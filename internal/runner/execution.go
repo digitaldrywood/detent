@@ -1275,9 +1275,6 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 	}
 	workflow, runtime, _, _ := r.runtimeSnapshot()
 	cfg := gate.Effective(workflow.Config.Gate).Validator
-	if !cfg.Enabled {
-		return nil
-	}
 	_, _, backend, routeErr := runtime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
 	ctx, cancel := r.finalizationContext(context.WithoutCancel(ctx), r.nativeWorkTimeout(workflow.Config, backend, durationFromMillis(cfg.TurnTimeoutMS)), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 	defer cancel()
@@ -1286,6 +1283,12 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 		if err != nil {
 			return fmt.Errorf("%w: acceptance input: %w", ErrValidatorInfrastructure, err)
 		}
+		return nil
+	}
+	if frozen := nativeAcceptanceGate(ValidatorRequest{NativeVersion: input.Version}); frozen != nil {
+		cfg = frozen.Validator
+	}
+	if !cfg.Enabled {
 		return nil
 	}
 	if routeErr != nil {

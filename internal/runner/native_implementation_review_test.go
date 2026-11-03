@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -35,6 +36,7 @@ type implementationReviewExecution struct {
 	head              string
 	securityAudit     *NativeSecurityAuditEvidence
 	reviewSource      tracker.NativeChangeReference
+	ownershipPolicy   *policy.Descriptor
 }
 
 func (e *implementationReviewExecution) RecoverChangeSource(ctx context.Context) (workspace.ChangeSource, error) {
@@ -42,6 +44,7 @@ func (e *implementationReviewExecution) RecoverChangeSource(ctx context.Context)
 	if e.head != "" {
 		input.Version.HeadSHA = e.head
 	}
+	e.bindOwnership(&input)
 	return workspace.ChangeSource{Version: *input.Version}, err
 }
 
@@ -65,7 +68,19 @@ func (e *implementationReviewExecution) ReviewVersion(context.Context) (NativeVa
 	if e.validation != nil {
 		input.Version.Validation = e.validation
 	}
+	e.bindOwnership(&input)
 	return input, nil
+}
+
+func (e *implementationReviewExecution) bindOwnership(input *NativeValidation) {
+	if e.ownershipPolicy == nil {
+		return
+	}
+	v := input.Version
+	v.Policy = *e.ownershipPolicy
+	v.PolicyID = v.Policy.ID
+	v.ChangeID, v.RunID, v.AttemptID = "change_example", "run_example", "attempt_example"
+	v.Source = &tracker.ChangeSource{BaseSHA: v.BaseSHA, HeadSHA: v.HeadSHA, DiffSHA256: input.Diff.Digest}
 }
 
 func (e *implementationReviewExecution) SecurityAuditVersion(ctx context.Context) (NativeValidation, error) {
@@ -101,6 +116,7 @@ func (e *implementationReviewExecution) ValidatorVersion(ctx context.Context) (N
 	if e.validation != nil {
 		input.Version.Validation = e.validation
 	}
+	e.bindOwnership(&input)
 	return input, err
 }
 
@@ -182,12 +198,27 @@ type implementationReviewBackend struct {
 	discussion        *NativeReviewDiscussion
 	securityAudit     *NativeSecurityAuditEvidence
 	validatorResponse string
+	focusedCommand    string
+	observeRole       func(string)
 }
 
 type implementationReviewWorkspace struct {
 	attachmentValidatorWorkspace
-	commands []string
-	local    *workspace.LocalGit
+	commands     []string
+	local        *workspace.LocalGit
+	preparations int
+}
+
+func (w *implementationReviewWorkspace) BeforeRun(ctx context.Context, info workspace.Info, issue workspace.Issue) error {
+	w.preparations++
+	return w.attachmentValidatorWorkspace.BeforeRun(ctx, info, issue)
+}
+
+func (w *implementationReviewWorkspace) DiffStat(ctx context.Context, info workspace.Info, issue workspace.Issue) (workspace.DiffStat, error) {
+	if w.local != nil {
+		return w.local.DiffStat(ctx, info, issue)
+	}
+	return workspace.DiffStat{HeadSHA: issue.PullRequestHeadSHA, TreeSHA: "tree"}, nil
 }
 
 func (w *implementationReviewWorkspace) ReviewCommandEnvironment(ctx context.Context, info workspace.Info, issue workspace.Issue, command string) gate.CheckEnvironment {
@@ -215,7 +246,17 @@ func (w *implementationReviewWorkspace) RunReviewCommand(ctx context.Context, in
 	return gate.CommandResult{ReceiptID: fmt.Sprintf("receipt-new-%d", len(w.commands)), Command: command, HeadSHA: issue.PullRequestHeadSHA, TreeSHA: "tree", DurationNS: int64(time.Second), StartedAt: time.Now(), Evidence: w.ReviewCommandEvidence(ctx, info, issue, "go test ./...")}, nil
 }
 
-func (b *implementationReviewBackend) RunTurn(_ context.Context, request AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+func (b *implementationReviewBackend) RunTurnWithTools(ctx context.Context, request AgentTurnRequest, _ []AgentTool, handle AgentToolHandler, update AgentUpdateHandler) (AgentTurnResult, error) {
+	if request.Model == "review-model" && b.focusedCommand != "" {
+		raw, _ := json.Marshal(map[string]string{"command": b.focusedCommand})
+		if _, err := handle(ctx, AgentToolCall{Name: "detent_run_validation", Arguments: raw}); err != nil {
+			b.t.Fatal(err)
+		}
+	}
+	return b.RunTurn(ctx, request, update)
+}
+
+func (b *implementationReviewBackend) RunTurn(ctx context.Context, request AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
 	if !request.ReadOnly {
 		b.t.Fatal("native review received a writable turn")
 	}
@@ -225,6 +266,9 @@ func (b *implementationReviewBackend) RunTurn(_ context.Context, request AgentTu
 		if err != nil || !strings.Contains(request.Prompt, string(raw)) || !strings.Contains(request.Prompt, "untrusted") {
 			b.t.Fatal("independent source review did not consume typed untrusted discussion")
 		}
+	}
+	if b.observeRole != nil {
+		b.observeRole(request.Model)
 	}
 	response := b.response
 	if request.Model == "validator-model" || response == "" {
@@ -247,6 +291,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 	isolateAttemptDiffGitConfig(t)
 	for _, test := range []struct {
 		name             string
+		ownership        bool
 		ssh              bool
 		validator        bool
 		verdict          string
@@ -266,8 +311,32 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		gateFailure      bool
 		securityAudit    bool
 		acceptanceRework bool
+		focused          bool
+		validatorFailure bool
+		frozenDisabled   bool
+		aliased          bool
+		unknownValidator bool
+		driftGate        bool
+		driftDisabled    bool
 		unsatisfiable    bool
 	}{
+		{name: "frozen validator remains required after live disable", ownership: true, driftDisabled: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, wantRuns: 1},
+		{name: "acceptance executes frozen gate after live change", ownership: true, driftGate: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, wantRuns: 1},
+		{name: "incomplete finalizer retains preflight", ownership: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, editReceipt: func(r *gate.CommandResult) { r.FinishedAt = time.Time{} }, wantRuns: 2},
+		{name: "unknown finalizer environment retains preflight", ownership: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, editReceipt: func(r *gate.CommandResult) { r.Evidence.Environment = gate.CheckEnvironment{} }, wantRuns: 2},
+		{name: "ownership acceptance never reuses bound receipt", ownership: true, validator: true, verdict: "pass", command: "go test ./...", wantRuns: 1},
+		{name: "aliased backend model retains preflight", ownership: true, aliased: true, validator: true, verdict: "rework", command: "make check-landing", wrapped: true, wantRuns: 1},
+		{name: "unknown validator retains preflight", ownership: true, unknownValidator: true, validator: true, verdict: "rework", command: "make check-landing", wrapped: true, wantRuns: 1},
+		{name: "ownership retains reviewer requested full gate", ownership: true, focused: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, wantRuns: 2},
+		{name: "ownership validator failure blocks acceptance", ownership: true, validatorFailure: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, linterState: "missing", wantRuns: 1},
+		{name: "frozen disabled validator retains review gate", ownership: true, frozenDisabled: true, verdict: "rework", command: "make check-landing", wrapped: true, wantRuns: 1},
+		{name: "ownership wrong tree retains preflight", ownership: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, editReceipt: func(r *gate.CommandResult) { r.TreeSHA = "old-tree" }, wantRuns: 2},
+		{name: "ownership missing receipt identity retains preflight", ownership: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, editReceipt: func(r *gate.CommandResult) { r.ReceiptID = "" }, wantRuns: 2},
+		{name: "ownership omits only review shell preflight", ownership: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, wantRuns: 1},
+		{name: "ownership survives SSH", ownership: true, ssh: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, wantRuns: 1},
+		{name: "ownership latest failure retains preflight", ownership: true, validator: true, verdict: "pass", latestFailed: true, command: "make check-landing", wrapped: true, wantRuns: 2},
+		{name: "ownership failed finalizer retains preflight", ownership: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, editReceipt: func(r *gate.CommandResult) { r.ExitCode = 1 }, wantRuns: 2},
+		{name: "ownership missing stage retains preflight", ownership: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, editReceipt: func(r *gate.CommandResult) { r.Stage = "" }, wantRuns: 2},
 		{name: "separate source and acceptance passes reuse source receipt", validator: true, verdict: "pass"},
 		{name: "1245 production criterion publishes wait", validator: true, verdict: "pass", unsatisfiable: true},
 		{name: "1245 production criterion publishes wait over SSH", validator: true, verdict: "pass", unsatisfiable: true, ssh: true},
@@ -312,8 +381,16 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 			}
 			var events []string
 			backend := &implementationReviewBackend{t: t, events: &events, response: fmt.Sprintf(`{"verdict":%q,"score":1,"summary":"Independent source result","criteria_evidence":[]}`, test.verdict)}
+			if test.focused {
+				backend.focusedCommand = command
+			}
 			worktree := &implementationReviewWorkspace{attachmentValidatorWorkspace: attachmentValidatorWorkspace{reviewMutationWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, heads: []string{"head"}}}}
 			receipt := gate.CommandResult{ReceiptID: "receipt-original", Command: command, HeadSHA: "head", TreeSHA: "tree", DurationNS: int64(time.Second), StartedAt: time.Now().Add(time.Hour), Evidence: worktree.ReviewCommandEvidence(t.Context(), workspace.Info{}, workspace.Issue{}, "go test ./...")}
+			if test.ownership {
+				receipt.FinishedAt = receipt.StartedAt.Add(time.Second)
+				receipt.Stage = gate.StageSourceFinalization
+				receipt.Execution = "executed"
+			}
 			if test.wrapped {
 				if runtime.GOOS == "windows" {
 					t.Skip("POSIX landing wrapper")
@@ -400,6 +477,9 @@ fi
 					t.Fatalf("host finalization command: %+v %v", receipt, err)
 				}
 				receipt.TimingStage = "finalization"
+				if test.ownership {
+					receipt.Stage = gate.StageSourceFinalization
+				}
 				receipt = tracker.PublicGateResult(receipt)
 				switch test.linterState {
 				case "replaced":
@@ -437,7 +517,50 @@ fi
 			if err != nil {
 				t.Fatal(err)
 			}
+			if test.aliased || test.unknownValidator {
+				for i := range r.agentRuntime.router.routes {
+					route := &r.agentRuntime.router.routes[i]
+					if route.Role != RoleValidator {
+						continue
+					}
+					if test.aliased {
+						route.Model = "review-model"
+					} else {
+						route.Role = "unknown"
+					}
+				}
+				if test.unknownValidator {
+					delete(r.agentRuntime.router.defaultIndexes, RoleValidator)
+				}
+			}
+			reviewRuns, acceptanceRuns := 0, 0
+			backend.observeRole = func(role string) {
+				if role == "review-model" {
+					reviewRuns = len(worktree.commands)
+					if test.driftDisabled {
+						r.workflow.Config.Gate.Validator.Enabled = false
+					}
+					if test.driftGate {
+						r.workflow.Config.Gate.Run = "make changed"
+					}
+				} else {
+					acceptanceRuns = len(worktree.commands) - reviewRuns
+				}
+			}
 			execution := &implementationReviewExecution{events: &events, validatorDisabled: !test.validator, recordError: test.recordError, validation: &receipt}
+			if test.ownership {
+				frozen := config.Default()
+				frozen.Tracker.Kind = config.TrackerHubNative
+				frozen.Gate = r.workflow.Config.Gate
+				if test.frozenDisabled {
+					frozen.Gate.Validator.Enabled = false
+				}
+				descriptor, err := config.ResolvePolicy(config.Workflow{Config: frozen, Prompt: "Review"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				execution.ownershipPolicy = &descriptor
+			}
 			if test.securityAudit {
 				execution.securityAudit = &NativeSecurityAuditEvidence{ReviewID: "review_security_accepted", VersionID: "version_example", Repository: "example-org/example-project", BaseSHA: "base", HeadSHA: "head", DiffDigest: "digest", Verdict: "pass", SessionID: 123, ReviewerVersion: "2", ReviewerDigest: "security-reviewer-digest"}
 				backend.securityAudit = execution.securityAudit
@@ -459,7 +582,7 @@ fi
 				t.Cleanup(func() { central.Close(); remote.Close(); left.Close(); right.Close() })
 				reviewExecution = &sshNativeExecution{sshExecution: &sshExecution{peer: remote}}
 			}
-			if test.prior || test.editReceipt != nil {
+			if test.prior || test.editReceipt != nil && !test.ownership {
 				execution.validation = &gate.CommandResult{TreeSHA: candidateTree}
 				execution.commands = []gate.CommandResult{receipt}
 			}
@@ -488,11 +611,14 @@ fi
 				criterion = "a real ChatGPT custom connector signs in against production"
 				backend.validatorResponse = fmt.Sprintf(`{"verdict":"pass","score":1,"summary":"Requires production","criteria_evidence":[{"criterion":%q,"kind":"not_verified","unverified_class":"unsatisfiable","reference":"Requires a real third-party client against production"}]}`, criterion)
 			}
-			err = r.validateNativeChange(t.Context(), RunRequest{Execution: reviewExecution, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1", Description: "## Acceptance criteria\n- " + criterion}})
+			err = r.validateNativeChange(t.Context(), RunRequest{workspacePrepared: true, Execution: reviewExecution, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1", Description: "## Acceptance criteria\n- " + criterion}})
 			if (err != nil) != (test.recordError != nil) {
 				t.Fatalf("source verdict became a run failure or recording failure was ignored: %v", err)
 			}
 			want := []string{"review version", "review-model", "record review"}
+			if test.verdict == "pass" && !test.validator && test.recordError == nil {
+				want = append(want, "validator version")
+			}
 			if test.verdict == "pass" && test.validator && test.recordError == nil && !test.gateFailure {
 				want = append(want, "validator version", "validator-model", "record validator")
 			}
@@ -505,6 +631,20 @@ fi
 			if test.acceptanceRework && execution.validatorResult.Verdict != gate.ValidatorVerdictRework {
 				t.Fatalf("accepted security audit overrode independent acceptance: %+v", execution.validatorResult)
 			}
+			if test.validatorFailure && execution.validatorResult.Verdict == gate.ValidatorVerdictPass {
+				t.Fatal("failed independent validator accepted source")
+			}
+			if test.ownership && test.wantRuns == 1 && !test.frozenDisabled && !test.aliased && !test.unknownValidator {
+				if reviewRuns != 0 || acceptanceRuns != 1 {
+					t.Fatalf("role invocation counts review=%d acceptance=%d", reviewRuns, acceptanceRuns)
+				}
+				if len(execution.reviewResult.Commands) != 0 || !strings.Contains(execution.reviewResult.Summary, "source finalizer receipt "+receipt.ReceiptID) {
+					t.Fatalf("ownership manufactured command evidence: %+v", execution.reviewResult)
+				}
+				if len(execution.validatorResult.Commands) != 1 || execution.validatorResult.Commands[0].ReceiptID == receipt.ReceiptID {
+					t.Fatalf("acceptance failed to execute independently: %+v", execution.validatorResult)
+				}
+			}
 			wantVerdict := test.verdict
 			if test.gateFailure {
 				wantVerdict = gate.ValidatorVerdictWait
@@ -515,15 +655,25 @@ fi
 			if execution.reviewResult.Verdict != wantVerdict {
 				t.Fatalf("source review verdict = %q, want %q", execution.reviewResult.Verdict, wantVerdict)
 			}
+			t.Logf("host gate invocations: review=%d acceptance=%d total=%d", reviewRuns, acceptanceRuns, len(worktree.commands))
 			if len(worktree.commands) != test.wantRuns {
 				t.Fatalf("applicable evidence was rerun or invalid evidence skipped execution: commands=%v want executions=%d", worktree.commands, test.wantRuns)
+			}
+			if test.ownership {
+				expectedPreparations := 1
+				if test.validator && test.verdict == "pass" {
+					expectedPreparations = 2
+				}
+				if worktree.preparations != expectedPreparations {
+					t.Fatalf("independent workspace preparations=%d want %d", worktree.preparations, expectedPreparations)
+				}
 			}
 			if test.wrapped {
 				invocations, err := os.ReadFile(filepath.Join(worktree.info.Path, ".git", "invocations"))
 				if err != nil || string(invocations) != strings.Repeat("build\n", 1+test.wantRuns) {
 					t.Fatalf("landing validation repeated: %q %v", invocations, err)
 				}
-				if !test.unsupported && receipt.Evidence.Environment.GoVersion != "go1.26.9" {
+				if !test.unsupported && test.editReceipt == nil && receipt.Evidence.Environment.GoVersion != "go1.26.9" {
 					t.Fatalf("receipt captured ambient toolchain: %+v", receipt.Evidence)
 				}
 				if receipt.Evidence.InputsSHA != "" {
