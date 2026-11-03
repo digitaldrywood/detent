@@ -73,6 +73,13 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 		return err
 	}
 	previous := e.data.Runtime
+	if observation.Validation != nil && observation.Phase == "" && (previous == nil || previous.Phase == "") {
+		observation.Phase = "validation"
+		observation.HeartbeatAt = observation.Validation.FinishedAt
+		if observation.HeartbeatAt.IsZero() {
+			observation.HeartbeatAt = e.scheduler.now().UTC()
+		}
+	}
 	observation = runtimeevidence.Merge(previous, observation)
 	current := runtimeevidence.Normalize(observation)
 	var before tracker.NativeRuntimeObservation

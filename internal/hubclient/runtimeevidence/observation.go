@@ -62,7 +62,7 @@ func Merge(previous *tracker.NativeRuntimeObservation, observation tracker.Nativ
 			observation.Phases[len(observation.Phases)-1].FinishedAt = observation.HeartbeatAt
 		}
 	}
-	if previous == nil || len(observation.Phases) == 0 || observation.Phase != previous.Phase {
+	if (previous == nil || len(observation.Phases) == 0 || observation.Phase != previous.Phase) && observation.Phase != "" && !observation.HeartbeatAt.IsZero() {
 		if len(observation.Phases) < 128 {
 			observation.Phases = append(observation.Phases, tracker.NativePhase{Name: observation.Phase, StartedAt: observation.HeartbeatAt})
 		} else {
