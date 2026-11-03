@@ -521,6 +521,13 @@ func archiveProjectionColumn(table, column string) bool {
 
 func archiveProjectionDefault(table, column string) json.RawMessage {
 	switch table {
+	case "collaboration_versions":
+		switch column {
+		case "payload_object_key":
+			return json.RawMessage(`""`)
+		case "base_revision":
+			return json.RawMessage(`0`)
+		}
 	case "attempt_diff_files":
 		switch column {
 		case "conversion_state":

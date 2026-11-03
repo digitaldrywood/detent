@@ -991,7 +991,7 @@ func TestSafeNativeWorkError(t *testing.T) {
 			if test.worker {
 				caller.credential.Scope = apiScopeWorker
 			}
-			_, cause := createNativeIssueTx(t.Context(), tx, caller, request, now)
+			_, cause := createNativeIssueTx(nativeFixturePayloadContext(t.Context(), tx), tx, caller, request, now)
 			err = safeNativeWorkError(cause)
 			var refusal *operatortool.RequestError
 			if !errors.As(err, &refusal) || refusal.Code != "invalid_request" || refusal.Message != test.message || errors.Is(err, operatortool.ErrSnapshotUnavailable) {

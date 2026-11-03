@@ -61,7 +61,7 @@ func TestNativeIssueCreatedBy(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: test.state}, time.Now())
+		_, err = persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: test.state}, time.Now())
 		if err != nil {
 			tx.Rollback()
 			t.Fatal(err)

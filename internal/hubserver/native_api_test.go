@@ -21,8 +21,10 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -981,7 +983,60 @@ func TestNativeDependenciesAndTransitions(t *testing.T) {
 	}
 }
 
+func nativeFixturePayloadContext(ctx context.Context, tx *sql.Tx) context.Context {
+	if ctx.Value(changeContentKey{}) == nil {
+		ctx = context.WithValue(ctx, changeContentKey{}, &changeContent{query: tx, call: func(context.Context, entryauthority.ContentRequest) ([]byte, error) {
+			return nil, artifact.ErrMissing
+		}})
+	}
+	return context.WithValue(ctx, pendingContentKey{}, &pendingContentMutation{tx: tx})
+}
+
+func inlineNativeVersionFixture(t *testing.T, service *Service, tx *sql.Tx) {
+	t.Helper()
+	rows, err := tx.QueryContext(t.Context(), "SELECT organization_id,project_id,work_item_id,record_id,revision FROM collaboration_versions ORDER BY organization_id,record_id,revision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type version struct {
+		organization, project, item, record string
+		revision                            int64
+		raw                                 []byte
+	}
+	var versions []version
+	for rows.Next() {
+		var v version
+		if err := rows.Scan(&v.organization, &v.project, &v.item, &v.record, &v.revision); err != nil {
+			t.Fatal(err)
+		}
+		versions = append(versions, v)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := service.contentContext(t.Context())
+	for i := range versions {
+		v := &versions[i]
+		v.raw, err = reconstructNativeVersion(ctx, tx, v.organization, v.project, v.item, v.record, v.revision)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tx.ExecContext(t.Context(), "DROP TRIGGER collaboration_versions_no_update"); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range versions {
+		if _, err := tx.ExecContext(t.Context(), "UPDATE collaboration_versions SET record_json=?,encoding='snapshot',payload_object_key='',base_revision=0 WHERE organization_id=? AND record_id=? AND revision=?", string(v.raw), v.organization, v.record, v.revision); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tx.ExecContext(t.Context(), "CREATE TRIGGER collaboration_versions_no_update BEFORE UPDATE ON collaboration_versions BEGIN SELECT RAISE(ABORT, 'collaboration history is append-only'); END"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func createNativeFixtureIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
+	ctx = nativeFixturePayloadContext(ctx, tx)
 	descriptor := hubTestPolicy()
 	raw, err := json.Marshal(descriptor)
 	if err != nil {

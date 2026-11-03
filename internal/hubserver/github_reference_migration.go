@@ -193,8 +193,11 @@ WHERE g.project_id = ? AND g.work_item_id = ? AND r.kind = 'issue'
 }
 
 func importedNativeIssueVersions(ctx context.Context, tx *sql.Tx, project, item string) ([]string, error) {
-	var encoded bool
+	var encoded, objects bool
 	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pragma_table_info('collaboration_versions') WHERE name='encoding')").Scan(&encoded); err != nil {
+		return nil, err
+	}
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pragma_table_info('collaboration_versions') WHERE name='payload_object_key')").Scan(&objects); err != nil {
 		return nil, err
 	}
 	rows, err := tx.QueryContext(ctx, "SELECT organization_id, revision, record_json FROM collaboration_versions WHERE project_id=? AND work_item_id=? AND record_id=? ORDER BY revision", project, item, item)
@@ -221,7 +224,7 @@ func importedNativeIssueVersions(ctx context.Context, tx *sql.Tx, project, item 
 	for _, version := range versions {
 		raw := []byte(version.raw)
 		if encoded {
-			raw, err = reconstructNativeVersion(ctx, tx, version.organization, project, item, item, version.revision)
+			raw, err = reconstructNativeVersionStorage(ctx, tx, version.organization, project, item, item, version.revision, objects)
 			if err != nil {
 				return nil, err
 			}

@@ -812,11 +812,17 @@ func recordNativeChange(ctx context.Context, tx *sql.Tx, scope nativeScope, reco
 		return err
 	}
 	var previous []byte
-	var previousEncoding string
+	var previousEncoding, previousKey string
 	if revision > 1 && int64(revision)%nativeVersionSnapshotInterval != 0 {
-		err := tx.QueryRowContext(ctx, `SELECT record_json, encoding FROM collaboration_versions
-WHERE organization_id=? AND project_id=? AND work_item_id=? AND record_id=? AND revision=?`, scope.organization, scope.project, workItemID, recordID, revision-1).Scan(&previous, &previousEncoding)
+		err := tx.QueryRowContext(ctx, `SELECT record_json, encoding, payload_object_key FROM collaboration_versions
+WHERE organization_id=? AND project_id=? AND work_item_id=? AND record_id=? AND revision=?`, scope.organization, scope.project, workItemID, recordID, revision-1).Scan(&previous, &previousEncoding, &previousKey)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	if previousKey != "" {
+		previous, err = readNativeVersionPayload(ctx, tx, string(scope.organization), previousKey)
+		if err != nil {
 			return err
 		}
 	}
@@ -824,7 +830,12 @@ WHERE organization_id=? AND project_id=? AND work_item_id=? AND record_id=? AND 
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO collaboration_versions (organization_id, project_id, work_item_id, record_id, revision, record_json, encoding) VALUES (?, ?, ?, ?, ?, ?, ?)", scope.organization, scope.project, workItemID, recordID, revision, string(version), encoding); err != nil {
+	key, err := storedPayloadKey(ctx, string(scope.organization), version)
+	if err != nil {
+		return err
+	}
+	base := nativeVersionBase(encoding, int64(revision))
+	if _, err := tx.ExecContext(ctx, "INSERT INTO collaboration_versions (organization_id, project_id, work_item_id, record_id, revision, record_json, encoding, base_revision, payload_object_key) VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?)", scope.organization, scope.project, workItemID, recordID, revision, encoding, base, key); err != nil {
 		return err
 	}
 	return appendNativeHistory(ctx, tx, scope, workItemID, eventType, data, now)

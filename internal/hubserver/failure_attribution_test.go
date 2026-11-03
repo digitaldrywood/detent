@@ -22,7 +22,7 @@ func TestInstanceStepSuccessesAreScopedAndBounded(t *testing.T) {
 	}
 	defer tx.Rollback()
 	create := func(title string) tracker.NativeIssue {
-		issue, err := createNativeIssueDraft(t.Context(), tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: title, State: "Todo"}, now, false, false)
+		issue, err := createNativeIssueDraft(nativeFixturePayloadContext(t.Context(), tx), tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: title, State: "Todo"}, now, false, false)
 		if err != nil {
 			t.Fatal(err)
 		}
