@@ -18,7 +18,7 @@ var scheduledDiagnostic = regexp.MustCompile("Problem: `go-diagnostic:([^`]+)`")
 var scheduledTest = regexp.MustCompile("Problem: `go-test:([^`]+)`")
 
 func DefectFingerprint(body string) string {
-	keys := defectFingerprints(body)
+	keys := DefectFingerprints(body)
 	if len(keys) == 1 {
 		return keys[0]
 	}
@@ -26,7 +26,7 @@ func DefectFingerprint(body string) string {
 }
 
 func HasDefect(body, fingerprint string) bool {
-	return slices.Contains(defectFingerprints(body), fingerprint)
+	return slices.Contains(DefectFingerprints(body), fingerprint)
 }
 
 func SameDefect(previous, incoming string) bool {
@@ -41,7 +41,7 @@ func SameDefect(previous, incoming string) bool {
 	if before.Kind != "worker" && after.Kind != "worker" {
 		return false
 	}
-	for _, key := range defectFingerprints(incoming) {
+	for _, key := range DefectFingerprints(incoming) {
 		if before.Fingerprint == key || HasDefect(previous, key) {
 			return true
 		}
@@ -49,7 +49,7 @@ func SameDefect(previous, incoming string) bool {
 	return HasDefect(previous, after.Fingerprint)
 }
 
-func defectFingerprints(body string) []string {
+func DefectFingerprints(body string) []string {
 	body = block.ReplaceAllString(body, "")
 	var keys []string
 	for _, match := range migrationCollision.FindAllStringSubmatch(body, -1) {

@@ -16,8 +16,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"slices"
 )
 
 const nativeSearchRebuildBatch = 1
@@ -27,6 +29,19 @@ const nativeSearchLegacyPruneBatch = 32
 
 var registerNativeSearchText = sync.OnceValue(func() error {
 	if err := registerNativeSearchTokenizer(); err != nil {
+		return err
+	}
+	if err := sqlite.RegisterDeterministicScalarFunction("native_duplicate_fingerprints", 1, func(_ *sqlite.FunctionContext, values []driver.Value) (driver.Value, error) {
+		body, ok := values[0].(string)
+		if !ok {
+			return "", nil
+		}
+		keys := nativeDuplicateFingerprints(body)
+		if len(keys) == 0 {
+			return "", nil
+		}
+		return strings.Join(keys, "\n") + "\n", nil
+	}); err != nil {
 		return err
 	}
 	return sqlite.RegisterDeterministicScalarFunction("native_search_text", 2, func(_ *sqlite.FunctionContext, values []driver.Value) (driver.Value, error) {
@@ -60,7 +75,7 @@ func nativeSearchIndexPending(scope nativeScope) (string, []any) {
  LIMIT ` + strconv.Itoa(nativeSearchPostingBudget) + `) i CROSS JOIN native_work_documents d
  WHERE d.issue_id=i.id AND d.id>r.through_id AND d.id<=r.last_id
  LIMIT ` + strconv.Itoa(nativeSearchPostingBudget) + `) d WHERE (NOT EXISTS(SELECT 1 FROM native_work_scoped_fts WHERE rowid=d.id*2)
- OR NOT EXISTS(SELECT 1 FROM native_work_search_lengths WHERE document_id=d.id))))
+ OR NOT EXISTS(SELECT 1 FROM native_work_search_lengths WHERE document_id=d.id AND search_revision>=0))))
  OR EXISTS(SELECT 1 FROM native_work_search_dirty WHERE organization_id=? AND project_id=?)
  OR (? AND EXISTS(SELECT 1 FROM issues WHERE organization_id=? AND project_id=? AND actor_principal_id IS NULL))`,
 		[]any{scope.organization, scope.project, scope.organization, scope.project, scope.credential.HostedRole == "reporter", scope.organization, scope.project}
@@ -191,6 +206,16 @@ func (d *database) publishNativeSearchDocument(ctx context.Context, tx *sql.Tx, 
 		_, err = tx.ExecContext(ctx, `INSERT INTO native_work_search_refresh SELECT d.id,i.organization_id,i.project_id FROM native_work_documents d JOIN issues i ON i.id=d.issue_id WHERE d.id=?
  ON CONFLICT(document_id) DO UPDATE SET organization_id=excluded.organization_id,project_id=excluded.project_id`, document.id)
 		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM native_work_fingerprints WHERE document_id=?`, document.id); err != nil {
+		return false, fmt.Errorf("remove stale fingerprints: %w", err)
+	}
+	for _, fingerprint := range nativeDuplicateFingerprints(document.body) {
+		for _, scope := range document.scopes {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO native_work_fingerprints(scope,fingerprint,document_id) VALUES(?,?,?)`, scope, fingerprint, document.id); err != nil {
+				return false, fmt.Errorf("index fingerprint: %w", err)
+			}
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM native_work_search_postings WHERE document_id=?`, document.id); err != nil {
 		return false, fmt.Errorf("remove stale search postings: %w", err)
@@ -415,4 +440,24 @@ func (d *database) backfillNativeSearch(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("advance search rebuild cursor: %w", err)
 	}
 	return true, d.commit(ctx, tx)
+}
+
+func nativeDuplicateFingerprints(body string) []string {
+	keys := issueorigin.DefectFingerprints(body)
+	if origin, ok := issueorigin.Parse(body); ok {
+		keys = append(keys, origin.Fingerprint)
+	}
+	keys = slices.DeleteFunc(keys, func(key string) bool {
+		if len(key) < 2 || len(key) > 256 {
+			return true
+		}
+		for _, c := range key {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("-_.:/", c)) {
+				return true
+			}
+		}
+		return false
+	})
+	slices.Sort(keys)
+	return slices.Compact(keys)
 }
