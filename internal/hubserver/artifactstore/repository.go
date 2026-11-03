@@ -28,6 +28,7 @@ type Reader interface {
 	ArtifactReference(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string, int64) (artifact.Reference, error)
 	ArtifactReferences(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int) ([]artifact.Reference, error)
 	ArchiveObject(context.Context, string) (ArchiveObject, error)
+	ArchiveObjectByReference(context.Context, attachment.ArchiveReference) (ArchiveObject, error)
 	ArchiveBytes(context.Context) (int64, error)
 }
 

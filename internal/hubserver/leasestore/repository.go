@@ -25,6 +25,10 @@ type Reader interface {
 	Attempt(context.Context, string) (Attempt, error)
 	LatestAttempt(context.Context, int64) (Attempt, error)
 	AttemptPage(context.Context, int64, AttemptCursor, int) (AttemptPage, error)
+	AttemptDiff(context.Context, tracker.ProjectID, string, tracker.DiffGeneration) (AttemptDiff, error)
+	LatestAttemptDiff(context.Context, tracker.ProjectID, string, string) (AttemptDiff, error)
+	LatestWorkItemAttemptDiff(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (AttemptDiff, error)
+	LatestAttemptDiffSequence(context.Context, string, string, string) (int64, error)
 	Usage(context.Context, string) (int64, error)
 }
 
@@ -44,6 +48,8 @@ type Writer interface {
 	Expire(context.Context, Fence) (Lease, error)
 	RecordAttempt(context.Context, AttemptEvent) (Attempt, error)
 	RecordAttemptEvent(context.Context, AttemptEvent) (Attempt, bool, error)
+	CreateAttemptDiff(context.Context, AttemptDiff) error
+	LockAttemptDiffGeneration(context.Context, string, string, string, string, string) (int64, error)
 }
 
 type FencedLeaseLocker interface {
@@ -119,6 +125,26 @@ type AttemptCursor struct {
 type AttemptPage struct {
 	Items []Attempt
 	Next  AttemptCursor
+}
+
+type AttemptDiff struct {
+	OrganizationID  tracker.OrganizationID
+	ID              string
+	AttemptID       string
+	IssueID         int64
+	ProjectID       tracker.ProjectID
+	WorkItemID      tracker.NativeWorkItemID
+	Generation      tracker.DiffGeneration
+	Producer        tracker.DiffProducer
+	BaseSHA         string
+	HeadSHA         string
+	FileCount       int
+	PatchBytes      int64
+	PostedBytes     int64
+	Truncated       bool
+	ManifestExpired bool
+	ArchiveID       string
+	CreatedAt       time.Time
 }
 
 type AttemptEvent struct {

@@ -27,6 +27,24 @@ func (s *session) ArchiveObject(ctx context.Context, id string) (artifactstore.A
 	return object, nil
 }
 
+func (s *session) ArchiveObjectByReference(ctx context.Context, ref attachment.ArchiveReference) (artifactstore.ArchiveObject, error) {
+	if ref.Validate(string(s.organization)) != nil {
+		return artifactstore.ArchiveObject{}, corestore.ErrInvalidPage
+	}
+	var object artifactstore.ArchiveObject
+	var stored attachment.ArchiveReference
+	err := s.db.QueryRowContext(ctx, `SELECT organization_id,id,object_key,sha256,compressed_size,uncompressed_size,codec,schema_version,kind,retention,binding_id,customer_owned,created_at FROM archive_objects WHERE organization_id=$1 AND object_key=$2 AND sha256=$3`, s.organization, ref.Key, ref.SHA256).Scan(
+		&object.OrganizationID, &object.ID, &stored.Key, &stored.SHA256, &stored.CompressedSize, &stored.UncompressedSize, &stored.Codec, &stored.SchemaVersion, &stored.Kind, &stored.Retention, &stored.BindingID, &stored.CustomerOwned, &object.CreatedAt)
+	if err != nil {
+		return artifactstore.ArchiveObject{}, mapError(ctx, err)
+	}
+	if stored != ref {
+		return artifactstore.ArchiveObject{}, corestore.ErrInvalidPage
+	}
+	object.Reference = stored
+	return object, nil
+}
+
 func (s *session) ArchiveBytes(ctx context.Context) (int64, error) {
 	if !s.readOnly {
 		if _, err := s.db.ExecContext(ctx, `INSERT INTO archive_usage_counters(organization_id,compressed_bytes) VALUES($1,0) ON CONFLICT (organization_id) DO NOTHING`, s.organization); err != nil {

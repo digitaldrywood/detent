@@ -249,6 +249,24 @@ WHERE id = ? AND organization_id = ? AND project_id = ? AND lease_id = ? AND fen
 }
 
 func validateStoredDiff(ctx context.Context, tx *sql.Tx, scope nativeScope, attemptID string, request tracker.AttemptDiffRequest) ([]tracker.AttemptDiffFile, int64, error) {
+	files, patchBytes, err := normalizeAttemptDiff(scope, request)
+	if err != nil {
+		return nil, 0, err
+	}
+	var stored int64
+	err = tx.QueryRowContext(ctx, `SELECT coalesce(max(seq), 0) FROM attempt_diffs
+WHERE attempt_id = ? AND source = ? AND source_id = ?`, attemptID, request.Generation.Source, request.Generation.ID).Scan(&stored)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read stored diff generation: %w", err)
+	}
+	if request.Generation.Seq <= stored {
+		return nil, 0, attemptDiffStaleGeneration("Generation " + strconv.FormatInt(request.Generation.Seq, 10) +
+			" is not ahead of the stored generation " + strconv.FormatInt(stored, 10))
+	}
+	return files, patchBytes, nil
+}
+
+func normalizeAttemptDiff(scope nativeScope, request tracker.AttemptDiffRequest) ([]tracker.AttemptDiffFile, int64, error) {
 	files, patchBytes := tracker.NormalizeDiffFiles(request.Files)
 	if patchBytes > tracker.MaxDiffBytes {
 		return nil, 0, attemptDiffTooLarge(tracker.MaxDiffBytes)
@@ -271,16 +289,6 @@ func validateStoredDiff(ctx context.Context, tx *sql.Tx, scope nativeScope, atte
 	}
 	if request.PostedBytes < 0 || request.PostedBytes > maxAttemptDiffRequestBytes || request.PostedBytes > 0 && request.PostedBytes < patchBytes {
 		return nil, 0, nativePublicInvalid("Invalid posted diff byte count")
-	}
-	var stored int64
-	err := tx.QueryRowContext(ctx, `SELECT coalesce(max(seq), 0) FROM attempt_diffs
-WHERE attempt_id = ? AND source = ? AND source_id = ?`, attemptID, request.Generation.Source, request.Generation.ID).Scan(&stored)
-	if err != nil {
-		return nil, 0, fmt.Errorf("read stored diff generation: %w", err)
-	}
-	if request.Generation.Seq <= stored {
-		return nil, 0, attemptDiffStaleGeneration("Generation " + strconv.FormatInt(request.Generation.Seq, 10) +
-			" is not ahead of the stored generation " + strconv.FormatInt(stored, 10))
 	}
 	return files, patchBytes, nil
 }
@@ -380,6 +388,16 @@ func (s *Service) postAttemptDiff(c echo.Context) error {
 	}
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
+	if s.config.TenantRepository != nil {
+		receipt, err := s.postAttemptDiffTenant(ctx, scope, attemptID, request, c.Get("attempt_diff_check") == true)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		if c.Get("attempt_diff_check") == true {
+			return c.NoContent(http.StatusNoContent)
+		}
+		return c.JSON(http.StatusAccepted, receipt)
+	}
 	var receipt tracker.AttemptDiffReceipt
 	if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok && c.Get("attempt_diff_check") != true {
 		if err := s.prepareDiffManifest(ctx, scope, attemptID, request); err != nil {
@@ -455,7 +473,7 @@ func (s *Service) getAttemptDiff(c echo.Context) error {
 		}
 		source = raw
 	}
-	if c.Request().Header.Get("X-Detent-Archive-Read") == "1" && c.QueryParam("source") != tracker.DiffSourceWorkspace {
+	if s.config.TenantRepository == nil && c.Request().Header.Get("X-Detent-Archive-Read") == "1" && c.QueryParam("source") != tracker.DiffSourceWorkspace {
 		scope := nativeRequestScope(c)
 		var item string
 		err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT work_item_id FROM issue_archive_sections WHERE organization_id=? AND project_id=? AND section_id=? ORDER BY archive_revision DESC LIMIT 1", scope.organization, scope.project, "diff:"+c.Param("attempt")).Scan(&item)
@@ -482,6 +500,9 @@ func (s *Service) readAttemptDiff(ctx context.Context, scope nativeScope, item, 
 	ctx = s.contentContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	if s.config.TenantRepository != nil {
+		return s.readAttemptDiffTenant(ctx, scope, item, attemptID, source, seq)
+	}
 	if item == "" {
 		if err := s.database.reader.QueryRowContext(ctx, "SELECT work_item_id FROM attempt_diffs WHERE organization_id=? AND project_id=? AND attempt_id=? ORDER BY seq DESC LIMIT 1", scope.organization, scope.project, attemptID).Scan(&item); err != nil {
 			return tracker.AttemptDiff{}, err
@@ -518,7 +539,7 @@ func (s *Service) readAttemptDiff(ctx context.Context, scope nativeScope, item, 
 // answers 200 with `{"diff": null}` rather than a 404 the client would have to
 // tell apart from a permission failure.
 func (s *Service) getWorkItemDiff(c echo.Context) error {
-	if c.QueryParam("source") != tracker.DiffSourceWorkspace {
+	if s.config.TenantRepository == nil && c.QueryParam("source") != tracker.DiffSourceWorkspace {
 		if handled, err := s.archiveView(c, c.Param("item"), "diff", nil); handled {
 			return err
 		}
@@ -543,6 +564,9 @@ func (s *Service) getWorkItemDiff(c echo.Context) error {
 func (s *Service) readWorkItemDiff(ctx context.Context, scope nativeScope, item, source string) (tracker.WorkItemDiff, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	if s.config.TenantRepository != nil {
+		return s.readWorkItemDiffTenant(ctx, scope, item, source)
+	}
 	issue, _, err := readNativeIssue(ctx, s.database.reader, scope, item)
 	if err != nil {
 		return tracker.WorkItemDiff{}, err
