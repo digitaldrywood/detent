@@ -111,7 +111,7 @@ func (r *Runner) auditNativeChange(ctx context.Context, req RunRequest) (approve
 	if evidence, ok := req.Execution.(ValidationEvidenceExecution); ok {
 		publisher = evidence
 	}
-	_, err = r.Audit(ctx, SecurityAuditRequest{usageExecution: req.Execution, Issue: req.Issue, Snapshot: snapshot, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate, evidence: publisher,
+	_, err = r.Audit(ctx, SecurityAuditRequest{usageExecution: req.Execution, workAttemptID: req.WorkAttemptID, generation: req.Generation, Issue: req.Issue, Snapshot: snapshot, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate, evidence: publisher,
 		complete: func(ctx context.Context, audit SecurityAuditExecution) error {
 			run := audit.auditRun(snapshot)
 			review := tracker.SecurityAuditReview{VersionID: input.Version.ID, Identity: audit.RuntimeIdentity, SessionID: audit.SessionID, DiffDigest: input.Diff.Digest, Run: run}
@@ -174,7 +174,7 @@ func (r *Runner) auditNativeLanding(ctx context.Context, req RunRequest, target 
 	if evidence, ok := req.Execution.(ValidationEvidenceExecution); ok {
 		publisher = evidence
 	}
-	_, err = r.Audit(ctx, SecurityAuditRequest{usageExecution: req.Execution, Issue: issue, Snapshot: snapshot, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate, evidence: publisher,
+	_, err = r.Audit(ctx, SecurityAuditRequest{usageExecution: req.Execution, workAttemptID: req.WorkAttemptID, generation: req.Generation, Issue: issue, Snapshot: snapshot, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate, evidence: publisher,
 		complete: func(ctx context.Context, audit SecurityAuditExecution) error {
 			run := audit.auditRun(snapshot)
 			evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: snapshot.ProjectID, Repository: target.Repository, BaseSHA: files.BaseSHA, HeadSHA: files.HeadSHA}, "", cfg.BlockOn)
