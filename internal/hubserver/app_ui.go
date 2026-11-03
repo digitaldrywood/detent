@@ -24,7 +24,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/readableurl"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -314,6 +316,46 @@ func (s *Service) readAppUpdates(ctx context.Context, credential apiCredential) 
 	current := detentVersion(s.config.Version)
 	minimum := minimumRunnerVersion(current)
 	payload := appUpdates{MinimumRunnerVersion: minimum, Current: current, Source: "hub", Runners: []appUpdateRunner{}, Client: s.clientBuild}
+	now := s.config.now()
+	if s.database.db == nil && s.config.TenantRepository != nil {
+		const pageSize = 200
+		organization := tracker.OrganizationID(s.appOrganizationID())
+		cursor := runnerstore.UpdateProjectionCursor{}
+		for {
+			var page []runnerstore.UpdateProjection
+			err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				pageReader, ok := reader.(runnerstore.UpdateProjectionPageReader)
+				if !ok {
+					return ErrProjectParticipants
+				}
+				var err error
+				page, err = pageReader.RunnerUpdateProjectionPage(ctx, cursor, pageSize)
+				return err
+			})
+			if err != nil {
+				return appUpdates{}, fmt.Errorf("list runner versions: %w", err)
+			}
+			for _, row := range page {
+				if len(payload.Runners) >= operatortool.MaxItemLimit {
+					return appUpdates{}, errHostedContextUnavailable
+				}
+				runner := appUpdateRunner{RunnerID: row.RunnerID, DisplayName: row.DisplayName, Version: row.Version}
+				runner.Online = !now.Before(row.LastHeartbeat) && now.Before(row.LastHeartbeat.Add(runnerauth.HeartbeatTimeout))
+				runner.ClaimRefusalReason = runnerClaimRefusal(minimum, runner.Version)
+				runner.Behind = runner.ClaimRefusalReason != ""
+				if runner.Behind {
+					payload.BehindCount++
+				}
+				payload.Runners = append(payload.Runners, runner)
+			}
+			if len(page) < pageSize {
+				break
+			}
+			last := page[len(page)-1]
+			cursor = runnerstore.UpdateProjectionCursor{DisplayName: last.DisplayName, RunnerID: last.RunnerID}
+		}
+		return payload, nil
+	}
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id, r.display_name, m.version, r.last_heartbeat_at
 FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens t ON t.id = r.token_id
 WHERE r.organization_id = ? AND t.revoked_at IS NULL ORDER BY r.display_name, r.id`, s.appOrganizationID())
@@ -321,7 +363,6 @@ WHERE r.organization_id = ? AND t.revoked_at IS NULL ORDER BY r.display_name, r.
 		return appUpdates{}, fmt.Errorf("list runner versions: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	now := s.config.now()
 	for rows.Next() {
 		var runner appUpdateRunner
 		var heartbeat string

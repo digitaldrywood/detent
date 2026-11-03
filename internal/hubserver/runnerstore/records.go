@@ -311,6 +311,22 @@ type Reader interface {
 	RunnerUrgentUpdate(context.Context) (UrgentUpdate, error)
 }
 
+type UpdateProjection struct {
+	RunnerID      string
+	DisplayName   string
+	Version       string
+	LastHeartbeat time.Time
+}
+
+type UpdateProjectionCursor struct {
+	DisplayName string
+	RunnerID    string
+}
+
+type UpdateProjectionPageReader interface {
+	RunnerUpdateProjectionPage(context.Context, UpdateProjectionCursor, int) ([]UpdateProjection, error)
+}
+
 type Writer interface {
 	Reader
 	CreateRunnerEnrollment(context.Context, Enrollment) error

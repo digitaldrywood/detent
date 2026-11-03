@@ -416,6 +416,18 @@ func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 			if len(projects) != 1 || projects[0] != "project_shared" {
 				t.Fatalf("projects=%v", projects)
 			}
+			projectionReader, ok := r.(runnerstore.UpdateProjectionPageReader)
+			if !ok {
+				t.Fatal("tenant reader does not expose the typed update projection")
+			}
+			projection, err := projectionReader.RunnerUpdateProjectionPage(ctx, runnerstore.UpdateProjectionCursor{}, 1)
+			if err != nil || len(projection) != 1 || projection[0].RunnerID != "runner_shared" || projection[0].DisplayName != "Example" || projection[0].Version != "example" || !projection[0].LastHeartbeat.Equal(now) {
+				t.Fatalf("projection=%+v error=%v", projection, err)
+			}
+			projection, err = projectionReader.RunnerUpdateProjectionPage(ctx, runnerstore.UpdateProjectionCursor{DisplayName: "Example", RunnerID: "runner_shared"}, 1)
+			if err != nil || len(projection) != 0 {
+				t.Fatalf("projection after cursor=%+v error=%v", projection, err)
+			}
 			allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, "project_shared", now.Add(time.Minute))
 			if err != nil || !allowed {
 				t.Fatalf("authorized=%t error=%v", allowed, err)
@@ -445,6 +457,12 @@ func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 			}
 			if allowed != check.want {
 				t.Fatalf("organization %s authorization=%t want=%t", check.organization, allowed, check.want)
+			}
+			if check.organization == "org_first" {
+				page, err := r.(runnerstore.UpdateProjectionPageReader).RunnerUpdateProjectionPage(ctx, runnerstore.UpdateProjectionCursor{}, 1)
+				if err != nil || len(page) != 0 {
+					t.Fatalf("revoked runner projection=%+v error=%v", page, err)
+				}
 			}
 			return nil
 		}); err != nil {

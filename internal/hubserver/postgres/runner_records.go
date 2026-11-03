@@ -360,6 +360,35 @@ func (s *session) RunnerIdentities(ctx context.Context, limit int) ([]runnerstor
 	return result, nil
 }
 
+func (s *session) RunnerUpdateProjectionPage(ctx context.Context, cursor runnerstore.UpdateProjectionCursor, limit int) ([]runnerstore.UpdateProjection, error) {
+	if limit < 1 || limit > 1000 {
+		return nil, corestore.ErrInvalidPage
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT r.runner_id,r.display_name,m.version,r.last_heartbeat_at
+FROM runner_identities r
+JOIN machines m ON m.organization_id=r.organization_id AND m.id=r.machine_id
+JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=r.token_id
+WHERE r.organization_id=$1 AND t.revoked_at IS NULL
+  AND (r.display_name,r.runner_id)>($2,$3)
+ORDER BY r.display_name,r.runner_id LIMIT $4`, s.organization, cursor.DisplayName, cursor.RunnerID, limit)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	defer rows.Close()
+	result := make([]runnerstore.UpdateProjection, 0, limit)
+	for rows.Next() {
+		var row runnerstore.UpdateProjection
+		if err := rows.Scan(&row.RunnerID, &row.DisplayName, &row.Version, &row.LastHeartbeat); err != nil {
+			return nil, mapError(ctx, err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapError(ctx, err)
+	}
+	return result, mapError(ctx, rows.Close())
+}
+
 func (s *session) RunnerRepositoryList(ctx context.Context, runnerID string) (runnerstore.RepositoryList, error) {
 	var row runnerstore.RepositoryList
 	var listedAt sql.NullTime
