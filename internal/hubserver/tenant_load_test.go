@@ -1,16 +1,20 @@
 package hubserver
 
 import (
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -206,5 +210,51 @@ func warmReaderPools(t *testing.T, d *database) {
 				t.Fatal(err)
 			}
 		}
+	}
+}
+
+func TestAuthenticatedTenantMiddlewareLatency(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "auth-latency")
+	other := newNativeFixture(t, f.service, "", "other-auth-latency")
+	f.create(t, "First seeded issue")
+	other.create(t, "Second seeded issue")
+	router := echo.New()
+	router.GET(nativeBase+"/auth-probe", func(c echo.Context) error {
+		scope := nativeRequestScope(c)
+		if scope.organization == "" || scope.project == "" || scope.credential.ID == "" {
+			return c.NoContent(http.StatusInternalServerError)
+		}
+		return c.NoContent(http.StatusNoContent)
+	}, f.service.requireNativeScope(apiScopeOperator))
+	held, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Rollback()
+	if _, err := held.ExecContext(t.Context(), "UPDATE projects SET name=name"); err != nil {
+		t.Fatal(err)
+	}
+	const budget = 250 * time.Millisecond
+	var latencies []time.Duration
+	for range 20 {
+		for _, fixture := range []nativeFixture{f, other} {
+			ctx, cancel := context.WithTimeout(t.Context(), budget)
+			request := newHubAPIRequest(t, http.MethodGet, fixture.base+"/auth-probe", fixture.token, nil).WithContext(ctx)
+			response := httptest.NewRecorder()
+			started := time.Now()
+			router.ServeHTTP(response, request)
+			latencies = append(latencies, time.Since(started))
+			cancel()
+			requireNativeStatus(t, response, http.StatusNoContent)
+		}
+	}
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, newHubAPIRequest(t, http.MethodGet, other.base+"/auth-probe", f.token, nil))
+	requireNativeStatus(t, response, http.StatusNotFound)
+	slices.Sort(latencies)
+	p95 := latencies[len(latencies)*95/100]
+	t.Logf("authenticated tenant requests=%d writer=occupied p95=%s budget=%s", len(latencies), p95, budget)
+	if p95 >= budget {
+		t.Fatalf("authenticated tenant request p95=%s exceeds %s", p95, budget)
 	}
 }

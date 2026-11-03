@@ -886,11 +886,6 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 	if kind == "run.finished" {
 		data.CompletionBody = e.preparedMessage
 	}
-	if (kind == "run.checkpointed" || kind == "run.finished") && e.storedSeq != data.Sequence && e.releaseDelivery == nil {
-		if err := e.postDiff(ctx, data.Sequence); err != nil {
-			slog.Default().Warn("attempt diff not stored", "work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", data.Sequence, "error", err)
-		}
-	}
 	data.Handoff = checkpoint
 	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: kind, SchemaVersion: 1, Data: data}
 	if len(immediate) == 0 && e.claim.lease.RunDetailBatching && kind == "run.observed" && len(e.observations) < 7 && !e.runtimeHeartbeatDue(data.Runtime) {
@@ -931,6 +926,14 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	if e.remaining() <= 0 {
 		if err := e.renew(ctx, 0); err != nil {
 			return e.executionError(ctx, err)
+		}
+	}
+	if (e.pending.Type == "run.checkpointed" || e.pending.Type == "run.finished") && e.storedSeq != e.pending.Data.Sequence && e.releaseDelivery == nil {
+		if err := e.postDiff(ctx, e.pending.Data.Sequence); err != nil {
+			if nativeTransportUnavailable(err) {
+				return err
+			}
+			slog.Default().Warn("attempt diff not stored", "work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", e.pending.Data.Sequence, "error", err)
 		}
 	}
 	if failure := e.pending.Data.TerminalFailure; failure != nil && failure.Stage == "event_publication" && e.pending.Data.Runtime == nil && e.data.Sequence > 0 {
