@@ -79,6 +79,11 @@ func TestChangeSourceSurvivesRestartAndPreservesScope(t *testing.T) {
 			t.Fatalf("occupied verification slot ignored cancellation: %v", err)
 		}
 	})
+	t.Run("occupied verification slot refuses publication", func(t *testing.T) {
+		f.service.sourceVerification <- struct{}{}
+		defer func() { <-f.service.sourceVerification }()
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, request), http.StatusServiceUnavailable)
+	})
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, request)
 	requireNativeStatus(t, response, http.StatusOK)
 	var version tracker.ChangeVersion

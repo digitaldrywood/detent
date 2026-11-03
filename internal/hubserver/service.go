@@ -53,6 +53,7 @@ type Service struct {
 	readerWaits             atomic.Int64
 	readerWaited            atomic.Int64
 	requestMetrics          *tenantRequestMetrics
+	requestAdmission        RequestAdmission
 	runnerPublishedReleases sync.Map
 	tokenUse                sync.Map
 	tokenUseWork            sync.WaitGroup

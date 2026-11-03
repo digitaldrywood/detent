@@ -95,6 +95,18 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 		if !cloudassert.CanonicalPath(request.URL) {
 			return s.nativeAPIError(c, nativeNotFound())
 		}
+		if SharedEntryRequestBodyLimit(request.Method, request.URL.Path) > cloudassert.MaxBodyBytes && request.Context().Value(requestBodyAdmissionContext{}) == nil {
+			credential := apiCredential{}
+			if request.Header.Get(echo.HeaderAuthorization) != "" {
+				var status int
+				var err error
+				credential, status, err = s.authenticateAPIRequest(c)
+				if err != nil {
+					return s.refusedAPIError(c, status, "unauthorized", "Valid scoped API token is required", nil)
+				}
+			}
+			return s.admitRequestBody(c, credential, s.hostedSharedEntry(next))
+		}
 		limit := SharedEntryRequestBodyLimit(request.Method, request.URL.Path)
 		body, err := io.ReadAll(io.LimitReader(request.Body, limit+1))
 		if err != nil {

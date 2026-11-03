@@ -131,6 +131,30 @@ func TestSharedEntryChangeSourcePublication(t *testing.T) {
 		t.Fatal(err)
 	}
 	path += "/" + change.ID + "/versions"
+	t.Run("large requests are admitted before proxy buffering", func(t *testing.T) {
+		reader, writer := io.Pipe()
+		held := httptest.NewRequest(http.MethodPost, path, reader)
+		held.Header.Set("Authorization", "Bearer "+key.Token)
+		held.Header.Set("Content-Type", "application/json")
+		held.ContentLength = 20 << 20
+		done := make(chan struct{})
+		go func() { defer close(done); f.service.Handler().ServeHTTP(httptest.NewRecorder(), held) }()
+		t.Cleanup(func() { _ = writer.Close(); _ = reader.Close(); <-done })
+		if _, err := io.WriteString(writer, `{"source_bundle":"`+strings.Repeat("A", 1<<20)); err != nil {
+			t.Fatal(err)
+		}
+		var consumed bytes.Buffer
+		excess := httptest.NewRequest(http.MethodPost, path, io.TeeReader(strings.NewReader(`{}`), &consumed))
+		excess.Header.Set("Authorization", "Bearer "+key.Token)
+		excess.Header.Set("Content-Type", "application/json")
+		excess.ContentLength = 20 << 20
+		response := httptest.NewRecorder()
+		f.service.Handler().ServeHTTP(response, excess)
+		require(t, response, http.StatusServiceUnavailable)
+		if consumed.Len() != 0 {
+			t.Fatal("shared entry buffered a refused body")
+		}
+	})
 	directory := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()
