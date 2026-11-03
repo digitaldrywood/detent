@@ -21,8 +21,10 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -981,7 +983,17 @@ func TestNativeDependenciesAndTransitions(t *testing.T) {
 	}
 }
 
+func nativeFixturePayloadContext(ctx context.Context, tx *sql.Tx) context.Context {
+	if ctx.Value(changeContentKey{}) == nil {
+		ctx = context.WithValue(ctx, changeContentKey{}, &changeContent{query: tx, call: func(context.Context, entryauthority.ContentRequest) ([]byte, error) {
+			return nil, artifact.ErrMissing
+		}})
+	}
+	return context.WithValue(ctx, pendingContentKey{}, &pendingContentMutation{tx: tx})
+}
+
 func createNativeFixtureIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
+	ctx = nativeFixturePayloadContext(ctx, tx)
 	descriptor := hubTestPolicy()
 	raw, err := json.Marshal(descriptor)
 	if err != nil {

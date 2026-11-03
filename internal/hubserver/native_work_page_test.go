@@ -42,7 +42,7 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 			}
 			at := now.Add(-time.Duration(index+1) * time.Hour)
 			issue.State = "Done"
-			updated, err := persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, at)
+			updated, err := persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, at)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -649,7 +649,7 @@ func TestNativeWorkClosedOrdering(t *testing.T) {
 			t.Fatal(err)
 		}
 		issue.State = state
-		if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: state}, now.Add(-time.Duration(index+1)*time.Hour)); err != nil {
+		if _, err := persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: state}, now.Add(-time.Duration(index+1)*time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 		if err := tx.Commit(); err != nil {

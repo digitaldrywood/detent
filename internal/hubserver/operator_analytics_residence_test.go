@@ -61,7 +61,7 @@ func TestNativeAnalyticsLaneResidence(t *testing.T) {
 		for _, event := range fixture.events {
 			if event.kind == "workflow.transitioned" {
 				issue.State = event.data.ToState
-				issue, err = persistNativeIssue(t.Context(), tx, scope, issue, event.kind, event.data, event.at)
+				issue, err = persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, event.kind, event.data, event.at)
 			} else {
 				err = appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), event.kind, event.data, event.at)
 			}

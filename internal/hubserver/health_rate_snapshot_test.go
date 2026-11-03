@@ -76,7 +76,7 @@ func TestHealthRatePersistedObservations(t *testing.T) {
 		for j, lane := range []string{"In Progress", "Rework", "Merging", "Done"} {
 			from := issue.State
 			issue.State = lane
-			issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: lane}, at.Add(-time.Duration(3-j)*10*time.Minute))
+			issue, err = persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: lane}, at.Add(-time.Duration(3-j)*10*time.Minute))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -99,7 +99,7 @@ func TestHealthRatePersistedObservations(t *testing.T) {
 	}
 	stalled := create("stalled", now.Add(-4*time.Hour))
 	stalled.State = "In Progress"
-	stalled, err = persistNativeIssue(t.Context(), tx, scope, stalled, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, now.Add(-3*time.Hour))
+	stalled, err = persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, stalled, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, now.Add(-3*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
