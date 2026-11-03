@@ -154,6 +154,8 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 			}
 			source := filepath.Join(root, "source")
 			checkout(t, source)
+			setupTrace := filepath.Join(root, "setup-trace")
+			successfulSetup := "printf 'setup\\n' >> " + runnerShellQuote(setupTrace) + "\n"
 			cloneCalls := 0
 			p.checkout = func(ctx context.Context, selected globalconfig.Project, url string) error {
 				return prepareRunnerCheckoutWithClone(ctx, selected, url, func(ctx context.Context, _ string, target string) error {
@@ -187,9 +189,9 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 					if err := os.WriteFile(filepath.Join(target, "WORKFLOW.md"), []byte(workflow), 0600); err != nil {
 						return err
 					}
-					script := "printf 'setup\\n' >> trace\n"
+					script := successfulSetup
 					if test.setupFailure {
-						script = "exit 7\n"
+						script = "printf 'MODULE_NOT_FOUND helper.sh\\nTOKEN=hidden-setup-credential\\n' >&2\nexit 7\n"
 					}
 					if err := os.WriteFile(filepath.Join(target, "setup.sh"), []byte(script), 0600); err != nil {
 						return err
@@ -323,7 +325,11 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 			}
 			later := filepath.Join(workspaceRoot, "prj_later")
 			if test.setupFailure {
-				if err := os.WriteFile(filepath.Join(later, "setup.sh"), []byte("printf 'setup\\n' >> trace\n"), 0600); err != nil {
+				problems := p.reportedProblems()
+				if len(problems) != 1 || !strings.Contains(problems[0].ErrorOutput, "MODULE_NOT_FOUND helper.sh") || strings.Contains(problems[0].ErrorOutput+logs.String(), "hidden-setup-credential") {
+					t.Fatalf("setup failure diagnostics were lost or exposed credentials: %+v", problems)
+				}
+				if err := os.WriteFile(filepath.Join(later, "setup.sh"), []byte(successfulSetup), 0600); err != nil {
 					t.Fatal(err)
 				}
 				runDoctorWorkflowSourceGit(t, later, "add", "setup.sh")
@@ -342,7 +348,7 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 			if cloneCalls != wantClones || p.checks["prj_later"].Setup != "passed" || p.checks["prj_later"].CheckoutMessage != "" || applied.Client.NativeProjects["prj_later"] != "prj_later" {
 				t.Fatalf("resume: clones %d, checks %+v, configuration %+v", cloneCalls, p.checks, applied.Client.NativeProjects)
 			}
-			trace, err := os.ReadFile(filepath.Join(later, "trace"))
+			trace, err := os.ReadFile(setupTrace)
 			if err != nil || strings.Count(string(trace), "\n") != 1 {
 				t.Fatalf("hook did not run exactly once: %q %v", trace, err)
 			}
