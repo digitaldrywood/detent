@@ -51,8 +51,13 @@ func TestRunnerSetupLifecycle(t *testing.T) {
 			if ref {
 				cfg.WorkflowRef = "HEAD"
 			}
+			installation := t.TempDir()
+			t.Setenv("DETENT_SETUP_TEST_ROOT", installation)
 			write := func(content string) {
 				t.Helper()
+				if ref {
+					content = "cd \"$DETENT_SETUP_TEST_ROOT\"\n" + content
+				}
 				if err := os.WriteFile(filepath.Join(root, "setup.sh"), []byte(content), 0o600); err != nil {
 					t.Fatal(err)
 				}
@@ -84,7 +89,11 @@ func TestRunnerSetupLifecycle(t *testing.T) {
 			second := NewRunnerSetup("runner-two", localStore, logger)
 			assertRuns := func(want int) {
 				t.Helper()
-				content, err := os.ReadFile(filepath.Join(root, "trace"))
+				target := root
+				if ref {
+					target = installation
+				}
+				content, err := os.ReadFile(filepath.Join(target, "trace"))
 				if err != nil || strings.Count(string(content), "\n") != want {
 					t.Fatalf("setup runs = %q, error = %v; want %d", content, err, want)
 				}
@@ -103,7 +112,11 @@ func TestRunnerSetupLifecycle(t *testing.T) {
 				if err := runner.Prepare(t.Context(), cfg); err != nil {
 					t.Fatal(err)
 				}
-				output, err := exec.CommandContext(t.Context(), filepath.Join(root, "tools", "setup-cli")).Output()
+				target := root
+				if ref {
+					target = installation
+				}
+				output, err := exec.CommandContext(t.Context(), filepath.Join(target, "tools", "setup-cli")).Output()
 				if err != nil || string(output) != "cli-ready" {
 					t.Fatalf("next turn CLI = %q, error = %v", output, err)
 				}
