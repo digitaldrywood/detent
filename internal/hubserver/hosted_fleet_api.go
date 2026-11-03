@@ -165,7 +165,11 @@ func (s *Service) hostedFleet(c echo.Context) error {
 	var result any
 	if c.QueryParam("include") == "names" {
 		var names map[string]hostedRunnerName
-		names, err = readHostedRunnerNames(readCtx, s.database.reader, tracker.OrganizationID(s.appOrganizationID()), true)
+		if s.config.TenantRepository != nil {
+			names, err = s.readHostedRunnerNamesTenant(readCtx, true)
+		} else {
+			names, err = readHostedRunnerNames(readCtx, s.database.reader, tracker.OrganizationID(s.appOrganizationID()), true)
+		}
 		result = hostedRunnerNamesResponse{RunnerNames: names}
 	} else if c.QueryParam("include") == "host_metrics" {
 		var from, to time.Time
@@ -194,6 +198,9 @@ func (s *Service) hostedFleet(c echo.Context) error {
 }
 
 func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential) (hostedFleetResponse, error) {
+	if s.config.TenantRepository != nil {
+		return s.readHostedFleetTenant(ctx, credential)
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	readable, err := s.hostedReadableProjects(ctx, credential)
@@ -477,6 +484,9 @@ func scopeProviderUsage(runners []hostedFleetRunner, reservations []scopedProvid
 }
 
 func (s *Service) readHostedRunnerHostHistory(ctx context.Context, credential apiCredential, runnerID string, from, to time.Time) ([]runnerHostHour, error) {
+	if s.config.TenantRepository != nil {
+		return s.readHostedRunnerHostHistoryTenant(ctx, credential, runnerID, from, to)
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if runnerID == "" {
