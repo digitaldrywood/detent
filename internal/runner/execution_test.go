@@ -1423,8 +1423,8 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		}, "manual_recovery", "checkpoint_unavailable", nil},
 		{"first run", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Attempts = nil }, "fresh_checkout", "no_prior_attempt", nil},
 		{"missing checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Attempts[0].Checkpoint = nil }, "fresh_checkout", "checkpoint_missing", nil},
-		{"machine lost with dirty work", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Lease.MachineID = "other" }, "fresh_checkout", "checkpoint_unavailable", nil},
-		{"local workspace missing", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) { *local = nil }, "fresh_checkout", "checkpoint_unavailable", nil},
+		{"machine lost with dirty work", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Lease.MachineID = "other" }, "manual_recovery", "checkpoint_unavailable", nil},
+		{"local workspace missing", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) { *local = nil }, "manual_recovery", "checkpoint_unavailable", nil},
 		{"dirty checkpoint replaced", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
 			(*local).WorkspaceFingerprint = "different"
 		}, "manual_recovery", "local_checkpoint_changed", nil},
@@ -1499,13 +1499,13 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		}, "fresh_checkout", "session_restart_required", current},
 		{"current Change with dirty checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.WorktreeState = "dirty"
-		}, "fresh_checkout", "checkpoint_unavailable", current},
+		}, "manual_recovery", "checkpoint_unavailable", current},
 		{"current Change with dirty local source", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
 			(*local).TrackedPaths = []string{"work.go"}
-		}, "fresh_checkout", "checkpoint_unavailable", current},
+		}, "manual_recovery", "checkpoint_unavailable", current},
 		{"current Change does not match local head", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
 			(*local).HeadSHA = "unrelated"
-		}, "fresh_checkout", "checkpoint_unavailable", current},
+		}, "manual_recovery", "checkpoint_unavailable", current},
 		{"current Change preserves ambiguous push", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "git_push", "ambiguous"
 		}, "fresh_checkout", "publication_reconciliation_required", current},
@@ -1719,13 +1719,13 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 		{name: "clean foreign rework", interrupted: true, cleanRole: RoleRework},
 		{name: "effect bearing foreign checkpoint", interrupted: true, cleanRole: RolePlan, effect: true, blocked: true},
 		{name: "dirty foreign checkpoint", interrupted: true, cleanRole: RolePlan, dirty: true, blocked: true},
-		{name: "lost legacy checkpoint starts fresh", lost: true},
+		{name: "lost legacy checkpoint refuses a new source turn", lost: true, blocked: true},
 		{name: "preserved planner checkpoint", local: true},
 		{name: "explicit worker GitHub access", workerAuth: true},
 		{name: "interrupted planner requires resume evidence", local: true, interrupted: true, blocked: true},
 		{name: "explicit fresh implementation preserves planner workspace", local: true, interrupted: true, fresh: true},
 		{name: "automatic fresh cannot restart interrupted planner", local: true, interrupted: true, fresh: true, blocked: true, automatic: true},
-		{name: "explicit fresh restarts from a lost legacy checkpoint", interrupted: true, fresh: true},
+		{name: "explicit fresh preserves a lost legacy checkpoint", interrupted: true, fresh: true, blocked: true},
 		{name: "explicit fresh cannot replay ambiguous push", local: true, interrupted: true, fresh: true, ambiguous: true, blocked: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1861,8 +1861,14 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 					t.Fatalf("clean checkpoint did not restart at recorded head: issue=%+v resume=%+v", backend.createIssue, agent.request.Resume)
 				}
 			}
-			if test.blocked && execution.started {
+			if test.blocked && (execution.started || agent.calls != 0) {
 				t.Fatal("unresolved checkpoint was superseded by a new attempt")
+			}
+			if test.lost || test.fresh && !test.local {
+				_, retryErr := r.Run(t.Context(), request)
+				if !errors.Is(retryErr, ErrNativeRecoveryRequired) || execution.started || agent.calls != 0 {
+					t.Fatalf("unchanged missing evidence started implementation: error=%v turns=%d", retryErr, agent.calls)
+				}
 			}
 			if !test.blocked && len(agent.request.ExtraNetworkDomains) != 2 {
 				t.Fatalf("project domains missing: %#v", agent.request.ExtraNetworkDomains)
