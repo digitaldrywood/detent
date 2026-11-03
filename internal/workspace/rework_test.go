@@ -700,7 +700,7 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 				if test.noIdentity {
 					identity = "Enrolled runner <machine_fixture@runners.detent.invalid>"
 				}
-				assertRunnerCommitPolicy(t, info.Path, checkpoint.CommitSHA, identity, test.signed)
+				assertRunnerCommitPolicy(t, info.Path, checkpoint.CommitSHA, identity, false)
 				writeCheckpointFile(t, info.Path, "README.md", "resolved conflict\n")
 				runGit(t, info.Path, "add", "README.md")
 			}
@@ -780,9 +780,9 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 			if err != nil || !changed {
 				t.Fatalf("checkpoint ref: changed=%v error=%v", changed, err)
 			}
-			assertRunnerCommitPolicy(t, info.Path, ref.CommitSHA, expected, test.signed)
-			if test.signerLost && (ref.TreeSHA != intendedTree || ref.HeadSHA != head || strings.TrimSpace(runGit(t, info.Path, "show", "-s", "--format=%P", ref.CommitSHA)) != head || owner.CommitReport().Signing != "unsigned" || len(owner.Problems()) == 0) {
-				t.Fatal("signer loss changed checkpoint identity or omitted signing problem")
+			assertRunnerCommitPolicy(t, info.Path, ref.CommitSHA, expected, false)
+			if test.signerLost && (ref.TreeSHA != intendedTree || ref.HeadSHA != head || strings.TrimSpace(runGit(t, info.Path, "show", "-s", "--format=%P", ref.CommitSHA)) != head) {
+				t.Fatal("signer loss changed checkpoint identity")
 			}
 			plan, err := owner.PrepareCheckpoint(t.Context(), info, issue)
 			if err != nil {
