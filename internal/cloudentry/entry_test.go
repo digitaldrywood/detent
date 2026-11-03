@@ -433,7 +433,7 @@ type tenantFixture struct {
 
 func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id, providerID, owner, project string, configure ...func(*hubserver.Config)) (tenantFixture, http.Handler) {
 	t.Helper()
-	path := hubDatabasePath(t)
+	path := ""
 	plans := pilotPlans()
 	plans.Plans[0].Allowances["projects"] = 10
 	logger := slog.New(slog.DiscardHandler)
@@ -446,6 +446,10 @@ func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id,
 	for _, apply := range configure {
 		apply(&fixture.config)
 	}
+	if fixture.config.DatabaseBackend != hubserver.DatabasePostgres && fixture.config.DatabasePath == "" {
+		fixture.config.DatabasePath = hubDatabasePath(t)
+		fixture.path = fixture.config.DatabasePath
+	}
 	shared, err := hubserver.Open(t.Context(), fixture.config)
 	if err != nil {
 		t.Fatal(err)
@@ -455,11 +459,11 @@ func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id,
 		transport: func(Organization) (http.RoundTripper, error) { return handlerTransport{shared.Handler()}, nil },
 	}}
 	organization := Organization{ID: id, ProviderID: providerID, Name: providerID, Generation: 1}
-	status, err := setup.serviceRequest(t.Context(), organization, "/internal/v1/owner/bootstrap", map[string]string{"organization_name": providerID}, func(claims *cloudassert.Claims) {
+	status, bootstrapBody, err := setup.serviceCall(t.Context(), organization, "/internal/v1/owner/bootstrap", map[string]string{"organization_name": providerID}, func(claims *cloudassert.Claims) {
 		claims.Subject, claims.Email = owner, provider.users[owner]
 	})
 	if err != nil || status != http.StatusNoContent {
-		t.Fatalf("bootstrap owner: status=%d error=%v", status, err)
+		t.Fatalf("bootstrap owner: status=%d body=%s error=%v", status, bootstrapBody, err)
 	}
 	identity, err := provider.Exchange(t.Context(), owner+":"+providerID, "", "")
 	if err != nil {

@@ -28,8 +28,8 @@ func (c StorageConfig) validate() error {
 			return errors.New("PostgreSQL entry settings require the postgres backend")
 		}
 	case "postgres":
-		if (strings.TrimSpace(c.PostgresDSN) == "") == (c.PostgresPool == nil) || c.Pool.MaxConnections < 2 || c.Pool.ServingConnections < 1 || c.Pool.BackgroundConnections < 1 || c.Pool.ServingConnections+c.Pool.BackgroundConnections > c.Pool.MaxConnections {
-			return errors.New("PostgreSQL entry storage requires a DSN and bounded connection budgets")
+		if (strings.TrimSpace(c.PostgresDSN) == "") == (c.PostgresPool == nil) || c.Pool.MaxConnections < 3 || c.Pool.ServingConnections < 1 || c.Pool.BackgroundConnections < 1 || c.Pool.ServingConnections >= c.Pool.MaxConnections || c.Pool.BackgroundConnections > c.Pool.MaxConnections-c.Pool.ServingConnections || c.Pool.BackgroundConnections > c.Pool.MaxConnections-2 {
+			return errors.New("PostgreSQL entry storage requires a DSN and positive workload budgets with room for a reserved health connection")
 		}
 	default:
 		return errors.New("unknown entry storage backend")
@@ -101,7 +101,13 @@ func (d *entryDatabase) BeginTx(ctx context.Context, options *sql.TxOptions) (*e
 		tx, err := d.DB.BeginTx(ctx, options)
 		return &entryTransaction{Tx: tx, owner: d}, err
 	}
-	tx, err := d.postgres.BeginEntry(ctx, entryWorkload(ctx), options != nil && options.ReadOnly)
+	var tx *platformstore.EntryTransaction
+	var err error
+	if health, _ := ctx.Value(entryHealthReadKey{}).(bool); health && options != nil && options.ReadOnly {
+		tx, err = d.postgres.BeginHealthRead(ctx)
+	} else {
+		tx, err = d.postgres.BeginEntry(ctx, entryWorkload(ctx), options != nil && options.ReadOnly)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -258,11 +264,11 @@ func (d *entryDatabase) PingContext(ctx context.Context) error {
 	if d.postgres == nil {
 		return d.DB.PingContext(ctx)
 	}
-	var value int
-	return d.QueryRowContext(ctx, "SELECT 1").Scan(&value)
+	return d.postgres.Ping(ctx)
 }
 
 type entryWorkloadKey struct{}
+type entryHealthReadKey struct{}
 
 func entryWorkload(ctx context.Context) corestore.Workload {
 	if workload, ok := ctx.Value(entryWorkloadKey{}).(corestore.Workload); ok {

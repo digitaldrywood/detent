@@ -51,9 +51,27 @@ var entryPostgresTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql
 	return err
 })
 
-func entryPostgresConfig(t *testing.T) func(*Config) {
+func entryPostgresDatabase(t *testing.T) *sql.DB {
 	t.Helper()
 	admin := entryPostgresTemplate.Database(t)
+	var name string
+	if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pq.QuoteIdentifier(name)+" CONNECTION LIMIT 6"); err != nil {
+		t.Fatal(err)
+	}
+	return admin
+}
+
+func entryPostgresConfig(t *testing.T, databases ...*sql.DB) func(*Config) {
+	t.Helper()
+	var admin *sql.DB
+	if len(databases) == 0 {
+		admin = entryPostgresDatabase(t)
+	} else {
+		admin = databases[0]
+	}
 	name := "example_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	password := uuid.NewString()
 	quoted := pq.QuoteIdentifier(name)
@@ -87,15 +105,15 @@ func entryPostgresConfig(t *testing.T) func(*Config) {
 	}
 }
 
-func newPostgresTenantEntryFixture(t *testing.T) entryFixture {
+func newPostgresTenantEntryFixture(t *testing.T, configureEntry ...func(*Config)) entryFixture {
 	t.Helper()
-	return newEntryFixtureWithConfig(t, slog.New(slog.DiscardHandler), nil, func(cfg *hubserver.Config) {
+	return newEntryFixtureWithConfig(t, slog.New(slog.DiscardHandler), configureEntry, func(cfg *hubserver.Config) {
 		keys, err := hubsecrets.FromEnvironment(entrySecretEnvironment(1, 1))
 		if err != nil {
 			t.Fatal(err)
 		}
 		cfg.SecretKeys = keys
-		admin := entryPostgresTemplate.Database(t)
+		admin := entryPostgresDatabase(t)
 		name, password := "example_"+strings.ReplaceAll(uuid.NewString(), "-", ""), uuid.NewString()
 		quoted := pq.QuoteIdentifier(name)
 		if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(password)+" IN ROLE "+postgres.RuntimeRoleName); err != nil {
@@ -142,7 +160,23 @@ func newPostgresTenantEntryFixture(t *testing.T) entryFixture {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		cfg.TenantRepository, cfg.AccessRepository, cfg.BillingRepository = repository, repository, repository
+		if err := repository.Close(); err != nil {
+			t.Fatal(err)
+		}
+		connection, err := pq.NewConfig(os.Getenv(pgtest.Environment))
+		if err != nil {
+			t.Fatal("invalid PostgreSQL fixture configuration")
+		}
+		if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&connection.Database); err != nil {
+			t.Fatal(err)
+		}
+		connection = pq.Config{Host: connection.Host, Port: connection.Port, Database: connection.Database, SSLMode: pq.SSLModeDisable, User: name, Password: password}
+		if connection.Host == "localhost" {
+			connection.Host = "127.0.0.1"
+		}
+		cfg.DatabaseBackend = hubserver.DatabasePostgres
+		cfg.DatabasePath = ""
+		cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1}}
 		cfg.RunDetails = tenantDetailFixture{&conversationArchiveFixture{}}
 	})
 }

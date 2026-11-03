@@ -179,7 +179,7 @@ func platformSQLiteImport(t *testing.T, s *Service, mode string) (*platformstore
 			t.Fatal(err)
 		}
 	}
-	r, err := platformstore.New(t.Context(), pool, platformstore.Config{Pool: platformstore.PoolConfig{MaxConnections: 2, ServingConnections: 1, BackgroundConnections: 1}, SigningKey: s.config.SigningKey, Keys: keys, Now: s.config.now})
+	r, err := platformstore.New(t.Context(), pool, platformstore.Config{Pool: platformstore.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}, SigningKey: s.config.SigningKey, Keys: keys, Now: s.config.now})
 	if err != nil {
 		t.Fatal(err)
 	}

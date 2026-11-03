@@ -121,7 +121,7 @@ func (s *Service) tenantHealth(ctx context.Context, organizations []Organization
 }
 
 func (s *Service) health(c echo.Context) error {
-	ctx := c.Request().Context()
+	ctx := context.WithValue(c.Request().Context(), entryHealthReadKey{}, true)
 	organizations, err := s.registry.List(ctx)
 	status, code := "unavailable", http.StatusServiceUnavailable
 	var migration hubserver.MigrationHealth

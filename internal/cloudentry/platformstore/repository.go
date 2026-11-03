@@ -43,9 +43,10 @@ type Repository struct {
 
 func New(ctx context.Context, pool *sql.DB, config Config) (*Repository, error) {
 	limits := config.Pool
-	if pool == nil || limits.MaxConnections < 2 || limits.ServingConnections < 1 || limits.BackgroundConnections < 1 || limits.ServingConnections >= limits.MaxConnections || limits.BackgroundConnections > limits.MaxConnections-limits.ServingConnections {
+	if pool == nil || limits.MaxConnections < 3 || limits.ServingConnections < 1 || limits.BackgroundConnections < 1 || limits.ServingConnections >= limits.MaxConnections || limits.BackgroundConnections > limits.MaxConnections-limits.ServingConnections || limits.BackgroundConnections > limits.MaxConnections-2 {
 		return nil, ErrInvalid
 	}
+	serving := min(limits.ServingConnections, limits.MaxConnections-limits.BackgroundConnections-1)
 	secrets, err := newSecretCipher(config.SigningKey, config.Keys)
 	if err != nil {
 		return nil, err
@@ -78,10 +79,12 @@ func New(ctx context.Context, pool *sql.DB, config Config) (*Repository, error) 
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	return &Repository{pool: pool, serving: make(chan struct{}, limits.ServingConnections), background: make(chan struct{}, limits.BackgroundConnections), secrets: secrets, now: config.Now}, nil
+	return &Repository{pool: pool, serving: make(chan struct{}, serving), background: make(chan struct{}, limits.BackgroundConnections), secrets: secrets, now: config.Now}, nil
 }
 
 func (r *Repository) Close() error { return r.pool.Close() }
+
+func (r *Repository) Ping(ctx context.Context) error { return mapError(ctx, r.pool.PingContext(ctx)) }
 
 func (r *Repository) SchemaVersion(ctx context.Context) (int64, error) {
 	var version int64

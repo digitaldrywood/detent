@@ -32,6 +32,14 @@ func (r *Repository) BeginEntry(ctx context.Context, workload corestore.Workload
 		return nil, ctx.Err()
 	}
 	release := sync.OnceFunc(func() { <-slots })
+	return r.beginEntry(ctx, readOnly, release)
+}
+
+func (r *Repository) BeginHealthRead(ctx context.Context) (*EntryTransaction, error) {
+	return r.beginEntry(ctx, true, func() {})
+}
+
+func (r *Repository) beginEntry(ctx context.Context, readOnly bool, release func()) (*EntryTransaction, error) {
 	tx, err := r.pool.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: readOnly})
 	if err != nil {
 		release()

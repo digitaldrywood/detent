@@ -106,7 +106,7 @@ func testConfig(t *testing.T) Config {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
-	return Config{Pool: PoolConfig{MaxConnections: 2, ServingConnections: 1, BackgroundConnections: 1}, SigningKey: key, Now: func() time.Time { return now }}
+	return Config{Pool: PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}, SigningKey: key, Now: func() time.Time { return now }}
 }
 
 func repository(t *testing.T, db *sql.DB, config Config) *Repository {
