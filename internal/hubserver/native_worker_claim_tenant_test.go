@@ -333,6 +333,8 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 		t.Fatal("board list accepted missing current version payload")
 	}
 	claimPath := base + "/claims"
+	batchDetails := &boardDetailBatchCounter{DetailStore: service.config.RunDetails}
+	service.config.RunDetails = batchDetails
 	counts := &nativePreviewReadCounts{}
 	service.config.TenantRepository = nativePreviewCountingRepository{Repository: repository, counts: counts}
 	previewClaim := request
@@ -341,6 +343,9 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	previewClaim.ProviderCandidates = nil
 	sharedPreviewResponse := performHubAPIRequest(t, service, http.MethodPost, claimPath+"/preview", secret, tracker.NativeCapacityPreview{NativeClaim: previewClaim, Limit: 2})
 	requireNativeStatus(t, sharedPreviewResponse, http.StatusOK)
+	if batchDetails.batches.Load() != 1 || batchDetails.scalar.Load() != 0 {
+		t.Fatalf("preview allocation lookups: batch=%d scalar=%d", batchDetails.batches.Load(), batchDetails.scalar.Load())
+	}
 	var sharedPreview tracker.NativeCapacityPage
 	decodeHubResponse(t, sharedPreviewResponse, &sharedPreview)
 	if len(sharedPreview.Items) != 2 || !slices.Contains([]tracker.NativeWorkItemID{items[0].WorkItemID, items[1].WorkItemID}, sharedPreview.Items[0].WorkItemID) || !slices.Contains([]tracker.NativeWorkItemID{items[0].WorkItemID, items[1].WorkItemID}, sharedPreview.Items[1].WorkItemID) || sharedPreview.Items[0].WorkItemID == sharedPreview.Items[1].WorkItemID {

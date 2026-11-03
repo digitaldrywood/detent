@@ -86,6 +86,7 @@ type authorityServer struct {
 	contents       attachment.ArchiveContentStore
 	storeDetail    func(DetailRequest) (attachment.ArchiveReference, error)
 	readDetail     func(DetailRequest) ([]byte, error)
+	readDetails    func(DetailBatchRequest) ([]attachment.DetailReadResult, error)
 	contentContext func(time.Time) (context.Context, context.CancelFunc)
 	archive        func(ArchiveRequest) (ArchiveResponse, error)
 	content        func(ContentRequest) ([]byte, error)
@@ -171,6 +172,17 @@ func Start(ctx context.Context, binding Binding, budget time.Duration, resolve R
 	}
 	if len(archives) == 1 && archives[0].Details != nil {
 		details := archives[0].Details
+		authority.readDetails = func(request DetailBatchRequest) ([]attachment.DetailReadResult, error) {
+			lookup, stop := context.WithTimeout(ctx, budget)
+			defer stop()
+			lookup, end := context.WithDeadline(lookup, request.Deadline)
+			defer end()
+			if batch, ok := details.(attachment.DetailBatchStore); ok {
+				return batch.ReadDetails(lookup, request.Organization, request.References)
+			}
+			return attachment.ReadDetailBatch(lookup, request.Organization, request.References, details.ReadDetail)
+		}
+
 		authority.storeDetail = func(request DetailRequest) (attachment.ArchiveReference, error) {
 			lookup, stop := context.WithTimeout(ctx, budget)
 			defer stop()

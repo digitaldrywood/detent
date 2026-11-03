@@ -5,6 +5,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -62,7 +63,28 @@ func (s *Service) prepareBoardChangeRows(ctx context.Context, scope nativeScope,
 		return err
 	})
 	if result.err == nil && supported {
-		approval, err := hydrateCurrentChangeVersionApproval(ctx, eventstore.NewContent(s.runDetailStore()), scope, result.policy, "")
+		refs := []attachment.ArchiveReference{eventstore.Reference(result.policy.Project.PayloadObjectKey, result.policy.Project.PayloadSHA256, result.policy.Project.PayloadBytes, result.policy.Project.PayloadContentBytes)}
+		if result.policy.hasReview {
+			r := result.policy.Review
+			refs = append(refs, eventstore.Reference(r.PayloadObjectKey, r.PayloadSHA256, r.PayloadBytes, r.PayloadContentBytes))
+		}
+		for _, row := range result.rows {
+			if r := row.Change; r != nil {
+				refs = append(refs, eventstore.Reference(r.PayloadObjectKey, r.PayloadSHA256, r.PayloadBytes, r.PayloadContentBytes))
+			}
+			if r := row.Version; r != nil {
+				refs = append(refs, eventstore.Reference(r.PayloadObjectKey, r.PayloadSHA256, r.PayloadBytes, r.PayloadContentBytes))
+			}
+			for _, r := range row.Evidence {
+				current := row.Version != nil && r.VersionID != nil && *r.VersionID == row.Version.ID
+				if (r.Kind == "review" || r.Kind == "check") && current {
+					refs = append(refs, eventstore.Reference(r.PayloadObjectKey, r.PayloadSHA256, r.PayloadBytes, r.PayloadContentBytes))
+				}
+			}
+		}
+		s.prefetchDetails(ctx, string(scope.organization), refs)
+
+		approval, err := hydrateCurrentChangeVersionApproval(ctx, eventstore.NewContent(s.runDetailStoreFor(ctx)), scope, result.policy, "")
 		result.approval = &approval
 		result.err = err
 	}

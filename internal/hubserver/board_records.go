@@ -107,6 +107,7 @@ func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, param
 	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}}
 	ctx, cancel := context.WithTimeout(s.runDetailContext(ctx), hubReadTimeout)
 	defer cancel()
+	ctx = s.withRequestDetails(ctx)
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
 		return page, workItemStorageUnavailable()
 	}

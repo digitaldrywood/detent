@@ -9,6 +9,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -104,6 +105,7 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 }
 
 func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nativeScope, request tracker.NativeCapacityPreview, now time.Time) (tracker.NativeCapacityPage, error) {
+	ctx = s.withRequestDetails(ctx)
 	limit := request.Limit
 	if limit == 0 {
 		limit = 100
@@ -242,9 +244,29 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 	if err != nil {
 		return tracker.NativeCapacityPage{}, err
 	}
+	refs := []attachment.ArchiveReference{}
+	if len(plans) > 0 {
+		refs = append(refs, eventstore.Reference(projectPolicy.PayloadObjectKey, projectPolicy.PayloadSHA256, projectPolicy.PayloadBytes, projectPolicy.PayloadContentBytes))
+	}
+	for _, plan := range plans {
+		v := plan.version
+		refs = append(refs, eventstore.Reference(v.PayloadObjectKey, v.PayloadSHA256, v.PayloadBytes, v.PayloadContentBytes))
+		if stringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending {
+			c := plan.changeRecord
+			v := plan.changeVersion
+			refs = append(refs, eventstore.Reference(c.PayloadObjectKey, c.PayloadSHA256, c.PayloadBytes, c.PayloadContentBytes), eventstore.Reference(v.PayloadObjectKey, v.PayloadSHA256, v.PayloadBytes, v.PayloadContentBytes))
+			p := plan.changePolicy.Project
+			refs = append(refs, eventstore.Reference(p.PayloadObjectKey, p.PayloadSHA256, p.PayloadBytes, p.PayloadContentBytes))
+			if plan.changePolicy.hasReview {
+				r := plan.changePolicy.Review
+				refs = append(refs, eventstore.Reference(r.PayloadObjectKey, r.PayloadSHA256, r.PayloadBytes, r.PayloadContentBytes))
+			}
+		}
+	}
+	s.prefetchDetails(ctx, string(scope.organization), refs)
 	var descriptor *policy.Descriptor
 	if len(plans) > 0 {
-		loaded, err := eventstore.NewContent(s.runDetailStore()).ProjectPolicy(ctx, projectPolicy)
+		loaded, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).ProjectPolicy(ctx, projectPolicy)
 		if err != nil {
 			return tracker.NativeCapacityPage{}, err
 		}
