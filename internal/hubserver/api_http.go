@@ -123,6 +123,7 @@ func (s *Service) registerPostgresRoutes(e *echo.Echo) {
 		e.POST("/internal/v1/keys/call", s.entryKeyCall, s.operatorAuthority)
 		e.POST("/internal/v1/health", s.hostedSharedHealth)
 		e.POST("/internal/v1/owner/bootstrap", s.bootstrapHostedSharedOwner)
+		e.POST("/internal/v1/github/repositories", s.hostedGitHubRepositories)
 	}
 	s.registerPostgresAppRoutes(e)
 }
