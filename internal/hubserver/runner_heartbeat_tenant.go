@@ -331,11 +331,11 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		if repositoryListErr == nil && repositoryList.Pending {
 			snapshot.RepositoryListRequest = repositoryList.RequestID
 		}
-		activeLeases, err := w.RunnerActiveLeaseIDs(ctx, identity.RunnerID, receivedAt, 1)
+		hasActiveLease, err := w.RunnerHasActiveLease(ctx, identity.RunnerID, receivedAt)
 		if err != nil {
 			return err
 		}
-		return s.applyRunnerTenantUsage(ctx, w, receivedAt, newNativeID("runner_heartbeat"), len(activeLeases) > 0, true)
+		return s.applyRunnerTenantUsage(ctx, w, receivedAt, newNativeID("runner_heartbeat"), hasActiveLease, true)
 	})
 	if err != nil {
 		return s.nativeAPIError(c, err)

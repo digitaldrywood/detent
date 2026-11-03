@@ -180,6 +180,82 @@ func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
 	}
 }
 
+func TestRunnerHasActiveLeaseIsBoundedAndTenantScoped(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	first := tracker.OrganizationID("org_active_lease_first")
+	second := tracker.OrganizationID("org_active_lease_second")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	for _, organization := range []tracker.OrganizationID{first, second} {
+		seedTenantAccess(t, repository, organization)
+		seedLeaseFamily(t, repository, organization)
+	}
+	for _, runner := range []struct {
+		organization tracker.OrganizationID
+		runner       string
+		machine      string
+	}{
+		{organization: first, runner: "runner_active", machine: "machine_1"},
+		{organization: first, runner: "runner_released", machine: "machine_2"},
+		{organization: second, runner: "runner_cross", machine: "machine_1"},
+		{organization: second, runner: "runner_expired", machine: "machine_2"},
+	} {
+		seedRunnerIdentity(t, repository, runner.organization, runner.runner, runner.machine, now, false)
+	}
+	assign := func(organization tracker.OrganizationID, lease leasestore.Lease, runner string) {
+		t.Helper()
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: organization, LeaseID: lease.LeaseID, RunnerID: runner, AssignedAt: lease.AcquiredAt})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	released := claimLease(t, repository, first, leasestore.Claim{IssueID: 1, ExpectedRevision: 1, MachineID: "machine_2", SessionID: "released_session", LeaseID: "lease_released", TTL: time.Hour})
+	assign(first, released, "runner_released")
+	if err := repository.WriteLeases(t.Context(), first, corestore.Serving, func(w leasestore.Writer) error {
+		_, err := w.Release(t.Context(), leaseFence(released), "example release")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	activeFirst := claimLease(t, repository, first, leasestore.Claim{IssueID: 1, ExpectedRevision: 1, MachineID: "machine_1", SessionID: "active_session_1", LeaseID: "lease_active_1", TTL: time.Hour})
+	activeSecond := claimLease(t, repository, first, leasestore.Claim{IssueID: 2, ExpectedRevision: 1, MachineID: "machine_1", SessionID: "active_session_2", LeaseID: "lease_active_2", TTL: time.Hour})
+	assign(first, activeFirst, "runner_active")
+	assign(first, activeSecond, "runner_active")
+	crossTenant := claimLease(t, repository, second, leasestore.Claim{IssueID: 1, ExpectedRevision: 1, MachineID: "machine_1", SessionID: "cross_session", LeaseID: "lease_cross", TTL: time.Hour})
+	assign(second, crossTenant, "runner_cross")
+	expired := claimLease(t, repository, second, leasestore.Claim{IssueID: 2, ExpectedRevision: 1, MachineID: "machine_2", SessionID: "expired_session", LeaseID: "lease_expired", TTL: time.Hour})
+	assign(second, expired, "runner_expired")
+	expireLeaseFixture(t, admin, second, expired.LeaseID)
+	for _, check := range []struct {
+		name         string
+		organization tracker.OrganizationID
+		runner       string
+		want         bool
+	}{
+		{name: "multiple live leases", organization: first, runner: "runner_active", want: true},
+		{name: "released only", organization: first, runner: "runner_released", want: false},
+		{name: "expired only", organization: second, runner: "runner_expired", want: false},
+		{name: "same runner ID in other tenant", organization: first, runner: "runner_cross", want: false},
+		{name: "live lease in owning tenant", organization: second, runner: "runner_cross", want: true},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			if err := repository.ReadTenant(t.Context(), check.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				got, err := r.RunnerHasActiveLease(t.Context(), check.runner, now)
+				if err != nil {
+					return err
+				}
+				if got != check.want {
+					t.Errorf("RunnerHasActiveLease(%q) = %t, want %t", check.runner, got, check.want)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestRunnerSharedProviderAccountSerializesFirstReportJoin(t *testing.T) {
 	admin := template.Database(t)
 	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})

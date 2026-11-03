@@ -261,6 +261,20 @@ func (s *session) RunnerActiveLeaseIDs(ctx context.Context, runnerID string, now
 	return ids, nil
 }
 
+func (s *session) RunnerHasActiveLease(ctx context.Context, runnerID string, now time.Time) (bool, error) {
+	if runnerID == "" || now.IsZero() {
+		return false, runnerstore.ErrInvalidRecord
+	}
+	var active bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM runner_lease_assignments a
+		JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id
+		WHERE a.organization_id=$1 AND a.runner_id=$2
+		AND l.released_at IS NULL AND l.expires_at>$3
+	)`, s.organization, runnerID, now).Scan(&active)
+	return active, mapError(ctx, err)
+}
+
 func (s *session) RunnerProjectUsage(ctx context.Context, runnerID string, project tracker.ProjectID, now time.Time) (int64, int64, error) {
 	if runnerID == "" || project == "" || now.IsZero() {
 		return 0, 0, runnerstore.ErrInvalidRecord
