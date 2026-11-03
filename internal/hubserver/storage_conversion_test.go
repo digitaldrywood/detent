@@ -127,9 +127,36 @@ func TestStorageConversionResumesAcrossScopes(t *testing.T) {
 		if err := tx.Commit(); err != nil {
 			t.Fatal(err)
 		}
-		path := fixture.base + "/work-items/" + string(issue.WorkItemID) + "/history?limit=200"
-		before := performHubAPIRequest(t, f.service, http.MethodGet, path, fixture.token, nil)
-		requireNativeStatus(t, before, http.StatusOK)
+		readHistory := func() []tracker.CollaborationData {
+			t.Helper()
+			rows, err := f.service.database.reader.QueryContext(t.Context(), "SELECT "+collaborationPayloadColumn("")+" FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='run.finished' ORDER BY sequence", scope.organization, scope.project, issue.WorkItemID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var payloads []string
+			for rows.Next() {
+				var payload string
+				if err := rows.Scan(&payload); err != nil {
+					t.Fatal(err)
+				}
+				payloads = append(payloads, payload)
+			}
+			if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+				t.Fatal(err)
+			}
+			history := make([]tracker.CollaborationData, len(payloads))
+			for i, payload := range payloads {
+				if err := decodeRunHistory(f.service.freshRunDetailContext(t.Context()), f.service.database.reader, payload, &history[i]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return history
+		}
+		before := readHistory()
+		if len(before) != 205 {
+			t.Fatalf("history rows=%d want 205", len(before))
+		}
 		for pass, want := range []int64{100, 200, 205} {
 			if err := f.service.convertStorageFamily(f.service.contentContext(t.Context()), scope, storageConversionFamilies[0], f.service.config.now()); err != nil {
 				t.Fatal(err)
@@ -149,11 +176,9 @@ func TestStorageConversionResumesAcrossScopes(t *testing.T) {
 				}
 				f.service = openTestService(t, cfg)
 			}
-		}
-		after := performHubAPIRequest(t, f.service, http.MethodGet, path, fixture.token, nil)
-		requireNativeStatus(t, after, http.StatusOK)
-		if !bytes.Equal(before.Body.Bytes(), after.Body.Bytes()) {
-			t.Fatal("history changed after conversion")
+			if after := readHistory(); !reflect.DeepEqual(before, after) {
+				t.Fatalf("history changed after conversion pass %d", pass)
+			}
 		}
 		if err := f.service.convertStorageFamily(f.service.contentContext(t.Context()), scope, storageConversionFamilies[0], f.service.config.now()); err != nil {
 			t.Fatal(err)
