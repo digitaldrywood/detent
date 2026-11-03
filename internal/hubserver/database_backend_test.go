@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"database/sql"
@@ -29,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -454,7 +456,7 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		browserRead := func(path string) *httptest.ResponseRecorder {
+		browserRequest := func(path string) (*http.Request, cloudassert.Claims) {
 			t.Helper()
 			id, err := cloudassert.NewID()
 			if err != nil {
@@ -468,6 +470,11 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 			}
 			request := httptest.NewRequest(http.MethodGet, path, nil)
 			request.Header.Set(cloudassert.Header, assertion)
+			return request, claims
+		}
+		browserRead := func(path string) *httptest.ResponseRecorder {
+			t.Helper()
+			request, _ := browserRequest(path)
 			response := httptest.NewRecorder()
 			service.Handler().ServeHTTP(response, request)
 			return response
@@ -497,6 +504,239 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 		}
 		requireNativeStatus(t, browserRead(base+"/readable/missing-project"), http.StatusNotFound)
 		requireNativeStatus(t, browserRead("/api/v2/organizations/org_other/readable/project-first"), http.StatusNotFound)
+		t.Run("project event stream", func(t *testing.T) {
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+				_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: "org_startup", ProjectID: "project_first", NativeID: "wi_owned", Number: 2, Title: "Owned example", WorkflowStateName: new("Todo"), ActorPrincipalID: &member.PrincipalID})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, row := range []struct {
+				project tracker.ProjectID
+				item    tracker.NativeWorkItemID
+				number  int
+				actor   string
+			}{{"project_first", "wi_project_first", 1, ""}, {"project_second", "wi_project_second", 1, ""}, {"project_first", "wi_owned", 2, member.PrincipalID}} {
+				card := tracker.NativeBoardCard{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_startup", ProjectID: row.project, WorkItemID: row.item, Number: row.number, Revision: 1}, Title: "Example issue", State: "Todo", Actor: tracker.Actor{PrincipalID: row.actor}}}
+				ref, err := viewstore.NewContent(service.runDetailStore()).PrepareBoard(t.Context(), card)
+				if err != nil {
+					t.Fatal(err)
+				}
+				record := viewstore.BoardRecord{OrganizationID: "org_startup", ProjectID: row.project, WorkItemID: row.item, SourceRevision: 1, ActorPrincipalID: row.actor, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("%s#%d", row.project, row.number)}, Payload: ref}
+				if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+					return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: row.project, WorkItemID: row.item, ExpectedRevision: 1, Current: &record})
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var retained, reporter *dashboardSubscription
+			for _, role := range []string{"owner", "reporter"} {
+				request, claims := browserRequest("/organizations/org_startup/projects/project_first/events")
+				claims.Role = role
+				session, err := service.accessWebSession(t.Context(), claims.Binding, service.config.now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				credential, _, err := service.hostedSharedCredential(t.Context(), session, claims.Binding, role)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sub := &dashboardSubscription{request: request, claims: claims, scope: nativeScope{organization: "org_startup", project: "project_first", credential: credential}, initial: true, params: url.Values{}, frames: make(chan dashboardFrame, 4), done: make(chan struct{})}
+				delivery := newDashboardDelivery(service)
+				delivery.config.pageSize = 1
+				firstPage := 0
+				if role == "reporter" {
+					if more, err := service.dashboardPage(t.Context(), delivery, sub); err != nil || more {
+						t.Fatalf("reporter initial visibility reset: more=%t error=%v", more, err)
+					}
+					select {
+					case frame := <-sub.frames:
+						if frame.event != "reset" || frame.sequence != 2 || strings.Contains(frame.data, "wi_project_first") {
+							t.Fatalf("reporter initial visibility reset=%+v", frame)
+						}
+					default:
+						t.Fatal("reporter initial visibility produced no reset")
+					}
+					sub = &dashboardSubscription{request: request, claims: claims, scope: sub.scope, sequence: 1, params: url.Values{}, frames: make(chan dashboardFrame, 4), done: make(chan struct{})}
+					firstPage = 1
+				}
+				for page := firstPage; page < 2; page++ {
+					more, err := service.dashboardPage(t.Context(), delivery, sub)
+					if err != nil || more != (page == 0) {
+						t.Fatalf("%s replay page %d: more=%t error=%v", role, page, more, err)
+					}
+					select {
+					case frame := <-sub.frames:
+						if frame.sequence != int64(page+1) || strings.Contains(frame.data, "wi_project_second") {
+							t.Fatalf("%s replay frame=%+v", role, frame)
+						}
+						if frame.event != "work_item" || page == 1 && !strings.Contains(frame.data, "wi_owned") {
+							t.Fatalf("%s issue invalidation=%+v", role, frame)
+						}
+					default:
+						t.Fatal("project replay produced no frame")
+					}
+				}
+				if more, err := service.dashboardPage(t.Context(), delivery, sub); err != nil || more || len(sub.frames) != 0 {
+					t.Fatalf("%s replay duplicated a frame: more=%t pending=%d error=%v", role, more, len(sub.frames), err)
+				}
+				resumed := &dashboardSubscription{request: request, claims: claims, scope: sub.scope, sequence: 2, frames: make(chan dashboardFrame, 4), done: make(chan struct{})}
+				if more, err := service.dashboardPage(t.Context(), delivery, resumed); err != nil || more || len(resumed.frames) != 0 || resumed.grantVersion == "" {
+					t.Fatalf("%s current-head resume reset or failed to pin access: more=%t pending=%d grants=%q error=%v", role, more, len(resumed.frames), resumed.grantVersion, err)
+				}
+				boardResume := &dashboardSubscription{request: request, claims: claims, scope: sub.scope, board: true, sequence: 2, params: url.Values{}, frames: make(chan dashboardFrame, 4), done: make(chan struct{})}
+				if more, err := service.dashboardPage(t.Context(), delivery, boardResume); err != nil || more {
+					t.Fatalf("%s board current-head resume: more=%t error=%v", role, more, err)
+				}
+				select {
+				case raw := <-boardResume.frames:
+					var frame tracker.NativeBoardFrame
+					if err := json.Unmarshal([]byte(raw.data), &frame); err != nil {
+						t.Fatal(err)
+					}
+					if frame.Gap || frame.Sequence != 2 || frame.GrantVersion == "" {
+						t.Fatalf("%s current-head board resume reset=%+v", role, frame)
+					}
+				default:
+					t.Fatal("board resume produced no frame")
+				}
+				for _, boundary := range []struct {
+					name     string
+					sequence int64
+					grants   string
+				}{{"ahead", 3, sub.grantVersion}, {"changed grants", 2, "previous-grants"}} {
+					reset := &dashboardSubscription{request: request, claims: claims, scope: sub.scope, sequence: boundary.sequence, grantVersion: boundary.grants, params: url.Values{}, frames: make(chan dashboardFrame, 4), done: make(chan struct{})}
+					if more, err := service.dashboardPage(t.Context(), delivery, reset); err != nil || more {
+						t.Fatalf("%s %s reset: more=%t error=%v", role, boundary.name, more, err)
+					}
+					select {
+					case frame := <-reset.frames:
+						if frame.event != "reset" || frame.sequence != 2 || !frame.terminal {
+							t.Fatalf("%s %s reset frame=%+v", role, boundary.name, frame)
+						}
+					default:
+						t.Fatalf("%s %s produced no reset", role, boundary.name)
+					}
+				}
+				if role == "owner" {
+					retained = sub
+				} else {
+					reporter = sub
+				}
+			}
+			requireNativeStatus(t, browserRead("/organizations/org_startup/projects/project_first/events?work_item=wi_missing"), http.StatusNotFound)
+			requireNativeStatus(t, browserRead("/organizations/org_startup/projects/project_first/events?workspace=missing"), http.StatusServiceUnavailable)
+			server := httptest.NewServer(service.Handler())
+			t.Cleanup(server.Close)
+			transport := &http.Transport{}
+			t.Cleanup(transport.CloseIdleConnections)
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			request, _ := browserRequest("/organizations/org_startup/projects/project_first/events")
+			address, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.URL.Scheme, request.URL.Host, request.RequestURI = address.Scheme, address.Host, ""
+			response, err := (&http.Client{Transport: transport}).Do(request.WithContext(ctx))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = response.Body.Close() })
+			if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/event-stream" {
+				t.Fatalf("project stream status=%d content type=%q", response.StatusCode, response.Header.Get("Content-Type"))
+			}
+			scanner := bufio.NewScanner(response.Body)
+			var event string
+			received := false
+			for scanner.Scan() {
+				line := scanner.Text()
+				if strings.HasPrefix(line, "event: ") {
+					event = strings.TrimPrefix(line, "event: ")
+				}
+				if !strings.HasPrefix(line, "data: ") {
+					continue
+				}
+				var change struct {
+					EntityID string `json:"entity_id"`
+					Kind     string `json:"kind"`
+				}
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &change); err != nil {
+					t.Fatal(err)
+				}
+				if event != "work_item" || change.EntityID != "wi_project_first" || change.Kind != "upsert" {
+					t.Fatalf("project stream event=%q change=%+v", event, change)
+				}
+				cancel()
+				received = true
+				break
+			}
+			if !received {
+				t.Fatalf("project stream ended before the issue invalidation: %v", scanner.Err())
+			}
+			setOwner := func(actor string) {
+				t.Helper()
+				var item corestore.WorkItem
+				if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+					var err error
+					item, err = w.WorkItem(t.Context(), "project_first", "wi_owned")
+					if err != nil {
+						return err
+					}
+					item.ActorPrincipalID = &actor
+					item, err = w.UpdateWorkItem(t.Context(), item)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				card := tracker.NativeBoardCard{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_startup", ProjectID: "project_first", WorkItemID: "wi_owned", Number: 2, Revision: tracker.Revision(item.Revision)}, Title: "Owned example", State: "Todo", Actor: tracker.Actor{PrincipalID: actor}}}
+				ref, err := viewstore.NewContent(service.runDetailStore()).PrepareBoard(t.Context(), card)
+				if err != nil {
+					t.Fatal(err)
+				}
+				record := viewstore.BoardRecord{OrganizationID: "org_startup", ProjectID: "project_first", WorkItemID: "wi_owned", SourceRevision: item.Revision, ActorPrincipalID: actor, Position: viewstore.BoardPosition{State: "Todo", Identifier: "project_first#2"}, Payload: ref}
+				if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+					return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: "project_first", WorkItemID: "wi_owned", ExpectedRevision: item.Revision, Current: &record})
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertVisibilityReset := func(sub *dashboardSubscription, sequence int64) {
+				t.Helper()
+				if more, err := service.dashboardPage(t.Context(), newDashboardDelivery(service), sub); err != nil || more {
+					t.Fatalf("visibility loss: more=%t error=%v", more, err)
+				}
+				select {
+				case frame := <-sub.frames:
+					if frame.event != "reset" || frame.sequence != sequence || !frame.terminal || strings.Contains(frame.data, "wi_owned") {
+						t.Fatalf("visibility loss did not invalidate cached data privately: %+v", frame)
+					}
+				default:
+					t.Fatal("visibility loss produced no reset")
+				}
+			}
+			setOwner("another-principal")
+			assertVisibilityReset(reporter, 3)
+			setOwner(member.PrincipalID)
+			deleted := &dashboardSubscription{request: reporter.request, claims: reporter.claims, scope: reporter.scope, sequence: 4, grantVersion: reporter.grantVersion, frames: make(chan dashboardFrame, 4), done: make(chan struct{})}
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.DeleteWorkItem(t.Context(), "project_first", "wi_owned"); err != nil {
+					return err
+				}
+				return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: "project_first", WorkItemID: "wi_owned"})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			assertVisibilityReset(deleted, 5)
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+				return w.DeleteAccessProjectGrant(t.Context(), member.UserID, "project_first")
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.dashboardPage(t.Context(), newDashboardDelivery(service), retained); !errors.Is(err, accessstore.ErrDenied) || len(retained.frames) != 0 {
+				t.Fatalf("revoked project stream published data: pending=%d error=%v", len(retained.frames), err)
+			}
+		})
 	})
 	if _, err := provider.CreateMembership(t.Context(), "user_member", "provider_org_startup", "member"); err != nil {
 		t.Fatal(err)

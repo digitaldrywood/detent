@@ -469,8 +469,11 @@ func (s *Service) dashboardPage(ctx context.Context, d *dashboardDelivery, sub *
 	}
 	scope := sub.scope
 	scope.credential = credential
-	if s.config.TenantRepository != nil && sub.board {
-		return s.dashboardBoardRecordPage(ctx, d, sub, scope)
+	if s.config.TenantRepository != nil {
+		if sub.board {
+			return s.dashboardBoardRecordPage(ctx, d, sub, scope)
+		}
+		return s.dashboardProjectRecordPage(ctx, d, sub, scope)
 	}
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
