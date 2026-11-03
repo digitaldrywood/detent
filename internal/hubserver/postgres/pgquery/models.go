@@ -1204,6 +1204,16 @@ type IssueDependency struct {
 	UpdatedAt          time.Time
 }
 
+type IssueDependencyReason struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+	Kind           string
+	Reason         string
+	Basis          string
+	Revision       int64
+}
+
 type IssueLabel struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID

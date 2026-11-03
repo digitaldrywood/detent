@@ -203,6 +203,13 @@ func (s *Service) updateNativeDependencyReason(c echo.Context) error {
 		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
+	if s.config.TenantRepository != nil {
+		result, err := s.updateNativeDependencyReasonTenant(c.Request().Context(), scope, c.Param("item"), request)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.JSONBlob(http.StatusOK, result)
+	}
 	options := nativeCommandOptions{OperationID: "dependency-reason/" + c.Param("item"), Item: c.Param("item"), RequireLease: true, Feature: "collaboration"}
 	result, err := s.executeNativeMutation(c.Request().Context(), scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, _ time.Time) (any, error) {
 		if !validDependencyReason(request.Text) || (request.Kind != "blocked" && request.Kind != "unblocks") {

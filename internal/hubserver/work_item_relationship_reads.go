@@ -42,6 +42,9 @@ func (s *Service) hydrateWorkItemRelationshipFacts(ctx context.Context, scope na
 	projectChecked := map[tracker.ProjectID]bool{scope.project: true}
 	var relations []corestore.Relationship
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := loadDependencyReasonRecords(ctx, r, scope.project, []*tracker.NativeIssue{issue}); err != nil {
+			return err
+		}
 		cursor := corestore.RelationshipCursor{}
 		for {
 			page, err := r.Relationships(ctx, scope.project, issue.WorkItemID, cursor, corestore.MaxPageSize)
