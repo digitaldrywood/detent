@@ -25,22 +25,23 @@ type Repository struct {
 	background chan struct{}
 }
 
-var ErrPoolConfig = errors.New("PostgreSQL pool requires positive serving and background budgets within its connection limit")
+var ErrPoolConfig = errors.New("PostgreSQL pool requires positive serving and background budgets plus one reserved health connection within its connection limit")
 var ErrWorkload = errors.New("unknown PostgreSQL workload")
 
 var _ corestore.Repository = (*Repository)(nil)
 
 func NewRepository(ctx context.Context, pool *sql.DB, config PoolConfig) (*Repository, error) {
-	if pool == nil || config.MaxConnections < 2 || config.ServingConnections < 1 || config.BackgroundConnections < 1 || config.ServingConnections >= config.MaxConnections || config.BackgroundConnections > config.MaxConnections-config.ServingConnections {
+	if pool == nil || config.MaxConnections < 3 || config.ServingConnections < 1 || config.BackgroundConnections < 1 || config.ServingConnections >= config.MaxConnections || config.BackgroundConnections > config.MaxConnections-config.ServingConnections || config.BackgroundConnections > config.MaxConnections-2 {
 		return nil, ErrPoolConfig
 	}
+	serving := min(config.ServingConnections, config.MaxConnections-config.BackgroundConnections-1)
 	pool.SetMaxOpenConns(config.MaxConnections)
 	pool.SetMaxIdleConns(config.MaxConnections)
 	runtime, err := NewRuntime(ctx, pool, pool)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
-	return &Repository{pool: pool, runtime: runtime, serving: make(chan struct{}, config.ServingConnections), background: make(chan struct{}, config.BackgroundConnections)}, nil
+	return &Repository{pool: pool, runtime: runtime, serving: make(chan struct{}, serving), background: make(chan struct{}, config.BackgroundConnections)}, nil
 }
 
 func (r *Repository) Close() error {
@@ -53,6 +54,10 @@ func (r *Repository) Ping(ctx context.Context) error {
 
 func (r *Repository) Stats() sql.DBStats {
 	return r.pool.Stats()
+}
+
+func (r *Repository) WorkloadCapacities() (serving, background int) {
+	return cap(r.serving), cap(r.background)
 }
 
 func (r *Repository) Read(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(corestore.Reader) error) error {

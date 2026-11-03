@@ -311,7 +311,7 @@ func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 
 func TestConcurrentProjectGrantsDoNotDeadlockRevisionUpdates(t *testing.T) {
 	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
+	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	organization := tracker.OrganizationID("org_first")
 	seedTenantAccess(t, repository, organization)
 	for _, project := range []tracker.ProjectID{"prj_example", "prj_other"} {

@@ -137,7 +137,7 @@ func startupConnection(t *testing.T, admin *sql.DB, group, attributes string) pq
 func startupConfig(connection pq.Config) Config {
 	return Config{DatabaseBackend: DatabasePostgres, Postgres: &postgres.Config{
 		Connection: connection,
-		Pool:       postgres.PoolConfig{MaxConnections: 2, ServingConnections: 1, BackgroundConnections: 1},
+		Pool:       postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1},
 	}, Hosted: &HostedConfig{
 		OrganizationID:       "org_startup",
 		WorkOSOrganizationID: "provider_startup",

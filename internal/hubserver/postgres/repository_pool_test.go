@@ -98,14 +98,22 @@ func poolPIDs(t *testing.T, admin, pool *sql.DB) []int {
 }
 
 func TestRepositoryPoolBudgetsAndReuse(t *testing.T) {
-	for _, config := range []postgres.PoolConfig{
-		smallPool(),
-		{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1},
-		{MaxConnections: 4, ServingConnections: 1, BackgroundConnections: 3},
+	for _, test := range []struct {
+		config  postgres.PoolConfig
+		serving int
+	}{
+		{smallPool(), 1},
+		{postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1}, 2},
+		{postgres.PoolConfig{MaxConnections: 4, ServingConnections: 1, BackgroundConnections: 2}, 1},
+		{postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1}, 1},
+		{postgres.PoolConfig{MaxConnections: 5, ServingConnections: 4, BackgroundConnections: 1}, 3},
 	} {
+		config := test.config
 		t.Run(fmt.Sprintf("serving=%d/background=%d", config.ServingConnections, config.BackgroundConnections), func(t *testing.T) {
 			admin := template.Database(t)
 			repository, pool := repositoryFor(t, admin, config)
+			seedTenantAccess(t, repository, "org_first")
+			seedTenantAccess(t, repository, "org_second")
 			seedRepository(t, repository, "org_first")
 			seedRepository(t, repository, "org_second")
 			release := make(chan struct{})
@@ -144,11 +152,15 @@ func TestRepositoryPoolBudgetsAndReuse(t *testing.T) {
 			for range config.BackgroundConnections {
 				held = append(held, hold(corestore.Background, "org_first"))
 			}
-			for range config.ServingConnections {
+			serving := test.serving
+			for range serving {
 				held = append(held, hold(corestore.Serving, "org_second"))
 			}
-			if stats := pool.Stats(); stats.MaxOpenConnections != config.MaxConnections || stats.InUse != config.ServingConnections+config.BackgroundConnections {
+			if stats := pool.Stats(); stats.MaxOpenConnections != config.MaxConnections || stats.InUse != serving+config.BackgroundConnections {
 				t.Fatalf("pool stats = %+v", stats)
+			}
+			if err := repository.Ping(t.Context()); err != nil {
+				t.Fatalf("reserved health connection: %v", err)
 			}
 			for _, workload := range []corestore.Workload{corestore.Serving, corestore.Background} {
 				waiting := make(chan struct{})
@@ -199,6 +211,8 @@ func TestRepositoryPoolConfiguration(t *testing.T) {
 		pool   *sql.DB
 	}{
 		{"nil pool", smallPool(), nil},
+		{"no health reserve", postgres.PoolConfig{MaxConnections: 2, ServingConnections: 1, BackgroundConnections: 1}, pool},
+		{"background leaves no serving reserve", postgres.PoolConfig{MaxConnections: 4, ServingConnections: 1, BackgroundConnections: 3}, pool},
 		{"unbounded pool", postgres.PoolConfig{ServingConnections: 1, BackgroundConnections: 1}, pool},
 		{"negative serving", postgres.PoolConfig{MaxConnections: 2, ServingConnections: -1, BackgroundConnections: 1}, pool},
 		{"no background", postgres.PoolConfig{MaxConnections: 2, ServingConnections: 1}, pool},

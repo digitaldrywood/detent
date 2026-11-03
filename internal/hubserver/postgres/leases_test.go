@@ -20,6 +20,9 @@ import (
 func seedLeaseFamily(t *testing.T, r *postgres.Repository, org tracker.OrganizationID) {
 	t.Helper()
 	err := r.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
+		if err := seedCoreOrganization(t.Context(), w, org); err != nil {
+			return err
+		}
 		for id := int64(1); id <= 2; id++ {
 			project := tracker.ProjectID(fmt.Sprintf("prj_%d", id))
 			if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: org, ID: project, Name: string(project), Profile: "native"}); err != nil {
@@ -401,7 +404,7 @@ func TestLeaseCompetingClaims(t *testing.T) {
 	for _, sameSession := range []bool{false, true} {
 		t.Run(fmt.Sprintf("same_session_%t", sameSession), func(t *testing.T) {
 			admin := template.Database(t)
-			r, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
+			r, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 			seedLeaseFamily(t, r, "org_first")
 			admin.SetMaxOpenConns(2)
 			blocker, err := admin.BeginTx(t.Context(), nil)

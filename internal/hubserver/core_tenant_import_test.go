@@ -28,7 +28,7 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	config := postgres.Config{
 		Connection: connection,
-		Pool:       postgres.PoolConfig{MaxConnections: 2, ServingConnections: 1, BackgroundConnections: 1},
+		Pool:       postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1},
 	}
 	catalog, err := storagecatalog.Read(os.DirFS("../.."), "tools/storageinventory/mappings/v1.json")
 	if err != nil {
