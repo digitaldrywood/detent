@@ -125,8 +125,6 @@ func backendVersionAtLeast(output []byte, minimum [3]int) bool {
 }
 
 func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy) (probeErr error) {
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
-	defer cancel()
 	command := strings.TrimSpace(backend.Command)
 	var shell string
 	var minimum [3]int
@@ -386,8 +384,6 @@ func backendPrerequisiteProblem(goos, output string) (runnerauth.Problem, bool) 
 }
 
 func probeBackendSignIn(ctx context.Context, backend workflowconfig.AgentBackend) error {
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
-	defer cancel()
 	command := backend.Command
 	var shell string
 	var args []string

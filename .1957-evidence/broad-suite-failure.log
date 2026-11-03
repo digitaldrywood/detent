@@ -1,0 +1,516 @@
+Issue #1957
+Implementation-start base SHA: e2fbfd894665ec2db55c4e3d329da07e6dbd45e2
+Final candidate diff SHA-256 (git diff bytes): 32b7d7ef5a4fc3d714f1aa627ea91dba12bcdb9be069954ed5441e6b3fbe52f6
+Candidate is uncommitted; host publication is pending.
+
+Source: initial candidate before final cleanup and fixture adjustments; full retained output
+Command: go test -timeout=120s ./internal/codex ./internal/claudecode ./internal/cli ./internal/hubclient/dispatch
+Exit: 1
+Original output file: TMPDIR/1957-tests.log
+Output (complete):
+ok  	github.com/digitaldrywood/detent/internal/codex	1.568s
+ok  	github.com/digitaldrywood/detent/internal/claudecode	1.571s
+ok  	github.com/digitaldrywood/detent/internal/cli	119.217s
+--- FAIL: TestNativeComposedAuthorizationClaimAndExecution (3.93s)
+    native_authorization_test.go:64: hub unavailable
+        Hub request failed with status 503 (not_ready): Run event storage is not available
+--- FAIL: TestNativeAcceptedClaimDispatchRefusals (0.58s)
+    --- FAIL: TestNativeAcceptedClaimDispatchRefusals/memory_pressure_high (0.12s)
+        native_dispatch_test.go:89: candidate refusal issue read: hub unavailable
+            Hub request failed with status 503 (not_ready): Run event storage is not available
+        native_dispatch_test.go:89: scheduling source unavailable
+            hub unavailable
+            Hub request failed with status 503 (not_ready): Run event storage is not available
+    --- FAIL: TestNativeAcceptedClaimDispatchRefusals/io_pressure_high (0.11s)
+        native_dispatch_test.go:89: candidate refusal issue read: hub unavailable
+            Hub request failed with status 503 (not_ready): Run event storage is not available
+        native_dispatch_test.go:89: scheduling source unavailable
+            hub unavailable
+            Hub request failed with status 503 (not_ready): Run event storage is not available
+    --- FAIL: TestNativeAcceptedClaimDispatchRefusals/cpu_pressure_high (0.12s)
+        native_dispatch_test.go:89: candidate refusal issue read: hub unavailable
+            Hub request failed with status 503 (not_ready): Run event storage is not available
+        native_dispatch_test.go:89: scheduling source unavailable
+            hub unavailable
+            Hub request failed with status 503 (not_ready): Run event storage is not available
+    --- FAIL: TestNativeAcceptedClaimDispatchRefusals/worker_host_unavailable (0.12s)
+        native_dispatch_test.go:89: candidate refusal issue read: hub unavailable
+            Hub request failed with status 503 (not_ready): Run event storage is not available
+        native_dispatch_test.go:89: scheduling source unavailable
+            hub unavailable
+            Hub request failed with status 503 (not_ready): Run event storage is not available
+    --- FAIL: TestNativeAcceptedClaimDispatchRefusals/work_attempt_start_failed (0.11s)
+        native_dispatch_test.go:89: candidate refusal issue read: hub unavailable
+            Hub request failed with status 503 (not_ready): Run event storage is not available
+        native_dispatch_test.go:89: scheduling source unavailable
+            hub unavailable
+            Hub request failed with status 503 (not_ready): Run event storage is not available
+--- FAIL: TestNativeRuntimeHeartbeatDuringQuietCommand (0.21s)
+    --- FAIL: TestNativeRuntimeHeartbeatDuringQuietCommand/false (0.11s)
+        native_runtime_test.go:69: candidate refusal issue read: hub unavailable
+            Hub request failed with status 503 (not_ready): Run event storage is not available
+        native_runtime_test.go:69: scheduling source unavailable
+            hub unavailable
+            Hub request failed with status 503 (not_ready): Run event storage is not available
+    --- FAIL: TestNativeRuntimeHeartbeatDuringQuietCommand/true (0.10s)
+        native_runtime_test.go:69: candidate refusal issue read: hub unavailable
+            Hub request failed with status 503 (not_ready): Run event storage is not available
+        native_runtime_test.go:69: scheduling source unavailable
+            hub unavailable
+            Hub request failed with status 503 (not_ready): Run event storage is not available
+--- FAIL: TestNativeStopDuringHostFinalization (0.00s)
+    --- FAIL: TestNativeStopDuringHostFinalization/drain_before_dispatch_with_pending_status (107.80s)
+        native_stop_test.go:176: status discovery did not block after native claim acquisition
+    --- FAIL: TestNativeStopDuringHostFinalization/drain_during_publication (107.84s)
+        native_stop_test.go:296: running=map[] blocked=map[] error=<nil>
+        native_stop_test.go:297: host check did not start
+    --- FAIL: TestNativeStopDuringHostFinalization/drain_during_publication_with_pending_status (107.86s)
+        native_stop_test.go:296: running=map[] blocked=map[] error=<nil>
+        native_stop_test.go:297: host check did not start
+    --- FAIL: TestNativeStopDuringHostFinalization/stop (107.86s)
+        native_stop_test.go:296: running=map[] blocked=map[] error=<nil>
+        native_stop_test.go:297: host check did not start
+    --- FAIL: TestNativeStopDuringHostFinalization/drain_before_dispatch_with_released_status (5.37s)
+        native_stop_test.go:176: status discovery did not block after native claim acquisition
+    --- FAIL: TestNativeStopDuringHostFinalization/drain_during_validation_with_pending_status (5.35s)
+        native_stop_test.go:296: running=map[] blocked=map[] error=<nil>
+        native_stop_test.go:297: host check did not start
+    --- FAIL: TestNativeStopDuringHostFinalization/drain_during_validation (5.36s)
+        native_stop_test.go:296: running=map[] blocked=map[] error=<nil>
+        native_stop_test.go:297: host check did not start
+panic: test timed out after 2m0s
+	running tests:
+		TestNativeStopEffectBoundary (0s)
+		TestNativeStopEffectBoundary/version_committed (0s)
+
+goroutine 33410 [running]:
+testing.(*M).startAlarm.func1()
+	testing/testing.go:2959 +0x34a
+created by time.goFunc
+	time/sleep.go:182 +0x2d
+
+goroutine 1 [chan receive]:
+testing.(*T).Run(0x998d4f0a908, {0x25e95de?, 0x998d549fa08?}, 0x8f514d8)
+	testing/testing.go:2266 +0x4f2
+testing.runTests.func1(0x998d4f0a908)
+	testing/testing.go:2742 +0x37
+testing.tRunner(0x998d4f0a908, 0x998d549fb30)
+	testing/testing.go:2193 +0xea
+testing.runTests({0x25fa0ba, 0x20}, {0x266ae51, 0x3c}, 0x998d4d84168, {0x902b688, 0x41, 0x41}, {0xc2b2a1ea3b925481, 0x1bf11813b8, ...})
+	testing/testing.go:2740 +0x510
+testing.(*M).Run(0x998d4e9e280)
+	testing/testing.go:2600 +0x6af
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestMain(0x998d4e9e280)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_change_fixture_test.go:54 +0x11c
+main.main()
+	_testmain.go:178 +0xa5
+
+goroutine 50 [chan receive, 2 minutes]:
+testing.(*T).Parallel(0x998d4f0bb08)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestRetiredControllerCannotOverwriteReplacementWithAcknowledgment(0x998d4f0bb08)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/controller_retirement_test.go:23 +0x27
+testing.tRunner(0x998d4f0bb08, 0x8f51518)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 51 [chan receive, 2 minutes]:
+testing.(*T).Parallel(0x998d4f0bd48)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestRunnerGitHubBatchReportsOneBoundedStep(0x998d4f0bd48)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/github_batch_test.go:24 +0x85
+testing.tRunner(0x998d4f0bd48, 0x8f51540)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 52 [chan receive, 2 minutes]:
+testing.(*T).Parallel(0x998d5560008)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestRunnerGitHubBatchRunsOutsideHeartbeatOneAtATime(0x998d5560008)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/github_batch_test.go:108 +0x2a
+testing.tRunner(0x998d5560008, 0x8f51548)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 53 [chan receive, 2 minutes]:
+testing.(*T).Parallel(0x998d5560248)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestRunnerGitHubBatchContinuesPagesWithoutHeartbeat(0x998d5560248)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/github_batch_test.go:151 +0x2a
+testing.tRunner(0x998d5560248, 0x8f51538)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 56 [chan receive, 1 minutes]:
+testing.(*T).Parallel(0x998d5422008)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestSchedulerLeaseHoldFollowsNativeClaims(0x998d5422008)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/lease_hold_test.go:20 +0x2a
+testing.tRunner(0x998d5422008, 0x8f51570)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 57 [chan receive, 1 minutes]:
+testing.(*T).Parallel(0x998d5422248)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestSchedulerLeaseHoldSpansCandidateFetch(0x998d5422248)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/lease_hold_test.go:66 +0x27
+testing.tRunner(0x998d5422248, 0x8f51588)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 58 [chan receive, 1 minutes]:
+testing.(*T).Parallel(0x998d5422d88)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestSchedulerLeaseHoldReleasesWhenClaimsVanishDuringAcquire(0x998d5422d88)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/lease_hold_test.go:165 +0x2a
+testing.tRunner(0x998d5422d88, 0x8f51580)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 59 [chan receive, 1 minutes]:
+testing.(*T).Parallel(0x998d5422fc8)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestSchedulerLeaseHoldConcurrentFetches(0x998d5422fc8)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/lease_hold_test.go:181 +0x18
+testing.tRunner(0x998d5422fc8, 0x8f51568)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 60 [chan receive, 1 minutes]:
+testing.(*T).Parallel(0x998d5423208)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestSchedulerLeaseHoldOutlivesReleasedLease(0x998d5423208)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/lease_hold_test.go:221 +0x27
+testing.tRunner(0x998d5423208, 0x8f51578)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 61 [chan receive, 1 minutes]:
+testing.(*T).Parallel(0x998d5423448)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestNativeAdmissionBatch(0x998d5423448)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_admission_test.go:29 +0x94
+testing.tRunner(0x998d5423448, 0x8f51418)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 62 [chan receive, 1 minutes]:
+testing.(*T).Parallel(0x998d5423688)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestNativeAdmissionCompetingRunners(0x998d5423688)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_admission_test.go:423 +0x8c
+testing.tRunner(0x998d5423688, 0x8f51420)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 5653 [chan receive, 1 minutes]:
+testing.(*T).Parallel(0x998d930c008)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestControllerRetirementWaitsForOldMachineReport(0x998d930c008)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_execution_test.go:38 +0x3c
+testing.tRunner(0x998d930c008, 0x8f513a8)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 33404 [runnable]:
+modernc.org/sqlite.interruptOnDone.func1()
+	modernc.org/sqlite@v1.51.0/sqlite.go:94 +0x7f
+created by modernc.org/sqlite.interruptOnDone in goroutine 33137
+	modernc.org/sqlite@v1.51.0/sqlite.go:93 +0xf5
+
+goroutine 33179 [select]:
+database/sql.(*DB).connectionCleaner(0x998d6489ba0, 0x998d68299a0?)
+	database/sql/sql.go:1109 +0x9e
+created by database/sql.(*DB).startCleanerLocked in goroutine 33137
+	database/sql/sql.go:1096 +0x109
+
+goroutine 33173 [select]:
+database/sql.(*DB).connectionOpener(0x998d6489860, {0x8f478d0, 0x998d6829e00})
+	database/sql/sql.go:1266 +0x89
+created by database/sql.OpenDB in goroutine 33137
+	database/sql/sql.go:846 +0x135
+
+goroutine 33183 [select]:
+database/sql.(*DB).connectionCleaner(0x998d57f60d0, 0x998d63fa1e0?)
+	database/sql/sql.go:1109 +0x9e
+created by database/sql.(*DB).startCleanerLocked in goroutine 33137
+	database/sql/sql.go:1096 +0x109
+
+goroutine 14393 [chan receive, 1 minutes]:
+testing.(*T).Parallel(0x998d573c488)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestNativeMachineIntakeAuthorityAndFingerprint(0x998d573c488)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_intake_test.go:37 +0xac
+testing.tRunner(0x998d573c488, 0x8f51480)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 33181 [select]:
+database/sql.(*DB).connectionOpener(0x998d57f60d0, {0x8f478d0, 0x998d6f6a050})
+	database/sql/sql.go:1266 +0x89
+created by database/sql.OpenDB in goroutine 33137
+	database/sql/sql.go:846 +0x135
+
+goroutine 33206 [select]:
+github.com/digitaldrywood/detent/internal/hubserver.(*conversationService).settleLoop(0x998d68fcb40, {0x8f478d0, 0x998d6f6a870})
+	github.com/digitaldrywood/detent/internal/hubserver/conversation_service.go:248 +0x14c
+created by github.com/digitaldrywood/detent/internal/hubserver.newConversationService in goroutine 33137
+	github.com/digitaldrywood/detent/internal/hubserver/conversation_service.go:187 +0x586
+
+goroutine 33351 [select]:
+github.com/digitaldrywood/detent/internal/hubserver.(*outboxWorker).run(0x998d711c3f0, {0x8f478d0, 0x998d6fdb950})
+	github.com/digitaldrywood/detent/internal/hubserver/outbox.go:906 +0x36a
+github.com/digitaldrywood/detent/internal/hubserver.(*outboxWorker).start.func1()
+	github.com/digitaldrywood/detent/internal/hubserver/outbox.go:879 +0x51
+created by github.com/digitaldrywood/detent/internal/hubserver.(*outboxWorker).start in goroutine 33137
+	github.com/digitaldrywood/detent/internal/hubserver/outbox.go:877 +0xcc
+
+goroutine 5655 [chan receive, 1 minutes]:
+testing.(*T).Parallel(0x998d930c488)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestNativeLeaseReceiptDoesNotExtendReplayedClaim(0x998d930c488)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_execution_test.go:156 +0x2a
+testing.tRunner(0x998d930c488, 0x8f51478)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 33155 [select]:
+database/sql.(*DB).connectionOpener(0x998d6489450, {0x8f478d0, 0x998d6829900})
+	database/sql/sql.go:1266 +0x89
+created by database/sql.OpenDB in goroutine 33137
+	database/sql/sql.go:846 +0x135
+
+goroutine 8794 [chan receive, 1 minutes]:
+testing.(*T).Parallel(0x998d960f688)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestNativeExecutionContextKeepsItsOriginalFence(0x998d960f688)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_execution_test.go:334 +0x2a
+testing.tRunner(0x998d960f688, 0x8f51468)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 14396 [chan receive, 1 minutes]:
+testing.(*T).Parallel(0x998d573cfc8)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestNativeRetryProgressOwnerAndSuccess(0x998d573cfc8)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_progress_test.go:18 +0x27
+testing.tRunner(0x998d573cfc8, 0x8f514a8)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 31526 [chan receive]:
+testing.(*T).Run(0x998d60cd448, {0x25c2025?, 0x8099f40?}, 0x998d7f9e510)
+	testing/testing.go:2266 +0x4f2
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestNativeStopEffectBoundary(0x998d60cd448)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_stop_test.go:476 +0xfc
+testing.tRunner(0x998d60cd448, 0x8f514d8)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 33205 [select]:
+github.com/digitaldrywood/detent/internal/hubserver.(*conversationWorkerRouter).reconcileLoop(0x998d711c540)
+	github.com/digitaldrywood/detent/internal/hubserver/conversation_worker.go:71 +0xf8
+created by github.com/digitaldrywood/detent/internal/hubserver.newConversationControlRouter in goroutine 33137
+	github.com/digitaldrywood/detent/internal/hubserver/conversation_worker.go:51 +0xd6
+
+goroutine 5656 [chan receive, 1 minutes]:
+testing.(*T).Parallel(0x998d930c6c8)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestNativeMissingClaimNeverRunsUnguarded(0x998d930c6c8)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_execution_test.go:177 +0x36
+testing.tRunner(0x998d930c6c8, 0x8f51488)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 33137 [runnable]:
+database/sql.(*Row).Scan(0x998d60971e8, {0x998d6096dd0?, 0xe?, 0xe})
+	database/sql/sql.go:3529 +0x23a
+github.com/digitaldrywood/detent/internal/hubserver.(*Service).authenticateAPIHash(_, {_, _}, {_, _}, {_, _}, {_, _})
+	github.com/digitaldrywood/detent/internal/hubserver/api_auth.go:230 +0x4c5
+github.com/digitaldrywood/detent/internal/hubserver.(*Service).authenticateAPIToken(_, {_, _}, {_, _}, {_, _}, {_, _})
+	github.com/digitaldrywood/detent/internal/hubserver/api_auth.go:214 +0x117
+github.com/digitaldrywood/detent/internal/hubserver.(*Service).authenticateAPIRequestContext(_, {_, _}, {_, _})
+	github.com/digitaldrywood/detent/internal/hubserver/api_auth.go:209 +0xde5
+github.com/digitaldrywood/detent/internal/hubserver.(*Service).authenticateAPIRequest(_, {_, _})
+	github.com/digitaldrywood/detent/internal/hubserver/api_auth.go:171 +0xf1
+github.com/digitaldrywood/detent/internal/hubserver.(*Service).requireAPIScope.func1.1({0x8f4f7d0, 0x998d819ab40})
+	github.com/digitaldrywood/detent/internal/hubserver/api_auth.go:123 +0xa5
+github.com/labstack/echo/v4.(*Echo).add.func1({0x8f4f7d0, 0x998d819ab40})
+	github.com/labstack/echo/v4@v4.15.1/echo.go:589 +0x45
+github.com/digitaldrywood/detent/internal/hubserver.(*Service).runDetailMiddleware.func1({0x8f4f7d0, 0x998d819ab40})
+	github.com/digitaldrywood/detent/internal/hubserver/run_details.go:112 +0xa2
+github.com/digitaldrywood/detent/internal/hubserver.(*Service).changeContentMiddleware.func1({0x8f4f7d0, 0x998d819ab40})
+	github.com/digitaldrywood/detent/internal/hubserver/change_content.go:69 +0xa2
+github.com/digitaldrywood/detent/internal/hubserver.(*Service).policyCacheMiddleware.func1({0x8f4f7d0, 0x998d819ab40})
+	github.com/digitaldrywood/detent/internal/hubserver/policy.go:1385 +0xb1
+github.com/digitaldrywood/detent/internal/hubserver.(*Service).measureRequests.func1({0x8f4f7d0, 0x998d819ab40})
+	github.com/digitaldrywood/detent/internal/hubserver/request_metrics.go:444 +0x82
+github.com/labstack/echo/v4.(*Echo).ServeHTTP.func1({0x8f4f7d0, 0x998d819ab40})
+	github.com/labstack/echo/v4@v4.15.1/echo.go:670 +0x11d
+github.com/digitaldrywood/detent/internal/hubserver.(*Service).serverTiming.func1({0x8f4f7d0, 0x998d819ab40})
+	github.com/digitaldrywood/detent/internal/hubserver/server_timing.go:153 +0x1b9
+github.com/digitaldrywood/detent/internal/hubserver.(*Service).timeWriterUse.func1({0x8f4f7d0, 0x998d819ab40})
+	github.com/digitaldrywood/detent/internal/hubserver/writer_timing.go:408 +0x19f
+github.com/labstack/echo/v4.(*Echo).ServeHTTP(0x998d8153d48, {0x8f45758, 0x998d6e23400}, 0x998d59b6dc0)
+	github.com/labstack/echo/v4@v4.15.1/echo.go:676 +0x319
+github.com/digitaldrywood/detent/internal/hubserver.(*Service).Handler.1({0x8f45758, 0x998d6e23400}, 0x998d59b6dc0)
+	github.com/digitaldrywood/detent/internal/hubserver/service.go:506 +0x4b
+net/http.HandlerFunc.ServeHTTP(...)
+	net/http/server.go:2338
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.newNativeChangeHubConfigured.func1({0x8f45758?, 0x998d6e23400?}, 0x160?)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_change_fixture_test.go:243 +0xbf
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.newNativeChangeHubConfigured.func3(0x998d59b6dc0)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_change_fixture_test.go:258 +0xbd
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.executionRoundTrip.RoundTrip(0x148?, 0x8d5d0d8?)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_execution_test.go:152 +0x19
+github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport.(*Transport).RoundTrip(0x490db3?, 0x8f3e6d8?)
+	github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport/transport.go:27 +0x1e
+net/http.send(0x998d59b6dc0, {0x8f3e6d8, 0x998d6978300}, {0x998d60990d8?, 0x495f86?, 0x0?})
+	net/http/client.go:266 +0x654
+net/http.(*Client).send(0x998d68a6c30, 0x998d59b6dc0, {0x7594240?, 0x1?, 0x0?})
+	net/http/client.go:187 +0x250
+net/http.(*Client).do(0x998d68a6c30, 0x998d59b6dc0)
+	net/http/client.go:745 +0x9f7
+net/http.(*Client).Do(...)
+	net/http/client.go:604
+github.com/digitaldrywood/detent/internal/hubclient/api.(*Client).requestWithToken(0x998d86f0820, {0x8f478d0, 0x998d6829860}, 0x998d68a6c30, {0x25a252b, 0x3}, {0x998d75c77a0, 0x6f}, 0x0, {0x8dd0ca8, ...}, ...)
+	github.com/digitaldrywood/detent/internal/hubclient/api/client.go:375 +0x906
+github.com/digitaldrywood/detent/internal/hubclient/api.(*Client).requestOnceWithClient(0x998d86f0820, {0x8f478d0, 0x998d6829860}, 0x998d68a6c30, 0x0, {0x25a252b, 0x3}, {0x998d75c77a0, 0x6f}, 0x0, ...)
+	github.com/digitaldrywood/detent/internal/hubclient/api/client.go:342 +0x665
+github.com/digitaldrywood/detent/internal/hubclient/api.(*Client).requestOnce(...)
+	github.com/digitaldrywood/detent/internal/hubclient/api/client.go:314
+github.com/digitaldrywood/detent/internal/hubclient/api.(*Client).requestWithDeadline.func1()
+	github.com/digitaldrywood/detent/internal/hubclient/api/client.go:309 +0x76
+github.com/digitaldrywood/detent/internal/hubclient/api.(*Client).withinRequestBudget(0x998d86f0820, {0x8f478d0, 0x998d6829860}, {0x25a252b, 0x3}, {0x998d75c77a0, 0x6f}, 0x998d60999b0)
+	github.com/digitaldrywood/detent/internal/hubclient/api/request_budget.go:29 +0xf6
+github.com/digitaldrywood/detent/internal/hubclient/api.(*Client).requestWithDeadline(0x998d6e233c0?, {0x8f478d0?, 0x998d6829860?}, 0x998d63d4270?, {0x25a252b?, 0x8e30e48?}, {0x998d75c77a0?, 0x998d63d4270?}, 0x0?, {0x8dd0ca8, ...}, ...)
+	github.com/digitaldrywood/detent/internal/hubclient/api/client.go:308 +0xe8
+github.com/digitaldrywood/detent/internal/hubclient/api.(*Client).requestWithHeaders(...)
+	github.com/digitaldrywood/detent/internal/hubclient/api/client.go:296
+github.com/digitaldrywood/detent/internal/hubclient/api.(*Client).request(...)
+	github.com/digitaldrywood/detent/internal/hubclient/api/client.go:289
+github.com/digitaldrywood/detent/internal/hubclient/api.(*NativeClient).ApproveProjectPolicy(_, {_, _}, {{0x0, 0x0}, {0x0, 0x0}, {0x0, 0x1, {0x998d645e320, ...}, ...}})
+	github.com/digitaldrywood/detent/internal/hubclient/api/policy.go:73 +0x157
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.newNativeChangeHubConfigured(_, {_, _}, {_, _, _}, _, _, {0x0, 0x0, ...}, ...)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_change_fixture_test.go:318 +0x1430
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.newNativeChangeHubDependencies(0x998d8152b48, {0x25ac362, 0x9}, {0x998d87561c0, 0x4, 0x4}, 0x1, 0x0, {0x0, 0x0, ...})
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_change_fixture_test.go:187 +0x209
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.newNativeChangeHubTransport(0x998d8152b48, {0x25ac362, 0x9}, {0x998d87561c0, 0x4, 0x4}, 0x1, {0x0, 0x0, 0x0})
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_change_fixture_test.go:181 +0xa9
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.newNativeChangeHub(0x998d8152b48, {0x998d5b74e57, 0x1, 0x998d5b749a0?})
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_change_fixture_test.go:165 +0x2c8
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestNativeStopEffectBoundary.func1(0x998d8152b48)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_stop_test.go:477 +0x72
+testing.tRunner(0x998d8152b48, 0x998d7f9e510)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 31526
+	testing/testing.go:2258 +0x4d4
+
+goroutine 14392 [chan receive, 1 minutes]:
+testing.(*T).Parallel(0x998d573c008)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestNativeDelayedResponsesPreserveSuccessor(0x998d573c008)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_execution_test.go:912 +0x27
+testing.tRunner(0x998d573c008, 0x8f51448)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 33175 [select]:
+database/sql.(*DB).connectionCleaner(0x998d6489860, 0x998d6af58c8?)
+	database/sql/sql.go:1109 +0x9e
+created by database/sql.(*DB).startCleanerLocked in goroutine 33137
+	database/sql/sql.go:1096 +0x109
+
+goroutine 5654 [chan receive, 1 minutes]:
+testing.(*T).Parallel(0x998d930c248)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestRetiredControllerRenewsClaimsWithoutReportingOldBuild(0x998d930c248)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_execution_test.go:91 +0x3c
+testing.tRunner(0x998d930c248, 0x8f51520)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 14394 [chan receive, 1 minutes]:
+testing.(*T).Parallel(0x998d573c6c8)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestNativeSourceIntakeRetryBeforeDispatch(0x998d573c6c8)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_intake_test.go:555 +0x85
+testing.tRunner(0x998d573c6c8, 0x8f514c8)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 14395 [chan receive, 1 minutes]:
+testing.(*T).Parallel(0x998d573c908)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestNativeEditsDuringSourceFetch(0x998d573c908)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_intake_test.go:645 +0xa5
+testing.tRunner(0x998d573c908, 0x8f51460)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 9209 [chan receive, 1 minutes]:
+testing.(*T).Parallel(0x998d5a2afc8)
+	testing/testing.go:1957 +0x230
+github.com/digitaldrywood/detent/internal/hubclient/dispatch.TestNativeProgressStartupRecoverySnapshot(0x998d5a2afc8)
+	github.com/digitaldrywood/detent/internal/hubclient/dispatch/native_execution_test.go:518 +0x32
+testing.tRunner(0x998d5a2afc8, 0x8f51498)
+	testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	testing/testing.go:2258 +0x4d4
+
+goroutine 33177 [select]:
+database/sql.(*DB).connectionOpener(0x998d6489ba0, {0x8f478d0, 0x998d6829ea0})
+	database/sql/sql.go:1266 +0x89
+created by database/sql.OpenDB in goroutine 33137
+	database/sql/sql.go:846 +0x135
+
+goroutine 33352 [select]:
+github.com/digitaldrywood/detent/internal/hubserver.(*Service).startHealthDetector.func1()
+	github.com/digitaldrywood/detent/internal/hubserver/health_detector.go:27 +0x11a
+created by github.com/digitaldrywood/detent/internal/hubserver.(*Service).startHealthDetector in goroutine 33137
+	github.com/digitaldrywood/detent/internal/hubserver/health_detector.go:22 +0x125
+
+goroutine 33405 [runnable]:
+database/sql.(*Rows).initContextClose.gowrap1()
+	database/sql/sql.go:3007
+runtime.goexit({})
+	runtime/asm_amd64.s:1264 +0x1
+created by database/sql.(*Rows).initContextClose in goroutine 33137
+	database/sql/sql.go:3007 +0x15a
+
+goroutine 33349 [select]:
+github.com/digitaldrywood/detent/internal/hubserver.(*Service).runGitHubWebhookMaintenance(0x998d6903608, {0x8f47898?, 0x998d6893d70?})
+	github.com/digitaldrywood/detent/internal/hubserver/service.go:636 +0x1c5
+created by github.com/digitaldrywood/detent/internal/hubserver.Open in goroutine 33137
+	github.com/digitaldrywood/detent/internal/hubserver/service.go:331 +0x1f77
+
+goroutine 33353 [select]:
+github.com/digitaldrywood/detent/internal/hubserver.(*dashboardDelivery).run(0x998d5162960, {0x8f478d0, 0x998d6fdb9f0})
+	github.com/digitaldrywood/detent/internal/hubserver/dashboard_delivery.go:281 +0x23c
+created by github.com/digitaldrywood/detent/internal/hubserver.(*dashboardDelivery).start in goroutine 33137
+	github.com/digitaldrywood/detent/internal/hubserver/dashboard_delivery.go:163 +0xbf
+FAIL	github.com/digitaldrywood/detent/internal/hubclient/dispatch	120.028s
+FAIL

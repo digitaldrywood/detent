@@ -1,0 +1,73 @@
+Issue #1957
+Implementation-start base SHA: e2fbfd894665ec2db55c4e3d329da07e6dbd45e2
+Final candidate diff SHA-256 (git diff bytes): 32b7d7ef5a4fc3d714f1aa627ea91dba12bcdb9be069954ed5441e6b3fbe52f6
+Candidate is uncommitted; host publication is pending.
+
+Source: base production with new regressions
+Command: go test -timeout=120s ./internal/codex ./internal/claudecode -run 'TestAppServerDefaultStartupUsesCallerDeadline|TestSandboxSlowHandshakeUsesCallerContext'
+Exit: 1
+Original output file: TMPDIR/1957-regression-before.log
+Output (complete):
+--- FAIL: TestAppServerDefaultStartupUsesCallerDeadline (0.00s)
+    --- FAIL: TestAppServerDefaultStartupUsesCallerDeadline/initialize (0.00s)
+        appserver_test.go:48: slow startup = wait for initialize response: context deadline exceeded after 1m0s
+    --- FAIL: TestAppServerDefaultStartupUsesCallerDeadline/thread/start (0.00s)
+        appserver_test.go:48: slow startup = wait for thread/start response: context deadline exceeded after 1m0s
+    --- FAIL: TestAppServerDefaultStartupUsesCallerDeadline/thread/resume (0.00s)
+        appserver_test.go:48: slow startup = wait for thread/resume response: context deadline exceeded after 1m0s
+    --- FAIL: TestAppServerDefaultStartupUsesCallerDeadline/turn/start (0.00s)
+        appserver_test.go:48: slow startup = wait for turn/start response: context deadline exceeded after 1m0s
+FAIL
+FAIL	github.com/digitaldrywood/detent/internal/codex	0.010s
+--- FAIL: TestSandboxSlowHandshakeUsesCallerContext (0.00s)
+    --- FAIL: TestSandboxSlowHandshakeUsesCallerContext/slow_response (0.00s)
+        isolation_test.go:402: slow handshake = context deadline exceeded after 30s
+FAIL
+FAIL	github.com/digitaldrywood/detent/internal/claudecode	0.009s
+FAIL
+
+Source: candidate with original one-minute scheduler cap restored
+Command: go test -timeout=120s ./internal/hubclient/dispatch -run '^TestIsolationProbeRecoversAfterTimeouts$'
+Exit: 1
+Original output file: TMPDIR/1957-scheduler-before.log
+Output (complete):
+--- FAIL: TestIsolationProbeRecoversAfterTimeouts (0.00s)
+    runner_problems_test.go:248: slow probe did not restore readiness: map[example-project/codex:[]] [{CachedCapabilities:false ProjectID: Subject:backend_isolation Check:runner isolation probe ErrorOutput:context deadline exceeded FixCommand: ReportedAt:2000-01-01 00:04:00 +0000 UTC Code:backend_probe_failed Message:The backend readiness probe did not complete successfully. No completed runner isolation probe is cached; reported capabilities contain only completed backend checks. FixHint:Check the runner's probe execution and let its next heartbeat refresh readiness. FirstSeen:0001-01-01 00:00:00 +0000 UTC}]
+FAIL
+FAIL	github.com/digitaldrywood/detent/internal/hubclient/dispatch	0.013s
+FAIL
+
+Source: final candidate
+Command: go test -timeout=120s ./internal/codex ./internal/claudecode ./internal/cli ./internal/hubclient/dispatch ./internal/runner ./internal/hubclient ./internal/hubclient/internal/scenariotest ./cmd/detent -run 'Test(AppServer|Sandbox|Isolation|ProbeBackend|ProbeRunnerIsolation|BackendProbe|BackendReadiness|SupervisorDoesNotAdvanceRetryForCapacityError|SupervisorAddsSharedHostCensusToStartupFailure|ClassifyAgentCapacityError)'
+Exit: 0
+Original output file: TMPDIR/1957-focused-final.log
+Output (complete):
+ok  	github.com/digitaldrywood/detent/internal/codex	0.027s
+ok  	github.com/digitaldrywood/detent/internal/claudecode	0.074s
+ok  	github.com/digitaldrywood/detent/internal/cli	1.182s
+ok  	github.com/digitaldrywood/detent/internal/hubclient/dispatch	2.038s
+ok  	github.com/digitaldrywood/detent/internal/runner	0.008s
+?   	github.com/digitaldrywood/detent/internal/hubclient	[no test files]
+?   	github.com/digitaldrywood/detent/internal/hubclient/internal/scenariotest	[no test files]
+ok  	github.com/digitaldrywood/detent/cmd/detent	0.013s [no tests to run]
+
+Source: final candidate
+Command: go test -timeout=120s ./internal/codex ./internal/claudecode
+Exit: 0
+Original output file: TMPDIR/1957-providers-final.log
+Output (complete):
+ok  	github.com/digitaldrywood/detent/internal/codex	1.524s
+ok  	github.com/digitaldrywood/detent/internal/claudecode	1.438s
+
+Source: final candidate
+Command: go vet ./internal/codex ./internal/claudecode ./internal/cli ./internal/hubclient/dispatch ./internal/hubclient ./internal/hubclient/internal/scenariotest ./cmd/detent
+Exit: 0
+Original output file: TMPDIR/1957-vet-final.log
+Output (complete):
+
+Source: final candidate
+Command: go test -timeout=120s ./internal/invariants -run 'TestRepositorySources|TestSourceViolations'
+Exit: 0
+Original output file: TMPDIR/1957-invariants.log
+Output (complete):
+ok  	github.com/digitaldrywood/detent/internal/invariants	3.652s

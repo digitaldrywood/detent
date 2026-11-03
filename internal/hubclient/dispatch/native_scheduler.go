@@ -331,7 +331,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 }
 
 func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
-	probeCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	probeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if s.leaseHold != nil {
 		release, err := s.leaseHold(probeCtx)
