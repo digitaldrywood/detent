@@ -529,9 +529,16 @@ func (c *conversationService) leaseReleasedTenant(ctx context.Context, writer te
 	if err != nil {
 		return err
 	}
-	now := c.server.config.now()
-	if lease.FencingToken != fencingToken || lease.ReleasedAt == nil || lease.RenewedAt.After(now) {
+	if lease.FencingToken != fencingToken || lease.ReleasedAt == nil {
 		return nil
+	}
+	releasedAt := *lease.ReleasedAt
+	if lease.RenewedAt.After(releasedAt) {
+		return nil
+	}
+	now := c.server.config.now()
+	if now.Before(releasedAt) {
+		now = releasedAt
 	}
 	status := record.Execution.Status
 	if !status.Terminal() {
