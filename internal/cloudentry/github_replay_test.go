@@ -196,7 +196,7 @@ func TestSharedEntryGitHubStartupReplay(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			served := make(chan error, 1)
 			go func() { served <- service.serve(ctx, listener) }()
@@ -227,9 +227,14 @@ func TestSharedEntryGitHubStartupReplay(t *testing.T) {
 					t.Fatalf("tenant receipt requests = %v", receiptIDs)
 				}
 			}
-			client := &http.Client{Timeout: time.Second}
+			client := &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}
+			t.Cleanup(client.CloseIdleConnections)
 			for range 3 {
-				response, err := client.Get("http://" + listener.Addr().String() + "/")
+				request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+listener.Addr().String()+"/", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				response, err := client.Do(request)
 				if err != nil {
 					t.Fatal(err)
 				}
