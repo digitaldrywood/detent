@@ -125,8 +125,37 @@ func (s *Service) auditEntryKey(ctx context.Context, exec hostedExecer, audit *e
 	return err
 }
 
+func (s *Service) entryKeyTools(ctx context.Context) ([]operatortool.Definition, error) {
+	if s.config.TenantRepository == nil {
+		return (hostedOperatorExecutor{s}).ListTools(ctx)
+	}
+	definitions, err := nativeOperatorExecutor{service: s}.ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	projects, err := (hubProjectExecutor{service: s}).ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	fleet, err := (hubFleetExecutor{service: s}).ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	definitions = append(definitions, projects...)
+	definitions = append(definitions, fleet...)
+	definitions = append(definitions, (hostedContextExecutor{service: s}).listTools(ctx)...)
+	supported := make([]operatortool.Definition, 0)
+	for _, definition := range definitions {
+		switch definition.Name {
+		case "list_projects", "get_native_project", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates:
+			supported = append(supported, definition)
+		}
+	}
+	return supported, nil
+}
+
 func (s *Service) entryKeyCatalog(c echo.Context) error {
-	definitions, err := (hostedOperatorExecutor{s}).ListTools(c.Request().Context())
+	definitions, err := s.entryKeyTools(c.Request().Context())
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -213,7 +242,7 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	if selector.ProjectID != "" && !credential.EntryKey.Allows(selector.ProjectID) {
 		return s.refusedAPIError(c, http.StatusForbidden, "key_project_denied", "The project is outside this key's access context", apikey.Refusal{Code: "key_project_denied", Message: "The project is outside this key's access context"})
 	}
-	definitions, err := (hostedOperatorExecutor{s}).ListTools(ctx)
+	definitions, err := s.entryKeyTools(ctx)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

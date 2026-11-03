@@ -141,7 +141,7 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 			return current, nil
 		}
-		connection := operatortool.Connection{Identity: identity, DashboardURL: s.operatorDashboardURL(), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+		connection := operatortool.Connection{Identity: identity, Origin: entryOrigin, DashboardURL: s.operatorDashboardURL(), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
 			current, err := resolve(ctx)
 			if err != nil {
 				return operatortool.Authority{}, err
