@@ -49,6 +49,15 @@ func TestProjectReadiness(t *testing.T) {
 			if tt.binding {
 				p.Artifacts = []artifact.Binding{{Mode: "customer"}}
 			}
+			summary := p
+			summary.Runners = nil
+			for _, runner := range p.Runners {
+				summary.ObserveRunner(runner)
+			}
+			summary.Evaluate()
+			if summary.Ready != tt.want || len(summary.Steps) != 4 || len(summary.Runners) > 4 {
+				t.Fatalf("summarized readiness=%+v", summary)
+			}
 			p.Evaluate()
 			p.Evaluate()
 			if p.Ready != tt.want || len(p.Steps) != 4 {
@@ -59,6 +68,26 @@ func TestProjectReadiness(t *testing.T) {
 			}
 		})
 	}
+	t.Run("compact runner facts remain complete at ten thousand", func(t *testing.T) {
+		project := Project{Repository: "example-org/example-project", Progress: Progress{Artifacts: "local"}, Policy: &policy.Approval{}}
+		blocked := runnerauth.Eligibility{Runner: runnerauth.Runner{Routing: runnerauth.Routing{State: "active"}, Health: "online"}, Exclusions: []runnerauth.Exclusion{{Code: "selector_no_match"}}, LocalChecks: &runnerauth.LocalChecks{Checkout: "passed", Configuration: "missing", Doctor: "passed", Provider: "passed"}}
+		project.ObserveRunner(blocked)
+		checked := blocked
+		checked.LocalChecks = &runnerauth.LocalChecks{Checkout: "passed", Configuration: "passed", Doctor: "passed", Provider: "passed"}
+		project.ObserveRunner(checked)
+		matching := blocked
+		matching.LocalChecks = nil
+		matching.Exclusions = nil
+		project.ObserveRunner(matching)
+		for range 10000 {
+			project.ObserveRunner(blocked)
+		}
+		project.Evaluate()
+		if !project.Ready || len(project.Steps) != 4 || len(project.Runners) > 4 {
+			t.Fatalf("incomplete or unbounded runner summary: %+v", project)
+		}
+	})
+
 }
 
 func TestProgressValidation(t *testing.T) {
