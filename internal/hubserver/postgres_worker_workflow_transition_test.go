@@ -115,6 +115,11 @@ func TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays(t *testin
 	}
 	lease := acquire(issue, "workflow-first-session")
 	secondLease := acquire(second, "workflow-second-session")
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.DeleteSearch(t.Context(), "issue:"+string(issue.WorkItemID), int64(issue.Revision))
+	}); err != nil {
+		t.Fatal(err)
+	}
 	originalRows := map[tracker.NativeWorkItemID]corestore.WorkItem{}
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		for _, item := range []tracker.NativeIssue{issue, second} {
