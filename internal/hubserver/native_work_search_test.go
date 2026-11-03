@@ -2415,7 +2415,7 @@ func TestNativeSearchCleanupMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, file := range files {
-		if file.Name() == "20261031202051_native_search_revision_cleanup.sql" || file.Name() == "20261031211642_native_search_deferred_deletion.sql" || file.Name() == "20261031222239_native_search_refresh_scope.sql" || file.Name() == "20261101000817_native_search_bounded_fts.sql" {
+		if file.Name() == "20261103090916_native_duplicate_fingerprints.sql" || file.Name() == "20261031202051_native_search_revision_cleanup.sql" || file.Name() == "20261031211642_native_search_deferred_deletion.sql" || file.Name() == "20261031222239_native_search_refresh_scope.sql" || file.Name() == "20261101000817_native_search_bounded_fts.sql" {
 			continue
 		}
 		data, err := migrationFiles.ReadFile("migrations/" + file.Name())

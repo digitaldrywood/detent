@@ -144,6 +144,7 @@
     "native_progress_decisions": {"class": "immutable_payload"},
     "native_progress_evidence": {"class": "index"},
     "native_work_documents": {"class": "index"},
+    "native_work_fingerprints": {"class": "index"},
     "native_work_fts": {"class": "index"},
     "native_work_legacy_fts": {"class": "index"},
     "native_work_scoped_fts": {"class": "index"},
