@@ -471,6 +471,7 @@ func (r NativeRecovery) SourceAttempt() *NativeAttempt {
 
 type NativeSourceRecovery struct {
 	Destinations        []NativeSourceRecoveryRunner `json:"destinations"`
+	DestinationsNext    string                       `json:"destinations_next,omitempty"`
 	WorkItemID          NativeWorkItemID             `json:"work_item_id"`
 	Revision            Revision                     `json:"revision,string"`
 	SourceMachineID     MachineID                    `json:"source_machine_id"`

@@ -14,6 +14,10 @@ import (
 )
 
 func (s *session) FleetRecords(ctx context.Context, limit int) ([]runnerstore.FleetRecord, error) {
+	return s.fleetRecords(ctx, "", "", limit, false)
+}
+
+func (s *session) fleetRecords(ctx context.Context, project tracker.ProjectID, after string, limit int, paged bool) ([]runnerstore.FleetRecord, error) {
 	if limit < 1 || limit > 10000 {
 		return nil, corestore.ErrInvalidPage
 	}
@@ -33,7 +37,9 @@ JOIN api_tokens credential ON credential.organization_id=r.organization_id AND c
 JOIN runner_enrollments e ON e.organization_id=r.organization_id AND e.id=r.enrollment_id
 LEFT JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=e.created_by
 LEFT JOIN hosted_members membership ON membership.organization_id=r.organization_id AND membership.principal_id=e.created_by
-WHERE r.organization_id=$1 AND r.removed_at IS NULL ORDER BY r.runner_id LIMIT $2`, s.organization, limit+1)
+WHERE r.organization_id=$1 AND r.removed_at IS NULL AND r.runner_id>$4
+AND ($3='' OR (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.organization_id=r.organization_id AND g.token_id=r.token_id AND g.project_id=$3)))
+ORDER BY r.runner_id LIMIT $2`, s.organization, limit+1, project, after)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -92,7 +98,7 @@ WHERE r.organization_id=$1 AND r.removed_at IS NULL ORDER BY r.runner_id LIMIT $
 	if err := rows.Close(); err != nil {
 		return nil, mapError(ctx, err)
 	}
-	if len(records) > limit {
+	if len(records) > limit && !paged {
 		return nil, runnerstore.ErrLimitExceeded
 	}
 	ids := make([]string, len(records))

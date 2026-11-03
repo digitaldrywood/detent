@@ -41,6 +41,7 @@ export const SourceRecovery = Schema.Struct({
   destination_runner_id: Schema.String,
   available: Schema.Boolean, quiesced: Schema.Boolean, reason: Schema.String,
   destinations: Schema.Array(Schema.Struct({ runner_id: Schema.String, name: Schema.String })),
+  destinations_next: Schema.optional(Schema.String),
 });
 export type SourceRecovery = typeof SourceRecovery.Type;
 

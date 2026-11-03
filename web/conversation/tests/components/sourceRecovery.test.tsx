@@ -15,6 +15,28 @@ const source: SourceRecovery = {
 const response = (view: SourceRecovery) => new Response(JSON.stringify(view), { status: 200 });
 
 describe("source recovery controls", () => {
+  it("offers destination runners from every scoped page", async () => {
+    const requests: string[] = [];
+    const http = makeWorkHttp({ origin: "http://fixture.test", apiBase: "/api/v2/organizations/org", csrfToken: "fixture-csrf", fetch: async (target) => {
+      const cursor = new URL(String(target)).searchParams.get("destinations_after");
+      requests.push(cursor ?? "");
+      return response(cursor === null ? { ...source, destinations_next: "runner_B" } : { ...source, destinations: [{ runner_id: "runner_C", name: "Second page runner" }] });
+    } });
+    render(<SourceRecoveryControls http={http} projectId="project" itemId="item" revision="7" canManage onTransferred={() => {}} />);
+    fireEvent.click(await screen.findByRole("combobox", { name: "Destination runner" }));
+    expect(await screen.findByRole("option", { name: "Second page runner" })).toBeTruthy();
+    expect(requests).toEqual(["", "runner_B"]);
+  });
+
+  it.each([
+    { name: "repeated cursor", next: { ...source, destinations_next: "runner_B" }, code: "invalid_response" },
+    { name: "source changed", next: { ...source, version_id: "replacement" }, code: "revision_conflict" },
+  ])("rejects an incomplete destination list when $name", async ({ next, code }) => {
+    let reads = 0;
+    const http = makeWorkHttp({ origin: "http://fixture.test", apiBase: "/api/v2/organizations/org", csrfToken: "fixture-csrf", fetch: async () => response(++reads === 1 ? { ...source, destinations_next: "runner_B" } : next) });
+    await expect(http.getSourceRecovery("project", "item")).rejects.toMatchObject({ code });
+  });
+
   it.each([
     { name: "uncaptured local work", view: { ...source, available: false, reason: "Wait for source runner runner_A to capture its local checkpoint" }, canManage: true },
     { name: "partitioned owner", view: { ...source, quiesced: false, reason: "Expiry does not prove the source owner stopped" }, canManage: true },

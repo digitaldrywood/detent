@@ -2300,6 +2300,10 @@ recovery blocker rather than Human Review readiness.
 current immutable version, retained-source availability, execution quiescence,
 selected destination and eligible destination runners. Runtime and explanation
 reads, including MCP `explain_item`, include the same recovery facts.
+Destination candidates are scoped to the project and read in pages of at most
+32 runners. When `destinations_next` is present, pass it as `destinations_after`
+on the next GET; continue even if a page has no eligible destinations. An absent
+cursor ends the list. Source identity and revision must still match across pages.
 `POST /work-items/{item}/source-recovery` and MCP `transfer_item` require work-write
 and runner-administration authority, a command request identity, the expected
 issue revision and exact `version_id`. The selected `destination_runner_id` is
