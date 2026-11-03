@@ -326,6 +326,40 @@ func (q *Queries) RecordGetLandingReceipt(ctx context.Context, arg RecordGetLand
 	return i, err
 }
 
+const recordGetLatestLandingReceiptForWorkItem = `-- name: RecordGetLatestLandingReceiptForWorkItem :one
+SELECT r.organization_id, r.attempt_id, r.version_id, r.merge_sha, r.payload_object_key, r.payload_sha256, r.payload_bytes, r.payload_content_bytes, r.repository, r.base_ref
+FROM change_landing_receipts r
+JOIN native_attempts a ON a.organization_id=r.organization_id AND a.id=r.attempt_id
+JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
+WHERE r.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3
+ORDER BY a.fencing_token DESC
+LIMIT 1
+`
+
+type RecordGetLatestLandingReceiptForWorkItemParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     tracker.NativeWorkItemID
+}
+
+func (q *Queries) RecordGetLatestLandingReceiptForWorkItem(ctx context.Context, arg RecordGetLatestLandingReceiptForWorkItemParams) (ChangeLandingReceipt, error) {
+	row := q.db.QueryRowContext(ctx, recordGetLatestLandingReceiptForWorkItem, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
+	var i ChangeLandingReceipt
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.AttemptID,
+		&i.VersionID,
+		&i.MergeSha,
+		&i.PayloadObjectKey,
+		&i.PayloadSHA256,
+		&i.PayloadBytes,
+		&i.PayloadContentBytes,
+		&i.Repository,
+		&i.BaseRef,
+	)
+	return i, err
+}
+
 const recordGetLink = `-- name: RecordGetLink :one
 SELECT organization_id, project_id, work_item_id, change_id, created_at FROM change_issue_links WHERE organization_id=$1 AND change_id=$2 AND work_item_id=$3
 `
@@ -1238,6 +1272,82 @@ func (q *Queries) RecordLatestChangesByWorkItems(ctx context.Context, arg Record
 			&i.PayloadSHA256,
 			&i.PayloadBytes,
 			&i.PayloadContentBytes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const recordLatestCheckpointEvents = `-- name: RecordLatestCheckpointEvents :many
+SELECT latest.organization_id, latest.project_id, latest.work_item_id, latest.id, latest.sequence, latest.type, latest.schema_version, latest.actor_kind, latest.actor_principal_id, latest.event_revision, latest.change_id, latest.version_id, latest.head_sha, latest.run_id, latest.attempt_id, latest.from_state, latest.to_state, latest.recorded_at, latest.payload_object_key, latest.payload_sha256, latest.payload_bytes, latest.payload_content_bytes, latest.payload_format_version, latest.landing_waiting, latest.landing_change_id, latest.landing_version_id, latest.landing_head_sha, latest.project_sequence
+FROM unnest($1::text[]) AS requested(attempt_id)
+CROSS JOIN LATERAL (
+  SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence FROM collaboration_events
+  WHERE organization_id=$2 AND project_id=$3
+    AND work_item_id=$4 AND attempt_id=requested.attempt_id
+    AND type='run.checkpointed'
+  ORDER BY sequence DESC LIMIT 1
+) latest
+`
+
+type RecordLatestCheckpointEventsParams struct {
+	AttemptIds     []string
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     tracker.NativeWorkItemID
+}
+
+func (q *Queries) RecordLatestCheckpointEvents(ctx context.Context, arg RecordLatestCheckpointEventsParams) ([]CollaborationEvent, error) {
+	rows, err := q.db.QueryContext(ctx, recordLatestCheckpointEvents,
+		pq.Array(arg.AttemptIds),
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.WorkItemID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CollaborationEvent{}
+	for rows.Next() {
+		var i CollaborationEvent
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.WorkItemID,
+			&i.ID,
+			&i.Sequence,
+			&i.Type,
+			&i.SchemaVersion,
+			&i.ActorKind,
+			&i.ActorPrincipalID,
+			&i.EventRevision,
+			&i.ChangeID,
+			&i.VersionID,
+			&i.HeadSHA,
+			&i.RunID,
+			&i.AttemptID,
+			&i.FromState,
+			&i.ToState,
+			&i.RecordedAt,
+			&i.PayloadObjectKey,
+			&i.PayloadSHA256,
+			&i.PayloadBytes,
+			&i.PayloadContentBytes,
+			&i.PayloadFormatVersion,
+			&i.LandingWaiting,
+			&i.LandingChangeID,
+			&i.LandingVersionID,
+			&i.LandingHeadSHA,
+			&i.ProjectSequence,
 		); err != nil {
 			return nil, err
 		}

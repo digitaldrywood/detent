@@ -83,6 +83,13 @@ WHERE organization_id=sqlc.arg(organization_id) AND issue_id=sqlc.arg(issue_id)
 AND (sqlc.arg(before_fence)::bigint=0 OR fencing_token<sqlc.arg(before_fence)::bigint)
 ORDER BY fencing_token DESC LIMIT sqlc.arg(page_limit);
 
+-- name: PageIssueCheckpointAttempts :many
+SELECT * FROM native_attempts
+WHERE organization_id=sqlc.arg(organization_id) AND issue_id=sqlc.arg(issue_id)
+AND checkpoint_object_key IS NOT NULL
+AND (sqlc.arg(before_fence)::bigint=0 OR fencing_token<sqlc.arg(before_fence)::bigint)
+ORDER BY fencing_token DESC LIMIT sqlc.arg(page_limit);
+
 -- name: PageIssueAttemptsOldest :many
 SELECT * FROM native_attempts
 WHERE organization_id=sqlc.arg(organization_id) AND issue_id=sqlc.arg(issue_id)

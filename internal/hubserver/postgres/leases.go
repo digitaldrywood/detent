@@ -158,6 +158,37 @@ func (s *session) AttemptPage(ctx context.Context, issueID int64, cursor leasest
 	return page, nil
 }
 
+func (s *session) CheckpointAttemptPage(ctx context.Context, issueID int64, cursor leasestore.AttemptCursor, limit int) (leasestore.AttemptPage, error) {
+	page := leasestore.AttemptPage{Items: []leasestore.Attempt{}}
+	if issueID <= 0 {
+		return page, tracker.ErrInvalidWorkItemID
+	}
+	if err := checkPage(limit); err != nil {
+		return page, err
+	}
+	if cursor != (leasestore.AttemptCursor{}) && (cursor.IssueID != issueID || cursor.Oldest || cursor.BeforeFence <= 0 || cursor.AfterFence != 0) {
+		return page, corestore.ErrInvalidCursor
+	}
+	rows, err := s.queries.PageIssueCheckpointAttempts(ctx, pgquery.PageIssueCheckpointAttemptsParams{
+		OrganizationID: s.organization,
+		IssueID:        issueID,
+		BeforeFence:    cursor.BeforeFence,
+		PageLimit:      int32(limit + 1),
+	})
+	if err != nil {
+		return page, mapError(ctx, err)
+	}
+	if len(rows) > limit {
+		rows = rows[:limit]
+		page.Next = leasestore.AttemptCursor{IssueID: issueID, BeforeFence: rows[len(rows)-1].FencingToken}
+	}
+	page.Items = make([]leasestore.Attempt, len(rows))
+	for i, row := range rows {
+		page.Items[i] = attemptFromPG(row)
+	}
+	return page, nil
+}
+
 func (s *session) Usage(ctx context.Context, machine string) (int64, error) {
 	now, err := s.queries.LeaseTime(ctx)
 	if err != nil {

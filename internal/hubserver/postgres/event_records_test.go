@@ -485,6 +485,20 @@ func TestLandingReceiptIsImmutableAndTenantScoped(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	var latest eventstore.LandingReceipt
+	if err := r.ReadRecords(t.Context(), "org_first", corestore.Serving, func(reader eventstore.Reader) error {
+		var err error
+		latest, err = reader.LatestLandingReceipt(t.Context(), f.change.ProjectID, f.change.WorkItemID)
+		return err
+	}); err != nil || latest != record {
+		t.Fatalf("latest landing receipt = %+v, %v; want %+v", latest, err, record)
+	}
+	if err := r.ReadRecords(t.Context(), "org_second", corestore.Serving, func(reader eventstore.Reader) error {
+		_, err := reader.LatestLandingReceipt(t.Context(), f.change.ProjectID, f.change.WorkItemID)
+		return err
+	}); !errors.Is(err, corestore.ErrNotFound) {
+		t.Fatalf("cross-tenant latest landing receipt error = %v, want not found", err)
+	}
 	hydrated, err := f.content.LandingReceipt(t.Context(), got)
 	if err != nil || !reflect.DeepEqual(hydrated, value) {
 		t.Fatalf("landing payload = %+v, %v; want %+v", hydrated, err, value)
