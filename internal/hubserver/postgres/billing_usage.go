@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"math"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -60,6 +61,51 @@ func (s *session) ApplyBillingUsage(ctx context.Context, receipt billingstore.Us
 	}
 	used += amount
 	return billingstore.UsageResult{Applied: true, Allowed: true, Used: used}, nil
+}
+
+func (s *session) CollaborationBytes(ctx context.Context) (int64, error) {
+	var used int64
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes'`, s.organization).Scan(&used)
+	if err != nil {
+		return 0, mapError(ctx, err)
+	}
+	if used < 0 {
+		return 0, billingstore.ErrInvalidCollaborationBytes
+	}
+	return used, nil
+}
+
+func (s *session) AdjustCollaborationBytes(ctx context.Context, delta, limit int64) (billingstore.UsageResult, error) {
+	if limit < 0 {
+		return billingstore.UsageResult{}, billingstore.ErrInvalidCollaborationBytes
+	}
+	var before int64
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes' FOR UPDATE`, s.organization).Scan(&before)
+	if err != nil {
+		return billingstore.UsageResult{}, mapError(ctx, err)
+	}
+	if before < 0 || delta > 0 && before > math.MaxInt64-delta || delta < 0 && delta < -before {
+		return billingstore.UsageResult{}, billingstore.ErrInvalidCollaborationBytes
+	}
+	after := before + delta
+	if delta > 0 && after > limit {
+		return billingstore.UsageResult{Allowed: false, Used: before}, nil
+	}
+	if delta == 0 {
+		return billingstore.UsageResult{Allowed: true, Used: before}, nil
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE hosted_usage_counters SET value=$2 WHERE organization_id=$1 AND name='collaboration_bytes'`, s.organization, after)
+	if err != nil {
+		return billingstore.UsageResult{}, mapError(ctx, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return billingstore.UsageResult{}, mapError(ctx, err)
+	}
+	if rows != 1 {
+		return billingstore.UsageResult{}, corestore.ErrNotFound
+	}
+	return billingstore.UsageResult{Applied: true, Allowed: true, Used: after}, nil
 }
 
 func (s *session) PruneRequestBillingUsage(ctx context.Context, cutoff time.Time, limit int) error {

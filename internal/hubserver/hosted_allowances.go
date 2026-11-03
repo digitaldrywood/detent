@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -63,18 +64,42 @@ func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, n
 		return result, nil
 	}
 	if d.billingRepository != nil {
-		if len(metrics) != 1 || metrics[0] != "usage_windows" {
+		if len(metrics) == 0 {
 			return nil, ErrBillingUsageUnavailable
 		}
-		window := now.Unix() / runtimePlans.WindowSeconds * runtimePlans.WindowSeconds
-		start := time.Unix(window, 0).UTC()
-		if err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
-			rows, err := reader.BillingUsages(ctx, start, 64)
-			if err != nil {
-				return err
+		usageWindows := false
+		collaborationBytes := false
+		for _, metric := range metrics {
+			switch metric {
+			case "usage_windows":
+				usageWindows = true
+			case "collaboration_bytes":
+				collaborationBytes = true
+			default:
+				return nil, ErrBillingUsageUnavailable
 			}
-			for _, row := range rows {
-				result[row.Metric] = row.Amount
+		}
+		if err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+			if usageWindows {
+				window := now.Unix() / runtimePlans.WindowSeconds * runtimePlans.WindowSeconds
+				start := time.Unix(window, 0).UTC()
+				rows, err := reader.BillingUsages(ctx, start, 64)
+				if err != nil {
+					return err
+				}
+				for _, row := range rows {
+					result[row.Metric] = row.Amount
+				}
+			}
+			if collaborationBytes {
+				used, err := reader.CollaborationBytes(ctx)
+				if err != nil {
+					if errors.Is(err, corestore.ErrNotFound) {
+						return ErrBillingUsageUnavailable
+					}
+					return err
+				}
+				result["collaboration_bytes"] = used
 			}
 			return nil
 		}); err != nil {
