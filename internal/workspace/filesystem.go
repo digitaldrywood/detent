@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
@@ -168,6 +169,11 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 	result.Processes = reapWorkspaceProcesses(WithProcessSource(ctx, f.processSource), info.Path, f.logger)
 	if err := f.runHook(ctx, "before_remove", f.hooks.BeforeRemove, info, issue); err != nil {
 		f.logger.Warn("filesystem workspace before_remove hook failed", slog.String("path", info.Path), slog.Any("error", err))
+	}
+	reaped, err := ReapProcesses(WithProcessSource(ctx, f.processSource), info.Path, procgroup.DefaultTerminationGrace)
+	result.Processes += reaped
+	if err != nil {
+		return result, fmt.Errorf("stop removed filesystem workspace processes: %w", err)
 	}
 	if err := removeWorkspacePath(f.root, info.Path); err != nil {
 		return CleanupResult{}, fmt.Errorf("remove filesystem workspace: %w", err)
