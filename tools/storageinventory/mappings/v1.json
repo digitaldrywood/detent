@@ -1171,15 +1171,15 @@
       "family": "delivery",
       "organization": "row",
       "columns": {
-        "due_at": {"source":"[8,\"due_at\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "enabled": {"source":"[2,\"enabled\",\"INTEGER\",1,\"0\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
+        "due_at": {"source":"[8,\"due_at\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_preferences","column":"due_at","type":"bigint"}]},
+        "enabled": {"source":"[2,\"enabled\",\"INTEGER\",1,\"0\",0,0]","disposition":"column","codec":"bool01","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_preferences","column":"enabled","type":"boolean"}]},
         "organization_id": {"source":"[1,\"organization_id\",\"TEXT\",1,null,2,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "send_minute": {"source":"[3,\"send_minute\",\"INTEGER\",1,\"360\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "time_zone": {"source":"[4,\"time_zone\",\"TEXT\",1,\"'UTC'\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "token": {"source":"[6,\"token\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "user_id": {"source":"[0,\"user_id\",\"TEXT\",1,null,1,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "weekdays": {"source":"[5,\"weekdays\",\"INTEGER\",1,\"0\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "window_end": {"source":"[7,\"window_end\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "send_minute": {"source":"[3,\"send_minute\",\"INTEGER\",1,\"360\",0,0]","disposition":"column","codec":"int32","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_preferences","column":"send_minute","type":"integer"}]},
+        "time_zone": {"source":"[4,\"time_zone\",\"TEXT\",1,\"'UTC'\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.daily_summary_preferences","column":"time_zone","type":"text"}]},
+        "token": {"source":"[6,\"token\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.daily_summary_preferences","column":"token","type":"text"}]},
+        "user_id": {"source":"[0,\"user_id\",\"TEXT\",1,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.daily_summary_preferences","column":"user_id","type":"text"}]},
+        "weekdays": {"source":"[5,\"weekdays\",\"INTEGER\",1,\"0\",0,0]","disposition":"column","codec":"bool01","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_preferences","column":"weekdays","type":"boolean"}]},
+        "window_end": {"source":"[7,\"window_end\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_preferences","column":"window_end","type":"bigint"}]}
       }
     },
     "hub/daily_summary_receipts": {
@@ -1188,12 +1188,12 @@
       "family": "delivery",
       "organization": "row",
       "columns": {
-        "attempts": {"source":"[4,\"attempts\",\"INTEGER\",1,\"1\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
+        "attempts": {"source":"[4,\"attempts\",\"INTEGER\",1,\"1\",0,0]","disposition":"column","codec":"int32","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_receipts","column":"attempts","type":"integer"}]},
         "organization_id": {"source":"[1,\"organization_id\",\"TEXT\",1,null,2,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "recorded_at": {"source":"[5,\"recorded_at\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "status": {"source":"[3,\"status\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "user_id": {"source":"[0,\"user_id\",\"TEXT\",1,null,1,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "window_end": {"source":"[2,\"window_end\",\"INTEGER\",1,null,3,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "recorded_at": {"source":"[5,\"recorded_at\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_receipts","column":"recorded_at","type":"bigint"}]},
+        "status": {"source":"[3,\"status\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.daily_summary_receipts","column":"status","type":"text"}]},
+        "user_id": {"source":"[0,\"user_id\",\"TEXT\",1,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.daily_summary_receipts","column":"user_id","type":"text"}]},
+        "window_end": {"source":"[2,\"window_end\",\"INTEGER\",1,null,3,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_receipts","column":"window_end","type":"bigint"}]}
       }
     },
     "hub/dashboard_delivery_authorization": {
@@ -1780,10 +1780,10 @@
       "family": "delivery",
       "organization": "row",
       "columns": {
-        "build_time": {"source":"[3,\"build_time\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
+        "build_time": {"source":"[3,\"build_time\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.hosted_release_preferences","column":"build_time","type":"timestamp with time zone"}]},
         "organization_id": {"source":"[0,\"organization_id\",\"TEXT\",1,null,1,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "user_id": {"source":"[1,\"user_id\",\"TEXT\",1,null,2,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "version": {"source":"[2,\"version\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "user_id": {"source":"[1,\"user_id\",\"TEXT\",1,null,2,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_release_preferences","column":"user_id","type":"text"}]},
+        "version": {"source":"[2,\"version\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_release_preferences","column":"version","type":"text"}]}
       }
     },
     "hub/hosted_sessions": {

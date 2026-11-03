@@ -28,6 +28,11 @@ func (s *Service) registerPostgresAppRoutes(e *echo.Echo) {
 		s.registerReadableRoutes(e)
 		s.registerWorkViewRoutes(e)
 		s.registerOrganizationSettingsRecordRoutes(e)
+		s.registerHostedAccountPreferenceRoutes(e)
+		e.GET("/daily-summary/unsubscribe", s.unsubscribeDailySummary)
+		if s.config.Hosted.SharedEntry != nil {
+			e.POST("/internal/v1/daily-summary/unsubscribe", s.unsubscribeDailySummary)
+		}
 		e.GET("/projects/:project/events", s.hostedEvents)
 		e.GET(hostedOrganizationBase+"/activity", s.hostedActivity, s.operatorAuthority)
 		e.GET(hostedOrganizationBase+"/fleet", s.hostedFleet, s.hostedSessionOnly)

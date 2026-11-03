@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
 )
 
 type dailySummaryPreference struct {
@@ -87,12 +89,48 @@ func (s *Service) dailySummaryPreference(c echo.Context) error {
 			return s.nativeAPIError(c, nativePublicInvalid("An enabled preference is required"))
 		}
 		value = dailySummaryPreference{Enabled: *request.Enabled, SendTime: request.SendTime, TimeZone: request.TimeZone, Days: request.Days}
-		if err := s.database.saveDailySummaryPreference(ctx, user, org, value, s.config.now()); err != nil {
-			return s.nativeAPIError(c, err)
+		var saveErr error
+		if repository, ok := s.config.AccessRepository.(accountstore.Repository); ok && credential.Hosted != nil {
+			var minute int
+			var zone *time.Location
+			minute, zone, saveErr = value.validate()
+			if saveErr == nil {
+				next := summarySchedule(s.config.now(), minute, zone, value.Days == "weekdays", 1)
+				saveErr = repository.SetDailySummaryPreference(ctx, s.accessOrganization(), user, credential.HostedMembership, credential.ID, accountstore.DailySummaryPreference{
+					Enabled: value.Enabled, SendMinute: minute, TimeZone: value.TimeZone, Weekdays: value.Days == "weekdays", WindowEnd: next.Unix(),
+				}, newNativeID("unsub"), next.Add(summaryJitter(user, org, next)).Unix())
+			}
+		} else {
+			saveErr = s.database.saveDailySummaryPreference(ctx, user, org, value, s.config.now())
+		}
+		if saveErr != nil {
+			return s.nativeAPIError(c, saveErr)
 		}
 	}
 	readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	if repository, ok := s.config.AccessRepository.(accountstore.Repository); ok && credential.Hosted != nil {
+		preference, err := repository.DailySummaryPreference(readCtx, s.accessOrganization(), user, credential.HostedMembership, credential.ID)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		value.Recipient = preference.Recipient
+		if preference.Configured {
+			value.Configured = true
+			value.Enabled = preference.Enabled
+			value.SendTime = fmt.Sprintf("%02d:%02d", preference.SendMinute/60, preference.SendMinute%60)
+			value.TimeZone = preference.TimeZone
+			value.Days = "every_day"
+			if preference.Weekdays {
+				value.Days = "weekdays"
+			}
+			if value.Enabled {
+				next := time.Unix(preference.WindowEnd, 0).UTC()
+				value.NextSend = &next
+			}
+		}
+		return c.JSON(http.StatusOK, value)
+	}
 	var minute int
 	var weekdays bool
 	var end int64
@@ -133,16 +171,22 @@ func (s *Service) unsubscribeDailySummary(c echo.Context) error {
 	if !validNativeID(token, "unsub") {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	result, err := s.database.db.ExecContext(c.Request().Context(), `UPDATE daily_summary_preferences SET enabled=0 WHERE token=? AND organization_id=?`, token, s.config.Hosted.OrganizationID)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if count == 0 {
-		return s.nativeAPIError(c, nativeNotFound())
+	if repository, ok := s.config.AccessRepository.(accountstore.Repository); ok {
+		if err := repository.UnsubscribeDailySummary(c.Request().Context(), s.accessOrganization(), token); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	} else {
+		result, err := s.database.db.ExecContext(c.Request().Context(), `UPDATE daily_summary_preferences SET enabled=0 WHERE token=? AND organization_id=?`, token, s.config.Hosted.OrganizationID)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		if count == 0 {
+			return s.nativeAPIError(c, nativeNotFound())
+		}
 	}
 	if c.Request().Method == http.MethodPost {
 		return c.NoContent(http.StatusNoContent)

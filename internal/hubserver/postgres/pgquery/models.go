@@ -788,6 +788,27 @@ type CreditHistoryImportRow struct {
 	CreatedAt      time.Time
 }
 
+type DailySummaryPreference struct {
+	OrganizationID tracker.OrganizationID
+	UserID         string
+	Enabled        bool
+	SendMinute     int32
+	TimeZone       string
+	Weekdays       bool
+	Token          string
+	WindowEnd      int64
+	DueAt          int64
+}
+
+type DailySummaryReceipt struct {
+	OrganizationID tracker.OrganizationID
+	UserID         string
+	WindowEnd      int64
+	Status         string
+	Attempts       int32
+	RecordedAt     int64
+}
+
 type GoTestReceipt struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
@@ -1066,6 +1087,13 @@ type HostedProjectGrant struct {
 	ProjectID      tracker.ProjectID
 	CanWrite       bool
 	ManageRunner   bool
+}
+
+type HostedReleasePreference struct {
+	OrganizationID tracker.OrganizationID
+	UserID         string
+	Version        string
+	BuildTime      time.Time
 }
 
 type HostedSession struct {

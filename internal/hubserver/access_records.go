@@ -2,7 +2,9 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -74,7 +76,13 @@ func (s *Service) authorizeAccessScope(ctx context.Context, r accessstore.Reader
 func (s *Service) accessWebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
 	var row accessstore.Session
 	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error { var err error; row, err = r.AccessSession(ctx, hash); return err })
-	if err != nil || row.RevokedAt != nil || !row.ExpiresAt.After(now) || !row.IdentityExpiresAt.After(now) {
+	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+		return auth.Session{}, auth.ErrInvalidSession
+	}
+	if err != nil {
+		return auth.Session{}, fmt.Errorf("read hosted session: %w", err)
+	}
+	if row.RevokedAt != nil || !row.ExpiresAt.After(now) || !row.IdentityExpiresAt.After(now) {
 		return auth.Session{}, auth.ErrInvalidSession
 	}
 	identity := &auth.HostedIdentity{Subject: row.Subject, OrganizationID: row.ProviderOrganizationID, SessionID: row.SessionID, CreatedAt: row.IdentityCreatedAt, ExpiresAt: row.IdentityExpiresAt, SupportActor: row.SupportActor, SupportReason: row.SupportReason}
@@ -129,8 +137,11 @@ func (s *Service) accessMemberCredential(ctx context.Context, session auth.Sessi
 		credential.HostedRole = lesserHostedRole(credential.HostedRole, member.Role)
 		return nil
 	})
-	if err != nil {
+	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
+	}
+	if err != nil {
+		return apiCredential{}, http.StatusInternalServerError, err
 	}
 	return credential, http.StatusOK, nil
 }

@@ -90,7 +90,8 @@
     "internal/hubserver/postgres/migrations/20261103154233_dependency_reason_records.sql",
     "internal/hubserver/postgres/migrations/20261103160239_team_threads.sql",
     "internal/hubserver/postgres/migrations/20261103160816_activity_read_windows.sql",
-    "internal/hubserver/postgres/migrations/20261103162920_current_billing_population.sql"
+    "internal/hubserver/postgres/migrations/20261103162920_current_billing_population.sql",
+    "internal/hubserver/postgres/migrations/20261103164805_account_preferences.sql"
   ],
   "tables": {
     "public.issue_dependency_reasons": {
@@ -1001,6 +1002,46 @@
       },
       "contract": "Retain the sealed source snapshot and verified account, pack, and credit transaction import counts.",
       "family": "billing",
+      "organization": "organization-owned"
+    },
+    "public.hosted_release_preferences": {
+      "columns": {
+        "organization_id": "text",
+        "user_id": "text",
+        "version": "text",
+        "build_time": "timestamp with time zone"
+      },
+      "contract": "Preserve each hosted member\u2019s latest observed release version and build time.",
+      "family": "delivery",
+      "organization": "organization-owned"
+    },
+    "public.daily_summary_preferences": {
+      "columns": {
+        "organization_id": "text",
+        "user_id": "text",
+        "enabled": "boolean",
+        "send_minute": "integer",
+        "time_zone": "text",
+        "weekdays": "boolean",
+        "token": "text",
+        "window_end": "bigint",
+        "due_at": "bigint"
+      },
+      "contract": "Preserve typed daily summary delivery preferences and unsubscribe capability per hosted member.",
+      "family": "delivery",
+      "organization": "organization-owned"
+    },
+    "public.daily_summary_receipts": {
+      "columns": {
+        "organization_id": "text",
+        "user_id": "text",
+        "window_end": "bigint",
+        "status": "text",
+        "attempts": "integer",
+        "recorded_at": "bigint"
+      },
+      "contract": "Track the idempotent daily summary delivery outcome for each member and delivery window.",
+      "family": "delivery",
       "organization": "organization-owned"
     }
   }

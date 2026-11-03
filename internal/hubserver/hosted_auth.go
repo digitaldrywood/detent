@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -133,7 +134,10 @@ func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (apiCred
 		if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
 			return apiCredential{}, http.StatusServiceUnavailable, err
 		}
-		return apiCredential{}, http.StatusUnauthorized, auth.ErrInvalidSession
+		if errors.Is(err, auth.ErrInvalidSession) {
+			return apiCredential{}, http.StatusUnauthorized, auth.ErrInvalidSession
+		}
+		return apiCredential{}, http.StatusInternalServerError, err
 	}
 	var credential apiCredential
 	var status int
@@ -165,7 +169,13 @@ func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Sessi
 			member, err = r.AccessMember(ctx, session.Identity.Subject)
 			return err
 		})
-		if err != nil || !member.Active || !auth.ValidOrganizationRole(role) {
+		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) || errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) {
+			return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
+		}
+		if err != nil {
+			return apiCredential{}, http.StatusInternalServerError, err
+		}
+		if !member.Active || !auth.ValidOrganizationRole(role) {
 			return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 		}
 		membership := auth.Membership{ID: member.MembershipID}

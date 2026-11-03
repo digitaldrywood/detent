@@ -7,6 +7,10 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 type issueNotificationPreference struct {
@@ -34,6 +38,21 @@ func (s *Service) issueNotificationPreference(c echo.Context) error {
 			return s.nativeAPIError(c, nativePublicInvalid("An enabled preference is required"))
 		}
 		value.Enabled = *request.Enabled
+		if s.config.AccessRepository != nil {
+			err := s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
+				member, err := authorizeIssueNotificationMember(ctx, w, credential)
+				if err != nil {
+					return err
+				}
+				member.NotifyIssues = value.Enabled
+				member.UpdatedAt = s.config.now()
+				return w.UpdateAccessMember(ctx, member)
+			})
+			if err != nil {
+				return s.nativeAPIError(c, err)
+			}
+			return c.JSON(http.StatusOK, value)
+		}
 		tx, err := s.database.db.BeginTx(ctx, nil)
 		if err != nil {
 			return s.nativeAPIError(c, err)
@@ -53,11 +72,49 @@ func (s *Service) issueNotificationPreference(c echo.Context) error {
 	} else {
 		ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 		defer cancel()
+		if s.config.AccessRepository != nil {
+			err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+				member, err := authorizeIssueNotificationMember(ctx, r, credential)
+				if err != nil {
+					return err
+				}
+				value.Enabled = member.NotifyIssues
+				return nil
+			})
+			if err != nil {
+				return s.nativeAPIError(c, err)
+			}
+			return c.JSON(http.StatusOK, value)
+		}
 		if err := s.database.reader.QueryRowContext(ctx, "SELECT notify_issues FROM hosted_members WHERE user_id=?", credential.Hosted.Subject).Scan(&value.Enabled); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}
 	return c.JSON(http.StatusOK, value)
+}
+
+func authorizeIssueNotificationMember(ctx context.Context, r tenantstore.Reader, credential apiCredential) (accessstore.Member, error) {
+	member, err := r.AccessMember(ctx, credential.Hosted.Subject)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return accessstore.Member{}, accessstore.ErrDenied
+	}
+	if err != nil {
+		return accessstore.Member{}, err
+	}
+	if !member.Active || member.MembershipID != credential.HostedMembership || member.PrincipalID != credential.ID {
+		return accessstore.Member{}, accessstore.ErrDenied
+	}
+	principal, err := r.AccessCredential(ctx, member.PrincipalID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return accessstore.Member{}, accessstore.ErrDenied
+	}
+	if err != nil {
+		return accessstore.Member{}, err
+	}
+	if principal.RevokedAt != nil {
+		return accessstore.Member{}, accessstore.ErrDenied
+	}
+	return member, nil
 }
 
 func (s *Service) unsubscribeIssueEmail(c echo.Context) error {

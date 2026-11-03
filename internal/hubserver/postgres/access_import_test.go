@@ -22,7 +22,7 @@ import (
 )
 
 var accessFixtureTables = []string{
-	"organizations", "hosted_tenant", "api_tokens", "hosted_members", "hosted_project_grants", "token_grants",
+	"organizations", "hosted_tenant", "api_tokens", "hosted_members", "hosted_release_preferences", "daily_summary_preferences", "daily_summary_receipts", "hosted_project_grants", "token_grants",
 	"hosted_sessions", "hosted_transactions", "hosted_invitations", "hosted_member_reservations",
 	"hosted_binding_migrations", "organization_secrets", "organization_secret_audit", "project_secrets",
 	"project_secret_audit", "hosted_audit", "hosted_audit_times",
@@ -108,6 +108,9 @@ func accessImportSourceFor(t *testing.T, db *sql.DB, schema string, organization
 		"hosted_tenant":              {"organization_id": string(organization), "singleton": "1", "provider_id": "provider_first", "bootstrap_subject": "bootstrap_first", "deployment": "example-deployment", "public_url": "https://example.test", "allocation_generation": "1"},
 		"api_tokens":                 {"id": "token_first", "name": "Example credential", "token_hash": "hash_first", "token_fingerprint": "fingerprint_first", "scope": "operator", "native_only": "0", "created_at": stamp, "updated_at": stamp, "hosted_user_id": "user_first", "hosted_membership_id": "membership_first", "operator_key_scope": "project", "operator_project_access": "selected", "key_kind": "personal"},
 		"hosted_members":             {"user_id": "user_first", "email": "user@example.test", "membership_id": "membership_first", "role": "member", "active": "1", "principal_id": "token_first", "notify_issues": "1", "created_at": stamp, "updated_at": stamp},
+		"hosted_release_preferences": {"organization_id": string(organization), "user_id": "user_first", "version": "v1.2.3", "build_time": stamp},
+		"daily_summary_preferences":  {"organization_id": string(organization), "user_id": "user_first", "enabled": "1", "send_minute": "390", "time_zone": "America/Chicago", "weekdays": "1", "token": "unsub_" + string(organization), "window_end": "1790000000", "due_at": "1790000300"},
+		"daily_summary_receipts":     {"organization_id": string(organization), "user_id": "user_first", "window_end": "1790000000", "status": "sent", "attempts": "2", "recorded_at": "1790000001"},
 		"hosted_project_grants":      {"organization_id": string(organization), "user_id": "user_first", "project_id": "prj_first", "can_write": "1", "manage_runner": "0"},
 		"token_grants":               {"organization_id": string(organization), "token_id": "token_first", "project_id": "prj_first"},
 		"hosted_sessions":            {"token_hash": "session_hash_first", "email": "user@example.test", "identity_json": identity, "identity_subject": "user_first", "created_at": stamp, "expires_at": "2026-11-02T12:00:00Z"},
@@ -242,6 +245,22 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 		var active, notify bool
 		if err := db.QueryRowContext(t.Context(), `SELECT role,principal_id,active,notify_issues FROM hosted_members WHERE organization_id=$1 AND user_id='user_first'`, organization).Scan(&role, &principal, &active, &notify); err != nil || role != "member" || principal != "token_first" || !active || !notify {
 			t.Fatalf("tenant %s membership parity: role=%s principal=%s active=%t notify=%t err=%v", organization, role, principal, active, notify, err)
+		}
+		var releaseVersion, timeZone, unsubscribeToken, receiptStatus string
+		var buildTime time.Time
+		if err := db.QueryRowContext(t.Context(), `SELECT version,build_time FROM hosted_release_preferences WHERE organization_id=$1 AND user_id='user_first'`, organization).Scan(&releaseVersion, &buildTime); err != nil || releaseVersion != "v1.2.3" || !buildTime.Equal(time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)) {
+			t.Fatalf("tenant %s release preference version=%q build_time=%v err=%v", organization, releaseVersion, buildTime, err)
+		}
+		var dailyEnabled, weekdays bool
+		var sendMinute int
+		var windowEnd, dueAt int64
+		if err := db.QueryRowContext(t.Context(), `SELECT enabled,send_minute,time_zone,weekdays,token,window_end,due_at FROM daily_summary_preferences WHERE organization_id=$1 AND user_id='user_first'`, organization).Scan(&dailyEnabled, &sendMinute, &timeZone, &weekdays, &unsubscribeToken, &windowEnd, &dueAt); err != nil || !dailyEnabled || sendMinute != 390 || timeZone != "America/Chicago" || !weekdays || unsubscribeToken != "unsub_"+string(organization) || windowEnd != 1790000000 || dueAt != 1790000300 {
+			t.Fatalf("tenant %s daily preference enabled=%t minute=%d zone=%q weekdays=%t token=%q window=%d due=%d err=%v", organization, dailyEnabled, sendMinute, timeZone, weekdays, unsubscribeToken, windowEnd, dueAt, err)
+		}
+		var attempts int
+		var recordedAt int64
+		if err := db.QueryRowContext(t.Context(), `SELECT status,attempts,recorded_at FROM daily_summary_receipts WHERE organization_id=$1 AND user_id='user_first' AND window_end=1790000000`, organization).Scan(&receiptStatus, &attempts, &recordedAt); err != nil || receiptStatus != "sent" || attempts != 2 || recordedAt != 1790000001 {
+			t.Fatalf("tenant %s daily receipt status=%q attempts=%d recorded_at=%d err=%v", organization, receiptStatus, attempts, recordedAt, err)
 		}
 		var sessionSubject, providerOrganization, sessionID, sessionEmail string
 		var identityCreated, identityExpires time.Time

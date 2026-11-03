@@ -36,14 +36,8 @@ const hostedOrganizationBase = "/api/v2/organizations/:organization"
 
 func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	session := s.hostedSessionOnly
-	e.POST(hostedOrganizationBase+"/widget-token", s.hostedWidgetToken, session)
-	e.GET(hostedOrganizationBase+"/release-notes", s.releaseNotesAPI, session)
-	e.PUT(hostedOrganizationBase+"/release-notes/seen", s.releaseNotesAPI, session)
+	s.registerHostedAccountPreferenceRoutes(e)
 	administration := s.hostedAdministrationSession
-	e.GET(hostedOrganizationBase+"/issue-notification-preference", s.issueNotificationPreference, session)
-	e.PUT(hostedOrganizationBase+"/issue-notification-preference", s.issueNotificationPreference, session)
-	e.GET(hostedOrganizationBase+"/daily-summary-preference", s.dailySummaryPreference, session)
-	e.PUT(hostedOrganizationBase+"/daily-summary-preference", s.dailySummaryPreference, session)
 	e.GET(hostedOrganizationBase+"/name", s.hostedOrganizationName, session)
 	e.PUT(hostedOrganizationBase+"/name", s.renameHostedOrganization, session)
 	e.GET(hostedOrganizationBase+"/logo", s.getOrganizationLogo, session)
@@ -79,6 +73,17 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	e.POST(hostedOrganizationBase+"/switch", s.switchHostedOrganizationJSON, session)
 	e.POST(hostedOrganizationBase+"/invitations/accept", s.acceptHostedInvitationJSON, session)
 	e.POST(hostedOrganizationBase+"/support/start", s.startHostedSupportJSON, session)
+}
+
+func (s *Service) registerHostedAccountPreferenceRoutes(e *echo.Echo) {
+	session := s.hostedSessionOnly
+	e.POST(hostedOrganizationBase+"/widget-token", s.hostedWidgetToken, session)
+	e.GET(hostedOrganizationBase+"/release-notes", s.releaseNotesAPI, session)
+	e.PUT(hostedOrganizationBase+"/release-notes/seen", s.releaseNotesAPI, session)
+	e.GET(hostedOrganizationBase+"/issue-notification-preference", s.issueNotificationPreference, session)
+	e.PUT(hostedOrganizationBase+"/issue-notification-preference", s.issueNotificationPreference, session)
+	e.GET(hostedOrganizationBase+"/daily-summary-preference", s.dailySummaryPreference, session)
+	e.PUT(hostedOrganizationBase+"/daily-summary-preference", s.dailySummaryPreference, session)
 }
 
 func (s *Service) registerOrganizationSettingsRecordRoutes(e *echo.Echo) {

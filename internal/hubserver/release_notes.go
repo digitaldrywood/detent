@@ -11,6 +11,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/releasenotes"
 )
@@ -37,6 +38,20 @@ func (s *Service) runningRelease() (releasenotes.Build, bool) {
 }
 
 func (s *Service) releaseSeenTime(ctx context.Context, credential apiCredential) (time.Time, error) {
+	if repository, ok := s.config.AccessRepository.(accountstore.Repository); ok && credential.Hosted != nil {
+		preference, err := repository.ReleasePreference(ctx, s.accessOrganization(), credential.Hosted.Subject, credential.HostedMembership, credential.ID)
+		if errors.Is(err, sql.ErrNoRows) {
+			build, ok := s.runningRelease()
+			if !ok {
+				return time.Time{}, nil
+			}
+			return build.BuildTime, nil
+		}
+		if err != nil {
+			return time.Time{}, err
+		}
+		return preference.BuildTime, nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	var value string
@@ -125,7 +140,11 @@ func (s *Service) releaseNotesAPI(c echo.Context) error {
 		if !ok {
 			return s.nativeAPIError(c, nativePublicInvalid("The running release is unavailable"))
 		}
-		_, err := s.database.db.ExecContext(ctx, `INSERT INTO hosted_release_preferences (organization_id,user_id,version,build_time) VALUES (?,?,?,?) ON CONFLICT (organization_id,user_id) DO UPDATE SET version=excluded.version,build_time=excluded.build_time WHERE excluded.build_time>=hosted_release_preferences.build_time`, s.appOrganizationID(), appSubject(credential), build.Version, build.BuildTime.UTC().Format("2006-01-02T15:04:05.000000000Z"))
+		if repository, ok := s.config.AccessRepository.(accountstore.Repository); ok && credential.Hosted != nil {
+			err = repository.SetReleasePreference(ctx, s.accessOrganization(), credential.Hosted.Subject, credential.HostedMembership, credential.ID, accountstore.ReleasePreference{Version: build.Version, BuildTime: build.BuildTime.UTC()})
+		} else {
+			_, err = s.database.db.ExecContext(ctx, `INSERT INTO hosted_release_preferences (organization_id,user_id,version,build_time) VALUES (?,?,?,?) ON CONFLICT (organization_id,user_id) DO UPDATE SET version=excluded.version,build_time=excluded.build_time WHERE excluded.build_time>=hosted_release_preferences.build_time`, s.appOrganizationID(), appSubject(credential), build.Version, build.BuildTime.UTC().Format("2006-01-02T15:04:05.000000000Z"))
+		}
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
