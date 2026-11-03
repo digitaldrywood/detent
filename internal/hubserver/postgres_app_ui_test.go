@@ -1,13 +1,18 @@
 package hubserver
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
+
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
@@ -15,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestPostgresAppBootstrapUsesTypedTenantAccess(t *testing.T) {
@@ -146,5 +152,135 @@ func TestPostgresAppBootstrapUsesTypedTenantAccess(t *testing.T) {
 	service.Handler().ServeHTTP(apiResponse, apiRequest)
 	if apiResponse.Code != http.StatusUnauthorized {
 		t.Fatalf("unsigned PostgreSQL API path status = %d, want %d", apiResponse.Code, http.StatusUnauthorized)
+	}
+}
+
+type healthAdmissionRepository struct {
+	tenantstore.Repository
+	entered chan struct{}
+}
+
+func (r healthAdmissionRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	select {
+	case r.entered <- struct{}{}:
+	default:
+	}
+	return r.Repository.ReadTenant(ctx, organization, workload, read)
+}
+
+func TestPostgresSharedHealthBypassesSaturatedServingAdmission(t *testing.T) {
+	admin := postgresStartupTemplate.Database(t)
+	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
+	cfg.Logger = discardLogger()
+	store, err := openDatabase(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	for _, organization := range []tracker.OrganizationID{"org_startup", "org_second"} {
+		seedStartupOrganization(t, store.postgres, organization)
+	}
+	occupied, release, transactionDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		transactionDone <- store.postgres.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(tenantstore.Reader) error {
+			close(occupied)
+			<-release
+			return nil
+		})
+	}()
+	var releaseOnce sync.Once
+	releaseServing := func() {
+		releaseOnce.Do(func() {
+			close(release)
+			if err := <-transactionDone; err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	t.Cleanup(releaseServing)
+	<-occupied
+	key := hostedSharedKey(41)
+	for _, organization := range []string{"org_startup", "org_second"} {
+		t.Run(organization, func(t *testing.T) {
+			configuration := cfg
+			hosted := *cfg.Hosted
+			configuration.Hosted = &hosted
+			configuration.Hosted.OrganizationID = organization
+			configuration.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
+			if err := configuration.Hosted.SharedEntry.validate(organization); err != nil {
+				t.Fatal(err)
+			}
+			entered := make(chan struct{}, 1)
+			configuration.TenantRepository = healthAdmissionRepository{Repository: store.postgres, entered: entered}
+			configuration.AccessRepository = configuration.TenantRepository
+			service := &Service{config: configuration, database: store}
+			service.ready.Store(true)
+			handler := echo.New()
+			handler.Pre(service.hostedSharedEntry)
+			handler.Use(service.hostedBoundary)
+			handler.POST("/internal/v1/health", service.hostedSharedHealth)
+			for _, test := range []struct {
+				name   string
+				signed bool
+				ready  bool
+				want   int
+				closed bool
+			}{
+				{name: "ready database with saturated serving queue", signed: true, ready: true, want: http.StatusOK},
+				{name: "startup remains unavailable", signed: true, want: http.StatusServiceUnavailable},
+				{name: "unsigned remains unauthorized", ready: true, want: http.StatusUnauthorized},
+				{name: "database failure remains unavailable", signed: true, ready: true, closed: true, want: http.StatusServiceUnavailable},
+			} {
+				if test.closed && organization != "org_second" {
+					continue
+				}
+				t.Run(test.name, func(t *testing.T) {
+					if test.closed {
+						releaseServing()
+						if err := store.Close(); err != nil {
+							t.Fatal(err)
+						}
+					}
+					service.ready.Store(test.ready)
+					ctx, cancel := context.WithCancel(t.Context())
+					defer cancel()
+					request := httptest.NewRequest(http.MethodPost, "/internal/v1/health", strings.NewReader("{}")).WithContext(ctx)
+					if test.signed {
+						id, err := cloudassert.NewID()
+						if err != nil {
+							t.Fatal(err)
+						}
+						now := time.Now()
+						assertion, err := cloudassert.Sign(key, cloudassert.Claims{Issuer: "entry", Audience: organization, Generation: 1, Kind: cloudassert.KindService, OrganizationSlug: "example-" + strings.TrimPrefix(organization, "org_"), Method: http.MethodPost, Path: "/internal/v1/health", BodyDigest: cloudassert.BodyDigest([]byte("{}")), IssuedAt: now, ExpiresAt: now.Add(20 * time.Second), ID: id})
+						if err != nil {
+							t.Fatal(err)
+						}
+						request.Header.Set(cloudassert.Header, assertion)
+					}
+					response := httptest.NewRecorder()
+					done := make(chan struct{})
+					go func() { defer close(done); handler.ServeHTTP(response, request) }()
+					select {
+					case <-entered:
+						cancel()
+						<-done
+						t.Fatal("health entered saturated application admission")
+					case <-done:
+					}
+					if response.Code != test.want {
+						t.Fatalf("health status = %d, want %d: %s", response.Code, test.want, response.Body.String())
+					}
+					if test.want == http.StatusOK {
+						var health MigrationHealth
+						if err := json.Unmarshal(response.Body.Bytes(), &health); err != nil {
+							t.Fatal(err)
+						}
+						if !health.SchemaFactsComplete || health.SchemaVersion != store.schemaVersion || health.SchemaFingerprint != store.schemaFingerprint {
+							t.Fatalf("health lost schema facts: %+v", health)
+						}
+					}
+				})
+			}
+		})
 	}
 }

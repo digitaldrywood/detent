@@ -143,8 +143,11 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 		if internal != (claims.Kind == cloudassert.KindService || keyInternal) {
 			return s.nativeAPIError(c, nativeNotFound())
 		}
-		if err := s.syncOrganizationSlug(request.Context(), claims.OrganizationSlug); err != nil {
-			return s.nativeAPIError(c, err)
+		healthProbe := claims.Kind == cloudassert.KindService && request.Method == http.MethodPost && path == "/internal/v1/health"
+		if !healthProbe {
+			if err := s.syncOrganizationSlug(request.Context(), claims.OrganizationSlug); err != nil {
+				return s.nativeAPIError(c, err)
+			}
 		}
 		c.Set(hostedSharedClaimsKey, claims)
 		if claims.Kind == cloudassert.KindKey {
