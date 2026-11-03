@@ -313,6 +313,6 @@ WHERE work_item_id IS NOT NULL AND visibility = 'shared'
 
 func migrateCollaborationDeltas(ctx context.Context, tx *sql.Tx) error {
 	return hubmigrations.CollaborationDeltas(ctx, tx, encodeNativeVersion, func(ctx context.Context, tx *sql.Tx, organization, project, item, record string, revision int64) ([]byte, error) {
-		return reconstructNativeVersion(ctx, tx, organization, project, item, record, revision)
+		return reconstructNativeVersionStorage(ctx, tx, organization, project, item, record, revision, false)
 	}, recountCollaborationBytes)
 }

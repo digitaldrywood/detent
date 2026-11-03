@@ -279,6 +279,12 @@ WHERE i.organization_id=? AND i.project_id=? AND i.id>? ORDER BY i.id LIMIT 100`
 }
 
 func prepareCoreWorkItemImport(ctx context.Context, tx *sql.Tx, objects *eventstore.Content, source CoreWorkItemImportSource, copyHash string, row coreWorkItemImportRow) (postgres.CoreWorkItemImport, error) {
+	var objectVersions bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pragma_table_info('collaboration_versions') WHERE name='payload_object_key')").Scan(&objectVersions); err != nil {
+		return postgres.CoreWorkItemImport{}, err
+	}
+	ctx = context.WithValue(ctx, nativeVersionStorageKey{}, objectVersions)
+	ctx = context.WithValue(ctx, changeContentKey{}, &changeContent{query: tx, store: source.Objects})
 	item := row.Item
 	if err := json.Unmarshal([]byte(row.Actor), &row.CurrentIssueSnapshot.Actor); err != nil {
 		return postgres.CoreWorkItemImport{}, eventstore.ErrInvalidRecord

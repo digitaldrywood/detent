@@ -30,7 +30,7 @@ func (s *Service) getNativeVersion(c echo.Context) error {
 }
 
 func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comment string, revision int64) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(s.contentContext(ctx), hubReadTimeout)
 	defer cancel()
 	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
 		return nil, err

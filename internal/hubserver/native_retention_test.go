@@ -473,24 +473,24 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 				if test.noHistory {
 					event = "issue.edited"
 				}
-				issue, err = persistNativeIssue(t.Context(), tx, scope, issue, event, tracker.CollaborationData{FromState: "Todo", ToState: issue.State}, now.Add(-time.Duration(test.age)*24*time.Hour))
+				issue, err = persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, event, tracker.CollaborationData{FromState: "Todo", ToState: issue.State}, now.Add(-time.Duration(test.age)*24*time.Hour))
 				if err != nil {
 					t.Fatal(err)
 				}
 				if test.terminalMove {
 					issue.State = test.state
-					issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Done", ToState: test.state}, now.Add(-time.Hour))
+					issue, err = persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Done", ToState: test.state}, now.Add(-time.Hour))
 					if err != nil {
 						t.Fatal(err)
 					}
 				}
 			}
 			if test.restore {
-				issue, err = setNativeArchiveTx(t.Context(), tx, scope, string(issue.WorkItemID), issue.Revision, true, now.Add(-2*time.Hour))
+				issue, err = setNativeArchiveTx(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, string(issue.WorkItemID), issue.Revision, true, now.Add(-2*time.Hour))
 				if err != nil {
 					t.Fatal(err)
 				}
-				issue, err = setNativeArchiveTx(t.Context(), tx, scope, string(issue.WorkItemID), issue.Revision, false, now.Add(-time.Hour))
+				issue, err = setNativeArchiveTx(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, string(issue.WorkItemID), issue.Revision, false, now.Add(-time.Hour))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -718,7 +718,7 @@ func TestNativeStorageArchiveRetention(t *testing.T) {
 					}
 				}
 				issue.State = test.state
-				issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: test.state}, now.Add(-test.age))
+				issue, err = persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: test.state}, now.Add(-test.age))
 				if err != nil {
 					t.Fatal(err)
 				}

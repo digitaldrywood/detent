@@ -278,11 +278,11 @@ func TestReporterNativeCommands(t *testing.T) {
 			r = request(u, http.MethodPatch, commentPath+"/"+parent.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "edit-deleted"}, ExpectedRevision: parent.Revision + 1, Body: "Restored"})
 			requireNativeStatus(t, r, http.StatusUnprocessableEntity)
 			var snapshot tracker.NativeComment
-			var encoded string
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM collaboration_versions WHERE record_id=? AND revision=?", parent.ID, parent.Revision).Scan(&encoded); err != nil {
+			encoded, err := reconstructNativeVersion(f.service.contentContext(t.Context()), f.service.database.reader, string(parent.OrganizationID), string(parent.ProjectID), string(parent.WorkItemID), parent.ID, int64(parent.Revision))
+			if err != nil {
 				t.Fatal(err)
 			}
-			if err := json.Unmarshal([]byte(encoded), &snapshot); err != nil || snapshot.Body != parent.Body || snapshot.Deleted {
+			if err := json.Unmarshal(encoded, &snapshot); err != nil || snapshot.Body != parent.Body || snapshot.Deleted {
 				t.Fatalf("revision=%#v, error=%v", snapshot, err)
 			}
 			var references int

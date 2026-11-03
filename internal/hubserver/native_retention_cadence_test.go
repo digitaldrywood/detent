@@ -33,7 +33,7 @@ func TestNativeRetentionWebhookMaintenanceCadence(t *testing.T) {
 	}
 	defer tx.Rollback()
 	issue.State = "Done"
-	if _, err := persistNativeIssue(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, now.Add(-31*24*time.Hour)); err != nil {
+	if _, err := persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, now.Add(-31*24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,?,'slots','example',3,'{}')`, f.project.OrganizationID, f.project.ID, now.Add(-31*24*time.Hour).Unix()); err != nil {

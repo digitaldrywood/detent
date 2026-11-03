@@ -39,7 +39,7 @@ func TestIssuePageFactsAcrossBackfill(t *testing.T) {
 		}
 		issue.State = "Done"
 		issue.Revision++
-		issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done", Reason: "example transition", Run: &tracker.NativeRunData{AttemptID: "example-attempt", FencingToken: 4}}, f.service.config.now())
+		issue, err = persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done", Reason: "example transition", Run: &tracker.NativeRunData{AttemptID: "example-attempt", FencingToken: 4}}, f.service.config.now())
 		if err != nil {
 			tx.Rollback()
 			t.Fatal(err)
@@ -598,7 +598,7 @@ func TestLegacyPageEventsReadPastConversionBudget(t *testing.T) {
 	}
 	issue.State = "Done"
 	issue.Revision++
-	if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, f.service.config.now()); err != nil {
+	if _, err := persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, f.service.config.now()); err != nil {
 		t.Fatal(err)
 	}
 	for index := range storageConversionRows + 3 {

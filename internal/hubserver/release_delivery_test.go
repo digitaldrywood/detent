@@ -495,7 +495,7 @@ func TestNativeReleaseDeliveryAssociation(t *testing.T) {
 			if err := tx.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions),(SELECT count(*) FROM collaboration_events)").Scan(&versionsBefore, &eventsBefore); err != nil {
 				t.Fatal(err)
 			}
-			same, err := persistNativeIssue(t.Context(), tx, scope, current, "issue.edited", tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: associated.ChangeID, VersionID: associated.VersionID, HeadSHA: associated.HeadSHA}}, time.Now().UTC())
+			same, err := persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, current, "issue.edited", tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: associated.ChangeID, VersionID: associated.VersionID, HeadSHA: associated.HeadSHA}}, time.Now().UTC())
 			if err != nil || same.Revision != current.Revision {
 				t.Fatalf("same release reference changed revision: %d/%d %v", same.Revision, current.Revision, err)
 			}

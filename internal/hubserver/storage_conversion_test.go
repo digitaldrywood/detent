@@ -1601,7 +1601,7 @@ func TestStorageConversionDrainsEveryLegacyFamily(t *testing.T) {
 				switch family.name {
 				case "runs":
 					predicate = family.where
-				case "attempts", "analytics", "versions", "evidence", "landings":
+				case "attempts", "analytics", "versions", "evidence", "landings", "collaboration_versions":
 					predicate = "r.payload_object_key=''"
 				case "sources":
 					predicate = "r.object_key=''"
@@ -1680,6 +1680,7 @@ func seedStorageDrainFamilies(t *testing.T, f *storageArchiveFixture, fixture na
 			query string
 			args  []any
 		}{
+			{`INSERT INTO collaboration_versions(organization_id,project_id,work_item_id,record_id,revision,record_json,encoding) VALUES(?,?,?,?,1,'{"body":"example history"}','snapshot')`, []any{scope.organization, scope.project, issue.WorkItemID, string(issue.WorkItemID) + "-legacy"}},
 			{`UPDATE native_attempts SET checkpoint_json='{"head_sha":"example-head"}' WHERE id=?`, []any{attempt}},
 			{`INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES(?,?,?,?,'{}')`, []any{change, scope.organization, scope.project, issue.WorkItemID}},
 			{`INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,1,?)`, []any{version, change, raw}},

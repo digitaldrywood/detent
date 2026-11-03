@@ -50,7 +50,7 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 		t.Fatal(err)
 	}
 	issue.State = "In Progress"
-	if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, now.Add(-2*time.Minute)); err != nil {
+	if _, err := persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, now.Add(-2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if err := rebuildAnalyticsRollups(t.Context(), tx, scope, now); err != nil {

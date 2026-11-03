@@ -127,7 +127,7 @@ func writeHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker
 			return nil, err
 		}
 		if id == "" {
-			id = newNativeID("finding")
+			id = payloadNativeID(ctx, "finding")
 			transitions = append(transitions, id)
 			openedAt := now
 			if !f.ConditionSince.IsZero() && f.ConditionSince.Before(now) {

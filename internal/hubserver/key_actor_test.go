@@ -350,7 +350,7 @@ func TestMCPKeyRevisionedWrites(t *testing.T) {
 				t.Error(err)
 			}
 		})
-		item, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: name, Body: issueContractTestSections, State: "Todo"}, time.Now())
+		item, err := createNativeIssueTx(nativeFixturePayloadContext(t.Context(), tx), tx, scope, tracker.CreateIssue{Title: name, Body: issueContractTestSections, State: "Todo"}, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}

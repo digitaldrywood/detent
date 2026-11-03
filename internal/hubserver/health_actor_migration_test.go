@@ -40,7 +40,7 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			comment, err := insertNativeComment(t.Context(), tx, scope, issue, "Retained occurrence", nil, now)
+			comment, err := insertNativeComment(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "Retained occurrence", nil, now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -53,9 +53,10 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 			if _, err := tx.ExecContext(t.Context(), "UPDATE native_comments SET edited_by_json=?, revision=? WHERE id=?", editor, comment.Revision, comment.ID); err != nil {
 				t.Fatal(err)
 			}
-			if err := recordNativeChange(t.Context(), tx, scope, comment, string(issue.WorkItemID), comment.Revision, "comment.edited", tracker.CollaborationData{CommentID: comment.ID, Revision: comment.Revision}, now); err != nil {
+			if err := recordNativeChange(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, comment, string(issue.WorkItemID), comment.Revision, "comment.edited", tracker.CollaborationData{CommentID: comment.ID, Revision: comment.Revision}, now); err != nil {
 				t.Fatal(err)
 			}
+			inlineNativeVersionFixture(t, f.service, tx)
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}

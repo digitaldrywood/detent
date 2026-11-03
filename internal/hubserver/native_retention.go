@@ -73,6 +73,7 @@ func (s *Service) runNativeRetentionStages(ctx context.Context, stages []nativeR
 }
 
 func (s *Service) expireNativeRecords(ctx context.Context, now time.Time) error {
+	ctx = s.contentContext(ctx)
 	if s.config.TenantRepository != nil {
 		organization := tracker.OrganizationID(s.appOrganizationID())
 		if organization == "" {
@@ -145,14 +146,9 @@ AND (c.claim_version_id IS NULL OR c.archive_landed_version_id IS NULL OR (c.cla
 		return err
 	}
 	for _, item := range candidates {
-		if err := func() error {
-			tx, err := s.database.db.BeginTx(ctx, nil)
-			if err != nil {
-				return err
-			}
-			defer tx.Rollback()
+		if err := s.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
 			item.scope.sourceActor = nativeIntegrationActor("auto_archive")
-			err = tx.QueryRowContext(ctx, selection+` AND i.organization_id=? AND i.project_id=? AND i.native_id=?`, formatHubTime(now), formatHubTime(now), item.scope.organization, item.scope.project, item.item).Scan(&item.scope.organization, &item.scope.project, &item.item, &item.days)
+			err := tx.QueryRowContext(ctx, selection+` AND i.organization_id=? AND i.project_id=? AND i.native_id=?`, formatHubTime(now), formatHubTime(now), item.scope.organization, item.scope.project, item.item).Scan(&item.scope.organization, &item.scope.project, &item.item, &item.days)
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil
 			}
@@ -168,8 +164,8 @@ AND (c.claim_version_id IS NULL OR c.archive_landed_version_id IS NULL OR (c.cla
 			if _, err := persistNativeIssue(ctx, tx, item.scope, issue, "issue.edited", data, now); err != nil {
 				return err
 			}
-			return s.database.commit(ctx, tx)
-		}(); err != nil {
+			return nil
+		}); err != nil {
 			return err
 		}
 	}
