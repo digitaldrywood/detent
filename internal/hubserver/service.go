@@ -340,10 +340,8 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		service.startHealthDetector()
 	}
 	service.startIssueMailer()
-	if database.postgres == nil {
-		service.dashboard = newDashboardDelivery(service)
-		service.dashboard.start()
-	}
+	service.dashboard = newDashboardDelivery(service)
+	service.dashboard.start()
 	return service, nil
 }
 

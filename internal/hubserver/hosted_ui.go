@@ -14,6 +14,8 @@ import (
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/staticasset"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/web/templates"
@@ -237,13 +239,23 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	workItemID := c.QueryParam("work_item")
 	if workItemID != "" {
 		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-		_, _, err := readNativeIssue(readCtx, s.database.reader, initialScope, workItemID)
+		var err error
+		if s.config.TenantRepository != nil {
+			err = s.config.TenantRepository.ReadTenant(readCtx, initialScope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				return requireDashboardRecordItem(readCtx, r, initialScope, workItemID)
+			})
+		} else {
+			_, _, err = readNativeIssue(readCtx, s.database.reader, initialScope, workItemID)
+		}
 		cancelRead()
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}
 	if workspaceID != "" {
+		if s.config.TenantRepository != nil {
+			return s.nativeAPIError(c, workItemStorageUnavailable())
+		}
 		if _, err := s.readWorkspace(c.Request().Context(), initialScope, workspaceID); err != nil {
 			return s.nativeAPIError(c, err)
 		}

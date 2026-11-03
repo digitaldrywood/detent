@@ -55,7 +55,7 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 			return err
 		}
 		head, frame.Sequence = sequence.Sequence, sequence.Sequence
-		frame.Gap = sub.sequence < sequence.ReplayFloor || sub.sequence > head || !sub.initial && sub.grantVersion != frame.GrantVersion
+		frame.Gap = sub.sequence < sequence.ReplayFloor || sub.sequence > head || sub.grantVersion != "" && sub.grantVersion != frame.GrantVersion
 		if frame.Gap {
 			return nil
 		}
