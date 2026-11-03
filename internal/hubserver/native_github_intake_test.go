@@ -19,7 +19,7 @@ type linkedTestImporter struct{ snapshot tracker.GitHubIssueSnapshot }
 func (i linkedTestImporter) FetchImportPage(_ context.Context, request GitHubImportRequest) (GitHubImportPage, error) {
 	snapshot := i.snapshot
 	if request.Stage == "issue" {
-		return GitHubImportPage{Issue: &IssueSource{NodeID: snapshot.Provenance.ExternalID, Number: linkedSourceNumber(snapshot.URL), URL: snapshot.URL, Title: snapshot.Title, Body: snapshot.Body, AuthorID: snapshot.Provenance.AuthorID, CreatedAt: snapshot.Provenance.CreatedAt, UpdatedAt: snapshot.Provenance.UpdatedAt}}, nil
+		return GitHubImportPage{Issue: &IssueSource{NodeID: snapshot.Provenance.ExternalID, Number: linkedSourceNumber(snapshot.URL), URL: snapshot.URL, Title: snapshot.Title, Body: snapshot.Body, Labels: snapshot.Labels, AuthorID: snapshot.Provenance.AuthorID, CreatedAt: snapshot.Provenance.CreatedAt, UpdatedAt: snapshot.Provenance.UpdatedAt}}, nil
 	}
 	page := GitHubImportPage{}
 	for _, comment := range snapshot.Comments {
