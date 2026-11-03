@@ -30,12 +30,13 @@ type CommitReport struct {
 }
 
 type commitPolicy struct {
-	report      CommitReport
-	config      []string
-	program     string
-	format      string
-	environment []string
-	unavailable *atomic.Bool
+	signingRequested bool
+	report           CommitReport
+	config           []string
+	program          string
+	format           string
+	environment      []string
+	unavailable      *atomic.Bool
 }
 
 func probeCommitPolicy(ctx context.Context, source string, fallback CommitIdentity) (_ commitPolicy, err error) {
@@ -92,6 +93,7 @@ func probeCommitPolicy(ctx context.Context, source string, fallback CommitIdenti
 	if err != nil || strings.TrimSpace(enabled) != "true" {
 		return p, nil
 	}
+	p.signingRequested = true
 	p.report.Signing = p.format
 	if attempted, err := p.verifySigning(ctx); err != nil {
 		if !attempted {

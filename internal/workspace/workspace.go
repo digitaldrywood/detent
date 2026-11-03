@@ -1021,6 +1021,13 @@ func (l *LocalGit) BeforeRun(ctx context.Context, info Info, issue Issue) error 
 	if err != nil {
 		return err
 	}
+	if l.commits.signingRequested {
+		policy := l.commits
+		policy.report.Signing = policy.format
+		if _, err := policy.verifySigning(ctx); err != nil {
+			return fmt.Errorf("verify commit signing: %w", err)
+		}
+	}
 	return l.runHook(ctx, "before_run", l.hooks.BeforeRun, normalized, issue)
 }
 
