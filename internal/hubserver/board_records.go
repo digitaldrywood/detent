@@ -163,7 +163,9 @@ func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, param
 			cursorParams.Set("include", strings.Join(includes, ","))
 		}
 	}
+	finishCursor := timeSpan(ctx, "board_cursor")
 	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, path, cursorParams, maximum, defaultAPIPageLimit)
+	finishCursor()
 	if err != nil {
 		return page, err
 	}
@@ -191,6 +193,7 @@ func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, param
 	if !ok {
 		return page, workItemStorageUnavailable()
 	}
+	finishSelection := timeSpan(ctx, "board_select")
 	err = snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
@@ -301,6 +304,7 @@ func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, param
 		}
 		return nil
 	})
+	finishSelection()
 	if err != nil {
 		return page, projectRecordError(err)
 	}
@@ -308,10 +312,14 @@ func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, param
 	if hasMore {
 		records = records[:limit]
 	}
+	finishSlug := timeSpan(ctx, "board_slug")
 	organizationSlug, err := s.readableOrganizationSlug(ctx)
+	finishSlug()
 	if err != nil {
 		return page, err
 	}
+	finishHydration := timeSpan(ctx, "board_hydrate")
+	defer finishHydration()
 	preparation := s.prepareBoardPage(ctx, scope, records, now, true)
 	defer preparation.close()
 	returnedRecords := make([]viewstore.BoardRecord, 0, min(len(records), limit))
