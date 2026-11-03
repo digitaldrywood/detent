@@ -80,11 +80,14 @@ func (s *Service) authorizeChangeSource(ctx context.Context, scope nativeScope, 
 func (s *Service) verifyChangeSource(ctx context.Context, source tracker.ChangeSource, bundle []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
 	case s.sourceVerification <- struct{}{}:
 		defer func() { <-s.sourceVerification }()
-	case <-ctx.Done():
-		return ctx.Err()
+	default:
+		return nativeUnavailable("Source verification is busy; retry the request")
 	}
 	if err := workspace.VerifyChangeSource(ctx, source, bundle); err != nil {
 		if ctx.Err() != nil {

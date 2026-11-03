@@ -18,6 +18,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -493,4 +494,49 @@ func (m *tenantRequestMetrics) knownRoutes(e *echo.Echo) map[string]bool {
 		}
 	})
 	return m.routes
+}
+
+const hubLargeRequestLimit = 4
+
+type RequestAdmission struct {
+	mu     sync.Mutex
+	bodies map[string]bool
+}
+
+type requestBodyAdmissionContext struct{}
+
+func (s *Service) admitRequestBody(c echo.Context, credential apiCredential, next echo.HandlerFunc) error {
+	request := c.Request()
+	if SharedEntryRequestBodyLimit(request.Method, request.URL.Path) <= cloudassert.MaxBodyBytes || request.Context().Value(requestBodyAdmissionContext{}) != nil {
+		return next(c)
+	}
+	caller := credential.Runner.RunnerID
+	if caller == "" {
+		caller = "principal:" + credential.ID
+	}
+	return s.requestAdmission.Admit(c, caller, next)
+}
+
+func (admission *RequestAdmission) Admit(c echo.Context, caller string, next echo.HandlerFunc) error {
+	request := c.Request()
+	if SharedEntryRequestBodyLimit(request.Method, request.URL.Path) <= cloudassert.MaxBodyBytes || request.Context().Value(requestBodyAdmissionContext{}) != nil {
+		return next(c)
+	}
+	admission.mu.Lock()
+	if admission.bodies[caller] || len(admission.bodies) >= hubLargeRequestLimit {
+		admission.mu.Unlock()
+		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "runner_request_budget", Message: "Large request capacity is busy; retry the request"})
+	}
+	if admission.bodies == nil {
+		admission.bodies = make(map[string]bool)
+	}
+	admission.bodies[caller] = true
+	admission.mu.Unlock()
+	defer func() {
+		admission.mu.Lock()
+		delete(admission.bodies, caller)
+		admission.mu.Unlock()
+	}()
+	c.SetRequest(request.WithContext(context.WithValue(request.Context(), requestBodyAdmissionContext{}, true)))
+	return next(c)
 }

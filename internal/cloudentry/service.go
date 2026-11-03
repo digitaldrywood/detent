@@ -119,6 +119,7 @@ func (c Config) validate() error {
 }
 
 type Service struct {
+	requestAdmission  hubserver.RequestAdmission
 	notifications     *platformNotifications
 	runtime           atomic.Pointer[entryRuntime]
 	allowlist         atomic.Pointer[signupAllowlist]

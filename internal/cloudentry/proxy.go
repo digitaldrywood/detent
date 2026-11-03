@@ -257,6 +257,18 @@ func (s *Service) logProxied(c echo.Context, organization, verification string, 
 }
 
 func (s *Service) proxy(c echo.Context) error {
+	caller := "browser"
+	if hubserver.SharedEntryRequestBodyLimit(c.Request().Method, c.Request().URL.Path) > cloudassert.MaxBodyBytes && c.Request().Header.Get(echo.HeaderAuthorization) != "" {
+		hash, err := keyBearer(c)
+		if err != nil {
+			return keyError(c, err)
+		}
+		caller = hash
+	}
+	return s.requestAdmission.Admit(c, caller, s.proxyAdmitted)
+}
+
+func (s *Service) proxyAdmitted(c echo.Context) error {
 	started := time.Now()
 	request := c.Request()
 	ctx := request.Context()
