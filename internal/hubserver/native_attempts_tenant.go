@@ -48,7 +48,7 @@ func (s *Service) readNativeAttemptTenant(ctx context.Context, scope nativeScope
 			return err
 		}
 		if snapshot.attempt.IssueID != workItem.ID {
-			return corestore.ErrNotFound
+			return nativeNotFound()
 		}
 		snapshot.lease, err = r.Lease(ctx, snapshot.attempt.LeaseID)
 		if err != nil {
