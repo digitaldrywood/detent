@@ -117,7 +117,7 @@ func (r *Runtime) Begin(ctx context.Context, organization tracker.OrganizationID
 	if err != nil {
 		return nil, fmt.Errorf("begin PostgreSQL tenant transaction: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `SELECT set_config('detent.organization_id', $1, true)`, organization); err != nil {
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('search_path', 'public, pg_catalog', true), set_config('detent.organization_id', $1, true)`, organization); err != nil {
 		rollbackErr := tx.Rollback()
 		if errors.Is(rollbackErr, sql.ErrTxDone) {
 			rollbackErr = nil

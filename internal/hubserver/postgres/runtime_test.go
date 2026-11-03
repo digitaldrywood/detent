@@ -1,10 +1,15 @@
 package postgres_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"os"
 	"strings"
 	"testing"
 
@@ -238,6 +243,9 @@ func TestTenantTransactionsDoNotLeakContext(t *testing.T) {
 				if readOnly {
 					pool = reader
 				}
+				if _, err := pool.ExecContext(t.Context(), "SET search_path=pg_catalog"); err != nil {
+					t.Fatal(err)
+				}
 				var pid int
 				if err := pool.QueryRowContext(t.Context(), `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
 					t.Fatal(err)
@@ -248,12 +256,12 @@ func TestTenantTransactionsDoNotLeakContext(t *testing.T) {
 						t.Fatal(err)
 					}
 					defer tx.Rollback()
-					var bound string
+					var bound, searchPath string
 					var currentPID, count int
-					if err := tx.QueryRowContext(t.Context(), `SELECT current_setting('detent.organization_id'),pg_backend_pid(),(SELECT count(*) FROM projects)`).Scan(&bound, &currentPID, &count); err != nil {
+					if err := tx.QueryRowContext(t.Context(), `SELECT current_setting('detent.organization_id'),pg_backend_pid(),(SELECT count(*) FROM projects),current_setting('search_path')`).Scan(&bound, &currentPID, &count, &searchPath); err != nil {
 						t.Fatal(err)
 					}
-					if bound != string(organization) || currentPID != pid || count != 2 {
+					if bound != string(organization) || currentPID != pid || count != 2 || searchPath != "public, pg_catalog" {
 						t.Fatalf("scope=%q pid=%d rows=%d, want %q pid=%d rows=2", bound, currentPID, count, organization, pid)
 					}
 					if !readOnly {
@@ -274,10 +282,10 @@ func TestTenantTransactionsDoNotLeakContext(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if err := pool.QueryRowContext(t.Context(), `SELECT COALESCE(current_setting('detent.organization_id',true),''),pg_backend_pid(),(SELECT count(*) FROM projects)`).Scan(&bound, &currentPID, &count); err != nil {
+					if err := pool.QueryRowContext(t.Context(), `SELECT COALESCE(current_setting('detent.organization_id',true),''),pg_backend_pid(),(SELECT count(*) FROM public.projects),current_setting('search_path')`).Scan(&bound, &currentPID, &count, &searchPath); err != nil {
 						t.Fatal(err)
 					}
-					if bound != "" || currentPID != pid || count != 0 {
+					if bound != "" || currentPID != pid || count != 0 || searchPath != "pg_catalog" {
 						t.Fatalf("pooled connection leaked scope=%q pid=%d rows=%d, want empty pid=%d rows=0", bound, currentPID, count, pid)
 					}
 					var title string
@@ -348,5 +356,99 @@ func TestRuntimeRejectsPrivilegedPools(t *testing.T) {
 		if runtime, err := postgres.NewRuntime(t.Context(), pool, valid); !errors.Is(err, postgres.ErrRuntimeRole) || runtime != nil {
 			t.Fatalf("invalid pool accepted: runtime=%v error=%v", runtime, err)
 		}
+	}
+}
+
+func TestPostgresStartupSeparatesRuntimeAndMigrationParameters(t *testing.T) {
+	for _, migration := range []bool{false, true} {
+		t.Run(fmt.Sprintf("migration=%v", migration), func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			type startupResult struct {
+				parameters map[string]string
+				err        error
+			}
+			ready := make(chan startupResult, 1)
+			joined := make(chan struct{})
+			var connection net.Conn
+			accepted := make(chan struct{})
+			go func() {
+				defer close(joined)
+				conn, err := listener.Accept()
+				connection = conn
+				close(accepted)
+				if err != nil {
+					ready <- startupResult{err: err}
+					return
+				}
+				defer conn.Close()
+				var header [4]byte
+				if _, err := io.ReadFull(conn, header[:]); err != nil {
+					ready <- startupResult{err: err}
+					return
+				}
+				size := binary.BigEndian.Uint32(header[:])
+				if size < 8 || size > 65536 {
+					ready <- startupResult{err: errors.New("invalid startup frame size")}
+					return
+				}
+				body := make([]byte, int(size)-4)
+				if _, err := io.ReadFull(conn, body); err != nil {
+					ready <- startupResult{err: err}
+					return
+				}
+				values := bytes.Split(body[4:], []byte{0})
+				parameters := map[string]string{}
+				for i := 0; i+1 < len(values); i += 2 {
+					parameters[string(values[i])] = string(values[i+1])
+				}
+				payload := []byte("SFATAL\x00VFATAL\x00C0A000\x00Mexample startup inspected\x00\x00")
+				message := make([]byte, 5+len(payload))
+				message[0] = 'E'
+				binary.BigEndian.PutUint32(message[1:5], uint32(4+len(payload)))
+				copy(message[5:], payload)
+				_, err = conn.Write(message)
+				ready <- startupResult{parameters: parameters, err: err}
+			}()
+			t.Cleanup(func() {
+				listener.Close()
+				<-accepted
+				if connection != nil {
+					connection.Close()
+				}
+				<-joined
+			})
+			cfg := pq.Config{Host: "127.0.0.1", Port: uint16(listener.Addr().(*net.TCPAddr).Port), Database: "example", User: "example", Password: "example", SSLMode: pq.SSLMode("disable")}
+			if migration {
+				err = postgres.Migrate(t.Context(), cfg, os.DirFS("migrations"))
+			} else {
+				var repository *postgres.Repository
+				repository, err = postgres.Open(t.Context(), postgres.Config{Connection: cfg, Pool: postgres.PoolConfig{MaxConnections: 2, ServingConnections: 1, BackgroundConnections: 1}}, os.DirFS("migrations"))
+				if repository != nil {
+					repository.Close()
+				}
+			}
+			if err == nil {
+				t.Fatal("test server refusal was ignored")
+			}
+			var refusal *pq.Error
+			if !errors.As(err, &refusal) || refusal.Message != "example startup inspected" {
+				t.Fatalf("startup did not reach the test server: %v", err)
+			}
+			result := <-ready
+			if result.err != nil {
+				t.Fatal(result.err)
+			}
+			if migration {
+				if result.parameters["search_path"] != "public, pg_catalog" || result.parameters["role"] != postgres.MigrationRoleName {
+					t.Fatalf("migration startup authority=%v", result.parameters)
+				}
+			} else if _, exists := result.parameters["search_path"]; exists {
+				t.Fatal("runtime sent transaction-pool-incompatible startup search_path")
+			}
+		})
 	}
 }
