@@ -484,17 +484,18 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	}
 	var process ValidationProcess
 	var groupID int
+	isHook, _ := ctx.Value(hookCommandKey{}).(bool)
 	defer func() {
 		cleanupCtx := context.WithoutCancel(ctx)
 		var cleanupErr error
-		if process != nil || toolcache.ManagedBuildFromContext(ctx) != "" {
+		if (!isHook || resultErr != nil || result.ExitCode != 0) && (process != nil || toolcache.ManagedBuildFromContext(ctx) != "") {
 			cleanupErr = procgroup.Cleanup(groupID)
 			if groupID > 0 {
 				_, err := ReapWorkerArtifactPathProcesses(cleanupCtx, info.Path, scratch, procgroup.DefaultTerminationGrace)
 				cleanupErr = errors.Join(cleanupErr, err)
 			}
 		}
-		if cleanupErr == nil {
+		if cleanupErr == nil && (!isHook || resultErr != nil || result.ExitCode != 0) {
 			cleanupErr = CleanupWorkerScratch(info.Path, scratch)
 		}
 		resultErr = errors.Join(resultErr, cleanupErr)
@@ -538,20 +539,34 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	if paged {
 		cmd.Stdout, cmd.Stderr = &source, &diagnostics
 	}
-	if err := cmd.Start(); err != nil {
-		return result, fmt.Errorf("start validation command: %w", err)
-	}
-	groupID = procgroup.GroupID(cmd)
-	if process != nil {
-		identity, registrationErr := procgroup.Inspect(cmd)
-		if registrationErr == nil {
-			registrationErr = process.Started(ctx, identity)
+	register := func() error {
+		groupID = procgroup.GroupID(cmd)
+		if process == nil {
+			return nil
 		}
-		if registrationErr != nil {
-			return result, errors.Join(fmt.Errorf("register host validation process: %w", registrationErr), cmd.Cancel(), cmd.Wait())
+		identity, err := procgroup.Inspect(cmd)
+		if err == nil {
+			err = process.Started(ctx, identity)
 		}
+		if err != nil {
+			return fmt.Errorf("register host validation process: %w", err)
+		}
+		return nil
 	}
-	err = cmd.Wait()
+	if isHook {
+		err = procgroup.RunHook(ctx, cmd, register)
+		if errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil {
+			err = nil
+		}
+	} else {
+		if err := cmd.Start(); err != nil {
+			return result, fmt.Errorf("start validation command: %w", err)
+		}
+		if err := register(); err != nil {
+			return result, errors.Join(err, cmd.Cancel(), cmd.Wait())
+		}
+		err = cmd.Wait()
+	}
 	result.FinishedAt = time.Now().UTC()
 	result.DurationNS = time.Since(started).Nanoseconds()
 	result.Output = tracker.RedactGateOutput(output.String())
