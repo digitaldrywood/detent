@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"slices"
 	"strings"
 	"time"
 
@@ -194,6 +195,10 @@ func (s *Service) validateWorkItemRecordFilingTenant(ctx context.Context, reader
 }
 
 type nativeScheduledRepair struct {
+	admitted     bool
+	labelAdded   bool
+	sourceAuthor string
+	sourceLabel  string
 	policyID     string
 	evidence     gate.ScheduledEvidence
 	importURL    string
@@ -204,7 +209,7 @@ type nativeScheduledRepair struct {
 type scheduledImportsKey struct{}
 
 func (s *Service) observeScheduledWebhook(ctx context.Context, delivery storedWebhook) context.Context {
-	if delivery.EventType != "issues" || delivery.Action != "opened" {
+	if delivery.EventType != "issues" || (delivery.Action != "opened" && delivery.Action != "labeled") {
 		return ctx
 	}
 	var payload githubWebhookPayload
@@ -222,7 +227,7 @@ func (s *Service) observeScheduledWebhook(ctx context.Context, delivery storedWe
 	}
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.organization_id,p.id FROM projects p LEFT JOIN repositories r ON r.id=p.repository_id
 WHERE p.deleted_at IS NULL AND p.profile='native' AND (lower(r.github_owner || '/' || r.github_name)=lower(?) OR lower(p.checkout_repository)=lower(?))
-AND NOT EXISTS (SELECT 1 FROM issues i WHERE i.project_id=p.id AND (i.native_source_key=? OR (i.repository_id=p.repository_id AND i.github_number=?)))`, repository, repository, "github:"+canonical, source.Number)
+AND (?='labeled' OR NOT EXISTS (SELECT 1 FROM issues i WHERE i.project_id=p.id AND (i.native_source_key=? OR (i.repository_id=p.repository_id AND i.github_number=?))))`, repository, repository, delivery.Action, "github:"+canonical, source.Number)
 	if err != nil {
 		return ctx
 	}
@@ -240,7 +245,11 @@ AND NOT EXISTS (SELECT 1 FROM issues i WHERE i.project_id=p.id AND (i.native_sou
 	}
 	imports := make(map[string]*nativeScheduledRepair, len(scopes))
 	for _, scope := range scopes {
-		imports[string(scope.organization)+"/"+string(scope.project)+"/"+canonical] = s.observeImportedScheduledRepair(ctx, scope, linkedSnapshotFromSource(IssueSource{URL: canonical, Body: source.Body, AuthorID: source.AuthorID}, s.config.now()))
+		observation := s.observeImportedScheduledRepair(ctx, scope, linkedSnapshotFromSource(IssueSource{URL: canonical, Body: source.Body, AuthorID: source.AuthorID, Labels: source.Labels}, s.config.now()))
+		if observation != nil {
+			observation.labelAdded = delivery.Action == "labeled"
+		}
+		imports[string(scope.organization)+"/"+string(scope.project)+"/"+canonical] = observation
 	}
 	return context.WithValue(ctx, scheduledImportsKey{}, imports)
 }
@@ -251,7 +260,7 @@ func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope nati
 		return nil
 	}
 	result := &nativeScheduledRepair{importURL: snapshot.URL, importBody: snapshot.Body, importReason: "Scheduled CI import requires an approved repair delegation and verified GitHub Actions provenance"}
-	if snapshot.Provenance.Provider != "github" || snapshot.Provenance.AuthorID != "github-actions[bot]" || strings.Contains(strings.ToLower(snapshot.Body), "detent:no-dispatch") || s.config.ImportBackend == nil {
+	if snapshot.Provenance.Provider != "github" || strings.Contains(strings.ToLower(snapshot.Body), "detent:no-dispatch") || slices.Contains(snapshot.Labels, "requires-human-review") || slices.Contains(snapshot.Labels, "detent:no-dispatch") {
 		return result
 	}
 	approval, found, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
@@ -278,6 +287,15 @@ func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope nati
 	}
 	workflow, branch, _, authorized := contract.ScheduledImportWorkflow()
 	if !authorized {
+		return result
+	}
+	authors, label := contract.ScheduledTrustedSource()
+	if slices.Contains(authors, snapshot.Provenance.AuthorID) && slices.Contains(snapshot.Labels, label) {
+		result.policyID, result.evidence, result.importReason = approval.Policy.ID, evidence[0], ""
+		result.sourceAuthor, result.sourceLabel = snapshot.Provenance.AuthorID, label
+		return result
+	}
+	if snapshot.Provenance.AuthorID != "github-actions[bot]" || s.config.ImportBackend == nil {
 		return result
 	}
 	page, err := s.config.ImportBackend.FetchImportPage(ctx, GitHubImportRequest{Profile: "native", Repository: repository, Stage: "scheduled", Scheduled: &evidence[0], ScheduledWorkflow: workflow, ScheduledBranch: branch})
@@ -370,12 +388,21 @@ func applyScheduledRepairContract(ctx context.Context, q nativeQueryer, scope na
 		return
 	}
 	issue.State, issue.Priority = "Todo", new(priority)
+	verified.admitted = true
 	verified.importReason = ""
 	issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(body)
 	issue.IssueContract.RecordedAt = now
-	body += fmt.Sprintf("\n\n## Verified CI occurrence\nRun: %s\nJob: %s\nTested commit: %s\nApproved policy: %s", verified.evidence.RunURL, verified.evidence.JobURL, verified.evidence.HeadSHA, verified.policyID)
+	if verified.sourceAuthor != "" {
+		body += "\n\n## Trusted-source CI verification override\n" + verified.admissionBasis()
+	} else {
+		body += fmt.Sprintf("\n\n## Verified CI occurrence\nRun: %s\nJob: %s\nTested commit: %s\nApproved policy: %s", verified.evidence.RunURL, verified.evidence.JobURL, verified.evidence.HeadSHA, verified.policyID)
+	}
 	body += "\n\n## Diagnostic evidence (untrusted)\n\n> " + strings.ReplaceAll(html.EscapeString(strings.ReplaceAll(issue.Body, "\r", "")), "\n", "\n> ")
 	issue.Body = issueorigin.Stamp(body, origin) + verified.evidence.Stamp()
+}
+
+func (r *nativeScheduledRepair) admissionBasis() string {
+	return fmt.Sprintf("Trusted-source override; approved policy: %s; authenticated GitHub source author: %s; source label: %s; independent Actions verification bypassed", r.policyID, r.sourceAuthor, r.sourceLabel)
 }
 
 func scheduledRepairOriginMatches(source string, evidence gate.ScheduledEvidence) bool {

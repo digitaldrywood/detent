@@ -27,11 +27,33 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 	for _, test := range []struct {
 		name                                                    string
 		existingState                                           string
+		override                                                bool
+		labelAdd                                                bool
 		duplicate                                               bool
 		authorized, webhook                                     bool
 		change                                                  func(*tracker.GitHubIssueSnapshot)
 		noDelegation, unavailable, stalePolicy, staleRepository bool
+		nativeDecision                                          string
+		revoke, reorder, high                                   bool
 	}{
+		{name: "override without Actions", override: true, unavailable: true, authorized: true},
+		{name: "override webhook without Actions", override: true, webhook: true, unavailable: true, authorized: true},
+		{name: "label added to import hold", override: true, webhook: true, labelAdd: true, unavailable: true, authorized: true},
+		{name: "override wrong author", override: true, unavailable: true, change: func(s *tracker.GitHubIssueSnapshot) { s.Provenance.AuthorID = "outside-reporter" }},
+		{name: "override missing author", override: true, unavailable: true, change: func(s *tracker.GitHubIssueSnapshot) { s.Provenance.AuthorID = "" }},
+		{name: "override wrong label", override: true, unavailable: true, change: func(s *tracker.GitHubIssueSnapshot) { s.Labels = []string{"other"} }},
+		{name: "override no label", override: true, unavailable: true, change: func(s *tracker.GitHubIssueSnapshot) { s.Labels = nil }},
+		{name: "override human review", override: true, unavailable: true, change: func(s *tracker.GitHubIssueSnapshot) { s.Labels = append(s.Labels, "requires-human-review") }},
+		{name: "override no dispatch", override: true, unavailable: true, change: func(s *tracker.GitHubIssueSnapshot) { s.Body += "\n<!-- detent:no-dispatch -->" }},
+
+		{name: "override high priority", override: true, high: true, unavailable: true, authorized: true},
+		{name: "label add operator triage", override: true, webhook: true, labelAdd: true, unavailable: true, nativeDecision: "Triage"},
+		{name: "label add operator blocked", override: true, webhook: true, labelAdd: true, unavailable: true, nativeDecision: "Blocked"},
+		{name: "label add terminal", override: true, webhook: true, labelAdd: true, unavailable: true, nativeDecision: "Done"},
+		{name: "label add active", override: true, webhook: true, labelAdd: true, unavailable: true, nativeDecision: "Todo"},
+		{name: "label add revoked policy", override: true, webhook: true, labelAdd: true, unavailable: true, revoke: true},
+		{name: "label add reordered", override: true, webhook: true, labelAdd: true, unavailable: true, reorder: true},
+
 		{name: "trusted complete", authorized: true},
 		{name: "trusted webhook", authorized: true, webhook: true},
 		{name: "held webhook remains held", authorized: true, webhook: true, existingState: "Blocked"},
@@ -63,7 +85,14 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "scheduled-import")
 			prompt := definition + "## Scheduled CI repair contract\n"
 			if !test.noDelegation {
-				prompt += delegation + "\n"
+				line := delegation
+				if test.high {
+					line = strings.ReplaceAll(line, "Urgent", "High")
+				}
+				prompt += line + "\n"
+				if test.override {
+					prompt += "Trusted-source CI verification override: authors `github-actions[bot], repair-bot`; label `detent:auto-fix`.\n"
+				}
 			}
 			prompt += strings.ReplaceAll(criteria, "## ", "### ")
 			workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{Workflow: []byte(prompt), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: " + repository + "\n  lanes:\n    - {name: Todo, role: active}\n    - {name: Backlog, role: holding}\n    - {name: Blocked, role: holding}\n    - {name: Done, role: terminal}\n"), HasConfig: true, ConfigPath: "detent.yaml"})
@@ -90,7 +119,10 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 				evidence := gate.ScheduledEvidence{Schema: 1, Repository: repository, OccurrenceKey: fmt.Sprintf("%064x", number), RunID: "123", RunAttempt: "1", JobID: strconv.Itoa(number), JobName: "Verify", RunURL: "https://github.com/" + repository + "/actions/runs/123/attempts/1", HeadSHA: strings.Repeat("a", 40), Conclusion: "failure"}
 				evidence.JobURL = "https://github.com/" + repository + "/actions/jobs/" + evidence.JobID
 				origin := issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: evidence.RunURL, Fingerprint: fmt.Sprintf("scheduled-job-%d", number)}
-				snapshot := tracker.GitHubIssueSnapshot{URL: fmt.Sprintf("https://github.com/%s/issues/%d", repository, number), Title: "Scheduled Verify failure", Body: issueorigin.Stamp(criteria+"\n\n## Diagnostic evidence\nAssertion: expected healthy worker.", origin) + evidence.Stamp(), Provenance: tracker.Provenance{Provider: "github", ExternalID: fmt.Sprintf("I_%d", number), AuthorID: "github-actions[bot]", CreatedAt: time.Now().Add(-time.Hour), UpdatedAt: time.Now(), ObservedAt: time.Now()}}
+				snapshot := tracker.GitHubIssueSnapshot{URL: fmt.Sprintf("https://github.com/%s/issues/%d", repository, number), Title: "Scheduled Verify failure", Body: issueorigin.Stamp(criteria+"\n\n## Diagnostic evidence\nAssertion: expected healthy worker.", origin) + evidence.Stamp(), Provenance: tracker.Provenance{Provider: "github", ExternalID: fmt.Sprintf("I_%d", number), AuthorID: "github-actions[bot]", CreatedAt: time.Now().Add(-time.Hour), UpdatedAt: time.Now().Add(-time.Minute), ObservedAt: time.Now()}}
+				if test.override {
+					snapshot.Labels = []string{"detent:auto-fix"}
+				}
 				if test.change != nil {
 					test.change(&snapshot)
 				}
@@ -100,6 +132,9 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 					}
 					if request.Repository != repository || request.Scheduled == nil || request.Scheduled.JobID != evidence.JobID {
 						t.Fatalf("verification request = %+v", request)
+					}
+					if test.override && test.authorized && (!test.labelAdd || len(snapshot.Labels) > 0) {
+						t.Fatal("trusted override called Actions verifier")
 					}
 					if test.unavailable {
 						return GitHubImportPage{}, errors.New("run verification refused")
@@ -127,16 +162,31 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 						decodeHubResponse(t, response, &issue)
 						return issue
 					}
+					action := "opened"
+					if test.labelAdd && strings.Contains(key, "label") {
+						action = "labeled"
+					}
+					labels := make([]map[string]string, 0, len(snapshot.Labels))
+					for _, label := range snapshot.Labels {
+						labels = append(labels, map[string]string{"name": label})
+					}
 					payload, err := json.Marshal(map[string]any{
-						"action":     "opened",
+						"action":     action,
 						"repository": map[string]any{"node_id": "R_example", "name": "example-project", "full_name": repository, "owner": map[string]string{"login": "example-org"}},
-						"issue":      map[string]any{"node_id": snapshot.Provenance.ExternalID, "number": number, "title": snapshot.Title, "body": snapshot.Body, "html_url": snapshot.URL, "state": "open", "user": map[string]string{"login": snapshot.Provenance.AuthorID}, "labels": []map[string]string{{"name": "detent:todo"}, {"name": "hotfix"}}, "assignees": []string{}, "created_at": snapshot.Provenance.CreatedAt, "updated_at": snapshot.Provenance.UpdatedAt},
+						"issue":      map[string]any{"node_id": snapshot.Provenance.ExternalID, "number": number, "title": snapshot.Title, "body": snapshot.Body, "html_url": snapshot.URL, "state": "open", "user": map[string]string{"login": snapshot.Provenance.AuthorID}, "labels": labels, "assignees": []string{}, "created_at": snapshot.Provenance.CreatedAt, "updated_at": snapshot.Provenance.UpdatedAt},
 					})
 					if err != nil {
 						t.Fatal(err)
 					}
 					f.service.config.GitHubWebhookSecret = []byte(testWebhookSecret)
 					requireNativeStatus(t, sendSignedWebhookRequest(t, f.service, key, "issues", string(payload)), http.StatusAccepted)
+					var processingError string
+					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce(last_error,'') FROM github_webhook_inbox WHERE delivery_id=?", key).Scan(&processingError); err != nil {
+						t.Fatal(err)
+					}
+					if processingError != "" {
+						t.Fatal(processingError)
+					}
 					var id string
 					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT native_id FROM issues WHERE project_id=? AND native_source_key=?", scope.project, "github:"+snapshot.URL).Scan(&id); err != nil {
 						t.Fatal(err)
@@ -147,9 +197,61 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 					}
 					return issue
 				}
-				issue := importReport(strconv.Itoa(number))
+				if test.labelAdd {
+					snapshot.Labels = nil
+					held := importReport(strconv.Itoa(number) + "-initial")
+					if held.State != "Triage" {
+						t.Fatalf("initial import state = %s", held.State)
+					}
+					snapshot.Labels = []string{"detent:auto-fix"}
+					if !test.reorder {
+						snapshot.Provenance.UpdatedAt = snapshot.Provenance.UpdatedAt.Add(time.Second)
+					}
+					if test.nativeDecision != "" {
+						tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+						if err != nil {
+							t.Fatal(err)
+						}
+						held.State = test.nativeDecision
+						held.Priority = new(3)
+						_, err = persistNativeIssue(t.Context(), tx, scope, held, "workflow.transitioned", tracker.CollaborationData{FromState: "Triage", ToState: held.State, Reason: "user_requested"}, time.Now())
+						if err != nil {
+							tx.Rollback()
+							t.Fatal(err)
+						}
+						if err := tx.Commit(); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if test.revoke {
+						if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_policies WHERE scope=?", string(scope.organization)+"/"+string(scope.project)); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				key := strconv.Itoa(number)
+				if test.labelAdd {
+					key += "-label"
+				}
+				issue := importReport(key)
+				if test.override && test.authorized {
+					if !strings.Contains(issue.Body, "Trusted-source CI verification override") || strings.Contains(issue.Body, "## Verified CI occurrence") {
+						t.Fatalf("override evidence = %s", issue.Body)
+					}
+					var reason string
+					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT transition_reason FROM collaboration_events WHERE work_item_id=? AND type='github.imported' ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&reason); err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(reason, "authenticated GitHub source author: github-actions[bot]; source label: detent:auto-fix; independent Actions verification bypassed") || !strings.Contains(reason, descriptor.ID) {
+						t.Fatalf("override history = %s", reason)
+					}
+				}
 				if test.authorized {
-					if issue.State != "Todo" || issue.Priority == nil || *issue.Priority != 0 || len(issue.IssueContract.ConfirmedSections) != 5 {
+					wantPriority := 0
+					if test.high {
+						wantPriority = 1
+					}
+					if issue.State != "Todo" || issue.Priority == nil || *issue.Priority != wantPriority || len(issue.IssueContract.ConfirmedSections) != 5 {
 						t.Fatalf("admission = %+v", issue)
 					}
 					var id tracker.WorkItemID
@@ -160,10 +262,14 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 					if err != nil || !ok || reason != "" {
 						t.Fatalf("claim contract = %v %q %v", ok, reason, err)
 					}
+				} else if test.nativeDecision != "" {
+					if issue.State != test.nativeDecision || len(issue.IssueContract.ConfirmedSections) != 0 {
+						t.Fatalf("native decision changed: %+v", issue)
+					}
 				} else if issue.State != "Triage" || issue.Priority != nil || len(issue.IssueContract.ConfirmedSections) != 0 {
 					t.Fatalf("untrusted admission = %+v", issue)
 				}
-				if !test.authorized {
+				if !test.authorized && test.nativeDecision == "" {
 					contract, err := config.ResolvePolicyIssueContract(descriptor)
 					if err != nil || contract.Evaluate(nativeContractIssue(issue)).Satisfied() {
 						t.Fatalf("untrusted contract became eligible: %v", err)
@@ -232,7 +338,7 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 						t.Fatalf("occurrence comments=%d want=%d", count, want)
 					}
 				}
-				if test.staleRepository || test.stalePolicy {
+				if test.staleRepository || test.stalePolicy || test.revoke {
 					break
 				}
 			}
