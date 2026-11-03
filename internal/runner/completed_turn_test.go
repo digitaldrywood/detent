@@ -84,11 +84,20 @@ func (w *completedExecutionWorkspace) DiffStat(ctx context.Context, info workspa
 
 type finalizingDiffExecution struct {
 	finalizingTestExecution
-	diffSource AttemptDiffSource
+	diffSource   AttemptDiffSource
+	changeSource func(context.Context, string, string) (tracker.ChangeSourceCapture, error)
 }
 
 func (e *finalizingDiffExecution) SetDiffSource(source AttemptDiffSource) {
 	e.diffSource = source
+}
+
+func (e *finalizingDiffExecution) SetChangeSource(source func(context.Context, string, string) (tracker.ChangeSourceCapture, error)) {
+	e.changeSource = source
+}
+
+func (*finalizingDiffExecution) RecoverChangeSource(context.Context) (workspace.ChangeSource, error) {
+	return workspace.ChangeSource{}, nil
 }
 
 func TestCompletedNativeFinalizationDiff(t *testing.T) {
@@ -97,11 +106,13 @@ func TestCompletedNativeFinalizationDiff(t *testing.T) {
 		commit       bool
 		newBase      bool
 		implicitBase bool
+		replaced     bool
 	}{
 		{name: "host commit replaces the precommit diff", commit: true},
 		{name: "implicit base survives the host commit", commit: true, implicitBase: true},
 		{name: "no commit rework replaces an older diff"},
 		{name: "finalized base survives workspace cleanup", commit: true, newBase: true},
+		{name: "finalized capture rejects a replaced checkout", commit: true, replaced: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			directory := initRunnerSourceRepo(t)
@@ -141,10 +152,23 @@ func TestCompletedNativeFinalizationDiff(t *testing.T) {
 			if !backend.afterRun || execution.checkpoint == nil {
 				t.Fatal("finalization did not checkpoint and clean up")
 			}
-			if err := os.Rename(directory, filepath.Join(t.TempDir(), "cleaned")); err != nil {
+			if execution.changeSource == nil {
+				t.Fatal("finalized source was not retained before cleanup")
+			}
+			finalizedHead := execution.checkpoint.HeadSHA
+			if test.replaced {
+				runRunnerGit(t, directory, "commit", "--allow-empty", "-m", "unrelated later head")
+			} else if err := os.Rename(directory, filepath.Join(t.TempDir(), "cleaned")); err != nil {
 				t.Fatal(err)
 			}
 			diff, ok := execution.diffSource(ctx)
+			capture, err := execution.changeSource(ctx, base, finalizedHead)
+			if err != nil || capture.Source.HeadSHA != finalizedHead || capture.Source.Validate(base, finalizedHead, capture.Bundle) != nil {
+				t.Fatalf("finalized source did not survive cleanup or replacement: %+v, %v", capture.Source, err)
+			}
+			if _, err := execution.changeSource(ctx, base, base); err == nil {
+				t.Fatal("finalized source accepted a substituted head")
+			}
 			if !ok || diff.HeadSHA != execution.checkpoint.HeadSHA || diff.HeadSHA == base || diff.BaseSHA != base || len(diff.Files) != 1 || diff.Files[0].Path != "implementation.go" {
 				t.Fatalf("final diff did not survive cleanup at the verified checkpoint: diff=%+v available=%t checkpoint=%+v", diff, ok, execution.checkpoint)
 			}

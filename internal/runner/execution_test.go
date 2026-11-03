@@ -1423,8 +1423,8 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		}, "manual_recovery", "checkpoint_unavailable", nil},
 		{"first run", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Attempts = nil }, "fresh_checkout", "no_prior_attempt", nil},
 		{"missing checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Attempts[0].Checkpoint = nil }, "fresh_checkout", "checkpoint_missing", nil},
-		{"machine lost with dirty work", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Lease.MachineID = "other" }, "fresh_checkout", "checkpoint_unavailable", nil},
-		{"local workspace missing", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) { *local = nil }, "fresh_checkout", "checkpoint_unavailable", nil},
+		{"machine lost with dirty work", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Lease.MachineID = "other" }, "manual_recovery", "checkpoint_unavailable", nil},
+		{"local workspace missing", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) { *local = nil }, "manual_recovery", "checkpoint_unavailable", nil},
 		{"dirty checkpoint replaced", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
 			(*local).WorkspaceFingerprint = "different"
 		}, "manual_recovery", "local_checkpoint_changed", nil},
@@ -1499,13 +1499,13 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		}, "fresh_checkout", "session_restart_required", current},
 		{"current Change with dirty checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.WorktreeState = "dirty"
-		}, "fresh_checkout", "checkpoint_unavailable", current},
+		}, "manual_recovery", "checkpoint_unavailable", current},
 		{"current Change with dirty local source", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
 			(*local).TrackedPaths = []string{"work.go"}
-		}, "fresh_checkout", "checkpoint_unavailable", current},
+		}, "manual_recovery", "checkpoint_unavailable", current},
 		{"current Change does not match local head", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
 			(*local).HeadSHA = "unrelated"
-		}, "fresh_checkout", "checkpoint_unavailable", current},
+		}, "manual_recovery", "checkpoint_unavailable", current},
 		{"current Change preserves ambiguous push", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "git_push", "ambiguous"
 		}, "fresh_checkout", "publication_reconciliation_required", current},
