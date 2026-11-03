@@ -3952,7 +3952,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		runtimeIdentity.ReasoningEffort = agentidentity.NewValue(resolvedSelection.Effort, agentidentity.ProvenanceConfigured)
 	}
 	runReq := RunRequest{
-		workspaceBackend: runWorkspace, Issue: req.Issue,
+		workspaceBackend: runWorkspace, Issue: req.Issue, Execution: req.usageExecution, WorkAttemptID: req.workAttemptID, Generation: req.generation,
 		StartedAt:        req.StartedAt,
 		SelectorContext:  req.SelectorContext,
 		OnUsageUpdate:    req.OnUsageUpdate,
@@ -3968,7 +3968,11 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		return gate.ValidatorResult{}, err
 	}
 	runReq.StartedAt = startedAt
-	activityProfile := r.startActivityProfile(ctx, runReq, sessionID, info.Path, workflow, "validation")
+	stage := "validation"
+	if req.implementationReview {
+		stage = "review"
+	}
+	activityProfile := r.startActivityProfile(ctx, runReq, sessionID, info.Path, workflow, stage)
 	defer activityProfile.finish()
 	sessionDuration := durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS)
 	sessionCtx, cancelSession := r.sessionLimit(
