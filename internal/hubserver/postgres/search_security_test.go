@@ -827,3 +827,84 @@ func TestSearchNumericMatchAppearsOnceAcrossWindows(t *testing.T) {
 		})
 	}
 }
+
+func TestSearchLiteralPublicationAvoidsUnchangedWrites(t *testing.T) {
+	f := newSearchFixture(t)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		for _, item := range []string{"wi_first_1", "wi_first_2"} {
+			f.put(t, searchIssue(org, item), searchstore.Text{Title: "example", Body: "example"}, 0)
+		}
+		f.drain(t, org)
+	}
+	runtime, err := postgres.NewRuntime(t.Context(), f.pool, f.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(org), func(t *testing.T) {
+			tx := tenantTx(t, runtime, f.pool, string(org))
+			queries := pgquery.New(tx)
+			terms := []string{searchstore.Prefix(org, "") + "g" + searchstore.LiteralHex("exa"), searchstore.Prefix(org, "prj_first") + "g" + searchstore.LiteralHex("exa")}
+			var scopes int64
+			if err := tx.QueryRowContext(t.Context(), `SELECT count(*) FROM search_postings WHERE organization_id=$1 AND document_id='issue/wi_first_1' AND term='~all'`, org).Scan(&scopes); err != nil {
+				t.Fatal(err)
+			}
+			if scopes == 0 {
+				t.Fatal("published document has no scopes")
+			}
+			counts := func() (int64, int64) {
+				t.Helper()
+				var inserts, updates int64
+				if err := tx.QueryRowContext(t.Context(), `SELECT n_tup_ins,n_tup_upd FROM pg_stat_xact_user_tables WHERE relname='search_postings'`).Scan(&inserts, &updates); err != nil {
+					t.Fatal(err)
+				}
+				return inserts, updates
+			}
+			for _, test := range []struct {
+				name      string
+				terms     []string
+				positions []string
+				inserts   int64
+				updates   int64
+			}{
+				{"unchanged", terms, []string{"{}", "{0,4294967296}"}, 0, 0},
+				{"changed and missing", append(slices.Clone(terms), searchstore.Prefix(org, "prj_first")+"g"+searchstore.LiteralHex("zzz")), []string{"{}", "{0,4294967296,4294967304}", "{}"}, scopes, scopes},
+				{"unchanged after change", terms, []string{"{}", "{0,4294967296,4294967304}"}, 0, 0},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					beforeInserts, beforeUpdates := counts()
+					if err := queries.SearchPublishLiterals(t.Context(), pgquery.SearchPublishLiteralsParams{OrganizationID: org, ID: "issue/wi_first_1", Revision: 1, Literals: test.terms, Positions: test.positions}); err != nil {
+						t.Fatal(err)
+					}
+					afterInserts, afterUpdates := counts()
+					if afterInserts-beforeInserts != test.inserts || afterUpdates-beforeUpdates != test.updates {
+						t.Fatalf("posting writes: inserts=%d updates=%d, want inserts=%d updates=%d", afterInserts-beforeInserts, afterUpdates-beforeUpdates, test.inserts, test.updates)
+					}
+					if test.name == "unchanged" {
+						probe, err := runtime.Begin(t.Context(), org, nil)
+						if err != nil {
+							t.Fatal(err)
+						}
+						_, lockErr := probe.ExecContext(t.Context(), `SELECT 1 FROM search_postings WHERE organization_id=$1 AND document_id='issue/wi_first_1' AND term=ANY($2::text[]) FOR UPDATE NOWAIT`, org, pq.Array(test.terms))
+						rollbackErr := probe.Rollback()
+						if lockErr != nil {
+							t.Fatalf("unchanged literal publication locked postings: %v", lockErr)
+						}
+						if rollbackErr != nil {
+							t.Fatal(rollbackErr)
+						}
+					}
+					for index, term := range test.terms {
+						var matching int64
+						if err := tx.QueryRowContext(t.Context(), `SELECT count(*) FROM search_postings WHERE organization_id=$1 AND document_id='issue/wi_first_1' AND term=$2 AND literal_positions=$3::bigint[]`, org, term, test.positions[index]).Scan(&matching); err != nil {
+							t.Fatal(err)
+						}
+						if matching != scopes {
+							t.Errorf("literal %d has correct positions in %d scopes, want %d", index, matching, scopes)
+						}
+					}
+				})
+			}
+		})
+	}
+}
