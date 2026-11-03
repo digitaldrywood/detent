@@ -101,7 +101,7 @@ func linkedSnapshotFromSource(source IssueSource, now time.Time) tracker.GitHubI
 	if author == "" {
 		author = "unavailable"
 	}
-	return tracker.GitHubIssueSnapshot{URL: source.URL, Title: source.Title, Body: source.Body,
+	return tracker.GitHubIssueSnapshot{URL: source.URL, Title: source.Title, Body: source.Body, Labels: source.Labels,
 		Provenance: tracker.Provenance{Provider: "github", ExternalID: source.NodeID, AuthorID: author, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt, ObservedAt: now}}
 }
 
@@ -232,7 +232,7 @@ func applyNativeIssueWebhook(ctx context.Context, tx *sql.Tx, delivery storedWeb
 		if issue.LinkedSource == nil || issue.LinkedSource.URL != canonical {
 			continue
 		}
-		snapshot := linkedSnapshotFromSource(IssueSource{NodeID: source.NodeID, Number: source.Number, URL: canonical, Title: source.Title, Body: source.Body, AuthorID: source.AuthorID, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt}, now)
+		snapshot := linkedSnapshotFromSource(IssueSource{NodeID: source.NodeID, Number: source.Number, URL: canonical, Title: source.Title, Body: source.Body, AuthorID: source.AuthorID, Labels: source.Labels, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt}, now)
 		if delivery.EventType == "issue_comment" {
 			if delivery.Action != "created" || payload.Comment == nil || strings.Contains(payload.Comment.Body, "<!-- detent-summary:") {
 				continue

@@ -113,7 +113,13 @@ func TestScheduledRepairContract(t *testing.T) {
 	for _, test := range []struct {
 		name, prompt, want, importBody, workflow, branch string
 		priority                                         int
+		authors                                          []string
+		label                                            string
 	}{
+		{name: "trusted authors", prompt: definition + strings.Replace(authorized, "### Acceptance criteria", "Trusted-source CI verification override: authors `repair-bot, github-actions[bot]`; label `detent:auto-fix`.\n### Acceptance criteria", 1), want: body, importBody: body, workflow: ".github/workflows/ci.yml", authors: []string{"repair-bot", "github-actions[bot]"}, label: "detent:auto-fix"},
+		{name: "empty trusted author", prompt: definition + strings.Replace(authorized, "### Acceptance criteria", "Trusted-source CI verification override: authors ``; label `detent:auto-fix`.\n### Acceptance criteria", 1), want: body},
+		{name: "empty trusted label", prompt: definition + strings.Replace(authorized, "### Acceptance criteria", "Trusted-source CI verification override: authors `repair-bot`; label ``.\n### Acceptance criteria", 1), want: body},
+
 		{name: "approved literal sections", prompt: definition + template, want: body},
 		{name: "explicit import delegation", prompt: definition + authorized, want: body, importBody: body, workflow: ".github/workflows/ci.yml"},
 		{name: "High priority release family", priority: 1, prompt: strings.Replace(shortTemplate, "Urgent priority", "High priority", 1), want: shortBody, importBody: shortBody, workflow: ".github/workflows/ci.yaml", branch: "release/v*"},
@@ -143,6 +149,9 @@ func TestScheduledRepairContract(t *testing.T) {
 			contract, err := ResolveIssueContract(test.prompt)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if authors, label := contract.ScheduledTrustedSource(); !reflect.DeepEqual(authors, test.authors) || label != test.label {
+				t.Fatalf("trusted source = %v %q", authors, label)
 			}
 			if got := contract.ScheduledRepairBody(); got != test.want {
 				t.Fatalf("repair contract = %q, want %q", got, test.want)
