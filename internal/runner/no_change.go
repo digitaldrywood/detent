@@ -28,7 +28,7 @@ func (c *NativeChange) NoChangeAccepted(cfg gate.Config) bool {
 		return false
 	}
 	n := c.NoChange
-	if n.VerifiedSHA == "" || n.ReportedSHA == "" || strings.TrimSpace(n.Evidence) == "" || n.PolicyID == "" || n.Repository == "" || c.HeadSHA != n.VerifiedSHA || c.BaseSHA != n.VerifiedSHA {
+	if n.VerifiedSHA == "" || n.VersionID() == "" || strings.TrimSpace(n.Evidence) == "" || n.PolicyID == "" || n.Repository == "" || c.HeadSHA != n.VerifiedSHA || c.BaseSHA != n.VerifiedSHA {
 		return false
 	}
 	cfg = gate.Effective(cfg)
