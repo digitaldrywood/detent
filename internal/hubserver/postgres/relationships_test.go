@@ -102,6 +102,64 @@ func TestRelationshipsAndLabelsAreTenantScopedAndAtomic(t *testing.T) {
 	if err := writeRelationship("org_first", "prj_first", "wi_first_1", "prj_second", "wi_second_2", "related"); err != nil {
 		t.Fatal(err)
 	}
+	if err := repository.ReadTenant(t.Context(), "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+		batch, ok := r.(tenantstore.WorkItemRelationshipBatchReader)
+		if !ok {
+			t.Fatal("PostgreSQL reader does not expose bounded relationship batches")
+		}
+		facts, err := batch.WorkItemRelationshipFacts(t.Context(), "prj_first", []tracker.NativeWorkItemID{"wi_first_1", "wi_first_2"})
+		if err != nil {
+			return err
+		}
+		byWorkItem := map[tracker.NativeWorkItemID][]tenantstore.WorkItemRelationshipFact{}
+		for _, fact := range facts {
+			byWorkItem[fact.WorkItemID] = append(byWorkItem[fact.WorkItemID], fact)
+		}
+		if len(byWorkItem["wi_first_1"]) != 2 || len(byWorkItem["wi_first_2"]) < 1 {
+			t.Fatalf("batched relationship facts counts: first=%d second=%d", len(byWorkItem["wi_first_1"]), len(byWorkItem["wi_first_2"]))
+		}
+		want := map[string]bool{"dependency/blocked_by/wi_second_1": false, "related/related/wi_second_2": false}
+		for _, fact := range byWorkItem["wi_first_1"] {
+			if fact.Relationship.RelatedProjectID != "prj_second" || !fact.RelatedProjectVisible {
+				t.Fatalf("cross-project visibility fact=%+v", fact)
+			}
+			key := fact.Relationship.Type + "/" + fact.Relationship.Direction + "/" + string(fact.Relationship.RelatedWorkItemID)
+			if _, ok := want[key]; ok {
+				want[key] = true
+			}
+		}
+		for key, found := range want {
+			if !found {
+				t.Errorf("missing relationship fact %q", key)
+			}
+		}
+		foundSecond := false
+		for _, fact := range byWorkItem["wi_first_2"] {
+			foundSecond = foundSecond || fact.Relationship.RelatedWorkItemID == "wi_prj_fourth"
+		}
+		if !foundSecond {
+			t.Fatal("second source item relationship was not returned")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ReadTenant(t.Context(), "org_second", corestore.Serving, func(r tenantstore.Reader) error {
+		batch, ok := r.(tenantstore.WorkItemRelationshipBatchReader)
+		if !ok {
+			t.Fatal("PostgreSQL reader does not expose bounded relationship batches")
+		}
+		facts, err := batch.WorkItemRelationshipFacts(t.Context(), "prj_first", []tracker.NativeWorkItemID{"wi_first_1", "wi_first_2"})
+		if err != nil {
+			return err
+		}
+		if len(facts) != 1 || facts[0].WorkItemID != "wi_first_1" || facts[0].Relationship.RelatedWorkItemID != "wi_second_1" {
+			t.Fatalf("second-tenant batch facts=%+v", facts)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	rollback := errors.New("rollback relationship transaction")
 	err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.SetRelationship(t.Context(), corestore.Relationship{
