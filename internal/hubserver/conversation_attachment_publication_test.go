@@ -3,6 +3,8 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -175,8 +177,8 @@ func TestConversationAttachmentPublicationRechecksRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	var accounted int64
-	if err := store.reader.QueryRowContext(t.Context(), "SELECT size FROM attachments WHERE organization_id=? AND object_key=? AND object_deleted_at IS NULL", record.OrganizationID, ref.Key).Scan(&accounted); err != nil || accounted != ref.CompressedSize {
-		t.Fatalf("rejected upload left unaccounted staged bytes: size=%d err=%v", accounted, err)
+	if err := store.reader.QueryRowContext(t.Context(), "SELECT size FROM attachments WHERE organization_id=? AND object_key=?", record.OrganizationID, ref.Key).Scan(&accounted); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("rejected upload left an orphan archive: size=%d err=%v", accounted, err)
 	}
 	var rows int
 	if err := store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_attachments WHERE conversation_id=?", record.ID).Scan(&rows); err != nil || rows != 0 {
@@ -259,5 +261,58 @@ func TestConversationUnsentAttachmentReclaimsArchiveCharge(t *testing.T) {
 				t.Fatalf("unreferenced archive rows=%d; want 0: %v", rows, err)
 			}
 		})
+	}
+}
+
+func TestConversationAttachmentDeletePreservesCrossProjectReceipt(t *testing.T) {
+	f := newConversationAPIFixture(t, nil)
+	first := f.create(t, f.token, map[string]any{"title": "upload"})
+	secondProject := newNativeFixture(t, f.service, f.project.OrganizationID, "receipt-project")
+	secondFixture := f
+	secondFixture.nativeFixture = secondProject
+	second := secondFixture.create(t, secondProject.token, map[string]any{"title": "receipt"})
+	store := f.service.conversations.store
+	now := f.service.config.now()
+	receipt := conversation.Receipt{Key: "shared-command", Kind: conversation.CommandMessage, Status: conversation.DeliverySaved, UpdatedAt: now.UTC()}
+	content, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := store.preparePayload(t.Context(), string(f.project.OrganizationID), content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, _, err := store.reserveCommand(ctx, tx, second.Conversation.ID, receipt.Key, receipt.Kind, "request-hash", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	upload := f.upload(t, f.token, first.Conversation.ID, "receipt.json", "application/json", content)
+	var uploadID, receiptID string
+	if err := store.reader.QueryRowContext(t.Context(), "SELECT content_attachment_id FROM conversation_attachments WHERE id=?", upload.ID).Scan(&uploadID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.reader.QueryRowContext(t.Context(), "SELECT content_attachment_id FROM conversation_commands WHERE conversation_id=? AND key=?", second.Conversation.ID, receipt.Key).Scan(&receiptID); err != nil {
+		t.Fatal(err)
+	}
+	if uploadID == "" || uploadID != receiptID {
+		t.Fatalf("upload and receipt did not deduplicate: %q / %q", uploadID, receiptID)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, upload.URL, f.token, nil), http.StatusNoContent)
+	ctx = newConversationArchiveReads(t.Context())
+	tx, err = store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	got, replay, err := store.reserveCommand(ctx, tx, second.Conversation.ID, receipt.Key, receipt.Kind, "request-hash", now)
+	if err != nil || !replay || got == nil || got.Key != receipt.Key || got.Status != receipt.Status {
+		t.Fatalf("receipt replay after upload deletion: %+v replay=%v err=%v", got, replay, err)
 	}
 }
