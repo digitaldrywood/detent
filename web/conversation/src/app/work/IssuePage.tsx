@@ -68,7 +68,7 @@ import type { WorkItemView } from "./lib/model.ts";
 import { useRunnerNames } from "./lib/runnerNames.ts";
 import { useNow, useWorkHttp } from "./lib/useWork.ts";
 import { newWorkKey, WorkApiError, type WorkHttp } from "./lib/workHttp.ts";
-import { invalidateQueries, scopeOf, setQueryData, useQuery } from "../lib/queryCache.ts";
+import { QuerySuperseded, invalidateQueries, scopeOf, setQueryData, useQuery } from "../lib/queryCache.ts";
 import { issueKey, issueProjectHint, hintIssueProject, readIssue, readOlderIssue, selectChangeId, type IssueData } from "./lib/issueQuery.ts";
 
 import { subscribeProjectQuery, eventNamesItem } from "./lib/projectEvents.ts";
@@ -132,14 +132,14 @@ export function useIssue(
     const readSignal = AbortSignal.any([signal, controller.signal]);
     let cancel = () => {};
     const aborted = new Promise<never>((_resolve, reject) => {
-      cancel = () => reject(new Error("Issue snapshot superseded"));
+      cancel = () => reject(new QuerySuperseded("Issue snapshot superseded"));
       readSignal.addEventListener("abort", cancel, { once: true });
       if (readSignal.aborted) cancel();
     });
     try {
       const result = await Promise.race([readIssue(http, workItemId, requestedChange, owner.projectChanged, owner.stream !== null)(readSignal,
         (next) => { if (owner.active && !readSignal.aborted && snapshot?.current() !== false) partial(next); }), aborted]);
-      if (!owner.active || snapshot?.current() === false) throw new Error("Issue snapshot superseded");
+      if (!owner.active || snapshot?.current() === false) throw new QuerySuperseded("Issue snapshot superseded");
       owner.projectChanged = false;
       setQueryData(key, result);
       snapshot?.complete(result?.issue.change_sequence);

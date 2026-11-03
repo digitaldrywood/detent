@@ -7,6 +7,8 @@
 // arrives for a cleared account is never published.
 import React from "react";
 
+export class QuerySuperseded extends Error {}
+
 export type QueryKey = readonly unknown[];
 
 export interface QuerySnapshot<T> {
@@ -184,6 +186,7 @@ function run(id: string, entry: Entry): Promise<unknown> {
       return data;
     } catch (error) {
       if (!current(id, entry, owner)) return undefined;
+      if (error instanceof QuerySuperseded && entry.again) return undefined;
       publish(entry, { ...entry.snapshot, error, fetching: false });
       return undefined;
     } finally {
