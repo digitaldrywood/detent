@@ -20,7 +20,7 @@ import (
 func storageTestArchiveObjects(t *testing.T, service *Service, objects map[string][]byte) map[string][]byte {
 	t.Helper()
 	archives := maps.Clone(objects)
-	rows, err := service.database.reader.QueryContext(t.Context(), "SELECT response_object_key FROM native_commands WHERE response_object_key<>''")
+	rows, err := service.database.reader.QueryContext(t.Context(), "SELECT response_object_key FROM native_commands WHERE response_object_key<>'' UNION SELECT payload_object_key FROM collaboration_versions WHERE payload_object_key<>''")
 	if err != nil {
 		t.Fatal(err)
 	}

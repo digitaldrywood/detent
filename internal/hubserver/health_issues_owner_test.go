@@ -102,7 +102,7 @@ func TestHealthFindingOpenOwner(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				owner, err := createNativeIssueTx(t.Context(), tx, scope, request, now.Add(-time.Hour))
+				owner, err := createNativeIssueTx(nativeFixturePayloadContext(t.Context(), tx), tx, scope, request, now.Add(-time.Hour))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -148,7 +148,7 @@ func TestHealthFindingOpenOwner(t *testing.T) {
 							defer tx.Rollback()
 							_, err = writeHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now, findings)
 							if err == nil {
-								_, err = reportHealthFindings(t.Context(), tx, f.project.OrganizationID, now, nil)
+								_, err = reportHealthFindings(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, f.project.OrganizationID, now, nil)
 							}
 							if err == nil {
 								err = tx.Commit()

@@ -27,7 +27,7 @@ type objectPayloadConversionPosition struct {
 
 func objectPayloadFamily(name string) bool {
 	switch name {
-	case "attempts", "analytics", "checkpoints", "landings", "versions", "evidence", "sources", "diff_files":
+	case "attempts", "analytics", "checkpoints", "landings", "versions", "evidence", "sources", "diff_files", "collaboration_versions":
 		return true
 	}
 	return false
@@ -166,6 +166,15 @@ func (s *Service) applyObjectPayloadConversion(ctx context.Context, tx *sql.Tx, 
 		}
 	}
 	before, after := storageConversionDigest(raw, ""), storageConversionDigest("{}", ref.Key)
+	if family.name == "collaboration_versions" {
+		var encoding string
+		var revision, base int64
+		if err := tx.QueryRowContext(ctx, "SELECT encoding,revision,base_revision FROM collaboration_versions WHERE rowid=?", row).Scan(&encoding, &revision, &base); err != nil {
+			return err
+		}
+		before = storageConversionDigest(raw, "", base)
+		after = storageConversionDigest("{}", ref.Key, nativeVersionBase(encoding, revision))
+	}
 	if family.name == "sources" {
 		before = storageConversionDigest(raw, "", "", int64(0), int64(0))
 		after = storageConversionDigest([]byte{}, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize)
@@ -176,6 +185,8 @@ VALUES(?,?,?,?,2,?,?,?,?,?,?) ON CONFLICT(organization_id,project_id,family,aggr
 		return err
 	}
 	switch family.name {
+	case "collaboration_versions":
+		_, err = tx.ExecContext(ctx, "UPDATE collaboration_versions SET record_json='{}',payload_object_key=?,base_revision=CASE WHEN encoding='patch' THEN revision-1 ELSE 0 END WHERE rowid=?", ref.Key, row)
 	case "analytics":
 		if _, err := tx.ExecContext(ctx, analyticsProjectionBackfill, analyticsValues...); err != nil {
 			return err
@@ -241,6 +252,9 @@ VALUES(?,?,?,?,2,?,?,?,?,?,?) ON CONFLICT(organization_id,project_id,family,aggr
 	pendingQuery := ""
 	var pendingArgs []any
 	switch family.name {
+	case "collaboration_versions":
+		pendingQuery = "SELECT EXISTS(SELECT 1 FROM collaboration_versions WHERE organization_id=? AND project_id=? AND work_item_id=? AND payload_object_key='')"
+		pendingArgs = []any{scope.organization, scope.project, aggregate}
 	case "analytics":
 		pendingQuery = analyticsPayloadPendingSQL
 		pendingArgs = []any{scope.organization, scope.project}

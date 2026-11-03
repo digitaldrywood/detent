@@ -906,7 +906,7 @@ func TestNativeDuplicateFilingHistoryBound(t *testing.T) {
 					t.Fatal(err)
 				}
 				for range 4 {
-					if _, err := insertNativeComment(t.Context(), tx, scope, issue, "Unrelated mailbox delivery history", nil, f.service.config.now()); err != nil {
+					if _, err := insertNativeComment(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "Unrelated mailbox delivery history", nil, f.service.config.now()); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -1011,7 +1011,7 @@ func TestNativeMachineDuplicateCommentCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := insertNativeComment(t.Context(), tx, scope, owner, "internal/example/pool.go:23:4: undefined: capacity", nil, f.service.config.now()); err != nil {
+	if _, err := insertNativeComment(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, owner, "internal/example/pool.go:23:4: undefined: capacity", nil, f.service.config.now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {

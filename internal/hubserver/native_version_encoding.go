@@ -10,8 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/artifact"
 )
 
 const nativeVersionSnapshotInterval = 32
@@ -229,17 +230,63 @@ func applyNativeVersionPatch(previous, patch []byte) ([]byte, error) {
 	return nativeVersionObjectBytes(keys, fields)
 }
 
+func nativeVersionBase(encoding string, revision int64) int64 {
+	if encoding == "patch" {
+		return revision - 1
+	}
+	return 0
+}
+
+func readNativeVersionPayload(ctx context.Context, query nativeQueryer, organization, key string) ([]byte, error) {
+	if !strings.HasPrefix(key, "orgs/"+organization+"/") {
+		return nil, artifact.ErrIntegrity
+	}
+	raw, err := readStoredPayload(payloadQueryContext(ctx, query), key)
+	if err != nil {
+		return nil, fmt.Errorf("read history payload: %w", err)
+	}
+	return raw, nil
+}
+
+type nativeVersionStorageKey struct{}
+
 func reconstructNativeVersion(ctx context.Context, query nativeQueryer, organization, project, item, record string, revision int64) ([]byte, error) {
-	var start int64
+	objects, set := ctx.Value(nativeVersionStorageKey{}).(bool)
+	if !set {
+		objects = true
+	}
+	return reconstructNativeVersionStorage(ctx, query, organization, project, item, record, revision, objects)
+}
+
+func reconstructNativeVersionStorage(ctx context.Context, query nativeQueryer, organization, project, item, record string, revision int64, objects bool) ([]byte, error) {
+	keyColumn, baseColumn := "''", "0"
+	if objects {
+		keyColumn, baseColumn = "payload_object_key", "base_revision"
+	}
+	snapshotKey, snapshotBase := "''", "0"
+	if objects {
+		snapshotKey, snapshotBase = "v.payload_object_key", "v.base_revision"
+	}
+	var start, base int64
 	var raw []byte
-	err := query.QueryRowContext(ctx, `SELECT v.revision, v.record_json FROM collaboration_versions v
+	var key string
+	err := query.QueryRowContext(ctx, `SELECT v.revision, v.record_json, `+snapshotKey+`,`+snapshotBase+` FROM collaboration_versions v
 JOIN collaboration_versions target ON target.organization_id=v.organization_id AND target.project_id=v.project_id
 AND target.work_item_id=v.work_item_id AND target.record_id=v.record_id
 WHERE target.organization_id=? AND target.project_id=? AND target.work_item_id=? AND target.record_id=? AND target.revision=?
 AND v.revision<=target.revision AND v.encoding='snapshot'
-ORDER BY v.revision DESC LIMIT 1`, organization, project, item, record, revision).Scan(&start, &raw)
+ORDER BY v.revision DESC LIMIT 1`, organization, project, item, record, revision).Scan(&start, &raw, &key, &base)
 	if err != nil {
 		return nil, err
+	}
+	if key != "" {
+		if base != 0 {
+			return nil, errors.New("history base revision mismatch")
+		}
+		raw, err = readNativeVersionPayload(ctx, query, organization, key)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if start == revision {
 		return raw, nil
@@ -247,37 +294,53 @@ ORDER BY v.revision DESC LIMIT 1`, organization, project, item, record, revision
 	if revision-start >= nativeVersionSnapshotInterval {
 		return nil, errors.New("history checkpoint interval exceeded")
 	}
-	rows, err := query.QueryContext(ctx, `SELECT revision, encoding, record_json FROM collaboration_versions
+	rows, err := query.QueryContext(ctx, `SELECT revision, encoding, record_json, `+keyColumn+`,`+baseColumn+` FROM collaboration_versions
 WHERE organization_id=? AND project_id=? AND work_item_id=? AND record_id=? AND revision>? AND revision<=? ORDER BY revision`, organization, project, item, record, start, revision)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	type version struct {
+		revision, base int64
+		encoding, key  string
+		encoded        []byte
+	}
+	var versions []version
 	for rows.Next() {
-		var next int64
-		var encoding string
-		var encoded []byte
-		if err := rows.Scan(&next, &encoding, &encoded); err != nil {
+		var v version
+		if err := rows.Scan(&v.revision, &v.encoding, &v.encoded, &v.key, &v.base); err != nil {
 			return nil, err
 		}
-		if next != start+1 {
+		versions = append(versions, v)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	for _, v := range versions {
+		if v.revision != start+1 {
 			return nil, sql.ErrNoRows
 		}
-		switch encoding {
-		case "snapshot":
-			raw = slices.Clone(encoded)
-		case "patch":
-			raw, err = applyNativeVersionPatch(raw, encoded)
+		if v.key != "" {
+			if v.base != nativeVersionBase(v.encoding, v.revision) {
+				return nil, errors.New("history base revision mismatch")
+			}
+			v.encoded, err = readNativeVersionPayload(ctx, query, organization, v.key)
 			if err != nil {
-				return nil, fmt.Errorf("apply history revision %d: %w", next, err)
+				return nil, err
+			}
+		}
+		switch v.encoding {
+		case "snapshot":
+			raw = v.encoded
+		case "patch":
+			raw, err = applyNativeVersionPatch(raw, v.encoded)
+			if err != nil {
+				return nil, fmt.Errorf("apply history revision %d: %w", v.revision, err)
 			}
 		default:
 			return nil, errors.New("unknown history encoding")
 		}
-		start = next
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+		start = v.revision
 	}
 	if start != revision {
 		return nil, sql.ErrNoRows

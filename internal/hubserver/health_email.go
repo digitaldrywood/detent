@@ -48,6 +48,7 @@ func healthEmailText(value string) string {
 }
 
 func (s *Service) commitHealthEvaluation(ctx context.Context, organization tracker.OrganizationID, now time.Time, findings []healthFinding, unavailable []healthBaselineUnavailable) error {
+	ctx = s.contentContext(ctx)
 	cancellations, err := readHealthCancellations(ctx, s.database.reader, organization)
 	if err != nil {
 		return err
@@ -59,30 +60,31 @@ func (s *Service) commitHealthEvaluation(ctx context.Context, organization track
 	if err != nil {
 		return err
 	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO health_detector_ticks(organization_id,last_tick_at,baseline_unavailable_json) VALUES(?,?,?)
+	var issues []tracker.NativeIssue
+	var notifications []healthFinding
+	err = s.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO health_detector_ticks(organization_id,last_tick_at,baseline_unavailable_json) VALUES(?,?,?)
  ON CONFLICT(organization_id) DO UPDATE SET baseline_unavailable_json=excluded.baseline_unavailable_json`, organization, formatHubTime(now), string(raw)); err != nil {
-		return err
-	}
-	transitions, err := writeHealthEvaluation(ctx, tx, organization, now, findings)
+			return err
+		}
+		transitions, err := writeHealthEvaluation(ctx, tx, organization, now, findings)
+		if err != nil {
+			return err
+		}
+		issues, err = reportHealthFindings(ctx, tx, organization, now, cancellations)
+		if err != nil {
+			return err
+		}
+		notifications, err = s.claimHealthEmails(ctx, tx, organization, transitions)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	issues, err := reportHealthFindings(ctx, tx, organization, now, cancellations)
-	if err != nil {
-		return err
-	}
-	notifications, err := s.claimHealthEmails(ctx, tx, organization, transitions)
-	if err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
+
 	if s.outbox != nil {
 		s.outbox.signal()
 	}
