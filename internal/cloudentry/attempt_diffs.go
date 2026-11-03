@@ -326,7 +326,7 @@ func (s *Service) maintainAttemptDiffBodies(ctx context.Context, organization Or
 }
 
 func (s *Service) maintainOrganizationDiffBodies(ctx context.Context) {
-	if s.attachments == nil || s.config.now().Before(s.diffBodySweepAt) {
+	if s.attachments == nil || (s.config.Allocation != nil && s.config.Allocation.TenantPostgres) || s.config.now().Before(s.diffBodySweepAt) {
 		return
 	}
 	organizations, err := s.registry.List(ctx)

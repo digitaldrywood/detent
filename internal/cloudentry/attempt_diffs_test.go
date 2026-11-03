@@ -23,6 +23,23 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type uncalledDiffMaintenanceStorage struct{ attachment.Storage }
+
+func TestDiffBodyMaintenanceSkipsPostgresTenants(t *testing.T) {
+	now := time.Now().UTC()
+	service := &Service{
+		config: Config{
+			Allocation: &AllocationConfig{TenantPostgres: true},
+			now:        func() time.Time { return now },
+		},
+		attachments: uncalledDiffMaintenanceStorage{},
+	}
+	service.maintainOrganizationDiffBodies(t.Context())
+	if !service.diffBodySweepAt.IsZero() {
+		t.Fatalf("PostgreSQL diff-body sweep was scheduled at %s", service.diffBodySweepAt)
+	}
+}
+
 func TestMigratedAttemptDiffReadsThroughEntry(t *testing.T) {
 	if testing.Short() {
 		t.Skip("durable tenant integration")
