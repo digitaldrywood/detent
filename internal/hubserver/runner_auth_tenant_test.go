@@ -279,7 +279,7 @@ func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing
 	}
 }
 
-func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testing.T) {
+func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	clock := &leaseTestClock{value: time.Date(2026, time.November, 1, 22, 0, 0, 0, time.UTC)}
 	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, TenantRepository: repository, Clock: clock.Now})
@@ -655,6 +655,55 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+	leaseProjectResponse := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization.ID)+"/projects", testHubAdminToken, map[string]any{
+		"idempotency_key": "heartbeat-leases-project",
+		"name":            "Heartbeat leases",
+		"states":          nativeFixtureStates(),
+	})
+	requireNativeStatus(t, leaseProjectResponse, http.StatusOK)
+	var leaseProject tracker.NativeProject
+	decodeHubResponse(t, leaseProjectResponse, &leaseProject)
+	var heartbeatWorkItems []corestore.WorkItem
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		for index := range 2 {
+			item, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{
+				OrganizationID: organization.ID,
+				NativeID:       tracker.NativeWorkItemID(fmt.Sprintf("wi_heartbeat_%d", index+1)),
+				ProjectID:      leaseProject.ID,
+				Number:         int64(9001 + index),
+				Title:          "Heartbeat lease example",
+			})
+			if err != nil {
+				return err
+			}
+			heartbeatWorkItems = append(heartbeatWorkItems, item)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for index, item := range heartbeatWorkItems {
+		var lease leasestore.Lease
+		if err := repository.WriteLeases(t.Context(), organization.ID, corestore.Serving, func(w leasestore.Writer) error {
+			var err error
+			lease, err = w.Claim(t.Context(), leasestore.Claim{
+				IssueID:          item.ID,
+				ExpectedRevision: item.Revision,
+				MachineID:        "machine_example",
+				SessionID:        fmt.Sprintf("heartbeat_session_%d", index+1),
+				LeaseID:          fmt.Sprintf("lease_heartbeat_%d", index+1),
+				TTL:              time.Hour,
+			})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: organization.ID, LeaseID: lease.LeaseID, RunnerID: "runner_example", AssignedAt: lease.AcquiredAt})
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, runner := range []struct {
 		runnerID  string

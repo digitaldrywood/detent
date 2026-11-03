@@ -291,6 +291,7 @@ type Reader interface {
 	RunnerProjects(context.Context, string, int) ([]tracker.ProjectID, error)
 	RunnerProjectAuthorized(context.Context, string, tracker.ProjectID, time.Time) (bool, error)
 	RunnerActiveLeaseIDs(context.Context, string, time.Time, int) ([]string, error)
+	RunnerHasActiveLease(context.Context, string, time.Time) (bool, error)
 	RunnerProjectUsage(context.Context, string, tracker.ProjectID, time.Time) (runnerUsed, runnerProjectUsed int64, err error)
 	RunnerBindingAvailable(context.Context, string, tracker.MachineID, bool) error
 	RunnerRepositoryList(context.Context, string) (RepositoryList, error)
