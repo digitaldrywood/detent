@@ -59,6 +59,7 @@ func (s *Service) prepareBoardPage(ctx context.Context, scope nativeScope, recor
 	for _, record := range records {
 		refs = append(refs, record.Payload)
 	}
+	finishPayloads := timeSpan(ctx, "board_payloads")
 	s.prefetchDetails(ctx, string(scope.organization), refs)
 
 	decoded := prepareBoardRecordPage(ctx, records, func(ctx context.Context, row viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
@@ -78,7 +79,10 @@ func (s *Service) prepareBoardPage(ctx context.Context, scope nativeScope, recor
 		}
 	}
 	decoded.close()
+	finishPayloads()
+	finishRelationships := timeSpan(ctx, "board_relationships")
 	relationshipErr := s.hydrateWorkItemRelationshipFactsPage(ctx, scope, issues)
+	finishRelationships()
 	var changes boardChangePreparation
 	supported := false
 	if currentChange {

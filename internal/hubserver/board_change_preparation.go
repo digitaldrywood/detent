@@ -37,6 +37,7 @@ func (s *Service) prepareBoardChangeRows(ctx context.Context, scope nativeScope,
 		return result, true
 	}
 	supported := false
+	finishRows := timeSpan(ctx, "board_change_rows")
 	result.err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		batch, ok := reader.(tenantstore.BoardChangeRowsReader)
 		if !ok {
@@ -62,6 +63,7 @@ func (s *Service) prepareBoardChangeRows(ctx context.Context, scope nativeScope,
 		result.policy, err = readCurrentChangePolicyRows(ctx, reader, scope)
 		return err
 	})
+	finishRows()
 	if result.err == nil && supported {
 		refs := []attachment.ArchiveReference{eventstore.Reference(result.policy.Project.PayloadObjectKey, result.policy.Project.PayloadSHA256, result.policy.Project.PayloadBytes, result.policy.Project.PayloadContentBytes)}
 		if result.policy.hasReview {
@@ -77,14 +79,17 @@ func (s *Service) prepareBoardChangeRows(ctx context.Context, scope nativeScope,
 			}
 			for _, r := range row.Evidence {
 				current := row.Version != nil && r.VersionID != nil && *r.VersionID == row.Version.ID
-				if (r.Kind == "review" || r.Kind == "check") && current {
+				if r.Kind == "review" && (current || r.Decision == "approved") || r.Kind == "check" && current {
 					refs = append(refs, eventstore.Reference(r.PayloadObjectKey, r.PayloadSHA256, r.PayloadBytes, r.PayloadContentBytes))
 				}
 			}
 		}
+		finishPayloads := timeSpan(ctx, "board_change_payloads")
 		s.prefetchDetails(ctx, string(scope.organization), refs)
-
+		finishPayloads()
+		finishPolicy := timeSpan(ctx, "board_change_policy")
 		approval, err := hydrateCurrentChangeVersionApproval(ctx, eventstore.NewContent(s.runDetailStoreFor(ctx)), scope, result.policy, "")
+		finishPolicy()
 		result.approval = &approval
 		result.err = err
 	}

@@ -120,6 +120,15 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			priorReview := tracker.ChangeReview{ID: fmt.Sprintf("review_%03d", index), Decision: "approved", Body: "Previously approved", Actor: issue.Actor, CreatedAt: now.Add(-time.Minute)}
+			reviewRaw, err := json.Marshal(priorReview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			evidence, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: changeID, Kind: "review"}, reviewRaw)
+			if err != nil {
+				t.Fatal(err)
+			}
 			card := tracker.NativeBoardCard{Issue: issue, Change: &tracker.NativeBoardChange{ID: changeID, Title: "Example"}}
 			payload, err := viewstore.NewContent(details).PrepareBoard(t.Context(), card)
 			if err != nil {
@@ -140,6 +149,9 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 					return err
 				}
 				if err := w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: "example", WorkItemID: id, ChangeID: changeID, CreatedAt: now}); err != nil {
+					return err
+				}
+				if _, err := w.AppendEvidence(t.Context(), evidence); err != nil {
 					return err
 				}
 				return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: "example", WorkItemID: id, ExpectedRevision: 1, ExpectedProjectRevision: project.Core.ContentSettingsRevision, Current: &board})
@@ -178,11 +190,22 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 		batchDetails.scalar.Store(0)
 		counted.scalar = false
 		counted.reads.Store(0)
-		after, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "archived": {"all"}, "include": {"board"}})
+		timing := &requestTiming{start: time.Now()}
+		after, err := service.readBoardRecords(withRequestTiming(t.Context(), timing), scope, url.Values{"limit": {"200"}, "archived": {"all"}, "include": {"board"}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		batchReads := counted.reads.Load()
+		phases := map[string]bool{}
+		for _, span := range timing.namedSpans() {
+			phases[span.name] = true
+		}
+		for _, phase := range []string{"board_cursor", "board_select", "board_payloads", "board_relationships", "board_change_rows", "board_change_payloads", "board_change_policy", "board_hydrate"} {
+			if !phases[phase] {
+				t.Errorf("board timing omitted phase %s", phase)
+			}
+		}
+		t.Logf("board phases: %+v", timing.namedSpans())
 		if batches, scalar := batchDetails.batches.Load(), batchDetails.scalar.Load(); batches < 3 || batches > 5 || scalar != 0 {
 			t.Fatalf("200-card allocation lookups: batches=%d scalar=%d", batches, scalar)
 		}
