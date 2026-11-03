@@ -862,6 +862,10 @@ func (s *Service) selectedCurrentChangeSummary(ctx context.Context, scope native
 }
 
 func (s *Service) hydrateCurrentChangeDetail(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, changeRecord eventstore.Change, versionRecord *eventstore.Version, policyRows currentChangePolicyRows, now time.Time) (tracker.ChangeDetail, error) {
+	return s.hydrateCurrentChangeDetailWithFacts(ctx, scope, item, changeRecord, versionRecord, policyRows, now, nil, nil)
+}
+
+func (s *Service) hydrateCurrentChangeDetailWithFacts(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, changeRecord eventstore.Change, versionRecord *eventstore.Version, policyRows currentChangePolicyRows, now time.Time, facts *tenantstore.BoardChangeRows, approval *ChangeVersionApproval) (tracker.ChangeDetail, error) {
 	if changeRecord.CurrentVersionID == nil && versionRecord != nil || changeRecord.CurrentVersionID != nil && (versionRecord == nil || *changeRecord.CurrentVersionID != versionRecord.ID || versionRecord.ChangeID != changeRecord.ID) {
 		return tracker.ChangeDetail{}, corestore.ErrRevisionConflict
 	}
@@ -870,7 +874,12 @@ func (s *Service) hydrateCurrentChangeDetail(ctx context.Context, scope nativeSc
 	if err != nil {
 		return tracker.ChangeDetail{}, err
 	}
-	change, visible, err := s.filterChangeRecord(ctx, scope, change)
+	var visible bool
+	if facts == nil {
+		change, visible, err = s.filterChangeRecord(ctx, scope, change)
+	} else {
+		change, visible, err = filterBoardChangeRecord(scope, change, *facts)
+	}
 	if err != nil {
 		return tracker.ChangeDetail{}, err
 	}
@@ -878,7 +887,7 @@ func (s *Service) hydrateCurrentChangeDetail(ctx context.Context, scope nativeSc
 		return tracker.ChangeDetail{}, corestore.ErrNotFound
 	}
 	if versionRecord == nil {
-		currentApproval, err := hydrateCurrentChangeVersionApproval(ctx, content, scope, policyRows, "")
+		currentApproval, err := boardCurrentApproval(ctx, content, scope, policyRows, approval)
 		if err != nil {
 			return tracker.ChangeDetail{}, projectRecordError(err)
 		}
@@ -892,26 +901,31 @@ func (s *Service) hydrateCurrentChangeDetail(ctx context.Context, scope nativeSc
 		return tracker.ChangeDetail{}, err
 	}
 	var evidence []eventstore.Evidence
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		var err error
-		evidence, err = r.Evidence(ctx, changeRecord.ID, 0, corestore.MaxPageSize)
-		if err != nil {
-			return err
-		}
-		if len(evidence) == corestore.MaxPageSize {
-			more, err := r.Evidence(ctx, changeRecord.ID, evidence[len(evidence)-1].Sequence, 1)
+	if facts != nil {
+		evidence = facts.Evidence
+	} else {
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			evidence, err = r.Evidence(ctx, changeRecord.ID, 0, corestore.MaxPageSize)
 			if err != nil {
 				return err
 			}
-			if len(more) != 0 {
-				return corestore.ErrInvalidPage
+			if len(evidence) == corestore.MaxPageSize {
+				more, err := r.Evidence(ctx, changeRecord.ID, evidence[len(evidence)-1].Sequence, 1)
+				if err != nil {
+					return err
+				}
+				if len(more) != 0 {
+					return corestore.ErrInvalidPage
+				}
 			}
+			return nil
+		})
+		if err != nil {
+			return tracker.ChangeDetail{}, projectRecordError(err)
 		}
-		return nil
-	})
-	if err != nil {
-		return tracker.ChangeDetail{}, projectRecordError(err)
 	}
+
 	if len(evidence) > corestore.MaxPageSize {
 		return tracker.ChangeDetail{}, corestore.ErrInvalidPage
 	}
@@ -956,7 +970,7 @@ func (s *Service) hydrateCurrentChangeDetail(ctx context.Context, scope nativeSc
 			detail.Checks = append(detail.Checks, check)
 		}
 	}
-	currentApproval, err := hydrateCurrentChangeVersionApproval(ctx, content, scope, policyRows, "")
+	currentApproval, err := boardCurrentApproval(ctx, content, scope, policyRows, approval)
 	if err != nil {
 		return tracker.ChangeDetail{}, projectRecordError(err)
 	}

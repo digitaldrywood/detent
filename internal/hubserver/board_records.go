@@ -311,9 +311,7 @@ func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, param
 	if err != nil {
 		return page, err
 	}
-	preparation := prepareBoardRecordPage(ctx, records, func(ctx context.Context, record viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
-		return s.prepareBoardRecord(ctx, scope, record, now, true)
-	})
+	preparation := s.prepareBoardPage(ctx, scope, records, now, true)
 	defer preparation.close()
 	returnedRecords := make([]viewstore.BoardRecord, 0, min(len(records), limit))
 	for index, record := range records {
@@ -355,9 +353,7 @@ func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, param
 	}
 	preparation.close()
 	if includeWork {
-		workPreparation := prepareBoardRecordPage(ctx, workRecordsForResponse, func(ctx context.Context, record viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
-			return s.prepareBoardRecord(ctx, scope, record, now, false)
-		})
+		workPreparation := s.prepareBoardPage(ctx, scope, workRecordsForResponse, now, false)
 		defer workPreparation.close()
 		for index, record := range workRecordsForResponse {
 			card, err := workPreparation.card(ctx, index)
