@@ -116,6 +116,12 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	requireNativeStatus(t, createResponse, http.StatusOK)
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, createResponse, &issue)
+	commentBody := strings.Repeat("discussion fragment. ", 2600)
+	for index := 0; index < 22; index++ {
+		comment := tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("recovery-fragment-%d", index)}, Body: commentBody}
+		commentPath := itemsPath + "/" + url.PathEscape(string(issue.WorkItemID)) + "/comments"
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, commentPath, ownerToken, comment), http.StatusOK)
+	}
 	if err := service.maintainBoardRecords(t.Context()); err != nil {
 		t.Fatalf("refresh PostgreSQL board projection: %v", err)
 	}
@@ -180,9 +186,14 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	if lease.WorkItemID != issue.WorkItemID || lease.MachineID != "machine_example" || lease.ID == "" {
 		t.Fatalf("PostgreSQL claim response = %+v", lease)
 	}
-	recovered, err := recovery.Load(t.Context(), postgresRouteRecoveryReader{service: service, token: workerToken, organization: "org_startup", project: project.ID, inflate: true}, "org_startup", project.ID, issue.WorkItemID)
+	bodyFragmentSeen, fragmentRequests := false, 0
+	recoveryReader := postgresRouteRecoveryReader{service: service, token: workerToken, organization: "org_startup", project: project.ID, bodyFragmentSeen: &bodyFragmentSeen, fragmentRequests: &fragmentRequests}
+	recovered, err := recovery.Load(t.Context(), recoveryReader, "org_startup", project.ID, issue.WorkItemID)
 	if err != nil {
 		t.Fatalf("PostgreSQL recovery load: %v", err)
+	}
+	if !bodyFragmentSeen || fragmentRequests == 0 {
+		t.Fatalf("PostgreSQL recovery handler did not serve issue body fragments: seen=%t requests=%d", bodyFragmentSeen, fragmentRequests)
 	}
 	if recovered.Issue.OrganizationID != "org_startup" || recovered.Issue.ProjectID != project.ID || recovered.Issue.WorkItemID != issue.WorkItemID || recovered.Issue.Body != recoveryBody {
 		t.Fatalf("PostgreSQL recovery detail = %+v", recovered.Issue)
@@ -334,11 +345,12 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 }
 
 type postgresRouteRecoveryReader struct {
-	service      *Service
-	token        string
-	organization tracker.OrganizationID
-	project      tracker.ProjectID
-	inflate      bool
+	service          *Service
+	token            string
+	organization     tracker.OrganizationID
+	project          tracker.ProjectID
+	bodyFragmentSeen *bool
+	fragmentRequests *int
 }
 
 func (r postgresRouteRecoveryReader) Detail(ctx context.Context, id tracker.NativeWorkItemID, headers http.Header) (tracker.NativeRecovery, error) {
@@ -360,17 +372,16 @@ func (r postgresRouteRecoveryReader) Detail(ctx context.Context, id tracker.Nati
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		return result, err
 	}
-	if r.inflate {
-		result.Discussion = append(result.Discussion, tracker.NativeComment{Body: strings.Repeat("oversized recovery projection ", 50000)})
-		scope := nativeScope{organization: r.organization, project: r.project, credential: apiCredential{ID: "credential_runner", Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: "runner_example"}}}}
-		if err := r.service.fitNativeRecovery(ctx, scope, path, &result, headers.Get("X-Detent-Recovery-Body") == "fragments"); err != nil {
-			return tracker.NativeRecovery{}, err
-		}
+	if r.bodyFragmentSeen != nil && result.Read != nil && result.Read.IssueBody != nil {
+		*r.bodyFragmentSeen = true
 	}
 	return result, nil
 }
 
 func (r postgresRouteRecoveryReader) Evidence(ctx context.Context, id tracker.NativeWorkItemID, cursor string) (tracker.NativeRecoveryPage, error) {
+	if r.fragmentRequests != nil {
+		*r.fragmentRequests = *r.fragmentRequests + 1
+	}
 	path := "/api/v2/organizations/" + url.PathEscape(string(r.organization)) + "/projects/" + url.PathEscape(string(r.project)) + "/work-items/" + url.PathEscape(string(id))
 	query := url.Values{"view": {"recovery"}, "limit": {"1"}, "cursor": {cursor}}
 	request := httptest.NewRequest(http.MethodGet, path+"?"+query.Encode(), nil)
