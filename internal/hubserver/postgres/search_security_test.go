@@ -849,6 +849,10 @@ func TestSearchLiteralPublicationAvoidsUnchangedWrites(t *testing.T) {
 			if err := tx.QueryRowContext(t.Context(), `SELECT count(*) FROM search_postings WHERE organization_id=$1 AND document_id='issue/wi_first_1' AND term='~all'`, org).Scan(&scopes); err != nil {
 				t.Fatal(err)
 			}
+			var capturedScopes []string
+			if err := tx.QueryRowContext(t.Context(), `SELECT array_agg(scope) FROM search_postings WHERE organization_id=$1 AND document_id='issue/wi_first_1' AND term='~all'`, org).Scan(pq.Array(&capturedScopes)); err != nil {
+				t.Fatal(err)
+			}
 			if scopes == 0 {
 				t.Fatal("published document has no scopes")
 			}
@@ -873,7 +877,7 @@ func TestSearchLiteralPublicationAvoidsUnchangedWrites(t *testing.T) {
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					beforeInserts, beforeUpdates := counts()
-					if err := queries.SearchPublishLiterals(t.Context(), pgquery.SearchPublishLiteralsParams{OrganizationID: org, ID: "issue/wi_first_1", Revision: 1, Literals: test.terms, Positions: test.positions}); err != nil {
+					if err := queries.SearchPublishLiterals(t.Context(), pgquery.SearchPublishLiteralsParams{OrganizationID: org, ID: "issue/wi_first_1", Revision: 1, Literals: test.terms, Positions: test.positions, Scopes: capturedScopes}); err != nil {
 						t.Fatal(err)
 					}
 					afterInserts, afterUpdates := counts()

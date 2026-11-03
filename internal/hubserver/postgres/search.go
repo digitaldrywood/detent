@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -122,20 +123,58 @@ func (s *session) PublishSearch(ctx context.Context, value searchstore.Prepared)
 		params.AggregateBytes = sql.NullInt64{Int64: value.Payload.CompressedSize, Valid: true}
 		params.AggregateContentBytes = sql.NullInt64{Int64: value.Payload.UncompressedSize, Valid: true}
 	}
+	terms := make([]string, len(value.Literals))
+	positions := make([]string, len(value.Literals))
+	for index, posting := range value.Literals {
+		terms[index] = posting.Term
+		positions[index] = literalPositionsArray(posting.Positions)
+	}
+	if _, err := s.db.ExecContext(ctx, "SAVEPOINT search_publication"); err != nil {
+		return false, mapError(ctx, err)
+	}
+	discard := func() (bool, error) {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if _, err := s.db.ExecContext(cleanup, "ROLLBACK TO SAVEPOINT search_publication"); err != nil {
+			return false, mapError(cleanup, err)
+		}
+		_, err := s.db.ExecContext(cleanup, "RELEASE SAVEPOINT search_publication")
+		return false, mapError(cleanup, err)
+	}
+	if err := s.queries.SearchDeletePublicationPostings(ctx, pgquery.SearchDeletePublicationPostingsParams{OrganizationID: s.organization, ID: d.ID, Revision: d.Revision, PayloadObjectKey: d.Payload.Key, PayloadSHA256: d.Payload.SHA256, Generation: d.Generation}); err != nil {
+		return false, mapError(ctx, err)
+	}
+	captured, err := s.queries.SearchPreparePublicationPostings(ctx, pgquery.SearchPreparePublicationPostingsParams{OrganizationID: s.organization, ID: d.ID, Revision: d.Revision, PayloadObjectKey: d.Payload.Key, PayloadSHA256: d.Payload.SHA256, Generation: d.Generation, Vector: value.Vector, TokenCount: value.Statistics.Tokens, Terms: value.Statistics.Terms, TermFrequencies: value.Statistics.Frequencies})
+	if errors.Is(err, sql.ErrNoRows) {
+		return discard()
+	}
+	if err != nil {
+		return false, mapError(ctx, err)
+	}
+	if len(terms) > 0 {
+		if err := s.queries.SearchPublishLiterals(ctx, pgquery.SearchPublishLiteralsParams{OrganizationID: s.organization, ID: d.ID, Revision: d.Revision, Literals: terms, Positions: positions, Scopes: captured.VisibilityScopes}); err != nil {
+			return false, mapError(ctx, err)
+		}
+	}
+	current, err := s.queries.SearchPublicationVisibility(ctx, pgquery.SearchPublicationVisibilityParams{OrganizationID: s.organization, ID: d.ID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return discard()
+	}
+	if err != nil {
+		return false, mapError(ctx, err)
+	}
+	if current.ProjectHidden != captured.ProjectHidden || current.ParentArchived != captured.ParentArchived || current.ParentPrincipal != captured.ParentPrincipal || current.ProjectName != captured.ProjectName || current.ParentNumber != captured.ParentNumber || current.ParentProject != captured.ParentProject {
+		return discard()
+	}
 	count, err := s.queries.SearchPublish(ctx, params)
 	if err != nil {
 		return false, mapError(ctx, err)
 	}
-	if count > 0 && len(value.Literals) > 0 {
-		terms := make([]string, len(value.Literals))
-		positions := make([]string, len(value.Literals))
-		for index, posting := range value.Literals {
-			terms[index] = posting.Term
-			positions[index] = literalPositionsArray(posting.Positions)
-		}
-		err = s.queries.SearchPublishLiterals(ctx, pgquery.SearchPublishLiteralsParams{OrganizationID: s.organization, ID: d.ID, Revision: d.Revision, Literals: terms, Positions: positions})
+	if count == 0 {
+		return discard()
 	}
-	return count > 0, mapError(ctx, err)
+	_, err = s.db.ExecContext(ctx, "RELEASE SAVEPOINT search_publication")
+	return true, mapError(ctx, err)
 }
 
 func literalPositionsArray(positions []int64) string {

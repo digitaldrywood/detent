@@ -263,6 +263,35 @@ func (q *Queries) SearchDelete(ctx context.Context, arg SearchDeleteParams) (int
 	return result.RowsAffected()
 }
 
+const searchDeletePublicationPostings = `-- name: SearchDeletePublicationPostings :exec
+DELETE FROM search_postings p
+WHERE p.organization_id=$1 AND p.document_id=$2 AND p.term NOT IN ('~all','~pending')
+ AND EXISTS(SELECT 1 FROM search_documents d WHERE d.organization_id=p.organization_id AND d.id=p.document_id
+  AND d.revision=$3 AND d.payload_object_key=$4
+  AND d.payload_sha256=$5 AND d.generation=$6 AND d.kind IN ('issue','thread'))
+`
+
+type SearchDeletePublicationPostingsParams struct {
+	OrganizationID   tracker.OrganizationID
+	ID               string
+	Revision         int64
+	PayloadObjectKey string
+	PayloadSHA256    string
+	Generation       int64
+}
+
+func (q *Queries) SearchDeletePublicationPostings(ctx context.Context, arg SearchDeletePublicationPostingsParams) error {
+	_, err := q.db.ExecContext(ctx, searchDeletePublicationPostings,
+		arg.OrganizationID,
+		arg.ID,
+		arg.Revision,
+		arg.PayloadObjectKey,
+		arg.PayloadSHA256,
+		arg.Generation,
+	)
+	return err
+}
+
 const searchPending = `-- name: SearchPending :one
 WITH task AS MATERIALIZED (
  SELECT organization_id, project_id, work_item_id, archived, principal_id, after_id, refresh_order FROM search_scope_refresh WHERE organization_id=$1 ORDER BY refresh_order LIMIT 1
@@ -329,6 +358,138 @@ func (q *Queries) SearchPending(ctx context.Context, organizationID tracker.Orga
 	return i, err
 }
 
+const searchPreparePublicationPostings = `-- name: SearchPreparePublicationPostings :one
+WITH document AS MATERIALIZED (
+ SELECT d.organization_id, d.id, d.project_id, d.work_item_id, d.kind, d.source_id, d.comment_id, d.event_id, d.change_id, d.revision, d.indexed_revision, d.title, d.scope, d.status, d.updated_at, d.updated_at_submicrosecond, d.payload_object_key, d.payload_sha256, d.payload_bytes, d.payload_content_bytes, d.vector, d.token_count, d.terms, d.term_frequencies, d.refresh_order, d.source_vector, d.generation, d.source_visible, d.placeholder, d.aggregate_object_key, d.aggregate_sha256, d.aggregate_bytes, d.aggregate_content_bytes, d.progress_generation, d.progress_after_id, d.progress_object_key, d.progress_sha256, d.progress_bytes, d.progress_content_bytes,coalesce(p.deleted_at IS NOT NULL,false) AS project_hidden,
+  coalesce(i.archived,false) AS parent_archived,coalesce(i.actor_principal_id,'') AS parent_principal,
+  coalesce(p.name,'')::text AS project_name,coalesce(i.number,0)::bigint AS parent_number,coalesce(i.project_id,'')::text AS parent_project,
+  CASE WHEN i.native_id IS NULL THEN NULL::text[] ELSE ARRAY[p.name||'#'||i.number,i.project_id||'#'||i.number] END AS metadata_labels
+ FROM search_documents d LEFT JOIN projects p ON p.organization_id=d.organization_id AND p.id=d.project_id
+ LEFT JOIN issues i ON i.organization_id=d.organization_id AND i.project_id=d.project_id AND i.native_id=d.work_item_id
+ WHERE d.organization_id=$1 AND d.id=$2 AND d.revision=$3
+  AND d.payload_object_key=$4 AND d.payload_sha256=$5 AND d.generation=$6
+), prefixes AS (
+ SELECT DISTINCT 's'||encode(convert_to(d.organization_id,'UTF8'),'hex')||'z'||encode(convert_to(p,'UTF8'),'hex')||'_' AS prefix
+ FROM document d CROSS JOIN LATERAL unnest(ARRAY['',coalesce(d.project_id,'')]) p
+), words AS (
+ SELECT prefix||'w'||term AS lexeme,frequency::double precision/(1+$7::bigint) AS impact
+ FROM prefixes CROSS JOIN ROWS FROM(unnest($8::text[]),unnest($9::bigint[])) AS t(term,frequency)
+), lexemes AS (
+ SELECT term,coalesce(w.impact,0) AS impact FROM (
+  SELECT unnest(tsvector_to_array($10::tsvector || CASE WHEN d.kind='issue' THEN public.search_metadata_vector(d.organization_id,d.project_id,d.metadata_labels) ELSE ''::tsvector END)) AS term FROM document d UNION SELECT lexeme FROM words
+ ) terms LEFT JOIN words w ON w.lexeme=term
+), inserted AS (
+ INSERT INTO search_postings(organization_id,scope,term,document_id,impact,updated_at,updated_at_submicrosecond)
+ SELECT d.organization_id,key,l.term,d.id,l.impact,d.updated_at,d.updated_at_submicrosecond
+ FROM document d
+ CROSS JOIN LATERAL public.search_scope_keys(d.project_id,d.work_item_id,d.kind,d.scope,d.status,d.parent_archived,d.parent_principal) key
+ CROSS JOIN lexemes l
+ WHERE d.kind IN ('issue','thread') AND NOT d.project_hidden
+ ON CONFLICT(organization_id,scope,term,document_id) DO UPDATE
+ SET impact=EXCLUDED.impact,updated_at=EXCLUDED.updated_at,updated_at_submicrosecond=EXCLUDED.updated_at_submicrosecond
+ WHERE (search_postings.impact,search_postings.updated_at,search_postings.updated_at_submicrosecond)
+  IS DISTINCT FROM (EXCLUDED.impact,EXCLUDED.updated_at,EXCLUDED.updated_at_submicrosecond)
+ RETURNING 1
+)
+SELECT d.project_hidden::boolean AS project_hidden,d.parent_archived,d.parent_principal,d.project_name,d.parent_number,d.parent_project,
+ CASE WHEN d.project_hidden OR d.kind NOT IN ('issue','thread') THEN ARRAY[]::text[]
+ ELSE ARRAY(SELECT public.search_scope_keys(d.project_id,d.work_item_id,d.kind,d.scope,d.status,d.parent_archived,d.parent_principal)) END::text[] AS visibility_scopes
+FROM document d CROSS JOIN (SELECT count(*) FROM inserted) wrote
+`
+
+type SearchPreparePublicationPostingsParams struct {
+	OrganizationID   tracker.OrganizationID
+	ID               string
+	Revision         int64
+	PayloadObjectKey string
+	PayloadSHA256    string
+	Generation       int64
+	TokenCount       int64
+	Terms            []string
+	TermFrequencies  []int64
+	Vector           string
+}
+
+type SearchPreparePublicationPostingsRow struct {
+	ProjectHidden    bool
+	ParentArchived   bool
+	ParentPrincipal  string
+	ProjectName      string
+	ParentNumber     int64
+	ParentProject    string
+	VisibilityScopes []string
+}
+
+func (q *Queries) SearchPreparePublicationPostings(ctx context.Context, arg SearchPreparePublicationPostingsParams) (SearchPreparePublicationPostingsRow, error) {
+	row := q.db.QueryRowContext(ctx, searchPreparePublicationPostings,
+		arg.OrganizationID,
+		arg.ID,
+		arg.Revision,
+		arg.PayloadObjectKey,
+		arg.PayloadSHA256,
+		arg.Generation,
+		arg.TokenCount,
+		pq.Array(arg.Terms),
+		pq.Array(arg.TermFrequencies),
+		arg.Vector,
+	)
+	var i SearchPreparePublicationPostingsRow
+	err := row.Scan(
+		&i.ProjectHidden,
+		&i.ParentArchived,
+		&i.ParentPrincipal,
+		&i.ProjectName,
+		&i.ParentNumber,
+		&i.ParentProject,
+		pq.Array(&i.VisibilityScopes),
+	)
+	return i, err
+}
+
+const searchPublicationVisibility = `-- name: SearchPublicationVisibility :one
+SELECT coalesce(p.hidden,false)::boolean AS project_hidden,
+ coalesce(i.archived,false)::boolean AS parent_archived,coalesce(i.principal,'')::text AS parent_principal,
+ coalesce(p.name,'')::text AS project_name,coalesce(i.number,0)::bigint AS parent_number,coalesce(i.project_id,'')::text AS parent_project
+FROM search_documents d
+LEFT JOIN LATERAL (
+ SELECT p.id,p.name,p.deleted_at IS NOT NULL AS hidden FROM projects p
+ WHERE p.organization_id=d.organization_id AND p.id=d.project_id FOR SHARE
+) p ON true
+LEFT JOIN LATERAL (
+ SELECT i.archived,i.number,i.project_id,coalesce(i.actor_principal_id,'') AS principal FROM issues i
+ WHERE i.organization_id=d.organization_id AND i.project_id=p.id AND i.native_id=d.work_item_id FOR SHARE
+) i ON true
+WHERE d.organization_id=$1 AND d.id=$2
+`
+
+type SearchPublicationVisibilityParams struct {
+	OrganizationID tracker.OrganizationID
+	ID             string
+}
+
+type SearchPublicationVisibilityRow struct {
+	ProjectHidden   bool
+	ParentArchived  bool
+	ParentPrincipal string
+	ProjectName     string
+	ParentNumber    int64
+	ParentProject   string
+}
+
+func (q *Queries) SearchPublicationVisibility(ctx context.Context, arg SearchPublicationVisibilityParams) (SearchPublicationVisibilityRow, error) {
+	row := q.db.QueryRowContext(ctx, searchPublicationVisibility, arg.OrganizationID, arg.ID)
+	var i SearchPublicationVisibilityRow
+	err := row.Scan(
+		&i.ProjectHidden,
+		&i.ParentArchived,
+		&i.ParentPrincipal,
+		&i.ProjectName,
+		&i.ParentNumber,
+		&i.ParentProject,
+	)
+	return i, err
+}
+
 const searchPublish = `-- name: SearchPublish :execrows
 UPDATE search_documents SET vector = $1::tsvector, source_vector=$1::tsvector, indexed_revision = revision,
     aggregate_object_key=$2,aggregate_sha256=$3,aggregate_bytes=$4,aggregate_content_bytes=$5,
@@ -380,24 +541,24 @@ func (q *Queries) SearchPublish(ctx context.Context, arg SearchPublishParams) (i
 const searchPublishLiterals = `-- name: SearchPublishLiterals :exec
 WITH literals AS MATERIALIZED (
     SELECT l.term,l.positions::bigint[] AS positions
-    FROM ROWS FROM(unnest($4::text[]),unnest($5::text[])) l(term,positions)
+    FROM ROWS FROM(unnest($5::text[]),unnest($6::text[])) l(term,positions)
 )
 INSERT INTO search_postings(organization_id,scope,term,document_id,impact,updated_at,updated_at_submicrosecond,literal_positions)
 SELECT d.organization_id,p.scope,l.term,d.id,0,d.updated_at,d.updated_at_submicrosecond,l.positions
 FROM search_documents d CROSS JOIN literals l
 CROSS JOIN LATERAL (
-    SELECT p.scope FROM search_postings p
-    WHERE p.organization_id=d.organization_id AND p.document_id=d.id AND p.term='~all'
+    SELECT unnest($1::text[]) AS scope
     EXCEPT
     SELECT previous.scope FROM search_postings previous
     WHERE previous.organization_id=d.organization_id AND previous.document_id=d.id AND previous.term=l.term AND previous.literal_positions=l.positions
 ) p
-WHERE d.organization_id=$1 AND d.id=$2 AND d.revision=$3
+WHERE d.organization_id=$2 AND d.id=$3 AND d.revision=$4
 ON CONFLICT(organization_id,scope,term,document_id) DO UPDATE SET literal_positions=EXCLUDED.literal_positions
 WHERE search_postings.literal_positions IS DISTINCT FROM EXCLUDED.literal_positions
 `
 
 type SearchPublishLiteralsParams struct {
+	Scopes         []string
 	OrganizationID tracker.OrganizationID
 	ID             string
 	Revision       int64
@@ -407,6 +568,7 @@ type SearchPublishLiteralsParams struct {
 
 func (q *Queries) SearchPublishLiterals(ctx context.Context, arg SearchPublishLiteralsParams) error {
 	_, err := q.db.ExecContext(ctx, searchPublishLiterals,
+		pq.Array(arg.Scopes),
 		arg.OrganizationID,
 		arg.ID,
 		arg.Revision,
