@@ -14,6 +14,7 @@ import (
 var ErrInvalidAmount = errors.New("billing amount must be nonnegative")
 var ErrInvalidUsage = errors.New("billing usage must have a positive amount and a valid window")
 var ErrUsageReceiptConflict = errors.New("billing usage receipt conflicts with a previous request")
+var ErrInvalidCollaborationBytes = errors.New("collaboration bytes adjustment is invalid")
 var ErrInvalidBudgetFact = errors.New("monthly budget record is invalid")
 
 const MaxUsageWindow = int64(1 << 50)
@@ -317,6 +318,7 @@ type Reader interface {
 	BillingMonthlyLease(context.Context, tracker.LeaseID) (MonthlyLease, error)
 	BillingUsage(context.Context, time.Time, string) (int64, error)
 	BillingUsages(context.Context, time.Time, int) ([]Usage, error)
+	CollaborationBytes(context.Context) (int64, error)
 }
 
 type Writer interface {
@@ -358,6 +360,7 @@ type Writer interface {
 	SetBillingMonthlyPolicy(context.Context, MonthlyPolicy, tracker.Revision) error
 	ImportBillingMonthlyPolicy(context.Context, MonthlyPolicy) error
 	ApplyBillingUsage(context.Context, UsageReceipt, int64) (UsageResult, error)
+	AdjustCollaborationBytes(context.Context, int64, int64) (UsageResult, error)
 	PruneRequestBillingUsage(context.Context, time.Time, int) error
 	RecordBillingMonthlyAdmission(context.Context, MonthlyAdmission) error
 	RecordBillingMonthlyLease(context.Context, MonthlyLease) error
