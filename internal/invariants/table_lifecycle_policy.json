@@ -134,6 +134,7 @@
     "native_board_filter_values": {"class": "index"},
     "native_board_items": {"class": "derived_with_retention", "retention": "native board expiry and source issue lifetime"},
     "native_board_sequences": {"class": "hot_state"},
+    "native_command_states": {"class": "hot_state"},
     "native_commands": {"class": "hot_state"},
     "native_comments": {"class": "hot_state"},
     "native_duplicate_challenges": {"class": "hot_state"},

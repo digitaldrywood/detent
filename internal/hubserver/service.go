@@ -696,6 +696,9 @@ func (s *Service) runPostgresMaintenance(ctx context.Context) {
 				}
 			}
 			if now.Sub(lastCleanup) >= nativeCleanupInterval {
+				if err := s.retainCommandPayloads(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
+					s.config.Logger.WarnContext(ctx, "expire PostgreSQL command receipts", "error", err)
+				}
 				if err := s.prunePostgresRunnerMetrics(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
 					s.config.Logger.WarnContext(ctx, "expire PostgreSQL runner host metrics", "error", err)
 				}

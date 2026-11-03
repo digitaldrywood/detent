@@ -1504,6 +1504,23 @@ type NativeCommand struct {
 	PayloadContentBytes int64
 }
 
+type NativeCommandState struct {
+	OrganizationID             tracker.OrganizationID
+	ActorID                    string
+	Operation                  string
+	CommandKey                 string
+	RequestHash                string
+	CreatedAt                  time.Time
+	ResponseClaimed            bool
+	ResponsePending            bool
+	ResponseRequestID          string
+	ResponseExpired            bool
+	ResponseReplayUntilNs      int64
+	ResponseReconciliationHash string
+	SourceSnapshotID           string
+	SourceRecordHash           string
+}
+
 type NativeComment struct {
 	OrganizationID       tracker.OrganizationID
 	ID                   string

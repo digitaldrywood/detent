@@ -10,6 +10,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -345,12 +347,23 @@ func (c *Content) PrepareReceipt(ctx context.Context, row Receipt, raw []byte) (
 	if json.Unmarshal(raw, &value) != nil {
 		return Receipt{}, ErrInvalidRecord
 	}
+	var err error
+	row.ResponsePending, row.ResponseRequestID, err = receiptstore.ResponseFacts(raw)
+	if err != nil {
+		return Receipt{}, err
+	}
 	ref, err := c.prepare(ctx, row.OrganizationID, value)
 	row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes = ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize
 	return row, err
 }
 
 func (c *Content) Receipt(ctx context.Context, row Receipt) (json.RawMessage, error) {
+	if row.ResponseExpired {
+		return nil, receiptstore.ErrExpired
+	}
+	if row.ResponseClaimed {
+		return nil, mutation.ErrUncertain
+	}
 	var value json.RawMessage
 	err := c.read(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), &value)
 	return value, err

@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -116,6 +117,12 @@ func isNativeConflict(err error) bool {
 }
 
 func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) error {
+	if errors.Is(err, receiptstore.ErrExpired) {
+		return s.nativeAPIError(c, commandResponseExpired(), attributes...)
+	}
+	if errors.Is(err, mutation.ErrUncertain) {
+		return s.refusedAPIError(c, http.StatusConflict, "idempotency_in_progress", mutation.ErrUncertain.Error(), apiErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
+	}
 	if errors.Is(err, searchstore.ErrIndexPending) {
 		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "not_ready", Message: "Search index refresh is pending"})
 	}

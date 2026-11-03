@@ -9,13 +9,14 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
-	commandReceiptRetention  = 24 * time.Hour
+	commandReceiptRetention  = receiptstore.ReplayRetention
 	commandReceiptPruneBatch = 5000
 	hostedAuditRetention     = 30 * 24 * time.Hour
 	nativeCleanupInterval    = time.Hour

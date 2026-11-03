@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -454,40 +455,10 @@ func (command hostedCommand) hash() (string, error) {
 
 // hostedPendingCommand is the response a claimed key holds until its
 // mutation completes. No real response has this shape.
-const hostedPendingCommand = `{"detent_pending_command":true}`
+const hostedPendingCommand = receiptstore.PendingPayload
 
-// claimHostedCommand takes the key before the mutation runs. The insert is the
-// claim: the primary key on native_commands lets exactly one request own a
-// key. It reports true when the caller owns the key and should perform the
-// mutation. Otherwise it has already answered: the stored response for a
-// completed key, a conflict for a key used with different content, and a
-// safe conflict for a key whose outcome is still pending or uncertain.
-// A pending invitation is never taken over; inspect provider/application
-// records before choosing a new key.
-// claimHostedOperation is the application receipt path shared by adapters.
-// Authorization must precede each call, including a replay.
-func (s *Service) claimHostedOperation(ctx context.Context, command hostedCommand) (claimed bool, response json.RawMessage, err error) {
-	command = command.forContext(ctx)
-	hash, err := command.hash()
-	if err != nil {
-		return false, nil, err
-	}
-	result, err := s.database.db.ExecContext(ctx, `INSERT INTO native_commands (organization_id,actor_id,operation,command_key,request_hash,response_json,created_at,response_pending,response_request_id) VALUES(?,?,?,?,?,?,?,1,'') ON CONFLICT DO NOTHING`, s.commandOrganization(ctx, command), command.actor, command.operation, command.key, hash, hostedPendingCommand, formatHubTime(s.config.now()))
-	if err != nil {
-		return false, nil, err
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return false, nil, err
-	}
-	if count == 1 {
-		return true, nil, nil
-	}
-	response, found, err := s.readHostedOperation(ctx, command)
-	if err == nil && !found {
-		err = sql.ErrNoRows
-	}
-	return false, response, err
+func (s *Service) claimHostedOperation(ctx context.Context, command hostedCommand) (bool, json.RawMessage, error) {
+	return s.claimHostedOperationRecord(ctx, command.forContext(ctx))
 }
 
 func (s *Service) claimHostedCommand(c echo.Context, command hostedCommand, status int) (bool, error) {
@@ -508,44 +479,16 @@ func (s *Service) claimHostedCommand(c echo.Context, command hostedCommand, stat
 }
 
 func (s *Service) completeHostedOperation(ctx context.Context, command hostedCommand, value any) (json.RawMessage, error) {
-	command = command.forContext(ctx)
-	response, err := marshalNative(value)
-	if err != nil {
-		return nil, err
-	}
-	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubReadTimeout)
-	defer cancel()
-	pending, request, err := commandResponseFacts(response)
-	if err != nil {
-		return nil, err
-	}
-	ref, err := prepareMeteredContent(commandCompletionContent(isolateContentContext(s.contentContext(persistCtx))), s.commandOrganization(ctx, command), []byte(response), !strings.HasPrefix(command.operation, "attachment."))
-	if err != nil {
-		return nil, err
-	}
-	now := s.config.now()
-	result, err := s.database.db.ExecContext(persistCtx, `UPDATE native_commands SET response_json='{}',response_object_key=?,response_pending=?,response_request_id=?,created_at=?,response_replay_until_ns=? WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=? AND response_json=?`, ref.Key, pending, request, formatHubTime(now), now.Add(commandReceiptRetention).UnixNano(), s.commandOrganization(ctx, command), command.actor, command.operation, command.key, hostedPendingCommand)
-	if err != nil {
-		return nil, err
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return nil, err
-	}
-	if count != 1 {
-		return nil, mutation.ErrUncertain
-	}
-	return json.RawMessage(response), nil
+	return s.completeHostedOperationRecord(ctx, command.forContext(ctx), value)
 }
 
 // abandonHostedOperation gives back a claim whose mutation did not happen, so
 // the same key can be retried.
 func (s *Service) abandonHostedOperation(parent context.Context, command hostedCommand) {
-	command = command.forContext(parent)
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 2*time.Second)
 	defer cancel()
-	if _, err := s.database.db.ExecContext(ctx, `DELETE FROM native_commands WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=? AND response_json=?`, s.commandOrganization(ctx, command), command.actor, command.operation, command.key, hostedPendingCommand); err != nil {
-		s.config.Logger.Warn("hosted command claim could not be released")
+	if err := s.abandonHostedOperationRecord(ctx, command.forContext(parent)); err != nil {
+		s.config.Logger.Warn("hosted command claim could not be released", "error", err)
 	}
 }
 
@@ -840,29 +783,5 @@ func (s *Service) commandOrganization(ctx context.Context, command hostedCommand
 func (s *Service) readHostedOperation(ctx context.Context, command hostedCommand) (json.RawMessage, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	command = command.forContext(ctx)
-	hash, err := command.hash()
-	if err != nil {
-		return nil, false, err
-	}
-	var storedHash, raw string
-	var expired bool
-	err = s.database.reader.QueryRowContext(ctx, `SELECT request_hash,COALESCE(NULLIF(response_object_key,''),response_json),response_expired FROM native_commands WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=?`, s.commandOrganization(ctx, command), command.actor, command.operation, command.key).Scan(&storedHash, &raw, &expired)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	if storedHash != hash {
-		return nil, true, mutation.ErrConflict
-	}
-	if expired {
-		return nil, true, commandResponseExpired()
-	}
-	if raw == hostedPendingCommand {
-		return nil, true, mutation.ErrUncertain
-	}
-	resolved, err := resolveStorageJSON(s.contentContext(ctx), []byte(raw))
-	return json.RawMessage(resolved), true, err
+	return s.readHostedOperationRecord(ctx, command.forContext(ctx))
 }
