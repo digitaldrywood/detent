@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -24,6 +25,10 @@ func (s *Service) authorizeRunnerLeaseProject(ctx context.Context, scope nativeS
 		return nativeNotFound()
 	}
 	return s.authorizeProjectRecord(ctx, scope, true)
+}
+
+func runnerIdentityMatchesHeldLease(identity runnerstore.Identity, organization tracker.OrganizationID, runnerID, tokenID string, machine tracker.MachineID, now time.Time) bool {
+	return identity.OrganizationID == organization && identity.RunnerID == runnerID && identity.TokenID == tokenID && identity.MachineID == machine && identity.RemovedAt == nil && identity.ExpiresAt.After(now)
 }
 
 func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope nativeScope, leaseID tracker.LeaseID, fencing tracker.FencingToken) (runnerauth.Runner, error) {
@@ -71,7 +76,7 @@ func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope nativeSco
 		if err != nil {
 			return err
 		}
-		if identity.OrganizationID != scope.organization || identity.RunnerID != scope.credential.Runner.RunnerID || identity.TokenID != credential.ID || identity.MachineID != tracker.MachineID(lease.MachineID) || identity.RemovedAt != nil || !identity.ExpiresAt.After(now) {
+		if !runnerIdentityMatchesHeldLease(identity, scope.organization, scope.credential.Runner.RunnerID, credential.ID, tracker.MachineID(lease.MachineID), now) {
 			return nativeNotFoundAt("lease_runner_credential")
 		}
 		if identity.Scope != "organization" {

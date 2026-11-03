@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -20,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -218,7 +220,7 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 			if !lease.ExpiresAt.After(currentTime) || !credential.Valid(scope.credential.Hash, currentTime) {
 				return tracker.ErrStaleFencingToken
 			}
-			if !runnerIdentityCanClaim(identity, scope, tracker.MachineID(lease.MachineID), currentTime) || identity.TokenID != credential.ID {
+			if !runnerIdentityMatchesHeldLease(identity, scope.organization, scope.credential.Runner.RunnerID, credential.ID, tracker.MachineID(lease.MachineID), currentTime) || identity.State == "disabled" || !slices.Contains(identity.Operations, runnerauth.Claim) || !slices.Contains(identity.Operations, runnerauth.Collaborate) {
 				return tracker.ErrMachineNotFound
 			}
 			allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, currentTime)

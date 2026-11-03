@@ -137,6 +137,10 @@ func TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays(t *testin
 	}
 	workflowPath := func(item tracker.NativeIssue) string { return itemsPath + "/" + string(item.WorkItemID) + "/workflow" }
 	first := transition(issue, lease, "workflow-first")
+	clock.Advance(runnerauth.HeartbeatTimeout + time.Second)
+	if !clock.Now().After(startedAt.Add(runnerauth.HeartbeatTimeout)) || !lease.ExpiresAt.After(clock.Now()) {
+		t.Fatal("held lease must be live after heartbeat freshness expires")
+	}
 	response := performHubAPIRequest(t, service, http.MethodPost, workflowPath(issue), secret, first)
 	requireNativeStatus(t, response, http.StatusOK)
 	var changed tracker.NativeIssue
@@ -243,4 +247,18 @@ func TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays(t *testin
 			t.Fatal(err)
 		}
 	}
+	if untilExpiry := lease.ExpiresAt.Add(time.Second).Sub(clock.Now()); untilExpiry > 0 {
+		clock.Advance(untilExpiry)
+	}
+	expiredLeaseRequest := transition(issue, lease, "workflow-expired-lease")
+	expiredLeaseRequest.ExpectedRevision = issue.Revision + 2
+	expiredLease := performHubAPIRequest(t, service, http.MethodPost, workflowPath(issue), secret, expiredLeaseRequest)
+	requireNativeStatus(t, expiredLease, http.StatusConflict)
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.RevokeAccessCredential(t.Context(), credentialID, clock.Now())
+	}); err != nil {
+		t.Fatal(err)
+	}
+	revokedCredential := performHubAPIRequest(t, service, http.MethodPost, workflowPath(issue), secret, expiredLeaseRequest)
+	requireNativeStatus(t, revokedCredential, http.StatusUnauthorized)
 }
