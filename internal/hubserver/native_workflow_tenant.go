@@ -239,7 +239,12 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 				return err
 			}
 			if err := w.PutSearch(ctx, searchDocument, row.Revision); err != nil {
-				return err
+				if !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
+				if err := w.PutSearch(ctx, searchDocument, 0); err != nil {
+					return err
+				}
 			}
 			if _, err := w.CreateCollaborationVersion(ctx, newVersion); err != nil {
 				return err
