@@ -156,7 +156,7 @@ func TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays(t *testin
 	requireNativeStatus(t, historyResponse, http.StatusOK)
 	organizationItemURL := "/api/v2/organizations/" + string(organization.ID) + "/work-items/" + string(issue.WorkItemID)
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, organizationItemURL, testHubAdminToken, nil), http.StatusOK)
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, projectGetPath+"/onboarding", testHubAdminToken, nil), http.StatusServiceUnavailable)
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, projectGetPath+"/onboarding", testHubAdminToken, nil), http.StatusOK)
 	for _, path := range []string{
 		strings.Replace(itemsPath+"/"+string(issue.WorkItemID)+"/history?view=timeline", string(project.ID), "prj_foreign", 1),
 		strings.Replace(itemsPath+"/"+string(issue.WorkItemID)+"/history?view=timeline", string(organization.ID), "org_foreign", 1),

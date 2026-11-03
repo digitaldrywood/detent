@@ -9,12 +9,14 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/readableurl"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 var ErrActiveWork = errors.New("project has active work")
 var ErrStateInUse = errors.New("workflow states are used by work items")
+var ErrInvalidOnboardingProgress = errors.New("project onboarding progress is invalid")
 
 type Settings struct {
 	OrganizationID            tracker.OrganizationID
@@ -48,6 +50,8 @@ type Record struct {
 }
 
 type Reader interface {
+	ProjectLatestAttemptStatus(context.Context, tracker.ProjectID) (string, error)
+	ProjectOnboardingProgress(context.Context, tracker.ProjectID) (onboarding.Progress, error)
 	ProjectAllowanceUsage(context.Context, int64) (int64, error)
 	ProjectRecord(context.Context, tracker.ProjectID) (Record, error)
 	ProjectBySlug(context.Context, string) (Record, error)
@@ -66,6 +70,7 @@ type GitHubRepositoryBindingsPageReader interface {
 
 type Writer interface {
 	Reader
+	SaveProjectOnboardingProgress(context.Context, tracker.ProjectID, onboarding.Progress, tracker.Revision) error
 	InitializeProjectAccess(context.Context, tracker.ProjectID, string) error
 	CreateProjectRecord(context.Context, Record) (Record, error)
 	UpdateProjectRecord(context.Context, Record) (Record, error)

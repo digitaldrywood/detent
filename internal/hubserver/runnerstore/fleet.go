@@ -49,3 +49,9 @@ type FleetReader interface {
 	FleetNames(context.Context, int) ([]FleetName, error)
 	FleetLeases(context.Context, time.Time, int) ([]FleetLease, error)
 }
+
+type OnboardingReader interface {
+	FleetReader
+	ProjectRunnerChecks(context.Context, tracker.ProjectID, int) (map[string]runnerauth.LocalChecks, error)
+	RunnerRepositoryLists(context.Context, int) (map[string]runnerauth.RepositoryList, error)
+}

@@ -47,7 +47,11 @@ func readOnboardingProgress(ctx context.Context, query nativeQueryer, scope nati
 
 func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onboarding.Project, error) {
 	if s.config.TenantRepository != nil {
-		return onboarding.Project{}, workItemStorageUnavailable()
+		if scope.credential.Scope == apiScopeWorker {
+			progress, err := s.readOnboardingProgressRecord(ctx, scope)
+			return onboarding.Project{Progress: progress}, err
+		}
+		return s.projectOnboardingRecord(ctx, scope)
 	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
@@ -212,6 +216,9 @@ func (s *Service) saveOnboarding(c echo.Context) error {
 	}
 	if err := request.Progress.Validate(); err != nil {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
+	}
+	if s.config.TenantRepository != nil {
+		return s.saveOnboardingProgressRecord(c, request)
 	}
 	return s.nativeMutation(c, request.Mutation, request, s.saveOnboardingOperation(request))
 }
