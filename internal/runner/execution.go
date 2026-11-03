@@ -1202,8 +1202,16 @@ func nativeRecoveryPrompt(execution Execution) (string, error) {
 	for i := range recovery.Attempts {
 		runtime := recovery.Attempts[i].Runtime
 		recovery.Attempts[i].Runtime = nil
-		if runtime != nil && runtime.Landing != nil {
-			recovery.Attempts[i].Runtime = &tracker.NativeRuntimeObservation{Landing: runtime.Landing}
+		if runtime != nil {
+			projected := &tracker.NativeRuntimeObservation{Landing: runtime.Landing}
+			if runtime.Validation != nil && runtime.Validation.ExitCode != 0 {
+				validation := tracker.PublicGateResult(*runtime.Validation)
+				projected.Validation = &validation
+				projected.RepairDependencies = runtime.RepairDependencies
+			}
+			if projected.Landing != nil || projected.Validation != nil {
+				recovery.Attempts[i].Runtime = projected
+			}
 		}
 	}
 	detailInstructions := ""
@@ -1222,7 +1230,7 @@ func nativeRecoveryPrompt(execution Execution) (string, error) {
 		"Verify local state before resuming. Missing or inaccessible dirty/unpushed checkpoints require recovery; preserve existing work. " +
 		"A pending or ambiguous external effect requires reconciliation: inspect the remote ref/head or existing PR before retrying. " +
 		detailInstructions + "This is current recovery context, not a complete history. Use work_comments, work_runs, work_history and get_change for older evidence through their supported bounded reads. " +
-		"The issue body is already supplied above; attempt runtime diagnostics and historical events are omitted here and remain available through those reads. " +
+		"Failed source validation receipts below require source repair and fresh validation; preserve their command, output and source identity. The issue body is already supplied above; other attempt runtime diagnostics and historical events remain available through those reads. " +
 		"Do not fetch GitHub issue history. Artifact and Change references require scoped verification; they are not download capabilities.\n" + string(data), nil
 }
 
@@ -1468,6 +1476,9 @@ func nativeReviewResumeAttempt(recovery tracker.NativeRecovery, command string) 
 		if finalization := attempt.Finalization; !finalizationObserved && finalization != nil && attempt.PolicyID == current.PolicyID && finalization.ChangeID == current.ChangeID && finalization.VersionID == current.ID && finalization.HeadSHA == current.HeadSHA {
 			finalizationObserved = true
 			finalizationPending = finalization.Changed && !finalization.Reviewed && finalization.Error == "" && finalization.VersionError == "" && (attempt.Status == "interrupted" || attempt.Status == "failed" || attempt.Status == "cancelled")
+		}
+		if attempt.Runtime != nil && attempt.Runtime.Validation != nil && attempt.Runtime.Validation.ExitCode != 0 && !nativeIndependentGateResume(recovery) {
+			return nil
 		}
 		if attempt.Checkpoint != nil && (attempt.Checkpoint.UncertainForgeEffect() || attempt.Checkpoint.HeadSHA != "" && attempt.Checkpoint.HeadSHA != current.HeadSHA || attempt.Checkpoint.WorktreeState == "dirty") {
 			return nil
