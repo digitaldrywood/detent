@@ -25,7 +25,7 @@ type recordIdentity struct {
 func TestRecordPagesAndScansRevisitLateCommits(t *testing.T) {
 	for _, family := range recordFamilies() {
 		t.Run(family.name, func(t *testing.T) {
-			repository, _ := repositoryFor(t, template.Database(t), postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
+			repository, _ := repositoryFor(t, template.Database(t), postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 			prepareRecords(t, repository, "org_first", family.name == "comments")
 			created := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
 			create := func(name string, sequence int64) recordIdentity {
@@ -204,6 +204,9 @@ func recordFamilies() []recordFamily {
 func prepareRecords(t *testing.T, repository corestore.Repository, org tracker.OrganizationID, comments bool) {
 	t.Helper()
 	if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
+		if err := seedCoreOrganization(t.Context(), w, org); err != nil {
+			return err
+		}
 		if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: org, ID: "prj_records", Name: "Records", Profile: "native"}); err != nil {
 			return err
 		}
@@ -444,7 +447,7 @@ func TestImportedIDsWaitForConcurrentAllocations(t *testing.T) {
 	for _, family := range recordFamilies() {
 		t.Run(family.name, func(t *testing.T) {
 			admin := template.Database(t)
-			repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
+			repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 			prepareRecords(t, repository, "org_first", family.name == "comments")
 			ctx, cancel := context.WithCancel(t.Context())
 			release := make(chan struct{})

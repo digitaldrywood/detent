@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,8 +19,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -169,9 +172,25 @@ func (r healthAdmissionRepository) ReadTenant(ctx context.Context, organization 
 }
 
 func TestPostgresSharedHealthBypassesSaturatedServingAdmission(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		pool    postgres.PoolConfig
+		serving int
+	}{
+		{"max3", postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1}, 1},
+		{"max5", postgres.PoolConfig{MaxConnections: 5, ServingConnections: 4, BackgroundConnections: 1}, 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testPostgresSharedHealthWithSaturatedWorkloads(t, test.pool, test.serving)
+		})
+	}
+}
+
+func testPostgresSharedHealthWithSaturatedWorkloads(t *testing.T, config postgres.PoolConfig, expectedServing int) {
 	admin := postgresStartupTemplate.Database(t)
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 	cfg.Logger = discardLogger()
+	cfg.Postgres.Pool = config
 	store, err := openDatabase(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -180,25 +199,52 @@ func TestPostgresSharedHealthBypassesSaturatedServingAdmission(t *testing.T) {
 	for _, organization := range []tracker.OrganizationID{"org_startup", "org_second"} {
 		seedStartupOrganization(t, store.postgres, organization)
 	}
-	occupied, release, transactionDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
-	go func() {
-		transactionDone <- store.postgres.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(tenantstore.Reader) error {
-			close(occupied)
-			<-release
-			return nil
-		})
-	}()
+	serving, background := store.postgres.WorkloadCapacities()
+	release, transactionDone := make(chan struct{}), make(chan error, serving+background)
+	held := 0
 	var releaseOnce sync.Once
 	releaseServing := func() {
 		releaseOnce.Do(func() {
 			close(release)
-			if err := <-transactionDone; err != nil {
-				t.Error(err)
+			for range held {
+				if err := <-transactionDone; err != nil {
+					t.Error(err)
+				}
 			}
 		})
 	}
 	t.Cleanup(releaseServing)
-	<-occupied
+	workloads := []corestore.Workload{}
+	for range background {
+		workloads = append(workloads, corestore.Background)
+	}
+	for range serving {
+		workloads = append(workloads, corestore.Serving)
+	}
+	for index, workload := range workloads {
+		occupied := make(chan struct{})
+		organization := []tracker.OrganizationID{"org_startup", "org_second"}[index%2]
+		held++
+		go func() {
+			transactionDone <- store.postgres.ReadTenant(t.Context(), organization, workload, func(tenantstore.Reader) error {
+				close(occupied)
+				<-release
+				return nil
+			})
+		}()
+		select {
+		case <-occupied:
+		case err := <-transactionDone:
+			held--
+			t.Fatalf("held transaction exited before readiness: %v", err)
+		case <-testenv.WaitContext(t, t.Context()).Done():
+			t.Fatal("held transaction did not start")
+		}
+	}
+	if stats := store.postgres.Stats(); stats.InUse != serving+background || stats.MaxOpenConnections != config.MaxConnections {
+		t.Fatalf("admitted workload transactions did not occupy their physical connections: %+v", stats)
+	}
+	t.Logf("held all admitted workloads: serving=%d background=%d physical_max=%d", serving, background, config.MaxConnections)
 	key := hostedSharedKey(41)
 	for _, organization := range []string{"org_startup", "org_second"} {
 		t.Run(organization, func(t *testing.T) {
@@ -226,7 +272,7 @@ func TestPostgresSharedHealthBypassesSaturatedServingAdmission(t *testing.T) {
 				want   int
 				closed bool
 			}{
-				{name: "ready database with saturated serving queue", signed: true, ready: true, want: http.StatusOK},
+				{name: "ready database with saturated serving and background queues", signed: true, ready: true, want: http.StatusOK},
 				{name: "startup remains unavailable", signed: true, want: http.StatusServiceUnavailable},
 				{name: "unsigned remains unauthorized", ready: true, want: http.StatusUnauthorized},
 				{name: "database failure remains unavailable", signed: true, ready: true, closed: true, want: http.StatusServiceUnavailable},
@@ -259,13 +305,32 @@ func TestPostgresSharedHealthBypassesSaturatedServingAdmission(t *testing.T) {
 					}
 					response := httptest.NewRecorder()
 					done := make(chan struct{})
+					waits := store.postgres.Stats().WaitCount
 					go func() { defer close(done); handler.ServeHTTP(response, request) }()
+					testenv.WaitUntil(t, ctx, func() error {
+						select {
+						case <-done:
+							return nil
+						case <-entered:
+							cancel()
+							<-done
+							t.Fatal("health entered saturated application admission")
+						default:
+						}
+						if store.postgres.Stats().WaitCount > waits {
+							cancel()
+							<-done
+							t.Fatal("health waited for a physical database connection")
+						}
+						return errors.New("health request has not completed")
+					})
 					select {
 					case <-entered:
-						cancel()
-						<-done
 						t.Fatal("health entered saturated application admission")
-					case <-done:
+					default:
+					}
+					if store.postgres.Stats().WaitCount != waits {
+						t.Fatal("health queued for a physical database connection")
 					}
 					if response.Code != test.want {
 						t.Fatalf("health status = %d, want %d: %s", response.Code, test.want, response.Body.String())
@@ -282,5 +347,8 @@ func TestPostgresSharedHealthBypassesSaturatedServingAdmission(t *testing.T) {
 				})
 			}
 		})
+	}
+	if serving != expectedServing || background != config.BackgroundConnections {
+		t.Fatalf("effective workload capacities = %d/%d, want %d/%d", serving, background, expectedServing, config.BackgroundConnections)
 	}
 }

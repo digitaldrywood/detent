@@ -426,7 +426,7 @@ func TestPostgresStartupSeparatesRuntimeAndMigrationParameters(t *testing.T) {
 				err = postgres.Migrate(t.Context(), cfg, os.DirFS("migrations"))
 			} else {
 				var repository *postgres.Repository
-				repository, err = postgres.Open(t.Context(), postgres.Config{Connection: cfg, Pool: postgres.PoolConfig{MaxConnections: 2, ServingConnections: 1, BackgroundConnections: 1}}, os.DirFS("migrations"))
+				repository, err = postgres.Open(t.Context(), postgres.Config{Connection: cfg, Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}, os.DirFS("migrations"))
 				if repository != nil {
 					repository.Close()
 				}

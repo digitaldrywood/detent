@@ -227,7 +227,7 @@ func TestRequestMetricImportRollsBackPageAndCheckpoint(t *testing.T) {
 
 func TestRequestMetricImportConcurrentReplay(t *testing.T) {
 	db := template.Database(t)
-	r, _ := repositoryFor(t, db, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 1, BackgroundConnections: 3})
+	r, _ := repositoryFor(t, db, postgres.PoolConfig{MaxConnections: 5, ServingConnections: 1, BackgroundConnections: 3})
 	source := metricImportSource(t, db, "raw_metrics", "org_first")
 	for n := range metricsstore.CallerLimit + 2 {
 		insertImportMetric(t, source, metricsstore.Minute, metricSample(source.RetainAt.Truncate(time.Minute), "GET /example", fmt.Sprintf("caller_%03d", n)))

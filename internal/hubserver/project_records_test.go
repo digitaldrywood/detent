@@ -27,7 +27,7 @@ import (
 )
 
 func projectRecordPostgres(t *testing.T) *postgres.Repository {
-	repository, _ := projectRecordPostgresWithAdmin(t, 2)
+	repository, _ := projectRecordPostgresWithAdmin(t, 3)
 	return repository
 }
 

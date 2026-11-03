@@ -259,7 +259,7 @@ func TestRunnerHasActiveLeaseIsBoundedAndTenantScoped(t *testing.T) {
 
 func TestRunnerSharedProviderAccountSerializesFirstReportJoin(t *testing.T) {
 	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
+	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	const organization tracker.OrganizationID = "org_shared_account"
 	now := time.Now().UTC()
 	seedRunnerIdentity(t, repository, organization, "runner_first", "machine_first", now, true)
@@ -554,7 +554,7 @@ func timePointer(value time.Time) *time.Time {
 
 func TestRunnerProjectObservationIsTenantScopedAndRejectsStaleSnapshots(t *testing.T) {
 	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
+	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	ctx := t.Context()
 	now := historyAt()
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {

@@ -218,7 +218,7 @@ func TestLeasePolicyPinSharesClaimTransactionAndTenantScope(t *testing.T) {
 
 func TestPolicyWritesWaitForSharedProjectAuthorityLock(t *testing.T) {
 	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
+	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	now := time.Date(2026, 11, 1, 20, 0, 0, 0, time.UTC)
 	for _, updateReview := range []bool{false, true} {
 		name := "project policy"

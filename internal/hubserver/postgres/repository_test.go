@@ -12,6 +12,7 @@ import (
 
 	"github.com/lib/pq"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -41,12 +42,15 @@ func repositoryFor(t *testing.T, admin *sql.DB, config postgres.PoolConfig) (*po
 }
 
 func smallPool() postgres.PoolConfig {
-	return postgres.PoolConfig{MaxConnections: 2, ServingConnections: 1, BackgroundConnections: 1}
+	return postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}
 }
 
 func seedRepository(t *testing.T, repository corestore.Repository, organization tracker.OrganizationID) {
 	t.Helper()
 	err := repository.Write(t.Context(), organization, corestore.Serving, func(w corestore.Writer) error {
+		if err := seedCoreOrganization(t.Context(), w, organization); err != nil {
+			return err
+		}
 		for index, suffix := range []string{"first", "second"} {
 			want := corestore.Project{OrganizationID: organization, ID: tracker.ProjectID("prj_" + suffix), Name: suffix, Slug: suffix, Profile: "native", RequireDependencies: true, SchedulingRank: int64(index), WorkflowSource: "example", WorkflowSourceRevision: "source-revision", WorkflowObjectKey: new("example/workflow"), StatesObjectKey: new("example/states"), ModelSelectionObjectKey: new("example/models")}
 			got, err := w.CreateProject(t.Context(), want)
@@ -522,4 +526,15 @@ func TestRepositoryRollsBackFailedCallbacks(t *testing.T) {
 			}
 		})
 	}
+}
+
+func seedCoreOrganization(ctx context.Context, writer corestore.Writer, organization tracker.OrganizationID) error {
+	access := writer.(interface {
+		accessstore.Reader
+		accessstore.Writer
+	})
+	if _, err := access.AccessOrganization(ctx); !errors.Is(err, corestore.ErrNotFound) {
+		return err
+	}
+	return access.CreateAccessOrganization(ctx, accessstore.Organization{OrganizationID: organization, Name: string(organization), CreatedAt: time.Now().UTC()})
 }

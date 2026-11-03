@@ -17,7 +17,7 @@ import (
 
 func TestOrganizationModelUpdatesWaitForProjectModelValidation(t *testing.T) {
 	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
+	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	org := tracker.OrganizationID("org_models_lock")
 	seedTenantAccess(t, repository, org)
 	locked, release := make(chan struct{}), make(chan struct{})
