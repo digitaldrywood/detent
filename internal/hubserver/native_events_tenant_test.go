@@ -561,11 +561,14 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 		t.Fatal(err)
 	}
 	var cancelRelease *httptest.ResponseRecorder
+	originalNow := service.config.now
+	service.config.now = func() time.Time { return thirdLease.RenewedAt.Add(-time.Second) }
 	err = withClosedSQLite(t, service, organization.ID, func() error {
 		var err error
 		cancelRelease, err = callCancelRelease()
 		return err
 	})
+	service.config.now = originalNow
 	if err != nil || cancelRelease.Code != http.StatusNoContent {
 		t.Fatalf("cancellation release status=%d error=%v body=%s", cancelRelease.Code, err, cancelRelease.Body.String())
 	}
