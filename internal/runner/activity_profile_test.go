@@ -390,10 +390,10 @@ func TestActivityRecorderSkipsUnchangedCheckpoints(t *testing.T) {
 		}{
 			{"tool started", AgentUpdate{Type: AgentUpdateToolStarted, ItemID: "tool", Tool: "Bash", Command: "go test ./foo"}, 2, "admission"},
 			{"whole gate receipt", AgentUpdate{Type: AgentUpdateToolOutput, ItemID: "tool", Delta: gate.CheckEvidencePrefix + string(check) + "\n"}, 3, "admission"},
-			{"unchanged turn", AgentUpdate{Type: AgentUpdateTurnStarted}, 3, "admission"},
-			{"tool completed", AgentUpdate{Type: AgentUpdateToolCompleted, ItemID: "tool", Status: "completed"}, 4, ""},
-			{"dropped input", AgentUpdate{Type: AgentUpdateToolStarted, ItemID: strings.Repeat("x", 513)}, 5, ""},
-			{"terminal turn", AgentUpdate{Type: AgentUpdateTurnCompleted, Status: "completed"}, 6, ""},
+			{"observed turn", AgentUpdate{Type: AgentUpdateTurnStarted}, 4, "admission"},
+			{"tool completed", AgentUpdate{Type: AgentUpdateToolCompleted, ItemID: "tool", Status: "completed"}, 5, ""},
+			{"dropped input", AgentUpdate{Type: AgentUpdateToolStarted, ItemID: strings.Repeat("x", 513)}, 6, ""},
+			{"terminal turn", AgentUpdate{Type: AgentUpdateTurnCompleted, Status: "completed"}, 7, ""},
 		} {
 			recorder.runtimeMu.Lock()
 			recorder.cacheWait = test.cacheWait
@@ -763,4 +763,48 @@ func TestWorkerPipelineEvidenceChunks(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFinalizationActivityUsesObservedTime(t *testing.T) {
+	for _, stage := range []string{"review", "validation", "security_audit"} {
+		t.Run(stage, func(t *testing.T) {
+			root := t.TempDir()
+			synctest.Test(t, func(t *testing.T) {
+				probe := &activityCheckpointProbe{started: make(chan struct{}), release: make(chan struct{}), profiles: make(chan store.WorkflowPhaseEvent, 16)}
+				close(probe.release)
+				execution := &landingRunExecution{}
+				r := &Runner{store: probe, projectID: "example", now: time.Now, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+				recorder := r.startActivityProfile(t.Context(), RunRequest{Execution: execution, WorkAttemptID: 42, Generation: 2}, 43, root, config.Workflow{}, stage)
+				defer recorder.finish()
+				synctest.Wait()
+				time.Sleep(11 * time.Minute)
+				synctest.Wait()
+				if len(execution.observations) != 1 {
+					t.Fatal("quiet session fabricated progress")
+				}
+				at := time.Now()
+				recorder.observe(AgentUpdate{Type: AgentUpdateMessageDelta, Delta: "private provider output"}, at, "", time.Time{})
+				time.Sleep(5 * time.Second)
+				synctest.Wait()
+				if len(execution.observations) != 2 {
+					t.Fatalf("missing provider activity: %d", len(execution.observations))
+				}
+				got := execution.observations[1]
+				if got.Phase != stage || !got.HeartbeatAt.Equal(at) || got.LocalAttemptID != 42 || got.Generation != 2 || got.Activity.Coverage != "partial" {
+					t.Fatalf("observation: %+v", got)
+				}
+				time.Sleep(11 * time.Minute)
+				synctest.Wait()
+				if len(execution.observations) != 2 {
+					t.Fatal("quiet finalization refreshed activity")
+				}
+			})
+		})
+	}
+}
+
+type finalizationActivityStore struct{ *fakeSessionStore }
+
+func (*finalizationActivityStore) SaveWorkflowActivityProfile(_ context.Context, _ int64, _ store.WorkflowPhaseEvent, _ workflowmetrics.ActivityProfile) (int64, error) {
+	return 1, nil
 }

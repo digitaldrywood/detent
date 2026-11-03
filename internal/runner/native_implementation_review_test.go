@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ import (
 )
 
 type implementationReviewExecution struct {
+	stages []string
 	attachmentValidatorExecution
 	events            *[]string
 	validatorDisabled bool
@@ -76,6 +78,11 @@ func (e *implementationReviewExecution) SecurityAuditVersion(ctx context.Context
 func (e *implementationReviewExecution) RecordSecurityAudit(_ context.Context, result tracker.SecurityAuditReview) error {
 	*e.events = append(*e.events, "record audit")
 	e.auditResult = result
+	return nil
+}
+
+func (e *implementationReviewExecution) ObserveRuntime(_ context.Context, observation tracker.NativeRuntimeObservation) error {
+	e.stages = append(e.stages, observation.Phase)
 	return nil
 }
 
@@ -431,6 +438,7 @@ fi
 						{Name: "acceptance", Role: RoleValidator, Backend: "codex", Model: "validator-model"},
 					}},
 				}, Prompt: "Review"},
+				Store:        &finalizationActivityStore{&fakeSessionStore{sessionID: 43}},
 				Workspace:    worktree,
 				AgentBackend: backend,
 			})
@@ -491,6 +499,12 @@ fi
 			err = r.validateNativeChange(t.Context(), RunRequest{Execution: reviewExecution, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1", Description: "## Acceptance criteria\n- " + criterion}})
 			if (err != nil) != (test.recordError != nil) {
 				t.Fatalf("source verdict became a run failure or recording failure was ignored: %v", err)
+			}
+			if !slices.Contains(execution.stages, "review") {
+				t.Fatalf("missing review runtime: %v", execution.stages)
+			}
+			if execution.validatorResult.Submitted && !slices.Contains(execution.stages, "validation") {
+				t.Fatalf("missing validator runtime: %v", execution.stages)
 			}
 			want := []string{"review version", "review-model", "record review"}
 			if test.verdict == "pass" && test.validator && test.recordError == nil && !test.gateFailure {
