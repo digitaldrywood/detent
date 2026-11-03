@@ -1931,6 +1931,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		return RunResult{}, fmt.Errorf("%w: create workspace: %w", ErrWorkspacePreparation, err)
 	}
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+		defer cancel()
+		returnErr = errors.Join(returnErr, r.reapWorkspaceProcessesAfterTurn(cleanupCtx, info.Path, 0, req.WorkAttemptID, req.Issue, returnErr, true))
+	}()
 	r.logWorkerEvent(req.Issue, "worker_workspace_created",
 		telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 		"workspace_path", info.Path,

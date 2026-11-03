@@ -13,6 +13,12 @@ func workerScratchOwnerRoots(root string) []string {
 }
 
 func workerScratchEnvironmentMatches(roots []string, environment []string) bool {
+	for _, entry := range environment {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok && (key == "DETENT_WORKSPACE" || runtime.GOOS == "windows" && strings.EqualFold(key, "DETENT_WORKSPACE")) {
+			return len(roots) > 0 && filepath.IsAbs(value) && bestEffortCanonicalPath(value) == bestEffortCanonicalPath(roots[0])
+		}
+	}
 	legacy := false
 	for _, entry := range environment {
 		key, value, ok := strings.Cut(entry, "=")

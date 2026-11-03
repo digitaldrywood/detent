@@ -15,6 +15,9 @@ func TestWorkerScratchEnvironmentMatches(t *testing.T) {
 		want bool
 	}{
 		{name: "unmarked"},
+		{name: "hook daemon", env: []string{"DETENT_WORKSPACE=" + root}, want: true},
+		{name: "hook overrides inherited worker scratch", env: []string{"DETENT_WORKER_SCRATCH=" + t.TempDir(), "DETENT_WORKSPACE=" + root}, want: true},
+		{name: "neighbor hook", env: []string{"DETENT_WORKSPACE=" + root + "-neighbor"}},
 		{name: "legacy scratch", env: []string{"TMPDIR=" + filepath.Join(root, ".detent", "tmp")}, want: true},
 		{name: "windows temp", env: []string{"Temp=" + root}, want: runtime.GOOS == "windows"},
 		{name: "neighbor prefix", env: []string{"TMPDIR=" + root + "-neighbor"}},
