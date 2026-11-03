@@ -491,7 +491,7 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 				}
 			}
 		}
-		for _, path := range []string{"/work-views", "/work-view-preference", "/projects/project_first/work-view-preference"} {
+		for _, path := range []string{"/work-views", "/work-view-preference", "/projects/project_first/work-view-preference", "/model-selection", "/slug", "/projects/project_first/slug", "/projects/project_second/slug"} {
 			requireNativeStatus(t, browserRead(base+path), http.StatusOK)
 		}
 		params := url.Values{"project": {"project_first", "project_second"}, "state": {`{"view":"board","tab":"active","q":"","sort":"default","completedWindow":"24h"}`}}

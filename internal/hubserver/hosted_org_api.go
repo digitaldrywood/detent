@@ -56,18 +56,13 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	e.GET(hostedOrganizationBase+"/sprite-pool", s.organizationSpritesScope(s.getSpritePool), session)
 	e.PUT(hostedOrganizationBase+"/sprite-pool", s.organizationSpritesScope(s.setSpritePool), administration)
 
-	for _, path := range []string{hostedOrganizationBase + "/slug", hostedOrganizationBase + "/projects/:project/slug"} {
-		e.GET(path, s.slugSettings, session)
-		e.PUT(path, s.slugSettings, session)
-	}
+	s.registerOrganizationSettingsRecordRoutes(e)
 	s.registerWorkViewRoutes(e)
 	e.GET(hostedOrganizationBase+"/integrations/slack", s.getSlackIntegration, session)
 	e.PUT(hostedOrganizationBase+"/integrations/slack", s.setSlackIntegration, administration)
 	e.POST(hostedOrganizationBase+"/integrations/slack/test", s.testSlackIntegration, administration)
 	e.GET(hostedOrganizationBase+"/monthly-budget", s.organizationMonthlyBudgetScope, session)
 	e.PUT(hostedOrganizationBase+"/monthly-budget", s.organizationMonthlyBudgetScope, administration)
-	e.GET(hostedOrganizationBase+"/model-selection", s.getOrganizationModelSelection, session)
-	e.PUT(hostedOrganizationBase+"/model-selection", s.updateOrganizationModelSelection, administration)
 	e.GET(hostedOrganizationBase+"/members", s.listHostedMembers, session)
 	e.POST(hostedOrganizationBase+"/members/invitations", s.inviteHostedMemberJSON, administration)
 	e.PUT(hostedOrganizationBase+"/members/invitations/:invitation", s.editHostedInvitationJSON, administration)
@@ -84,6 +79,15 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	e.POST(hostedOrganizationBase+"/switch", s.switchHostedOrganizationJSON, session)
 	e.POST(hostedOrganizationBase+"/invitations/accept", s.acceptHostedInvitationJSON, session)
 	e.POST(hostedOrganizationBase+"/support/start", s.startHostedSupportJSON, session)
+}
+
+func (s *Service) registerOrganizationSettingsRecordRoutes(e *echo.Echo) {
+	for _, path := range []string{hostedOrganizationBase + "/slug", hostedOrganizationBase + "/projects/:project/slug"} {
+		e.GET(path, s.slugSettings, s.hostedSessionOnly)
+		e.PUT(path, s.slugSettings, s.hostedSessionOnly)
+	}
+	e.GET(hostedOrganizationBase+"/model-selection", s.getOrganizationModelSelection, s.hostedSessionOnly)
+	e.PUT(hostedOrganizationBase+"/model-selection", s.updateOrganizationModelSelection, s.hostedAdministrationSession)
 }
 
 func (s *Service) registerWorkViewRoutes(e *echo.Echo) {
