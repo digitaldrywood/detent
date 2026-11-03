@@ -283,5 +283,10 @@
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "credit_history_imports.organization_id; sealed source snapshot and completion counts are tenant scoped"
+  },
+  "public/attempt_diffs": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "attempt_diffs.organization_id; work item generation is tenant and project scoped and diff files remain in verified archive content"
   }
 }
