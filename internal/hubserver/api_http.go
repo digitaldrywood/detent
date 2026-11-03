@@ -124,7 +124,7 @@ func (s *Service) registerPostgresRoutes(e *echo.Echo) {
 		e.POST("/internal/v1/health", s.hostedSharedHealth)
 		e.POST("/internal/v1/owner/bootstrap", s.bootstrapHostedSharedOwner)
 	}
-	e.Any("/*", s.postgresFeatureUnavailable)
+	s.registerPostgresAppRoutes(e)
 }
 
 func (s *Service) postgresFeatureUnavailable(c echo.Context) error {
