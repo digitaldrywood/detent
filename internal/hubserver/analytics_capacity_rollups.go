@@ -85,14 +85,14 @@ func refreshAnalyticsClaims(ctx context.Context, tx projectionQuery, scope nativ
 
 func projectAnalyticsCapacityRollups(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
 	queue := nativeAnalyticsCapacityWait{Source: "native_scheduler_decisions", Coverage: "recorded_provider_capacity_wait_to_claim; claimed_in_window; clipped_to_window", Partial: true}
-	rows, err := queryAnalyticsPopulation(ctx, q, "capacity", `SELECT data_json FROM analytics_hourly_rollups INDEXED BY analytics_capacity_order WHERE organization_id=? AND project_id=? AND metric='capacity_claim' AND sample_ns>=? AND sample_ns<? ORDER BY sample_at,dimension LIMIT ? OFFSET ?`, scope.organization, scope.project, out.Window.From.UnixNano(), out.Window.To.UnixNano())
+	rows, err := queryAnalyticsPopulation(ctx, q, "capacity", `SELECT `+analyticsSampleColumn("")+` FROM analytics_hourly_rollups INDEXED BY analytics_capacity_order WHERE organization_id=? AND project_id=? AND metric='capacity_claim' AND sample_ns>=? AND sample_ns<? ORDER BY sample_at,dimension LIMIT ? OFFSET ?`, scope.organization, scope.project, out.Window.From.UnixNano(), out.Window.To.UnixNano())
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	var ids []string
+	var ids, samples []string
 	for rows.Next() {
-		if queue.ClaimsObserved == maxAnalyticsPopulation {
+		if len(samples) == maxAnalyticsPopulation {
 			out.Partial = true
 			break
 		}
@@ -100,8 +100,15 @@ func projectAnalyticsCapacityRollups(ctx context.Context, q nativeQueryer, scope
 		if err := rows.Scan(&raw); err != nil {
 			return err
 		}
+		samples = append(samples, raw)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, raw := range samples {
 		var sample analyticsCapacitySample
-		if err := json.Unmarshal([]byte(raw), &sample); err != nil {
+		if err := decodeAnalyticsSample(ctx, q, raw, &sample); err != nil {
 			return err
 		}
 		queue.ClaimsObserved++
@@ -113,10 +120,6 @@ func projectAnalyticsCapacityRollups(ctx context.Context, q nativeQueryer, scope
 		queue.IntervalsObserved++
 		queue.Seconds += float64(max(int64(0), sample.SecondsNS-max(int64(0), out.Window.From.Sub(sample.Start).Nanoseconds()))) / 1e9
 		ids = append(ids, sample.ID)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
 	}
 	encoded, err := sqlList(ids)
 	if err != nil {
