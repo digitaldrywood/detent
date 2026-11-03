@@ -22,7 +22,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -353,9 +355,22 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 			}
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
 			if c.Path() == nativeOrganizationIssuePath {
-				err := s.database.auth().QueryRowContext(readCtx, "SELECT project_id FROM issues WHERE organization_id = ? AND native_id = ?", scope.organization, c.Param("item")).Scan(&scope.project)
-				if err != nil {
-					return s.nativeAPIError(c, err)
+				if s.config.TenantRepository != nil {
+					var item corestore.WorkItem
+					err := s.config.TenantRepository.ReadTenant(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+						var err error
+						item, err = r.WorkItemByNativeID(readCtx, tracker.NativeWorkItemID(c.Param("item")))
+						return err
+					})
+					if err != nil {
+						return s.nativeAPIError(c, projectRecordError(err))
+					}
+					scope.project = item.ProjectID
+				} else {
+					err := s.database.auth().QueryRowContext(readCtx, "SELECT project_id FROM issues WHERE organization_id = ? AND native_id = ?", scope.organization, c.Param("item")).Scan(&scope.project)
+					if err != nil {
+						return s.nativeAPIError(c, err)
+					}
 				}
 			}
 			runnerHeartbeat := c.Path() == nativeBase+"/machines/:machine/heartbeat" && credential.Runner.RunnerID != ""
@@ -396,12 +411,12 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 						return s.nativeAPIError(c, operatortool.ErrAccessDenied)
 					}
 				}
-				if s.config.TenantRepository != nil && runnerLeaseMutationRoute(c.Path()) {
-					if err := s.authorizeRunnerLeaseProject(readCtx, scope); err != nil {
-						return s.nativeAPIError(c, err)
-					}
-				} else if s.config.TenantRepository != nil && (projectRecordRoute(c.Path()) || workItemRecordRoute(c.Path()) || selectedChangeRecordRoute(c.Path()) || selectedGoTestReceiptRoute(c.Path()) || runnerRepositoryRoute(c.Path())) {
-					if runnerRepositoryReportRoute(c.Path()) && credential.Runner.RunnerID != "" {
+				if s.config.TenantRepository != nil {
+					if runnerLeaseMutationRoute(c.Path()) {
+						if err := s.authorizeRunnerLeaseProject(readCtx, scope); err != nil {
+							return s.nativeAPIError(c, err)
+						}
+					} else if runnerRepositoryReportRoute(c.Path()) && credential.Runner.RunnerID != "" {
 						if err := s.authorizeRunnerRepositoryProject(readCtx, scope); err != nil {
 							return s.nativeAPIError(c, err)
 						}
@@ -424,7 +439,7 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 			}
 			if item := c.Param("item"); item != "" {
 				var visibilityErr error
-				if s.config.TenantRepository != nil && (workItemRecordRoute(c.Path()) || selectedChangeRecordRoute(c.Path())) {
+				if s.config.TenantRepository != nil {
 					_, _, visibilityErr = s.readWorkItemRecord(readCtx, scope, item)
 				} else {
 					visibilityErr = requireReporterItem(readCtx, s.database.reader, scope, item)

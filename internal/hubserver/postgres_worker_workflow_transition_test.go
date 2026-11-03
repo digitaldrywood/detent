@@ -34,6 +34,16 @@ func TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays(t *testin
 		t.Fatal(err)
 	}
 	seedPostgresHubAdmin(t, repository, service, organization)
+	cursorKey := bytes.Repeat([]byte{0x31}, 32)
+	cursorEnvelope, err := service.config.SecretKeys.Seal(cursorKey, accessstore.SecretAAD(organization.ID, "", accessstore.NativeCursorKeyKind))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Envelope: cursorEnvelope, UpdatedAt: clock.Now()}, accessstore.SecretAudit{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: cursorEnvelope.Version, RecordedAt: clock.Now()})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	service.localOrganization = string(organization.ID)
 	projectPath := "/api/v2/organizations/" + string(organization.ID) + "/projects"
 	projectResponse := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{"idempotency_key": "workflow-project", "name": "Example project", "states": nativeFixtureStates()})
@@ -137,6 +147,25 @@ func TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays(t *testin
 	t.Cleanup(func() { service.database.db = originalDB; service.database.reader = originalReader })
 	service.database.db = nil
 	service.database.reader = nil
+	projectGetPath := strings.Replace(nativeBase, ":organization", string(organization.ID), 1)
+	projectGetPath = strings.Replace(projectGetPath, ":project", string(project.ID), 1)
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, projectGetPath+"/policy", testHubAdminToken, nil), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, itemsPath+"/"+string(issue.WorkItemID), testHubAdminToken, nil), http.StatusOK)
+	historyURL := itemsPath + "/" + string(issue.WorkItemID) + "/history?view=timeline"
+	historyResponse := performHubAPIRequest(t, service, http.MethodGet, historyURL, testHubAdminToken, nil)
+	requireNativeStatus(t, historyResponse, http.StatusOK)
+	organizationItemURL := "/api/v2/organizations/" + string(organization.ID) + "/work-items/" + string(issue.WorkItemID)
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, organizationItemURL, testHubAdminToken, nil), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, projectGetPath+"/onboarding", testHubAdminToken, nil), http.StatusServiceUnavailable)
+	for _, path := range []string{
+		strings.Replace(itemsPath+"/"+string(issue.WorkItemID)+"/history?view=timeline", string(project.ID), "prj_foreign", 1),
+		strings.Replace(itemsPath+"/"+string(issue.WorkItemID)+"/history?view=timeline", string(organization.ID), "org_foreign", 1),
+	} {
+		got := performHubAPIRequest(t, service, http.MethodGet, path, testHubAdminToken, nil)
+		if got.Code != http.StatusNotFound && got.Code != http.StatusForbidden && got.Code != http.StatusUnauthorized {
+			t.Fatalf("cross-scope history status=%d", got.Code)
+		}
+	}
 	transition := func(item tracker.NativeIssue, lease leasestore.Lease, key string) tracker.Transition {
 		return tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: key, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, ExpectedRevision: item.Revision, State: "In Progress", Reason: "worker_progress"}
 	}
