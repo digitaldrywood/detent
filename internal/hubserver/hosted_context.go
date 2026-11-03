@@ -10,6 +10,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -55,8 +58,21 @@ func (e hostedContextExecutor) credential(ctx context.Context, name, project str
 		return ctx, apiCredential{}, err
 	}
 	s := e.service
-	if s.config.Hosted == nil || s.database == nil || s.database.db == nil {
+	if s.config.Hosted == nil || s.database == nil {
 		return ctx, apiCredential{}, errHostedContextUnavailable
+	}
+	if s.database.db == nil {
+		if s.config.TenantRepository == nil || name != operatortool.AppUpdates {
+			return ctx, apiCredential{}, errHostedContextUnavailable
+		}
+		credential, err := currentHubOperator(ctx)
+		if err != nil || credential.Hosted == nil || credential.HostedRole == "account" || operatorIdentity(credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
+			return ctx, apiCredential{}, operatortool.ErrAccessDenied
+		}
+		if !s.appAllRunnerGrants(ctx, credential) {
+			return ctx, apiCredential{}, operatortool.ErrAccessDenied
+		}
+		return ctx, credential, nil
 	}
 	credential, err := (hubAdministration{s}).credential(ctx)
 	if err != nil || credential.Hosted == nil || credential.HostedRole == "account" || operatorIdentity(credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
@@ -70,7 +86,25 @@ func (e hostedContextExecutor) credential(ctx context.Context, name, project str
 
 func (e hostedContextExecutor) listTools(ctx context.Context) []operatortool.Definition {
 	s := e.service
-	if s.config.Hosted == nil || s.database == nil || s.database.db == nil {
+	if s.config.Hosted == nil || s.database == nil {
+		return nil
+	}
+	if s.database.db == nil {
+		if s.config.TenantRepository == nil {
+			return nil
+		}
+		catalog, err := operatorCatalog(ctx)
+		if err != nil || catalog.credential.Hosted == nil || catalog.credential.HostedRole == "account" || operatorIdentity(catalog.credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
+			return nil
+		}
+		if _, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ResourceKind: "runners"}); err != nil || !s.appAllRunnerGrants(ctx, catalog.credential) {
+			return nil
+		}
+		for _, definition := range operatortool.HostedContextCatalog() {
+			if definition.Name == operatortool.AppUpdates {
+				return []operatortool.Definition{definition}
+			}
+		}
 		return nil
 	}
 	catalog, err := operatorCatalog(ctx)
@@ -275,7 +309,13 @@ func (s *Service) readHostedEventObservation(ctx context.Context, scope nativeSc
 func (s *Service) appAllRunnerGrants(ctx context.Context, credential apiCredential, projects ...tracker.ProjectID) bool {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	if credential.Hosted == nil || s.requireHostedRunnerProjects(ctx, s.database.reader, credential, projects) != nil {
+	if credential.Hosted == nil {
+		return false
+	}
+	if s.database.db == nil && s.config.TenantRepository != nil {
+		return s.appAllRunnerGrantsPostgres(ctx, credential, projects)
+	}
+	if s.requireHostedRunnerProjects(ctx, s.database.reader, credential, projects) != nil {
 		return false
 	}
 	if credential.HostedKeyScope == "" {
@@ -290,4 +330,70 @@ func (s *Service) appAllRunnerGrants(ctx context.Context, credential apiCredenti
 	var total, granted int
 	err = queryRowSQL(ctx, s.database.reader, "SELECT count(*), COALESCE(sum("+condition+"),0) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id = ? AND (? OR p.id IN (SELECT value FROM sql_rows(?)))", args...).Scan(&total, &granted)
 	return err == nil && total > 0 && total == granted
+}
+
+func (s *Service) appAllRunnerGrantsPostgres(ctx context.Context, credential apiCredential, projects []tracker.ProjectID) bool {
+	if credential.HostedRole != "owner" && credential.HostedRole != "admin" && credential.HostedRole != "member" || projects != nil && len(projects) == 0 {
+		return false
+	}
+	if credential.HostedKeyScope == "" && (credential.HostedRole == "owner" || credential.HostedRole == "admin") {
+		return true
+	}
+	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
+	var total, accessible int
+	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		accessReader, ok := reader.(accessstore.ProjectAccessPageReader)
+		if !ok {
+			return ErrProjectParticipants
+		}
+		if projects != nil {
+			if len(projects) > corestore.MaxPageSize {
+				return corestore.ErrInvalidPage
+			}
+			for _, project := range projects {
+				rows, err := accessReader.ProjectAccessPage(ctx, projectAccessFilter(credential, project, "", 1))
+				if err != nil {
+					return err
+				}
+				if len(rows) == 0 || rows[0].ProjectID != project || credential.HostedRole == "member" && !rows[0].ManageRunner {
+					return nil
+				}
+				accessible++
+			}
+			total = len(projects)
+			return nil
+		}
+		page, err := accessReader.ProjectAccessPage(ctx, projectAccessFilter(credential, "", "", corestore.MaxPageSize))
+		if err != nil {
+			return err
+		}
+		if len(page) > corestore.MaxPageSize {
+			return corestore.ErrInvalidPage
+		}
+		if credential.HostedRole == "member" {
+			for _, project := range page {
+				if !project.ManageRunner {
+					return operatortool.ErrAccessDenied
+				}
+			}
+		}
+		accessible = len(page)
+		projectsPage, err := reader.Projects(ctx, "", corestore.MaxPageSize)
+		if err != nil {
+			return err
+		}
+		if len(projectsPage) >= corestore.MaxPageSize {
+			return corestore.ErrInvalidPage
+		}
+		for _, project := range projectsPage {
+			if project.DeletedAt == nil {
+				total++
+			}
+		}
+		return nil
+	})
+	if err != nil || total == 0 || total != accessible {
+		return false
+	}
+	return true
 }

@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +19,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -634,6 +642,86 @@ func TestAppUpdates(t *testing.T) {
 	payload = read(t, "owner")
 	if payload.BehindCount != 0 || payload.Runners[0].Version != "v0.117.60" || payload.Runners[0].Behind {
 		t.Fatalf("after upgrade heartbeat = %#v", payload)
+	}
+}
+
+func TestAppUpdatesPostgresProjectionAndFreshAuthorization(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	expires := now.Add(time.Hour)
+	organization := tracker.OrganizationID("org_app_updates")
+	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		if err := writer.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example", CreatedAt: now}); err != nil {
+			return err
+		}
+		if err := writer.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "provider_example"}); err != nil {
+			return err
+		}
+		if _, err := writer.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "project_example", Name: "Example", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}); err != nil {
+			return err
+		}
+		if err := writer.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "runner_token", Name: "Runner", Hash: apikey.HashToken("example-runner-token"), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+			return err
+		}
+		if err := writer.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "runner_token_second", Name: "Second runner", Hash: apikey.HashToken("example-runner-token-second"), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+			return err
+		}
+		if err := writer.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: "machine_example", Hostname: "example", DisplayName: "Example runner", Capacity: 1, Version: "v1.2.4"}); err != nil {
+			return err
+		}
+		if err := writer.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: "machine_second", Hostname: "second.example", DisplayName: "Second runner", Capacity: 1, Version: "v1.2.4"}); err != nil {
+			return err
+		}
+		if err := writer.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization, ID: "enrollment_example", RunnerID: "runner_example", MachineID: "machine_example", TokenHash: apikey.HashToken("example-enrollment-token"), Scope: "projects", Operations: []string{"read"}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "example"}); err != nil {
+			return err
+		}
+		if err := writer.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization, ID: "enrollment_second", RunnerID: "runner_second", MachineID: "machine_second", TokenHash: apikey.HashToken("second-enrollment-token"), Scope: "projects", Operations: []string{"read"}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "example"}); err != nil {
+			return err
+		}
+		if err := writer.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: "runner_example", MachineID: "machine_example", TokenID: "runner_token", EnrollmentID: "enrollment_example", Scope: "projects", Operations: []string{"read"}, DisplayName: "Example runner", CapacityLimit: 1, ReportedCapacity: 1, CreatedAt: now, ExpiresAt: now.Add(time.Hour), LastHeartbeatAt: now}); err != nil {
+			return err
+		}
+		return writer.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: "runner_second", MachineID: "machine_second", TokenID: "runner_token_second", EnrollmentID: "enrollment_second", Scope: "projects", Operations: []string{"read"}, DisplayName: "Second runner", CapacityLimit: 1, ReportedCapacity: 1, CreatedAt: now, ExpiresAt: now.Add(time.Hour), LastHeartbeatAt: now})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{database: &database{}, config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(organization)}, Version: "v1.2.4", now: func() time.Time { return now }}}
+	credential := apiCredential{ID: "operator_example", Hash: "example-hash", Scope: apiScopeOperator, Hosted: &auth.HostedIdentity{Subject: "user_example", OrganizationID: "provider_example"}, HostedRole: "owner"}
+	updates, err := service.readAppUpdates(t.Context(), credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updates.Runners) != 2 || updates.Runners[0].RunnerID != "runner_example" || updates.Runners[0].DisplayName != "Example runner" || updates.Runners[0].Version != "v1.2.4" || !updates.Runners[0].Online || updates.Runners[0].Behind || updates.Runners[1].RunnerID != "runner_second" || updates.Runners[1].DisplayName != "Second runner" || updates.Runners[1].Version != "v1.2.4" || !updates.Runners[1].Online || updates.Runners[1].Behind {
+		t.Fatalf("updates=%+v", updates)
+	}
+	member := credential
+	member.HostedRole = "member"
+	if _, err := service.readAppUpdates(t.Context(), member); err == nil {
+		t.Fatal("member without manage_runner grants read runner updates")
+	}
+	revoked := false
+	resolve := func(context.Context) (apiCredential, error) {
+		if revoked {
+			return apiCredential{}, operatortool.ErrAccessDenied
+		}
+		return credential, nil
+	}
+	identity := operatorIdentity(credential, string(organization))
+	ctx := context.WithValue(t.Context(), hubOperatorResolverKey{}, resolve)
+	ctx = operatortool.WithConnection(ctx, operatortool.Connection{Identity: identity, Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+		current, err := resolve(ctx)
+		if err != nil {
+			return operatortool.Authority{}, err
+		}
+		return operatortool.Authority{Identity: operatorIdentity(current, string(organization)), Check: func(context.Context, operatortool.Requirement) error { return nil }}, nil
+	}})
+	executor := hostedContextExecutor{service: service}
+	if _, _, err := executor.credential(ctx, operatortool.AppUpdates, ""); err != nil {
+		t.Fatalf("current credential authorization failed: %v", err)
+	}
+	revoked = true
+	if _, _, err := executor.credential(ctx, operatortool.AppUpdates, ""); err == nil {
+		t.Fatal("revoked current credential remained authorized")
 	}
 }
 
