@@ -75,7 +75,7 @@ func (f *storageArchiveFixture) transition(t *testing.T, item, state string, at 
 	}
 	from := issue.State
 	issue.State = state
-	issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: state}, at)
+	issue, err = persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: state}, at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +312,7 @@ func TestNativeStorageArchivePrivacyAndOrganizations(t *testing.T) {
 	tx := f.tx(t)
 	scope := nativeScope{organization: other.project.OrganizationID, project: other.project.ID}
 	second.State = "Done"
-	if _, err := persistNativeIssue(t.Context(), tx, scope, second, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, f.now.Add(-73*time.Hour)); err != nil {
+	if _, err := persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, second, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, f.now.Add(-73*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	f.commit(t, tx)
@@ -543,14 +543,14 @@ func TestNativeStorageArchiveCommentRevisions(t *testing.T) {
 	issue := f.nativeFixture.create(t, "comment history")
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	tx := f.tx(t)
-	comment, err := insertNativeComment(t.Context(), tx, scope, issue, "comment revision 1", nil, f.now)
+	comment, err := insertNativeComment(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, strings.Repeat("retained comment ", 512)+"comment revision 0", nil, f.now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for revision := 2; revision <= 40; revision++ {
 		comment.Revision = tracker.Revision(revision)
-		comment.Body = "comment revision " + strconv.Itoa(revision)
-		if err := recordNativeChange(t.Context(), tx, scope, comment, string(issue.WorkItemID), comment.Revision, "comment.edited", tracker.CollaborationData{CommentID: comment.ID, Revision: comment.Revision}, f.now); err != nil {
+		comment.Body = strings.Repeat("retained comment ", 512) + "comment revision " + strconv.Itoa(revision/4)
+		if err := recordNativeChange(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, comment, string(issue.WorkItemID), comment.Revision, "comment.edited", tracker.CollaborationData{CommentID: comment.ID, Revision: comment.Revision}, f.now); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -585,14 +585,14 @@ func TestNativeStorageArchiveCommentRevisions(t *testing.T) {
 		if err := json.Unmarshal(raw, &got); err != nil {
 			t.Fatal(err)
 		}
-		if got.Body != "comment revision "+strconv.FormatInt(revision, 10) {
+		if got.Body != strings.Repeat("retained comment ", 512)+"comment revision "+strconv.FormatInt(revision/4, 10) {
 			t.Fatalf("revision %d body=%q", revision, got.Body)
 		}
 	}
 	tx = f.tx(t)
 	comment.Revision = 41
 	comment.Body = "late comment revision"
-	if err := recordNativeChange(t.Context(), tx, scope, comment, string(issue.WorkItemID), comment.Revision, "comment.edited", tracker.CollaborationData{CommentID: comment.ID, Revision: comment.Revision}, f.now); err != nil {
+	if err := recordNativeChange(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, comment, string(issue.WorkItemID), comment.Revision, "comment.edited", tracker.CollaborationData{CommentID: comment.ID, Revision: comment.Revision}, f.now); err != nil {
 		t.Fatal(err)
 	}
 	f.commit(t, tx)

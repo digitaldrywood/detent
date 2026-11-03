@@ -44,7 +44,8 @@ func TestNativeVersionRoundTrip(t *testing.T) {
 			for revision := int64(1); revision <= count; revision++ {
 				if revision == 1 && kind == "issue" {
 					var raw []byte
-					if err := tx.QueryRowContext(t.Context(), "SELECT record_json FROM collaboration_versions WHERE organization_id=? AND record_id=? AND revision=1", scope.organization, recordID).Scan(&raw); err != nil {
+					raw, err := reconstructNativeVersion(f.service.contentContext(t.Context()), tx, string(scope.organization), string(scope.project), string(issue.WorkItemID), recordID, 1)
+					if err != nil {
 						t.Fatal(err)
 					}
 					var original tracker.NativeIssue
@@ -88,7 +89,7 @@ func TestNativeVersionRoundTrip(t *testing.T) {
 						versionReads++
 					}
 				}})
-				if err := recordNativeChange(ctx, tx, scope, record, string(issue.WorkItemID), tracker.Revision(revision), "issue.edited", data, stamp); err != nil {
+				if err := recordNativeChange(nativeFixturePayloadContext(f.service.contentContext(ctx), tx), tx, scope, record, string(issue.WorkItemID), tracker.Revision(revision), "issue.edited", data, stamp); err != nil {
 					t.Fatal(err)
 				}
 				if versionReads > 1 {
@@ -99,13 +100,14 @@ func TestNativeVersionRoundTrip(t *testing.T) {
 				t.Fatal(err)
 			}
 			for revision := int64(1); revision <= count; revision++ {
-				raw, err := reconstructNativeVersion(t.Context(), f.service.database.reader, string(scope.organization), string(scope.project), string(issue.WorkItemID), recordID, revision)
+				raw, err := reconstructNativeVersion(f.service.contentContext(t.Context()), f.service.database.reader, string(scope.organization), string(scope.project), string(issue.WorkItemID), recordID, revision)
 				if err != nil {
 					t.Fatal(err)
 				}
 				var expectedStored []byte
 				if kind == "issue" && revision == 1 {
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM collaboration_versions WHERE organization_id=? AND record_id=? AND revision=1", scope.organization, recordID).Scan(&expectedStored); err != nil {
+					expectedStored, err = reconstructNativeVersion(f.service.contentContext(t.Context()), f.service.database.reader, string(scope.organization), string(scope.project), string(issue.WorkItemID), recordID, 1)
+					if err != nil {
 						t.Fatal(err)
 					}
 				} else {
@@ -193,7 +195,7 @@ func TestNativeTransitionHistoryBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	issue.Body = strings.Repeat("Large unchanged issue body. 雪\n", 1024) + issueContractTestSections
-	issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "issue.edited", tracker.CollaborationData{Fields: []string{"body"}}, now)
+	issue, err = persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "issue.edited", tracker.CollaborationData{Fields: []string{"body"}}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +206,7 @@ func TestNativeTransitionHistoryBytes(t *testing.T) {
 		if from == issue.State {
 			issue.State = "Todo"
 		}
-		issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: issue.State}, now.Add(time.Duration(i+1)*24*time.Second))
+		issue, err = persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: issue.State}, now.Add(time.Duration(i+1)*24*time.Second))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -218,7 +220,7 @@ func TestNativeTransitionHistoryBytes(t *testing.T) {
 	}
 	var fullBytes, storedBytes int
 	for revision, expected := range snapshots {
-		actual, err := reconstructNativeVersion(t.Context(), f.service.database.reader, string(scope.organization), string(scope.project), string(issue.WorkItemID), string(issue.WorkItemID), int64(revision))
+		actual, err := reconstructNativeVersion(f.service.contentContext(t.Context()), f.service.database.reader, string(scope.organization), string(scope.project), string(issue.WorkItemID), string(issue.WorkItemID), int64(revision))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -482,6 +484,14 @@ func TestCollaborationDeltaMigration(t *testing.T) {
 					}
 				}
 			}
+			fixtureTx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			inlineNativeVersionFixture(t, f.service, fixtureTx)
+			if err := fixtureTx.Commit(); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := f.service.database.db.ExecContext(t.Context(), "ALTER TABLE collaboration_versions DROP COLUMN encoding"); err != nil {
 				t.Fatal(err)
 			}
@@ -499,7 +509,7 @@ func TestCollaborationDeltaMigration(t *testing.T) {
 				if record != item {
 					continue
 				}
-				urlsBefore[item], err = importedGitHubIssueURLs(t.Context(), tx, string(scope.project), item, "")
+				urlsBefore[item], err = importedGitHubIssueURLs(f.service.contentContext(t.Context()), tx, string(scope.project), item, "")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -538,7 +548,7 @@ func TestCollaborationDeltaMigration(t *testing.T) {
 					if record != item {
 						continue
 					}
-					after, err := importedGitHubIssueURLs(t.Context(), tx, string(scope.project), item, "")
+					after, err := importedGitHubIssueURLs(f.service.contentContext(t.Context()), tx, string(scope.project), item, "")
 					if err != nil || !reflect.DeepEqual(after, urlsBefore[item]) {
 						t.Fatalf("migration changed imported URLs: %v", err)
 					}

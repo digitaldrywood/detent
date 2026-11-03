@@ -101,7 +101,7 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 			}
 			if test.archived {
 				issue.Archived = true
-				if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "issue.edited", tracker.CollaborationData{Operation: "archive"}, now); err != nil {
+				if _, err := persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "issue.edited", tracker.CollaborationData{Operation: "archive"}, now); err != nil {
 					t.Fatal(err)
 				}
 			}
