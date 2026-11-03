@@ -21,6 +21,10 @@ func workspaceDiskExhausted(err error) bool {
 	if !errors.Is(err, runpkg.ErrWorkspacePreparation) {
 		return false
 	}
+	var resourceHook *workspace.HookError
+	if errors.As(err, &resourceHook) && strings.Contains(strings.ToLower(resourceHook.Output), "shared memory") {
+		return false
+	}
 	if errors.Is(err, syscall.ENOSPC) || strings.Contains(strings.ToLower(err.Error()), "no space left on device") {
 		return true
 	}

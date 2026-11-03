@@ -124,6 +124,11 @@ func (f *Filesystem) Create(ctx context.Context, issue Issue) (Info, error) {
 	info.Created = created
 	if created {
 		if err := f.runHook(ctx, "after_create", f.hooks.AfterCreate, info, issue); err != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultHookTimeout)
+			defer cancel()
+			if _, reapErr := ReapProcesses(WithProcessSource(cleanupCtx, f.processSource), info.Path, 250*time.Millisecond); reapErr != nil {
+				return Info{}, errors.Join(err, reapErr)
+			}
 			if cleanupErr := removeWorkspacePath(f.root, info.Path); cleanupErr != nil {
 				f.logger.Warn("failed to clean filesystem workspace after after_create hook error", slog.String("path", info.Path), slog.Any("error", cleanupErr))
 			}
@@ -165,9 +170,14 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 	if !takeCleanupSlot(ctx) {
 		return result, fmt.Errorf("%w: cleanup batch complete", ErrWorkspacePreserved)
 	}
-	result.Processes = reapWorkspaceProcesses(WithProcessSource(ctx, f.processSource), info.Path, f.logger)
 	if err := f.runHook(ctx, "before_remove", f.hooks.BeforeRemove, info, issue); err != nil {
 		f.logger.Warn("filesystem workspace before_remove hook failed", slog.String("path", info.Path), slog.Any("error", err))
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultHookTimeout)
+	defer cancel()
+	result.Processes, err = ReapProcesses(WithProcessSource(cleanupCtx, f.processSource), info.Path, 250*time.Millisecond)
+	if err != nil {
+		return result, fmt.Errorf("stop filesystem workspace processes: %w", err)
 	}
 	if err := removeWorkspacePath(f.root, info.Path); err != nil {
 		return CleanupResult{}, fmt.Errorf("remove filesystem workspace: %w", err)
