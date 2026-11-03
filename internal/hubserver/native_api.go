@@ -582,23 +582,9 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		return nil, err
 	}
 	operationID := options.OperationID
-	event, runEvent := input.(tracker.NativeRunEvent)
-	var pending *pendingContentMutation
+	_, runEvent := input.(tracker.NativeRunEvent)
 	if runEvent {
-		pending = &pendingContentMutation{authorize: func(ctx context.Context, tx *sql.Tx, now time.Time) error {
-			if err := requireLeaseRunner(ctx, tx, event.Data.LeaseID, scope); err != nil {
-				return err
-			}
-			lease, found, err := readLeaseByID(ctx, tx, event.Data.LeaseID)
-			if err != nil {
-				return err
-			}
-			if !found {
-				return tracker.ErrStaleFencingToken
-			}
-			return requireCurrentLease(lease, event.Data.FencingToken, now)
-		}}
-		ctx = context.WithValue(ctx, pendingContentKey{}, pending)
+		ctx = context.WithValue(ctx, pendingContentKey{}, &pendingContentMutation{})
 	}
 	replay := false
 	if runEvent || !options.Completion && !options.ArtifactRead && s.database.plans() != nil {
@@ -640,11 +626,6 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	result, err = prepareContentMutation(ctx, s.database.reader, func() (json.RawMessage, error) {
 		return s.commitNativeMutation(ctx, scope, options, command, input, operation, requestHash, preparationErr)
 	})
-	if err == nil && pending != nil {
-		if err := s.publishPendingContent(ctx, pending.objects); err != nil {
-			s.config.Logger.Warn("publish run content", "error", err)
-		}
-	}
 	return result, err
 }
 

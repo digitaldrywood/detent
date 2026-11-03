@@ -100,17 +100,7 @@ func TestNativeEventWriterBudget(t *testing.T) {
 						event.IdempotencyKey = "finish-replayed"
 					}
 					f.service.tokenUseWork.Wait()
-					uploadsBefore := uploaded.Load()
 					var statements, transactionStatements, maximumStatements int
-					var transactionEntered atomic.Bool
-					recordUpload := store.afterStore
-					store.afterStore = func(ref attachment.ArchiveReference) {
-						recordUpload(ref)
-						if !transactionEntered.Load() {
-							t.Error("run event uploaded content before its writer transaction")
-						}
-					}
-					defer func() { store.afterStore = recordUpload }()
 					timing := &requestTiming{
 						writerTrace: func(_ string, _ []driver.NamedValue) {
 							statements++
@@ -118,7 +108,6 @@ func TestNativeEventWriterBudget(t *testing.T) {
 						},
 						writerTransaction: func(active bool) {
 							if active {
-								transactionEntered.Store(true)
 								transactionStatements = 0
 							} else {
 								maximumStatements = max(maximumStatements, transactionStatements)
@@ -149,18 +138,14 @@ func TestNativeEventWriterBudget(t *testing.T) {
 					if event.Data.Disposition != nil {
 						bound += 40 * len(event.Data.Disposition.BlockerEvidence)
 					}
-					uploads := uploaded.Load() - uploadsBefore
-					wantTransactions := int64(2)
-					if name == "replay" || name == "finish replay" {
-						wantTransactions = 1
-					}
+					wantTransactions := int64(1)
 					if writer.txs.Load() != wantTransactions || statements > bound {
-						t.Errorf("writer_txs=%d (want %d for %d uploads), writer_statements=%d (bound %d)", writer.txs.Load(), wantTransactions, uploads, statements, bound)
+						t.Errorf("writer_txs=%d (want %d), writer_statements=%d (bound %d)", writer.txs.Load(), wantTransactions, statements, bound)
 					}
-					var pending int
-					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM attachments WHERE pending_content IS NOT NULL)+(SELECT count(*) FROM change_content_objects WHERE pending_content IS NOT NULL)`).Scan(&pending); err != nil || pending != 0 {
-						t.Fatalf("unpublished content=%d: %v", pending, err)
+					if uploaded.Load() != 0 {
+						t.Fatal("event request uploaded content instead of deferring publication")
 					}
+
 				})
 			}
 			var sequence, events int
@@ -218,28 +203,12 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 			return err
 		}
 	})
-	var uploaded atomic.Int64
 	start := make(chan struct{})
-	preparing := make(chan struct{}, len(requests))
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	unblock := func() { releaseOnce.Do(func() { close(release) }) }
-	store.afterStore = func(attachment.ArchiveReference) {
-		uploaded.Add(1)
-		select {
-		case <-release:
-			return
-		default:
-		}
-		preparing <- struct{}{}
-		<-release
-	}
 	responses := make([]*httptest.ResponseRecorder, len(requests))
 	requestErrors := make([]error, len(requests))
 	completed := make(chan int, len(requests))
 	var ready, finished sync.WaitGroup
 	t.Cleanup(func() {
-		unblock()
 		finished.Wait()
 	})
 	ready.Add(len(requests))
@@ -247,7 +216,7 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 		finished.Go(func() {
 			ready.Done()
 			<-start
-			ctx, cancel := context.WithTimeout(request.Context(), 30*time.Second)
+			ctx, cancel := context.WithCancel(request.Context())
 			defer cancel()
 			responses[i] = httptest.NewRecorder()
 			f.service.Handler().ServeHTTP(responses[i], request.WithContext(ctx))
@@ -257,16 +226,6 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 	}
 	ready.Wait()
 	close(start)
-	for range requests {
-		select {
-		case <-preparing:
-		case i := <-completed:
-			t.Fatalf("request %d ended before all requests prepared: status=%d error=%v", i, responses[i].Code, requestErrors[i])
-		case <-t.Context().Done():
-			t.Fatal("requests did not upload content concurrently after commit")
-		}
-	}
-	unblock()
 	finished.Wait()
 	for i, response := range responses {
 		requireNativeStatus(t, response, http.StatusOK)
@@ -282,8 +241,8 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 		transactions += writer.txs.Load()
 	}
 	t.Logf("runners=%d writer_txs=%d", len(requests), transactions)
-	wantTransactions := int64(2 * len(requests))
+	wantTransactions := int64(len(requests))
 	if transactions != wantTransactions {
-		t.Fatalf("writer_txs=%d, want %d for %d requests and %d uploads", transactions, wantTransactions, len(requests), uploaded.Load())
+		t.Fatalf("writer_txs=%d, want %d for %d requests ", transactions, wantTransactions, len(requests))
 	}
 }

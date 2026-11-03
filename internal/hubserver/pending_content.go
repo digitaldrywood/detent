@@ -24,9 +24,8 @@ type pendingContentObject struct {
 }
 
 type pendingContentMutation struct {
-	tx        *sql.Tx
-	objects   map[string]pendingContentObject
-	authorize func(context.Context, *sql.Tx, time.Time) error
+	tx      *sql.Tx
+	objects map[string]pendingContentObject
 }
 
 func (p *pendingContentMutation) stage(ctx context.Context, organization string, raw []byte, billable bool) (string, error) {
@@ -95,12 +94,7 @@ func (s *Service) publishPendingContent(ctx context.Context, objects map[string]
 	if len(published) == 0 {
 		return failures
 	}
-	err := s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if pending, ok := ctx.Value(pendingContentKey{}).(*pendingContentMutation); ok {
-			if err := pending.authorize(ctx, tx, now); err != nil {
-				return err
-			}
-		}
+	err := s.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
 		for _, object := range published {
 			ref := object.reference
 			if _, err := tx.ExecContext(ctx, `UPDATE change_content_objects SET pending_content=NULL WHERE organization_id=? AND object_key=? AND object_sha256=? AND object_bytes=? AND content_bytes=? AND pending_content IS NOT NULL`, object.organization, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize); err != nil {
