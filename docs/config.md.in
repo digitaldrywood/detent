@@ -982,9 +982,9 @@ cleanup. Treat them as trusted code: they run with the Detent process
 permissions and should be short, deterministic, and safe to retry.
 
 `hooks.runner_setup` names a repository-relative script for project tools on
-a registered runner. It runs from the project's source checkout during runner
-preparation, before any work is claimed, and is checked before subsequent
-dispatch. It uses `hooks.shell` and `hooks.timeout_ms` (60 seconds by default;
+a registered runner. It runs during runner preparation, before any work is
+claimed, and is checked before subsequent dispatch. It uses `hooks.shell`
+and `hooks.timeout_ms` (60 seconds by default;
 increase this for installers). The script need not have executable permission.
 
 ```yaml
@@ -1001,10 +1001,13 @@ project. When the checkout is a Git clone, the runner also writes the hash to
 attempts or after restarting with the same store. Changing the script, shell
 or checkout path, or recreating the checkout, runs setup again before the next
 dispatch. With
-`workflow_ref`, the script comes from the same Git revision as the project's
-configuration; otherwise it comes from the source checkout, including local
-edits. Paths must remain inside the repository. Keep setup self-contained:
-changes to files sourced by the script do not change its recorded hash.
+`workflow_ref`, setup runs in a temporary checkout of the same Git revision as
+the project's configuration, so the script, helpers and manifests share that
+revision. This checkout is removed afterward; setup does not change the source
+checkout or active workspaces. Otherwise setup runs in the configured source
+checkout, including local edits. Paths must remain inside the repository.
+Keep setup self-contained: changes to files sourced by the script do not
+change its recorded hash.
 
 Setup is trusted host code. Make it idempotent, non-interactive, and free of
 secrets; the runner closes standard input and inherits its host environment,
@@ -1013,6 +1016,9 @@ into a directory already on the runner's PATH. Shell exports do not persist
 into later agent turns. Setup failures are instance-owned for that project on
 that runner, appear in runner logs and the project's local-check API report,
 and prevent claims and dispatch without consuming an issue failure allowance.
+Failures retain bounded, credential-redacted standard output and error in
+existing runner logs and diagnostic reports. Incomplete lines at the capture
+limit are omitted, and truncated output is marked.
 The existing project polling retries setup until it succeeds. Other projects
 and runners remain eligible.
 
