@@ -908,3 +908,144 @@ func TestSearchLiteralPublicationAvoidsUnchangedWrites(t *testing.T) {
 		})
 	}
 }
+
+func TestSearchPendingUpdatesAvoidBulkPostings(t *testing.T) {
+	f := newSearchFixture(t)
+	documents := func(org tracker.OrganizationID) []searchstore.Document {
+		issue := searchIssue(org, "wi_first_1")
+		thread := searchstore.Document{OrganizationID: org, ID: "thread/full-scopes", SourceID: "thread/full-scopes", Kind: "thread", ProjectID: "prj_first", WorkItemID: "wi_first_2", Scope: "issue", Status: "open", Revision: 1}
+		return []searchstore.Document{issue, thread}
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if _, err := f.admin.ExecContext(t.Context(), `UPDATE issues SET actor_principal_id='example-initial-reporter' WHERE organization_id=$1 AND project_id='prj_first'`, org); err != nil {
+			t.Fatal(err)
+		}
+		for _, document := range documents(org) {
+			var body strings.Builder
+			for index := range 300 {
+				fmt.Fprintf(&body, "exampleterm%04d ", index)
+			}
+			title := "example"
+			if document.Kind == "thread" {
+				title = body.String()
+			}
+			f.put(t, document, searchstore.Text{Title: title, Body: body.String()}, 0)
+		}
+		f.drain(t, org)
+	}
+	runtime, err := postgres.NewRuntime(t.Context(), f.pool, f.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		for _, document := range documents(org) {
+			t.Run(string(org)+"/"+document.Kind, func(t *testing.T) {
+				markerCap := 32
+				if document.Kind == "thread" {
+					document.Status = "resolved"
+					markerCap = 64
+				}
+				document.Revision = 2
+				document.UpdatedAt = historyAt().Add(time.Minute)
+				prepared, err := f.content.Prepare(t.Context(), document, searchstore.Text{Title: "currenttitle currentbody", Body: "currentbody"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				tx := tenantTx(t, runtime, f.pool, string(org))
+				queries := pgquery.New(tx)
+				counts := func() [3]int64 {
+					t.Helper()
+					var result [3]int64
+					if err := tx.QueryRowContext(t.Context(), `SELECT n_tup_ins,n_tup_upd,n_tup_del FROM pg_stat_xact_user_tables WHERE relname='search_postings'`).Scan(&result[0], &result[1], &result[2]); err != nil {
+						t.Fatal(err)
+					}
+					return result
+				}
+				advance := func(writes bool) {
+					t.Helper()
+					before := counts()
+					var orderBefore, orderAfter int64
+					if err := tx.QueryRowContext(t.Context(), `SELECT refresh_order FROM search_documents WHERE organization_id=$1 AND id=$2`, org, document.ID).Scan(&orderBefore); err != nil {
+						t.Fatal(err)
+					}
+					if err := queries.SearchAdvance(t.Context(), pgquery.SearchAdvanceParams{OrganizationID: org, ID: document.ID, Revision: 2}); err != nil {
+						t.Fatal(err)
+					}
+					if err := tx.QueryRowContext(t.Context(), `SELECT refresh_order FROM search_documents WHERE organization_id=$1 AND id=$2`, org, document.ID).Scan(&orderAfter); err != nil {
+						t.Fatal(err)
+					}
+					if orderAfter <= orderBefore {
+						t.Fatalf("refresh order did not advance: %d to %d", orderBefore, orderAfter)
+					}
+					after := counts()
+					delta := [3]int64{after[0] - before[0], after[1] - before[1], after[2] - before[2]}
+					if !writes && delta != ([3]int64{}) {
+						t.Fatalf("unchanged pending advance wrote postings: %v", delta)
+					}
+					if delta[0]+delta[1]+delta[2] > int64(markerCap*2) {
+						t.Fatalf("scope refresh exceeded marker bound: %v", delta)
+					}
+					if writes && delta[0]+delta[1]+delta[2] == 0 {
+						t.Fatal("scope refresh did not update postings")
+					}
+				}
+				var published int
+				if err := tx.QueryRowContext(t.Context(), `SELECT count(*) FROM search_postings WHERE organization_id=$1 AND document_id=$2`, org, document.ID).Scan(&published); err != nil {
+					t.Fatal(err)
+				}
+				if published < 1000 {
+					t.Fatalf("bulk posting fixture has only %d rows", published)
+				}
+				before := counts()
+				changed, err := queries.SearchUpdate(t.Context(), pgquery.SearchUpdateParams{OrganizationID: org, ID: prepared.ID, ProjectID: new(prepared.ProjectID), WorkItemID: new(string(prepared.WorkItemID)), Kind: prepared.Kind, SourceID: prepared.SourceID, Scope: prepared.Scope, Status: prepared.Status, Revision: 2, ExpectedRevision: 1, Title: prepared.Title, UpdatedAt: prepared.UpdatedAt, PayloadObjectKey: prepared.Payload.Key, PayloadSHA256: prepared.Payload.SHA256, PayloadBytes: prepared.Payload.CompressedSize, PayloadContentBytes: prepared.Payload.UncompressedSize, SourceVector: prepared.Source.Vector, TokenCount: prepared.Source.Statistics.Tokens, Terms: prepared.Source.Statistics.Terms, TermFrequencies: prepared.Source.Statistics.Frequencies})
+				if err != nil || changed != 1 {
+					t.Fatalf("source update: changed=%d error=%v", changed, err)
+				}
+				after := counts()
+				writes := after[0] - before[0] + after[1] - before[1] + after[2] - before[2]
+				if writes > int64(markerCap*2) {
+					t.Fatalf("source update rewrote bulk postings: writes=%d published=%d", writes, published)
+				}
+				t.Logf("source update posting writes=%d with published rows=%d marker cap=%d", writes, published, markerCap)
+				advance(false)
+				if _, err := f.admin.ExecContext(t.Context(), `UPDATE issues SET archived=true,actor_principal_id='example-current-reporter' WHERE organization_id=$1 AND project_id='prj_first' AND native_id=$2`, org, document.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				advance(true)
+				advance(false)
+				kind, item, oldReporter, newReporter := "work", "", "example-initial-reporter", "example-current-reporter"
+				if document.Kind == "thread" {
+					kind, item, oldReporter, newReporter = "thread", string(document.WorkItemID), "", ""
+				}
+				var markers, oldScope, newScope int
+				if err := tx.QueryRowContext(t.Context(), `SELECT count(*),count(*) FILTER(WHERE scope=public.search_scope_key('prj_first',$3,$4,'issue',$5,'false',$6)),count(*) FILTER(WHERE scope=public.search_scope_key('prj_first',$3,$4,'issue',$5,'true',$7)) FROM search_postings WHERE organization_id=$1 AND document_id=$2 AND term IN ('~all','~pending')`, org, document.ID, item, kind, document.Status, oldReporter, newReporter).Scan(&markers, &oldScope, &newScope); err != nil {
+					t.Fatal(err)
+				}
+				if markers != markerCap || oldScope != 0 || newScope != 2 {
+					t.Fatalf("visibility markers=%d old scope=%d new scope=%d", markers, oldScope, newScope)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+				for _, state := range []string{"pending", "indexed"} {
+					if state == "indexed" {
+						f.drain(t, org)
+					}
+					for _, test := range []struct {
+						text string
+						want int
+					}{{"exampleterm0001", 0}, {"currentbody", 1}} {
+						query := searchstore.Query{Text: test.text, Exact: true, Archived: "true", Reporter: new("example-current-reporter")}
+						if document.Kind == "thread" {
+							query.Kind, query.ProjectID, query.WorkItemID, query.Status, query.Reporter = "thread", document.ProjectID, document.WorkItemID, document.Status, nil
+						}
+						page := f.find(t, org, query)
+						if len(page.Items) != test.want {
+							t.Fatalf("%s query %q matches=%d want=%d", state, test.text, len(page.Items), test.want)
+						}
+					}
+				}
+			})
+		}
+	}
+}
