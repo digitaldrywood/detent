@@ -1,11 +1,13 @@
 package hubserver
 
 import (
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,13 +56,27 @@ func TestTenantServesRunnersWhileReadsAreSlow(t *testing.T) {
 		}
 	}
 	readers = nil
-	for _, item := range items {
-		for _, suffix := range []string{"comments", "runtime"} {
-			request := newHubAPIRequest(t, http.MethodGet, f.base+"/work-items/"+string(item.WorkItemID)+"/"+suffix, f.token, nil).WithContext(ctx)
-			response := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(response, request)
-			requireNativeStatus(t, response, http.StatusOK)
+	const budget = 250 * time.Millisecond
+	var latencies []time.Duration
+	for range 10 {
+		for _, item := range items {
+			for _, suffix := range []string{"comments", "runtime"} {
+				requestCtx, cancel := context.WithTimeout(ctx, budget)
+				request := newHubAPIRequest(t, http.MethodGet, f.base+"/work-items/"+string(item.WorkItemID)+"/"+suffix, f.token, nil).WithContext(requestCtx)
+				response := httptest.NewRecorder()
+				started := time.Now()
+				f.service.Handler().ServeHTTP(response, request)
+				latencies = append(latencies, time.Since(started))
+				cancel()
+				requireNativeStatus(t, response, http.StatusOK)
+			}
 		}
+	}
+	slices.Sort(latencies)
+	p95 := latencies[len(latencies)*95/100]
+	t.Logf("authenticated tenant requests=%d writer=occupied p95=%s budget=%s", len(latencies), p95, budget)
+	if p95 >= budget {
+		t.Fatalf("authenticated tenant request p95=%s exceeds %s", p95, budget)
 	}
 }
 

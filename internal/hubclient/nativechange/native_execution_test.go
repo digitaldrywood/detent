@@ -1654,7 +1654,7 @@ func TestNativeCacheWaitRuntimeRecovery(t *testing.T) {
 }
 
 func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
-	for _, status := range []int{502, 503, 0} {
+	for _, status := range []int{502, 503, 0, -1} {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				start := time.Now()
@@ -1663,6 +1663,9 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 				var finished tracker.NativeRunEvent
 				client, err := newTestClient(t, Config{URL: "http://hub.example", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					if offline {
+						if status == -1 {
+							return nil, fmt.Errorf("Client.Timeout exceeded while awaiting headers: %w", context.DeadlineExceeded)
+						}
 						if status == 0 {
 							return nil, errors.New("connection refused")
 						}
@@ -1708,10 +1711,19 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 				execution := scheduler.RunExecution("wi_test").(*nativeExecution)
 				execution.data.Identity = &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
 				execution.data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: start.Add(-11 * time.Minute)}
+				checkpoint := &tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "git_ref", Availability: "available", WorktreeState: "clean", Ref: tracker.CheckpointRefPrefix + "completed", CommitSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), HeadSHA: strings.Repeat("a", 40), WorkspaceDigest: strings.Repeat("c", 64), ExternalEffect: "none", EffectState: "none"}
+				execution.data.Handoff = checkpoint
 				execution.preparedOutcome = "succeeded"
+				if err := scheduler.Heartbeat(t.Context()); !nativeTransportUnavailable(err) {
+					t.Fatalf("heartbeat outage = %v", err)
+				}
 				if err := scheduler.ReleaseClaim(t.Context(), "wi_test", "completed"); !nativeTransportUnavailable(err) {
 					t.Fatalf("outage = %v", err)
 				}
+				if execution.pending == nil {
+					t.Fatal("completion timeout lost pending event")
+				}
+				pending := *execution.pending
 				deadline := execution.completionOutageDeadline
 				time.Sleep(2 * time.Minute)
 				if err := scheduler.ReleaseClaim(t.Context(), "wi_test", "completed"); !nativeTransportUnavailable(err) {
@@ -1719,6 +1731,9 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 				}
 				if !execution.completionOutageDeadline.Equal(deadline) {
 					t.Fatal("retry extended outage bound")
+				}
+				if execution.pending == nil || execution.pending.IdempotencyKey != pending.IdempotencyKey || !reflect.DeepEqual(execution.data.Handoff, checkpoint) || scheduler.RunExecution("wi_test") != execution {
+					t.Fatal("retry replaced completion, checkpoint or execution")
 				}
 				offline = false
 				if err := scheduler.Heartbeat(t.Context()); err != nil {
@@ -1732,6 +1747,9 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 				}
 				if finished.Data.Outcome != "succeeded" || finished.Data.TerminalFailure != nil {
 					t.Fatalf("completion lost: %+v", finished)
+				}
+				if !reflect.DeepEqual(finished.Data.Handoff, checkpoint) || finished.Data.LeaseID != "lease" || finished.Data.FencingToken != 1 || finished.IdempotencyKey != pending.IdempotencyKey {
+					t.Fatalf("completion retry changed checkpoint or fenced event: %+v", finished)
 				}
 				if len(fixtureClaims(scheduler)) != 0 {
 					t.Fatal("completed claim retained")
