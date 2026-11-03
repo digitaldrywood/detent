@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -38,13 +39,18 @@ func (s *Service) checkAttachmentEvidenceTenant(ctx context.Context, scope nativ
 		if attempt.OrganizationID != scope.organization || attempt.IssueID != item.ID || attempt.LeaseID != lease.LeaseID || attempt.FencingToken != lease.FencingToken || attempt.Status != "running" {
 			return nativeStaleExecution("Evidence producer is not the running attempt")
 		}
+		if s.database.plans() != nil {
+			if _, err := r.CollaborationBytes(ctx); err != nil {
+				if errors.Is(err, corestore.ErrNotFound) {
+					return &nativeError{Code: "storage_owner_unavailable", Message: "Evidence upload accounting is unavailable with PostgreSQL storage", status: http.StatusServiceUnavailable, publicMessage: true}
+				}
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {
 		return err
-	}
-	if s.database.plans() != nil {
-		return &nativeError{Code: "storage_owner_unavailable", Message: "Evidence upload accounting is unavailable with PostgreSQL storage", status: http.StatusServiceUnavailable, publicMessage: true}
 	}
 	return nil
 }

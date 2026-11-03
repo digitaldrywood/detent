@@ -230,6 +230,9 @@ func (s *Service) checkCloudAttachment(c echo.Context) error {
 }
 
 func (s *Service) prepareCloudAttachment(c echo.Context, input attachment.UploadRequest) error {
+	if s.config.TenantRepository != nil {
+		return s.prepareCloudAttachmentTenant(c, input)
+	}
 	ctx := c.Request().Context()
 	if err := s.checkAttachmentEvidence(c, input.Evidence); err != nil {
 		return s.nativeAPIError(c, err)
@@ -280,6 +283,9 @@ func (s *Service) recordCloudAttachment(c echo.Context) error {
 	var input attachment.UploadRequest
 	if err := c.Bind(&input); err != nil || input.Validate() != nil || input.WorkItemID != "" || input.CommentID != "" || len(input.ReferencedBy) != 0 || input.DeletedAt != nil {
 		return s.nativeAPIError(c, nativePublicInvalid("Invalid attachment metadata"))
+	}
+	if s.config.TenantRepository != nil {
+		return s.recordCloudAttachmentTenant(c, input)
 	}
 	if err := s.checkAttachmentEvidence(c, input.Evidence); err != nil {
 		return s.nativeAPIError(c, err)
@@ -363,6 +369,9 @@ func (s *Service) getCloudAttachment(c echo.Context) error {
 }
 
 func (s *Service) readCloudAttachment(ctx context.Context, scope nativeScope, id string) (attachment.Metadata, error) {
+	if s.config.TenantRepository != nil {
+		return s.readAttachmentRecordTenant(ctx, scope, id)
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	return readCloudAttachment(ctx, s.database.reader, scope, id)
@@ -462,6 +471,9 @@ func (s *Service) deleteCloudAttachment(c echo.Context) error {
 }
 
 func (s *Service) deleteCloudAttachmentCommand(ctx context.Context, scope nativeScope, id string) error {
+	if s.config.TenantRepository != nil {
+		return workItemStorageUnavailable()
+	}
 	scope.action = operatortool.DeleteAttachment
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -507,6 +519,9 @@ func (s *Service) referenceCloudAttachment(c echo.Context) error {
 }
 
 func (s *Service) referenceCloudAttachmentCommand(ctx context.Context, scope nativeScope, id string, input attachment.SourceReference) error {
+	if s.config.TenantRepository != nil {
+		return s.referenceCloudAttachmentTenant(ctx, scope, id, input)
+	}
 	scope.action = operatortool.ReferenceAttachment
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -551,6 +566,9 @@ func (s *Service) referenceCloudAttachmentCommand(ctx context.Context, scope nat
 }
 
 func (s *Service) expiredCloudAttachments(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
+	}
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService {
 		return s.nativeAPIError(c, nativeNotFound())
@@ -577,6 +595,9 @@ func (s *Service) expiredCloudAttachments(c echo.Context) error {
 }
 
 func (s *Service) finishCloudAttachmentDeletion(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
+	}
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService {
 		return s.nativeAPIError(c, nativeNotFound())
@@ -595,6 +616,9 @@ func (s *Service) finishCloudAttachmentDeletion(c echo.Context) error {
 }
 
 func (s *Service) cloudAttachmentExists(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
+	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	claims, ok := hostedSharedClaims(c)

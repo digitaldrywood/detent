@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
@@ -27,6 +28,7 @@ type Reader interface {
 	claimstore.Reader
 	accessstore.Reader
 	artifactstore.Reader
+	attachmentstore.Reader
 	conversationstore.Reader
 	gotestreceiptstore.Reader
 	corestore.Reader
@@ -44,6 +46,7 @@ type Writer interface {
 	claimstore.Writer
 	accessstore.Writer
 	artifactstore.Writer
+	attachmentstore.Writer
 	conversationstore.Writer
 	gotestreceiptstore.Writer
 	corestore.Writer
@@ -65,14 +68,14 @@ type ClaimPreviewPlanRowsReader interface {
 }
 
 type ClaimPreviewPlanRow struct {
-	Item                  corestore.WorkItem
-	Version               eventstore.CollaborationVersion
-	LinkedSource          *eventstore.LinkedSource
-	Change                *eventstore.Change
-	ChangeVersion         *eventstore.Version
-	ChangePolicyRevision  *policystore.Revision
-	LatestAttempt         *leasestore.Attempt
-	LatestRunEvent        *eventstore.Event
+	Item                 corestore.WorkItem
+	Version              eventstore.CollaborationVersion
+	LinkedSource         *eventstore.LinkedSource
+	Change               *eventstore.Change
+	ChangeVersion        *eventstore.Version
+	ChangePolicyRevision *policystore.Revision
+	LatestAttempt        *leasestore.Attempt
+	LatestRunEvent       *eventstore.Event
 }
 
 type SnapshotRepository interface {
