@@ -1667,9 +1667,11 @@ func restoreRunWorkspaceCheckpoint(req RunRequest, runWorkspace workspace.Backen
 	if req.Execution != nil && !nativeLanding {
 		previous := req.Execution.Recovery().SourceAttempt()
 		refreshCheckpoint := previous != nil && previous.Checkpoint != nil && (previous.Checkpoint.WorktreeState == "dirty" || previous.Checkpoint.Resume == "fresh_checkout")
-		if issue.NativeRework && refreshCheckpoint || !sameMachineWorkspaceRetained(runWorkspace, req.Execution.Recovery(), *issue) {
-			issue.Checkpoint = nativeRestorableCheckpoint(req.Execution.Recovery(), issue.Source)
-			if previous := req.Execution.Recovery().SourceAttempt(); issue.Checkpoint != nil && normalizeRunMode(req.Mode) == RunModeImplement && previous != nil && previous.Identity != nil && previous.Identity.Role == RoleRework {
+		checkpoint := nativeRestorableCheckpoint(req.Execution.Recovery(), issue.Source)
+		reworkCheckpoint := checkpoint != nil && normalizeRunMode(req.Mode) == RunModeImplement && previous != nil && previous.Identity != nil && previous.Identity.Role == RoleRework
+		if issue.NativeRework && refreshCheckpoint || reworkCheckpoint || !sameMachineWorkspaceRetained(runWorkspace, req.Execution.Recovery(), *issue) {
+			issue.Checkpoint = checkpoint
+			if reworkCheckpoint {
 				issue.NativeRework = true
 			}
 		}
