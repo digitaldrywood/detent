@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,10 +18,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -31,7 +34,7 @@ import (
 )
 
 func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	repository, admin := projectRecordPostgresWithAdmin(t, 2)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	details := &memoryRunDetails{}
 	asOf := now
@@ -234,6 +237,80 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 		if runner.ID == "runner_2" && (len(runner.Leases) != 0 || runner.HostUsed != 0 || runner.ProviderCapacity[0].Used != 0) {
 			t.Fatalf("member fleet exposes inaccessible activity: %+v", runner)
 		}
+	}
+
+	ref := billingstore.PlanReference{ID: "example", Version: 1}
+	allowances := map[string]int64{"members": 100, "projects": 100, "repositories": 100, "registered_runners": 100, "connected_runners": 100, "concurrent_work": 100, "unarchived_issues": 100, "collaboration_bytes": 1000, "history_records": 1000, "api_mutations": 100}
+	for index, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: org, PlanReference: ref, Name: "Example", Features: []string{}, Allowances: allowances}); err != nil {
+				return err
+			}
+			if err := w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: org, Base: ref}, 0); err != nil {
+				return err
+			}
+			window := time.Unix(now.Unix()/60*60, 0).UTC()
+			_, err := w.ApplyBillingUsage(t.Context(), billingstore.UsageReceipt{OrganizationID: org, ID: "usage", WindowStart: window, Metric: "api_mutations", Amount: int64(index + 4)}, 100)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO hosted_usage_counters(organization_id,name,value) VALUES($1,'collaboration_bytes',$2)`, org, 73+index); err != nil {
+			t.Fatal(err)
+		}
+		service.database = conversationAllowanceDatabase(org, ref, allowances, repository)
+		runtime := *service.database.hostedRuntime.Load()
+		runtime.Plans.ConnectedSeconds = 90
+		service.database.hostedRuntime.Store(&runtime)
+		service.config.Hosted.OrganizationID = string(org)
+		measured, err := service.readHostedFleet(t.Context(), credential)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(measured.Runners) != 2 || measured.Usage.Allowances["concurrent_work"].Used != 2 || measured.Usage.Allowances["registered_runners"].Used != 2 || measured.Usage.Allowances["connected_runners"].Used != 2 || measured.Usage.Allowances["projects"].Used != 2 || measured.Usage.Allowances["unarchived_issues"].Used != 2 || measured.Usage.Allowances["collaboration_bytes"].Used != int64(73+index) || measured.Usage.Allowances["api_mutations"].Used != int64(index+4) {
+			t.Fatalf("configured plan erased actual fleet facts: %+v", measured)
+		}
+		if _, known := measured.Usage.Allowances["history_records"]; known || !slices.Contains(measured.Usage.Unavailable, "history_records") {
+			t.Fatalf("unknown history usage was reported as a measurement: %+v", measured.Usage)
+		}
+	}
+	service.config.Hosted.OrganizationID = "org_first"
+	service.database = conversationAllowanceDatabase("org_first", ref, allowances, repository)
+	owner := apiCredential{ID: "credential_owner", Hash: apikey.HashToken("org_first_owner"), Scope: apiScopeOperator, NativeOnly: true, HostedRole: "owner", HostedMembership: "membership_example", HostedKeyScope: apikey.ScopeAdmin, HostedProjectAccess: hostedProjectsAll, Hosted: &auth.HostedIdentity{Subject: "user_example", OrganizationID: "provider_example"}}
+	provider := newHostedSecurityProvider()
+	membership := auth.Membership{ID: "membership_example", UserID: "user_example", OrganizationID: "provider_example", Status: "active"}
+	membership.Role.Slug = "owner"
+	provider.members["user_example"] = membership
+	service.config.Hosted.Provider = provider
+	service.requestMetrics = &tenantRequestMetrics{repository: repository, organization: "org_first"}
+	latency := metricsstore.Latency{Count: 3, Sum: 30, Max: 10}
+	latency.Histogram[14] = 3
+	if err := repository.MergeRequestMetrics(t.Context(), "org_first", now, []metricsstore.Metric{{At: now.Truncate(time.Minute).Add(-time.Minute), Route: "GET /example", CallerKind: "runner", CallerID: "runner_1", StatusClass: 2, Latency: latency}}); err != nil {
+		t.Fatal(err)
+	}
+	metricsContext := operatortool.WithConnection(context.WithValue(t.Context(), hubOperatorResolverKey{}, func(context.Context) (apiCredential, error) { return owner, nil }), operatortool.Connection{Identity: operatorIdentity(owner, "org_first"), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+		return service.operatorCurrentAuthority(ctx, owner, "org_first")
+	}})
+	requests, visible, err := service.adminRequestMetrics(metricsContext)
+	if err != nil || !visible || len(requests.Callers) != 1 || requests.Callers[0].Count != 3 {
+		t.Fatalf("typed admin metrics unavailable or empty: %+v visible=%v err=%v", requests, visible, err)
+	}
+	diagnosticReport, err := service.readCloudDiagnostics(metricsContext, owner, operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now, Bucket: time.Hour})
+	if err != nil || diagnosticReport.Requests == nil || len(diagnosticReport.Requests.Callers) != 1 || diagnosticReport.Requests.Callers[0].Count != 3 {
+		t.Fatalf("full diagnostics omitted real metrics: %+v err=%v", diagnosticReport.Requests, err)
+	}
+	if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+		member, err := w.AccessMember(t.Context(), "user_example")
+		if err != nil {
+			return err
+		}
+		member.Role = "member"
+		return w.UpdateAccessMember(t.Context(), member)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, visible, err := service.adminRequestMetrics(metricsContext); err != nil || visible {
+		t.Fatalf("demoted member retained admin metrics: visible=%v err=%v", visible, err)
 	}
 
 	e := echo.New()

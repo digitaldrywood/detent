@@ -87,6 +87,7 @@ type hostedFleetAllowance struct {
 }
 
 type hostedFleetUsage struct {
+	Unavailable  []string                        `json:"unavailable,omitempty"`
 	WindowEndsAt string                          `json:"window_ends_at"`
 	Allowances   map[string]hostedFleetAllowance `json:"allowances"`
 }
@@ -405,6 +406,9 @@ func (s *Service) hostedFleetUsage(ctx context.Context) (hostedFleetUsage, error
 	usage := hostedFleetUsage{Allowances: map[string]hostedFleetAllowance{}}
 	if s.database.plans() == nil {
 		return usage, nil
+	}
+	if s.config.TenantRepository != nil {
+		return s.hostedFleetUsageTenant(ctx)
 	}
 	entitlement, err := s.database.hostedPlanUsage(ctx, s.config.now(), hostedAllowanceNames()...)
 	if err != nil {
