@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -35,7 +36,8 @@ import (
 
 func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *testing.T) {
 	repository, _ := projectRecordPostgresWithAdmin(t, 3)
-	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}})
+	details := &memoryRunDetails{}
+	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: details})
 	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
 	if err != nil {
 		t.Fatal(err)
@@ -110,6 +112,31 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 	descriptorA := hubTestPolicy()
 	descriptorA.Workflow = &policy.Workflow{Source: "WORKFLOW.md", Revision: strings.Repeat("a", 40), States: nativeFixtureStates()}
 	descriptorA = descriptorA.WithID()
+	legacyPayload, err := json.MarshalIndent(descriptorA, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyReference, err := details.StoreDetail(t.Context(), string(organization.ID), legacyPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyRevision := policystore.Revision{
+		OrganizationID:      organization.ID,
+		ProjectID:           project.ID,
+		PolicyID:            descriptorA.ID,
+		ApprovedBy:          "runner-report",
+		ApprovedAt:          now.Add(-time.Minute),
+		GitHubPullRequest:   new(descriptorA.Gates.GitHubPullRequest),
+		PayloadObjectKey:    legacyReference.Key,
+		PayloadSHA256:       legacyReference.SHA256,
+		PayloadBytes:        legacyReference.CompressedSize,
+		PayloadContentBytes: legacyReference.UncompressedSize,
+	}
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(writer tenantstore.Writer) error {
+		return writer.ImportProjectPolicyRevision(t.Context(), legacyRevision, false)
+	}); err != nil {
+		t.Fatal(err)
+	}
 	descriptorB := descriptorA
 	descriptorB.ConfigDigest = policy.Digest([]byte("other configuration"))
 	descriptorB.Workflow = &policy.Workflow{Source: "WORKFLOW.md", Revision: strings.Repeat("b", 40), States: nativeFixtureStates()}

@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -41,6 +42,38 @@ func TestCorePolicyImportPreservesApprovalsPointersAndBudgetHistory(t *testing.T
 			if result != (postgres.CorePolicyImportResult{PolicyRevisions: 2, CurrentPolicies: 1, ReviewPolicies: 1, MonthlyPolicies: 3}) {
 				t.Fatalf("organization %s import counts = %+v", organization, result)
 			}
+		}
+		reported := importedReportedPolicyDescriptor()
+		reportedRaw, err := json.Marshal(reported)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipt, err := eventstore.NewContent(source.Objects).PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: organization}, reportedRaw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		observation := policystore.Observation{
+			OrganizationID: organization,
+			ProjectID:      "prj_1",
+			RunnerID:       "runner_example",
+			PolicyID:       reported.ID,
+			ObservedAt:     now.Add(time.Minute),
+			Revision: policystore.Revision{
+				OrganizationID:      organization,
+				ProjectID:           "prj_1",
+				PolicyID:            reported.ID,
+				GitHubPullRequest:   new(reported.Gates.GitHubPullRequest),
+				PayloadObjectKey:    receipt.PayloadObjectKey,
+				PayloadSHA256:       receipt.PayloadSHA256,
+				PayloadBytes:        receipt.PayloadBytes,
+				PayloadContentBytes: receipt.PayloadContentBytes,
+			},
+		}
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+			_, err := writer.RecordProjectPolicyObservation(t.Context(), observation)
+			return err
+		}); err != nil {
+			t.Fatalf("organization %s report imported policy observation: %v", organization, err)
 		}
 		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			current, err := reader.ProjectPolicy(t.Context(), "prj_1")
