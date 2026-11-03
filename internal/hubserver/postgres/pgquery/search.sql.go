@@ -357,12 +357,16 @@ WITH document AS MATERIALIZED (
  SELECT unnest($11::text[]) AS term
 ), current_terms AS MATERIALIZED (
  SELECT term FROM lexemes UNION SELECT term FROM literal_terms
-), removed AS (
- DELETE FROM search_postings p USING document d
+), obsolete_keys AS MATERIALIZED (
+ SELECT p.organization_id,p.scope,p.term,p.document_id
+ FROM search_postings p CROSS JOIN document d
  WHERE p.organization_id=d.organization_id AND p.document_id=d.id AND p.term NOT IN ('~all','~pending')
   AND d.kind IN ('issue','thread')
   AND (NOT EXISTS(SELECT 1 FROM visibility v WHERE v.key=p.scope)
    OR NOT EXISTS(SELECT 1 FROM current_terms t WHERE t.term=p.term))
+), removed AS (
+ DELETE FROM search_postings p USING obsolete_keys k
+ WHERE p.organization_id=k.organization_id AND p.scope=k.scope AND p.term=k.term AND p.document_id=k.document_id
  RETURNING 1
 ), inserted AS (
  INSERT INTO search_postings(organization_id,scope,term,document_id,impact,updated_at,updated_at_submicrosecond)
