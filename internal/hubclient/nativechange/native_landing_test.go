@@ -1,6 +1,7 @@
 package nativechange
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"reflect"
@@ -11,8 +12,10 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/scenariotest"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
@@ -64,4 +67,30 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 
 func (h *nativeChangeHub) candidatesIn(t *testing.T, states ...string) []connector.Issue {
 	return scenariotest.CandidatesIn(t, h.scheduler, h.descriptor, states...)
+}
+
+func TestStartLandingRefusesNonMergeAuthority(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name        string
+		identity    *tracker.NativeExecutionIdentity
+		reservation *providercapacity.Reservation
+	}{
+		{name: "started code execution", identity: &tracker.NativeExecutionIdentity{Role: runner.RoleCode}},
+		{name: "reserved code execution", reservation: &providercapacity.Reservation{Requirement: providercapacity.Requirement{Role: runner.RoleCode}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			execution := &nativeExecution{role: runner.RoleCode, data: tracker.NativeRunData{Identity: test.identity}}
+			execution.claim.lease.ProviderReservation = test.reservation
+			err := execution.StartLanding(t.Context(), 1, 1)
+			var refusal *workspace.LandRefusal
+			if !errors.As(err, &refusal) || refusal.Kind != "" {
+				t.Fatalf("wrong role must use existing landing wait: %v", err)
+			}
+			if execution.role != runner.RoleCode || execution.data.Identity != test.identity || execution.data.Runtime != nil {
+				t.Fatal("wrong role changed execution authority or started landing")
+			}
+		})
+	}
 }

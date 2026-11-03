@@ -104,6 +104,19 @@ func (e *nativeExecution) activityBoundary(at time.Time, outcome string) {
 }
 
 func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, generation uint64) error {
+	identity := tracker.NativeExecutionIdentity{Role: "merge", Backend: "git", Model: "none"}
+	if reservation := e.claim.lease.ProviderReservation; reservation != nil {
+		identity.Role, identity.Backend, identity.Model = reservation.Role, reservation.Backend, reservation.Model
+	}
+	e.mu.Lock()
+	if e.data.Identity != nil {
+		identity = *e.data.Identity
+	}
+	e.mu.Unlock()
+	if identity.Role != runner.RoleMerge {
+		return &workspace.LandRefusal{Reason: "Landing requires a merge execution; retry with the merge role"}
+	}
+
 	e.mu.Lock()
 	e.role = runner.RoleMerge
 	e.mu.Unlock()
@@ -119,15 +132,6 @@ func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, 
 			return err
 		}
 	}
-	identity := tracker.NativeExecutionIdentity{Role: "merge", Backend: "git", Model: "none"}
-	if reservation := e.claim.lease.ProviderReservation; reservation != nil {
-		identity.Role, identity.Backend, identity.Model = reservation.Role, reservation.Backend, reservation.Model
-	}
-	e.mu.Lock()
-	if e.data.Identity != nil {
-		identity = *e.data.Identity
-	}
-	e.mu.Unlock()
 	at := e.scheduler.now().UTC()
 	runtimeIdentity := runner.NativeLandingIdentity(at)
 	observation := tracker.NativeRuntimeObservation{LocalAttemptID: localAttempt, Generation: generation, Phase: "merging", HeartbeatAt: at, Identity: runtimeIdentity}

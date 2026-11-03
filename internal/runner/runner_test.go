@@ -5557,6 +5557,7 @@ func TestRunRoleDerivesStageFromModeAndState(t *testing.T) {
 	}{
 		{name: "empty mode todo uses code", state: "Todo", want: RoleCode},
 		{name: "implement mode in progress uses code", mode: RunModeImplement, state: "In Progress", want: RoleCode},
+		{name: "merge mode overrides stale active state", mode: RunModeMerge, state: "In Progress", want: RoleMerge},
 		{name: "plan mode uses plan", mode: RunModePlan, state: "Todo", want: RolePlan},
 		{name: "plan mode overrides rework state", mode: RunModePlan, state: "Rework", want: RolePlan},
 		{name: "routine mode uses routine", mode: RunModeRoutine, state: "Routine", want: RoleRoutine},
