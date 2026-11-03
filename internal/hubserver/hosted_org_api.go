@@ -60,18 +60,7 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 		e.GET(path, s.slugSettings, session)
 		e.PUT(path, s.slugSettings, session)
 	}
-	for _, path := range []string{hostedOrganizationBase + "/work-view-preference", hostedOrganizationBase + "/projects/:project/work-view-preference"} {
-		e.GET(path, s.workViewPreference, session)
-		e.PUT(path, s.workViewPreference, session)
-		e.DELETE(path, s.workViewPreference, session)
-	}
-	e.GET(hostedOrganizationBase+"/work-board", s.workBoard, session)
-	e.GET(hostedOrganizationBase+"/work-views", s.savedWorkViews, session)
-	e.POST(hostedOrganizationBase+"/work-views", s.savedWorkViews, session)
-	e.GET(hostedOrganizationBase+"/work-views/:view", s.savedWorkViews, session)
-	e.PUT(hostedOrganizationBase+"/work-views/:view", s.savedWorkViews, session)
-	e.DELETE(hostedOrganizationBase+"/work-views/:view", s.savedWorkViews, session)
-	e.PUT(hostedOrganizationBase+"/work-views/:view/favorite", s.savedWorkViews, session)
+	s.registerWorkViewRoutes(e)
 	e.GET(hostedOrganizationBase+"/integrations/slack", s.getSlackIntegration, session)
 	e.PUT(hostedOrganizationBase+"/integrations/slack", s.setSlackIntegration, administration)
 	e.POST(hostedOrganizationBase+"/integrations/slack/test", s.testSlackIntegration, administration)
@@ -95,6 +84,25 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	e.POST(hostedOrganizationBase+"/switch", s.switchHostedOrganizationJSON, session)
 	e.POST(hostedOrganizationBase+"/invitations/accept", s.acceptHostedInvitationJSON, session)
 	e.POST(hostedOrganizationBase+"/support/start", s.startHostedSupportJSON, session)
+}
+
+func (s *Service) registerWorkViewRoutes(e *echo.Echo) {
+	session := s.hostedSessionOnly
+	if s.config.Hosted == nil {
+		session = s.localAppOnly
+	}
+	for _, path := range []string{hostedOrganizationBase + "/work-view-preference", hostedOrganizationBase + "/projects/:project/work-view-preference"} {
+		e.GET(path, s.workViewPreference, session)
+		e.PUT(path, s.workViewPreference, session)
+		e.DELETE(path, s.workViewPreference, session)
+	}
+	e.GET(hostedOrganizationBase+"/work-board", s.workBoard, session)
+	e.GET(hostedOrganizationBase+"/work-views", s.savedWorkViews, session)
+	e.POST(hostedOrganizationBase+"/work-views", s.savedWorkViews, session)
+	e.GET(hostedOrganizationBase+"/work-views/:view", s.savedWorkViews, session)
+	e.PUT(hostedOrganizationBase+"/work-views/:view", s.savedWorkViews, session)
+	e.DELETE(hostedOrganizationBase+"/work-views/:view", s.savedWorkViews, session)
+	e.PUT(hostedOrganizationBase+"/work-views/:view/favorite", s.savedWorkViews, session)
 }
 
 func (s *Service) hostedAdministrationSession(next echo.HandlerFunc) echo.HandlerFunc {

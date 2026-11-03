@@ -25,6 +25,8 @@ import (
 
 func (s *Service) registerPostgresAppRoutes(e *echo.Echo) {
 	if s.config.Hosted != nil {
+		s.registerReadableRoutes(e)
+		s.registerWorkViewRoutes(e)
 		e.GET("/app/bootstrap", s.postgresAppBootstrapPayload)
 		e.GET("/chat/bootstrap", s.postgresAppBootstrapPayload)
 		e.GET("/app/updates", s.appUpdates)

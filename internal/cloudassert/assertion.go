@@ -236,7 +236,8 @@ func CanonicalPath(u *url.URL) bool {
 	if u == nil || u.RawPath != "" || u.Opaque != "" || !strings.HasPrefix(u.Path, "/") || strings.ContainsAny(u.Path, "\\\x00%") || strings.Contains(u.Path, "//") {
 		return false
 	}
-	for segment := range strings.SplitSeq(strings.TrimPrefix(u.Path, "/"), "/") {
+	parts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+	for _, segment := range parts {
 		if segment == "." || segment == ".." {
 			return false
 		}
@@ -245,8 +246,9 @@ func CanonicalPath(u *url.URL) bool {
 	if err != nil {
 		return false
 	}
+	workBoard := len(parts) == 5 && parts[0] == "api" && parts[1] == "v2" && parts[2] == "organizations" && parts[4] == "work-board"
 	for key, values := range query {
-		if len(values) > 1 && !repeatableQueryKeys[key] {
+		if len(values) > 1 && !repeatableQueryKeys[key] && !(workBoard && key == "project") {
 			return false
 		}
 	}

@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
@@ -344,6 +345,7 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 	provider := newHostedSecurityProvider()
 	key := hostedSharedKey(61)
 	cfg := startupConfig(connection)
+	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	cfg.Hosted.Provider = provider
 	cfg.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
 	store, err := openDatabase(t.Context(), cfg)
@@ -421,6 +423,81 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 	if err != nil || !member.Active || member.Role != "owner" || member.MembershipID != "membership_user_owner" {
 		t.Fatalf("PostgreSQL owner member = %+v, error = %v", member, err)
 	}
+	t.Run("browser board routes", func(t *testing.T) {
+		if service.database.db != nil || service.database.reader != nil {
+			t.Fatal("PostgreSQL browser routes retained legacy database handles")
+		}
+		now := service.config.now().UTC()
+		envelope, err := cfg.SecretKeys.Seal([]byte(strings.Repeat("k", 32)), accessstore.SecretAAD("org_startup", "", accessstore.NativeCursorKeyKind))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: "org_startup", Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: "org_startup", Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: envelope.Version, RecordedAt: now}); err != nil {
+				return err
+			}
+			for _, id := range []tracker.ProjectID{"project_first", "project_second"} {
+				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_startup", ID: id, Name: string(id), Slug: strings.ReplaceAll(string(id), "_", "-"), Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+					return err
+				}
+				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: "org_startup", ProjectID: id, NativeID: tracker.NativeWorkItemID("wi_" + string(id)), Number: 1, Title: "Example issue", WorkflowStateName: new("Todo")}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: "org_startup", UserID: member.UserID, ProjectID: id}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_startup", TokenID: member.PrincipalID, ProjectID: id}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		browserRead := func(path string) *httptest.ResponseRecorder {
+			t.Helper()
+			id, err := cloudassert.NewID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := service.config.now().UTC()
+			claims := cloudassert.Claims{Issuer: "entry", Audience: "org_startup", Generation: 1, Kind: cloudassert.KindBrowser, Method: http.MethodGet, Path: path, BodyDigest: cloudassert.BodyDigest(nil), IssuedAt: now, ExpiresAt: now.Add(cloudassert.MaxLifetime), ID: id, Subject: "user_owner", Email: "owner@example.test", ProviderOrganization: "provider_org_startup", ProviderSession: "session_owner", SessionCreatedAt: now, SessionExpiresAt: now.Add(time.Hour), Role: "owner", AccessExpiresAt: now.Add(time.Hour), Binding: strings.Repeat("b", 64), CSRF: strings.Repeat("c", 64)}
+			assertion, err := cloudassert.Sign(key, claims)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			request.Header.Set(cloudassert.Header, assertion)
+			response := httptest.NewRecorder()
+			service.Handler().ServeHTTP(response, request)
+			return response
+		}
+		const base = "/api/v2/organizations/org_startup"
+		for _, id := range []string{"project-first", "project-second"} {
+			for _, suffix := range []string{"", "/issues/1"} {
+				response := browserRead(base + "/readable/" + id + suffix)
+				requireNativeStatus(t, response, http.StatusOK)
+				var resolved map[string]string
+				decodeHubResponse(t, response, &resolved)
+				if resolved["project_id"] != strings.ReplaceAll(id, "-", "_") || suffix != "" && resolved["work_item_id"] != "wi_"+resolved["project_id"] {
+					t.Fatalf("readable browser response = %+v", resolved)
+				}
+			}
+		}
+		for _, path := range []string{"/work-views", "/work-view-preference", "/projects/project_first/work-view-preference"} {
+			requireNativeStatus(t, browserRead(base+path), http.StatusOK)
+		}
+		params := url.Values{"project": {"project_first", "project_second"}, "state": {`{"view":"board","tab":"active","q":"","sort":"default","completedWindow":"24h"}`}}
+		response := browserRead(base + "/work-board?" + params.Encode())
+		requireNativeStatus(t, response, http.StatusOK)
+		var boards []workBoardProject
+		decodeHubResponse(t, response, &boards)
+		if len(boards) != 2 || boards[0].Project.ID != "project_first" || boards[1].Project.ID != "project_second" {
+			t.Fatalf("browser board projects = %+v", boards)
+		}
+		requireNativeStatus(t, browserRead(base+"/readable/missing-project"), http.StatusNotFound)
+		requireNativeStatus(t, browserRead("/api/v2/organizations/org_other/readable/project-first"), http.StatusNotFound)
+	})
 	if _, err := provider.CreateMembership(t.Context(), "user_member", "provider_org_startup", "member"); err != nil {
 		t.Fatal(err)
 	}
