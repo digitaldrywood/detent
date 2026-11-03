@@ -117,7 +117,7 @@ func TestReceiptImportPreservesUncertainAndExpiredOutcomes(t *testing.T) {
 func TestReceiptMetadataBatchIsAtomicAndPreservesCompletion(t *testing.T) {
 	admin := template.Database(t)
 	pool := smallPool()
-	pool.MaxConnections, pool.ServingConnections = 3, 2
+	pool.MaxConnections, pool.ServingConnections = 4, 2
 	r, _ := repositoryFor(t, admin, pool)
 	content := eventstore.NewContent(newHistoryObjects())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -209,7 +209,7 @@ func TestReceiptMetadataBatchIsAtomicAndPreservesCompletion(t *testing.T) {
 func TestReceiptMetadataBatchCannotMaskGenericMutation(t *testing.T) {
 	admin := template.Database(t)
 	pool := smallPool()
-	pool.MaxConnections, pool.ServingConnections = 3, 2
+	pool.MaxConnections, pool.ServingConnections = 4, 2
 	r, _ := repositoryFor(t, admin, pool)
 	content := eventstore.NewContent(newHistoryObjects())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -399,7 +399,7 @@ func TestReceiptImportCannotReplacePreStateCompletion(t *testing.T) {
 func TestReceiptClaimHasOneOwnerAndExpiryReleasesPayload(t *testing.T) {
 	admin := template.Database(t)
 	pool := smallPool()
-	pool.MaxConnections, pool.ServingConnections = 3, 2
+	pool.MaxConnections, pool.ServingConnections = 4, 2
 	r, _ := repositoryFor(t, admin, pool)
 	content := eventstore.NewContent(newHistoryObjects())
 	org := tracker.OrganizationID("org_first")
