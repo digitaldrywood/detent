@@ -8,13 +8,16 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/store"
 )
@@ -82,11 +85,26 @@ func (s *RunnerSetup) Prepare(ctx context.Context, cfg globalconfig.Project) (er
 	}
 	setupCtx, cancel := context.WithTimeout(ctx, time.Duration(hooks.TimeoutMS)*time.Millisecond)
 	defer cancel()
+	dir := cfg.Workdir
+	if cfg.WorkflowRef != "" {
+		dir, err = os.MkdirTemp("", "detent-runner-setup-")
+		if err != nil {
+			return fmt.Errorf("create runner setup checkout: %w", err)
+		}
+		defer func() {
+			err = errors.Join(err, os.RemoveAll(dir))
+		}()
+		if err := runnerSetupCheckout(setupCtx, cfg.Workdir, workflow.Definition.Revision, dir); err != nil {
+			return err
+		}
+	}
 	cmd := commandshell.Command(setupCtx, string(content), hooks.Shell)
 	procgroup.Configure(setupCtx, cmd)
-	cmd.Dir = cfg.Workdir
+	cmd.Dir = dir
 	cmd.Env = os.Environ()
 	cmd.WaitDelay = time.Second
+	var output runnerSetupOutput
+	cmd.Stdout, cmd.Stderr = &output, &output
 	s.logger.Info("running runner project setup", "runner_id", s.runnerID, "project_id", cfg.ID, "script", hooks.RunnerSetup, "content_hash", hash)
 	err = procgroup.Start(cmd)
 	if err == nil {
@@ -96,7 +114,7 @@ func (s *RunnerSetup) Prepare(ctx context.Context, cfg globalconfig.Project) (er
 		if setupCtx.Err() != nil {
 			err = setupCtx.Err()
 		}
-		return fmt.Errorf("runner project setup %s: %w", hooks.RunnerSetup, err)
+		return fmt.Errorf("runner project setup: %w: %s", err, output.diagnostic())
 	}
 	if marker != "" {
 		if err := os.WriteFile(marker, []byte(hash), 0o600); err != nil {
@@ -108,6 +126,68 @@ func (s *RunnerSetup) Prepare(ctx context.Context, cfg globalconfig.Project) (er
 	}
 	s.logger.Info("runner project setup completed", "runner_id", s.runnerID, "project_id", cfg.ID, "content_hash", hash)
 	return nil
+}
+
+func runnerSetupCheckout(ctx context.Context, source, revision, target string) error {
+	root, err := runWorkflowGit(ctx, source, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return fmt.Errorf("resolve runner setup source: %w", err)
+	}
+	for _, args := range [][]string{
+		{"clone", "--shared", "--no-checkout", "--", strings.TrimSpace(string(root)), target},
+		{"-C", target, "checkout", "--detach", revision, "--"},
+	} {
+		cmd := exec.CommandContext(ctx, "git")
+		cmd.Args = append(cmd.Args, args...)
+		procgroup.Configure(ctx, cmd)
+		cmd.WaitDelay = time.Second
+		var output runnerSetupOutput
+		cmd.Stdout, cmd.Stderr = &output, &output
+		err := procgroup.Start(cmd)
+		if err == nil {
+			err = procgroup.Wait(cmd)
+		}
+		if err != nil {
+			return fmt.Errorf("prepare runner setup checkout: %w: %s", errors.Join(err, ctx.Err()), output.diagnostic())
+		}
+	}
+	return nil
+}
+
+type runnerSetupOutput struct {
+	data      [16384]byte
+	size      int
+	truncated bool
+}
+
+func (b *runnerSetupOutput) Write(p []byte) (int, error) {
+	n := copy(b.data[b.size:], p)
+	b.size += n
+	b.truncated = b.truncated || n < len(p)
+	return len(p), nil
+}
+
+func (b *runnerSetupOutput) diagnostic() string {
+	output := string(b.data[:b.size])
+	if b.truncated {
+		if end := strings.LastIndexByte(output, '\n'); end >= 0 {
+			output = output[:end+1]
+		} else {
+			output = ""
+		}
+	}
+	for _, entry := range os.Environ() {
+		name, value, _ := strings.Cut(entry, "=")
+		name = strings.ToLower(name)
+		if value != "" && (strings.Contains(name, "token") || strings.Contains(name, "secret") || strings.Contains(name, "password") || strings.Contains(name, "key") || strings.Contains(name, "credential") || strings.Contains(name, "auth") || strings.Contains(name, "cookie")) {
+			output = strings.ReplaceAll(output, value, "[redacted]")
+		}
+	}
+	output = runnerauth.SanitizeProblem(runnerauth.Problem{ErrorOutput: output}).ErrorOutput
+	if b.truncated {
+		output = "[setup output truncated]\n" + output
+	}
+	return output
 }
 
 func runnerSetupMarker(workdir string) string {
