@@ -777,6 +777,8 @@ const (
 
 type ValidatorRequest struct {
 	usageExecution       Execution
+	workAttemptID        int64
+	generation           uint64
 	source               ChangeSourceExecution
 	workspacePrepared    bool
 	SecurityAudit        *NativeSecurityAuditEvidence
@@ -797,6 +799,8 @@ type ValidatorRequest struct {
 
 type SecurityAuditRequest struct {
 	usageExecution  Execution
+	workAttemptID   int64
+	generation      uint64
 	complete        func(context.Context, SecurityAuditExecution) error
 	evidence        ValidationEvidenceExecution
 	OnUsageUpdate   UsageUpdateHandler

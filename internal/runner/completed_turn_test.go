@@ -83,12 +83,18 @@ func (w *completedExecutionWorkspace) DiffStat(ctx context.Context, info workspa
 }
 
 type finalizingDiffExecution struct {
+	observation tracker.NativeRuntimeObservation
 	finalizingTestExecution
 	diffSource AttemptDiffSource
 }
 
 func (e *finalizingDiffExecution) SetDiffSource(source AttemptDiffSource) {
 	e.diffSource = source
+}
+
+func (e *finalizingDiffExecution) ObserveRuntime(_ context.Context, observation tracker.NativeRuntimeObservation) error {
+	e.observation = observation
+	return nil
 }
 
 func TestCompletedNativeFinalizationDiff(t *testing.T) {
@@ -137,6 +143,9 @@ func TestCompletedNativeFinalizationDiff(t *testing.T) {
 			}
 			if err := r.afterExecution(ctx, request, backend, backend.info, issue, AgentResume{}, true); err != nil {
 				t.Fatal(err)
+			}
+			if execution.observation.Phase != "finalization" || execution.observation.HeartbeatAt.IsZero() {
+				t.Fatalf("missing host finalization activity: %+v", execution.observation)
 			}
 			if !backend.afterRun || execution.checkpoint == nil {
 				t.Fatal("finalization did not checkpoint and clean up")

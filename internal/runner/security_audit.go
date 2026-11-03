@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -188,7 +189,7 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 	if resolvedSelection.Effort != "" {
 		runtimeIdentity.ReasoningEffort = agentidentity.NewValue(resolvedSelection.Effort, agentidentity.ProvenanceConfigured)
 	}
-	runReq := RunRequest{Issue: req.Issue, StartedAt: startedAt, SelectorContext: req.SelectorContext}
+	runReq := RunRequest{Issue: req.Issue, StartedAt: startedAt, SelectorContext: req.SelectorContext, Execution: req.usageExecution, WorkAttemptID: req.workAttemptID, Generation: req.generation}
 	cacheCtx, release, err := toolcache.UseFromContext(ctx)
 	if err != nil {
 		return execution, fmt.Errorf("%w: acquire managed Go build cache: %w", ErrValidatorInfrastructure, err)
@@ -198,6 +199,9 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 	if err != nil {
 		return execution, err
 	}
+
+	activityProfile := r.startActivityProfile(ctx, runReq, sessionID, auditWorkspace, workflow, "security_audit")
+	defer activityProfile.finish()
 
 	runResult := RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
@@ -257,6 +261,7 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 			reserveScratch:   r.reserveSessionWorkerScratch(sessionID, r.securityAuditRoot, auditWorkspace),
 		}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
 			r.providerUsage.ObserveUpdate(runtimeIdentity.BackendID, update)
+			activityProfile.observe(update, r.now(), "", time.Time{})
 			if update.Type == AgentUpdateToolStarted || update.Type == AgentUpdateToolOutput || update.Type == AgentUpdateToolCompleted {
 				return ErrSecurityAuditToolUse
 			}
