@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -228,5 +229,29 @@ func TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker(t *testing.T) {
 		if got := attempts.completions[len(attempts.completions)-1].TerminalState; got != store.WorkAttemptTerminalCapacity {
 			t.Fatalf("attempt %d terminal state = %q, want capacity", attempt, got)
 		}
+	}
+}
+
+func TestHookResourcesRetryAsInstanceFailures(t *testing.T) {
+	for _, output := range []string{"could not create shared memory segment: No space left on device", "Too many open files", "Address already in use"} {
+		t.Run(output, func(t *testing.T) {
+			issue := connector.Issue{ID: "example", State: "In Progress"}
+			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: issue}}
+			cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress"}})
+			attempts := &terminalRetryWorkAttemptStore{}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+			state := newState(cfg)
+			at := time.Date(2026, 9, 24, 18, 12, 0, 0, time.UTC)
+			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 1, StartedAt: at.Add(-time.Second)}
+			err := fmt.Errorf("%w: %w", runpkg.ErrWorkspacePreparation, &workspace.HookError{Hook: "after_create", Output: output, Err: errors.New("exit status 1")})
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Err: err, CompletedAt: at})
+			retry, ok := state.Retry[issue.ID]
+			if !ok || !retry.DueAt.After(at) || !strings.Contains(retry.Error, output) || strings.Contains(retry.Error, telemetry.WorkspaceDiskExhaustionMessage) {
+				t.Fatalf("resource retry lost diagnostic or backoff: %#v", state.Retry)
+			}
+			if len(state.Blocked) != 0 || len(state.ForgeUnavailable) != 0 || len(tracker.comments) != 0 {
+				t.Fatal("resource failure charged issue or forge")
+			}
+		})
 	}
 }
