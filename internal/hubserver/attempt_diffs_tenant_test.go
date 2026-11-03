@@ -45,9 +45,6 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.ExecContext(t.Context(), `INSERT INTO hosted_usage_counters(organization_id,name,value) VALUES('org_startup','collaboration_bytes',0)`); err != nil {
-		t.Fatal(err)
-	}
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -145,10 +142,6 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 	if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		initialArchiveBytes, err = r.ArchiveBytes(t.Context())
-		if err != nil {
-			return err
-		}
-		initialCollaborationBytes, err = r.CollaborationBytes(t.Context())
 		return err
 	}); err != nil {
 		t.Fatal(err)

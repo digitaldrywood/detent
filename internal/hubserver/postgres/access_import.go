@@ -572,7 +572,7 @@ func (i *AccessImporter) validateOrganization(ctx context.Context, s *session, r
 	var created time.Time
 	err := s.db.QueryRowContext(ctx, `SELECT name,slug,local,created_at FROM organizations WHERE organization_id=$1`, i.organization).Scan(&name, &slug, &local, &created)
 	if errors.Is(err, sql.ErrNoRows) {
-		return s.CreateAccessOrganization(ctx, accessstore.Organization{OrganizationID: i.organization, Name: values["name"].Text, Slug: values["slug"].Text, Local: values["local"].Boolean, CreatedAt: recordTime(values["created_at"].Time)})
+		return s.createAccessOrganization(ctx, accessstore.Organization{OrganizationID: i.organization, Name: values["name"].Text, Slug: values["slug"].Text, Local: values["local"].Boolean, CreatedAt: recordTime(values["created_at"].Time)}, false)
 	}
 	if err != nil {
 		return errors.Join(storagecatalog.ErrOrganization, err)

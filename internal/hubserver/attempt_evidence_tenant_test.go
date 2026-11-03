@@ -193,6 +193,9 @@ func TestPostgresAttemptEvidencePreflightChecksRunningFencedOwner(t *testing.T) 
 		})
 	}
 	service.database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}})
+	if _, err := admin.ExecContext(t.Context(), `DELETE FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes'`, organization.ID); err != nil {
+		t.Fatal(err)
+	}
 	if status := request(path, input); status != http.StatusServiceUnavailable {
 		t.Fatalf("missing accounting owner status=%d", status)
 	}
