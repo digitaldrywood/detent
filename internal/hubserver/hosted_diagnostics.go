@@ -88,6 +88,10 @@ func (s *Service) hostedDiagnostics(c echo.Context) error {
 func (s *Service) readCloudDiagnostics(ctx context.Context, credential apiCredential, w operatortool.AnalyticsWindow) (diagnosticsReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	if s.config.TenantRepository != nil {
+		return s.readCloudDiagnosticsTenant(ctx, credential, w)
+	}
+
 	r := operatortool.AnalyticsRequest{Limit: 100}
 	projects, err := s.analyticsReadableProjects(ctx, credential, r)
 	if err != nil {

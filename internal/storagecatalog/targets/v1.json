@@ -83,9 +83,24 @@
     "internal/hubserver/postgres/migrations/20261102052209_change_publication_records.sql",
     "internal/hubserver/postgres/migrations/20261102052440_conversation_history_import.sql",
     "internal/hubserver/postgres/migrations/20261102053822_credit_history_import.sql",
-    "internal/hubserver/postgres/migrations/20261102060700_hub_server_identities.sql"
+    "internal/hubserver/postgres/migrations/20261102060700_hub_server_identities.sql",
+    "internal/hubserver/postgres/migrations/20261103090154_ordinary_attachment_records.sql",
+    "internal/hubserver/postgres/migrations/20261103144625_hosted_diagnostic_windows.sql"
   ],
   "tables": {
+    "public.attachment_item_references": {
+      "columns": {
+        "attachment_id": "text",
+        "comment_id": "text",
+        "organization_id": "text",
+        "project_id": "text",
+        "retain_with_work_item": "boolean",
+        "work_item_id": "text"
+      },
+      "contract": "Preserve tenant-scoped work item and comment references to retained ordinary attachments.",
+      "family": "collaboration",
+      "organization": "organization-owned"
+    },
     "public.hub_server_identities": {
       "columns": {
         "cursor_key": "bytea",

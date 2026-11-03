@@ -1,4 +1,9 @@
 {
+  "public/attachment_item_references": {
+    "ownership": "organization-owned",
+    "scope": "attachment_item_references.organization_id",
+    "inline_payloads": []
+  },
   "public/ai_credit_reason_references": {
     "inline_payloads": [],
     "ownership": "organization-owned",
