@@ -311,22 +311,15 @@ func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, param
 	if err != nil {
 		return page, err
 	}
-	content := viewstore.NewContent(s.runDetailStore())
+	preparation := prepareBoardRecordPage(ctx, records, func(ctx context.Context, record viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
+		return s.prepareBoardRecord(ctx, scope, record, now, true)
+	})
+	defer preparation.close()
 	returnedRecords := make([]viewstore.BoardRecord, 0, min(len(records), limit))
-	for _, record := range records {
-		card, err := content.BoardRecord(ctx, record)
+	for index, record := range records {
+		card, err := preparation.card(ctx, index)
 		if err != nil {
 			return page, err
-		}
-		if err := s.hydrateWorkItemRelationshipFacts(ctx, scope, &card.Issue); err != nil {
-			return page, err
-		}
-		if card.Change != nil {
-			detail, err := s.selectedChangeDetail(ctx, scope, string(record.WorkItemID), card.Change.ID, now)
-			if err != nil {
-				return page, err
-			}
-			card.Change.Status = detail.Summary.Status
 		}
 		card.Issue.WebURL = issueBrowserPath(organizationSlug, projectSlug, card.Issue.Number)
 		if selection.SearchText != "" {
@@ -360,13 +353,15 @@ func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, param
 		page.Items = append(page.Items, card.Issue)
 		returnedRecords = append(returnedRecords, record)
 	}
+	preparation.close()
 	if includeWork {
-		for _, record := range workRecordsForResponse {
-			card, err := content.BoardRecord(ctx, record)
+		workPreparation := prepareBoardRecordPage(ctx, workRecordsForResponse, func(ctx context.Context, record viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
+			return s.prepareBoardRecord(ctx, scope, record, now, false)
+		})
+		defer workPreparation.close()
+		for index, record := range workRecordsForResponse {
+			card, err := workPreparation.card(ctx, index)
 			if err != nil {
-				return page, err
-			}
-			if err := s.hydrateWorkItemRelationshipFacts(ctx, scope, &card.Issue); err != nil {
 				return page, err
 			}
 			if selection.SearchText != "" {
