@@ -80,8 +80,6 @@ func VerifySandboxCommand(ctx context.Context, cmd *exec.Cmd, settings map[strin
 }
 
 func verifySandboxProcess(ctx context.Context, input io.Writer, output io.Reader, settings map[string]any) (*bufio.Reader, error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
 	reader := bufio.NewReaderSize(output, 1<<20)
 	done := make(chan error, 1)
 	go func() {
@@ -133,6 +131,13 @@ func verifySandboxProcess(ctx context.Context, input io.Writer, output io.Reader
 	case err := <-done:
 		return reader, err
 	case <-ctx.Done():
+		if closer, ok := input.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		if closer, ok := output.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		<-done
 		return nil, ctx.Err()
 	}
 }

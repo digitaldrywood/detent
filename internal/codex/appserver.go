@@ -397,7 +397,7 @@ func NewAppServer(factory TransportFactory, opts ...AppServerOption) (*AppServer
 			Version: defaultClientVersion,
 		},
 		logger:      slog.Default(),
-		readTimeout: defaultReadTimeout,
+		readTimeout: 0,
 		turnTimeout: defaultTurnTimeout,
 		now:         time.Now,
 		timeoutContext: func(ctx context.Context, timeout time.Duration, cause error) (context.Context, context.CancelFunc) {
@@ -420,8 +420,8 @@ func NewAppServer(factory TransportFactory, opts ...AppServerOption) (*AppServer
 	if server.logger == nil {
 		server.logger = slog.Default()
 	}
-	if server.readTimeout <= 0 {
-		server.readTimeout = defaultReadTimeout
+	if server.readTimeout < 0 {
+		server.readTimeout = 0
 	}
 	if server.turnTimeout <= 0 {
 		server.turnTimeout = defaultTurnTimeout
@@ -2759,6 +2759,9 @@ func firstNonBlank(values ...string) string {
 func closeTransport(ctx context.Context, transport Transport, timeout time.Duration) error {
 	ctx = contextOrBackground(ctx)
 	ctx = context.WithoutCancel(ctx)
+	if timeout <= 0 {
+		timeout = defaultReadTimeout
+	}
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)

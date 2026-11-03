@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -355,6 +358,50 @@ func TestInvestigationRefusesWriteAndNetworkPermissions(t *testing.T) {
 					}
 				})
 			}
+		})
+	}
+}
+
+func TestSandboxSlowHandshakeUsesCallerContext(t *testing.T) {
+	for _, expires := range []bool{false, true} {
+		t.Run(map[bool]string{false: "slow response", true: "caller expiry"}[expires], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+				defer cancel()
+				reader, writer := io.Pipe()
+				defer reader.Close()
+				done := make(chan struct{})
+				expected := sandboxSettings(t)
+				go func() {
+					defer close(done)
+					defer writer.Close()
+					timer := time.NewTimer(30 * time.Second)
+					defer timer.Stop()
+					if expires {
+						<-ctx.Done()
+						return
+					}
+					<-timer.C
+					encoder := json.NewEncoder(writer)
+					for _, id := range []string{"initialize", "get_settings"} {
+						if err := encoder.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": id, "response": map[string]any{"effective": expected}}}); err != nil {
+							return
+						}
+					}
+				}()
+				start := time.Now()
+				_, err := verifySandboxProcess(ctx, io.Discard, reader, expected)
+				reader.Close()
+				cancel()
+				<-done
+				if expires {
+					if !errors.Is(err, context.DeadlineExceeded) {
+						t.Fatalf("expiry = %v", err)
+					}
+				} else if err != nil || time.Since(start) != 30*time.Second {
+					t.Fatalf("slow handshake = %v after %v", err, time.Since(start))
+				}
+			})
 		})
 	}
 }

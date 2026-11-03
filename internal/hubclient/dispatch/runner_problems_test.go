@@ -225,7 +225,7 @@ func TestIsolationProbeRecoversAfterTimeouts(t *testing.T) {
 				<-ctx.Done()
 				return isolation.Report{"example-project/codex": {}}, nil
 			}
-			timer := time.NewTimer(20 * time.Second)
+			timer := time.NewTimer(2 * time.Minute)
 			defer timer.Stop()
 			select {
 			case <-ctx.Done():
@@ -235,7 +235,9 @@ func TestIsolationProbeRecoversAfterTimeouts(t *testing.T) {
 			}
 		}}
 		for attempt := 1; attempt <= 4; attempt++ {
-			report, problems := scheduler.probeIsolation(t.Context())
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+			report, problems := scheduler.probeIsolation(ctx)
+			cancel()
 			if attempt < 4 {
 				if report.Supports(isolation.NativeTrusted) || len(problems) == 0 {
 					t.Fatalf("incomplete probe advertised readiness: %+v %+v", report, problems)
