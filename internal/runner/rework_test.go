@@ -476,6 +476,8 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		humanChanges             bool
 		optionalAcceptance       bool
 		summaryFailure           bool
+		gateFailure              bool
+		gateInfrastructure       bool
 		laterFinalizationSuccess bool
 		landingRepair            *tracker.NativeLandingReceipt
 		historyRefusal           bool
@@ -508,6 +510,8 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		{name: "IndependentFailure repair refreshes base and reviews changed source", reviewResume: "pass", reviewEvidence: "source_pass", staged: true, independentRepair: true},
 		{name: "complete operator resume in code lane only reviews", reviewResume: "pass", normal: true, staged: true},
 		{name: "complete source review and acceptance resume without coding", reviewResume: "pass", staged: true},
+		{name: "transient finalization infrastructure resumes retained review", reviewResume: "pass", staged: true, gateInfrastructure: true},
+		{name: "base advancement rejects migration bound and returns source for repair", reviewResume: "pass", staged: true, gateFailure: true, writableResume: true},
 		{name: "complete source producer failure preserves zero-turn version", reviewResume: "pass", staged: true, producerFailure: true},
 		{name: "complete source repeated explicit evidence wait never codes", reviewResume: "wait", staged: true, resumeTwice: true},
 		{name: "human requested current changes retain writable Rework", reviewResume: "pass", staged: true, reviewEvidence: "complete_pair", humanChanges: true, writableResume: true},
@@ -812,6 +816,16 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 						owner.recovery.Attempts = append(owner.recovery.Attempts, attempt)
 					}
 				}
+				if test.gateFailure || test.gateInfrastructure {
+					attempt := owner.recovery.Attempts[0]
+					attempt.AttemptID, attempt.RunID, attempt.Status = "attempt_gate", "run_gate", "failed"
+					attempt.Runtime = &tracker.NativeRuntimeObservation{Validation: &gate.CommandResult{Stage: gate.StageSourceFinalization, Command: "check-source", HeadSHA: original, TreeSHA: strings.Repeat("a", 40), ExitCode: 2, Output: "migration 20261101092709 is below current base migration 20261102023606", BaseReproduction: &failureattribution.Observation{Command: "check-source", HeadSHA: target, ExitCode: 0, Complete: true}}}
+					if test.gateInfrastructure {
+						attempt.Runtime.Validation = nil
+						attempt.TerminalFailure = &tracker.NativeTerminalFailure{Stage: "validation", ErrorClass: "infrastructure"}
+					}
+					owner.recovery.Attempts = append(owner.recovery.Attempts, attempt)
+				}
 				if test.producerFailure {
 					owner.recordError = errors.New("required review recording unavailable")
 				}
@@ -881,7 +895,30 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				}
 				request.Execution = owner
 				request.Issue.Description = "## Acceptance criteria\n- Preserve current source"
-				if test.landingRepair != nil {
+				if test.gateFailure {
+					for tick := 0; tick < 2; tick++ {
+						if review, turn, _ := nativeRunRecovery(request, RunModeImplement, "true"); review != nil || turn != nil {
+							t.Fatal("gate rejection replayed a completed disposition")
+						}
+						data, err := json.Marshal(owner.recovery)
+						if err != nil {
+							t.Fatal(err)
+						}
+						var restored tracker.NativeRecovery
+						if err := json.Unmarshal(data, &restored); err != nil {
+							t.Fatal(err)
+						}
+						owner.recovery = restored
+					}
+					agent.beforeStage = func() {
+						for _, content := range []string{"check-source", original, target, "migration 20261101092709 is below current base migration 20261102023606"} {
+							if !strings.Contains(agent.request.Prompt, content) {
+								t.Fatalf("source repair prompt omitted %q", content)
+							}
+						}
+					}
+				}
+				if test.landingRepair != nil || test.gateFailure {
 					agent.afterStage = func() {
 						owner.repairTree = strings.TrimSpace(runRunnerGit(t, agent.request.Workspace, "write-tree"))
 					}
@@ -891,7 +928,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					if agent.calls == 0 {
 						t.Fatalf("partial or genuine rework skipped coding: %v", err)
 					}
-					if test.landingRepair != nil {
+					if test.landingRepair != nil || test.gateFailure {
 						if err != nil || result.NativeChange == nil || result.NativeChange.ReusedDispositionAttemptID != "" || owner.head == "" || owner.head == original || owner.validation == nil || owner.validation.HeadSHA != owner.head || owner.diffHead != owner.head {
 							t.Fatalf("landing repair lost finalized source: head=%s original=%s validation=%+v result=%+v error=%v", owner.head, original, owner.validation, result, err)
 						}

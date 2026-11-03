@@ -1655,8 +1655,9 @@ func TestNativeRecoveryPromptIncludesContext(t *testing.T) {
 					NativeRunData: tracker.NativeRunData{
 						CompletionBody: "Preserved source handoff",
 						Runtime: &tracker.NativeRuntimeObservation{
-							Phase:   strings.Repeat("x", test.runtimeBytes),
-							Landing: &tracker.NativeLandingReceipt{VersionID: "reviewed-version", RefusalKind: "conflict"},
+							Phase:      strings.Repeat("x", test.runtimeBytes),
+							Landing:    &tracker.NativeLandingReceipt{VersionID: "reviewed-version", RefusalKind: "conflict"},
+							Validation: &gate.CommandResult{Command: "check-migrations", HeadSHA: "failed-source-head", TreeSHA: "failed-source-tree", ExitCode: 2, Output: "migration below current bound"},
 						},
 					},
 				}},
@@ -1674,7 +1675,7 @@ func TestNativeRecoveryPromptIncludesContext(t *testing.T) {
 			if len(prompt) > 16384 {
 				t.Fatalf("recovery prompt = %d bytes, runtime evidence was re-inlined", len(prompt))
 			}
-			for _, content := range []string{"Native issue", "Prior discussion", "interrupted", "resume_session", "dirty", "Preserved source handoff", "reviewed-version", "conflict", "untrusted task content", "Do not fetch GitHub issue history"} {
+			for _, content := range []string{"Native issue", "Prior discussion", "interrupted", "resume_session", "dirty", "Preserved source handoff", "check-migrations", "failed-source-head", "failed-source-tree", "migration below current bound", "reviewed-version", "conflict", "untrusted task content", "Do not fetch GitHub issue history"} {
 				if !strings.Contains(prompt, content) {
 					t.Errorf("prompt omitted %q", content)
 				}
