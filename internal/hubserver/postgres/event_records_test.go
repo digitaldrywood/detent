@@ -406,6 +406,11 @@ func TestEventChangeReceipts(t *testing.T) {
 
 func TestLandingReceiptIsImmutableAndTenantScoped(t *testing.T) {
 	admin := template.Database(t)
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, organization, historyAt()); err != nil {
+			t.Fatal(err)
+		}
+	}
 	r, pool := repositoryFor(t, admin, smallPool())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedRepository(t, r, organization)
@@ -420,8 +425,8 @@ func TestLandingReceiptIsImmutableAndTenantScoped(t *testing.T) {
 	attempt := attemptEvent(lease)
 	attempt.ID = f.version.AttemptID
 	storedAttempt := recordLeaseAttempt(t, r, "org_first", attempt)
-	value := tracker.NativeLandingReceipt{VersionID: f.version.ID, MergeSHA: strings.Repeat("a", 40), Landed: true}
-	record, err := f.content.PrepareLandingReceipt(t.Context(), eventstore.LandingReceipt{OrganizationID: "org_first", AttemptID: storedAttempt.ID, VersionID: f.version.ID}, value)
+	value := tracker.NativeLandingReceipt{VersionID: f.version.ID, MergeSHA: strings.Repeat("a", 40), BaseRef: "main", Landed: true}
+	record, err := f.content.PrepareLandingReceipt(t.Context(), eventstore.LandingReceipt{OrganizationID: "org_first", AttemptID: storedAttempt.ID, VersionID: f.version.ID, Repository: f.version.Repository, BaseRef: value.BaseRef}, value)
 	if err != nil {
 		t.Fatal(err)
 	}
