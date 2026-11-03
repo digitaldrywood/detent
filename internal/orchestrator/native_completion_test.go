@@ -299,6 +299,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		machineAttempt   int
 		progressCycles   bool
 		optout           bool
+		customOptout     bool
 		name             string
 		republish        bool
 		finalState       string
@@ -453,7 +454,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "deferred provider cancellation retains its outcome", states: workflow, runErr: context.Canceled, wantState: "In Review", wantTerminal: store.WorkAttemptTerminalCancelled, roundTrip: true},
 		{name: "failed native stale authority is rejected", states: workflow, runErr: errors.New("provider failed"), updateErr: errors.Join(runpkg.ErrExecutionAuthorityUnavailable, errors.New("final diff unavailable")), wantAbandoned: true},
 		{name: "failed provider without native change settles for review", states: workflow, runErr: errors.New("provider failed"), wantState: "In Review"},
-		{name: "failed provider optout prefers review over Blocked", states: workflow, humanReview: &no, optout: true, runErr: errors.New("provider failed"), wantState: "In Review"},
+		{name: "failed provider optout retries without work product", states: workflow, humanReview: &no, optout: true, runErr: errors.New("provider failed"), turnStarted: true, wantState: "Todo", wantContinue: true},
+		{name: "failed provider custom optout retries without work product", states: fourLanes, humanReview: &no, customOptout: true, runErr: errors.New("provider failed"), turnStarted: true, wantState: "Todo", wantContinue: true},
+		{name: "failed provider optout retains Rework checkpoint", states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, optout: true, runErr: errors.New("provider failed"), diffStats: checkpoint, turnStarted: true, wantState: "Rework", wantSameState: true, wantContinue: true},
+		{name: "failed final state optout retries without work product", states: fourLanes, humanReview: &no, optout: true, finalState: runpkg.FinalStateFailed, turnStarted: true, wantState: "Todo", wantContinue: true},
+		{name: "failed provider optout with human review enabled keeps review", states: workflow, humanReview: &yes, optout: true, runErr: errors.New("provider failed"), turnStarted: true, wantState: "In Review"},
+		{name: "successful custom optout waits for configured review", change: accepted, states: workflow, reviewed: &yes, customOptout: true, humanReview: &no, wantState: "In Review"},
 		{name: "failed provider lane refusal retains authority", states: workflow, runErr: errors.New("provider failed"), updateErr: errors.New("stale fencing token"), wantDeferred: true},
 		{name: "failed provider missing allowed lane retains authority", states: hosted, runErr: errors.New("provider failed"), wantDeferred: true},
 		{name: "failed outcome without error cannot publish", states: workflow, finalState: runpkg.FinalStateFailed, change: accepted, wantState: "In Review", wantTerminal: store.WorkAttemptTerminalFailure},
@@ -661,6 +667,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			}
 			if test.delegated {
 				cfg.IssueContract = &workflowconfig.IssueContract{Context: "## Issue Contract\n- Acceptance criteria\n\nAgent-authored criteria do not require human confirmation.\n"}
+			}
+			if test.customOptout {
+				issue.Labels = append(issue.Labels, "custom-review")
+				tick.stateIssues[0].Labels = issue.Labels
+				cfg.AutoPromote.OptoutLabel = "custom-review"
 			}
 			cfg.AutoPromote.SourceState = "In Review"
 			cfg.AutoPromote.HumanReview = test.humanReview
@@ -1408,6 +1419,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 					}
 					if len(tick.updates) != wantTransitions || scheduling.releases != 1 || (len(state.Retry) > 0) != test.wantContinue || len(state.deferredCompletions) != 0 || len(attempts.completions) != 1 {
 						t.Fatal("checkpoint refusal repeated completion or lost its retry")
+					}
+				}
+				if test.change == nil && (test.optout || test.customOptout) && test.wantContinue && !test.wantSameState {
+					reasons := tracker.(*nativeWorkflowConnector).reasons
+					if len(reasons) != 1 || reasons[0] != "terminal attempt without work product" {
+						t.Fatalf("failure without work product has misleading reason: %v", reasons)
 					}
 				}
 				if test.wantState != "" {

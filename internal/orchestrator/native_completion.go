@@ -96,7 +96,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		}
 		target := terminalAttemptTodoState(o.cfg.ActiveStates)
 		var allowed bool
-		if humanReview && !recoveryRequired && preTurnFailureClass(event, running) == "" {
+		if cfg.humanReviewEnabled() && !recoveryRequired && preTurnFailureClass(event, running) == "" {
 			review := cfg.reviewTargetState()
 			if autoPromoteOptoutLabel(issue, cfg) {
 				review = cfg.SourceState
