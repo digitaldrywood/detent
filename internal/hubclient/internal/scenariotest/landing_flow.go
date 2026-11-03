@@ -55,6 +55,7 @@ func RunLandingScenarios(t *testing.T, factories Constructors) {
 	}{
 		{name: "plain git by default"},
 		{name: "audited clean landing", audited: "clean"},
+		{name: "wrong role preserves Merging and retries audited landing", audited: "wrong_role"},
 		{name: "audited already incorporated landing", audited: "incorporated"},
 		{name: "incorporated audit excludes 200 unrelated target commits", audited: "advanced"},
 		{name: "audited already incorporated receipt retry", audited: "receipt"},
@@ -147,7 +148,7 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 	}
 	change := result.NativeChange
 	h.complete(t, issue.ID, change, true)
-	incorporated := scenario != "clean"
+	incorporated := scenario != "clean" && scenario != "wrong_role"
 	if incorporated {
 		nativeChangeGit(t, source, "merge", "--squash", change.HeadSHA)
 		nativeChangeGit(t, source, "commit", "-m", "Previously incorporated source")
@@ -187,6 +188,32 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 	}
 	if scenario == "advanced" {
 		h.failChanges.next = incorporationRejectionTransport{next: h.failChanges.next, t: t}
+	}
+	if scenario == "wrong_role" {
+		wrong := h.scheduler.RunExecution(issue.ID)
+		if err := wrong.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+			t.Fatal(err)
+		}
+		refused, err := agent.Run(t.Context(), runner.RunRequest{Execution: wrong, ProjectID: "local", Issue: candidates[0], Mode: runner.RunModeMerge})
+		if err != nil || refused.NativeLanding == nil || !refused.NativeLanding.Waiting || refused.NativeLanding.Landed || h.state(t, issue.ID) != "Merging" {
+			t.Fatalf("wrong role did not preserve landing lane: %+v, %v, state=%s", refused.NativeLanding, err, h.state(t, issue.ID))
+		}
+		if err := wrong.(runner.CompletionExecution).PrepareFinish(t.Context(), "succeeded", refused.FinalMessage, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := wrong.Finish(t.Context(), "succeeded"); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "released"); err != nil {
+			t.Fatal(err)
+		}
+		candidates = h.candidatesIn(t, "Merging")
+		if len(candidates) != 1 || candidates[0].ID != issue.ID {
+			t.Fatalf("wrong role lost next landing dispatch: %+v", candidates)
+		}
+		if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
+			t.Fatal(err)
+		}
 	}
 	result, err = agent.Run(t.Context(), runner.RunRequest{Execution: h.scheduler.RunExecution(issue.ID), ProjectID: "local", Issue: candidates[0], Mode: runner.RunModeMerge})
 	if err != nil || result.NativeLanding == nil || !result.NativeLanding.Landed || h.state(t, issue.ID) != "Done" {
