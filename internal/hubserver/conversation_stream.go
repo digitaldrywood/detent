@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -187,19 +188,30 @@ func (s *Service) reauthorizeConversationStream(c echo.Context, scope *nativeSco
 			return conversationRecord{}, err
 		}
 		scope.credential = credential
-		if err := s.requireHostedProject(readCtx, s.database.reader, *scope, false); err != nil {
+	}
+	if s.config.TenantRepository != nil {
+		if err := s.authorizeProjectRecord(readCtx, *scope, false); err != nil {
+			return conversationRecord{}, err
+		}
+		if _, err := s.readProjectRecord(readCtx, *scope); err != nil {
 			return conversationRecord{}, err
 		}
 	} else {
-		err := s.conversations.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-			return requireCredentialAuthority(ctx, tx, scope.credential, now)
-		})
-		if err != nil {
+		if scope.credential.Hosted != nil {
+			if err := s.requireHostedProject(readCtx, s.database.reader, *scope, false); err != nil {
+				return conversationRecord{}, err
+			}
+		} else {
+			err := s.conversations.transact(readCtx, func(tx *sql.Tx, now time.Time) error {
+				return requireCredentialAuthority(readCtx, tx, scope.credential, now)
+			})
+			if err != nil {
+				return conversationRecord{}, err
+			}
+		}
+		if err := s.database.authorizeNativeProject(readCtx, *scope); err != nil {
 			return conversationRecord{}, err
 		}
-	}
-	if err := s.database.authorizeNativeProject(ctx, *scope); err != nil {
-		return conversationRecord{}, err
 	}
 	return s.conversations.loadConversation(readCtx, s.database.reader, *scope, conversationID)
 }
@@ -215,7 +227,7 @@ func conversationStreamCloseReason(err error) string {
 		return conversationClosedServerError
 	case errors.As(err, &native):
 		return conversationClosedAccessRevoked
-	case errors.Is(err, sql.ErrNoRows), errors.Is(err, auth.ErrHostedIdentity):
+	case errors.Is(err, sql.ErrNoRows), errors.Is(err, auth.ErrHostedIdentity), errors.Is(err, accessstore.ErrDenied):
 		return conversationClosedAccessRevoked
 	default:
 		return conversationClosedServerError
