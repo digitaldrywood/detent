@@ -16,7 +16,7 @@ func TestHostedConsumptionReadsTypedCollaborationBytesAndUsageWindows(t *testing
 	plan := billingstore.PlanReference{ID: "example", Version: 1}
 	allowances := map[string]int64{"collaboration_bytes": 100, "api_mutations": 10}
 	seedConversationAllowancePostgres(t, repository, organization, plan, allowances)
-	if _, err := admin.ExecContext(t.Context(), `INSERT INTO hosted_usage_counters(organization_id,name,value) VALUES($1,'collaboration_bytes',73)`, organization); err != nil {
+	if _, err := admin.ExecContext(t.Context(), `UPDATE hosted_usage_counters SET value=73 WHERE organization_id=$1 AND name='collaboration_bytes'`, organization); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Unix(120, 0).UTC()
@@ -47,11 +47,14 @@ func TestHostedConsumptionReadsTypedCollaborationBytesAndUsageWindows(t *testing
 }
 
 func TestHostedConsumptionTreatsMissingCollaborationCounterAsUnavailable(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	repository, admin := projectRecordPostgresWithAdmin(t, 2)
 	organization := tracker.OrganizationID("org_missing_consumption")
 	plan := billingstore.PlanReference{ID: "example", Version: 1}
 	allowances := map[string]int64{"collaboration_bytes": 100, "api_mutations": 10}
 	seedConversationAllowancePostgres(t, repository, organization, plan, allowances)
+	if _, err := admin.ExecContext(t.Context(), `DELETE FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes'`, organization); err != nil {
+		t.Fatal(err)
+	}
 	database := conversationAllowanceDatabase(organization, plan, allowances, repository)
 	_, err := database.hostedConsumption(t.Context(), nil, time.Unix(120, 0).UTC(), "collaboration_bytes")
 	if err != ErrBillingUsageUnavailable {

@@ -255,7 +255,7 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := admin.ExecContext(t.Context(), `INSERT INTO hosted_usage_counters(organization_id,name,value) VALUES($1,'collaboration_bytes',$2)`, org, 73+index); err != nil {
+		if _, err := admin.ExecContext(t.Context(), `UPDATE hosted_usage_counters SET value=$2 WHERE organization_id=$1 AND name='collaboration_bytes'`, org, 73+index); err != nil {
 			t.Fatal(err)
 		}
 		service.database = conversationAllowanceDatabase(org, ref, allowances, repository)

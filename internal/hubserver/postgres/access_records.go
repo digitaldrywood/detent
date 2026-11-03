@@ -30,10 +30,20 @@ func (s *session) AccessOrganization(ctx context.Context) (accessstore.Organizat
 }
 
 func (s *session) CreateAccessOrganization(ctx context.Context, row accessstore.Organization) error {
+	return s.createAccessOrganization(ctx, row, true)
+}
+
+func (s *session) createAccessOrganization(ctx context.Context, row accessstore.Organization, initializeUsage bool) error {
 	if err := s.checkOrganization(row.OrganizationID); err != nil {
 		return err
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO organizations (organization_id,name,slug,local,created_at) VALUES ($1,$2,$3,$4,$5)`, row.OrganizationID, row.Name, row.Slug, row.Local, row.CreatedAt)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if initializeUsage {
+		_, err = s.db.ExecContext(ctx, `INSERT INTO hosted_usage_counters(organization_id,name,value) VALUES($1,'collaboration_bytes',0)`, row.OrganizationID)
+	}
 	return mapError(ctx, err)
 }
 

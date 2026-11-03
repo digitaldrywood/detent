@@ -206,6 +206,15 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 		if err != nil || processed != int64(len(accessFixtureTables)) {
 			t.Fatalf("tenant %s import = %d, %v", organizations[n], processed, err)
 		}
+		if err := r.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			_, err := reader.CollaborationBytes(t.Context())
+			if !errors.Is(err, corestore.ErrNotFound) {
+				return errors.Join(err, errors.New("import initialized unaccounted history to zero"))
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
 		var invitationExpiry time.Time
 		if err := db.QueryRowContext(t.Context(), `SELECT expires_at FROM hosted_invitations WHERE organization_id=$1 AND id='invitation_first'`, organization).Scan(&invitationExpiry); err != nil {
 			t.Fatal(err)
@@ -224,9 +233,19 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 		if n == 0 && acceptErr != nil || n == 1 && !errors.Is(acceptErr, corestore.ErrNotFound) {
 			t.Fatalf("tenant %s invitation acceptance after original finite-expiry horizon: %v", organization, acceptErr)
 		}
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO hosted_usage_counters(organization_id,name,value) VALUES($1,'collaboration_bytes',$2)`, organization, 101+n); err != nil {
+			t.Fatal(err)
+		}
 		replay, err := r.ImportAccessCopy(t.Context(), copySource)
 		if err != nil || replay != processed {
 			t.Fatalf("tenant %s replay = %+v, %v", organizations[n], replay, err)
+		}
+		var retainedBytes int64
+		if err := db.QueryRowContext(t.Context(), `SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes'`, organization).Scan(&retainedBytes); err != nil {
+			t.Fatal(err)
+		}
+		if retainedBytes != int64(101+n) {
+			t.Fatalf("import reset retained collaboration bytes to %d", retainedBytes)
 		}
 		var importedName, importedSlug string
 		var importedLocal bool
