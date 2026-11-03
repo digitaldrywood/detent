@@ -16,8 +16,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"slices"
 )
 
 const nativeSearchRebuildBatch = 1
@@ -191,6 +193,16 @@ func (d *database) publishNativeSearchDocument(ctx context.Context, tx *sql.Tx, 
 		_, err = tx.ExecContext(ctx, `INSERT INTO native_work_search_refresh SELECT d.id,i.organization_id,i.project_id FROM native_work_documents d JOIN issues i ON i.id=d.issue_id WHERE d.id=?
  ON CONFLICT(document_id) DO UPDATE SET organization_id=excluded.organization_id,project_id=excluded.project_id`, document.id)
 		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM native_work_fingerprints WHERE document_id=?`, document.id); err != nil {
+		return false, fmt.Errorf("remove stale fingerprints: %w", err)
+	}
+	for _, fingerprint := range nativeDuplicateFingerprints(document.body) {
+		for _, scope := range document.scopes {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO native_work_fingerprints(scope,fingerprint,document_id) VALUES(?,?,?)`, scope, fingerprint, document.id); err != nil {
+				return false, fmt.Errorf("index fingerprint: %w", err)
+			}
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM native_work_search_postings WHERE document_id=?`, document.id); err != nil {
 		return false, fmt.Errorf("remove stale search postings: %w", err)
@@ -415,4 +427,24 @@ func (d *database) backfillNativeSearch(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("advance search rebuild cursor: %w", err)
 	}
 	return true, d.commit(ctx, tx)
+}
+
+func nativeDuplicateFingerprints(body string) []string {
+	keys := issueorigin.DefectFingerprints(body)
+	if origin, ok := issueorigin.Parse(body); ok {
+		keys = append(keys, origin.Fingerprint)
+	}
+	keys = slices.DeleteFunc(keys, func(key string) bool {
+		if len(key) < 2 || len(key) > 256 {
+			return true
+		}
+		for _, c := range key {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("-_.:/", c)) {
+				return true
+			}
+		}
+		return false
+	})
+	slices.Sort(keys)
+	return slices.Compact(keys)
 }

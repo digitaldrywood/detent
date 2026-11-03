@@ -87,30 +87,18 @@ func resolveNativeDuplicates(ctx context.Context, query nativeQueryer, scope nat
 	query = pageQuery
 	window, args := duplicateWindow(scope, now, machine)
 	var matches []possibleDuplicate
-	origin, stamped := issueorigin.Parse(request.Body)
+	_, stamped := issueorigin.Parse(request.Body)
 	if stamped {
-		fingerprints := []string{origin.Fingerprint}
-		if canonical := issueorigin.DefectFingerprint(request.Body); canonical != "" && canonical != origin.Fingerprint {
-			fingerprints = append(fingerprints, canonical)
-		}
-		var searches []string
+		fingerprints := nativeDuplicateFingerprints(request.Body)
 		for _, fingerprint := range fingerprints {
-			searches = append(searches, nativeScopedExpression(nativeSearchScopes(scope, ""), nativeSearchExpressions(fingerprint), " AND "))
-		}
-		if expressions := duplicateSearchExpressions(request.Body); len(expressions) > 0 {
-			searches = append(searches, nativeScopedExpression(nativeSearchScopes(scope, ""), expressions, " OR "))
-		}
-		for _, expression := range searches {
-			searchArgs := []any{expression}
-			searchArgs = append(searchArgs, args...)
+			searchArgs := []any{nativeSearchScopes(scope, "")[0], fingerprint}
 			searchArgs = append(searchArgs, args...)
 			rows, err := query.QueryContext(ctx, `WITH candidates AS MATERIALIZED (
-SELECT d.issue_id,d.comment_id FROM native_work_scoped_fts JOIN native_work_documents d ON d.id=native_work_scoped_fts.rowid/2
-JOIN issues i ON i.id=d.issue_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
-WHERE native_work_scoped_fts MATCH ? AND i.organization_id=? AND i.project_id=?`+window+`
- )
+SELECT document_id FROM native_work_fingerprints
+WHERE scope=? AND fingerprint=? ORDER BY document_id DESC LIMIT 100
+)
 SELECT i.native_id,i.number,i.title,ws.detent_state,i.revision,ws.terminal,i.body || char(10) || COALESCE(c.body,'')
-FROM candidates d JOIN issues i ON i.id=d.issue_id
+FROM candidates f JOIN native_work_documents d ON d.id=f.document_id JOIN issues i ON i.id=d.issue_id
 JOIN workflow_states ws ON ws.id=i.workflow_state_id LEFT JOIN native_comments c ON c.id=d.comment_id
 WHERE i.organization_id=? AND i.project_id=?`+window+` ORDER BY ws.terminal,i.number DESC`, searchArgs...)
 			if err != nil {
