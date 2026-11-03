@@ -26,6 +26,41 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestRecordSourceValidationInitialRuntimeUsesValidationPhase(t *testing.T) {
+	fallback := time.Now().UTC()
+	for _, test := range []struct {
+		name       string
+		finishedAt time.Time
+	}{
+		{name: "receipt timestamp", finishedAt: fallback.Add(-time.Minute)},
+		{name: "scheduler fallback"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Source validation")
+			h.claim(t, issue.ID)
+			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			execution.scheduler.now = func() time.Time { return fallback }
+			result := gate.CommandResult{Command: "go test internal/example", DurationNS: 1, HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), FinishedAt: test.finishedAt}
+			if err := execution.RecordSourceValidation(t.Context(), result); err != nil {
+				t.Fatal(err)
+			}
+			wantAt := test.finishedAt
+			if wantAt.IsZero() {
+				wantAt = fallback
+			}
+			runtime := execution.data.Runtime
+			if runtime == nil || runtime.Validation == nil || runtime.Phase != "validation" || runtime.HeartbeatAt != wantAt || len(runtime.Phases) != 1 {
+				t.Fatalf("initial source validation runtime = %+v, want heartbeat %s", runtime, wantAt)
+			}
+			phase := runtime.Phases[0]
+			if phase.Name != "validation" || phase.StartedAt != wantAt {
+				t.Fatalf("initial source validation phase = %+v, want start %s", phase, wantAt)
+			}
+		})
+	}
+}
+
 func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 	for _, test := range []struct {
 		name           string
