@@ -689,6 +689,8 @@ func agentTurnIssueRepository(cfg config.Config, issue connector.Issue) string {
 
 func runRole(mode string, issue connector.Issue) string {
 	switch normalizeRunMode(mode) {
+	case RunModeMerge:
+		return RoleMerge
 	case RunModePlan:
 		return RolePlan
 	case RunModeRoutine:

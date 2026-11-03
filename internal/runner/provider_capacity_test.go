@@ -30,6 +30,7 @@ func TestDispatchCapacityPreservesRouting(t *testing.T) {
 		{name: "catalog failure cannot affect dispatch", routeModel: "sol", body: "```detent-agent\nschema: 1\nmodel: astra\n```", catalogErr: errors.New("offline"), wantModel: "astra", wantRole: RoleCode},
 		{name: "provider default remains explicit", wantModel: "provider_default", wantRole: RoleCode},
 		{name: "plan role", mode: RunModePlan, routeModel: "sol", wantModel: "plan-model", wantRole: RolePlan},
+		{name: "merge mode with pending landing", mode: RunModeMerge, state: "In Progress", routeModel: "sol", wantModel: "sol", wantRole: RoleMerge},
 		{name: "merge role fallback", state: "Merging", routeModel: "sol", wantModel: "sol", wantRole: RoleMerge},
 		{name: "rework role", state: "Rework", routeModel: "sol", wantModel: "sol", wantRole: RoleRework},
 	} {
