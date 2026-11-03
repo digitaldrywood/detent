@@ -294,13 +294,23 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 				if !hostedRoleAllows(credential.HostedRole, requirement.Scope, requirement.Action) {
 					return operatortool.ErrAccessDenied
 				}
-				if s.config.TenantRepository != nil && s.config.AccessRepository != nil && requirement.ProjectID != "" {
+				if s.config.TenantRepository != nil && s.config.AccessRepository != nil {
+					if requirement.ProjectID != "" {
+						return s.checkOperatorResource(ctx, query, checkScope, requirement)
+					}
+					checkScope.requireHostedAdmin = requirement.Scope == apikey.ScopeAdmin
+					if operatortool.IsThreadTool(requirement.Action) {
+						return s.authorizeProjectRecord(ctx, checkScope, true)
+					}
+					if err := s.recheckProjectRecordMutation(ctx, checkScope); err != nil {
+						return err
+					}
+					if requirement.ResourceKind == "billing" || requirement.ResourceKind == "plan" {
+						return nil
+					}
 					return s.checkOperatorResource(ctx, query, checkScope, requirement)
 				}
 				checkScope.requireHostedAdmin = requirement.Scope == apikey.ScopeAdmin
-				if s.config.TenantRepository != nil && s.config.AccessRepository != nil && operatortool.IsThreadTool(requirement.Action) {
-					return s.authorizeProjectRecord(ctx, checkScope, true)
-				}
 				tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 				if err != nil {
 					return err

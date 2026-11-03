@@ -782,6 +782,7 @@ export const Allowance = Schema.Struct({
 export type Allowance = typeof Allowance.Type;
 
 export const FleetUsage = Schema.Struct({
+  unavailable: Schema.optional(Schema.Array(Schema.String)),
   window_ends_at: Schema.String,
   allowances: Schema.Record(Schema.String, Allowance),
 });

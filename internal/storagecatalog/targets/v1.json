@@ -89,7 +89,8 @@
     "internal/hubserver/postgres/migrations/20261103151137_project_onboarding_progress.sql",
     "internal/hubserver/postgres/migrations/20261103154233_dependency_reason_records.sql",
     "internal/hubserver/postgres/migrations/20261103160239_team_threads.sql",
-    "internal/hubserver/postgres/migrations/20261103160816_activity_read_windows.sql"
+    "internal/hubserver/postgres/migrations/20261103160816_activity_read_windows.sql",
+    "internal/hubserver/postgres/migrations/20261103162920_current_billing_population.sql"
   ],
   "tables": {
     "public.issue_dependency_reasons": {
