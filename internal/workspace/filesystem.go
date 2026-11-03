@@ -124,6 +124,11 @@ func (f *Filesystem) Create(ctx context.Context, issue Issue) (Info, error) {
 	info.Created = created
 	if created {
 		if err := f.runHook(ctx, "after_create", f.hooks.AfterCreate, info, issue); err != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultHookTimeout)
+			defer cancel()
+			if _, reapErr := ReapProcesses(WithProcessSource(cleanupCtx, f.processSource), info.Path, 250*time.Millisecond); reapErr != nil {
+				return Info{}, errors.Join(err, reapErr)
+			}
 			if cleanupErr := removeWorkspacePath(f.root, info.Path); cleanupErr != nil {
 				f.logger.Warn("failed to clean filesystem workspace after after_create hook error", slog.String("path", info.Path), slog.Any("error", cleanupErr))
 			}

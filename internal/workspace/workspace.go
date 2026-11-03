@@ -1611,6 +1611,9 @@ func (l *LocalGit) quarantineWorktree(ctx context.Context, path string) (string,
 	if metadata.commonDir != sourceCommon {
 		return "", fmt.Errorf("refusing to quarantine worktree not managed by source: %s", path)
 	}
+	if _, err := ReapProcesses(WithProcessSource(ctx, l.processSource), path, 250*time.Millisecond); err != nil {
+		return "", fmt.Errorf("stop workspace processes before quarantine: %w", err)
+	}
 	quarantinePath, err := l.nextQuarantinePath(path)
 	if err != nil {
 		return "", err
@@ -1704,6 +1707,9 @@ func (l *LocalGit) quarantineFailedWorkspace(ctx context.Context, path string) (
 	path, err = validateWorkspacePath(l.root, path)
 	if err != nil {
 		return "", false, err
+	}
+	if _, err := ReapProcesses(WithProcessSource(ctx, l.processSource), path, 250*time.Millisecond); err != nil {
+		return "", false, fmt.Errorf("stop failed workspace processes: %w", err)
 	}
 	quarantinePath, err := l.nextQuarantinePath(path)
 	if err != nil {

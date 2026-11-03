@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 )
 
@@ -62,7 +63,45 @@ func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, 
 	if source, ok := ctx.Value(processSourceKey{}).(ProcessSource); ok && source != nil {
 		scan = workspaceProcessScanner(source)
 	}
-	return reapProcesses(ctx, path, grace, scan, syscall.Kill)
+	identities := make(map[int]procgroup.Identity)
+	ownedScan := func(ctx context.Context, path string) ([]int, error) {
+		pids, scanErr := scan(ctx, path)
+		var owned []int
+		for _, pid := range pids {
+			if pid <= 0 || pid == os.Getpid() {
+				continue
+			}
+			process, err := os.FindProcess(pid)
+			if err != nil {
+				return owned, errors.Join(scanErr, err)
+			}
+			identity, err := procgroup.Inspect(&exec.Cmd{Process: process})
+			_ = process.Release()
+			if errors.Is(err, procgroup.ErrProcessNotRunning) {
+				continue
+			}
+			if err != nil {
+				return owned, errors.Join(scanErr, err)
+			}
+			if previous, ok := identities[pid]; ok && !previous.StartedAt.Equal(identity.StartedAt) {
+				continue
+			}
+			identities[pid] = identity
+			owned = append(owned, pid)
+		}
+		return owned, scanErr
+	}
+	signal := func(pid int, sig syscall.Signal) error {
+		alive, err := procgroup.Alive(identities[pid])
+		if err != nil {
+			return err
+		}
+		if !alive {
+			return nil
+		}
+		return syscall.Kill(pid, sig)
+	}
+	return reapProcesses(ctx, path, grace, ownedScan, signal)
 }
 
 var reapProcessScanner workspaceProcessScanner = workspaceProcessIDs
@@ -216,7 +255,7 @@ func workspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
 
 	canonical, err := canonicalExistingPath(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return scratchEnvironmentProcessIDs(ctx, path)
 	}
 	if err != nil {
 		return nil, err
