@@ -69,18 +69,22 @@ func appReserved(path string) bool {
 // product is enabled. The hosted pages still own the paths they register, so the
 // catch-all serves only the client routes they leave free.
 func (s *Service) registerAppRoutes(e *echo.Echo) {
-	session := s.hostedSessionOnly
-	if s.config.Hosted == nil {
-		session = s.localAppOnly
-	}
-	e.GET(hostedOrganizationBase+"/readable/:project_slug", s.resolveReadablePage, session)
-	e.GET(hostedOrganizationBase+"/readable/:project_slug/issues/:number", s.resolveReadablePage, session)
+	s.registerReadableRoutes(e)
 	e.GET("/app/bootstrap", s.appBootstrapPayload)
 	e.GET("/chat/bootstrap", s.appBootstrapPayload)
 	e.GET("/app/updates", s.appUpdates)
 	// Any method, so an unmatched path still answers not found rather than
 	// the method-not-allowed a GET-only wildcard would produce.
 	e.Any("/*", s.appShell)
+}
+
+func (s *Service) registerReadableRoutes(e *echo.Echo) {
+	session := s.hostedSessionOnly
+	if s.config.Hosted == nil {
+		session = s.localAppOnly
+	}
+	e.GET(hostedOrganizationBase+"/readable/:project_slug", s.resolveReadablePage, session)
+	e.GET(hostedOrganizationBase+"/readable/:project_slug/issues/:number", s.resolveReadablePage, session)
 }
 
 // appShell serves the client application shell for every client route. The
