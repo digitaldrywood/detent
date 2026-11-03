@@ -563,9 +563,12 @@ artifact without release discovery. Discovery failures preserve that verified
 selection, never authorize an unchecked binary, and never clear an explicit
 critical or incompatible update refusal. A captured artifact remains owned
 until its workers and cleanup finish; only then may an obsolete artifact be
-removed. Execution processes access local session state through the controller's
-bounded typed protocol, never concurrent SQLite migrations or independent store
-writers.
+removed. Execution processes access ephemeral process state through the controller's
+bounded typed protocol. Durable job ownership, leases, checkpoints, recovery,
+retries, completion and history belong to PostgreSQL through authenticated Hub
+APIs. Runners never open a local application database, including in-memory
+SQLite, and never use local files or queues as recovery or execution authority.
+A runner restart reconstructs its authorized work from Hub records.
 
 A change may not add machine-local state that later jobs depend on, discover
 configuration by scanning the machine, or route work by where earlier work

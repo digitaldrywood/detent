@@ -25,6 +25,8 @@ Read `AGENTS.md` and the governing sections of `docs/invariants.md` before chang
 
 ## Completion Contract
 
+- Follow the PostgreSQL-only storage authority in `AGENTS.md`. Do not implement, repair or retain SQLite runtime compatibility. Runners use the Hub for all durable state; local memory and disposable files are not recovery or ownership authorities.
+
 - Work in this workspace on the branch Detent checked out for you. Do not rebase onto or merge other branches unless the issue asks for it.
 - Stage finished issue-owned changes on that branch. Do not commit or use signing workarounds: the runner's host finalizer verifies the worktree, branch and execution authority, commits with the project's signing configuration and publishes the native Change. Preserve unfinished work for continuation; never stage a half-done change.
 - Never push, open or update pull requests, post or edit issue comments, or change issue state or labels. Never run `gh` or call the GitHub API. Native Cloud owns work items and the runner owns publication and landing. Report findings through the provided Detent tools and your final message.
