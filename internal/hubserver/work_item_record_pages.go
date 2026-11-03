@@ -25,7 +25,7 @@ func (s *Service) readCommentRecords(ctx context.Context, scope nativeScope, ite
 	if err != nil {
 		return page, err
 	}
-	if _, err := s.readWorkItem(ctx, scope, item); err != nil {
+	if err := s.authorizeCommentWorkItem(ctx, scope, item); err != nil {
 		return page, err
 	}
 	if _, _, err := nativePageOrder(params, "sequence", cursor.After); err != nil {
@@ -95,6 +95,27 @@ func (s *Service) readCommentRecords(ctx context.Context, scope nativeScope, ite
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
 	}
 	return page, err
+}
+
+func (s *Service) authorizeCommentWorkItem(ctx context.Context, scope nativeScope, item string) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		project, err := r.Project(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if project.DeletedAt != nil {
+			return corestore.ErrNotFound
+		}
+		row, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		if err != nil {
+			return err
+		}
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
+			return corestore.ErrNotFound
+		}
+		return nil
+	})
+	return projectRecordError(err)
 }
 
 func (s *Service) workItemResource(ctx context.Context, scope nativeScope, id string, params url.Values) (tracker.NativeIssue, error) {
