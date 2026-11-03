@@ -916,9 +916,59 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 		t.Fatalf("persisted provider reports = %+v", providers)
 	}
 	clock.value = now.Add(2 * time.Minute)
+	var currentIdentity runnerstore.Identity
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		currentIdentity, err = r.RunnerIdentity(t.Context(), "runner_example")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runningBuild := runnerauth.BuildEvidence{Version: "0.174.1", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "darwin", Architecture: "arm64", VerifiedRelease: true, ObservedAt: clock.value}
+	ownerPolicy := hubTestPolicy()
 	projectConfiguration := runnerauth.ProjectConfiguration{
-		ProjectID: string(project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: clock.value,
-		Diagnostics: &runnerauth.ProjectDiagnostics{ObservedAt: clock.value, RuntimeObservedAt: clock.value, Source: "runner_runtime_and_durable_attempt_owners", Counts: map[string]int{}, Unavailable: map[string]string{}, Records: []runnerauth.DiagnosticAttempt{{Key: "local:1", IssueID: "wi_example", LocalAttemptID: 1, Generation: 2, Fence: 3, Stage: "implementing", Membership: []string{"running"}}}},
+		ProjectID: string(project.ID), Authority: "local_global_configuration", Source: "configured_committed_workflow", ObservedAt: clock.value,
+		RunnerID: currentIdentity.RunnerID, RunnerRevision: currentIdentity.Revision,
+		ConfigRevision: strings.Repeat("c", 64), Registered: true, RuntimeRegistered: true, Draining: true, UnsettledAttempts: 1,
+		AllowLocalBinding: true, LocalIntakeEnabled: true,
+		EffectivePolicy: &ownerPolicy, SelectedPolicy: &ownerPolicy, LocalBindingPolicy: &ownerPolicy, RestrictedBindingPolicy: &ownerPolicy,
+		LocalIntakeRemaining: []string{"wi_example"}, LocalIntakeBlocked: []string{"wi_blocked"},
+		Diagnostics: &runnerauth.ProjectDiagnostics{
+			ObservedAt: clock.value, RuntimeObservedAt: clock.value, Source: "runner_runtime_and_durable_attempt_owners", RunningBuild: &runningBuild,
+			Counts: map[string]int{"native_claim": 1, "distinct_records": 1}, Unavailable: map[string]string{},
+			Records: []runnerauth.DiagnosticAttempt{{Key: "local:1", IssueID: "wi_example", LocalAttemptID: 1, Generation: 2, Fence: 3, Stage: "implementing", Membership: []string{"running", "native_claim"}, ProviderCompletedAt: clock.value.Add(-3 * time.Second), HostOperation: "append.run.observed", OperationPending: true, OperationStartedAt: clock.value.Add(-2 * time.Second), OperationObservedAt: clock.value.Add(-time.Second), LatestErrorCode: "invalid_request", DeferredAt: clock.value.Add(-time.Second), RetryAt: clock.value.Add(time.Second), RetryAttempt: 1, RecoveryOwner: "instance", LeaseRenewedAt: clock.value, LeaseExpiresAt: clock.value.Add(time.Hour)}},
+		},
+	}
+	if err := projectConfiguration.Validate(); err != nil {
+		t.Fatalf("invalid project owner projection fixture: %v", err)
+	}
+	if err := validateTenantHeartbeatProjection(nativeMachineHeartbeatRequest{ProjectConfiguration: &projectConfiguration}); err != nil {
+		t.Fatalf("rejected project owner projection fixture: %v", err)
+	}
+	for name, mutate := range map[string]func(*runnerauth.ProjectConfiguration){
+		"runner identity": func(view *runnerauth.ProjectConfiguration) { view.RunnerID = "runner_other" },
+		"runner revision": func(view *runnerauth.ProjectConfiguration) { view.RunnerRevision++ },
+	} {
+		invalid := projectConfiguration
+		mutate(&invalid)
+		response := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "protocol_major": 2, "project_configuration": invalid})
+		if response.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("%s mismatch status = %d, want %d: %s", name, response.Code, http.StatusUnprocessableEntity, response.Body.String())
+		}
+	}
+	for name, mutate := range map[string]func(*runnerauth.ProjectConfiguration){
+		"authority":              func(view *runnerauth.ProjectConfiguration) { view.Authority = "other" },
+		"configuration revision": func(view *runnerauth.ProjectConfiguration) { view.ConfigRevision = "invalid" },
+		"configuration time":     func(view *runnerauth.ProjectConfiguration) { view.ObservedAt = time.Time{} },
+		"diagnostics time":       func(view *runnerauth.ProjectConfiguration) { view.Diagnostics.ObservedAt = time.Time{} },
+	} {
+		invalid := projectConfiguration
+		diagnostics := *projectConfiguration.Diagnostics
+		invalid.Diagnostics = &diagnostics
+		mutate(&invalid)
+		if err := validateTenantHeartbeatProjection(nativeMachineHeartbeatRequest{ProjectConfiguration: &invalid}); err == nil {
+			t.Fatalf("accepted owner projection with invalid %s", name)
+		}
 	}
 	observed := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "protocol_major": 2, "project_configuration": projectConfiguration})
 	requireNativeStatus(t, observed, http.StatusOK)
@@ -927,7 +977,14 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if !observation.DiagnosticsAt.Equal(clock.value) || !observation.RuntimeObservedAt.Equal(clock.value) || len(attempts) != 1 || attempts[0].LocalAttemptID != 1 || attempts[0].Generation != 2 || attempts[0].Fence != 3 || !attempts[0].Running {
+		wantDigest, err := projectConfigurationDigest(projectConfiguration)
+		if err != nil {
+			return err
+		}
+		if observation.SnapshotDigest != wantDigest {
+			t.Fatalf("persisted project configuration digest = %q, want enriched projection digest %q", observation.SnapshotDigest, wantDigest)
+		}
+		if !observation.DiagnosticsAt.Equal(clock.value) || !observation.RuntimeObservedAt.Equal(clock.value) || len(attempts) != 1 || attempts[0].LocalAttemptID != 1 || attempts[0].Generation != 2 || attempts[0].Fence != 3 || !attempts[0].Running || !attempts[0].NativeClaim || attempts[0].HostOperation != "append.run.observed" || !attempts[0].OperationPending || attempts[0].ProviderCompletedAt == nil || !attempts[0].ProviderCompletedAt.Equal(clock.value.Add(-3*time.Second)) || attempts[0].LeaseRenewedAt == nil || !attempts[0].LeaseRenewedAt.Equal(clock.value) {
 			t.Fatalf("persisted project diagnostics = %+v / %+v", observation, attempts)
 		}
 		return nil

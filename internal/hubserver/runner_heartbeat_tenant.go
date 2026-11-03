@@ -349,17 +349,11 @@ func validateTenantHeartbeatProjection(request nativeMachineHeartbeatRequest) er
 		return nil
 	}
 	view := request.ProjectConfiguration
-	if view.Validate() != nil || view.Authority != "local_global_configuration" || view.Diagnostics == nil || view.Registered || view.RuntimeRegistered || view.Paused || view.Draining || view.UnsettledAttempts != 0 || view.ConfigRevision != "" || view.SelectedPolicy != nil || view.EffectivePolicy != nil || view.LocalBindingPolicy != nil || view.RestrictedBindingPolicy != nil || view.Pending || view.Saved || view.Applied || view.Constraint != "" || view.LastOperation != nil || view.LocalIntakeEnabled || len(view.LocalIntakeRemaining) != 0 || len(view.LocalIntakeBlocked) != 0 {
+	if view.Validate() != nil || view.Authority != "local_global_configuration" {
 		return nativeRunEventStorageUnavailable()
 	}
-	diagnostics := view.Diagnostics
-	if diagnostics.Source != "runner_runtime_and_durable_attempt_owners" || diagnostics.RunningBuild != nil || len(diagnostics.Admissions) != 0 || len(diagnostics.Counts) != 0 || diagnostics.Truncated || len(diagnostics.Unavailable) != 0 {
+	if diagnostics := view.Diagnostics; diagnostics != nil && diagnostics.Source != "runner_runtime_and_durable_attempt_owners" {
 		return nativeRunEventStorageUnavailable()
-	}
-	for _, record := range diagnostics.Records {
-		if !record.OperationStartedAt.IsZero() || !record.OperationObservedAt.IsZero() || record.LatestErrorCode != "" || record.LatestError != "" || !record.DeferredAt.IsZero() || !record.RetryAt.IsZero() || record.RetryAttempt != 0 || record.RecoveryOwner != "" || !record.LeaseExpiresAt.IsZero() || len(record.Unavailable) != 0 {
-			return nativeRunEventStorageUnavailable()
-		}
 	}
 	return nil
 }
