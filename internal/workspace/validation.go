@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,11 +47,11 @@ func (l *LocalGit) ReviewCommandEvidence(ctx context.Context, info Info, issue I
 	command := commandshell.Command(ctx, "", l.hooks.Shell)
 	command.Dir = normalized.Path
 	command.Env = hookEnv(normalized, issue, l.hooks.StripGitHubTokens)
-	l.applyValidationGoBudget(ctx, command)
+	applyValidationGoBudget(ctx, command, l.logger)
 	return reviewCommandEvidence(ctx, command, validation)
 }
 
-func (l *LocalGit) applyValidationGoBudget(ctx context.Context, command *exec.Cmd) {
+func applyValidationGoBudget(ctx context.Context, command *exec.Cmd, logger *slog.Logger) {
 	inherited := make(map[string]string)
 	for _, entry := range command.Environ() {
 		key, value, ok := strings.Cut(entry, "=")
@@ -60,7 +61,7 @@ func (l *LocalGit) applyValidationGoBudget(ctx context.Context, command *exec.Cm
 	}
 	variables, err := gobudget.FromContext(ctx).Environment(inherited["GOFLAGS"])
 	if err != nil {
-		l.logger.Warn("go build budget unavailable; validation Go commands run unqueued", "error", err)
+		logger.Warn("go build budget unavailable; validation Go commands run unqueued", "error", err)
 		return
 	}
 	if _, explicit := inherited["GOMAXPROCS"]; explicit {
