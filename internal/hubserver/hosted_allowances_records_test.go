@@ -11,7 +11,7 @@ import (
 )
 
 func TestHostedConsumptionReadsTypedCollaborationBytesAndUsageWindows(t *testing.T) {
-	repository, admin := projectRecordPostgresWithAdmin(t, 2)
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	organization := tracker.OrganizationID("org_consumption_records")
 	plan := billingstore.PlanReference{ID: "example", Version: 1}
 	allowances := map[string]int64{"collaboration_bytes": 100, "api_mutations": 10}
@@ -47,7 +47,7 @@ func TestHostedConsumptionReadsTypedCollaborationBytesAndUsageWindows(t *testing
 }
 
 func TestHostedConsumptionTreatsMissingCollaborationCounterAsUnavailable(t *testing.T) {
-	repository, admin := projectRecordPostgresWithAdmin(t, 2)
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	organization := tracker.OrganizationID("org_missing_consumption")
 	plan := billingstore.PlanReference{ID: "example", Version: 1}
 	allowances := map[string]int64{"collaboration_bytes": 100, "api_mutations": 10}

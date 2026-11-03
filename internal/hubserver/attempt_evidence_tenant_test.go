@@ -25,7 +25,7 @@ import (
 )
 
 func TestPostgresAttemptEvidencePreflightChecksRunningFencedOwner(t *testing.T) {
-	repository, admin := projectRecordPostgresWithAdmin(t, 2)
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	var operationLog bytes.Buffer
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	service := openPostgresHubTestService(t, repository, Config{
