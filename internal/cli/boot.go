@@ -670,11 +670,22 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		}); err != nil {
 			return err
 		}
+		buildCache, cacheErr := newRunnerBuildCache(ctx, cfg)
+		if cacheErr != nil && !errors.Is(cacheErr, errNativeBuildCache) {
+			logger.Warn("runner-owned Go build cache unavailable; retaining native cache", "error", cacheErr)
+		}
+		var cacheOwner *toolcache.Managed
+		var trimCache func(context.Context, toolcache.Policy, time.Time) error
+		var cacheReport func() *toolcache.Report
+		if buildCache != nil {
+			cacheOwner, trimCache, cacheReport = buildCache.cache, buildCache.trim, buildCache.observe
+		}
 		observationsStarted := time.Now()
 		logger.Info("runner setup observations started")
 		if cfg.Global.Client.Configured() {
 			hubScheduling, err = newHubScheduling(ctx, cfg.Global, cfg.Version, hubSchedulingOptions{
 				providerUsage: providerUsage,
+				buildCache:    buildCache,
 				applyProjects: func(ctx context.Context, current globalconfig.Config) error {
 					if _, err := manager.Reconcile(ctx, managerConfigWithRuntimeGitHubToken(current, runtimeGitHubToken.get())); err != nil {
 						return err
@@ -711,16 +722,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			reporter.SetProjectConfigurationOwner(runnerProjectConfigurationOwner(cfg.Global, globalConfigState.get, owner))
 		}
 		logger.Info("runner setup observations completed", "duration", time.Since(observationsStarted))
-		buildCache, cacheErr := newRunnerBuildCache(ctx, cfg)
-		if cacheErr != nil && !errors.Is(cacheErr, errNativeBuildCache) {
-			logger.Warn("runner-owned Go build cache unavailable; retaining native cache", "error", cacheErr)
-		}
-		var cacheOwner *toolcache.Managed
-		var trimCache func(context.Context, toolcache.Policy, time.Time) error
-		var cacheReport func() *toolcache.Report
-		if buildCache != nil {
-			cacheOwner, trimCache, cacheReport = buildCache.cache, buildCache.trim, buildCache.observe
-		}
 		projectFactory = withRunnerFactoryWithProjectTokens(ctx, project.Dependencies{
 			HostBuildCache:     cacheOwner,
 			TrimHostCache:      trimCache,

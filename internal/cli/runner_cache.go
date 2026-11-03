@@ -81,9 +81,10 @@ func (c *runnerBuildCache) trimForVolume(ctx context.Context, policy toolcache.P
 	var pressureReclaim int64
 	if freeBeforeErr == nil {
 		reserve := toolcache.Policy{}.NormalizedForCapacity(capacity).MaxBytes
-		if freeBefore < uint64(reserve) {
-			headroom := min(policy.NormalizedForCapacity(capacity).MaxBytes, reserve)
-			pressureReclaim = reserve - int64(freeBefore) + headroom
+		headroom := min(policy.NormalizedForCapacity(capacity).MaxBytes, reserve)
+		target := reserve + headroom
+		if freeBefore < uint64(target) {
+			pressureReclaim = target - int64(freeBefore)
 			policy = policy.WithReclaimBytes(pressureReclaim)
 		}
 	}

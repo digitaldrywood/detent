@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -119,12 +120,23 @@ func runnerCapacityConfiguration(selected, runtime, cfg globalconfig.Config, rev
 	return report
 }
 
-func runnerStorageConstraint(ctx context.Context, cfg globalconfig.Config) string {
+func runnerStorageConstraint(ctx context.Context, cfg globalconfig.Config, cache *runnerBuildCache) string {
 	paths, err := toolcache.Resolve(ctx)
 	if err != nil {
 		return "Host storage is unavailable; waiting for a storage observation."
 	}
-	return runnerStorageConstraintForPaths(cfg, paths, runnerStorageVolume)
+	return runnerStorageConstraintAfterReclaim(ctx, cfg, paths, cache, runnerStorageVolume)
+}
+
+func runnerStorageConstraintAfterReclaim(ctx context.Context, cfg globalconfig.Config, paths toolcache.Paths, cache *runnerBuildCache, volume func(string) (uint64, uint64, error)) string {
+	constraint := runnerStorageConstraintForPaths(cfg, paths, volume)
+	if constraint == "" || cache == nil || cache.root != paths.Build {
+		return constraint
+	}
+	if err := cache.trimForVolume(ctx, cfg.Global.Cache, time.Now(), volume); err != nil {
+		slog.Warn("managed Go build cache reclaim before storage admission failed", "error", err)
+	}
+	return runnerStorageConstraintForPaths(cfg, paths, volume)
 }
 
 func runnerStorageVolume(root string) (uint64, uint64, error) {
