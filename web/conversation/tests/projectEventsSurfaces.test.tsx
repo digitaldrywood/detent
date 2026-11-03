@@ -145,3 +145,57 @@ it("mounts board, IssuePage, workspaces, ActivityPage, sidebarHumanActions, heal
   expect(Source.instances[1]!.close).toHaveBeenCalledOnce();
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it.each(["success", "failure", "unmount"])("replaces a reset snapshot without hiding a current failure (%s)", async (outcome) => {
+  vi.stubGlobal("EventSource", Source);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  Source.instances = [];
+  const http = workHttpFor({ http: { origin: "", apiBase: "/api/v2/organizations/reset-example", csrfToken: "" }, bootstrap: { organization: { id: "reset-example" }, projects: [], actor: { principal_id: "person" } } } as unknown as ConversationClient);
+  const issue = { ...issueFixture, work_item_id: `wi_reset_${outcome}`, project_id: "reset-project", change_sequence: 20 } as NativeIssue;
+  let releaseFirst!: (value: { items: [] }) => void;
+  let releaseSecond!: (value: NativeIssue) => void;
+  let rejectSecond!: (error: Error) => void;
+  const first = new Promise<{ items: [] }>((resolve) => { releaseFirst = resolve; });
+  const second = new Promise<NativeIssue>((resolve, reject) => { releaseSecond = resolve; rejectSecond = reject; });
+  const head = vi.spyOn(http, "getWorkItemById").mockResolvedValueOnce(issue).mockResolvedValueOnce(issue).mockImplementation(() => second);
+  const attempts = vi.spyOn(http, "listAttempts").mockImplementationOnce(() => first).mockResolvedValue({ items: [] });
+  vi.spyOn(http, "getProject").mockResolvedValue({ ...projectFixture, project_id: issue.project_id } as NativeProject);
+  vi.spyOn(http, "listHistory").mockResolvedValue({ items: [] });
+  vi.spyOn(http, "listComments").mockResolvedValue({ items: [] });
+  vi.spyOn(http, "listChanges").mockResolvedValue([]);
+  let detail!: ReturnType<typeof useIssue>;
+  const errors: string[] = [];
+  function Probe() {
+    detail = useIssue(http, issue.work_item_id);
+    if (detail.error !== null) errors.push(detail.error);
+    return null;
+  }
+  const view = render(<Probe />);
+  try {
+    await waitFor(() => expect(attempts).toHaveBeenCalledOnce());
+    await act(async () => { Source.instances[0]!.emit("reset", {}, 21); });
+    await waitFor(() => expect(head).toHaveBeenCalledTimes(3));
+    expect(detail.error).toBeNull();
+    expect(detail.loading).toBe(true);
+    expect(detail.data).toBeNull();
+    if (outcome === "unmount") {
+      view.unmount();
+      expect(head.mock.calls[2]?.[1]?.aborted).toBe(true);
+      return;
+    }
+    await act(async () => {
+      releaseFirst({ items: [] });
+      if (outcome === "failure") rejectSecond(new Error("Backend unavailable"));
+      else releaseSecond({ ...issue, title: "Current issue", change_sequence: 22 });
+    });
+    await waitFor(() => {
+      if (outcome === "failure") expect(detail.error).toBe("Backend unavailable");
+      else expect(detail.data?.issue.title).toBe("Current issue");
+    });
+    expect(errors).not.toContain("Issue snapshot superseded");
+    expect(head).toHaveBeenCalledTimes(3);
+  } finally {
+    view.unmount();
+    await act(async () => { releaseFirst({ items: [] }); releaseSecond(issue); });
+  }
+});
