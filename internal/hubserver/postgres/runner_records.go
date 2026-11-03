@@ -783,7 +783,7 @@ func (s *session) ReplaceRunnerProjectObservation(ctx context.Context, row runne
 			unavailableRows = append(unavailableRows, []any{row.OrganizationID, row.RunnerID, row.ProjectID, "attempt", attempt.Position, key, reason})
 		}
 	}
-	if err := s.insertRunnerDiagnosticRows(ctx, "runner_project_diagnostic_attempts", "organization_id,runner_id,project_id,position,record_key,issue_id,local_attempt_id,native_attempt_id,generation,fence,stage,running,native_claim,provider_completed_at,host_operation,operation_pending,lease_renewed_at,membership,operation_started_at,operation_observed_at,latest_error_code,latest_error,deferred_at,retry_at,retry_attempt,recovery_owner,lease_expires_at", attemptRows); err != nil {
+	if err := s.insertRunnerCurrentRows(ctx, "runner_project_diagnostic_attempts", "organization_id,runner_id,project_id,position,record_key,issue_id,local_attempt_id,native_attempt_id,generation,fence,stage,running,native_claim,provider_completed_at,host_operation,operation_pending,lease_renewed_at,membership,operation_started_at,operation_observed_at,latest_error_code,latest_error,deferred_at,retry_at,retry_attempt,recovery_owner,lease_expires_at", attemptRows); err != nil {
 		return err
 	}
 	admissionRows := make([][]any, 0)
@@ -806,19 +806,19 @@ func (s *session) ReplaceRunnerProjectObservation(ctx context.Context, row runne
 			unavailableRows = append(unavailableRows, []any{row.OrganizationID, row.RunnerID, row.ProjectID, "snapshot", -1, key, reason})
 		}
 	}
-	if err := s.insertRunnerDiagnosticRows(ctx, "runner_project_diagnostic_admissions", "organization_id,runner_id,project_id,position,issue_id,work_item_revision,observed_at,result,predicate,repository_reservations,host_landing_occupancy,provider_role,provider_backend,provider_model", admissionRows); err != nil {
+	if err := s.insertRunnerCurrentRows(ctx, "runner_project_diagnostic_admissions", "organization_id,runner_id,project_id,position,issue_id,work_item_revision,observed_at,result,predicate,repository_reservations,host_landing_occupancy,provider_role,provider_backend,provider_model", admissionRows); err != nil {
 		return err
 	}
-	if err := s.insertRunnerDiagnosticRows(ctx, "runner_project_diagnostic_counts", "organization_id,runner_id,project_id,count_key,count_value", countRows); err != nil {
+	if err := s.insertRunnerCurrentRows(ctx, "runner_project_diagnostic_counts", "organization_id,runner_id,project_id,count_key,count_value", countRows); err != nil {
 		return err
 	}
-	if err := s.insertRunnerDiagnosticRows(ctx, "runner_project_diagnostic_unavailable", "organization_id,runner_id,project_id,source,position,unavailable_key,reason", unavailableRows); err != nil {
+	if err := s.insertRunnerCurrentRows(ctx, "runner_project_diagnostic_unavailable", "organization_id,runner_id,project_id,source,position,unavailable_key,reason", unavailableRows); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (s *session) insertRunnerDiagnosticRows(ctx context.Context, table, columns string, rows [][]any) error {
+func (s *session) insertRunnerCurrentRows(ctx context.Context, table, columns string, rows [][]any) error {
 	const maxRows = 500
 	for offset := 0; offset < len(rows); offset += maxRows {
 		end := min(len(rows), offset+maxRows)
@@ -1058,27 +1058,25 @@ func (s *session) ReplaceRunnerProviderReports(ctx context.Context, runnerID str
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM runner_provider_reports WHERE organization_id=$1 AND runner_id=$2`, s.organization, runnerID); err != nil {
 		return mapError(ctx, err)
 	}
+	reportRows := make([][]any, 0)
+	modelRows := make([][]any, 0)
+	effortRows := make([][]any, 0)
+	windowRows := make([][]any, 0)
 	for _, report := range reports {
 		var resetAt any
 		if !report.ResetAt.IsZero() {
 			resetAt = report.ResetAt
 		}
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO runner_provider_reports (organization_id,runner_id,backend,provider,account_alias,shared_account_alias,billing,max_concurrent,availability,observed_at,reset_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, s.organization, runnerID, report.Backend, report.Provider, report.AccountAlias, report.SharedAccountAlias, report.Billing, report.MaxConcurrent, report.Availability, report.ObservedAt, resetAt); err != nil {
-			return mapError(ctx, err)
-		}
+		reportRows = append(reportRows, []any{s.organization, runnerID, report.Backend, report.Provider, report.AccountAlias, report.SharedAccountAlias, report.Billing, report.MaxConcurrent, report.Availability, report.ObservedAt, resetAt})
 		details := make(map[string]providercapacity.ModelDetail, len(report.ModelDetails))
 		for _, detail := range report.ModelDetails {
 			details[detail.ID] = detail
 		}
 		for position, model := range report.Models {
 			detail, hasDetail := details[model]
-			if _, err := s.db.ExecContext(ctx, `INSERT INTO runner_provider_report_models (organization_id,runner_id,backend,position,model_id,has_detail,label,model_provider,is_default,default_reasoning_effort,legacy) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, s.organization, runnerID, report.Backend, position, model, hasDetail, detail.Label, detail.Provider, detail.Default, detail.DefaultReasoningEffort, detail.Legacy); err != nil {
-				return mapError(ctx, err)
-			}
+			modelRows = append(modelRows, []any{s.organization, runnerID, report.Backend, position, model, hasDetail, detail.Label, detail.Provider, detail.Default, detail.DefaultReasoningEffort, detail.Legacy})
 			for effortPosition, effort := range detail.ReasoningEfforts {
-				if _, err := s.db.ExecContext(ctx, `INSERT INTO runner_provider_model_efforts (organization_id,runner_id,backend,model_id,position,effort) VALUES ($1,$2,$3,$4,$5,$6)`, s.organization, runnerID, report.Backend, model, effortPosition, effort); err != nil {
-					return mapError(ctx, err)
-				}
+				effortRows = append(effortRows, []any{s.organization, runnerID, report.Backend, model, effortPosition, effort})
 			}
 		}
 		for position, window := range report.UsageWindows {
@@ -1093,10 +1091,20 @@ func (s *session) ReplaceRunnerProviderReports(ctx context.Context, runnerID str
 			if !window.ObservedAt.IsZero() {
 				observedAt = window.ObservedAt
 			}
-			if _, err := s.db.ExecContext(ctx, `INSERT INTO runner_provider_usage_windows (organization_id,runner_id,backend,position,kind,percent_used,reset_at,observed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, s.organization, runnerID, report.Backend, position, window.Kind, percent, windowResetAt, observedAt); err != nil {
-				return mapError(ctx, err)
-			}
+			windowRows = append(windowRows, []any{s.organization, runnerID, report.Backend, position, window.Kind, percent, windowResetAt, observedAt})
 		}
+	}
+	if err := s.insertRunnerCurrentRows(ctx, "runner_provider_reports", "organization_id,runner_id,backend,provider,account_alias,shared_account_alias,billing,max_concurrent,availability,observed_at,reset_at", reportRows); err != nil {
+		return err
+	}
+	if err := s.insertRunnerCurrentRows(ctx, "runner_provider_report_models", "organization_id,runner_id,backend,position,model_id,has_detail,label,model_provider,is_default,default_reasoning_effort,legacy", modelRows); err != nil {
+		return err
+	}
+	if err := s.insertRunnerCurrentRows(ctx, "runner_provider_model_efforts", "organization_id,runner_id,backend,model_id,position,effort", effortRows); err != nil {
+		return err
+	}
+	if err := s.insertRunnerCurrentRows(ctx, "runner_provider_usage_windows", "organization_id,runner_id,backend,position,kind,percent_used,reset_at,observed_at", windowRows); err != nil {
+		return err
 	}
 	return nil
 }
