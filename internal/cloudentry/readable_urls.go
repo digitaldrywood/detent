@@ -37,7 +37,7 @@ func (s *Service) readableProxy(c echo.Context) error {
 	c.SetParamNames("organization")
 	c.SetParamValues(id)
 	c.Set("readable_url", true)
-	return s.proxy(c)
+	return s.admitProxyRequest(c)
 }
 
 func (s *Service) readableOrganizationRoot(c echo.Context, id string) error {
