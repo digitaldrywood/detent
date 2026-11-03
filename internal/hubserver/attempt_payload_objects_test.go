@@ -687,7 +687,7 @@ func TestAnalyticsPayloadCompletionUsesScopedPendingIndex(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	plan := strings.Join(explainQueryPlan(t, f.service.database.reader, analyticsPayloadPendingSQL, []any{f.project.OrganizationID, f.project.ID}), "\n")
-	if !strings.Contains(plan, "analytics_attempt_payload_pending_scope (organization_id=? AND project_id=?)") {
+	if !strings.Contains(plan, "analytics_payload_pending_scope (organization_id=? AND project_id=?)") {
 		t.Fatalf("completion can scan history or other tenants' pending rows: %s", plan)
 	}
 }

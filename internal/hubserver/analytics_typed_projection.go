@@ -134,17 +134,15 @@ func analyticsProjection(raw string) ([]any, error) {
 }
 
 func writeAnalyticsSample(ctx context.Context, tx nativeExecer, organization, project string, hour int64, metric, dimension string, value float64, raw string) error {
-	values, err := analyticsProjection(raw)
+	sample, err := prepareAnalyticsSample(organization, project, hour, metric, dimension, value, raw)
 	if err != nil {
 		return err
 	}
-	stored := raw
-	if metric == "attempt" {
-		stored = "{}"
+	if plan, ok := tx.(*projectionPlan); ok {
+		plan.writes = append(plan.writes, projectionWrite{sample: sample})
+		return nil
 	}
-	args := append([]any{organization, project, hour, metric, dimension, value, stored}, values...)
-	_, err = tx.ExecContext(ctx, analyticsSampleUpsert, args...)
-	return err
+	return sample.apply(ctx, tx)
 }
 
 func (d *database) convertAnalyticsProjections(ctx context.Context) error {

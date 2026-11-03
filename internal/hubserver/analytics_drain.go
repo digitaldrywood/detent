@@ -35,8 +35,9 @@ type projectionQuery interface {
 }
 
 type projectionWrite struct {
-	query string
-	args  []any
+	query  string
+	args   []any
+	sample *analyticsSampleWrite
 }
 
 type projectionPlan struct {
@@ -47,7 +48,7 @@ type projectionPlan struct {
 
 func (p *projectionPlan) ExecContext(_ context.Context, query string, args ...any) (sql.Result, error) {
 	if !p.skipDeletes || !strings.HasPrefix(query, "DELETE FROM report_issue_") {
-		p.writes = append(p.writes, projectionWrite{query, args})
+		p.writes = append(p.writes, projectionWrite{query: query, args: args})
 	}
 	return driver.RowsAffected(1), nil
 }
@@ -135,7 +136,13 @@ func (d *database) drainAnalyticsItem(ctx context.Context, id string, now time.T
 			return saveErr
 		}
 		for _, w := range plan.writes {
-			if _, writeErr := d.analytics.exec(ctx, tx, w.query, w.args...); writeErr != nil {
+			var writeErr error
+			if w.sample != nil {
+				writeErr = w.sample.apply(ctx, tx)
+			} else {
+				_, writeErr = d.analytics.exec(ctx, tx, w.query, w.args...)
+			}
+			if writeErr != nil {
 				err = writeErr
 				break
 			}
@@ -179,10 +186,10 @@ func (d *database) planAnalyticsPage(ctx context.Context, plan *projectionPlan, 
 		}
 		if !baseline {
 			var raw string
-			err := plan.QueryRowContext(ctx, `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_edge' AND dimension=?`, p.scope.organization, p.scope.project, id+":0").Scan(&raw)
+			err := plan.QueryRowContext(ctx, `SELECT `+analyticsSampleColumn("")+` FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_edge' AND dimension=?`, p.scope.organization, p.scope.project, id+":0").Scan(&raw)
 			if err == nil {
 				var sample analyticsResidenceSample
-				if err := decodeStorageJSON(ctx, []byte(raw), &sample); err != nil {
+				if err := decodeAnalyticsSample(ctx, plan, raw, &sample); err != nil {
 					return err
 				}
 				return writeAnalyticsResidenceSample(ctx, plan, p.scope, "residence_hour", id, sample)
@@ -337,11 +344,11 @@ func planAnalyticsResidenceCheckpoint(ctx context.Context, plan *projectionPlan,
 		return false, nil
 	}
 	var raw string
-	if err := plan.QueryRowContext(ctx, `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_hour' AND dimension=? ORDER BY hour DESC LIMIT 1`, p.scope.organization, p.scope.project, id).Scan(&raw); err != nil {
+	if err := plan.QueryRowContext(ctx, `SELECT `+analyticsSampleColumn("")+` FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_hour' AND dimension=? ORDER BY hour DESC LIMIT 1`, p.scope.organization, p.scope.project, id).Scan(&raw); err != nil {
 		return false, err
 	}
 	var sample analyticsResidenceSample
-	if err := decodeStorageJSON(ctx, []byte(raw), &sample); err != nil {
+	if err := decodeAnalyticsSample(ctx, plan, raw, &sample); err != nil {
 		return false, err
 	}
 	if sample.Sequence > p.sequence {

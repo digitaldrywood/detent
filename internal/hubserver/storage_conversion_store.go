@@ -95,7 +95,7 @@ func (s sqliteConversionStorage) Convert(ctx context.Context, cursor storageconv
 		return projections[index].convert(ctx)
 	}
 	family := storageConversionFamilies[slices.IndexFunc(storageConversionFamilies, func(f storageConversionFamily) bool { return f.name == cursor.Family })]
-	if (objectPayloadFamily(family.name) && (s.service.runDetailStore() != nil || s.service.storageArchiveContent() != nil)) || (!objectPayloadFamily(family.name) && s.service.storageArchiveContent() != nil) {
+	if family.name == "analytics" || (objectPayloadFamily(family.name) && (s.service.runDetailStore() != nil || s.service.storageArchiveContent() != nil)) || (!objectPayloadFamily(family.name) && s.service.storageArchiveContent() != nil) {
 		return s.service.convertStorageFamilyTurn(ctx, family, storageFamilyCursor{family: cursor.Family, turn: cursor.Turn, positioned: cursor.Positioned, keys: cursor.Keys, sequence: cursor.Sequence}, s.now)
 	}
 	return nil

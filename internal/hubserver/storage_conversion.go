@@ -33,7 +33,7 @@ type storageConversionFamily struct {
 var storageConversionFamilies = []storageConversionFamily{
 	{name: "runs", update: "UPDATE collaboration_events SET data_json=? WHERE rowid=?", column: "data_json", from: "collaboration_events r", where: "r.payload_version=0 AND r.type IN ('run.started','run.checkpointed','run.observed','run.finished','scheduler.decision')", aggregate: "r.work_item_id"},
 	{name: "attempts", update: "UPDATE native_attempts SET data_json=?,analytics_revision=analytics_revision+1 WHERE rowid=?", column: "data_json", from: "native_attempts r", where: "1", aggregate: "r.work_item_id"},
-	{name: "analytics", update: "UPDATE analytics_hourly_rollups SET data_json=? WHERE rowid=?", column: "data_json", from: "analytics_hourly_rollups r", where: "r.metric='attempt'", aggregate: "''"},
+	{name: "analytics", update: "UPDATE analytics_hourly_rollups SET data_json=? WHERE rowid=?", column: "data_json", from: "analytics_hourly_rollups r", where: "r.data_json<>'{}'", aggregate: "''"},
 	{name: "conversation_events", update: "UPDATE conversation_events SET body_json=? WHERE rowid=?", column: "body_json", from: "conversation_events r JOIN conversations c ON c.id=r.conversation_id", where: "r.content_attachment_id=''", aggregate: "r.conversation_id"},
 	{name: "messages", column: "data_json", from: "conversation_messages r JOIN conversations c ON c.id=r.conversation_id", where: "(r.content_attachment_id='' OR r.actor_principal_id IS NULL)", aggregate: "r.conversation_id"},
 	{name: "versions", update: "UPDATE change_versions SET record_json=? WHERE rowid=?", column: "record_json", from: "change_versions r JOIN change_requests c ON c.id=r.change_id", where: "1", aggregate: "c.work_item_id"},
@@ -707,7 +707,7 @@ func (f storageConversionFamily) payloadPredicate() string {
 	case "attempts", "versions", "evidence":
 		return "r.payload_object_key=''"
 	case "analytics":
-		return "r.payload_object_key='' AND r.metric='attempt' AND r.data_json<>'{}'"
+		return "r.data_json<>'{}'"
 	case "diff_files":
 		return "1"
 	}
@@ -1087,7 +1087,7 @@ func (f storageConversionFamily) keysetFrom() string {
 			"evidence":            "change_evidence_payload_pending",
 			"checkpoints":         "native_attempts_checkpoint_pending",
 			"landings":            "change_landing_receipts_payload_pending",
-			"analytics":           "analytics_attempt_payload_pending_scope",
+			"analytics":           "analytics_payload_pending_scope",
 			"conversation_events": "conversation_events_payload_pending",
 			"messages":            "conversation_messages_payload_pending",
 			"tool_revisions":      "conversation_tool_revisions_payload_pending",

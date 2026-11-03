@@ -13,6 +13,8 @@
     "analytics_rollup_backfill": {"class": "hot_state"},
     "analytics_rollup_dirty": {"class": "hot_state"},
     "analytics_rollup_positions": {"class": "hot_state"},
+    "analytics_sample_causes": {"class": "derived_with_retention", "retention": "cascade with parent analytics rollup; compactAnalyticsSamples"},
+    "analytics_sample_lanes": {"class": "derived_with_retention", "retention": "cascade with parent analytics rollup; compactAnalyticsSamples"},
     "analytics_sample_hours": {"class": "derived_with_retention", "retention": "compactAnalyticsSamples; sample lifetime"},
     "analytics_slot_retention": {"class": "derived_with_retention", "retention": "compactAnalyticsSamples; slot window"},
     "api_tokens": {"class": "hot_state"},
