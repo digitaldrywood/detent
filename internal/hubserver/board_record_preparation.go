@@ -53,20 +53,52 @@ func (p *boardRecordPreparation) card(ctx context.Context, index int) (tracker.N
 }
 func (p *boardRecordPreparation) close() { p.cancel(); p.workers.Wait() }
 
-func (s *Service) prepareBoardRecord(ctx context.Context, scope nativeScope, record viewstore.BoardRecord, now time.Time, currentChange bool) (tracker.NativeBoardCard, error) {
-	card, err := viewstore.NewContent(s.runDetailStore()).BoardRecord(ctx, record)
-	if err != nil {
-		return card, err
-	}
-	if err := s.hydrateWorkItemRelationshipFacts(ctx, scope, &card.Issue); err != nil {
-		return card, err
-	}
-	if currentChange && card.Change != nil {
-		summary, err := s.selectedCurrentChangeSummary(ctx, scope, record.WorkItemID, card.Change.ID, now)
-		if err != nil {
-			return card, err
+func (s *Service) prepareBoardPage(ctx context.Context, scope nativeScope, records []viewstore.BoardRecord, now time.Time, currentChange bool) *boardRecordPreparation {
+	decoded := prepareBoardRecordPage(ctx, records, func(ctx context.Context, row viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
+		return viewstore.NewContent(s.runDetailStore()).BoardRecord(ctx, row)
+	})
+	cards := make([]tracker.NativeBoardCard, len(records))
+	errors := make([]error, len(records))
+	indexes := make(map[tracker.NativeWorkItemID]int, len(records))
+	valid := []tracker.NativeBoardCard{}
+	issues := []*tracker.NativeIssue{}
+	for index, row := range records {
+		cards[index], errors[index] = decoded.card(ctx, index)
+		indexes[row.WorkItemID] = index
+		if errors[index] == nil {
+			valid = append(valid, cards[index])
+			issues = append(issues, &cards[index].Issue)
 		}
-		card.Change.Status = summary.Status
 	}
-	return card, nil
+	decoded.close()
+	relationshipErr := s.hydrateWorkItemRelationshipFactsPage(ctx, scope, issues)
+	var changes boardChangePreparation
+	supported := false
+	if currentChange {
+		changes, supported = s.prepareBoardChangeRows(ctx, scope, valid)
+	}
+	return prepareBoardRecordPage(ctx, records, func(ctx context.Context, row viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
+		index := indexes[row.WorkItemID]
+		card := cards[index]
+		if errors[index] != nil {
+			return card, errors[index]
+		}
+		if relationshipErr != nil {
+			return card, relationshipErr
+		}
+		if currentChange && card.Change != nil {
+			var summary tracker.ChangeSummary
+			var err error
+			if supported {
+				summary, err = changes.summary(ctx, s, scope, row.WorkItemID, card.Change.ID, now)
+			} else {
+				summary, err = s.selectedCurrentChangeSummary(ctx, scope, row.WorkItemID, card.Change.ID, now)
+			}
+			if err != nil {
+				return card, err
+			}
+			card.Change.Status = summary.Status
+		}
+		return card, nil
+	})
 }

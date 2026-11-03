@@ -1,0 +1,206 @@
+package hubserver
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/url"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+type boardChangeCountingRepository struct {
+	tenantstore.Repository
+	reads  atomic.Int64
+	scalar bool
+}
+type boardChangeScalarReader struct{ tenantstore.Reader }
+
+func (r *boardChangeCountingRepository) ReadTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	r.reads.Add(1)
+	return r.Repository.ReadTenant(ctx, org, workload, func(reader tenantstore.Reader) error {
+		if r.scalar {
+			return read(boardChangeScalarReader{reader})
+		}
+		return read(reader)
+	})
+}
+func (r *boardChangeCountingRepository) ReadTenantSnapshot(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	r.reads.Add(1)
+	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, org, workload, read)
+}
+func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	counted := &boardChangeCountingRepository{Repository: repository}
+	details := &memoryRunDetails{}
+	service := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: counted, AccessRepository: counted, SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: details, now: func() time.Time { return now }}}
+	content := eventstore.NewContent(details)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		service.localOrganization = string(org)
+		seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: org, Name: string(org), Slug: string(org)})
+		var project projectstore.Record
+		descriptor := hubTestPolicy()
+		policy, err := content.PrepareProjectPolicy(t.Context(), org, descriptor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		policy.ProjectID = "example"
+		policy.ApprovedBy = "test_hub_admin"
+		policy.ApprovedAt = now
+		envelope, err := service.config.SecretKeys.Seal(bytes.Repeat([]byte{1}, 32), accessstore.SecretAAD(org, "", accessstore.NativeCursorKeyKind))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			var err error
+			project, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "example", Name: "Example", Profile: "native"}, States: nativeFixtureStates()})
+			if err != nil {
+				return err
+			}
+			if err := w.ApproveProjectPolicy(t.Context(), policy, ""); err != nil {
+				return err
+			}
+			return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: envelope.Version, RecordedAt: now})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for index := range 200 {
+			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index))
+			changeID := fmt.Sprintf("change_%03d", index)
+			versionID := fmt.Sprintf("version_%03d", index)
+			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "example", WorkItemID: id, Number: index + 1, Revision: 1}, Title: "Example", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "test_hub_admin"}, Archived: index%2 == 0, CreatedAt: now, UpdatedAt: now}
+			if index == 2 {
+				issue.Actor.PrincipalID = "other"
+			}
+			raw, _ := json.Marshal(issue)
+			collaboration, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "example", WorkItemID: id, RecordID: string(id), Revision: 1}, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			change := tracker.ChangeRequest{ID: changeID, OrganizationID: org, ProjectID: "example", WorkItemID: id, LinkedIssues: []tracker.NativeWorkItemID{id}, Title: "Example", Revision: 1, CurrentVersion: versionID, CreatedAt: now, UpdatedAt: now}
+			raw, _ = json.Marshal(change)
+			changeRow, err := content.PrepareChange(t.Context(), org, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := changeTestInput()
+			input.PolicyID = descriptor.ID
+			version := tracker.ChangeVersion{ID: versionID, ChangeID: changeID, Number: 1, ChangeVersionInput: input, Policy: descriptor, Actor: issue.Actor, CreatedAt: now}
+			raw, _ = json.Marshal(version)
+			versionRow, err := content.PrepareVersion(t.Context(), org, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			card := tracker.NativeBoardCard{Issue: issue, Change: &tracker.NativeBoardChange{ID: changeID, Title: "Example"}}
+			payload, err := viewstore.NewContent(details).PrepareBoard(t.Context(), card)
+			if err != nil {
+				t.Fatal(err)
+			}
+			board := viewstore.BoardRecord{OrganizationID: org, ProjectID: "example", WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("example#%03d", index)}, Archived: issue.Archived, ActorPrincipalID: issue.Actor.PrincipalID, CreatedAt: now, UpdatedAt: now, Payload: payload}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "example", NativeID: id, Number: int64(index + 1), Title: "Example", Archived: issue.Archived, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State}); err != nil {
+					return err
+				}
+				if _, err := w.CreateCollaborationVersion(t.Context(), collaboration); err != nil {
+					return err
+				}
+				if _, err := w.CreateChange(t.Context(), changeRow); err != nil {
+					return err
+				}
+				if _, err := w.CreateVersion(t.Context(), versionRow); err != nil {
+					return err
+				}
+				if err := w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: "example", WorkItemID: id, ChangeID: changeID, CreatedAt: now}); err != nil {
+					return err
+				}
+				return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: "example", WorkItemID: id, ExpectedRevision: 1, ExpectedProjectRevision: project.Core.ContentSettingsRevision, Current: &board})
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		newer := tracker.ChangeRequest{ID: "change_newer", OrganizationID: org, ProjectID: "example", WorkItemID: "wi_000", LinkedIssues: []tracker.NativeWorkItemID{"wi_000"}, Title: "Newer draft", Revision: 1, CreatedAt: now.Add(time.Minute), UpdatedAt: now.Add(time.Minute)}
+		raw, _ := json.Marshal(newer)
+		newerRow, err := content.PrepareChange(t.Context(), org, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.CreateChange(t.Context(), newerRow); err != nil {
+				return err
+			}
+			return w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: "example", WorkItemID: "wi_000", ChangeID: newer.ID, CreatedAt: newer.CreatedAt})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: "example", WorkItemID: "wi_002", ChangeID: "change_001", CreatedAt: now})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		scope := nativeScope{organization: org, project: "example", credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+		counted.scalar = true
+		counted.reads.Store(0)
+		before, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "archived": {"all"}, "include": {"board"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		scalarReads := counted.reads.Load()
+		counted.scalar = false
+		counted.reads.Store(0)
+		after, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "archived": {"all"}, "include": {"board"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		batchReads := counted.reads.Load()
+		if len(before.Cards) != 200 || len(after.Cards) != 200 {
+			t.Fatalf("page sizes before%d after%d", len(before.Cards), len(after.Cards))
+		}
+		archived := 0
+		for index, card := range after.Cards {
+			if card.Issue.OrganizationID != org || card.Issue.WorkItemID != before.Cards[index].Issue.WorkItemID || card.Change == nil || card.Change.Status != before.Cards[index].Change.Status {
+				t.Fatalf("changed scoped card%d", index)
+			}
+			if card.Issue.Archived {
+				archived++
+			}
+		}
+		if archived != 100 || scalarReads < 800 || batchReads > 10 {
+			t.Fatalf("archived%d scalarUOW%d batchUOW%d", archived, scalarReads, batchReads)
+		}
+		t.Logf("tenant=%s cards=200 scalar_uows=%d batch_uows=%d", org, scalarReads, batchReads)
+		reporter := scope
+		reporter.credential.HostedRole = "reporter"
+		reporterPage, err := service.readBoardRecords(t.Context(), reporter, url.Values{"limit": {"200"}, "archived": {"all"}, "include": {"board"}})
+		if err != nil || len(reporterPage.Cards) != 199 {
+			t.Fatalf("reporter cards%d error%v", len(reporterPage.Cards), err)
+		}
+		found := false
+		for _, card := range reporterPage.Cards {
+			if card.Issue.WorkItemID == "wi_002" {
+				t.Fatal("reporter received another principal issue")
+			}
+			if card.Issue.WorkItemID == "wi_001" {
+				found = true
+				if card.Change == nil || card.Change.ID != "change_001" {
+					t.Fatal("hidden secondary link suppressed the visible primary change")
+				}
+			}
+		}
+		if !found {
+			t.Fatal("reporter lost visible primary issue")
+		}
+
+	}
+}
