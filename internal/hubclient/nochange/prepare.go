@@ -33,5 +33,9 @@ func Prepare(diff tracker.AttemptDiffRequest, detail tracker.ChangeDetail, state
 			return nil
 		}
 	}
-	return &runner.NativeChange{BaseSHA: diff.BaseSHA, HeadSHA: diff.BaseSHA, NoChange: &tracker.NativeNoChangeCompletion{ReportedSHA: reported, VerifiedSHA: diff.BaseSHA, Repository: state.Repository, Evidence: evidence, PolicyID: state.PolicyID, Validation: state.Validation}}
+	completion := &tracker.NativeNoChangeCompletion{ReportedSHA: reported, VerifiedSHA: diff.BaseSHA, Repository: state.Repository, Evidence: evidence, PolicyID: state.PolicyID, Validation: state.Validation}
+	if completion.VersionID() == "" {
+		return nil
+	}
+	return &runner.NativeChange{BaseSHA: diff.BaseSHA, HeadSHA: diff.BaseSHA, NoChange: completion}
 }
