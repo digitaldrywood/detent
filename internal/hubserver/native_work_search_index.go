@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -27,6 +28,19 @@ const nativeSearchLegacyPruneBatch = 32
 
 var registerNativeSearchText = sync.OnceValue(func() error {
 	if err := registerNativeSearchTokenizer(); err != nil {
+		return err
+	}
+	if err := sqlite.RegisterDeterministicScalarFunction("native_machine_identity", 2, func(_ *sqlite.FunctionContext, values []driver.Value) (driver.Value, error) {
+		body, _ := values[0].(string)
+		mode, _ := values[1].(string)
+		if mode == "origin" {
+			if origin, ok := issueorigin.Parse(body); ok {
+				return sha256Hex(origin.Fingerprint), nil
+			}
+			return "", nil
+		}
+		return issueorigin.DefectFingerprint(body), nil
+	}); err != nil {
 		return err
 	}
 	return sqlite.RegisterDeterministicScalarFunction("native_search_text", 2, func(_ *sqlite.FunctionContext, values []driver.Value) (driver.Value, error) {
