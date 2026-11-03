@@ -52,6 +52,30 @@ func (s *session) ProjectRecord(ctx context.Context, id tracker.ProjectID) (proj
 	return result, nil
 }
 
+func (s *session) GitHubRepositoryBindings(ctx context.Context, after tracker.ProjectID, limit int) ([]projectstore.GitHubRepositoryBinding, error) {
+	if err := checkPage(limit); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT p.id,ps.repository,ps.checkout_repository
+FROM projects p
+JOIN project_settings ps ON ps.organization_id=p.organization_id AND ps.project_id=p.id
+WHERE p.organization_id=$1 AND p.id>$2 AND p.deleted_at IS NULL AND p.profile='native'
+ORDER BY p.id LIMIT $3`, s.organization, after, limit+1)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	defer rows.Close()
+	result := make([]projectstore.GitHubRepositoryBinding, 0, limit+1)
+	for rows.Next() {
+		var row projectstore.GitHubRepositoryBinding
+		if err := rows.Scan(&row.ProjectID, &row.Repository, &row.CheckoutRepository); err != nil {
+			return nil, mapError(ctx, err)
+		}
+		result = append(result, row)
+	}
+	return result, mapError(ctx, rows.Err())
+}
+
 func (s *session) ProjectSlugOwner(ctx context.Context, slug string) (tracker.ProjectID, error) {
 	id, err := s.queries.ResolveProjectSlug(ctx, pgquery.ResolveProjectSlugParams{OrganizationID: s.organization, Slug: slug})
 	return id, mapError(ctx, err)

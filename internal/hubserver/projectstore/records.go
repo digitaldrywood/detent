@@ -54,6 +54,16 @@ type Reader interface {
 	ProjectSlugOwner(context.Context, string) (tracker.ProjectID, error)
 }
 
+type GitHubRepositoryBinding struct {
+	ProjectID          tracker.ProjectID
+	Repository         string
+	CheckoutRepository string
+}
+
+type GitHubRepositoryBindingsPageReader interface {
+	GitHubRepositoryBindings(context.Context, tracker.ProjectID, int) ([]GitHubRepositoryBinding, error)
+}
+
 type Writer interface {
 	Reader
 	InitializeProjectAccess(context.Context, tracker.ProjectID, string) error
