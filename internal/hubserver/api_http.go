@@ -15,6 +15,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent"
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/staticasset"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -117,6 +118,9 @@ func (s *Service) registerPostgresRoutes(e *echo.Echo) {
 	s.registerCostUsageRoutes(e)
 	s.registerConversationRoutes(e)
 	if s.config.Hosted != nil && s.config.Hosted.SharedEntry != nil {
+		s.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{s}, chat.WithClock(s.config.now))
+		e.POST("/internal/v1/keys/catalog", s.entryKeyCatalog, s.operatorAuthority)
+		e.POST("/internal/v1/keys/call", s.entryKeyCall, s.operatorAuthority)
 		e.POST("/internal/v1/health", s.hostedSharedHealth)
 		e.POST("/internal/v1/owner/bootstrap", s.bootstrapHostedSharedOwner)
 	}

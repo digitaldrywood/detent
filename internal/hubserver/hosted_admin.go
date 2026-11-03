@@ -12,6 +12,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -122,6 +123,63 @@ func (s *Service) requireHostedRunnerProjects(ctx context.Context, query nativeQ
 	}
 	if projects != nil && len(projects) == 0 {
 		return fmt.Errorf("%w: An unassigned runner needs an owner or admin", operatortool.ErrAccessDenied)
+	}
+	if s.config.TenantRepository != nil {
+		return s.config.TenantRepository.ReadTenant(ctx, s.accessOrganization(), corestore.Serving, func(reader tenantstore.Reader) error {
+			total := 0
+			check := func(project corestore.Project) error {
+				if project.DeletedAt != nil {
+					return corestore.ErrNotFound
+				}
+				grant, err := reader.AccessProjectGrant(ctx, credential.Hosted.Subject, project.ID)
+				if err != nil {
+					return err
+				}
+				if !grant.ManageRunner {
+					return refusal
+				}
+				total++
+				return nil
+			}
+			if projects != nil {
+				if len(projects) > corestore.MaxPageSize {
+					return refusal
+				}
+				seen := make(map[tracker.ProjectID]bool, len(projects))
+				for _, id := range projects {
+					if seen[id] {
+						return refusal
+					}
+					seen[id] = true
+					project, err := reader.Project(ctx, id)
+					if err != nil {
+						return err
+					}
+					if err := check(project); err != nil {
+						return err
+					}
+				}
+			} else {
+				page, err := reader.Projects(ctx, "", corestore.MaxPageSize)
+				if err != nil {
+					return err
+				}
+				if len(page) >= corestore.MaxPageSize {
+					return refusal
+				}
+				for _, project := range page {
+					if project.DeletedAt == nil {
+						if err := check(project); err != nil {
+							return err
+						}
+					}
+				}
+			}
+			if total == 0 {
+				return refusal
+			}
+			return nil
+		})
 	}
 	raw, err := sqlList(projects)
 	if err != nil {
