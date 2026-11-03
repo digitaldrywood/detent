@@ -29,6 +29,7 @@ func (s *Service) registerPostgresAppRoutes(e *echo.Echo) {
 		s.registerWorkViewRoutes(e)
 		s.registerOrganizationSettingsRecordRoutes(e)
 		e.GET("/projects/:project/events", s.hostedEvents)
+		e.GET(hostedOrganizationBase+"/activity", s.hostedActivity, s.operatorAuthority)
 		e.GET(hostedOrganizationBase+"/fleet", s.hostedFleet, s.hostedSessionOnly)
 		e.GET(hostedOrganizationBase+"/diagnostics", s.hostedDiagnostics, s.usageSessionOnly, s.operatorAuthority)
 		e.GET(hostedOrganizationBase+"/diagnostics/requests", s.hostedRequestMetrics, s.operatorAuthority)
