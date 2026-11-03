@@ -95,7 +95,7 @@ func compactAnalyticsSample(ctx context.Context, tx *sql.Tx, through int64, afte
 	var rowid, hour int64
 	var metric, dimension, raw string
 	var value float64
-	err := tx.QueryRowContext(ctx, `SELECT rowid,organization_id,project_id,hour,metric,dimension,value,data_json FROM analytics_hourly_rollups r
+	err := tx.QueryRowContext(ctx, `SELECT rowid,organization_id,project_id,hour,metric,dimension,value,`+analyticsSampleColumn("r")+` FROM analytics_hourly_rollups r
 WHERE (hour,metric,dimension,rowid)>(?,?,?,?) AND projection_version=1 AND hour<? AND (metric IN ('skip_sample','slots','capacity_claim') OR (metric='capacity_wait' AND sample_ns<?*1000000000) OR
 (metric='lease' AND unixepoch(coalesce(released_at,expires_at))<?))
 ORDER BY hour,metric,dimension,rowid LIMIT 1`, after.hour, after.metric, after.dimension, after.rowid, through, through, through).Scan(&rowid, &scope.organization, &scope.project, &hour, &metric, &dimension, &value, &raw)
@@ -105,7 +105,7 @@ ORDER BY hour,metric,dimension,rowid LIMIT 1`, after.hour, after.metric, after.d
 		case "skip_sample":
 			var exists bool
 			var sample analyticsSkipSample
-			if err := json.Unmarshal([]byte(raw), &sample); err != nil {
+			if err := decodeAnalyticsSample(ctx, tx, raw, &sample); err != nil {
 				return false, &analyticsSampleDecodeError{rowid: rowid}
 			}
 			key := analyticsDimension(sample.Source, sample.Reason)
@@ -124,7 +124,7 @@ ORDER BY hour,metric,dimension,rowid LIMIT 1`, after.hour, after.metric, after.d
 			}
 		case "capacity_claim", "capacity_wait":
 			var sample analyticsCapacitySample
-			if err := json.Unmarshal([]byte(raw), &sample); err != nil {
+			if err := decodeAnalyticsSample(ctx, tx, raw, &sample); err != nil {
 				return false, &analyticsSampleDecodeError{rowid: rowid}
 			}
 			if metric == "capacity_wait" {
@@ -185,7 +185,7 @@ WHERE r.metric='residence_hour' AND r.hour<? GROUP BY r.organization_id,r.projec
 	for i, at := range []time.Time{from, to} {
 		var raw string
 		var rowid int64
-		err := tx.QueryRowContext(ctx, `SELECT rowid,data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_hour' AND dimension=? AND hour<? ORDER BY hour DESC LIMIT 1`, scope.organization, scope.project, id, at.Unix()).Scan(&rowid, &raw)
+		err := tx.QueryRowContext(ctx, `SELECT rowid,`+analyticsSampleColumn("")+` FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_hour' AND dimension=? AND hour<? ORDER BY hour DESC LIMIT 1`, scope.organization, scope.project, id, at.Unix()).Scan(&rowid, &raw)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
@@ -193,7 +193,7 @@ WHERE r.metric='residence_hour' AND r.hour<? GROUP BY r.organization_id,r.projec
 			return false, err
 		}
 		var sample analyticsResidenceSample
-		if err := json.Unmarshal([]byte(raw), &sample); err != nil {
+		if err := decodeAnalyticsSample(ctx, tx, raw, &sample); err != nil {
 			after.residenceHour = hour
 			after.residenceOrganization, after.residenceProject, after.residenceID = string(scope.organization), string(scope.project), id
 			return false, &analyticsSampleDecodeError{rowid: rowid}

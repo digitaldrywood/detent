@@ -17,7 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const analyticsPayloadPendingSQL = "SELECT EXISTS(SELECT 1 FROM analytics_hourly_rollups INDEXED BY analytics_attempt_payload_pending_scope WHERE organization_id=? AND project_id=? AND metric='attempt' AND payload_object_key='' AND data_json<>'{}')"
+const analyticsPayloadPendingSQL = "SELECT EXISTS(SELECT 1 FROM analytics_hourly_rollups INDEXED BY analytics_payload_pending_scope WHERE organization_id=? AND project_id=? AND data_json<>'{}')"
 
 type objectPayloadConversionPosition struct {
 	row       int64
@@ -39,7 +39,7 @@ func (s *Service) convertObjectPayloadFamily(ctx context.Context, family storage
 	case "landings":
 		predicate = family.where
 	case "analytics":
-		predicate += " AND r.metric='attempt' AND r.data_json<>'{}'"
+		predicate = family.payloadPredicate()
 	case "checkpoints":
 		predicate = family.where
 	case "sources":
@@ -272,6 +272,18 @@ VALUES(?,?,?,?,2,?,?,?,?,?,?) ON CONFLICT(organization_id,project_id,family,aggr
 }
 
 func (s *Service) convertObjectPayloadRow(ctx context.Context, family storageConversionFamily, c objectPayloadConversionPosition, now time.Time) error {
+	if family.name == "analytics" {
+		var metric string
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT metric FROM analytics_hourly_rollups WHERE rowid=?", c.row).Scan(&metric); err != nil {
+			return err
+		}
+		if metric != "attempt" {
+			return s.convertAnalyticsSample(ctx, c.row, now)
+		}
+		if s.runDetailStore() == nil && s.storageArchiveContent() == nil {
+			return nil
+		}
+	}
 	raw, err := readObjectConversionPayload(ctx, s.database.reader, family, c.row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
