@@ -1,12 +1,13 @@
 import { redirect } from "@tanstack/react-router";
 import { lastAccountBootstrap } from "../../runtime/bootstrap.ts";
+import { workApiErrorForStatus } from "./lib/workHttp.ts";
 
 export async function resolveReadable(projectSlug: string, number?: string): Promise<{ resolvedProjectId: string; resolvedWorkItemId: string }> {
   const account = lastAccountBootstrap();
   if (account === null) throw new Error("Account unavailable");
   const path = `${account.api_base}/readable/${encodeURIComponent(projectSlug)}${number === undefined ? "" : `/issues/${encodeURIComponent(number)}`}`;
   const response = await fetch(path, { credentials: "same-origin", headers: { Accept: "application/json" } });
-  if (!response.ok) throw new Error("Issue or project not found");
+  if (!response.ok) throw workApiErrorForStatus(response.status, "Issue or project not found");
   const data = await response.json() as { project_id: string; work_item_id: string };
   return { resolvedProjectId: data.project_id, resolvedWorkItemId: data.work_item_id };
 }
@@ -27,7 +28,7 @@ export async function redirectLegacyIssue(workItemId: string, search: Record<str
   const account = lastAccountBootstrap();
   if (!account?.organization.slug) return;
   const response = await fetch(`${account.api_base}/work-items/${encodeURIComponent(workItemId)}`, { credentials: "same-origin", headers: { Accept: "application/json" } });
-  if (!response.ok) throw new Error("Issue not found");
+  if (!response.ok) throw workApiErrorForStatus(response.status, "Issue not found");
   const issue = await response.json() as { project_id: string; number: number; web_url: string };
   const canonicalSearch = { ...search };
   delete canonicalSearch.project;

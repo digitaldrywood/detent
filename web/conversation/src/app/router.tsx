@@ -15,10 +15,15 @@ import {
   Outlet,
   redirect,
   useRouterState,
+  useRouter,
+  type ErrorComponentProps,
   type AnyRoute,
   type RouterHistory,
 } from "@tanstack/react-router";
 import type { ReactElement } from "react";
+
+import { Button } from "../components/ui/button.tsx";
+import { WorkApiError } from "./work/lib/workHttp.ts";
 
 import { Shell } from "./App.tsx";
 import { accountRoutes } from "./routes.account.tsx";
@@ -167,7 +172,35 @@ const workChangesRoute = createRoute({
   component: ChangesPage,
 });
 
+function WorkRoutePending(): ReactElement {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-muted-foreground text-sm">
+      <p>Opening…</p>
+    </div>
+  );
+}
+
+function WorkRouteError({ error }: ErrorComponentProps): ReactElement {
+  const router = useRouter();
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-muted-foreground text-sm">
+      <p>{error instanceof WorkApiError ? error.message : "The hub could not complete the request."}</p>
+      <Button size="sm" variant="outline" onClick={() => void router.invalidate()}>
+        Try again
+      </Button>
+    </div>
+  );
+}
+
+const workResolverOptions = {
+  errorComponent: WorkRouteError,
+  pendingComponent: WorkRoutePending,
+  pendingMs: 0,
+  pendingMinMs: 0,
+};
+
 const workProjectRoute = createRoute({
+  ...workResolverOptions,
   getParentRoute: () => rootRoute,
   path: "/work/p/$projectId",
   component: ProjectWorkBoard,
@@ -175,6 +208,7 @@ const workProjectRoute = createRoute({
 });
 
 const workItemRoute = createRoute({
+  ...workResolverOptions,
   getParentRoute: () => rootRoute,
   path: "/work/i/$workItemId",
   component: IssuePage,
@@ -184,6 +218,7 @@ const workItemRoute = createRoute({
 // One Change Request, under the issue it belongs to: the hub addresses a
 // change through its primary work item, so the URL does too.
 const workChangeRoute = createRoute({
+  ...workResolverOptions,
   getParentRoute: () => rootRoute,
   path: "/work/i/$workItemId/changes/$changeId",
   component: ChangeRequestPage,
@@ -208,9 +243,9 @@ const supportOrganizationRoute = createRoute({
   component: SupportRoute,
 });
 
-const readableProjectRoute = createRoute({ getParentRoute: () => rootRoute, path: "/$projectSlug", component: ReadableProjectBoard, beforeLoad: ({ params }) => resolveReadable(params.projectSlug) });
-const readableIssueRoute = createRoute({ getParentRoute: () => rootRoute, path: "/$projectSlug/issues/$number", component: IssuePage, beforeLoad: ({ params }) => resolveReadable(params.projectSlug, params.number) });
-const readableChangeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/$projectSlug/issues/$number/changes/$changeId", component: ChangeRequestPage, beforeLoad: ({ params }) => resolveReadable(params.projectSlug, params.number) });
+const readableProjectRoute = createRoute({ ...workResolverOptions, getParentRoute: () => rootRoute, path: "/$projectSlug", component: ReadableProjectBoard, beforeLoad: ({ params }) => resolveReadable(params.projectSlug) });
+const readableIssueRoute = createRoute({ ...workResolverOptions, getParentRoute: () => rootRoute, path: "/$projectSlug/issues/$number", component: IssuePage, beforeLoad: ({ params }) => resolveReadable(params.projectSlug, params.number) });
+const readableChangeRoute = createRoute({ ...workResolverOptions, getParentRoute: () => rootRoute, path: "/$projectSlug/issues/$number/changes/$changeId", component: ChangeRequestPage, beforeLoad: ({ params }) => resolveReadable(params.projectSlug, params.number) });
 
 const routeTree = rootRoute.addChildren([
   ...reporterRoutes,

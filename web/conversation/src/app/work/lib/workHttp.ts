@@ -100,6 +100,14 @@ function messageForStatus(status: number): string {
   return `The request failed (${status}).`;
 }
 
+export function workApiErrorForStatus(status: number, notFoundMessage?: string): WorkApiError {
+  return new WorkApiError({
+    status,
+    code: status === 404 ? "not_found" : "invalid",
+    message: status === 404 && notFoundMessage !== undefined ? notFoundMessage : messageForStatus(status),
+  });
+}
+
 const decodeError = Schema.decodeUnknownSync(NativeError);
 
 function errorFromBody(status: number, body: unknown): WorkApiError {
@@ -120,11 +128,7 @@ function errorFromBody(status: number, body: unknown): WorkApiError {
   } catch {
     // Echo's own 404 and 405 are `{"message": "Not Found"}` with no code, and
     // the hosted event stream answers with no body at all.
-    return new WorkApiError({
-      status,
-      code: status === 404 ? "not_found" : "invalid",
-      message: messageForStatus(status),
-    });
+    return workApiErrorForStatus(status);
   }
 }
 
