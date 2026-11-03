@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -213,18 +214,7 @@ type LinkedSource struct {
 	ExpectedSnapshotSHA256 *string
 }
 
-type Receipt struct {
-	OrganizationID      tracker.OrganizationID
-	ActorID             string
-	Operation           string
-	CommandKey          string
-	RequestHash         string
-	CreatedAt           time.Time
-	PayloadObjectKey    string
-	PayloadSHA256       string
-	PayloadBytes        int64
-	PayloadContentBytes int64
-}
+type Receipt = receiptstore.Record
 
 type Reader interface {
 	ReviewPolicy(context.Context, tracker.ProjectID) (ReviewPolicy, error)

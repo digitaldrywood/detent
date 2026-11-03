@@ -320,7 +320,11 @@ func TestLatestRunEventUsesTypedAttemptIndex(t *testing.T) {
 }
 
 func TestEventChangeReceipts(t *testing.T) {
-	r, _ := repositoryFor(t, template.Database(t), smallPool())
+	admin := template.Database(t)
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, "org_first", historyAt()); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := repositoryFor(t, admin, smallPool())
 	seedRepository(t, r, "org_first")
 	f := seedHistory(t, r, "org_first", "first")
 	for _, tc := range []struct {

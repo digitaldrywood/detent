@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -117,37 +118,7 @@ func writeAttemptUsageFacts(ctx context.Context, tx *sql.Tx, id string, data tra
 }
 
 func commandResponseFacts(raw string) (bool, string, error) {
-	if raw == hostedPendingCommand {
-		return true, "", nil
-	}
-	var response map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &response); err != nil {
-		if !json.Valid([]byte(raw)) {
-			return false, "", err
-		}
-		return false, "", nil
-	}
-	var pending bool
-	if value := response["pending"]; len(value) > 0 {
-		if err := json.Unmarshal(value, &pending); err != nil {
-			var number float64
-			pending = json.Unmarshal(value, &number) != nil || number != 0
-		}
-	}
-	var request struct {
-		ID string `json:"id"`
-	}
-	if value := response["request"]; len(value) > 0 {
-		var fields map[string]json.RawMessage
-		if json.Unmarshal(value, &fields) == nil {
-			if value := fields["id"]; len(value) > 0 {
-				if err := json.Unmarshal(value, &request.ID); err != nil {
-					request.ID = ""
-				}
-			}
-		}
-	}
-	return pending, request.ID, nil
+	return receiptstore.ResponseFacts([]byte(raw))
 }
 
 func resolveMachineSpriteFacts(facts machineSpriteFacts, legacy sql.NullString) (machineSpriteFacts, error) {

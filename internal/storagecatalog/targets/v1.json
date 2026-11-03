@@ -95,9 +95,31 @@
     "internal/hubserver/postgres/migrations/20261103162920_current_billing_population.sql",
     "internal/hubserver/postgres/migrations/20261103164805_account_preferences.sql",
     "internal/hubserver/postgres/migrations/20261103172438_activity_history_lookup.sql",
-    "internal/hubserver/postgres/migrations/20261103173525_runner_project_diagnostic_details.sql"
+    "internal/hubserver/postgres/migrations/20261103173525_runner_project_diagnostic_details.sql",
+    "internal/hubserver/postgres/migrations/20261103193325_hosted_operation_receipts.sql"
   ],
   "tables": {
+    "public.native_command_states": {
+      "columns": {
+        "organization_id": "text",
+        "actor_id": "text",
+        "operation": "text",
+        "command_key": "text",
+        "request_hash": "text",
+        "response_request_id": "text",
+        "response_reconciliation_hash": "text",
+        "source_snapshot_id": "text",
+        "source_record_hash": "text",
+        "created_at": "timestamp with time zone",
+        "response_claimed": "boolean",
+        "response_pending": "boolean",
+        "response_expired": "boolean",
+        "response_replay_until_ns": "bigint"
+      },
+      "contract": "Preserve command claim, replay, expiry and pinned source state beside immutable archived completion receipts.",
+      "family": "core",
+      "organization": "organization-owned"
+    },
     "public.issue_dependency_reasons": {
       "columns": {
         "organization_id": "text",

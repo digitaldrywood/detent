@@ -610,26 +610,13 @@ func (s *session) LinkIssue(ctx context.Context, record eventstore.Link) error {
 }
 
 func (s *session) Receipt(ctx context.Context, actor, operation, key string) (eventstore.Receipt, error) {
-	row, err := s.queries.RecordGetReceipt(ctx, pgquery.RecordGetReceiptParams{OrganizationID: s.organization, ActorID: actor, Operation: operation, CommandKey: key})
-	return eventstore.Receipt(row), mapError(ctx, err)
+	return s.receiptRecord(ctx, actor, operation, key)
 }
 
 func (s *session) PutReceipt(ctx context.Context, record eventstore.Receipt) (eventstore.Receipt, error) {
-	if err := s.checkOrganization(record.OrganizationID); err != nil {
-		return eventstore.Receipt{}, err
+	row, inserted, err := s.insertReceipt(ctx, record)
+	if err == nil && !inserted && (row.ResponseClaimed || row.ResponseExpired || row.PayloadSHA256 != record.PayloadSHA256) {
+		return eventstore.Receipt{}, corestore.ErrRevisionConflict
 	}
-	if record.ActorID == "" || record.Operation == "" || record.CommandKey == "" || !artifact.ValidHash(record.RequestHash, 64) {
-		return eventstore.Receipt{}, eventstore.ErrInvalidRecord
-	}
-	if err := validRecordPayload(record.OrganizationID, record.PayloadObjectKey, record.PayloadSHA256, record.PayloadBytes, record.PayloadContentBytes); err != nil {
-		return eventstore.Receipt{}, err
-	}
-	row, err := s.queries.RecordInsertReceipt(ctx, pgquery.RecordInsertReceiptParams{OrganizationID: s.organization, ActorID: record.ActorID, Operation: record.Operation, CommandKey: record.CommandKey, RequestHash: record.RequestHash, CreatedAt: recordTime(record.CreatedAt), PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes})
-	if errors.Is(err, sql.ErrNoRows) {
-		row, err = s.queries.RecordGetReceipt(ctx, pgquery.RecordGetReceiptParams{OrganizationID: s.organization, ActorID: record.ActorID, Operation: record.Operation, CommandKey: record.CommandKey})
-		if err == nil && row.RequestHash != record.RequestHash {
-			return eventstore.Receipt{}, corestore.ErrRevisionConflict
-		}
-	}
-	return eventstore.Receipt(row), mapError(ctx, err)
+	return row, err
 }

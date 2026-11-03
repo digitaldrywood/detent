@@ -1,4 +1,9 @@
 {
+  "public/native_command_states": {
+    "ownership": "organization-owned",
+    "scope": "native_command_states.organization_id; actor, operation and command key fence current replay state",
+    "inline_payloads": []
+  },
   "public/issue_dependency_reasons": {
     "ownership": "organization-owned",
     "scope": "issue_dependency_reasons.organization_id; project_id and work_item_id scope current summaries",
