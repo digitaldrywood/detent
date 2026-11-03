@@ -87,6 +87,10 @@ func (r *activityRecorder) observe(update AgentUpdate, at time.Time, head string
 			return
 		}
 		delta = update.Delta
+	case AgentUpdateMessageDelta:
+		if update.Delta == "" {
+			return
+		}
 	case AgentUpdateToolCompleted, AgentUpdateTurnStarted, AgentUpdateTurnCompleted:
 		r.mu.Lock()
 		if update.Type == AgentUpdateToolCompleted {
@@ -114,10 +118,6 @@ func (r *activityRecorder) observe(update AgentUpdate, at time.Time, head string
 				delta = "validation_lock"
 			case "validating":
 				delta = "validation_acquired"
-			default:
-				if len(checks) == 0 {
-					return
-				}
 			}
 		}
 	default:
@@ -221,6 +221,7 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 		event := store.WorkflowPhaseEvent{ProjectID: r.projectID, SessionID: sessionID, IssueID: request.Issue.ID, Identifier: request.Issue.Identifier, IssueURL: request.Issue.URL, PRNumber: pullRequestNumber(request.Issue), PhaseType: workflowmetrics.PhaseTypeAgentActivity, PhaseName: "instruction_activity", StartedAt: started}
 		var id int64
 		var savedProfile [32]byte
+		observedAt, savedAt := started, time.Time{}
 		dirty := true
 		persist := func() {
 			dropped := recorder.dropped.Swap(0)
@@ -237,7 +238,7 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 				return
 			}
 			signature := sha256.Sum256(encoded)
-			if signature == savedProfile {
+			if signature == savedProfile && !observedAt.After(savedAt) {
 				dirty = false
 				return
 			}
@@ -253,7 +254,7 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 				if recorder.cacheWait != "" {
 					phase = "waiting_cache_" + recorder.cacheWait
 				}
-				err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: request.WorkAttemptID, Generation: request.Generation, Phase: phase, HeartbeatAt: profile.AsOf, Activity: &profile})
+				err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: request.WorkAttemptID, Generation: request.Generation, Phase: phase, HeartbeatAt: observedAt, Activity: &profile})
 				recorder.runtimeMu.Unlock()
 				if err != nil {
 					r.logger.Warn("native activity observation unavailable", "session_id", sessionID, "error", err)
@@ -266,6 +267,7 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 			}
 			id = next
 			savedProfile = signature
+			savedAt = observedAt
 			dirty = false
 		}
 		persist()
@@ -288,12 +290,16 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 							profile.Status = "ended_without_terminal_event"
 						}
 						profile.FinishedAt = r.now()
+						observedAt = profile.FinishedAt
 						for _, index := range open {
 							profile.Spans[index].Outcome = "unobserved"
 						}
 						profile.SummarizeThrough(profile.FinishedAt)
 						persist()
 						return
+					}
+					if observation.at.After(observedAt) {
+						observedAt = observation.at
 					}
 					for _, check := range observation.update.Checks {
 						result := gate.CommandResult{Command: check.Command, HeadSHA: check.HeadSHA, TreeSHA: check.TreeSHA, ExitCode: check.ExitCode, StartedAt: check.StartedAt, FinishedAt: check.FinishedAt}
@@ -309,6 +315,9 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 					snapshotReads := observation.update.Type == AgentUpdateToolStarted && len(profile.Spans) < activitySpanLimit
 					if observation.update.Type == AgentUpdateToolCompleted {
 						u := observation.update
+						if u.Type == AgentUpdateToolOutput && u.Tool != "tool_result" && u.Delta == "" {
+							return
+						}
 						key := activityHash(u.ThreadID + "\x00" + u.TurnID + "\x00" + u.ItemID)
 						if index, ok := open[key]; ok && len(profile.Spans[index].Actions) == 0 {
 							snapshotReads = true
@@ -364,6 +373,9 @@ func loadActivityInstructions(workspace string, workflow config.Workflow, at tim
 
 func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map[string]int, repeats map[string]int, sources []activityInstruction, observation activityObservation) {
 	u := observation.update
+	if u.Type == AgentUpdateToolOutput && u.Tool != "tool_result" && u.Delta == "" {
+		return
+	}
 	if u.ThreadID != "" {
 		profile.ProviderThreadRef = activityHash(u.ThreadID)
 	}
@@ -371,7 +383,7 @@ func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map
 		profile.ProviderSessionRef = activityHash(u.ProviderSessionID)
 	}
 	parent := activityHash(u.ThreadID + "\x00" + u.TurnID)
-	if u.Type == AgentUpdateTurnStarted || u.Type == AgentUpdateTurnCompleted {
+	if u.Type == AgentUpdateMessageDelta || u.Type == AgentUpdateTurnStarted || u.Type == AgentUpdateTurnCompleted {
 		if u.Type == AgentUpdateTurnCompleted {
 			profile.Status = activityOutcome(u.Status, nil)
 		}
@@ -474,6 +486,9 @@ func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map
 // metadata must not count the same actions again or invent new timed spans.
 func applyActivityActions(span *workflowmetrics.ActivitySpan, repeats map[string]int, sources []activityInstruction, observation activityObservation) {
 	u := observation.update
+	if u.Type == AgentUpdateToolOutput && u.Tool != "tool_result" && u.Delta == "" {
+		return
+	}
 	if len(u.NativeActions) > 0 || u.ActionsDropped > 0 {
 		span.Sources = nil
 		span.Attribution = "unattributed"

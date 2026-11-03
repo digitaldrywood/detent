@@ -23,6 +23,7 @@ import (
 )
 
 type nativeSecurityAuditTestExecution struct {
+	stages []string
 	attachmentValidatorExecution
 	audit          *tracker.SecurityAuditReview
 	versions       int
@@ -48,6 +49,11 @@ func (b *nativeSecurityAuditIsolationBackend) RunTurn(ctx context.Context, req A
 	}
 	b.policy = policy
 	return b.fakeCodexClient.RunTurn(ctx, req, update)
+}
+
+func (e *nativeSecurityAuditTestExecution) ObserveRuntime(_ context.Context, observation tracker.NativeRuntimeObservation) error {
+	e.stages = append(e.stages, observation.Phase)
+	return nil
 }
 
 func (e *nativeSecurityAuditTestExecution) SecurityAuditVersion(ctx context.Context) (NativeValidation, error) {
@@ -179,7 +185,7 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 			if localProjectID == "" {
 				localProjectID = "prj_example"
 			}
-			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, ProjectID: localProjectID, Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{}, AgentBackends: map[string]AgentBackend{"audit": configuredBackend}, SecurityAuditRoot: t.TempDir(), Store: &fakeSessionStore{sessionID: 73}, Now: func() time.Time { return now.Add(time.Second) }})
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, ProjectID: localProjectID, Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{}, AgentBackends: map[string]AgentBackend{"audit": configuredBackend}, SecurityAuditRoot: t.TempDir(), Store: &finalizationActivityStore{&fakeSessionStore{sessionID: 73}}, Now: func() time.Time { return now.Add(time.Second) }})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -220,6 +226,9 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 				}
 			} else {
 				approved, err = runner.auditNativeChange(ctx, req)
+			}
+			if approved && backend.request.Workspace != "" && len(execution.stages) == 0 {
+				t.Fatal("missing security audit runtime")
 			}
 			if (err != nil) != test.failed {
 				t.Fatalf("audit error = %v", err)
