@@ -229,6 +229,9 @@ func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item
 	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	if s.config.TenantRepository != nil {
+		return s.readNativeRuntimeTenant(ctx, scope, item, attemptID, admission...)
+	}
 	prepared := &nativeRuntimePreparation{objects: make(map[nativeRuntimeObjectKey]nativeRuntimeObjectResult)}
 	ctx = context.WithValue(ctx, nativeRuntimePreparationKey{}, prepared)
 	for {
