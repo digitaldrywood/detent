@@ -18,11 +18,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/threadstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type Reader interface {
+	threadstore.Reader
 	viewstore.Reader
 	billingstore.Reader
 	claimstore.Reader
@@ -41,6 +43,7 @@ type Reader interface {
 }
 
 type Writer interface {
+	threadstore.Writer
 	viewstore.Writer
 	billingstore.Writer
 	claimstore.Writer

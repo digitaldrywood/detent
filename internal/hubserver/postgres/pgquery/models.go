@@ -208,6 +208,32 @@ type AttachmentItemReference struct {
 	RetainWithWorkItem bool
 }
 
+type AttemptDiff struct {
+	OrganizationID       tracker.OrganizationID
+	ID                   string
+	AttemptID            string
+	IssueID              int64
+	ProjectID            tracker.ProjectID
+	WorkItemID           string
+	Source               string
+	SourceID             string
+	Sequence             int64
+	BaseSHA              string
+	HeadSHA              string
+	ProducerKind         string
+	ProducerID           string
+	ProducerRunnerID     string
+	ProducerLeaseID      string
+	ProducerFencingToken int64
+	FileCount            int32
+	PatchBytes           int64
+	PostedBytes          int64
+	Truncated            bool
+	ArchiveID            string
+	CreatedAt            time.Time
+	ManifestExpired      bool
+}
+
 type ChangeEvidence struct {
 	OrganizationID       tracker.OrganizationID
 	ChangeID             string
@@ -2748,6 +2774,94 @@ type StorageConversionProgress struct {
 	AggregateID    string
 	ConvertedRows  int64
 	ConvertedBytes int64
+}
+
+type TeamThread struct {
+	OrganizationID   tracker.OrganizationID
+	ID               string
+	Scope            string
+	ProjectID        tracker.ProjectID
+	WorkItemID       *string
+	Title            string
+	Status           string
+	CreatorPrincipal string
+	CreatorName      string
+	CreatorClient    string
+	RequestKey       string
+	InputHash        string
+	PostCount        int64
+	CreatedAt        string
+	UpdatedAt        string
+}
+
+type TeamThreadParticipant struct {
+	OrganizationID tracker.OrganizationID
+	ThreadID       string
+	PrincipalID    string
+	ClientName     string
+	DisplayName    string
+}
+
+type TeamThreadPost struct {
+	OrganizationID   tracker.OrganizationID
+	ThreadID         string
+	Seq              int64
+	AuthorPrincipal  string
+	AuthorName       string
+	ActingFor        string
+	ClientName       string
+	Kind             string
+	BodyArchiveID    string
+	BodyObjectKey    string
+	BodySha256       string
+	BodyBytes        int64
+	BodyContentBytes int64
+	RequestKey       string
+	InputHash        string
+	CreatedAt        string
+}
+
+type TeamThreadRead struct {
+	OrganizationID tracker.OrganizationID
+	ThreadID       string
+	PrincipalID    string
+	LastSeq        int64
+}
+
+type TeamThreadReference struct {
+	OrganizationID tracker.OrganizationID
+	ThreadID       string
+	PostSeq        int64
+	Kind           string
+	TargetID       string
+	ProjectID      tracker.ProjectID
+}
+
+type TeamThreadUnreadProject struct {
+	OrganizationID tracker.OrganizationID
+	SummaryID      string
+	ProjectID      tracker.ProjectID
+}
+
+type TeamThreadUnreadSummary struct {
+	OrganizationID         tracker.OrganizationID
+	ID                     string
+	PrincipalID            string
+	CredentialID           string
+	UserID                 string
+	MemberPrincipal        string
+	KeyKind                string
+	RequireCredentialGrant bool
+	ReporterPrincipal      string
+	ScopeHash              string
+	RequestedRevision      int64
+	CompletedRevision      int64
+	ScanRevision           int64
+	AfterThread            string
+	ThroughThread          string
+	PartialCount           int64
+	UnreadCount            sql.NullInt64
+	Turn                   int64
 }
 
 type TokenGrant struct {

@@ -26,6 +26,9 @@ WHERE work_item_id>? ORDER BY work_item_id LIMIT 1)`
 
 func (s *Service) maintainNativeBoard(ctx context.Context) {
 	if s.config.TenantRepository != nil {
+		if err := s.maintainTeamUnread(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			s.config.Logger.ErrorContext(ctx, "refresh team unread summary", "error", err)
+		}
 		if err := s.maintainBoardRecords(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			s.config.Logger.ErrorContext(ctx, "refresh native board card", "error", err)
 		}

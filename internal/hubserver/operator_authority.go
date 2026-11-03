@@ -298,6 +298,9 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 					return s.checkOperatorResource(ctx, query, checkScope, requirement)
 				}
 				checkScope.requireHostedAdmin = requirement.Scope == apikey.ScopeAdmin
+				if s.config.TenantRepository != nil && s.config.AccessRepository != nil && operatortool.IsThreadTool(requirement.Action) {
+					return s.authorizeProjectRecord(ctx, checkScope, true)
+				}
 				tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 				if err != nil {
 					return err

@@ -452,77 +452,79 @@ func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.U
 
 func (s *Service) readAttachmentRecordTenant(ctx context.Context, scope nativeScope, id string) (attachment.Metadata, error) {
 	var metadata attachment.Metadata
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
-			return err
-		}
-		record, err := r.Attachment(ctx, scope.project, id)
-		if err != nil {
-			return projectRecordError(err)
-		}
-		if record.Metadata.DeletedAt != nil || record.ObjectDeletedAt != nil || record.PendingContent != nil {
-			return nativeNotFound()
-		}
-		key, err := attachment.Key(string(scope.organization), id)
-		if err != nil {
-			return err
-		}
-		if record.CustomerOwned || record.StorageBindingID != "" || record.ObjectKey != "" && record.ObjectKey != key {
-			return workItemStorageUnavailable()
-		}
-		references, err := r.AttachmentReferences(ctx, scope.project, id, 201)
-		if err != nil {
-			return err
-		}
-		if len(references) > 200 {
-			return nativePublicInvalid("Attachment references exceed the read bound")
-		}
-		metadata = record.Metadata
-		visible := scope.credential.HostedRole != "reporter" || metadata.Uploader == scope.credential.ID || metadata.Uploader == scope.actor().PrincipalID
-		if !visible {
-			uploader, err := r.AccessCredential(ctx, metadata.Uploader)
-			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-				return err
-			}
-			if err == nil && uploader.Kind == "personal" && uploader.UserID != "" {
-				member, err := r.AccessMember(ctx, uploader.UserID)
-				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-					return err
-				}
-				visible = err == nil && member.MembershipID == uploader.MembershipID && member.PrincipalID == scope.actor().PrincipalID
-			}
-		}
-		if scope.credential.HostedRole == "reporter" && metadata.WorkItemID != "" {
-			item, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(metadata.WorkItemID))
-			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-				return err
-			}
-			if err != nil || !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(item.ActorPrincipalID)}) {
-				metadata.WorkItemID, metadata.CommentID = "", ""
-			}
-		}
-		for _, reference := range references {
-			if scope.credential.HostedRole == "reporter" {
-				item, err := r.WorkItem(ctx, scope.project, reference.WorkItemID)
-				if errors.Is(err, corestore.ErrNotFound) {
-					continue
-				}
-				if err != nil {
-					return err
-				}
-				if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(item.ActorPrincipalID)}) {
-					continue
-				}
-			}
-			visible = true
-			metadata.ReferencedBy = append(metadata.ReferencedBy, attachment.SourceReference{WorkItemID: string(reference.WorkItemID), CommentID: reference.CommentID})
-		}
-		if !visible {
-			return nativeNotFound()
-		}
-		return nil
-	})
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error { return s.readAttachmentRecordWith(ctx, r, scope, id, &metadata) })
 	return metadata, err
+}
+
+func (s *Service) readAttachmentRecordWith(ctx context.Context, r tenantstore.Reader, scope nativeScope, id string, metadata *attachment.Metadata) error {
+	if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+		return err
+	}
+	record, err := r.Attachment(ctx, scope.project, id)
+	if err != nil {
+		return projectRecordError(err)
+	}
+	if record.Metadata.DeletedAt != nil || record.ObjectDeletedAt != nil || record.PendingContent != nil {
+		return nativeNotFound()
+	}
+	key, err := attachment.Key(string(scope.organization), id)
+	if err != nil {
+		return err
+	}
+	if record.CustomerOwned || record.StorageBindingID != "" || record.ObjectKey != "" && record.ObjectKey != key {
+		return workItemStorageUnavailable()
+	}
+	references, err := r.AttachmentReferences(ctx, scope.project, id, 201)
+	if err != nil {
+		return err
+	}
+	if len(references) > 200 {
+		return nativePublicInvalid("Attachment references exceed the read bound")
+	}
+	*metadata = record.Metadata
+	visible := scope.credential.HostedRole != "reporter" || metadata.Uploader == scope.credential.ID || metadata.Uploader == scope.actor().PrincipalID
+	if !visible {
+		uploader, err := r.AccessCredential(ctx, metadata.Uploader)
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if err == nil && uploader.Kind == "personal" && uploader.UserID != "" {
+			member, err := r.AccessMember(ctx, uploader.UserID)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			visible = err == nil && member.MembershipID == uploader.MembershipID && member.PrincipalID == scope.actor().PrincipalID
+		}
+	}
+	if scope.credential.HostedRole == "reporter" && metadata.WorkItemID != "" {
+		item, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(metadata.WorkItemID))
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if err != nil || !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(item.ActorPrincipalID)}) {
+			metadata.WorkItemID, metadata.CommentID = "", ""
+		}
+	}
+	for _, reference := range references {
+		if scope.credential.HostedRole == "reporter" {
+			item, err := r.WorkItem(ctx, scope.project, reference.WorkItemID)
+			if errors.Is(err, corestore.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(item.ActorPrincipalID)}) {
+				continue
+			}
+		}
+		visible = true
+		metadata.ReferencedBy = append(metadata.ReferencedBy, attachment.SourceReference{WorkItemID: string(reference.WorkItemID), CommentID: reference.CommentID})
+	}
+	if !visible {
+		return nativeNotFound()
+	}
+	return nil
 }
 
 func (s *Service) prepareCommentAttachmentReferences(ctx context.Context, scope nativeScope, plan workItemRecordPlan) ([]string, error) {
