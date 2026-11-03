@@ -1021,6 +1021,14 @@ func (l *LocalGit) BeforeRun(ctx context.Context, info Info, issue Issue) error 
 	if err != nil {
 		return err
 	}
+	if l.commits.signingRequested {
+		if l.commits.report.Signing == "unsigned" {
+			return errors.New("configured commit signing unavailable at startup")
+		}
+		if _, err := l.commits.verifySigning(ctx); err != nil {
+			return fmt.Errorf("verify commit signing: %w", err)
+		}
+	}
 	return l.runHook(ctx, "before_run", l.hooks.BeforeRun, normalized, issue)
 }
 

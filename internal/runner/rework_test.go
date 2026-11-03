@@ -1094,7 +1094,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				if staged := strings.TrimSpace(runRunnerGit(t, info.Path, "diff", "--cached", "--name-only")); staged != "repair.md" {
 					t.Fatalf("failed finalization lost staged repair: %s", staged)
 				}
-				if test.signingFail && (execution.checkpoint == nil || execution.checkpoint.WorktreeState != "dirty") {
+				if test.signingFail && (execution.checkpoint == nil || execution.checkpoint.WorktreeState != "dirty" || !execution.checkpoint.GitRef()) {
 					t.Fatalf("signing failure omitted dirty checkpoint: %+v", execution.checkpoint)
 				}
 				if test.authorityLost && (execution.checkpoint != priorCheckpoint || execution.authorityChecks < 2) {

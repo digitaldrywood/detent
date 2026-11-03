@@ -45,7 +45,9 @@ func (l *LocalGit) checkpointCommit(ctx context.Context, path, tree string, pare
 		}
 	}
 	args = append(args, "-m", "detent: checkpoint")
-	output, err := l.runCommit(ctx, path, nil, args...)
+	policy := l.commits
+	policy.report.Signing = "unsigned"
+	output, err := policy.run(ctx, path, nil, args...)
 	return strings.TrimSpace(output), err
 }
 
