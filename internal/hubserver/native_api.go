@@ -429,12 +429,11 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 							return s.nativeAPIError(c, err)
 						}
 					} else {
-						if err := s.authorizeProjectRecord(readCtx, scope, write); err != nil {
+						record, err := s.readAuthorizedProjectRecord(readCtx, scope, write)
+						if err != nil {
 							return s.nativeAPIError(c, err)
 						}
-						if _, err := s.readProjectRecord(readCtx, scope); err != nil {
-							return s.nativeAPIError(c, err)
-						}
+						c.Set("native_project_record", record)
 					}
 				} else {
 					if err := s.requireHostedProject(readCtx, s.database.auth(), scope, write); err != nil {

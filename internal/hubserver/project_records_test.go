@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 
@@ -544,5 +545,114 @@ func TestPostgresProjectCreationSerializesWithAdministratorPromotion(t *testing.
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type countedProjectReads struct {
+	tenantstore.Repository
+	transactions int
+	projects     int
+}
+
+func (r *countedProjectReads) ReadTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	r.transactions++
+	return r.Repository.ReadTenant(ctx, org, workload, func(reader tenantstore.Reader) error { return read(countedProjectReader{Reader: reader, owner: r}) })
+}
+
+type countedProjectReader struct {
+	tenantstore.Reader
+	owner *countedProjectReads
+}
+
+func (r countedProjectReader) ProjectRecord(ctx context.Context, project tracker.ProjectID) (projectstore.Record, error) {
+	r.owner.projects++
+	return r.Reader.ProjectRecord(ctx, project)
+}
+
+func TestPostgresProjectReadAvoidsRepeatedAdmissions(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	counted := &countedProjectReads{Repository: repository}
+	accessCounted := &countedProjectReads{Repository: repository}
+	now := time.Now().UTC()
+	service := &Service{echo: echo.New(), database: &database{postgres: repository}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), TenantRepository: counted, AccessRepository: accessCounted, RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }}}
+	service.registerNativeRoutes(service.echo)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(org), func(t *testing.T) {
+			token := string(org) + "_token"
+			credential := string(org) + "_credential"
+			project := tracker.ProjectID("project_" + string(org))
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), CreatedAt: now}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "provider_" + string(org)}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: credential, Name: "Example reader", Hash: apikey.HashToken(token), Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ProjectAccess: "selected", Kind: "service"}); err != nil {
+					return err
+				}
+				for _, id := range []tracker.ProjectID{project, "hidden_" + project} {
+					if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: id, Name: string(id), Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+						return err
+					}
+				}
+				return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: credential, ProjectID: project})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			base := "/api/v2/organizations/" + string(org) + "/projects/"
+			read := func(id tracker.ProjectID) tracker.NativeProject {
+				t.Helper()
+				counted.transactions, counted.projects = 0, 0
+				accessCounted.transactions, accessCounted.projects = 0, 0
+				response := performHubAPIRequest(t, service, http.MethodGet, base+string(id), token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				transactions := counted.transactions + accessCounted.transactions
+				projects := counted.projects + accessCounted.projects
+				if transactions != 3 || projects != 1 {
+					t.Errorf("project GET used %d tenant admissions and %d project reads; want 3 and 1", transactions, projects)
+				}
+				if accessCounted.transactions != 1 || accessCounted.projects != 1 {
+					t.Errorf("project authorization owner used %d admissions and %d project reads; want 1 and 1", accessCounted.transactions, accessCounted.projects)
+				}
+				var got tracker.NativeProject
+				decodeHubResponse(t, response, &got)
+				if got.OrganizationID != org || got.ID != project {
+					t.Fatalf("project GET returned another tenant or project: %+v", got)
+				}
+				return got
+			}
+			if got := read(project); got.Name != string(project) {
+				t.Fatalf("initial project name=%q", got.Name)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, base+"hidden_"+string(project), token, nil), http.StatusForbidden)
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				record, err := w.ProjectRecord(t.Context(), project)
+				if err != nil {
+					return err
+				}
+				record.Core.Name = "Updated " + string(org)
+				_, err = w.UpdateProjectRecord(t.Context(), record)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if got := read(project); got.Name != "Updated "+string(org) {
+				t.Fatalf("later request reused stale project: %+v", got)
+			}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.DeleteAccessTokenGrant(t.Context(), credential, project) }); err != nil {
+				t.Fatal(err)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, base+string(project), token, nil), http.StatusForbidden)
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: credential, ProjectID: project}); err != nil {
+					return err
+				}
+				return w.RevokeAccessCredential(t.Context(), credential, now)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, base+string(project), token, nil), http.StatusUnauthorized)
+		})
 	}
 }
