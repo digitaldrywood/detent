@@ -34,7 +34,7 @@ func (e *nativeExecution) noChangeValidation(ctx context.Context, stage string) 
 		return runner.NativeValidation{}, err
 	}
 	version := e.noChangeVersion()
-	if version.Policy.ID != version.PolicyID || e.lastDiff == nil || e.lastDiff.BaseSHA != version.BaseSHA || len(e.lastDiff.Files) != 0 {
+	if version.ID == "" || version.Policy.ID != version.PolicyID || e.lastDiff == nil || e.lastDiff.BaseSHA != version.BaseSHA || len(e.lastDiff.Files) != 0 {
 		return runner.NativeValidation{}, errors.New("no-change verification source or policy changed")
 	}
 	var auditEvidence *runner.NativeSecurityAuditEvidence

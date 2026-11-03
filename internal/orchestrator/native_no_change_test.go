@@ -18,10 +18,13 @@ func TestNoChangeCompletionRequiresCurrentSourceGateReceipts(t *testing.T) {
 		missing string
 		reject  string
 		stale   bool
+		invalid bool
 		audit   bool
 		want    string
 	}{
 		{name: "accepted evidence closes without a Change", want: "Done"},
+		{name: "malformed reported SHA cannot close with matching receipts", invalid: true, want: "Todo"},
+		{name: "different evidence cannot reuse passing receipts", missing: "evidence", want: "Todo"},
 		{name: "empty Change from merging completes without landing", merging: true, want: "Done"},
 		{name: "stale claim reverified on current base", stale: true, want: "Done"},
 		{name: "review rejection returns to implementation", reject: "review", want: "Rework"},
@@ -38,11 +41,16 @@ func TestNoChangeCompletionRequiresCurrentSourceGateReceipts(t *testing.T) {
 			if test.stale {
 				n.ReportedSHA = strings.Repeat("a", 40)
 			}
+			if test.invalid {
+				n.ReportedSHA = "x:y"
+			}
 			review := gate.ValidatorResult{VersionID: n.VersionID(), Repository: "https://github.com/example-org/example-project", BaseSHA: head, HeadSHA: head, SessionID: 11, Submitted: true, Verdict: "pass", Score: 10}
 			validator := review
 			validator.SessionID = 12
 			change := &runpkg.NativeChange{NoChange: n, BaseSHA: head, HeadSHA: head, ImplementationReview: &review, Validator: &validator}
 			switch test.missing {
+			case "evidence":
+				n.Evidence = "different evidence"
 			case "review":
 				change.ImplementationReview = nil
 			case "validator":
