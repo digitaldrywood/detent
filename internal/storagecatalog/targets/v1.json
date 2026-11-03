@@ -992,36 +992,6 @@
       "family": "conversation",
       "organization": "organization-owned"
     },
-    "public.attempt_diffs": {
-      "columns": {
-        "archive_id": "text",
-        "attempt_id": "text",
-        "base_sha": "text",
-        "created_at": "timestamp with time zone",
-        "file_count": "integer",
-        "head_sha": "text",
-        "id": "text",
-        "issue_id": "bigint",
-        "manifest_expired": "boolean",
-        "organization_id": "text",
-        "patch_bytes": "bigint",
-        "posted_bytes": "bigint",
-        "producer_fencing_token": "bigint",
-        "producer_id": "text",
-        "producer_kind": "text",
-        "producer_lease_id": "text",
-        "producer_runner_id": "text",
-        "project_id": "text",
-        "sequence": "bigint",
-        "source": "text",
-        "source_id": "text",
-        "truncated": "boolean",
-        "work_item_id": "text"
-      },
-      "contract": "Retain typed attempt and workspace diff metadata while patch content remains in verified archive storage.",
-      "family": "execution",
-      "organization": "organization-owned"
-    },
     "public.archive_usage_counters": {
       "columns": {
         "compressed_bytes": "bigint",
