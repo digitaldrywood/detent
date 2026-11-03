@@ -100,8 +100,9 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	repository := projectRecordPostgres(t)
 	clock := &leaseTestClock{value: time.Now().UTC()}
 	participant := &nativeRunEventParticipantFixture{}
+	details := &memoryRunDetails{}
 	service := openPostgresHubTestService(t, repository, Config{
-		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, Clock: clock.Now,
+		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: details, Clock: clock.Now,
 		NativeRunEvents: participant, Logger: slog.New(slog.NewTextHandler(&logs, nil)),
 	})
 	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
@@ -145,6 +146,17 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	requireNativeStatus(t, changeResponse, http.StatusOK)
 	var sharedChange tracker.ChangeRequest
 	decodeHubResponse(t, changeResponse, &sharedChange)
+	changePath := itemsPath + "/" + string(items[0].WorkItemID) + "/changes/" + sharedChange.ID
+	firstVersionResponse := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", testHubAdminToken, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "shared-version-first"}, ChangeVersionInput: changeTestInput()})
+	requireNativeStatus(t, firstVersionResponse, http.StatusOK)
+	var firstVersion tracker.ChangeVersion
+	decodeHubResponse(t, firstVersionResponse, &firstVersion)
+	secondInput := changeTestInput()
+	secondInput.HeadSHA = strings.Repeat("d", 40)
+	secondVersionResponse := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", testHubAdminToken, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "shared-version-second"}, ExpectedVersionID: firstVersion.ID, ChangeVersionInput: secondInput})
+	requireNativeStatus(t, secondVersionResponse, http.StatusOK)
+	var secondVersion tracker.ChangeVersion
+	decodeHubResponse(t, secondVersionResponse, &secondVersion)
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(reader tenantstore.Reader) error {
 		batchReader, ok := reader.(tenantstore.ClaimPreviewPlanRowsReader)
 		if !ok {
@@ -206,6 +218,51 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	plan, err := service.readNativeClaimPlan(t.Context(), scope, request, now)
 	if err != nil || !nativeClaimIssueContractAllowed(plan) {
 		t.Fatalf("read claim plan = %+v, error %v", plan, err)
+	}
+	staleEvidenceSequence := plan.changeRecord
+	staleEvidenceSequence.EvidenceSequence++
+	if sameNativeClaimChangeRecord(plan.changeRecord, staleEvidenceSequence) {
+		t.Fatal("claim writer fence accepted a changed evidence sequence")
+	}
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(reader tenantstore.Reader) error {
+		var err error
+		plan.changePolicy, err = readCurrentChangePolicyRows(t.Context(), reader, scope)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var oldVersionRow eventstore.Version
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(reader tenantstore.Reader) error {
+		var err error
+		oldVersionRow, err = reader.Version(t.Context(), sharedChange.ID, firstVersion.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	withMissingDetail := func(key string, run func() error) error {
+		details.mu.Lock()
+		payload := bytes.Clone(details.data[key])
+		delete(details.data, key)
+		details.mu.Unlock()
+		err := run()
+		details.mu.Lock()
+		details.data[key] = payload
+		details.mu.Unlock()
+		return err
+	}
+	mergePlan := plan
+	mergePlan.candidate.State = "Merging"
+	if err := withMissingDetail(oldVersionRow.PayloadObjectKey, func() error {
+		_, err := service.hydrateNativeClaimPlan(t.Context(), scope, request, now, mergePlan, &descriptor)
+		return err
+	}); err != nil {
+		t.Fatalf("claim hydration read missing historical version payload: %v", err)
+	}
+	if err := withMissingDetail(plan.changeVersion.PayloadObjectKey, func() error {
+		_, err := service.hydrateNativeClaimPlan(t.Context(), scope, request, now, mergePlan, &descriptor)
+		return err
+	}); err == nil {
+		t.Fatal("claim hydration accepted a missing current version payload")
 	}
 	claimPath := base + "/claims"
 	counts := &nativePreviewReadCounts{}

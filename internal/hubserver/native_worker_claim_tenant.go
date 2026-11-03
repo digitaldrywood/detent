@@ -731,20 +731,16 @@ func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope nativeScope,
 		plan.issue.LinkedSource = &linked
 	}
 	if stringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending {
-		latest, summary, found, err := s.selectedLatestChangeSummary(ctx, scope, string(plan.candidate.WorkItemID), now)
-		if err != nil {
-			return nativeClaimPlan{}, err
-		}
-		if !found || summary.Status == "landed" || latest.ChangeID != plan.changeRecord.ID || latest.VersionID != plan.change.VersionID || latest.HeadSHA != plan.change.HeadSHA {
+		if plan.changeRecord.ID == "" || plan.changeRecord.CurrentVersionID == nil || *plan.changeRecord.CurrentVersionID != plan.changeVersion.ID || plan.changeVersion.ID != plan.change.VersionID || plan.changeVersion.HeadSHA != plan.change.HeadSHA {
 			return plan, nil
 		}
-		detail, err := s.selectedChangeDetail(ctx, scope, string(plan.candidate.WorkItemID), latest.ChangeID, now)
+		detail, err := s.nativeClaimCurrentChangeDetail(ctx, scope, plan, now)
 		if err != nil {
 			return nativeClaimPlan{}, err
 		}
-		state := changerequest.ReviewState(detail, latest.VersionID, latest.HeadSHA)
+		state := changerequest.ReviewState(detail, plan.changeVersion.ID, plan.changeVersion.HeadSHA)
 		currentVersion := valueOrEmpty(plan.changeRecord.CurrentVersionID)
-		plan.changeReady = plan.changeRecord.OrganizationID == scope.organization && plan.changeRecord.ProjectID == scope.project && plan.changeRecord.WorkItemID == plan.candidate.WorkItemID && detail.Change.ID == plan.changeRecord.ID && int64(detail.Change.Revision) == plan.changeRecord.Revision && detail.Change.CurrentVersion == currentVersion && currentVersion == latest.VersionID && state.Current && !state.ChangesRequested && !state.RepairPending && nativeChangeLandingClaimable("Merging", &detail)
+		plan.changeReady = plan.changeRecord.OrganizationID == scope.organization && plan.changeRecord.ProjectID == scope.project && plan.changeRecord.WorkItemID == plan.candidate.WorkItemID && detail.Change.ID == plan.changeRecord.ID && int64(detail.Change.Revision) == plan.changeRecord.Revision && detail.Change.CurrentVersion == currentVersion && currentVersion == plan.changeVersion.ID && state.Current && !state.ChangesRequested && !state.RepairPending && nativeChangeLandingClaimable("Merging", &detail)
 	}
 	if stringsEqualFold(plan.candidate.State, "Merging") {
 		if plan.changePolicyRevision.GitHubPullRequest == nil {

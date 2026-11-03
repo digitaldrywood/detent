@@ -821,6 +821,104 @@ func (s *Service) selectedChangeDetail(ctx context.Context, scope nativeScope, i
 	return result, nil
 }
 
+func (s *Service) nativeClaimCurrentChangeDetail(ctx context.Context, scope nativeScope, plan nativeClaimPlan, now time.Time) (tracker.ChangeDetail, error) {
+	if plan.changeRecord.ID == "" || plan.changeRecord.CurrentVersionID == nil || *plan.changeRecord.CurrentVersionID != plan.changeVersion.ID || plan.changeVersion.ChangeID != plan.changeRecord.ID {
+		return tracker.ChangeDetail{}, corestore.ErrRevisionConflict
+	}
+	content := eventstore.NewContent(s.runDetailStore())
+	change, err := content.Change(ctx, plan.changeRecord)
+	if err != nil {
+		return tracker.ChangeDetail{}, err
+	}
+	change, visible, err := s.filterChangeRecord(ctx, scope, change)
+	if err != nil {
+		return tracker.ChangeDetail{}, err
+	}
+	if !visible || !slices.Contains(change.LinkedIssues, plan.candidate.WorkItemID) || change.CurrentVersion != plan.changeVersion.ID {
+		return tracker.ChangeDetail{}, corestore.ErrNotFound
+	}
+	version, err := content.Version(ctx, plan.changeVersion)
+	if err != nil {
+		return tracker.ChangeDetail{}, err
+	}
+	var evidence []eventstore.Evidence
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		evidence, err = r.Evidence(ctx, plan.changeRecord.ID, 0, corestore.MaxPageSize)
+		if err != nil {
+			return err
+		}
+		if len(evidence) == corestore.MaxPageSize {
+			more, err := r.Evidence(ctx, plan.changeRecord.ID, evidence[len(evidence)-1].Sequence, 1)
+			if err != nil {
+				return err
+			}
+			if len(more) != 0 {
+				return corestore.ErrInvalidPage
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return tracker.ChangeDetail{}, projectRecordError(err)
+	}
+	if len(evidence) > corestore.MaxPageSize {
+		return tracker.ChangeDetail{}, corestore.ErrInvalidPage
+	}
+	detail := tracker.ChangeDetail{Change: change, Versions: []tracker.ChangeVersion{version}}
+	priorApproval := false
+	for _, row := range evidence {
+		if row.OrganizationID != scope.organization || row.ChangeID != plan.changeRecord.ID {
+			return tracker.ChangeDetail{}, corestore.ErrTenantMismatch
+		}
+		currentReview := row.Kind == "review" && row.VersionID != nil && *row.VersionID == version.ID
+		priorReview := row.Kind == "review" && row.Decision == "approved" && (row.VersionID == nil || *row.VersionID != version.ID) && !priorApproval
+		currentCheck := row.Kind == "check" && row.VersionID != nil && *row.VersionID == version.ID
+		if !currentReview && !priorReview && !currentCheck {
+			continue
+		}
+		raw, err := content.Evidence(ctx, row)
+		if err != nil {
+			return tracker.ChangeDetail{}, err
+		}
+		switch row.Kind {
+		case "review":
+			var review tracker.ChangeReview
+			if err := json.Unmarshal(raw, &review); err != nil {
+				return tracker.ChangeDetail{}, err
+			}
+			if review.VersionID != valueOrEmpty(row.VersionID) || review.Decision != row.Decision || review.Actor.Kind != row.ActorKind || review.Actor.PrincipalID != row.ActorPrincipalID || !sameTypedEvidenceTime(review.CreatedAt, row.CreatedAt) {
+				return tracker.ChangeDetail{}, eventstore.ErrInvalidRecord
+			}
+			if currentReview {
+				detail.Reviews = append(detail.Reviews, review)
+			} else if priorReview && review.Decision == "approved" && review.SecurityAudit == nil && review.ImplementationReview == nil && review.Validator == nil {
+				priorApproval = true
+			}
+		case "check":
+			var check tracker.ChangeCheck
+			if err := json.Unmarshal(raw, &check); err != nil {
+				return tracker.ChangeDetail{}, err
+			}
+			if check.VersionID != valueOrEmpty(row.VersionID) || check.CheckRunID != valueOrEmpty(row.SourceKey) || check.Actor.Kind != row.ActorKind || check.Actor.PrincipalID != row.ActorPrincipalID || !sameTypedEvidenceTime(check.ReceivedAt, row.CreatedAt) {
+				return tracker.ChangeDetail{}, eventstore.ErrInvalidRecord
+			}
+			detail.Checks = append(detail.Checks, check)
+		}
+	}
+	currentApproval, err := hydrateCurrentChangeVersionApproval(ctx, content, scope, plan.changePolicy, "")
+	if err != nil {
+		return tracker.ChangeDetail{}, projectRecordError(err)
+	}
+	policyID, reviewPolicyID := changerequest.CurrentPolicyIdentities(&detail.Versions[0], currentApproval.Policy, currentApproval.ReviewPolicy)
+	detail.Summary = changerequest.SummarizeCurrentVersion(detail, policyID, reviewPolicyID, now, priorApproval)
+	return detail, nil
+}
+
+func sameTypedEvidenceTime(payload, typed time.Time) bool {
+	return payload.UTC().Truncate(time.Microsecond).Equal(typed.UTC().Truncate(time.Microsecond))
+}
+
 func (s *Service) selectedLatestChangeSummary(ctx context.Context, scope nativeScope, item string, now time.Time) (tracker.NativeChangeReference, tracker.ChangeSummary, bool, error) {
 	var latest eventstore.Change
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
