@@ -43,7 +43,11 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 		reportIdentity                                                                             bool
 		native                                                                                     bool
 		priority                                                                                   int
+		override, missingLabel                                                                     bool
 	}{
+		{name: "trusted source without Actions", override: true, workflow: ".github/workflows/ci.yml", branch: "develop", state: "Todo"},
+		{name: "trusted author alone needs Actions", override: true, missingLabel: true, workflow: ".github/workflows/ci.yml", branch: "develop", state: "Triage"},
+
 		{name: "native approved project", native: true, workflow: ".github/workflows/ci.yml", branch: "develop", state: "Todo"},
 		{name: "native portable release contract", priority: 1, native: true, shortContract: true, runOrigin: true, workflow: ".github/workflows/validated-release.yml", branch: "release/v2.1", state: "Todo", delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/validated-release.yml` on `release/v*` enter Todo with High priority."},
 		{name: "release family rejects develop", native: true, workflow: ".github/workflows/validated-release.yml", branch: "develop", state: "Triage", delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/validated-release.yml` on `release/v*` enter Todo with High priority."},
@@ -108,6 +112,12 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 			if test.state == "Todo" {
 				client.steps = append(client.steps, restStep{method: http.MethodGet, path: path + "/jobs?per_page=100", response: map[string]any{"jobs": []map[string]any{{"id": 456, "run_id": 123, "name": "Verify", "head_sha": sha, "status": "completed", "conclusion": "failure", "started_at": "2026-10-01T00:00:00Z", "completed_at": "2026-10-01T00:01:00Z"}}}})
 			}
+			if test.override {
+				client.steps = client.steps[:1]
+				if test.missingLabel {
+					client.steps = append(client.steps, restStep{method: http.MethodGet, path: path, err: errors.New("Actions unavailable")})
+				}
+			}
 			service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: databasePath(t), InitialAdminToken: []byte(token), GitHubWebhookSecret: []byte(secret), ImportBackend: NewImporter(client), ReconcileBackend: NewReconciler(client), Content: newContentStore(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 			if err != nil {
 				t.Fatal(err)
@@ -153,6 +163,9 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 			if delegation == "" {
 				delegation = "New verified GitHub Actions CI repair reports enter Todo with Urgent priority."
 			}
+			if test.override {
+				delegation += "\nTrusted-source CI verification override: authors `github-actions[bot]`; label `detent:auto-fix`."
+			}
 			workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{Workflow: []byte(definition + "\n## Scheduled CI repair contract\n" + delegation + "\n" + strings.ReplaceAll(criteria, "## ", "### ")), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: " + repository + "\n  lanes:\n    - {name: Backlog, role: holding}\n    - {name: Blocked, role: holding}\n    - {name: Todo, role: active}\n    - {name: Done, role: terminal}\n"), HasConfig: true, ConfigPath: "detent.yaml"})
 			if err != nil {
 				t.Fatal(err)
@@ -184,7 +197,11 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 					t.Fatalf("native report: %d %s", response.Code, response.Body.String())
 				}
 			} else {
-				payload, err := json.Marshal(map[string]any{"action": "opened", "repository": map[string]any{"node_id": "R_example", "name": name, "full_name": repository, "owner": map[string]string{"login": owner}}, "issue": map[string]any{"node_id": "I_report", "number": 12, "title": "Scheduled Verify failure", "body": body, "html_url": "https://github.com/" + sourceRepository + "/issues/12", "state": "open", "user": map[string]string{"login": "github-actions[bot]"}, "labels": []map[string]string{{"name": "hotfix"}, {"name": "detent:todo"}}, "assignees": []string{}, "created_at": "2026-10-01T00:00:00Z", "updated_at": "2026-10-01T00:00:00Z"}})
+				labels := []map[string]string{{"name": "hotfix"}, {"name": "detent:todo"}}
+				if test.override && !test.missingLabel {
+					labels = append(labels, map[string]string{"name": "detent:auto-fix"})
+				}
+				payload, err := json.Marshal(map[string]any{"action": "opened", "repository": map[string]any{"node_id": "R_example", "name": name, "full_name": repository, "owner": map[string]string{"login": owner}}, "issue": map[string]any{"node_id": "I_report", "number": 12, "title": "Scheduled Verify failure", "body": body, "html_url": "https://github.com/" + sourceRepository + "/issues/12", "state": "open", "user": map[string]string{"login": "github-actions[bot]"}, "labels": labels, "assignees": []string{}, "created_at": "2026-10-01T00:00:00Z", "updated_at": "2026-10-01T00:00:00Z"}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -203,13 +220,26 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 					t.Fatalf("webhook: %d %s", response.Code, response.Body.String())
 				}
 			}
-			var issues tracker.Page[tracker.NativeIssue]
-			api(http.MethodGet, base+"/work-items", nil, &issues)
-			if len(issues.Items) != 1 {
-				t.Fatalf("issues=%+v", issues.Items)
+			var issue tracker.NativeIssue
+			if test.override {
+				api(http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "lookup-source"}, GitHubIssueURL: "https://github.com/" + sourceRepository + "/issues/12"}, &issue)
+				var replay tracker.NativeIssue
+				api(http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "lookup-source-repeat"}, GitHubIssueURL: "https://github.com/" + sourceRepository + "/issues/12"}, &replay)
+				if replay.WorkItemID != issue.WorkItemID || replay.Revision != issue.Revision {
+					t.Fatal("source delivery duplicated or reset work")
+				}
+				if test.state == "Todo" && (!strings.Contains(issue.Body, "Trusted-source CI verification override") || strings.Contains(issue.Body, "## Verified CI occurrence")) {
+					t.Fatalf("override evidence = %s", issue.Body)
+				}
+			} else {
+				var issues tracker.Page[tracker.NativeIssue]
+				api(http.MethodGet, base+"/work-items", nil, &issues)
+				if len(issues.Items) != 1 {
+					t.Fatalf("issues=%+v", issues.Items)
+				}
+				issue = issues.Items[0]
+				api(http.MethodGet, base+"/work-items/"+string(issue.WorkItemID), nil, &issue)
 			}
-			issue := issues.Items[0]
-			api(http.MethodGet, base+"/work-items/"+string(issue.WorkItemID), nil, &issue)
 			if issue.State != test.state {
 				t.Fatalf("lane=%s want=%s", issue.State, test.state)
 			}

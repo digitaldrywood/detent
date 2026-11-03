@@ -3557,6 +3557,31 @@ confirmation of the bounded approved sections. Source diagnostics remain quoted
 as untrusted evidence. Labels such as `detent:todo` and `hotfix` confer no
 authority. No review, security, validator or landing gate changes.
 
+
+An operator can explicitly delegate source trust by adding this second line
+immediately after the scheduled repair authorization sentence, before its
+subsections, and approving the changed project policy:
+
+> Trusted-source CI verification override: authors `github-actions[bot], repair-bot`; label `detent:auto-fix`.
+
+Author logins and the label match exactly. The configured repository must also
+match. This optional rule bypasses only the independent Actions run/job lookup;
+it delegates trust in reported CI metadata to the authenticated GitHub issue
+author together with the explicit source label. The bounded repair template,
+report structure, policy approval, repository isolation and downstream gates
+remain required. Without a matching rule the ordinary verifier remains in use.
+Labels and identity come from signed webhook payloads or authenticated source
+reads; request fields, quoted labels and report body stamps grant no trust.
+History and the admitted body name the trusted-source override, approved policy,
+authenticated author and label, without claiming independent CI verification.
+
+A signed `issues.labeled` delivery can admit an existing report only while it
+remains in import-created Triage with no subsequent native decision, edits or
+holds. Source updates alone do not replace that original native intent. Stale
+or duplicate deliveries cannot admit work; a later native decision, active or
+terminal state, `requires-human-review` or `detent:no-dispatch` remains authoritative.
+No policy is changed by importing a report or applying a source label.
+
 Incomplete, untrusted, held or unverifiable scheduled reports remain in Triage
 without delegated confirmation; their `github.imported` history records the
 refusal reason. Existing source identities retain native decisions. A matching

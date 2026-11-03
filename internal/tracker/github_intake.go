@@ -79,6 +79,7 @@ type LinkedIssueSource struct {
 }
 
 type GitHubIssueSnapshot struct {
+	Labels     []string             `json:"labels,omitempty"`
 	URL        string               `json:"url"`
 	Title      string               `json:"title"`
 	Body       string               `json:"body"`
