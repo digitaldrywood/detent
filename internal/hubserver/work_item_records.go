@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -573,11 +574,11 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 		if err != nil {
 			return plan, err
 		}
-		if len(references) > 0 {
+		if len(references) > 0 && !(plan.comment.ID != "" && plan.create) {
 			return plan, workItemStorageUnavailable()
 		}
 	}
-	if plan.project.Core.WorkflowSource != "" {
+	if plan.comment.ID == "" && plan.project.Core.WorkflowSource != "" {
 		return plan, workItemStorageUnavailable()
 	}
 	if plan.requiresIssueContract() && s.config.TenantRepository == nil {
@@ -685,7 +686,12 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	if scope.credential.Scope == apiScopeWorker {
-		return nil, workItemStorageUnavailable()
+		if _, ok := input.(tracker.CreateComment); !ok || link != nil {
+			return nil, workItemStorageUnavailable()
+		}
+		if _, err := s.validateRunnerLeaseTenant(ctx, scope, command.LeaseID, command.FencingToken); err != nil {
+			return nil, err
+		}
 	}
 	hash, err := nativeCommandHash(input)
 	if err != nil {
@@ -725,6 +731,10 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 			return nil, err
 		}
 		plan, err = s.planWorkItemRecord(ctx, scope, plan, input)
+		if err != nil {
+			return nil, err
+		}
+		attachmentIDs, err := s.prepareCommentAttachmentReferences(ctx, scope, plan)
 		if err != nil {
 			return nil, err
 		}
@@ -951,6 +961,35 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 				}
 			}
 			if !plan.existing {
+				if scope.credential.Scope == apiScopeWorker {
+					if err := s.authorizeAttachmentCommentLease(ctx, w, scope, plan.current, command); err != nil {
+						return err
+					}
+				}
+				if _, ok := input.(tracker.CreateComment); ok && (scope.credential.Scope == apiScopeWorker || len(attachmentIDs) > 0) {
+					limit, err := s.attachmentQuotaLimit(ctx, w)
+					if err != nil {
+						return err
+					}
+					data, err := json.Marshal(tracker.CollaborationData{Revision: plan.comment.Revision, CommentID: plan.comment.ID})
+					if err != nil {
+						return err
+					}
+					actor, err := json.Marshal(scope.actor())
+					if err != nil {
+						return err
+					}
+					usage, err := w.AdjustCollaborationBytes(ctx, int64(len(plan.comment.Body)+len(valueRaw)+len(data)+len(actor)), limit)
+					if errors.Is(err, corestore.ErrNotFound) {
+						return attachmentAccountingUnavailable()
+					}
+					if err != nil {
+						return err
+					}
+					if !usage.Allowed {
+						return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
+					}
+				}
 				if plan.relationship != nil {
 					if err := w.SetRelationship(ctx, *plan.relationship, plan.relationshipOperate, plan.issue.UpdatedAt); err != nil {
 						return err
@@ -982,6 +1021,11 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 				}
 				if _, err := w.AppendEvent(ctx, event); err != nil {
 					return err
+				}
+				for _, id := range attachmentIDs {
+					if err := w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.project, AttachmentID: id, WorkItemID: plan.comment.WorkItemID, CommentID: plan.comment.ID}); err != nil {
+						return err
+					}
 				}
 			}
 			if link != nil {

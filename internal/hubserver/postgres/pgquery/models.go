@@ -119,6 +119,35 @@ type ApiToken struct {
 	KeyKind               string
 }
 
+type ArchiveObject struct {
+	OrganizationID   tracker.OrganizationID
+	ID               string
+	ObjectKey        string
+	Sha256           string
+	CompressedSize   int64
+	UncompressedSize int64
+	Codec            string
+	SchemaVersion    int32
+	Kind             string
+	Retention        string
+	BindingID        string
+	CustomerOwned    bool
+	CreatedAt        time.Time
+}
+
+type ArchiveObjectOwner struct {
+	OrganizationID tracker.OrganizationID
+	ArchiveID      string
+	OwnerKind      string
+	OwnerID        string
+	CreatedAt      time.Time
+}
+
+type ArchiveUsageCounter struct {
+	OrganizationID  tracker.OrganizationID
+	CompressedBytes int64
+}
+
 type ArtifactReference struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
@@ -139,6 +168,44 @@ type ArtifactReference struct {
 	Objects        int32
 	ExpiresAt      time.Time
 	ObservedAt     time.Time
+}
+
+type Attachment struct {
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	ID                string
+	Uploader          string
+	Name              string
+	ContentType       string
+	Size              int64
+	Sha256            string
+	Width             int32
+	Height            int32
+	CreatedAt         time.Time
+	WorkItemID        *string
+	CommentID         *string
+	EvidenceAttemptID *string
+	EvidenceCaption   string
+	Kind              string
+	RetentionClass    string
+	ObjectKey         string
+	UncompressedSize  int64
+	Codec             string
+	SchemaVersion     int64
+	StorageBindingID  string
+	CustomerOwned     bool
+	PendingContent    []byte
+	DeletedAt         *time.Time
+	ObjectDeletedAt   *time.Time
+}
+
+type AttachmentItemReference struct {
+	OrganizationID     tracker.OrganizationID
+	ProjectID          tracker.ProjectID
+	AttachmentID       string
+	WorkItemID         string
+	CommentID          string
+	RetainWithWorkItem bool
 }
 
 type ChangeEvidence struct {
@@ -340,6 +407,23 @@ type Conversation struct {
 	ConversionState        int16
 }
 
+type ConversationAttachment struct {
+	OrganizationID      tracker.OrganizationID
+	ConversationID      string
+	ProjectID           tracker.ProjectID
+	ID                  string
+	MessageID           *string
+	PrincipalID         string
+	Name                string
+	Mime                string
+	Size                int64
+	ArtifactRef         string
+	ContentAttachmentID *string
+	CreatedAt           time.Time
+	ExpiresAt           *time.Time
+	DeletedAt           *time.Time
+}
+
 type ConversationAudienceEvent struct {
 	OrganizationID   tracker.OrganizationID
 	ID               string
@@ -389,6 +473,7 @@ type ConversationContentObject struct {
 	BindingID        string
 	CustomerOwned    bool
 	CreatedAt        time.Time
+	ArchiveID        string
 }
 
 type ConversationEvent struct {
@@ -422,6 +507,24 @@ type ConversationEvent struct {
 	DeltaOffset               sql.NullInt64
 	DeltaBytes                sql.NullInt64
 	MessageRevision           sql.NullInt64
+}
+
+type ConversationHistoryImport struct {
+	OrganizationID tracker.OrganizationID
+	SourceSchema   string
+	SnapshotID     string
+	CatalogDigest  string
+	Completed      bool
+	Rows           int64
+}
+
+type ConversationHistoryImportRow struct {
+	OrganizationID tracker.OrganizationID
+	SnapshotID     string
+	SourceTable    string
+	SourceRowID    int64
+	RequestHash    string
+	CreatedAt      time.Time
 }
 
 type ConversationMessage struct {
@@ -535,6 +638,20 @@ type ConversationUsage struct {
 	CacheSavingsUsd sql.NullFloat64
 }
 
+type CoreWorkEvent struct {
+	OrganizationID tracker.OrganizationID
+	SourceID       int64
+	IssueID        int64
+	FencingToken   sql.NullInt64
+	MachineID      *string
+	SessionID      *string
+	RunID          *string
+	Kind           string
+	PayloadJson    string
+	OccurredAt     time.Time
+	RecordedAt     time.Time
+}
+
 type CostImport struct {
 	OrganizationID tracker.OrganizationID
 	SourceSchema   string
@@ -623,6 +740,26 @@ type CostSource struct {
 	AmountMicros    sql.NullInt64
 	Currency        string
 	Voided          bool
+}
+
+type CreditHistoryImport struct {
+	OrganizationID  tracker.OrganizationID
+	SourceSchema    string
+	SnapshotID      string
+	CatalogDigest   string
+	Completed       bool
+	AccountRows     int64
+	PackRows        int64
+	TransactionRows int64
+}
+
+type CreditHistoryImportRow struct {
+	OrganizationID tracker.OrganizationID
+	SnapshotID     string
+	SourceTable    string
+	SourceRowID    int64
+	RequestHash    string
+	CreatedAt      time.Time
 }
 
 type GoTestReceipt struct {
@@ -1013,6 +1150,12 @@ type HostedWorkViewValue struct {
 	Value          string
 }
 
+type HubServerIdentity struct {
+	OrganizationID tracker.OrganizationID
+	ServerID       string
+	CursorKey      []byte
+}
+
 type Issue struct {
 	OrganizationID         tracker.OrganizationID
 	ID                     int64
@@ -1316,6 +1459,22 @@ type NativeComment struct {
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
 	RecordID             int64
+}
+
+type NativePrPublication struct {
+	OrganizationID    tracker.OrganizationID
+	VersionID         string
+	ChangeID          string
+	Repository        string
+	BaseRef           string
+	Branch            string
+	HeadSHA           string
+	PolicyID          string
+	SourceAttemptID   string
+	RecorderAttemptID string
+	Provider          string
+	ExternalID        string
+	ExternalURL       string
 }
 
 type Organization struct {
@@ -1939,6 +2098,29 @@ type QueueEntry struct {
 	UpdatedAt        time.Time
 }
 
+type ReleaseDelivery struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+	SourceIssueID  string
+	SourceChangeID string
+	SourceMergeSha string
+	RepositoryID   sql.NullInt64
+	Repository     string
+	PrNumber       int64
+	HeadRef        string
+	HeadSHA        string
+	BaseRef        string
+	BaseSHA        string
+	FrozenSha      string
+	ChangeID       string
+	VersionID      *string
+	PrincipalID    string
+	ActorKind      string
+	ViaKey         string
+	AssociatedAt   time.Time
+}
+
 type RequestDay struct {
 	OrganizationID tracker.OrganizationID
 	Day            time.Time
@@ -2126,6 +2308,7 @@ type RunnerIdentityEvent struct {
 	ActorID        string
 	Kind           string
 	OccurredAt     time.Time
+	ImportSourceID sql.NullInt64
 }
 
 type RunnerLeaseAssignment struct {

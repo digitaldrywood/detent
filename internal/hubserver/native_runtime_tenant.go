@@ -113,6 +113,9 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		}
 		snapshot.project, snapshot.item, snapshot.version = project, row, version
 		snapshot.attempt = tenantAttemptSnapshot{attempt: attempt, lease: lease, event: event}
+		if err := readTenantAttemptEvidence(ctx, r, &snapshot.attempt); err != nil {
+			return err
+		}
 		snapshot.attemptPolicy, snapshot.currentPolicy, snapshot.policyFound = attemptPolicy, currentPolicy, policyFound
 		snapshot.leasePolicy, snapshot.boardSequence = leasePolicy, board.Sequence
 		activeLease, activeErr := r.ActiveLeaseForIssue(ctx, row.ID)

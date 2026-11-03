@@ -2,13 +2,16 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -18,9 +21,11 @@ import (
 )
 
 type tenantAttemptSnapshot struct {
-	attempt leasestore.Attempt
-	lease   leasestore.Lease
-	event   eventstore.Event
+	attempt      leasestore.Attempt
+	lease        leasestore.Lease
+	event        eventstore.Event
+	evidence     bool
+	evidenceRows []attachmentstore.Record
 }
 
 func (s *Service) readNativeAttemptTenant(ctx context.Context, scope nativeScope, item, id string) (tracker.NativeAttempt, error) {
@@ -61,7 +66,10 @@ func (s *Service) readNativeAttemptTenant(ctx context.Context, scope nativeScope
 		if err == nil && snapshot.event.WorkItemID != tracker.NativeWorkItemID(item) {
 			return corestore.ErrNotFound
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		return readTenantAttemptEvidence(ctx, r, &snapshot)
 	})
 	if err != nil {
 		return tracker.NativeAttempt{}, err
@@ -153,7 +161,13 @@ func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope nativeS
 			if event.WorkItemID != tracker.NativeWorkItemID(item) {
 				return corestore.ErrNotFound
 			}
-			snapshots = append(snapshots, tenantAttemptSnapshot{attempt: attempt, lease: lease, event: event})
+			snapshot := tenantAttemptSnapshot{attempt: attempt, lease: lease, event: event}
+			if view != "recorded_blockers" && !attemptSummaryRead(ctx) {
+				if err := readTenantAttemptEvidence(ctx, r, &snapshot); err != nil {
+					return err
+				}
+			}
+			snapshots = append(snapshots, snapshot)
 		}
 		return nil
 	})
@@ -170,9 +184,6 @@ func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope nativeS
 		if view != "" && view != "detail" {
 			attempt.Runtime = nil
 			attempt.RuntimeFreshness = "unavailable"
-		}
-		if view != "recorded_blockers" && !attemptSummaryRead(ctx) {
-			attempt.Evidence = []tracker.NativeEvidence{}
 		}
 		attempt.Identity = nativeAttemptDisplayIdentity(attempt)
 		attempt.Runtime = attempt.Runtime.WithoutActivitySpans()
@@ -238,6 +249,27 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 		LeaseRenewedAt: lease.RenewedAt, LeaseExpiresAt: lease.ExpiresAt, Current: lease.ReleasedAt == nil && !now.Before(lease.RenewedAt) && now.Before(lease.ExpiresAt),
 		Checkpoint: run.Handoff, RuntimeFreshness: "unavailable",
 		TerminalFailureAvailability: "unavailable", FinalizationAvailability: "unavailable", Unavailable: []string{"evidence"}}
+	if snapshot.evidence {
+		var evidence []tracker.NativeEvidence
+		budget := 1 << 20
+		for _, record := range snapshot.evidenceRows {
+			if record.OrganizationID != attempt.OrganizationID || record.Metadata.ProjectID != string(snapshot.event.ProjectID) || record.Metadata.WorkItemID != string(snapshot.event.WorkItemID) || record.EvidenceAttemptID != attempt.ID || record.Metadata.Validate() != nil {
+				return tracker.NativeAttempt{}, artifact.ErrIntegrity
+			}
+			file := tracker.NativeEvidence{AttachmentID: record.Metadata.ID, Caption: record.EvidenceCaption, Reference: record.Metadata.Markdown(string(attempt.OrganizationID))}
+			raw, err := json.Marshal(file)
+			if err != nil {
+				return tracker.NativeAttempt{}, err
+			}
+			budget -= len(raw) + 1
+			if budget < 0 {
+				return tracker.NativeAttempt{}, nativePublicInvalid("Attempt evidence exceeds the 1048576-byte read limit")
+			}
+			evidence = append(evidence, file)
+		}
+		result.Evidence = append(result.Evidence, evidence...)
+		result.Unavailable = slices.DeleteFunc(result.Unavailable, func(value string) bool { return value == "evidence" })
+	}
 	result.ArtifactIDs = run.ArtifactIDs
 	if lease.ReleasedAt != nil {
 		released := *lease.ReleasedAt
@@ -264,4 +296,16 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 		result.Status = "interrupted"
 	}
 	return result, nil
+}
+
+func readTenantAttemptEvidence(ctx context.Context, r tenantstore.Reader, snapshot *tenantAttemptSnapshot) error {
+	records, err := r.AttachmentEvidence(ctx, snapshot.event.ProjectID, snapshot.event.WorkItemID, snapshot.attempt.ID, 201)
+	if err != nil {
+		return err
+	}
+	if len(records) > 200 {
+		return nativePublicInvalid("Attempt evidence exceeds the 200-reference read bound")
+	}
+	snapshot.evidence, snapshot.evidenceRows = true, records
+	return nil
 }
