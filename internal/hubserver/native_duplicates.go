@@ -74,6 +74,12 @@ func duplicateWindow(scope nativeScope, now time.Time, machine bool) (string, []
 }
 
 func resolveNativeDuplicates(ctx context.Context, query nativeQueryer, scope nativeScope, request tracker.CreateIssue, now time.Time, machine bool) ([]possibleDuplicate, error) {
+	if machine {
+		matches, err := resolveNativeFingerprint(ctx, query, scope, request, now)
+		if err != nil || len(matches) != 0 {
+			return matches, err
+		}
+	}
 	if err := requireNativeSearchIndex(ctx, query, scope); err != nil {
 		if errors.Is(err, operatortool.ErrServiceUnavailable) {
 			return nil, nil
@@ -204,6 +210,70 @@ AND search.terms>=? ORDER BY search.search_score,ws.terminal,i.number DESC LIMIT
 		}
 	}
 	return matches, nil
+}
+
+func resolveNativeFingerprint(ctx context.Context, query nativeQueryer, scope nativeScope, request tracker.CreateIssue, now time.Time) ([]possibleDuplicate, error) {
+	origin, ok := issueorigin.Parse(request.Body)
+	if !ok {
+		return nil, nil
+	}
+	keys := []string{origin.Fingerprint}
+	if canonical := issueorigin.DefectFingerprint(request.Body); canonical != "" && canonical != origin.Fingerprint {
+		keys = append(keys, canonical)
+	}
+	var matches []possibleDuplicate
+	window, visibilityArgs := duplicateWindow(scope, now, true)
+	for _, key := range keys {
+		args := []any{scope.organization, scope.project, sha256Hex(key), scope.organization, scope.project, key, scope.organization, scope.project, key}
+		args = append(args, visibilityArgs...)
+		rows, err := query.QueryContext(ctx, `WITH candidates AS MATERIALIZED (
+ SELECT native_id AS issue_id,'' AS comment_id FROM (SELECT native_id FROM issues WHERE organization_id=? AND project_id=? AND machine_fingerprint=? ORDER BY id DESC LIMIT 100)
+ UNION
+ SELECT native_id,'' FROM (SELECT native_id FROM issues WHERE organization_id=? AND project_id=? AND machine_defect=? ORDER BY id DESC LIMIT 100)
+ UNION
+ SELECT work_item_id,id FROM (SELECT work_item_id,id FROM native_comments WHERE organization_id=? AND project_id=? AND machine_defect=? ORDER BY work_item_id,id DESC LIMIT 100)
+)
+SELECT i.native_id,i.number,i.title,ws.detent_state,i.revision,ws.terminal,i.body || char(10) || COALESCE(c.body,'')
+FROM candidates d JOIN issues i ON i.native_id=d.issue_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
+LEFT JOIN native_comments c ON c.id=d.comment_id
+WHERE i.organization_id=? AND i.project_id=?`+window+` ORDER BY ws.terminal,i.number DESC`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var match possibleDuplicate
+			var body string
+			if err := rows.Scan(&match.WorkItemID, &match.Number, &match.Title, &match.State, &match.revision, &match.terminal, &body); err != nil {
+				return nil, errors.Join(err, rows.Close())
+			}
+			same := issueorigin.SameDefect(body, request.Body)
+			if string(scope.project) == issueorigin.DetentCloudProjectID {
+				before, after := issueorigin.ReleaseStabilizationSeries(body), issueorigin.ReleaseStabilizationSeries(request.Body)
+				if before != "" || after != "" {
+					same = before != "" && before == after
+				}
+			}
+			if same {
+				match.Identifier = string(scope.project) + "#" + strconv.Itoa(match.Number)
+				match.Why = "Matching machine fingerprint"
+				matches = append(matches, match)
+				break
+			}
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return nil, err
+		}
+	}
+	slices.SortFunc(matches, func(a, b possibleDuplicate) int {
+		if a.terminal != b.terminal {
+			if a.terminal {
+				return 1
+			}
+			return -1
+		}
+		return b.Number - a.Number
+	})
+	return matches[:min(1, len(matches))], nil
 }
 
 func resolveNativeDuplicatesTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, machine bool) ([]possibleDuplicate, error) {

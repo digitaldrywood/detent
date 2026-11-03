@@ -1025,7 +1025,7 @@ func TestNativeMachineDuplicateCommentCandidate(t *testing.T) {
 }
 
 func TestNativeDuplicatesIncompleteIndex(t *testing.T) {
-	for _, state := range []string{"rebuild", "dirty"} {
+	for _, state := range []string{"ready", "rebuild", "dirty"} {
 		t.Run(state, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
@@ -1052,7 +1052,7 @@ func TestNativeDuplicatesIncompleteIndex(t *testing.T) {
 UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
 					t.Fatal(err)
 				}
-			} else {
+			} else if state == "dirty" {
 				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_work_search_dirty(issue_id,organization_id,project_id) SELECT id,organization_id,project_id FROM issues WHERE native_id=?`, first.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
@@ -1060,7 +1060,11 @@ UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM 
 			prepared := map[bool]*nativeDuplicateSearch{}
 			for _, machine := range []bool{false, true} {
 				search, err := prepareNativeDuplicates(t.Context(), f.service.database.reader, scope, request, f.service.config.now(), machine)
-				if err != nil || len(search.matches) != 0 {
+				want := 0
+				if machine || state == "ready" {
+					want = 1
+				}
+				if err != nil || len(search.matches) != want {
 					t.Fatalf("incomplete index machine=%v search=%v err=%v", machine, search, err)
 				}
 				prepared[machine] = search
@@ -1087,7 +1091,11 @@ UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM 
 						} else {
 							matches, err = resolveNativeDuplicates(t.Context(), f.service.database.reader, scope, request, f.service.config.now(), machine)
 						}
-						if err != nil || len(matches) != 0 {
+						want := 0
+						if machine || state == "ready" {
+							want = 1
+						}
+						if err != nil || len(matches) != want {
 							t.Errorf("mode=%s matches=%v err=%v", mode, matches, err)
 						}
 					}
@@ -1100,8 +1108,8 @@ UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM 
 			requireNativeStatus(t, response, http.StatusOK)
 			var filed tracker.NativeIssue
 			decodeHubResponse(t, response, &filed)
-			if filed.WorkItemID == "" || filed.WorkItemID == first.WorkItemID {
-				t.Fatalf("incomplete index reused a duplicate: %s", response.Body.String())
+			if filed.WorkItemID != first.WorkItemID {
+				t.Fatalf("incomplete index lost fingerprint owner: %s", response.Body.String())
 			}
 		})
 	}
