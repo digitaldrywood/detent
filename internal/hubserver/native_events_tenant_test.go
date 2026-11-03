@@ -366,6 +366,32 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	if _, err := service.readNativeAttemptPageTenant(t.Context(), reporterScope, string(secondIssue.WorkItemID), url.Values{"limit": {"200"}}, json.Marshal); err != nil {
 		t.Fatalf("reporter-owned attempt page: %v", err)
 	}
+	originalDB, originalReader := service.database.db, service.database.reader
+	service.database.db, service.database.reader = nil, nil
+	func() {
+		defer func() {
+			service.database.db, service.database.reader = originalDB, originalReader
+		}()
+		attemptsPath := itemPath + "/" + string(secondIssue.WorkItemID) + "/attempts?view=detail"
+		response := performHubAPIRequest(t, service, http.MethodGet, attemptsPath, testHubAdminToken, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var attemptPage tracker.Page[tracker.NativeAttempt]
+		decodeHubResponse(t, response, &attemptPage)
+		if len(attemptPage.Items) == 0 {
+			t.Fatal("typed attempts route returned no stored attempts")
+		}
+		attemptPath := itemPath + "/" + string(secondIssue.WorkItemID) + "/attempts/" + string(secondStart.Data.AttemptID)
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, attemptPath, testHubAdminToken, nil), http.StatusOK)
+		wrongItemAttemptPath := itemPath + "/" + string(issue.WorkItemID) + "/attempts/" + string(secondStart.Data.AttemptID)
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, wrongItemAttemptPath, testHubAdminToken, nil), http.StatusNotFound)
+		foreignProject := strings.Replace(itemPath, string(project.ID), "prj_foreign", 1) + "/" + string(secondIssue.WorkItemID) + "/attempts"
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, foreignProject, testHubAdminToken, nil), http.StatusNotFound)
+		foreignOrganization := strings.ReplaceAll(attemptsPath, string(organization.ID), "org_foreign")
+		foreignOrganizationResponse := performHubAPIRequest(t, service, http.MethodGet, foreignOrganization, testHubAdminToken, nil)
+		if foreignOrganizationResponse.Code != http.StatusNotFound && foreignOrganizationResponse.Code != http.StatusUnauthorized {
+			t.Fatalf("foreign organization status=%d", foreignOrganizationResponse.Code)
+		}
+	}()
 	foreignReporterScope := reporterScope
 	foreignReporterScope.sourceActor = &tracker.Actor{Kind: "human", PrincipalID: "another-reporter"}
 	for _, read := range []struct {
