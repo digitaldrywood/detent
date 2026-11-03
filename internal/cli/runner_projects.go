@@ -52,6 +52,22 @@ func runnerProjectObservationDue(previous runnerauth.LocalChecks, reported bool,
 	return false, now.Sub(observedAt) >= runnerReadinessRecheck
 }
 
+func runnerProjectRefreshChecks(previous, current runnerauth.LocalChecks) runnerauth.LocalChecks {
+	if previous.WorkReady() {
+		failed := false
+		for _, state := range []string{current.Checkout, current.Configuration, current.Setup, current.Doctor, current.Provider} {
+			failed = failed || state == "failed" || state == "missing"
+		}
+		if !failed {
+			return previous
+		}
+	}
+	if previous.Setup == "passed" && current.Setup == "pending" {
+		current.Setup = "passed"
+	}
+	return current
+}
+
 type runnerProjectPreparation struct {
 	mu       sync.Mutex
 	snapshot runnerauth.LocalChecks
@@ -303,6 +319,10 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 	}
 	for _, selected := range p.cfg.Projects {
 		previous, reported := p.checks[selected.ID]
+		if !slices.ContainsFunc(before.Projects, func(prior globalconfig.Project) bool { return reflect.DeepEqual(prior, selected) }) {
+			previous, reported = runnerauth.LocalChecks{}, false
+			delete(p.checks, selected.ID)
+		}
 		requested := false
 		native, err := p.client.Native(identity.OrganizationID, tracker.ProjectID(p.cfg.Client.NativeProjects[selected.ID]))
 		if err != nil {
@@ -343,7 +363,7 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 			if previous.Setup == "passed" {
 				setup = "passed"
 			}
-			p.checks[selected.ID] = runnerauth.LocalChecks{Checkout: "running", Configuration: "pending", Setup: setup, Doctor: "pending", Provider: "pending"}
+			p.checks[selected.ID] = runnerProjectRefreshChecks(previous, runnerauth.LocalChecks{Checkout: "running", Configuration: "pending", Setup: setup, Doctor: "pending", Provider: "pending"})
 			continue
 		}
 		select {
@@ -375,11 +395,7 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 		default:
 			run.mu.Lock()
 			if run.snapshot.Checkout != "" {
-				snapshot := run.snapshot
-				if previous.Setup == "passed" && snapshot.Setup == "pending" {
-					snapshot.Setup = "passed"
-				}
-				p.checks[selected.ID] = snapshot
+				p.checks[selected.ID] = runnerProjectRefreshChecks(previous, run.snapshot)
 			}
 			run.mu.Unlock()
 		}

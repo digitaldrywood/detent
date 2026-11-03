@@ -321,6 +321,46 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 			if _, ok := scheduler.ConnectorForProject("prj_later"); !ok {
 				t.Fatal("new project was not assigned to scheduler")
 			}
+			if test.incremental {
+				selected := p.cfg.Projects[slices.IndexFunc(p.cfg.Projects, func(value globalconfig.Project) bool { return value.ID == "prj_later" })]
+				ready := p.checks[selected.ID]
+				for _, state := range []string{"running", "pending", "failed", "provider failed", "configuration missing", "passed"} {
+					p.checks[selected.ID] = ready
+					checks := runnerauth.LocalChecks{Checkout: state, Configuration: "pending", Setup: "pending", Doctor: "pending", Provider: "pending"}
+					if state == "passed" {
+						checks = ready
+					}
+					if state == "provider failed" {
+						checks.Checkout, checks.Provider = "passed", "failed"
+					}
+					if state == "configuration missing" {
+						checks.Checkout, checks.Configuration = "passed", "missing"
+					}
+					done := make(chan struct{})
+					run := &runnerProjectPreparation{selected: selected, cancel: func() {}, done: done, snapshot: checks, checks: checks}
+					p.preparing[selected.ID] = run
+					if state == "passed" {
+						close(done)
+					}
+					p.lastRefresh = time.Time{}
+					if err := p.refresh(t.Context(), scheduler); err != nil {
+						t.Fatal(err)
+					}
+					if err := scheduler.Heartbeat(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+					report, ok := hub.localChecks.Load(tracker.ProjectID(selected.ID))
+					if !ok || report.(runnerauth.LocalChecks).WorkReady() != (state == "running" || state == "pending" || state == "passed") {
+						t.Fatalf("refresh %s discarded readiness or hid failure: %+v", state, report)
+					}
+					if state == "running" || state == "pending" {
+						if !reflect.DeepEqual(p.checks[selected.ID], ready) {
+							t.Fatalf("refresh %s changed completed evidence: %+v", state, p.checks[selected.ID])
+						}
+					}
+					delete(p.preparing, selected.ID)
+				}
+			}
 			later := filepath.Join(workspaceRoot, "prj_later")
 			if test.setupFailure {
 				if err := os.WriteFile(filepath.Join(later, "setup.sh"), []byte("printf 'setup\\n' >> trace\n"), 0600); err != nil {
