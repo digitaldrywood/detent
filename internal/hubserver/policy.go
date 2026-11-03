@@ -428,17 +428,25 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 		return previous, nil
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	raw, err := json.Marshal(resolved)
-	if err != nil {
-		return policy.Approval{}, err
-	}
-	reference, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, raw)
+	revision, revisionFound, err := s.tenantProjectPolicyRevisionForDescriptor(ctx, scope.organization, scope.project, resolved, content)
 	if err != nil {
 		return policy.Approval{}, err
 	}
 	now := s.config.now().UTC()
-	gate := resolved.Gates.GitHubPullRequest
-	revision := policystore.Revision{OrganizationID: scope.organization, ProjectID: scope.project, PolicyID: resolved.ID, GitHubPullRequest: &gate, ApprovedBy: actor, ApprovedAt: now, PayloadObjectKey: reference.PayloadObjectKey, PayloadSHA256: reference.PayloadSHA256, PayloadBytes: reference.PayloadBytes, PayloadContentBytes: reference.PayloadContentBytes}
+	if !revisionFound {
+		raw, err := json.Marshal(resolved)
+		if err != nil {
+			return policy.Approval{}, err
+		}
+		reference, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, raw)
+		if err != nil {
+			return policy.Approval{}, err
+		}
+		gate := resolved.Gates.GitHubPullRequest
+		revision = policystore.Revision{OrganizationID: scope.organization, ProjectID: scope.project, PolicyID: resolved.ID, GitHubPullRequest: &gate, PayloadObjectKey: reference.PayloadObjectKey, PayloadSHA256: reference.PayloadSHA256, PayloadBytes: reference.PayloadBytes, PayloadContentBytes: reference.PayloadContentBytes}
+	}
+	revision.ApprovedBy = actor
+	revision.ApprovedAt = now
 	result := policy.Approval{Policy: resolved, ApprovedBy: actor, ApprovedAt: formatHubTime(now)}
 	var receipt eventstore.Receipt
 	if command != nil {
@@ -510,6 +518,21 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 				return err
 			}
 			return nil
+		}
+		storedRevision, err := writer.ProjectPolicyRevision(ctx, scope.project, resolved.ID)
+		if err == nil {
+			if !sameTenantProjectPolicyRevisionContent(storedRevision, revision) {
+				return corestore.ErrUniqueViolation
+			}
+			revision = storedRevision
+			revision.ApprovedBy = actor
+			revision.ApprovedAt = now
+		} else if errors.Is(err, corestore.ErrNotFound) {
+			if revisionFound {
+				return corestore.ErrRevisionConflict
+			}
+		} else {
+			return err
 		}
 		if project.Core.Profile == "native" {
 			if resolved.Workflow == nil && project.Core.WorkflowSource != "" {
@@ -700,26 +723,33 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope nativeSc
 	if err != nil {
 		return err
 	}
-	raw, err := json.Marshal(observation.Descriptor)
+	content := eventstore.NewContent(s.runDetailStore())
+	revision, found, err := s.tenantProjectPolicyRevisionForDescriptor(ctx, scope.organization, scope.project, observation.Descriptor, content)
 	if err != nil {
 		return err
 	}
-	reference, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, raw)
-	if err != nil {
-		return err
+	if !found {
+		raw, err := json.Marshal(observation.Descriptor)
+		if err != nil {
+			return err
+		}
+		receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, raw)
+		if err != nil {
+			return err
+		}
+		gate := observation.Gates.GitHubPullRequest
+		revision = policystore.Revision{
+			OrganizationID:      scope.organization,
+			ProjectID:           scope.project,
+			PolicyID:            observation.ID,
+			GitHubPullRequest:   &gate,
+			PayloadObjectKey:    receipt.PayloadObjectKey,
+			PayloadSHA256:       receipt.PayloadSHA256,
+			PayloadBytes:        receipt.PayloadBytes,
+			PayloadContentBytes: receipt.PayloadContentBytes,
+		}
 	}
-	gate := observation.Gates.GitHubPullRequest
 	now := s.config.now().UTC()
-	revision := policystore.Revision{
-		OrganizationID:      scope.organization,
-		ProjectID:           scope.project,
-		PolicyID:            observation.ID,
-		GitHubPullRequest:   &gate,
-		PayloadObjectKey:    reference.PayloadObjectKey,
-		PayloadSHA256:       reference.PayloadSHA256,
-		PayloadBytes:        reference.PayloadBytes,
-		PayloadContentBytes: reference.PayloadContentBytes,
-	}
 	record := policystore.Observation{
 		OrganizationID: scope.organization,
 		ProjectID:      scope.project,
@@ -754,6 +784,19 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope nativeSc
 		if err != nil {
 			return err
 		}
+		storedRevision, err := writer.ProjectPolicyRevision(ctx, scope.project, observation.ID)
+		if err == nil {
+			if !sameTenantProjectPolicyRevisionContent(storedRevision, revision) {
+				return corestore.ErrUniqueViolation
+			}
+			record.Revision = storedRevision
+		} else if errors.Is(err, corestore.ErrNotFound) {
+			if found {
+				return corestore.ErrRevisionConflict
+			}
+		} else {
+			return err
+		}
 		accepted, err := writer.RecordProjectPolicyObservation(ctx, record)
 		if err != nil {
 			return err
@@ -763,6 +806,53 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope nativeSc
 		}
 		return s.applyObservedTenantDefaultBranchPolicy(ctx, writer, scope, project, reporter, observation, previous, previousRevision, record.Revision, now)
 	})
+}
+
+func (s *Service) tenantProjectPolicyRevisionForDescriptor(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, descriptor policy.Descriptor, content *eventstore.Content) (policystore.Revision, bool, error) {
+	var revision policystore.Revision
+	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		var err error
+		revision, err = reader.ProjectPolicyRevision(ctx, project, descriptor.ID)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		return policystore.Revision{}, false, err
+	}
+	if revision.PolicyID == "" {
+		return policystore.Revision{}, false, nil
+	}
+	if err := sameTenantProjectPolicyDescriptor(ctx, content, revision, descriptor); err != nil {
+		return policystore.Revision{}, false, err
+	}
+	return revision, true, nil
+}
+
+func sameTenantProjectPolicyDescriptor(ctx context.Context, content *eventstore.Content, revision policystore.Revision, descriptor policy.Descriptor) error {
+	if revision.GitHubPullRequest == nil || *revision.GitHubPullRequest != descriptor.Gates.GitHubPullRequest {
+		return corestore.ErrUniqueViolation
+	}
+	stored, err := content.ProjectPolicy(ctx, revision)
+	if err != nil {
+		return err
+	}
+	resolved, err := workflowconfig.ResolveSharedPolicy(stored)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(resolved, descriptor) {
+		return corestore.ErrUniqueViolation
+	}
+	return nil
+}
+
+func sameTenantProjectPolicyRevisionContent(left, right policystore.Revision) bool {
+	if left.GitHubPullRequest == nil || right.GitHubPullRequest == nil || *left.GitHubPullRequest != *right.GitHubPullRequest {
+		return false
+	}
+	return left.OrganizationID == right.OrganizationID && left.ProjectID == right.ProjectID && left.PolicyID == right.PolicyID && left.PayloadObjectKey == right.PayloadObjectKey && left.PayloadSHA256 == right.PayloadSHA256 && left.PayloadBytes == right.PayloadBytes && left.PayloadContentBytes == right.PayloadContentBytes
 }
 
 func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, writer tenantstore.Writer, scope nativeScope, project projectstore.Record, reporter string, observation policy.Observation, previous policy.Approval, previousRevision, observedRevision policystore.Revision, now time.Time) error {
