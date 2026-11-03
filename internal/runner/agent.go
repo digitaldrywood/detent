@@ -3853,6 +3853,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		}
 	}
 
+	ownershipReceipt := r.reviewGateOwner(ctx, req, workflow, runWorkspace, info, workspaceIssue)
 	var commands *validatorCommands
 	var validationTools []AgentTool
 	var validationHandler AgentToolHandler
@@ -3862,12 +3863,12 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 			return gate.ValidatorResult{}, fmt.Errorf("%w: native validation requires host command execution", ErrValidatorInfrastructure)
 		}
 		commands = &validatorCommands{run: commandRunner, info: info, issue: workspaceIssue, base: req.Diff.BaseSHA, shell: workflow.Config.Hooks.Shell}
-		if req.NativeVersion.Validation != nil {
+		if req.NativeVersion.Validation != nil && ownershipReceipt == "" {
 			receipts := append([]gate.CommandResult{*req.NativeVersion.Validation}, req.Commands...)
 			commands.reuse(req.NativeVersion.Validation.TreeSHA, receipts)
 		}
 		configured := gate.Effective(workflow.Config.Gate)
-		if configured.Kind == gate.KindCommand {
+		if configured.Kind == gate.KindCommand && !(req.implementationReview && ownershipReceipt != "") {
 			if !slices.ContainsFunc(commands.results, func(receipt gate.CommandResult) bool {
 				return receipt.Command == configured.Run && commands.canReuse(ctx, receipt)
 			}) {
@@ -4237,6 +4238,9 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	}
 	if req.NativeVersion != nil {
 		validation.VersionID = req.NativeVersion.ID
+	}
+	if req.implementationReview && ownershipReceipt != "" {
+		validation.Summary += "\n\nAutomatic command preflight omitted: source finalizer receipt " + ownershipReceipt + "; independent acceptance validation owns the configured gate. This ownership decision is not command evidence."
 	}
 	validation.SessionID = sessionID
 	validation.Repository = req.Diff.Repository

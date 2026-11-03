@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -35,6 +36,7 @@ type implementationReviewExecution struct {
 	head              string
 	securityAudit     *NativeSecurityAuditEvidence
 	reviewSource      tracker.NativeChangeReference
+	ownershipPolicy   *policy.Descriptor
 }
 
 func (e *implementationReviewExecution) RecoverChangeSource(ctx context.Context) (workspace.ChangeSource, error) {
@@ -42,6 +44,7 @@ func (e *implementationReviewExecution) RecoverChangeSource(ctx context.Context)
 	if e.head != "" {
 		input.Version.HeadSHA = e.head
 	}
+	e.bindOwnership(&input)
 	return workspace.ChangeSource{Version: *input.Version}, err
 }
 
@@ -65,7 +68,19 @@ func (e *implementationReviewExecution) ReviewVersion(context.Context) (NativeVa
 	if e.validation != nil {
 		input.Version.Validation = e.validation
 	}
+	e.bindOwnership(&input)
 	return input, nil
+}
+
+func (e *implementationReviewExecution) bindOwnership(input *NativeValidation) {
+	if e.ownershipPolicy == nil {
+		return
+	}
+	v := input.Version
+	v.Policy = *e.ownershipPolicy
+	v.PolicyID = v.Policy.ID
+	v.ChangeID, v.RunID, v.AttemptID = "change_example", "run_example", "attempt_example"
+	v.Source = &tracker.ChangeSource{BaseSHA: v.BaseSHA, HeadSHA: v.HeadSHA, DiffSHA256: input.Diff.Digest}
 }
 
 func (e *implementationReviewExecution) SecurityAuditVersion(ctx context.Context) (NativeValidation, error) {
@@ -101,6 +116,7 @@ func (e *implementationReviewExecution) ValidatorVersion(ctx context.Context) (N
 	if e.validation != nil {
 		input.Version.Validation = e.validation
 	}
+	e.bindOwnership(&input)
 	return input, err
 }
 
@@ -182,12 +198,20 @@ type implementationReviewBackend struct {
 	discussion        *NativeReviewDiscussion
 	securityAudit     *NativeSecurityAuditEvidence
 	validatorResponse string
+	focusedCommand    string
 }
 
 type implementationReviewWorkspace struct {
 	attachmentValidatorWorkspace
 	commands []string
 	local    *workspace.LocalGit
+}
+
+func (w *implementationReviewWorkspace) DiffStat(ctx context.Context, info workspace.Info, issue workspace.Issue) (workspace.DiffStat, error) {
+	if w.local != nil {
+		return w.local.DiffStat(ctx, info, issue)
+	}
+	return workspace.DiffStat{HeadSHA: issue.PullRequestHeadSHA, TreeSHA: "tree"}, nil
 }
 
 func (w *implementationReviewWorkspace) ReviewCommandEnvironment(ctx context.Context, info workspace.Info, issue workspace.Issue, command string) gate.CheckEnvironment {
@@ -215,7 +239,17 @@ func (w *implementationReviewWorkspace) RunReviewCommand(ctx context.Context, in
 	return gate.CommandResult{ReceiptID: fmt.Sprintf("receipt-new-%d", len(w.commands)), Command: command, HeadSHA: issue.PullRequestHeadSHA, TreeSHA: "tree", DurationNS: int64(time.Second), StartedAt: time.Now(), Evidence: w.ReviewCommandEvidence(ctx, info, issue, "go test ./...")}, nil
 }
 
-func (b *implementationReviewBackend) RunTurn(_ context.Context, request AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+func (b *implementationReviewBackend) RunTurnWithTools(ctx context.Context, request AgentTurnRequest, _ []AgentTool, handle AgentToolHandler, update AgentUpdateHandler) (AgentTurnResult, error) {
+	if request.Model == "review-model" && b.focusedCommand != "" {
+		raw, _ := json.Marshal(map[string]string{"command": b.focusedCommand})
+		if _, err := handle(ctx, AgentToolCall{Name: "detent_run_validation", Arguments: raw}); err != nil {
+			b.t.Fatal(err)
+		}
+	}
+	return b.RunTurn(ctx, request, update)
+}
+
+func (b *implementationReviewBackend) RunTurn(ctx context.Context, request AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
 	if !request.ReadOnly {
 		b.t.Fatal("native review received a writable turn")
 	}
@@ -247,6 +281,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 	isolateAttemptDiffGitConfig(t)
 	for _, test := range []struct {
 		name             string
+		ownership        bool
 		ssh              bool
 		validator        bool
 		verdict          string
@@ -266,8 +301,21 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		gateFailure      bool
 		securityAudit    bool
 		acceptanceRework bool
+		focused          bool
+		validatorFailure bool
+		frozenDisabled   bool
 		unsatisfiable    bool
 	}{
+		{name: "ownership retains reviewer requested full gate", ownership: true, focused: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, wantRuns: 2},
+		{name: "ownership validator failure blocks acceptance", ownership: true, validatorFailure: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, linterState: "missing", wantRuns: 1},
+		{name: "frozen disabled validator retains review gate", ownership: true, frozenDisabled: true, verdict: "rework", command: "make check-landing", wrapped: true, wantRuns: 1},
+		{name: "ownership wrong tree retains preflight", ownership: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, editReceipt: func(r *gate.CommandResult) { r.TreeSHA = "old-tree" }, wantRuns: 2},
+		{name: "ownership missing receipt identity retains preflight", ownership: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, editReceipt: func(r *gate.CommandResult) { r.ReceiptID = "" }, wantRuns: 2},
+		{name: "ownership omits only review shell preflight", ownership: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, wantRuns: 1},
+		{name: "ownership survives SSH", ownership: true, ssh: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, wantRuns: 1},
+		{name: "ownership latest failure retains preflight", ownership: true, validator: true, verdict: "pass", latestFailed: true, command: "make check-landing", wrapped: true, wantRuns: 2},
+		{name: "ownership failed finalizer retains preflight", ownership: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, editReceipt: func(r *gate.CommandResult) { r.ExitCode = 1 }, wantRuns: 2},
+		{name: "ownership missing stage retains preflight", ownership: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, editReceipt: func(r *gate.CommandResult) { r.Stage = "" }, wantRuns: 2},
 		{name: "separate source and acceptance passes reuse source receipt", validator: true, verdict: "pass"},
 		{name: "1245 production criterion publishes wait", validator: true, verdict: "pass", unsatisfiable: true},
 		{name: "1245 production criterion publishes wait over SSH", validator: true, verdict: "pass", unsatisfiable: true, ssh: true},
@@ -312,6 +360,9 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 			}
 			var events []string
 			backend := &implementationReviewBackend{t: t, events: &events, response: fmt.Sprintf(`{"verdict":%q,"score":1,"summary":"Independent source result","criteria_evidence":[]}`, test.verdict)}
+			if test.focused {
+				backend.focusedCommand = command
+			}
 			worktree := &implementationReviewWorkspace{attachmentValidatorWorkspace: attachmentValidatorWorkspace{reviewMutationWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, heads: []string{"head"}}}}
 			receipt := gate.CommandResult{ReceiptID: "receipt-original", Command: command, HeadSHA: "head", TreeSHA: "tree", DurationNS: int64(time.Second), StartedAt: time.Now().Add(time.Hour), Evidence: worktree.ReviewCommandEvidence(t.Context(), workspace.Info{}, workspace.Issue{}, "go test ./...")}
 			if test.wrapped {
@@ -400,6 +451,9 @@ fi
 					t.Fatalf("host finalization command: %+v %v", receipt, err)
 				}
 				receipt.TimingStage = "finalization"
+				if test.ownership {
+					receipt.Stage = gate.StageSourceFinalization
+				}
 				receipt = tracker.PublicGateResult(receipt)
 				switch test.linterState {
 				case "replaced":
@@ -438,6 +492,19 @@ fi
 				t.Fatal(err)
 			}
 			execution := &implementationReviewExecution{events: &events, validatorDisabled: !test.validator, recordError: test.recordError, validation: &receipt}
+			if test.ownership {
+				frozen := config.Default()
+				frozen.Tracker.Kind = config.TrackerHubNative
+				frozen.Gate = r.workflow.Config.Gate
+				if test.frozenDisabled {
+					frozen.Gate.Validator.Enabled = false
+				}
+				descriptor, err := config.ResolvePolicy(config.Workflow{Config: frozen, Prompt: "Review"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				execution.ownershipPolicy = &descriptor
+			}
 			if test.securityAudit {
 				execution.securityAudit = &NativeSecurityAuditEvidence{ReviewID: "review_security_accepted", VersionID: "version_example", Repository: "example-org/example-project", BaseSHA: "base", HeadSHA: "head", DiffDigest: "digest", Verdict: "pass", SessionID: 123, ReviewerVersion: "2", ReviewerDigest: "security-reviewer-digest"}
 				backend.securityAudit = execution.securityAudit
@@ -459,7 +526,7 @@ fi
 				t.Cleanup(func() { central.Close(); remote.Close(); left.Close(); right.Close() })
 				reviewExecution = &sshNativeExecution{sshExecution: &sshExecution{peer: remote}}
 			}
-			if test.prior || test.editReceipt != nil {
+			if test.prior || test.editReceipt != nil && !test.ownership {
 				execution.validation = &gate.CommandResult{TreeSHA: candidateTree}
 				execution.commands = []gate.CommandResult{receipt}
 			}
@@ -504,6 +571,17 @@ fi
 			}
 			if test.acceptanceRework && execution.validatorResult.Verdict != gate.ValidatorVerdictRework {
 				t.Fatalf("accepted security audit overrode independent acceptance: %+v", execution.validatorResult)
+			}
+			if test.validatorFailure && execution.validatorResult.Verdict == gate.ValidatorVerdictPass {
+				t.Fatal("failed independent validator accepted source")
+			}
+			if test.ownership && test.wantRuns == 1 && !test.frozenDisabled {
+				if len(execution.reviewResult.Commands) != 0 || !strings.Contains(execution.reviewResult.Summary, "source finalizer receipt "+receipt.ReceiptID) {
+					t.Fatalf("ownership manufactured command evidence: %+v", execution.reviewResult)
+				}
+				if len(execution.validatorResult.Commands) != 1 || execution.validatorResult.Commands[0].ReceiptID == receipt.ReceiptID {
+					t.Fatalf("acceptance failed to execute independently: %+v", execution.validatorResult)
+				}
 			}
 			wantVerdict := test.verdict
 			if test.gateFailure {
