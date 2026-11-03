@@ -70,6 +70,7 @@ func TestIncorporationRefusalRestoresPublishedSource(t *testing.T) {
 		noFinalization bool
 		unpushed       bool
 		files          int
+		priorRework    bool
 		wantFresh      bool
 		wantPushed     bool
 	}{
@@ -79,6 +80,7 @@ func TestIncorporationRefusalRestoresPublishedSource(t *testing.T) {
 		{name: "retained clean local checkpoint without finalization restores current source", retained: true, noFinalization: true, wantFresh: true},
 		{name: "retained unpushed checkpoint without finalization preserves source", retained: true, noFinalization: true, unpushed: true},
 		{name: "dirty checkpoint preserves unpublished edits", gitRef: true, dirty: true, wantPushed: true},
+		{name: "code dispatch restores retained paused rework transaction", gitRef: true, dirty: true, retained: true, priorRework: true, wantPushed: true, wantFresh: true},
 		{name: "uncertain publication retains custody", gitRef: true, uncertain: true},
 		{name: "different version cannot redirect recovery", gitRef: true, stale: true, wantPushed: true},
 		{name: "empty clean publication mismatch restores current source", gitRef: true, unpublished: true, wantFresh: true},
@@ -113,6 +115,9 @@ func TestIncorporationRefusalRestoresPublishedSource(t *testing.T) {
 				NativeRunData: tracker.NativeRunData{MachineID: "machine", Finalization: &tracker.NativeFinalization{ChangeID: ref.ChangeID, VersionID: ref.VersionID, HeadSHA: ref.HeadSHA, SourceVersion: ref}},
 				Checkpoint:    checkpoint,
 			}}}
+			if test.priorRework {
+				recovery.Attempts[0].Identity = &tracker.NativeExecutionIdentity{Role: RoleRework}
+			}
 			if test.unpublished {
 				f := recovery.Attempts[0].Finalization
 				f.VersionID, f.Settled, f.Changed, f.Files = "", true, true, test.files
@@ -125,7 +130,10 @@ func TestIncorporationRefusalRestoresPublishedSource(t *testing.T) {
 				backend.err = nil
 			}
 			issue := workspace.Issue{Source: &workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "version", ChangeID: "change", ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "published"}}}}
-			restoreRunWorkspaceCheckpoint(RunRequest{Execution: &testExecution{recovery: recovery}}, backend, &issue, false)
+			restoreRunWorkspaceCheckpoint(RunRequest{Mode: RunModeImplement, Execution: &testExecution{recovery: recovery}}, backend, &issue, false)
+			if test.priorRework && !issue.NativeRework {
+				t.Fatal("paused transaction lost its rework owner")
+			}
 			if issue.FreshCheckout != test.wantFresh || (issue.Checkpoint != nil) != test.wantPushed {
 				t.Fatalf("recovery replayed integration checkpoint: fresh=%t checkpoint=%+v", issue.FreshCheckout, issue.Checkpoint)
 			}
