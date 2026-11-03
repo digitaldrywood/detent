@@ -92,6 +92,113 @@ func (r nativePreviewCountingReader) ClaimPreviewPlanRows(ctx context.Context, p
 	return reader.ClaimPreviewPlanRows(ctx, project, candidates)
 }
 
+func TestNativeClaimUsesHeartbeatTimeAtWriteValidation(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	clock := &leaseTestClock{value: time.Now().UTC()}
+	service := openPostgresHubTestService(t, repository, Config{
+		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, Clock: clock.Now,
+		SecretKeys: secretTestKeys(t, "1", "1"),
+	})
+	service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
+	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedPostgresHubAdmin(t, repository, service, organization)
+	projectPath := "/api/v2/organizations/" + string(organization.ID) + "/projects"
+	projectResponse := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{"idempotency_key": "heartbeat-race-project", "name": "Example project", "states": nativeFixtureStates()})
+	requireNativeStatus(t, projectResponse, http.StatusOK)
+	var project tracker.NativeProject
+	decodeHubResponse(t, projectResponse, &project)
+	descriptor := hubTestPolicy()
+	policyRevision, err := eventstore.NewContent(service.config.RunDetails).PrepareProjectPolicy(t.Context(), organization.ID, descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyRevision.ProjectID = project.ID
+	policyRevision.ApprovedBy = "test_hub_admin"
+	policyRevision.ApprovedAt = clock.Now().UTC()
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.ApproveProjectPolicy(t.Context(), policyRevision, "")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	itemsPath := projectPath + "/" + string(project.ID) + "/work-items"
+	issueResponse := performHubAPIRequest(t, service, http.MethodPost, itemsPath, testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "heartbeat-race-issue"}, Title: "Example issue", Body: workItemRecordBody, State: "Todo"})
+	requireNativeStatus(t, issueResponse, http.StatusOK)
+	var issue tracker.NativeIssue
+	decodeHubResponse(t, issueResponse, &issue)
+	startedAt := clock.Now().UTC()
+	const runnerID = "runner_heartbeat_race"
+	const machineID = "machine_heartbeat_race"
+	const credentialID = "credential_heartbeat_race"
+	const enrollmentID = "enrollment_heartbeat_race"
+	const secret = "example_runner_heartbeat_race_secret"
+	tokenHash := apikey.HashToken(secret)
+	expires := startedAt.Add(time.Hour)
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: credentialID, Name: "Example runner", Hash: tokenHash, Fingerprint: tokenFingerprint(tokenHash), Scope: "worker", NativeOnly: true, CreatedAt: startedAt, UpdatedAt: startedAt, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: credentialID, ProjectID: project.ID}); err != nil {
+			return err
+		}
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization.ID, ID: enrollmentID, RunnerID: runnerID, MachineID: machineID, TokenHash: apikey.HashToken("example_enrollment_secret"), Scope: "projects", ProjectIDs: []tracker.ProjectID{project.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, CreatedAt: startedAt, ExpiresAt: expires, CreatedBy: "example-admin"}); err != nil {
+			return err
+		}
+		if err := w.RedeemRunnerEnrollment(t.Context(), enrollmentID, runnerID, machineID, startedAt); err != nil {
+			return err
+		}
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: machineID, Hostname: "example-host", Capacity: 1, Version: "example"}); err != nil {
+			return err
+		}
+		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: runnerID, MachineID: machineID, TokenID: credentialID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, DisplayName: "Example runner", CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: startedAt, ExpiresAt: expires, LastHeartbeatAt: startedAt}); err != nil {
+			return err
+		}
+		return w.UpdateRunnerCapacityConfig(t.Context(), runnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: startedAt})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	scope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: credentialID, Hash: tokenHash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: organization.ID}}}
+	request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: machineID, SessionID: "heartbeat-race-session", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}
+	plan, err := service.readNativeClaimPlan(t.Context(), scope, request, startedAt)
+	if err != nil || !nativeClaimIssueContractAllowed(plan) {
+		t.Fatalf("read claim plan: error=%v", err)
+	}
+	clock.Advance(time.Second)
+	heartbeatPath := "/api/v2/organizations/" + string(organization.ID) + "/projects/" + string(project.ID) + "/machines/" + machineID + "/heartbeat"
+	heartbeatResponse := performHubAPIRequest(t, service, http.MethodPost, heartbeatPath, secret, map[string]any{"display_name": "Example host", "capacity": 1, "version": "example", "os": "darwin", "architecture": "arm64", "protocol_major": tracker.NativeProtocolMajor})
+	requireNativeStatus(t, heartbeatResponse, http.StatusOK)
+	var identity runnerstore.Identity
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		identity, err = r.RunnerIdentityByCredential(t.Context(), credentialID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !identity.LastHeartbeatAt.After(startedAt) || !identity.LastHeartbeatAt.Before(clock.Now().Add(runnerauth.HeartbeatTimeout)) {
+		t.Fatalf("heartbeat timestamp did not advance within the valid window: %s", identity.LastHeartbeatAt)
+	}
+	lease, err := service.claimNativeIssueTenantWithPlan(t.Context(), scope, request, 5*time.Minute, startedAt, plan, nil)
+	if err != nil {
+		t.Fatalf("claim rejected a fresh identity after heartbeat advanced during planning: %v", err)
+	}
+	if lease.LeaseID == "" {
+		t.Fatal("claim returned an empty lease ID")
+	}
+	future := identity
+	future.LastHeartbeatAt = clock.Now().Add(time.Second)
+	if runnerIdentityCanClaim(future, scope, machineID, clock.Now()) {
+		t.Fatal("claim accepted a heartbeat timestamp from the future")
+	}
+	expired := identity
+	expired.LastHeartbeatAt = clock.Now().Add(-runnerauth.HeartbeatTimeout - time.Second)
+	if runnerIdentityCanClaim(expired, scope, machineID, clock.Now()) {
+		t.Fatal("claim accepted an expired heartbeat")
+	}
+}
+
 func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *testing.T) {
 	var logs bytes.Buffer
 	t.Cleanup(func() {

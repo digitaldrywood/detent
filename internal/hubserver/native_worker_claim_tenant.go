@@ -120,7 +120,7 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope nativeScope,
 			return s.claimNativeIssueTenantWithPlan(ctx, scope, candidateRequest, ttl, now, plan, &scan.cursor)
 		}
 		scan.cursor.Position = scan.pageNext
-		if err := s.persistNativeClaimCursor(ctx, scope, scan.cursor, now); err != nil {
+		if err := s.persistNativeClaimCursor(ctx, scope, scan.cursor); err != nil {
 			return leasestore.Lease{}, err
 		}
 		if contractRefusal != nil {
@@ -216,16 +216,17 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 		if err != nil {
 			return err
 		}
-		if !runnerIdentityCanClaim(identity, scope, request.MachineID, now) {
+		authoritativeNow := s.config.now().UTC()
+		if !runnerIdentityCanClaim(identity, scope, request.MachineID, authoritativeNow) {
 			return tracker.ErrMachineNotFound
 		}
 		if err := plan.descriptor.Requirements.Match(identity.RunnerID, string(identity.MachineID), identity.Tags); err != nil {
 			return policyMismatch(err.Error())
 		}
-		if identity.State != "active" || identity.CapacityConfig == nil || !now.Before(identity.CapacityConfig.ObservedAt.Add(runnerauth.HeartbeatTimeout)) || now.Before(identity.CapacityConfig.ObservedAt) {
+		if identity.State != "active" || identity.CapacityConfig == nil || !authoritativeNow.Before(identity.CapacityConfig.ObservedAt.Add(runnerauth.HeartbeatTimeout)) || authoritativeNow.Before(identity.CapacityConfig.ObservedAt) {
 			return ErrNoClaimableWork
 		}
-		allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
+		allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, authoritativeNow)
 		if err != nil {
 			return err
 		}
@@ -270,7 +271,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			return ErrNoClaimableWork
 		}
 		if plan.replay == nil {
-			query := nativeTenantCandidateQuery(scope, request, plan.candidate.WorkItemID, now)
+			query := nativeTenantCandidateQuery(scope, request, plan.candidate.WorkItemID, authoritativeNow)
 			page, err := w.CandidatePage(ctx, query)
 			if err != nil {
 				return err
@@ -327,7 +328,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			}
 		}
 		if plan.replay == nil && (plan.landingRequired || request.LandingCapacity > 0) {
-			usage, err := w.LandingCapacityUsage(ctx, scope.project, now)
+			usage, err := w.LandingCapacityUsage(ctx, scope.project, authoritativeNow)
 			if err != nil {
 				return err
 			}
@@ -346,7 +347,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 				capacity = min(capacity, int64(projectCapacity))
 			}
 			availability := runnerauth.Availability{Timezone: identity.Availability.Timezone, Windows: identity.Availability.Windows, WindowSlots: identity.Availability.WindowSlots, HardDeadline: identity.Availability.HardDeadline}
-			availableCapacity, err := availability.Capacity(now, int(capacity))
+			availableCapacity, err := availability.Capacity(authoritativeNow, int(capacity))
 			if err != nil {
 				return err
 			}
@@ -364,7 +365,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			if machine.Capacity <= 0 || machineUsed >= machine.Capacity {
 				return ErrNoClaimableWork
 			}
-			runnerUsed, projectUsed, err := w.RunnerProjectUsage(ctx, identity.RunnerID, scope.project, now)
+			runnerUsed, projectUsed, err := w.RunnerProjectUsage(ctx, identity.RunnerID, scope.project, authoritativeNow)
 			if err != nil {
 				return err
 			}
@@ -374,7 +375,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 		}
 		var selectedReservation *providercapacity.Reservation
 		if !workspaceItem && plan.replay == nil && len(request.ProviderCandidates) > 0 {
-			reservation, err := selectTenantProviderReservation(ctx, w, identity, request, item.NativeID, now)
+			reservation, err := selectTenantProviderReservation(ctx, w, identity, request, item.NativeID, authoritativeNow)
 			if err != nil {
 				return err
 			}
@@ -415,10 +416,10 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 				}
 			}
 		} else {
-			if err := w.AssignRunnerLease(ctx, runnerstore.LeaseAssignment{OrganizationID: scope.organization, LeaseID: lease.LeaseID, RunnerID: identity.RunnerID, AssignedAt: now}); err != nil {
+			if err := w.AssignRunnerLease(ctx, runnerstore.LeaseAssignment{OrganizationID: scope.organization, LeaseID: lease.LeaseID, RunnerID: identity.RunnerID, AssignedAt: authoritativeNow}); err != nil {
 				return err
 			}
-			if err := w.BindLeasePolicy(ctx, policystore.LeasePolicy{OrganizationID: scope.organization, ProjectID: scope.project, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: plan.policy.PolicyID, BoundAt: now}); err != nil {
+			if err := w.BindLeasePolicy(ctx, policystore.LeasePolicy{OrganizationID: scope.organization, ProjectID: scope.project, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: plan.policy.PolicyID, BoundAt: authoritativeNow}); err != nil {
 				return err
 			}
 			if selectedReservation != nil {
@@ -453,7 +454,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 	return lease, err
 }
 
-func (s *Service) persistNativeClaimCursor(ctx context.Context, scope nativeScope, cursor claimstore.SelectionCursor, now time.Time) error {
+func (s *Service) persistNativeClaimCursor(ctx context.Context, scope nativeScope, cursor claimstore.SelectionCursor) error {
 	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
@@ -462,10 +463,11 @@ func (s *Service) persistNativeClaimCursor(ctx context.Context, scope nativeScop
 		if err != nil {
 			return err
 		}
-		if !runnerIdentityCanClaim(identity, scope, scope.credential.Runner.MachineID, now) {
+		authoritativeNow := s.config.now().UTC()
+		if !runnerIdentityCanClaim(identity, scope, scope.credential.Runner.MachineID, authoritativeNow) {
 			return tracker.ErrMachineNotFound
 		}
-		allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
+		allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, authoritativeNow)
 		if err != nil {
 			return err
 		}
