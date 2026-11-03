@@ -1606,14 +1606,23 @@ func TestNativeWorkSearchScopeRefresh(t *testing.T) {
 
 func TestNativeWorkSearchIndexMaintenance(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "index-maintenance")
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	issue := f.create(t, "Existing migration document")
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "existing-comment"}, Body: "Existing zebras discussion"})
 	requireNativeStatus(t, response, http.StatusOK)
 	var comment tracker.NativeComment
 	decodeHubResponse(t, response, &comment)
+	if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts; DELETE FROM native_work_search_lengths;
+UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
+		t.Fatal(err)
+	}
 	matches := func(term string) int {
 		t.Helper()
-		drainTestNativeSearch(t, f.service)
+		for range 32 {
+			f.service.maintainNativeSearch(t.Context())
+		}
 		var count int
 		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_fts WHERE native_work_fts MATCH ?", term).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -1664,10 +1673,19 @@ func TestNativeWorkSearchIndexMaintenance(t *testing.T) {
 			}
 		})
 	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET title='Edited narwhals',body='' WHERE native_id=?", issue.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_comments SET body='Edited quasars' WHERE id=?", comment.ID); err != nil {
+		t.Fatal(err)
+	}
+	if matches("migration") != 0 || matches("narwhal") != 1 || matches("zebra") != 0 || matches("quasar") != 1 {
+		t.Fatal("maintenance missed committed edits")
+	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM native_comments WHERE id = ?", comment.ID); err != nil {
 		t.Fatal(err)
 	}
-	if matches("zebra") != 0 {
+	if matches("quasar") != 0 {
 		t.Fatal("deleted comment retained a match")
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO issues

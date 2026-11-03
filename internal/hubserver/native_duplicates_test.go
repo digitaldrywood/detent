@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1017,6 +1019,13 @@ func TestNativeMachineDuplicateCommentCandidate(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts;
+UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
+		t.Fatal(err)
+	}
 	request := tracker.CreateIssue{Body: issueorigin.Stamp("internal/example/pool.go:31:2: undefined: capacity", issueorigin.Origin{Kind: "worker", Fingerprint: "later-failure"})}
 	search, err := prepareNativeDuplicates(t.Context(), f.service.database.reader, scope, request, f.service.config.now(), true)
 	if err != nil || len(search.matches) != 1 || search.matches[0].WorkItemID != owner.WorkItemID {
@@ -1025,7 +1034,7 @@ func TestNativeMachineDuplicateCommentCandidate(t *testing.T) {
 }
 
 func TestNativeDuplicatesIncompleteIndex(t *testing.T) {
-	for _, state := range []string{"rebuild", "dirty"} {
+	for _, state := range []string{"ready", "rebuild", "dirty"} {
 		t.Run(state, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
@@ -1052,15 +1061,87 @@ func TestNativeDuplicatesIncompleteIndex(t *testing.T) {
 UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
 					t.Fatal(err)
 				}
-			} else {
+			} else if state == "dirty" {
 				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_work_search_dirty(issue_id,organization_id,project_id) SELECT id,organization_id,project_id FROM issues WHERE native_id=?`, first.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 			}
+			request.IdempotencyKey = "machine-file-during-rebuild"
+			request.Body += issueContractTestSections
+			request.State = "Todo"
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
+			requireNativeStatus(t, response, http.StatusOK)
+			var filed tracker.NativeIssue
+			decodeHubResponse(t, response, &filed)
+			if filed.WorkItemID != first.WorkItemID {
+				t.Fatalf("incomplete index lost fingerprint owner: %s", response.Body.String())
+			}
+			responses := make(chan *httptest.ResponseRecorder, 3)
+			var reports sync.WaitGroup
+			reports.Add(3)
+			for n := range 3 {
+				go func() {
+					defer reports.Done()
+					next := request
+					next.IdempotencyKey = "distinct-report-" + strconv.Itoa(n)
+					responses <- performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, next)
+				}()
+			}
+			reports.Wait()
+			for range 3 {
+				response := <-responses
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &filed)
+				if filed.WorkItemID != first.WorkItemID {
+					t.Fatalf("concurrent report lost owner: %s", response.Body.String())
+				}
+			}
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			direct, err := reportNativeMachineIssueTx(t.Context(), tx, scope, request, f.service.config.now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if direct.WorkItemID != first.WorkItemID {
+				t.Fatal("direct report lost owner")
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			var count int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", first.WorkItemID).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != 5 {
+				t.Fatalf("occurrences=%d want 5", count)
+			}
+			foreignOrg, err := f.service.createNativeOrganizationFor(t.Context(), "Other fingerprint organization")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, org := range []tracker.OrganizationID{f.project.OrganizationID, foreignOrg.ID} {
+				other := newNativeFixture(t, f.service, org, "other-fingerprint-project"+string(org))
+				next := request
+				next.IdempotencyKey = "other-project-report"
+				response := performHubAPIRequest(t, f.service, http.MethodPost, other.base+"/work-items", other.token, next)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &filed)
+				if filed.WorkItemID == first.WorkItemID {
+					t.Fatal("cross-scope fingerprint owner reused")
+				}
+			}
+
 			prepared := map[bool]*nativeDuplicateSearch{}
 			for _, machine := range []bool{false, true} {
 				search, err := prepareNativeDuplicates(t.Context(), f.service.database.reader, scope, request, f.service.config.now(), machine)
-				if err != nil || len(search.matches) != 0 {
+				want := 0
+				if machine || state == "ready" {
+					want = 1
+				}
+				if err != nil || len(search.matches) != want {
 					t.Fatalf("incomplete index machine=%v search=%v err=%v", machine, search, err)
 				}
 				prepared[machine] = search
@@ -1087,22 +1168,57 @@ UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM 
 						} else {
 							matches, err = resolveNativeDuplicates(t.Context(), f.service.database.reader, scope, request, f.service.config.now(), machine)
 						}
-						if err != nil || len(matches) != 0 {
+						want := 0
+						if machine || state == "ready" {
+							want = 1
+						}
+						if err != nil || len(matches) != want {
 							t.Errorf("mode=%s matches=%v err=%v", mode, matches, err)
 						}
 					}
 				})
 			}
-			request.IdempotencyKey = "machine-file-during-rebuild"
-			request.Body += issueContractTestSections
-			request.State = "Todo"
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
-			requireNativeStatus(t, response, http.StatusOK)
-			var filed tracker.NativeIssue
-			decodeHubResponse(t, response, &filed)
-			if filed.WorkItemID == "" || filed.WorkItemID == first.WorkItemID {
-				t.Fatalf("incomplete index reused a duplicate: %s", response.Body.String())
+
+			states := append(slices.Clone(f.project.States), tracker.NativeState{Name: "Cancelled", Terminal: true})
+			for i := range states {
+				if states[i].Name == "Todo" {
+					states[i].Transitions = append(states[i].Transitions, "Cancelled")
+				}
 			}
+			stateTx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stateTx.Rollback()
+			if err := updateNativeProjectStates(t.Context(), stateTx, scope, states, f.service.config.now()); err != nil {
+				t.Fatal(err)
+			}
+			if err := stateTx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+
+			for _, decision := range []string{"detent:no-dispatch", "Cancelled"} {
+				path := f.base + "/work-items/" + string(first.WorkItemID)
+				var response *httptest.ResponseRecorder
+				if decision == "Cancelled" {
+					response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "human-cancel"}, ExpectedRevision: first.Revision, State: "Cancelled", Reason: "user_requested"})
+				} else {
+					held := request.Body + "\n<!-- detent:no-dispatch -->"
+					response = performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "human-hold"}, ExpectedRevision: first.Revision, Body: &held})
+				}
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &first)
+
+				next := request
+				next.IdempotencyKey = "preserve-" + decision
+				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, next)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &filed)
+				if filed.WorkItemID != first.WorkItemID || !strings.Contains(filed.Body, "detent:no-dispatch") || (decision == "Cancelled" && filed.State != "Cancelled") {
+					t.Fatalf("human decision lost: %+v", filed)
+				}
+			}
+
 		})
 	}
 }
