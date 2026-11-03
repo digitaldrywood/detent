@@ -230,6 +230,11 @@ func (s *Service) internalAPIError(c echo.Context, code string, message string, 
 }
 
 func (s *Service) refusedAPIError(c echo.Context, status int, code, reason string, response any, attributes ...any) error {
+	if status >= http.StatusInternalServerError {
+		scope := nativeRequestScope(c)
+		s.config.Logger.Error("API request unavailable", "error", code, "code", code, "refusal_code", code, "status", status,
+			"method", c.Request().Method, "route", c.Path(), "organization_id", string(scope.organization), "project_id", string(scope.project))
+	}
 	if status >= http.StatusBadRequest && status < http.StatusInternalServerError && status != http.StatusUnauthorized && (status != http.StatusNotFound || slices.Contains(attributes, any("not_found_step")) || slices.Contains(attributes, any("not_found_source")) && (strings.HasSuffix(c.Path(), "/events") || strings.Contains(c.Path(), "/leases/"))) {
 		scope := nativeRequestScope(c)
 		attributes = append([]any{"error", reason, "code", code, "refusal_code", code, "reason", reason,

@@ -304,6 +304,7 @@ func TestNativeAPIError(t *testing.T) {
 		{"revision conflict", "revision_conflict", "Resource has changed", "WARN", nativeConflict(7), http.StatusConflict},
 		{"not found", "not_found", "Resource was not found", "", sql.ErrNoRows, http.StatusNotFound},
 		{"search refresh pending", "not_ready", "Search index refresh is pending", "", searchstore.ErrIndexPending, http.StatusServiceUnavailable},
+		{"service unavailable", "storage_owner_unavailable", "Dependency is temporarily unavailable", "ERROR", &nativeError{Code: "storage_owner_unavailable", Message: "Dependency is temporarily unavailable", status: http.StatusServiceUnavailable, publicMessage: true, logAttributes: []any{"private_detail", "private-context"}}, http.StatusServiceUnavailable},
 		{"internal error", "native_operation_failed", "Native operation could not be completed", "ERROR", errors.New("database unavailable"), http.StatusInternalServerError},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -353,8 +354,15 @@ func TestNativeAPIError(t *testing.T) {
 					if entry["level"] != test.level || entry["error"] == nil {
 						t.Fatalf("log = %#v", entry)
 					}
-					if test.level == "WARN" {
-						for key, want := range map[string]any{"refusal_code": test.code, "reason": test.reason, "route": nativeBase + "/runners/:runner", "organization_id": "org_example", "project_id": "prj_example", "method": http.MethodDelete} {
+					if test.level == "WARN" || test.name == "service unavailable" {
+						fields := map[string]any{"refusal_code": test.code, "route": nativeBase + "/runners/:runner", "organization_id": "org_example", "project_id": "prj_example", "method": http.MethodDelete}
+						if test.level == "WARN" {
+							fields["reason"] = test.reason
+						} else {
+							fields["error"] = test.code
+							fields["status"] = float64(test.status)
+						}
+						for key, want := range fields {
 							if entry[key] != want {
 								t.Errorf("log %s = %v, want %v", key, entry[key], want)
 							}
