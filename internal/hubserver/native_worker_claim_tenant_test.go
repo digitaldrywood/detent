@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -103,7 +105,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	details := &memoryRunDetails{}
 	service := openPostgresHubTestService(t, repository, Config{
 		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: details, Clock: clock.Now,
-		NativeRunEvents: participant, Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+		NativeRunEvents: participant, SecretKeys: secretTestKeys(t, "1", "1"), Logger: slog.New(slog.NewTextHandler(&logs, nil)),
 	})
 	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
 	if err != nil {
@@ -131,6 +133,16 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	}
 	itemsPath := projectPath + "/" + string(project.ID) + "/work-items"
 	now := service.config.now().UTC()
+	service.localOrganization = string(organization.ID)
+	envelope, err := service.config.SecretKeys.Seal(bytes.Repeat([]byte{1}, 32), accessstore.SecretAAD(organization.ID, "", accessstore.NativeCursorKeyKind))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: envelope.Version, RecordedAt: now})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	items := make([]tracker.NativeIssue, 0, 2)
 	for _, idempotencyKey := range []string{"issue-first", "issue-second"} {
 		response := performHubAPIRequest(t, service, http.MethodPost, itemsPath, testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: idempotencyKey}, Title: "Example issue", Body: workItemRecordBody, State: "Todo"})
@@ -147,6 +159,21 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	var sharedChange tracker.ChangeRequest
 	decodeHubResponse(t, changeResponse, &sharedChange)
 	changePath := itemsPath + "/" + string(items[0].WorkItemID) + "/changes/" + sharedChange.ID
+	for _, item := range items {
+		if err := service.refreshBoardRecord(t.Context(), organization.ID, viewstore.BoardCandidate{ProjectID: project.ID, WorkItemID: item.WorkItemID}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	draftScope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+	draftPage, err := service.readBoardRecords(t.Context(), draftScope, url.Values{"limit": {"200"}, "include": {"board"}})
+	if err != nil || len(draftPage.Cards) != 2 {
+		t.Fatalf("draft board cards=%d error=%v", len(draftPage.Cards), err)
+	}
+	for _, card := range draftPage.Cards {
+		if card.Change == nil || card.Change.Status != "draft" {
+			t.Fatalf("draft change status=%+v", card.Change)
+		}
+	}
 	firstVersionResponse := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", testHubAdminToken, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "shared-version-first"}, ChangeVersionInput: changeTestInput()})
 	requireNativeStatus(t, firstVersionResponse, http.StatusOK)
 	var firstVersion tracker.ChangeVersion
@@ -263,6 +290,47 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 		return err
 	}); err == nil {
 		t.Fatal("claim hydration accepted a missing current version payload")
+	}
+	for _, item := range items {
+		if err := service.refreshBoardRecord(t.Context(), organization.ID, viewstore.BoardCandidate{ProjectID: project.ID, WorkItemID: item.WorkItemID}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	baselineBoard, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "include": {"board"}})
+	if err != nil || len(baselineBoard.Cards) != 2 {
+		t.Fatalf("baseline board: cards=%d error=%v", len(baselineBoard.Cards), err)
+	}
+	fullDetail, err := service.selectedChangeDetail(t.Context(), scope, string(items[0].WorkItemID), sharedChange.ID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, card := range baselineBoard.Cards {
+		if card.Change == nil || card.Change.Status != fullDetail.Summary.Status {
+			t.Fatalf("current board summary differs from full history: %+v vs %+v", card.Change, fullDetail.Summary)
+		}
+	}
+	if err := withMissingDetail(oldVersionRow.PayloadObjectKey, func() error {
+		currentBoard, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "include": {"board"}})
+		if err != nil {
+			return err
+		}
+		if len(currentBoard.Cards) != 2 {
+			return fmt.Errorf("current board cards=%d", len(currentBoard.Cards))
+		}
+		for index, card := range currentBoard.Cards {
+			if card.Issue.WorkItemID != baselineBoard.Cards[index].Issue.WorkItemID || card.Change == nil || card.Change.Status != baselineBoard.Cards[index].Change.Status {
+				return fmt.Errorf("board list changed order or current status at %d", index)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("board list read missing historical payload: %v", err)
+	}
+	if err := withMissingDetail(plan.changeVersion.PayloadObjectKey, func() error {
+		_, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "include": {"board"}})
+		return err
+	}); err == nil {
+		t.Fatal("board list accepted missing current version payload")
 	}
 	claimPath := base + "/claims"
 	counts := &nativePreviewReadCounts{}
