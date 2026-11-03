@@ -118,7 +118,12 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 	}
 	service := s.conversations
 	ctx := c.Request().Context()
-	record, err := service.loadConversation(ctx, s.database.reader, scope, c.Param("conversation"))
+	var record conversationRecord
+	if s.conversationRecordsSelected() {
+		record, err = s.readPGConversation(ctx, scope, c.Param("conversation"))
+	} else {
+		record, err = service.loadConversation(ctx, s.database.reader, scope, c.Param("conversation"))
+	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -212,6 +217,9 @@ func (s *Service) reauthorizeConversationStream(c echo.Context, scope *nativeSco
 		if err := s.database.authorizeNativeProject(readCtx, *scope); err != nil {
 			return conversationRecord{}, err
 		}
+	}
+	if s.conversationRecordsSelected() {
+		return s.readPGConversation(readCtx, *scope, conversationID)
 	}
 	return s.conversations.loadConversation(readCtx, s.database.reader, *scope, conversationID)
 }
