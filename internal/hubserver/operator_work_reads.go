@@ -284,6 +284,9 @@ func safeWorkReadError(err error) error {
 }
 
 func (s *Service) resolveOperatorNativeReadItem(ctx context.Context, query nativeQueryer, scope nativeScope, reference string) (tracker.NativeIssue, error) {
+	if s.config.TenantRepository != nil {
+		return s.resolveOperatorRecordReadItem(ctx, scope, reference)
+	}
 	item, err := s.resolveOperatorNativeItem(ctx, query, scope, reference)
 	if scope.credential.HostedRole == "reporter" || !errors.Is(err, sql.ErrNoRows) || !strings.HasPrefix(reference, "wi_") {
 		return item, err
