@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -58,6 +58,15 @@ type CollaborationVersion struct {
 	PayloadSHA256       string
 	PayloadBytes        int64
 	PayloadContentBytes int64
+}
+
+type CollaborationVersionKey struct {
+	RecordID string
+	Revision int64
+}
+
+type CollaborationVersionsReader interface {
+	CollaborationVersions(context.Context, []CollaborationVersionKey) ([]CollaborationVersion, error)
 }
 
 type Change struct {
