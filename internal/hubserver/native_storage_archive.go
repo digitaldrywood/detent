@@ -419,6 +419,8 @@ func (s *Service) publishStorageArchive(ctx context.Context, c storageArchiveCan
 				return err
 			}
 			row[encodingColumn] = json.RawMessage(`"snapshot"`)
+			row[slices.Index(table.Columns, "payload_object_key")] = json.RawMessage(`""`)
+			row[slices.Index(table.Columns, "base_revision")] = json.RawMessage(`0`)
 			part := attachment.ArchiveTable{Name: table.Name, Columns: table.Columns, Rows: [][]json.RawMessage{row}}
 			if err := add("revision", id, revision, revision, part); err != nil {
 				return err

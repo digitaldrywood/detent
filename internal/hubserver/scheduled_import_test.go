@@ -200,7 +200,7 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 						t.Fatal(err)
 					}
 					issue.State = test.existingState
-					issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: issue.State, Reason: "user_requested"}, time.Now())
+					issue, err = persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: issue.State, Reason: "user_requested"}, time.Now())
 					if err != nil {
 						tx.Rollback()
 						t.Fatal(err)

@@ -405,7 +405,7 @@ func TestHealthFindingResolutionOwnership(t *testing.T) {
 				runnerScope := scope
 				runnerScope.sourceActor = &tracker.Actor{Kind: "runner", PrincipalID: "health-runner"}
 				for _, body := range []string{"## Detent recovery park\n\n```detent-park\n{\"schema\":1,\"owner\":\"human\",\"phase\":\"applied\"}\n```", "Runner observed the scheduler again."} {
-					if _, err := insertNativeComment(t.Context(), tx, runnerScope, issue, body, nil, now); err != nil {
+					if _, err := insertNativeComment(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, runnerScope, issue, body, nil, now); err != nil {
 						t.Fatal(err)
 					}
 				}

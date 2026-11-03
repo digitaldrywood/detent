@@ -273,7 +273,7 @@ func pendingLinkedIssue(t *testing.T, f nativeFixture) tracker.NativeIssue {
 		t.Fatal(err)
 	}
 	issue.State = "Todo"
-	issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Triage", ToState: "Todo"}, time.Now())
+	issue, err = persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Triage", ToState: "Todo"}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

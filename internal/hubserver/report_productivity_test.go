@@ -70,7 +70,7 @@ func TestOrganizationProductivity(t *testing.T) {
 		ids[seed.name] = id
 		if seed.closed != 0 {
 			issue.State = "In Progress"
-			if issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, created.Add(time.Hour)); err != nil {
+			if issue, err = persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, created.Add(time.Hour)); err != nil {
 				t.Fatal(err)
 			}
 			if seed.name == "runner completed" {
@@ -79,14 +79,14 @@ func TestOrganizationProductivity(t *testing.T) {
 					from, to string
 				}{{-6, "In Progress", "Rework"}, {-5, "Rework", "In Progress"}} {
 					issue.State = step.to
-					if issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: step.from, ToState: step.to, ReasonDetail: "missing criterion"}, to.Add(time.Duration(step.hour)*time.Hour)); err != nil {
+					if issue, err = persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: step.from, ToState: step.to, ReasonDetail: "missing criterion"}, to.Add(time.Duration(step.hour)*time.Hour)); err != nil {
 						t.Fatal(err)
 					}
 				}
 				scope.sourceActor = &tracker.Actor{Kind: "runner", PrincipalID: "runner_browser_preview"}
 			}
 			issue.State = seed.state
-			if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "In Progress", ToState: seed.state}, to.Add(time.Duration(seed.closed)*time.Hour)); err != nil {
+			if _, err := persistNativeIssue(nativeFixturePayloadContext(f.service.contentContext(t.Context()), tx), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "In Progress", ToState: seed.state}, to.Add(time.Duration(seed.closed)*time.Hour)); err != nil {
 				t.Fatal(err)
 			}
 		}
