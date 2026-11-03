@@ -87,12 +87,15 @@
     "internal/hubserver/postgres/migrations/20261103090154_ordinary_attachment_records.sql",
     "internal/hubserver/postgres/migrations/20261103144625_hosted_diagnostic_windows.sql",
     "internal/hubserver/postgres/migrations/20261103151137_project_onboarding_progress.sql",
+    "internal/hubserver/postgres/migrations/20261103151440_attempt_diffs.sql",
     "internal/hubserver/postgres/migrations/20261103154233_dependency_reason_records.sql",
+    "internal/hubserver/postgres/migrations/20261103154539_attempt_diff_manifest_expiry.sql",
     "internal/hubserver/postgres/migrations/20261103160239_team_threads.sql",
     "internal/hubserver/postgres/migrations/20261103160816_activity_read_windows.sql",
     "internal/hubserver/postgres/migrations/20261103162920_current_billing_population.sql",
     "internal/hubserver/postgres/migrations/20261103164805_account_preferences.sql",
-    "internal/hubserver/postgres/migrations/20261103172438_activity_history_lookup.sql"
+    "internal/hubserver/postgres/migrations/20261103172438_activity_history_lookup.sql",
+    "internal/hubserver/postgres/migrations/20261103173525_runner_project_diagnostic_details.sql"
   ],
   "tables": {
     "public.issue_dependency_reasons": {
@@ -372,6 +375,53 @@
         "value": "text"
       },
       "contract": "Retain ordered typed admission selector values beneath their runner and project observation.",
+      "family": "fleet",
+      "organization": "organization-owned"
+    },
+    "public.runner_project_diagnostic_admissions": {
+      "columns": {
+        "issue_id": "text",
+        "organization_id": "text",
+        "position": "integer",
+        "predicate": "text",
+        "provider_backend": "text",
+        "provider_model": "text",
+        "provider_role": "text",
+        "repository_reservations": "text[]",
+        "result": "text",
+        "runner_id": "text",
+        "project_id": "text",
+        "host_landing_occupancy": "integer",
+        "observed_at": "timestamp with time zone",
+        "work_item_revision": "bigint"
+      },
+      "contract": "Retain bounded typed admission decisions with their owning runner project diagnostic snapshot.",
+      "family": "fleet",
+      "organization": "organization-owned"
+    },
+    "public.runner_project_diagnostic_counts": {
+      "columns": {
+        "count_key": "text",
+        "count_value": "integer",
+        "organization_id": "text",
+        "project_id": "text",
+        "runner_id": "text"
+      },
+      "contract": "Retain bounded typed diagnostic counters beneath their tenant runner project snapshot.",
+      "family": "fleet",
+      "organization": "organization-owned"
+    },
+    "public.runner_project_diagnostic_unavailable": {
+      "columns": {
+        "organization_id": "text",
+        "position": "integer",
+        "project_id": "text",
+        "reason": "text",
+        "runner_id": "text",
+        "source": "text",
+        "unavailable_key": "text"
+      },
+      "contract": "Retain typed unavailable markers for runner project diagnostics and their bounded child records.",
       "family": "fleet",
       "organization": "organization-owned"
     },
@@ -940,6 +990,36 @@
       },
       "contract": "Retain verified immutable archive metadata while object bytes remain in the configured archive store.",
       "family": "conversation",
+      "organization": "organization-owned"
+    },
+    "public.attempt_diffs": {
+      "columns": {
+        "archive_id": "text",
+        "attempt_id": "text",
+        "base_sha": "text",
+        "created_at": "timestamp with time zone",
+        "file_count": "integer",
+        "head_sha": "text",
+        "id": "text",
+        "issue_id": "bigint",
+        "manifest_expired": "boolean",
+        "organization_id": "text",
+        "patch_bytes": "bigint",
+        "posted_bytes": "bigint",
+        "producer_fencing_token": "bigint",
+        "producer_id": "text",
+        "producer_kind": "text",
+        "producer_lease_id": "text",
+        "producer_runner_id": "text",
+        "project_id": "text",
+        "sequence": "bigint",
+        "source": "text",
+        "source_id": "text",
+        "truncated": "boolean",
+        "work_item_id": "text"
+      },
+      "contract": "Retain typed attempt and workspace diff metadata while patch content remains in verified archive storage.",
+      "family": "execution",
       "organization": "organization-owned"
     },
     "public.archive_usage_counters": {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -443,17 +444,52 @@ func (s *session) RunnerRepositories(ctx context.Context, runnerID string, limit
 func (s *session) RunnerProjectObservation(ctx context.Context, runnerID string, project tracker.ProjectID, issueID string) (runnerstore.ProjectObservation, []runnerstore.ProjectDiagnosticAttempt, error) {
 	var row runnerstore.ProjectObservation
 	var diagnosticsAt, runtimeAt sql.NullTime
-	err := s.db.QueryRowContext(ctx, `SELECT organization_id,runner_id,project_id,observed_at,diagnostics_at,runtime_observed_at,snapshot_digest FROM runner_project_observations WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, s.organization, runnerID, project).Scan(&row.OrganizationID, &row.RunnerID, &row.ProjectID, &row.ObservedAt, &diagnosticsAt, &runtimeAt, &row.SnapshotDigest)
+	var source, buildVersion, buildCommit, buildSource, buildSHA256, buildOS, buildArchitecture sql.NullString
+	var buildVerified sql.NullBool
+	var buildObserved sql.NullTime
+	var truncated bool
+	err := s.db.QueryRowContext(ctx, `SELECT organization_id,runner_id,project_id,observed_at,diagnostics_at,runtime_observed_at,snapshot_digest,diagnostics_source,diagnostics_truncated,build_version,build_commit,build_source,build_sha256,build_os,build_architecture,build_verified_release,build_observed_at FROM runner_project_observations WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, s.organization, runnerID, project).Scan(&row.OrganizationID, &row.RunnerID, &row.ProjectID, &row.ObservedAt, &diagnosticsAt, &runtimeAt, &row.SnapshotDigest, &source, &truncated, &buildVersion, &buildCommit, &buildSource, &buildSHA256, &buildOS, &buildArchitecture, &buildVerified, &buildObserved)
 	if err != nil {
 		return runnerstore.ProjectObservation{}, nil, mapError(ctx, err)
 	}
-	if diagnosticsAt.Valid {
+	if diagnosticsAt.Valid && source.String == "runner_runtime_and_durable_attempt_owners" {
 		row.DiagnosticsAt = &diagnosticsAt.Time
 	}
 	if runtimeAt.Valid {
 		row.RuntimeObservedAt = &runtimeAt.Time
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT position,record_key,issue_id,local_attempt_id,native_attempt_id,generation,fence,stage,running,native_claim,provider_completed_at,host_operation,operation_pending,lease_renewed_at FROM runner_project_diagnostic_attempts WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3 AND issue_id=$4 ORDER BY position`, s.organization, runnerID, project, issueID)
+	if !diagnosticsAt.Valid || source.String != "runner_runtime_and_durable_attempt_owners" {
+		return row, nil, nil
+	}
+	diagnostics := &runnerauth.ProjectDiagnostics{Source: source.String, Truncated: truncated, Records: []runnerauth.DiagnosticAttempt{}, Admissions: []runnerauth.DiagnosticAdmission{}, Counts: map[string]int{}, Unavailable: map[string]string{}}
+	diagnostics.ObservedAt = diagnosticsAt.Time
+	if runtimeAt.Valid {
+		diagnostics.RuntimeObservedAt = runtimeAt.Time
+	}
+	if buildObserved.Valid {
+		diagnostics.RunningBuild = &runnerauth.BuildEvidence{Version: buildVersion.String, Commit: buildCommit.String, Source: buildSource.String, SHA256: buildSHA256.String, OS: buildOS.String, Architecture: buildArchitecture.String, VerifiedRelease: buildVerified.Bool, ObservedAt: buildObserved.Time}
+	}
+	countRows, err := s.db.QueryContext(ctx, `SELECT count_key,count_value FROM runner_project_diagnostic_counts WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3 ORDER BY count_key`, s.organization, runnerID, project)
+	if err != nil {
+		return runnerstore.ProjectObservation{}, nil, mapError(ctx, err)
+	}
+	for countRows.Next() {
+		var key string
+		var value int
+		if err := countRows.Scan(&key, &value); err != nil {
+			countRows.Close()
+			return runnerstore.ProjectObservation{}, nil, mapError(ctx, err)
+		}
+		diagnostics.Counts[key] = value
+	}
+	if err := mapError(ctx, countRows.Err()); err != nil {
+		countRows.Close()
+		return runnerstore.ProjectObservation{}, nil, err
+	}
+	if err := countRows.Close(); err != nil {
+		return runnerstore.ProjectObservation{}, nil, mapError(ctx, err)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT position,record_key,issue_id,local_attempt_id,native_attempt_id,generation,fence,stage,running,native_claim,provider_completed_at,host_operation,operation_pending,lease_renewed_at,membership,operation_started_at,operation_observed_at,latest_error_code,latest_error,deferred_at,retry_at,retry_attempt,recovery_owner,lease_expires_at FROM runner_project_diagnostic_attempts WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3 AND ($4='' OR issue_id=$4) ORDER BY position`, s.organization, runnerID, project, issueID)
 	if err != nil {
 		return runnerstore.ProjectObservation{}, nil, mapError(ctx, err)
 	}
@@ -461,9 +497,19 @@ func (s *session) RunnerProjectObservation(ctx context.Context, runnerID string,
 	attempts := make([]runnerstore.ProjectDiagnosticAttempt, 0)
 	for rows.Next() {
 		var attempt runnerstore.ProjectDiagnosticAttempt
-		var completedAt, renewedAt sql.NullTime
-		if err := rows.Scan(&attempt.Position, &attempt.RecordKey, &attempt.IssueID, &attempt.LocalAttemptID, &attempt.NativeAttemptID, &attempt.Generation, &attempt.Fence, &attempt.Stage, &attempt.Running, &attempt.NativeClaim, &completedAt, &attempt.HostOperation, &attempt.OperationPending, &renewedAt); err != nil {
+		var completedAt, renewedAt, startedAt, operationObservedAt, deferredAt, retryAt, leaseExpiresAt sql.NullTime
+		var membership pq.StringArray
+		if err := rows.Scan(&attempt.Position, &attempt.RecordKey, &attempt.IssueID, &attempt.LocalAttemptID, &attempt.NativeAttemptID, &attempt.Generation, &attempt.Fence, &attempt.Stage, &attempt.Running, &attempt.NativeClaim, &completedAt, &attempt.HostOperation, &attempt.OperationPending, &renewedAt, &membership, &startedAt, &operationObservedAt, &attempt.LatestErrorCode, &attempt.LatestError, &deferredAt, &retryAt, &attempt.RetryAttempt, &attempt.RecoveryOwner, &leaseExpiresAt); err != nil {
 			return runnerstore.ProjectObservation{}, nil, mapError(ctx, err)
+		}
+		attempt.Membership = append([]string(nil), membership...)
+		if len(attempt.Membership) == 0 {
+			if attempt.Running {
+				attempt.Membership = append(attempt.Membership, "running")
+			}
+			if attempt.NativeClaim {
+				attempt.Membership = append(attempt.Membership, "native_claim")
+			}
 		}
 		if completedAt.Valid {
 			attempt.ProviderCompletedAt = &completedAt.Time
@@ -471,9 +517,158 @@ func (s *session) RunnerProjectObservation(ctx context.Context, runnerID string,
 		if renewedAt.Valid {
 			attempt.LeaseRenewedAt = &renewedAt.Time
 		}
+		if startedAt.Valid {
+			attempt.OperationStartedAt = &startedAt.Time
+		}
+		if operationObservedAt.Valid {
+			attempt.OperationObservedAt = &operationObservedAt.Time
+		}
+		if deferredAt.Valid {
+			attempt.DeferredAt = &deferredAt.Time
+		}
+		if retryAt.Valid {
+			attempt.RetryAt = &retryAt.Time
+		}
+		if leaseExpiresAt.Valid {
+			attempt.LeaseExpiresAt = &leaseExpiresAt.Time
+		}
 		attempts = append(attempts, attempt)
 	}
-	return row, attempts, mapError(ctx, rows.Err())
+	if err := mapError(ctx, rows.Err()); err != nil {
+		return runnerstore.ProjectObservation{}, nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return runnerstore.ProjectObservation{}, nil, mapError(ctx, err)
+	}
+	for i := range attempts {
+		attempt := &attempts[i]
+		record := runnerauth.DiagnosticAttempt{Key: attempt.RecordKey, IssueID: attempt.IssueID, LocalAttemptID: attempt.LocalAttemptID, NativeAttemptID: attempt.NativeAttemptID, Generation: uint64(attempt.Generation), Fence: attempt.Fence, Stage: attempt.Stage, Membership: attempt.Membership, HostOperation: attempt.HostOperation, OperationPending: attempt.OperationPending, LatestErrorCode: attempt.LatestErrorCode, LatestError: attempt.LatestError, RetryAttempt: attempt.RetryAttempt, RecoveryOwner: attempt.RecoveryOwner, Unavailable: attempt.Unavailable}
+		if attempt.ProviderCompletedAt != nil {
+			record.ProviderCompletedAt = *attempt.ProviderCompletedAt
+		}
+		if attempt.OperationStartedAt != nil {
+			record.OperationStartedAt = *attempt.OperationStartedAt
+		}
+		if attempt.OperationObservedAt != nil {
+			record.OperationObservedAt = *attempt.OperationObservedAt
+		}
+		if attempt.DeferredAt != nil {
+			record.DeferredAt = *attempt.DeferredAt
+		}
+		if attempt.RetryAt != nil {
+			record.RetryAt = *attempt.RetryAt
+		}
+		if attempt.LeaseRenewedAt != nil {
+			record.LeaseRenewedAt = *attempt.LeaseRenewedAt
+		}
+		if attempt.LeaseExpiresAt != nil {
+			record.LeaseExpiresAt = *attempt.LeaseExpiresAt
+		}
+		diagnostics.Records = append(diagnostics.Records, record)
+	}
+	if err := s.readProjectDiagnosticAdmissions(ctx, runnerID, project, diagnostics); err != nil {
+		return runnerstore.ProjectObservation{}, nil, err
+	}
+	if err := s.readProjectDiagnosticUnavailable(ctx, runnerID, project, diagnostics, attempts); err != nil {
+		return runnerstore.ProjectObservation{}, nil, err
+	}
+	row.Diagnostics = diagnostics
+	return row, attempts, nil
+}
+
+func (s *session) RunnerProjectObservationRunners(ctx context.Context, project tracker.ProjectID, now time.Time, limit int) ([]string, bool, error) {
+	if project == "" || now.IsZero() || limit < 1 || limit > 100 {
+		return nil, false, corestore.ErrInvalidPage
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT o.runner_id FROM runner_project_observations o JOIN runner_identities r ON r.organization_id=o.organization_id AND r.runner_id=o.runner_id JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=r.token_id JOIN projects p ON p.organization_id=o.organization_id AND p.id=o.project_id AND p.deleted_at IS NULL WHERE o.organization_id=$1 AND o.project_id=$2 AND r.removed_at IS NULL AND r.expires_at>$3 AND t.scope='worker' AND t.key_kind='service' AND t.revoked_at IS NULL AND t.created_at<=$3 AND (t.expires_at IS NULL OR t.expires_at>$3) AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.organization_id=r.organization_id AND g.token_id=r.token_id AND g.project_id=p.id)) ORDER BY o.runner_id LIMIT $4`, s.organization, project, now, limit+1)
+	if err != nil {
+		return nil, false, mapError(ctx, err)
+	}
+	defer rows.Close()
+	runners := make([]string, 0, limit)
+	for rows.Next() {
+		var runner string
+		if err := rows.Scan(&runner); err != nil {
+			return nil, false, mapError(ctx, err)
+		}
+		runners = append(runners, runner)
+	}
+	if err := mapError(ctx, rows.Err()); err != nil {
+		return nil, false, err
+	}
+	truncated := len(runners) > limit
+	if truncated {
+		runners = runners[:limit]
+	}
+	return runners, truncated, nil
+}
+
+func (s *session) readProjectDiagnosticUnavailable(ctx context.Context, runnerID string, project tracker.ProjectID, diagnostics *runnerauth.ProjectDiagnostics, attempts []runnerstore.ProjectDiagnosticAttempt) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT source,position,unavailable_key,reason FROM runner_project_diagnostic_unavailable WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3 ORDER BY source,position,unavailable_key`, s.organization, runnerID, project)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var source string
+		var position int
+		var key, reason string
+		if err := rows.Scan(&source, &position, &key, &reason); err != nil {
+			return mapError(ctx, err)
+		}
+		switch source {
+		case "snapshot":
+			diagnostics.Unavailable[key] = reason
+		case "attempt":
+			for index := range attempts {
+				if attempts[index].Position == position {
+					if diagnostics.Records[index].Unavailable == nil {
+						diagnostics.Records[index].Unavailable = map[string]string{}
+					}
+					diagnostics.Records[index].Unavailable[key] = reason
+					if attempts[index].Unavailable == nil {
+						attempts[index].Unavailable = map[string]string{}
+					}
+					attempts[index].Unavailable[key] = reason
+					break
+				}
+			}
+		case "admission":
+			if position >= 0 && position < len(diagnostics.Admissions) {
+				diagnostics.Admissions[position].Unavailable[key] = reason
+			}
+		}
+	}
+	return mapError(ctx, rows.Err())
+}
+
+func (s *session) readProjectDiagnosticAdmissions(ctx context.Context, runnerID string, project tracker.ProjectID, diagnostics *runnerauth.ProjectDiagnostics) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT issue_id,work_item_revision,observed_at,result,predicate,repository_reservations,host_landing_occupancy,provider_role,provider_backend,provider_model FROM runner_project_diagnostic_admissions WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3 ORDER BY position`, s.organization, runnerID, project)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var admission runnerauth.DiagnosticAdmission
+		var reservations pq.StringArray
+		var role, backend, model string
+		if err := rows.Scan(&admission.IssueID, &admission.WorkItemRevision, &admission.ObservedAt, &admission.Result, &admission.Predicate, &reservations, &admission.HostLandingOccupancy, &role, &backend, &model); err != nil {
+			return mapError(ctx, err)
+		}
+		admission.RepositoryReservations = append([]string(nil), reservations...)
+		if role != "" || backend != "" || model != "" {
+			admission.ProviderRequirement = &providercapacity.Requirement{Role: role, Backend: backend, Model: model}
+		}
+		admission.Unavailable = map[string]string{}
+		diagnostics.Admissions = append(diagnostics.Admissions, admission)
+	}
+	if err := mapError(ctx, rows.Err()); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return mapError(ctx, err)
+	}
+	return nil
 }
 
 func (s *session) CreateRunnerEnrollment(ctx context.Context, row runnerstore.Enrollment) error {
@@ -565,16 +760,111 @@ func (s *session) ReplaceRunnerProjectObservation(ctx context.Context, row runne
 		}
 		return runnerstore.ErrStaleObservation
 	}
+	if err := s.writeRunnerProjectDiagnosticDetails(ctx, row); err != nil {
+		return err
+	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM runner_project_diagnostic_attempts WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, row.OrganizationID, row.RunnerID, row.ProjectID); err != nil {
 		return mapError(ctx, err)
 	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM runner_project_diagnostic_counts WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, row.OrganizationID, row.RunnerID, row.ProjectID); err != nil {
+		return mapError(ctx, err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM runner_project_diagnostic_unavailable WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, row.OrganizationID, row.RunnerID, row.ProjectID); err != nil {
+		return mapError(ctx, err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM runner_project_diagnostic_admissions WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, row.OrganizationID, row.RunnerID, row.ProjectID); err != nil {
+		return mapError(ctx, err)
+	}
+	attemptRows := make([][]any, 0, len(attempts))
+	unavailableRows := make([][]any, 0)
 	for _, attempt := range attempts {
-		_, err := s.db.ExecContext(ctx, `INSERT INTO runner_project_diagnostic_attempts (organization_id,runner_id,project_id,position,record_key,issue_id,local_attempt_id,native_attempt_id,generation,fence,stage,running,native_claim,provider_completed_at,host_operation,operation_pending,lease_renewed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`, row.OrganizationID, row.RunnerID, row.ProjectID, attempt.Position, attempt.RecordKey, attempt.IssueID, attempt.LocalAttemptID, attempt.NativeAttemptID, attempt.Generation, attempt.Fence, attempt.Stage, attempt.Running, attempt.NativeClaim, attempt.ProviderCompletedAt, attempt.HostOperation, attempt.OperationPending, attempt.LeaseRenewedAt)
-		if err != nil {
+		attemptRows = append(attemptRows, []any{row.OrganizationID, row.RunnerID, row.ProjectID, attempt.Position, attempt.RecordKey, attempt.IssueID, attempt.LocalAttemptID, attempt.NativeAttemptID, attempt.Generation, attempt.Fence, attempt.Stage, attempt.Running, attempt.NativeClaim, attempt.ProviderCompletedAt, attempt.HostOperation, attempt.OperationPending, attempt.LeaseRenewedAt, pq.Array(attempt.Membership), attempt.OperationStartedAt, attempt.OperationObservedAt, attempt.LatestErrorCode, attempt.LatestError, attempt.DeferredAt, attempt.RetryAt, attempt.RetryAttempt, attempt.RecoveryOwner, attempt.LeaseExpiresAt})
+		for key, reason := range attempt.Unavailable {
+			unavailableRows = append(unavailableRows, []any{row.OrganizationID, row.RunnerID, row.ProjectID, "attempt", attempt.Position, key, reason})
+		}
+	}
+	if err := s.insertRunnerDiagnosticRows(ctx, "runner_project_diagnostic_attempts", "organization_id,runner_id,project_id,position,record_key,issue_id,local_attempt_id,native_attempt_id,generation,fence,stage,running,native_claim,provider_completed_at,host_operation,operation_pending,lease_renewed_at,membership,operation_started_at,operation_observed_at,latest_error_code,latest_error,deferred_at,retry_at,retry_attempt,recovery_owner,lease_expires_at", attemptRows); err != nil {
+		return err
+	}
+	admissionRows := make([][]any, 0)
+	countRows := make([][]any, 0)
+	if row.Diagnostics != nil {
+		for position, admission := range row.Diagnostics.Admissions {
+			requirement := providercapacity.Requirement{}
+			if admission.ProviderRequirement != nil {
+				requirement = *admission.ProviderRequirement
+			}
+			admissionRows = append(admissionRows, []any{row.OrganizationID, row.RunnerID, row.ProjectID, position, admission.IssueID, admission.WorkItemRevision, admission.ObservedAt, admission.Result, admission.Predicate, pq.Array(admission.RepositoryReservations), admission.HostLandingOccupancy, requirement.Role, requirement.Backend, requirement.Model})
+			for key, reason := range admission.Unavailable {
+				unavailableRows = append(unavailableRows, []any{row.OrganizationID, row.RunnerID, row.ProjectID, "admission", position, key, reason})
+			}
+		}
+		for key, value := range row.Diagnostics.Counts {
+			countRows = append(countRows, []any{row.OrganizationID, row.RunnerID, row.ProjectID, key, value})
+		}
+		for key, reason := range row.Diagnostics.Unavailable {
+			unavailableRows = append(unavailableRows, []any{row.OrganizationID, row.RunnerID, row.ProjectID, "snapshot", -1, key, reason})
+		}
+	}
+	if err := s.insertRunnerDiagnosticRows(ctx, "runner_project_diagnostic_admissions", "organization_id,runner_id,project_id,position,issue_id,work_item_revision,observed_at,result,predicate,repository_reservations,host_landing_occupancy,provider_role,provider_backend,provider_model", admissionRows); err != nil {
+		return err
+	}
+	if err := s.insertRunnerDiagnosticRows(ctx, "runner_project_diagnostic_counts", "organization_id,runner_id,project_id,count_key,count_value", countRows); err != nil {
+		return err
+	}
+	if err := s.insertRunnerDiagnosticRows(ctx, "runner_project_diagnostic_unavailable", "organization_id,runner_id,project_id,source,position,unavailable_key,reason", unavailableRows); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *session) insertRunnerDiagnosticRows(ctx context.Context, table, columns string, rows [][]any) error {
+	const maxRows = 500
+	for offset := 0; offset < len(rows); offset += maxRows {
+		end := min(len(rows), offset+maxRows)
+		var query strings.Builder
+		query.WriteString("INSERT INTO ")
+		query.WriteString(table)
+		query.WriteString(" (")
+		query.WriteString(columns)
+		query.WriteString(") VALUES ")
+		args := make([]any, 0, (end-offset)*len(rows[offset]))
+		for index, row := range rows[offset:end] {
+			if index != 0 {
+				query.WriteByte(',')
+			}
+			query.WriteByte('(')
+			for valueIndex, value := range row {
+				if valueIndex != 0 {
+					query.WriteByte(',')
+				}
+				fmt.Fprintf(&query, "$%d", len(args)+1)
+				args = append(args, value)
+			}
+			query.WriteByte(')')
+		}
+		if _, err := s.db.ExecContext(ctx, query.String(), args...); err != nil {
 			return mapError(ctx, err)
 		}
 	}
 	return nil
+}
+
+func (s *session) writeRunnerProjectDiagnosticDetails(ctx context.Context, row runnerstore.ProjectObservation) error {
+	source := ""
+	truncated := false
+	var version, commit, buildSource, sha256, os, architecture any
+	var verified, buildObserved any
+	if row.Diagnostics != nil {
+		source = row.Diagnostics.Source
+		truncated = row.Diagnostics.Truncated
+		if build := row.Diagnostics.RunningBuild; build != nil {
+			version, commit, buildSource, sha256, os, architecture = build.Version, build.Commit, build.Source, build.SHA256, build.OS, build.Architecture
+			verified, buildObserved = build.VerifiedRelease, build.ObservedAt
+		}
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE runner_project_observations SET diagnostics_source=$4,diagnostics_truncated=$5,build_version=$6,build_commit=$7,build_source=$8,build_sha256=$9,build_os=$10,build_architecture=$11,build_verified_release=$12,build_observed_at=$13 WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, row.OrganizationID, row.RunnerID, row.ProjectID, source, truncated, version, commit, buildSource, sha256, os, architecture, verified, buildObserved)
+	return mapError(ctx, err)
 }
 
 func (s *session) RunnerProviderReports(ctx context.Context, runnerID string) ([]providercapacity.Report, error) {

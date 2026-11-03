@@ -289,9 +289,39 @@
     "ownership": "organization-owned",
     "scope": "credit_history_imports.organization_id; sealed source snapshot and completion counts are tenant scoped"
   },
+  "public/daily_summary_preferences": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "daily_summary_preferences.organization_id; hosted member delivery preferences are tenant scoped"
+  },
+  "public/daily_summary_receipts": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "daily_summary_receipts.organization_id; delivery receipts are tenant scoped"
+  },
+  "public/hosted_release_preferences": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "hosted_release_preferences.organization_id; release observations are tenant scoped"
+  },
   "public/attempt_diffs": {
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "attempt_diffs.organization_id; work item generation is tenant and project scoped and diff files remain in verified archive content"
+  },
+  "public/runner_project_diagnostic_admissions": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "runner_project_diagnostic_admissions.organization_id; admission observations reference one tenant runner project snapshot"
+  },
+  "public/runner_project_diagnostic_counts": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "runner_project_diagnostic_counts.organization_id; counts reference one tenant runner project snapshot"
+  },
+  "public/runner_project_diagnostic_unavailable": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "runner_project_diagnostic_unavailable.organization_id; unavailable markers reference one tenant runner project snapshot"
   }
 }

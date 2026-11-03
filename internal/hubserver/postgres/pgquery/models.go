@@ -2468,6 +2468,23 @@ type RunnerProjectCapacityLimit struct {
 	CapacityLimit  int32
 }
 
+type RunnerProjectDiagnosticAdmission struct {
+	OrganizationID         tracker.OrganizationID
+	RunnerID               string
+	ProjectID              tracker.ProjectID
+	Position               int32
+	IssueID                string
+	WorkItemRevision       int64
+	ObservedAt             time.Time
+	Result                 string
+	Predicate              string
+	RepositoryReservations []string
+	HostLandingOccupancy   int32
+	ProviderRole           string
+	ProviderBackend        string
+	ProviderModel          string
+}
+
 type RunnerProjectDiagnosticAttempt struct {
 	OrganizationID      tracker.OrganizationID
 	RunnerID            string
@@ -2486,16 +2503,54 @@ type RunnerProjectDiagnosticAttempt struct {
 	HostOperation       string
 	OperationPending    bool
 	LeaseRenewedAt      *time.Time
+	Membership          []string
+	OperationStartedAt  *time.Time
+	OperationObservedAt *time.Time
+	LatestErrorCode     string
+	LatestError         string
+	DeferredAt          *time.Time
+	RetryAt             *time.Time
+	RetryAttempt        int32
+	RecoveryOwner       string
+	LeaseExpiresAt      *time.Time
+}
+
+type RunnerProjectDiagnosticCount struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	ProjectID      tracker.ProjectID
+	CountKey       string
+	CountValue     int32
+}
+
+type RunnerProjectDiagnosticUnavailable struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	ProjectID      tracker.ProjectID
+	Source         string
+	Position       int32
+	UnavailableKey string
+	Reason         string
 }
 
 type RunnerProjectObservation struct {
-	OrganizationID    tracker.OrganizationID
-	RunnerID          string
-	ProjectID         tracker.ProjectID
-	ObservedAt        time.Time
-	DiagnosticsAt     *time.Time
-	RuntimeObservedAt *time.Time
-	SnapshotDigest    string
+	OrganizationID       tracker.OrganizationID
+	RunnerID             string
+	ProjectID            tracker.ProjectID
+	ObservedAt           time.Time
+	DiagnosticsAt        *time.Time
+	RuntimeObservedAt    *time.Time
+	SnapshotDigest       string
+	DiagnosticsSource    string
+	DiagnosticsTruncated bool
+	BuildVersion         *string
+	BuildCommit          *string
+	BuildSource          *string
+	BuildSha256          *string
+	BuildOs              *string
+	BuildArchitecture    *string
+	BuildVerifiedRelease sql.NullBool
+	BuildObservedAt      *time.Time
 }
 
 type RunnerProjectRank struct {

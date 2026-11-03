@@ -125,6 +125,25 @@ func (s *session) WorkItems(ctx context.Context, project tracker.ProjectID, afte
 	return items, nil
 }
 
+func (s *session) WorkItemsByNativeIDs(ctx context.Context, project tracker.ProjectID, ids []tracker.NativeWorkItemID) ([]corestore.WorkItem, error) {
+	if project == "" || len(ids) > corestore.MaxPageSize {
+		return nil, corestore.ErrInvalidPage
+	}
+	values := make([]string, len(ids))
+	for i, id := range ids {
+		values[i] = string(id)
+	}
+	rows, err := s.queries.GetNativeWorkItemsByIDs(ctx, pgquery.GetNativeWorkItemsByIDsParams{OrganizationID: s.organization, ProjectID: project, NativeIds: values})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	items := make([]corestore.WorkItem, len(rows))
+	for i, row := range rows {
+		items[i] = corestore.WorkItem(row)
+	}
+	return items, nil
+}
+
 func optionalTime(value time.Time) *time.Time {
 	if value.IsZero() {
 		return nil
