@@ -194,8 +194,14 @@ func (s *conversationStore) deleteAttachment(ctx context.Context, tx *sql.Tx, id
 	if _, err := tx.ExecContext(ctx, "UPDATE conversation_attachments SET deleted_at = ?, expires_at = NULL, content_attachment_id = '' WHERE id = ?", conversationTime(now), id); err != nil {
 		return fmt.Errorf("delete attachment: %w", err)
 	}
-	if contentID != "" {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM attachments WHERE id=? AND kind='archive'
+	return s.reclaimUnreferencedAttachmentArchive(ctx, tx, contentID)
+}
+
+func (s *conversationStore) reclaimUnreferencedAttachmentArchive(ctx context.Context, tx *sql.Tx, contentID string) error {
+	if contentID == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM attachments WHERE id=? AND kind='archive'
  AND NOT EXISTS (SELECT 1 FROM conversation_attachments WHERE content_attachment_id=attachments.id)
  AND NOT EXISTS (SELECT 1 FROM conversations WHERE content_attachment_id=attachments.id)
  AND NOT EXISTS (SELECT 1 FROM conversation_messages WHERE content_attachment_id=attachments.id)
@@ -212,8 +218,7 @@ func (s *conversationStore) deleteAttachment(ctx context.Context, tx *sql.Tx, id
  AND NOT EXISTS (SELECT 1 FROM issue_storage_archives WHERE attachment_id=attachments.id)
  AND NOT EXISTS (SELECT 1 FROM attachment_references WHERE attachment_id=attachments.id)
  AND NOT EXISTS (SELECT 1 FROM release_audit_parts WHERE attachment_id=attachments.id)`, contentID); err != nil {
-			return fmt.Errorf("reclaim unsent attachment archive: %w", err)
-		}
+		return fmt.Errorf("reclaim unreferenced attachment archive: %w", err)
 	}
 	return nil
 }
@@ -583,7 +588,7 @@ func (s *Service) commandDeleteAttachment(ctx context.Context, scope nativeScope
 	return json.RawMessage(`{"deleted":true}`), nil
 }
 
-func (s *Service) commandUploadAttachment(ctx context.Context, scope nativeScope, id string, upload conversationAttachmentUpload) (json.RawMessage, error) {
+func (s *Service) commandUploadAttachment(ctx context.Context, scope nativeScope, id string, upload conversationAttachmentUpload) (result json.RawMessage, resultErr error) {
 	if s.conversationRecordsSelected() {
 		return nil, conversationUnsupported("Conversation attachments require the PostgreSQL attachment owner")
 	}
@@ -666,6 +671,26 @@ func (s *Service) commandUploadAttachment(ctx context.Context, scope nativeScope
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubReadTimeout)
+		defer cancel()
+		tx, err := service.store.db.BeginTx(cleanupCtx, nil)
+		if err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("begin attachment archive reclaim: %w", err))
+			return
+		}
+		defer tx.Rollback()
+		if err := service.store.reclaimUnreferencedAttachmentArchive(cleanupCtx, tx, contentArchiveID(string(scope.organization), archive)); err != nil {
+			resultErr = errors.Join(resultErr, err)
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("commit attachment archive reclaim: %w", err))
+		}
+	}()
 	prepared, ok := ctx.Value(conversationContentsKey{}).(preparedConversationContents)
 	if !ok {
 		return nil, errors.New("prepare attachment payload: prepared contents unavailable")
