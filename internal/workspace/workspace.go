@@ -968,6 +968,12 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		return result, err
 	}
 	if !exists {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultHookTimeout)
+		defer cancel()
+		result.Processes, err = ReapProcesses(WithProcessSource(cleanupCtx, l.processSource), info.Path, 250*time.Millisecond)
+		if err != nil {
+			return result, fmt.Errorf("stop missing workspace processes: %w", err)
+		}
 		_, pruneErr := l.runGit(ctx, "worktree", "prune")
 		if pruneErr != nil {
 			return result, pruneErr
@@ -985,11 +991,17 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		l.deleteCheckpointRef(ctx, issue)
 		return result, nil
 	}
-	result.Processes = reapWorkspaceProcesses(WithProcessSource(ctx, l.processSource), info.Path, l.logger)
 	if isDir && l.isSourceWorktree(ctx, info.Path) {
 		if err := l.runHook(ctx, "before_remove", l.hooks.BeforeRemove, info, issue); err != nil {
 			l.logger.Warn("workspace before_remove hook failed", slog.String("path", info.Path), slog.Any("error", err))
 		}
+	}
+
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultHookTimeout)
+	defer cancel()
+	result.Processes, err = ReapProcesses(WithProcessSource(cleanupCtx, l.processSource), info.Path, 250*time.Millisecond)
+	if err != nil {
+		return result, fmt.Errorf("stop workspace processes before removal: %w", err)
 	}
 
 	if err := l.beginWorkspaceCleanup(ctx, info, issue, isDir); err != nil {
@@ -1611,6 +1623,9 @@ func (l *LocalGit) quarantineWorktree(ctx context.Context, path string) (string,
 	if metadata.commonDir != sourceCommon {
 		return "", fmt.Errorf("refusing to quarantine worktree not managed by source: %s", path)
 	}
+	if _, err := ReapProcesses(WithProcessSource(ctx, l.processSource), path, 250*time.Millisecond); err != nil {
+		return "", fmt.Errorf("stop workspace processes before quarantine: %w", err)
+	}
 	quarantinePath, err := l.nextQuarantinePath(path)
 	if err != nil {
 		return "", err
@@ -1704,6 +1719,9 @@ func (l *LocalGit) quarantineFailedWorkspace(ctx context.Context, path string) (
 	path, err = validateWorkspacePath(l.root, path)
 	if err != nil {
 		return "", false, err
+	}
+	if _, err := ReapProcesses(WithProcessSource(ctx, l.processSource), path, 250*time.Millisecond); err != nil {
+		return "", false, fmt.Errorf("stop failed workspace processes: %w", err)
 	}
 	quarantinePath, err := l.nextQuarantinePath(path)
 	if err != nil {

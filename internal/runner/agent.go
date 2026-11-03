@@ -1931,6 +1931,15 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		return RunResult{}, fmt.Errorf("%w: create workspace: %w", ErrWorkspacePreparation, err)
 	}
+	workspaceTeardownPending := true
+	defer func() {
+		if !workspaceTeardownPending || info.Path == "" {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+		defer cancel()
+		returnErr = errors.Join(returnErr, r.reapWorkspaceProcessesAfterTurn(cleanupCtx, info.Path, 0, req.WorkAttemptID, req.Issue, returnErr, true))
+	}()
 	r.logWorkerEvent(req.Issue, "worker_workspace_created",
 		telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 		"workspace_path", info.Path,
@@ -2546,6 +2555,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	runWithCheckpoint := func(request AgentTurnRequest, runReq RunRequest, identity agentidentity.Identity, costOffsetUSD float64) agentTurnExecution {
 		return r.runCheckpointedTurn(ctx, sessionCtx, checkpoint, workflow.Config.Agent, backend, request, runReq, func(turnCtx context.Context, request AgentTurnRequest, runReq RunRequest) agentTurnExecution {
+			workspaceTeardownPending = false
 			execution := r.runAgentTurn(turnCtx, backend, request, runReq, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, targetRefObserver, runStartedAt, sessionID, identity, budgetProjection, costOffsetUSD, sessionModel, backendConfig.Kind)
 			costOffsetUSD += r.usageCostUSD(sessionModel, execution.result.Tokens.InputTokens, execution.result.Tokens.CachedInputTokens, execution.result.Tokens.OutputTokens, backendConfig.Kind)
 			return execution
