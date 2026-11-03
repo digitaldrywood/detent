@@ -163,7 +163,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
 		if name == operatortool.WorkAttemptReceipt && evidence.Attempt != nil {
-			evidence.ValidationAudit, err = readValidationAudit(ctx, s.database.reader, scope, "", request.Reference, "", evidence.Attempt.AttemptID)
+			evidence.ValidationAudit, err = s.readValidationAuditRecord(ctx, scope, item, evidence.Attempt)
 			if err != nil {
 				return operatortool.Result{}, safeWorkReadError(err)
 			}
@@ -177,7 +177,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		}
 		view := operatortool.NativeItemView(request.ProjectID, item)
 		if strings.Contains(item.Body, "detent-checks") {
-			view.ValidationAudit, err = readValidationAudit(ctx, s.database.reader, scope, request.Reference, "", "", "")
+			view.ValidationAudit, err = s.readValidationAuditRecord(ctx, scope, item, nil)
 		}
 		return hubWorkResult(r, request, view, err)
 	case operatortool.WorkExport:

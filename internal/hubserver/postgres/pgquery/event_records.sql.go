@@ -136,6 +136,50 @@ func (q *Queries) RecordGetCollaborationVersion(ctx context.Context, arg RecordG
 	return i, err
 }
 
+const recordGetCollaborationVersions = `-- name: RecordGetCollaborationVersions :many
+SELECT v.organization_id, v.project_id, v.work_item_id, v.record_id, v.revision, v.payload_object_key, v.payload_sha256, v.payload_bytes, v.payload_content_bytes FROM ROWS FROM(unnest($1::text[]),unnest($2::bigint[])) input(record_id,revision)
+JOIN collaboration_versions v ON v.organization_id=$3 AND v.record_id=input.record_id AND v.revision=input.revision
+`
+
+type RecordGetCollaborationVersionsParams struct {
+	RecordIds      []string
+	Revisions      []int64
+	OrganizationID tracker.OrganizationID
+}
+
+func (q *Queries) RecordGetCollaborationVersions(ctx context.Context, arg RecordGetCollaborationVersionsParams) ([]CollaborationVersion, error) {
+	rows, err := q.db.QueryContext(ctx, recordGetCollaborationVersions, pq.Array(arg.RecordIds), pq.Array(arg.Revisions), arg.OrganizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CollaborationVersion{}
+	for rows.Next() {
+		var i CollaborationVersion
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.WorkItemID,
+			&i.RecordID,
+			&i.Revision,
+			&i.PayloadObjectKey,
+			&i.PayloadSHA256,
+			&i.PayloadBytes,
+			&i.PayloadContentBytes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const recordGetEvent = `-- name: RecordGetEvent :one
 SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND id=$4
 `

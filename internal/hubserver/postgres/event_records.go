@@ -325,6 +325,33 @@ func (s *session) CollaborationVersion(ctx context.Context, id string, revision 
 	row, err := s.queries.RecordGetCollaborationVersion(ctx, pgquery.RecordGetCollaborationVersionParams{OrganizationID: s.organization, RecordID: id, Revision: revision})
 	return eventstore.CollaborationVersion(row), mapError(ctx, err)
 }
+func (s *session) CollaborationVersions(ctx context.Context, keys []eventstore.CollaborationVersionKey) ([]eventstore.CollaborationVersion, error) {
+	if len(keys) == 0 {
+		return []eventstore.CollaborationVersion{}, nil
+	}
+	if len(keys) > 64 {
+		return nil, corestore.ErrInvalidPage
+	}
+	ids := make([]string, len(keys))
+	revisions := make([]int64, len(keys))
+	seen := map[eventstore.CollaborationVersionKey]bool{}
+	for i, key := range keys {
+		if key.RecordID == "" || key.Revision < 1 || seen[key] {
+			return nil, corestore.ErrInvalidPage
+		}
+		ids[i], revisions[i], seen[key] = key.RecordID, key.Revision, true
+	}
+	rows, err := s.queries.RecordGetCollaborationVersions(ctx, pgquery.RecordGetCollaborationVersionsParams{OrganizationID: s.organization, RecordIds: ids, Revisions: revisions})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	result := make([]eventstore.CollaborationVersion, len(rows))
+	for i, row := range rows {
+		result[i] = eventstore.CollaborationVersion(row)
+	}
+	return result, nil
+}
+
 func (s *session) insertRecordEvent(ctx context.Context, record eventstore.Event) (eventstore.Event, error) {
 	row, err := s.queries.RecordInsertEvent(ctx, pgquery.RecordInsertEventParams{OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID, Sequence: record.Sequence, ProjectSequence: record.ProjectSequence, Type: record.Type, SchemaVersion: record.SchemaVersion, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, EventRevision: record.EventRevision, ChangeID: record.ChangeID, VersionID: record.VersionID, HeadSHA: record.HeadSHA, LandingWaiting: record.LandingWaiting, LandingChangeID: record.LandingChangeID, LandingVersionID: record.LandingVersionID, LandingHeadSHA: record.LandingHeadSHA, RunID: record.RunID, AttemptID: record.AttemptID, FromState: record.FromState, ToState: record.ToState, RecordedAt: record.RecordedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
 	return eventstore.Event(row), mapError(ctx, err)

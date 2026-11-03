@@ -244,3 +244,7 @@ VALUES (sqlc.arg(organization_id),sqlc.arg(project_id),sqlc.arg(work_item_id),sq
 UPDATE linked_issue_sources SET title_owned=sqlc.arg(title_owned),body_owned=sqlc.arg(body_owned),snapshot_object_key=sqlc.narg(snapshot_object_key),snapshot_sha256=sqlc.narg(snapshot_sha256),snapshot_bytes=sqlc.narg(snapshot_bytes),snapshot_content_bytes=sqlc.narg(snapshot_content_bytes)
 WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND source_url=sqlc.arg(source_url) AND snapshot_sha256 IS NOT DISTINCT FROM sqlc.narg(expected_snapshot_sha256)
 RETURNING *;
+
+-- name: RecordGetCollaborationVersions :many
+SELECT v.* FROM ROWS FROM(unnest(sqlc.arg(record_ids)::text[]),unnest(sqlc.arg(revisions)::bigint[])) input(record_id,revision)
+JOIN collaboration_versions v ON v.organization_id=sqlc.arg(organization_id) AND v.record_id=input.record_id AND v.revision=input.revision;
