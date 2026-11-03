@@ -48,9 +48,8 @@ func openPool(connection pq.Config, role string) (*sql.DB, error) {
 		return nil, ErrConnectionConfig
 	}
 	connection = connection.Clone()
-	connection.Runtime = map[string]string{"search_path": "public, pg_catalog"}
 	if role != "" {
-		connection.Runtime["role"] = role
+		connection.Runtime = map[string]string{"search_path": "public, pg_catalog", "role": role}
 	}
 	connector, err := pq.NewConnectorConfig(connection)
 	if err != nil {
