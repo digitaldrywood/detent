@@ -165,6 +165,22 @@ func projectRecordError(err error) error {
 	return err
 }
 
+func (s *Service) readAuthorizedProjectRecord(ctx context.Context, scope nativeScope, write bool) (projectstore.Record, error) {
+	if s.config.AccessRepository == nil {
+		return projectstore.Record{}, nativeNotFound()
+	}
+	var result projectstore.Record
+	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, write); err != nil {
+			return err
+		}
+		var err error
+		result, err = r.ProjectRecord(ctx, scope.project)
+		return err
+	})
+	return result, projectRecordError(err)
+}
+
 func (s *Service) readProjectRecord(ctx context.Context, scope nativeScope) (projectstore.Record, error) {
 	var result projectstore.Record
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -501,7 +517,11 @@ func (s *Service) planProjectRecordMutation(ctx context.Context, scope nativeSco
 
 func (s *Service) getProjectRecord(c echo.Context) error {
 	scope := nativeRequestScope(c)
-	record, err := s.readProjectRecord(c.Request().Context(), scope)
+	record, ok := c.Get("native_project_record").(projectstore.Record)
+	var err error
+	if !ok || record.Core.OrganizationID != scope.organization || record.Core.ID != scope.project {
+		record, err = s.readProjectRecord(c.Request().Context(), scope)
+	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
