@@ -150,7 +150,7 @@ func TestNativeEventWriterBudget(t *testing.T) {
 						bound += 40 * len(event.Data.Disposition.BlockerEvidence)
 					}
 					uploads := uploaded.Load() - uploadsBefore
-					wantTransactions := int64(2)
+					wantTransactions := int64(1)
 					if name == "replay" || name == "finish replay" {
 						wantTransactions = 1
 					}
@@ -158,8 +158,8 @@ func TestNativeEventWriterBudget(t *testing.T) {
 						t.Errorf("writer_txs=%d (want %d for %d uploads), writer_statements=%d (bound %d)", writer.txs.Load(), wantTransactions, uploads, statements, bound)
 					}
 					var pending int
-					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM attachments WHERE pending_content IS NOT NULL)+(SELECT count(*) FROM change_content_objects WHERE pending_content IS NOT NULL)`).Scan(&pending); err != nil || pending != 0 {
-						t.Fatalf("unpublished content=%d: %v", pending, err)
+					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM attachments WHERE pending_content IS NOT NULL)+(SELECT count(*) FROM change_content_objects WHERE pending_content IS NOT NULL)`).Scan(&pending); err != nil || pending == 0 {
+						t.Fatalf("missing staged publication: pending=%d: %v", pending, err)
 					}
 				})
 			}
@@ -282,7 +282,7 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 		transactions += writer.txs.Load()
 	}
 	t.Logf("runners=%d writer_txs=%d", len(requests), transactions)
-	wantTransactions := int64(2 * len(requests))
+	wantTransactions := int64(len(requests))
 	if transactions != wantTransactions {
 		t.Fatalf("writer_txs=%d, want %d for %d requests and %d uploads", transactions, wantTransactions, len(requests), uploaded.Load())
 	}

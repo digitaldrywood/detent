@@ -14,6 +14,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -51,6 +52,14 @@ func TestHeartbeatContentAccounting(t *testing.T) {
 			}
 			uploaded := make(map[string]int64)
 			f.service.config.Content = func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+				if !request.Write {
+					objects.mu.Lock()
+					_, found := objects.objects[request.Reference.Key]
+					objects.mu.Unlock()
+					if !found {
+						return nil, artifact.ErrMissing
+					}
+				}
 				raw, err := objects.call(ctx, request)
 				if err == nil && request.Write {
 					uploaded[request.Reference.Key] = request.Reference.CompressedSize
@@ -67,7 +76,7 @@ func TestHeartbeatContentAccounting(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusTooManyRequests)
 				return
 			}
-			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+			requireNativeStatus(t, response, http.StatusOK)
 			if len(uploaded) < len(view.Diagnostics.Admissions) {
 				t.Fatalf("uploaded objects=%d, want at least %d", len(uploaded), len(view.Diagnostics.Admissions))
 			}
@@ -96,9 +105,9 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 		concurrent bool
 		statements int
 	}{
-		{name: "heartbeat", statements: 12},
-		{name: "heartbeat admission", admission: true, statements: 30},
-		{name: "heartbeat hosted admission", admission: true, hosted: true, statements: 50},
+		{name: "heartbeat", statements: 16},
+		{name: "heartbeat admission", admission: true, statements: 40},
+		{name: "heartbeat hosted admission", admission: true, hosted: true, statements: 60},
 		{name: "heartbeat concurrent admission", admission: true, concurrent: true, statements: 40},
 		{name: "renew", renew: true, statements: 12},
 		{name: "hosted renew", renew: true, hosted: true, statements: 20},
@@ -195,9 +204,6 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 			}
 			t.Logf("writer_txs=%d writer_statements=%d", writer.txs.Load(), statements)
 			wantTransactions := int64(1)
-			if test.admission {
-				wantTransactions++
-			}
 			if writer.txs.Load() != wantTransactions || statements > test.statements {
 				t.Fatalf("writer_txs=%d (want %d), writer_statements=%d (bound %d)", writer.txs.Load(), wantTransactions, statements, test.statements)
 			}

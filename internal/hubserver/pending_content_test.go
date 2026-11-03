@@ -88,6 +88,9 @@ func TestNativeEventPendingPublicationS3(t *testing.T) {
 				return attachment.ReadArchiveObject(ctx, storage, request.Organization, request.Reference)
 			}})
 			f.start(t)
+			if err := f.service.convertStorageBatch(t.Context(), f.service.config.now()); err != nil {
+				t.Fatal(err)
+			}
 			mu.Lock()
 			unavailable = recovery
 			beforeUploads := uploads
@@ -99,10 +102,7 @@ func TestNativeEventPendingPublicationS3(t *testing.T) {
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE pending_content IS NOT NULL").Scan(&pending); err != nil {
 				t.Fatal(err)
 			}
-			wantPending := 0
-			if recovery {
-				wantPending = 2
-			}
+			wantPending := 2
 			if pending != wantPending {
 				t.Fatalf("pending=%d, want %d", pending, wantPending)
 			}
@@ -245,6 +245,9 @@ func TestNativeEventRejectionsLeaveNoContent(t *testing.T) {
 			store := &memoryRunDetails{}
 			f := claimedAttemptDiffFixture(t, false, Config{RunDetails: store, now: func() time.Time { return now }})
 			f.start(t)
+			if err := f.service.convertStorageBatch(t.Context(), f.service.config.now()); err != nil {
+				t.Fatal(err)
+			}
 			event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "rejected-event"}, Type: "run.finished", SchemaVersion: 1,
 				Data: tracker.NativeRunData{Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded"}}
 			path := f.base + "/work-items/" + string(f.issue.WorkItemID) + "/events"
@@ -338,6 +341,9 @@ func TestNativeEventUploadsOnlyAfterCommit(t *testing.T) {
 			store := &memoryRunDetails{}
 			f := claimedAttemptDiffFixture(t, false, Config{RunDetails: store})
 			f.start(t)
+			if err := f.service.convertStorageBatch(t.Context(), f.service.config.now()); err != nil {
+				t.Fatal(err)
+			}
 			if change.name == "owner" {
 				worker := f.nativeFixture.worker(t, "replacement-worker")
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker,
@@ -363,6 +369,7 @@ func TestNativeEventUploadsOnlyAfterCommit(t *testing.T) {
 			go func() {
 				defer close(done)
 				f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
+
 			}()
 			t.Cleanup(func() {
 				release.Do(func() { close(resume) })
@@ -385,7 +392,7 @@ func TestNativeEventUploadsOnlyAfterCommit(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var pending int
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE pending_content IS NOT NULL").Scan(&pending); err != nil || pending != 2 {
-				t.Fatalf("superseded publisher cleared pending content: pending=%d want=2 error=%v", pending, err)
+				t.Fatalf("request cleared pending content: pending=%d want=2 error=%v", pending, err)
 			}
 			if got := readReferencedRun(t, f.service, f.attempt); got.Sequence != 2 || got.Outcome != "succeeded" {
 				t.Fatal("supersession lost committed run history")
@@ -411,6 +418,9 @@ func TestNativeEventPendingPublicationRecovery(t *testing.T) {
 			store := &uncertainRunDetails{memoryRunDetails: &memoryRunDetails{}}
 			f := claimedAttemptDiffFixture(t, false, Config{RunDetails: store})
 			f.start(t)
+			if err := f.service.convertStorageBatch(t.Context(), f.service.config.now()); err != nil {
+				t.Fatal(err)
+			}
 			var beforeBytes int64
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&beforeBytes); err != nil {
 				t.Fatal(err)
@@ -437,6 +447,13 @@ func TestNativeEventPendingPublicationRecovery(t *testing.T) {
 				Data: tracker.NativeRunData{Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded"}}
 			path := f.base + "/work-items/" + string(f.issue.WorkItemID) + "/events"
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.worker, event), http.StatusOK)
+			publicationErr := f.service.convertStorageBatch(t.Context(), f.service.config.now())
+			if failure != "uncertain committed upload" && publicationErr == nil {
+				t.Fatal("publication failure was not exercised")
+			}
+			if failure == "uncertain committed upload" && publicationErr != nil {
+				t.Fatal(publicationErr)
+			}
 			var pending, references int
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE pending_content IS NOT NULL").Scan(&pending); err != nil {
 				t.Fatal(err)

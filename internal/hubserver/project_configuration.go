@@ -447,7 +447,7 @@ func (s *Service) prepareProjectConfiguration(ctx context.Context, scope nativeS
 	if err != nil {
 		return preparedProjectConfiguration{}, err
 	}
-	if observation.Diagnostics != nil {
+	if observation.Diagnostics != nil && ctx.Value(pendingContentKey{}) == nil {
 		_, err := prepareContentMutation(ctx, s.database.reader, func() (struct{}, error) {
 			return struct{}{}, s.prepareAdmissionPayloads(ctx, scope, observation.Diagnostics.Admissions, now)
 		})

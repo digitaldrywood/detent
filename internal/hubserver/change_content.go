@@ -95,7 +95,13 @@ func prepareMeteredContent(ctx context.Context, organization string, data []byte
 		return cached, nil
 	}
 	var ref attachment.ArchiveReference
-	if content.call == nil {
+	if _, pending := ctx.Value(pendingContentKey{}).(*pendingContentMutation); pending {
+		var err error
+		ref, _, err = attachment.PrepareArchive(organization, 1, bytes.NewReader(data))
+		if err != nil {
+			return ref, err
+		}
+	} else if content.call == nil {
 		var err error
 		ref, err = content.store.StoreDetail(ctx, organization, data)
 		if err != nil {
