@@ -24,7 +24,7 @@ const storageConversionVersion = 1
 const storageConversionRows = 100
 const storageConversionBytes = 1 << 20
 
-const storageConversionOwnerPredicate = "family IN ('projection-content','projection-pages','projection-activity','projection-attempts','projection-leases','projection-ranks','projection-health','projection-runners','runs','attempts','analytics','conversation_events','messages','versions','evidence','sources','diff_files','checkpoints','landings','tool_revisions','conversation_records','conversation_questions','conversation_commands','conversation_attachments')"
+const storageConversionOwnerPredicate = "family IN ('projection-content','projection-pages','projection-activity','projection-attempts','projection-leases','projection-ranks','projection-health','projection-runners','runs','attempts','analytics','conversation_events','messages','versions','evidence','sources','diff_files','checkpoints','landings','tool_revisions','conversation_records','conversation_questions','conversation_commands','conversation_attachments','collaboration_versions')"
 
 type storageConversionFamily struct {
 	name, column, from, where, aggregate, update string
@@ -47,6 +47,7 @@ var storageConversionFamilies = []storageConversionFamily{
 	{name: "conversation_questions", column: "prompts_json", from: "conversation_questions r JOIN conversations c ON c.id=r.conversation_id", where: "r.content_attachment_id=''", aggregate: "r.conversation_id"},
 	{name: "conversation_commands", column: "receipt_json", from: "conversation_commands r JOIN conversations c ON c.id=r.conversation_id", where: "r.content_attachment_id=''", aggregate: "r.conversation_id"},
 	{name: "conversation_attachments", column: "artifact_ref", from: "conversation_attachments r JOIN conversations c ON c.id=r.conversation_id", where: "r.content_attachment_id='' AND r.deleted_at IS NULL", aggregate: "r.conversation_id"},
+	{name: "collaboration_versions", column: "record_json", from: "collaboration_versions r", where: "r.payload_object_key=''", aggregate: "r.work_item_id"},
 }
 
 func (f storageConversionFamily) scope() string {
@@ -685,7 +686,7 @@ func (f storageConversionFamily) keyset() ([]string, bool) {
 	switch f.name {
 	case "analytics":
 		return []string{"r.organization_id", "r.project_id", "r.rowid"}, true
-	case "attempts", "versions", "evidence", "checkpoints", "landings":
+	case "attempts", "versions", "evidence", "checkpoints", "landings", "collaboration_versions":
 		return []string{"r.rowid"}, true
 	case "sources":
 		return []string{"r.version_id"}, false
@@ -704,7 +705,7 @@ func (f storageConversionFamily) keyset() ([]string, bool) {
 
 func (f storageConversionFamily) payloadPredicate() string {
 	switch f.name {
-	case "attempts", "versions", "evidence":
+	case "attempts", "versions", "evidence", "collaboration_versions":
 		return "r.payload_object_key=''"
 	case "analytics":
 		return "r.payload_object_key='' AND r.metric='attempt' AND r.data_json<>'{}'"
