@@ -1202,8 +1202,16 @@ func nativeRecoveryPrompt(execution Execution) (string, error) {
 	for i := range recovery.Attempts {
 		runtime := recovery.Attempts[i].Runtime
 		recovery.Attempts[i].Runtime = nil
-		if runtime != nil && runtime.Landing != nil {
-			recovery.Attempts[i].Runtime = &tracker.NativeRuntimeObservation{Landing: runtime.Landing}
+		if runtime != nil {
+			projected := &tracker.NativeRuntimeObservation{Landing: runtime.Landing}
+			if runtime.Validation != nil && runtime.Validation.ExitCode != 0 {
+				validation := tracker.PublicGateResult(*runtime.Validation)
+				projected.Validation = &validation
+				projected.RepairDependencies = runtime.RepairDependencies
+			}
+			if projected.Landing != nil || projected.Validation != nil {
+				recovery.Attempts[i].Runtime = projected
+			}
 		}
 	}
 	detailInstructions := ""
@@ -1468,6 +1476,9 @@ func nativeReviewResumeAttempt(recovery tracker.NativeRecovery, command string) 
 		if finalization := attempt.Finalization; !finalizationObserved && finalization != nil && attempt.PolicyID == current.PolicyID && finalization.ChangeID == current.ChangeID && finalization.VersionID == current.ID && finalization.HeadSHA == current.HeadSHA {
 			finalizationObserved = true
 			finalizationPending = finalization.Changed && !finalization.Reviewed && finalization.Error == "" && finalization.VersionError == "" && (attempt.Status == "interrupted" || attempt.Status == "failed" || attempt.Status == "cancelled")
+		}
+		if attempt.Runtime != nil && attempt.Runtime.Validation != nil && attempt.Runtime.Validation.ExitCode != 0 && !repairResume {
+			return nil
 		}
 		if attempt.Checkpoint != nil && (attempt.Checkpoint.UncertainForgeEffect() || attempt.Checkpoint.HeadSHA != "" && attempt.Checkpoint.HeadSHA != current.HeadSHA || attempt.Checkpoint.WorktreeState == "dirty") {
 			return nil
