@@ -91,7 +91,8 @@
     "internal/hubserver/postgres/migrations/20261103160239_team_threads.sql",
     "internal/hubserver/postgres/migrations/20261103160816_activity_read_windows.sql",
     "internal/hubserver/postgres/migrations/20261103162920_current_billing_population.sql",
-    "internal/hubserver/postgres/migrations/20261103164805_account_preferences.sql"
+    "internal/hubserver/postgres/migrations/20261103164805_account_preferences.sql",
+    "internal/hubserver/postgres/migrations/20261103172438_activity_history_lookup.sql"
   ],
   "tables": {
     "public.issue_dependency_reasons": {
