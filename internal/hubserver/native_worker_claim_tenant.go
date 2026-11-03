@@ -558,22 +558,32 @@ func readTenantProviderReservation(ctx context.Context, r claimstore.Reader, lea
 }
 
 func (s *Service) readNativeClaimPlan(ctx context.Context, scope nativeScope, request tracker.NativeClaim, now time.Time) (nativeClaimPlan, error) {
-	var plan nativeClaimPlan
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	plan, err := s.readNativeClaimPlanRows(ctx, scope, request, now, nil, nil, nativeClaimPlan{})
+	if err != nil {
+		return nativeClaimPlan{}, err
+	}
+	return s.hydrateNativeClaimPlan(ctx, scope, request, now, plan, nil)
+}
+
+func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope nativeScope, request tracker.NativeClaim, now time.Time, reader tenantstore.Reader, candidate *claimstore.Candidate, shared nativeClaimPlan) (nativeClaimPlan, error) {
+	plan := shared
+	readRows := func(r tenantstore.Reader) error {
 		var err error
-		plan.project, err = r.ProjectRecord(ctx, scope.project)
-		if err != nil {
-			return err
-		}
-		if plan.project.Core.Profile != "native" || plan.project.Core.DeletedAt != nil {
-			return ErrNoClaimableWork
-		}
-		plan.policy, err = r.ProjectPolicy(ctx, scope.project)
-		if err != nil {
-			return err
-		}
-		if plan.policy.PolicyID != request.PolicyID {
-			return policyMismatch("Claim configuration changed; load the current project policy before claiming")
+		if plan.project.Core.ID == "" {
+			plan.project, err = r.ProjectRecord(ctx, scope.project)
+			if err != nil {
+				return err
+			}
+			if plan.project.Core.Profile != "native" || plan.project.Core.DeletedAt != nil {
+				return ErrNoClaimableWork
+			}
+			plan.policy, err = r.ProjectPolicy(ctx, scope.project)
+			if err != nil {
+				return err
+			}
+			if plan.policy.PolicyID != request.PolicyID {
+				return policyMismatch("Claim configuration changed; load the current project policy before claiming")
+			}
 		}
 		if request.SessionID != "" {
 			lease, err := r.LeaseBySession(ctx, request.SessionID)
@@ -600,7 +610,15 @@ func (s *Service) readNativeClaimPlan(ctx context.Context, scope nativeScope, re
 				return err
 			}
 		}
-		if plan.replay == nil {
+		if candidate != nil {
+			if plan.replay != nil && plan.candidate.WorkItemID != candidate.WorkItemID {
+				return tracker.ErrLeaseConflict
+			}
+			if plan.replay == nil {
+				plan.candidate = *candidate
+			}
+		}
+		if candidate == nil && plan.replay == nil {
 			page, err := r.CandidatePage(ctx, nativeTenantCandidateQuery(scope, request, request.WorkItemID, now))
 			if err != nil {
 				return err
@@ -663,14 +681,29 @@ func (s *Service) readNativeClaimPlan(ctx context.Context, scope nativeScope, re
 			}
 		}
 		return nil
-	})
+	}
+	var err error
+	if reader != nil {
+		err = readRows(reader)
+	} else {
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, readRows)
+	}
 	if err != nil {
 		return nativeClaimPlan{}, err
 	}
-	plan.descriptor, err = eventstore.NewContent(s.runDetailStore()).ProjectPolicy(ctx, plan.policy)
-	if err != nil {
-		return nativeClaimPlan{}, err
+	return plan, nil
+}
+
+func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope nativeScope, request tracker.NativeClaim, now time.Time, plan nativeClaimPlan, descriptor *policy.Descriptor) (nativeClaimPlan, error) {
+	var err error
+	if descriptor == nil {
+		loaded, err := eventstore.NewContent(s.runDetailStore()).ProjectPolicy(ctx, plan.policy)
+		if err != nil {
+			return nativeClaimPlan{}, err
+		}
+		descriptor = &loaded
 	}
+	plan.descriptor = *descriptor
 	if plan.descriptor.ID != request.PolicyID {
 		return nativeClaimPlan{}, policyMismatch("Claim configuration does not match the current project policy")
 	}
