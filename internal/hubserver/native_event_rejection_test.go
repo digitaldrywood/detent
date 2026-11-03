@@ -3,6 +3,7 @@ package hubserver
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -84,6 +85,9 @@ func TestNativeRunEventRejectionsLogged(t *testing.T) {
 				if entry[key] != value {
 					t.Errorf("%s = %v, want %v", key, entry[key], value)
 				}
+			}
+			if want.Field == "data.runtime.phases" && (entry["phase_index"] != float64(0) || entry["phase_failure"] != "invalid_name") {
+				t.Errorf("phase diagnostic = (%v, %v), want (0, invalid_name)", entry["phase_index"], entry["phase_failure"])
 			}
 		}
 		if warnings != 1 || strings.Contains(logs.String()+response.Body.String(), "sentinel-private") {
@@ -363,6 +367,39 @@ func TestNativeRunEventRejectionsLogged(t *testing.T) {
 		})
 	}
 
+}
+
+func TestNativeRuntimePhaseRejectionReason(t *testing.T) {
+	started := time.Date(2026, time.November, 3, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name   string
+		phase  tracker.NativePhase
+		reason string
+	}{
+		{name: "invalid name", phase: tracker.NativePhase{Name: "private-phase", StartedAt: started}, reason: "invalid_name"},
+		{name: "missing start", phase: tracker.NativePhase{Name: "implementation"}, reason: "missing_start"},
+		{name: "finish before start", phase: tracker.NativePhase{Name: "implementation", StartedAt: started, FinishedAt: started.Add(-time.Second)}, reason: "finish_before_start"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateNativeRuntime(&tracker.NativeRuntimeObservation{Phase: "completed", Phases: []tracker.NativePhase{{Name: "implementation", StartedAt: started}, test.phase}})
+			var failure *nativeError
+			if !errors.As(err, &failure) || failure == nil {
+				t.Fatalf("validateNativeRuntime() error = %v, want nativeError", err)
+			}
+			want := []any{"phase_index", 1, "phase_failure", test.reason}
+			if len(failure.logAttributes) != len(want) {
+				t.Fatalf("phase log attributes = %v, want %v", failure.logAttributes, want)
+			}
+			for i := range want {
+				if failure.logAttributes[i] != want[i] {
+					t.Errorf("phase log attribute %d = %v, want %v", i, failure.logAttributes[i], want[i])
+				}
+			}
+			if strings.Contains(strings.Join([]string{failure.Error(), failure.Message}, " "), "private-phase") {
+				t.Fatal("phase rejection exposed the phase name")
+			}
+		})
+	}
 }
 
 func TestHostedNativeRejectionMessages(t *testing.T) {
