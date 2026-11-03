@@ -60,7 +60,7 @@ func (s *Service) prepareBoardChangeRows(ctx context.Context, scope nativeScope,
 				result.rows[row.Request] = row
 			}
 		}
-		result.policy, err = readCurrentChangePolicyRows(ctx, reader, scope)
+		result.policy, err = readChangeSummaryPolicyRows(ctx, reader, scope)
 		return err
 	})
 	finishRows()
@@ -88,7 +88,7 @@ func (s *Service) prepareBoardChangeRows(ctx context.Context, scope nativeScope,
 		s.prefetchDetails(ctx, string(scope.organization), refs)
 		finishPayloads()
 		finishPolicy := timeSpan(ctx, "board_change_policy")
-		approval, err := hydrateCurrentChangeVersionApproval(ctx, eventstore.NewContent(s.runDetailStoreFor(ctx)), scope, result.policy, "")
+		approval, err := hydrateChangeSummaryPolicy(ctx, eventstore.NewContent(s.runDetailStoreFor(ctx)), scope, result.policy)
 		finishPolicy()
 		result.approval = &approval
 		result.err = err
@@ -113,7 +113,7 @@ func boardCurrentApproval(ctx context.Context, content *eventstore.Content, scop
 	if approval != nil {
 		return *approval, nil
 	}
-	return hydrateCurrentChangeVersionApproval(ctx, content, scope, rows, "")
+	return hydrateChangeSummaryPolicy(ctx, content, scope, rows)
 }
 func filterBoardChangeRecord(scope nativeScope, change tracker.ChangeRequest, rows tenantstore.BoardChangeRows) (tracker.ChangeRequest, bool, error) {
 	if change.OrganizationID != scope.organization || change.ProjectID != scope.project {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"sync/atomic"
@@ -245,6 +246,163 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 		}
 		if !found {
 			t.Fatal("reporter lost visible primary issue")
+		}
+
+	}
+}
+
+func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	details := &memoryRunDetails{}
+	service := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: details, now: func() time.Time { return now }}}
+	content := eventstore.NewContent(details)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		service.localOrganization = string(org)
+		seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: org, Name: string(org), Slug: string(org)})
+		var project projectstore.Record
+		descriptor := hubTestPolicy()
+		policy, err := content.PrepareProjectPolicy(t.Context(), org, descriptor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		policy.ProjectID = "example"
+		policy.ApprovedBy = "test_hub_admin"
+		policy.ApprovedAt = now
+		envelope, err := service.config.SecretKeys.Seal(bytes.Repeat([]byte{1}, 32), accessstore.SecretAAD(org, "", accessstore.NativeCursorKeyKind))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			var err error
+			project, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "example", Name: "Example", Profile: "native"}, States: nativeFixtureStates()})
+			if err != nil {
+				return err
+			}
+			if err := w.ApproveProjectPolicy(t.Context(), policy, ""); err != nil {
+				return err
+			}
+			return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: envelope.Version, RecordedAt: now})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for index := range 2 {
+			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index))
+			changeID := fmt.Sprintf("change_%03d", index)
+			versionID := fmt.Sprintf("version_%03d", index)
+			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "example", WorkItemID: id, Number: index + 1, Revision: 1}, Title: "Example", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "test_hub_admin"}, Archived: false, CreatedAt: now, UpdatedAt: now}
+			raw, _ := json.Marshal(issue)
+			collaboration, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "example", WorkItemID: id, RecordID: string(id), Revision: 1}, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			change := tracker.ChangeRequest{ID: changeID, OrganizationID: org, ProjectID: "example", WorkItemID: id, LinkedIssues: []tracker.NativeWorkItemID{id}, Title: "Example", Revision: 1, CurrentVersion: versionID, CreatedAt: now, UpdatedAt: now}
+			raw, _ = json.Marshal(change)
+			changeRow, err := content.PrepareChange(t.Context(), org, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := changeTestInput()
+			input.PolicyID = descriptor.ID
+			version := tracker.ChangeVersion{ID: versionID, ChangeID: changeID, Number: 1, ChangeVersionInput: input, Policy: descriptor, ReviewPolicy: defaultChangeReviewPolicy(descriptor), Actor: issue.Actor, CreatedAt: now}
+			raw, _ = json.Marshal(version)
+			versionRow, err := content.PrepareVersion(t.Context(), org, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			card := tracker.NativeBoardCard{Issue: issue, Change: &tracker.NativeBoardChange{ID: changeID, Title: "Example"}}
+			payload, err := viewstore.NewContent(details).PrepareBoard(t.Context(), card)
+			if err != nil {
+				t.Fatal(err)
+			}
+			board := viewstore.BoardRecord{OrganizationID: org, ProjectID: "example", WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("example#%03d", index)}, Archived: issue.Archived, ActorPrincipalID: issue.Actor.PrincipalID, CreatedAt: now, UpdatedAt: now, Payload: payload}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "example", NativeID: id, Number: int64(index + 1), Title: "Example", Archived: issue.Archived, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State}); err != nil {
+					return err
+				}
+				if _, err := w.CreateCollaborationVersion(t.Context(), collaboration); err != nil {
+					return err
+				}
+				if _, err := w.CreateChange(t.Context(), changeRow); err != nil {
+					return err
+				}
+				if _, err := w.CreateVersion(t.Context(), versionRow); err != nil {
+					return err
+				}
+				if err := w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: "example", WorkItemID: id, ChangeID: changeID, CreatedAt: now}); err != nil {
+					return err
+				}
+				return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: "example", WorkItemID: id, ExpectedRevision: 1, ExpectedProjectRevision: project.Core.ContentSettingsRevision, Current: &board})
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		scope := nativeScope{organization: org, project: "example", credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+		before, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "include": {"board"}})
+		if err != nil || len(before.Cards) != 2 {
+			t.Fatalf("current-policy board cards=%d error=%v", len(before.Cards), err)
+		}
+		for _, card := range before.Cards {
+			if card.Change == nil || card.Change.Status == "stale_policy" {
+				t.Fatalf("current policy incorrectly stale: %+v", card.Change)
+			}
+		}
+
+		rules := defaultChangeReviewPolicy(descriptor)
+		review, err := content.PrepareReviewPolicy(t.Context(), eventstore.ReviewPolicy{OrganizationID: org, ProjectID: "example", PolicyRevisionID: descriptor.ID, Revision: 1, UpdatedBy: "test_hub_admin", UpdatedAt: now}, rules)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nextDescriptor := descriptor
+		nextDescriptor.Gates.Validator = true
+		nextDescriptor = nextDescriptor.WithID()
+		nextPolicy, err := content.PrepareProjectPolicy(t.Context(), org, nextDescriptor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nextPolicy.ProjectID, nextPolicy.ApprovedBy, nextPolicy.ApprovedAt = "example", "test_hub_admin", now
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.SetReviewPolicy(t.Context(), review, ""); err != nil {
+				return err
+			}
+			return w.ApproveProjectPolicy(t.Context(), nextPolicy, descriptor.ID)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		stale, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "archived": {"all"}, "include": {"board"}})
+		if err != nil {
+			t.Fatalf("stale review reference prevents scoped board read: %v", err)
+		}
+		if len(stale.Cards) != 2 {
+			t.Fatalf("stale-policy cards=%d", len(stale.Cards))
+		}
+		for _, card := range stale.Cards {
+			if card.Issue.OrganizationID != org || card.Change == nil || card.Change.Status != "stale_policy" {
+				t.Fatalf("stale policy summary lost tenant or fence: %+v", card.Change)
+			}
+		}
+		listed, err := service.readIssuesProjection(t.Context(), scope, url.Values{"limit": {"200"}, "state": {"Todo"}, "include": {"summary"}}, true)
+		if err != nil || len(listed.Items) != 2 || listed.Total != 2 {
+			t.Fatalf("Todo summary list items=%d total=%d error=%v", len(listed.Items), listed.Total, err)
+		}
+		for _, issue := range listed.Items {
+			if issue.OrganizationID != org || issue.ProjectID != scope.project || issue.State != "Todo" {
+				t.Fatalf("Todo summary list escaped scope: %+v", issue.NativeReference)
+			}
+		}
+		summary, err := service.selectedCurrentChangeSummary(t.Context(), scope, "wi_001", "change_001", now)
+		if err != nil || summary.Status != "stale_policy" {
+			t.Fatalf("scalar stale-policy summary=%+v error=%v", summary, err)
+		}
+		detail, err := service.selectedChangeDetail(t.Context(), scope, "wi_001", "change_001", now)
+		if err != nil || detail.Change.OrganizationID != org || detail.Summary.Status != "stale_policy" {
+			t.Fatalf("stale-policy detail=%+v error=%v", detail.Summary, err)
+		}
+		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			_, err := readCurrentChangePolicyRows(t.Context(), r, scope)
+			return err
+		}); !errors.Is(err, corestore.ErrTenantMismatch) {
+			t.Fatalf("stale publication policy accepted: %v", err)
 		}
 
 	}
