@@ -28,6 +28,10 @@ type Reader interface {
 	Usage(context.Context, string) (int64, error)
 }
 
+type CheckpointAttemptReader interface {
+	CheckpointAttemptPage(context.Context, int64, AttemptCursor, int) (AttemptPage, error)
+}
+
 type Writer interface {
 	Reader
 	LockMachine(context.Context, string) (Machine, error)

@@ -732,6 +732,66 @@ func (q *Queries) PageIssueAttemptsOldest(ctx context.Context, arg PageIssueAtte
 	return items, nil
 }
 
+const pageIssueCheckpointAttempts = `-- name: PageIssueCheckpointAttempts :many
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns FROM native_attempts
+WHERE organization_id=$1 AND issue_id=$2
+AND checkpoint_object_key IS NOT NULL
+AND ($3::bigint=0 OR fencing_token<$3::bigint)
+ORDER BY fencing_token DESC LIMIT $4
+`
+
+type PageIssueCheckpointAttemptsParams struct {
+	OrganizationID tracker.OrganizationID
+	IssueID        int64
+	BeforeFence    int64
+	PageLimit      int32
+}
+
+func (q *Queries) PageIssueCheckpointAttempts(ctx context.Context, arg PageIssueCheckpointAttemptsParams) ([]NativeAttempt, error) {
+	rows, err := q.db.QueryContext(ctx, pageIssueCheckpointAttempts,
+		arg.OrganizationID,
+		arg.IssueID,
+		arg.BeforeFence,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []NativeAttempt{}
+	for rows.Next() {
+		var i NativeAttempt
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ID,
+			&i.IssueID,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.RunID,
+			&i.Sequence,
+			&i.Status,
+			&i.WorkItemRevision,
+			&i.DispatchGeneration,
+			&i.PayloadObjectKey,
+			&i.CheckpointObjectKey,
+			&i.ArtifactsObjectKey,
+			&i.StartedAt,
+			&i.UpdatedAt,
+			&i.StartedAtSubmicroNs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const registerLeaseMachine = `-- name: RegisterLeaseMachine :exec
 INSERT INTO machines (organization_id,id,hostname,display_name,capacity,version,sprite_name,last_heartbeat_at,registered_at,updated_at)
 VALUES ($1,$2,$3,$4,$5,$6,$7,clock_timestamp(),clock_timestamp(),clock_timestamp())

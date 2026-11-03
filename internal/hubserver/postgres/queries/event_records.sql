@@ -53,6 +53,17 @@ WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_
 AND attempt_id=sqlc.arg(attempt_id)
 ORDER BY sequence DESC LIMIT 1;
 
+-- name: RecordLatestCheckpointEvents :many
+SELECT latest.*
+FROM unnest(sqlc.arg(attempt_ids)::text[]) AS requested(attempt_id)
+CROSS JOIN LATERAL (
+  SELECT * FROM collaboration_events
+  WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
+    AND work_item_id=sqlc.arg(work_item_id) AND attempt_id=requested.attempt_id
+    AND type='run.checkpointed'
+  ORDER BY sequence DESC LIMIT 1
+) latest;
+
 -- name: RecordGetCollaborationVersion :one
 SELECT * FROM collaboration_versions WHERE organization_id=sqlc.arg(organization_id) AND record_id=sqlc.arg(record_id) AND revision=sqlc.arg(revision);
 
@@ -116,6 +127,15 @@ SELECT attempt_id FROM change_versions WHERE organization_id=sqlc.arg(organizati
 
 -- name: RecordGetLandingReceipt :one
 SELECT * FROM change_landing_receipts WHERE organization_id=sqlc.arg(organization_id) AND attempt_id=sqlc.arg(attempt_id);
+
+-- name: RecordGetLatestLandingReceiptForWorkItem :one
+SELECT r.*
+FROM change_landing_receipts r
+JOIN native_attempts a ON a.organization_id=r.organization_id AND a.id=r.attempt_id
+JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
+WHERE r.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND i.native_id=sqlc.arg(work_item_id)
+ORDER BY a.fencing_token DESC
+LIMIT 1;
 
 -- name: RecordInsertLandingReceipt :one
 INSERT INTO change_landing_receipts (organization_id, attempt_id, version_id, merge_sha, repository, base_ref, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)

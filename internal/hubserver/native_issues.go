@@ -321,6 +321,9 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
+		if params.Get("view") == "recovery" {
+			return s.getNativeRecoveryTenant(c, params)
+		}
 		issue, err := s.workItemResource(c.Request().Context(), nativeRequestScope(c), c.Param("item"), params)
 		if err != nil {
 			return s.nativeAPIError(c, err)

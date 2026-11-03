@@ -229,6 +229,7 @@ type Receipt struct {
 type Reader interface {
 	ReviewPolicy(context.Context, tracker.ProjectID) (ReviewPolicy, error)
 	LandingReceipt(context.Context, string) (LandingReceipt, error)
+	LatestLandingReceipt(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (LandingReceipt, error)
 	ViewedFiles(context.Context, string, string, int) ([]ViewedFile, error)
 	Receipt(context.Context, string, string, string) (Receipt, error)
 	Events(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
@@ -236,6 +237,7 @@ type Reader interface {
 	ProjectEventSequence(context.Context, tracker.ProjectID) (int64, error)
 	ProjectChanges(context.Context, tracker.ProjectID, int64, int64, time.Time, int) ([]ProjectChange, error)
 	LatestRunEvent(context.Context, tracker.ProjectID, string) (Event, error)
+	LatestCheckpointEvents(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, []string) ([]Event, error)
 	CollaborationVersion(context.Context, string, int64) (CollaborationVersion, error)
 	Change(context.Context, string) (Change, error)
 	LatestChange(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (Change, error)

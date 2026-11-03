@@ -96,6 +96,26 @@ func (s *session) LatestRunEvent(ctx context.Context, project tracker.ProjectID,
 	return eventstore.Event(row), mapError(ctx, err)
 }
 
+func (s *session) LatestCheckpointEvents(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, attempts []string) ([]eventstore.Event, error) {
+	if len(attempts) == 0 || len(attempts) > corestore.MaxPageSize {
+		return nil, corestore.ErrInvalidPage
+	}
+	rows, err := s.queries.RecordLatestCheckpointEvents(ctx, pgquery.RecordLatestCheckpointEventsParams{
+		OrganizationID: s.organization,
+		ProjectID:      project,
+		WorkItemID:     item,
+		AttemptIds:     attempts,
+	})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	events := make([]eventstore.Event, len(rows))
+	for i, row := range rows {
+		events[i] = eventstore.Event(row)
+	}
+	return events, nil
+}
+
 func (s *session) Versions(ctx context.Context, change string, after int64, limit int) ([]eventstore.Version, error) {
 	if err := checkPage(limit); err != nil {
 		return nil, err
@@ -117,6 +137,11 @@ func (s *session) Version(ctx context.Context, change, id string) (eventstore.Ve
 
 func (s *session) LandingReceipt(ctx context.Context, attemptID string) (eventstore.LandingReceipt, error) {
 	row, err := s.queries.RecordGetLandingReceipt(ctx, pgquery.RecordGetLandingReceiptParams{OrganizationID: s.organization, AttemptID: attemptID})
+	return landingReceiptRecord(row), mapError(ctx, err)
+}
+
+func (s *session) LatestLandingReceipt(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (eventstore.LandingReceipt, error) {
+	row, err := s.queries.RecordGetLatestLandingReceiptForWorkItem(ctx, pgquery.RecordGetLatestLandingReceiptForWorkItemParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item})
 	return landingReceiptRecord(row), mapError(ctx, err)
 }
 
