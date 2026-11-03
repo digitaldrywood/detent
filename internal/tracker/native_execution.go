@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"slices"
@@ -492,6 +493,17 @@ type NativeSourceRecoveryRunner struct {
 }
 
 func (n NativeNoChangeCompletion) VersionID() string {
-	key := sha256.Sum256([]byte(n.PolicyID + ":" + n.Repository + ":" + n.VerifiedSHA + ":" + n.ReportedSHA + ":" + n.Evidence))
-	return "version_" + hex.EncodeToString(key[:16])
+	if len(n.ReportedSHA) != 40 && len(n.ReportedSHA) != 64 {
+		return ""
+	}
+	if _, err := hex.DecodeString(n.ReportedSHA); err != nil {
+		return ""
+	}
+	framed := []byte("no-change-v2")
+	for _, field := range []string{n.PolicyID, n.Repository, n.VerifiedSHA, n.ReportedSHA, n.Evidence} {
+		framed = binary.BigEndian.AppendUint64(framed, uint64(len(field)))
+		framed = append(framed, field...)
+	}
+	key := sha256.Sum256(framed)
+	return "version_" + hex.EncodeToString(key[:])
 }
