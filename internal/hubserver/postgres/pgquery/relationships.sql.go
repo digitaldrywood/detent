@@ -7,9 +7,11 @@ package pgquery
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/lib/pq"
 )
 
 const deleteDependency = `-- name: DeleteDependency :execrows
@@ -284,6 +286,120 @@ func (q *Queries) LockRelationshipGraph(ctx context.Context, organizationID trac
 	var organization_id tracker.OrganizationID
 	err := row.Scan(&organization_id)
 	return organization_id, err
+}
+
+const relationshipBatch = `-- name: RelationshipBatch :many
+WITH requested AS (
+    SELECT DISTINCT unnest($2::text[]) AS native_id
+), candidates AS (
+    SELECT source.native_id AS work_item_id, 'dependency'::text AS relationship_type, 'blocked_by'::text AS direction, d.blocker_project_id AS related_project_id, d.blocker_issue_id AS related_issue_id, d.created_at
+    FROM requested
+    JOIN issues source ON source.organization_id=$1 AND source.project_id=$3 AND source.native_id=requested.native_id
+    JOIN issue_dependencies d ON d.organization_id=source.organization_id AND d.dependent_project_id=source.project_id AND d.dependent_issue_id=source.id
+    UNION ALL
+    SELECT source.native_id, 'dependency'::text, 'blocks'::text, d.dependent_project_id, d.dependent_issue_id, d.created_at
+    FROM requested
+    JOIN issues source ON source.organization_id=$1 AND source.project_id=$3 AND source.native_id=requested.native_id
+    JOIN issue_dependencies d ON d.organization_id=source.organization_id AND d.blocker_project_id=source.project_id AND d.blocker_issue_id=source.id
+    UNION ALL
+    SELECT source.native_id, 'related'::text, 'related'::text,
+        CASE WHEN r.first_issue_id=source.id THEN r.second_project_id ELSE r.first_project_id END,
+        CASE WHEN r.first_issue_id=source.id THEN r.second_issue_id ELSE r.first_issue_id END,
+        r.created_at
+    FROM requested
+    JOIN issues source ON source.organization_id=$1 AND source.project_id=$3 AND source.native_id=requested.native_id
+    JOIN issue_relationships r ON r.organization_id=source.organization_id AND source.id IN (r.first_issue_id,r.second_issue_id)
+)
+SELECT c.work_item_id,c.relationship_type,c.direction,c.related_project_id,target.native_id,c.created_at,target.number,target.title,target.workflow_state_name,COALESCE(states.terminal,false),COALESCE(states.dispatchable,false),target.actor_principal_id,COALESCE(organizations.slug,'') AS organization_slug,projects.slug AS project_slug,
+    COALESCE(closed.closed_at,'0001-01-01 00:00:00+00'::timestamptz) AS closed_at,
+    COALESCE(started.started_at,'0001-01-01 00:00:00+00'::timestamptz) AS started_at,
+    (projects.deleted_at IS NULL AND projects.profile='native') AS related_project_visible
+FROM candidates c
+JOIN issues target ON target.organization_id=$1 AND target.project_id=c.related_project_id AND target.id=c.related_issue_id
+JOIN projects ON projects.organization_id=target.organization_id AND projects.id=target.project_id
+LEFT JOIN organizations ON organizations.organization_id=target.organization_id
+LEFT JOIN project_workflow_states states ON states.organization_id=target.organization_id AND states.project_id=target.project_id AND states.name=target.workflow_state_name
+LEFT JOIN LATERAL (
+        SELECT e.recorded_at AS closed_at FROM collaboration_events e
+        JOIN project_workflow_states destination ON destination.organization_id=e.organization_id AND destination.project_id=e.project_id AND destination.name=e.to_state AND destination.terminal
+        JOIN project_workflow_states origin ON origin.organization_id=e.organization_id AND origin.project_id=e.project_id AND origin.name=e.from_state AND NOT origin.terminal
+        WHERE e.organization_id=target.organization_id AND e.project_id=target.project_id AND e.work_item_id=target.native_id
+        ORDER BY e.sequence DESC LIMIT 1
+    ) closed(closed_at) ON states.terminal
+LEFT JOIN LATERAL (
+        SELECT attempts.started_at FROM native_attempts attempts
+        JOIN leases ON leases.organization_id=attempts.organization_id AND leases.lease_id=attempts.lease_id AND leases.fencing_token=attempts.fencing_token
+        WHERE attempts.organization_id=target.organization_id AND attempts.issue_id=target.id AND attempts.status='running' AND leases.released_at IS NULL AND leases.expires_at>CURRENT_TIMESTAMP
+        ORDER BY attempts.fencing_token DESC LIMIT 1
+    ) started ON true
+ORDER BY c.work_item_id,c.relationship_type,c.direction,c.related_project_id,target.native_id
+`
+
+type RelationshipBatchParams struct {
+	OrganizationID tracker.OrganizationID
+	WorkItemIds    []string
+	ProjectID      tracker.ProjectID
+}
+
+type RelationshipBatchRow struct {
+	WorkItemID            string
+	RelationshipType      string
+	Direction             string
+	RelatedProjectID      string
+	NativeID              tracker.NativeWorkItemID
+	CreatedAt             time.Time
+	Number                int64
+	Title                 string
+	WorkflowStateName     *string
+	Terminal              bool
+	Dispatchable          bool
+	ActorPrincipalID      *string
+	OrganizationSlug      string
+	ProjectSlug           string
+	ClosedAt              time.Time
+	StartedAt             time.Time
+	RelatedProjectVisible sql.NullBool
+}
+
+func (q *Queries) RelationshipBatch(ctx context.Context, arg RelationshipBatchParams) ([]RelationshipBatchRow, error) {
+	rows, err := q.db.QueryContext(ctx, relationshipBatch, arg.OrganizationID, pq.Array(arg.WorkItemIds), arg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RelationshipBatchRow{}
+	for rows.Next() {
+		var i RelationshipBatchRow
+		if err := rows.Scan(
+			&i.WorkItemID,
+			&i.RelationshipType,
+			&i.Direction,
+			&i.RelatedProjectID,
+			&i.NativeID,
+			&i.CreatedAt,
+			&i.Number,
+			&i.Title,
+			&i.WorkflowStateName,
+			&i.Terminal,
+			&i.Dispatchable,
+			&i.ActorPrincipalID,
+			&i.OrganizationSlug,
+			&i.ProjectSlug,
+			&i.ClosedAt,
+			&i.StartedAt,
+			&i.RelatedProjectVisible,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const relationshipPage = `-- name: RelationshipPage :many
