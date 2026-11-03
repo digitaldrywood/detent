@@ -28,6 +28,7 @@ import (
 )
 
 type hubSchedulingOptions struct {
+	buildCache       *runnerBuildCache
 	workspaceSupport func() workspacerunner.Support
 	processStore     releasedExecutionProcessStore
 	providerUsage    *runner.ProviderUsage
@@ -186,14 +187,14 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 			if setupOptions.runtimeConfig != nil {
 				current = setupOptions.runtimeConfig()
 			}
-			return runnerStorageConstraint(ctx, current)
+			return runnerStorageConstraint(ctx, current, setupOptions.buildCache)
 		},
 		AvailableCapacity: func(ctx context.Context, capacity int) int {
 			current := cfg
 			if setupOptions.runtimeConfig != nil {
 				current = setupOptions.runtimeConfig()
 			}
-			if constraint := runnerStorageConstraint(ctx, current); constraint != "" {
+			if constraint := runnerStorageConstraint(ctx, current, setupOptions.buildCache); constraint != "" {
 				return 0
 			}
 			return capacity

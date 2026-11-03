@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +21,7 @@ func TestRunnerBuildCacheMaintenanceResumesDispatch(t *testing.T) {
 	for _, tt := range []struct {
 		name           string
 		maxBytes       int64
+		freeBefore     uint64
 		freeAfter      uint64
 		separateVolume bool
 		wantEvicted    int64
@@ -26,6 +29,7 @@ func TestRunnerBuildCacheMaintenanceResumesDispatch(t *testing.T) {
 		recent         bool
 	}{
 		{name: "over budget", maxBytes: 1000, freeAfter: 2500, wantEvicted: 2000, wantAdmission: true},
+		{name: "within budget approaching reserve", maxBytes: 4000, freeBefore: 1500, freeAfter: 3500, wantEvicted: 2000, wantAdmission: true},
 		{name: "within budget below reserve", maxBytes: 4000, freeAfter: 2500, wantEvicted: 2000, wantAdmission: true},
 		{name: "insufficient reclaimable cache", maxBytes: 4000, freeAfter: 700, wantEvicted: 2000},
 		{name: "separate workspace filesystem", maxBytes: 4000, separateVolume: true},
@@ -106,17 +110,17 @@ func TestRunnerBuildCacheMaintenanceResumesDispatch(t *testing.T) {
 					if path == root {
 						return 2500, 10000, nil
 					}
-					return 500, 10000, nil
+					return max(500, tt.freeBefore), 10000, nil
 				}
 				if _, err := os.Stat(output); err == nil {
-					return 500, 10000, nil
+					return max(500, tt.freeBefore), 10000, nil
 				}
 				return tt.freeAfter, 10000, nil
 			}
 			storageConstraint := func() string {
 				return runnerStorageConstraintForPaths(globalconfig.Config{WorkspaceRoot: workspace}, toolcache.Paths{Build: root}, volume)
 			}
-			if got := storageConstraint(); !strings.Contains(got, "reserve") {
+			if got := storageConstraint(); !strings.Contains(got, "reserve") && tt.freeBefore < 1000 {
 				t.Fatalf("low free disk did not constrain capacity: %q", got)
 			}
 			for _, active := range []int{2, 1, 0} {
@@ -131,7 +135,7 @@ func TestRunnerBuildCacheMaintenanceResumesDispatch(t *testing.T) {
 					if data, err := os.ReadFile(output); err != nil || len(data) != 2000 {
 						t.Fatalf("active cache changed: bytes=%d err=%v", len(data), err)
 					}
-					if got := storageConstraint(); !strings.Contains(got, "reserve") {
+					if got := storageConstraint(); !strings.Contains(got, "reserve") && tt.freeBefore < 1000 {
 						t.Fatalf("active cache pressure lost its reserve constraint: %q", got)
 					}
 					if active == 2 {
@@ -180,6 +184,90 @@ func TestRunnerBuildCacheMaintenanceResumesDispatch(t *testing.T) {
 				t.Fatalf("second dispatch: %t %v", acquired, err)
 			}
 			defer gate.Release(slot)
+		})
+	}
+}
+
+func TestRunnerStorageAdmissionReclaimsBeforeRefusing(t *testing.T) {
+	for _, tt := range []struct {
+		name                                                     string
+		pinned, recent, separateVolume, native, observationError bool
+		wantAvailable                                            bool
+	}{
+		{name: "cache frees reserve", wantAvailable: true},
+		{name: "pinned output retains reserve refusal", pinned: true},
+		{name: "recent output retains reserve refusal", recent: true},
+		{name: "workspace volume still below reserve", separateVolume: true},
+		{name: "operator cache is not reclaimed", native: true},
+		{name: "unavailable observation fails closed", observationError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			cache, err := toolcache.NewManaged(t.Context(), root, filepath.Join(root, "runtime.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(root, "00"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			output := filepath.Join(root, "00", strings.Repeat("a", 64)+"-d")
+			if err := os.WriteFile(output, make([]byte, 2000), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if !tt.recent {
+				old := time.Now().Add(-4 * time.Hour)
+				if err := os.Chtimes(output, old, old); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.pinned {
+				if err := os.Link(output, filepath.Join(t.TempDir(), "pin")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			managed := &runnerBuildCache{cache: cache, root: root}
+			if tt.native {
+				managed = nil
+			}
+			workspace := root
+			if tt.separateVolume {
+				workspace = t.TempDir()
+			}
+			cfg := globalconfig.Config{WorkspaceRoot: workspace}
+			cfg.Global.Cache = toolcache.Policy{MaxBytes: 4000}
+			volume := func(path string) (uint64, uint64, error) {
+				if tt.observationError {
+					return 0, 0, errors.New("observation failed")
+				}
+				if path != root {
+					return 500, 10000, nil
+				}
+				if _, err := os.Stat(output); err == nil {
+					return 500, 10000, nil
+				}
+				return 2500, 10000, nil
+			}
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+			got := runnerStorageConstraintAfterReclaim(t.Context(), cfg, toolcache.Paths{Build: root}, managed, volume)
+			if (got == "") != tt.wantAvailable {
+				t.Fatalf("constraint=%q, want available=%t", got, tt.wantAvailable)
+			}
+			if tt.wantAvailable {
+				if _, err := os.Stat(output); !os.IsNotExist(err) {
+					t.Fatalf("cache not reclaimed before admission: %v", err)
+				}
+				if !strings.Contains(logs.String(), "size_evicted_bytes=2000") || !strings.Contains(logs.String(), "pressure_reclaim_bytes=1500") {
+					t.Fatalf("missing reclaim log: %s", logs.String())
+				}
+			}
+			if tt.pinned || tt.recent || tt.native || tt.observationError {
+				if data, err := os.ReadFile(output); err != nil || len(data) != 2000 {
+					t.Fatalf("protected cache changed: bytes=%d err=%v", len(data), err)
+				}
+			}
 		})
 	}
 }
