@@ -3,6 +3,7 @@ package hubserver
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -74,7 +75,7 @@ func TestCoreChangeImportPreservesChangesVersionsAndEvidence(t *testing.T) {
 		if err := repository.PinCoreImportSource(t.Context(), organization, copyHash, objects); err != nil {
 			return err
 		}
-		page, err := readCoreChangePage(t.Context(), tx, organization, "")
+		page, err := readCoreChangePage(t.Context(), tx, source, "")
 		if err != nil || len(page) == 0 {
 			return fmt.Errorf("read initial change page: %w", err)
 		}
@@ -116,11 +117,39 @@ func TestCoreChangeImportPreservesChangesVersionsAndEvidence(t *testing.T) {
 			t.Fatalf("change import count=%d error=%v", count, err)
 		}
 	}
+	var escapeDigest string
+	if _, err := admin.ExecContext(t.Context(), `UPDATE change_requests SET landed_version_id=NULL,landed_at=NULL,landed_head_sha=NULL,landed_merge_sha=NULL,landed_base_ref=NULL WHERE organization_id=$1`, organization); err != nil {
+		t.Fatal(err)
+	}
+	var landingDigest string
+	for range 2 {
+		parity, err := ImportCoreReportLandings(t.Context(), repository, source)
+		if err != nil || parity.Landings != 2 || parity.SourceSHA256 == "" || parity.ProjectionSHA256 == "" {
+			t.Fatalf("source landing parity = %+v error %v", parity, err)
+		}
+		if landingDigest != "" && landingDigest != parity.ProjectionSHA256 {
+			t.Fatal("source landing projection changed across replay")
+		}
+		landingDigest = parity.ProjectionSHA256
+	}
+	for range 2 {
+		parity, err := ImportCoreReportEscapes(t.Context(), repository, source)
+		if err != nil || parity.Escapes != 2 || parity.SourceSHA256 == "" || parity.ProjectionSHA256 == "" {
+			t.Fatalf("source escape parity = %+v error %v", parity, err)
+		}
+		if escapeDigest != "" && escapeDigest != parity.ProjectionSHA256 {
+			t.Fatal("escape source projection changed across replay")
+		}
+		escapeDigest = parity.ProjectionSHA256
+	}
 	if err := repository.ReadRecords(t.Context(), organization, corestore.Serving, func(r eventstore.Reader) error {
 		for _, id := range []string{"change_import_a", "change_import_b"} {
 			changeRow, err := r.Change(t.Context(), id)
 			if err != nil {
 				return err
+			}
+			if changeRow.LandedAt == nil || changeRow.LandedVersionID == nil || changeRow.LandedMergeSHA == nil || *changeRow.LandedMergeSHA != strings.Repeat("c", 40) {
+				return errors.New("legacy landing receipt did not populate typed report landing facts")
 			}
 			change, err := content.Change(t.Context(), changeRow)
 			if err != nil || change.Title != "Change "+id || change.Body != "Preserved discussion" || change.LinkedIssues[0] == "" {
@@ -291,7 +320,7 @@ func coreChangeSourceCopy(t *testing.T, organization tracker.OrganizationID, pro
 		if _, err := db.ExecContext(t.Context(), `INSERT INTO release_deliveries VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, item, organization, project, item, id, strings.Repeat("c", 40), 47, version.Repository, 300+index+1, "release-pick/"+version.ID, headSHA, "release/v1.0", strings.Repeat("d", 40), strings.Repeat("e", 40), id, version.ID, "example-owner", "human", "example-release-key", createdAt.Add(2*time.Minute+123*time.Nanosecond).Format(time.RFC3339Nano)); err != nil {
 			t.Fatal(err)
 		}
-		discussion := tracker.ChangeDiscussion{ID: "discussion_" + suffix, VersionID: version.ID, Body: "Preserved discussion", Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, CreatedAt: createdAt.Add(time.Second)}
+		discussion := tracker.ChangeDiscussion{ID: "discussion_" + suffix, VersionID: version.ID, Body: "Preserved discussion", Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, CreatedAt: createdAt.Add(2 * time.Minute), Escape: &tracker.QualityEscape{OccurrenceID: "occurrence_" + suffix, Kind: "scheduled_failure", Cause: "validator_miss", ObservedAt: createdAt.Add(90 * time.Second), HumanOverride: true}}
 		discussionJSON, err := json.Marshal(discussion)
 		if err != nil {
 			t.Fatal(err)

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -38,6 +39,7 @@ type Event struct {
 	LandingVersionID     string
 	LandingHeadSHA       string
 	ProjectSequence      int64
+	Report               *reportstore.EventProjection
 }
 
 type ProjectChange struct {
@@ -73,6 +75,11 @@ type Change struct {
 	PayloadSHA256       string
 	PayloadBytes        int64
 	PayloadContentBytes int64
+	LandedVersionID     *string
+	LandedAt            *time.Time
+	LandedHeadSHA       *string
+	LandedMergeSHA      *string
+	LandedBaseRef       *string
 }
 
 type ReviewPolicy struct {
@@ -196,6 +203,7 @@ type Evidence struct {
 	PayloadBytes         int64
 	PayloadContentBytes  int64
 	PayloadFormatVersion int64
+	ReportEscape         *reportstore.EscapeProjection
 }
 
 type LinkedSource struct {

@@ -224,7 +224,7 @@ func (s *session) ClaimPreviewPlanRows(ctx context.Context, project tracker.Proj
 		for _, row := range eventRows {
 			index, ok := indexesByAttempt[row.AttemptID]
 			if ok {
-				event := eventstore.Event(row)
+				event := eventRecord(row)
 				result[index].LatestRunEvent = &event
 			}
 		}

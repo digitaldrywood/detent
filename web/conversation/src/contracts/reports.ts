@@ -95,6 +95,7 @@ export const ReportsFacets = Schema.Struct({
   runners: Schema.Array(Facet),
   models: Schema.Array(Schema.String),
   stages: Schema.Array(Schema.String),
+  unavailable: Schema.optional(Schema.Array(Schema.String)),
 });
 export const ReportsReport = Schema.Struct({
   prior_recorded: Schema.optional(Schema.Boolean),
@@ -252,10 +253,10 @@ const ProductivityMetrics = Schema.Struct({
   completed: Schema.Number,
   cancelled: Schema.Number,
   net_backlog: Schema.Number,
-  changes_landed: Schema.Number,
+  changes_landed: Schema.NullOr(Schema.Number),
   worked: Schema.Number,
   reworked: Schema.Number,
-  completion_cost_usd: Schema.Number,
+  completion_cost_usd: Schema.NullOr(Schema.Number),
   cost_per_completed_usd: Schema.NullOr(Schema.Number),
   cycle_p50_seconds: Schema.NullOr(Schema.Number),
   rework_percent: Schema.NullOr(Schema.Number),
@@ -277,6 +278,7 @@ const ProductivityActor = Schema.Struct({
 const ProductivityWindow = Schema.Struct({ from: Schema.String, to: Schema.String });
 export const OrganizationReports = Schema.Struct({
   organization_id: Schema.String,
+  unavailable: Schema.optional(Schema.Array(Schema.String)),
   prior_recorded: Schema.Boolean,
   window: ProductivityWindow,
   previous_window: ProductivityWindow,

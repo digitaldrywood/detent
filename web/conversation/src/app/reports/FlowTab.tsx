@@ -48,7 +48,7 @@ export function FlowTab({ report, search }: { readonly report: ReportsReport; re
   const cycle = buckets.map((bucket) => (lead ? bucket.lead : bucket.cycle));
   const residence = report.analytics.lane_residence.lanes.filter((lane) => LANE_ORDER.includes(lane.lane));
   const residenceTotal = residence.reduce((sum, lane) => sum + lane.seconds, 0);
-  const missing = (value: number | null | undefined) => residenceMissing || value === null || value === undefined;
+  const missing = (value: number | null | undefined) => (residenceMissing && !lead) || value === null || value === undefined;
   return (
     <div className="flex flex-col gap-6">
       <MetricTileGroup aria-label="Flow headline" className="lg:grid-cols-5">
@@ -102,8 +102,8 @@ export function FlowTab({ report, search }: { readonly report: ReportsReport; re
               label: "p50",
               color: "var(--primary)",
               kind: "band",
-              values: cycle.map((value) => (residenceMissing || value.count === 0 ? null : value.p50_seconds)),
-              upper: cycle.map((value) => (residenceMissing || value.count === 0 ? null : value.p90_seconds)),
+              values: cycle.map((value) => ((residenceMissing && !lead) || value.count === 0 ? null : value.p50_seconds)),
+              upper: cycle.map((value) => ((residenceMissing && !lead) || value.count === 0 ? null : value.p90_seconds)),
             },
           ]}
         />

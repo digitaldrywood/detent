@@ -247,6 +247,28 @@ describe("organization Reports Overview", () => {
     expect(screen.getByRole("heading", { name: heading })).toBeTruthy();
   });
 
+  it("explains when PostgreSQL report failure classes are unavailable", async () => {
+    activeProjectId = "prj_alpha";
+    vi.spyOn(api, "reports").mockResolvedValue({
+      ...projectFixture,
+      failure_classes: [],
+      unavailable: [...projectFixture.unavailable, "failure_classification"],
+    });
+    await openReports("/reports/failures");
+    expect(screen.getByText("Failure classification is not available in this report source.")).toBeTruthy();
+    expect(screen.queryByText("No recorded failures in this range.")).toBeNull();
+  });
+
+  it("explains when PostgreSQL report rework timelines are unavailable", async () => {
+    activeProjectId = "prj_alpha";
+    vi.spyOn(api, "reports").mockResolvedValue({
+      ...projectFixture,
+      unavailable: [...projectFixture.unavailable, "rework_timeline_unavailable"],
+    });
+    await openReports("/reports/quality");
+    expect(screen.getByText("Rework returns per day are not available in this report source.")).toBeTruthy();
+  });
+
   it("keeps the project Overview and Reports read", async () => {
     activeProjectId = "prj_alpha";
     await openReports();

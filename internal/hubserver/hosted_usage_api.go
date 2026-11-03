@@ -77,6 +77,17 @@ func (s *Service) usageCredentialError(c echo.Context, err error) error {
 // usageReadableProjects lists the projects the hosted member holds a grant
 // for, which is what the report is filtered to.
 func (s *Service) usageReadableProjects(ctx context.Context, credential apiCredential) ([]string, error) {
+	if s.database.postgres != nil {
+		projects, err := s.hostedReadableProjectsPostgres(ctx, credential)
+		if err != nil {
+			return nil, err
+		}
+		ids := make([]string, len(projects))
+		for i, project := range projects {
+			ids[i] = project.ID
+		}
+		return ids, nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.id FROM projects p JOIN hosted_project_grants g ON g.project_id = p.id

@@ -55,7 +55,7 @@ func (q *Queries) CommentBySource(ctx context.Context, arg CommentBySourceParams
 }
 
 const lockWorkItem = `-- name: LockWorkItem :one
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR UPDATE
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR UPDATE
 `
 
 type LockWorkItemParams struct {
@@ -91,6 +91,8 @@ func (q *Queries) LockWorkItem(ctx context.Context, arg LockWorkItemParams) (Iss
 		&i.NativeUpdatedAt,
 		&i.WorkflowStateName,
 		&i.LastActivityAt,
+		&i.IssueType,
+		&i.Priority,
 	)
 	return i, err
 }
@@ -250,7 +252,7 @@ func (q *Queries) SelectCommentsOldest(ctx context.Context, arg SelectCommentsOl
 }
 
 const workItemBySource = `-- name: WorkItemBySource :one
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_source_key=$3
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_source_key=$3
 `
 
 type WorkItemBySourceParams struct {
@@ -286,6 +288,8 @@ func (q *Queries) WorkItemBySource(ctx context.Context, arg WorkItemBySourcePara
 		&i.NativeUpdatedAt,
 		&i.WorkflowStateName,
 		&i.LastActivityAt,
+		&i.IssueType,
+		&i.Priority,
 	)
 	return i, err
 }

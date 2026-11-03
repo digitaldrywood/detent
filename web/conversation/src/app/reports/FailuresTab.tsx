@@ -33,6 +33,7 @@ export function FailuresTab({ report, search }: { readonly report: ReportsReport
   const splitKnown = report.series !== undefined;
   const failed = buckets.reduce((sum, bucket) => sum + bucket.failed, 0);
   const classes = report.failure_classes;
+  const classificationUnavailable = report.unavailable.includes("failure_classification");
   const classTotal = classes.reduce((sum, item) => sum + item.count, 0);
   const failedSpend = classes.reduce((sum, item) => sum + item.cost_usd, 0);
   const infraCount = classes.filter((item) => failureKind(item.kind) === "infrastructure").reduce((sum, item) => sum + item.count, 0);
@@ -108,7 +109,7 @@ export function FailuresTab({ report, search }: { readonly report: ReportsReport
         actions={<span className="text-muted-foreground text-xs">Grouped by class · full evidence stays in the issue's run history</span>}
       >
         {rows.length === 0 ? (
-          <Muted>No recorded failures in this range.</Muted>
+          <Muted>{classificationUnavailable ? "Failure classification is not available in this report source." : "No recorded failures in this range."}</Muted>
         ) : (
           <div className="flex flex-col">
             <div className="hidden gap-3 pb-2 text-muted-foreground text-xs sm:flex">

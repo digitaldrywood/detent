@@ -24,6 +24,7 @@ export function QualityTab({ report, search }: { readonly report: ReportsReport;
   const firstTry = report.unavailable.includes("landed_first_try") ? null : report.first_try_percent;
   const buckets = reportBuckets(report);
   const seriesKnown = report.series !== undefined;
+  const timelineUnavailable = report.unavailable.includes("rework_timeline_unavailable");
   const categories = bucketCategories(buckets);
   const kinds = Object.fromEntries(report.rework_classes.map((row) => [row.class, row.kind]));
   const byDay = buckets.map((bucket) => reworkByGroup(bucket.rework_classes, kinds));
@@ -62,7 +63,7 @@ export function QualityTab({ report, search }: { readonly report: ReportsReport;
         actions={<ChartLegend items={REWORK_GROUPS.map((group) => ({ label: group.label, color: group.color }))} />}
         footnote="Landing refused is infrastructure: attributed to the runner and excluded from the issue rework rate."
       >
-        {seriesKnown ? (
+        {seriesKnown && !timelineUnavailable ? (
           <Chart
             ariaLabel="Rework returns per bucket, stacked by cause"
             categories={categories}
@@ -78,7 +79,7 @@ export function QualityTab({ report, search }: { readonly report: ReportsReport;
           />
         ) : (
           <Muted>
-            <Dash /> Rework returns per day are not recorded.
+            <Dash /> Rework returns per day are not available in this report source.
           </Muted>
         )}
       </ChartPanel>

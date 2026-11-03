@@ -40,6 +40,8 @@ func (s *Service) registerPostgresAppRoutes(e *echo.Echo) {
 		e.GET(hostedOrganizationBase+"/fleet", s.hostedFleet, s.hostedSessionOnly)
 		e.GET(hostedOrganizationBase+"/diagnostics", s.hostedDiagnostics, s.usageSessionOnly, s.operatorAuthority)
 		e.GET(hostedOrganizationBase+"/diagnostics/requests", s.hostedRequestMetrics, s.operatorAuthority)
+		e.GET(hostedOrganizationBase+"/reports", s.hostedReports, s.usageSessionOnly, s.operatorAuthority)
+		e.GET(hostedOrganizationBase+"/reports/options", s.hostedReportOptions, s.usageSessionOnly, s.operatorAuthority)
 		e.GET("/app/bootstrap", s.postgresAppBootstrapPayload)
 		e.GET("/chat/bootstrap", s.postgresAppBootstrapPayload)
 		e.GET("/app/updates", s.appUpdates)

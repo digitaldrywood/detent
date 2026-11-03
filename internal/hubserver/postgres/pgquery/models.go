@@ -234,6 +234,21 @@ type AttemptDiff struct {
 	ManifestExpired      bool
 }
 
+type AttemptUsage struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	AttemptID      string
+	Period         time.Time
+	Provider       string
+	Model          string
+	Input          int64
+	CachedInput    int64
+	Output         int64
+	CostEstimate   float64
+	Currency       string
+	UpdatedAt      time.Time
+}
+
 type ChangeEvidence struct {
 	OrganizationID       tracker.OrganizationID
 	ChangeID             string
@@ -288,6 +303,11 @@ type ChangeRequest struct {
 	PayloadSHA256       string
 	PayloadBytes        int64
 	PayloadContentBytes int64
+	LandedVersionID     *string
+	LandedAt            *time.Time
+	LandedHeadSHA       *string
+	LandedMergeSHA      *string
+	LandedBaseRef       *string
 }
 
 type ChangeReviewPolicy struct {
@@ -1234,6 +1254,8 @@ type Issue struct {
 	NativeUpdatedAt        time.Time
 	WorkflowStateName      *string
 	LastActivityAt         time.Time
+	IssueType              string
+	Priority               *int
 }
 
 type IssueClaimFact struct {
@@ -2211,6 +2233,68 @@ type ReleaseDelivery struct {
 	ActorKind      string
 	ViaKey         string
 	AssociatedAt   time.Time
+}
+
+type ReportAttemptFact struct {
+	OrganizationID tracker.OrganizationID
+	AttemptID      string
+	FirstEventID   string
+	LatestEventID  string
+	OutcomeEventID *string
+}
+
+type ReportEscapeFact struct {
+	OrganizationID   tracker.OrganizationID
+	ChangeID         string
+	EvidenceSequence int64
+	OccurrenceID     string
+	Kind             string
+	Cause            string
+	ObservedAt       time.Time
+	InstanceID       string
+	HumanOverride    bool
+}
+
+type ReportEventFact struct {
+	OrganizationID  tracker.OrganizationID
+	EventID         string
+	DurationSeconds float64
+	RunSequence     int64
+	RunStatus       string
+	Role            string
+	Model           string
+	Effort          string
+	Failed          bool
+	FailureClass    string
+	FailureKind     string
+	LandingReceipt  bool
+	Landed          bool
+	LandingChangeID string
+	ReworkClass     string
+	ReworkKind      string
+}
+
+type ReportUsageCurrent struct {
+	OrganizationID tracker.OrganizationID
+	SourceKey      string
+	Revision       int64
+	ProjectID      tracker.ProjectID
+	AttemptID      string
+	Period         time.Time
+	Provider       string
+	Model          string
+	Input          int64
+	CachedInput    int64
+	Output         int64
+	CostEstimate   float64
+	Complete       bool
+}
+
+type ReportUsageImportCoverage struct {
+	OrganizationID tracker.OrganizationID
+	AttemptID      string
+	SourceSha256   string
+	RowCount       int64
 }
 
 type RequestDay struct {

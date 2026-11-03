@@ -58,6 +58,7 @@ export function OverviewTab({ report, search }: { readonly report: ReportsReport
   const prior = rangeOption(search.range).prior;
   const usageMissing = report.unavailable.includes("recorded_usage");
   const residenceMissing = report.unavailable.includes("lane_residence_and_unclaimed_waits_unavailable");
+  const completionMissing = report.unavailable.includes("completion_complete_population");
   const completion = report.completion;
   const previous = report.previous.partial ? undefined : report.previous;
   const firstTry = report.unavailable.includes("landed_first_try") ? null : report.first_try_percent;
@@ -93,8 +94,8 @@ export function OverviewTab({ report, search }: { readonly report: ReportsReport
       <MetricTileGroup aria-label="Headline metrics" className="lg:grid-cols-5">
         <MetricTile
           label="Shipped"
-          value={residenceMissing ? null : formatCount(completion.done)}
-          delta={compare ? (residenceMissing ? null : countDelta(completion.done, recorded ? report.previous.done : undefined, true, ` vs ${prior}`)) : undefined}
+          value={completionMissing ? null : formatCount(completion.done)}
+          delta={compare ? (completionMissing ? null : countDelta(completion.done, recorded ? report.previous.done : undefined, true, ` vs ${prior}`)) : undefined}
           detail={`plus ${formatCount(completion.cancelled)} cancelled`}
         />
         <MetricTile
@@ -135,14 +136,14 @@ export function OverviewTab({ report, search }: { readonly report: ReportsReport
             ]}
           />
         }
-        footnote={`Hover a day for counts. Bucket: day for 7d+, hour for 24h.${residenceMissing ? " Shipped counts are not recorded." : ""}`}
+        footnote={`Hover a day for counts. Bucket: day for 7d+, hour for 24h.${completionMissing ? " Shipped counts are not recorded." : ""}`}
       >
         <Chart
           ariaLabel="Shipped issues and failed attempts per bucket"
           categories={categories}
           height={260}
           series={[
-            { id: "shipped", label: "Shipped", color: "var(--success)", kind: "bar", values: buckets.map((bucket) => (residenceMissing ? null : bucket.done)) },
+            { id: "shipped", label: "Shipped", color: "var(--success)", kind: "bar", values: buckets.map((bucket) => (completionMissing ? null : bucket.done)) },
             ...(phone ? [] : [{ id: "failed", label: "Failed attempts", color: "var(--warning)", kind: "bar" as const, values: buckets.map((bucket) => bucket.failed) }]),
             ...(compare && hasPrior && !phone
               ? [{ id: "prior", label: "Prior period", color: "var(--muted-foreground)", kind: "line" as const, dashed: true, values: buckets.map((bucket) => bucket.prior_done ?? null) }]

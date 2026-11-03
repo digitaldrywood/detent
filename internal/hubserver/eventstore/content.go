@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -159,6 +161,7 @@ func (c *Content) PrepareEvent(ctx context.Context, organization tracker.Organiz
 		}
 	}
 	row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes = ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize
+	row.Report = reportstore.ProjectEvent(value)
 	return row, err
 }
 
@@ -190,6 +193,14 @@ func (c *Content) PrepareChange(ctx context.Context, organization tracker.Organi
 	row := Change{OrganizationID: organization, ProjectID: value.ProjectID, WorkItemID: value.WorkItemID, ID: value.ID, Revision: int64(value.Revision), Title: value.Title, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
 	if value.CurrentVersion != "" {
 		row.CurrentVersionID = new(value.CurrentVersion)
+	}
+	if value.Landed != nil {
+		row.LandedVersionID = new(value.Landed.VersionID)
+		landedAt := value.Landed.LandedAt
+		row.LandedAt = &landedAt
+		row.LandedHeadSHA = new(value.Landed.HeadSHA)
+		row.LandedMergeSHA = new(value.Landed.MergeSHA)
+		row.LandedBaseRef = new(value.Landed.BaseRef)
 	}
 	row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes = ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize
 	return row, err
@@ -311,6 +322,9 @@ func (c *Content) PrepareEvidence(ctx context.Context, row Evidence, raw []byte)
 		}
 		if value.Provenance != nil {
 			row.SourceKey = new(value.Provenance.Provider + ":" + value.Provenance.ExternalID)
+		}
+		if escape := value.Escape; escape != nil {
+			row.ReportEscape = &reportstore.EscapeProjection{OccurrenceID: escape.OccurrenceID, Kind: escape.Kind, Cause: escape.Cause, ObservedAt: escape.ObservedAt.UTC().Truncate(time.Microsecond), InstanceID: escape.InstanceID, HumanOverride: escape.HumanOverride}
 		}
 		ref, err = c.prepare(ctx, row.OrganizationID, value)
 	default:

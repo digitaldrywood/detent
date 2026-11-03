@@ -37,6 +37,14 @@ func recordTime(value time.Time) time.Time {
 	}
 	return value.UTC().Truncate(time.Microsecond)
 }
+
+func recordTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	result := recordTime(*value)
+	return &result
+}
 func (s *session) Events(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, after int64, limit int) ([]eventstore.Event, error) {
 	if err := checkPage(limit); err != nil {
 		return nil, err
@@ -47,7 +55,7 @@ func (s *session) Events(ctx context.Context, project tracker.ProjectID, item tr
 	}
 	records := make([]eventstore.Event, len(rows))
 	for i, row := range rows {
-		records[i] = eventstore.Event(row)
+		records[i] = eventRecord(row)
 	}
 	return records, nil
 }
@@ -62,7 +70,7 @@ func (s *session) EventsBefore(ctx context.Context, project tracker.ProjectID, i
 	}
 	records := make([]eventstore.Event, len(rows))
 	for i, row := range rows {
-		records[i] = eventstore.Event(row)
+		records[i] = eventRecord(row)
 	}
 	return records, nil
 }
@@ -93,7 +101,7 @@ func (s *session) LatestRunEvent(ctx context.Context, project tracker.ProjectID,
 		ProjectID:      project,
 		AttemptID:      attempt,
 	})
-	return eventstore.Event(row), mapError(ctx, err)
+	return eventRecord(row), mapError(ctx, err)
 }
 
 func (s *session) LatestCheckpointEvents(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, attempts []string) ([]eventstore.Event, error) {
@@ -111,7 +119,7 @@ func (s *session) LatestCheckpointEvents(ctx context.Context, project tracker.Pr
 	}
 	events := make([]eventstore.Event, len(rows))
 	for i, row := range rows {
-		events[i] = eventstore.Event(row)
+		events[i] = eventRecord(row)
 	}
 	return events, nil
 }
@@ -270,13 +278,13 @@ func (s *session) Evidence(ctx context.Context, change string, after int64, limi
 	}
 	records := make([]eventstore.Evidence, len(rows))
 	for i, row := range rows {
-		records[i] = eventstore.Evidence(row)
+		records[i] = evidenceRecord(row)
 	}
 	return records, nil
 }
 func (s *session) EvidenceBySource(ctx context.Context, change, kind, source string) (eventstore.Evidence, error) {
 	row, err := s.queries.RecordGetEvidenceBySource(ctx, pgquery.RecordGetEvidenceBySourceParams{OrganizationID: s.organization, ChangeID: change, Kind: kind, SourceKey: &source})
-	return eventstore.Evidence(row), mapError(ctx, err)
+	return evidenceRecord(row), mapError(ctx, err)
 }
 func (s *session) Links(ctx context.Context, change string, after tracker.NativeWorkItemID, limit int) ([]eventstore.Link, error) {
 	if err := checkPage(limit); err != nil {
@@ -327,14 +335,20 @@ func (s *session) CollaborationVersion(ctx context.Context, id string, revision 
 }
 func (s *session) insertRecordEvent(ctx context.Context, record eventstore.Event) (eventstore.Event, error) {
 	row, err := s.queries.RecordInsertEvent(ctx, pgquery.RecordInsertEventParams{OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID, Sequence: record.Sequence, ProjectSequence: record.ProjectSequence, Type: record.Type, SchemaVersion: record.SchemaVersion, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, EventRevision: record.EventRevision, ChangeID: record.ChangeID, VersionID: record.VersionID, HeadSHA: record.HeadSHA, LandingWaiting: record.LandingWaiting, LandingChangeID: record.LandingChangeID, LandingVersionID: record.LandingVersionID, LandingHeadSHA: record.LandingHeadSHA, RunID: record.RunID, AttemptID: record.AttemptID, FromState: record.FromState, ToState: record.ToState, RecordedAt: record.RecordedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
-	return eventstore.Event(row), mapError(ctx, err)
+	if err != nil {
+		return eventstore.Event{}, mapError(ctx, err)
+	}
+	if err := s.putReportEventProjection(ctx, record); err != nil {
+		return eventstore.Event{}, err
+	}
+	return eventRecord(row), nil
 }
 func (s *session) insertRecordCollaborationVersion(ctx context.Context, record eventstore.CollaborationVersion) (eventstore.CollaborationVersion, error) {
 	row, err := s.queries.RecordInsertCollaborationVersion(ctx, pgquery.RecordInsertCollaborationVersionParams{OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, RecordID: record.RecordID, Revision: record.Revision, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes})
 	return eventstore.CollaborationVersion(row), mapError(ctx, err)
 }
 func (s *session) insertRecordChange(ctx context.Context, record eventstore.Change) (eventstore.Change, error) {
-	row, err := s.queries.RecordInsertChange(ctx, pgquery.RecordInsertChangeParams{OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID, Revision: record.Revision, Title: record.Title, CurrentVersionID: record.CurrentVersionID, EvidenceSequence: record.EvidenceSequence, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes})
+	row, err := s.queries.RecordInsertChange(ctx, pgquery.RecordInsertChangeParams{OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID, Revision: record.Revision, Title: record.Title, CurrentVersionID: record.CurrentVersionID, EvidenceSequence: record.EvidenceSequence, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, LandedVersionID: record.LandedVersionID, LandedAt: recordTimePointer(record.LandedAt), LandedHeadSHA: record.LandedHeadSHA, LandedMergeSHA: record.LandedMergeSHA, LandedBaseRef: record.LandedBaseRef})
 	return eventstore.Change(row), mapError(ctx, err)
 }
 func (s *session) insertRecordVersion(ctx context.Context, record eventstore.Version) (eventstore.Version, error) {
@@ -351,7 +365,14 @@ func (s *session) insertRecordVersion(ctx context.Context, record eventstore.Ver
 }
 func (s *session) insertRecordEvidence(ctx context.Context, record eventstore.Evidence) (eventstore.Evidence, error) {
 	row, err := s.queries.RecordInsertEvidence(ctx, pgquery.RecordInsertEvidenceParams{OrganizationID: record.OrganizationID, ChangeID: record.ChangeID, Sequence: record.Sequence, VersionID: record.VersionID, Kind: record.Kind, SourceKey: record.SourceKey, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, Decision: record.Decision, CreatedAt: record.CreatedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
-	return eventstore.Evidence(row), mapError(ctx, err)
+	if err != nil {
+		return eventstore.Evidence{}, mapError(ctx, err)
+	}
+	record.Sequence = row.Sequence
+	if err := s.putReportEscapeProjection(ctx, record); err != nil {
+		return eventstore.Evidence{}, err
+	}
+	return evidenceRecord(row), nil
 }
 
 func (s *session) AppendEvent(ctx context.Context, record eventstore.Event) (eventstore.Event, error) {
@@ -376,6 +397,7 @@ func (s *session) AppendEvent(ctx context.Context, record eventstore.Event) (eve
 	previous, err := s.queries.RecordGetEvent(ctx, pgquery.RecordGetEventParams{OrganizationID: s.organization, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID})
 	if err == nil {
 		requested := record
+		requested.Report = nil
 		if requested.Sequence == 0 {
 			requested.Sequence = previous.Sequence
 		}
@@ -385,10 +407,13 @@ func (s *session) AppendEvent(ctx context.Context, record eventstore.Event) (eve
 		if requested.RecordedAt.IsZero() || recordTime(requested.RecordedAt).Equal(previous.RecordedAt) {
 			requested.RecordedAt = previous.RecordedAt
 		}
-		if !reflect.DeepEqual(eventstore.Event(previous), requested) {
+		if !reflect.DeepEqual(eventRecord(previous), requested) {
 			return eventstore.Event{}, corestore.ErrRevisionConflict
 		}
-		return eventstore.Event(previous), nil
+		if err := s.putReportEventProjection(ctx, record); err != nil {
+			return eventstore.Event{}, err
+		}
+		return eventRecord(previous), nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return eventstore.Event{}, mapError(ctx, err)
@@ -484,7 +509,7 @@ func (s *session) UpdateChange(ctx context.Context, record eventstore.Change) (e
 	if err := validRecordPayload(record.OrganizationID, record.PayloadObjectKey, record.PayloadSHA256, record.PayloadBytes, record.PayloadContentBytes); err != nil {
 		return eventstore.Change{}, err
 	}
-	row, err := s.queries.RecordUpdateChange(ctx, pgquery.RecordUpdateChangeParams{OrganizationID: s.organization, ID: record.ID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ExpectedRevision: record.Revision, Title: record.Title, CurrentVersionID: record.CurrentVersionID, UpdatedAt: recordTime(record.UpdatedAt), PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes})
+	row, err := s.queries.RecordUpdateChange(ctx, pgquery.RecordUpdateChangeParams{OrganizationID: s.organization, ID: record.ID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ExpectedRevision: record.Revision, Title: record.Title, CurrentVersionID: record.CurrentVersionID, UpdatedAt: recordTime(record.UpdatedAt), PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, LandedVersionID: record.LandedVersionID, LandedAt: recordTimePointer(record.LandedAt), LandedHeadSHA: record.LandedHeadSHA, LandedMergeSHA: record.LandedMergeSHA, LandedBaseRef: record.LandedBaseRef})
 	return eventstore.Change(row), updated(ctx, err)
 }
 
@@ -561,16 +586,21 @@ func (s *session) AppendEvidence(ctx context.Context, record eventstore.Evidence
 		}
 		if err == nil {
 			requested := record
+			requested.ReportEscape = nil
 			if requested.Sequence == 0 {
 				requested.Sequence = previous.Sequence
 			}
 			if requested.CreatedAt.IsZero() || recordTime(requested.CreatedAt).Equal(previous.CreatedAt) {
 				requested.CreatedAt = previous.CreatedAt
 			}
-			if !reflect.DeepEqual(eventstore.Evidence(previous), requested) {
+			if !reflect.DeepEqual(evidenceRecord(previous), requested) {
 				return eventstore.Evidence{}, corestore.ErrRevisionConflict
 			}
-			return eventstore.Evidence(previous), nil
+			record.Sequence = previous.Sequence
+			if err := s.putReportEscapeProjection(ctx, record); err != nil {
+				return eventstore.Evidence{}, err
+			}
+			return evidenceRecord(previous), nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return eventstore.Evidence{}, mapError(ctx, err)

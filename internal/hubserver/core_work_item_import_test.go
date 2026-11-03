@@ -44,7 +44,39 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 		}); err != nil {
 			t.Fatal(err)
 		}
-		path := coreWorkItemSourceCopy(t, org, project, false)
+		originalPath := coreWorkItemSourceCopy(t, org, project, false)
+		contents, err := os.ReadFile(originalPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "report-source.db")
+		if err := os.WriteFile(path, contents, 0600); err != nil {
+			t.Fatal(err)
+		}
+		copyDB, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var actor, recorded string
+		if err := copyDB.QueryRowContext(t.Context(), `SELECT actor_json,recorded_at FROM collaboration_events WHERE sequence=2`).Scan(&actor, &recorded); err != nil {
+			t.Fatal(err)
+		}
+		runData, err := json.Marshal(tracker.CollaborationData{Revision: 2, Run: &tracker.NativeRunData{AttemptID: "attempt_report_import", RunID: "run_report_import", Sequence: 1, Outcome: "failed", TerminalFailure: &tracker.NativeTerminalFailure{Error: "hub request timed out"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := copyDB.ExecContext(t.Context(), `INSERT INTO collaboration_events VALUES(?,?,?,?,?,?,?,?,?,?,?)`, "event_report_import", 3, "run.finished", 1, actor, string(runData), 2, recorded, org, project, "wi_core_import"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := copyDB.ExecContext(t.Context(), `UPDATE issues SET event_sequence=3`); err != nil {
+			t.Fatal(err)
+		}
+		if err := copyDB.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0444); err != nil {
+			t.Fatal(err)
+		}
 		source := CoreWorkItemImportSource{CopyPath: path, OrganizationID: org, ProjectID: project, Objects: objects}
 		for range 2 {
 			count, err := ImportCoreWorkItems(t.Context(), repository, source)
@@ -52,12 +84,23 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 				t.Fatalf("organization %s import count=%d error=%v", org, count, err)
 			}
 		}
+		var projectionDigest string
+		for range 2 {
+			parity, err := ImportCoreReportEvents(t.Context(), repository, source)
+			if err != nil || parity.Events != 1 || parity.AttemptObservations != 1 || parity.Reworks != 0 || parity.SourceSHA256 == "" || parity.ProjectionSHA256 == "" {
+				t.Fatalf("source report parity = %+v error %v", parity, err)
+			}
+			if projectionDigest != "" && projectionDigest != parity.ProjectionSHA256 {
+				t.Fatal("source report projection changed across idempotent import")
+			}
+			projectionDigest = parity.ProjectionSHA256
+		}
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 			item, err := r.WorkItem(t.Context(), project, "wi_core_import")
 			if err != nil {
 				return err
 			}
-			if item.ID != 41 || item.Revision != 2 || item.EventSequence != 2 || item.Title != "Updated title" || item.WorkflowStateName == nil || *item.WorkflowStateName != "Todo" || item.BodyObjectKey == nil {
+			if item.ID != 41 || item.Revision != 2 || item.EventSequence != 3 || item.Title != "Updated title" || item.WorkflowStateName == nil || *item.WorkflowStateName != "Todo" || item.BodyObjectKey == nil {
 				return errors.New("typed work item did not preserve source identity and current fields")
 			}
 			if *item.BodyObjectKey == "" {
@@ -107,7 +150,7 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 			if err != nil {
 				return err
 			}
-			if len(events) != 2 || events[0].Sequence != 1 || events[1].Sequence != 2 {
+			if len(events) != 3 || events[0].Sequence != 1 || events[1].Sequence != 2 || events[2].Sequence != 3 {
 				return errors.New("collaboration events did not preserve source sequence")
 			}
 			eventContent := eventstore.NewContent(objects)
