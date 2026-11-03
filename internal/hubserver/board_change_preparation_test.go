@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -40,12 +41,28 @@ func (r *boardChangeCountingRepository) ReadTenantSnapshot(ctx context.Context, 
 	r.reads.Add(1)
 	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, org, workload, read)
 }
+
+type boardDetailBatchCounter struct {
+	attachment.DetailStore
+	batches atomic.Int64
+	scalar  atomic.Int64
+}
+
+func (d *boardDetailBatchCounter) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	d.scalar.Add(1)
+	return d.DetailStore.ReadDetail(ctx, organization, ref)
+}
+func (d *boardDetailBatchCounter) ReadDetails(ctx context.Context, organization string, refs []attachment.ArchiveReference) ([]attachment.DetailReadResult, error) {
+	d.batches.Add(1)
+	return attachment.ReadDetailBatch(ctx, organization, refs, d.DetailStore.ReadDetail)
+}
 func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	counted := &boardChangeCountingRepository{Repository: repository}
 	details := &memoryRunDetails{}
-	service := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: counted, AccessRepository: counted, SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: details, now: func() time.Time { return now }}}
+	batchDetails := &boardDetailBatchCounter{DetailStore: details}
+	service := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: counted, AccessRepository: counted, SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: batchDetails, now: func() time.Time { return now }}}
 	content := eventstore.NewContent(details)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		service.localOrganization = string(org)
@@ -157,6 +174,8 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 			t.Fatal(err)
 		}
 		scalarReads := counted.reads.Load()
+		batchDetails.batches.Store(0)
+		batchDetails.scalar.Store(0)
 		counted.scalar = false
 		counted.reads.Store(0)
 		after, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "archived": {"all"}, "include": {"board"}})
@@ -164,6 +183,9 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 			t.Fatal(err)
 		}
 		batchReads := counted.reads.Load()
+		if batches, scalar := batchDetails.batches.Load(), batchDetails.scalar.Load(); batches < 3 || batches > 5 || scalar != 0 {
+			t.Fatalf("200-card allocation lookups: batches=%d scalar=%d", batches, scalar)
+		}
 		if len(before.Cards) != 200 || len(after.Cards) != 200 {
 			t.Fatalf("page sizes before%d after%d", len(before.Cards), len(after.Cards))
 		}

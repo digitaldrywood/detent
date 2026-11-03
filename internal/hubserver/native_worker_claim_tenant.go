@@ -697,7 +697,7 @@ func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope nativeScope
 func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope nativeScope, request tracker.NativeClaim, now time.Time, plan nativeClaimPlan, descriptor *policy.Descriptor) (nativeClaimPlan, error) {
 	var err error
 	if descriptor == nil {
-		loaded, err := eventstore.NewContent(s.runDetailStore()).ProjectPolicy(ctx, plan.policy)
+		loaded, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).ProjectPolicy(ctx, plan.policy)
 		if err != nil {
 			return nativeClaimPlan{}, err
 		}
@@ -710,7 +710,7 @@ func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope nativeScope,
 	if plan.policy.GitHubPullRequest == nil || *plan.policy.GitHubPullRequest != plan.descriptor.Gates.GitHubPullRequest {
 		return nativeClaimPlan{}, ErrNoClaimableWork
 	}
-	raw, err := eventstore.NewContent(s.runDetailStore()).CollaborationVersion(ctx, plan.version)
+	raw, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).CollaborationVersion(ctx, plan.version)
 	if err != nil {
 		return nativeClaimPlan{}, err
 	}

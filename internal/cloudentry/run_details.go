@@ -59,3 +59,18 @@ func (d tenantDetailStore) ReadDetail(ctx context.Context, organization string, 
 	}
 	return attachment.ReadArchive(ctx, storage, organization, ref)
 }
+
+func (d tenantDetailStore) ReadDetails(ctx context.Context, organization string, refs []attachment.ArchiveReference) ([]attachment.DetailReadResult, error) {
+	if organization != d.allocation.ID || attachment.ValidateDetailBatch(organization, refs) != nil {
+		return nil, attachment.ErrInvalid
+	}
+	unlock := d.service.attachmentLocks.lock(organization, false)
+	storage, err := d.current(ctx)
+	unlock()
+	if err != nil {
+		return nil, err
+	}
+	return attachment.ReadDetailBatch(ctx, organization, refs, func(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+		return attachment.ReadArchive(ctx, storage, organization, ref)
+	})
+}

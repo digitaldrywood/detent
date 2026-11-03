@@ -61,8 +61,24 @@ func TestTenantDetailStoreWritesBeforeTenantHTTPStarts(t *testing.T) {
 		if _, err := owner.StoreDetail(t.Context(), "org_foreign", raw); !errors.Is(err, attachment.ErrInvalid) {
 			t.Fatal("foreign organization accepted")
 		}
+		rows, err := owner.ReadDetails(t.Context(), organization, []attachment.ArchiveReference{first, second})
+		if err != nil || len(rows) != 2 {
+			t.Fatalf("batch read: %v", err)
+		}
+		for _, row := range rows {
+			data, err := row.Bytes()
+			if err != nil || !bytes.Equal(data, raw) {
+				t.Fatalf("batch bytes: %v", err)
+			}
+		}
+		if _, err := owner.ReadDetails(t.Context(), "org_foreign", []attachment.ArchiveReference{first}); !errors.Is(err, attachment.ErrInvalid) {
+			t.Fatal("foreign batch accepted")
+		}
 		stale := owner
 		stale.allocation.Generation++
+		if _, err := stale.ReadDetails(t.Context(), organization, []attachment.ArchiveReference{first}); !errors.Is(err, attachment.ErrInvalid) {
+			t.Fatal("stale batch accepted")
+		}
 		if _, err := stale.StoreDetail(t.Context(), organization, raw); !errors.Is(err, attachment.ErrInvalid) {
 			t.Fatal("stale allocation accepted")
 		}

@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -54,8 +55,14 @@ func (p *boardRecordPreparation) card(ctx context.Context, index int) (tracker.N
 func (p *boardRecordPreparation) close() { p.cancel(); p.workers.Wait() }
 
 func (s *Service) prepareBoardPage(ctx context.Context, scope nativeScope, records []viewstore.BoardRecord, now time.Time, currentChange bool) *boardRecordPreparation {
+	refs := make([]attachment.ArchiveReference, 0, len(records))
+	for _, record := range records {
+		refs = append(refs, record.Payload)
+	}
+	s.prefetchDetails(ctx, string(scope.organization), refs)
+
 	decoded := prepareBoardRecordPage(ctx, records, func(ctx context.Context, row viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
-		return viewstore.NewContent(s.runDetailStore()).BoardRecord(ctx, row)
+		return viewstore.NewContent(s.runDetailStoreFor(ctx)).BoardRecord(ctx, row)
 	})
 	cards := make([]tracker.NativeBoardCard, len(records))
 	errors := make([]error, len(records))

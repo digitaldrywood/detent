@@ -869,7 +869,7 @@ func (s *Service) hydrateCurrentChangeDetailWithFacts(ctx context.Context, scope
 	if changeRecord.CurrentVersionID == nil && versionRecord != nil || changeRecord.CurrentVersionID != nil && (versionRecord == nil || *changeRecord.CurrentVersionID != versionRecord.ID || versionRecord.ChangeID != changeRecord.ID) {
 		return tracker.ChangeDetail{}, corestore.ErrRevisionConflict
 	}
-	content := eventstore.NewContent(s.runDetailStore())
+	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
 	change, err := content.Change(ctx, changeRecord)
 	if err != nil {
 		return tracker.ChangeDetail{}, err
