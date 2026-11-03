@@ -761,7 +761,7 @@ func (s *Service) selectedChangeDetail(ctx context.Context, scope nativeScope, i
 				return corestore.ErrInvalidPage
 			}
 		}
-		policyRows, err = readCurrentChangePolicyRows(ctx, r, scope)
+		policyRows, err = readChangeSummaryPolicyRows(ctx, r, scope)
 		return err
 	})
 	if err != nil {
@@ -812,7 +812,7 @@ func (s *Service) selectedChangeDetail(ctx context.Context, scope nativeScope, i
 			break
 		}
 	}
-	currentApproval, err := hydrateCurrentChangeVersionApproval(ctx, content, scope, policyRows, "")
+	currentApproval, err := hydrateChangeSummaryPolicy(ctx, content, scope, policyRows)
 	if err != nil {
 		return tracker.ChangeDetail{}, projectRecordError(err)
 	}
@@ -851,7 +851,7 @@ func (s *Service) selectedCurrentChangeSummary(ctx context.Context, scope native
 			}
 			version = &row
 		}
-		policyRows, err = readCurrentChangePolicyRows(ctx, r, scope)
+		policyRows, err = readChangeSummaryPolicyRows(ctx, r, scope)
 		return err
 	})
 	if err != nil {

@@ -59,6 +59,14 @@ type currentChangePolicyRows struct {
 }
 
 func readCurrentChangePolicyRows(ctx context.Context, r tenantstore.Reader, scope nativeScope) (currentChangePolicyRows, error) {
+	rows, err := readChangeSummaryPolicyRows(ctx, r, scope)
+	if err == nil && rows.hasReview && rows.Review.PolicyRevisionID != rows.Project.PolicyID {
+		return rows, corestore.ErrTenantMismatch
+	}
+	return rows, err
+}
+
+func readChangeSummaryPolicyRows(ctx context.Context, r tenantstore.Reader, scope nativeScope) (currentChangePolicyRows, error) {
 	var rows currentChangePolicyRows
 	project, err := r.ProjectPolicy(ctx, scope.project)
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -78,7 +86,7 @@ func readCurrentChangePolicyRows(ctx context.Context, r tenantstore.Reader, scop
 	if err != nil {
 		return rows, err
 	}
-	if review.OrganizationID != scope.organization || review.ProjectID != scope.project || review.PolicyRevisionID != project.PolicyID || review.ReviewPolicyID == "" || review.Revision < 1 || review.UpdatedBy == "" || review.UpdatedAt.IsZero() {
+	if review.OrganizationID != scope.organization || review.ProjectID != scope.project || review.PolicyRevisionID == "" || review.ReviewPolicyID == "" || review.Revision < 1 || review.UpdatedBy == "" || review.UpdatedAt.IsZero() {
 		return rows, corestore.ErrTenantMismatch
 	}
 	rows.Review, rows.hasReview = review, true
@@ -105,6 +113,27 @@ func hydrateCurrentChangeVersionApproval(ctx context.Context, content *eventstor
 	}
 	if policyID != "" && policyID != descriptor.ID {
 		return ChangeVersionApproval{}, policyMismatch("Published version does not match the current approved policy")
+	}
+	return ChangeVersionApproval{Policy: descriptor, ReviewPolicy: rules}, nil
+}
+
+func hydrateChangeSummaryPolicy(ctx context.Context, content *eventstore.Content, scope nativeScope, rows currentChangePolicyRows) (ChangeVersionApproval, error) {
+	if !rows.hasReview || rows.Review.PolicyRevisionID == rows.Project.PolicyID {
+		return hydrateCurrentChangeVersionApproval(ctx, content, scope, rows, "")
+	}
+	if rows.Project.OrganizationID != scope.organization || rows.Project.ProjectID != scope.project || rows.Review.OrganizationID != scope.organization || rows.Review.ProjectID != scope.project {
+		return ChangeVersionApproval{}, corestore.ErrTenantMismatch
+	}
+	descriptor, err := content.ProjectPolicy(ctx, rows.Project)
+	if err != nil {
+		return ChangeVersionApproval{}, err
+	}
+	if err := descriptor.Validate(); err != nil || descriptor.ID != rows.Project.PolicyID {
+		return ChangeVersionApproval{}, eventstore.ErrInvalidRecord
+	}
+	rules, err := content.ReviewPolicy(ctx, rows.Review)
+	if err != nil {
+		return ChangeVersionApproval{}, err
 	}
 	return ChangeVersionApproval{Policy: descriptor, ReviewPolicy: rules}, nil
 }
