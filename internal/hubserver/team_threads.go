@@ -15,69 +15,20 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/threadstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type teamReference struct {
-	Kind      string `json:"kind"`
-	ID        string `json:"id"`
-	ProjectID string `json:"project_id,omitempty"`
-	IssueID   string `json:"issue_id,omitempty"`
-	Label     string `json:"label,omitempty"`
-}
-
+type teamReference = threadstore.Reference
 type teamThreadInput = operatortool.ThreadArguments
-
-type teamParticipant struct {
-	PrincipalID string `json:"principal_id"`
-	Name        string `json:"name"`
-	Client      string `json:"client,omitempty"`
-}
-
-type teamThread struct {
-	ID            string            `json:"id"`
-	Scope         string            `json:"scope"`
-	ProjectID     string            `json:"project_id,omitempty"`
-	IssueID       string            `json:"issue_id,omitempty"`
-	IssueNumber   int               `json:"issue_number,omitempty"`
-	Title         string            `json:"title"`
-	Status        string            `json:"status"`
-	Creator       string            `json:"creator_principal"`
-	CreatorName   string            `json:"creator_name"`
-	CreatorClient string            `json:"creator_client,omitempty"`
-	PostCount     int64             `json:"post_count"`
-	Unread        int64             `json:"unread_count"`
-	Preview       string            `json:"last_post_preview"`
-	CreatedAt     string            `json:"created_at"`
-	UpdatedAt     string            `json:"updated_at"`
-	Participants  []teamParticipant `json:"participants"`
-	References    []teamReference   `json:"references"`
-}
-
-type teamPost struct {
-	Sequence   int64           `json:"sequence"`
-	Author     string          `json:"author_principal"`
-	Name       string          `json:"author_name"`
-	ActingFor  string          `json:"acting_for,omitempty"`
-	Client     string          `json:"client_name,omitempty"`
-	Kind       string          `json:"kind"`
-	Body       string          `json:"body"`
-	CreatedAt  string          `json:"created_at"`
-	References []teamReference `json:"references"`
-}
-
-type teamThreadPage struct {
-	Threads    []teamThread `json:"threads"`
-	NextCursor string       `json:"next_cursor,omitempty"`
-}
-
-type teamThreadRead struct {
-	Thread  teamThread `json:"thread"`
-	Posts   []teamPost `json:"posts"`
-	Cursor  string     `json:"cursor"`
-	HasMore bool       `json:"has_more"`
-}
+type teamParticipant = threadstore.Participant
+type teamThread = threadstore.Thread
+type teamPost = threadstore.Post
+type teamThreadPage = threadstore.Page
+type teamThreadRead = threadstore.Read
 
 func threadInvalid() error {
 	return &nativeError{Code: "invalid_request", Message: "Thread request is invalid", status: http.StatusUnprocessableEntity, publicMessage: true}
@@ -142,6 +93,9 @@ func (s *Service) teamThreadOperation(ctx context.Context, name string, in teamT
 	ctx, scope, err := s.teamThreadAuthority(ctx, name, required)
 	if err != nil {
 		return nil, err
+	}
+	if s.config.TenantRepository != nil {
+		return s.teamThreadRecordOperation(ctx, scope, name, in)
 	}
 	if name == "list_threads" {
 		return s.listTeamThreads(ctx, scope, in)
@@ -769,6 +723,30 @@ func (s *Service) teamThreadAuthority(ctx context.Context, name string, required
 		return ctx, nativeScope{}, err
 	}
 	scope.action = name
+	if s.config.TenantRepository != nil {
+		if err := s.authorizeProjectRecord(ctx, scope, false); err != nil {
+			return ctx, nativeScope{}, err
+		}
+		if scope.credential.Hosted == nil && (scope.credential.Scope != apiScopeAdmin || scope.credential.NativeOnly) {
+			err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				grants, err := r.AccessTokenGrants(ctx, scope.credential.ID, "", 1)
+				if err != nil {
+					return err
+				}
+				if len(grants) == 0 {
+					return nativeNotFound()
+				}
+				return nil
+			})
+			if err != nil {
+				return ctx, nativeScope{}, err
+			}
+		}
+		if scope.credential.HostedRole == "account" {
+			return ctx, nativeScope{}, operatortool.ErrAccessDenied
+		}
+		return ctx, scope, nil
+	}
 	if scope.credential.Hosted == nil && (scope.credential.Scope != apiScopeAdmin || scope.credential.NativeOnly) {
 		var member int
 		if err := s.database.reader.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM token_grants WHERE token_id=? AND organization_id=?)", scope.credential.ID, scope.organization).Scan(&member); err != nil {

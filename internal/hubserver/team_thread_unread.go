@@ -47,6 +47,12 @@ func (s *Service) registerTeamUnreadRoute(e *echo.Echo) {
 			}
 			check := scope
 			check.project = tracker.ProjectID(project)
+			if s.config.TenantRepository != nil {
+				if err := s.authorizeProjectRecord(ctx, check, false); err != nil {
+					return s.nativeAPIError(c, threadRecordError(err))
+				}
+				continue
+			}
 			if err := s.requireHostedProject(ctx, s.database.reader, check, false); err != nil {
 				return s.nativeAPIError(c, err)
 			}
@@ -76,6 +82,9 @@ func (s *Service) registerTeamUnreadRoute(e *echo.Echo) {
 }
 
 func (s *Service) requestTeamUnread(ctx context.Context, scope nativeScope, projects []string, refresh bool) (teamUnreadSummary, error) {
+	if s.config.TenantRepository != nil {
+		return s.requestTeamUnreadRecord(ctx, scope, projects, refresh)
+	}
 	var result teamUnreadSummary
 	principal := operatorIdentity(scope.credential, string(scope.organization)).PrincipalID
 	id, err := nativeCommandHash(struct {
@@ -155,7 +164,7 @@ func (s *Service) requestTeamUnread(ctx context.Context, scope nativeScope, proj
 
 func (s *Service) maintainTeamUnread(ctx context.Context) error {
 	for range teamUnreadJobsPerTick {
-		more, _, err := s.database.advanceTeamUnread(ctx)
+		more, _, err := s.advanceTeamUnread(ctx)
 		if err != nil {
 			return err
 		}
@@ -257,4 +266,11 @@ func (d *database) advanceTeamUnread(ctx context.Context) (bool, int, error) {
 		return false, 0, fmt.Errorf("commit unread projection: %w", err)
 	}
 	return true, len(page), nil
+}
+
+func (s *Service) advanceTeamUnread(ctx context.Context) (bool, int, error) {
+	if s.config.TenantRepository != nil {
+		return s.advanceTeamUnreadRecord(ctx)
+	}
+	return s.database.advanceTeamUnread(ctx)
 }
