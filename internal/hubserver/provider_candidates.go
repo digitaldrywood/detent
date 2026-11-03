@@ -158,17 +158,84 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 		}
 		candidates = page.Items
 		shared := nativeClaimPlan{project: project, policy: projectPolicy}
-		for _, candidate := range candidates {
-			claim := request.NativeClaim
-			claim.WorkItemID = candidate.WorkItemID
-			plan, err := s.readNativeClaimPlanRows(ctx, scope, claim, now, r, &candidate, shared)
-			if errors.Is(err, ErrNoClaimableWork) {
-				continue
-			}
+		batchReader, canBatch := r.(tenantstore.ClaimPreviewPlanRowsReader)
+		if canBatch && request.NativeClaim.SessionID == "" && len(candidates) > 0 {
+			rows, err := batchReader.ClaimPreviewPlanRows(ctx, scope.project, candidates)
 			if err != nil {
 				return err
 			}
-			plans = append(plans, plan)
+			if len(rows) != len(candidates) {
+				return corestore.ErrRevisionConflict
+			}
+			needsChangePolicy := make([]bool, len(rows))
+			planIndexes := make([]int, len(rows))
+			for index := range planIndexes {
+				planIndexes[index] = -1
+			}
+			needsSharedChangePolicy := false
+			for index, row := range rows {
+				candidate := candidates[index]
+				if row.Item.Revision != candidate.Revision || row.Item.Archived {
+					continue
+				}
+				plan := shared
+				plan.candidate = candidate
+				plan.item = row.Item
+				plan.version = row.Version
+				if row.Item.NativeSourceKey != nil {
+					plan.linkedRecord = row.LinkedSource
+				}
+				if row.Change != nil {
+					plan.changeRecord = *row.Change
+				}
+				if row.ChangeVersion != nil {
+					if row.Change == nil || row.ChangePolicyRevision == nil {
+						return corestore.ErrNotFound
+					}
+					plan.changeVersion = *row.ChangeVersion
+					plan.changePolicyRevision = *row.ChangePolicyRevision
+					plan.change = tracker.NativeChangeReference{ChangeID: plan.changeRecord.ID, VersionID: plan.changeVersion.ID, HeadSHA: plan.changeVersion.HeadSHA}
+				}
+				if row.LatestAttempt != nil {
+					plan.latestAttempt = *row.LatestAttempt
+					plan.latestAttemptFound = true
+				}
+				if row.LatestRunEvent != nil {
+					plan.latestRunEvent = *row.LatestRunEvent
+					plan.latestRunEventFound = true
+				}
+				plan.landingPending = nativeClaimPendingLanding(plan)
+				if (stringsEqualFold(candidate.State, "Merging") || plan.landingPending) && plan.changeRecord.ID != "" {
+					needsChangePolicy[index] = true
+					needsSharedChangePolicy = true
+				}
+				plans = append(plans, plan)
+				planIndexes[index] = len(plans) - 1
+			}
+			if needsSharedChangePolicy {
+				changePolicy, err := readCurrentChangePolicyRows(ctx, r, scope)
+				if err != nil {
+					return err
+				}
+				for index, needed := range needsChangePolicy {
+					if needed && planIndexes[index] >= 0 {
+						plans[planIndexes[index]].changePolicy = changePolicy
+					}
+				}
+			}
+		} else {
+			for _, candidate := range candidates {
+				claim := request.NativeClaim
+				claim.WorkItemID = candidate.WorkItemID
+				plan, err := s.readNativeClaimPlanRows(ctx, scope, claim, now, r, &candidate, shared)
+				if errors.Is(err, ErrNoClaimableWork) {
+					continue
+				}
+				if err != nil {
+					return err
+				}
+				plans = append(plans, plan)
+			}
 		}
 		return nil
 	})

@@ -35,23 +35,26 @@ type nativePreviewReadCounts struct {
 	projectPolicy       int
 	candidatePage       int
 	landingCapacityRead int
+	claimPlanBatch      int
 }
 
 type nativePreviewCountingRepository struct {
 	tenantstore.Repository
-	counts *nativePreviewReadCounts
+	counts     *nativePreviewReadCounts
+	staleFirst bool
 }
 
 func (r nativePreviewCountingRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
 	r.counts.readTenant++
 	return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
-		return read(nativePreviewCountingReader{Reader: reader, counts: r.counts})
+		return read(nativePreviewCountingReader{Reader: reader, counts: r.counts, staleFirst: r.staleFirst})
 	})
 }
 
 type nativePreviewCountingReader struct {
 	tenantstore.Reader
-	counts *nativePreviewReadCounts
+	counts     *nativePreviewReadCounts
+	staleFirst bool
 }
 
 func (r nativePreviewCountingReader) ProjectRecord(ctx context.Context, project tracker.ProjectID) (projectstore.Record, error) {
@@ -66,12 +69,25 @@ func (r nativePreviewCountingReader) ProjectPolicy(ctx context.Context, project 
 
 func (r nativePreviewCountingReader) CandidatePage(ctx context.Context, query claimstore.CandidateQuery) (claimstore.CandidatePage, error) {
 	r.counts.candidatePage++
-	return r.Reader.CandidatePage(ctx, query)
+	page, err := r.Reader.CandidatePage(ctx, query)
+	if err == nil && r.staleFirst && len(page.Items) > 0 {
+		page.Items[0].Revision++
+	}
+	return page, err
 }
 
 func (r nativePreviewCountingReader) LandingCapacityUsage(ctx context.Context, project tracker.ProjectID, now time.Time) (claimstore.LandingCapacityUsage, error) {
 	r.counts.landingCapacityRead++
 	return r.Reader.LandingCapacityUsage(ctx, project, now)
+}
+
+func (r nativePreviewCountingReader) ClaimPreviewPlanRows(ctx context.Context, project tracker.ProjectID, candidates []claimstore.Candidate) ([]tenantstore.ClaimPreviewPlanRow, error) {
+	r.counts.claimPlanBatch++
+	reader, ok := r.Reader.(tenantstore.ClaimPreviewPlanRowsReader)
+	if !ok {
+		return nil, corestore.ErrNotFound
+	}
+	return reader.ClaimPreviewPlanRows(ctx, project, candidates)
 }
 
 func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *testing.T) {
@@ -121,6 +137,37 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 		var issue tracker.NativeIssue
 		decodeHubResponse(t, response, &issue)
 		items = append(items, issue)
+	}
+	changeResponse := performHubAPIRequest(t, service, http.MethodPost, itemsPath+"/"+string(items[0].WorkItemID)+"/changes", testHubAdminToken, tracker.CreateChange{
+		Mutation: tracker.Mutation{IdempotencyKey: "shared-change"}, Title: "Shared example change",
+		LinkedIssues: []tracker.NativeWorkItemID{items[1].WorkItemID},
+	})
+	requireNativeStatus(t, changeResponse, http.StatusOK)
+	var sharedChange tracker.ChangeRequest
+	decodeHubResponse(t, changeResponse, &sharedChange)
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(reader tenantstore.Reader) error {
+		batchReader, ok := reader.(tenantstore.ClaimPreviewPlanRowsReader)
+		if !ok {
+			return corestore.ErrNotFound
+		}
+		batchCandidates := make([]claimstore.Candidate, 0, len(items))
+		for _, issue := range items {
+			item, err := reader.WorkItemByNativeID(t.Context(), issue.WorkItemID)
+			if err != nil {
+				return err
+			}
+			batchCandidates = append(batchCandidates, claimstore.Candidate{OrganizationID: item.OrganizationID, ProjectID: item.ProjectID, WorkItemID: item.NativeID, ID: item.ID, Revision: item.Revision, State: valueOrEmpty(item.WorkflowStateName)})
+		}
+		rows, err := batchReader.ClaimPreviewPlanRows(t.Context(), project.ID, batchCandidates)
+		if err != nil {
+			return err
+		}
+		if len(rows) != 2 || rows[0].Change == nil || rows[1].Change == nil || rows[0].Change.ID != sharedChange.ID || rows[1].Change.ID != sharedChange.ID {
+			return fmt.Errorf("linked change was not mapped to both candidate items")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	secret := "example_runner_secret"
 	tokenHash := apikey.HashToken(secret)
@@ -185,6 +232,17 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	}
 	if twoCandidateCounts != *counts {
 		t.Fatalf("preview shared read counts changed with candidate count: two=%+v one=%+v", twoCandidateCounts, *counts)
+	}
+	if twoCandidateCounts.claimPlanBatch != 1 {
+		t.Fatalf("two-candidate preview batch read calls = %d, want 1", twoCandidateCounts.claimPlanBatch)
+	}
+	service.config.TenantRepository = nativePreviewCountingRepository{Repository: repository, counts: counts, staleFirst: true}
+	stalePreviewResponse := performHubAPIRequest(t, service, http.MethodPost, claimPath+"/preview", secret, tracker.NativeCapacityPreview{NativeClaim: previewClaim, Limit: 2})
+	requireNativeStatus(t, stalePreviewResponse, http.StatusOK)
+	var stalePreview tracker.NativeCapacityPage
+	decodeHubResponse(t, stalePreviewResponse, &stalePreview)
+	if len(stalePreview.Items) != 1 || stalePreview.Items[0].WorkItemID != sharedPreview.Items[1].WorkItemID {
+		t.Fatalf("preview did not skip stale first candidate: %+v", stalePreview.Items)
 	}
 	service.config.TenantRepository = repository
 	previewResponse := performHubAPIRequest(t, service, http.MethodPost, claimPath+"/preview", secret, tracker.NativeCapacityPreview{NativeClaim: request, Limit: 1})

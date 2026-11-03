@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/lib/pq"
 )
 
 const policyCurrentProjectObservation = `-- name: PolicyCurrentProjectObservation :one
@@ -139,6 +140,69 @@ func (q *Queries) PolicyGetProjectRevision(ctx context.Context, arg PolicyGetPro
 		&i.GateGithubPullRequest,
 	)
 	return i, err
+}
+
+const policyGetProjectRevisions = `-- name: PolicyGetProjectRevisions :many
+SELECT r.organization_id,r.project_id,r.policy_id,COALESCE(a.approved_by,r.approved_by) AS approved_by,
+  COALESCE(a.approved_at,r.approved_at) AS approved_at,r.payload_object_key,r.payload_sha256,r.payload_bytes,
+  r.payload_content_bytes,r.gate_github_pull_request
+FROM policy_revisions r LEFT JOIN policy_revision_approvals a
+  ON a.organization_id=r.organization_id AND a.project_id=r.project_id AND a.policy_id=r.policy_id
+WHERE r.organization_id=$1 AND r.project_id=$2
+  AND r.policy_id=ANY($3::text[])
+`
+
+type PolicyGetProjectRevisionsParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	PolicyIds      []string
+}
+
+type PolicyGetProjectRevisionsRow struct {
+	OrganizationID        tracker.OrganizationID
+	ProjectID             tracker.ProjectID
+	PolicyID              string
+	ApprovedBy            string
+	ApprovedAt            time.Time
+	PayloadObjectKey      string
+	PayloadSHA256         string
+	PayloadBytes          int64
+	PayloadContentBytes   int64
+	GateGithubPullRequest sql.NullBool
+}
+
+func (q *Queries) PolicyGetProjectRevisions(ctx context.Context, arg PolicyGetProjectRevisionsParams) ([]PolicyGetProjectRevisionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, policyGetProjectRevisions, arg.OrganizationID, arg.ProjectID, pq.Array(arg.PolicyIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PolicyGetProjectRevisionsRow{}
+	for rows.Next() {
+		var i PolicyGetProjectRevisionsRow
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.PolicyID,
+			&i.ApprovedBy,
+			&i.ApprovedAt,
+			&i.PayloadObjectKey,
+			&i.PayloadSHA256,
+			&i.PayloadBytes,
+			&i.PayloadContentBytes,
+			&i.GateGithubPullRequest,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const policyGetReviewCurrent = `-- name: PolicyGetReviewCurrent :one

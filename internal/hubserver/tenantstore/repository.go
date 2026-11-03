@@ -60,6 +60,21 @@ type Repository interface {
 	WriteTenant(context.Context, tracker.OrganizationID, corestore.Workload, func(Writer) error) error
 }
 
+type ClaimPreviewPlanRowsReader interface {
+	ClaimPreviewPlanRows(context.Context, tracker.ProjectID, []claimstore.Candidate) ([]ClaimPreviewPlanRow, error)
+}
+
+type ClaimPreviewPlanRow struct {
+	Item                  corestore.WorkItem
+	Version               eventstore.CollaborationVersion
+	LinkedSource          *eventstore.LinkedSource
+	Change                *eventstore.Change
+	ChangeVersion         *eventstore.Version
+	ChangePolicyRevision  *policystore.Revision
+	LatestAttempt         *leasestore.Attempt
+	LatestRunEvent        *eventstore.Event
+}
+
 type SnapshotRepository interface {
 	ReadTenantSnapshot(context.Context, tracker.OrganizationID, corestore.Workload, func(Reader) error) error
 }

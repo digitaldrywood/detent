@@ -21,6 +21,12 @@ WHERE organization_id=sqlc.arg(organization_id)
   AND project_id=sqlc.arg(project_id)
   AND id=sqlc.arg(id);
 
+-- name: GetWorkItemsByIDs :many
+SELECT * FROM issues
+WHERE organization_id=sqlc.arg(organization_id)
+  AND project_id=sqlc.arg(project_id)
+  AND id=ANY(sqlc.arg(ids)::bigint[]);
+
 -- name: CreateWorkItem :one
 INSERT INTO issues (
     last_activity_at,

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/lib/pq"
 )
 
 const recordAdvanceEvidence = `-- name: RecordAdvanceEvidence :one
@@ -406,6 +407,54 @@ func (q *Queries) RecordGetLinkedIssueSourceByURL(ctx context.Context, arg Recor
 		&i.SnapshotContentBytes,
 	)
 	return i, err
+}
+
+const recordGetLinkedIssueSourcesByWorkItems = `-- name: RecordGetLinkedIssueSourcesByWorkItems :many
+SELECT organization_id, project_id, work_item_id, source_url, title_supplied, body_supplied, title_owned, body_owned, snapshot_object_key, snapshot_sha256, snapshot_bytes, snapshot_content_bytes FROM linked_issue_sources
+WHERE organization_id=$1 AND project_id=$2
+  AND work_item_id=ANY($3::text[])
+`
+
+type RecordGetLinkedIssueSourcesByWorkItemsParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemIds    []string
+}
+
+func (q *Queries) RecordGetLinkedIssueSourcesByWorkItems(ctx context.Context, arg RecordGetLinkedIssueSourcesByWorkItemsParams) ([]LinkedIssueSource, error) {
+	rows, err := q.db.QueryContext(ctx, recordGetLinkedIssueSourcesByWorkItems, arg.OrganizationID, arg.ProjectID, pq.Array(arg.WorkItemIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LinkedIssueSource{}
+	for rows.Next() {
+		var i LinkedIssueSource
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.WorkItemID,
+			&i.SourceUrl,
+			&i.TitleSupplied,
+			&i.BodySupplied,
+			&i.TitleOwned,
+			&i.BodyOwned,
+			&i.SnapshotObjectKey,
+			&i.SnapshotSha256,
+			&i.SnapshotBytes,
+			&i.SnapshotContentBytes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const recordGetReceipt = `-- name: RecordGetReceipt :one
@@ -1127,6 +1176,82 @@ func (q *Queries) RecordLatestChange(ctx context.Context, arg RecordLatestChange
 	return i, err
 }
 
+const recordLatestChangesByWorkItems = `-- name: RecordLatestChangesByWorkItems :many
+SELECT requested.work_item_id::text AS linked_work_item_id, c.organization_id, c.project_id, c.work_item_id, c.id, c.revision, c.title, c.current_version_id, c.evidence_sequence, c.created_at, c.updated_at, c.payload_object_key, c.payload_sha256, c.payload_bytes, c.payload_content_bytes
+FROM unnest($1::text[]) AS requested(work_item_id)
+CROSS JOIN LATERAL (
+  SELECT c.organization_id, c.project_id, c.work_item_id, c.id, c.revision, c.title, c.current_version_id, c.evidence_sequence, c.created_at, c.updated_at, c.payload_object_key, c.payload_sha256, c.payload_bytes, c.payload_content_bytes FROM change_issue_links l
+  JOIN change_requests c ON c.organization_id=l.organization_id AND c.project_id=l.project_id AND c.id=l.change_id
+  WHERE l.organization_id=$2 AND l.project_id=$3
+    AND l.work_item_id=requested.work_item_id
+  ORDER BY l.created_at DESC,l.change_id DESC
+  LIMIT 1
+) c
+`
+
+type RecordLatestChangesByWorkItemsParams struct {
+	WorkItemIds    []string
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+}
+
+type RecordLatestChangesByWorkItemsRow struct {
+	LinkedWorkItemID    string
+	OrganizationID      tracker.OrganizationID
+	ProjectID           tracker.ProjectID
+	WorkItemID          tracker.NativeWorkItemID
+	ID                  string
+	Revision            int64
+	Title               string
+	CurrentVersionID    *string
+	EvidenceSequence    int64
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
+}
+
+func (q *Queries) RecordLatestChangesByWorkItems(ctx context.Context, arg RecordLatestChangesByWorkItemsParams) ([]RecordLatestChangesByWorkItemsRow, error) {
+	rows, err := q.db.QueryContext(ctx, recordLatestChangesByWorkItems, pq.Array(arg.WorkItemIds), arg.OrganizationID, arg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RecordLatestChangesByWorkItemsRow{}
+	for rows.Next() {
+		var i RecordLatestChangesByWorkItemsRow
+		if err := rows.Scan(
+			&i.LinkedWorkItemID,
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.WorkItemID,
+			&i.ID,
+			&i.Revision,
+			&i.Title,
+			&i.CurrentVersionID,
+			&i.EvidenceSequence,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.PayloadObjectKey,
+			&i.PayloadSHA256,
+			&i.PayloadBytes,
+			&i.PayloadContentBytes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const recordLatestRunEvent = `-- name: RecordLatestRunEvent :one
 SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence FROM collaboration_events
 WHERE organization_id=$1 AND project_id=$2
@@ -1174,6 +1299,76 @@ func (q *Queries) RecordLatestRunEvent(ctx context.Context, arg RecordLatestRunE
 		&i.ProjectSequence,
 	)
 	return i, err
+}
+
+const recordLatestRunEventsByAttempts = `-- name: RecordLatestRunEventsByAttempts :many
+SELECT latest.organization_id, latest.project_id, latest.work_item_id, latest.id, latest.sequence, latest.type, latest.schema_version, latest.actor_kind, latest.actor_principal_id, latest.event_revision, latest.change_id, latest.version_id, latest.head_sha, latest.run_id, latest.attempt_id, latest.from_state, latest.to_state, latest.recorded_at, latest.payload_object_key, latest.payload_sha256, latest.payload_bytes, latest.payload_content_bytes, latest.payload_format_version, latest.landing_waiting, latest.landing_change_id, latest.landing_version_id, latest.landing_head_sha, latest.project_sequence
+FROM unnest($1::text[]) AS requested(attempt_id)
+CROSS JOIN LATERAL (
+  SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence FROM collaboration_events
+  WHERE organization_id=$2 AND project_id=$3
+    AND attempt_id=requested.attempt_id
+  ORDER BY sequence DESC
+  LIMIT 1
+) latest
+`
+
+type RecordLatestRunEventsByAttemptsParams struct {
+	AttemptIds     []string
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+}
+
+func (q *Queries) RecordLatestRunEventsByAttempts(ctx context.Context, arg RecordLatestRunEventsByAttemptsParams) ([]CollaborationEvent, error) {
+	rows, err := q.db.QueryContext(ctx, recordLatestRunEventsByAttempts, pq.Array(arg.AttemptIds), arg.OrganizationID, arg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CollaborationEvent{}
+	for rows.Next() {
+		var i CollaborationEvent
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.WorkItemID,
+			&i.ID,
+			&i.Sequence,
+			&i.Type,
+			&i.SchemaVersion,
+			&i.ActorKind,
+			&i.ActorPrincipalID,
+			&i.EventRevision,
+			&i.ChangeID,
+			&i.VersionID,
+			&i.HeadSHA,
+			&i.RunID,
+			&i.AttemptID,
+			&i.FromState,
+			&i.ToState,
+			&i.RecordedAt,
+			&i.PayloadObjectKey,
+			&i.PayloadSHA256,
+			&i.PayloadBytes,
+			&i.PayloadContentBytes,
+			&i.PayloadFormatVersion,
+			&i.LandingWaiting,
+			&i.LandingChangeID,
+			&i.LandingVersionID,
+			&i.LandingHeadSHA,
+			&i.ProjectSequence,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const recordListChange = `-- name: RecordListChange :many

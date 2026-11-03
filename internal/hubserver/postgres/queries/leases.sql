@@ -67,6 +67,16 @@ SELECT * FROM native_attempts WHERE organization_id=$1 AND id=$2;
 -- name: GetLatestIssueAttempt :one
 SELECT * FROM native_attempts WHERE organization_id=$1 AND issue_id=$2 ORDER BY fencing_token DESC LIMIT 1;
 
+-- name: GetLatestIssueAttemptsByIssues :many
+SELECT latest.*
+FROM unnest(sqlc.arg(issue_ids)::bigint[]) AS requested(issue_id)
+CROSS JOIN LATERAL (
+  SELECT * FROM native_attempts
+  WHERE organization_id=sqlc.arg(organization_id) AND issue_id=requested.issue_id
+  ORDER BY fencing_token DESC
+  LIMIT 1
+) latest;
+
 -- name: PageIssueAttempts :many
 SELECT * FROM native_attempts
 WHERE organization_id=sqlc.arg(organization_id) AND issue_id=sqlc.arg(issue_id)
