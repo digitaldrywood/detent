@@ -264,6 +264,17 @@ func (s *session) lockFence(ctx context.Context, fence leasestore.Fence) (pgquer
 	return row, now, mapError(ctx, err)
 }
 
+func (s *session) LockLease(ctx context.Context, leaseID string) (leasestore.Lease, error) {
+	if strings.TrimSpace(leaseID) == "" {
+		return leasestore.Lease{}, tracker.ErrLeaseNotFound
+	}
+	row, err := s.queries.LockLease(ctx, pgquery.LockLeaseParams{OrganizationID: s.organization, LeaseID: leaseID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return leasestore.Lease{}, tracker.ErrLeaseNotFound
+	}
+	return leasestore.Lease(row), mapError(ctx, err)
+}
+
 func (s *session) Renew(ctx context.Context, fence leasestore.Fence, ttl time.Duration) (leasestore.Lease, error) {
 	return s.RenewWithLandingCapacity(ctx, fence, ttl, 0)
 }

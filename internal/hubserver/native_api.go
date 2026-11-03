@@ -365,6 +365,9 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				}
 			} else {
 				write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c)
+				if write && c.Request().Method == http.MethodPost && c.Path() == nativeBase+"/work-items/:item/workflow" {
+					scope.action = operatortool.MoveItem
+				}
 				if write && credential.HostedRole == "reporter" {
 					switch c.Request().Method + " " + c.Path() {
 					case "POST " + nativeBase + "/release-audits":

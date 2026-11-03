@@ -34,7 +34,7 @@ type workItemArchive struct {
 
 func workItemRecordRoute(path string) bool {
 	switch path {
-	case nativeBase + "/labels", nativeBase + "/work-items", nativeBase + "/work-items/:item", nativeBase + "/work-items/:item/comments", nativeBase + "/work-items/:item/comments/:comment", nativeBase + "/work-items/:item/archive", nativeBase + "/work-items/:item/restore", nativeBase + "/work-items/:item/dependencies", nativeBase + "/work-items/:item/source-intake", nativeBase + "/work-items/:item/events":
+	case nativeBase + "/labels", nativeBase + "/work-items", nativeBase + "/work-items/:item", nativeBase + "/work-items/:item/comments", nativeBase + "/work-items/:item/comments/:comment", nativeBase + "/work-items/:item/archive", nativeBase + "/work-items/:item/restore", nativeBase + "/work-items/:item/dependencies", nativeBase + "/work-items/:item/source-intake", nativeBase + "/work-items/:item/events", nativeBase + "/work-items/:item/workflow":
 		return true
 	}
 	return false

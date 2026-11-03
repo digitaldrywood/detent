@@ -46,6 +46,10 @@ type Writer interface {
 	RecordAttemptEvent(context.Context, AttemptEvent) (Attempt, bool, error)
 }
 
+type FencedLeaseLocker interface {
+	LockLease(context.Context, string) (Lease, error)
+}
+
 type Machine struct {
 	OrganizationID tracker.OrganizationID
 	ID             string
