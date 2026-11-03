@@ -1,6 +1,8 @@
 package hubserver
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -26,7 +29,7 @@ import (
 )
 
 func TestPostgresActivityReadsLiveOutcomesAndIssueClocksWithoutSQLite(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	repository, admin := projectRecordPostgresWithAdmin(t, 2)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	base := now.Add(-time.Hour)
 	observed := now
@@ -256,5 +259,80 @@ func TestPostgresActivityReadsLiveOutcomesAndIssueClocksWithoutSQLite(t *testing
 	if !interrupted {
 		t.Fatal("expired running attempt did not report interruption")
 	}
+	assertActivityRunLookupBounded(t, admin)
+}
 
+type activityQueryCapture struct {
+	pgquery.DBTX
+	query string
+	args  []any
+}
+
+func (r *activityQueryCapture) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	r.query, r.args = query, args
+	return r.DBTX.QueryContext(ctx, query, args...)
+}
+
+func assertActivityRunLookupBounded(t *testing.T, admin *sql.DB) {
+	t.Helper()
+	_, err := admin.ExecContext(t.Context(), `INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,event_revision,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
+ SELECT e.organization_id,e.project_id,e.work_item_id,e.id||'_history_'||n,10000+n,e.type,e.schema_version,e.actor_kind,e.actor_principal_id,e.event_revision,e.recorded_at,e.payload_object_key,e.payload_sha256,e.payload_bytes,e.payload_content_bytes FROM collaboration_events e CROSS JOIN generate_series(1,2000)n WHERE e.organization_id='org_first' AND e.type='issue.created'; ANALYZE collaboration_events; ANALYZE native_attempts; ANALYZE issues;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := admin.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(t.Context(), `SET LOCAL ROLE detent_runtime_v2; SELECT set_config('detent.organization_id','org_first',true);`); err != nil {
+		t.Fatal(err)
+	}
+	capture := &activityQueryCapture{DBTX: tx}
+	events, err := pgquery.New(capture).ActivityLatestRunEvents(t.Context(), pgquery.ActivityLatestRunEventsParams{OrganizationID: "org_first", AttemptIds: []string{"project_1_item_1", "project_1_item_2", "project_2_item_1", "project_2_item_2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 4 {
+		t.Fatalf("run event lookup returned %d events, want four", len(events))
+	}
+	for _, e := range events {
+		if e.Type != "run.updated" || e.OrganizationID != "org_first" {
+			t.Fatalf("run event lookup returned unrelated event: %s %s", e.OrganizationID, e.Type)
+		}
+	}
+	var raw []byte
+	if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+capture.query, capture.args...).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	type planNode struct {
+		Relation string            `json:"Relation Name"`
+		Rows     float64           `json:"Actual Rows"`
+		Loops    float64           `json:"Actual Loops"`
+		Removed  float64           `json:"Rows Removed by Filter"`
+		Plans    []json.RawMessage `json:"Plans"`
+	}
+	var plans []struct{ Plan json.RawMessage }
+	if err := json.Unmarshal(raw, &plans); err != nil {
+		t.Fatal(err)
+	}
+	var visited float64
+	var walk func(json.RawMessage)
+	walk = func(raw json.RawMessage) {
+		var n planNode
+		if err := json.Unmarshal(raw, &n); err != nil {
+			t.Fatal(err)
+		}
+		if n.Relation == "collaboration_events" {
+			visited += (n.Rows + n.Removed) * n.Loops
+		}
+		for _, child := range n.Plans {
+			walk(child)
+		}
+	}
+	walk(plans[0].Plan)
+	if visited > 16 {
+		t.Fatalf("run lookup scanned %.0f event rows for four attempts; unrelated project history must not be scanned", visited)
+	}
+	t.Logf("run lookup visited %.0f event rows with 8000 unrelated events", visited)
 }

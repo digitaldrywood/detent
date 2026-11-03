@@ -71,7 +71,7 @@ SELECT latest.organization_id, latest.project_id, latest.work_item_id, latest.id
 FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
 CROSS JOIN LATERAL (
  SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence FROM collaboration_events e
- WHERE e.organization_id=a.organization_id AND e.project_id=i.project_id AND e.attempt_id=a.id
+ WHERE e.organization_id=a.organization_id AND e.project_id=i.project_id AND e.attempt_id=a.id AND e.attempt_id<>''
  ORDER BY e.sequence DESC LIMIT 1
 ) latest
 WHERE a.organization_id=$1 AND a.id=ANY($2::text[])
