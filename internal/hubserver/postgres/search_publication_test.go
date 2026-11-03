@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +17,119 @@ import (
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestSearchPublicationReusesUnchangedPostings(t *testing.T) {
+	f := newSearchFixture(t)
+	if _, err := f.admin.ExecContext(t.Context(), `CREATE TABLE search_publication_writes(organization_id text,document_id text,operation text,writes bigint,PRIMARY KEY(organization_id,document_id,operation));
+GRANT SELECT,INSERT,UPDATE ON search_publication_writes TO detent_runtime_v2;
+CREATE FUNCTION count_search_publication_writes() RETURNS trigger LANGUAGE plpgsql AS $fn$
+DECLARE posting public.search_postings;
+BEGIN
+ IF TG_OP='DELETE' THEN posting:=OLD; ELSE posting:=NEW; END IF;
+ IF posting.term NOT IN ('~all','~pending') THEN
+  INSERT INTO search_publication_writes VALUES(posting.organization_id,posting.document_id,TG_OP,1)
+  ON CONFLICT(organization_id,document_id,operation) DO UPDATE SET writes=search_publication_writes.writes+1;
+ END IF;
+ RETURN NULL;
+END $fn$;
+CREATE TRIGGER count_search_publication_writes AFTER INSERT OR UPDATE OR DELETE ON search_postings FOR EACH ROW EXECUTE FUNCTION count_search_publication_writes()`); err != nil {
+		t.Fatal(err)
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if _, err := f.admin.ExecContext(t.Context(), `UPDATE projects SET name='path-name' WHERE organization_id=$1 AND id='prj_first'`, org); err != nil {
+			t.Fatal(err)
+		}
+		d := searchIssue(org, "wi_first_1")
+		text := searchstore.Text{Title: "Example source", Body: "path-name "}
+		for i := 0; i < 60; i++ {
+			text.Body += fmt.Sprintf("exampleword%03d ", i)
+		}
+		d = f.put(t, d, text, 0)
+		comment := searchstore.Document{OrganizationID: org, ID: "comment:publication", Kind: "comment", SourceID: "publication", ProjectID: d.ProjectID, WorkItemID: d.WorkItemID, Scope: "issue", Revision: 1, UpdatedAt: d.UpdatedAt}
+		if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO native_comments(organization_id,project_id,work_item_id,id,revision,sequence,body_object_key,actor_kind,actor_principal_id,created_at,updated_at) VALUES($1,$2,$3,'publication',1,999,'example','human','example',$4,$4)`, org, d.ProjectID, d.WorkItemID, d.UpdatedAt); err != nil {
+			t.Fatal(err)
+		}
+		f.put(t, comment, searchstore.Text{Body: "commentretainedsentinel"}, 0)
+		f.drain(t, org)
+		var postings int64
+		if err := f.admin.QueryRowContext(t.Context(), `SELECT count(*) FROM search_postings WHERE organization_id=$1 AND document_id=$2 AND term NOT IN ('~all','~pending')`, org, d.ID).Scan(&postings); err != nil {
+			t.Fatal(err)
+		}
+		if postings < 1000 {
+			t.Fatalf("fixture has only %d postings", postings)
+		}
+		for _, mode := range []string{"identical refresh", "revision and time", "literal source change"} {
+			t.Run(string(org)+"/"+mode, func(t *testing.T) {
+				staleLiterals := []string{}
+				if mode == "identical refresh" {
+					if err := f.repository.WriteSearch(t.Context(), org, corestore.Background, func(w searchstore.Writer) error { return w.AdvanceSearch(t.Context(), d) }); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					expected := d.Revision
+					d.Revision++
+					d.UpdatedAt = d.UpdatedAt.Add(time.Minute + time.Nanosecond)
+					if mode == "literal source change" {
+						previous := searchstore.LiteralPostings(d, text)
+						text.Body = strings.ReplaceAll(text.Body, "path-name", "path+name")
+						current := map[string]bool{}
+						for _, posting := range searchstore.LiteralPostings(d, text) {
+							current[posting.Term] = true
+						}
+						for _, posting := range previous {
+							if !current[posting.Term] {
+								staleLiterals = append(staleLiterals, posting.Term)
+							}
+						}
+					}
+					d = f.put(t, d, text, expected)
+				}
+				if _, err := f.admin.ExecContext(t.Context(), `DELETE FROM search_publication_writes WHERE organization_id=$1 AND document_id=$2`, org, d.ID); err != nil {
+					t.Fatal(err)
+				}
+				f.drain(t, org)
+				var inserts, updates, deletes int64
+				if err := f.admin.QueryRowContext(t.Context(), `SELECT coalesce(sum(writes) FILTER(WHERE operation='INSERT'),0),coalesce(sum(writes) FILTER(WHERE operation='UPDATE'),0),coalesce(sum(writes) FILTER(WHERE operation='DELETE'),0) FROM search_publication_writes WHERE organization_id=$1 AND document_id=$2`, org, d.ID).Scan(&inserts, &updates, &deletes); err != nil {
+					t.Fatal(err)
+				}
+				t.Logf("postings=%d inserts=%d updates=%d deletes=%d", postings, inserts, updates, deletes)
+				if mode == "identical refresh" && inserts+updates+deletes != 0 {
+					t.Errorf("identical publication rewrote postings: insert=%d update=%d delete=%d", inserts, updates, deletes)
+				}
+				if mode == "revision and time" && (inserts != 0 || deletes != 0 || updates != postings) {
+					t.Errorf("revision-only publication recreated postings or lost current ordering: insert=%d update=%d delete=%d want_updates=%d", inserts, updates, deletes, postings)
+				}
+				if mode != "identical refresh" {
+					var stale int64
+					if err := f.admin.QueryRowContext(t.Context(), `SELECT count(*) FROM search_postings WHERE organization_id=$1 AND document_id=$2 AND (updated_at<>$3 OR updated_at_submicrosecond<>$4)`, org, d.ID, d.UpdatedAt.Truncate(time.Microsecond), d.UpdatedAt.Nanosecond()%1000).Scan(&stale); err != nil {
+						t.Fatal(err)
+					}
+					if stale != 0 {
+						t.Errorf("%d postings retained stale ordering timestamps", stale)
+					}
+				}
+				for _, query := range []string{"exampleword059", "commentretainedsentinel"} {
+					page := f.find(t, org, searchstore.Query{Text: query})
+					if len(page.Items) != 1 || page.Items[0].Document.Revision != d.Revision || !page.Items[0].Document.UpdatedAt.Equal(d.UpdatedAt) {
+						t.Fatal("reused publication lost current source identity or comment content")
+					}
+				}
+				if mode == "literal source change" {
+					if page := f.find(t, org, searchstore.Query{Text: "path+name"}); len(page.Items) != 1 {
+						t.Fatal("changed punctuation is not searchable")
+					}
+					var stale int64
+					if err := f.admin.QueryRowContext(t.Context(), `SELECT count(*) FROM search_postings WHERE organization_id=$1 AND document_id=$2 AND term=ANY($3::text[]) AND cardinality(literal_positions)>0`, org, d.ID, pq.Array(staleLiterals)).Scan(&stale); err != nil {
+						t.Fatal(err)
+					}
+					if len(staleLiterals) == 0 || stale != 0 {
+						t.Fatal("stale punctuation positions remain on metadata postings")
+					}
+				}
+			})
+		}
+	}
+}
 
 func TestSearchPublicationAllowsCurrentWritesDuringPostingIO(t *testing.T) {
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -151,7 +265,7 @@ END $fn$`)
 					})
 					testenv.WaitUntil(t, t.Context(), func() error {
 						var waiting bool
-						if err := f.admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND wait_event<>'advisory' AND (query LIKE '-- name: SearchDeletePublicationPostings%' OR query LIKE '-- name: SearchPublish :execrows%'))`).Scan(&waiting); err != nil {
+						if err := f.admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND wait_event<>'advisory' AND (query LIKE '-- name: SearchPreparePublicationPostings%' OR query LIKE '-- name: SearchPublish :execrows%'))`).Scan(&waiting); err != nil {
 							return err
 						}
 						if !waiting {
