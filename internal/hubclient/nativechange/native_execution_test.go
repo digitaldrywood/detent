@@ -1654,19 +1654,36 @@ func TestNativeCacheWaitRuntimeRecovery(t *testing.T) {
 }
 
 func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
-	for _, status := range []int{502, 503, 0} {
-		t.Run(strconv.Itoa(status), func(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		status      int
+		timeout     bool
+		eventsOnly  bool
+		releaseOnly bool
+	}{
+		{name: "bad gateway", status: 502},
+		{name: "unavailable", status: 503},
+		{name: "connection refused"},
+		{name: "client timeout", timeout: true},
+		{name: "event timeout", timeout: true, eventsOnly: true},
+		{name: "claim release timeout", timeout: true, releaseOnly: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				start := time.Now()
 				descriptor := clientTestPolicy()
 				offline := true
 				var finished tracker.NativeRunEvent
+				var storedDiff tracker.AttemptDiffRequest
 				client, err := newTestClient(t, Config{URL: "http://hub.example", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
-					if offline {
-						if status == 0 {
+					if offline && (!test.eventsOnly || !strings.HasSuffix(request.URL.Path, "/diff")) && (!test.releaseOnly || strings.HasSuffix(request.URL.Path, "/release") || strings.HasSuffix(request.URL.Path, "/heartbeat")) {
+						if test.timeout {
+							return nil, fmt.Errorf("Client.Timeout exceeded while awaiting headers: %w", context.DeadlineExceeded)
+						}
+						if test.status == 0 {
 							return nil, errors.New("connection refused")
 						}
-						return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"unavailable"}`)), Request: request}, nil
+						return &http.Response{StatusCode: test.status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"unavailable"}`)), Request: request}, nil
 					}
 					body := `{"profile":"native"}`
 					if strings.HasSuffix(request.URL.Path, "/capabilities") {
@@ -1679,6 +1696,11 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 					if strings.HasSuffix(request.URL.Path, "/renew") {
 						value, _ := json.Marshal(tracker.NativeLease{ID: "lease", WorkItemID: "wi_test", FencingToken: 1, PolicyID: descriptor.ID, ServerTime: time.Now(), ExpiresAt: time.Now().Add(10 * time.Minute)})
 						body = string(value)
+					}
+					if strings.HasSuffix(request.URL.Path, "/diff") && request.Method == http.MethodPost {
+						if err := json.NewDecoder(request.Body).Decode(&storedDiff); err != nil {
+							return nil, err
+						}
 					}
 					if strings.HasSuffix(request.URL.Path, "/events") {
 						var event tracker.NativeRunEvent
@@ -1708,9 +1730,21 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 				execution := scheduler.RunExecution("wi_test").(*nativeExecution)
 				execution.data.Identity = &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
 				execution.data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: start.Add(-11 * time.Minute)}
+				checkpoint := &tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "git_ref", Availability: "available", WorktreeState: "clean", Ref: tracker.CheckpointRefPrefix + "completed", CommitSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), HeadSHA: strings.Repeat("a", 40), WorkspaceDigest: strings.Repeat("c", 64), ExternalEffect: "none", EffectState: "none"}
+				execution.data.Handoff = checkpoint
+				execution.SetDiffSource(nativeChangeDiff(checkpoint.HeadSHA, "README.md"))
 				execution.preparedOutcome = "succeeded"
+				if err := native.HeartbeatMachine(t.Context(), Machine{ID: "machine", Capacity: 1}); !nativeTransportUnavailable(err) {
+					t.Fatalf("heartbeat outage = %v", err)
+				}
 				if err := scheduler.ReleaseClaim(t.Context(), "wi_test", "completed"); !nativeTransportUnavailable(err) {
 					t.Fatalf("outage = %v", err)
+				}
+				pending := finished
+				if execution.pending != nil {
+					pending = *execution.pending
+				} else if !test.releaseOnly || execution.data.Outcome != "succeeded" {
+					t.Fatal("completion timeout lost pending event")
 				}
 				deadline := execution.completionOutageDeadline
 				time.Sleep(2 * time.Minute)
@@ -1719,6 +1753,9 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 				}
 				if !execution.completionOutageDeadline.Equal(deadline) {
 					t.Fatal("retry extended outage bound")
+				}
+				if (!test.releaseOnly && (execution.pending == nil || execution.pending.IdempotencyKey != pending.IdempotencyKey)) || !reflect.DeepEqual(execution.data.Handoff, checkpoint) || scheduler.RunExecution("wi_test") != execution {
+					t.Fatal("retry replaced completion, checkpoint or execution")
 				}
 				offline = false
 				if err := scheduler.Heartbeat(t.Context()); err != nil {
@@ -1732,6 +1769,12 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 				}
 				if finished.Data.Outcome != "succeeded" || finished.Data.TerminalFailure != nil {
 					t.Fatalf("completion lost: %+v", finished)
+				}
+				if finished.Data.LeaseID != "lease" || finished.Data.FencingToken != 1 || finished.IdempotencyKey != pending.IdempotencyKey {
+					t.Fatalf("completion retry changed checkpoint or fenced event: %+v", finished)
+				}
+				if storedDiff.HeadSHA != checkpoint.HeadSHA || len(storedDiff.Files) != 1 || storedDiff.Files[0].Path != "README.md" || storedDiff.Producer.LeaseID != "lease" || storedDiff.Producer.FencingToken != 1 {
+					t.Fatalf("completion timeout lost fenced diff: %+v", storedDiff)
 				}
 				if len(fixtureClaims(scheduler)) != 0 {
 					t.Fatal("completed claim retained")
