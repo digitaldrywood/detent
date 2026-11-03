@@ -119,6 +119,7 @@ func (c Config) validate() error {
 }
 
 type Service struct {
+	requestAdmission  hubserver.RequestAdmission
 	notifications     *platformNotifications
 	runtime           atomic.Pointer[entryRuntime]
 	allowlist         atomic.Pointer[signupAllowlist]
@@ -414,11 +415,11 @@ func (s *Service) routes() {
 	e.GET("/api/cloud/organizations/:organization/slug", s.organizationSlug)
 	e.PUT("/api/cloud/organizations/:organization/slug", s.organizationSlug)
 	e.Any("/*", s.readableProxy)
-	e.Any("/organizations/:organization", s.proxy)
+	e.Any("/organizations/:organization", s.admitProxyRequest)
 	e.GET("/organizations/:organization/issue-notifications/unsubscribe", s.unsubscribeIssueEmail)
 	e.GET("/organizations/:organization/daily-summary/unsubscribe", s.unsubscribeDailySummary)
-	e.Any("/organizations/:organization/*", s.proxy)
-	e.Any("/api/v2/organizations/:organization/*", s.proxy)
+	e.Any("/organizations/:organization/*", s.admitProxyRequest)
+	e.Any("/api/v2/organizations/:organization/*", s.admitProxyRequest)
 }
 
 func (s *Service) boundary(next echo.HandlerFunc) echo.HandlerFunc {
