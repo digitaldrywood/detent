@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
@@ -1047,6 +1048,12 @@ func TestConversationPostgresAPIUsesTenantRecords(t *testing.T) {
 	credential.Kind = "personal"
 	credential.CreatedAt, credential.UpdatedAt = time.Now().UTC(), time.Now().UTC()
 	if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: f.project.OrganizationID, Name: "Example organization", Slug: "example-organization", Local: true, CreatedAt: time.Now().UTC()}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: f.project.OrganizationID, ProviderID: "provider_example", AllocationGeneration: 1}); err != nil {
+			return err
+		}
 		if err := w.CreateAccessCredential(t.Context(), credential); err != nil {
 			return err
 		}
@@ -1055,11 +1062,15 @@ func TestConversationPostgresAPIUsesTenantRecords(t *testing.T) {
 			Settings: projectstore.Settings{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID},
 			States:   f.project.States,
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: credential.ID, ProjectID: f.project.ID})
 	}); err != nil {
 		t.Fatal(err)
 	}
 	f.service.config.TenantRepository = repository
+	f.service.config.AccessRepository = repository
 
 	contents := f.service.conversations.store.contents.(*conversationContentFixture)
 	contents.setFail(true)
@@ -1070,7 +1081,7 @@ func TestConversationPostgresAPIUsesTenantRecords(t *testing.T) {
 	contents.setFail(false)
 
 	body := map[string]any{"key": "pg-create", "title": "Example", "first_message": map[string]any{"key": "pg-first", "text": "hello from PostgreSQL"}}
-	apiCredentialValue, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
+	apiCredentialValue, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1254,6 +1265,92 @@ func TestConversationPostgresAPIUsesTenantRecords(t *testing.T) {
 	}
 	if created.Conversation.ID == "" {
 		t.Fatal("created conversation has no id")
+	}
+}
+
+func TestConversationPostgresScopeUsesTenantRecords(t *testing.T) {
+	f := newConversationAPIFixture(t, nil)
+	f.service.config.RunDetails = &memoryRunDetails{}
+	repository := projectRecordPostgres(t)
+	var credential accessstore.Credential
+	if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT id,name,token_hash,token_fingerprint,scope,native_only FROM api_tokens WHERE id=?`, f.ownerID).Scan(&credential.ID, &credential.Name, &credential.Hash, &credential.Fingerprint, &credential.Scope, &credential.NativeOnly); err != nil {
+		t.Fatal(err)
+	}
+	credential.OrganizationID = f.project.OrganizationID
+	credential.ProjectAccess = "selected"
+	credential.Kind = "personal"
+	credential.CreatedAt, credential.UpdatedAt = time.Now().UTC(), time.Now().UTC()
+	if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: f.project.OrganizationID, Name: "Example organization", Slug: "example-organization", Local: true, CreatedAt: time.Now().UTC()}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: f.project.OrganizationID, ProviderID: "provider_example", AllocationGeneration: 1}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessCredential(t.Context(), credential); err != nil {
+			return err
+		}
+		_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{
+			Core:     corestore.Project{OrganizationID: f.project.OrganizationID, ID: f.project.ID, Name: f.project.Name, Slug: f.project.Slug, Profile: f.project.Profile, RequireDependencies: f.project.RequireDependencies, CreatedAt: time.Now().UTC()},
+			Settings: projectstore.Settings{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID},
+			States:   f.project.States,
+		})
+		if err != nil {
+			return err
+		}
+		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: credential.ID, ProjectID: f.project.ID})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.service.config.TenantRepository = repository
+	f.service.config.AccessRepository = repository
+	created := f.create(t, f.token, map[string]any{"title": "Scoped conversation"}).Conversation
+	linked := f.link(t, f.token, created.ID, "scope-link", true, "Scoped work item")
+	requireNativeStatus(t, linked, http.StatusOK)
+	var linkedResult conversationLinkResponse
+	decodeHubResponse(t, linked, &linkedResult)
+
+	legacyDB, legacyReader := f.service.database.db, f.service.database.reader
+	legacyAuthReader, legacyClaimReader := f.service.database.authReader, f.service.database.claimReader
+	f.service.database.db, f.service.database.reader = nil, nil
+	f.service.database.authReader, f.service.database.claimReader = nil, nil
+	t.Cleanup(func() {
+		f.service.database.db, f.service.database.reader = legacyDB, legacyReader
+		f.service.database.authReader, f.service.database.claimReader = legacyAuthReader, legacyClaimReader
+	})
+
+	projectList := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations", f.token, nil)
+	requireNativeStatus(t, projectList, http.StatusOK)
+	organizationList := performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/conversations", f.token, nil)
+	requireNativeStatus(t, organizationList, http.StatusOK)
+	itemConversation := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+linkedResult.Issue.ID+"/conversation?metadata=true", f.token, nil)
+	requireNativeStatus(t, itemConversation, http.StatusOK)
+
+	foreignProject := performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/projects/prj_hidden/conversations", f.token, nil)
+	requireNativeStatus(t, foreignProject, http.StatusForbidden)
+	foreignOrganization := performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/org_hidden/projects/prj_hidden/conversations", f.token, nil)
+	requireNativeStatus(t, foreignOrganization, http.StatusUnauthorized)
+
+	var item corestore.WorkItem
+	if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		item, err = r.WorkItem(t.Context(), f.project.ID, tracker.NativeWorkItemID(linkedResult.Issue.ID))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reporterScope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeOperator, HostedRole: "reporter", HostedPrincipal: stringValue(item.ActorPrincipalID)}}
+	if _, _, err := f.service.readWorkItemRecord(t.Context(), reporterScope, linkedResult.Issue.ID); err != nil {
+		t.Fatalf("reporter could not read its own work item: %v", err)
+	}
+	reporterScope.credential.HostedPrincipal = "other-reporter"
+	if _, _, err := f.service.readWorkItemRecord(t.Context(), reporterScope, linkedResult.Issue.ID); err == nil {
+		t.Fatal("reporter read another principal's work item")
+	} else {
+		var failure *nativeError
+		if !errors.As(err, &failure) || failure.status != http.StatusNotFound {
+			t.Fatalf("foreign reporter visibility error = %v, want not found", err)
+		}
 	}
 }
 

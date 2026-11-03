@@ -79,11 +79,25 @@ func (s *Service) requireConversationScope(extra ...apiScope) echo.MiddlewareFun
 			}
 			ctx := c.Request().Context()
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
-			if err := s.requireHostedProject(ctx, s.database.reader, scope, false); err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			if err := s.database.authorizeNativeProject(ctx, scope); err != nil {
-				return s.nativeAPIError(c, err)
+			if s.config.TenantRepository != nil {
+				if err := s.authorizeProjectRecord(ctx, scope, false); err != nil {
+					return s.nativeAPIError(c, err)
+				}
+				if _, err := s.readProjectRecord(ctx, scope); err != nil {
+					return s.nativeAPIError(c, err)
+				}
+				if item := c.Param("item"); item != "" {
+					if _, _, err := s.readWorkItemRecord(ctx, scope, item); err != nil {
+						return s.nativeAPIError(c, err)
+					}
+				}
+			} else {
+				if err := s.requireHostedProject(ctx, s.database.reader, scope, false); err != nil {
+					return s.nativeAPIError(c, err)
+				}
+				if err := s.database.authorizeNativeProject(ctx, scope); err != nil {
+					return s.nativeAPIError(c, err)
+				}
 			}
 			c.Set("native_scope", scope)
 			if c.Request().Method == http.MethodGet {
@@ -143,6 +157,27 @@ func (s *Service) authorizeConversationOrganization(ctx context.Context, scope n
 			return nativeNotFound()
 		}
 		return nil
+	}
+	if s.config.TenantRepository != nil {
+		if s.config.AccessRepository == nil {
+			return nativeNotFound()
+		}
+		return s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+			if _, err := r.AccessTenant(ctx); err != nil {
+				return err
+			}
+			if scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly || scope.credential.Scope == apiScopeOperator && !scope.credential.NativeOnly {
+				return nil
+			}
+			grants, err := r.AccessTokenGrants(ctx, scope.credential.ID, "", 1)
+			if err != nil {
+				return err
+			}
+			if len(grants) == 0 {
+				return nativeNotFound()
+			}
+			return nil
+		})
 	}
 	var count int
 	query := "SELECT count(*) FROM organizations WHERE id = ?"
