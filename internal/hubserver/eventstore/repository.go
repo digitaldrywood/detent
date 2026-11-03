@@ -10,6 +10,12 @@ import (
 )
 
 type Event struct {
+	PushKnown            bool
+	PushChangeID         string
+	PushVersionID        string
+	PushHeadSHA          string
+	PushExternalEffect   string
+	PushEffectState      string
 	OrganizationID       tracker.OrganizationID
 	ProjectID            tracker.ProjectID
 	WorkItemID           tracker.NativeWorkItemID
@@ -190,6 +196,11 @@ type ViewedFile struct {
 }
 
 type Evidence struct {
+	ReviewKind           string
+	ReviewLanding        bool
+	ReviewSessionKnown   bool
+	ReviewSessionID      int64
+	ReviewSessionMachine tracker.MachineID
 	OrganizationID       tracker.OrganizationID
 	ChangeID             string
 	Sequence             int64
@@ -270,4 +281,14 @@ type Writer interface {
 type Repository interface {
 	ReadRecords(context.Context, tracker.OrganizationID, corestore.Workload, func(Reader) error) error
 	WriteRecords(context.Context, tracker.OrganizationID, corestore.Workload, func(Writer) error) error
+}
+
+type ChangeRecoveryReader interface {
+	ChangeSummaryEvidence(context.Context, string, string, int64, []string) ([]Evidence, bool, error)
+	ChangePublicationCheckpoints(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, tracker.NativeChangeReference) ([]Event, error)
+	ChangePublicationProvenance(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, tracker.NativeRunData) (bool, error)
+}
+
+type ValidatorReviewReader interface {
+	ValidatorReviewEvidence(context.Context, string, string, int64, tracker.MachineID, int64) ([]Evidence, bool, error)
 }

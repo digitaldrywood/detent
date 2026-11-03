@@ -2,22 +2,18 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
-	"github.com/digitaldrywood/detent/internal/serviceapi"
-	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type auditEvidenceResult struct {
@@ -122,53 +118,39 @@ func runAuditDisposition(
 	evidence string,
 	opts options,
 ) (securityaudit.Disposition, error) {
-	boot, address, err := resolveDashboardBoot(ctx, configPath, host, port, portSet, opts)
+	resolution, err := resolveConfigPathResolution(configPath, opts)
 	if err != nil {
 		return securityaudit.Disposition{}, err
 	}
-	form := url.Values{
-		"repository":   {strings.TrimSpace(repository)},
-		"pull_request": {strconv.Itoa(pullRequest)},
-		"base_sha":     {strings.TrimSpace(baseSHA)},
-		"head_sha":     {strings.TrimSpace(headSHA)},
-		"finding_id":   {strings.TrimSpace(findingID)},
-		"status":       {securityaudit.DispositionFalsePositive},
-		"evidence":     {strings.TrimSpace(evidence)},
-		"confirm":      {"true"},
-	}
-	endpoint := "http://" + dashboardServerAddr(boot) + "/api/v1/projects/" + url.PathEscape(strings.TrimSpace(projectID)) + "/security-audits/dispositions"
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	global, err := opts.read(resolution.Path)
 	if err != nil {
-		return securityaudit.Disposition{}, fmt.Errorf("create security audit disposition request: %w", err)
+		return securityaudit.Disposition{}, err
 	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	apiToken := strings.TrimSpace(opts.lookupEnv(serviceapi.DispositionTokenEnvironment))
-	if apiToken == "" {
-		apiToken = strings.TrimSpace(opts.lookupEnv(serviceapi.TokenEnvironment))
-	}
-	if apiToken == "" {
-		apiToken = strings.TrimSpace(boot.Global.APIToken)
-	}
-	if apiToken != "" {
-		request.Header.Set("Authorization", "Bearer "+apiToken)
-	}
-	response, err := opts.httpDo(request)
-	if err != nil {
-		return securityaudit.Disposition{}, fmt.Errorf("record security audit disposition via %s: %w", address, err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, 4096))
-		if readErr != nil {
-			return securityaudit.Disposition{}, fmt.Errorf("record security audit disposition: HTTP %d", response.StatusCode)
+	if global.Client.Configured() {
+		clientConfig := global.Client.Normalized()
+		project, ok := clientConfig.NativeProjects[projectID]
+		if !ok {
+			return securityaudit.Disposition{}, errors.New("project is not configured for the Hub runner")
 		}
-		return securityaudit.Disposition{}, fmt.Errorf("record security audit disposition: HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+		client, err := api.New(api.Config{URL: clientConfig.URL, IdentityFile: clientConfig.IdentityFile, TokenSource: func() string { return opts.lookupEnv(clientConfig.TokenEnvironment) }, HTTPClient: &http.Client{Transport: auditTransport{do: opts.httpDo}, Timeout: clientConfig.RequestTimeout()}})
+		if err != nil {
+			return securityaudit.Disposition{}, err
+		}
+		native, err := client.Native(tracker.OrganizationID(clientConfig.OrganizationID), tracker.ProjectID(project))
+		if err != nil {
+			return securityaudit.Disposition{}, err
+		}
+		return native.RecordAuditDisposition(ctx, securityaudit.DispositionCommand{Key: securityaudit.Key{ProjectID: project, Repository: repository, PRNumber: pullRequest, BaseSHA: baseSHA, HeadSHA: headSHA}, FindingID: findingID, Evidence: evidence, Confirm: true})
 	}
-	var result securityaudit.Disposition
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
-		return securityaudit.Disposition{}, fmt.Errorf("decode security audit disposition response: %w", err)
-	}
-	return result, nil
+	return securityaudit.Disposition{}, errors.New("security audit commands require configured Hub access")
+}
+
+type auditTransport struct {
+	do func(*http.Request) (*http.Response, error)
+}
+
+func (t auditTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return t.do(request)
 }
 
 func newAuditEvidenceCommand(configPath *string, opts options) *cobra.Command {
@@ -194,37 +176,11 @@ func newAuditEvidenceCommand(configPath *string, opts options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			backend, err := store.Open(cmd.Context(), store.Config{Backend: store.BackendSQLite, Path: doctorRuntimeStorePath(resolution.Path)})
+			evidence, err := loadAuditEvidence(cmd.Context(), resolution.Path, securityaudit.Key{ProjectID: projectID, Repository: repository, PRNumber: pullRequest, BaseSHA: baseSHA, HeadSHA: headSHA}, opts)
 			if err != nil {
 				return err
 			}
-			defer func() {
-				if err := backend.Close(); err != nil {
-					slog.Warn("close audit evidence store", "error", err)
-				}
-			}()
-			var run securityaudit.Run
-			if strings.TrimSpace(headSHA) != "" {
-				run, err = backend.LatestSecurityAuditRun(cmd.Context(), securityaudit.Key{
-					ProjectID:  projectID,
-					Repository: repository,
-					PRNumber:   pullRequest,
-					BaseSHA:    baseSHA,
-					HeadSHA:    headSHA,
-				})
-			} else {
-				run, err = backend.LatestSecurityAuditRunForPullRequest(cmd.Context(), projectID, repository, pullRequest)
-			}
-			if errors.Is(err, store.ErrNotFound) {
-				return WrapValidation(errors.New("no trusted security audit evidence found"))
-			}
-			if err != nil {
-				return err
-			}
-			dispositions, err := backend.ListSecurityAuditDispositions(cmd.Context(), run.ID)
-			if err != nil {
-				return err
-			}
+			run, dispositions := evidence.Run, evidence.Dispositions
 			result := auditEvidenceResultFromRun(run, dispositions)
 			return out.Write(func(writer io.Writer) error {
 				_, err := fmt.Fprintf(writer, "Audit run %d (%s)\nPR: %s#%d\nBase: %s\nHead: %s\nService: %s\nReviewer: %s (%s)\nAuthentication: %s\nExit: %s\nOutput: %s (%d bytes)\nVerdict: %s\nSummary: %s\n", result.RunID, result.InvocationID, result.Repository, result.PullRequest, result.BaseSHA, result.HeadSHA, result.ServiceIdentity, result.ReviewerVersion, result.ReviewerDigest, result.AuthenticationMode, result.ExitStatus, result.OutputDigest, result.OutputBytes, result.Verdict, result.Summary)
@@ -277,4 +233,28 @@ func auditEvidenceResultFromRun(run securityaudit.Run, dispositions []securityau
 		result.MaxDiffBytes = size.LimitBytes
 	}
 	return result
+}
+
+func loadAuditEvidence(ctx context.Context, path string, key securityaudit.Key, opts options) (securityaudit.Evidence, error) {
+	cfg, err := opts.read(path)
+	if err != nil {
+		return securityaudit.Evidence{}, err
+	}
+	if cfg.Client.Configured() {
+		normalized := cfg.Client.Normalized()
+		project, ok := normalized.NativeProjects[key.ProjectID]
+		if !ok {
+			return securityaudit.Evidence{}, errors.New("project is not configured for the Hub runner")
+		}
+		client, err := api.New(api.Config{URL: normalized.URL, IdentityFile: normalized.IdentityFile, TokenSource: func() string { return opts.lookupEnv(normalized.TokenEnvironment) }, HTTPClient: &http.Client{Transport: auditTransport{do: opts.httpDo}, Timeout: normalized.RequestTimeout()}})
+		if err != nil {
+			return securityaudit.Evidence{}, err
+		}
+		native, err := client.Native(tracker.OrganizationID(normalized.OrganizationID), tracker.ProjectID(project))
+		if err != nil {
+			return securityaudit.Evidence{}, err
+		}
+		return native.AuditEvidence(ctx, key)
+	}
+	return securityaudit.Evidence{}, errors.New("security audit commands require configured Hub access")
 }

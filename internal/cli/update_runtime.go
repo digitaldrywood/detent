@@ -73,6 +73,7 @@ func newRuntimeUpdateScheduler(
 	logger *slog.Logger,
 	reserveIdle func(context.Context) (func(), bool),
 	reserveDrain func(context.Context) (func(), error),
+	receiptStores ...detentupdate.ReceiptStore,
 ) (*detentupdate.Scheduler, error) {
 	interval := time.Duration(cfg.Global.Update.NormalizedCheckIntervalHours()) * time.Hour
 	if cfg.Global.Client.IdentityFile != "" {
@@ -92,6 +93,13 @@ func newRuntimeUpdateScheduler(
 			Preflight:         candidateStartupPreflight(cfg),
 			RecoveryStatePath: detentupdate.RecoveryStatePath(cfg.Global.Path),
 		},
+	}
+	if cfg.Global.Client.Configured() {
+		schedulerConfig.StatePath = ""
+		schedulerConfig.ApplyOptions.RecoveryStatePath = ""
+		if len(receiptStores) > 0 {
+			schedulerConfig.ReceiptStore = receiptStores[0]
+		}
 	}
 	if cfg.Isolated != nil {
 		schedulerConfig.Enabled = false
@@ -123,7 +131,7 @@ func newRuntimeUpdateScheduler(
 		if !ok {
 			return nil, errors.New("worker release service is unavailable")
 		}
-		artifactRoot := filepath.Join(filepath.Dir(schedulerConfig.StatePath), "workers")
+		artifactRoot := filepath.Join(filepath.Dir(runtimeUpdateStatePath(cfg)), "workers")
 		if cfg.Restart != nil && cfg.Restart.control != nil {
 			artifactRoot = filepath.Join(artifactRoot, fmt.Sprintf("controller-%d", os.Getpid()))
 		}

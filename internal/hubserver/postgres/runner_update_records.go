@@ -70,7 +70,7 @@ func (s *session) RunnerUpdateState(ctx context.Context, runnerID string) (runne
 		if err != nil {
 			return runnerstore.UpdateState{}, err
 		}
-		if request.RunnerID != runnerID || request.Request.Urgent {
+		if !runnerReceiptRequestOwned(request, runnerID) {
 			return runnerstore.UpdateState{}, corestore.ErrInvalidPage
 		}
 		receipt.Request = request.Request
@@ -79,7 +79,7 @@ func (s *session) RunnerUpdateState(ctx context.Context, runnerID string) (runne
 			if err != nil {
 				return runnerstore.UpdateState{}, err
 			}
-			if request.RunnerID != runnerID || request.Request.Urgent {
+			if !runnerReceiptRequestOwned(request, runnerID) {
 				return runnerstore.UpdateState{}, corestore.ErrInvalidPage
 			}
 			previous.Request = request.Request
@@ -130,6 +130,16 @@ func (s *session) RunnerUpdateState(ctx context.Context, runnerID string) (runne
 	}
 	state.Observation = &observation
 	return state, nil
+}
+
+func runnerReceiptRequestOwned(request runnerstore.UpdateRequestRecord, runnerID string) bool {
+	return request.RunnerID == runnerID && !request.Request.Urgent || request.RunnerID == "" && request.Request.Urgent
+}
+
+func (s *session) LockRunnerUpdate(ctx context.Context, runnerID string) error {
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT runner_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2 FOR UPDATE`, s.organization, runnerID).Scan(&id)
+	return mapError(ctx, err)
 }
 
 func (s *session) RunnerUrgentUpdate(ctx context.Context) (runnerstore.UrgentUpdate, error) {

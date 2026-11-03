@@ -187,6 +187,7 @@ func (c *NativeClient) ReviewChange(ctx context.Context, item tracker.NativeWork
 	if err != nil || id == "" || version == "" {
 		return result, errors.New("valid Change Request and version identities are required")
 	}
+	request.Mutation = c.FencedMutation(ctx, item, request.Mutation)
 	err = c.client.request(ctx, http.MethodPost, c.base()+path+"/reviews", request, &result)
 	return result, auditPublicationFailure(err, request)
 }

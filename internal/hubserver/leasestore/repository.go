@@ -148,6 +148,7 @@ type AttemptDiff struct {
 }
 
 type AttemptEvent struct {
+	Usage               []tracker.NativeUsage `json:"-"`
 	ID                  string
 	Fence               Fence
 	RunID               string

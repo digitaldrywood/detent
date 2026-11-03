@@ -22,35 +22,34 @@ func (s *Service) storeRunnerUpdateObservationTenant(ctx context.Context, writer
 	if err := validateRunnerUpdateObservation(report, protocol, version, platform, architecture); err != nil {
 		return err
 	}
+	if locker, ok := writer.(runnerstore.UpdateLocker); ok {
+		if err := locker.LockRunnerUpdate(ctx, identity.RunnerID); err != nil {
+			return err
+		}
+	}
 	state, err := writer.RunnerUpdateState(ctx, identity.RunnerID)
 	if err != nil {
 		return err
 	}
 	if report == nil {
-		if err := writer.ReplaceRunnerUpdateObservation(ctx, identity.RunnerID, nil); err != nil {
-			return err
-		}
 		return nil
 	}
 	report.ReceivedAt = now
+	if report.Receipt == nil && state.Observation != nil && state.Observation.Receipt != nil {
+		report.Receipt = state.Observation.Receipt
+		if err := report.Validate(); err != nil {
+			return corestore.ErrRevisionConflict
+		}
+	}
 	if report.Receipt != nil {
 		urgent, err := writer.RunnerUrgentUpdate(ctx)
 		if err != nil {
 			return err
 		}
-		accepted := state.Desired != nil && state.Desired.Matches(report.Receipt.Request)
-		if state.Observation != nil && state.Observation.Receipt != nil && state.Observation.Receipt.Request.Matches(report.Receipt.Request) {
-			accepted = true
+		known, accepted := acceptRunnerUpdateReceipt(state, urgent, report.Receipt, report.Running)
+		if !known || !accepted {
+			return nil
 		}
-		if urgent.Request != nil && urgent.Request.Matches(report.Receipt.Request) {
-			accepted = true
-		}
-		if !accepted {
-			report.Receipt = nil
-		}
-	}
-	if report.Receipt != nil && state.Observation != nil {
-		report.Receipt.RetainPreviousFailure(state.Observation.Receipt)
 	}
 	if err := writer.ReplaceRunnerUpdateObservation(ctx, identity.RunnerID, report); err != nil {
 		return err

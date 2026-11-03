@@ -48,6 +48,7 @@ func (r *Runner) SSHRunCallbacks(request RunRequest) *SSHCallbacks {
 }
 
 func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.RawMessage) (any, error) {
+	ctx = bindSessionExecution(ctx, c.store, c.execution)
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -113,6 +114,7 @@ func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.Ra
 }
 
 func (c *SSHCallbacks) Finish(ctx context.Context, at time.Time) error {
+	ctx = bindSessionExecution(ctx, c.store, c.execution)
 	c.mu.Lock()
 	c.closed = true
 	c.mu.Unlock()

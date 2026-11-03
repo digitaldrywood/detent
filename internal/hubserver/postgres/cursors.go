@@ -58,7 +58,7 @@ func (s *session) WorkItemPage(ctx context.Context, project tracker.ProjectID, c
 	}
 	page.Items = make([]corestore.WorkItem, len(rows))
 	for i, row := range rows {
-		page.Items[i] = corestore.WorkItem(row)
+		page.Items[i] = workItemRecord(row)
 	}
 	if len(rows) == limit {
 		last := rows[len(rows)-1]
@@ -135,7 +135,7 @@ func (s *session) ScanWorkItems(ctx context.Context, project tracker.ProjectID, 
 	}
 	page.Items = make([]corestore.WorkItem, len(rows))
 	for i, row := range rows {
-		page.Items[i] = corestore.WorkItem(row)
+		page.Items[i] = workItemRecord(row)
 	}
 	if len(rows) == limit && rows[len(rows)-1].ID < cursor.Through {
 		page.Next = corestore.ScanCursor{After: rows[len(rows)-1].ID, Through: cursor.Through}

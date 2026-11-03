@@ -3,7 +3,6 @@ package nativechange
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"reflect"
 	"slices"
 	"strconv"
@@ -18,10 +17,8 @@ import (
 func (e *nativeExecution) RecordUsage(ctx context.Context, entry tracker.NativeUsage) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.scheduler != nil {
-		if err := e.flush(ctx); err != nil {
-			return err
-		}
+	if entry.SourceID != "" && e.scheduler != nil {
+		entry.To, entry.ReportedAt = e.scheduler.now().UTC(), e.scheduler.now().UTC()
 	}
 	for _, existing := range e.data.Usage {
 		if existing.Provider == strings.TrimSpace(entry.Provider) && existing.Model == strings.TrimSpace(entry.Model) && existing.Currency != "" && entry.Currency != "" && existing.Currency != entry.Currency {
@@ -29,12 +26,17 @@ func (e *nativeExecution) RecordUsage(ctx context.Context, entry tracker.NativeU
 		}
 	}
 	e.data.Usage = mergeNativeUsage(e.data.Usage, entry)
+	observed := slices.Clone(e.data.Usage)
+	if e.scheduler != nil {
+		if err := e.flush(ctx); err != nil {
+			return err
+		}
+		e.data.Usage = observed
+	}
+
 	if e.data.Identity != nil && e.data.Outcome == "" {
 		if err := e.append(ctx, "run.observed", "", nil, true); err != nil {
-			if e.pending == nil {
-				return err
-			}
-			slog.Default().Warn("native usage publication deferred", "attempt", e.data.AttemptID, "error", err)
+			return err
 		}
 	}
 	return nil
@@ -71,6 +73,28 @@ func mergeNativeUsage(existing []tracker.NativeUsage, entry tracker.NativeUsage)
 			continue
 		}
 
+		if merged[i].SourceID != entry.SourceID {
+			continue
+		}
+		if entry.SourceID != "" {
+			entry.Input = max(entry.Input, merged[i].Input)
+			entry.CachedInput = max(entry.CachedInput, merged[i].CachedInput)
+			entry.Output = max(entry.Output, merged[i].Output)
+			entry.CostEstimate = max(entry.CostEstimate, merged[i].CostEstimate)
+			entry.Revision = max(entry.Revision, merged[i].Revision)
+			if !merged[i].From.IsZero() {
+				entry.From = merged[i].From
+			}
+			if entry.To.Before(merged[i].To) {
+				entry.To = merged[i].To
+			}
+			if merged[i].ReportedCostMicros != nil && (entry.ReportedCostMicros == nil || *entry.ReportedCostMicros < *merged[i].ReportedCostMicros) {
+				value := *merged[i].ReportedCostMicros
+				entry.ReportedCostMicros = &value
+			}
+			merged[i] = entry
+			return merged
+		}
 		if merged[i].BillingMode != entry.BillingMode {
 			merged[i].BillingMode = "unknown"
 		}

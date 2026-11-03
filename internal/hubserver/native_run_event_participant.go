@@ -18,7 +18,7 @@ type tenantNativeRunEventParticipant struct {
 	service *Service
 }
 
-func (p tenantNativeRunEventParticipant) ValidateNativeRunEvent(ctx context.Context, reader tenantstore.Reader, authority *NativeRunEventAuthority) error {
+func (p tenantNativeRunEventParticipant) validateNativeRunEventOwner(ctx context.Context, reader tenantstore.Reader, authority *NativeRunEventAuthority) error {
 	if authority == nil || authority.OrganizationID == "" || authority.ProjectID == "" || authority.WorkItem.NativeID == "" || authority.Lease.LeaseID == "" {
 		return nativeRunEventStorageUnavailable()
 	}
@@ -78,6 +78,15 @@ func (p tenantNativeRunEventParticipant) ValidateNativeRunEvent(ctx context.Cont
 	if pinned.OrganizationID != authority.OrganizationID || pinned.ProjectID != authority.ProjectID || pinned.PolicyID != event.Data.PolicyID {
 		return policyMismatch("Run event policy must match the policy pinned to its lease")
 	}
+	return nil
+}
+
+func (p tenantNativeRunEventParticipant) ValidateNativeRunEvent(ctx context.Context, reader tenantstore.Reader, authority *NativeRunEventAuthority) error {
+	if err := p.validateNativeRunEventOwner(ctx, reader, authority); err != nil {
+		return err
+	}
+	event := authority.Event
+	item, lease := authority.WorkItem, authority.Lease
 	if event.Data.Sequence > 1 {
 		attempt, err := reader.Attempt(ctx, event.Data.AttemptID)
 		if err != nil {
@@ -93,7 +102,7 @@ func (p tenantNativeRunEventParticipant) ValidateNativeRunEvent(ctx context.Cont
 		}
 		if authority.UsageFacts != nil {
 			facts := authority.UsageFacts
-			if event.Type != "run.finished" || len(event.Data.Usage) == 0 || len(authority.UsageCosts) != len(event.Data.Usage) || facts.WorkItemID != string(item.NativeID) || facts.RunnerID != identity.RunnerID || facts.MachineID != lease.MachineID || !facts.StartedAt.Equal(attempt.StartedAt) || !facts.StartedAt.Before(facts.EndedAt) {
+			if event.Type != "run.finished" || len(event.Data.Usage) == 0 || len(authority.UsageCosts) != len(event.Data.Usage) || facts.WorkItemID != string(item.NativeID) || facts.RunnerID != authority.Scope.credential.Runner.RunnerID || facts.MachineID != lease.MachineID || !facts.StartedAt.Equal(attempt.StartedAt) || !facts.StartedAt.Before(facts.EndedAt) {
 				return leasestore.ErrAttemptConflict
 			}
 			machine, err := reader.Machine(ctx, lease.MachineID)

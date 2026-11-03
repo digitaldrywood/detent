@@ -2,8 +2,8 @@
 SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND id=sqlc.arg(id);
 
 -- name: RecordInsertEvent :one
-INSERT INTO collaboration_events (organization_id, project_id, work_item_id, id, sequence, project_sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version)
-VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id), sqlc.arg(id), sqlc.arg(sequence), sqlc.arg(project_sequence), sqlc.arg(type), sqlc.arg(schema_version), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(event_revision), sqlc.arg(change_id), sqlc.arg(version_id), sqlc.arg(head_sha), sqlc.arg(landing_waiting), sqlc.arg(landing_change_id), sqlc.arg(landing_version_id), sqlc.arg(landing_head_sha), sqlc.arg(run_id), sqlc.arg(attempt_id), sqlc.arg(from_state), sqlc.arg(to_state), sqlc.arg(recorded_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version)) RETURNING *;
+INSERT INTO collaboration_events (organization_id, project_id, work_item_id, id, sequence, project_sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state)
+VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id), sqlc.arg(id), sqlc.arg(sequence), sqlc.arg(project_sequence), sqlc.arg(type), sqlc.arg(schema_version), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(event_revision), sqlc.arg(change_id), sqlc.arg(version_id), sqlc.arg(head_sha), sqlc.arg(landing_waiting), sqlc.arg(landing_change_id), sqlc.arg(landing_version_id), sqlc.arg(landing_head_sha), sqlc.arg(run_id), sqlc.arg(attempt_id), sqlc.arg(from_state), sqlc.arg(to_state), sqlc.arg(recorded_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version), sqlc.arg(push_known), sqlc.arg(push_change_id), sqlc.arg(push_version_id), sqlc.arg(push_head_sha), sqlc.arg(push_external_effect), sqlc.arg(push_effect_state)) RETURNING *;
 
 -- name: RecordAdvanceProjectEventSequence :one
 INSERT INTO project_event_cursors (organization_id, project_id, sequence)
@@ -172,8 +172,8 @@ SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AN
 SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND kind=sqlc.arg(kind) AND source_key=sqlc.arg(source_key);
 
 -- name: RecordInsertEvidence :one
-INSERT INTO change_evidence (organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version)
-VALUES (sqlc.arg(organization_id), sqlc.arg(change_id), sqlc.arg(sequence), sqlc.narg(version_id), sqlc.arg(kind), sqlc.narg(source_key), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(decision), sqlc.arg(created_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version)) RETURNING *;
+INSERT INTO change_evidence (organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version,review_kind,review_landing,review_session_known,review_session_id,review_session_machine)
+VALUES (sqlc.arg(organization_id), sqlc.arg(change_id), sqlc.arg(sequence), sqlc.narg(version_id), sqlc.arg(kind), sqlc.narg(source_key), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(decision), sqlc.arg(created_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version),sqlc.arg(review_kind),sqlc.arg(review_landing),sqlc.arg(review_session_known),sqlc.arg(review_session_id),sqlc.arg(review_session_machine)) RETURNING *;
 
 -- name: RecordListEvidence :many
 SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND sequence>sqlc.arg(after) ORDER BY sequence LIMIT sqlc.arg(page_limit);
@@ -248,3 +248,94 @@ RETURNING *;
 -- name: RecordGetCollaborationVersions :many
 SELECT v.* FROM ROWS FROM(unnest(sqlc.arg(record_ids)::text[]),unnest(sqlc.arg(revisions)::bigint[])) input(record_id,revision)
 JOIN collaboration_versions v ON v.organization_id=sqlc.arg(organization_id) AND v.record_id=input.record_id AND v.revision=input.revision;
+
+-- name: RecordChangeSummaryEvidence :many
+WITH scoped AS NOT MATERIALIZED (
+ SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id)
+ AND version_id=sqlc.arg(version_id) AND sequence<=sqlc.arg(through) AND kind IN ('review','check')
+), human_latest AS (
+ SELECT DISTINCT ON (actor_principal_id) * FROM scoped WHERE review_kind='human' AND decision<>'commented'
+ ORDER BY actor_principal_id,sequence DESC
+), human_decisions AS (
+ SELECT DISTINCT ON (decision) * FROM human_latest WHERE decision IN ('approved','changes_requested') ORDER BY decision,sequence DESC
+), recovery_actors AS (
+ SELECT DISTINCT actor_principal_id FROM scoped WHERE kind='review' AND review_kind='' LIMIT 201
+), recovery_humans AS (
+ SELECT * FROM human_latest WHERE actor_principal_id IN (SELECT actor_principal_id FROM recovery_actors)
+), machine_latest AS (
+ SELECT DISTINCT ON (review_kind) * FROM scoped WHERE review_kind IN ('validator','implementation','security_audit') AND NOT review_landing
+ ORDER BY review_kind,sequence DESC
+), audit_block AS (
+ SELECT * FROM scoped WHERE review_kind='security_audit' AND decision='changes_requested' ORDER BY sequence DESC LIMIT 1
+), other AS (
+ SELECT * FROM scoped WHERE kind='review' AND review_kind='' ORDER BY sequence LIMIT 201
+), checks AS (
+ SELECT * FROM scoped WHERE kind='check' AND source_key=ANY(sqlc.arg(check_ids)::text[])
+)
+SELECT * FROM (
+ SELECT * FROM human_decisions UNION SELECT * FROM recovery_humans UNION SELECT * FROM machine_latest UNION SELECT * FROM audit_block UNION SELECT * FROM other UNION SELECT * FROM checks
+) selected ORDER BY sequence;
+
+-- name: RecordChangePriorApproval :one
+SELECT EXISTS (SELECT 1 FROM change_evidence e
+WHERE e.organization_id=sqlc.arg(organization_id) AND e.change_id=sqlc.arg(change_id)
+AND e.version_id<>sqlc.arg(version_id) AND e.sequence<=sqlc.arg(through)
+AND e.kind='review' AND e.review_kind='human' AND e.decision='approved') AS approved,
+EXISTS (SELECT 1 FROM change_evidence e
+WHERE e.organization_id=sqlc.arg(organization_id) AND e.change_id=sqlc.arg(change_id)
+AND e.version_id<>sqlc.arg(version_id) AND e.sequence<=sqlc.arg(through)
+AND e.kind='review' AND e.review_kind='' AND e.decision='approved') AS unprojected;
+
+-- name: RecordChangePublicationCheckpoints :many
+WITH matching AS (
+ SELECT e.* FROM collaboration_events e WHERE e.organization_id=sqlc.arg(organization_id) AND e.project_id=sqlc.arg(project_id)
+ AND e.work_item_id=sqlc.arg(work_item_id) AND e.type='run.checkpointed'
+ AND e.push_change_id=sqlc.arg(change_id) AND e.push_version_id=sqlc.arg(version_id) AND e.push_head_sha=sqlc.arg(head_sha)
+ AND e.push_external_effect='git_push' AND e.push_effect_state='confirmed'
+ ORDER BY e.sequence DESC LIMIT 1
+), unprojected AS (
+ SELECT e.* FROM collaboration_events e WHERE e.organization_id=sqlc.arg(organization_id) AND e.project_id=sqlc.arg(project_id)
+ AND e.work_item_id=sqlc.arg(work_item_id) AND e.type='run.checkpointed' AND NOT e.push_known
+ AND e.sequence>COALESCE((SELECT sequence FROM matching),0) ORDER BY e.sequence DESC LIMIT 201
+)
+SELECT e.* FROM collaboration_events e
+JOIN (SELECT sequence FROM matching UNION ALL SELECT sequence FROM unprojected) candidates ON candidates.sequence=e.sequence
+WHERE e.organization_id=sqlc.arg(organization_id) AND e.project_id=sqlc.arg(project_id) AND e.work_item_id=sqlc.arg(work_item_id)
+ORDER BY e.sequence DESC;
+
+-- name: RecordChangePublicationProvenance :one
+SELECT EXISTS (SELECT 1 FROM native_attempts a
+JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
+JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id AND l.fencing_token=a.fencing_token AND l.issue_id=a.issue_id
+JOIN lease_policy_bindings p ON p.organization_id=a.organization_id AND p.lease_id=a.lease_id AND p.project_id=sqlc.arg(project_id) AND p.policy_id=sqlc.arg(policy_id)
+JOIN native_attempt_events ae ON ae.organization_id=a.organization_id AND ae.attempt_id=a.id AND ae.sequence=sqlc.arg(run_sequence)
+WHERE a.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id)
+AND i.native_id=sqlc.arg(work_item_id) AND a.id=sqlc.arg(attempt_id)
+AND a.run_id=sqlc.arg(run_id) AND a.lease_id=sqlc.arg(lease_id)
+AND a.fencing_token=sqlc.arg(fencing_token));
+
+-- name: RecordUnprojectedChangeReviews :many
+SELECT * FROM change_evidence WHERE organization_id=$1 AND kind='review' AND (review_kind='' OR NOT review_session_known)
+ORDER BY change_id,sequence LIMIT $2;
+
+-- name: RecordValidatorReviewEvidence :many
+WITH scoped AS NOT MATERIALIZED (
+ SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id)
+ AND version_id=sqlc.arg(version_id) AND sequence<=sqlc.arg(through) AND kind='review'
+), implementation AS (
+ SELECT * FROM scoped WHERE review_kind='implementation' AND NOT review_landing ORDER BY sequence DESC LIMIT 1
+), reuse AS (
+ SELECT e.* FROM (VALUES ('security_audit'),('implementation'),('validator')) k(review_kind)
+ CROSS JOIN LATERAL (
+  SELECT * FROM scoped WHERE review_session_known AND review_kind=k.review_kind
+  AND review_session_machine=sqlc.arg(machine_id) AND review_session_id=sqlc.arg(session_id)
+  ORDER BY sequence DESC LIMIT 1
+ ) e
+), unknown AS (
+ SELECT * FROM scoped WHERE review_kind='' OR NOT review_session_known ORDER BY sequence LIMIT 1
+)
+SELECT * FROM (SELECT * FROM implementation UNION SELECT * FROM reuse UNION SELECT * FROM unknown) selected ORDER BY sequence;
+
+-- name: RecordUnprojectedChangePushes :many
+SELECT * FROM collaboration_events WHERE organization_id=$1 AND type='run.checkpointed' AND NOT push_known
+ORDER BY project_id,work_item_id,sequence DESC LIMIT $2;

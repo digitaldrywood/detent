@@ -432,7 +432,7 @@ func (s *Service) createChange(c echo.Context) error {
 }
 
 func (s *Service) getChange(c echo.Context) error {
-	if s.config.TenantRepository != nil {
+	if s.config.TenantRepository != nil && c.QueryParam("view") != "bounded" {
 		ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 		defer cancel()
 		result, err := s.selectedChangeDetail(ctx, nativeRequestScope(c), c.Param("item"), c.Param("change"), s.config.now())
@@ -441,13 +441,18 @@ func (s *Service) getChange(c echo.Context) error {
 		}
 		return nativeArchiveJSON(c, http.StatusOK, result)
 	}
-	if handled, err := s.archiveView(c, c.Param("item"), "change:"+c.Param("change"), nil); handled {
-		return err
+	if s.config.TenantRepository == nil {
+		if handled, err := s.archiveView(c, c.Param("item"), "change:"+c.Param("change"), nil); handled {
+			return err
+		}
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	scope, ctx := nativeRequestScope(c), ctx
-	query := s.database.reader
+	var query nativeQueryer
+	if s.config.TenantRepository == nil {
+		query = s.database.reader
+	}
 	var err error
 	if c.QueryParam("view") == "bounded" {
 		args := operatortool.ChangeArguments{ProjectID: string(scope.project), ItemID: c.Param("item"), ChangeID: c.Param("change"), VersionID: c.QueryParam("version_id"), Section: c.QueryParam("section"), Cursor: c.QueryParam("cursor")}
@@ -466,7 +471,11 @@ func (s *Service) getChange(c echo.Context) error {
 			return s.nativeAPIError(c, nativePublicInvalid("invalid Change read selector"))
 		}
 		result := (hubChangeApplication{service: s}).result(scope, args)
-		result, err = readBoundedChange(ctx, query, scope, args, result)
+		if s.config.TenantRepository != nil {
+			result, err = s.readBoundedChangeRecord(ctx, scope, args, result)
+		} else {
+			result, err = readBoundedChange(ctx, query, scope, args, result)
+		}
 		if err != nil {
 			var refusal *operatortool.RequestError
 			if errors.As(err, &refusal) {

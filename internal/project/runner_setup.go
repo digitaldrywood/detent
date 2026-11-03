@@ -60,8 +60,8 @@ func (s *RunnerSetup) Prepare(ctx context.Context, cfg globalconfig.Project) (er
 	if hooks.RunnerSetup == "" {
 		return nil
 	}
-	if s.store == nil || s.runnerID == "" {
-		return errors.New("runner project setup requires a runner identity and local store")
+	if s.runnerID == "" {
+		return errors.New("runner project setup requires a runner identity")
 	}
 	content, err := runnerSetupContent(ctx, cfg, hooks.RunnerSetup, workflow.Definition.Revision)
 	if err != nil {
@@ -69,16 +69,19 @@ func (s *RunnerSetup) Prepare(ctx context.Context, cfg globalconfig.Project) (er
 	}
 	digest := sha256.Sum256(append([]byte(hooks.Shell+"\x00"+filepath.Clean(cfg.Workdir)+"\x00"), content...))
 	hash := hex.EncodeToString(digest[:])
-	previous, err := s.store.ProjectRunnerSetupHash(ctx, s.runnerID, cfg.ID)
-	if err != nil {
-		return err
-	}
-	marker := runnerSetupMarker(cfg.Workdir)
-	if previous == hash && runnerSetupMarkerMatches(marker, hash) {
-		return nil
-	}
-	if err := s.store.SetProjectRunnerSetupHash(ctx, s.runnerID, cfg.ID, ""); err != nil {
-		return err
+	marker := ""
+	if s.store != nil {
+		previous, err := s.store.ProjectRunnerSetupHash(ctx, s.runnerID, cfg.ID)
+		if err != nil {
+			return err
+		}
+		marker = runnerSetupMarker(cfg.Workdir)
+		if previous == hash && runnerSetupMarkerMatches(marker, hash) {
+			return nil
+		}
+		if err := s.store.SetProjectRunnerSetupHash(ctx, s.runnerID, cfg.ID, ""); err != nil {
+			return err
+		}
 	}
 	setupCtx, cancel := context.WithTimeout(ctx, time.Duration(hooks.TimeoutMS)*time.Millisecond)
 	defer cancel()
@@ -103,8 +106,10 @@ func (s *RunnerSetup) Prepare(ctx context.Context, cfg globalconfig.Project) (er
 			return fmt.Errorf("record runner project setup in checkout: %w", err)
 		}
 	}
-	if err := s.store.SetProjectRunnerSetupHash(ctx, s.runnerID, cfg.ID, hash); err != nil {
-		return err
+	if s.store != nil {
+		if err := s.store.SetProjectRunnerSetupHash(ctx, s.runnerID, cfg.ID, hash); err != nil {
+			return err
+		}
 	}
 	s.logger.Info("runner project setup completed", "runner_id", s.runnerID, "project_id", cfg.ID, "content_hash", hash)
 	return nil

@@ -14,6 +14,21 @@ import (
 
 const schedulerStateSchema = 1
 
+type ReceiptStore interface {
+	Load() (*runnerauth.UpdateReceipt, error)
+	Save(*runnerauth.UpdateReceipt) error
+}
+
+func persistSchedulerState(cfg SchedulerConfig, state schedulerState) error {
+	if cfg.ReceiptStore != nil {
+		if state.EnrolledReceipt == nil {
+			return nil
+		}
+		return cfg.ReceiptStore.Save(state.EnrolledReceipt)
+	}
+	return saveSchedulerState(cfg.StatePath, state)
+}
+
 type schedulerState struct {
 	EnrolledReceipt  *runnerauth.UpdateReceipt `json:"enrolled_receipt,omitempty"`
 	Schema           int                       `json:"schema"`

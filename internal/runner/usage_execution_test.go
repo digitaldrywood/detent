@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -108,11 +109,13 @@ func TestReportTurnUsage(t *testing.T) {
 	reportTurnUsage(t.Context(), stubExecution{}, result, "gpt-6-astra", "codex", func(string, int64, int64, int64, string) float64 { return 0 }, logger)
 	reportTurnUsage(t.Context(), nil, result, "gpt-6-astra", "codex", func(string, int64, int64, int64, string) float64 { return 0 }, logger)
 
-	// A hub that refuses the report does not fail the turn, and a runner
-	// with no logger still reports.
 	failing := &recordingUsageExecution{err: errors.New("hub refused")}
-	reportTurnUsage(t.Context(), failing, result, "gpt-6-astra", "codex", nil, logger)
-	reportTurnUsage(t.Context(), failing, result, "gpt-6-astra", "codex", nil, nil)
+	if err := reportTurnUsage(t.Context(), failing, result, "gpt-6-astra", "codex", nil, logger); !errors.Is(err, failing.err) {
+		t.Fatalf("refused usage report did not fail execution: %v", err)
+	}
+	if err := reportTurnUsage(t.Context(), failing, result, "gpt-6-astra", "codex", nil, nil); !errors.Is(err, failing.err) {
+		t.Fatalf("refused usage report without logger did not fail execution: %v", err)
+	}
 	if len(failing.entries) != 2 {
 		t.Fatalf("a refused report recorded %d entries, want 2 attempts", len(failing.entries))
 	}
@@ -120,7 +123,7 @@ func TestReportTurnUsage(t *testing.T) {
 
 func TestTurnUsageReporter(t *testing.T) {
 	execution := &recordingUsageExecution{}
-	reporter := turnUsageReporter{}
+	reporter := turnUsageReporter{sourceID: "session_42", startedAt: time.Now()}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	price := func(_ string, input, _, output int64, _ string) float64 { return float64(input+output) / 1000 }
 	result := RunResult{Tokens: TokenTotals{InputTokens: 100, OutputTokens: 10}}
@@ -134,18 +137,23 @@ func TestTurnUsageReporter(t *testing.T) {
 	paid := int64(25000)
 	result.ReportedCostMicros, result.CostSource = &paid, "provider"
 	reporter.report(t.Context(), execution, result, "test-model", "codex", price, logger)
-	var input, output, cost int64
-	var estimate float64
-	for _, entry := range execution.entries {
-		input += entry.Input
-		output += entry.Output
-		estimate += entry.CostEstimate
-		if entry.ReportedCostMicros != nil {
-			cost += *entry.ReportedCostMicros
-		}
+	if len(execution.entries) != 3 || execution.entries[2].Input != 150 || execution.entries[2].Output != 15 || execution.entries[2].ReportedCostMicros == nil || *execution.entries[2].ReportedCostMicros != paid {
+		t.Fatalf("cumulative turn observations lost final totals: %+v", execution.entries)
 	}
-	if len(execution.entries) != 3 || input != 150 || output != 15 || cost != paid || estimate != 0.165 {
-		t.Fatalf("turn total: entries=%+v input=%d output=%d cost=%d estimate=%g", execution.entries, input, output, cost, estimate)
+	if execution.entries[0].SourceID != execution.entries[2].SourceID || execution.entries[2].Revision <= execution.entries[0].Revision {
+		t.Fatalf("usage observation identity changed: %+v", execution.entries)
+	}
+	failing := &recordingUsageExecution{err: ErrExecutionAuthorityUnavailable}
+	reporter = turnUsageReporter{sourceID: "session_42", startedAt: time.Now()}
+	if err := reporter.report(t.Context(), failing, result, "test-model", "codex", price, logger); !errors.Is(err, ErrExecutionAuthorityUnavailable) {
+		t.Fatalf("revoked usage publication did not fail execution: %v", err)
+	}
+	result.Tokens.InputTokens, result.Tokens.OutputTokens = 175, 18
+	if err := reporter.report(t.Context(), failing, result, "test-model", "codex", price, logger); !errors.Is(err, ErrExecutionAuthorityUnavailable) {
+		t.Fatalf("revoked usage refusal was lost: %v", err)
+	}
+	if len(failing.entries) != 2 || failing.entries[0].SourceID != failing.entries[1].SourceID || failing.entries[1].Input != 175 || failing.entries[1].Output != 18 {
+		t.Fatalf("failed observation was not reconciled by stable identity: %+v", failing.entries)
 	}
 }
 

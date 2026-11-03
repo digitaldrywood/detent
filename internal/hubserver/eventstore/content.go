@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -147,6 +148,7 @@ func (c *Content) PrepareEvent(ctx context.Context, organization tracker.Organiz
 		row.VersionID = value.Data.Change.VersionID
 		row.HeadSHA = value.Data.Change.HeadSHA
 	}
+	row = ProjectChangePush(row, value)
 	if value.Data.Run != nil {
 		row.RunID = value.Data.Run.RunID
 		row.AttemptID = value.Data.Run.AttemptID
@@ -168,6 +170,19 @@ func (c *Content) Event(ctx context.Context, row Event) (tracker.CollaborationEv
 	if err == nil {
 		if value.ID != row.ID || value.OrganizationID != row.OrganizationID || value.ProjectID != row.ProjectID || value.AggregateID != row.WorkItemID || value.Type != row.Type || value.Actor.Kind != row.ActorKind || value.Actor.PrincipalID != row.ActorPrincipalID {
 			return value, artifact.ErrIntegrity
+		}
+		if row.PushKnown {
+			var checkpoint tracker.NativeCheckpoint
+			if value.Data.Run != nil && value.Data.Run.Handoff != nil {
+				checkpoint = *value.Data.Run.Handoff
+			}
+			var reference tracker.NativeChangeReference
+			if checkpoint.Change != nil {
+				reference = *checkpoint.Change
+			}
+			if row.PushChangeID != reference.ChangeID || row.PushVersionID != reference.VersionID || row.PushHeadSHA != reference.HeadSHA || row.PushExternalEffect != checkpoint.ExternalEffect || row.PushEffectState != checkpoint.EffectState {
+				return value, artifact.ErrIntegrity
+			}
 		}
 		var landing tracker.NativeLandingReceipt
 		if value.Data.Run != nil && value.Data.Run.Runtime != nil && value.Data.Run.Runtime.Landing != nil {
@@ -286,6 +301,10 @@ func (c *Content) PrepareEvidence(ctx context.Context, row Evidence, raw []byte)
 		if json.Unmarshal(raw, &value) != nil || value.ID == "" {
 			return Evidence{}, ErrInvalidRecord
 		}
+		row, err = ProjectChangeReview(row, value)
+		if err != nil {
+			return Evidence{}, err
+		}
 		row.ActorKind, row.ActorPrincipalID, row.Decision, row.CreatedAt = value.Actor.Kind, value.Actor.PrincipalID, value.Decision, value.CreatedAt
 		if value.VersionID != "" {
 			row.VersionID = new(value.VersionID)
@@ -323,6 +342,19 @@ func (c *Content) PrepareEvidence(ctx context.Context, row Evidence, raw []byte)
 func (c *Content) Evidence(ctx context.Context, row Evidence) (json.RawMessage, error) {
 	var value json.RawMessage
 	err := c.read(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), &value)
+	if err == nil && row.Kind == "review" {
+		var review tracker.ChangeReview
+		if json.Unmarshal(value, &review) != nil {
+			return nil, artifact.ErrIntegrity
+		}
+		projected, err := ProjectChangeReview(row, review)
+		if err != nil {
+			return nil, err
+		}
+		if row.ReviewKind != "" && (row.ReviewKind != projected.ReviewKind || row.ReviewLanding != projected.ReviewLanding) || row.ReviewSessionKnown && (row.ReviewSessionID != projected.ReviewSessionID || row.ReviewSessionMachine != projected.ReviewSessionMachine) {
+			return nil, artifact.ErrIntegrity
+		}
+	}
 	return value, err
 }
 
@@ -367,4 +399,60 @@ func (c *Content) Receipt(ctx context.Context, row Receipt) (json.RawMessage, er
 	var value json.RawMessage
 	err := c.read(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), &value)
 	return value, err
+}
+
+func DecodeChangeReview(row Evidence, raw []byte) (tracker.ChangeReview, error) {
+	var value tracker.ChangeReview
+	version := ""
+	if row.VersionID != nil {
+		version = *row.VersionID
+	}
+	if row.Kind != "review" || json.Unmarshal(raw, &value) != nil || value.ID == "" || value.VersionID != version || value.Decision != row.Decision || value.Actor.Kind != row.ActorKind || value.Actor.PrincipalID != row.ActorPrincipalID || !value.CreatedAt.UTC().Truncate(time.Microsecond).Equal(row.CreatedAt.UTC().Truncate(time.Microsecond)) {
+		return value, ErrInvalidRecord
+	}
+	_, err := ProjectChangeReview(row, value)
+	return value, err
+}
+
+func ProjectChangeReview(row Evidence, value tracker.ChangeReview) (Evidence, error) {
+	results := 0
+	for _, present := range []bool{value.SecurityAudit != nil, value.ImplementationReview != nil, value.Validator != nil} {
+		if present {
+			results++
+		}
+	}
+	if results > 1 {
+		return Evidence{}, ErrInvalidRecord
+	}
+	row.ReviewKind, row.ReviewLanding = "human", false
+	row.ReviewSessionKnown, row.ReviewSessionID, row.ReviewSessionMachine = true, 0, value.SessionMachineID
+	switch {
+	case value.SecurityAudit != nil:
+		row.ReviewKind, row.ReviewLanding = "security_audit", value.SecurityAudit.Landing
+		row.ReviewSessionID = value.SecurityAudit.SessionID
+	case value.ImplementationReview != nil:
+		row.ReviewKind = "implementation"
+		row.ReviewSessionID = value.ImplementationReview.SessionID
+	case value.Validator != nil:
+		row.ReviewKind = "validator"
+		row.ReviewSessionID = value.Validator.SessionID
+	}
+	if row.ReviewSessionID < 0 {
+		return Evidence{}, ErrInvalidRecord
+	}
+	return row, nil
+}
+
+func ProjectChangePush(row Event, value tracker.CollaborationEvent) Event {
+	row.PushKnown = true
+	row.PushChangeID, row.PushVersionID, row.PushHeadSHA = "", "", ""
+	row.PushExternalEffect, row.PushEffectState = "", ""
+	if value.Data.Run != nil && value.Data.Run.Handoff != nil {
+		checkpoint := value.Data.Run.Handoff
+		row.PushExternalEffect, row.PushEffectState = checkpoint.ExternalEffect, checkpoint.EffectState
+		if checkpoint.Change != nil {
+			row.PushChangeID, row.PushVersionID, row.PushHeadSHA = checkpoint.Change.ChangeID, checkpoint.Change.VersionID, checkpoint.Change.HeadSHA
+		}
+	}
+	return row
 }

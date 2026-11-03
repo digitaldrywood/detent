@@ -6,9 +6,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -109,127 +109,87 @@ func TestAuditEvidenceRequiresBaseAndHeadTogether(t *testing.T) {
 	}
 }
 
-func TestRunAuditDispositionUsesAuthenticatedExactHeadServicePath(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
-	t.Parallel()
-
-	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/projects/detent/security-audits/dispositions" {
-			t.Fatalf("request = %s %s", request.Method, request.URL.Path)
-		}
-		if got := request.Header.Get("Authorization"); got != "Bearer operator-token" {
-			t.Fatalf("Authorization = %q", got)
-		}
-		if err := request.ParseForm(); err != nil {
-			t.Fatalf("ParseForm() error = %v", err)
-		}
-		for key, want := range map[string]string{
-			"repository":   "digitaldrywood/detent",
-			"pull_request": "2006",
-			"base_sha":     "base-7",
-			"head_sha":     "head-7",
-			"finding_id":   "auth-1",
-			"status":       securityaudit.DispositionFalsePositive,
-			"evidence":     "The route is unreachable before administrator authorization.",
-			"confirm":      "true",
-		} {
-			if got := request.Form.Get(key); got != want {
-				t.Fatalf("form[%q] = %q, want %q", key, got, want)
-			}
-		}
-		writer.Header().Set("Content-Type", "application/json")
-		writer.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(writer).Encode(securityaudit.Disposition{
-			ID:              9,
-			AuditRunID:      7,
-			FindingID:       "auth-1",
-			Status:          securityaudit.DispositionFalsePositive,
-			Evidence:        request.Form.Get("evidence"),
-			ServiceIdentity: "detent:detent",
-			RecordedAt:      now,
-		})
-	}))
-	t.Cleanup(server.Close)
-	serverURL, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatalf("url.Parse() error = %v", err)
-	}
-	port, err := strconv.Atoi(serverURL.Port())
-	if err != nil {
-		t.Fatalf("strconv.Atoi() error = %v", err)
-	}
-
-	opts := dashboardAddressOptions(globalconfig.Config{APIToken: "operator-token"})
-	opts.httpDo = server.Client().Do
-	result, err := runAuditDisposition(t.Context(), "/config/global.yaml", serverURL.Hostname(), port, true, "detent", "digitaldrywood/detent", 2006, "base-7", "head-7", "auth-1", "The route is unreachable before administrator authorization.", opts)
-	if err != nil {
-		t.Fatalf("runAuditDisposition() error = %v", err)
-	}
-	if result.ID != 9 || result.AuditRunID != 7 || result.ServiceIdentity != "detent:detent" {
-		t.Fatalf("result = %#v", result)
-	}
-}
-
-func TestRunAuditDispositionUsesWorkerServiceConnection(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
-	t.Parallel()
-
-	listener := nonLoopbackListener(t)
-	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if got := request.Header.Get("Authorization"); got != "Bearer worker-service-token" {
-			t.Fatalf("Authorization = %q", got)
-		}
-		writer.Header().Set("Content-Type", "application/json")
-		writer.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(writer).Encode(securityaudit.Disposition{
-			ID:              10,
-			AuditRunID:      8,
-			FindingID:       "auth-1",
-			Status:          securityaudit.DispositionFalsePositive,
-			Evidence:        "The route requires administrator authorization.",
-			ServiceIdentity: "detent:detent",
-			RecordedAt:      now,
-		})
-	}))
-	server.Listener = listener
-	server.Start()
-	t.Cleanup(server.Close)
-
-	tests := []struct {
+func TestAuditCommandsRequireHubWithoutRuntimeFallback(t *testing.T) {
+	for _, test := range []struct {
 		name           string
 		serviceAddress string
+		host           string
+		port           int
+		portSet        bool
 	}{
-		{name: "non-loopback bind supplied by worker environment", serviceAddress: listener.Addr().String()},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			opts := dashboardAddressOptions(globalconfig.Config{})
+		{name: "no Hub configuration"},
+		{name: "local service credentials cannot authorize audit", serviceAddress: "example.invalid:1234", host: "example.invalid", port: 1234, portSet: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			opts := dashboardAddressOptions(globalconfig.Config{APIToken: "example"})
 			opts.lookupEnv = func(name string) string {
 				switch name {
 				case "DETENT_SERVICE_ADDRESS":
-					return tt.serviceAddress
+					return test.serviceAddress
 				case serviceapi.DispositionTokenEnvironment:
-					return "worker-service-token"
+					return "example-service-token"
 				default:
 					return ""
 				}
 			}
-			opts.httpDo = server.Client().Do
-
-			result, err := runAuditDisposition(t.Context(), "/config/global.yaml", "", -1, false, "detent", "digitaldrywood/detent", 2006, "base-8", "head-8", "auth-1", "The route requires administrator authorization.", opts)
-			if err != nil {
-				t.Fatalf("runAuditDisposition() error = %v", err)
+			opts.httpDo = func(*http.Request) (*http.Response, error) {
+				t.Fatal("audit command attempted local service fallback")
+				return nil, nil
 			}
-			if result.ID != 10 || result.AuditRunID != 8 {
-				t.Fatalf("result = %#v", result)
+			key := securityaudit.Key{ProjectID: "example", Repository: "example-org/example-project", PRNumber: 1}
+			if _, err := loadAuditEvidence(t.Context(), "/config/global.yaml", key, opts); err == nil || !strings.Contains(err.Error(), "require configured Hub") {
+				t.Fatalf("audit read did not require Hub: %v", err)
+			}
+			if _, err := runAuditDisposition(t.Context(), "/config/global.yaml", test.host, test.port, test.portSet, "example", key.Repository, 1, "base", "head", "finding", "evidence", opts); err == nil || !strings.Contains(err.Error(), "require configured Hub") {
+				t.Fatalf("audit write did not require Hub: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunAuditDispositionUsesHubWithoutLocalService(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusServiceUnavailable} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.URL.Path != "/api/v2/organizations/org_example/projects/prj_example/security-audits/dispositions" || r.Header.Get("Authorization") != "Bearer example-token" {
+					t.Errorf("unexpected audit authority: %s", r.URL.Path)
+					http.Error(w, "unexpected authority", http.StatusBadRequest)
+					return
+				}
+				var command securityaudit.DispositionCommand
+				if err := json.NewDecoder(r.Body).Decode(&command); err != nil {
+					t.Error(err)
+					http.Error(w, "invalid request", http.StatusBadRequest)
+					return
+				}
+				if command.Key.ProjectID != "prj_example" || command.Key.HeadSHA != "head" || command.FindingID != "finding" || !command.Confirm || command.RequestID == "" {
+					t.Errorf("audit source was not preserved: %+v", command)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				if status == http.StatusOK {
+					_ = json.NewEncoder(w).Encode(securityaudit.Disposition{ID: 9, AuditRunID: 7, FindingID: "finding"})
+				} else {
+					_, _ = w.Write([]byte(`{"code":"unavailable","message":"Hub unavailable"}`))
+				}
+			}))
+			defer server.Close()
+			opts := dashboardAddressOptions(globalconfig.Config{Client: globalconfig.HubClient{URL: server.URL, OrganizationID: "org_example", NativeProjects: map[string]string{"local": "prj_example"}, TokenEnvironment: "EXAMPLE_HUB_TOKEN"}})
+			opts.lookupEnv = func(key string) string {
+				if key == "EXAMPLE_HUB_TOKEN" {
+					return "example-token"
+				}
+				return ""
+			}
+			opts.httpDo = server.Client().Do
+			result, err := runAuditDisposition(t.Context(), "/config/runner.yaml", "127.0.0.1", 0, false, "local", "example-org/example-project", 7, "base", "head", "finding", "Verified source evidence", opts)
+			if (err == nil) != (status == http.StatusOK) || calls.Load() != 1 {
+				t.Fatalf("Hub audit result=%+v error=%v calls=%d", result, err, calls.Load())
+			}
+			if err == nil && result.ID != 9 {
+				t.Fatalf("Hub disposition receipt was lost: %+v", result)
 			}
 		})
 	}

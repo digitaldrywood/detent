@@ -36,3 +36,10 @@ func validateHubStartup(ctx context.Context, cfg globalconfig.Config, deps runti
 	}
 	return nil
 }
+
+func validateRunnerHubStartup(cfg BootConfig) error {
+	if !cfg.Global.Client.Configured() {
+		return NewValidationError("Runners require client.hub_url.", hubMigrationHint, nil)
+	}
+	return nil
+}

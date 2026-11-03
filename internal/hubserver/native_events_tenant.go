@@ -307,6 +307,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			return nil, err
 		}
 		attemptEvent := leasestore.AttemptEvent{
+			Usage: event.Data.Usage,
 			ID:    event.Data.AttemptID,
 			Fence: leasestore.Fence{LeaseID: string(event.Data.LeaseID), FencingToken: int64(event.Data.FencingToken)},
 			RunID: event.Data.RunID, Sequence: event.Data.Sequence, Status: status,

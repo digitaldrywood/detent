@@ -15,22 +15,22 @@ func (s *session) WorkItem(ctx context.Context, project tracker.ProjectID, id tr
 		ProjectID:      project,
 		NativeID:       id,
 	})
-	return corestore.WorkItem(row), mapError(ctx, err)
+	return workItemRecord(row), mapError(ctx, err)
 }
 
 func (s *session) WorkItemByNativeID(ctx context.Context, id tracker.NativeWorkItemID) (corestore.WorkItem, error) {
 	row, err := s.queries.GetWorkItemByNativeID(ctx, pgquery.GetWorkItemByNativeIDParams{OrganizationID: s.organization, NativeID: id})
-	return corestore.WorkItem(row), mapError(ctx, err)
+	return workItemRecord(row), mapError(ctx, err)
 }
 
 func (s *session) WorkItemByID(ctx context.Context, project tracker.ProjectID, id int64) (corestore.WorkItem, error) {
 	row, err := s.queries.GetWorkItemByID(ctx, pgquery.GetWorkItemByIDParams{OrganizationID: s.organization, ProjectID: project, ID: id})
-	return corestore.WorkItem(row), mapError(ctx, err)
+	return workItemRecord(row), mapError(ctx, err)
 }
 
 func (s *session) WorkItemByNumber(ctx context.Context, project tracker.ProjectID, number int64) (corestore.WorkItem, error) {
 	row, err := s.queries.GetWorkItemByNumber(ctx, pgquery.GetWorkItemByNumberParams{OrganizationID: s.organization, ProjectID: project, Number: number})
-	return corestore.WorkItem(row), mapError(ctx, err)
+	return workItemRecord(row), mapError(ctx, err)
 }
 
 func (s *session) CreateWorkItem(ctx context.Context, record corestore.WorkItem) (corestore.WorkItem, error) {
@@ -69,7 +69,7 @@ func (s *session) createWorkItem(ctx context.Context, record corestore.WorkItem)
 		Archived:               record.Archived,
 		WorkflowStateName:      record.WorkflowStateName,
 	})
-	return corestore.WorkItem(row), mapError(ctx, err)
+	return workItemRecord(row), mapError(ctx, err)
 }
 
 func (s *session) UpdateWorkItem(ctx context.Context, record corestore.WorkItem) (corestore.WorkItem, error) {
@@ -96,7 +96,7 @@ func (s *session) UpdateWorkItem(ctx context.Context, record corestore.WorkItem)
 		NativeID:               record.NativeID,
 		ExpectedRevision:       record.Revision,
 	})
-	return corestore.WorkItem(row), updated(ctx, err)
+	return workItemRecord(row), updated(ctx, err)
 }
 
 func (s *session) DeleteWorkItem(ctx context.Context, project tracker.ProjectID, id tracker.NativeWorkItemID) error {
@@ -120,7 +120,7 @@ func (s *session) WorkItems(ctx context.Context, project tracker.ProjectID, afte
 	}
 	items := make([]corestore.WorkItem, len(rows))
 	for i, row := range rows {
-		items[i] = corestore.WorkItem(row)
+		items[i] = workItemRecord(row)
 	}
 	return items, nil
 }
@@ -139,7 +139,7 @@ func (s *session) WorkItemsByNativeIDs(ctx context.Context, project tracker.Proj
 	}
 	items := make([]corestore.WorkItem, len(rows))
 	for i, row := range rows {
-		items[i] = corestore.WorkItem(row)
+		items[i] = workItemRecord(row)
 	}
 	return items, nil
 }
@@ -149,4 +149,8 @@ func optionalTime(value time.Time) *time.Time {
 		return nil
 	}
 	return &value
+}
+
+func workItemRecord(row pgquery.Issue) corestore.WorkItem {
+	return corestore.WorkItem{OrganizationID: row.OrganizationID, ID: row.ID, NativeID: row.NativeID, ProjectID: row.ProjectID, Number: row.Number, Revision: row.Revision, EventSequence: row.EventSequence, NativeSourceKey: row.NativeSourceKey, Title: row.Title, BodyObjectKey: row.BodyObjectKey, IssueContractObjectKey: row.IssueContractObjectKey, ReportContextObjectKey: row.ReportContextObjectKey, ActorKind: row.ActorKind, ActorPrincipalID: row.ActorPrincipalID, ProvenanceProvider: row.ProvenanceProvider, ProvenanceExternalID: row.ProvenanceExternalID, Archived: row.Archived, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, NativeCreatedAt: row.NativeCreatedAt, NativeUpdatedAt: row.NativeUpdatedAt, WorkflowStateName: row.WorkflowStateName, LastActivityAt: row.LastActivityAt}
 }

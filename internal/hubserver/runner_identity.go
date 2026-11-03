@@ -34,6 +34,8 @@ func runnerOperationAllowed(c echo.Context, operations []string) bool {
 	}
 	operation := ""
 	switch {
+	case path == runnerBase+"/:runner/update/receipt":
+		operation = runnerauth.Heartbeat
 	case path == "/api/v2/capabilities":
 		operation = runnerauth.Read
 	case !strings.HasPrefix(path, nativeBase):
@@ -42,6 +44,10 @@ func runnerOperationAllowed(c echo.Context, operations []string) bool {
 		operation = runnerauth.Claim
 	case c.Request().Method == http.MethodGet:
 		operation = runnerauth.Read
+	case path == nativeBase+"/runner-sessions/find":
+		operation = runnerauth.Read
+	case path == nativeBase+"/runner-sessions", path == nativeBase+"/security-audits/dispositions":
+		operation = runnerauth.Events
 	case path == nativeBase+"/attempts/:attempt/diff", path == nativeBase+"/attempts/:attempt/diff/check":
 		// The diff is written by the runner holding the attempt's lease;
 		// postAttemptDiff re-checks that lease and its fencing token.

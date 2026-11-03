@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -121,11 +122,15 @@ func ValidateResult(version tracker.ChangeVersion, result tracker.ChangeCheckRes
 }
 
 func Summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time) tracker.ChangeSummary {
-	return summarize(detail, policyID, reviewPolicyID, now, false)
+	return summarize(detail, policyID, reviewPolicyID, now, false, nil)
 }
 
 func SummarizeCurrentVersion(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool) tracker.ChangeSummary {
-	return summarize(detail, policyID, reviewPolicyID, now, priorApproval)
+	return summarize(detail, policyID, reviewPolicyID, now, priorApproval, nil)
+}
+
+func SummarizeCurrentVersionWithAuditDispositions(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool, dispositions map[int64][]securityaudit.Disposition) tracker.ChangeSummary {
+	return summarize(detail, policyID, reviewPolicyID, now, priorApproval, dispositions)
 }
 
 func CurrentPolicyIdentities(version *tracker.ChangeVersion, approved policy.Descriptor, rules tracker.ChangeReviewPolicy) (string, string) {
@@ -172,7 +177,7 @@ func gatesSatisfied(version, current policy.Gates) bool {
 	return !current.PlanEnabled || current.PlanReview == "" || current.PlanReview == version.PlanReview || current.PlanReview == gate.PlanReviewBoth
 }
 
-func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool) tracker.ChangeSummary {
+func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool, dispositions map[int64][]securityaudit.Disposition) tracker.ChangeSummary {
 	summary := tracker.ChangeSummary{NativeReview: "pending", ExternalReview: "not_linked", Checks: "missing", Status: "draft", Messages: []string{}}
 	var current *tracker.ChangeVersion
 	for i := range detail.Versions {
@@ -201,6 +206,10 @@ func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 	if !current.ReviewPolicy.RequireReview {
 		summary.NativeReview = "not_required"
 	}
+	summary.SecurityAudit = "pending"
+	if !current.Policy.Gates.SecurityAudit {
+		summary.SecurityAudit = "not_required"
+	}
 	auditBlocked := false
 	auditPassed := !current.Policy.Gates.SecurityAudit
 	validatorPassed := !current.Policy.Gates.Validator
@@ -209,16 +218,29 @@ func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 	staleApproval := priorApproval
 	for _, review := range detail.Reviews {
 		if review.SecurityAudit != nil {
-			if review.VersionID == current.ID && review.Decision == "changes_requested" {
-				auditBlocked = true
-			}
-			if review.SecurityAudit.Landing {
-				continue
-			}
 			if review.VersionID == current.ID {
 				run := review.SecurityAudit.Run
-				evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: string(detail.Change.ProjectID), Repository: current.Repository, PRNumber: run.PRNumber, BaseSHA: current.BaseSHA, HeadSHA: current.HeadSHA}, "", []string{"none"})
-				auditPassed = evaluation.Allowed && review.Decision == "approved"
+				key := securityaudit.Key{ProjectID: string(detail.Change.ProjectID), Repository: current.Repository, PRNumber: run.PRNumber, BaseSHA: current.BaseSHA, HeadSHA: current.HeadSHA}
+				evaluation := securityaudit.Evaluate(run, nil, key, "", []string{"none"})
+				allowed := evaluation.Allowed && review.Decision == "approved"
+				if values := dispositions[run.ID]; len(values) > 0 {
+					workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, current.Policy)
+					allowed = false
+					if err == nil {
+						matched := make([]securityaudit.Disposition, 0, len(values))
+						for _, value := range values {
+							if value.AuditRunID == run.ID {
+								matched = append(matched, value)
+							}
+						}
+						evaluation = securityaudit.Evaluate(run, matched, key, securityaudit.ServiceIdentity(string(detail.Change.ProjectID)), workflow.Config.Gate.SecurityAudit.BlockOn)
+						allowed = evaluation.Allowed
+					}
+				}
+				auditBlocked = auditBlocked || review.Decision == "changes_requested" && !allowed
+				if !review.SecurityAudit.Landing {
+					auditPassed = allowed
+				}
 			}
 			continue
 		}
@@ -283,6 +305,9 @@ func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 			summary.Checks = "missing"
 		}
 	}
+	if current.Policy.Gates.SecurityAudit && !auditBlocked && auditPassed && policyID == current.PolicyID && reviewPolicyID == current.ReviewPolicy.ID {
+		summary.SecurityAudit = "passed"
+	}
 	checksSatisfied := slices.Contains([]string{"success", "not_required"}, summary.Checks)
 	if !checksSatisfied {
 		summary.Messages = append(summary.Messages, "Current version checks are "+summary.Checks+". Missing or stale evidence does not pass review.")
@@ -332,7 +357,7 @@ func ReviewState(detail tracker.ChangeDetail, versionID, headSHA string) connect
 		case review.Validator != nil:
 			validatorRework = review.Validator.Verdict != gate.ValidatorVerdictPass
 		case review.SecurityAudit != nil:
-			auditRework = auditRework || review.Decision == "changes_requested"
+			auditRework = auditRework || review.Decision == "changes_requested" && detail.Summary.SecurityAudit != "passed" && detail.Summary.Status != "landed"
 		}
 	}
 	result.ChangesRequested = result.ChangesRequested || sourceRework || validatorRework || auditRework

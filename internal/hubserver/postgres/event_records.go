@@ -47,7 +47,7 @@ func (s *session) Events(ctx context.Context, project tracker.ProjectID, item tr
 	}
 	records := make([]eventstore.Event, len(rows))
 	for i, row := range rows {
-		records[i] = eventstore.Event(row)
+		records[i] = eventRecord(row)
 	}
 	return records, nil
 }
@@ -62,7 +62,7 @@ func (s *session) EventsBefore(ctx context.Context, project tracker.ProjectID, i
 	}
 	records := make([]eventstore.Event, len(rows))
 	for i, row := range rows {
-		records[i] = eventstore.Event(row)
+		records[i] = eventRecord(row)
 	}
 	return records, nil
 }
@@ -93,7 +93,7 @@ func (s *session) LatestRunEvent(ctx context.Context, project tracker.ProjectID,
 		ProjectID:      project,
 		AttemptID:      attempt,
 	})
-	return eventstore.Event(row), mapError(ctx, err)
+	return eventRecord(row), mapError(ctx, err)
 }
 
 func (s *session) LatestCheckpointEvents(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, attempts []string) ([]eventstore.Event, error) {
@@ -111,7 +111,7 @@ func (s *session) LatestCheckpointEvents(ctx context.Context, project tracker.Pr
 	}
 	events := make([]eventstore.Event, len(rows))
 	for i, row := range rows {
-		events[i] = eventstore.Event(row)
+		events[i] = eventRecord(row)
 	}
 	return events, nil
 }
@@ -270,13 +270,13 @@ func (s *session) Evidence(ctx context.Context, change string, after int64, limi
 	}
 	records := make([]eventstore.Evidence, len(rows))
 	for i, row := range rows {
-		records[i] = eventstore.Evidence(row)
+		records[i] = evidenceRecord(row)
 	}
 	return records, nil
 }
 func (s *session) EvidenceBySource(ctx context.Context, change, kind, source string) (eventstore.Evidence, error) {
 	row, err := s.queries.RecordGetEvidenceBySource(ctx, pgquery.RecordGetEvidenceBySourceParams{OrganizationID: s.organization, ChangeID: change, Kind: kind, SourceKey: &source})
-	return eventstore.Evidence(row), mapError(ctx, err)
+	return evidenceRecord(row), mapError(ctx, err)
 }
 func (s *session) Links(ctx context.Context, change string, after tracker.NativeWorkItemID, limit int) ([]eventstore.Link, error) {
 	if err := checkPage(limit); err != nil {
@@ -294,17 +294,17 @@ func (s *session) Links(ctx context.Context, change string, after tracker.Native
 }
 func (s *session) Change(ctx context.Context, id string) (eventstore.Change, error) {
 	row, err := s.queries.RecordGetChange(ctx, pgquery.RecordGetChangeParams{OrganizationID: s.organization, ID: id})
-	return eventstore.Change(row), mapError(ctx, err)
+	return changeRecord(row), mapError(ctx, err)
 }
 
 func (s *session) LockChange(ctx context.Context, id string) (eventstore.Change, error) {
 	row, err := s.queries.RecordLockChange(ctx, pgquery.RecordLockChangeParams{OrganizationID: s.organization, ID: id})
-	return eventstore.Change(row), mapError(ctx, err)
+	return changeRecord(row), mapError(ctx, err)
 }
 
 func (s *session) LatestChange(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (eventstore.Change, error) {
 	row, err := s.queries.RecordLatestChange(ctx, pgquery.RecordLatestChangeParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item})
-	return eventstore.Change(row), mapError(ctx, err)
+	return changeRecord(row), mapError(ctx, err)
 }
 
 func (s *session) Changes(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, after string, limit int) ([]eventstore.Change, error) {
@@ -317,7 +317,7 @@ func (s *session) Changes(ctx context.Context, project tracker.ProjectID, item t
 	}
 	records := make([]eventstore.Change, len(rows))
 	for i, row := range rows {
-		records[i] = eventstore.Change(row)
+		records[i] = changeRecord(row)
 	}
 	return records, nil
 }
@@ -353,8 +353,8 @@ func (s *session) CollaborationVersions(ctx context.Context, keys []eventstore.C
 }
 
 func (s *session) insertRecordEvent(ctx context.Context, record eventstore.Event) (eventstore.Event, error) {
-	row, err := s.queries.RecordInsertEvent(ctx, pgquery.RecordInsertEventParams{OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID, Sequence: record.Sequence, ProjectSequence: record.ProjectSequence, Type: record.Type, SchemaVersion: record.SchemaVersion, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, EventRevision: record.EventRevision, ChangeID: record.ChangeID, VersionID: record.VersionID, HeadSHA: record.HeadSHA, LandingWaiting: record.LandingWaiting, LandingChangeID: record.LandingChangeID, LandingVersionID: record.LandingVersionID, LandingHeadSHA: record.LandingHeadSHA, RunID: record.RunID, AttemptID: record.AttemptID, FromState: record.FromState, ToState: record.ToState, RecordedAt: record.RecordedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
-	return eventstore.Event(row), mapError(ctx, err)
+	row, err := s.queries.RecordInsertEvent(ctx, pgquery.RecordInsertEventParams{PushKnown: record.PushKnown, PushChangeID: record.PushChangeID, PushVersionID: record.PushVersionID, PushHeadSha: record.PushHeadSHA, PushExternalEffect: record.PushExternalEffect, PushEffectState: record.PushEffectState, OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID, Sequence: record.Sequence, ProjectSequence: record.ProjectSequence, Type: record.Type, SchemaVersion: record.SchemaVersion, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, EventRevision: record.EventRevision, ChangeID: record.ChangeID, VersionID: record.VersionID, HeadSHA: record.HeadSHA, LandingWaiting: record.LandingWaiting, LandingChangeID: record.LandingChangeID, LandingVersionID: record.LandingVersionID, LandingHeadSHA: record.LandingHeadSHA, RunID: record.RunID, AttemptID: record.AttemptID, FromState: record.FromState, ToState: record.ToState, RecordedAt: record.RecordedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
+	return eventRecord(row), mapError(ctx, err)
 }
 func (s *session) insertRecordCollaborationVersion(ctx context.Context, record eventstore.CollaborationVersion) (eventstore.CollaborationVersion, error) {
 	row, err := s.queries.RecordInsertCollaborationVersion(ctx, pgquery.RecordInsertCollaborationVersionParams{OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, RecordID: record.RecordID, Revision: record.Revision, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes})
@@ -362,7 +362,7 @@ func (s *session) insertRecordCollaborationVersion(ctx context.Context, record e
 }
 func (s *session) insertRecordChange(ctx context.Context, record eventstore.Change) (eventstore.Change, error) {
 	row, err := s.queries.RecordInsertChange(ctx, pgquery.RecordInsertChangeParams{OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID, Revision: record.Revision, Title: record.Title, CurrentVersionID: record.CurrentVersionID, EvidenceSequence: record.EvidenceSequence, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes})
-	return eventstore.Change(row), mapError(ctx, err)
+	return changeRecord(row), mapError(ctx, err)
 }
 func (s *session) insertRecordVersion(ctx context.Context, record eventstore.Version) (eventstore.Version, error) {
 	var sourceKey, sourceDigest *string
@@ -377,8 +377,8 @@ func (s *session) insertRecordVersion(ctx context.Context, record eventstore.Ver
 	return versionRecord(row), mapError(ctx, err)
 }
 func (s *session) insertRecordEvidence(ctx context.Context, record eventstore.Evidence) (eventstore.Evidence, error) {
-	row, err := s.queries.RecordInsertEvidence(ctx, pgquery.RecordInsertEvidenceParams{OrganizationID: record.OrganizationID, ChangeID: record.ChangeID, Sequence: record.Sequence, VersionID: record.VersionID, Kind: record.Kind, SourceKey: record.SourceKey, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, Decision: record.Decision, CreatedAt: record.CreatedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
-	return eventstore.Evidence(row), mapError(ctx, err)
+	row, err := s.queries.RecordInsertEvidence(ctx, pgquery.RecordInsertEvidenceParams{ReviewKind: record.ReviewKind, ReviewLanding: record.ReviewLanding, ReviewSessionKnown: record.ReviewSessionKnown, ReviewSessionID: record.ReviewSessionID, ReviewSessionMachine: string(record.ReviewSessionMachine), OrganizationID: record.OrganizationID, ChangeID: record.ChangeID, Sequence: record.Sequence, VersionID: record.VersionID, Kind: record.Kind, SourceKey: record.SourceKey, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, Decision: record.Decision, CreatedAt: record.CreatedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
+	return evidenceRecord(row), mapError(ctx, err)
 }
 
 func (s *session) AppendEvent(ctx context.Context, record eventstore.Event) (eventstore.Event, error) {
@@ -412,10 +412,10 @@ func (s *session) AppendEvent(ctx context.Context, record eventstore.Event) (eve
 		if requested.RecordedAt.IsZero() || recordTime(requested.RecordedAt).Equal(previous.RecordedAt) {
 			requested.RecordedAt = previous.RecordedAt
 		}
-		if !reflect.DeepEqual(eventstore.Event(previous), requested) {
+		if !reflect.DeepEqual(eventRecord(previous), requested) {
 			return eventstore.Event{}, corestore.ErrRevisionConflict
 		}
-		return eventstore.Event(previous), nil
+		return eventRecord(previous), nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return eventstore.Event{}, mapError(ctx, err)
@@ -487,10 +487,10 @@ func (s *session) CreateChange(ctx context.Context, record eventstore.Change) (e
 		if requested.UpdatedAt.IsZero() || recordTime(requested.UpdatedAt).Equal(previous.UpdatedAt) {
 			requested.UpdatedAt = previous.UpdatedAt
 		}
-		if !reflect.DeepEqual(eventstore.Change(previous), requested) {
+		if !reflect.DeepEqual(changeRecord(previous), requested) {
 			return eventstore.Change{}, corestore.ErrRevisionConflict
 		}
-		return eventstore.Change(previous), nil
+		return changeRecord(previous), nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return eventstore.Change{}, mapError(ctx, err)
@@ -512,7 +512,7 @@ func (s *session) UpdateChange(ctx context.Context, record eventstore.Change) (e
 		return eventstore.Change{}, err
 	}
 	row, err := s.queries.RecordUpdateChange(ctx, pgquery.RecordUpdateChangeParams{OrganizationID: s.organization, ID: record.ID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ExpectedRevision: record.Revision, Title: record.Title, CurrentVersionID: record.CurrentVersionID, UpdatedAt: recordTime(record.UpdatedAt), PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes})
-	return eventstore.Change(row), updated(ctx, err)
+	return changeRecord(row), updated(ctx, err)
 }
 
 func (s *session) CreateVersion(ctx context.Context, record eventstore.Version) (eventstore.Version, error) {
@@ -594,10 +594,10 @@ func (s *session) AppendEvidence(ctx context.Context, record eventstore.Evidence
 			if requested.CreatedAt.IsZero() || recordTime(requested.CreatedAt).Equal(previous.CreatedAt) {
 				requested.CreatedAt = previous.CreatedAt
 			}
-			if !reflect.DeepEqual(eventstore.Evidence(previous), requested) {
+			if !reflect.DeepEqual(evidenceRecord(previous), requested) {
 				return eventstore.Evidence{}, corestore.ErrRevisionConflict
 			}
-			return eventstore.Evidence(previous), nil
+			return evidenceRecord(previous), nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return eventstore.Evidence{}, mapError(ctx, err)
@@ -646,4 +646,80 @@ func (s *session) PutReceipt(ctx context.Context, record eventstore.Receipt) (ev
 		return eventstore.Receipt{}, corestore.ErrRevisionConflict
 	}
 	return row, err
+}
+
+func (s *session) ChangeSummaryEvidence(ctx context.Context, change, version string, through int64, checks []string) ([]eventstore.Evidence, bool, error) {
+	if len(checks) > corestore.MaxPageSize {
+		return nil, false, corestore.ErrInvalidPage
+	}
+	rows, err := s.queries.RecordChangeSummaryEvidence(ctx, pgquery.RecordChangeSummaryEvidenceParams{OrganizationID: s.organization, ChangeID: change, VersionID: new(version), Through: through, CheckIds: checks})
+	if err != nil {
+		return nil, false, mapError(ctx, err)
+	}
+	unknown := 0
+	for _, row := range rows {
+		if row.Kind == "review" && row.ReviewKind == "" {
+			unknown++
+		}
+	}
+	if unknown > corestore.MaxPageSize {
+		return nil, false, corestore.ErrInvalidPage
+	}
+	prior, err := s.queries.RecordChangePriorApproval(ctx, pgquery.RecordChangePriorApprovalParams{OrganizationID: s.organization, ChangeID: change, VersionID: new(version), Through: through})
+	records := make([]eventstore.Evidence, len(rows))
+	for i, row := range rows {
+		records[i] = evidenceRecord(pgquery.ChangeEvidence(row))
+	}
+	if prior.Unprojected {
+		return nil, false, corestore.ErrInvalidPage
+	}
+	return records, prior.Approved, mapError(ctx, err)
+}
+
+func (s *session) ChangePublicationCheckpoints(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, reference tracker.NativeChangeReference) ([]eventstore.Event, error) {
+	rows, err := s.queries.RecordChangePublicationCheckpoints(ctx, pgquery.RecordChangePublicationCheckpointsParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item, ChangeID: reference.ChangeID, VersionID: reference.VersionID, HeadSHA: reference.HeadSHA})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	unknown := 0
+	for _, row := range rows {
+		if !row.PushKnown {
+			unknown++
+		}
+	}
+	if unknown > corestore.MaxPageSize {
+		return nil, corestore.ErrInvalidPage
+	}
+	records := make([]eventstore.Event, len(rows))
+	for i, row := range rows {
+		records[i] = eventRecord(pgquery.CollaborationEvent(row))
+	}
+	return records, nil
+}
+
+func (s *session) ChangePublicationProvenance(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, run tracker.NativeRunData) (bool, error) {
+	valid, err := s.queries.RecordChangePublicationProvenance(ctx, pgquery.RecordChangePublicationProvenanceParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item, PolicyID: run.PolicyID, RunSequence: run.Sequence, AttemptID: run.AttemptID, RunID: run.RunID, LeaseID: string(run.LeaseID), FencingToken: int64(run.FencingToken)})
+	return valid, mapError(ctx, err)
+}
+
+func (s *session) ValidatorReviewEvidence(ctx context.Context, change, version string, through int64, machine tracker.MachineID, sessionID int64) ([]eventstore.Evidence, bool, error) {
+	if through < 0 || machine == "" || sessionID < 1 {
+		return nil, false, corestore.ErrInvalidPage
+	}
+	rows, err := s.queries.RecordValidatorReviewEvidence(ctx, pgquery.RecordValidatorReviewEvidenceParams{OrganizationID: s.organization, ChangeID: change, VersionID: new(version), Through: through, MachineID: string(machine), SessionID: sessionID})
+	if err != nil {
+		return nil, false, mapError(ctx, err)
+	}
+	records := make([]eventstore.Evidence, len(rows))
+	for i, row := range rows {
+		if !row.ReviewSessionKnown || row.ReviewKind == "" {
+			return nil, false, nil
+		}
+		records[i] = evidenceRecord(pgquery.ChangeEvidence(row))
+	}
+	return records, true, nil
+}
+
+func changeRecord(row pgquery.ChangeRequest) eventstore.Change {
+	return eventstore.Change{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, WorkItemID: row.WorkItemID, ID: row.ID, Revision: row.Revision, Title: row.Title, CurrentVersionID: row.CurrentVersionID, EvidenceSequence: row.EvidenceSequence, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, PayloadObjectKey: row.PayloadObjectKey, PayloadSHA256: row.PayloadSHA256, PayloadBytes: row.PayloadBytes, PayloadContentBytes: row.PayloadContentBytes}
 }

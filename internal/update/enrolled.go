@@ -240,7 +240,7 @@ func (s *Scheduler) enrolledObservation(running runnerauth.BuildEvidence) *runne
 		}
 	}
 	observation := &runnerauth.UpdateObservation{
-		Discovery: "unknown", Protocol: 1, Service: "detent", Supported: valid && s.cfg.Updater != nil && s.cfg.ReserveDrain != nil && s.cfg.RequestRestart != nil && strings.TrimSpace(s.cfg.StatePath) != "",
+		Discovery: "unknown", Protocol: 1, Service: "detent", Supported: valid && s.cfg.Updater != nil && s.cfg.ReserveDrain != nil && s.cfg.RequestRestart != nil && (s.cfg.ReceiptStore != nil || strings.TrimSpace(s.cfg.StatePath) != ""),
 		Pending: status.State == "pending_idle", AvailableVersion: status.AvailableVersion,
 		Running: running, Receipt: receipt, ObservedAt: now,
 	}

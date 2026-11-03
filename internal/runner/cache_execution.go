@@ -19,6 +19,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (result RunResult, err
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = bindSessionExecution(ctx, r.store, req.Execution)
 	ctx = gobudget.WithContext(ctx, r.goBudget)
 	ctx = r.buildCache.WithContext(ctx)
 	ctx = r.withCacheWaitObserver(ctx, req)
@@ -65,6 +66,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (result gat
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = bindSessionExecution(ctx, r.store, req.usageExecution)
 	ctx = gobudget.WithContext(ctx, r.goBudget)
 	ctx = r.buildCache.WithContext(ctx)
 	ctx = r.withCacheWaitObserver(ctx, RunRequest{Issue: req.Issue})
@@ -77,11 +79,21 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (result Se
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = bindSessionExecution(ctx, r.store, req.usageExecution)
 	ctx = gobudget.WithContext(ctx, r.goBudget)
 	ctx = r.buildCache.WithContext(ctx)
 	ctx = r.withCacheWaitObserver(ctx, RunRequest{Issue: req.Issue})
 	ctx = r.withValidationProcessOwner(ctx, req.Issue, 0)
 	return r.audit(ctx, req)
+}
+
+func bindSessionExecution(ctx context.Context, sessions SessionStore, execution Execution) context.Context {
+	if owner, ok := sessions.(interface {
+		BindExecution(context.Context, Execution) context.Context
+	}); ok {
+		return owner.BindExecution(ctx, execution)
+	}
+	return ctx
 }
 
 func (r *Runner) withCacheWaitObserver(ctx context.Context, req RunRequest) context.Context {

@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -397,6 +398,10 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 		detail, err := service.selectedChangeDetail(t.Context(), scope, "wi_001", "change_001", now)
 		if err != nil || detail.Change.OrganizationID != org || detail.Summary.Status != "stale_policy" {
 			t.Fatalf("stale-policy detail=%+v error=%v", detail.Summary, err)
+		}
+		bounded, err := service.readBoundedChangeRecord(t.Context(), scope, operatortool.ChangeArguments{ItemID: "wi_001", ChangeID: "change_001"}, operatortool.ChangeResult{})
+		if err != nil || bounded.Detail == nil || bounded.Detail.Change.OrganizationID != org || bounded.Detail.Summary.Status != "stale_policy" {
+			t.Fatalf("bounded stale-policy read=%+v error=%v", bounded.Detail, err)
 		}
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 			_, err := readCurrentChangePolicyRows(t.Context(), r, scope)

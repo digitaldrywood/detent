@@ -234,7 +234,7 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 		var output strings.Builder
 		previousUsage := runResult.Tokens
 		runResult.ReportedCostMicros, runResult.CostSource = nil, ""
-		usageReport := &turnUsageReporter{tokens: previousUsage}
+		usageReport := &turnUsageReporter{baseline: previousUsage, startedAt: r.now(), sourceID: fmt.Sprintf("session_%d_chunk_%d", sessionID, index)}
 		removeAuditWorkspace = false
 		turns++
 		execution.WorkerProcess = procgroup.Identity{}
@@ -279,7 +279,9 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 				runResult.Tokens = addAgentTokenTotals(previousUsage, runResult.Tokens)
 			}
 			if update.Type == AgentUpdateTokenUsage {
-				usageReport.report(updateCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, r.logger)
+				if err := usageReport.report(updateCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, r.logger); err != nil {
+					return err
+				}
 			}
 			if req.OnUsageUpdate != nil {
 				if err := req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, Tokens: runResult.Tokens, RuntimeIdentity: runResult.RuntimeIdentity, RateLimits: runResult.RateLimits}); err != nil {
@@ -302,7 +304,7 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 		turnResult = currentTurn
 		runResult.ReportedCostMicros, runResult.CostSource = turnResult.ReportedCostMicros, turnResult.CostSource
 		usageCtx, usageCancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
-		usageReport.report(usageCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, r.logger)
+		turnErr = errors.Join(turnErr, usageReport.report(usageCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, r.logger))
 		usageCancel()
 		execution.RuntimeIdentity = runResult.RuntimeIdentity
 		execution.SessionID = sessionID

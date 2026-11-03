@@ -115,7 +115,11 @@ func (r *Runner) auditNativeChange(ctx context.Context, req RunRequest) (approve
 		complete: func(ctx context.Context, audit SecurityAuditExecution) error {
 			run := audit.auditRun(snapshot)
 			review := tracker.SecurityAuditReview{VersionID: input.Version.ID, Identity: audit.RuntimeIdentity, SessionID: audit.SessionID, DiffDigest: input.Diff.Digest, Run: run}
-			evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: snapshot.ProjectID, Repository: run.Repository, PRNumber: run.PRNumber, BaseSHA: input.Version.BaseSHA, HeadSHA: input.Version.HeadSHA}, "", cfg.BlockOn)
+			dispositions, err := r.nativeAuditDispositions(ctx, run.ID)
+			if err != nil {
+				return err
+			}
+			evaluation := securityaudit.Evaluate(run, dispositions, securityaudit.Key{ProjectID: snapshot.ProjectID, Repository: run.Repository, PRNumber: run.PRNumber, BaseSHA: input.Version.BaseSHA, HeadSHA: input.Version.HeadSHA}, securityaudit.ServiceIdentity(snapshot.ProjectID), cfg.BlockOn)
 			if !evaluation.Allowed && evaluation.Reason != securityaudit.ReasonUnresolvedFindings {
 				return fmt.Errorf("security audit evidence is incomplete: %s", evaluation.Diagnostic())
 			}
@@ -177,7 +181,11 @@ func (r *Runner) auditNativeLanding(ctx context.Context, req RunRequest, target 
 	_, err = r.Audit(ctx, SecurityAuditRequest{usageExecution: req.Execution, Issue: issue, Snapshot: snapshot, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate, evidence: publisher,
 		complete: func(ctx context.Context, audit SecurityAuditExecution) error {
 			run := audit.auditRun(snapshot)
-			evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: snapshot.ProjectID, Repository: target.Repository, BaseSHA: files.BaseSHA, HeadSHA: files.HeadSHA}, "", cfg.BlockOn)
+			dispositions, err := r.nativeAuditDispositions(ctx, run.ID)
+			if err != nil {
+				return err
+			}
+			evaluation := securityaudit.Evaluate(run, dispositions, securityaudit.Key{ProjectID: snapshot.ProjectID, Repository: target.Repository, BaseSHA: files.BaseSHA, HeadSHA: files.HeadSHA}, securityaudit.ServiceIdentity(snapshot.ProjectID), cfg.BlockOn)
 			if !evaluation.Allowed && evaluation.Reason != securityaudit.ReasonUnresolvedFindings {
 				return fmt.Errorf("landing security audit evidence is incomplete: %s", evaluation.Diagnostic())
 			}
@@ -195,4 +203,18 @@ func (r *Runner) auditNativeLanding(ctx context.Context, req RunRequest, target 
 			return nil
 		}})
 	return review, err
+}
+
+func (r *Runner) nativeAuditDispositions(ctx context.Context, id int64) ([]securityaudit.Disposition, error) {
+	owner, ok := r.store.(interface {
+		ListSecurityAuditDispositions(context.Context, int64) ([]securityaudit.Disposition, error)
+	})
+	if !ok || id < 1 {
+		return nil, nil
+	}
+	value, err := owner.ListSecurityAuditDispositions(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("read Hub audit dispositions: %w", err)
+	}
+	return value, nil
 }

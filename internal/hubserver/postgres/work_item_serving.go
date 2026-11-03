@@ -21,12 +21,12 @@ func (s *session) LockWorkItemProject(ctx context.Context, project tracker.Proje
 
 func (s *session) LockWorkItem(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (corestore.WorkItem, error) {
 	row, err := s.queries.LockWorkItem(ctx, pgquery.LockWorkItemParams{OrganizationID: s.organization, ProjectID: project, NativeID: item})
-	return corestore.WorkItem(row), mapError(ctx, err)
+	return workItemRecord(row), mapError(ctx, err)
 }
 
 func (s *session) WorkItemBySource(ctx context.Context, project tracker.ProjectID, source string) (corestore.WorkItem, error) {
 	row, err := s.queries.WorkItemBySource(ctx, pgquery.WorkItemBySourceParams{OrganizationID: s.organization, ProjectID: project, SourceKey: &source})
-	return corestore.WorkItem(row), mapError(ctx, err)
+	return workItemRecord(row), mapError(ctx, err)
 }
 
 func (s *session) CommentBySource(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, source string) (corestore.Comment, error) {

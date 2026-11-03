@@ -48,7 +48,7 @@ func (s *session) ClaimPreviewPlanRows(ctx context.Context, project tracker.Proj
 		if !ok {
 			continue
 		}
-		result[index].Item = corestore.WorkItem(row)
+		result[index].Item = workItemRecord(row)
 	}
 	for index := range result {
 		if result[index].Item.ID == 0 {
@@ -224,7 +224,7 @@ func (s *session) ClaimPreviewPlanRows(ctx context.Context, project tracker.Proj
 		for _, row := range eventRows {
 			index, ok := indexesByAttempt[row.AttemptID]
 			if ok {
-				event := eventstore.Event(row)
+				event := eventRecord(row)
 				result[index].LatestRunEvent = &event
 			}
 		}

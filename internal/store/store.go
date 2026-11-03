@@ -416,6 +416,9 @@ type RunStop struct {
 }
 
 type SessionStart struct {
+	PRNumber                     int64
+	PRHeadSHA                    string
+	PRBaseSHA                    string
 	RunID                        int64
 	WorkAttemptID                int64
 	ProjectID                    string
@@ -507,6 +510,7 @@ type SessionFinish struct {
 }
 
 type AgentResumeLookup struct {
+	NativeAttemptID  string
 	WorkAttemptID    int64
 	ProjectID        string
 	IssueID          string

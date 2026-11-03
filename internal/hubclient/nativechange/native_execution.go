@@ -876,6 +876,9 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 	if kind == "run.finished" {
 		data.Usage = slices.Clone(data.Usage)
 		for i := range data.Usage {
+			if data.Usage[i].SourceID != "" {
+				continue
+			}
 			data.Usage[i].From = e.usageStartedAt
 			data.Usage[i].To, data.Usage[i].ReportedAt = at, at
 			data.Usage[i].Revision = data.Sequence + 1
@@ -1031,7 +1034,13 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	}
 	checkpoint := e.data.Handoff
 	runtime := e.data.Runtime
+	observedUsage := e.data.Usage
 	e.data = e.pending.Data
+	for _, entry := range observedUsage {
+		if entry.SourceID != "" {
+			e.data.Usage = mergeNativeUsage(e.data.Usage, entry)
+		}
+	}
 	if e.data.Runtime != nil {
 		e.runtimePublishedAt = e.data.Runtime.HeartbeatAt
 	}

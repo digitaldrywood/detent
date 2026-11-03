@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -130,10 +131,11 @@ func (wire SSHRunRequest) Bind(ctx context.Context, peer *SSHPeer) RunRequest {
 // orchestrator. Remote PIDs are deliberately absent from central usage updates.
 func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker BudgetChecker, estimator DispatchEstimator) func(context.Context, string, []json.RawMessage) (any, error) {
 	return func(ctx context.Context, method string, arguments []json.RawMessage) (any, error) {
+		ctx = bindSessionExecution(ctx, sessions, request.Execution)
 		if strings.HasPrefix(method, "store.") {
 			name := strings.TrimPrefix(method, "store.")
 			switch name {
-			case "StartSession", "FinishSession", "RecordUsageEvent", "UpdateSessionIdentity", "UpdateSessionProviderIdentity", "UpdateSessionResumeState", "RecordWorkflowPhaseEvent", "SaveWorkflowActivityProfile", "SessionProgress", "SaveSessionProgress", "SessionPolicy":
+			case "StartSession", "FinishSession", "RecordUsageEvent", "UpdateSessionIdentity", "UpdateSessionProviderIdentity", "UpdateSessionResumeState", "RecordWorkflowPhaseEvent", "SaveWorkflowActivityProfile", "SessionProgress", "SaveSessionProgress", "SessionPolicy", "LatestAgentResumeState", "LatestIssueAgentResumeState", "ListSecurityAuditDispositions":
 				return invokeSSHMethod(ctx, sessions, name, arguments)
 			default:
 				return nil, errors.New("unsupported SSH store method")
@@ -422,5 +424,21 @@ func (s SSHSessionStore) SaveSessionProgress(ctx context.Context, id int64, inpu
 func (s SSHSessionStore) SessionPolicy(ctx context.Context, project string, id int64) (policy.Descriptor, error) {
 	var result policy.Descriptor
 	err := s.Peer.Call(ctx, "store.SessionPolicy", &result, project, id)
+	return result, err
+}
+
+func (s SSHSessionStore) LatestAgentResumeState(ctx context.Context, lookup store.AgentResumeLookup) (store.AgentResumeState, error) {
+	var result store.AgentResumeState
+	err := s.Peer.Call(ctx, "store.LatestAgentResumeState", &result, lookup)
+	return result, err
+}
+func (s SSHSessionStore) LatestIssueAgentResumeState(ctx context.Context, issue store.IssueIdentity) (store.AgentResumeState, error) {
+	var result store.AgentResumeState
+	err := s.Peer.Call(ctx, "store.LatestIssueAgentResumeState", &result, issue)
+	return result, err
+}
+func (s SSHSessionStore) ListSecurityAuditDispositions(ctx context.Context, id int64) ([]securityaudit.Disposition, error) {
+	var result []securityaudit.Disposition
+	err := s.Peer.Call(ctx, "store.ListSecurityAuditDispositions", &result, id)
 	return result, err
 }
