@@ -59,29 +59,43 @@ func (p *Project) Evaluate() {
 		}
 		p.Steps = append(p.Steps, Step{Name: name, State: state, Detail: detail})
 	}
-	enrolled := func(r runnerauth.Eligibility) bool {
-		return r.Runner.State == "active" && r.Runner.Health != "revoked" && r.Runner.Health != "expired" && !slices.ContainsFunc(r.Exclusions, func(e runnerauth.Exclusion) bool {
-			return e.Code == "project_access_denied"
-		})
-	}
-	add("Runner", slices.ContainsFunc(p.Runners, enrolled), "Use a runner you already have. It can work on this project alongside its other projects.")
+	facts := projectRunnerReadiness(p.Runners)
+	add("Runner", facts.enrolled, "Use a runner you already have. It can work on this project alongside its other projects.")
 	add("Repository", p.Repository != "" && p.RepositoryBindingReason == nil, "Choose the repository your runner should work on using its own Git sign-in.")
-	validated := slices.ContainsFunc(p.Runners, func(r runnerauth.Eligibility) bool {
-		return enrolled(r) && (r.Runner.ConnectionHealth == "online" || r.Runner.ConnectionHealth == "" && r.Runner.Health == "online") && r.LocalChecks != nil && r.LocalChecks.Passed()
-	})
 	checkoutDetail := "Verify the checkout, repository configuration, Detent checks and provider sign-in on your runner."
-	if !validated && slices.ContainsFunc(p.Runners, func(r runnerauth.Eligibility) bool {
-		return enrolled(r) && r.LocalChecks != nil && r.LocalChecks.Configuration == "missing"
-	}) {
+	if !facts.validated && facts.missingConfiguration {
 		checkoutDetail = "Configuration missing: detent.yaml and WORKFLOW.md not found. Create starter files or add them to the repository; checks continue automatically."
 	}
-	add("Checkout", validated && (p.Policy != nil || len(p.ObservedPolicies) > 0), checkoutDetail)
-	matching := slices.ContainsFunc(p.Runners, func(r runnerauth.Eligibility) bool {
-		return !slices.ContainsFunc(r.Exclusions, func(e runnerauth.Exclusion) bool {
-			return e.Code != "host_capacity" && e.Code != "runner_capacity"
-		})
-	})
+	add("Checkout", facts.validated && (p.Policy != nil || len(p.ObservedPolicies) > 0), checkoutDetail)
 	artifactDetail := "Choose where to keep files from agent runs, such as logs and screenshots. Keep them on your runner, or connect storage that you manage."
 	add("Run files", p.Progress.Artifacts == "local" || p.Progress.Artifacts == "customer" && len(p.Artifacts) > 0, artifactDetail)
-	p.Ready = matching && !slices.ContainsFunc(p.Steps, func(s Step) bool { return s.State != "ready" })
+	p.Ready = facts.matching && !slices.ContainsFunc(p.Steps, func(s Step) bool { return s.State != "ready" })
+}
+
+type runnerReadiness struct {
+	enrolled             bool
+	validated            bool
+	missingConfiguration bool
+	matching             bool
+}
+
+func projectRunnerReadiness(runners []runnerauth.Eligibility) runnerReadiness {
+	var result runnerReadiness
+	for _, r := range runners {
+		enrolled := r.Runner.State == "active" && r.Runner.Health != "revoked" && r.Runner.Health != "expired" && !slices.ContainsFunc(r.Exclusions, func(e runnerauth.Exclusion) bool { return e.Code == "project_access_denied" })
+		result.enrolled = result.enrolled || enrolled
+		result.validated = result.validated || enrolled && (r.Runner.ConnectionHealth == "online" || r.Runner.ConnectionHealth == "" && r.Runner.Health == "online") && r.LocalChecks != nil && r.LocalChecks.Passed()
+		result.missingConfiguration = result.missingConfiguration || enrolled && r.LocalChecks != nil && r.LocalChecks.Configuration == "missing"
+		result.matching = result.matching || !slices.ContainsFunc(r.Exclusions, func(e runnerauth.Exclusion) bool { return e.Code != "host_capacity" && e.Code != "runner_capacity" })
+	}
+	return result
+}
+
+func (p *Project) ObserveRunner(runner runnerauth.Eligibility) bool {
+	before := projectRunnerReadiness(p.Runners)
+	after := projectRunnerReadiness([]runnerauth.Eligibility{runner})
+	if after.enrolled && !before.enrolled || after.validated && !before.validated || after.missingConfiguration && !before.missingConfiguration || after.matching && !before.matching {
+		p.Runners = append(p.Runners, runner)
+	}
+	return (before.enrolled || after.enrolled) && (before.validated || after.validated) && (before.matching || after.matching)
 }

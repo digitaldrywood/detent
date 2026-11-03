@@ -27,6 +27,7 @@ func (s *Service) registerPostgresAppRoutes(e *echo.Echo) {
 	if s.config.Hosted != nil {
 		s.registerReadableRoutes(e)
 		s.registerWorkViewRoutes(e)
+		e.GET(hostedOrganizationBase+"/projects", s.listHostedProjects, s.hostedSessionOnly)
 		s.registerOrganizationSettingsRecordRoutes(e)
 		s.registerHostedAccountPreferenceRoutes(e)
 		s.registerHostedMemberAndSecretRoutes(e)
