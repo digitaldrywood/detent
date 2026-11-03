@@ -59,7 +59,7 @@ type duplicateCostConn struct {
 }
 
 func (c *duplicateCostConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	c.searching = strings.Contains(query, "native_work_search_postings") || strings.Contains(query, "native_work_fts") || strings.Contains(query, "native_work_scoped_fts")
+	c.searching = strings.Contains(query, "native_work_fingerprints") || strings.Contains(query, "native_work_search_postings") || strings.Contains(query, "native_work_fts") || strings.Contains(query, "native_work_scoped_fts")
 	return c.timedConn.QueryContext(ctx, query, args)
 }
 
@@ -1022,6 +1022,25 @@ func TestNativeMachineDuplicateCommentCandidate(t *testing.T) {
 	if err != nil || len(search.matches) != 1 || search.matches[0].WorkItemID != owner.WorkItemID {
 		t.Fatalf("search=%+v err=%v", search, err)
 	}
+	for _, mutation := range []string{"edit", "delete"} {
+		t.Run(mutation, func(t *testing.T) {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_comments SET body='internal/example/pool.go:23:4: undefined: capacity' WHERE work_item_id=?", owner.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			statement := "UPDATE native_comments SET body='Different diagnostic' WHERE work_item_id=?"
+			if mutation == "delete" {
+				statement = "DELETE FROM native_comments WHERE work_item_id=?"
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), statement, owner.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			search, err := prepareNativeDuplicates(t.Context(), f.service.database.reader, scope, request, f.service.config.now(), true)
+			if err != nil || len(search.matches) != 0 {
+				t.Fatalf("stale fingerprint search=%+v err=%v", search, err)
+			}
+		})
+	}
+
 }
 
 func TestNativeDuplicatesIncompleteIndex(t *testing.T) {
@@ -1102,6 +1121,45 @@ UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM 
 			decodeHubResponse(t, response, &filed)
 			if filed.WorkItemID == "" || filed.WorkItemID == first.WorkItemID {
 				t.Fatalf("incomplete index reused a duplicate: %s", response.Body.String())
+			}
+		})
+	}
+}
+
+func TestNativeDuplicateFingerprintBounded(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	seedArchiveIssues(t, f.service, scope, 1000, "Todo")
+	body := issueorigin.Stamp("a common diagnostic", issueorigin.Origin{Kind: "worker", Fingerprint: "valid-fingerprint"})
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE project_id=?", body, f.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	var steps int64
+	pool := sql.OpenDB(duplicateCostConnector{timedConnector: timedConnector{driver: f.service.database.reader.Driver(), dsn: sqliteReaderDSN(f.service.database.path, f.service.config.BusyTimeout)}, steps: &steps})
+	pool.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	for _, fingerprint := range []string{"a", "bad fingerprint", "valid-finger", "valid-fingerprint"} {
+		t.Run(fingerprint, func(t *testing.T) {
+			steps = 0
+			request := tracker.CreateIssue{Body: issueorigin.Stamp("a common diagnostic", issueorigin.Origin{Kind: "worker", Fingerprint: fingerprint})}
+			matches, err := resolveNativeDuplicates(t.Context(), pool, scope, request, f.service.config.now(), true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("fingerprint lookup used %d VM steps", steps)
+			if steps > 30000 {
+				t.Errorf("fingerprint lookup used %d VM steps, budget 30000", steps)
+			}
+			want := 0
+			if fingerprint == "valid-fingerprint" {
+				want = 1
+			}
+			if len(matches) != want {
+				t.Errorf("matches=%d want %d", len(matches), want)
 			}
 		})
 	}
