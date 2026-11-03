@@ -46,6 +46,9 @@ func readOnboardingProgress(ctx context.Context, query nativeQueryer, scope nati
 }
 
 func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onboarding.Project, error) {
+	if s.config.TenantRepository != nil {
+		return onboarding.Project{}, workItemStorageUnavailable()
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	result := onboarding.Project{Runners: []runnerauth.Eligibility{}, Artifacts: []artifact.Binding{}}
