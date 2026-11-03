@@ -64,6 +64,10 @@ func (s *Service) getNativeRecoveryTenant(c echo.Context, params url.Values) err
 }
 
 func (s *Service) readNativeRecoveryTenant(ctx context.Context, scope nativeScope, item string) (tracker.NativeRecovery, error) {
+	return s.readNativeRecoveryCommentsTenant(ctx, scope, item, false)
+}
+
+func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope nativeScope, item string, excludeProgress bool) (tracker.NativeRecovery, error) {
 	var result tracker.NativeRecovery
 	var row corestore.WorkItem
 	var version eventstore.CollaborationVersion
@@ -134,6 +138,9 @@ func (s *Service) readNativeRecoveryTenant(ctx context.Context, scope nativeScop
 				return err
 			}
 			for _, comment := range page {
+				if excludeProgress && comment.ActorKind == "machine" && stringValue(comment.ProvenanceProvider) == "progress-check" {
+					continue
+				}
 				keep := comment.ActorKind == "human" || stringValue(comment.EditedByKind) == "human" || !latestMachine
 				if comment.ActorKind != "human" {
 					latestMachine = true

@@ -4,25 +4,30 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubclient/recovery"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -32,6 +37,8 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	cfg := startupConfig(connection)
+	cfg.Postgres.Pool.MaxConnections = 3
+	cfg.Postgres.Pool.ServingConnections = 2
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	cfg.Workspace = &WorkspaceConfig{Enabled: true}
 	provider := cfg.Hosted.Provider
@@ -46,6 +53,9 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedStartupOrganization(t, store.postgres, "org_startup")
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO hosted_usage_counters(organization_id,name,value) VALUES('org_startup','collaboration_bytes',0)`); err != nil {
+		t.Fatalf("seed PostgreSQL collaboration byte counter: %v", err)
+	}
 	const ownerToken = "example_owner_token"
 	ownerHash := apikey.HashToken(ownerToken)
 	const reporterToken = "example_reporter_token"
@@ -68,7 +78,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 			return err
 		}
 		projectID := tracker.ProjectID("project_example")
-		states := append(nativeFixtureStates(), tracker.NativeState{Name: "Triage", Transitions: []string{"Todo"}})
+		states := append(nativeFixtureStates(), tracker.NativeState{Name: "Triage", Transitions: []string{"Todo"}}, tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo"}})
 		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_startup", ID: projectID, Name: "Example project", Slug: "example-project", Profile: "native"}, States: states}); err != nil {
 			return err
 		}
@@ -139,6 +149,16 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	requireNativeStatus(t, createResponse, http.StatusOK)
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, createResponse, &issue)
+	recoveryPath := itemsPath + "/" + url.PathEscape(string(issue.WorkItemID)) + "/source-recovery"
+	recoveryResponse := performHubAPIRequest(t, service, http.MethodGet, recoveryPath, ownerToken, nil)
+	requireNativeStatus(t, recoveryResponse, http.StatusOK)
+	var sourceRecovery tracker.NativeSourceRecovery
+	decodeHubResponse(t, recoveryResponse, &sourceRecovery)
+	if sourceRecovery.WorkItemID != issue.WorkItemID || sourceRecovery.Revision != issue.Revision || sourceRecovery.Destinations == nil {
+		t.Fatalf("PostgreSQL source recovery = %+v", sourceRecovery)
+	}
+	unauthorizedRecovery := performHubAPIRequest(t, service, http.MethodGet, recoveryPath, "example-invalid-token", nil)
+	requireNativeStatus(t, unauthorizedRecovery, http.StatusUnauthorized)
 	commentBody := strings.Repeat("discussion fragment. ", 2600)
 	for index := 0; index < 22; index++ {
 		comment := tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("recovery-fragment-%d", index)}, Body: commentBody}
@@ -159,6 +179,18 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	requireNativeStatus(t, reporterCreateResponse, http.StatusOK)
 	var reporterIssue tracker.NativeIssue
 	decodeHubResponse(t, reporterCreateResponse, &reporterIssue)
+	secondBody := "## Acceptance criteria\nThe second work item remains isolated.\n## Must not break\nDo not expose the first work item.\n## How we know it worked\nSource recovery returns the second ID.\n"
+	secondIssueResponse := performHubAPIRequest(t, service, http.MethodPost, itemsPath, ownerToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "second-issue-create"}, Title: "Example second issue", Body: secondBody, State: "Todo"})
+	requireNativeStatus(t, secondIssueResponse, http.StatusOK)
+	var secondIssue tracker.NativeIssue
+	decodeHubResponse(t, secondIssueResponse, &secondIssue)
+	secondRecoveryResponse := performHubAPIRequest(t, service, http.MethodGet, itemsPath+"/"+url.PathEscape(string(secondIssue.WorkItemID))+"/source-recovery", ownerToken, nil)
+	requireNativeStatus(t, secondRecoveryResponse, http.StatusOK)
+	var secondRecovery tracker.NativeSourceRecovery
+	decodeHubResponse(t, secondRecoveryResponse, &secondRecovery)
+	if secondRecovery.WorkItemID != secondIssue.WorkItemID || secondRecovery.WorkItemID == sourceRecovery.WorkItemID {
+		t.Fatalf("PostgreSQL source recovery crossed work items: first=%+v second=%+v", sourceRecovery, secondRecovery)
+	}
 	workspacePath := "/api/v2/organizations/org_startup/projects/" + url.PathEscape(string(project.ID)) + "/workspaces"
 	workspaceResponse := performHubAPIRequest(t, service, http.MethodPost, workspacePath, ownerToken, map[string]any{})
 	requireNativeStatus(t, workspaceResponse, http.StatusServiceUnavailable)
@@ -179,7 +211,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_startup", TokenID: "credential_runner", ProjectID: project.ID}); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: "org_startup", ID: "enrollment_runner", RunnerID: "runner_example", MachineID: "machine_example", TokenHash: apikey.HashToken("example_enrollment_secret"), Scope: "projects", ProjectIDs: []tracker.ProjectID{project.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "credential_owner"}); err != nil {
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: "org_startup", ID: "enrollment_runner", RunnerID: "runner_example", MachineID: "machine_example", TokenHash: apikey.HashToken("example_enrollment_secret"), Scope: "projects", ProjectIDs: []tracker.ProjectID{project.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "credential_owner"}); err != nil {
 			return err
 		}
 		if err := w.RedeemRunnerEnrollment(t.Context(), "enrollment_runner", "runner_example", "machine_example", now); err != nil {
@@ -188,7 +220,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: "org_startup", ID: "machine_example", Hostname: "example-host", Capacity: 1, Version: "example"}); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: "org_startup", RunnerID: "runner_example", MachineID: "machine_example", TokenID: "credential_runner", EnrollmentID: "enrollment_runner", Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
+		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: "org_startup", RunnerID: "runner_example", MachineID: "machine_example", TokenID: "credential_runner", EnrollmentID: "enrollment_runner", Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
 			return err
 		}
 		if err := w.UpdateRunnerCapacityConfig(t.Context(), "runner_example", runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: now}); err != nil {
@@ -346,7 +378,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 		t.Fatalf("PostgreSQL released lease = %+v", releasedLease)
 	}
 
-	seedAttempt := func(session string, checkpoint *tracker.NativeCheckpoint) tracker.NativeRunData {
+	seedAttempt := func(session string, checkpoint *tracker.NativeCheckpoint, retainLease ...bool) tracker.NativeRunData {
 		t.Helper()
 		request := claim
 		request.SessionID = session
@@ -373,14 +405,213 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 		data.Outcome = "failed"
 		finished := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "finish_" + attemptID}, Type: "run.finished", SchemaVersion: 1, Data: data}
 		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, finished), http.StatusOK)
-		leasePath := "/api/v2/organizations/org_startup/projects/" + url.PathEscape(string(project.ID)) + "/leases/" + url.PathEscape(string(attemptLease.ID))
-		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, leasePath+"/release", workerToken, tracker.NativeLeaseMutation{FencingToken: attemptLease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+		if len(retainLease) == 0 || !retainLease[0] {
+			leasePath := "/api/v2/organizations/org_startup/projects/" + url.PathEscape(string(project.ID)) + "/leases/" + url.PathEscape(string(attemptLease.ID))
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, leasePath+"/release", workerToken, tracker.NativeLeaseMutation{FencingToken: attemptLease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+		}
 		return data
 	}
 	oldUnrelated := seedAttempt("session_old_unrelated", nil)
 	sourceAttempt := seedAttempt("session_source", &tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "dirty", ExternalEffect: "none", EffectState: "none"})
 	cleanCheckpoint := seedAttempt("session_clean_checkpoint", &tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "clean", ExternalEffect: "none", EffectState: "none"})
-	landingAttempt := seedAttempt("session_landing", nil)
+	landingAttempt := seedAttempt("session_landing", nil, true)
+	progressPath := itemsPath + "/" + url.PathEscape(string(issue.WorkItemID)) + "/progress?policy=" + url.QueryEscape(policy.ID) + "&instance=machine_example"
+	progressResponse := performHubAPIRequest(t, service, http.MethodGet, progressPath, ownerToken, nil)
+	requireNativeStatus(t, progressResponse, http.StatusOK)
+	var progress nativeProgressView
+	decodeHubResponse(t, progressResponse, &progress)
+	if !progress.Request.NeedsCheck() || len(progress.Request.Attempts) == 0 || progress.Request.InstanceVersion != "example" || progress.Record != nil {
+		t.Fatalf("PostgreSQL native progress request has check=%t attempts=%d version=%q record=%t", progress.Request.NeedsCheck(), len(progress.Request.Attempts), progress.Request.InstanceVersion, progress.Record != nil)
+	}
+	progressRequestID, err := progress.Request.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentWorkItem, _, err := service.readWorkItemRecord(t.Context(), nativeScope{organization: "org_startup", project: project.ID, credential: ownerCredential}, string(issue.WorkItemID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	progressPost := progresscheck.Publication{
+		Mutation:         tracker.Mutation{IdempotencyKey: "progress_publication_example", LeaseID: landingAttempt.LeaseID, FencingToken: landingAttempt.FencingToken},
+		ExpectedRevision: tracker.Revision(currentWorkItem.Revision), RequestID: progressRequestID,
+		PolicyID: policy.ID, Instance: "machine_example",
+		Decision: progresscheck.Decision{Outcome: progresscheck.Reroute, Step: progress.Request.AvailableSteps[0], Reason: "The failure evidence identifies unfinished implementation work", Diagnosis: progress.Request.Attempts[0].ID + " shows the attempt ended before the required result was produced", Instruction: "Complete the named step and retain its verification receipt", Convergence: "The next attempt can confirm the required result", Evidence: []string{progress.Request.Attempts[0].ID}},
+	}
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: "org_startup", ID: "machine_other", Hostname: "other-host", Capacity: 1, Version: "other"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name     string
+		policy   string
+		instance string
+	}{
+		{name: "reject policy outside lease", policy: "policy_other", instance: "machine_example"},
+		{name: "reject instance outside lease", policy: policy.ID, instance: "machine_other"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := itemsPath + "/" + string(issue.WorkItemID) + "/progress"
+			response := performHubAPIRequest(t, service, http.MethodGet, path+"?"+url.Values{"policy": {test.policy}, "instance": {test.instance}}.Encode(), workerToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var view nativeProgressView
+			decodeHubResponse(t, response, &view)
+			input := progressPost
+			input.PolicyID, input.Instance = test.policy, test.instance
+			input.RequestID, err = view.Request.ID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, input), http.StatusConflict)
+			row, _, err := service.readWorkItemRecord(t.Context(), nativeScope{organization: "org_startup", project: project.ID, credential: ownerCredential}, string(issue.WorkItemID))
+			if err != nil || row.EventSequence != currentWorkItem.EventSequence {
+				t.Fatalf("rejected execution binding changed issue evidence: sequence=%d want=%d error=%v", row.EventSequence, currentWorkItem.EventSequence, err)
+			}
+		})
+	}
+	progressPostResponse := performHubAPIRequest(t, service, http.MethodPost, itemsPath+"/"+url.PathEscape(string(issue.WorkItemID))+"/progress", workerToken, progressPost)
+	requireNativeStatus(t, progressPostResponse, http.StatusOK)
+	var publishedProgress progresscheck.Record
+	decodeHubResponse(t, progressPostResponse, &publishedProgress)
+	if publishedProgress.RequestID != progressRequestID || publishedProgress.CommentID == "" {
+		t.Fatalf("PostgreSQL published progress record = %+v", publishedProgress)
+	}
+	progressReadResponse := performHubAPIRequest(t, service, http.MethodGet, progressPath, ownerToken, nil)
+	requireNativeStatus(t, progressReadResponse, http.StatusOK)
+	decodeHubResponse(t, progressReadResponse, &progress)
+	if progress.Record == nil || progress.Record.RequestID != progressRequestID {
+		t.Fatalf("PostgreSQL progress receipt was not retained for its request: %+v", progress)
+	}
+	workerCredential, status, err = service.authenticateAccessHash(t.Context(), workerHash, "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("authenticate progress worker: status=%d error=%v", status, err)
+	}
+	progressOwner := nativeProgressOwner{service: service, scope: nativeScope{organization: "org_startup", project: project.ID, credential: workerCredential}, request: progress.Request, leaseID: landingAttempt.LeaseID, fencingToken: landingAttempt.FencingToken, expectedRevision: progressPost.ExpectedRevision}
+	for _, test := range []struct {
+		name    string
+		mutate  string
+		restore string
+		owner   bool
+	}{
+		{name: "receipt rejects revoked credential", mutate: `UPDATE api_tokens SET revoked_at=now() WHERE organization_id='org_startup' AND id='credential_runner'`, restore: `UPDATE api_tokens SET revoked_at=NULL WHERE organization_id='org_startup' AND id='credential_runner'`},
+		{name: "receipt rejects revoked project grant", mutate: `DELETE FROM token_grants WHERE organization_id='org_startup' AND token_id='credential_runner' AND project_id='project_example'`, restore: `INSERT INTO token_grants(organization_id,token_id,project_id) VALUES('org_startup','credential_runner','project_example')`},
+		{name: "receipt rejects disabled runner", mutate: `UPDATE runner_identities SET state='disabled' WHERE organization_id='org_startup' AND runner_id='runner_example'`, restore: `UPDATE runner_identities SET state='active' WHERE organization_id='org_startup' AND runner_id='runner_example'`},
+		{name: "receipt rejects revoked membership", mutate: `UPDATE hosted_members SET active=false WHERE organization_id='org_startup' AND user_id='user_owner'`, restore: `UPDATE hosted_members SET active=true WHERE organization_id='org_startup' AND user_id='user_owner'`, owner: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := admin.ExecContext(t.Context(), test.mutate); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+				defer cancel()
+				if _, err := admin.ExecContext(ctx, test.restore); err != nil {
+					t.Error(err)
+				}
+			})
+			owner := progressOwner
+			if test.owner {
+				owner.scope.credential = ownerCredential
+			}
+			if _, found, err := owner.Load(t.Context(), string(project.ID), string(issue.WorkItemID), progressRequestID); err == nil || found {
+				t.Fatalf("revoked authority replayed progress receipt: found=%t error=%v", found, err)
+			}
+		})
+	}
+	t.Run("receipt cannot mask denied publication", func(t *testing.T) {
+		original := service.config.TenantRepository
+		service.config.TenantRepository = &postgresProgressReceiptRepository{Repository: original, hideReceipt: true}
+		defer func() { service.config.TenantRepository = original }()
+		candidate := publishedProgress
+		candidate.CommentID = ""
+		if _, err := progressOwner.Publish(t.Context(), candidate); !errors.Is(err, accessstore.ErrDenied) {
+			t.Fatalf("denied publication replayed another publisher's receipt: %v", err)
+		}
+	})
+	t.Run("publication preserves previous machine evidence", func(t *testing.T) {
+		path := itemsPath + "/" + string(issue.WorkItemID)
+		response := performHubAPIRequest(t, service, http.MethodPost, path+"/comments", workerToken, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "machine-evidence", LeaseID: landingAttempt.LeaseID, FencingToken: landingAttempt.FencingToken}, Body: "The machine diagnosis identifies the missing implementation result"})
+		requireNativeStatus(t, response, http.StatusOK)
+		var evidence tracker.NativeComment
+		decodeHubResponse(t, response, &evidence)
+		if evidence.Actor.Kind != "runner" {
+			t.Fatalf("fixture comment actor=%q", evidence.Actor.Kind)
+		}
+		read := performHubAPIRequest(t, service, http.MethodGet, progressPath, workerToken, nil)
+		requireNativeStatus(t, read, http.StatusOK)
+		var view nativeProgressView
+		decodeHubResponse(t, read, &view)
+		if !slices.ContainsFunc(view.Request.Comments, func(comment progresscheck.Comment) bool { return comment.ID == evidence.ID }) {
+			t.Fatal("request omitted the machine evidence before publication")
+		}
+		input := progressPost
+		input.RequestID, err = view.Request.ID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/progress", workerToken, input), http.StatusOK)
+		}
+		read = performHubAPIRequest(t, service, http.MethodGet, progressPath, workerToken, nil)
+		requireNativeStatus(t, read, http.StatusOK)
+		decodeHubResponse(t, read, &view)
+		id, err := view.Request.ID()
+		if err != nil || id != input.RequestID || view.Record == nil || !slices.ContainsFunc(view.Request.Comments, func(comment progresscheck.Comment) bool { return comment.ID == evidence.ID }) {
+			t.Fatalf("publication displaced machine evidence: request=%s expected=%s record=%t error=%v", id, input.RequestID, view.Record != nil, err)
+		}
+	})
+	t.Run("system defect uses originating fenced issue", func(t *testing.T) {
+		path := itemsPath + "/" + string(issue.WorkItemID)
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/comments", ownerToken, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "defect-evidence"}, Body: "The protocol failure persists and requires a system defect"}), http.StatusOK)
+		response := performHubAPIRequest(t, service, http.MethodGet, progressPath, workerToken, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var view nativeProgressView
+		decodeHubResponse(t, response, &view)
+		input := progressPost
+		input.RequestID, err = view.Request.ID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		input.Decision = progresscheck.Decision{Outcome: progresscheck.SystemDefect, Reason: "The retained failure identifies a protocol defect", Diagnosis: view.Request.Attempts[0].ID + " identifies the protocol refusal that prevents the required result", Convergence: "Repairing the protocol permits the required result", Evidence: []string{view.Request.Attempts[0].ID}, DefectKey: "example-protocol-refusal", DefectTitle: "Repair example protocol refusal", DefectBody: issueContractTestSections}
+		var retained progresscheck.Record
+		for range 2 {
+			response = performHubAPIRequest(t, service, http.MethodPost, path+"/progress", workerToken, input)
+			requireNativeStatus(t, response, http.StatusOK)
+			var record progresscheck.Record
+			decodeHubResponse(t, response, &record)
+			if record.DefectIssueID == "" || record.CommentID == "" || retained.DefectIssueID != "" && (record.DefectIssueID != retained.DefectIssueID || record.CommentID != retained.CommentID) {
+				t.Fatalf("system defect publication was not retained: %+v", record)
+			}
+			retained = record
+		}
+		response = performHubAPIRequest(t, service, http.MethodGet, itemsPath+"/"+retained.DefectIssueID, ownerToken, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var defect tracker.NativeIssue
+		decodeHubResponse(t, response, &defect)
+		if defect.State != "Backlog" || defect.WorkItemID == issue.WorkItemID {
+			t.Fatalf("system defect issue=%+v", defect)
+		}
+		response = performHubAPIRequest(t, service, http.MethodGet, progressPath, workerToken, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		decodeHubResponse(t, response, &view)
+		if view.Record == nil || view.Record.DefectIssueID != retained.DefectIssueID {
+			t.Fatal("GET lost the system defect decision")
+		}
+		if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+			page, err := r.Relationships(t.Context(), project.ID, issue.WorkItemID, corestore.RelationshipCursor{}, corestore.MaxPageSize)
+			if err != nil {
+				return err
+			}
+			if !slices.ContainsFunc(page.Items, func(edge corestore.Relationship) bool {
+				return string(edge.RelatedWorkItemID) == retained.DefectIssueID && edge.Type == "dependency" && edge.Direction == "blocked_by"
+			}) {
+				return errors.New("originating issue lost its system defect dependency")
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
 
 	content := eventstore.NewContent(service.config.RunDetails)
 	changeValue := tracker.ChangeRequest{ID: "change_recovery", OrganizationID: "org_startup", ProjectID: project.ID, WorkItemID: issue.WorkItemID, Title: "Example change", Revision: 1, CreatedAt: now, UpdatedAt: now}
@@ -450,6 +681,368 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	if selectedAttempts[sourceAttempt.AttemptID].Checkpoint == nil || !selectedAttempts[sourceAttempt.AttemptID].Checkpoint.PreservesSource() || selectedAttempts[cleanCheckpoint.AttemptID].Checkpoint == nil || selectedAttempts[cleanCheckpoint.AttemptID].Checkpoint.PreservesSource() || selectedAttempts[landingAttempt.AttemptID].Runtime == nil || selectedAttempts[landingAttempt.AttemptID].Runtime.Landing == nil || selectedAttempts[landingAttempt.AttemptID].Runtime.Landing.MergeSHA != landing.MergeSHA {
 		t.Fatalf("PostgreSQL recovery lost checkpoint or independent landing receipt: %+v", selectedAttempts)
 	}
+	t.Run("linked issue cannot recover another owner's source", func(t *testing.T) {
+		input := changeTestInput()
+		input.PolicyID = policy.ID
+		bundle := changeTestSource(t, &input)
+		value := tracker.ChangeVersion{ID: "version_source_owner", ChangeID: "change_source_owner", Number: 1, ChangeVersionInput: input, Policy: policy, Actor: tracker.Actor{Kind: "human", PrincipalID: "user_owner"}, CreatedAt: now}
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		version, err := content.PrepareVersion(t.Context(), "org_startup", raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref, err := content.PrepareSourceBundle(t.Context(), "org_startup", bundle)
+		if err != nil {
+			t.Fatal(err)
+		}
+		version.SourceObjectKey, version.SourceSHA256, version.SourceBytes, version.SourceContentBytes = ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize
+		changeValue := tracker.ChangeRequest{ID: value.ChangeID, OrganizationID: "org_startup", ProjectID: project.ID, WorkItemID: issue.WorkItemID, LinkedIssues: []tracker.NativeWorkItemID{issue.WorkItemID, secondIssue.WorkItemID}, Title: "Owned source", Revision: 1, CreatedAt: now, UpdatedAt: now}
+		raw, err = json.Marshal(changeValue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		change, err := content.PrepareChange(t.Context(), "org_startup", raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+			change, err = w.CreateChange(t.Context(), change)
+			if err != nil {
+				return err
+			}
+			if _, err := w.CreateVersion(t.Context(), version); err != nil {
+				return err
+			}
+			change.CurrentVersionID = &value.ID
+			if _, err := w.UpdateChange(t.Context(), change); err != nil {
+				return err
+			}
+			for _, id := range changeValue.LinkedIssues {
+				if err := w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: "org_startup", ProjectID: project.ID, WorkItemID: id, ChangeID: value.ChangeID}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		owned := performHubAPIRequest(t, service, http.MethodGet, itemsPath+"/"+string(issue.WorkItemID)+"/source-recovery", ownerToken, nil)
+		requireNativeStatus(t, owned, http.StatusOK)
+		var view sourceRecoveryView
+		decodeHubResponse(t, owned, &view)
+		if !view.Available || view.VersionID != value.ID {
+			t.Fatalf("owned verified source unavailable: %+v", view)
+		}
+		foreign := performHubAPIRequest(t, service, http.MethodGet, itemsPath+"/"+string(secondIssue.WorkItemID)+"/source-recovery", ownerToken, nil)
+		requireNativeStatus(t, foreign, http.StatusNotFound)
+	})
+	t.Run("release before validation cannot commit progress", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		var workers sync.WaitGroup
+		defer func() { cancel(); workers.Wait() }()
+		held, identityReached := make(chan struct{}), make(chan struct{})
+		released, validated := make(chan error, 1), make(chan error, 1)
+		marker, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: "org_startup", ActorID: "progress-release-race", Operation: "progress", CommandKey: "release-race", RequestHash: strings.Repeat("a", 64), CreatedAt: now}, []byte(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		workers.Go(func() {
+			released <- service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+				if _, err := w.RunnerForLease(ctx, string(landingAttempt.LeaseID)); err != nil {
+					return err
+				}
+				close(held)
+				select {
+				case <-identityReached:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				_, err := w.Release(ctx, leasestore.Fence{LeaseID: string(landingAttempt.LeaseID), FencingToken: int64(landingAttempt.FencingToken)}, "completed")
+				return err
+			})
+		})
+		select {
+		case <-held:
+		case err := <-released:
+			t.Fatalf("hold release identity: %v", err)
+		}
+		workers.Go(func() {
+			validated <- service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+				writer := &postgresProgressIdentityWriter{Writer: w, reached: identityReached}
+				if err := progressOwner.validateProgressLeaseWriter(ctx, writer); err != nil {
+					return err
+				}
+				_, err := w.PutReceipt(ctx, marker)
+				return err
+			})
+		})
+		validationErr := <-validated
+		if !errors.Is(validationErr, tracker.ErrStaleFencingToken) {
+			t.Fatalf("released authority committed progress: %v", validationErr)
+		}
+		if err := <-released; err != nil {
+			t.Fatalf("release lease: %v", err)
+		}
+		if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+			_, err := r.Receipt(t.Context(), marker.ActorID, marker.Operation, marker.CommandKey)
+			if !errors.Is(err, corestore.ErrNotFound) {
+				return fmt.Errorf("released progress receipt retained: %v", err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("source destinations use bounded project pages", func(t *testing.T) {
+		var base runnerstore.Identity
+		if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			base, err = r.RunnerIdentity(t.Context(), "runner_example")
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		otherProject := tracker.ProjectID("project_recovery_other")
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_startup", ID: otherProject, Name: "Other recovery project", Slug: "other-recovery", Profile: "native"}, States: nativeFixtureStates()})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for index := range runnerstore.SourceRecoveryPageLimit + 2 {
+			id := fmt.Sprintf("runner_recovery_%02d", index)
+			assignedProject := project.ID
+			if index == runnerstore.SourceRecoveryPageLimit+1 {
+				assignedProject = otherProject
+			}
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+				identity := base
+				identity.RunnerID, identity.TokenID, identity.EnrollmentID = id, id+"_token", id+"_enrollment"
+				identity.MachineID = tracker.MachineID(id + "_machine")
+				identity.OS, identity.IsolationTier = "linux", isolation.NativeTrusted
+				identity.ProjectIDs = []tracker.ProjectID{assignedProject}
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_startup", ID: identity.TokenID, Name: "Recovery " + id, Hash: apikey.HashToken(identity.TokenID), Fingerprint: tokenFingerprint(apikey.HashToken(identity.TokenID)), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_startup", TokenID: identity.TokenID, ProjectID: assignedProject}); err != nil {
+					return err
+				}
+				if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: "org_startup", ID: identity.EnrollmentID, RunnerID: id, MachineID: identity.MachineID, TokenHash: apikey.HashToken(identity.EnrollmentID), Scope: "projects", ProjectIDs: identity.ProjectIDs, Operations: identity.Operations, CreatedAt: now, ExpiresAt: expires, CreatedBy: "credential_owner"}); err != nil {
+					return err
+				}
+				if err := w.RedeemRunnerEnrollment(t.Context(), identity.EnrollmentID, id, identity.MachineID, now); err != nil {
+					return err
+				}
+				if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: "org_startup", ID: string(identity.MachineID), Hostname: id, Capacity: 1, Version: "example"}); err != nil {
+					return err
+				}
+				if err := w.CreateRunnerIdentity(t.Context(), identity); err != nil {
+					return err
+				}
+				if err := w.UpdateRunnerCapacityConfig(t.Context(), id, *base.CapacityConfig); err != nil {
+					return err
+				}
+				if err := w.ReplaceRunnerBackendIsolation(t.Context(), id, isolation.Report{"example-backend": {isolation.NativeTrusted}}); err != nil {
+					return err
+				}
+				report := capacity
+				report.SharedAccountAlias = ""
+				return w.ReplaceRunnerProviderReports(t.Context(), id, []providercapacity.Report{report})
+			}); err != nil {
+				t.Fatalf("seed recovery runner %s: %v", id, err)
+			}
+		}
+		original := service.config.TenantRepository
+		pageCalls := 0
+		service.config.TenantRepository = postgresSourceRecoveryRepository{Repository: original, pageCalls: &pageCalls}
+		defer func() { service.config.TenantRepository = original }()
+		seen := map[string]bool{}
+		after := ""
+		for range 3 {
+			path := itemsPath + "/" + string(issue.WorkItemID) + "/source-recovery?destinations_after=" + url.QueryEscape(after)
+			response := performHubAPIRequest(t, service, http.MethodGet, path, ownerToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var view sourceRecoveryView
+			decodeHubResponse(t, response, &view)
+			if len(view.Destinations) > runnerstore.SourceRecoveryPageLimit {
+				t.Fatalf("destination page exceeded bound: %d", len(view.Destinations))
+			}
+			for _, destination := range view.Destinations {
+				if seen[destination.ID] || destination.ID == fmt.Sprintf("runner_recovery_%02d", runnerstore.SourceRecoveryPageLimit+1) {
+					t.Fatalf("duplicate or unauthorized destination: %s", destination.ID)
+				}
+				seen[destination.ID] = true
+			}
+			if view.DestinationsNext == "" {
+				break
+			}
+			if view.DestinationsNext <= after {
+				t.Fatal("destination cursor did not advance")
+			}
+			after = view.DestinationsNext
+		}
+		if len(seen) != runnerstore.SourceRecoveryPageLimit+1 || pageCalls != 2 {
+			t.Fatalf("project destination pagination: runners=%d pages=%d", len(seen), pageCalls)
+		}
+		secondary, _, err := service.readWorkItemRecord(t.Context(), nativeScope{organization: "org_startup", project: project.ID, credential: ownerCredential}, string(secondIssue.WorkItemID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var hostTimeBeforeRenewal time.Time
+		if err := original.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+			lease, err := w.Claim(t.Context(), leasestore.Claim{IssueID: secondary.ID, ExpectedRevision: secondary.Revision, MachineID: "runner_recovery_00_machine", SessionID: "session_recovery_capacity", LeaseID: "lease_recovery_capacity", TTL: time.Minute})
+			if err != nil {
+				return err
+			}
+			hostTimeBeforeRenewal = lease.RenewedAt.Add(-time.Millisecond)
+			if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: "org_startup", RunnerID: "runner_recovery_00", LeaseID: lease.LeaseID, AssignedAt: now}); err != nil {
+				return err
+			}
+			report := capacity
+			report.SharedAccountAlias = ""
+			return w.CreateProviderReservation(t.Context(), claimstore.ProviderReservation{OrganizationID: "org_startup", LeaseID: tracker.LeaseID(lease.LeaseID), Reservation: providercapacity.Reservation{Requirement: providercapacity.Requirement{Role: "implement", Backend: "example-backend", Model: "example-model"}, Report: report, Reason: "Retained capacity fixture"}})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := original.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+			page, err := r.(runnerstore.SourceRecoveryReader).ProjectSourceRecoveryPage(t.Context(), project.ID, "runner_recovery_", 1, hostTimeBeforeRenewal)
+			if err != nil {
+				return err
+			}
+			if len(page.Items) != 1 {
+				return errors.New("missing occupied recovery candidate")
+			}
+			candidate := page.Items[0]
+			if candidate.Record.Identity.RunnerID != "runner_recovery_00" || candidate.RunnerUsed != 1 || candidate.ProjectUsed != 1 || candidate.HostUsed != 1 || len(candidate.Providers) != 1 || candidate.Providers[0].Used != 1 || candidate.Providers[0].Available() {
+				return fmt.Errorf("scoped recovery capacity lost active reservations: runner=%s runnerUsed=%d projectUsed=%d hostUsed=%d providers=%+v", candidate.Record.Identity.RunnerID, candidate.RunnerUsed, candidate.ProjectUsed, candidate.HostUsed, candidate.Providers)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+type postgresSourceRecoveryRepository struct {
+	tenantstore.Repository
+	pageCalls *int
+}
+
+func (r postgresSourceRecoveryRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
+		return read(postgresSourceRecoveryReader{Reader: reader, pageCalls: r.pageCalls})
+	})
+}
+
+type postgresSourceRecoveryReader struct {
+	tenantstore.Reader
+	pageCalls *int
+}
+
+func (r postgresSourceRecoveryReader) ProjectSourceRecoveryPage(ctx context.Context, project tracker.ProjectID, after string, limit int, now time.Time) (runnerstore.SourceRecoveryPage, error) {
+	*r.pageCalls++
+	if project != "project_example" || limit > runnerstore.SourceRecoveryPageLimit {
+		return runnerstore.SourceRecoveryPage{}, errors.New("unbounded or unscoped recovery query")
+	}
+	return r.Reader.(runnerstore.SourceRecoveryReader).ProjectSourceRecoveryPage(ctx, project, after, limit, now)
+}
+
+func (r postgresSourceRecoveryReader) FleetRecords(context.Context, int) ([]runnerstore.FleetRecord, error) {
+	return nil, errors.New("source recovery must not scan the fleet")
+}
+
+func (r postgresSourceRecoveryReader) FleetLeases(context.Context, time.Time, int) ([]runnerstore.FleetLease, error) {
+	return nil, errors.New("source recovery must not scan fleet leases")
+}
+
+func (r postgresSourceRecoveryReader) FleetNames(context.Context, int) ([]runnerstore.FleetName, error) {
+	return nil, errors.New("source recovery must not scan fleet names")
+}
+
+func (r postgresSourceRecoveryReader) FleetProjectCount(context.Context, int) (int, error) {
+	return 0, errors.New("source recovery must not count fleet projects")
+}
+
+func (r postgresSourceRecoveryReader) CheckpointAttemptPage(ctx context.Context, issue int64, cursor leasestore.AttemptCursor, limit int) (leasestore.AttemptPage, error) {
+	return r.Reader.(leasestore.CheckpointAttemptReader).CheckpointAttemptPage(ctx, issue, cursor, limit)
+}
+
+type postgresProgressIdentityWriter struct {
+	tenantstore.Writer
+	reached chan struct{}
+	once    sync.Once
+}
+
+func (w *postgresProgressIdentityWriter) RunnerIdentityByCredential(ctx context.Context, id string) (runnerstore.Identity, error) {
+	w.once.Do(func() { close(w.reached) })
+	return w.Writer.RunnerIdentityByCredential(ctx, id)
+}
+
+func (w *postgresProgressIdentityWriter) RunnerForLease(ctx context.Context, id string) (runnerstore.Identity, error) {
+	w.once.Do(func() { close(w.reached) })
+	return w.Writer.RunnerForLease(ctx, id)
+}
+
+func (w *postgresProgressIdentityWriter) LockLease(ctx context.Context, id string) (leasestore.Lease, error) {
+	return w.Writer.(leasestore.FencedLeaseLocker).LockLease(ctx, id)
+}
+
+type postgresProgressReceiptRepository struct {
+	tenantstore.Repository
+	mu          sync.Mutex
+	hideReceipt bool
+}
+
+func (r *postgresProgressReceiptRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
+		return read(postgresProgressReceiptReader{Reader: reader, repository: r})
+	})
+}
+
+func (r *postgresProgressReceiptRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	return r.Repository.WriteTenant(ctx, organization, workload, func(writer tenantstore.Writer) error {
+		return write(postgresProgressDeniedWriter{Writer: writer})
+	})
+}
+
+type postgresProgressReceiptReader struct {
+	tenantstore.Reader
+	repository *postgresProgressReceiptRepository
+}
+
+func (r postgresProgressReceiptReader) Receipt(ctx context.Context, actor, operation, key string) (eventstore.Receipt, error) {
+	if actor == nativeProgressReceiptActor {
+		r.repository.mu.Lock()
+		hide := r.repository.hideReceipt
+		r.repository.hideReceipt = false
+		r.repository.mu.Unlock()
+		if hide {
+			return eventstore.Receipt{}, corestore.ErrNotFound
+		}
+	}
+	return r.Reader.Receipt(ctx, actor, operation, key)
+}
+
+func (r postgresProgressReceiptReader) CheckpointAttemptPage(ctx context.Context, issue int64, cursor leasestore.AttemptCursor, limit int) (leasestore.AttemptPage, error) {
+	return r.Reader.(leasestore.CheckpointAttemptReader).CheckpointAttemptPage(ctx, issue, cursor, limit)
+}
+
+type postgresProgressDeniedWriter struct {
+	tenantstore.Writer
+}
+
+func (w postgresProgressDeniedWriter) LockLease(ctx context.Context, id string) (leasestore.Lease, error) {
+	return w.Writer.(leasestore.FencedLeaseLocker).LockLease(ctx, id)
+}
+
+func (w postgresProgressDeniedWriter) PutReceipt(ctx context.Context, receipt eventstore.Receipt) (eventstore.Receipt, error) {
+	if receipt.ActorID == nativeProgressReceiptActor {
+		return eventstore.Receipt{}, accessstore.ErrDenied
+	}
+	return w.Writer.PutReceipt(ctx, receipt)
 }
 
 type postgresRouteRecoveryReader struct {

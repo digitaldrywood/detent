@@ -606,6 +606,23 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     throw errorFromBody(response.status, parsed);
   }
 
+  async function sourceRecoveryPages(projectId: string, itemId: string, first: SourceRecovery): Promise<SourceRecovery> {
+    const destinations = [...first.destinations];
+    const seen = new Set<string>();
+    let cursor = first.destinations_next;
+    while (cursor !== undefined && cursor !== "") {
+      if (seen.has(cursor)) throw new WorkApiError({ status: 502, code: "invalid_response", message: "Source recovery destination cursor did not advance" });
+      seen.add(cursor);
+      const page = await send(SourceRecovery, "GET", url(`${itemBase(projectId, itemId)}/source-recovery`, { destinations_after: cursor }));
+      if (page.work_item_id !== first.work_item_id || page.revision !== first.revision || page.version_id !== first.version_id || page.head_sha !== first.head_sha || page.destination_runner_id !== first.destination_runner_id) {
+        throw new WorkApiError({ status: 409, code: "revision_conflict", message: "Source recovery changed while reading destinations" });
+      }
+      destinations.push(...page.destinations);
+      cursor = page.destinations_next;
+    }
+    return { ...first, destinations, destinations_next: "" };
+  }
+
   return {
     origin: options.origin,
     apiBase: options.apiBase,
@@ -715,13 +732,13 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
       send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit, cursor, direction, view }), undefined, signal),
     getExplanation: (projectId, itemId) =>
       send(IssueExplanation, "GET", url(`${itemBase(projectId, itemId)}/explanation`)),
-    getSourceRecovery: (projectId, itemId) =>
-      send(SourceRecovery, "GET", url(`${itemBase(projectId, itemId)}/source-recovery`)),
-    transferSource: (input) =>
-      send(SourceRecovery, "POST", url(`${itemBase(input.projectId, input.itemId)}/source-recovery`), {
+    getSourceRecovery: async (projectId, itemId) =>
+      sourceRecoveryPages(projectId, itemId, await send(SourceRecovery, "GET", url(`${itemBase(projectId, itemId)}/source-recovery`))),
+    transferSource: async (input) =>
+      sourceRecoveryPages(input.projectId, input.itemId, await send(SourceRecovery, "POST", url(`${itemBase(input.projectId, input.itemId)}/source-recovery`), {
         idempotency_key: input.key, expected_revision: input.expectedRevision,
         version_id: input.versionId, destination_runner_id: input.destinationRunnerId,
-      }),
+      })),
     getWorkItemDiff: (projectId, itemId) =>
       send(WorkItemDiff, "GET", url(`${itemBase(projectId, itemId)}/diff`)),
     listHistory: (input) =>

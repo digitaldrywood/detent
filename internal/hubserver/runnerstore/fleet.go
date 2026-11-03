@@ -50,6 +50,25 @@ type FleetReader interface {
 	FleetLeases(context.Context, time.Time, int) ([]FleetLease, error)
 }
 
+const SourceRecoveryPageLimit = 32
+
+type SourceRecoveryCandidate struct {
+	Record      FleetRecord
+	RunnerUsed  int
+	ProjectUsed int
+	HostUsed    int
+	Providers   []providercapacity.View
+}
+
+type SourceRecoveryPage struct {
+	Items []SourceRecoveryCandidate
+	Next  string
+}
+
+type SourceRecoveryReader interface {
+	ProjectSourceRecoveryPage(context.Context, tracker.ProjectID, string, int, time.Time) (SourceRecoveryPage, error)
+}
+
 type OnboardingReader interface {
 	FleetReader
 	ProjectRunnerChecks(context.Context, tracker.ProjectID, int) (map[string]runnerauth.LocalChecks, error)

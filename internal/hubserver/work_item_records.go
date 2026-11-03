@@ -299,7 +299,7 @@ func validateWorkItemRecordCreateInput(ctx context.Context, scope nativeScope, p
 		}
 		request.GitHubIssueURL = canonical
 	}
-	if _, machine := issueorigin.Parse(request.Body); machine && scope.credential.HostedRole != "reporter" {
+	if _, machine := issueorigin.Parse(request.Body); machine && scope.credential.HostedRole != "reporter" && !nativeProgressActor(scope) {
 		return workItemStorageUnavailable()
 	}
 	if err := validateNativeIssueType(request.Type, scope.credential.HostedRole == "reporter"); err != nil {
@@ -343,7 +343,7 @@ func validateWorkItemRecordCreateInput(ctx context.Context, scope nativeScope, p
 		}
 		return nil
 	}
-	return validateNativeIssueState(scope, tracker.NativeProject{Profile: project.Core.Profile, States: project.States}, state, false)
+	return validateNativeIssueState(scope, tracker.NativeProject{Profile: project.Core.Profile, States: project.States}, state, nativeProgressActor(scope))
 }
 
 func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, plan workItemRecordPlan, input any) (workItemRecordPlan, error) {
@@ -686,7 +686,9 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	if scope.credential.Scope == apiScopeWorker {
-		if _, ok := input.(tracker.CreateComment); !ok || link != nil {
+		_, comment := input.(tracker.CreateComment)
+		_, defect := input.(tracker.CreateIssue)
+		if (!comment && !(defect && nativeProgressActor(scope) && scope.progressOrigin != nil)) || link != nil {
 			return nil, workItemStorageUnavailable()
 		}
 		if _, err := s.validateRunnerLeaseTenant(ctx, scope, command.LeaseID, command.FencingToken); err != nil {
@@ -960,8 +962,17 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 					}
 				}
 			}
+			if _, defect := input.(tracker.CreateIssue); defect && scope.credential.Scope == apiScopeWorker {
+				origin := scope.progressOrigin
+				if !nativeProgressActor(scope) || origin == nil || origin.service != s || origin.scope.organization != scope.organization || origin.scope.project != scope.project || origin.scope.credential.ID != scope.credential.ID || origin.leaseID != command.LeaseID || origin.fencingToken != command.FencingToken {
+					return runnerUnauthorized()
+				}
+				if err := origin.validateProgressLeaseWriter(ctx, w); err != nil {
+					return err
+				}
+			}
 			if !plan.existing {
-				if scope.credential.Scope == apiScopeWorker {
+				if _, comment := input.(tracker.CreateComment); comment && scope.credential.Scope == apiScopeWorker {
 					if err := s.authorizeAttachmentCommentLease(ctx, w, scope, plan.current, command); err != nil {
 						return err
 					}

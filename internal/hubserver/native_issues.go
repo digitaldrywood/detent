@@ -448,6 +448,9 @@ func validateNativeProvenance(scope nativeScope, provenance *tracker.Provenance)
 	if provenance == nil {
 		return nil
 	}
+	if scope.sourceActor != nil && scope.sourceActor.Agent == "progress-check" && provenance.Provider == "progress-check" && strings.TrimSpace(provenance.ExternalID) != "" && len(provenance.ExternalID) <= 200 {
+		return nil
+	}
 	if scope.credential.Scope == apiScopeWorker {
 		return nativePublicInvalid("Imported provenance requires an operator")
 	}

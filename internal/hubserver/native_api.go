@@ -43,6 +43,7 @@ type nativeScope struct {
 	actionComment         string
 	scheduledRepair       *nativeScheduledRepair
 	sourceActor           *tracker.Actor
+	progressOrigin        *nativeProgressOwner
 	organization          tracker.OrganizationID
 	project               tracker.ProjectID
 	credential            apiCredential
