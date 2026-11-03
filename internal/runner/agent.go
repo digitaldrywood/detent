@@ -3853,6 +3853,15 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		}
 	}
 
+	ownershipReceipt := ""
+	if req.implementationReview {
+		ownershipReceipt = r.reviewGateOwner(ctx, req, workflow, agentRuntime, runWorkspace, info, workspaceIssue)
+	}
+	acceptanceGate := nativeAcceptanceGate(req)
+	freshAcceptance := !req.implementationReview && acceptanceGate != nil
+	if freshAcceptance {
+		workflow.Config.Gate = *acceptanceGate
+	}
 	var commands *validatorCommands
 	var validationTools []AgentTool
 	var validationHandler AgentToolHandler
@@ -3862,12 +3871,13 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 			return gate.ValidatorResult{}, fmt.Errorf("%w: native validation requires host command execution", ErrValidatorInfrastructure)
 		}
 		commands = &validatorCommands{run: commandRunner, info: info, issue: workspaceIssue, base: req.Diff.BaseSHA, shell: workflow.Config.Hooks.Shell}
-		if req.NativeVersion.Validation != nil {
+		if req.NativeVersion.Validation != nil && ownershipReceipt == "" && !freshAcceptance {
 			receipts := append([]gate.CommandResult{*req.NativeVersion.Validation}, req.Commands...)
 			commands.reuse(req.NativeVersion.Validation.TreeSHA, receipts)
 		}
 		configured := gate.Effective(workflow.Config.Gate)
-		if configured.Kind == gate.KindCommand {
+
+		if configured.Kind == gate.KindCommand && !(req.implementationReview && ownershipReceipt != "") {
 			if !slices.ContainsFunc(commands.results, func(receipt gate.CommandResult) bool {
 				return receipt.Command == configured.Run && commands.canReuse(ctx, receipt)
 			}) {
@@ -3896,6 +3906,9 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		promptOptions.DiffTruncated = promptOptions.DiffTruncated || req.Diff.Patch == ""
 	}
 	prompt := BuildValidatorPrompt(workflow, req.Issue, promptOptions)
+	if req.implementationReview && ownershipReceipt != "" {
+		prompt += "\nAutomatic whole-gate preflight is omitted because immutable source finalizer receipt " + ownershipReceipt + " already covers this version and independent acceptance validation will execute the configured gate. Assess the code and use detent_run_validation for targeted checks or a full gate when a concrete risk warrants it. This ownership decision is not passing command evidence.\n"
+	}
 	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), role)
 	if err != nil {
 		return gate.ValidatorResult{}, err
@@ -4237,6 +4250,9 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	}
 	if req.NativeVersion != nil {
 		validation.VersionID = req.NativeVersion.ID
+	}
+	if req.implementationReview && ownershipReceipt != "" {
+		validation.Summary += "\n\nAutomatic command preflight omitted: source finalizer receipt " + ownershipReceipt + "; independent acceptance validation owns the configured gate. This ownership decision is not command evidence."
 	}
 	validation.SessionID = sessionID
 	validation.Repository = req.Diff.Repository
