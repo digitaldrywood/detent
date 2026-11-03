@@ -22,6 +22,58 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
+func TestAppServerDefaultStartupUsesCallerDeadline(t *testing.T) {
+	for _, requestID := range []int{initializeRequestID, threadStartRequestID, threadResumeRequestID, turnStartRequestID} {
+		t.Run(requestName(requestID), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				for _, expires := range []bool{false, true} {
+					ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+					transport := &slowStartupTransport{requestID: requestID, expires: expires}
+					server, err := NewAppServer(staticTransportFactory{transport: transport})
+					if err != nil {
+						t.Fatal(err)
+					}
+					start := time.Now()
+					_, err = server.awaitResponse(ctx, transport, requestID, nil, nil, nil)
+					cancel()
+					if expires {
+						if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != 3*time.Minute {
+							t.Fatalf("caller expiry = %v after %v", err, time.Since(start))
+						}
+						_, ok := ClassifyCapacityError(startupStageError(err, requestName(requestID), start, time.Now(), 3*time.Minute), nil, time.Now())
+						if !ok {
+							t.Fatalf("startup expiry lost instance classification: %v", err)
+						}
+					} else if err != nil || time.Since(start) != 2*time.Minute {
+						t.Fatalf("slow startup = %v after %v", err, time.Since(start))
+					}
+				}
+			})
+		})
+	}
+}
+
+type slowStartupTransport struct {
+	fakeAppServerTransport
+	requestID int
+	expires   bool
+}
+
+func (t *slowStartupTransport) Receive(ctx context.Context) (Message, error) {
+	if t.expires {
+		<-ctx.Done()
+		return Message{}, ctx.Err()
+	}
+	timer := time.NewTimer(2 * time.Minute)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return Message{}, ctx.Err()
+	case <-timer.C:
+		return Message{ID: requestID(t.requestID), Result: json.RawMessage(`{}`)}, nil
+	}
+}
+
 func TestAppServerResponseDeadlineSurvivesNotifications(t *testing.T) {
 	t.Parallel()
 	for _, requestID := range []int{initializeRequestID, threadStartRequestID, threadResumeRequestID, turnStartRequestID} {
