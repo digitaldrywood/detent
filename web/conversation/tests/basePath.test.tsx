@@ -1,13 +1,15 @@
 // @vitest-environment jsdom
 import { createMemoryHistory } from "@tanstack/react-router";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { conversationWebURL } from "../src/app/lib/conversationHandoff.ts";
 import { makeAccountApi } from "../src/app/account/api.ts";
 import { checkForUpdates, resetUpdateCheckState } from "../src/app/adapters/detentUpdates.ts";
 import { makeRouter } from "../src/app/router.tsx";
-import { makeWorkHttp } from "../src/app/work/lib/workHttp.ts";
+import { makeWorkHttp, WorkApiError } from "../src/app/work/lib/workHttp.ts";
+import { redirectLegacyIssue, resolveReadable } from "../src/app/work/readableRoutes.ts";
 import bootstrapFixture from "../src/contracts/fixtures/bootstrap.json";
+import accountBootstrapFixture from "../src/contracts/fixtures/account-bootstrap.json";
 import conversationFixture from "../src/contracts/fixtures/conversation-snapshot.json";
 import {
   applyHubPaths,
@@ -51,9 +53,39 @@ function recordingFetch(respond: (url: string) => Response = () => new Response(
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   document.head.innerHTML = "";
   resetHubPaths();
   resetUpdateCheckState();
+});
+
+describe("readable issue route failures", () => {
+  it.each([
+    [401, "Your session has expired. Sign in again."],
+    [403, "You do not have permission to do that."],
+    [404, "Issue or project not found"],
+    [503, "The hub could not complete the request."],
+  ] as const)("preserves HTTP %i instead of reporting every failure as missing", async (status, message) => {
+    await loadBootstrap("", async () => Response.json(accountBootstrapFixture));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status }));
+
+    await expect(resolveReadable("example-project", "2099")).rejects.toMatchObject({
+      name: "WorkApiError",
+      status,
+      message,
+    } satisfies Partial<WorkApiError>);
+  });
+
+  it("keeps legacy issue redirects truthful when the issue lookup fails", async () => {
+    await loadBootstrap("", async () => Response.json({ ...accountBootstrapFixture, organization: { ...accountBootstrapFixture.organization, slug: "example-org" } }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 503 }));
+
+    await expect(redirectLegacyIssue("wi_example", {})).rejects.toMatchObject({
+      name: "WorkApiError",
+      status: 503,
+      message: "The hub could not complete the request.",
+    });
+  });
 });
 
 describe("normalizeBasePath and readBasePath", () => {
