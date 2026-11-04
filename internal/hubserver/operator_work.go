@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -176,11 +177,17 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		}
 		if request.Target != "pr" {
 			resolve := e.service.resolveOperatorNativeItem
-			if definition.Annotations.ReadOnly {
+			if definition.Annotations.ReadOnly || call.Name == operatortool.AddComment && e.service.config.TenantRepository != nil {
 				resolve = e.service.resolveOperatorNativeReadItem
 			}
 			item, resolveErr := resolve(ctx, e.service.database.reader, scope, request.Identifier)
 			if resolveErr != nil {
+				if call.Name == operatortool.AddComment && e.service.config.TenantRepository != nil {
+					if errors.Is(resolveErr, explain.ErrNotFound) {
+						return operatortool.Result{}, operatortool.ErrAccessDenied
+					}
+					return operatortool.Result{}, hubSafeChangeError(resolveErr)
+				}
 				if definition.Annotations.ReadOnly || scope.credential.HostedRole == "reporter" {
 					return operatortool.Result{}, safeWorkReadError(resolveErr)
 				}
@@ -252,6 +259,9 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		return operatortool.Result{}, operatortool.ErrSnapshotUnavailable
 	}
 	if err != nil {
+		if call.Name == operatortool.AddComment && e.service.config.TenantRepository != nil {
+			return operatortool.Result{}, hubSafeChangeError(err)
+		}
 		return operatortool.Result{}, safeNativeWorkError(fmt.Errorf("execute work command: %w", err))
 	}
 	outcome = "succeeded"

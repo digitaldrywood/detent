@@ -118,6 +118,9 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		if err := service.Close(); err != nil {
 			t.Error(err)
@@ -184,7 +187,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		return result.Data
 	}
 	cached := map[string]tracker.NativeIssue{}
-	for _, input := range []struct{ user, id, state string }{{"owner", "completed", "Done"}, {"owner", "admin", "Done"}, {"owner", "member", "Done"}, {"reporter", "reporter_own", "Triage"}} {
+	for _, input := range []struct{ user, id, state string }{{"owner", "completed", "Done"}, {"owner", "admin", "Done"}, {"owner", "member", "Done"}, {"reporter", "reporter_own", "Triage"}, {"reporter", "reporter_fresh_race", "Triage"}, {"reporter", "reporter_replay_race", "Triage"}} {
 		cached[input.id] = create(input.user, input.id, input.state)
 	}
 	create = func(user, id, state string) tracker.NativeIssue {
@@ -252,6 +255,9 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := other.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		if err := other.Close(); err != nil {
 			t.Error(err)
@@ -306,6 +312,117 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 			t.Fatal(err)
 		}
 		return value
+	}
+	comment := func(target *Service, user, identifier, requestID string) *httptest.ResponseRecorder {
+		return requestFor(target, user, "/internal/v1/keys/call", map[string]any{"name": operatortool.AddComment, "connection_id": "comment_" + user, "arguments": map[string]any{"project_id": "project_example", "identifier": identifier, "request_id": requestID, "body": "Example comment"}})
+	}
+	t.Run("signed comments preserve tenant authority and replay", func(t *testing.T) {
+		for _, test := range []struct {
+			service *Service
+			user    string
+			issue   tracker.NativeIssue
+		}{{service, "owner", changed}, {service, "reporter", cached["reporter_own"]}, {other, "owner", otherMoved}} {
+			identifier := fmt.Sprint(test.issue.Number)
+			response := comment(test.service, test.user, identifier, "example-comment-"+test.user)
+			requireNativeStatus(t, response, http.StatusOK)
+			var result struct {
+				Data tracker.NativeComment `json:"data"`
+			}
+			decodeHubResponse(t, response, &result)
+			if result.Data.ID == "" || result.Data.WorkItemID != test.issue.WorkItemID || result.Data.OrganizationID != test.issue.OrganizationID || result.Data.Body != "Example comment" {
+				t.Fatal("comment lost canonical identity, tenant or body")
+			}
+			commentArchiveBytes := func() int64 {
+				t.Helper()
+				var value int64
+				if err := test.service.config.TenantRepository.ReadTenant(t.Context(), test.issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					value, err = r.ArchiveBytes(t.Context())
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return value
+			}
+			before := commentArchiveBytes()
+			replay := comment(test.service, test.user, identifier, "example-comment-"+test.user)
+			requireNativeStatus(t, replay, http.StatusOK)
+			var repeated struct {
+				Data tracker.NativeComment `json:"data"`
+			}
+			decodeHubResponse(t, replay, &repeated)
+			if !reflect.DeepEqual(result.Data, repeated.Data) || commentArchiveBytes() != before {
+				t.Fatal("comment replay changed the canonical result or archive accounting")
+			}
+		}
+		requireNativeStatus(t, comment(service, "reader", string(changed.WorkItemID), "read-key-comment"), http.StatusForbidden)
+		requireNativeStatus(t, comment(service, "reporter", string(changed.WorkItemID), "foreign-reporter-comment"), http.StatusForbidden)
+		requireNativeStatus(t, comment(service, "owner", string(otherMoved.WorkItemID), "foreign-tenant-comment"), http.StatusForbidden)
+	})
+	for _, replay := range []bool{false, true} {
+		t.Run(fmt.Sprintf("comment ownership changes before write replay=%v", replay), func(t *testing.T) {
+			item := cached["reporter_fresh_race"]
+			if replay {
+				item = cached["reporter_replay_race"]
+				requireNativeStatus(t, comment(service, "reporter", string(item.WorkItemID), "ownership-race"), http.StatusOK)
+			}
+			var before corestore.WorkItem
+			if err := repository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				before, err = r.WorkItem(t.Context(), "project_example", item.WorkItemID)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			intercepted := &projectUpdateBeforeWriteRepository{Repository: repository}
+			intercepted.before = func() error {
+				return repository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+					if err := w.LockWorkItemProject(t.Context(), "project_example"); err != nil {
+						return err
+					}
+					row, err := w.WorkItem(t.Context(), "project_example", item.WorkItemID)
+					if err != nil {
+						return err
+					}
+					row.ActorPrincipalID = new("credential_owner")
+					_, err = w.UpdateWorkItem(t.Context(), row)
+					return err
+				})
+			}
+			service.config.TenantRepository = intercepted
+			defer func() { service.config.TenantRepository = repository }()
+			denied := comment(service, "reporter", string(item.WorkItemID), "ownership-race")
+			requireNativeStatus(t, denied, http.StatusForbidden)
+			if strings.Contains(denied.Body.String(), "Example comment") {
+				t.Fatal("former owner received private comment data")
+			}
+			if intercepted.before != nil {
+				t.Fatal("ownership did not change before the write")
+			}
+			if err := repository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+				row, err := r.WorkItem(t.Context(), "project_example", item.WorkItemID)
+				if err == nil && row.EventSequence != before.EventSequence {
+					t.Fatal("denied comment appended an event")
+				}
+				if err != nil {
+					return err
+				}
+				if !replay {
+					operation := "POST /api/v2/organizations/org_startup/projects/project_example/work-items/" + string(item.WorkItemID) + "/comments"
+					bound, err := (mutation.Metadata{PrincipalID: "credential_reporter", OrganizationID: "org_startup", ProjectID: "project_example", Action: operatortool.AddComment}).Bind("ownership-race", nil)
+					if err != nil {
+						return err
+					}
+					_, err = r.Receipt(t.Context(), "credential_reporter", operation, bound.RetryIdentity)
+					if !errors.Is(err, corestore.ErrNotFound) {
+						return fmt.Errorf("denied comment receipt: %v", err)
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 	beforeReplay := archiveBytes()
 	replayed := decode(call("owner", args))
@@ -468,6 +585,13 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 			if fresh.Code != http.StatusForbidden && fresh.Code != http.StatusUnauthorized {
 				t.Fatalf("fresh revocation status=%d", fresh.Code)
 			}
+			if test != "reporter_target" {
+				commentArguments := map[string]any{"project_id": input.ProjectID, "identifier": string(changed.WorkItemID), "request_id": "revoked-comment-" + test, "body": "Example denied comment"}
+				denied := request("owner", "/internal/v1/keys/call", map[string]any{"name": operatortool.AddComment, "connection_id": "comment_owner", "arguments": commentArguments})
+				if denied.Code != http.StatusForbidden && denied.Code != http.StatusUnauthorized {
+					t.Fatalf("revoked comment status=%d", denied.Code)
+				}
+			}
 
 		})
 	}
@@ -517,7 +641,11 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		if row.Revision != int64(changed.Revision) || stringValue(row.WorkflowStateName) != changed.State {
 			return fmt.Errorf("refused transition changed the issue")
 		}
-		_, err = r.Receipt(t.Context(), "credential_owner", "POST /api/v2/organizations/org_startup/projects/project_example/work-items/"+string(issue.WorkItemID)+"/workflow", "active_Cancelled")
+		bound, err := (mutation.Metadata{PrincipalID: "credential_owner", OrganizationID: "org_startup", ProjectID: "project_example", Action: operatortool.MoveItem}).Bind("active_Cancelled", nil)
+		if err != nil {
+			return err
+		}
+		_, err = r.Receipt(t.Context(), "credential_owner", "POST /api/v2/organizations/org_startup/projects/project_example/work-items/"+string(issue.WorkItemID)+"/workflow", bound.RetryIdentity)
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return fmt.Errorf("missing run evidence cancellation receipt: %v", err)
 		}

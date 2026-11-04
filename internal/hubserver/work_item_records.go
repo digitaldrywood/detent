@@ -1026,6 +1026,15 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
 				return err
 			}
+			if plan.comment.ID != "" && scope.action == operatortool.AddComment && scope.credential.HostedRole == "reporter" {
+				current, err := w.LockWorkItem(ctx, scope.project, plan.current.NativeID)
+				if err != nil {
+					return err
+				}
+				if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(current.ActorPrincipalID)}) {
+					return corestore.ErrNotFound
+				}
+			}
 			if duplicateSearch != nil && duplicateSearch.available {
 				if err := lockWorkItemDuplicateSource(ctx, w, scope.project, duplicateSearch.sequence); err != nil {
 					return err
@@ -1296,6 +1305,18 @@ func (s *Service) workItemRecordReceipt(ctx context.Context, scope nativeScope, 
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := s.authorizeWorkItemRecordScope(ctx, w, scope); err != nil {
 				return err
+			}
+			if scope.action == operatortool.AddComment && scope.actionItem != "" && scope.credential.HostedRole == "reporter" {
+				if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+					return err
+				}
+				current, err := w.LockWorkItem(ctx, scope.project, tracker.NativeWorkItemID(scope.actionItem))
+				if err != nil {
+					return projectRecordError(err)
+				}
+				if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(current.ActorPrincipalID)}) {
+					return nativeNotFound()
+				}
 			}
 			var err error
 			receipt, err = w.Receipt(ctx, scope.credential.ID, operation, key)

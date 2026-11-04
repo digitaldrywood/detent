@@ -189,7 +189,7 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 	case operatortool.WorkList, operatortool.WorkItem:
 		_, found := entryKeyDefinition(operatortool.WorkReadCatalog(), name)
 		return found && catalog.credential.HostedRole != "account", nil
-	case operatortool.MoveItem, operatortool.FileIssue:
+	case operatortool.MoveItem, operatortool.FileIssue, operatortool.AddComment:
 		definition, found := entryKeyDefinition(operatortool.CommandCatalog(), name)
 		if !found {
 			return false, nil
@@ -253,7 +253,7 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 
 func entryKeyToolSupported(name string) bool {
 	switch name {
-	case "list_projects", "get_native_project", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, operatortool.AppBootstrapPayload, operatortool.MoveItem, operatortool.FileIssue, operatortool.ListComments, operatortool.ListChanges, "list_threads", "get_thread":
+	case "list_projects", "get_native_project", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, operatortool.AppBootstrapPayload, operatortool.MoveItem, operatortool.FileIssue, operatortool.AddComment, operatortool.ListComments, operatortool.ListChanges, "list_threads", "get_thread":
 		return true
 	default:
 		return false
