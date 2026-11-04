@@ -858,6 +858,51 @@ func TestRunnerProjectObservationIsTenantScopedAndRejectsStaleSnapshots(t *testi
 	}); err != nil {
 		t.Fatal(err)
 	}
+	for _, check := range []struct {
+		name         string
+		membership   []string
+		reservations []string
+	}{
+		{name: "omitted membership violates not null", reservations: []string{"repository_example"}},
+		{name: "omitted reservations violates not null", membership: []string{"durable_active"}},
+		{name: "both omitted arrays replace nonempty projection"},
+		{name: "explicit nonempty arrays round trip", membership: []string{"durable_active"}, reservations: []string{"repository_example"}},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+				at := now.Add(10 * time.Minute)
+				record := runnerauth.DiagnosticAttempt{Key: "local:7", IssueID: "wi_shared", LocalAttemptID: 7, Membership: check.membership}
+				diagnostics := &runnerauth.ProjectDiagnostics{ObservedAt: at, RuntimeObservedAt: at, Source: "runner_runtime_and_durable_attempt_owners", Records: []runnerauth.DiagnosticAttempt{record}, Admissions: []runnerauth.DiagnosticAdmission{{IssueID: "wi_shared", ObservedAt: at, Result: "skipped", Predicate: "project_capacity_full", RepositoryReservations: check.reservations}}}
+				if err := diagnostics.Validate(); err != nil {
+					t.Fatalf("optional array contract: %v", err)
+				}
+				err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.ReplaceRunnerProjectObservation(t.Context(), runnerstore.ProjectObservation{OrganizationID: organization, RunnerID: "runner_shared", ProjectID: "project_shared", ObservedAt: at, DiagnosticsAt: &at, RuntimeObservedAt: &at, SnapshotDigest: strings.Repeat("d", 64), Diagnostics: diagnostics}, []runnerstore.ProjectDiagnosticAttempt{{Position: 0, RecordKey: record.Key, IssueID: record.IssueID, LocalAttemptID: record.LocalAttemptID, Membership: record.Membership}})
+				})
+				if err != nil {
+					var pgError *pq.Error
+					if errors.As(err, &pgError) {
+						t.Errorf("replace optional arrays for %s: SQLSTATE=%s table=%s column=%s", organization, pgError.Code, pgError.Table, pgError.Column)
+					} else {
+						t.Errorf("replace optional arrays for %s: %v", organization, err)
+					}
+					continue
+				}
+				if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+					observation, attempts, err := r.RunnerProjectObservation(t.Context(), "runner_shared", "project_shared", "wi_shared")
+					if err != nil {
+						return err
+					}
+					if len(attempts) != 1 || attempts[0].RecordKey != record.Key || !slices.Equal(attempts[0].Membership, check.membership) || observation.Diagnostics == nil || len(observation.Diagnostics.Records) != 1 || !slices.Equal(observation.Diagnostics.Records[0].Membership, check.membership) || len(observation.Diagnostics.Admissions) != 1 || !slices.Equal(observation.Diagnostics.Admissions[0].RepositoryReservations, check.reservations) {
+						t.Fatalf("optional arrays did not replace and round trip for %s", organization)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
 	if _, err := admin.ExecContext(ctx, `UPDATE runner_project_observations SET diagnostics_source='' WHERE organization_id='org_second' AND runner_id='runner_shared' AND project_id='project_shared'`); err != nil {
 		t.Fatal(err)
 	}
