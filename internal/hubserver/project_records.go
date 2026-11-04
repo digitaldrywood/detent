@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
@@ -165,18 +166,33 @@ func projectRecordError(err error) error {
 	return err
 }
 
-func (s *Service) readAuthorizedProjectRecord(ctx context.Context, scope nativeScope, write bool) (projectstore.Record, error) {
+type authorizedProjectRecord struct {
+	projectstore.Record
+	organizationModels *policystore.OrganizationModels
+}
+
+func (s *Service) readAuthorizedProjectRecord(ctx context.Context, scope nativeScope, write bool, includeModels bool) (authorizedProjectRecord, error) {
 	if s.config.AccessRepository == nil {
-		return projectstore.Record{}, nativeNotFound()
+		return authorizedProjectRecord{}, nativeNotFound()
 	}
-	var result projectstore.Record
+	var result authorizedProjectRecord
 	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, write); err != nil {
 			return err
 		}
 		var err error
-		result, err = r.ProjectRecord(ctx, scope.project)
-		return err
+		result.Record, err = r.ProjectRecord(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if includeModels {
+			row, err := r.OrganizationModels(ctx)
+			if err != nil {
+				return err
+			}
+			result.organizationModels = &row
+		}
+		return nil
 	})
 	return result, projectRecordError(err)
 }
@@ -227,7 +243,7 @@ func (s *Service) projectRecordWorkflow(ctx context.Context, record projectstore
 	return markdown, err
 }
 
-func (s *Service) projectRecordNative(ctx context.Context, record projectstore.Record) (tracker.NativeProject, error) {
+func (s *Service) projectRecordNative(ctx context.Context, record projectstore.Record, models ...policystore.OrganizationModels) (tracker.NativeProject, error) {
 	markdown, err := s.projectRecordWorkflow(ctx, record)
 	if err != nil {
 		return tracker.NativeProject{}, err
@@ -240,7 +256,7 @@ func (s *Service) projectRecordNative(ctx context.Context, record projectstore.R
 	if repository != "" {
 		project.CloneURL = "https://github.com/" + repository + ".git"
 	}
-	selection, err := s.projectRecordModel(ctx, record)
+	selection, err := s.projectRecordModel(ctx, record, models...)
 	if err != nil {
 		return project, err
 	}
@@ -517,15 +533,21 @@ func (s *Service) planProjectRecordMutation(ctx context.Context, scope nativeSco
 
 func (s *Service) getProjectRecord(c echo.Context) error {
 	scope := nativeRequestScope(c)
-	record, ok := c.Get("native_project_record").(projectstore.Record)
+	authorized, ok := c.Get("native_project_record").(authorizedProjectRecord)
+	record := authorized.Record
+	var models []policystore.OrganizationModels
+	if ok && authorized.organizationModels != nil {
+		models = append(models, *authorized.organizationModels)
+	}
 	var err error
 	if !ok || record.Core.OrganizationID != scope.organization || record.Core.ID != scope.project {
 		record, err = s.readProjectRecord(c.Request().Context(), scope)
+		models = nil
 	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	project, err := s.projectRecordNative(c.Request().Context(), record)
+	project, err := s.projectRecordNative(c.Request().Context(), record, models...)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

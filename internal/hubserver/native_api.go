@@ -440,7 +440,7 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 							return s.nativeAPIError(c, err)
 						}
 					} else {
-						record, err := s.readAuthorizedProjectRecord(readCtx, scope, write)
+						record, err := s.readAuthorizedProjectRecord(readCtx, scope, write, c.Request().Method == http.MethodGet && c.Path() == nativeBase)
 						if err != nil {
 							return s.nativeAPIError(c, err)
 						}
