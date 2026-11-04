@@ -476,6 +476,18 @@ func (s *Service) readPGConversationPage(ctx context.Context, scope nativeScope,
 		if err != nil {
 			return err
 		}
+		owner, ok := reader.(conversationstore.AttachmentReader)
+		if !ok {
+			return conversationUnsupported("Conversation attachment owner is unavailable")
+		}
+		ids := make([]string, 0, len(messages.Items))
+		for _, item := range messages.Items {
+			ids = append(ids, item.ID)
+		}
+		attachments, err := owner.MessageAttachments(ctx, scope.project, id, ids)
+		if err != nil {
+			return err
+		}
 		for _, item := range messages.Items {
 			if item.ContentReference != "" {
 				object, err := reader.ConversationContent(ctx, item.ContentReference)
@@ -485,6 +497,10 @@ func (s *Service) readPGConversationPage(ctx context.Context, scope nativeScope,
 				contentReferences[item.ContentReference] = object.Reference
 			}
 			message := conversationMessageFromStore(item)
+			for _, a := range attachments[item.ID] {
+				message.Attachments = append(message.Attachments, conversationAttachmentFromStore(a))
+			}
+
 			references, err := reader.MessageReferences(ctx, id, item.ID)
 			if err != nil {
 				return err
@@ -536,6 +552,7 @@ func (s *Service) readPGConversationPage(ctx context.Context, scope nativeScope,
 func (s *Service) replayPGConversationEvents(ctx context.Context, scope nativeScope, stream *conversationStream, id string, cursor, through int64) (int64, error) {
 	for cursor < through {
 		var page conversationstore.EventPage
+		refs := map[string]attachment.ArchiveReference{}
 		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
 				return err
@@ -552,7 +569,23 @@ func (s *Service) replayPGConversationEvents(ctx context.Context, scope nativeSc
 				return err
 			}
 			page, err = reader.ConversationEvents(ctx, id, cursor, conversationEventPage)
-			return err
+			if err != nil {
+				return err
+			}
+			for _, stored := range page.Items {
+				if stored.Seq > through {
+					break
+				}
+				if stored.ContentReference == "" {
+					continue
+				}
+				object, err := reader.ConversationContent(ctx, stored.ContentReference)
+				if err != nil {
+					return err
+				}
+				refs[stored.ContentReference] = object.Reference
+			}
+			return nil
 		})
 		if err != nil {
 			return cursor, translateConversationError(err)
@@ -560,30 +593,79 @@ func (s *Service) replayPGConversationEvents(ctx context.Context, scope nativeSc
 		if len(page.Items) == 0 {
 			return cursor, nil
 		}
+		accepted := map[int]conversationMessageResource{}
+		ids := make([]string, 0, len(page.Items))
+		for index := range page.Items {
+			stored := &page.Items[index]
+			if stored.Seq > through {
+				break
+			}
+			if stored.ContentReference == "" {
+				continue
+			}
+			var payload conversationContent
+			if err := s.readConversationObject(ctx, string(scope.organization), refs[stored.ContentReference], &payload); err != nil {
+				return cursor, err
+			}
+			stored.Event.Data = payload.Data
+			if stored.Event.Type == conversation.EventMessageAccepted {
+				var message conversationMessageResource
+				if err := json.Unmarshal(payload.Data, &message); err != nil {
+					return cursor, err
+				}
+				accepted[index] = message
+				ids = append(ids, message.ID)
+			}
+		}
+		if len(ids) > 0 {
+			if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
+					return err
+				}
+				record, err := reader.Conversation(ctx, scope.project, id)
+				if err != nil {
+					return err
+				}
+				current := conversationRecordFromStore(record)
+				if current.ReadAudience != "" || (current.Visibility == conversation.VisibilityPrivate && current.OwnerPrincipalID != scope.credential.ID) {
+					return nativeNotFound()
+				}
+				if err := authorizeConversationLinkedItemPG(ctx, reader, scope, current); err != nil {
+					return err
+				}
+				owner, ok := reader.(conversationstore.AttachmentReader)
+				if !ok {
+					return conversationUnsupported("Conversation attachment owner is unavailable")
+				}
+				sequences, err := owner.MessageSequences(ctx, id, ids)
+				if err != nil {
+					return err
+				}
+				for index, message := range accepted {
+					sequence, ok := sequences[message.ID]
+					if !ok {
+						return corestore.ErrNotFound
+					}
+					message.Seq = sequence
+					data, err := json.Marshal(message)
+					if err != nil {
+						return err
+					}
+					page.Items[index].Event.Data = data
+				}
+				return nil
+			}); err != nil {
+				return cursor, translateConversationError(err)
+			}
+		}
 		for _, stored := range page.Items {
 			if stored.Seq > through {
 				return cursor, nil
 			}
-			event := stored.Event
-			if stored.ContentReference != "" {
-				var ref attachment.ArchiveReference
-				if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-					object, err := reader.ConversationContent(ctx, stored.ContentReference)
-					ref = object.Reference
-					return err
-				}); err != nil {
-					return cursor, translateConversationError(err)
-				}
-				var payload conversationContent
-				if err := s.readConversationObject(ctx, string(scope.organization), ref, &payload); err != nil {
-					return cursor, err
-				}
-				event.Data = payload.Data
-			}
-			if err := stream.event(event); err != nil {
+			if err := stream.event(stored.Event); err != nil {
 				return cursor, err
 			}
-			cursor = event.Seq
+			cursor = stored.Seq
 		}
 		if len(page.Items) < conversationEventPage {
 			return cursor, nil
@@ -597,9 +679,6 @@ func conversationCursorURL(record conversationRecord) string {
 }
 
 func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeScope, id string, command conversation.Command) (json.RawMessage, error) {
-	if len(command.Attachments) > 0 {
-		return nil, conversationUnsupported("Conversation attachments require the attachments migration")
-	}
 	service := s.conversations
 	current, err := s.readPGConversation(ctx, scope, id)
 	if err != nil {
@@ -760,12 +839,39 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 	default:
 		return nil, conversationUnsupported("This conversation command requires the worker control migration")
 	}
+
+	if len(command.Attachments) > 0 {
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			var err error
+			message.Attachments, err = loadCommandAttachmentsPG(ctx, reader, scope, id, command.Attachments, plan.now)
+			return err
+		})
+		if err != nil {
+			return nil, translateConversationError(err)
+		}
+	}
 	if command.Kind == conversation.CommandMessage || command.Kind == conversation.CommandAnswer || command.Kind == conversation.CommandInterrupt || command.Kind == conversation.CommandContinue || command.Kind == conversation.CommandRetry {
 		if err := preparePGConversationMessage(ctx, plan, &message); err != nil {
 			return nil, err
 		}
 	}
 	prepared := plan.messages[message.ID]
+	var attachmentEventContent string
+	if len(command.Attachments) > 0 {
+		raw, err := json.Marshal(projectMessage(prepared))
+		if err != nil {
+			return nil, err
+		}
+		payload, err := json.Marshal(conversationContent{Data: raw})
+		if err != nil {
+			return nil, err
+		}
+		ref, err := plan.prepare(ctx, payload)
+		if err != nil {
+			return nil, err
+		}
+		attachmentEventContent = contentArchiveID(string(scope.organization), ref)
+	}
 	result := conversation.Receipt{Key: command.Key, Kind: command.Kind, Status: prepared.Delivery, MessageID: message.ID, UpdatedAt: plan.now}
 	if command.Kind == conversation.CommandAnswer {
 		result.QuestionID = question.ID
@@ -827,6 +933,18 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 			receipt, replay = existing.Receipt, true
 			return nil
 		}
+
+		owner, ok := writer.(conversationstore.AttachmentWriter)
+		if !ok {
+			return conversationUnsupported("Conversation attachment owner is unavailable")
+		}
+		if err := s.authorizeConversationAttachmentPG(ctx, writer, scope, storedConversation, true); err != nil {
+			return err
+		}
+		attachments, err := loadCommandAttachmentsPG(ctx, writer, scope, id, command.Attachments, s.config.now())
+		if err != nil {
+			return err
+		}
 		pending, err := writer.PendingUserMessages(ctx, id)
 		if err != nil {
 			return err
@@ -862,6 +980,20 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 			prepared.Seq, prepared.Revision = createdMessage.Sequence, createdMessage.Revision
 			message = prepared
 		}
+
+		for i := range attachments {
+			if attachments[i].ID != prepared.Attachments[i].ID || attachments[i].ContentID != prepared.Attachments[i].ContentID || attachments[i].resource() != prepared.Attachments[i].resource() {
+				return conversationStale("Attachment changed; retry the command")
+			}
+			if err := owner.BindConversationAttachment(ctx, scope.project, id, attachments[i].ID, scope.credential.ID, createdMessage.ID, s.config.now()); err != nil {
+				if errors.Is(err, corestore.ErrNotFound) {
+					return nativeInvalid("Attachment is no longer available")
+				}
+				return err
+			}
+			attachments[i].MessageID, attachments[i].ExpiresAt = createdMessage.ID, nil
+		}
+		message.Attachments = attachments
 		if command.Kind == conversation.CommandAnswer {
 			if err := writer.UpsertQuestion(ctx, question); err != nil {
 				return err
@@ -881,7 +1013,10 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 		if err != nil {
 			return err
 		}
-		acceptedEvent, err := writer.AppendConversationEvent(ctx, conversationstore.Event{OrganizationID: scope.organization, ConversationID: id, Event: conversation.Event{Type: conversation.EventMessageAccepted, Data: messageBody, CreatedAt: plan.now}})
+		if attachmentEventContent != "" {
+			messageBody = json.RawMessage(`{}`)
+		}
+		acceptedEvent, err := writer.AppendConversationEvent(ctx, conversationstore.Event{OrganizationID: scope.organization, ConversationID: id, ContentReference: attachmentEventContent, Event: conversation.Event{Type: conversation.EventMessageAccepted, Data: messageBody, CreatedAt: plan.now}})
 		if err != nil {
 			return err
 		}
