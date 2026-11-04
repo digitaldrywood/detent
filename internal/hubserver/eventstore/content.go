@@ -118,14 +118,14 @@ func (c *Content) read(ctx context.Context, organization tracker.OrganizationID,
 		return artifact.ErrStorage
 	}
 	if ref.Validate(string(organization)) != nil {
-		return artifact.ErrIntegrity
+		return fmt.Errorf("validate history reference: %w", artifact.ErrIntegrity)
 	}
 	raw, err := c.store.ReadDetail(ctx, string(organization), ref)
 	if err != nil {
 		return fmt.Errorf("read history payload: %w", errors.Join(artifact.ErrIntegrity, err))
 	}
 	if int64(len(raw)) != ref.UncompressedSize {
-		return artifact.ErrIntegrity
+		return fmt.Errorf("validate history content length: %w", artifact.ErrIntegrity)
 	}
 	if err := json.Unmarshal(raw, value); err != nil {
 		return fmt.Errorf("decode history payload: %w", artifact.ErrIntegrity)
@@ -171,7 +171,7 @@ func (c *Content) Event(ctx context.Context, row Event) (tracker.CollaborationEv
 	err := c.read(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), &value)
 	if err == nil {
 		if value.ID != row.ID || value.OrganizationID != row.OrganizationID || value.ProjectID != row.ProjectID || value.AggregateID != row.WorkItemID || value.Type != row.Type || value.Actor.Kind != row.ActorKind || value.Actor.PrincipalID != row.ActorPrincipalID {
-			return value, artifact.ErrIntegrity
+			return value, fmt.Errorf("validate event identity: %w", artifact.ErrIntegrity)
 		}
 		if row.PushKnown {
 			var checkpoint tracker.NativeCheckpoint
@@ -183,7 +183,7 @@ func (c *Content) Event(ctx context.Context, row Event) (tracker.CollaborationEv
 				reference = *checkpoint.Change
 			}
 			if row.PushChangeID != reference.ChangeID || row.PushVersionID != reference.VersionID || row.PushHeadSHA != reference.HeadSHA || row.PushExternalEffect != checkpoint.ExternalEffect || row.PushEffectState != checkpoint.EffectState {
-				return value, artifact.ErrIntegrity
+				return value, fmt.Errorf("validate event push projection: %w", artifact.ErrIntegrity)
 			}
 		}
 		var landing tracker.NativeLandingReceipt
@@ -191,7 +191,7 @@ func (c *Content) Event(ctx context.Context, row Event) (tracker.CollaborationEv
 			landing = *value.Data.Run.Runtime.Landing
 		}
 		if row.LandingWaiting != landing.Waiting || row.LandingChangeID != landing.ChangeID || row.LandingVersionID != landing.VersionID || row.LandingHeadSHA != landing.HeadSHA {
-			return value, artifact.ErrIntegrity
+			return value, fmt.Errorf("validate event landing projection: %w", artifact.ErrIntegrity)
 		}
 	}
 	value.AggregateSequence, value.RecordedAt = row.Sequence, row.RecordedAt

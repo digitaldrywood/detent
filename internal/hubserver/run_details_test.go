@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -27,6 +29,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -1216,4 +1221,114 @@ func readReferencedRun(t *testing.T, service *Service, attempt string) storedRun
 		t.Fatal(err)
 	}
 	return storedRun{NativeRunData: run, Detail: &runDetailReference{AttachmentID: attachment, Organization: organization, Entry: runDetailEntry(run), ObjectKey: key}}
+}
+
+func TestAttemptHydrationIntegrityStages(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		stage string
+		edit  func(*tracker.CollaborationEvent, *tenantAttemptSnapshot, *memoryRunDetails)
+	}{
+		{name: "missing run", stage: "hydrate attempt run", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) { v.Data.Run = nil }},
+		{name: "run id", stage: "hydrate attempt identity", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
+			v.Data.Run.RunID = "private-run"
+		}},
+		{name: "attempt id", stage: "hydrate attempt identity", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
+			v.Data.Run.AttemptID = "private-attempt"
+		}},
+		{name: "lease id", stage: "hydrate attempt identity", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
+			v.Data.Run.LeaseID = "private-lease"
+		}},
+		{name: "fence", stage: "hydrate attempt identity", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
+			v.Data.Run.FencingToken++
+		}},
+		{name: "sequence", stage: "hydrate attempt identity", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
+			v.Data.Run.Sequence++
+		}},
+		{name: "attachment evidence", stage: "hydrate attempt evidence", edit: func(_ *tracker.CollaborationEvent, s *tenantAttemptSnapshot, _ *memoryRunDetails) {
+			s.evidence = true
+			s.evidenceRows = []attachmentstore.Record{{OrganizationID: "private-organization", EvidenceCaption: "private-caption"}}
+		}},
+		{name: "event identity", stage: "validate event identity", edit: func(_ *tracker.CollaborationEvent, s *tenantAttemptSnapshot, _ *memoryRunDetails) {
+			s.event.ID = "private-event"
+		}},
+		{name: "push projection", stage: "validate event push projection", edit: func(_ *tracker.CollaborationEvent, s *tenantAttemptSnapshot, _ *memoryRunDetails) {
+			s.event.PushKnown = true
+			s.event.PushHeadSHA = "private-head"
+		}},
+		{name: "landing projection", stage: "validate event landing projection", edit: func(_ *tracker.CollaborationEvent, s *tenantAttemptSnapshot, _ *memoryRunDetails) {
+			s.event.LandingWaiting = true
+		}},
+		{name: "reference", stage: "validate history reference", edit: func(_ *tracker.CollaborationEvent, s *tenantAttemptSnapshot, _ *memoryRunDetails) {
+			s.event.PayloadObjectKey = "private-object-key"
+		}},
+		{name: "length", stage: "validate history content length", edit: func(_ *tracker.CollaborationEvent, s *tenantAttemptSnapshot, _ *memoryRunDetails) {
+			s.event.PayloadContentBytes++
+		}},
+		{name: "decode", stage: "decode history payload", edit: func(_ *tracker.CollaborationEvent, s *tenantAttemptSnapshot, m *memoryRunDetails) {
+			m.data[s.event.PayloadObjectKey] = bytes.Repeat([]byte("!"), int(s.event.PayloadContentBytes))
+		}},
+		{name: "read", stage: "read history payload", edit: func(_ *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, m *memoryRunDetails) {
+			m.beforeRead = func(context.Context) error { return &attachment.ArchiveReadError{Err: artifact.ErrIntegrity} }
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &memoryRunDetails{}
+			service := &Service{config: Config{RunDetails: store, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}}
+			value := tracker.CollaborationEvent{ID: "event", OrganizationID: "org", ProjectID: "project", AggregateID: "item", Type: "run.updated", SchemaVersion: 1, Data: tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt", RunID: "run", LeaseID: "lease", FencingToken: 7, Sequence: 2}}}
+			snapshot := tenantAttemptSnapshot{attempt: leasestore.Attempt{OrganizationID: "org", ID: "attempt", RunID: "run", Sequence: 2}, lease: leasestore.Lease{LeaseID: "lease", FencingToken: 7}}
+			content := eventstore.NewContent(store)
+			prepare := func() eventstore.Event {
+				raw, err := json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				row, err := content.PrepareEvent(t.Context(), "org", raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return row
+			}
+			snapshot.event = prepare()
+			if _, err := service.hydrateNativeAttemptTenant(t.Context(), snapshot, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			test.edit(&value, &snapshot, store)
+			if test.name == "missing run" || test.stage == "hydrate attempt identity" {
+				snapshot.event = prepare()
+			}
+			got, err := service.hydrateNativeAttemptTenant(t.Context(), snapshot, time.Now())
+			if !errors.Is(err, artifact.ErrIntegrity) {
+				t.Fatalf("integrity identity lost: %v", err)
+			}
+			if !reflect.DeepEqual(got, tracker.NativeAttempt{}) {
+				t.Fatal("integrity failure returned an attempt")
+			}
+			wantError := test.stage + ": " + artifact.ErrIntegrity.Error()
+			if test.name == "read" {
+				wantError += "\nread archive: " + artifact.ErrIntegrity.Error()
+			}
+			if err.Error() != wantError {
+				t.Errorf("missing static stage or leaked raw values: %v", err)
+			}
+			if test.name == "read" {
+				var readError *attachment.ArchiveReadError
+				if !errors.As(err, &readError) {
+					t.Fatal("archive read error type lost")
+				}
+			}
+			response := func(failure error) *httptest.ResponseRecorder {
+				recorder := httptest.NewRecorder()
+				if err := service.nativeAPIError(echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), recorder), failure); err != nil {
+					t.Fatal(err)
+				}
+				return recorder
+			}
+			before, after := response(artifact.ErrIntegrity), response(err)
+			if after.Code != http.StatusInternalServerError || after.Code != before.Code || after.Body.String() != before.Body.String() {
+				t.Fatalf("public response changed: %d %s", after.Code, after.Body.String())
+			}
+		})
+	}
 }
