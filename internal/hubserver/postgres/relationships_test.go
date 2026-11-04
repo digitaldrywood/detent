@@ -311,3 +311,92 @@ func TestHistoricalIssueVersionLabelsRoundTripIntoTypedMemberships(t *testing.T)
 		t.Fatal(err)
 	}
 }
+
+func TestOwnedDependencyRemovalPreservesOtherSourcesAndTenants(t *testing.T) {
+	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: string(organization), Local: true, CreatedAt: historyAt()})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		seedRepository(t, repository, organization)
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			row, err := w.WorkItem(t.Context(), "prj_second", "wi_second_1")
+			if err != nil {
+				return err
+			}
+			row.NativeSourceKey = new("progress-check:example")
+			if _, err := w.UpdateWorkItem(t.Context(), row); err != nil {
+				return err
+			}
+			for _, pair := range [][2]tracker.NativeWorkItemID{{"wi_first_1", "wi_second_1"}, {"wi_first_1", "wi_second_2"}, {"wi_first_2", "wi_second_1"}} {
+				if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: organization, ProjectID: "prj_first", WorkItemID: pair[0], RelatedProjectID: "prj_second", RelatedWorkItemID: pair[1], Type: "dependency"}, "add", historyAt()); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rollback := errors.New("rollback owned dependencies")
+	refs := []corestore.WorkItemReference{{ProjectID: "prj_second", WorkItemID: "wi_second_1"}, {ProjectID: "prj_second", WorkItemID: "wi_second_2"}, {ProjectID: "prj_second", WorkItemID: "wi_second_1"}}
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		for _, tc := range []struct {
+			name, prefix string
+			refs         []corestore.WorkItemReference
+			result       error
+			rollback     bool
+		}{
+			{name: "empty", prefix: "progress-check:"},
+			{name: "wrong owner", prefix: "another-owner:", refs: refs},
+			{name: "missing owner", refs: refs, result: corestore.ErrInvalidRelationship},
+			{name: "missing endpoint", prefix: "progress-check:", refs: append(append([]corestore.WorkItemReference{}, refs...), corestore.WorkItemReference{ProjectID: "prj_second", WorkItemID: "wi_missing"}), result: corestore.ErrNotFound},
+			{name: "rollback", prefix: "progress-check:", refs: refs, result: rollback, rollback: true},
+		} {
+			t.Run(string(organization)+"/"+tc.name, func(t *testing.T) {
+				err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+					if err := w.RemoveOwnedDependencies(t.Context(), "prj_first", "wi_first_1", tc.prefix, tc.refs); err != nil {
+						return err
+					}
+					if tc.rollback {
+						return rollback
+					}
+					return nil
+				})
+				if !errors.Is(err, tc.result) {
+					t.Fatalf("removal error=%v want=%v", err, tc.result)
+				}
+				if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+					page, err := r.Relationships(t.Context(), "prj_first", "wi_first_1", corestore.RelationshipCursor{}, 10)
+					if err == nil && len(page.Items) != 2 {
+						t.Fatalf("rejected/rolled-back removal changed dependencies: %+v", page.Items)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.RemoveOwnedDependencies(t.Context(), "prj_first", "wi_first_1", "progress-check:", refs)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+			for _, pair := range [][2]tracker.NativeWorkItemID{{"wi_first_1", "wi_second_2"}, {"wi_first_2", "wi_second_1"}} {
+				page, err := r.Relationships(t.Context(), "prj_first", pair[0], corestore.RelationshipCursor{}, 10)
+				if err != nil {
+					return err
+				}
+				if len(page.Items) != 1 || page.Items[0].RelatedWorkItemID != pair[1] {
+					t.Fatalf("removal changed an unrelated edge: %+v", page.Items)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

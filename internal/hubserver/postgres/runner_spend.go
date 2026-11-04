@@ -137,13 +137,17 @@ func (s *session) RunnerTokenSpend(ctx context.Context, project tracker.ProjectI
 }
 
 func (s *session) AccountRunnerTokenUsage(ctx context.Context, expected leasestore.Attempt, usage []tracker.NativeUsage) error {
+	if err := s.lockAttemptScope(ctx, expected.IssueID); err != nil {
+		return err
+	}
 	var sequence int64
+	var issueID int64
 	var key string
 	var recorded bool
-	if err := s.db.QueryRowContext(ctx, `SELECT sequence,payload_object_key,runner_tokens_recorded FROM native_attempts WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, expected.ID).Scan(&sequence, &key, &recorded); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT issue_id,sequence,payload_object_key,runner_tokens_recorded FROM native_attempts WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, expected.ID).Scan(&issueID, &sequence, &key, &recorded); err != nil {
 		return mapError(ctx, err)
 	}
-	if sequence != expected.Sequence || key != expected.PayloadObjectKey {
+	if issueID != expected.IssueID || sequence != expected.Sequence || key != expected.PayloadObjectKey {
 		return corestore.ErrRevisionConflict
 	}
 	if recorded {

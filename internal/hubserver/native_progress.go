@@ -55,6 +55,10 @@ func (o nativeProgressOwner) validateProgressLeaseWriter(ctx context.Context, wr
 	if err != nil {
 		return err
 	}
+	item, err := writer.LockWorkItem(ctx, o.scope.project, tracker.NativeWorkItemID(o.request.IssueID))
+	if err != nil {
+		return err
+	}
 	locker, ok := writer.(leasestore.FencedLeaseLocker)
 	if !ok {
 		return workItemStorageUnavailable()
@@ -64,10 +68,6 @@ func (o nativeProgressOwner) validateProgressLeaseWriter(ctx context.Context, wr
 		return err
 	}
 	assigned, err := writer.RunnerForLease(ctx, string(o.leaseID))
-	if err != nil {
-		return err
-	}
-	item, err := writer.LockWorkItem(ctx, o.scope.project, tracker.NativeWorkItemID(o.request.IssueID))
 	if err != nil {
 		return err
 	}
@@ -411,6 +411,64 @@ func (o nativeProgressOwner) Publish(ctx context.Context, record progresscheck.R
 	return record, nil
 }
 
+func (o nativeProgressOwner) lockProgressRelationships(ctx context.Context, writer tenantstore.Writer, record progresscheck.Record) ([]corestore.Relationship, error) {
+	if err := writer.LockRelationshipGraph(ctx); err != nil {
+		return nil, err
+	}
+	var removals []corestore.Relationship
+	cursor := corestore.WorkItemBlockerCursor{}
+	complete := false
+	for range claimPreparationLimit {
+		blockers, err := writer.WorkItemBlockers(ctx, o.scope.project, tracker.NativeWorkItemID(record.IssueID), cursor, corestore.MaxPageSize)
+		if err != nil {
+			return nil, err
+		}
+		for _, blocker := range blockers[:min(corestore.MaxPageSize, len(blockers))] {
+			if blocker.NativeSourceKey != nil && strings.HasPrefix(*blocker.NativeSourceKey, "progress-check:") {
+				removals = append(removals, corestore.Relationship{OrganizationID: o.scope.organization, ProjectID: o.scope.project, WorkItemID: tracker.NativeWorkItemID(record.IssueID), RelatedProjectID: blocker.ProjectID, RelatedWorkItemID: blocker.WorkItemID, Type: "dependency", Direction: "blocked_by"})
+			}
+		}
+		if len(blockers) <= corestore.MaxPageSize {
+			complete = true
+			break
+		}
+		last := blockers[corestore.MaxPageSize-1]
+		cursor = corestore.WorkItemBlockerCursor{ProjectID: last.ProjectID, IssueID: last.IssueID}
+	}
+	if !complete {
+		return nil, corestore.ErrInvalidPage
+	}
+	projects := []tracker.ProjectID{o.scope.project}
+	items := []corestore.WorkItemReference{{ProjectID: o.scope.project, WorkItemID: tracker.NativeWorkItemID(record.IssueID)}}
+	for _, relationship := range removals {
+		projects = append(projects, relationship.RelatedProjectID)
+		items = append(items, corestore.WorkItemReference{ProjectID: relationship.RelatedProjectID, WorkItemID: relationship.RelatedWorkItemID})
+	}
+	if record.DefectIssueID != "" {
+		items = append(items, corestore.WorkItemReference{ProjectID: o.scope.project, WorkItemID: tracker.NativeWorkItemID(record.DefectIssueID)})
+	}
+	slices.Sort(projects)
+	projects = slices.Compact(projects)
+	for _, project := range projects {
+		if err := writer.LockWorkItemProject(ctx, project); err != nil {
+			return nil, err
+		}
+	}
+	slices.SortFunc(items, func(a, b corestore.WorkItemReference) int {
+		if a.ProjectID != b.ProjectID {
+			return strings.Compare(string(a.ProjectID), string(b.ProjectID))
+		}
+		return strings.Compare(string(a.WorkItemID), string(b.WorkItemID))
+	})
+	items = slices.Compact(items)
+	for start := 0; start < len(items); start += corestore.MaxPageSize {
+		if _, err := writer.LockWorkItems(ctx, items[start:min(start+corestore.MaxPageSize, len(items))]); err != nil {
+			return nil, err
+		}
+	}
+	return removals, nil
+}
+
 func (o nativeProgressOwner) publishTenant(ctx context.Context, record progresscheck.Record) (progresscheck.Record, error) {
 	if record.ProjectID != string(o.scope.project) || record.IssueID != o.request.IssueID {
 		return progresscheck.Record{}, errors.New("progress decision scope differs")
@@ -563,6 +621,10 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 		if err := o.service.authorizeAccessScope(ctx, writer, commentScope, true); err != nil {
 			return err
 		}
+		removals, err := o.lockProgressRelationships(ctx, writer, record)
+		if err != nil {
+			return err
+		}
 		if err := o.validateProgressLeaseWriter(ctx, writer); err != nil {
 			return err
 		}
@@ -573,35 +635,15 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 		if current.EventSequence != expectedSequence {
 			return &nativeError{Code: "revision_conflict", status: http.StatusConflict}
 		}
-		cursor := corestore.RelationshipCursor{}
-		complete := false
-		for range claimPreparationLimit {
-			page, err := writer.Relationships(ctx, o.scope.project, tracker.NativeWorkItemID(record.IssueID), cursor, corestore.MaxPageSize)
-			if err != nil {
+		for start := 0; start < len(removals); start += corestore.MaxPageSize - 1 {
+			batch := removals[start:min(start+corestore.MaxPageSize-1, len(removals))]
+			refs := make([]corestore.WorkItemReference, len(batch))
+			for i, row := range batch {
+				refs[i] = corestore.WorkItemReference{ProjectID: row.RelatedProjectID, WorkItemID: row.RelatedWorkItemID}
+			}
+			if err := writer.RemoveOwnedDependencies(ctx, o.scope.project, tracker.NativeWorkItemID(record.IssueID), "progress-check:", refs); err != nil {
 				return err
 			}
-			for _, relationship := range page.Items {
-				if relationship.Type != "dependency" || relationship.Direction != "blocked_by" {
-					continue
-				}
-				blocker, err := writer.WorkItemByNativeID(ctx, relationship.RelatedWorkItemID)
-				if err != nil {
-					return err
-				}
-				if blocker.NativeSourceKey != nil && strings.HasPrefix(*blocker.NativeSourceKey, "progress-check:") {
-					if err := writer.SetRelationship(ctx, relationship, "remove", o.service.config.now().UTC()); err != nil {
-						return err
-					}
-				}
-			}
-			if page.Next == (corestore.RelationshipCursor{}) {
-				complete = true
-				break
-			}
-			cursor = page.Next
-		}
-		if !complete {
-			return corestore.ErrInvalidPage
 		}
 		if record.DefectIssueID != "" {
 			if err := writer.SetRelationship(ctx, corestore.Relationship{OrganizationID: o.scope.organization, ProjectID: o.scope.project, WorkItemID: tracker.NativeWorkItemID(record.IssueID), RelatedProjectID: o.scope.project, RelatedWorkItemID: tracker.NativeWorkItemID(record.DefectIssueID), Type: "dependency"}, "add", o.service.config.now().UTC()); err != nil {

@@ -20,6 +20,16 @@ func (s *session) RecordAttempt(ctx context.Context, event leasestore.AttemptEve
 	return attempt, err
 }
 
+func (s *session) lockAttemptScope(ctx context.Context, issueID int64) error {
+	if _, err := s.queries.LockAttemptProject(ctx, pgquery.LockAttemptProjectParams{OrganizationID: s.organization, ID: issueID}); err != nil {
+		return mapError(ctx, err)
+	}
+	if _, err := s.queries.LockAttemptIssue(ctx, pgquery.LockAttemptIssueParams{OrganizationID: s.organization, ID: issueID}); err != nil {
+		return mapError(ctx, err)
+	}
+	return nil
+}
+
 func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.AttemptEvent) (leasestore.Attempt, bool, error) {
 	if strings.TrimSpace(event.ID) == "" || strings.TrimSpace(event.RunID) == "" || strings.TrimSpace(event.PayloadObjectKey) == "" || event.Sequence < 1 || event.DispatchGeneration < 0 {
 		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
@@ -29,11 +39,21 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 	default:
 		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
 	}
+	identity, err := s.queries.GetLease(ctx, pgquery.GetLeaseParams{OrganizationID: s.organization, LeaseID: event.Fence.LeaseID})
+	if err != nil {
+		return leasestore.Attempt{}, false, mapError(ctx, err)
+	}
+	if identity.FencingToken != event.Fence.FencingToken {
+		return leasestore.Attempt{}, false, tracker.ErrStaleFencingToken
+	}
+	if err := s.lockAttemptScope(ctx, identity.IssueID); err != nil {
+		return leasestore.Attempt{}, false, err
+	}
 	lease, err := s.queries.LockLease(ctx, pgquery.LockLeaseParams{OrganizationID: s.organization, LeaseID: event.Fence.LeaseID})
 	if err != nil {
 		return leasestore.Attempt{}, false, mapError(ctx, err)
 	}
-	if lease.FencingToken != event.Fence.FencingToken {
+	if lease.FencingToken != event.Fence.FencingToken || lease.IssueID != identity.IssueID {
 		return leasestore.Attempt{}, false, tracker.ErrStaleFencingToken
 	}
 	encoded, err := json.Marshal(event)

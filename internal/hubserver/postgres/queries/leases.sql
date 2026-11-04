@@ -9,6 +9,12 @@ SELECT i.revision,i.archived FROM issues i JOIN projects p ON p.organization_id=
 -- name: LockActiveLease :one
 SELECT * FROM leases WHERE organization_id=$1 AND issue_id=$2 AND released_at IS NULL FOR UPDATE;
 
+-- name: LockAttemptIssue :one
+SELECT id FROM issues WHERE organization_id=$1 AND id=$2 FOR UPDATE;
+
+-- name: LockAttemptProject :one
+SELECT p.id FROM projects p JOIN issues i ON i.organization_id=p.organization_id AND i.project_id=p.id WHERE i.organization_id=$1 AND i.id=$2 FOR SHARE OF p;
+
 -- name: LockLease :one
 SELECT * FROM leases WHERE organization_id=$1 AND lease_id=$2 FOR UPDATE;
 

@@ -1,3 +1,18 @@
+-- name: WorkItemBlockers :many
+WITH selected AS MATERIALIZED (
+  SELECT d.blocker_project_id,d.blocker_issue_id FROM issue_dependencies d
+  WHERE d.organization_id=sqlc.arg(organization_id) AND d.dependent_project_id=sqlc.arg(project_id)
+    AND d.dependent_issue_id=(SELECT source.id FROM issues source WHERE source.organization_id=sqlc.arg(organization_id) AND source.project_id=sqlc.arg(project_id) AND source.native_id=sqlc.arg(native_id))
+    AND (d.blocker_project_id,d.blocker_issue_id)>(sqlc.arg(after_project_id)::text,sqlc.arg(after_issue_id)::bigint)
+  ORDER BY d.blocker_project_id,d.blocker_issue_id LIMIT sqlc.arg(page_limit)
+)
+SELECT selected.blocker_project_id,selected.blocker_issue_id,blocker.native_id,blocker.native_source_key FROM selected
+CROSS JOIN LATERAL (
+  SELECT b.native_id,b.native_source_key FROM issues b
+  WHERE b.organization_id=sqlc.arg(organization_id) AND b.project_id=selected.blocker_project_id AND b.id=selected.blocker_issue_id OFFSET 0
+) blocker
+ORDER BY selected.blocker_project_id,selected.blocker_issue_id;
+
 -- name: RelationshipPage :many
 WITH candidates AS (
     SELECT 'dependency'::text AS relationship_type, 'blocked_by'::text AS direction, d.blocker_project_id AS related_project_id, d.blocker_issue_id AS related_issue_id, d.created_at
@@ -90,7 +105,7 @@ ORDER BY c.work_item_id,c.relationship_type,c.direction,c.related_project_id,tar
 -- name: LockRelationshipGraph :one
 SELECT organization_id FROM organizations
 WHERE organization_id=sqlc.arg(organization_id)
-FOR UPDATE;
+FOR NO KEY UPDATE;
 
 -- name: InsertDependency :exec
 INSERT INTO issue_dependencies (organization_id,dependent_project_id,dependent_issue_id,blocker_project_id,blocker_issue_id,provenance,created_at,updated_at)
@@ -135,3 +150,10 @@ DELETE FROM issue_labels WHERE organization_id=sqlc.arg(organization_id) AND pro
 -- name: InsertWorkItemLabel :exec
 INSERT INTO issue_labels (organization_id,project_id,work_item_id,label)
 VALUES (sqlc.arg(organization_id),sqlc.arg(project_id),sqlc.arg(work_item_id),sqlc.arg(label));
+
+-- name: LockWorkItemBatch :many
+WITH requested AS MATERIALIZED (
+ SELECT requested.project_id,requested.native_id FROM ROWS FROM(unnest(sqlc.arg(project_ids)::text[]),unnest(sqlc.arg(native_ids)::text[])) AS requested(project_id,native_id)
+)
+SELECT i.* FROM requested r JOIN issues i ON i.organization_id=sqlc.arg(organization_id) AND i.project_id=r.project_id AND i.native_id=r.native_id
+ORDER BY i.project_id COLLATE "C",i.native_id COLLATE "C" FOR UPDATE OF i;

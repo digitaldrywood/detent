@@ -4,18 +4,99 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/lib/pq"
+
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type progressLeaseOrderWriter struct {
+	tenantstore.Writer
+	issue, lease, issueWait chan struct{}
+	hasIssue, hasLease      bool
+}
+
+func (w *progressLeaseOrderWriter) AccessCredential(context.Context, string) (accessstore.Credential, error) {
+	return accessstore.Credential{}, nil
+}
+
+func (w *progressLeaseOrderWriter) RunnerIdentityByCredential(context.Context, string) (runnerstore.Identity, error) {
+	return runnerstore.Identity{}, nil
+}
+
+func (w *progressLeaseOrderWriter) RunnerForLease(context.Context, string) (runnerstore.Identity, error) {
+	return runnerstore.Identity{}, nil
+}
+
+func (w *progressLeaseOrderWriter) LockWorkItem(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (corestore.WorkItem, error) {
+	close(w.issueWait)
+	<-w.issue
+	w.hasIssue = true
+	return corestore.WorkItem{}, nil
+}
+
+func (w *progressLeaseOrderWriter) LockLease(context.Context, string) (leasestore.Lease, error) {
+	<-w.lease
+	w.hasLease = true
+	return leasestore.Lease{}, nil
+}
+
+func TestProgressLeaseValidationDoesNotDeadlockClaim(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		writer := &progressLeaseOrderWriter{issue: make(chan struct{}, 1), lease: make(chan struct{}, 1), issueWait: make(chan struct{})}
+		writer.lease <- struct{}{}
+		owner := nativeProgressOwner{service: &Service{config: Config{now: time.Now}}, scope: nativeScope{credential: apiCredential{Scope: apiScopeWorker}}}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			defer func() {
+				if writer.hasLease {
+					writer.lease <- struct{}{}
+				}
+				if writer.hasIssue {
+					writer.issue <- struct{}{}
+				}
+			}()
+			_ = owner.validateProgressLeaseWriter(t.Context(), writer)
+		}()
+		<-writer.issueWait
+		synctest.Wait()
+		claimDone := make(chan struct{})
+		go func() {
+			<-writer.lease
+			writer.lease <- struct{}{}
+			close(claimDone)
+		}()
+		synctest.Wait()
+		select {
+		case <-claimDone:
+		default:
+			t.Error("claim could not acquire its lease while progress waited for the issue")
+		}
+		writer.issue <- struct{}{}
+		<-done
+		<-claimDone
+	})
+}
 
 type sharedOutageProgressBackend struct {
 	decision progresscheck.Decision
@@ -394,5 +475,273 @@ func TestNativeProgressRetrievedEvidenceIsScoped(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type progressBlockerProbeWriter struct {
+	tenantstore.Writer
+	expected map[int64]bool
+	seen     map[int64]bool
+	pages    int
+}
+
+func (w *progressBlockerProbeWriter) WorkItemBlockers(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, cursor corestore.WorkItemBlockerCursor, limit int) ([]corestore.WorkItemBlocker, error) {
+	rows, err := w.Writer.WorkItemBlockers(ctx, project, item, cursor, limit)
+	w.pages++
+	for _, row := range rows {
+		if !w.expected[row.IssueID] {
+			return nil, errors.New("blocker query crossed tenant scope")
+		}
+		w.seen[row.IssueID] = true
+	}
+	return rows, err
+}
+
+func TestPostgresProgressLocksGraphBeforeScopedEndpoints(t *testing.T) {
+	admin := postgresStartupTemplate.Database(t)
+	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
+	store, err := openDatabase(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	repository := store.postgres
+	seedStartupOrganization(t, repository, "org_progress_control")
+	for _, organization := range []tracker.OrganizationID{"org_progress_first", "org_progress_second"} {
+		seedStartupOrganization(t, repository, organization)
+		expected := map[int64]bool{}
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			for _, project := range []tracker.ProjectID{"prj_first", "prj_second"} {
+				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: "Example " + string(project), Slug: strings.ReplaceAll(string(project), "_", "-"), Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+					return err
+				}
+			}
+			create := func(project tracker.ProjectID, id tracker.NativeWorkItemID, number int64, source *string) (corestore.WorkItem, error) {
+				return w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: project, NativeID: id, Number: number, Revision: 1, Title: "Example", WorkflowStateName: new("Todo"), NativeSourceKey: source})
+			}
+			for i, id := range []tracker.NativeWorkItemID{"wi_primary", "wi_next", "wi_shadow"} {
+				if _, err := create("prj_first", id, int64(i+1), nil); err != nil {
+					return err
+				}
+			}
+			for i := range 201 {
+				project, id, number, source := tracker.ProjectID("prj_first"), tracker.NativeWorkItemID(fmt.Sprintf("wi_blocker_%d", i)), int64(i+4), (*string)(nil)
+				if i == 0 {
+					source = new("progress-check:local")
+				}
+				if i == 1 {
+					project, id, number, source = "prj_second", "wi_shared", 1, new("progress-check:foreign-project")
+				}
+				row, err := create(project, id, number, source)
+				if err != nil {
+					return err
+				}
+				expected[row.ID] = true
+				if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: organization, ProjectID: "prj_first", WorkItemID: "wi_primary", RelatedProjectID: project, RelatedWorkItemID: id, Type: "dependency"}, "add", time.Now().UTC()); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		held, release := make(chan struct{}), make(chan struct{})
+		var once sync.Once
+		var tasks sync.WaitGroup
+		graphResult, progressResult := make(chan error, 1), make(chan error, 1)
+		tasks.Add(1)
+		go func() {
+			defer tasks.Done()
+			graphResult <- repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.LockRelationshipGraph(ctx); err != nil {
+					return err
+				}
+				close(held)
+				select {
+				case <-release:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			})
+		}()
+		t.Cleanup(func() { once.Do(func() { close(release) }); cancel(); tasks.Wait() })
+		testenv.WaitUntil(t, t.Context(), func() error {
+			select {
+			case <-held:
+				return nil
+			default:
+				return errors.New("graph holder has not acquired its lock")
+			}
+		})
+		fk, err := admin.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var organizationID string
+		err = fk.QueryRowContext(t.Context(), `SELECT organization_id FROM organizations WHERE organization_id=$1 FOR KEY SHARE NOWAIT`, organization).Scan(&organizationID)
+		if err == nil {
+			_, err = fk.ExecContext(t.Context(), `INSERT INTO machines(organization_id,id,hostname,display_name,capacity,version,sprite_name,last_heartbeat_at,registered_at,updated_at) VALUES($1,'machine_fk_probe','example','',1,'test','',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`, organization)
+		}
+		rollbackErr := fk.Rollback()
+		if err != nil {
+			t.Fatalf("graph lock blocked an unrelated organization foreign-key reference: %v", err)
+		}
+		if rollbackErr != nil {
+			t.Fatal(rollbackErr)
+		}
+		orgUpdate, err := admin.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = orgUpdate.QueryRowContext(t.Context(), `SELECT organization_id FROM organizations WHERE organization_id=$1 FOR NO KEY UPDATE NOWAIT`, organization).Scan(&organizationID)
+		rollbackErr = orgUpdate.Rollback()
+		var updateLock *pq.Error
+		if !errors.As(err, &updateLock) || updateLock.Code != "55P03" {
+			t.Fatalf("graph lock did not serialize organization updates: %v", err)
+		}
+		if rollbackErr != nil {
+			t.Fatal(rollbackErr)
+		}
+		otherGraph, err := admin.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = otherGraph.QueryRowContext(t.Context(), `SELECT organization_id FROM organizations WHERE organization_id='org_progress_control' FOR NO KEY UPDATE NOWAIT`).Scan(&organizationID)
+		rollbackErr = otherGraph.Rollback()
+		if err != nil {
+			t.Fatalf("graph lock crossed tenant scope: %v", err)
+		}
+		if rollbackErr != nil {
+			t.Fatal(rollbackErr)
+		}
+		owner := nativeProgressOwner{scope: nativeScope{organization: organization, project: "prj_first"}}
+		tasks.Add(1)
+		go func() {
+			defer tasks.Done()
+			progressResult <- repository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+				probe := &progressBlockerProbeWriter{Writer: w, expected: expected, seen: map[int64]bool{}}
+				started := time.Now()
+				removals, err := owner.lockProgressRelationships(ctx, probe, progresscheck.Record{ProjectID: "prj_first", IssueID: "wi_primary", DefectIssueID: "wi_next"})
+				if err != nil {
+					return err
+				}
+				if probe.pages != 2 || len(probe.seen) != 201 || len(removals) != 2 {
+					return fmt.Errorf("progress endpoints pages=%d blockers=%d removals=%d", probe.pages, len(probe.seen), len(removals))
+				}
+				for _, endpoint := range []corestore.WorkItemReference{{ProjectID: "prj_first", WorkItemID: "wi_primary"}, {ProjectID: "prj_first", WorkItemID: "wi_next"}, {ProjectID: "prj_first", WorkItemID: "wi_blocker_0"}, {ProjectID: "prj_second", WorkItemID: "wi_shared"}} {
+					tx, err := admin.BeginTx(ctx, nil)
+					if err != nil {
+						return err
+					}
+					var id int64
+					err = tx.QueryRowContext(ctx, `SELECT id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR UPDATE NOWAIT`, organization, endpoint.ProjectID, endpoint.WorkItemID).Scan(&id)
+					rollbackErr := tx.Rollback()
+					var locked *pq.Error
+					if !errors.As(err, &locked) || locked.Code != "55P03" {
+						return fmt.Errorf("progress endpoint was not locked: %v", err)
+					}
+					if rollbackErr != nil {
+						return rollbackErr
+					}
+				}
+				tx, err := admin.BeginTx(ctx, nil)
+				if err != nil {
+					return err
+				}
+				var shadow int64
+				err = tx.QueryRowContext(ctx, `SELECT id FROM issues WHERE organization_id=$1 AND project_id='prj_first' AND native_id='wi_shadow' FOR UPDATE NOWAIT`, organization).Scan(&shadow)
+				rollbackErr := tx.Rollback()
+				if err != nil {
+					return fmt.Errorf("progress locked an unrelated endpoint: %w", err)
+				}
+				if rollbackErr != nil {
+					return rollbackErr
+				}
+				refs := make([]corestore.WorkItemReference, 0, len(removals)+1)
+				for _, removal := range removals {
+					refs = append(refs, corestore.WorkItemReference{ProjectID: removal.RelatedProjectID, WorkItemID: removal.RelatedWorkItemID})
+				}
+				refs = append(refs, corestore.WorkItemReference{ProjectID: "prj_first", WorkItemID: "wi_blocker_2"})
+				if err := w.RemoveOwnedDependencies(ctx, "prj_first", "wi_primary", "different-owner:", refs); err != nil {
+					return err
+				}
+				var before int
+				if err := admin.QueryRowContext(ctx, `SELECT count(*) FROM issue_dependencies WHERE organization_id=$1`, organization).Scan(&before); err != nil || before != 201 {
+					return fmt.Errorf("unmatched owner changed dependencies count=%d: %w", before, err)
+				}
+				changed, err := w.WorkItem(ctx, "prj_second", "wi_shared")
+				if err != nil {
+					return err
+				}
+				changed.NativeSourceKey = new("other-owner:changed")
+				if changed, err = w.UpdateWorkItem(ctx, changed); err != nil {
+					return err
+				}
+				refs = append(refs, refs[0])
+				if err := w.RemoveOwnedDependencies(ctx, "prj_first", "wi_primary", "progress-check:", refs); err != nil {
+					return err
+				}
+				retained, err := w.WorkItemBlockers(ctx, "prj_first", "wi_primary", corestore.WorkItemBlockerCursor{}, corestore.MaxPageSize)
+				if err != nil || len(retained) != 200 {
+					return fmt.Errorf("changed source ownership count=%d: %w", len(retained), err)
+				}
+				changed.NativeSourceKey = new("progress-check:restored")
+				if changed, err = w.UpdateWorkItem(ctx, changed); err != nil {
+					return err
+				}
+				if err := w.RemoveOwnedDependencies(ctx, "prj_first", "wi_primary", "progress-check:", refs); err != nil {
+					return err
+				}
+				remaining, err := w.WorkItemBlockers(ctx, "prj_first", "wi_primary", corestore.WorkItemBlockerCursor{}, corestore.MaxPageSize)
+				if err != nil || len(remaining) != 199 {
+					return fmt.Errorf("owned dependency removal count=%d: %w", len(remaining), err)
+				}
+				for _, blocker := range remaining {
+					if blocker.NativeSourceKey != nil && strings.HasPrefix(*blocker.NativeSourceKey, "progress-check:") {
+						return errors.New("owned dependency was not removed")
+					}
+				}
+				t.Logf("progress scope pages=%d blockers=%d owned=%d duration=%s", probe.pages, len(probe.seen), len(removals), time.Since(started))
+				return nil
+			})
+		}()
+		testenv.WaitUntil(t, t.Context(), func() error {
+			var waiting bool
+			if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND state='active' AND wait_event_type='Lock' AND query LIKE '-- name: LockRelationshipGraph :one%')`).Scan(&waiting); err != nil {
+				return err
+			}
+			if !waiting {
+				return errors.New("progress has not reached the graph lock")
+			}
+			return nil
+		})
+		probe, err := admin.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var id string
+		err = probe.QueryRowContext(t.Context(), `SELECT id FROM projects WHERE organization_id=$1 AND id='prj_first' FOR UPDATE NOWAIT`, organization).Scan(&id)
+		rollbackErr = probe.Rollback()
+		if err != nil {
+			t.Fatalf("progress held a project while waiting for the graph: %v", err)
+		}
+		if rollbackErr != nil {
+			t.Fatal(rollbackErr)
+		}
+		once.Do(func() { close(release) })
+		if err := <-graphResult; err != nil {
+			t.Fatal(err)
+		}
+		if err := <-progressResult; err != nil {
+			t.Fatal(err)
+		}
+		cancel()
+		tasks.Wait()
 	}
 }

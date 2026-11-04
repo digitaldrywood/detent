@@ -6,10 +6,27 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lib/pq"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func (s *session) WorkItemBlockers(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, cursor corestore.WorkItemBlockerCursor, limit int) ([]corestore.WorkItemBlocker, error) {
+	if err := checkPage(limit); err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.WorkItemBlockers(ctx, pgquery.WorkItemBlockersParams{OrganizationID: s.organization, ProjectID: string(project), NativeID: item, AfterProjectID: string(cursor.ProjectID), AfterIssueID: cursor.IssueID, PageLimit: int32(limit + 1)})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	result := make([]corestore.WorkItemBlocker, len(rows))
+	for i, row := range rows {
+		result[i] = corestore.WorkItemBlocker{WorkItemReference: corestore.WorkItemReference{ProjectID: tracker.ProjectID(row.BlockerProjectID), WorkItemID: row.NativeID}, IssueID: row.BlockerIssueID, NativeSourceKey: row.NativeSourceKey}
+	}
+	return result, nil
+}
 
 func relationshipState(state *string) string {
 	if state == nil {
@@ -234,3 +251,97 @@ func (s *session) SetWorkItemLabels(ctx context.Context, project tracker.Project
 	}
 	return nil
 }
+
+func sortedWorkItemReferences(refs []corestore.WorkItemReference) []corestore.WorkItemReference {
+	refs = slices.Clone(refs)
+	slices.SortFunc(refs, func(a, b corestore.WorkItemReference) int {
+		if a.ProjectID != b.ProjectID {
+			return strings.Compare(string(a.ProjectID), string(b.ProjectID))
+		}
+		return strings.Compare(string(a.WorkItemID), string(b.WorkItemID))
+	})
+	refs = slices.Compact(refs)
+	return refs
+}
+
+func (s *session) LockWorkItems(ctx context.Context, refs []corestore.WorkItemReference) ([]corestore.WorkItem, error) {
+	if err := checkPage(len(refs)); err != nil {
+		return nil, err
+	}
+	refs = sortedWorkItemReferences(refs)
+	projects, items := make([]string, len(refs)), make([]string, len(refs))
+	var last tracker.ProjectID
+	for i, ref := range refs {
+		if ref.ProjectID == "" || ref.WorkItemID == "" {
+			return nil, corestore.ErrNotFound
+		}
+		if ref.ProjectID != last {
+			if err := s.LockWorkItemProject(ctx, ref.ProjectID); err != nil {
+				return nil, err
+			}
+			last = ref.ProjectID
+		}
+		projects[i], items[i] = string(ref.ProjectID), string(ref.WorkItemID)
+	}
+	rows, err := s.queries.LockWorkItemBatch(ctx, pgquery.LockWorkItemBatchParams{OrganizationID: s.organization, ProjectIds: projects, NativeIds: items})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	if len(rows) != len(refs) {
+		return nil, corestore.ErrNotFound
+	}
+	result := make([]corestore.WorkItem, len(rows))
+	for i, row := range rows {
+		result[i] = corestore.WorkItem(row)
+	}
+	return result, nil
+}
+
+func (s *session) RemoveOwnedDependencies(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, prefix string, refs []corestore.WorkItemReference) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	if len(refs) >= corestore.MaxPageSize || prefix == "" {
+		return corestore.ErrInvalidRelationship
+	}
+	refs = sortedWorkItemReferences(refs)
+	if err := s.LockRelationshipGraph(ctx); err != nil {
+		return err
+	}
+	endpoints := append(slices.Clone(refs), corestore.WorkItemReference{ProjectID: project, WorkItemID: item})
+	locked, err := s.LockWorkItems(ctx, endpoints)
+	if err != nil {
+		return err
+	}
+	byReference := make(map[corestore.WorkItemReference]int64, len(locked))
+	for _, row := range locked {
+		byReference[corestore.WorkItemReference{ProjectID: row.ProjectID, WorkItemID: row.NativeID}] = row.ID
+	}
+	anchor := byReference[corestore.WorkItemReference{ProjectID: project, WorkItemID: item}]
+	projects, items, ids := make([]string, len(refs)), make([]string, len(refs)), make([]int64, len(refs))
+	for i, ref := range refs {
+		projects[i], items[i], ids[i] = string(ref.ProjectID), string(ref.WorkItemID), byReference[ref]
+	}
+	_, err = s.db.ExecContext(ctx, removeOwnedDependencies, s.organization, project, anchor, prefix, pq.Array(projects), pq.Array(items), pq.Array(ids))
+	return mapError(ctx, err)
+}
+
+const removeOwnedDependencies = `
+WITH requested AS MATERIALIZED (
+ SELECT requested.project_id,requested.native_id,requested.issue_id
+ FROM ROWS FROM(unnest($5::text[]),unnest($6::text[]),unnest($7::bigint[])) AS requested(project_id,native_id,issue_id)
+), selected AS MATERIALIZED (
+ SELECT edge.location FROM requested r
+ CROSS JOIN LATERAL (
+  SELECT b.id,b.project_id,b.native_id,b.native_source_key FROM issues b
+  WHERE b.organization_id=$1 AND b.id=r.issue_id OFFSET 0
+ ) blocker
+ CROSS JOIN LATERAL (
+  SELECT d.ctid AS location FROM issue_dependencies d WHERE d.organization_id=$1
+  AND d.blocker_project_id=r.project_id AND d.blocker_issue_id=blocker.id
+  AND d.dependent_project_id=$2 AND d.dependent_issue_id=$3 OFFSET 0
+ ) edge
+ WHERE blocker.project_id=r.project_id AND blocker.native_id=r.native_id
+ AND left(blocker.native_source_key,length($4::text))=$4::text
+)
+DELETE FROM issue_dependencies d WHERE d.organization_id=$1 AND d.ctid=ANY(ARRAY(SELECT location FROM selected))`

@@ -6,10 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -74,6 +78,319 @@ func leaseFence(lease leasestore.Lease) leasestore.Fence {
 
 func attemptEvent(lease leasestore.Lease) leasestore.AttemptEvent {
 	return leasestore.AttemptEvent{ID: "attempt_" + lease.LeaseID, Fence: leaseFence(lease), RunID: "run_" + lease.LeaseID, Sequence: 1, Status: "running", PayloadObjectKey: "example/start", DispatchGeneration: 2}
+}
+
+func TestAttemptEventDoesNotDeadlockIssueTransition(t *testing.T) {
+	admin := template.Database(t)
+	repository, pool := repositoryFor(t, admin, smallPool())
+	seedLeaseFamily(t, repository, "org_first")
+	lease := claimLease(t, repository, "org_first", leaseClaim(1))
+	var login string
+	if err := pool.QueryRowContext(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
+		t.Fatal(err)
+	}
+	locked, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	transition := startRepositoryTask(t, func(ctx context.Context) error {
+		return repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+			item, err := w.LockWorkItem(ctx, "prj_1", "wi_1")
+			if err != nil {
+				return err
+			}
+			close(locked)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			locker := w.(leasestore.UnreleasedIssueLeaseLocker)
+			_, err = locker.LockUnreleasedIssueLease(ctx, item.ID)
+			return err
+		})
+	})
+	waitRepositorySignal(t, locked)
+	var transitionPID int
+	if err := admin.QueryRowContext(t.Context(), `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND state='idle in transaction' AND query LIKE '-- name: LockWorkItem :one%'`, login).Scan(&transitionPID); err != nil {
+		t.Fatal(err)
+	}
+	attempt := startRepositoryTask(t, func(ctx context.Context) error {
+		return repository.WriteLeases(ctx, "org_first", corestore.Background, func(w leasestore.Writer) error {
+			_, err := w.RecordAttempt(ctx, attemptEvent(lease))
+			return err
+		})
+	})
+	testenv.WaitUntil(t, t.Context(), func() error {
+		var waiting bool
+		if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)) AND (query LIKE '-- name: BindAttemptRun :exec%' OR query LIKE '-- name: LockAttemptIssue :one%' OR query LIKE '-- name: LockAttemptProject :one%'))`, login, transitionPID).Scan(&waiting); err != nil {
+			return err
+		}
+		if !waiting {
+			return errors.New("attempt event has not reached the project or issue lock")
+		}
+		return nil
+	})
+	releaseOnce.Do(func() { close(release) })
+	if err := transition.wait(t); err != nil {
+		t.Errorf("issue transition lock: %v", err)
+	}
+	if err := attempt.wait(t); err != nil {
+		t.Errorf("attempt event: %v", err)
+	}
+}
+
+func TestAttemptEventDoesNotDeadlockUsageAccounting(t *testing.T) {
+	admin := template.Database(t)
+	repository, pool := repositoryFor(t, admin, smallPool())
+	seedLeaseFamily(t, repository, "org_first")
+	lease := claimLease(t, repository, "org_first", leaseClaim(1))
+	start := recordLeaseAttempt(t, repository, "org_first", attemptEvent(lease))
+	if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET runner_tokens_recorded=false WHERE organization_id=$1 AND id=$2`, "org_first", start.ID); err != nil {
+		t.Fatal(err)
+	}
+	var login string
+	if err := pool.QueryRowContext(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
+		t.Fatal(err)
+	}
+	locked, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	usage := []tracker.NativeUsage{{Model: "example-model", Input: 5, Output: 2, To: time.Now().UTC()}}
+	event := attemptEvent(lease)
+	event.Sequence, event.PayloadObjectKey, event.Usage = 2, "example/next", usage
+	transition := startRepositoryTask(t, func(ctx context.Context) error {
+		return repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.LockWorkItem(ctx, "prj_1", "wi_1"); err != nil {
+				return err
+			}
+			close(locked)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			_, err := w.RecordAttempt(ctx, event)
+			return err
+		})
+	})
+	waitRepositorySignal(t, locked)
+	var transitionPID int
+	if err := admin.QueryRowContext(t.Context(), `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND state='idle in transaction' AND query LIKE '-- name: LockWorkItem :one%'`, login).Scan(&transitionPID); err != nil {
+		t.Fatal(err)
+	}
+	accounting := startRepositoryTask(t, func(ctx context.Context) error {
+		return repository.WriteTenant(ctx, "org_first", corestore.Background, func(w tenantstore.Writer) error {
+			return w.(leasestore.RunnerUsageWriter).AccountRunnerTokenUsage(ctx, start, usage)
+		})
+	})
+	testenv.WaitUntil(t, t.Context(), func() error {
+		select {
+		case <-accounting.done:
+			t.Fatalf("accounting ended before lock observation: %v", accounting.err)
+		default:
+		}
+		var waiting bool
+		if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)) AND (query LIKE 'INSERT INTO runner_issue_tokens%' OR query LIKE 'INSERT INTO runner_attempt_token_usage%' OR query LIKE 'INSERT INTO runner_project_daily_tokens%' OR query LIKE '-- name: LockAttemptProject :one%' OR query LIKE '-- name: LockAttemptIssue :one%' OR query LIKE '-- name: LockClaimIssue :one%'))`, login, transitionPID).Scan(&waiting); err != nil {
+			return err
+		}
+		if !waiting {
+			return errors.New("usage accounting has not reached the project or issue lock")
+		}
+		return nil
+	})
+	releaseOnce.Do(func() { close(release) })
+	if err := transition.wait(t); err != nil {
+		t.Errorf("attempt event: %v", err)
+	}
+	if err := accounting.wait(t); !errors.Is(err, corestore.ErrRevisionConflict) {
+		t.Errorf("stale usage accounting error = %v", err)
+	}
+}
+
+func TestImportedWorkItemLocksProjectBeforeWriting(t *testing.T) {
+	admin := template.Database(t)
+	repository, pool := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 5, ServingConnections: 2, BackgroundConnections: 2})
+	seedLeaseFamily(t, repository, "org_first")
+	var login string
+	if err := pool.QueryRowContext(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	content := eventstore.NewContent(newHistoryObjects())
+	version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: "org_first", ProjectID: "prj_1", WorkItemID: "wi_imported", RecordID: "wi_imported", Revision: 1}, []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: "org_first", ActorID: "production-import", Operation: "core-work-item", CommandKey: "imported-issue", RequestHash: artifact.Digest([]byte("imported-issue")), CreatedAt: now}, []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := postgres.CoreWorkItemImport{
+		Item:     corestore.WorkItem{OrganizationID: "org_first", ProjectID: "prj_1", NativeID: "wi_imported", ID: 3, Number: 2, Revision: 1, Title: "Example"},
+		Facts:    claimstore.WorkItemFacts{OrganizationID: "org_first", ProjectID: "prj_1", WorkItemID: "wi_imported"},
+		Versions: []eventstore.CollaborationVersion{version}, Receipt: receipt,
+	}
+	locked, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	owner := startRepositoryTask(t, func(ctx context.Context) error {
+		return repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.LockWorkItemProject(ctx, "prj_1"); err != nil {
+				return err
+			}
+			close(locked)
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+	})
+	waitRepositorySignal(t, locked)
+	var ownerPID int
+	if err := admin.QueryRowContext(t.Context(), `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND state='idle in transaction' AND query LIKE '-- name: LockWorkItemProject :one%'`, login).Scan(&ownerPID); err != nil {
+		t.Fatal(err)
+	}
+	imported := startRepositoryTask(t, func(ctx context.Context) error { return repository.ImportCoreWorkItem(ctx, record) })
+	testenv.WaitUntil(t, t.Context(), func() error {
+		select {
+		case <-imported.done:
+			t.Fatalf("import finished before acquiring the project lock: %v", imported.err)
+		default:
+		}
+		var query string
+		err := admin.QueryRowContext(t.Context(), `SELECT query FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid))`, login, ownerPID).Scan(&query)
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("import has not reached the project lock")
+		}
+		if err == nil && !strings.HasPrefix(query, "-- name: LockWorkItemProject :one") {
+			t.Fatalf("import wrote before acquiring the project lock: %s", query)
+		}
+		return err
+	})
+	replayed := startRepositoryTask(t, func(ctx context.Context) error { return repository.ImportCoreWorkItem(ctx, record) })
+	testenv.WaitUntil(t, t.Context(), func() error {
+		select {
+		case <-replayed.done:
+			t.Fatalf("concurrent replay finished before acquiring the project lock: %v", replayed.err)
+		default:
+		}
+		var waiting int
+		if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND wait_event_type='Lock' AND query LIKE '-- name: LockWorkItemProject :one%'`, login).Scan(&waiting); err != nil {
+			return err
+		}
+		if waiting != 2 {
+			return errors.New("concurrent import has not reached the project lock")
+		}
+		return nil
+	})
+	releaseOnce.Do(func() { close(release) })
+	if err := owner.wait(t); err != nil {
+		t.Fatal(err)
+	}
+	if err := imported.wait(t); err != nil {
+		t.Fatal(err)
+	}
+	if err := replayed.wait(t); err != nil {
+		t.Fatalf("concurrent replay: %v", err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `UPDATE projects SET deleted_at=$1 WHERE organization_id='org_first' AND id='prj_1'`, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ImportCoreWorkItem(t.Context(), record); err != nil {
+		t.Fatalf("committed replay after project deletion: %v", err)
+	}
+	record.Receipt.CommandKey = "fresh-import"
+	if err := repository.ImportCoreWorkItem(t.Context(), record); !errors.Is(err, corestore.ErrNotFound) {
+		t.Fatalf("fresh import after project deletion: %v", err)
+	}
+}
+
+func TestImportedLeaseWaitsForIssueBeforeFencingAllocation(t *testing.T) {
+	admin := template.Database(t)
+	repository, pool := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 5, ServingConnections: 1, BackgroundConnections: 3})
+	seedLeaseFamily(t, repository, "org_first")
+	var login string
+	if err := pool.QueryRowContext(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	receipt, err := eventstore.NewContent(newHistoryObjects()).PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: "org_first", ActorID: "production-import", Operation: "core-lease", CommandKey: "imported-lease", RequestHash: artifact.Digest([]byte("imported-lease")), CreatedAt: now}, []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leasestore.Lease{OrganizationID: "org_first", LeaseID: "imported-lease", FencingToken: 1000000, IssueID: 1, MachineID: "machine_1", SessionID: "imported-session", WorkItemRevision: 1, AcquiredAt: now, RenewedAt: now, ExpiresAt: now.Add(time.Hour)}
+	locked, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	transition := startRepositoryTask(t, func(ctx context.Context) error {
+		return repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.LockWorkItem(ctx, "prj_1", "wi_1"); err != nil {
+				return err
+			}
+			close(locked)
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+	})
+	waitRepositorySignal(t, locked)
+	var transitionPID int
+	if err := admin.QueryRowContext(t.Context(), `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND state='idle in transaction' AND query LIKE '-- name: LockWorkItem :one%'`, login).Scan(&transitionPID); err != nil {
+		t.Fatal(err)
+	}
+	imported := startRepositoryTask(t, func(ctx context.Context) error {
+		return repository.ImportCoreLease(ctx, postgres.CoreLeaseImport{Lease: lease, Receipt: receipt})
+	})
+	duplicate := startRepositoryTask(t, func(ctx context.Context) error {
+		return repository.ImportCoreLease(ctx, postgres.CoreLeaseImport{Lease: lease, Receipt: receipt})
+	})
+	var importPID int
+	testenv.WaitUntil(t, t.Context(), func() error {
+		err := admin.QueryRowContext(t.Context(), `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)) AND (query LIKE '-- name: LockAttemptIssue :one%' OR query LIKE '-- name: LockAttemptProject :one%' OR query LIKE 'INSERT INTO leases%')`, login, transitionPID).Scan(&importPID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("lease import has not reached the issue lock")
+		}
+		return err
+	})
+	testenv.WaitUntil(t, t.Context(), func() error {
+		var count int
+		if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND wait_event_type='Lock' AND (query LIKE '-- name: LockAttemptIssue :one%' OR query LIKE '-- name: LockAttemptProject :one%' OR query LIKE 'INSERT INTO leases%' OR query LIKE 'SELECT allocate_imported_lease_fencing_token%')`, login).Scan(&count); err != nil {
+			return err
+		}
+		if count != 2 {
+			return fmt.Errorf("concurrent imports waiting=%d, want2", count)
+		}
+		return nil
+	})
+	var holdsAllocator bool
+	if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND locktype='advisory' AND granted)`, importPID).Scan(&holdsAllocator); err != nil {
+		t.Fatal(err)
+	}
+	if holdsAllocator {
+		t.Error("lease import holds the fencing allocator while waiting for the issue")
+	}
+	releaseOnce.Do(func() { close(release) })
+	if err := transition.wait(t); err != nil {
+		t.Errorf("issue transition lock: %v", err)
+	}
+	if err := imported.wait(t); err != nil {
+		t.Errorf("lease import: %v", err)
+	}
+	if err := duplicate.wait(t); err != nil {
+		t.Errorf("concurrent lease replay: %v", err)
+	}
+	var last int64
+	if err := admin.QueryRowContext(t.Context(), `SELECT last_value FROM leases_fencing_token_seq`).Scan(&last); err != nil {
+		t.Fatal(err)
+	}
+	if last != lease.FencingToken {
+		t.Fatalf("concurrent import replay advanced the fencing allocator: %d, want%d", last, lease.FencingToken)
+	}
 }
 
 func recordLeaseAttempt(t *testing.T, r *postgres.Repository, org tracker.OrganizationID, event leasestore.AttemptEvent) leasestore.Attempt {

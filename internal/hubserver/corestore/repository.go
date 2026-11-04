@@ -64,6 +64,9 @@ type Reader interface {
 type Writer interface {
 	Reader
 	LockRelationshipGraph(context.Context) error
+	WorkItemBlockers(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, WorkItemBlockerCursor, int) ([]WorkItemBlocker, error)
+	LockWorkItems(context.Context, []WorkItemReference) ([]WorkItem, error)
+	RemoveOwnedDependencies(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string, []WorkItemReference) error
 	LockWorkItemProject(context.Context, tracker.ProjectID) error
 	LockWorkItem(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (WorkItem, error)
 	CreateProject(context.Context, Project) (Project, error)
@@ -186,6 +189,22 @@ type Relationship struct {
 	ProjectSlug       string
 	ClosedAt          *time.Time
 	StartedAt         *time.Time
+}
+
+type WorkItemReference struct {
+	ProjectID  tracker.ProjectID
+	WorkItemID tracker.NativeWorkItemID
+}
+
+type WorkItemBlockerCursor struct {
+	ProjectID tracker.ProjectID
+	IssueID   int64
+}
+
+type WorkItemBlocker struct {
+	WorkItemReference
+	IssueID         int64
+	NativeSourceKey *string
 }
 
 type RelationshipCursor struct {

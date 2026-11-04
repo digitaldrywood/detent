@@ -83,7 +83,17 @@ func (r *Repository) ImportCoreWorkItem(ctx context.Context, record CoreWorkItem
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		if _, err := s.Project(ctx, item.ProjectID); err != nil {
+		if err := s.LockWorkItemProject(ctx, item.ProjectID); err != nil {
+			return err
+		}
+		previous, err = s.Receipt(ctx, record.Receipt.ActorID, record.Receipt.Operation, record.Receipt.CommandKey)
+		if err == nil {
+			if previous.RequestHash != record.Receipt.RequestHash {
+				return mutation.ErrConflict
+			}
+			return nil
+		}
+		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
 		if _, err := s.createWorkItem(ctx, item); err != nil {

@@ -278,7 +278,7 @@ func (q *Queries) LabelNamePage(ctx context.Context, arg LabelNamePageParams) ([
 const lockRelationshipGraph = `-- name: LockRelationshipGraph :one
 SELECT organization_id FROM organizations
 WHERE organization_id=$1
-FOR UPDATE
+FOR NO KEY UPDATE
 `
 
 func (q *Queries) LockRelationshipGraph(ctx context.Context, organizationID tracker.OrganizationID) (tracker.OrganizationID, error) {
@@ -286,6 +286,71 @@ func (q *Queries) LockRelationshipGraph(ctx context.Context, organizationID trac
 	var organization_id tracker.OrganizationID
 	err := row.Scan(&organization_id)
 	return organization_id, err
+}
+
+const lockWorkItemBatch = `-- name: LockWorkItemBatch :many
+WITH requested AS MATERIALIZED (
+ SELECT requested.project_id,requested.native_id FROM ROWS FROM(unnest($2::text[]),unnest($3::text[])) AS requested(project_id,native_id)
+)
+SELECT i.organization_id, i.id, i.native_id, i.project_id, i.number, i.revision, i.event_sequence, i.native_source_key, i.title, i.body_object_key, i.issue_contract_object_key, i.report_context_object_key, i.actor_kind, i.actor_principal_id, i.provenance_provider, i.provenance_external_id, i.archived, i.created_at, i.updated_at, i.native_created_at, i.native_updated_at, i.workflow_state_name, i.last_activity_at, i.issue_type, i.priority, i.dispatch_generation, i.dispatch_requested_at FROM requested r JOIN issues i ON i.organization_id=$1 AND i.project_id=r.project_id AND i.native_id=r.native_id
+ORDER BY i.project_id COLLATE "C",i.native_id COLLATE "C" FOR UPDATE OF i
+`
+
+type LockWorkItemBatchParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectIds     []string
+	NativeIds      []string
+}
+
+func (q *Queries) LockWorkItemBatch(ctx context.Context, arg LockWorkItemBatchParams) ([]Issue, error) {
+	rows, err := q.db.QueryContext(ctx, lockWorkItemBatch, arg.OrganizationID, pq.Array(arg.ProjectIds), pq.Array(arg.NativeIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Issue{}
+	for rows.Next() {
+		var i Issue
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ID,
+			&i.NativeID,
+			&i.ProjectID,
+			&i.Number,
+			&i.Revision,
+			&i.EventSequence,
+			&i.NativeSourceKey,
+			&i.Title,
+			&i.BodyObjectKey,
+			&i.IssueContractObjectKey,
+			&i.ReportContextObjectKey,
+			&i.ActorKind,
+			&i.ActorPrincipalID,
+			&i.ProvenanceProvider,
+			&i.ProvenanceExternalID,
+			&i.Archived,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.NativeCreatedAt,
+			&i.NativeUpdatedAt,
+			&i.WorkflowStateName,
+			&i.LastActivityAt,
+			&i.IssueType,
+			&i.Priority,
+			&i.DispatchGeneration,
+			&i.DispatchRequestedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const relationshipBatch = `-- name: RelationshipBatch :many
@@ -509,6 +574,73 @@ func (q *Queries) RelationshipPage(ctx context.Context, arg RelationshipPagePara
 			&i.ProjectSlug,
 			&i.ClosedAt,
 			&i.StartedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const workItemBlockers = `-- name: WorkItemBlockers :many
+WITH selected AS MATERIALIZED (
+  SELECT d.blocker_project_id,d.blocker_issue_id FROM issue_dependencies d
+  WHERE d.organization_id=$1 AND d.dependent_project_id=$2
+    AND d.dependent_issue_id=(SELECT source.id FROM issues source WHERE source.organization_id=$1 AND source.project_id=$2 AND source.native_id=$3)
+    AND (d.blocker_project_id,d.blocker_issue_id)>($4::text,$5::bigint)
+  ORDER BY d.blocker_project_id,d.blocker_issue_id LIMIT $6
+)
+SELECT selected.blocker_project_id,selected.blocker_issue_id,blocker.native_id,blocker.native_source_key FROM selected
+CROSS JOIN LATERAL (
+  SELECT b.native_id,b.native_source_key FROM issues b
+  WHERE b.organization_id=$1 AND b.project_id=selected.blocker_project_id AND b.id=selected.blocker_issue_id OFFSET 0
+) blocker
+ORDER BY selected.blocker_project_id,selected.blocker_issue_id
+`
+
+type WorkItemBlockersParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      string
+	NativeID       tracker.NativeWorkItemID
+	AfterProjectID string
+	AfterIssueID   int64
+	PageLimit      int32
+}
+
+type WorkItemBlockersRow struct {
+	BlockerProjectID string
+	BlockerIssueID   int64
+	NativeID         tracker.NativeWorkItemID
+	NativeSourceKey  *string
+}
+
+func (q *Queries) WorkItemBlockers(ctx context.Context, arg WorkItemBlockersParams) ([]WorkItemBlockersRow, error) {
+	rows, err := q.db.QueryContext(ctx, workItemBlockers,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.NativeID,
+		arg.AfterProjectID,
+		arg.AfterIssueID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkItemBlockersRow{}
+	for rows.Next() {
+		var i WorkItemBlockersRow
+		if err := rows.Scan(
+			&i.BlockerProjectID,
+			&i.BlockerIssueID,
+			&i.NativeID,
+			&i.NativeSourceKey,
 		); err != nil {
 			return nil, err
 		}

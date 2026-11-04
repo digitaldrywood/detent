@@ -568,6 +568,38 @@ func (q *Queries) LockActiveLease(ctx context.Context, arg LockActiveLeaseParams
 	return i, err
 }
 
+const lockAttemptIssue = `-- name: LockAttemptIssue :one
+SELECT id FROM issues WHERE organization_id=$1 AND id=$2 FOR UPDATE
+`
+
+type LockAttemptIssueParams struct {
+	OrganizationID tracker.OrganizationID
+	ID             int64
+}
+
+func (q *Queries) LockAttemptIssue(ctx context.Context, arg LockAttemptIssueParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, lockAttemptIssue, arg.OrganizationID, arg.ID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const lockAttemptProject = `-- name: LockAttemptProject :one
+SELECT p.id FROM projects p JOIN issues i ON i.organization_id=p.organization_id AND i.project_id=p.id WHERE i.organization_id=$1 AND i.id=$2 FOR SHARE OF p
+`
+
+type LockAttemptProjectParams struct {
+	OrganizationID tracker.OrganizationID
+	ID             int64
+}
+
+func (q *Queries) LockAttemptProject(ctx context.Context, arg LockAttemptProjectParams) (tracker.ProjectID, error) {
+	row := q.db.QueryRowContext(ctx, lockAttemptProject, arg.OrganizationID, arg.ID)
+	var id tracker.ProjectID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const lockClaimIssue = `-- name: LockClaimIssue :one
 SELECT i.revision,i.archived FROM issues i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id WHERE i.organization_id=$1 AND i.id=$2 AND p.deleted_at IS NULL FOR SHARE OF p FOR NO KEY UPDATE OF i
 `

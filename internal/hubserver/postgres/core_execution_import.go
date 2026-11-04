@@ -291,6 +291,13 @@ func (r *Repository) ImportCoreLease(ctx context.Context, record CoreLeaseImport
 		if err != nil {
 			return err
 		}
+		if err := s.lockAttemptScope(ctx, lease.IssueID); err != nil {
+			return err
+		}
+		replayed, err = checkCoreImportReceipt(ctx, s, record.Receipt)
+		if err != nil {
+			return err
+		}
 		if !replayed {
 			var allocated int64
 			if err := s.db.QueryRowContext(ctx, `SELECT allocate_imported_lease_fencing_token($1)`, lease.FencingToken).Scan(&allocated); err != nil {
@@ -345,6 +352,12 @@ func (r *Repository) ImportCoreAttempt(ctx context.Context, record CoreAttemptIm
 		return corestore.ErrTenantMismatch
 	}
 	return r.transaction(ctx, attempt.OrganizationID, corestore.Background, false, func(s *session) error {
+		if _, err := checkCoreImportReceipt(ctx, s, record.Receipt); err != nil {
+			return err
+		}
+		if err := s.lockAttemptScope(ctx, attempt.IssueID); err != nil {
+			return err
+		}
 		if _, err := checkCoreImportReceipt(ctx, s, record.Receipt); err != nil {
 			return err
 		}
