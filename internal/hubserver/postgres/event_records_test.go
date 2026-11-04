@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -316,6 +318,99 @@ func TestLatestRunEventUsesTypedAttemptIndex(t *testing.T) {
 		if err != nil || hydrated.Data.Run == nil || hydrated.Data.Run.Runtime == nil || hydrated.Data.Run.Runtime.Landing == nil || !hydrated.Data.Run.Runtime.Landing.Waiting {
 			t.Fatalf("hydrated latest run event = %+v, error %v", hydrated, err)
 		}
+	}
+}
+
+func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
+	admin := template.Database(t)
+	r, _ := repositoryFor(t, admin, smallPool())
+	attempts := make([]string, 17)
+	for i := range attempts {
+		attempts[i] = fmt.Sprintf("attempt_%d", i+1)
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedRepository(t, r, org)
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO collaboration_events
+			(organization_id,project_id,work_item_id,id,sequence,schema_version,attempt_id,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
+			SELECT $1,'prj_first','wi_first_1','event_'||n,n,1,
+			CASE WHEN n<=1700 THEN 'attempt_'||((n-1)%17+1) ELSE 'unrelated_'||n END,
+			$2::timestamptz-n*interval '1 second',
+			'orgs/'||$1||'/blobs/sha256/aa/'||repeat('a',64),repeat('a',64),1,1
+			FROM generate_series(1,30000) n`, org, historyAt()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := admin.ExecContext(t.Context(), `ANALYZE collaboration_events`); err != nil {
+		t.Fatal(err)
+	}
+	pool := rolePool(t, admin, "detent_runtime_v2", "")
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(org), func(t *testing.T) {
+			tx, err := pool.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, org); err != nil {
+				t.Fatal(err)
+			}
+			probe := &searchPlanProbe{DBTX: tx}
+			queries := pgquery.New(probe)
+			params := pgquery.RecordLatestRunEventsByAttemptsParams{OrganizationID: org, ProjectID: "prj_first", AttemptIds: attempts}
+			rows, err := queries.RecordLatestRunEventsByAttempts(t.Context(), params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != len(attempts) {
+				t.Fatalf("latest events=%d, want %d", len(rows), len(attempts))
+			}
+			seen := make(map[string]bool)
+			for _, row := range rows {
+				var number int
+				if _, err := fmt.Sscanf(row.AttemptID, "attempt_%d", &number); err != nil {
+					t.Fatal(err)
+				}
+				want := int64(1683 + number)
+				if number < 1 || number > len(attempts) || seen[row.AttemptID] || row.OrganizationID != org || row.ProjectID != "prj_first" || row.Sequence != want || row.ID != fmt.Sprintf("event_%d", want) {
+					t.Fatalf("latest event lost sequence or scope: %+v", row)
+				}
+				seen[row.AttemptID] = true
+			}
+			var raw []byte
+			if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
+				t.Fatal(err)
+			}
+			var plan []struct{ Plan searchPlanNode }
+			if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
+				t.Fatalf("decode plan: %v", err)
+			}
+			var visits func(searchPlanNode) float64
+			visits = func(node searchPlanNode) float64 {
+				var count float64
+				if node.Relation == "collaboration_events" {
+					count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
+				}
+				for _, child := range node.Plans {
+					count += visits(child)
+				}
+				return count
+			}
+			visited := visits(plan[0].Plan)
+			t.Logf("requested=%d actual event rows visited=%.0f plan=%s", len(attempts), visited, raw)
+			if visited > float64(4*len(attempts)) {
+				t.Errorf("latest batch visited %.0f event rows for %d attempts", visited, len(attempts))
+			}
+			params.OrganizationID = "org_foreign"
+			foreign, err := queries.RecordLatestRunEventsByAttempts(t.Context(), params)
+			if err != nil || len(foreign) != 0 {
+				t.Fatalf("foreign tenant events=%d error=%v", len(foreign), err)
+			}
+			params.OrganizationID, params.ProjectID = org, "prj_second"
+			otherProject, err := queries.RecordLatestRunEventsByAttempts(t.Context(), params)
+			if err != nil || len(otherProject) != 0 {
+				t.Fatalf("other project events=%d error=%v", len(otherProject), err)
+			}
+		})
 	}
 }
 
