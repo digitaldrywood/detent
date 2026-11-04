@@ -20,10 +20,17 @@ type tenantNativeRunEventParticipant struct {
 }
 
 func (p tenantNativeRunEventParticipant) validateNativeRunEventOwner(ctx context.Context, reader tenantstore.Reader, authority *NativeRunEventAuthority) error {
+	return p.validateRunEventOwner(ctx, reader, authority, false)
+}
+
+func (p tenantNativeRunEventParticipant) validateRunEventOwner(ctx context.Context, reader tenantstore.Reader, authority *NativeRunEventAuthority, human bool) error {
 	if authority == nil || authority.OrganizationID == "" || authority.ProjectID == "" || authority.WorkItem.NativeID == "" || authority.Lease.LeaseID == "" {
 		return nativeRunEventStorageUnavailable()
 	}
 	event := authority.Event
+	if human && (event.Type != "run.finished" || event.Data.Outcome != "cancelled" || event.Data.Sequence <= 1 || authority.UsageCorrection || authority.UsageFacts != nil || len(authority.UsageCosts) != 0) {
+		return tracker.ErrInvalidClaimRequest
+	}
 	if err := validateNativeRunEvent(event); err != nil {
 		return err
 	}
@@ -55,22 +62,28 @@ func (p tenantNativeRunEventParticipant) validateNativeRunEventOwner(ctx context
 	if lease.IssueID != item.ID || lease.FencingToken != authority.Lease.FencingToken || lease.MachineID != authority.Lease.MachineID || lease.SessionID != authority.Lease.SessionID || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
 		return tracker.ErrStaleFencingToken
 	}
-	if event.Data.MachineID != tracker.MachineID(lease.MachineID) || event.Data.SessionID != lease.SessionID || event.Data.RunnerID != authority.Scope.credential.Runner.RunnerID {
+	if event.Data.MachineID != tracker.MachineID(lease.MachineID) || event.Data.SessionID != lease.SessionID || !human && event.Data.RunnerID != authority.Scope.credential.Runner.RunnerID {
 		return nativeExecutionConflict("Execution identity must match the authenticated lease owner")
 	}
-	identity, err := reader.RunnerForLease(ctx, lease.LeaseID)
-	if err != nil {
-		return err
-	}
-	if identity.OrganizationID != authority.OrganizationID || identity.RunnerID == "" || identity.RunnerID != authority.Scope.credential.Runner.RunnerID || identity.TokenID != authority.Scope.credential.ID || identity.MachineID != tracker.MachineID(lease.MachineID) || identity.RemovedAt != nil || identity.State != "active" || !identity.ExpiresAt.After(now) || !slices.Contains(identity.Operations, runnerauth.Claim) {
-		return tracker.ErrStaleFencingToken
-	}
-	allowed, err := reader.RunnerProjectAuthorized(ctx, identity.RunnerID, authority.ProjectID, now)
-	if err != nil {
-		return err
-	}
-	if !allowed {
-		return tracker.ErrMachineNotFound
+	if human {
+		if err := p.service.authorizeNativeWorkflowScope(ctx, reader, authority.Scope); err != nil {
+			return err
+		}
+	} else {
+		identity, err := reader.RunnerForLease(ctx, lease.LeaseID)
+		if err != nil {
+			return err
+		}
+		if identity.OrganizationID != authority.OrganizationID || identity.RunnerID == "" || identity.RunnerID != authority.Scope.credential.Runner.RunnerID || identity.TokenID != authority.Scope.credential.ID || identity.MachineID != tracker.MachineID(lease.MachineID) || identity.RemovedAt != nil || identity.State != "active" || !identity.ExpiresAt.After(now) || !slices.Contains(identity.Operations, runnerauth.Claim) {
+			return tracker.ErrStaleFencingToken
+		}
+		allowed, err := reader.RunnerProjectAuthorized(ctx, identity.RunnerID, authority.ProjectID, now)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return tracker.ErrMachineNotFound
+		}
 	}
 	pinned, err := reader.LeasePolicy(ctx, tracker.LeaseID(lease.LeaseID))
 	if err != nil {
@@ -83,7 +96,11 @@ func (p tenantNativeRunEventParticipant) validateNativeRunEventOwner(ctx context
 }
 
 func (p tenantNativeRunEventParticipant) ValidateNativeRunEvent(ctx context.Context, reader tenantstore.Reader, authority *NativeRunEventAuthority) error {
-	if err := p.validateNativeRunEventOwner(ctx, reader, authority); err != nil {
+	return p.validateNativeRunEvent(ctx, reader, authority, false)
+}
+
+func (p tenantNativeRunEventParticipant) validateNativeRunEvent(ctx context.Context, reader tenantstore.Reader, authority *NativeRunEventAuthority, human bool) error {
+	if err := p.validateRunEventOwner(ctx, reader, authority, human); err != nil {
 		return err
 	}
 	event := authority.Event
@@ -161,10 +178,17 @@ func (p tenantNativeRunEventParticipant) ApplyNativeRunEvent(ctx context.Context
 }
 
 func (p tenantNativeRunEventParticipant) ValidateNativeLeaseMutation(ctx context.Context, reader tenantstore.Reader, authority *NativeLeaseAuthority) error {
+	return p.validateNativeLeaseMutation(ctx, reader, authority, false)
+}
+
+func (p tenantNativeRunEventParticipant) validateNativeLeaseMutation(ctx context.Context, reader tenantstore.Reader, authority *NativeLeaseAuthority, human bool) error {
 	if authority == nil || authority.Scope.organization == "" || authority.Scope.project == "" || authority.Lease.LeaseID == "" {
 		return nativeRunEventStorageUnavailable()
 	}
-	if authority.Scope.credential.Scope != apiScopeWorker || authority.Scope.credential.Runner.RunnerID == "" || authority.Lease.OrganizationID != authority.Scope.organization {
+	if human && (authority.Operation != "release" || authority.Request.Reason != "cancelled" || !authority.Request.CancelAttempt) {
+		return tracker.ErrInvalidClaimRequest
+	}
+	if authority.Lease.OrganizationID != authority.Scope.organization || !human && (authority.Scope.credential.Scope != apiScopeWorker || authority.Scope.credential.Runner.RunnerID == "") {
 		return tracker.ErrMachineNotFound
 	}
 	item, err := reader.WorkItemByID(ctx, authority.Scope.project, authority.Lease.IssueID)
@@ -183,19 +207,25 @@ func (p tenantNativeRunEventParticipant) ValidateNativeLeaseMutation(ctx context
 	if lease.IssueID != item.ID || lease.FencingToken != authority.Lease.FencingToken || lease.MachineID != authority.Lease.MachineID || lease.SessionID != authority.Lease.SessionID || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || int64(authority.Request.FencingToken) != lease.FencingToken {
 		return tracker.ErrStaleFencingToken
 	}
-	identity, err := reader.RunnerForLease(ctx, lease.LeaseID)
-	if err != nil {
-		return err
-	}
-	if identity.OrganizationID != authority.Scope.organization || identity.RunnerID == "" || identity.RunnerID != authority.Scope.credential.Runner.RunnerID || identity.TokenID != authority.Scope.credential.ID || identity.MachineID != tracker.MachineID(lease.MachineID) || identity.RemovedAt != nil || identity.State != "active" || !identity.ExpiresAt.After(now) {
-		return tracker.ErrStaleFencingToken
-	}
-	allowed, err := reader.RunnerProjectAuthorized(ctx, identity.RunnerID, authority.Scope.project, now)
-	if err != nil {
-		return err
-	}
-	if !allowed {
-		return tracker.ErrMachineNotFound
+	if human {
+		if err := p.service.authorizeNativeWorkflowScope(ctx, reader, authority.Scope); err != nil {
+			return err
+		}
+	} else {
+		identity, err := reader.RunnerForLease(ctx, lease.LeaseID)
+		if err != nil {
+			return err
+		}
+		if identity.OrganizationID != authority.Scope.organization || identity.RunnerID == "" || identity.RunnerID != authority.Scope.credential.Runner.RunnerID || identity.TokenID != authority.Scope.credential.ID || identity.MachineID != tracker.MachineID(lease.MachineID) || identity.RemovedAt != nil || identity.State != "active" || !identity.ExpiresAt.After(now) {
+			return tracker.ErrStaleFencingToken
+		}
+		allowed, err := reader.RunnerProjectAuthorized(ctx, identity.RunnerID, authority.Scope.project, now)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return tracker.ErrMachineNotFound
+		}
 	}
 	if authority.Operation != "renew" && authority.Operation != "release" {
 		return tracker.ErrInvalidClaimRequest
