@@ -275,6 +275,14 @@ func (s *session) LockLease(ctx context.Context, leaseID string) (leasestore.Lea
 	return leasestore.Lease(row), mapError(ctx, err)
 }
 
+func (s *session) LockUnreleasedIssueLease(ctx context.Context, issueID int64) (leasestore.Lease, error) {
+	if issueID <= 0 {
+		return leasestore.Lease{}, tracker.ErrInvalidWorkItemID
+	}
+	row, err := s.queries.LockActiveLease(ctx, pgquery.LockActiveLeaseParams{OrganizationID: s.organization, IssueID: issueID})
+	return leasestore.Lease(row), mapError(ctx, err)
+}
+
 func (s *session) Renew(ctx context.Context, fence leasestore.Fence, ttl time.Duration) (leasestore.Lease, error) {
 	return s.RenewWithLandingCapacity(ctx, fence, ttl, 0)
 }

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,7 +38,14 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	cfg := startupConfig(connection)
-	cfg.Postgres.Pool.MaxConnections = 3
+	var humanWorkflowClock atomic.Int64
+	cfg.now = func() time.Time {
+		if value := humanWorkflowClock.Load(); value != 0 {
+			return time.Unix(0, value).UTC()
+		}
+		return time.Now().UTC()
+	}
+	cfg.Postgres.Pool.MaxConnections = 4
 	cfg.Postgres.Pool.ServingConnections = 2
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	cfg.Workspace = &WorkspaceConfig{Enabled: true}
@@ -53,7 +61,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedStartupOrganization(t, store.postgres, "org_startup")
-	if _, err := admin.ExecContext(t.Context(), `INSERT INTO hosted_usage_counters(organization_id,name,value) VALUES('org_startup','collaboration_bytes',0)`); err != nil {
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO hosted_usage_counters(organization_id,name,value) VALUES('org_startup','collaboration_bytes',0) ON CONFLICT (organization_id,name) DO NOTHING`); err != nil {
 		t.Fatalf("seed PostgreSQL collaboration byte counter: %v", err)
 	}
 	const ownerToken = "example_owner_token"
@@ -78,7 +86,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 			return err
 		}
 		projectID := tracker.ProjectID("project_example")
-		states := append(nativeFixtureStates(), tracker.NativeState{Name: "Triage", Transitions: []string{"Todo"}}, tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo"}})
+		states := append(humanWorkflowFixtureStates(), tracker.NativeState{Name: "Triage", Transitions: []string{"Todo", "Cancelled"}}, tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo"}})
 		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_startup", ID: projectID, Name: "Example project", Slug: "example-project", Profile: "native"}, States: states}); err != nil {
 			return err
 		}
@@ -377,6 +385,10 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	if releasedLease.ReleasedAt == nil || releasedLease.ReleaseReason != "released" {
 		t.Fatalf("PostgreSQL released lease = %+v", releasedLease)
 	}
+
+	t.Run("human workflow after success", func(t *testing.T) {
+		verifyPostgresHumanWorkflow(t, service, admin, project, claim, ownerToken, reporterToken, workerToken, &humanWorkflowClock)
+	})
 
 	seedAttempt := func(session string, checkpoint *tracker.NativeCheckpoint, retainLease ...bool) tracker.NativeRunData {
 		t.Helper()

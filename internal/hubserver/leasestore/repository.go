@@ -52,6 +52,10 @@ type Writer interface {
 	LockAttemptDiffGeneration(context.Context, string, string, string, string, string) (int64, error)
 }
 
+type UnreleasedIssueLeaseLocker interface {
+	LockUnreleasedIssueLease(context.Context, int64) (Lease, error)
+}
+
 type FencedLeaseLocker interface {
 	LockLease(context.Context, string) (Lease, error)
 }

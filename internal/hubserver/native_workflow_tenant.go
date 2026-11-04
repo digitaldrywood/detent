@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -27,20 +29,24 @@ import (
 )
 
 func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeScope, item string, request tracker.Transition) (json.RawMessage, error) {
-	if scope.credential.Scope != apiScopeWorker || scope.credential.Runner.RunnerID == "" || scope.credential.Runner.OrganizationID != scope.organization || scope.credential.EntryKey != nil {
+	human := (scope.credential.Scope == apiScopeOperator || scope.credential.Scope == apiScopeAdmin) && scope.credential.Runner.RunnerID == "" && scope.actor().Kind == "human"
+	if !human && (scope.credential.Scope != apiScopeWorker || scope.credential.Runner.RunnerID == "" || scope.credential.Runner.OrganizationID != scope.organization || scope.credential.EntryKey != nil) {
 		return nil, runnerUnauthorized()
 	}
-	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 || request.ExpectedRevision <= 0 || request.LeaseID == "" || request.FencingToken <= 0 {
-		return nil, nativePublicInvalid("A current revision, lease, fencing token, and idempotency key are required")
+	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 || request.ExpectedRevision <= 0 || !human && (request.LeaseID == "" || request.FencingToken <= 0) {
+		return nil, nativePublicInvalid("A current revision and idempotency key are required; workers also require a lease and fencing token")
 	}
-	if request.Reason != "worker_progress" && request.Reason != string(gate.ReasonValidatorRework) {
+	if human && request.Reason != "user_requested" || !human && request.Reason != "worker_progress" && request.Reason != string(gate.ReasonValidatorRework) {
 		return nil, workItemStorageUnavailable()
 	}
 	if len(request.ReasonDetail) > workpad.MaxFinalSummaryBytes || !utf8.ValidString(request.ReasonDetail) {
 		return nil, nativePublicInvalid("Transition reason detail must be bounded UTF-8 text")
 	}
-	if strings.EqualFold(request.State, "Cancelled") {
+	if !human && strings.EqualFold(request.State, "Cancelled") {
 		return nil, workItemStorageUnavailable()
+	}
+	if human && scope.credential.HostedRole == "reporter" && request.State != "Cancelled" {
+		return nil, operatortool.ErrAccessDenied
 	}
 	scope.action = operatortool.MoveItem
 	scope.actionItem, scope.actionTarget = item, request.State
@@ -58,11 +64,20 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		receipt, found, err := s.workItemRecordReceipt(ctx, scope, options.OperationID, request.IdempotencyKey, hash)
+		var receipt eventstore.Receipt
+		var found bool
+		if human {
+			receipt, found, err = s.humanWorkflowReceipt(ctx, scope, item, options.OperationID, request.IdempotencyKey, hash)
+		} else {
+			receipt, found, err = s.workItemRecordReceipt(ctx, scope, options.OperationID, request.IdempotencyKey, hash)
+		}
 		if err != nil {
 			return nil, err
 		}
 		if found {
+			if receipt.ResponseExpired {
+				return nil, commandResponseExpired()
+			}
 			return content.Receipt(ctx, receipt)
 		}
 		row, currentVersion, err := s.readWorkItemRecord(ctx, scope, item)
@@ -75,6 +90,14 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 		}
 		if issue.Profile != "native" || issue.Archived || int64(request.ExpectedRevision) != row.Revision {
 			return nil, nativeConflict(tracker.Revision(row.Revision))
+		}
+		if human && (request.State == issue.State || strings.EqualFold(request.State, "Blocked") || nativeDoneState(request.State) || issue.LinkedSource != nil || issue.IssueContract != nil && (issue.IssueContract.ReturnState != "" || issue.IssueContract.HumanAction != "")) {
+			return nil, workItemStorageUnavailable()
+		}
+		if human {
+			if signal, ok := workpad.SignalFromComment(request.ReasonDetail, "", ""); ok && signal != nil && signal.Invalid == nil && signal.Fields["issue_contract_return_state"] != "" {
+				return nil, workItemStorageUnavailable()
+			}
 		}
 		project, err := s.readTenantProjectRecord(ctx, scope)
 		if err != nil {
@@ -110,7 +133,11 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 		} else if nativeDoneState(previousState) && !nativeDoneState(request.State) {
 			issue.Verification = nil
 		}
-		policyRevision, policyFound, err := s.validateTenantTransitionIssueContract(ctx, scope, issue)
+		var configuredProject *projectstore.Record
+		if human {
+			configuredProject = &project
+		}
+		policyRevision, policyFound, err := s.validateTenantTransitionIssueContract(ctx, scope, issue, configuredProject)
 		if err != nil {
 			return nil, err
 		}
@@ -135,7 +162,7 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 		if err != nil {
 			return nil, err
 		}
-		preparedReceipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: options.OperationID, CommandKey: request.IdempotencyKey, RequestHash: hash}, responseRaw)
+		preparedReceipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: options.OperationID, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, responseRaw)
 		if err != nil {
 			return nil, err
 		}
@@ -148,7 +175,11 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 		fields := workItemRecordFields{Body: stringValue(row.BodyObjectKey), Contract: row.IssueContractObjectKey, Report: row.ReportContextObjectKey}
 		var committed json.RawMessage
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+			if human {
+				if err := s.authorizeNativeWorkflowScope(ctx, w, scope); err != nil {
+					return err
+				}
+			} else if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 				return err
 			}
 			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
@@ -171,6 +202,13 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 			} else if !policyFound || !sameTenantProjectPolicyRevisionContent(policyRevision, currentPolicy) {
 				return corestore.ErrSerializationFailure
 			}
+			locked, err := w.LockWorkItem(ctx, scope.project, issue.WorkItemID)
+			if err != nil {
+				return err
+			}
+			if human && scope.credential.HostedRole == "reporter" && (request.State != "Cancelled" || !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(locked.ActorPrincipalID)})) {
+				return corestore.ErrNotFound
+			}
 			previous, err := w.Receipt(ctx, scope.credential.ID, options.OperationID, request.IdempotencyKey)
 			if err == nil {
 				if previous.RequestHash != hash {
@@ -179,10 +217,6 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 				return corestore.ErrSerializationFailure
 			}
 			if !errors.Is(err, corestore.ErrNotFound) {
-				return err
-			}
-			locked, err := w.LockWorkItem(ctx, scope.project, issue.WorkItemID)
-			if err != nil {
 				return err
 			}
 			if locked.Archived || locked.Revision != row.Revision || locked.ID != row.ID || locked.NativeID != issue.WorkItemID {
@@ -197,40 +231,69 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 					return corestore.ErrSerializationFailure
 				}
 			}
-			locker, ok := w.(leasestore.FencedLeaseLocker)
-			if !ok {
-				return workItemStorageUnavailable()
-			}
-			lease, err := locker.LockLease(ctx, string(request.LeaseID))
-			if err != nil {
-				return err
-			}
-			if lease.OrganizationID != scope.organization || lease.IssueID != row.ID || lease.FencingToken != int64(request.FencingToken) || lease.ReleasedAt != nil {
-				return tracker.ErrStaleFencingToken
-			}
-			credential, err := w.AccessCredential(ctx, scope.credential.ID)
-			if err != nil || credential.OrganizationID != scope.organization || credential.Scope != string(apiScopeWorker) || credential.Kind != "service" {
-				return runnerUnauthorized()
-			}
-			identity, err := w.RunnerForLease(ctx, lease.LeaseID)
-			if err != nil {
-				return err
+			if human {
+				if _, err := w.LinkedSource(ctx, scope.project, issue.WorkItemID); err == nil {
+					return workItemStorageUnavailable()
+				} else if !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
+					return err
+				}
+				locker, ok := w.(leasestore.UnreleasedIssueLeaseLocker)
+				if !ok {
+					return workItemStorageUnavailable()
+				}
+				lease, leaseErr := locker.LockUnreleasedIssueLease(ctx, row.ID)
+				if leaseErr != nil && !errors.Is(leaseErr, corestore.ErrNotFound) && !errors.Is(leaseErr, sql.ErrNoRows) {
+					return leaseErr
+				}
+				if request.LeaseID != "" || request.FencingToken != 0 {
+					if leaseErr != nil || string(request.LeaseID) != lease.LeaseID || int64(request.FencingToken) != lease.FencingToken {
+						return tracker.ErrStaleFencingToken
+					}
+				}
+				if leaseErr == nil {
+					if _, err := w.Expire(ctx, leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}); errors.Is(err, tracker.ErrStaleFencingToken) {
+						return tracker.ErrLeaseConflict
+					} else if err != nil {
+						return err
+					}
+				}
+			} else {
+				locker, ok := w.(leasestore.FencedLeaseLocker)
+				if !ok {
+					return workItemStorageUnavailable()
+				}
+				lease, err := locker.LockLease(ctx, string(request.LeaseID))
+				if err != nil {
+					return err
+				}
+				if lease.OrganizationID != scope.organization || lease.IssueID != row.ID || lease.FencingToken != int64(request.FencingToken) || lease.ReleasedAt != nil {
+					return tracker.ErrStaleFencingToken
+				}
+				credential, err := w.AccessCredential(ctx, scope.credential.ID)
+				if err != nil || credential.OrganizationID != scope.organization || credential.Scope != string(apiScopeWorker) || credential.Kind != "service" {
+					return runnerUnauthorized()
+				}
+				identity, err := w.RunnerForLease(ctx, lease.LeaseID)
+				if err != nil {
+					return err
+				}
+				currentTime := s.config.now().UTC()
+				if !lease.ExpiresAt.After(currentTime) || !credential.Valid(scope.credential.Hash, currentTime) {
+					return tracker.ErrStaleFencingToken
+				}
+				if !runnerIdentityMatchesHeldLease(identity, scope.organization, scope.credential.Runner.RunnerID, credential.ID, tracker.MachineID(lease.MachineID), currentTime) || identity.State == "disabled" || !slices.Contains(identity.Operations, runnerauth.Claim) || !slices.Contains(identity.Operations, runnerauth.Collaborate) {
+					return tracker.ErrMachineNotFound
+				}
+				allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, currentTime)
+				if err != nil {
+					return err
+				}
+				if !allowed {
+					return tracker.ErrMachineNotFound
+				}
 			}
 			currentTime := s.config.now().UTC()
-			if !lease.ExpiresAt.After(currentTime) || !credential.Valid(scope.credential.Hash, currentTime) {
-				return tracker.ErrStaleFencingToken
-			}
-			if !runnerIdentityMatchesHeldLease(identity, scope.organization, scope.credential.Runner.RunnerID, credential.ID, tracker.MachineID(lease.MachineID), currentTime) || identity.State == "disabled" || !slices.Contains(identity.Operations, runnerauth.Claim) || !slices.Contains(identity.Operations, runnerauth.Collaborate) {
-				return tracker.ErrMachineNotFound
-			}
-			allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, currentTime)
-			if err != nil {
-				return err
-			}
-			if !allowed {
-				return tracker.ErrMachineNotFound
-			}
-			if options.Feature != "" && s.database.billingRepository != nil {
+			if options.Feature != "" && (human || s.database.billingRepository != nil) {
 				if err := s.database.requireHostedFeatureRecord(ctx, w, options.Feature, currentTime); err != nil {
 					return err
 				}
@@ -264,8 +327,65 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 		if err != nil {
 			return nil, projectRecordError(err)
 		}
+		if human {
+			s.signalNativeDispatch(scope)
+		}
 		return committed, nil
 	}
+}
+
+func (s *Service) humanWorkflowReceipt(ctx context.Context, scope nativeScope, item, operation, key, hash string) (eventstore.Receipt, bool, error) {
+	var receipt eventstore.Receipt
+	var found bool
+	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.authorizeNativeWorkflowScope(ctx, w, scope); err != nil {
+			return err
+		}
+		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+			return err
+		}
+		row, err := w.LockWorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		if err != nil {
+			return err
+		}
+		if scope.credential.HostedRole == "reporter" && !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
+			return corestore.ErrNotFound
+		}
+		receipt, err = w.Receipt(ctx, scope.credential.ID, operation, key)
+		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		found = true
+		if receipt.RequestHash != hash {
+			return nativeConflict(0)
+		}
+		now := s.config.now().UTC()
+		if !receipt.ResponseExpired && receipt.ResponseReplayUntilNs > 0 && receipt.ResponseReplayUntilNs <= now.UnixNano() {
+			writer, ok := w.(receiptstore.RetentionWriter)
+			if !ok {
+				return eventstore.ErrInvalidRecord
+			}
+			if _, err := writer.ExpireReceipt(ctx, receipt, now.Add(time.Nanosecond)); err != nil {
+				return err
+			}
+			receipt, err = w.Receipt(ctx, scope.credential.ID, operation, key)
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return receipt, false, projectRecordError(err)
+	}
+	if !found {
+		return receipt, false, nil
+	}
+	if receipt.RequestHash != hash {
+		return receipt, false, nativeConflict(0)
+	}
+	return receipt, true, nil
 }
 
 func tenantProjectStateTerminal(project projectstore.Record, name string) bool {
@@ -287,7 +407,7 @@ func (s *Service) readTenantProjectRecord(ctx context.Context, scope nativeScope
 	return project, projectRecordError(err)
 }
 
-func (s *Service) validateTenantTransitionIssueContract(ctx context.Context, scope nativeScope, issue tracker.NativeIssue) (policystore.Revision, bool, error) {
+func (s *Service) validateTenantTransitionIssueContract(ctx context.Context, scope nativeScope, issue tracker.NativeIssue, project *projectstore.Record) (policystore.Revision, bool, error) {
 	workflow := config.Workflow{Config: config.Default()}
 	var revision policystore.Revision
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -300,14 +420,25 @@ func (s *Service) validateTenantTransitionIssueContract(ctx context.Context, sco
 	}
 	descriptor := policy.Descriptor{}
 	found := err == nil
-	if issue.LinkedSource != nil && issue.LinkedSource.Status != "complete" || strings.EqualFold(issue.State, "Triage") || issue.IssueContract != nil && issue.IssueContract.Exempt || strings.Contains(strings.ToLower(issue.Body), "detent:no-dispatch") {
+	exempt := issue.LinkedSource != nil && issue.LinkedSource.Status != "complete" || strings.EqualFold(issue.State, "Triage") || issue.IssueContract != nil && issue.IssueContract.Exempt || strings.Contains(strings.ToLower(issue.Body), "detent:no-dispatch")
+	if exempt && (project == nil || project.Core.WorkflowSource == "") {
 		return revision, found, nil
 	}
-	if err == nil {
+	if found {
 		descriptor, err = eventstore.NewContent(s.runDetailStore()).ProjectPolicy(ctx, revision)
 		if err != nil {
 			return policystore.Revision{}, false, err
 		}
+	}
+	if project != nil {
+		if err := validateNativeWorkflowPolicy(*project, descriptor, found); err != nil {
+			return revision, found, err
+		}
+	}
+	if exempt {
+		return revision, found, nil
+	}
+	if found {
 		workflow, err = config.ApplyNativePolicy(workflow, descriptor)
 		if err != nil {
 			return policystore.Revision{}, false, policyMismatch(err.Error())
