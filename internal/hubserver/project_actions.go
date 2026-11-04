@@ -553,6 +553,9 @@ func (s *Service) applyCreateProjectActionRun(ctx context.Context, tx *sql.Tx, s
 }
 
 func (s *Service) readActions(ctx context.Context, scope nativeScope) (json.RawMessage, error) {
+	if s.config.TenantRepository != nil {
+		return s.readActionRecords(ctx, scope)
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	records, err := readProjectActions(ctx, s.database.reader, scope.organization, scope.project)
@@ -567,6 +570,9 @@ func (s *Service) readActions(ctx context.Context, scope nativeScope) (json.RawM
 }
 
 func (s *Service) readActionRuns(ctx context.Context, scope nativeScope, actionID string, limit int) (json.RawMessage, error) {
+	if s.config.TenantRepository != nil {
+		return nil, projectActionsUnavailable("Project action execution requires a native workspace executor")
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -597,6 +603,9 @@ func (s *Service) readActionRuns(ctx context.Context, scope nativeScope, actionI
 }
 
 func (s *Service) readActionRun(ctx context.Context, scope nativeScope, actionID, runID string) (actionRunRecord, error) {
+	if s.config.TenantRepository != nil {
+		return actionRunRecord{}, projectActionsUnavailable("Project action execution requires a native workspace executor")
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if _, err := readProjectAction(ctx, s.database.reader, scope, actionID); err != nil {

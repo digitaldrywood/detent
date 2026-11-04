@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -62,6 +64,23 @@ func (s *session) UpdateProject(ctx context.Context, record corestore.Project) (
 }
 
 func (s *session) DeleteProject(ctx context.Context, id tracker.ProjectID) error {
+	var locked tracker.ProjectID
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, id).Scan(&locked); err != nil {
+		return mapError(ctx, err)
+	}
+	actions, err := s.ProjectActions(ctx, id)
+	if err != nil {
+		return err
+	}
+	for _, action := range actions {
+		object, err := s.ArchiveObjectByReference(ctx, action.Command)
+		if err != nil {
+			return err
+		}
+		if err := s.RemoveArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: s.organization, ArchiveID: object.ID, Kind: "project-action", ID: actionstore.ArchiveOwnerID(id, action.Action.ID)}); err != nil {
+			return err
+		}
+	}
 	rows, err := s.queries.DeleteProject(ctx, pgquery.DeleteProjectParams{
 		OrganizationID: s.organization,
 		ID:             id,
