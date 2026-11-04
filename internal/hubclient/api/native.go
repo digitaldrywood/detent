@@ -248,7 +248,7 @@ func (c *NativeClient) Dependency(ctx context.Context, id tracker.NativeWorkItem
 }
 
 func (c *NativeClient) Comments(ctx context.Context, id tracker.NativeWorkItemID, cursor string) (tracker.Page[tracker.NativeComment], error) {
-	return c.CommentsPage(ctx, id, cursor, 10)
+	return c.CommentsPage(ctx, id, cursor, 200)
 }
 
 func (c *NativeClient) CreateComment(ctx context.Context, id tracker.NativeWorkItemID, request tracker.CreateComment) (tracker.NativeComment, error) {
