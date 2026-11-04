@@ -31,6 +31,157 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type changeReadInterceptionStore struct {
+	attachment.DetailStore
+	key       string
+	afterRead func(context.Context) error
+}
+
+func (s *changeReadInterceptionStore) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	raw, err := s.DetailStore.ReadDetail(ctx, organization, ref)
+	if err != nil {
+		return nil, err
+	}
+	if ref.Key == s.key && s.afterRead != nil {
+		callback := s.afterRead
+		s.afterRead = nil
+		if err := callback(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return raw, nil
+}
+
+func TestPostgresBoundedChangeReadRechecksRoleAfterHydration(t *testing.T) {
+	repository, f, owner, _ := newChangePolicyPostgresFixtureWithAdmin(t, 3)
+	f.service.database.billingRepository = repository
+	free := normalizeHostedPlan(pilotHostedPlans().Plans[0])
+	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		plan := billingstore.Plan{OrganizationID: "org_security", PlanReference: billingstore.PlanReference{ID: free.ID, Version: free.Version}, Name: free.Name, Allowances: free.Allowances, Features: free.Features}
+		if err := w.CreateBillingPlan(t.Context(), plan); err != nil {
+			return err
+		}
+		return w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: "org_security", Base: plan.PlanReference}, 0)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	items := f.base + "/work-items"
+	created := f.request(t, owner, http.MethodPost, items, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "bounded-role-issue"}, Title: "Example private issue", Body: workItemRecordBody, State: "Todo"})
+	requireNativeStatus(t, created, http.StatusOK)
+	var issue tracker.NativeIssue
+	decodeHubResponse(t, created, &issue)
+	created = f.request(t, owner, http.MethodPost, items, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "bounded-secondary-issue"}, Title: "Example secondary issue", Body: workItemRecordBody, State: "Todo"})
+	requireNativeStatus(t, created, http.StatusOK)
+	var secondary tracker.NativeIssue
+	decodeHubResponse(t, created, &secondary)
+	changes := items + "/" + string(issue.WorkItemID) + "/changes"
+	created = f.request(t, owner, http.MethodPost, changes, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "bounded-role-change"}, Title: "Example private Change", LinkedIssues: []tracker.NativeWorkItemID{secondary.WorkItemID}})
+	requireNativeStatus(t, created, http.StatusOK)
+	var change tracker.ChangeRequest
+	decodeHubResponse(t, created, &change)
+	details := f.service.config.RunDetails.(*memoryRunDetails)
+	keyResponse := f.request(t, owner, http.MethodPost, "/api/v2/organizations/org_security/api-keys", hostedKeyRequest{Name: "Example read key", Scope: "read", NeverExpires: true, ProjectAccess: hostedProjectsAll})
+	requireNativeStatus(t, keyResponse, http.StatusCreated)
+	var key tokenResponse
+	decodeHubResponse(t, keyResponse, &key)
+	var keyRevoked bool
+	details.beforeRead = func(ctx context.Context) error {
+		details.beforeRead = nil
+		keyRevoked = true
+		return repository.WriteTenant(ctx, "org_security", corestore.Serving, func(w tenantstore.Writer) error { return w.RevokeAccessCredential(ctx, key.ID, time.Now().UTC()) })
+	}
+	t.Cleanup(func() { details.beforeRead = nil })
+	keyRead := performHubAPIRequest(t, f.service, http.MethodGet, changes+"/"+change.ID+"?view=bounded", key.Token, nil)
+	if !keyRevoked {
+		t.Fatal("key was not revoked during source hydration")
+	}
+	if keyRead.Code == http.StatusOK || strings.Contains(keyRead.Body.String(), "Example private Change") {
+		t.Fatalf("revoked key received Change data: %d %s", keyRead.Code, keyRead.Body.String())
+	}
+	var changed bool
+	details.beforeRead = func(ctx context.Context) error {
+		details.beforeRead = nil
+		changed = true
+		return repository.WriteTenant(ctx, "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+			member, err := w.AccessMember(ctx, owner.identity.Subject)
+			if err != nil {
+				return err
+			}
+			member.Role = "reporter"
+			return w.UpdateAccessMember(ctx, member)
+		})
+	}
+	t.Cleanup(func() { details.beforeRead = nil })
+	response := f.request(t, owner, http.MethodGet, changes+"/"+change.ID+"?view=bounded", nil)
+	if !changed {
+		t.Fatal("role did not change during source hydration")
+	}
+	if response.Code == http.StatusOK || strings.Contains(response.Body.String(), "Example private Change") {
+		t.Fatalf("downgraded member received Change data: %d %s", response.Code, response.Body.String())
+	}
+	response = f.request(t, owner, http.MethodGet, changes+"/"+change.ID+"?view=bounded", nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var oldVersion eventstore.CollaborationVersion
+	if err := repository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		oldVersion, err = r.CollaborationVersion(t.Context(), string(secondary.WorkItemID), int64(secondary.Revision))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	transferred := secondary
+	transferred.Revision++
+	transferred.Actor.PrincipalID = "other_principal"
+	raw, err := json.Marshal(transferred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newVersion, err := eventstore.NewContent(details).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: "org_security", ProjectID: f.project, WorkItemID: secondary.WorkItemID, RecordID: string(secondary.WorkItemID), Revision: int64(transferred.Revision)}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intercept := &changeReadInterceptionStore{DetailStore: details, key: oldVersion.PayloadObjectKey}
+	intercept.afterRead = func(ctx context.Context) error {
+		return repository.WriteTenant(ctx, "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.LockWorkItemProject(ctx, f.project); err != nil {
+				return err
+			}
+			row, err := w.WorkItem(ctx, f.project, secondary.WorkItemID)
+			if err != nil {
+				return err
+			}
+			row.ActorPrincipalID = &transferred.Actor.PrincipalID
+			if _, err := w.UpdateWorkItem(ctx, row); err != nil {
+				return err
+			}
+			_, err = w.CreateCollaborationVersion(ctx, newVersion)
+			return err
+		})
+	}
+	f.service.config.RunDetails = intercept
+	t.Cleanup(func() { f.service.config.RunDetails = details })
+	response = f.request(t, owner, http.MethodGet, changes+"/"+change.ID+"?view=bounded", nil)
+	if intercept.afterRead != nil {
+		t.Fatal("secondary ownership did not change during hydration")
+	}
+	if response.Code == http.StatusOK || strings.Contains(response.Body.String(), string(secondary.WorkItemID)) {
+		t.Fatalf("reporter received a no-longer-visible linked issue: %d %s", response.Code, response.Body.String())
+	}
+	response = f.request(t, owner, http.MethodGet, changes+"/"+change.ID+"?view=bounded", nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	if strings.Contains(response.Body.String(), string(secondary.WorkItemID)) {
+		t.Fatal("reporter received an inaccessible linked issue on reread")
+	}
+	foreignPath := items + "/" + string(secondary.WorkItemID) + "/changes/" + change.ID + "?view=bounded"
+	foreignRead := f.request(t, owner, http.MethodGet, foreignPath, nil)
+	if foreignRead.Code != http.StatusNotFound || strings.Contains(foreignRead.Body.String(), "Example private Change") {
+		t.Fatalf("inaccessible linked issue exposed the Change: %d %s", foreignRead.Code, foreignRead.Body.String())
+	}
+}
+
 func TestPostgresBoundedChangeRuntimeRecovery(t *testing.T) {
 	repository, f, owner, admin := newChangePolicyPostgresFixtureWithAdmin(t, 3)
 	f.service.database.billingRepository = repository

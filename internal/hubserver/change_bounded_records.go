@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -179,8 +181,25 @@ func (s *Service) readBoundedChangeRecord(ctx context.Context, scope nativeScope
 	if err != nil {
 		return result, err
 	}
-	if latest.Revision != change.Revision || latest.CurrentVersion != change.CurrentVersion {
+	if latest.Revision != change.Revision || latest.CurrentVersion != change.CurrentVersion || !slices.Equal(latest.LinkedIssues, change.LinkedIssues) {
 		return result, mutation.ErrConflict
+	}
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		if scope.credential.Hosted != nil {
+			member, err := r.AuthorizeAccess(ctx, s.accessAuthority(scope, false), s.config.now())
+			if err != nil {
+				return err
+			}
+			if member.UserID != "" && lesserHostedRole(member.Role, scope.credential.HostedRole) != scope.credential.HostedRole {
+				return auth.ErrHostedIdentity
+			}
+		}
+		return nil
+	}); err != nil {
+		return result, err
 	}
 	return result, nil
 }
