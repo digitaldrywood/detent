@@ -18,12 +18,22 @@ func (s *session) FleetRecords(ctx context.Context, limit int) ([]runnerstore.Fl
 }
 
 func (s *session) fleetRecords(ctx context.Context, project tracker.ProjectID, after string, limit int, paged bool) ([]runnerstore.FleetRecord, error) {
+	return s.selectedFleetRecords(ctx, project, after, limit, paged, "")
+}
+
+func (s *session) selectedFleetRecords(ctx context.Context, project tracker.ProjectID, after string, limit int, paged bool, runnerID string) ([]runnerstore.FleetRecord, error) {
 	if limit < 1 || limit > 10000 {
 		return nil, corestore.ErrInvalidPage
 	}
+	selector := ""
+	args := []any{s.organization, limit + 1, project, after}
+	if runnerID != "" {
+		selector = " AND r.runner_id=$5"
+		args = append(args, runnerID)
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT r.organization_id,r.runner_id,r.machine_id,r.token_id,r.enrollment_id,r.scope,r.state,r.revision,r.tags,r.machine_use,r.isolation_tier,r.host_services,r.availability_timezone,r.availability_hard_deadline,r.operations,r.display_name,r.capacity_limit,r.reported_capacity,r.os,r.architecture,r.created_at,r.expires_at,r.last_heartbeat_at,
 coalesce(r.capacity_config_revision,''),coalesce(r.capacity_config_local_limit,0),coalesce(r.capacity_config_client_limit,0),coalesce(r.capacity_config_runtime_limit,0),coalesce(r.capacity_config_manageable,false),coalesce(r.capacity_config_constraint,''),r.capacity_config_observed_at,
-m.hostname,m.capacity,m.version,m.sprite_name,e.created_by,coalesce(nullif(t.hosted_user_id,''),membership.user_id,''),credential.revoked_at IS NOT NULL,credential.created_at,credential.expires_at,
+m.hostname,m.capacity,m.version,m.sprite_name,m.display_name,e.created_by,coalesce(nullif(t.hosted_user_id,''),membership.user_id,''),credential.revoked_at IS NOT NULL,credential.created_at,credential.expires_at,
 ARRAY(SELECT project_id FROM token_grants g WHERE g.organization_id=r.organization_id AND g.token_id=r.token_id ORDER BY project_id),
 ARRAY(SELECT window_spec FROM runner_availability_windows w WHERE w.organization_id=r.organization_id AND w.runner_id=r.runner_id ORDER BY position),
 ARRAY(SELECT slot_key FROM runner_availability_window_slots w WHERE w.organization_id=r.organization_id AND w.runner_id=r.runner_id ORDER BY slot_key),
@@ -39,7 +49,7 @@ LEFT JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=e.created
 LEFT JOIN hosted_members membership ON membership.organization_id=r.organization_id AND membership.principal_id=e.created_by
 WHERE r.organization_id=$1 AND r.removed_at IS NULL AND r.runner_id>$4
 AND ($3='' OR (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.organization_id=r.organization_id AND g.token_id=r.token_id AND g.project_id=$3)))
-ORDER BY r.runner_id LIMIT $2`, s.organization, limit+1, project, after)
+`+selector+` ORDER BY r.runner_id LIMIT $2`, args...)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -53,7 +63,7 @@ ORDER BY r.runner_id LIMIT $2`, s.organization, limit+1, project, after)
 		var slotValues, limitValues, rankValues pq.Int64Array
 		var capacity runnerauth.CapacityConfig
 		var observed, credentialExpires sql.NullTime
-		if err := rows.Scan(&identity.OrganizationID, &identity.RunnerID, &identity.MachineID, &identity.TokenID, &identity.EnrollmentID, &identity.Scope, &identity.State, &identity.Revision, &tags, &identity.MachineUse, &identity.IsolationTier, &services, &identity.Availability.Timezone, &identity.Availability.HardDeadline, &operations, &identity.DisplayName, &identity.CapacityLimit, &identity.ReportedCapacity, &identity.OS, &identity.Architecture, &identity.CreatedAt, &identity.ExpiresAt, &identity.LastHeartbeatAt, &capacity.Revision, &capacity.LocalLimit, &capacity.ClientLimit, &capacity.RuntimeLimit, &capacity.Manageable, &capacity.Constraint, &observed, &machine.Hostname, &machine.Capacity, &machine.Version, &machine.SpriteName, &record.OwnerPrincipalID, &record.OwnerUserID, &record.CredentialRevoked, &record.CredentialCreatedAt, &credentialExpires, &projects, &windows, &slots, &slotValues, &limits, &limitValues, &ranks, &rankValues); err != nil {
+		if err := rows.Scan(&identity.OrganizationID, &identity.RunnerID, &identity.MachineID, &identity.TokenID, &identity.EnrollmentID, &identity.Scope, &identity.State, &identity.Revision, &tags, &identity.MachineUse, &identity.IsolationTier, &services, &identity.Availability.Timezone, &identity.Availability.HardDeadline, &operations, &identity.DisplayName, &identity.CapacityLimit, &identity.ReportedCapacity, &identity.OS, &identity.Architecture, &identity.CreatedAt, &identity.ExpiresAt, &identity.LastHeartbeatAt, &capacity.Revision, &capacity.LocalLimit, &capacity.ClientLimit, &capacity.RuntimeLimit, &capacity.Manageable, &capacity.Constraint, &observed, &machine.Hostname, &machine.Capacity, &machine.Version, &machine.SpriteName, &machine.DisplayName, &record.OwnerPrincipalID, &record.OwnerUserID, &record.CredentialRevoked, &record.CredentialCreatedAt, &credentialExpires, &projects, &windows, &slots, &slotValues, &limits, &limitValues, &ranks, &rankValues); err != nil {
 			return nil, mapError(ctx, err)
 		}
 		if credentialExpires.Valid {

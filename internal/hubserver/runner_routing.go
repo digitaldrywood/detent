@@ -13,6 +13,11 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -318,26 +323,110 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 	if credential.Hosted == nil && (credential.Runner.RunnerID != "" && (credential.Runner.RunnerID != runnerID || credential.Runner.OrganizationID != scope.organization) || credential.Runner.RunnerID == "" && (credential.Scope != apiScopeAdmin || credential.NativeOnly)) {
 		return runnerauth.Runner{}, nativeNotFound()
 	}
-	var visible bool
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM runner_identities WHERE organization_id = ? AND id = ? AND removed_at IS NULL)", scope.organization, runnerID).Scan(&visible); err != nil {
-		return runnerauth.Runner{}, err
+
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return runnerauth.Runner{}, nativeRunEventStorageUnavailable()
 	}
-	if !visible {
-		return runnerauth.Runner{}, nativeNotFound()
-	}
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	var runner runnerauth.Runner
+	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		now := s.config.now().UTC()
+		if credential.Runner.RunnerID != "" {
+			current, err := reader.AccessCredential(ctx, credential.ID)
+			if err != nil {
+				return err
+			}
+			identity, err := reader.RunnerIdentityByCredential(ctx, credential.ID)
+			if err != nil {
+				return err
+			}
+			if current.OrganizationID != scope.organization || current.Scope != string(apiScopeWorker) || current.Kind != "service" || !current.Valid(credential.Hash, now) || !runnerIdentityMatchesHeldLease(identity, scope.organization, runnerID, credential.ID, credential.Runner.MachineID, now) || !slices.Contains(identity.Operations, runnerauth.Read) {
+				return accessstore.ErrDenied
+			}
+		} else {
+			if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
+				return err
+			}
+			current, err := reader.AccessCredential(ctx, credential.ID)
+			if err != nil {
+				return err
+			}
+			if credential.Hosted == nil {
+				if current.Scope != string(apiScopeAdmin) || current.NativeOnly {
+					return accessstore.ErrDenied
+				}
+			} else {
+				member, err := reader.AccessMember(ctx, credential.Hosted.Subject)
+				if err != nil {
+					return err
+				}
+				credential.HostedRole = lesserHostedRole(member.Role, credential.HostedRole)
+				credential.HostedKeyScope = apikey.Scope(current.KeyScope)
+				credential.HostedProjectAccess = hostedProjectAccess(current.ProjectAccess)
+			}
+		}
+		routingReader, ok := reader.(runnerstore.RoutingReader)
+		if !ok {
+			return nativeRunEventStorageUnavailable()
+		}
+		record, err := routingReader.RunnerRoutingRecord(ctx, runnerID, now)
+		if err != nil {
+			return err
+		}
+		urgent, err := reader.RunnerUrgentUpdate(ctx)
+		if err != nil {
+			return err
+		}
+		runner = runnerFromFleetRecord(record.Record, now, urgent)
+		runner.ProviderCapacity = record.Providers
+		runner.ProjectUsed = map[tracker.ProjectID]int{}
+		runner.Leases = []runnerauth.RunnerLease{}
+		hostSlots, runnerSlots := map[string]bool{}, map[string]bool{}
+		for _, lease := range record.Leases {
+			key := string(lease.Lease.ID)
+			if lease.LandingCapacity > 0 {
+				if group := landingCapacityKey(lease.MachineID, string(lease.Lease.ProjectID), lease.SessionID); group != "" {
+					key = group
+				}
+			}
+			hostSlots[key] = true
+			if lease.RunnerID != runnerID {
+				continue
+			}
+			if !runnerSlots[key] {
+				runner.ProjectUsed[lease.Lease.ProjectID]++
+			}
+			runnerSlots[key] = true
+			lease.Lease.ProviderReservation = lease.Reservation
+			runner.Leases = append(runner.Leases, lease.Lease)
+		}
+		runner.HostUsed, runner.Used = len(hostSlots), len(runnerSlots)
+		return nil
+	})
 	if err != nil {
-		return runnerauth.Runner{}, err
+		return runnerauth.Runner{}, projectRecordError(err)
 	}
-	defer tx.Rollback()
-	runner, err := readRunnerWithClock(ctx, tx, scope.organization, runnerID, s.config.now)
-	if err != nil {
-		return runnerauth.Runner{}, err
+
+	projects := runnerManagementProjects(runner)
+	if credential.Hosted != nil && projects != nil {
+		for project := range runner.ProjectRanks {
+			if !slices.Contains(projects, project) {
+				projects = append(projects, project)
+			}
+		}
+		for project := range runner.ProjectCapacityLimits {
+			if !slices.Contains(projects, project) {
+				projects = append(projects, project)
+			}
+		}
+		for _, problem := range runner.Problems {
+			project := tracker.ProjectID(problem.ProjectID)
+			if project != "" && !slices.Contains(projects, project) {
+				projects = append(projects, project)
+			}
+		}
 	}
-	if err := tx.Commit(); err != nil {
-		return runnerauth.Runner{}, err
-	}
-	if credential.Hosted != nil && !s.appAllRunnerGrants(ctx, credential, runnerManagementProjects(runner)...) {
+	if credential.Hosted != nil && !s.appAllRunnerGrants(ctx, credential, projects...) {
 		return runnerauth.Runner{}, nativeNotFound()
 	}
 	return runner, nil

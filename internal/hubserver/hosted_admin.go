@@ -49,6 +49,13 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 		case c.Path() == "/api/v2/organizations/:organization/runners/:runner/routing":
+			if c.Request().Method == http.MethodGet {
+				c.Set("hub_api_credential", credential)
+				if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "administration", c.Request().Method+" "+c.Path(), "", 0); err != nil {
+					return s.nativeAPIError(c, err)
+				}
+				return next(c)
+			}
 			runner, err := readRunnerWithClock(c.Request().Context(), s.database.reader, tracker.OrganizationID(c.Param("organization")), c.Param("runner"), s.config.now)
 			if err != nil {
 				return s.nativeAPIError(c, err)

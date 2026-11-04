@@ -266,6 +266,7 @@ func runnerFromFleetRecord(record runnerstore.FleetRecord, now time.Time, urgent
 		Revision:         identity.Revision,
 		LastHeartbeatAt:  identity.LastHeartbeatAt,
 		Hostname:         machine.Hostname,
+		HostDisplayName:  machine.DisplayName,
 		HostCapacity:     int(machine.Capacity),
 		ReportedCapacity: int(identity.ReportedCapacity),
 		CapacityConfig:   identity.CapacityConfig,
