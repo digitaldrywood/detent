@@ -37,7 +37,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	cfg := startupConfig(connection)
-	cfg.Postgres.Pool.MaxConnections = 3
+	cfg.Postgres.Pool.MaxConnections = 4
 	cfg.Postgres.Pool.ServingConnections = 2
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	cfg.Workspace = &WorkspaceConfig{Enabled: true}
@@ -53,7 +53,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedStartupOrganization(t, store.postgres, "org_startup")
-	if _, err := admin.ExecContext(t.Context(), `INSERT INTO hosted_usage_counters(organization_id,name,value) VALUES('org_startup','collaboration_bytes',0)`); err != nil {
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO hosted_usage_counters(organization_id,name,value) VALUES('org_startup','collaboration_bytes',0) ON CONFLICT (organization_id,name) DO NOTHING`); err != nil {
 		t.Fatalf("seed PostgreSQL collaboration byte counter: %v", err)
 	}
 	const ownerToken = "example_owner_token"
