@@ -255,12 +255,6 @@ func duplicateSearchExpressions(content string) []string {
 	return expressions
 }
 
-func duplicateContentHash(request tracker.CreateIssue) (string, error) {
-	request.ChallengeToken = ""
-	request.NotDuplicateOf = nil
-	return nativeCommandHash(request)
-}
-
 func challengeNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (duplicateChallenge, error) {
 	var enabled bool
 	if err := tx.QueryRowContext(ctx, "SELECT duplicate_challenge FROM projects WHERE organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&enabled); err != nil {

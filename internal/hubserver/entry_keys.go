@@ -157,7 +157,7 @@ func (s *Service) entryKeyTools(ctx context.Context) ([]operatortool.Definition,
 	supported := make([]operatortool.Definition, 0)
 	for _, definition := range definitions {
 		switch definition.Name {
-		case "list_projects", "get_native_project", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, operatortool.AppBootstrapPayload, operatortool.MoveItem, "list_threads", "get_thread":
+		case "list_projects", "get_native_project", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, operatortool.AppBootstrapPayload, operatortool.MoveItem, operatortool.FileIssue, "list_threads", "get_thread":
 			supported = append(supported, definition)
 		}
 	}

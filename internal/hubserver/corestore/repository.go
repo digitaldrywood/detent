@@ -23,6 +23,7 @@ var (
 )
 
 const MaxPageSize = 200
+const MaxDuplicateChallengePruneBatch = 5000
 
 type Workload uint8
 
@@ -211,4 +212,35 @@ type LabelPage struct {
 type ScanCursor struct {
 	After   int64
 	Through int64
+}
+
+type DuplicateCandidate struct {
+	WorkItemID tracker.NativeWorkItemID
+	Number     int64
+	Revision   int64
+}
+
+type DuplicateChallenge struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Token          string
+	PrincipalID    string
+	RequestID      string
+	ContentHash    string
+	PolicyHash     string
+	SourceSequence int64
+	Candidates     []DuplicateCandidate
+	CreatedAt      time.Time
+	ExpiresAt      time.Time
+}
+
+type DuplicateChallengeReader interface {
+	DuplicateChallenge(context.Context, tracker.ProjectID, string) (DuplicateChallenge, error)
+}
+
+type DuplicateChallengeWriter interface {
+	DuplicateChallengeReader
+	CreateDuplicateChallenge(context.Context, DuplicateChallenge) error
+	ConsumeDuplicateChallenge(context.Context, DuplicateChallenge, time.Time) (DuplicateChallenge, error)
+	PruneDuplicateChallenges(context.Context, time.Time, int) (int64, error)
 }

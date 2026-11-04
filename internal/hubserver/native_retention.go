@@ -81,10 +81,19 @@ func (s *Service) expireNativeRecords(ctx context.Context, now time.Time) error 
 		}
 		cutoff := now.UTC().Truncate(time.Hour).Add(-720 * time.Hour)
 		if err := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
-			return w.PruneRunnerHostMetrics(ctx, cutoff, runnerstore.MaxRunnerHostPruneBatch)
+			if err := w.PruneRunnerHostMetrics(ctx, cutoff, runnerstore.MaxRunnerHostPruneBatch); err != nil {
+				return err
+			}
+			writer, ok := w.(corestore.DuplicateChallengeWriter)
+			if !ok {
+				return workItemStorageUnavailable()
+			}
+			_, err := writer.PruneDuplicateChallenges(ctx, now, commandReceiptPruneBatch)
+			return err
 		}); err != nil {
-			return fmt.Errorf("expire PostgreSQL runner host metrics: %w", err)
+			return fmt.Errorf("expire PostgreSQL native records: %w", err)
 		}
+		return s.retainCommandPayloads(ctx, now)
 	}
 	if _, err := s.database.db.ExecContext(ctx, `DELETE FROM hosted_audit WHERE rowid IN (SELECT rowid FROM hosted_audit
 WHERE route LIKE 'GET %' AND status<400 AND actual_actor=effective_user AND reason=''
