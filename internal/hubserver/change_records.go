@@ -111,7 +111,7 @@ func (s *Service) filterChangeRecord(ctx context.Context, scope nativeScope, cha
 	visible := make([]tracker.NativeWorkItemID, 0, len(linked))
 	for _, id := range linked {
 		row, _, err := s.readWorkItemRecord(ctx, scope, string(id))
-		if errors.Is(err, corestore.ErrNotFound) {
+		if errors.Is(err, corestore.ErrNotFound) || isNativeNotFound(err) {
 			continue
 		}
 		if err != nil {

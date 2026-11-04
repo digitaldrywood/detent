@@ -65,6 +65,10 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 			resultErr = fmt.Errorf("%s: %w", strings.ReplaceAll(name, "_", " "), resultErr)
 		}
 	}()
+	if a.service.config.TenantRepository != nil && name == operatortool.ListChanges {
+		return a.readChangeListRecords(ctx, args)
+	}
+
 	scope, err := a.authorized(ctx, args, false)
 	if err != nil {
 		return operatortool.ChangeResult{}, err

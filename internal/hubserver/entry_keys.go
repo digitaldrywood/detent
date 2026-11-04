@@ -154,10 +154,14 @@ func (s *Service) entryKeyTools(ctx context.Context) ([]operatortool.Definition,
 			}
 		}
 	}
+	if _, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, Action: operatortool.ListChanges}); err == nil {
+		definition, _ := operatortool.Lookup(operatortool.ListChanges)
+		definitions = append(definitions, definition)
+	}
 	supported := make([]operatortool.Definition, 0)
 	for _, definition := range definitions {
 		switch definition.Name {
-		case "list_projects", "get_native_project", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, operatortool.AppBootstrapPayload, operatortool.MoveItem, operatortool.FileIssue, "list_threads", "get_thread":
+		case "list_projects", "get_native_project", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, operatortool.AppBootstrapPayload, operatortool.MoveItem, operatortool.FileIssue, "list_threads", "get_thread", operatortool.ListComments, operatortool.ListChanges:
 			supported = append(supported, definition)
 		}
 	}
