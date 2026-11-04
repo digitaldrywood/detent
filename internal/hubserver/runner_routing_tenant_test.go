@@ -65,7 +65,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 				if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: org, ID: "enrollment_" + id, RunnerID: runner, MachineID: tracker.MachineID(machine), TokenHash: apikey.HashToken(string(org) + "_enroll_" + id), Scope: "projects", Operations: []string{runnerauth.Read, runnerauth.Claim}, CreatedAt: now.Add(-time.Hour), ExpiresAt: expires, CreatedBy: "admin_" + string(org)}); err != nil {
 					return err
 				}
-				identity := runnerstore.Identity{OrganizationID: org, RunnerID: runner, MachineID: tracker.MachineID(machine), TokenID: runner, EnrollmentID: "enrollment_" + id, Scope: "projects", State: "active", DisplayName: "Example runner " + id, Operations: []string{runnerauth.Read, runnerauth.Claim}, CapacityLimit: 4, ReportedCapacity: 3, OS: "linux", Architecture: "arm64", MachineUse: "shared", IsolationTier: "native-trusted", Tags: []string{"example"}, HostServices: []string{"tcp:127.0.0.1:5432"}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now.Add(-time.Hour), ExpiresAt: expires, LastHeartbeatAt: now}
+				identity := runnerstore.Identity{OrganizationID: org, RunnerID: runner, MachineID: tracker.MachineID(machine), TokenID: runner, EnrollmentID: "enrollment_" + id, Scope: "projects", State: "active", DisplayName: "Example runner " + id, Operations: []string{runnerauth.Read, runnerauth.Claim}, CapacityLimit: 3, ReportedCapacity: 3, OS: "linux", Architecture: "arm64", MachineUse: "shared", IsolationTier: "native-trusted", Tags: []string{"example"}, HostServices: []string{"tcp:127.0.0.1:5432"}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now.Add(-time.Hour), ExpiresAt: expires, LastHeartbeatAt: now}
 				if err := w.CreateRunnerIdentity(t.Context(), identity); err != nil {
 					return err
 				}
@@ -135,7 +135,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 					if got.RunnerID != "runner_"+id || got.OrganizationID != tracker.OrganizationID(org) || got.Hostname != org+"-"+id || got.HostDisplayName != "Example host "+id || got.HostCapacity != 5 || got.OS != "linux" || got.Architecture != "arm64" {
 						t.Fatalf("identity/machine facts=%+v", got)
 					}
-					if got.CapacityLimit != 4 || got.ReportedCapacity != 3 || got.CapacityConfig == nil || got.CapacityConfig.RuntimeLimit != 3 || got.Used != 1 || got.HostUsed != 1 || got.ProjectUsed[project] != 1 {
+					if got.CapacityLimit != 3 || got.ReportedCapacity != 3 || got.CapacityConfig == nil || got.CapacityConfig.RuntimeLimit != 3 || got.Used != 1 || got.HostUsed != 1 || got.ProjectUsed[project] != 1 {
 						t.Fatalf("capacity facts=%+v", got)
 					}
 					if got.Scope != "projects" || !slices.Equal(got.ProjectIDs, []tracker.ProjectID{project}) || got.ProjectRanks[project] != 7 || got.ProjectCapacityLimits[project] != 2 || got.Availability.Timezone != "UTC" || got.IsolationTier != "native-trusted" || !slices.Contains(got.Tags, "example") {
@@ -309,6 +309,68 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 			if got := read("runner_two"); !reflect.DeepEqual(got, other) {
 				t.Fatal("unrelated runner changed")
 			}
+			t.Run("capacity increase reaches runner", func(t *testing.T) {
+				current := read("runner_one")
+				input := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: current.Revision, Routing: current.Routing}, IdempotencyKey: "raise_capacity"}
+				input.CapacityLimit = 6
+				if rec := put("example_member_token", input); rec.Code != http.StatusOK {
+					t.Fatalf("raise status=%d body=%s", rec.Code, rec.Body.String())
+				}
+				rec := request("org_first", "runner_one", "org_first_runner_one")
+				var received runnerauth.Runner
+				if err := json.Unmarshal(rec.Body.Bytes(), &received); err != nil {
+					t.Fatal(err)
+				}
+				if rec.Code != http.StatusOK || received.CapacityLimit != 6 || received.CapacityRequest == nil || received.CapacityRequest.Capacity != 6 || received.CapacityRequest.ExpectedConfigRevision != strings.Repeat("a", 64) {
+					t.Fatalf("runner capacity request=%+v status=%d", received.CapacityRequest, rec.Code)
+				}
+			})
+			t.Run("organization edit ignores unrelated projects", func(t *testing.T) {
+				if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+					for i := 0; i < 201; i++ {
+						id := tracker.ProjectID(fmt.Sprintf("unrelated_%d", i))
+						if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_first", ID: id, Name: string(id), Slug: strings.ReplaceAll(string(id), "_", "-"), Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+							return err
+						}
+					}
+					identity, err := w.RunnerIdentity(t.Context(), "runner_one")
+					if err != nil {
+						return err
+					}
+					identity.Scope = "organization"
+					if err := w.DeleteAccessTokenGrant(t.Context(), identity.TokenID, "project_one"); err != nil {
+						return err
+					}
+					return w.UpdateRunnerRouting(t.Context(), identity.Revision, identity)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.ExecContext(t.Context(), `UPDATE api_tokens SET operator_project_access='all' WHERE organization_id='org_first' AND id='credential_member'`); err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if _, err := admin.ExecContext(parentContext, `UPDATE api_tokens SET operator_project_access='selected' WHERE organization_id='org_first' AND id='credential_member'`); err != nil {
+						t.Error(err)
+					}
+					if _, err := admin.ExecContext(parentContext, `INSERT INTO token_grants (organization_id,token_id,project_id) VALUES ('org_first','runner_one','project_one')`); err != nil {
+						t.Error(err)
+					}
+					if _, err := admin.ExecContext(parentContext, `UPDATE runner_identities SET scope='projects' WHERE organization_id='org_first' AND runner_id='runner_one'`); err != nil {
+						t.Error(err)
+					}
+				}()
+				current := read("runner_one")
+				input := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: current.Revision, Routing: current.Routing}, IdempotencyKey: "rename_large_organization"}
+				input.ProjectIDs = nil
+				input.DisplayName = "Renamed runner"
+				if rec := put("example_member_token", input); rec.Code != http.StatusOK {
+					t.Fatalf("rename status=%d body=%s", rec.Code, rec.Body.String())
+				}
+				got := read("runner_one")
+				if got.DisplayName != input.DisplayName || got.Revision != current.Revision+1 || !reflect.DeepEqual(got.CapacityRequest, current.CapacityRequest) {
+					t.Fatal("rename lost routing or capacity request")
+				}
+			})
 		})
 
 		identity := auth.HostedIdentity{Subject: "user_example", OrganizationID: "provider_org_first", SessionID: "session_support_routing", CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), SupportActor: "support@example.test", SupportReason: "customer-request"}

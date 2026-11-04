@@ -65,6 +65,7 @@ type Identity struct {
 	DisplayName           string
 	CapacityLimit         int64
 	ReportedCapacity      int64
+	CapacityRequest       *runnerauth.CapacityRequest
 	CapacityConfig        *runnerauth.CapacityConfig
 	ProjectIDs            []tracker.ProjectID
 	ProjectCapacityLimits map[tracker.ProjectID]int
