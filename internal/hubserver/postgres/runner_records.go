@@ -817,6 +817,9 @@ func (s *session) ReplaceRunnerProjectObservation(ctx context.Context, row runne
 	attemptRows := make([][]any, 0, len(attempts))
 	unavailableRows := make([][]any, 0)
 	for _, attempt := range attempts {
+		if attempt.Membership == nil {
+			attempt.Membership = []string{}
+		}
 		attemptRows = append(attemptRows, []any{row.OrganizationID, row.RunnerID, row.ProjectID, attempt.Position, attempt.RecordKey, attempt.IssueID, attempt.LocalAttemptID, attempt.NativeAttemptID, attempt.Generation, attempt.Fence, attempt.Stage, attempt.Running, attempt.NativeClaim, attempt.ProviderCompletedAt, attempt.HostOperation, attempt.OperationPending, attempt.LeaseRenewedAt, pq.Array(attempt.Membership), attempt.OperationStartedAt, attempt.OperationObservedAt, attempt.LatestErrorCode, attempt.LatestError, attempt.DeferredAt, attempt.RetryAt, attempt.RetryAttempt, attempt.RecoveryOwner, attempt.LeaseExpiresAt})
 		for key, reason := range attempt.Unavailable {
 			unavailableRows = append(unavailableRows, []any{row.OrganizationID, row.RunnerID, row.ProjectID, "attempt", attempt.Position, key, reason})
@@ -829,6 +832,9 @@ func (s *session) ReplaceRunnerProjectObservation(ctx context.Context, row runne
 	countRows := make([][]any, 0)
 	if row.Diagnostics != nil {
 		for position, admission := range row.Diagnostics.Admissions {
+			if admission.RepositoryReservations == nil {
+				admission.RepositoryReservations = []string{}
+			}
 			requirement := providercapacity.Requirement{}
 			if admission.ProviderRequirement != nil {
 				requirement = *admission.ProviderRequirement
