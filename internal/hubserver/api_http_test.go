@@ -2,7 +2,12 @@ package hubserver
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,9 +16,12 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
 
 func TestDecodeAPIJSONCompatibility(t *testing.T) {
@@ -206,3 +214,88 @@ func TestAPIRefusals(t *testing.T) {
 		})
 	}
 }
+
+func TestInternalAPIErrorPostgresDiagnostics(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, state, schema, table, column string
+		wantSchema, wantTable, wantColumn  string
+		domain                             error
+	}{
+		{name: "not null owner error", state: "23502", schema: "public", table: "native_attempts", column: "issue_id", wantSchema: "public", wantTable: "native_attempts", wantColumn: "issue_id"},
+		{name: "domain classification", state: "23505", schema: "platform", table: "organizations", column: "id", wantSchema: "platform", wantTable: "organizations", wantColumn: "id", domain: corestore.ErrUniqueViolation},
+		{name: "unknown schema", state: "23502", schema: "customer_private", table: "private_table", column: "private_column"},
+		{name: "empty schema", state: "23502", table: "private_table", column: "private_column"},
+		{name: "malformed identifiers", state: "23502", schema: "public", table: "issues\nprivate", column: "private value", wantSchema: "public"},
+		{name: "quoted identifiers", state: "23502", schema: "public", table: "Issues", column: "title.secret", wantSchema: "public"},
+		{name: "overlong identifiers", state: "23502", schema: "public", table: strings.Repeat("a", 64), column: strings.Repeat("b", 64), wantSchema: "public"},
+		{name: "empty identifiers", state: "23502", schema: "public", wantSchema: "public"},
+		{name: "invalid initial digit", state: "23502", schema: "public", table: "1issues", column: "2title", wantSchema: "public"},
+		{name: "non ASCII", state: "23502", schema: "public", table: "issués", column: "títle", wantSchema: "public"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			raw := &pq.Error{Code: pq.ErrorCode(test.state), Schema: test.schema, Table: test.table, Column: test.column,
+				Message: "private message", Detail: "private detail", Where: "private where", Hint: "private hint", Constraint: "private constraint", InternalQuery: "private query"}
+			pool := sql.OpenDB(apiErrorConnector{err: fmt.Errorf("connect: %w", raw)})
+			t.Cleanup(func() {
+				if err := pool.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			_, ownerErr := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1})
+			var retained *pq.Error
+			if !errors.As(ownerErr, &retained) || retained != raw || !errors.Is(ownerErr, raw) {
+				t.Fatalf("owner lost PostgreSQL cause: %v", ownerErr)
+			}
+			if test.domain != nil && !errors.Is(ownerErr, test.domain) {
+				t.Fatalf("owner lost domain: %v", ownerErr)
+			}
+			wantError := "PostgreSQL operation failed with SQLSTATE " + test.state
+			if test.domain != nil {
+				wantError = test.domain.Error()
+			}
+			if ownerErr.Error() != wantError {
+				t.Fatalf("owner error = %q, want %q", ownerErr, wantError)
+			}
+			var logs bytes.Buffer
+			service := &Service{config: Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil))}}
+			recorder := httptest.NewRecorder()
+			c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/example", nil), recorder)
+			if err := service.internalAPIError(c, "example_unavailable", "Example unavailable", fmt.Errorf("read: %w", ownerErr)); err != nil {
+				t.Fatal(err)
+			}
+			if recorder.Code != http.StatusInternalServerError || recorder.Body.String() != "{\"code\":\"example_unavailable\",\"message\":\"Example unavailable\"}\n" {
+				t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
+			}
+			if strings.Count(logs.String(), "\n") != 1 {
+				t.Fatalf("expected one log: %s", logs.String())
+			}
+			var record map[string]any
+			if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
+				t.Fatal(err)
+			}
+			for key, want := range map[string]string{"sqlstate": test.state, "schema": test.wantSchema, "table": test.wantTable, "column": test.wantColumn, "error": "read: " + wantError} {
+				got, exists := record[key]
+				if want == "" {
+					if exists {
+						t.Errorf("unexpected %s = %v", key, got)
+					}
+					continue
+				}
+				if got != want {
+					t.Errorf("%s = %v, want %q", key, got, want)
+				}
+			}
+			for _, secret := range []string{"private", "customer_private", "Detail", "Where", "Hint", "Constraint", "InternalQuery"} {
+				if strings.Contains(logs.String()+recorder.Body.String(), secret) {
+					t.Errorf("output leaked %q", secret)
+				}
+			}
+		})
+	}
+}
+
+type apiErrorConnector struct{ err error }
+
+func (c apiErrorConnector) Connect(context.Context) (driver.Conn, error) { return nil, c.err }
+func (c apiErrorConnector) Driver() driver.Driver                        { return &pq.Driver{} }
