@@ -30,22 +30,11 @@ func (s *session) ProjectSourceRecoveryPage(ctx context.Context, project tracker
 		if err := s.sourceRecoveryRunnerUsage(ctx, project, record, now, &candidate); err != nil {
 			return runnerstore.SourceRecoveryPage{}, err
 		}
-		for _, report := range record.Reports {
-			account, err := s.readRunnerProviderAccount(ctx, runnerstore.ProviderAccountKey{RunnerID: record.Identity.RunnerID, Provider: report.Provider, Backend: report.Backend, AccountAlias: report.AccountAlias, SharedAccountAlias: report.SharedAccountAlias}, now)
-			if err != nil {
-				return runnerstore.SourceRecoveryPage{}, err
-			}
-			used, retainedLimit, err := s.sourceRecoveryProviderUsage(ctx, record.Identity.RunnerID, report, now)
-			if err != nil {
-				return runnerstore.SourceRecoveryPage{}, err
-			}
-			view := providercapacity.View{Report: report, Used: used, State: account.State, Reason: "Declared provider concurrency is available"}
-			view.MaxConcurrent = sourceRecoveryLimit(report.MaxConcurrent, sourceRecoveryLimit(account.MaxConcurrent, retainedLimit))
-			if state := report.State(now); state == "exhausted" || state == "unknown" && view.State != "exhausted" {
-				view.State = state
-			}
-			candidate.Providers = append(candidate.Providers, view)
+		candidate.Providers, err = s.fleetRecordProviderViews(ctx, record, now)
+		if err != nil {
+			return runnerstore.SourceRecoveryPage{}, err
 		}
+
 		page.Items = append(page.Items, candidate)
 	}
 	return page, nil
@@ -126,15 +115,25 @@ WHERE r.organization_id=$1 ORDER BY r.runner_id LIMIT $2`, s.organization, limit
 }
 
 func (s *session) FleetLeases(ctx context.Context, now time.Time, limit int) ([]runnerstore.FleetLease, error) {
+	return s.fleetLeases(ctx, now, limit, "")
+}
+
+func (s *session) fleetLeases(ctx context.Context, now time.Time, limit int, machineID tracker.MachineID) ([]runnerstore.FleetLease, error) {
 	if limit < 1 || limit > 10000 {
 		return nil, corestore.ErrInvalidPage
+	}
+	selector := ""
+	args := []any{s.organization, now, limit + 1}
+	if machineID != "" {
+		selector = " AND l.machine_id=$4"
+		args = append(args, machineID)
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT coalesce(r.runner_id,''),l.machine_id,l.session_id,l.landing_capacity,l.lease_id,l.fencing_token,i.native_id,i.title,i.project_id,l.expires_at,coalesce(i.actor_principal_id,''),coalesce(p.requirement_role,''),coalesce(p.requirement_backend,''),coalesce(p.requirement_model,''),coalesce(p.provider,''),coalesce(p.backend,''),coalesce(p.account_alias,''),coalesce(p.shared_account_alias,''),coalesce(p.billing,''),coalesce(p.max_concurrent,0),coalesce(p.availability,''),p.observed_at,p.reset_at,coalesce(p.reason,'')
 FROM leases l JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
 LEFT JOIN runner_lease_assignments r ON r.organization_id=l.organization_id AND r.lease_id=l.lease_id
 LEFT JOIN provider_reservations p ON p.organization_id=l.organization_id AND p.lease_id=l.lease_id
 WHERE l.organization_id=$1 AND l.released_at IS NULL AND l.renewed_at<=$2 AND l.expires_at>$2
-ORDER BY l.fencing_token LIMIT $3`, s.organization, now, limit+1)
+`+selector+` ORDER BY l.fencing_token LIMIT $3`, args...)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -167,4 +166,50 @@ func (s *session) FleetProjectCount(ctx context.Context, limit int) (int, error)
 	var count int
 	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT id FROM projects WHERE organization_id=$1 AND deleted_at IS NULL LIMIT $2) selected`, s.organization, limit+1).Scan(&count)
 	return count, mapError(ctx, err)
+}
+
+func (s *session) RunnerRoutingRecord(ctx context.Context, runnerID string, now time.Time) (runnerstore.RoutingRecord, error) {
+	var result runnerstore.RoutingRecord
+	if runnerID == "" || len(runnerID) > 256 || now.IsZero() {
+		return result, corestore.ErrInvalidPage
+	}
+	records, err := s.selectedFleetRecords(ctx, "", "", 1, false, runnerID)
+	if err != nil {
+		return result, err
+	}
+	if len(records) != 1 {
+		return result, corestore.ErrNotFound
+	}
+	result.Record = records[0]
+	result.Leases, err = s.fleetLeases(ctx, now, 10000, result.Record.Identity.MachineID)
+	if err != nil {
+		return result, err
+	}
+	result.Providers, err = s.fleetRecordProviderViews(ctx, result.Record, now)
+	return result, err
+}
+
+func (s *session) fleetRecordProviderViews(ctx context.Context, record runnerstore.FleetRecord, now time.Time) ([]providercapacity.View, error) {
+	if len(record.Reports) > 32 {
+		return nil, runnerstore.ErrInvalidRecord
+	}
+	runnerID := record.Identity.RunnerID
+	views := []providercapacity.View{}
+	for _, report := range record.Reports {
+		account, err := s.readRunnerProviderAccount(ctx, runnerstore.ProviderAccountKey{RunnerID: runnerID, Provider: report.Provider, Backend: report.Backend, AccountAlias: report.AccountAlias, SharedAccountAlias: report.SharedAccountAlias}, now)
+		if err != nil {
+			return nil, err
+		}
+		used, retainedLimit, err := s.sourceRecoveryProviderUsage(ctx, runnerID, report, now)
+		if err != nil {
+			return nil, err
+		}
+		view := providercapacity.View{Report: report, Used: used, State: account.State, Reason: "Declared provider concurrency is available"}
+		view.MaxConcurrent = sourceRecoveryLimit(report.MaxConcurrent, sourceRecoveryLimit(account.MaxConcurrent, retainedLimit))
+		if state := report.State(now); state == "exhausted" || state == "unknown" && view.State != "exhausted" {
+			view.State = state
+		}
+		views = append(views, view)
+	}
+	return views, nil
 }

@@ -50,6 +50,16 @@ type FleetReader interface {
 	FleetLeases(context.Context, time.Time, int) ([]FleetLease, error)
 }
 
+type RoutingRecord struct {
+	Record    FleetRecord
+	Leases    []FleetLease
+	Providers []providercapacity.View
+}
+
+type RoutingReader interface {
+	RunnerRoutingRecord(context.Context, string, time.Time) (RoutingRecord, error)
+}
+
 const SourceRecoveryPageLimit = 32
 
 type SourceRecoveryCandidate struct {
