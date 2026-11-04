@@ -1088,7 +1088,7 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 
 func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scope nativeScope, item string, request tracker.Transition, conversationID string) (json.RawMessage, error) {
 	if s.config.TenantRepository != nil {
-		if scope.credential.Scope != apiScopeWorker || conversationID != "" {
+		if conversationID != "" {
 			return nil, workItemStorageUnavailable()
 		}
 		return s.transitionNativeIssueTenant(ctx, scope, item, request)

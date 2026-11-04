@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,6 +38,13 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	cfg := startupConfig(connection)
+	var humanWorkflowClock atomic.Int64
+	cfg.now = func() time.Time {
+		if value := humanWorkflowClock.Load(); value != 0 {
+			return time.Unix(0, value).UTC()
+		}
+		return time.Now().UTC()
+	}
 	cfg.Postgres.Pool.MaxConnections = 4
 	cfg.Postgres.Pool.ServingConnections = 2
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
@@ -78,7 +86,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 			return err
 		}
 		projectID := tracker.ProjectID("project_example")
-		states := append(nativeFixtureStates(), tracker.NativeState{Name: "Triage", Transitions: []string{"Todo"}}, tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo"}})
+		states := append(humanWorkflowFixtureStates(), tracker.NativeState{Name: "Triage", Transitions: []string{"Todo", "Cancelled"}}, tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo"}})
 		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_startup", ID: projectID, Name: "Example project", Slug: "example-project", Profile: "native"}, States: states}); err != nil {
 			return err
 		}
@@ -377,6 +385,10 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	if releasedLease.ReleasedAt == nil || releasedLease.ReleaseReason != "released" {
 		t.Fatalf("PostgreSQL released lease = %+v", releasedLease)
 	}
+
+	t.Run("human workflow after success", func(t *testing.T) {
+		verifyPostgresHumanWorkflow(t, service, admin, project, claim, ownerToken, reporterToken, workerToken, &humanWorkflowClock)
+	})
 
 	seedAttempt := func(session string, checkpoint *tracker.NativeCheckpoint, retainLease ...bool) tracker.NativeRunData {
 		t.Helper()
