@@ -13,15 +13,18 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/threadstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/labstack/echo/v4"
 )
 
 func TestPostgresEntryKeyThreadReads(t *testing.T) {
@@ -88,7 +91,21 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 				if name == "foreign" {
 					actor = "credential_second"
 				}
-				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: project, NativeID: tracker.NativeWorkItemID("wi_" + name), Number: int64(index + 1), Title: "Example issue", ActorPrincipalID: &actor}); err != nil {
+				id := tracker.NativeWorkItemID("wi_" + name)
+				issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: project, WorkItemID: id, Number: index + 1, Revision: 1}, Title: "Example issue", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: actor}, CreatedAt: now, UpdatedAt: now}
+				raw, err := json.Marshal(issue)
+				if err != nil {
+					return err
+				}
+				version, err := eventstore.NewContent(cfg.RunDetails).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: id, RecordID: string(id), Revision: 1}, raw)
+				if err != nil {
+					return err
+				}
+				state := "Todo"
+				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: project, NativeID: id, Number: int64(index + 1), Title: issue.Title, WorkflowStateName: &state, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID}); err != nil {
+					return err
+				}
+				if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
 					return err
 				}
 			}
@@ -126,6 +143,11 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 			t.Error(err)
 		}
 	})
+	if service.database.reader != nil || service.database.db != nil {
+		t.Fatal("fixture must use PostgreSQL without the legacy database")
+	}
+	requestHandler := service.Handler()
+	var requestReadCounter *entryKeyReadCounter
 	request := func(path, user, connection string, arguments any, mutate func(*cloudassert.Claims)) *httptest.ResponseRecorder {
 		t.Helper()
 		body, err := json.Marshal(arguments)
@@ -145,14 +167,62 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 			t.Fatal(err)
 		}
 		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+		if requestReadCounter != nil {
+			req = req.WithContext(context.WithValue(req.Context(), entryKeyReadCounterContextKey{}, requestReadCounter))
+		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(cloudassert.Header, assertion)
 		response := httptest.NewRecorder()
-		service.Handler().ServeHTTP(response, req)
+		requestHandler.ServeHTTP(response, req)
 		return response
 	}
 	call := func(name string, args any, mutate func(*cloudassert.Claims)) *httptest.ResponseRecorder {
 		return request("/internal/v1/keys/call", "first", "thread_reads", map[string]any{"name": name, "arguments": args, "connection_id": "thread_reads"}, mutate)
+	}
+	credential := apiCredential{ID: "credential_first", Hash: "key-hash-first", HostedPrincipal: "credential_first", Scope: apiScopeOperator, HostedRole: "owner", HostedKeyScope: apikey.ScopeRead, HostedProjectAccess: hostedProjectsAll, Hosted: &auth.HostedIdentity{Subject: "first", OrganizationID: "provider_org_startup"}}
+	identity := operatorIdentity(credential, "org_startup")
+	catalogContext := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: identity})
+	catalogContext = context.WithValue(catalogContext, operatorCatalogKey{}, operatorCatalogAuthority{identity: identity, credential: credential})
+	counter := &entryKeyReadCounter{}
+	catalogContext = context.WithValue(catalogContext, entryKeyReadCounterContextKey{}, counter)
+	counted := &entryKeyReadCountingRepository{Repository: service.config.TenantRepository}
+	isolatedService := &Service{config: service.config, database: service.database}
+	isolatedService.config.TenantRepository = counted
+	available, err := isolatedService.entryKeyToolAvailable(catalogContext, operatortool.WorkItem)
+	if err != nil || !available || counted.readCalls != 0 {
+		t.Fatalf("selected work_item availability = (%t, %v), unrelated tenant reads = %d; want available with no reads", available, err, counted.readCalls)
+	}
+	available, err = isolatedService.entryKeyToolAvailable(catalogContext, operatortool.FileIssue)
+	if err != nil || available || counted.readCalls != 0 {
+		t.Fatalf("read-scoped FileIssue availability = (%t, %v), tenant reads = %d; want denied with no reads", available, err, counted.readCalls)
+	}
+	counted.readCalls = 0
+	if _, err := isolatedService.entryKeyTools(catalogContext); err != nil {
+		t.Fatalf("full catalog read: %v", err)
+	}
+	if counter.projectAccessPageReads.Load() == 0 {
+		t.Fatal("full catalog path did not read unrelated runner grants")
+	}
+	isolatedService.echo = echo.New()
+	isolatedService.ready.Store(true)
+	isolatedService.operatorChat = service.operatorChat
+	isolatedService.echo.POST("/internal/v1/keys/call", isolatedService.entryKeyCall, isolatedService.hostedSharedEntry, isolatedService.operatorAuthority)
+	requestHandler = isolatedService.echo
+	selectedReadCounter := &entryKeyReadCounter{}
+	requestReadCounter = selectedReadCounter
+	workItem := call(operatortool.WorkItem, map[string]any{"project_id": "project_org_startup", "reference": "wi_own"}, nil)
+	requestReadCounter = nil
+	requestHandler = service.Handler()
+	requireNativeStatus(t, workItem, http.StatusOK)
+	if reads := selectedReadCounter.projectAccessPageReads.Load(); reads != 0 {
+		t.Fatalf("selected work_item call read unrelated runner grants %d times", reads)
+	}
+	foreignOrganizationItem := call(operatortool.WorkItem, map[string]any{"project_id": "project_org_other", "reference": "wi_foreign"}, nil)
+	requireNativeStatus(t, foreignOrganizationItem, http.StatusForbidden)
+	unavailableTool := call(operatortool.WorkHistory, map[string]any{"project_id": "project_org_startup", "reference": "wi_own"}, nil)
+	requireNativeStatus(t, unavailableTool, http.StatusForbidden)
+	if !strings.Contains(unavailableTool.Body.String(), "tool_unavailable") {
+		t.Fatalf("unsupported tool response = %s", unavailableTool.Body.String())
 	}
 	catalog := request("/internal/v1/keys/catalog", "first", "", map[string]any{}, nil)
 	requireNativeStatus(t, catalog, http.StatusOK)
@@ -339,9 +409,11 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 	requireNativeStatus(t, call("post_to_thread", map[string]any{"thread_id": "th_org_startup_own", "kind": "note", "body": "Must be rejected"}, func(c *cloudassert.Claims) { c.Key.Permission = apikey.ScopeWrite }), http.StatusForbidden)
 	entryRevoked = true
 	requireNativeStatus(t, call("list_threads", map[string]any{}, nil), http.StatusForbidden)
+	requireNativeStatus(t, call(operatortool.WorkItem, map[string]any{"project_id": "project_org_startup", "reference": "wi_own"}, nil), http.StatusForbidden)
 	entryRevoked = false
 	currentRole = "account"
 	requireNativeStatus(t, call("get_thread", map[string]any{"thread_id": "th_org_startup_own"}, nil), http.StatusForbidden)
+	requireNativeStatus(t, call(operatortool.WorkItem, map[string]any{"project_id": "project_org_startup", "reference": "wi_own"}, nil), http.StatusForbidden)
 	currentRole = "owner"
 	setRole("owner")
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {

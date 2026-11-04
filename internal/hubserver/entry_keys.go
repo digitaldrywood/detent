@@ -160,12 +160,118 @@ func (s *Service) entryKeyTools(ctx context.Context) ([]operatortool.Definition,
 	}
 	supported := make([]operatortool.Definition, 0)
 	for _, definition := range definitions {
-		switch definition.Name {
-		case "list_projects", "get_native_project", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, operatortool.AppBootstrapPayload, operatortool.MoveItem, operatortool.FileIssue, "list_threads", "get_thread", operatortool.ListComments, operatortool.ListChanges:
+		if entryKeyToolSupported(definition.Name) {
 			supported = append(supported, definition)
 		}
 	}
 	return supported, nil
+}
+
+func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool, error) {
+	if s.config.TenantRepository == nil {
+		definitions, err := s.entryKeyTools(ctx)
+		if err != nil {
+			return false, err
+		}
+		return entryKeyHasDefinition(definitions, name), nil
+	}
+	if !entryKeyToolSupported(name) {
+		return false, nil
+	}
+	if _, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
+		return false, err
+	}
+	catalog, err := operatorCatalog(ctx)
+	if err != nil {
+		return false, err
+	}
+	switch name {
+	case operatortool.WorkList, operatortool.WorkItem:
+		_, found := entryKeyDefinition(operatortool.WorkReadCatalog(), name)
+		return found && catalog.credential.HostedRole != "account", nil
+	case operatortool.MoveItem, operatortool.FileIssue:
+		definition, found := entryKeyDefinition(operatortool.CommandCatalog(), name)
+		if !found {
+			return false, nil
+		}
+		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: projectToolScope(name, definition.Annotations.ReadOnly), ResourceKind: "work_item", Action: name})
+		return err == nil, nil
+	case "list_projects", "get_native_project":
+		definitions := append(operatortool.ProjectCatalog(), operatortool.LocalProjectCatalog()...)
+		definition, found := entryKeyDefinition(definitions, name)
+		if !found {
+			return false, nil
+		}
+		requirement := operatortool.Requirement{Scope: projectToolScope(name, definition.Annotations.ReadOnly)}
+		if requirement.Scope == apikey.ScopeWrite {
+			requirement.ResourceKind = "project"
+		}
+		_, err := s.authorizeCatalog(ctx, requirement)
+		return err == nil, nil
+	case operatortool.AppUpdates, operatortool.AppBootstrapPayload:
+		if s.config.Hosted == nil || s.database == nil || catalog.credential.Hosted == nil || catalog.credential.HostedRole == "account" || operatorIdentity(catalog.credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
+			return false, nil
+		}
+		_, found := entryKeyDefinition(operatortool.HostedContextCatalog(), name)
+		if !found {
+			return false, nil
+		}
+		requirement := operatortool.Requirement{Scope: apikey.ScopeRead}
+		if name == operatortool.AppUpdates {
+			requirement.ResourceKind = "runners"
+			if !s.appAllRunnerGrants(ctx, catalog.credential) {
+				return false, nil
+			}
+		}
+		_, err := s.authorizeCatalog(ctx, requirement)
+		return err == nil, nil
+	case "list_threads", "get_thread":
+		if catalog.credential.HostedRole == "account" {
+			return false, nil
+		}
+		if _, found := entryKeyDefinition(operatortool.ThreadCatalog(), name); !found {
+			return false, nil
+		}
+		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, Action: name})
+		return err == nil, nil
+	case operatortool.ListComments:
+		if _, found := operatortool.Lookup(name); !found {
+			return false, nil
+		}
+		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ResourceKind: "comment", Action: name})
+		return err == nil, nil
+	case operatortool.ListChanges:
+		if _, found := operatortool.Lookup(name); !found {
+			return false, nil
+		}
+		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, Action: name})
+		return err == nil, nil
+	default:
+		return false, nil
+	}
+}
+
+func entryKeyToolSupported(name string) bool {
+	switch name {
+	case "list_projects", "get_native_project", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, operatortool.AppBootstrapPayload, operatortool.MoveItem, operatortool.FileIssue, operatortool.ListComments, operatortool.ListChanges, "list_threads", "get_thread":
+		return true
+	default:
+		return false
+	}
+}
+
+func entryKeyDefinition(definitions []operatortool.Definition, name string) (operatortool.Definition, bool) {
+	for _, definition := range definitions {
+		if definition.Name == name {
+			return definition, true
+		}
+	}
+	return operatortool.Definition{}, false
+}
+
+func entryKeyHasDefinition(definitions []operatortool.Definition, name string) bool {
+	_, found := entryKeyDefinition(definitions, name)
+	return found
 }
 
 func (s *Service) entryKeyCatalog(c echo.Context) error {
@@ -256,13 +362,9 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	if selector.ProjectID != "" && !credential.EntryKey.Allows(selector.ProjectID) {
 		return s.refusedAPIError(c, http.StatusForbidden, "key_project_denied", "The project is outside this key's access context", apikey.Refusal{Code: "key_project_denied", Message: "The project is outside this key's access context"})
 	}
-	definitions, err := s.entryKeyTools(ctx)
+	available, err := s.entryKeyToolAvailable(ctx, call.Name)
 	if err != nil {
 		return s.nativeAPIError(c, err)
-	}
-	available := false
-	for _, d := range definitions {
-		available = available || d.Name == call.Name
 	}
 	if !available {
 		return s.refusedAPIError(c, http.StatusForbidden, "tool_unavailable", "The target organization's role or plan does not provide this tool", apikey.Refusal{Code: "tool_unavailable", Message: "The target organization's role or plan does not provide this tool"})
