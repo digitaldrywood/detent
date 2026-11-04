@@ -116,6 +116,105 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 		e.ServeHTTP(rec, req)
 		return rec
 	}
+	t.Run("hosted fleet pages", func(t *testing.T) {
+		defer func() { service.config.Hosted = nil }()
+		for _, org := range []string{"org_first", "org_second"} {
+			provider := newHostedSecurityProvider()
+			membership := auth.Membership{ID: "membership_list", UserID: "user_list", OrganizationID: "provider_" + org, Status: "active"}
+			membership.Role.Slug = "admin"
+			provider.members[membership.ID] = membership
+			if err := repository.WriteTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: tracker.OrganizationID(org), ID: "credential_list", Name: "Example list admin", Hash: apikey.HashToken(org + "_list"), Scope: "operator", NativeOnly: true, CreatedAt: now.Add(-time.Hour), UpdatedAt: now, UserID: membership.UserID, MembershipID: membership.ID, KeyScope: string(apikey.ScopeAdmin), ProjectAccess: "all", Kind: "personal"}); err != nil {
+					return err
+				}
+				return w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: tracker.OrganizationID(org), UserID: membership.UserID, Email: "list@example.test", MembershipID: membership.ID, Role: "admin", Active: true, PrincipalID: "credential_list", CreatedAt: now, UpdatedAt: now})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			service.config.Hosted = &HostedConfig{OrganizationID: org, Provider: provider}
+			hosted := echo.New()
+			service.registerPostgresRoutes(hosted)
+			for _, tc := range []struct{ query, id, next string }{
+				{"?limit=1", "one", "1"}, {"?limit=1&offset=1", "two", ""}, {"?limit=1&offset=2", "", ""},
+			} {
+				req := httptest.NewRequest(http.MethodGet, "/api/v2/organizations/"+org+"/runners"+tc.query, nil)
+				req.Header.Set(echo.HeaderAuthorization, "Bearer "+org+"_list")
+				rec := httptest.NewRecorder()
+				hosted.ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("fleet status=%d body=%s", rec.Code, rec.Body.String())
+				}
+				var runners []runnerauth.Runner
+				if err := json.Unmarshal(rec.Body.Bytes(), &runners); err != nil {
+					t.Fatal(err)
+				}
+				wantCount := 1
+				if tc.id == "" {
+					wantCount = 0
+				}
+				if rec.Header().Get("X-Next-Offset") != tc.next || len(runners) != wantCount {
+					t.Fatalf("page %s: next=%s runners=%+v", tc.query, rec.Header().Get("X-Next-Offset"), runners)
+				}
+				for _, got := range runners {
+					project := tracker.ProjectID("project_" + tc.id)
+					if got.RunnerID != "runner_"+tc.id || got.OrganizationID != tracker.OrganizationID(org) || got.Hostname != org+"-"+tc.id || got.CapacityLimit != 3 || got.HostCapacity != 5 || got.HostUsed != 1 || got.Used != 1 || got.ProjectUsed[project] != 1 || got.ProjectRanks[project] != 7 || got.ProjectCapacityLimits[project] != 2 || got.CapacityConfig == nil {
+						t.Fatalf("fleet facts=%+v", got)
+					}
+					if len(got.Leases) != 1 || got.Leases[0].ProjectID != project || got.Leases[0].ProviderReservation == nil || len(got.ProviderCapacity) != 1 || got.ProviderCapacity[0].Used != 2 || got.ProviderCapacity[0].MaxConcurrent != 3 {
+						t.Fatalf("fleet leases/providers=%+v / %+v", got.Leases, got.ProviderCapacity)
+					}
+				}
+			}
+			for _, query := range []string{"?limit=0", "?limit=201", "?offset=-1", "?offset=invalid", "?offset=100001"} {
+				req := httptest.NewRequest(http.MethodGet, "/api/v2/organizations/"+org+"/runners"+query, nil)
+				req.Header.Set(echo.HeaderAuthorization, "Bearer "+org+"_list")
+				rec := httptest.NewRecorder()
+				hosted.ServeHTTP(rec, req)
+				if rec.Code != http.StatusUnprocessableEntity {
+					t.Fatalf("invalid page %s: status=%d body=%s", query, rec.Code, rec.Body.String())
+				}
+			}
+			if err := repository.WriteTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(w tenantstore.Writer) error {
+				for index := range 49 {
+					id := fmt.Sprintf("runner_page_%02d", index)
+					if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: tracker.OrganizationID(org), ID: id, Name: id, Hash: apikey.HashToken(org + id), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ProjectAccess: "all", Kind: "service"}); err != nil {
+						return err
+					}
+					if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: tracker.OrganizationID(org), ID: id, RunnerID: id, MachineID: "machine_one", TokenHash: apikey.HashToken(org + id + "enroll"), Scope: "organization", Operations: []string{runnerauth.Read}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "admin_" + org}); err != nil {
+						return err
+					}
+					if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: tracker.OrganizationID(org), RunnerID: id, MachineID: "machine_one", TokenID: id, EnrollmentID: id, Scope: "organization", State: "active", Operations: []string{runnerauth.Read}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), LastHeartbeatAt: now}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, query := range []string{"", "?limit=200"} {
+				req := httptest.NewRequest(http.MethodGet, "/api/v2/organizations/"+org+"/runners"+query, nil)
+				req.Header.Set(echo.HeaderAuthorization, "Bearer "+org+"_list")
+				rec := httptest.NewRecorder()
+				hosted.ServeHTTP(rec, req)
+				if query == "" && rec.Code != http.StatusUnprocessableEntity || query != "" && rec.Code != http.StatusOK {
+					t.Fatalf("large fleet %q: status=%d body=%s", query, rec.Code, rec.Body.String())
+				}
+				if query != "" {
+					var runners []runnerauth.Runner
+					if err := json.Unmarshal(rec.Body.Bytes(), &runners); err != nil || len(runners) != 51 {
+						t.Fatalf("large page count=%d error=%v", len(runners), err)
+					}
+				}
+			}
+			req := httptest.NewRequest(http.MethodGet, "/api/v2/organizations/org_other/runners", nil)
+			req.Header.Set(echo.HeaderAuthorization, "Bearer "+org+"_list")
+			rec := httptest.NewRecorder()
+			hosted.ServeHTTP(rec, req)
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("cross-organization list status=%d", rec.Code)
+			}
+		}
+	})
 	for _, org := range []string{"org_first", "org_second"} {
 		for _, id := range []string{"one", "two"} {
 			for _, token := range []string{org + "_runner_" + id, org + "_admin"} {
