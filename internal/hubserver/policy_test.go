@@ -35,7 +35,7 @@ import (
 )
 
 func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *testing.T) {
-	repository, _ := projectRecordPostgresWithAdmin(t, 3)
+	repository, _ := projectRecordPostgresWithAdmin(t, 4)
 	details := &memoryRunDetails{}
 	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: details})
 	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
@@ -244,6 +244,108 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 	view = read()
 	if view.Policy == nil || view.Policy.ID != descriptorA.ID || view.ApprovedBy != "test_hub_admin" || len(view.ObservedPolicies) != 1 || view.ObservedPolicies[0].Policy.ID != descriptorB.ID || !view.ObservedPolicies[0].Conflict {
 		t.Fatalf("observed policy approval or conflict state = %+v", view)
+	}
+	other, err := service.createNativeOrganizationFor(t.Context(), "Other example organization")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedPostgresHubAdmin(t, repository, service, other)
+	otherProjects := "/api/v2/organizations/" + string(other.ID) + "/projects"
+	otherResponse := performHubAPIRequest(t, service, http.MethodPost, otherProjects, testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Other example project", "states": nativeFixtureStates()})
+	requireNativeStatus(t, otherResponse, http.StatusOK)
+	var otherProject tracker.NativeProject
+	decodeHubResponse(t, otherResponse, &otherProject)
+	otherBase := otherProjects + "/" + string(otherProject.ID)
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPut, otherBase+"/policy", testHubAdminToken, policy.Change{Policy: descriptorA}), http.StatusOK)
+	capturedSkew := make(chan context.Context, 1)
+	service.echo.GET("/api/v2/organizations/:organization/skew-operator", func(c echo.Context) error {
+		capturedSkew <- c.Request().Context()
+		return c.NoContent(http.StatusOK)
+	}, service.operatorAuthority)
+	for _, mode := range []string{"observation", "approval", "observed approval", "receipted approval", "reused approval", "unapproved observation"} {
+		t.Run("same-content revision skew/"+mode, func(t *testing.T) {
+			for _, target := range []struct {
+				organization tracker.OrganizationID
+				project      tracker.ProjectID
+				base         string
+			}{{organization.ID, project.ID, base}, {other.ID, otherProject.ID, otherBase}} {
+				if err := repository.WriteTenant(t.Context(), target.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					record, err := w.ProjectRecord(t.Context(), target.project)
+					if err != nil {
+						return err
+					}
+					record.Core.WorkflowSourceRevision = descriptorObservationA.Workflow.Revision
+					_, err = w.UpdateProjectRecord(t.Context(), record)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, target := range []struct {
+				organization tracker.OrganizationID
+				project      tracker.ProjectID
+				base         string
+			}{{organization.ID, project.ID, base}, {other.ID, otherProject.ID, otherBase}} {
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, "/api/v2/organizations/"+string(target.organization)+"/skew-operator", testHubAdminToken, nil), http.StatusOK)
+				ctx := operatortool.BindConnection(context.WithoutCancel(<-capturedSkew), "skew-"+string(target.organization), "policy fixture")
+				if err := (hubProjectExecutor{service}).OpenConnection(ctx); err != nil {
+					t.Fatal(err)
+				}
+				file := func(key string) error {
+					raw, err := json.Marshal(map[string]string{"project_id": string(target.project), "request_id": mode + key, "title": "Example policy filing", "description": workItemRecordBody, "type": "bug", "state": "Backlog"})
+					if err != nil {
+						return err
+					}
+					result, err := (nativeOperatorExecutor{service}).Execute(ctx, operatortool.Call{Name: operatortool.FileIssue, Arguments: raw})
+					if err == nil && !strings.Contains(string(result.Content), `"state":"Backlog"`) {
+						t.Fatalf("missing filed Backlog issue: %s", result.Content)
+					}
+					return err
+				}
+				var conflict *operatortool.ConflictError
+				if err := file("before"); !errors.As(err, &conflict) || conflict.Code != "policy_mismatch" {
+					t.Fatalf("skew filing error = %v", err)
+				}
+				before, err := service.readTenantProjectPolicy(t.Context(), target.organization, target.project)
+				if err != nil {
+					t.Fatal(err)
+				}
+				switch {
+				case mode == "unapproved observation" && target.organization == organization.ID:
+					report(runners[0], descriptorB, sourceB)
+					if err := file("unapproved"); !errors.As(err, &conflict) || conflict.Code != "policy_mismatch" {
+						t.Fatalf("unapproved content repaired filing: %v", err)
+					}
+					report(runners[0], descriptorObservationA, sourceB)
+				case mode == "reused approval" && target.organization == other.ID:
+					reused := authoredDescriptor("Example isolated approval history.\n", strings.Repeat("e", 40))
+					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPut, target.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptorA.ID, Policy: reused}), http.StatusOK)
+					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPut, target.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: reused.ID, Policy: descriptorObservationA}), http.StatusOK)
+				case mode == "observation" && target.organization == organization.ID:
+					report(runners[0], descriptorObservationA, sourceB)
+				case mode == "receipted approval":
+					call := projectCall(t, "approve_project_policy", string(target.project), "skew-approval", operatortool.PolicyApprovalInput{ExpectedID: descriptorA.ID, Policy: descriptorObservationA})
+					for range 2 {
+						if _, err := (hubProjectExecutor{service}).command(ctx, call, projectCommandExecute); err != nil {
+							t.Fatal(err)
+						}
+					}
+				default:
+					change := policy.Change{ExpectedID: descriptorA.ID, Policy: descriptorObservationA}
+					if mode == "observed approval" {
+						change = policy.Change{ExpectedID: descriptorA.ID, ObservedPolicyID: descriptorA.ID}
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPut, target.base+"/policy", testHubAdminToken, change), http.StatusOK)
+				}
+				if err := file("after"); err != nil {
+					t.Fatalf("same-content reconciliation still refuses Backlog file_issue: %v", err)
+				}
+				after, err := service.readTenantProjectPolicy(t.Context(), target.organization, target.project)
+				if err != nil || !reflect.DeepEqual(before.Policy, after.Policy) || mode != "reused approval" && !reflect.DeepEqual(before, after) {
+					t.Fatalf("canonical approval changed: %v", err)
+				}
+			}
+		})
 	}
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.RevokeAccessCredential(t.Context(), "credential_example_a", now)

@@ -403,10 +403,7 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 			return policy.Approval{}, nativeInvalid("policy must be omitted when observed_policy_id is supplied")
 		}
 		if previous.Policy.ID == change.ObservedPolicyID {
-			if command != nil {
-				return s.recordTenantPolicyNoopReceipt(ctx, scope, previous, previousRevision, command)
-			}
-			return previous, nil
+			return s.reconcileTenantPolicyApproval(ctx, scope, previous, previousRevision, command)
 		}
 		observed, err := s.readTenantObservedPolicy(ctx, scope.organization, scope.project, previous.Policy.ID, change.ObservedPolicyID)
 		if err != nil {
@@ -422,15 +419,19 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 		return policy.Approval{}, policyMismatch("Approved policy changed; inspect the current policy and supply its expected_policy_id")
 	}
 	if previous.Policy.ID == resolved.ID {
-		if command != nil {
-			return s.recordTenantPolicyNoopReceipt(ctx, scope, previous, previousRevision, command)
-		}
-		return previous, nil
+		return s.reconcileTenantPolicyApproval(ctx, scope, previous, previousRevision, command)
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	revision, revisionFound, err := s.tenantProjectPolicyRevisionForDescriptor(ctx, scope.organization, scope.project, resolved, content)
 	if err != nil {
 		return policy.Approval{}, err
+	}
+	canonical := resolved
+	if revisionFound {
+		canonical, err = content.ProjectPolicy(ctx, revision)
+		if err != nil {
+			return policy.Approval{}, err
+		}
 	}
 	now := s.config.now().UTC()
 	if !revisionFound {
@@ -447,7 +448,7 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 	}
 	revision.ApprovedBy = actor
 	revision.ApprovedAt = now
-	result := policy.Approval{Policy: resolved, ApprovedBy: actor, ApprovedAt: formatHubTime(now)}
+	result := policy.Approval{Policy: canonical, ApprovedBy: actor, ApprovedAt: formatHubTime(now)}
 	var receipt eventstore.Receipt
 	if command != nil {
 		response, err := json.Marshal(result)
@@ -534,21 +535,8 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 		} else {
 			return err
 		}
-		if project.Core.Profile == "native" {
-			if resolved.Workflow == nil && project.Core.WorkflowSource != "" {
-				return policyMismatch("Repository-controlled workflow requires a resolved workflow in the policy descriptor; inspect the repository definition with an updated runner")
-			}
-			if resolved.Workflow != nil {
-				project.States = resolved.Workflow.States
-				project.Core.WorkflowSource = resolved.Workflow.Source
-				project.Core.WorkflowSourceRevision = resolved.Workflow.Revision
-				if project.Core.WorkflowSourceRevision == "" {
-					project.Core.WorkflowSourceRevision = resolved.SourceRevision
-				}
-				if _, err := writer.UpdateProjectRecord(ctx, project); err != nil {
-					return err
-				}
-			}
+		if err := reconcileTenantWorkflowPolicy(ctx, writer, project, canonical); err != nil {
+			return err
 		}
 		if err := writer.ApproveProjectPolicy(ctx, revision, change.ExpectedID); err != nil {
 			return err
@@ -587,38 +575,43 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 	return result, nil
 }
 
-func (s *Service) recordTenantPolicyNoopReceipt(ctx context.Context, scope nativeScope, approval policy.Approval, planned policystore.Revision, command *tenantPolicyCommandReceipt) (policy.Approval, error) {
-	raw, err := json.Marshal(approval)
-	if err != nil {
-		return policy.Approval{}, err
-	}
-	receipt, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{
-		OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: command.Operation,
-		CommandKey: command.Key, RequestHash: command.Hash, CreatedAt: s.config.now().UTC(),
-	}, raw)
-	if err != nil {
-		return policy.Approval{}, err
+func (s *Service) reconcileTenantPolicyApproval(ctx context.Context, scope nativeScope, approval policy.Approval, planned policystore.Revision, command *tenantPolicyCommandReceipt) (policy.Approval, error) {
+	var receipt eventstore.Receipt
+	if command != nil {
+		raw, err := json.Marshal(approval)
+		if err != nil {
+			return policy.Approval{}, err
+		}
+		receipt, err = eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{
+			OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: command.Operation,
+			CommandKey: command.Key, RequestHash: command.Hash, CreatedAt: s.config.now().UTC(),
+		}, raw)
+		if err != nil {
+			return policy.Approval{}, err
+		}
 	}
 	replayed := false
 	var replayReceipt eventstore.Receipt
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, writer, scope, true); err != nil {
 			return err
 		}
 		if err := writer.LockWorkItemProject(ctx, scope.project); err != nil {
 			return err
 		}
-		prior, err := writer.Receipt(ctx, scope.credential.ID, command.Operation, command.Key)
-		if err == nil {
-			if prior.RequestHash != command.Hash {
-				return nativeConflict(0)
+		if command != nil {
+			prior, err := writer.Receipt(ctx, scope.credential.ID, command.Operation, command.Key)
+			if err == nil {
+				if prior.RequestHash != command.Hash {
+					return nativeConflict(0)
+				}
+				replayed = true
+				replayReceipt = prior
+				return nil
 			}
-			replayed = true
-			replayReceipt = prior
-			return nil
-		}
-		if !errors.Is(err, corestore.ErrNotFound) {
-			return err
+			if !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
 		}
 		current, err := writer.ProjectPolicy(ctx, scope.project)
 		if err != nil {
@@ -627,7 +620,16 @@ func (s *Service) recordTenantPolicyNoopReceipt(ctx context.Context, scope nativ
 		if !sameNativeClaimProjectPolicy(current, planned) {
 			return corestore.ErrRevisionConflict
 		}
-		_, err = writer.PutReceipt(ctx, receipt)
+		project, err := writer.ProjectRecord(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if err := reconcileTenantWorkflowPolicy(ctx, writer, project, approval.Policy); err != nil {
+			return err
+		}
+		if command != nil {
+			_, err = writer.PutReceipt(ctx, receipt)
+		}
 		return err
 	})
 	if err != nil {
@@ -728,6 +730,13 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope nativeSc
 	if err != nil {
 		return err
 	}
+	canonical := observation.Descriptor
+	if found {
+		canonical, err = content.ProjectPolicy(ctx, revision)
+		if err != nil {
+			return err
+		}
+	}
 	if !found {
 		raw, err := json.Marshal(observation.Descriptor)
 		if err != nil {
@@ -804,7 +813,7 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope nativeSc
 		if !accepted {
 			return nil
 		}
-		return s.applyObservedTenantDefaultBranchPolicy(ctx, writer, scope, project, reporter, observation, previous, previousRevision, record.Revision, now)
+		return s.applyObservedTenantDefaultBranchPolicy(ctx, writer, scope, project, reporter, observation, canonical, previous, previousRevision, record.Revision, now)
 	})
 }
 
@@ -874,7 +883,7 @@ func sameTenantProjectPolicyRevisionContent(left, right policystore.Revision) bo
 	return left.OrganizationID == right.OrganizationID && left.ProjectID == right.ProjectID && left.PolicyID == right.PolicyID && left.PayloadObjectKey == right.PayloadObjectKey && left.PayloadSHA256 == right.PayloadSHA256 && left.PayloadBytes == right.PayloadBytes && left.PayloadContentBytes == right.PayloadContentBytes
 }
 
-func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, writer tenantstore.Writer, scope nativeScope, project projectstore.Record, reporter string, observation policy.Observation, previous policy.Approval, previousRevision, observedRevision policystore.Revision, now time.Time) error {
+func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, writer tenantstore.Writer, scope nativeScope, project projectstore.Record, reporter string, observation policy.Observation, canonical policy.Descriptor, previous policy.Approval, previousRevision, observedRevision policystore.Revision, now time.Time) error {
 	descriptor := observation.Descriptor
 	current, err := writer.ProjectPolicy(ctx, scope.project)
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -917,7 +926,7 @@ func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, wr
 		}
 	}
 	if current.PolicyID == descriptor.ID {
-		return nil
+		return reconcileTenantWorkflowPolicy(ctx, writer, project, previous.Policy)
 	}
 	actor := "repository-default-branch"
 	if carryover && previous.ApprovedBy != "" {
@@ -925,21 +934,8 @@ func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, wr
 	} else if landing.Actor != "" {
 		actor = landing.Actor
 	}
-	if project.Core.Profile == "native" {
-		if descriptor.Workflow == nil && project.Core.WorkflowSource != "" {
-			return policyMismatch("Repository-controlled workflow requires a resolved workflow in the policy descriptor; inspect the repository definition with an updated runner")
-		}
-		if descriptor.Workflow != nil {
-			project.States = descriptor.Workflow.States
-			project.Core.WorkflowSource = descriptor.Workflow.Source
-			project.Core.WorkflowSourceRevision = descriptor.Workflow.Revision
-			if project.Core.WorkflowSourceRevision == "" {
-				project.Core.WorkflowSourceRevision = descriptor.SourceRevision
-			}
-			if _, err := writer.UpdateProjectRecord(ctx, project); err != nil {
-				return err
-			}
-		}
+	if err := reconcileTenantWorkflowPolicy(ctx, writer, project, canonical); err != nil {
+		return err
 	}
 	approved := observedRevision
 	approved.ApprovedBy = actor
@@ -951,6 +947,30 @@ func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, wr
 		return nil
 	}
 	return s.createTenantWorkflowApply(ctx, writer, scope, project, current.PolicyID, previous.Policy, descriptor, actor, reporter, now, landing)
+}
+
+func reconcileTenantWorkflowPolicy(ctx context.Context, writer tenantstore.Writer, project projectstore.Record, descriptor policy.Descriptor) error {
+	if project.Core.Profile != "native" {
+		return nil
+	}
+	if descriptor.Workflow == nil {
+		if project.Core.WorkflowSource != "" {
+			return policyMismatch("Repository-controlled workflow requires a resolved workflow in the policy descriptor; inspect the repository definition with an updated runner")
+		}
+		return nil
+	}
+	revision := descriptor.Workflow.Revision
+	if revision == "" {
+		revision = descriptor.SourceRevision
+	}
+	if project.Core.WorkflowSource == descriptor.Workflow.Source && project.Core.WorkflowSourceRevision == revision && reflect.DeepEqual(project.States, descriptor.Workflow.States) {
+		return nil
+	}
+	project.Core.WorkflowSource = descriptor.Workflow.Source
+	project.Core.WorkflowSourceRevision = revision
+	project.States = descriptor.Workflow.States
+	_, err := writer.UpdateProjectRecord(ctx, project)
+	return err
 }
 
 func sameProjectPolicySnapshot(current, planned policystore.Revision) bool {
