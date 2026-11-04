@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"database/sql"
@@ -9,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -26,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -338,6 +341,56 @@ func TestPostgresStartupOwnsPoolWithoutSQLiteOrWorkers(t *testing.T) {
 	var leases, attempts int
 	if err := admin.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM leases), (SELECT count(*) FROM native_attempts)`).Scan(&leases, &attempts); err != nil || leases != 0 || attempts != 0 {
 		t.Fatalf("failed startup dispatched: leases=%d attempts=%d error=%v", leases, attempts, err)
+	}
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run("restored plan "+string(organization), func(t *testing.T) {
+			plans := pilotHostedPlans()
+			configured := plans.Plans[0]
+			stored := billingstore.Plan{OrganizationID: organization, PlanReference: billingstore.PlanReference{ID: configured.ID, Version: configured.Version}, Name: "Restored example plan", Allowances: map[string]int64{"collaboration_bytes": 25 << 30}, Features: configured.Features}
+			if err := service.database.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error { return w.CreateBillingPlan(t.Context(), stored) }); err != nil {
+				t.Fatal(err)
+			}
+			childConfig := cfg
+			hosted := *cfg.Hosted
+			hosted.OrganizationID = string(organization)
+			hosted.Plans = &plans
+			childConfig.Hosted = &hosted
+			var logs bytes.Buffer
+			childConfig.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+			var child *Service
+			var openErr error
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						openErr = fmt.Errorf("open restored-plan tenant panicked: %v", recovered)
+					}
+				}()
+				child, openErr = Open(t.Context(), childConfig)
+			}()
+			if openErr != nil {
+				t.Fatal(openErr)
+			}
+			t.Cleanup(func() {
+				if err := child.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			if !strings.Contains(logs.String(), "hosted plan seed differs from immutable stored version; keeping stored version") {
+				t.Fatal("startup did not exercise the differing-plan warning")
+			}
+			if err := child.database.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+				actual, err := r.BillingPlan(t.Context(), stored.PlanReference)
+				if err == nil && (actual.Name != stored.Name || actual.Allowances["collaboration_bytes"] != stored.Allowances["collaboration_bytes"]) {
+					t.Fatal("startup overwrote the restored plan")
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if health, status := child.readInstanceHealth(t.Context()); status != http.StatusOK || !health.SchemaFactsComplete {
+				t.Fatalf("restored-plan tenant health = %d, complete=%v", status, health.SchemaFactsComplete)
+			}
+		})
 	}
 }
 

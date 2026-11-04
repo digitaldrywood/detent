@@ -153,6 +153,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	database.now = cfg.now
 	database.newLeaseID = cfg.newLeaseID
 	if database.postgres != nil {
+		database.logger = cfg.Logger
 		cfg.TenantRepository = database.postgres
 		cfg.AccessRepository = database.postgres
 		cfg.BillingRepository = database.postgres
