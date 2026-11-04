@@ -62,14 +62,14 @@ func (e hostedContextExecutor) credential(ctx context.Context, name, project str
 		return ctx, apiCredential{}, errHostedContextUnavailable
 	}
 	if s.database.db == nil {
-		if s.config.TenantRepository == nil || name != operatortool.AppUpdates {
+		if s.config.TenantRepository == nil || name != operatortool.AppUpdates && name != operatortool.AppBootstrapPayload {
 			return ctx, apiCredential{}, errHostedContextUnavailable
 		}
 		credential, err := currentHubOperator(ctx)
 		if err != nil || credential.Hosted == nil || credential.HostedRole == "account" || operatorIdentity(credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
 			return ctx, apiCredential{}, operatortool.ErrAccessDenied
 		}
-		if !s.appAllRunnerGrants(ctx, credential) {
+		if name == operatortool.AppUpdates && !s.appAllRunnerGrants(ctx, credential) {
 			return ctx, apiCredential{}, operatortool.ErrAccessDenied
 		}
 		return ctx, credential, nil
@@ -97,15 +97,24 @@ func (e hostedContextExecutor) listTools(ctx context.Context) []operatortool.Def
 		if err != nil || catalog.credential.Hosted == nil || catalog.credential.HostedRole == "account" || operatorIdentity(catalog.credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
 			return nil
 		}
-		if _, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ResourceKind: "runners"}); err != nil || !s.appAllRunnerGrants(ctx, catalog.credential) {
-			return nil
-		}
+		definitions := []operatortool.Definition{}
 		for _, definition := range operatortool.HostedContextCatalog() {
-			if definition.Name == operatortool.AppUpdates {
-				return []operatortool.Definition{definition}
+			requirement := operatortool.Requirement{Scope: apikey.ScopeRead}
+			switch definition.Name {
+			case operatortool.AppUpdates:
+				requirement.ResourceKind = "runners"
+				if !s.appAllRunnerGrants(ctx, catalog.credential) {
+					continue
+				}
+			case operatortool.AppBootstrapPayload:
+			default:
+				continue
+			}
+			if _, err := s.authorizeCatalog(ctx, requirement); err == nil {
+				definitions = append(definitions, definition)
 			}
 		}
-		return nil
+		return definitions
 	}
 	catalog, err := operatorCatalog(ctx)
 	if err != nil || catalog.credential.Hosted == nil || catalog.credential.HostedRole == "account" || operatorIdentity(catalog.credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
@@ -183,11 +192,36 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 				return result, operatortool.ErrAccessDenied
 			}
 		} else if credential.HostedKeyScope != "" {
-			if err := s.database.reader.QueryRowContext(readCtx, "SELECT email FROM hosted_members WHERE user_id=? AND active=1", credential.Hosted.Subject).Scan(&session.Email); err != nil {
+			if s.database.db == nil {
+				member, err := s.activeAccessMember(readCtx, credential.Hosted.Subject)
+				if err != nil {
+					return result, operatortool.ErrAccessDenied
+				}
+				session.Email = member.Email
+			} else if err := s.database.reader.QueryRowContext(readCtx, "SELECT email FROM hosted_members WHERE user_id=? AND active=1", credential.Hosted.Subject).Scan(&session.Email); err != nil {
 				return result, err
 			}
 		}
-		bootstrap, err := s.readAppBootstrap(ctx, credential, session)
+		var bootstrap appBootstrap
+		if s.database.db == nil {
+			bootstrap, err = s.readPostgresAppBootstrap(readCtx, credential, session)
+			if err == nil {
+				var seen time.Time
+				seen, err = s.releaseSeenTime(readCtx, credential)
+				if err == nil {
+					bootstrap.HasUnread = s.releasesUnread(seen)
+				}
+			}
+			if err == nil && s.database.plans() != nil {
+				var entitlement HostedEntitlement
+				entitlement, err = s.database.hostedEntitlement(readCtx, nil, s.config.now())
+				if err == nil {
+					bootstrap.Plan = &appBootstrapPlan{ID: entitlement.EffectiveBase.ID, Name: entitlement.Name, Source: entitlement.Source, WindowEndsAt: entitlement.WindowEndsAt.UTC().Format(time.RFC3339)}
+				}
+			}
+		} else {
+			bootstrap, err = s.readAppBootstrap(ctx, credential, session)
+		}
 		if err != nil {
 			return result, err
 		}
