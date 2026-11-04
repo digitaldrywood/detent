@@ -429,6 +429,12 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 			t.Fatal(err)
 		}
 		assertCoverage(false)
+		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.(reportstore.UsageWriter).RefreshReportUsage(ctx, []billingstore.CostObservation{first, first})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		assertCoverage(true)
 		probe := reportObjectReadProbe{DetailStore: objects, check: func() {
 			if repository.Stats().InUse != 0 {
 				t.Fatal("object read held target transaction")
@@ -447,7 +453,7 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 			if _, err := w.RecordBillingCosts(ctx, []billingstore.CostObservation{corrected}); err != nil {
 				return err
 			}
-			return w.(reportstore.UsageWriter).RefreshReportUsage(ctx, []billingstore.CostObservation{corrected})
+			return w.(reportstore.UsageWriter).RefreshReportUsage(ctx, []billingstore.CostObservation{first, corrected, corrected, first})
 		}); err != nil {
 			t.Fatal(err)
 		}

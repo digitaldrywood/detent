@@ -24,7 +24,7 @@ import (
 )
 
 func TestCoreChangeImportPreservesChangesVersionsAndEvidence(t *testing.T) {
-	repository, admin := projectRecordPostgresWithAdmin(t, 2)
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	objects := &memoryRunDetails{}
 	organization := tracker.OrganizationID("org_change_import")
 	project := tracker.ProjectID("prj_change_import")

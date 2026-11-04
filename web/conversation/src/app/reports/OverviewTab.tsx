@@ -56,6 +56,7 @@ export function OverviewTab({ report, search }: { readonly report: ReportsReport
   const phone = useMediaQuery("max-sm");
   const compare = search.compare;
   const prior = rangeOption(search.range).prior;
+  const outcomesMissing = report.unavailable.includes("attempt_outcomes_unavailable");
   const usageMissing = report.unavailable.includes("recorded_usage");
   const residenceMissing = report.unavailable.includes("lane_residence_and_unclaimed_waits_unavailable");
   const completionMissing = report.unavailable.includes("completion_complete_population");
@@ -144,7 +145,7 @@ export function OverviewTab({ report, search }: { readonly report: ReportsReport
           height={260}
           series={[
             { id: "shipped", label: "Shipped", color: "var(--success)", kind: "bar", values: buckets.map((bucket) => (completionMissing ? null : bucket.done)) },
-            ...(phone ? [] : [{ id: "failed", label: "Failed attempts", color: "var(--warning)", kind: "bar" as const, values: buckets.map((bucket) => bucket.failed) }]),
+            ...(phone ? [] : [{ id: "failed", label: "Failed attempts", color: "var(--warning)", kind: "bar" as const, values: buckets.map((bucket) => outcomesMissing ? null : bucket.failed) }]),
             ...(compare && hasPrior && !phone
               ? [{ id: "prior", label: "Prior period", color: "var(--muted-foreground)", kind: "line" as const, dashed: true, values: buckets.map((bucket) => bucket.prior_done ?? null) }]
               : []),

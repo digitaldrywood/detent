@@ -306,13 +306,6 @@ func (s *session) ReadAttemptFacts(ctx context.Context, query reportstore.Attemp
 		}
 		projects[i] = string(project)
 	}
-	var population int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT 1 FROM native_attempts WHERE organization_id=$1 AND started_at<$2 ORDER BY started_at DESC LIMIT 50001) bounded`, s.organization, query.To.UTC()).Scan(&population); err != nil {
-		return nil, mapError(ctx, err)
-	}
-	if population > 50000 {
-		return nil, reportstore.ErrPopulationExceeded
-	}
 	rows, err := s.db.QueryContext(ctx, `SELECT i.project_id,i.native_id,a.id,coalesce(r.runner_id,''),coalesce(r.display_name,''),coalesce(nullif(f.run_status,''),'running'),a.started_at,coalesce(f.recorded_at,a.started_at),coalesce(f.role,''),coalesce(f.model,''),coalesce(f.effort,''),f.event_id IS NOT NULL,coalesce(f.failed,false),coalesce(f.failure_class,''),coalesce(f.failure_kind,''),coalesce(f.landing_receipt,false),coalesce(f.landed,false),coalesce(f.landing_change_id,''),coalesce(f.duration_seconds,0)
 FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
 LEFT JOIN report_attempt_facts af ON af.organization_id=a.organization_id AND af.attempt_id=a.id

@@ -75,6 +75,8 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential apiCr
 		priorities[i] = mustAtoi(value)
 	}
 	query := reportstore.OverviewQuery{Projects: ids, Principal: reportPrincipal(credential), From: prior.From, Split: w.From, To: w.To, Limit: 5000, Filter: reportstore.Filter{Labels: filter.Labels, Priorities: priorities, Types: filter.Types, FiledBy: filter.FiledBy, Runners: filter.Runners, Models: filter.Models, Stages: filter.Stages}}
+	var openFacts []reportstore.OpenFact
+	var openFactsAvailable bool
 	var facts []reportstore.OverviewFact
 	var attempts []reportstore.AttemptFact
 	var history []reportstore.ProjectHistory
@@ -98,6 +100,13 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential apiCr
 		facts, err = store.ReadOverviewFacts(ctx, query)
 		if err != nil {
 			return err
+		}
+		if openReader, ok := reader.(reportstore.OpenReader); ok && len(query.Filter.Models) == 0 && len(query.Filter.Stages) == 0 {
+			openFacts, err = openReader.ReadOpenFacts(ctx, reportstore.OpenQuery{Projects: ids, Principal: query.Principal, At: w.To, Filter: query.Filter, Limit: query.Limit})
+			if err != nil {
+				return err
+			}
+			openFactsAvailable = true
 		}
 		if attemptReader, ok := reader.(reportstore.AttemptReader); ok {
 			attempts, err = attemptReader.ReadAttemptFacts(ctx, reportstore.AttemptQuery{Projects: ids, Principal: query.Principal, From: prior.From, To: w.To, Filter: query.Filter, Limit: 50000})
@@ -132,7 +141,7 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential apiCr
 		}
 		for _, attempt := range attempts {
 			if !attempt.ProjectionKnown {
-				return fmt.Errorf("PostgreSQL report attempt projection is missing")
+				attemptFactsAvailable = false
 			}
 		}
 		usage, err = readPostgresReportUsage(ctx, reader, query, facts, w, prior)
@@ -156,6 +165,10 @@ func (s *Service) readPostgresHostedReport(ctx context.Context, credential apiCr
 			return hostedReportsReport{}, err
 		}
 	}
+	if openFactsAvailable {
+		out.OpenWork, out.Unavailable = postgresReportOpenWork(openFacts, w.To, out.Unavailable)
+	}
+	markPostgresReportCoverage(&out, history, attempts)
 	if !compare {
 		out = withoutPriorPeriod(out)
 	}
@@ -403,4 +416,46 @@ func completeReportCosts(keys []reportstore.CostKey, costs map[reportstore.CostK
 		}
 	}
 	return true
+}
+
+func markPostgresReportCoverage(out *hostedReportsReport, history []reportstore.ProjectHistory, attempts []reportstore.AttemptFact) {
+	quality := &out.Analytics.Quality
+	quality.Partial = true
+	quality.Coverage = "observed typed facts; historical escape and landing completeness is unknown"
+	quality.Unavailable = append(quality.Unavailable, "escape_classification")
+	quality.EscapePercent = nil
+	out.Analytics.Unavailable = append(out.Analytics.Unavailable, "escape_classification")
+	out.FirstTry, out.PriorFirst = nil, nil
+	out.Unavailable = append(out.Unavailable, "landed_first_try")
+	for _, attempt := range attempts {
+		if !attempt.ProjectionKnown {
+			out.Unavailable = append(out.Unavailable, "attempt_outcomes_unavailable", "failure_classification")
+			out.Analytics.Unavailable = append(out.Analytics.Unavailable, "attempt_outcomes_unavailable", "failure_classification")
+			out.PriorFailed = nil
+			break
+		}
+	}
+	historyIncomplete, initialStateMissing := false, false
+	for _, project := range history {
+		for _, issue := range project.Issues {
+			if issue.InitialState == "" {
+				historyIncomplete = true
+				initialStateMissing = true
+			}
+			for _, event := range issue.Events {
+				historyIncomplete = historyIncomplete || event.ToState == "Rework" && event.Class.Name == ""
+			}
+		}
+	}
+	if initialStateMissing {
+		out.Unavailable = append(out.Unavailable, "lane_residence_and_unclaimed_waits_unavailable", "completion_complete_population")
+		out.Analytics.Unavailable = append(out.Analytics.Unavailable, "lane_residence_and_unclaimed_waits_unavailable")
+	}
+	if historyIncomplete {
+		out.Unavailable = append(out.Unavailable, "rework_timeline_unavailable")
+		out.Analytics.Unavailable = append(out.Analytics.Unavailable, "rework_timeline_unavailable", "infrastructure_return_classification")
+		quality.Unavailable = append(quality.Unavailable, "rework_timeline_unavailable", "infrastructure_return_classification")
+		quality.ReworkPercent = nil
+		out.Prior.ReworkPercent, out.Prior.InfrastructureReturns = nil, nil
+	}
 }

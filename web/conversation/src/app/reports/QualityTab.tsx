@@ -21,6 +21,8 @@ export function reworkRows(report: ReportsReport) {
 export function QualityTab({ report, search }: { readonly report: ReportsReport; readonly search: ReportsSearch }): React.ReactElement {
   const compare = search.compare;
   const quality = report.analytics.quality;
+  const escapesKnown = quality !== undefined && !quality.unavailable?.includes("escape_classification");
+  const infrastructureKnown = quality !== undefined && !quality.unavailable?.includes("infrastructure_return_classification");
   const firstTry = report.unavailable.includes("landed_first_try") ? null : report.first_try_percent;
   const buckets = reportBuckets(report);
   const seriesKnown = report.series !== undefined;
@@ -47,13 +49,13 @@ export function QualityTab({ report, search }: { readonly report: ReportsReport;
         />
         <MetricTile
           label="Bounced by infrastructure"
-          value={quality === undefined ? null : formatCount(quality.infrastructure_returns)}
-          delta={compare ? (quality === undefined ? null : countDelta(quality.infrastructure_returns, report.prior?.infrastructure_returns, false)) : undefined}
+          value={!infrastructureKnown ? null : formatCount(quality.infrastructure_returns)}
+          delta={compare ? (!infrastructureKnown ? null : countDelta(quality.infrastructure_returns, report.prior?.infrastructure_returns, false)) : undefined}
           detail="landing errors · counted against the runner, not the issue"
         />
         <MetricTile
           label="Escapes reported"
-          value={quality === undefined ? null : formatCount(quality.escapes)}
+          value={!escapesKnown ? null : formatCount(quality.escapes)}
           detail={`of ${formatCount(report.completion.done)} shipped · from escape reports`}
         />
       </MetricTileGroup>
@@ -86,7 +88,7 @@ export function QualityTab({ report, search }: { readonly report: ReportsReport;
 
       <ChartPanel title="Rework causes" actions={<span className="text-muted-foreground text-xs">Select a cause to list its issues</span>}>
         {rows.length === 0 ? (
-          <Muted>No rework in this range.</Muted>
+          <Muted>{timelineUnavailable ? "Rework classifications are not available in this report source." : "No rework in this range."}</Muted>
         ) : (
           <div className="flex flex-col">
             {rows.map((row) => {

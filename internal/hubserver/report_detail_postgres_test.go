@@ -200,3 +200,115 @@ func TestReportCurrentUsageIngestionPreservesCoverage(t *testing.T) {
 		})
 	}
 }
+
+func TestPostgresReportMissingImportsRemainUnknown(t *testing.T) {
+	for _, check := range []struct {
+		name     string
+		history  []reportstore.ProjectHistory
+		attempts []reportstore.AttemptFact
+		missing  []string
+	}{
+		{name: "absent historical facts"},
+		{name: "two missing history issues", history: []reportstore.ProjectHistory{{Issues: []reportstore.HistoryIssue{{WorkItemID: "wi_first"}, {WorkItemID: "wi_second"}}}}, missing: []string{"lane_residence_and_unclaimed_waits_unavailable", "completion_complete_population", "rework_timeline_unavailable"}},
+		{name: "missing attempt projection", attempts: []reportstore.AttemptFact{{AttemptID: "attempt_example"}}, missing: []string{"attempt_outcomes_unavailable", "failure_classification"}},
+		{name: "missing rework projection", history: []reportstore.ProjectHistory{{Issues: []reportstore.HistoryIssue{{Events: []reportstore.WorkflowEvent{{ToState: "Rework"}}}}}}, missing: []string{"rework_timeline_unavailable"}},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			out := hostedReportsReport{}
+			out.Completion.Done = 2
+			out.FirstTry = new(100.0)
+			out.Analytics.Quality.ReworkPercent = new(0.0)
+			out.Prior.ReworkPercent = new(0.0)
+			out.Prior.InfrastructureReturns = new(0)
+			out.Analytics.Quality.EscapePercent = new(0.0)
+			markPostgresReportCoverage(&out, check.history, check.attempts)
+			if out.Completion.Done != 2 || !out.Analytics.Quality.Partial || out.FirstTry != nil || out.Analytics.Quality.EscapePercent != nil || !slices.Contains(out.Analytics.Quality.Unavailable, "escape_classification") || !slices.Contains(out.Unavailable, "landed_first_try") {
+				t.Fatalf("missing import coverage = %+v", out)
+			}
+			for _, markers := range [][]string{out.Unavailable, out.Analytics.Unavailable, out.Analytics.Quality.Unavailable} {
+				seen := map[string]bool{}
+				for _, marker := range markers {
+					if seen[marker] {
+						t.Errorf("duplicate unavailable marker %q in %v", marker, markers)
+					}
+					seen[marker] = true
+				}
+			}
+			if len(check.history) > 0 && (out.Analytics.Quality.ReworkPercent != nil || out.Prior.ReworkPercent != nil || out.Prior.InfrastructureReturns != nil) {
+				t.Fatalf("missing history outcomes must remain unknown: %+v", out)
+			}
+			for _, marker := range check.missing {
+				if !slices.Contains(out.Unavailable, marker) {
+					t.Errorf("missing unavailable marker %q in %v", marker, out.Unavailable)
+				}
+			}
+		})
+	}
+}
+
+func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	ctx := t.Context()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	project := tracker.ProjectID("project_partial_reports")
+	state := "Todo"
+	objects := &memoryRunDetails{}
+	for _, organization := range []tracker.OrganizationID{"org_partial_first", "org_partial_second"} {
+		payload, err := objects.StoreDetail(ctx, string(organization), []byte(`{"attempt_id":"attempt_partial"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessOrganization(ctx, accessstore.Organization{OrganizationID: organization, Name: "Example", CreatedAt: now}); err != nil {
+				return err
+			}
+			if _, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: "Example", Profile: "native"}, States: []tracker.NativeState{{Name: state, Dispatchable: true}}}); err != nil {
+				return err
+			}
+			item, err := w.CreateWorkItem(ctx, corestore.WorkItem{OrganizationID: organization, ProjectID: project, NativeID: "wi_partial", Number: 1, Title: string(organization), WorkflowStateName: &state, CreatedAt: now})
+			if err != nil {
+				return err
+			}
+			if err := w.RegisterMachine(ctx, leasestore.Machine{OrganizationID: organization, ID: "machine_partial", Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
+				return err
+			}
+			lease, err := w.Claim(ctx, leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: "machine_partial", SessionID: "session_partial", LeaseID: "lease_partial", TTL: time.Hour})
+			if err != nil {
+				return err
+			}
+			_, err = w.RecordAttempt(ctx, leasestore.AttemptEvent{ID: "attempt_partial", Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: "run_partial", Sequence: 1, Status: "running", StartedAt: now, PayloadObjectKey: payload.Key})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, organization := range []tracker.OrganizationID{"org_partial_first", "org_partial_second"} {
+		t.Run(string(organization), func(t *testing.T) {
+			service := &Service{config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(organization)}}}
+			out, err := service.readPostgresHostedReport(t.Context(), apiCredential{}, []string{string(project)}, operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour}, reportsFilter{}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !out.Analytics.Quality.Partial || out.FirstTry != nil || out.Analytics.Quality.EscapePercent != nil {
+				t.Fatalf("unproven historic completeness = %+v", out.Analytics.Quality)
+			}
+			for _, marker := range []string{"attempt_outcomes_unavailable", "failure_classification", "landed_first_try"} {
+				if !slices.Contains(out.Unavailable, marker) {
+					t.Errorf("missing marker %q in %v", marker, out.Unavailable)
+				}
+			}
+			if out.OpenWork.Count != 1 {
+				t.Fatalf("tenant open work = %+v", out.OpenWork)
+			}
+			for _, filter := range []reportsFilter{{Models: []string{"unrecorded-model"}}, {Stages: []string{"unrecorded-stage"}}} {
+				filtered, err := service.readPostgresHostedReport(t.Context(), apiCredential{}, []string{string(project)}, operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour}, filter, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if filtered.OpenWork.Count != 0 || len(filtered.OpenWork.Items) != 0 {
+					t.Fatalf("open work escaped report filter %+v: %+v", filter, filtered.OpenWork)
+				}
+			}
+		})
+	}
+}

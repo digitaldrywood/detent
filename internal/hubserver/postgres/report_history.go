@@ -115,10 +115,6 @@ ORDER BY e.project_id,e.work_item_id,e.sequence LIMIT $4`, s.organization, pq.Ar
 			rows.Close()
 			return nil, mapError(ctx, err)
 		}
-		if event.ToState == "Rework" && event.Class.Name == "" {
-			rows.Close()
-			return nil, errors.New("report rework projection is missing")
-		}
 		location := locations[id]
 		out[location.project].Issues[location.issue].Events = append(out[location.project].Issues[location.issue].Events, event)
 		count++

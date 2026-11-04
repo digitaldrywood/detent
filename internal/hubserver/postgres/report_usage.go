@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"reflect"
 	"strings"
 	"time"
 
@@ -62,32 +63,21 @@ func (s *session) ReadReportUsage(ctx context.Context, query reportstore.Overvie
 }
 
 func (r *Repository) ImportReportUsageFact(ctx context.Context, record reportstore.UsageRecord) error {
-	if record.OrganizationID == "" || record.ProjectID == "" || record.AttemptID == "" || record.WorkItemID == "" || record.Period.IsZero() || record.UpdatedAt.IsZero() || record.Provider == "" || record.Model == "" || record.Input < 0 || record.CachedInput < 0 || record.Output < 0 || record.Cost < 0 || math.IsInf(record.Cost, 0) || math.IsNaN(record.Cost) || !strings.EqualFold(record.Currency, "usd") {
-		return errors.New("invalid typed report usage fact")
+	return r.ImportReportUsageFacts(ctx, []reportstore.UsageRecord{record})
+}
+
+func (r *Repository) ImportReportUsageFacts(ctx context.Context, records []reportstore.UsageRecord) error {
+	if len(records) < 1 || len(records) > 100 || records[0].OrganizationID == "" {
+		return errors.New("invalid typed report usage batch")
 	}
-	record.Period = recordTime(record.Period)
-	record.UpdatedAt = recordTime(record.UpdatedAt)
-	return r.transaction(ctx, record.OrganizationID, corestore.Background, false, func(s *session) error {
-		var project, item string
-		if err := s.db.QueryRowContext(ctx, `SELECT i.project_id,i.native_id FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE a.organization_id=$1 AND a.id=$2`, s.organization, record.AttemptID).Scan(&project, &item); err != nil {
-			return mapError(ctx, err)
+	organization := records[0].OrganizationID
+	for _, record := range records {
+		if record.OrganizationID != organization || record.ProjectID == "" || record.AttemptID == "" || record.WorkItemID == "" || record.Period.IsZero() || record.UpdatedAt.IsZero() || record.Provider == "" || record.Model == "" || record.Input < 0 || record.CachedInput < 0 || record.Output < 0 || record.Cost < 0 || math.IsInf(record.Cost, 0) || math.IsNaN(record.Cost) || !strings.EqualFold(record.Currency, "usd") {
+			return errors.New("invalid typed report usage fact")
 		}
-		if project != string(record.ProjectID) || item != string(record.WorkItemID) {
-			return corestore.ErrTenantMismatch
-		}
-		_, err := s.db.ExecContext(ctx, `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'USD',$11) ON CONFLICT(organization_id,attempt_id,period,provider,model) DO NOTHING`, s.organization, record.ProjectID, record.AttemptID, record.Period.UTC(), record.Provider, record.Model, record.Input, record.CachedInput, record.Output, record.Cost, record.UpdatedAt.UTC())
-		if err != nil {
-			return mapError(ctx, err)
-		}
-		var actual reportstore.UsageRecord
-		err = s.db.QueryRowContext(ctx, `SELECT project_id,input,cached_input,output,cost_estimate,currency,updated_at FROM attempt_usage WHERE organization_id=$1 AND attempt_id=$2 AND period=$3 AND provider=$4 AND model=$5`, s.organization, record.AttemptID, record.Period.UTC(), record.Provider, record.Model).Scan(&actual.ProjectID, &actual.Input, &actual.CachedInput, &actual.Output, &actual.Cost, &actual.Currency, &actual.UpdatedAt)
-		if err != nil {
-			return mapError(ctx, err)
-		}
-		if actual.ProjectID != record.ProjectID || actual.Input != record.Input || actual.CachedInput != record.CachedInput || actual.Output != record.Output || actual.Cost != record.Cost || !strings.EqualFold(actual.Currency, record.Currency) || !actual.UpdatedAt.Equal(recordTime(record.UpdatedAt)) {
-			return corestore.ErrRevisionConflict
-		}
-		return nil
+	}
+	return r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
+		return s.importReportUsage(ctx, records)
 	})
 }
 
@@ -95,6 +85,8 @@ func (s *session) RefreshReportUsage(ctx context.Context, records []billingstore
 	if len(records) < 1 || len(records) > 128 {
 		return errors.New("invalid report usage refresh batch")
 	}
+	selected := make([]billingstore.CostObservation, 0, len(records))
+	positions := map[string]int{}
 	for _, record := range records {
 		if err := s.validateBillingCost(record); err != nil {
 			return err
@@ -104,24 +96,24 @@ func (s *session) RefreshReportUsage(ctx context.Context, records []billingstore
 			return errors.New("invalid report usage attribution")
 		}
 		key := costIdentity(o.Provider, o.ProviderAccount, o.SourceID, o.From.UTC().Format(costPeriodLayout), o.To.UTC().Format(costPeriodLayout))
-		var revision int64
-		var acceptedSHA string
-		if err := s.db.QueryRowContext(ctx, `SELECT revision,payload_hash FROM cost_sources WHERE organization_id=$1 AND source_key=$2 AND resource_id=$3 AND bucket='runner_api'`, s.organization, key, o.AttemptID).Scan(&revision, &acceptedSHA); err != nil {
-			return mapError(ctx, err)
-		}
-		if revision > o.Revision {
+		if index, ok := positions[key]; ok {
+			previous := selected[index]
+			if previous.Observation.Revision == o.Revision && (previous.ProjectID != record.ProjectID || previous.Reference.SHA256 != record.Reference.SHA256 || !reflect.DeepEqual(previous.Observation, o)) {
+				return corestore.ErrRevisionConflict
+			}
+			if previous.Observation.Revision < o.Revision {
+				selected[index] = record
+			}
 			continue
 		}
-		if revision != o.Revision || acceptedSHA != record.Reference.SHA256 {
-			return corestore.ErrRevisionConflict
-		}
-		var project, item string
-		if err := s.db.QueryRowContext(ctx, `SELECT i.project_id,i.native_id FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE a.organization_id=$1 AND a.id=$2`, s.organization, o.AttemptID).Scan(&project, &item); err != nil {
-			return mapError(ctx, err)
-		}
-		if project != string(record.ProjectID) || item != o.WorkItemID {
-			return corestore.ErrTenantMismatch
-		}
+		positions[key] = len(selected)
+		selected = append(selected, record)
+	}
+	b := newReportBatch(s.organization, "source_key,revision,payload_sha256,project_id,work_item_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,complete", "text", "bigint", "text", "text", "text", "text", "timestamptz", "text", "text", "bigint", "bigint", "bigint", "double precision", "boolean")
+	for _, record := range selected {
+		o := record.Observation
+		key := costIdentity(o.Provider, o.ProviderAccount, o.SourceID, o.From.UTC().Format(costPeriodLayout), o.To.UTC().Format(costPeriodLayout))
+
 		amount := o.EstimatedAmountMicros
 		if amount == nil {
 			amount = o.AmountMicros
@@ -147,12 +139,18 @@ func (s *session) RefreshReportUsage(ctx context.Context, records []billingstore
 		if record.ReceivedAt.IsZero() {
 			return errors.New("missing report usage receipt time")
 		}
-		_, err := s.db.ExecContext(ctx, `INSERT INTO report_usage_current(organization_id,source_key,revision,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,complete) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(organization_id,source_key) DO UPDATE SET revision=EXCLUDED.revision,input=EXCLUDED.input,cached_input=EXCLUDED.cached_input,output=EXCLUDED.output,cost_estimate=EXCLUDED.cost_estimate,complete=EXCLUDED.complete WHERE report_usage_current.revision<=EXCLUDED.revision`, s.organization, key, o.Revision, record.ProjectID, o.AttemptID, period, o.Provider, o.Model, input, cached, output, cost, known)
-		if err != nil {
-			return mapError(ctx, err)
-		}
+		b.add(key, o.Revision, record.Reference.SHA256, record.ProjectID, o.WorkItemID, o.AttemptID, period, o.Provider, o.Model, input, cached, output, cost, known)
 	}
-	return nil
+	if err := s.verifyReportBatch(ctx, b, `SELECT count(*) FROM source JOIN cost_sources c ON c.organization_id=$1 AND c.source_key=source.source_key AND c.resource_id=source.attempt_id AND c.bucket='runner_api' WHERE c.revision>source.revision OR (c.revision=source.revision AND c.payload_hash=source.payload_sha256)`, corestore.ErrRevisionConflict); err != nil {
+		return err
+	}
+	if err := s.verifyReportBatch(ctx, b, `SELECT count(*) FROM source JOIN cost_sources c ON c.organization_id=$1 AND c.source_key=source.source_key WHERE c.revision>source.revision OR EXISTS(SELECT 1 FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE a.organization_id=$1 AND a.id=source.attempt_id AND i.project_id=source.project_id AND i.native_id=source.work_item_id)`, corestore.ErrTenantMismatch); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, b.source()+`INSERT INTO report_usage_current(organization_id,source_key,revision,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,complete)
+ SELECT $1,s.source_key,s.revision,s.project_id,s.attempt_id,s.period,s.provider,s.model,s.input,s.cached_input,s.output,s.cost_estimate,s.complete FROM source s JOIN cost_sources c ON c.organization_id=$1 AND c.source_key=s.source_key AND c.revision=s.revision ORDER BY s.source_key
+ ON CONFLICT(organization_id,source_key) DO UPDATE SET revision=EXCLUDED.revision,input=EXCLUDED.input,cached_input=EXCLUDED.cached_input,output=EXCLUDED.output,cost_estimate=EXCLUDED.cost_estimate,complete=EXCLUDED.complete WHERE report_usage_current.revision<=EXCLUDED.revision`, b.args...)
+	return mapError(ctx, err)
 }
 
 func (s *session) ReadReportUsageCoverage(ctx context.Context, query reportstore.OverviewQuery) (bool, error) {
@@ -224,30 +222,25 @@ func (s *session) ReadReportUsageCoverage(ctx context.Context, query reportstore
 }
 
 func (r *Repository) VerifyReportUsageImport(ctx context.Context, organization tracker.OrganizationID, attempt, sha string, expected int64) error {
-	if organization == "" || attempt == "" || len(sha) != 64 || expected < 1 {
+	return r.VerifyReportUsageImports(ctx, organization, sha, []ReportUsageImportCoverage{{AttemptID: attempt, RowCount: expected}})
+}
+
+type ReportUsageImportCoverage struct {
+	AttemptID string
+	RowCount  int64
+}
+
+func (r *Repository) VerifyReportUsageImports(ctx context.Context, organization tracker.OrganizationID, sha string, records []ReportUsageImportCoverage) error {
+	if organization == "" || len(sha) != 64 || len(records) < 1 || len(records) > 100 {
 		return errors.New("invalid report usage import coverage")
 	}
+	for _, record := range records {
+		if record.AttemptID == "" || record.RowCount < 1 {
+			return errors.New("invalid report usage import coverage")
+		}
+	}
 	return r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
-		var actual int64
-		if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT 1 FROM attempt_usage WHERE organization_id=$1 AND attempt_id=$2 LIMIT $3) bounded`, organization, attempt, expected+1).Scan(&actual); err != nil {
-			return mapError(ctx, err)
-		}
-		if actual != expected {
-			return corestore.ErrRevisionConflict
-		}
-		_, err := s.db.ExecContext(ctx, `INSERT INTO report_usage_import_coverage(organization_id,attempt_id,source_sha256,row_count) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id,attempt_id) DO NOTHING`, organization, attempt, sha, expected)
-		if err != nil {
-			return mapError(ctx, err)
-		}
-		var storedSHA string
-		var storedCount int64
-		if err := s.db.QueryRowContext(ctx, `SELECT source_sha256,row_count FROM report_usage_import_coverage WHERE organization_id=$1 AND attempt_id=$2`, organization, attempt).Scan(&storedSHA, &storedCount); err != nil {
-			return mapError(ctx, err)
-		}
-		if storedSHA != sha || storedCount != expected {
-			return corestore.ErrRevisionConflict
-		}
-		return nil
+		return s.verifyReportUsageBatch(ctx, sha, records)
 	})
 }
 
@@ -286,6 +279,7 @@ func (r *Repository) RefreshReportUsagePage(ctx context.Context, organization tr
 	if err != nil {
 		return after, 0, err
 	}
+	prepared := make([]billingstore.CostObservation, 0, len(page))
 	for _, value := range page {
 		raw, err := objects.ReadDetail(ctx, string(organization), value.record.Reference.ArchiveReference())
 		if err != nil {
@@ -294,10 +288,13 @@ func (r *Repository) RefreshReportUsagePage(ctx context.Context, organization tr
 		if err := json.Unmarshal(raw, &value.record.Observation); err != nil {
 			return after, 0, errors.New("decode accepted report usage observation")
 		}
-		if err := r.transaction(ctx, organization, corestore.Background, false, func(s *session) error { return s.RefreshReportUsage(ctx, []billingstore.CostObservation{value.record}) }); err != nil {
+		prepared = append(prepared, value.record)
+	}
+	if len(prepared) > 0 {
+		if err := r.transaction(ctx, organization, corestore.Background, false, func(s *session) error { return s.RefreshReportUsage(ctx, prepared) }); err != nil {
 			return after, 0, err
 		}
-		after = value.key
+		after = page[len(page)-1].key
 	}
 	return after, len(page), nil
 }

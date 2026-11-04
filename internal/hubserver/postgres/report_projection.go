@@ -3,28 +3,57 @@ package postgres
 import (
 	"context"
 	"errors"
-	"reflect"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 )
 
+type ReportEventProjectionImport struct {
+	Event  eventstore.Event
+	Legacy *eventstore.Event
+}
+
+type ReportLandingImport struct {
+	Change  eventstore.Change
+	Receipt eventstore.LandingReceipt
+}
+
 func (r *Repository) ImportReportEventProjection(ctx context.Context, event eventstore.Event) error {
-	if event.Report == nil || event.OrganizationID == "" || event.PayloadSHA256 == "" {
-		return eventstore.ErrInvalidRecord
+	_, err := r.ImportReportEventProjections(ctx, []ReportEventProjectionImport{{Event: event}})
+	return err
+}
+
+func (r *Repository) ImportReportEventProjections(ctx context.Context, records []ReportEventProjectionImport) (int, error) {
+	if len(records) < 1 || len(records) > 100 {
+		return 0, errors.New("invalid report event projection batch")
 	}
-	return r.transaction(ctx, event.OrganizationID, corestore.Background, false, func(s *session) error {
-		stored, err := s.queries.RecordGetEvent(ctx, pgquery.RecordGetEventParams{OrganizationID: event.OrganizationID, ProjectID: event.ProjectID, WorkItemID: event.WorkItemID, ID: event.ID})
-		if err != nil {
-			return mapError(ctx, err)
+	organization := records[0].Event.OrganizationID
+	if organization == "" {
+		return 0, eventstore.ErrInvalidRecord
+	}
+	for _, record := range records {
+		event := record.Event
+		if event.OrganizationID != organization || event.ProjectID == "" || event.WorkItemID == "" || event.ID == "" || event.Report == nil || event.PayloadSHA256 == "" {
+			return 0, eventstore.ErrInvalidRecord
 		}
-		if stored.PayloadSHA256 != event.PayloadSHA256 || stored.PayloadObjectKey != event.PayloadObjectKey {
-			return corestore.ErrRevisionConflict
+		if record.Legacy != nil {
+			legacy := record.Legacy
+			if legacy.OrganizationID != organization || legacy.ProjectID != event.ProjectID || legacy.WorkItemID != event.WorkItemID || legacy.ID != event.ID || legacy.Report == nil || *legacy.Report != *event.Report || legacy.PayloadSHA256 == "" {
+				return 0, eventstore.ErrInvalidRecord
+			}
 		}
-		return s.putReportEventProjection(ctx, event)
+	}
+	legacyAnchors := 0
+	err := r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
+		var err error
+		legacyAnchors, err = s.importReportEvents(ctx, records)
+		return err
 	})
+	if err != nil {
+		return 0, err
+	}
+	return legacyAnchors, nil
 }
 
 func (s *session) putReportEventProjection(ctx context.Context, event eventstore.Event) error {
@@ -56,18 +85,24 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (org
 }
 
 func (r *Repository) ImportReportEscapeProjection(ctx context.Context, evidence eventstore.Evidence) error {
-	if evidence.ReportEscape == nil || evidence.OrganizationID == "" || evidence.Sequence < 1 {
+	return r.ImportReportEscapeProjections(ctx, []eventstore.Evidence{evidence})
+}
+
+func (r *Repository) ImportReportEscapeProjections(ctx context.Context, records []eventstore.Evidence) error {
+	if len(records) < 1 || len(records) > 100 {
+		return errors.New("invalid report escape projection batch")
+	}
+	organization := records[0].OrganizationID
+	if organization == "" {
 		return eventstore.ErrInvalidRecord
 	}
-	return r.transaction(ctx, evidence.OrganizationID, corestore.Background, false, func(s *session) error {
-		stored, err := s.queries.RecordGetEvidenceSequence(ctx, pgquery.RecordGetEvidenceSequenceParams{OrganizationID: evidence.OrganizationID, ChangeID: evidence.ChangeID, Sequence: evidence.Sequence})
-		if err != nil {
-			return mapError(ctx, err)
+	for _, record := range records {
+		if record.OrganizationID != organization || record.ChangeID == "" || record.Sequence < 1 || record.ReportEscape == nil || record.PayloadSHA256 == "" {
+			return eventstore.ErrInvalidRecord
 		}
-		if stored.PayloadSHA256 != evidence.PayloadSHA256 || stored.PayloadObjectKey != evidence.PayloadObjectKey {
-			return corestore.ErrRevisionConflict
-		}
-		return s.putReportEscapeProjection(ctx, evidence)
+	}
+	return r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
+		return s.importReportEscapes(ctx, records)
 	})
 }
 
@@ -98,39 +133,24 @@ func (s *session) putReportEscapeProjection(ctx context.Context, evidence events
 }
 
 func (r *Repository) ImportReportChangeLanding(ctx context.Context, record eventstore.Change, proof eventstore.LandingReceipt) error {
-	if record.OrganizationID == "" || record.OrganizationID != proof.OrganizationID || record.LandedVersionID == nil || record.LandedAt == nil || record.LandedHeadSHA == nil || record.LandedMergeSHA == nil || record.LandedBaseRef == nil {
+	return r.ImportReportChangeLandings(ctx, []ReportLandingImport{{Change: record, Receipt: proof}})
+}
+
+func (r *Repository) ImportReportChangeLandings(ctx context.Context, records []ReportLandingImport) error {
+	if len(records) < 1 || len(records) > 100 {
+		return errors.New("invalid report landing batch")
+	}
+	organization := records[0].Change.OrganizationID
+	if organization == "" {
 		return eventstore.ErrInvalidRecord
 	}
-	return r.transaction(ctx, record.OrganizationID, corestore.Background, false, func(s *session) error {
-		current, err := s.LockChange(ctx, record.ID)
-		if err != nil {
-			return err
+	for _, record := range records {
+		change, proof := record.Change, record.Receipt
+		if change.OrganizationID != organization || proof.OrganizationID != organization || change.ID == "" || change.LandedVersionID == nil || change.LandedAt == nil || change.LandedHeadSHA == nil || change.LandedMergeSHA == nil || change.LandedBaseRef == nil || proof.AttemptID == "" || proof.PayloadSHA256 == "" {
+			return eventstore.ErrInvalidRecord
 		}
-		if current.Revision != record.Revision || current.ProjectID != record.ProjectID || current.WorkItemID != record.WorkItemID || current.CurrentVersionID == nil || *current.CurrentVersionID != proof.VersionID || *record.LandedVersionID != proof.VersionID {
-			return corestore.ErrRevisionConflict
-		}
-		receipt, err := s.LandingReceipt(ctx, proof.AttemptID)
-		if err != nil {
-			return err
-		}
-		if receipt.PayloadObjectKey != proof.PayloadObjectKey || receipt.PayloadSHA256 != proof.PayloadSHA256 || receipt.VersionID != proof.VersionID || receipt.MergeSHA != *record.LandedMergeSHA || receipt.BaseRef != *record.LandedBaseRef {
-			return corestore.ErrRevisionConflict
-		}
-		version, err := s.Version(ctx, record.ID, proof.VersionID)
-		if err != nil {
-			return err
-		}
-		if version.HeadSHA != *record.LandedHeadSHA {
-			return corestore.ErrRevisionConflict
-		}
-		at := recordTimePointer(record.LandedAt)
-		if current.LandedVersionID != nil || current.LandedAt != nil || current.LandedHeadSHA != nil || current.LandedMergeSHA != nil || current.LandedBaseRef != nil {
-			if !reflect.DeepEqual(current.LandedVersionID, record.LandedVersionID) || !sameCoreImportOptionalTime(current.LandedAt, at) || !reflect.DeepEqual(current.LandedHeadSHA, record.LandedHeadSHA) || !reflect.DeepEqual(current.LandedMergeSHA, record.LandedMergeSHA) || !reflect.DeepEqual(current.LandedBaseRef, record.LandedBaseRef) {
-				return corestore.ErrRevisionConflict
-			}
-			return nil
-		}
-		_, err = s.db.ExecContext(ctx, `UPDATE change_requests SET landed_version_id=$1,landed_at=$2,landed_head_sha=$3,landed_merge_sha=$4,landed_base_ref=$5 WHERE organization_id=$6 AND id=$7`, record.LandedVersionID, at, record.LandedHeadSHA, record.LandedMergeSHA, record.LandedBaseRef, s.organization, record.ID)
-		return mapError(ctx, err)
+	}
+	return r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
+		return s.importReportLandings(ctx, records)
 	})
 }

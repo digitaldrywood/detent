@@ -95,6 +95,34 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 			}
 			projectionDigest = parity.ProjectionSHA256
 		}
+		t.Run(string(org)+" nullable report revision", func(t *testing.T) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			nullablePath := filepath.Join(t.TempDir(), "nullable-report-source.db")
+			if err := os.WriteFile(nullablePath, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			db, err := sql.Open("sqlite", nullablePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, updateErr := db.ExecContext(t.Context(), `UPDATE collaboration_events SET event_revision=NULL WHERE type='run.finished'`)
+			if err := errors.Join(updateErr, db.Close()); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(nullablePath, 0444); err != nil {
+				t.Fatal(err)
+			}
+			nullableSource := source
+			nullableSource.CopyPath = nullablePath
+			parity, err := ImportCoreReportEvents(t.Context(), repository, nullableSource)
+			if err != nil || parity.Events != 1 || parity.ProjectionSHA256 != projectionDigest {
+				t.Fatalf("nullable source report fidelity: %+v error %v", parity, err)
+			}
+		})
+
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 			item, err := r.WorkItem(t.Context(), project, "wi_core_import")
 			if err != nil {

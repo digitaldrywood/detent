@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -18,6 +19,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type ReportImportTarget interface {
+	ImportReportChangeLandings(context.Context, []postgres.ReportLandingImport) error
+	ImportReportEventProjections(context.Context, []postgres.ReportEventProjectionImport) (int, error)
+	ImportReportEscapeProjections(context.Context, []eventstore.Evidence) error
+	ImportReportUsageFacts(context.Context, []reportstore.UsageRecord) error
+	VerifyReportUsageImports(context.Context, tracker.OrganizationID, string, []postgres.ReportUsageImportCoverage) error
+}
 
 type ReportImportSummary struct {
 	Events              int64
@@ -31,7 +40,7 @@ type ReportImportSummary struct {
 	ProjectionSHA256    string
 }
 
-func ImportCoreReportLandings(ctx context.Context, target *postgres.Repository, source CoreChangeImportSource) (ReportImportSummary, error) {
+func ImportCoreReportLandings(ctx context.Context, target ReportImportTarget, source CoreChangeImportSource) (ReportImportSummary, error) {
 	var summary ReportImportSummary
 	if target == nil || source.CopyPath == "" || source.OrganizationID == "" || source.SourceObjects == nil || source.Objects == nil {
 		return summary, errors.New("invalid report landing import source")
@@ -48,6 +57,8 @@ func ImportCoreReportLandings(ctx context.Context, target *postgres.Repository, 
 			if len(page) == 0 {
 				return nil
 			}
+			batch := make([]postgres.ReportLandingImport, 0, len(page))
+			proofs := make([][]byte, 0, len(page))
 			for _, row := range page {
 				if row.change.Landed == nil {
 					continue
@@ -64,9 +75,6 @@ func ImportCoreReportLandings(ctx context.Context, target *postgres.Repository, 
 				if err != nil {
 					return err
 				}
-				if err := target.ImportReportChangeLanding(ctx, record, proof); err != nil {
-					return err
-				}
 				encoded, err := json.Marshal(struct {
 					ID      string
 					Landing *tracker.ChangeLanding
@@ -74,8 +82,17 @@ func ImportCoreReportLandings(ctx context.Context, target *postgres.Repository, 
 				if err != nil {
 					return err
 				}
-				digest.Write(encoded)
-				summary.Landings++
+				batch = append(batch, postgres.ReportLandingImport{Change: record, Receipt: proof})
+				proofs = append(proofs, encoded)
+			}
+			if len(batch) > 0 {
+				if err := target.ImportReportChangeLandings(ctx, batch); err != nil {
+					return err
+				}
+				for _, proof := range proofs {
+					digest.Write(proof)
+					summary.Landings++
+				}
 			}
 			after = page[len(page)-1].change.ID
 		}
@@ -216,7 +233,7 @@ func (s reportImportObjects) ReadDetail(ctx context.Context, organization string
 	return s.store.ReadDetail(ctx, organization, ref)
 }
 
-func ImportCoreReportEvents(ctx context.Context, target *postgres.Repository, source CoreWorkItemImportSource) (ReportImportSummary, error) {
+func ImportCoreReportEvents(ctx context.Context, target ReportImportTarget, source CoreWorkItemImportSource) (ReportImportSummary, error) {
 	var summary ReportImportSummary
 	if target == nil || source.CopyPath == "" || source.OrganizationID == "" || source.ProjectID == "" || source.Objects == nil {
 		return summary, errors.New("invalid report import source")
@@ -232,7 +249,8 @@ func ImportCoreReportEvents(ctx context.Context, target *postgres.Repository, so
 			}
 			type row struct {
 				id, item, kind, actor, data, at string
-				sequence, schema, revision      int64
+				sequence, schema                int64
+				revision                        sql.NullInt64
 			}
 			page := []row{}
 			for rows.Next() {
@@ -249,6 +267,10 @@ func ImportCoreReportEvents(ctx context.Context, target *postgres.Repository, so
 			if len(page) == 0 {
 				return nil
 			}
+			batch := make([]postgres.ReportEventProjectionImport, 0, len(page))
+			sourceRows := make([]row, 0, len(page))
+			proofs := make([][]byte, 0, len(page))
+			observations, reworks := 0, 0
 			for _, row := range page {
 				var actor tracker.Actor
 				var data tracker.CollaborationData
@@ -271,35 +293,15 @@ func ImportCoreReportEvents(ctx context.Context, target *postgres.Repository, so
 				if err != nil {
 					return err
 				}
-				event.EventRevision = row.revision
+				if row.revision.Valid {
+					event.EventRevision = row.revision.Int64
+				}
 
 				if event.Report == nil {
 					continue
 				}
-				if err := target.ImportReportEventProjection(ctx, event); err != nil {
-					if !errors.Is(err, corestore.ErrRevisionConflict) {
-						return fmt.Errorf("import report event projection: %w", err)
-					}
-					var legacyData tracker.CollaborationData
-					if json.Unmarshal([]byte(row.data), &legacyData) != nil {
-						return eventstore.ErrInvalidRecord
-					}
-					legacyValue := value
-					legacyValue.Data = legacyData
-					legacyRaw, encodeErr := json.Marshal(legacyValue)
-					if encodeErr != nil {
-						return encodeErr
-					}
-					legacy, prepareErr := eventstore.NewContent(source.Objects).PrepareEvent(ctx, source.OrganizationID, legacyRaw)
-					if prepareErr != nil {
-						return prepareErr
-					}
-					legacy.EventRevision, legacy.Report = row.revision, event.Report
-					if importErr := target.ImportReportEventProjection(ctx, legacy); importErr != nil {
-						return fmt.Errorf("match legacy report projection source: %w", importErr)
-					}
-					summary.LegacyAnchors++
-				}
+				batch = append(batch, postgres.ReportEventProjectionImport{Event: event})
+				sourceRows = append(sourceRows, row)
 				proof, err := json.Marshal(struct {
 					ID         string
 					Projection *reportstore.EventProjection
@@ -307,14 +309,54 @@ func ImportCoreReportEvents(ctx context.Context, target *postgres.Repository, so
 				if err != nil {
 					return err
 				}
-				digest.Write(proof)
-				summary.Events++
+				proofs = append(proofs, proof)
 				if event.AttemptID != "" {
-					summary.AttemptObservations++
+					observations++
 				}
 				if event.Report.ReworkClass != "" {
-					summary.Reworks++
+					reworks++
 				}
+			}
+			if len(batch) > 0 {
+				legacyAnchors, importErr := target.ImportReportEventProjections(ctx, batch)
+				if errors.Is(importErr, corestore.ErrRevisionConflict) {
+					for i, record := range batch {
+						var legacyData tracker.CollaborationData
+						sourceRow := sourceRows[i]
+						if err := json.Unmarshal([]byte(sourceRow.data), &legacyData); err != nil {
+							return eventstore.ErrInvalidRecord
+						}
+						legacyValue := tracker.CollaborationEvent{ID: sourceRow.id, OrganizationID: source.OrganizationID, ProjectID: source.ProjectID, AggregateType: "work_item", AggregateID: tracker.NativeWorkItemID(sourceRow.item), AggregateSequence: sourceRow.sequence, Type: sourceRow.kind, SchemaVersion: int(sourceRow.schema), Actor: tracker.Actor{}, Data: legacyData}
+						if err := json.Unmarshal([]byte(sourceRow.actor), &legacyValue.Actor); err != nil {
+							return eventstore.ErrInvalidRecord
+						}
+						legacyValue.RecordedAt, err = time.Parse(time.RFC3339Nano, sourceRow.at)
+						if err != nil {
+							return err
+						}
+						legacyRaw, err := json.Marshal(legacyValue)
+						if err != nil {
+							return err
+						}
+						legacy, err := eventstore.NewContent(source.Objects).PrepareEvent(ctx, source.OrganizationID, legacyRaw)
+						if err != nil {
+							return err
+						}
+						legacy.EventRevision, legacy.Report = record.Event.EventRevision, record.Event.Report
+						batch[i].Legacy = &legacy
+					}
+					legacyAnchors, importErr = target.ImportReportEventProjections(ctx, batch)
+				}
+				if importErr != nil {
+					return fmt.Errorf("import report event projection batch: %w", importErr)
+				}
+				summary.LegacyAnchors += int64(legacyAnchors)
+				for _, proof := range proofs {
+					digest.Write(proof)
+				}
+				summary.Events += int64(len(batch))
+				summary.AttemptObservations += int64(observations)
+				summary.Reworks += int64(reworks)
 			}
 			after = page[len(page)-1].id
 		}
@@ -323,7 +365,7 @@ func ImportCoreReportEvents(ctx context.Context, target *postgres.Repository, so
 	return summary, err
 }
 
-func ImportCoreReportEscapes(ctx context.Context, target *postgres.Repository, source CoreChangeImportSource) (ReportImportSummary, error) {
+func ImportCoreReportEscapes(ctx context.Context, target ReportImportTarget, source CoreChangeImportSource) (ReportImportSummary, error) {
 	var summary ReportImportSummary
 	if target == nil || source.CopyPath == "" || source.OrganizationID == "" || source.SourceObjects == nil || source.Objects == nil {
 		return summary, errors.New("invalid report escape import source")
@@ -357,6 +399,8 @@ func ImportCoreReportEscapes(ctx context.Context, target *postgres.Repository, s
 			if len(page) == 0 {
 				return nil
 			}
+			batch := make([]eventstore.Evidence, 0, len(page))
+			proofs := make([][]byte, 0, len(page))
 			for _, row := range page {
 				raw, err := readCoreChangePayload(ctx, tx, source, row.raw)
 				if err != nil {
@@ -378,9 +422,6 @@ func ImportCoreReportEscapes(ctx context.Context, target *postgres.Repository, s
 				if record.ReportEscape == nil {
 					continue
 				}
-				if err := target.ImportReportEscapeProjection(ctx, record); err != nil {
-					return err
-				}
 				proof, err := json.Marshal(struct {
 					Change     string
 					Sequence   int64
@@ -389,8 +430,17 @@ func ImportCoreReportEscapes(ctx context.Context, target *postgres.Repository, s
 				if err != nil {
 					return err
 				}
-				digest.Write(proof)
-				summary.Escapes++
+				batch = append(batch, record)
+				proofs = append(proofs, proof)
+			}
+			if len(batch) > 0 {
+				if err := target.ImportReportEscapeProjections(ctx, batch); err != nil {
+					return err
+				}
+				for _, proof := range proofs {
+					digest.Write(proof)
+				}
+				summary.Escapes += int64(len(batch))
 			}
 			last := page[len(page)-1]
 			changeAfter, sequenceAfter = last.change, last.sequence
@@ -406,7 +456,7 @@ type ReportUsageImportSource struct {
 	ExpectedSHA256 string
 }
 
-func ImportCoreReportUsage(ctx context.Context, target *postgres.Repository, source ReportUsageImportSource) (ReportImportSummary, error) {
+func ImportCoreReportUsage(ctx context.Context, target ReportImportTarget, source ReportUsageImportSource) (ReportImportSummary, error) {
 	var summary ReportImportSummary
 	if target == nil || source.CopyPath == "" || source.OrganizationID == "" || len(source.ExpectedSHA256) != 64 {
 		return summary, errors.New("invalid pinned report usage source")
@@ -463,17 +513,11 @@ func ImportCoreReportUsage(ctx context.Context, target *postgres.Repository, sou
 				return err
 			}
 			if len(page) == 0 {
-				for attempt, count := range counts {
-					if err := target.VerifyReportUsageImport(ctx, source.OrganizationID, attempt, copyHash, count); err != nil {
-						return err
-					}
-				}
-				return nil
+				break
 			}
+			batch := make([]reportstore.UsageRecord, 0, len(page))
 			for _, e := range page {
-				if err := target.ImportReportUsageFact(ctx, e.record); err != nil {
-					return err
-				}
+				batch = append(batch, e.record)
 				encoded, err := json.Marshal(e.record)
 				if err != nil {
 					return err
@@ -482,8 +526,30 @@ func ImportCoreReportUsage(ctx context.Context, target *postgres.Repository, sou
 				summary.UsageRows++
 				counts[e.record.AttemptID]++
 			}
+			if err := target.ImportReportUsageFacts(ctx, batch); err != nil {
+				return err
+			}
 			after = page[len(page)-1].id
 		}
+		attempts := make([]string, 0, len(counts))
+		for attempt := range counts {
+			attempts = append(attempts, attempt)
+		}
+		sort.Strings(attempts)
+		for start := 0; start < len(attempts); start += 100 {
+			end := start + 100
+			if end > len(attempts) {
+				end = len(attempts)
+			}
+			coverage := make([]postgres.ReportUsageImportCoverage, 0, end-start)
+			for _, attempt := range attempts[start:end] {
+				coverage = append(coverage, postgres.ReportUsageImportCoverage{AttemptID: attempt, RowCount: counts[attempt]})
+			}
+			if err := target.VerifyReportUsageImports(ctx, source.OrganizationID, copyHash, coverage); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	summary.ProjectionSHA256 = hex.EncodeToString(digest.Sum(nil))
 	return summary, err
