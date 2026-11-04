@@ -2,10 +2,7 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"net/http"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -51,7 +48,7 @@ func (s *Service) hostedProjectRank(c echo.Context) error {
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	value, err := s.readReadableOrganizationProjectRank(ctx, s.database.reader, credential)
+	value, err := s.readOrganizationRankRecord(ctx, nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), credential: credential})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -76,21 +73,5 @@ func (s *Service) updateHostedProjectRank(c echo.Context) error {
 
 func (s *Service) updateOrganizationProjectRankCommand(ctx context.Context, credential apiCredential, change projectRankChange) (any, error) {
 	scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), credential: credential, requireHostedAdmin: true}
-	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, _ time.Time) (any, error) {
-		readable, err := s.readReadableOrganizationProjectRank(ctx, tx, credential)
-		if err != nil {
-			return nil, err
-		}
-		value, err := projectsettings.UpdateActiveRank(ctx, tx, scope.organization, change, readable.ProjectIDs)
-		if errors.Is(err, projectsettings.ErrConflict) {
-			return nil, nativeConflict(tracker.Revision(value.Revision))
-		}
-		if errors.Is(err, projectsettings.ErrInvalid) {
-			return nil, nativePublicInvalid("Order must include every readable project once")
-		}
-		if err != nil {
-			return nil, err
-		}
-		return s.readReadableOrganizationProjectRank(ctx, tx, credential)
-	})
+	return s.updateOrganizationRankRecord(ctx, scope, change)
 }

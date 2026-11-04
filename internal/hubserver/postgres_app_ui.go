@@ -29,6 +29,7 @@ func (s *Service) registerPostgresAppRoutes(e *echo.Echo) {
 		s.registerWorkViewRoutes(e)
 		e.GET(hostedOrganizationBase+"/projects", s.listHostedProjects, s.hostedSessionOnly)
 		s.registerOrganizationSettingsRecordRoutes(e)
+		s.registerOrganizationVisibleRoutes(e)
 		s.registerHostedAccountPreferenceRoutes(e)
 		s.registerHostedMemberAndSecretRoutes(e)
 		e.GET("/daily-summary/unsubscribe", s.unsubscribeDailySummary)

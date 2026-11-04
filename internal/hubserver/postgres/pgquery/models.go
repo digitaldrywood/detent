@@ -1603,6 +1603,7 @@ type Organization struct {
 	ModelSelectionSha256       *string
 	ModelSelectionBytes        sql.NullInt64
 	ModelSelectionContentBytes sql.NullInt64
+	SchedulingRevision         int64
 }
 
 type OrganizationSecret struct {

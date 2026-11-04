@@ -40,8 +40,7 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	s.registerHostedAccountPreferenceRoutes(e)
 	s.registerHostedMemberAndSecretRoutes(e)
 	administration := s.hostedAdministrationSession
-	e.GET(hostedOrganizationBase+"/name", s.hostedOrganizationName, session)
-	e.PUT(hostedOrganizationBase+"/name", s.renameHostedOrganization, session)
+	s.registerOrganizationVisibleRoutes(e)
 	e.GET(hostedOrganizationBase+"/logo", s.getOrganizationLogo, session)
 	e.PUT(hostedOrganizationBase+"/logo", s.setOrganizationLogo, administration)
 	e.GET(hostedOrganizationBase+"/attachment-metadata/:attachment", s.getOrganizationLogoAttachment, session)
@@ -57,8 +56,6 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	e.GET(hostedOrganizationBase+"/monthly-budget", s.organizationMonthlyBudgetScope, session)
 	e.PUT(hostedOrganizationBase+"/monthly-budget", s.organizationMonthlyBudgetScope, administration)
 	e.GET(hostedOrganizationBase+"/projects", s.listHostedProjects, session)
-	e.GET(hostedOrganizationBase+"/project-rank", s.hostedProjectRank, session)
-	e.PUT(hostedOrganizationBase+"/project-rank", s.updateHostedProjectRank, administration)
 	e.GET(hostedOrganizationBase+"/fleet", s.hostedFleet, session)
 	e.GET(hostedOrganizationBase+"/plan", s.hostedPlanJSON, session)
 	e.POST(hostedOrganizationBase+"/switch", s.switchHostedOrganizationJSON, session)
@@ -791,4 +788,13 @@ func (s *Service) readHostedOperation(ctx context.Context, command hostedCommand
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	return s.readHostedOperationRecord(ctx, command.forContext(ctx))
+}
+
+func (s *Service) registerOrganizationVisibleRoutes(e *echo.Echo) {
+	session := s.hostedSessionOnly
+	administration := s.hostedAdministrationSession
+	e.GET(hostedOrganizationBase+"/name", s.hostedOrganizationName, session)
+	e.PUT(hostedOrganizationBase+"/name", s.renameHostedOrganization, session)
+	e.GET(hostedOrganizationBase+"/project-rank", s.hostedProjectRank, session)
+	e.PUT(hostedOrganizationBase+"/project-rank", s.updateHostedProjectRank, administration)
 }
