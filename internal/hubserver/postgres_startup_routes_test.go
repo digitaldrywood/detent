@@ -183,7 +183,7 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	if len(page.Items) != 1 || page.Items[0].WorkItemID != issue.WorkItemID {
 		t.Fatalf("PostgreSQL issue list = %+v, created %+v", page.Items, issue)
 	}
-	reporterCreateResponse := performHubAPIRequest(t, service, http.MethodPost, itemsPath, reporterToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "reporter-issue-create"}, Title: "Reporter issue", Body: "## Acceptance criteria\nThe report can be read.\n## Must not break\nKeep issue ownership scoped.\n## How we know it worked\nThe reporter sees only their record.", Type: "bug", State: "Triage"})
+	reporterCreateResponse := performHubAPIRequest(t, service, http.MethodPost, itemsPath, reporterToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "reporter-issue-create"}, Title: "Reporter issue", Body: reporterBugSections, Type: "bug", State: "Triage"})
 	requireNativeStatus(t, reporterCreateResponse, http.StatusOK)
 	var reporterIssue tracker.NativeIssue
 	decodeHubResponse(t, reporterCreateResponse, &reporterIssue)

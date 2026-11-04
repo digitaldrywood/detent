@@ -93,6 +93,10 @@ func seedConfiguredHumanWorkflowIssue(t *testing.T, service *Service, organizati
 	if err != nil && (!errors.As(err, &unavailable) || unavailable.status != http.StatusServiceUnavailable) || plan.project.Core.WorkflowSource == "" || plan.issue.IssueContract == nil || !plan.create || plan.issue.WorkItemID == "" {
 		t.Fatalf("expected complete configured-source plan: %v", err)
 	}
+	policyRevision, policyFound, err := service.validateWorkItemRecordFilingTenant(t.Context(), scope, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
 	fields, err := service.prepareWorkItemFields(t.Context(), organization, plan)
 	if err != nil {
 		t.Fatal(err)
@@ -121,8 +125,22 @@ func seedConfiguredHumanWorkflowIssue(t *testing.T, service *Service, organizati
 		if err := w.LockWorkItemProject(t.Context(), project); err != nil {
 			return err
 		}
-		if err := service.validateWorkItemRecordFilingTenant(t.Context(), w, scope, plan); err != nil {
+		currentProject, err := w.ProjectRecord(t.Context(), project)
+		if err != nil {
 			return err
+		}
+		if !sameWorkItemProjectPlan(plan.project, currentProject) {
+			return corestore.ErrRevisionConflict
+		}
+		currentPolicy, err := w.ProjectPolicy(t.Context(), project)
+		if errors.Is(err, corestore.ErrNotFound) {
+			if policyFound {
+				return corestore.ErrRevisionConflict
+			}
+		} else if err != nil {
+			return err
+		} else if !policyFound || !sameNativeClaimProjectPolicy(policyRevision, currentPolicy) {
+			return corestore.ErrRevisionConflict
 		}
 		if err := writeWorkItemRecord(t.Context(), w, plan, fields); err != nil {
 			return err
@@ -130,7 +148,7 @@ func seedConfiguredHumanWorkflowIssue(t *testing.T, service *Service, organizati
 		if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
 			return err
 		}
-		_, err := w.AppendEvent(t.Context(), event)
+		_, err = w.AppendEvent(t.Context(), event)
 		return err
 	}); err != nil {
 		t.Fatal(err)

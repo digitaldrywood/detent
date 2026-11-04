@@ -569,7 +569,7 @@ func verifyPostgresHumanWorkflow(t *testing.T, service *Service, admin *sql.DB, 
 		t.Fatal(err)
 	}
 	verifyPostgresHumanReceiptExpiry(t, service, project.OrganizationID, base, owner, clock)
-	own := create(reporter, "human-reporter-own", "Triage")
+	own := seedConfiguredHumanWorkflowIssue(t, service, project.OrganizationID, project.ID, reporter, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "human-reporter-own"}, Title: "Example reporter workflow", Type: "bug", Body: reporterBugSections, State: "Triage"})
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, workflow(own), reporter, transition(own, "human-own-cancel", "Cancelled")), http.StatusOK)
 	denied := performHubAPIRequest(t, service, http.MethodPost, workflow(changed), reporter, transition(changed, "human-foreign-cancel", "Cancelled"))
 	if denied.Code != http.StatusNotFound && denied.Code != http.StatusForbidden {
