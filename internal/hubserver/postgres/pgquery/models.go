@@ -2037,6 +2037,27 @@ type Project struct {
 	DeletedAt               *time.Time
 }
 
+type ProjectAction struct {
+	OrganizationID        tracker.OrganizationID
+	ProjectID             tracker.ProjectID
+	ID                    string
+	Slot                  int16
+	Name                  string
+	Keybinding            string
+	Icon                  string
+	PreviewUrl            string
+	OpenPreview           bool
+	RunOnWorktreeCreation bool
+	CreatedBy             string
+	Revision              int64
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	CommandObjectKey      string
+	CommandSha256         string
+	CommandBytes          int64
+	CommandContentBytes   int64
+}
+
 type ProjectEventCursor struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
