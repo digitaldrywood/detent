@@ -167,6 +167,68 @@ func TestPostgresThreadsPreservePostsPermissionsAndUnread(t *testing.T) {
 	if page := list("", reporter); len(page.Threads) != 1 || page.Threads[0].ID != "th_project_first" || len(page.Threads[0].Participants) != 1 || len(page.Threads[0].References) != 1 || page.Threads[0].IssueNumber != 1 {
 		t.Fatalf("reporter thread/reference visibility=%+v", page)
 	}
+	for _, test := range []struct {
+		name, suffix, token, change, restore string
+	}{
+		{"list grant revoked", "", owner, `DELETE FROM hosted_project_grants WHERE organization_id='org_startup' AND user_id='user_owner' AND project_id='project_first'`, `INSERT INTO hosted_project_grants (organization_id,user_id,project_id,can_write,manage_runner) VALUES ('org_startup','user_owner','project_first',true,true)`},
+		{"list key revoked", "", owner, `UPDATE api_tokens SET revoked_at=clock_timestamp() WHERE organization_id='org_startup' AND id='credential_owner'`, `UPDATE api_tokens SET revoked_at=NULL WHERE organization_id='org_startup' AND id='credential_owner'`},
+		{"list role downgraded", "", owner, `UPDATE hosted_members SET role='reporter' WHERE organization_id='org_startup' AND user_id='user_owner'`, `UPDATE hosted_members SET role='owner' WHERE organization_id='org_startup' AND user_id='user_owner'`},
+		{"get role downgraded", "/th_project_second", owner, `UPDATE hosted_members SET role='reporter' WHERE organization_id='org_startup' AND user_id='user_owner'`, `UPDATE hosted_members SET role='owner' WHERE organization_id='org_startup' AND user_id='user_owner'`},
+		{"list issue ownership changed", "", reporter, `UPDATE issues SET actor_principal_id='credential_owner' WHERE organization_id='org_startup' AND native_id='wi_project_first'`, `UPDATE issues SET actor_principal_id='credential_reporter' WHERE organization_id='org_startup' AND native_id='wi_project_first'`},
+		{"get issue ownership changed", "/th_project_first", reporter, `UPDATE issues SET actor_principal_id='credential_owner' WHERE organization_id='org_startup' AND native_id='wi_project_first'`, `UPDATE issues SET actor_principal_id='credential_reporter' WHERE organization_id='org_startup' AND native_id='wi_project_first'`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			readCursor := func() int64 {
+				t.Helper()
+				if test.suffix == "" {
+					return 0
+				}
+				var value int64
+				principal := "credential_owner"
+				if test.token == reporter {
+					principal = "credential_reporter"
+				}
+				if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					value, err = r.ThreadReadCursor(t.Context(), strings.TrimPrefix(test.suffix, "/"), principal)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return value
+			}
+			beforeCursor := readCursor()
+			details := cfg.RunDetails.(*memoryRunDetails)
+			var once sync.Once
+			var changed atomic.Bool
+			var changeErr error
+			details.beforeRead = func(ctx context.Context) error {
+				once.Do(func() {
+					_, changeErr = admin.ExecContext(ctx, test.change)
+					changed.Store(true)
+				})
+				return changeErr
+			}
+			t.Cleanup(func() {
+				details.beforeRead = nil
+				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+				defer cancel()
+				if _, err := admin.ExecContext(ctx, test.restore); err != nil {
+					t.Errorf("restore thread authority: %v", err)
+				}
+			})
+			response := request(http.MethodGet, test.suffix, test.token, nil)
+			if !changed.Load() || changeErr != nil {
+				t.Fatalf("authority change did not occur: changed=%t error=%v", changed.Load(), changeErr)
+			}
+			if response.Code == http.StatusOK || strings.Contains(response.Body.String(), "Preserved source post") {
+				t.Fatalf("thread content survived authority change: status=%d body=%s", response.Code, response.Body.String())
+			}
+			if readCursor() != beforeCursor {
+				t.Fatal("failed thread authorization advanced the read cursor")
+			}
+		})
+	}
 	requireNativeStatus(t, request(http.MethodGet, "/th_project_second", reporter, nil), http.StatusNotFound)
 	sourceReplay := request(http.MethodPost, "/th_project_first/posts", owner, teamThreadInput{Kind: "note", Body: "Preserved source post", Key: "post_1", References: []operatortool.ThreadReference{{Kind: "issue", ID: "wi_project_first"}}})
 	requireNativeStatus(t, sourceReplay, http.StatusCreated)
@@ -188,6 +250,117 @@ func TestPostgresThreadsPreservePostsPermissionsAndUnread(t *testing.T) {
 	if len(read.Posts) != 1 || read.Posts[0].Sequence != 2 || read.HasMore || read.Thread.Unread != 0 {
 		t.Fatalf("thread last-read continuation=%+v", read)
 	}
+	t.Run("post references rechecked after hydration", func(t *testing.T) {
+		created := request(http.MethodPost, "/th_project_first/posts", owner, teamThreadInput{Kind: "note", Body: "A referenced update", Key: "cross-project-reference", References: []operatortool.ThreadReference{{Kind: "issue", ID: "wi_project_second"}}})
+		requireNativeStatus(t, created, http.StatusCreated)
+		details := cfg.RunDetails.(*memoryRunDetails)
+		var reads atomic.Int32
+		var once sync.Once
+		var changeErr error
+		details.beforeRead = func(ctx context.Context) error {
+			if reads.Add(1) >= 2 {
+				once.Do(func() {
+					_, changeErr = admin.ExecContext(ctx, `DELETE FROM hosted_project_grants WHERE organization_id='org_startup' AND user_id='user_owner' AND project_id='project_second'`)
+				})
+			}
+			return changeErr
+		}
+		t.Cleanup(func() {
+			details.beforeRead = nil
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+			defer cancel()
+			if _, err := admin.ExecContext(ctx, `INSERT INTO hosted_project_grants (organization_id,user_id,project_id,can_write,manage_runner) VALUES ('org_startup','user_owner','project_second',true,true)`); err != nil {
+				t.Errorf("restore project grant: %v", err)
+			}
+		})
+		response := request(http.MethodGet, "/th_project_first?since=2", owner, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		if reads.Load() < 2 || changeErr != nil {
+			t.Fatalf("grant change did not occur during hydration: reads=%d error=%v", reads.Load(), changeErr)
+		}
+		var result teamThreadRead
+		decodeHubResponse(t, response, &result)
+		if len(result.Posts) != 1 || result.Posts[0].Body != "A referenced update" || len(result.Posts[0].References) != 0 {
+			t.Fatalf("post reference survived grant revocation: %+v", result.Posts)
+		}
+	})
+	t.Run("failed final authorization keeps unread posts", func(t *testing.T) {
+		created := request(http.MethodPost, "/th_project_first/posts", owner, teamThreadInput{Kind: "note", Body: "Unread after failed response", Key: "failed-final-read"})
+		requireNativeStatus(t, created, http.StatusCreated)
+		original := service.config.TenantRepository
+		injected := &threadFinalReadFailure{Repository: original}
+		service.config.TenantRepository = injected
+		details := cfg.RunDetails.(*memoryRunDetails)
+		var reads atomic.Int32
+		details.beforeRead = func(context.Context) error {
+			if reads.Add(1) >= 2 {
+				injected.armed.Store(true)
+			}
+			return nil
+		}
+		t.Cleanup(func() {
+			details.beforeRead = nil
+			service.config.TenantRepository = original
+		})
+		response := request(http.MethodGet, "/th_project_first?since=last_read", owner, nil)
+		if response.Code == http.StatusOK || !injected.failed.Load() {
+			t.Fatalf("final read failure was not returned: status=%d fired=%t", response.Code, injected.failed.Load())
+		}
+		details.beforeRead = nil
+		service.config.TenantRepository = original
+		retry := request(http.MethodGet, "/th_project_first?since=last_read", owner, nil)
+		requireNativeStatus(t, retry, http.StatusOK)
+		var result teamThreadRead
+		decodeHubResponse(t, retry, &result)
+		if len(result.Posts) != 1 || result.Posts[0].Body != "Unread after failed response" {
+			t.Fatalf("retry skipped undelivered content: %+v", result.Posts)
+		}
+	})
+	t.Run("role revoked before cursor commit keeps unread posts", func(t *testing.T) {
+		created := request(http.MethodPost, "/th_project_first/posts", owner, teamThreadInput{Kind: "note", Body: "Unread after revoked authorization", Key: "cursor-final-role"})
+		requireNativeStatus(t, created, http.StatusCreated)
+		original := service.config.TenantRepository
+		cursor := func() int64 {
+			t.Helper()
+			var value int64
+			if err := original.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				value, err = r.ThreadReadCursor(t.Context(), "th_project_first", "credential_owner")
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			return value
+		}
+		before := cursor()
+		intercepted := &projectUpdateBeforeWriteRepository{Repository: original}
+		intercepted.before = func() error {
+			_, err := admin.ExecContext(t.Context(), `UPDATE hosted_members SET role='reporter' WHERE organization_id='org_startup' AND user_id='user_owner'`)
+			return err
+		}
+		service.config.TenantRepository = intercepted
+		restore := func() {
+			service.config.TenantRepository = original
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+			defer cancel()
+			if _, err := admin.ExecContext(ctx, `UPDATE hosted_members SET role='owner' WHERE organization_id='org_startup' AND user_id='user_owner'`); err != nil {
+				t.Error(err)
+			}
+		}
+		t.Cleanup(restore)
+		denied := request(http.MethodGet, "/th_project_first?since=last_read", owner, nil)
+		if intercepted.before != nil || denied.Code == http.StatusOK || strings.Contains(denied.Body.String(), "Unread after revoked authorization") || cursor() != before {
+			t.Fatal("failed cursor commit returned content or advanced the cursor")
+		}
+		restore()
+		retry := request(http.MethodGet, "/th_project_first?since=last_read", owner, nil)
+		requireNativeStatus(t, retry, http.StatusOK)
+		var result teamThreadRead
+		decodeHubResponse(t, retry, &result)
+		if len(result.Posts) != 1 || result.Posts[0].Body != "Unread after revoked authorization" {
+			t.Fatal("retry skipped content after failed cursor authorization")
+		}
+	})
 	create := teamThreadInput{Scope: "general", Title: "Example shared note", Key: "example_create", References: []operatortool.ThreadReference{{Kind: "issue", ID: "wi_project_second"}}}
 	var created teamThread
 	for range 2 {
@@ -364,6 +537,20 @@ func TestPostgresThreadsPreservePostsPermissionsAndUnread(t *testing.T) {
 	if page := list("", reporter); len(page.Threads) != 25 || page.Threads[0].Scope != "general" {
 		t.Fatalf("revoked project remained visible: %+v", page)
 	}
+}
+
+type threadFinalReadFailure struct {
+	tenantstore.Repository
+	armed  atomic.Bool
+	failed atomic.Bool
+}
+
+func (r *threadFinalReadFailure) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	if r.armed.CompareAndSwap(true, false) {
+		r.failed.Store(true)
+		return errors.New("injected final thread read failure")
+	}
+	return r.Repository.ReadTenant(ctx, organization, workload, read)
 }
 
 type threadBodyReadRepository struct {

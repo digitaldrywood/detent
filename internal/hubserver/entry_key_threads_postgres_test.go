@@ -365,6 +365,25 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 					t.Fatalf("invisible thread listed: %+v", thread)
 				}
 			}
+			beforeList := capture()
+			response = call("list_threads", map[string]any{"project_id": "project_org_startup", "status": "open", "limit": 5}, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeThread(response, &page)
+			wantProjectThreads := 3
+			if role == "reporter" {
+				wantProjectThreads = 2
+			}
+			if len(page.Threads) != wantProjectThreads {
+				t.Fatalf("project open thread count=%d want=%d", len(page.Threads), wantProjectThreads)
+			}
+			for _, thread := range page.Threads {
+				if thread.ProjectID != "project_org_startup" || thread.Status != "open" || role == "reporter" && thread.ID == "th_org_startup_foreign" {
+					t.Fatalf("project thread read lost visibility or filters: %+v", thread)
+				}
+			}
+			if !reflect.DeepEqual(beforeList, capture()) {
+				t.Fatal("listing project threads changed records, posts or read cursors")
+			}
 			response = call("get_thread", map[string]any{"thread_id": "th_org_startup_own"}, nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeThread(response, &body)

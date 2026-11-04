@@ -34,6 +34,15 @@ func threadRecordError(err error) error {
 }
 func (s *Service) threadRecordFilter(ctx context.Context, r tenantstore.Reader, scope nativeScope) (threadstore.Filter, error) {
 	f := threadstore.Filter{Principal: operatorIdentity(scope.credential, string(scope.organization)).PrincipalID, AllProjects: scope.credential.Hosted == nil && scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly}
+	if scope.credential.Hosted != nil {
+		member, err := r.AuthorizeAccess(ctx, s.accessAuthority(scope, false), s.config.now())
+		if err != nil {
+			return f, err
+		}
+		if member.UserID != "" && lesserHostedRole(member.Role, scope.credential.HostedRole) != scope.credential.HostedRole {
+			return f, auth.ErrHostedIdentity
+		}
+	}
 	if scope.credential.HostedRole == "reporter" {
 		f.Reporter = scope.actor().PrincipalID
 		if f.Reporter == "" {
@@ -354,6 +363,31 @@ func (s *Service) listThreadRecords(ctx context.Context, scope nativeScope, in t
 	for i, post := range previews {
 		out.Threads[previewIndexes[i]].Preview = boundRunes(post.Body, 200)
 	}
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		filter, err := s.threadRecordFilter(ctx, r, scope)
+		if err != nil {
+			return err
+		}
+		for i := range out.Threads {
+			current, err := r.Thread(ctx, out.Threads[i].ID, filter)
+			if err != nil {
+				return err
+			}
+			thread := current.Thread
+			if err := s.fillThreadRecord(ctx, r, scope, &thread); err != nil {
+				return err
+			}
+			thread.Preview = out.Threads[i].Preview
+			out.Threads[i] = thread
+		}
+		return nil
+	})
+	if err != nil {
+		return teamThreadPage{}, threadRecordError(err)
+	}
 	return out, nil
 }
 func (s *Service) createThreadRecord(ctx context.Context, scope nativeScope, in teamThreadInput) (teamThread, error) {
@@ -588,6 +622,42 @@ func (s *Service) getThreadRecord(ctx context.Context, scope nativeScope, thread
 		}
 		cursor = post.Sequence
 	}
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		f, err := s.threadRecordFilter(ctx, r, scope)
+		if err != nil {
+			return err
+		}
+		current, err := r.Thread(ctx, thread.ID, f)
+		if err != nil {
+			return err
+		}
+		updated := current.Thread
+		if err := s.fillThreadRecord(ctx, r, scope, &updated); err != nil {
+			return err
+		}
+		updated.Preview = out.Thread.Preview
+		out.Thread = updated
+		for i := range out.Posts {
+			out.Posts[i].References, err = s.threadRecordReferences(ctx, r, scope, thread.ID, out.Posts[i].Sequence)
+			if err != nil {
+				return err
+			}
+		}
+		encoded, err := json.Marshal(out)
+		if err != nil {
+			return err
+		}
+		if len(encoded) > operatortool.MaxResultBytes/2 {
+			return threadInvalid()
+		}
+		return nil
+	})
+	if err != nil {
+		return teamThreadRead{}, threadRecordError(err)
+	}
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, false); err != nil {
 			return err
@@ -596,15 +666,18 @@ func (s *Service) getThreadRecord(ctx context.Context, scope nativeScope, thread
 		if err != nil {
 			return err
 		}
-		if _, err = w.Thread(ctx, thread.ID, f); err != nil {
+		if _, err := w.Thread(ctx, thread.ID, f); err != nil {
 			return err
 		}
 		return w.AdvanceThreadRead(ctx, thread.ID, principal, cursor)
 	})
+	if err != nil {
+		return teamThreadRead{}, threadRecordError(err)
+	}
 	out.Cursor = strconv.FormatInt(cursor, 10)
-	out.HasMore = cursor < thread.PostCount
-	out.Thread.Unread = thread.PostCount - cursor
-	return out, threadRecordError(err)
+	out.HasMore = cursor < out.Thread.PostCount
+	out.Thread.Unread = out.Thread.PostCount - cursor
+	return out, nil
 }
 func (s *Service) hydrateThreadPosts(ctx context.Context, organization tracker.OrganizationID, posts []threadstore.PostRecord) error {
 	ctx, cancel := context.WithCancel(ctx)
