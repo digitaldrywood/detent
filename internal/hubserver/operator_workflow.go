@@ -19,7 +19,7 @@ func (e nativeOperatorExecutor) workflowAuthority(ctx context.Context, raw json.
 	if err != nil {
 		return ctx, nativeScope{}, err
 	}
-	ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, Action: operatortool.MoveItem, ProjectID: request.ProjectID, ResourceKind: "work_item", ResourceID: request.Identifier})
+	ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, Action: operatortool.MoveItem, ProjectID: request.ProjectID})
 	if err != nil {
 		return ctx, nativeScope{}, err
 	}
@@ -29,14 +29,17 @@ func (e nativeOperatorExecutor) workflowAuthority(ctx context.Context, raw json.
 	}
 	scope, err := resolve(ctx)
 	if err != nil {
-		return ctx, nativeScope{}, operatortool.ErrAccessDenied
+		return ctx, nativeScope{}, workflowSafeError(err)
 	}
 	scope.project = tracker.ProjectID(request.ProjectID)
 	scope.action = operatortool.MoveItem
 	scope.actionItem, scope.actionTarget = request.Identifier, request.TargetState
-	issue, err := e.service.resolveOperatorNativeItem(ctx, e.service.database.reader, scope, request.Identifier)
+	if scope.credential.HostedRole == "reporter" && request.TargetState != "Cancelled" {
+		return ctx, nativeScope{}, operatortool.ErrAccessDenied
+	}
+	issue, err := e.service.resolveWorkflowItem(ctx, scope, request.Identifier)
 	if err != nil {
-		return ctx, nativeScope{}, hubSafeChangeError(err)
+		return ctx, nativeScope{}, workflowSafeError(err)
 	}
 	if issue.Profile != "native" {
 		return ctx, nativeScope{}, operatortool.ErrServiceUnavailable
@@ -45,16 +48,16 @@ func (e nativeOperatorExecutor) workflowAuthority(ctx context.Context, raw json.
 }
 
 func (e nativeOperatorExecutor) workflowProposal(ctx context.Context, scope nativeScope, request operatortool.MoveItemArguments) (chat.Action, error) {
-	issue, err := e.service.resolveOperatorNativeItem(ctx, e.service.database.reader, scope, request.Identifier)
+	issue, err := e.service.resolveWorkflowItem(ctx, scope, request.Identifier)
 	if err != nil {
-		return chat.Action{}, hubSafeChangeError(err)
+		return chat.Action{}, workflowSafeError(err)
 	}
-	project, err := readNativeProject(ctx, e.service.database.reader, scope)
+	states, err := e.service.workflowProjectStates(ctx, scope)
 	if err != nil {
-		return chat.Action{}, hubSafeChangeError(err)
+		return chat.Action{}, workflowSafeError(err)
 	}
-	if err := validateNativeWorkflowTransition(project.States, issue.State, request.TargetState, scope.credential.Scope); err != nil {
-		if issue.State == request.TargetState && slices.ContainsFunc(project.States, func(state tracker.NativeState) bool {
+	if err := validateNativeWorkflowTransition(states, issue.State, request.TargetState, scope.credential.Scope); err != nil {
+		if issue.State == request.TargetState && slices.ContainsFunc(states, func(state tracker.NativeState) bool {
 			return state.Name == issue.State && state.Dispatchable && !state.Terminal
 		}) {
 			return chat.Action{}, &operatortool.RequestError{Code: "invalid_request", Message: "move_item cannot resume an item already in the requested state. Read explain_item and the linked issue conversation snapshot, then send its continue command at POST /api/v2/organizations/{organization}/projects/{project}/conversations/{conversation}/commands with the current expected.attempt_id. Resolve remaining blockers through their recorded owners; a comment does not resolve an external prerequisite. resume_local_project only resumes a paused project."}
@@ -62,7 +65,7 @@ func (e nativeOperatorExecutor) workflowProposal(ctx context.Context, scope nati
 		return chat.Action{}, err
 	}
 	action := chat.Action{Kind: chat.ActionMoveItem, NativeWorkflow: true, ProjectID: request.ProjectID, IssueID: string(issue.WorkItemID), Identifier: request.Identifier, CurrentState: issue.State, TargetState: request.TargetState, Revision: request.ExpectedRevision, Title: issue.Title}
-	for _, state := range project.States {
+	for _, state := range states {
 		if state.Name == issue.State || state.Name == request.TargetState {
 			action.Material = action.Material || state.Terminal
 		}
@@ -79,9 +82,9 @@ func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call ope
 	if err != nil {
 		return operatortool.Result{}, err
 	}
-	issue, err := e.service.resolveOperatorNativeItem(ctx, e.service.database.reader, scope, request.Identifier)
+	issue, err := e.service.resolveWorkflowItem(ctx, scope, request.Identifier)
 	if err != nil {
-		return operatortool.Result{}, hubSafeChangeError(err)
+		return operatortool.Result{}, workflowSafeError(err)
 	}
 	request.Identifier = string(issue.WorkItemID)
 	action := chat.Action{Kind: chat.ActionMoveItem, NativeWorkflow: true, ProjectID: request.ProjectID, IssueID: request.Identifier, Identifier: request.Identifier}
@@ -101,9 +104,9 @@ func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call ope
 	defer func() { e.service.hubChangeAudit(ctx, action.Mutation, outcome) }()
 	mutationContext := mutation.WithContext(ctx, action.Mutation)
 	transition := tracker.Transition{Mutation: tracker.MutationForContext(mutationContext, request.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.TargetState, Reason: "user_requested", ReasonDetail: request.ReasonDetail}
-	replay, found, err := e.service.nativeCommandReplay(mutationContext, scope, nativeOperation(scope, "POST", "/work-items/"+request.Identifier+"/workflow"), transition.IdempotencyKey, transition)
+	replay, found, err := e.service.workflowCommandReplay(mutationContext, scope, request.Identifier, transition)
 	if err != nil {
-		return operatortool.Result{}, hubSafeChangeError(err)
+		return operatortool.Result{}, workflowSafeError(err)
 	}
 	if found {
 		outcome = "replayed"
@@ -165,7 +168,7 @@ func (e nativeOperatorExecutor) executeWorkflowTransition(ctx context.Context, a
 }
 
 func workflowExecutionFailure(err error) (chat.ActionExecution, error) {
-	safe := hubSafeChangeError(err)
+	safe := workflowSafeError(err)
 	if errors.Is(safe, mutation.ErrConflict) {
 		if conflict := operatorNativeConflict(err); conflict != nil {
 			safe = conflict
