@@ -1114,3 +1114,98 @@ func (s *Service) selectedLatestChangeSummary(ctx context.Context, scope nativeS
 	}
 	return reference, detail.Summary, true, nil
 }
+
+func (s *Service) lockChangeRecordOperation(ctx context.Context, w tenantstore.Writer, scope nativeScope, item, changeID, versionID string) (eventstore.Change, error) {
+	if err := s.authorizeWorkItemRecordScope(ctx, w, scope); err != nil {
+		return eventstore.Change{}, err
+	}
+	if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+		return eventstore.Change{}, err
+	}
+	project, err := w.Project(ctx, scope.project)
+	if err != nil {
+		return eventstore.Change{}, err
+	}
+	if project.DeletedAt != nil {
+		return eventstore.Change{}, corestore.ErrNotFound
+	}
+	var issue corestore.WorkItem
+	if scope.credential.Scope == apiScopeWorker {
+		issue, err = w.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+	} else {
+		issue, err = w.LockWorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+	}
+	if err != nil {
+		return eventstore.Change{}, err
+	}
+	if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(issue.ActorPrincipalID)}) {
+		return eventstore.Change{}, corestore.ErrNotFound
+	}
+	var change eventstore.Change
+	if scope.credential.Scope == apiScopeWorker {
+		change, err = w.Change(ctx, changeID)
+	} else {
+		change, err = w.LockChange(ctx, changeID)
+	}
+	if err != nil {
+		return eventstore.Change{}, err
+	}
+	if change.ProjectID != scope.project {
+		return eventstore.Change{}, corestore.ErrNotFound
+	}
+	if change.WorkItemID != tracker.NativeWorkItemID(item) {
+		return eventstore.Change{}, corestore.ErrNotFound
+	}
+	if versionID != "" {
+		if _, err := w.Version(ctx, changeID, versionID); err != nil {
+			return eventstore.Change{}, err
+		}
+	}
+	return change, nil
+}
+
+func (s *Service) changeOperationRecordReceipt(ctx context.Context, scope nativeScope, item, changeID, versionID, operation, key, hash string) (json.RawMessage, bool, error) {
+	var receipt eventstore.Receipt
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeWorkItemRecordScope(ctx, r, scope); err != nil {
+			return err
+		}
+		var err error
+		receipt, err = r.Receipt(ctx, scope.credential.ID, operation, key)
+		return err
+	})
+	if errors.Is(err, corestore.ErrNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, projectRecordError(err)
+	}
+	var raw json.RawMessage
+	var payloadErr error
+	if receipt.RequestHash == hash {
+		raw, payloadErr = eventstore.NewContent(s.runDetailStore()).Receipt(ctx, receipt)
+	}
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if _, err := s.lockChangeRecordOperation(ctx, w, scope, item, changeID, versionID); err != nil {
+			return err
+		}
+		current, err := w.Receipt(ctx, scope.credential.ID, operation, key)
+		if err != nil {
+			return err
+		}
+		if current.RequestHash != hash {
+			return nativeConflict(0)
+		}
+		if current.ResponseExpired || current.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= current.ResponseReplayUntilNs {
+			return receiptstore.ErrExpired
+		}
+		if !reflect.DeepEqual(current, receipt) {
+			return nativeConflict(0)
+		}
+		return payloadErr
+	})
+	if err != nil {
+		return nil, false, projectRecordError(err)
+	}
+	return raw, true, nil
+}

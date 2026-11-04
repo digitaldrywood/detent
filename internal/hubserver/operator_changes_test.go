@@ -61,6 +61,25 @@ func changeToolCall(name string, args operatortool.ChangeArguments) operatortool
 	return operatortool.Call{Name: name, Arguments: raw}
 }
 
+func TestOperatorChangeWithoutPostgresCannotUseLegacyStorage(t *testing.T) {
+	app := hubChangeApplication{service: &Service{}, scope: nativeScope{credential: apiCredential{Scope: apiScopeAdmin}}}
+	args := operatortool.ChangeArguments{ProjectID: "example-project", ItemID: "wi_example", RequestID: "example-command"}
+	for _, name := range []string{operatortool.ListChanges, operatortool.GetChange, operatortool.GetChangeReviewPolicy, operatortool.ArtifactReferences} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := app.ReadChange(t.Context(), name, args); !errors.Is(err, operatortool.ErrServiceUnavailable) {
+				t.Fatalf("missing PostgreSQL read owner: %v", err)
+			}
+		})
+	}
+	for _, name := range []string{operatortool.CreateChange, operatortool.PublishChangeVersion, operatortool.ReviewChange, operatortool.DiscussChange, operatortool.ArtifactAccess} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := app.MutateChange(t.Context(), name, args); !errors.Is(err, operatortool.ErrServiceUnavailable) {
+				t.Fatalf("missing PostgreSQL write owner: %v", err)
+			}
+		})
+	}
+}
+
 func TestOperatorChangePublication(t *testing.T) {
 	for _, test := range []struct {
 		name           string

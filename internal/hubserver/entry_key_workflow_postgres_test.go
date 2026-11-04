@@ -19,9 +19,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -41,7 +43,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 	clock := time.Now().UTC().Truncate(time.Microsecond)
 	initialClock := clock
 	states := humanWorkflowFixtureStates()
-	states = append(states, tracker.NativeState{Name: "Triage", Transitions: []string{"Todo", "Cancelled"}})
+	states = append(states, tracker.NativeState{Name: "Triage", Transitions: []string{"Todo", "Cancelled"}}, tracker.NativeState{Name: "Review", Transitions: []string{"Merging", "Rework", "Cancelled"}}, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Rework"}})
 	descriptor := hubTestPolicy()
 	descriptor.Workflow = &policy.Workflow{Source: "example-workflow.yaml", Revision: descriptor.SourceRevision, States: states}
 	descriptor = descriptor.WithID()
@@ -76,6 +78,13 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 			t.Fatal(err)
 		}
 		prepared.ProjectID, prepared.ApprovedBy, prepared.ApprovedAt = "project_example", "credential_owner", clock
+		rules := defaultChangeReviewPolicy(descriptor)
+		rules.RequireReview = true
+		rules.ID = changerequest.PolicyID(rules)
+		reviewPolicy, err := eventstore.NewContent(cfg.RunDetails).PrepareReviewPolicy(t.Context(), eventstore.ReviewPolicy{OrganizationID: organization, ProjectID: "project_example", PolicyRevisionID: descriptor.ID, Revision: 1, UpdatedBy: "credential_owner", UpdatedAt: clock}, rules)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			cursor, err := cfg.SecretKeys.Seal(bytes.Repeat([]byte{0x36}, 32), accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
 			if err != nil {
@@ -109,7 +118,10 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: "machine_example", Hostname: "example", Capacity: 2, Version: "test"}); err != nil {
 				return err
 			}
-			return w.ApproveProjectPolicy(t.Context(), prepared, "")
+			if err := w.ApproveProjectPolicy(t.Context(), prepared, ""); err != nil {
+				return err
+			}
+			return w.SetReviewPolicy(t.Context(), reviewPolicy, "")
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -337,6 +349,611 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 			if fromHTTP.ID != created.ChangeID || fromHTTP.OrganizationID != target.issue.OrganizationID {
 				t.Fatal("HTTP replay created a second Change or crossed tenants")
 			}
+			t.Run("publish and review "+string(target.issue.OrganizationID), func(t *testing.T) {
+				target := target
+				issueResponse := requestFor(target.service, "owner", linkedPath, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "workflow-review-issue"}, Title: "Example review workflow", Body: workItemRecordBody, State: "Review"})
+				requireNativeStatus(t, issueResponse, http.StatusOK)
+				decodeHubResponse(t, issueResponse, &target.issue)
+				path := linkedPath + "/" + string(target.issue.WorkItemID) + "/changes"
+				changeResponse := requestFor(target.service, "owner", "/internal/v1/keys/call", map[string]any{"name": operatortool.CreateChange, "connection_id": "workflow_change", "arguments": operatortool.ChangeArguments{ProjectID: "project_example", ItemID: string(target.issue.WorkItemID), LinkedIssues: []tracker.NativeWorkItemID{linked.WorkItemID}, RequestID: "workflow_change", Title: "Example workflow Change"}})
+				requireNativeStatus(t, changeResponse, http.StatusOK)
+				var created operatortool.ChangeResult
+				decodeHubResponse(t, changeResponse, &created)
+				var history leasestore.Attempt
+				if err := repository.WriteTenant(t.Context(), target.issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					row, err := w.WorkItem(t.Context(), "project_example", target.issue.WorkItemID)
+					if err != nil {
+						return err
+					}
+					lease, err := w.Claim(t.Context(), leasestore.Claim{IssueID: row.ID, ExpectedRevision: row.Revision, MachineID: "machine_example", SessionID: "workflow_history", LeaseID: "workflow_history", TTL: time.Minute})
+					if err != nil {
+						return err
+					}
+					fence := leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}
+					if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "workflow_history", RunID: "workflow_history", Fence: fence, Sequence: 1, Status: "running", StartedAt: clock, PayloadObjectKey: "example/workflow-start"}); err != nil {
+						return err
+					}
+					history, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "workflow_history", RunID: "workflow_history", Fence: fence, Sequence: 2, Status: "succeeded", PayloadObjectKey: "example/workflow-done"})
+					if err != nil {
+						return err
+					}
+					_, err = w.Release(t.Context(), fence, "released")
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				input := changeTestInput()
+				input.PolicyID = descriptor.ID
+				empty := ""
+				publish := operatortool.ChangeArguments{ProjectID: "project_example", ItemID: string(target.issue.WorkItemID), ChangeID: created.ChangeID, ExpectedVersionID: &empty, RequestID: "example-version", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, MergeBaseSHA: input.MergeBaseSHA, Repository: input.Repository, Code: &input.Code, Artifacts: input.Artifacts, PolicyID: input.PolicyID}
+				changeCall := func(user, name string, args operatortool.ChangeArguments) *httptest.ResponseRecorder {
+					return requestFor(target.service, user, "/internal/v1/keys/call", map[string]any{"name": name, "arguments": args, "connection_id": "version_" + user})
+				}
+				drainReviewProjection := func(t *testing.T) {
+					t.Helper()
+					owner := repository.(interface {
+						BackfillCurrentChangeReviews(context.Context, tracker.OrganizationID, *eventstore.Content, int) (int, error)
+					})
+					for range 32 {
+						n, err := owner.BackfillCurrentChangeReviews(t.Context(), target.issue.OrganizationID, eventstore.NewContent(target.service.runDetailStore()), corestore.MaxPageSize)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if n == 0 {
+							return
+						}
+					}
+					t.Fatal("fixture review projections did not complete")
+				}
+				response := changeCall("owner", operatortool.PublishChangeVersion, publish)
+				requireNativeStatus(t, response, http.StatusOK)
+				var published operatortool.ChangeResult
+				decodeHubResponse(t, response, &published)
+				if published.Version == nil || published.Version.ID == "" || published.Version.ChangeID != created.ChangeID || published.Version.Actor.Kind != "human" || published.Version.PolicyID != descriptor.ID {
+					t.Fatal("version lost source, policy or human identity")
+				}
+				replay := changeCall("owner", operatortool.PublishChangeVersion, publish)
+				requireNativeStatus(t, replay, http.StatusOK)
+				var repeated operatortool.ChangeResult
+				decodeHubResponse(t, replay, &repeated)
+				if !bytes.Equal(published.Receipt, repeated.Receipt) {
+					t.Fatal("version replay changed the canonical receipt")
+				}
+				versionPath := path + "/" + created.ChangeID + "/versions"
+				httpReplay := requestFor(target.service, "owner", versionPath, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: publish.RequestID}, ChangeVersionInput: input})
+				requireNativeStatus(t, httpReplay, http.StatusOK)
+				var httpVersion tracker.ChangeVersion
+				decodeHubResponse(t, httpReplay, &httpVersion)
+				if httpVersion.ID != published.Version.ID {
+					t.Fatal("HTTP version replay created a second version")
+				}
+
+				newReviewCase := func(t *testing.T, key, state string) (tracker.NativeIssue, operatortool.ChangeResult, operatortool.ChangeResult) {
+					t.Helper()
+					target := target
+
+					response := requestFor(target.service, "owner", linkedPath, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: key + "-issue"}, Title: "Example reviewer coordination", Body: workItemRecordBody, State: state})
+					requireNativeStatus(t, response, http.StatusOK)
+					decodeHubResponse(t, response, &target.issue)
+					argsCreate := operatortool.ChangeArguments{ProjectID: "project_example", ItemID: string(target.issue.WorkItemID), RequestID: key + "-change", Title: "Example reviewer Change"}
+					response = changeCall("owner", operatortool.CreateChange, argsCreate)
+					requireNativeStatus(t, response, http.StatusOK)
+					var created operatortool.ChangeResult
+					decodeHubResponse(t, response, &created)
+					argsPublish := publish
+					argsPublish.ItemID, argsPublish.ChangeID, argsPublish.RequestID = string(target.issue.WorkItemID), created.ChangeID, key+"-version"
+					response = changeCall("owner", operatortool.PublishChangeVersion, argsPublish)
+					requireNativeStatus(t, response, http.StatusOK)
+					var published operatortool.ChangeResult
+					decodeHubResponse(t, response, &published)
+					return target.issue, created, published
+				}
+				t.Run("publication and review recheck current authority", func(t *testing.T) {
+					issue, created, published := newReviewCase(t, "authority", "Review")
+					publishedArgs := publish
+					publishedArgs.ItemID, publishedArgs.ChangeID, publishedArgs.RequestID = string(issue.WorkItemID), created.ChangeID, "authority-version"
+					reviewArgs := operatortool.ChangeArguments{ProjectID: string(issue.ProjectID), ItemID: string(issue.WorkItemID), ChangeID: created.ChangeID, VersionID: published.Version.ID, ExpectedRevision: 2, RequestID: "authority-review", Decision: "commented", Body: "Example authority review"}
+					requireNativeStatus(t, changeCall("owner", operatortool.ReviewChange, reviewArgs), http.StatusOK)
+					readSource := func(t *testing.T) eventstore.Change {
+						t.Helper()
+						var row eventstore.Change
+						if err := repository.ReadTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+							var err error
+							row, err = r.Change(t.Context(), created.ChangeID)
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+						return row
+					}
+					changeAuthority := func(kind string, allowed bool) error {
+						return repository.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+							if kind == "key" {
+								hash := apikey.HashToken(string(issue.OrganizationID) + "owner")
+								if !allowed {
+									hash = apikey.HashToken("example changed credential")
+								}
+								return w.RotateAccessCredential(t.Context(), "credential_owner", hash, tokenFingerprint(hash), clock)
+							}
+							member, err := w.AccessMember(t.Context(), "owner")
+							if err != nil {
+								return err
+							}
+							member.Active = allowed
+							return w.UpdateAccessMember(t.Context(), member)
+						})
+					}
+					for _, test := range []struct {
+						name string
+						args operatortool.ChangeArguments
+						path string
+					}{
+						{name: operatortool.PublishChangeVersion, args: publishedArgs, path: linkedPath + "/" + string(issue.WorkItemID) + "/changes/" + created.ChangeID + "/versions"},
+						{name: operatortool.ReviewChange, args: reviewArgs, path: linkedPath + "/" + string(issue.WorkItemID) + "/changes/" + created.ChangeID + "/versions/" + published.Version.ID + "/reviews"},
+					} {
+						for _, kind := range []string{"membership", "key"} {
+							for _, replay := range []bool{false, true} {
+								t.Run(fmt.Sprintf("%s/%s/writer/replay=%t", test.name, kind, replay), func(t *testing.T) {
+									before := readSource(t)
+									args := test.args
+									if !replay {
+										args.RequestID += "-fresh-" + kind
+										if test.name == operatortool.PublishChangeVersion {
+											args.ExpectedVersionID = &published.Version.ID
+										}
+									}
+									target.service.config.TenantRepository = &projectUpdateBeforeWriteRepository{Repository: repository, before: func() error { return changeAuthority(kind, false) }}
+									defer func() {
+										target.service.config.TenantRepository = repository
+										if err := changeAuthority(kind, true); err != nil {
+											t.Error(err)
+										}
+									}()
+									requireNativeStatus(t, changeCall("owner", test.name, args), http.StatusForbidden)
+									if after := readSource(t); !reflect.DeepEqual(before, after) {
+										t.Fatal("revoked publication or review changed immutable source")
+									}
+								})
+							}
+							t.Run(test.name+"/"+kind+"/archive replay", func(t *testing.T) {
+								before := readSource(t)
+								var receipt eventstore.Receipt
+								if err := repository.ReadTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+									var err error
+									receipt, err = r.Receipt(t.Context(), "credential_owner", http.MethodPost+" "+test.path, test.args.RequestID)
+									return err
+								}); err != nil {
+									t.Fatal(err)
+								}
+								original := target.service.config.RunDetails
+								probe := &changeReceiptReadProbe{DetailStore: original, key: receipt.PayloadObjectKey, before: func(context.Context) error { return changeAuthority(kind, false) }}
+								target.service.config.RunDetails = probe
+								defer func() {
+									target.service.config.RunDetails = original
+									if err := changeAuthority(kind, true); err != nil {
+										t.Error(err)
+									}
+								}()
+								response := changeCall("owner", test.name, test.args)
+								requireNativeStatus(t, response, http.StatusForbidden)
+								if !probe.called || strings.Contains(response.Body.String(), created.ChangeID) {
+									t.Fatal("revoked authority exposed a receipt or missed archive interleaving")
+								}
+								if after := readSource(t); !reflect.DeepEqual(before, after) {
+									t.Fatal("revoked receipt replay changed immutable source")
+								}
+							})
+						}
+					}
+				})
+				t.Run("visual content retains only current scoped attachments", func(t *testing.T) {
+					issue, created, published := newReviewCase(t, "visual-content", "Review")
+					setVisual := func(enabled bool) error {
+						return repository.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+							project, err := w.ProjectRecord(t.Context(), issue.ProjectID)
+							if err != nil {
+								return err
+							}
+							return w.UpdateProjectContent(t.Context(), issue.ProjectID, project.Core.ContentSettingsRevision, enabled)
+						})
+					}
+					if err := setVisual(true); err != nil {
+						t.Fatal(err)
+					}
+					defer func() {
+						if err := setVisual(false); err != nil {
+							t.Error(err)
+						}
+					}()
+					ids := make([]string, 6)
+					for index := range ids {
+						ids[index] = fmt.Sprintf("att_%032x", index+1)
+					}
+					if err := repository.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+						for index, id := range ids {
+							project := string(issue.ProjectID)
+							if index == 1 {
+								project = "project_foreign"
+							}
+							metadata := attachment.Metadata{ID: id, ProjectID: project, Uploader: "credential_owner", Name: "example.png", ContentType: "image/png", Size: 10, Width: 1, Height: 1, SHA256: strings.Repeat("a", 64), CreatedAt: clock}
+							if index == 2 {
+								metadata.DeletedAt = &clock
+							}
+							if err := w.CreateAttachment(t.Context(), attachmentstore.Record{OrganizationID: issue.OrganizationID, Metadata: metadata, Kind: "attachment", Retention: "ephemeral", ObjectKey: "example/" + id, UncompressedSize: 10, Codec: "identity", SchemaVersion: 1}); err != nil {
+								return err
+							}
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := admin.ExecContext(t.Context(), `UPDATE attachments SET pending_content=$3 WHERE organization_id=$1 AND id=$2`, issue.OrganizationID, ids[3], []byte("pending")); err != nil {
+						t.Fatal(err)
+					}
+					otherOrganization, foreignID := tracker.OrganizationID("org_other"), "att_77777777777777777777777777777777"
+					if issue.OrganizationID == "org_other" {
+						otherOrganization, foreignID = "org_startup", "att_88888888888888888888888888888888"
+					}
+					if err := repository.WriteTenant(t.Context(), otherOrganization, corestore.Serving, func(w tenantstore.Writer) error {
+						metadata := attachment.Metadata{ID: foreignID, ProjectID: string(issue.ProjectID), Uploader: "credential_owner", Name: "example.png", ContentType: "image/png", Size: 10, Width: 1, Height: 1, SHA256: strings.Repeat("a", 64), CreatedAt: clock}
+						return w.CreateAttachment(t.Context(), attachmentstore.Record{OrganizationID: otherOrganization, Metadata: metadata, Kind: "attachment", ObjectKey: "example/" + foreignID, UncompressedSize: 10, Codec: "identity", SchemaVersion: 1})
+					}); err != nil {
+						t.Fatal(err)
+					}
+					for _, test := range []struct {
+						name, body string
+						status     int
+					}{
+						{name: "live", body: "![Example](attachment:" + ids[0] + ")", status: http.StatusOK},
+						{name: "foreign project", body: "![Example](attachment:" + ids[1] + ")", status: http.StatusUnprocessableEntity},
+						{name: "foreign tenant", body: "![Example](attachment:" + foreignID + ")", status: http.StatusUnprocessableEntity},
+						{name: "deleted", body: "![Example](attachment:" + ids[2] + ")", status: http.StatusUnprocessableEntity},
+						{name: "pending", body: "![Example](attachment:" + ids[3] + ")", status: http.StatusUnprocessableEntity},
+						{name: "missing", body: "![Example](attachment:att_ffffffffffffffffffffffffffffffff)", status: http.StatusUnprocessableEntity},
+						{name: "external", body: "![Example](https://example.test/image.png)", status: http.StatusUnprocessableEntity},
+					} {
+						t.Run(test.name, func(t *testing.T) {
+							args := operatortool.ChangeArguments{ProjectID: string(issue.ProjectID), ItemID: string(issue.WorkItemID), ChangeID: created.ChangeID, VersionID: published.Version.ID, ExpectedRevision: 2, RequestID: "visual-" + strings.ReplaceAll(test.name, " ", "-"), Decision: "commented", Body: test.body}
+							requireNativeStatus(t, changeCall("owner", operatortool.ReviewChange, args), test.status)
+						})
+					}
+					artifactArgs := publish
+					artifactArgs.ItemID, artifactArgs.ChangeID, artifactArgs.RequestID, artifactArgs.ExpectedVersionID = string(issue.WorkItemID), created.ChangeID, "visual-artifact", &published.Version.ID
+					artifactArgs.Artifacts = []tracker.ChangeArtifact{{Kind: "artifact", URI: "attachment:" + ids[4], SHA256: strings.Repeat("a", 64), Availability: "available"}}
+					for _, test := range []struct{ name, id, digest string }{
+						{name: "foreign-project", id: ids[1], digest: strings.Repeat("a", 64)},
+						{name: "foreign-tenant", id: foreignID, digest: strings.Repeat("a", 64)},
+						{name: "digest-mismatch", id: ids[4], digest: strings.Repeat("b", 64)},
+					} {
+						args := artifactArgs
+						args.RequestID += "-" + test.name
+						args.Artifacts = []tracker.ChangeArtifact{{Kind: "artifact", URI: "attachment:" + test.id, SHA256: test.digest, Availability: "available"}}
+						requireNativeStatus(t, changeCall("owner", operatortool.PublishChangeVersion, args), http.StatusUnprocessableEntity)
+					}
+					requireNativeStatus(t, changeCall("owner", operatortool.PublishChangeVersion, artifactArgs), http.StatusOK)
+					for _, id := range []string{ids[0], ids[4]} {
+						if err := repository.ReadTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+							refs, err := r.AttachmentReferences(t.Context(), issue.ProjectID, id, 10)
+							if err == nil && (len(refs) != 1 || refs[0].WorkItemID != issue.WorkItemID || !refs[0].RetainWithWorkItem) {
+								return fmt.Errorf("attachment %s lost primary-item retention: %+v", id, refs)
+							}
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					original := target.service.config.RunDetails
+					var beforeReceipts int
+					if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM native_commands WHERE organization_id=$1`, issue.OrganizationID).Scan(&beforeReceipts); err != nil {
+						t.Fatal(err)
+					}
+					deleted := false
+					target.service.config.RunDetails = &changeContentStoreProbe{DetailStore: original, before: func(ctx context.Context) error {
+						if deleted {
+							return nil
+						}
+						deleted = true
+						_, err := admin.ExecContext(ctx, `UPDATE attachments SET deleted_at=$3 WHERE organization_id=$1 AND id=$2`, issue.OrganizationID, ids[5], clock)
+						return err
+					}}
+					defer func() { target.service.config.RunDetails = original }()
+					args := operatortool.ChangeArguments{ProjectID: string(issue.ProjectID), ItemID: string(issue.WorkItemID), ChangeID: created.ChangeID, VersionID: published.Version.ID, ExpectedRevision: 3, RequestID: "visual-delete-race", Decision: "commented", Body: "![Example](attachment:" + ids[5] + ")"}
+					requireNativeStatus(t, changeCall("owner", operatortool.ReviewChange, args), http.StatusUnprocessableEntity)
+					if !deleted {
+						t.Fatal("attachment deletion did not interleave after preflight")
+					}
+					var rejectedWrites int
+					if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM native_commands WHERE organization_id=$1`, issue.OrganizationID).Scan(&rejectedWrites); err != nil || rejectedWrites != beforeReceipts {
+						t.Fatalf("rejected attachment race committed receipt: count=%d want=%d error=%v", rejectedWrites, beforeReceipts, err)
+					}
+				})
+				t.Run("existing review projection completes through its owner", func(t *testing.T) {
+					issue, created, published := newReviewCase(t, "existing-review", "Review")
+					args := operatortool.ChangeArguments{ProjectID: "project_example", ItemID: string(issue.WorkItemID), ChangeID: created.ChangeID, VersionID: published.Version.ID, ExpectedRevision: 2, RequestID: "existing-review-comment", Decision: "commented", Body: "Example existing review"}
+					requireNativeStatus(t, changeCall("owner", operatortool.ReviewChange, args), http.StatusOK)
+					if _, err := admin.ExecContext(t.Context(), `UPDATE change_requests SET review_summary_sequence=0 WHERE organization_id=$1 AND id=$2`, issue.OrganizationID, created.ChangeID); err != nil {
+						t.Fatal(err)
+					}
+					args.RequestID, args.Decision = "existing-review-approval", "approved"
+					requireNativeStatus(t, changeCall("owner", operatortool.ReviewChange, args), http.StatusConflict)
+					drainReviewProjection(t)
+					requireNativeStatus(t, changeCall("owner", operatortool.ReviewChange, args), http.StatusOK)
+					if err := repository.ReadTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+						row, err := r.WorkItem(t.Context(), issue.ProjectID, issue.WorkItemID)
+						if err == nil && (stringValue(row.WorkflowStateName) != "Merging" || row.Revision != 2) {
+							return errors.New("existing review did not promote after canonical projection recovery")
+						}
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+				})
+				t.Run("one approval preserves another reviewers request", func(t *testing.T) {
+					target := target
+					issue, created, published := newReviewCase(t, "other-reviewer", "Review")
+					target.issue = issue
+					content := eventstore.NewContent(cfg.RunDetails)
+					for _, principal := range []string{"credential_admin", "credential_owner"} {
+						raw, err := json.Marshal(tracker.ChangeReview{ID: payloadNativeID(t.Context(), "review"), VersionID: published.Version.ID, Decision: "changes_requested", Body: "Example outstanding review", Actor: tracker.Actor{Kind: "human", PrincipalID: principal}, CreatedAt: clock})
+						if err != nil {
+							t.Fatal(err)
+						}
+						row, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: target.issue.OrganizationID, ChangeID: created.ChangeID, VersionID: new(published.Version.ID), Kind: "review", CreatedAt: clock}, raw)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := repository.WriteTenant(t.Context(), target.issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(t.Context(), row); return err }); err != nil {
+							t.Fatal(err)
+						}
+					}
+					args := operatortool.ChangeArguments{ProjectID: "project_example", ItemID: string(target.issue.WorkItemID), ChangeID: created.ChangeID, VersionID: published.Version.ID, ExpectedRevision: 2, RequestID: "partial-human-approval", Decision: "approved", Body: "Example approval"}
+					drainReviewProjection(t)
+					requireNativeStatus(t, changeCall("owner", operatortool.ReviewChange, args), http.StatusOK)
+					if err := repository.ReadTenant(t.Context(), target.issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+						row, err := r.WorkItem(t.Context(), "project_example", target.issue.WorkItemID)
+						if err == nil && (stringValue(row.WorkflowStateName) != "Review" || row.Revision != 1) {
+							return fmt.Errorf("outstanding other review was bypassed: %s/%d", stringValue(row.WorkflowStateName), row.Revision)
+						}
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					args.RequestID, args.Decision = "clear-other-review", "commented"
+					requireNativeStatus(t, changeCall("admin", operatortool.ReviewChange, args), http.StatusOK)
+					args.RequestID, args.Decision = "approve-other-review", "approved"
+					drainReviewProjection(t)
+					requireNativeStatus(t, changeCall("admin", operatortool.ReviewChange, args), http.StatusOK)
+					if err := repository.ReadTenant(t.Context(), target.issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+						row, err := r.WorkItem(t.Context(), "project_example", target.issue.WorkItemID)
+						if err == nil && (stringValue(row.WorkflowStateName) != "Merging" || row.Revision != 2) {
+							return fmt.Errorf("all current human approvals did not promote: %s/%d", stringValue(row.WorkflowStateName), row.Revision)
+						}
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+				})
+				t.Run("concurrent move invalidates skipped rework", func(t *testing.T) {
+					target := target
+					issue, created, published := newReviewCase(t, "concurrent-lane", "Todo")
+					target.issue = issue
+					var version eventstore.CollaborationVersion
+					if err := repository.ReadTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+						var err error
+						version, err = r.CollaborationVersion(t.Context(), string(issue.WorkItemID), 1)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					original := target.service.config.RunDetails
+					moved := false
+					probe := &changeReceiptReadProbe{DetailStore: original, key: version.PayloadObjectKey, before: func(ctx context.Context) error {
+						if moved {
+							return nil
+						}
+						moved = true
+						changed := issue
+						changed.State, changed.Revision = "Review", 2
+						raw, err := json.Marshal(changed)
+						if err != nil {
+							return err
+						}
+						snapshot, err := eventstore.NewContent(original).PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: 2}, raw)
+						if err != nil {
+							return err
+						}
+						return repository.WriteTenant(ctx, issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+							row, err := w.LockWorkItem(ctx, issue.ProjectID, issue.WorkItemID)
+							if err != nil {
+								return err
+							}
+							row.WorkflowStateName = new("Review")
+							if _, err := w.UpdateWorkItem(ctx, row); err != nil {
+								return err
+							}
+							_, err = w.CreateCollaborationVersion(ctx, snapshot)
+							return err
+						})
+					}}
+					target.service.config.RunDetails = probe
+					defer func() { target.service.config.RunDetails = original }()
+					args := operatortool.ChangeArguments{ProjectID: "project_example", ItemID: string(issue.WorkItemID), ChangeID: created.ChangeID, VersionID: published.Version.ID, ExpectedRevision: 2, RequestID: "concurrent-lane-review", Decision: "changes_requested", Body: "Example requested changes"}
+					response := changeCall("owner", operatortool.ReviewChange, args)
+					target.service.config.RunDetails = original
+					requireNativeStatus(t, response, http.StatusConflict)
+					if !moved || !probe.called {
+						t.Fatal("concurrent lane mutation did not reach the hydration boundary")
+					}
+					if err := repository.ReadTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+						row, err := r.Change(t.Context(), created.ChangeID)
+						if err != nil {
+							return err
+						}
+						if row.EvidenceSequence != 0 {
+							return errors.New("stale skipped-rework decision published review evidence")
+						}
+						comments, err := r.Comments(t.Context(), issue.ProjectID, issue.WorkItemID, 0, 10)
+						if err != nil {
+							return err
+						}
+						if len(comments) != 0 {
+							return errors.New("stale skipped-rework decision published instructions")
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+				})
+				for _, decision := range []string{"commented", "approved", "changes_requested"} {
+					drainReviewProjection(t)
+					var current eventstore.Change
+					if err := repository.ReadTenant(t.Context(), target.issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+						var err error
+						current, err = r.Change(t.Context(), created.ChangeID)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					review := operatortool.ChangeArguments{ProjectID: "project_example", ItemID: string(target.issue.WorkItemID), ChangeID: created.ChangeID, VersionID: published.Version.ID, ExpectedRevision: current.Revision, RequestID: "example-review-" + decision, Decision: decision, Body: "Example human review"}
+
+					if decision == "approved" {
+						var lease leasestore.Lease
+						if err := repository.WriteTenant(t.Context(), target.issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+							row, err := w.WorkItem(t.Context(), "project_example", target.issue.WorkItemID)
+							if err != nil {
+								return err
+							}
+							lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: row.ID, ExpectedRevision: row.Revision, MachineID: "machine_example", SessionID: "workflow_active", LeaseID: "workflow_active", TTL: time.Minute})
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+						active := review
+						active.RequestID += "-live-lease"
+						requireNativeStatus(t, changeCall("owner", operatortool.ReviewChange, active), http.StatusConflict)
+						if err := repository.ReadTenant(t.Context(), target.issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+							row, err := r.WorkItem(t.Context(), "project_example", target.issue.WorkItemID)
+							if err != nil {
+								return err
+							}
+							if stringValue(row.WorkflowStateName) != "Review" || row.Revision != 1 {
+								return errors.New("live-lease refusal mutated workflow")
+							}
+							stored, err := r.Change(t.Context(), created.ChangeID)
+							if err != nil {
+								return err
+							}
+							if stored.EvidenceSequence != current.EvidenceSequence {
+								return errors.New("live-lease refusal published review evidence")
+							}
+							if _, err := r.Receipt(t.Context(), "credential_owner", http.MethodPost+" "+versionPath+"/"+published.Version.ID+"/reviews", active.RequestID); !errors.Is(err, corestore.ErrNotFound) {
+								return fmt.Errorf("live-lease refusal wrote receipt: %v", err)
+							}
+							currentLease, err := r.Lease(t.Context(), lease.LeaseID)
+							if err != nil {
+								return err
+							}
+							if currentLease.ReleasedAt != nil || currentLease.FencingToken != lease.FencingToken {
+								return errors.New("live-lease refusal released or replaced current lease")
+							}
+							return nil
+						}); err != nil {
+							t.Fatal(err)
+						}
+						if err := repository.WriteTenant(t.Context(), target.issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+							_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, "released")
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					response := changeCall("owner", operatortool.ReviewChange, review)
+					requireNativeStatus(t, response, http.StatusOK)
+					var result operatortool.ChangeResult
+					decodeHubResponse(t, response, &result)
+					var value tracker.ChangeReview
+					if err := json.Unmarshal(result.Receipt, &value); err != nil || value.ID == "" || value.VersionID != published.Version.ID || value.Actor.Kind != "human" || value.Decision != decision {
+						t.Fatalf("human review lost canonical identity: %v", err)
+					}
+					replay := changeCall("owner", operatortool.ReviewChange, review)
+					requireNativeStatus(t, replay, http.StatusOK)
+					decodeHubResponse(t, replay, &repeated)
+					if !bytes.Equal(result.Receipt, repeated.Receipt) {
+						t.Fatal("review replay changed canonical evidence")
+					}
+					httpReplay := requestFor(target.service, "owner", versionPath+"/"+published.Version.ID+"/reviews", tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: review.RequestID}, ExpectedRevision: tracker.Revision(review.ExpectedRevision), ExpectedVersionID: review.VersionID, Decision: decision, Body: review.Body})
+					requireNativeStatus(t, httpReplay, http.StatusOK)
+					var httpReview tracker.ChangeReview
+					decodeHubResponse(t, httpReplay, &httpReview)
+					if httpReview.ID != value.ID {
+						t.Fatal("HTTP review replay created duplicate evidence")
+					}
+					if err := repository.ReadTenant(t.Context(), target.issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+						row, err := r.WorkItem(t.Context(), "project_example", target.issue.WorkItemID)
+						if err != nil {
+							return err
+						}
+						state, revision := "Review", int64(1)
+						if decision == "approved" {
+							state, revision = "Merging", 2
+						}
+						if decision == "changes_requested" {
+							state, revision = "Rework", 3
+						}
+						if stringValue(row.WorkflowStateName) != state || row.Revision != revision {
+							return fmt.Errorf("review workflow state=%s revision=%d, want %s/%d", stringValue(row.WorkflowStateName), row.Revision, state, revision)
+						}
+						if decision != "commented" && (row.DispatchGeneration <= history.DispatchGeneration || row.DispatchRequestedAt == nil) {
+							return errors.New("review transition omitted fresh dispatch intent")
+						}
+						current, err := r.Attempt(t.Context(), history.ID)
+						if err != nil {
+							return err
+						}
+						if !reflect.DeepEqual(current, history) {
+							return errors.New("human review modified historical successful attempt")
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if decision == "changes_requested" && !target.issue.Terminal {
+						var rows []corestore.Comment
+						var snapshot eventstore.CollaborationVersion
+						if err := repository.ReadTenant(t.Context(), target.issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+							var err error
+							rows, err = r.Comments(t.Context(), "project_example", target.issue.WorkItemID, 0, 10)
+							if err != nil {
+								return err
+							}
+							if len(rows) != 1 {
+								return fmt.Errorf("review instructions comments=%d, want1", len(rows))
+							}
+							snapshot, err = r.CollaborationVersion(t.Context(), rows[0].ID, rows[0].Revision)
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+						comment, err := target.service.hydrateCommentRecord(t.Context(), rows[0], snapshot)
+						if err != nil || comment.Sequence == 0 || comment.Sequence != rows[0].Sequence || !strings.Contains(comment.Body, review.Body) {
+							t.Fatalf("persisted review instructions are unreadable or lost sequence/body: %v", err)
+						}
+					}
+					for _, user := range []string{"member", "reporter", "reader"} {
+						requireNativeStatus(t, changeCall(user, operatortool.ReviewChange, review), http.StatusForbidden)
+					}
+				}
+				var current eventstore.Change
+				if err := repository.ReadTenant(t.Context(), target.issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					current, err = r.Change(t.Context(), created.ChangeID)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				secondary := operatortool.ChangeArguments{ProjectID: "project_example", ItemID: string(linked.WorkItemID), ChangeID: created.ChangeID, VersionID: published.Version.ID, ExpectedRevision: current.Revision, RequestID: "secondary-review", Decision: "changes_requested", Body: "Example wrong-target instructions"}
+				requireNativeStatus(t, changeCall("owner", operatortool.ReviewChange, secondary), http.StatusForbidden)
+			})
 			changeRole := func(role string) error {
 				return repository.WriteTenant(t.Context(), target.issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 					member, err := w.AccessMember(t.Context(), "owner")
@@ -1074,6 +1691,18 @@ func (p *changeReceiptReadProbe) ReadDetail(ctx context.Context, organization st
 type changeCreateProbeRepository struct {
 	tenantstore.Repository
 	before func(context.Context) error
+}
+
+type changeContentStoreProbe struct {
+	attachment.DetailStore
+	before func(context.Context) error
+}
+
+func (p *changeContentStoreProbe) StoreDetail(ctx context.Context, organization string, raw []byte) (attachment.ArchiveReference, error) {
+	if err := p.before(ctx); err != nil {
+		return attachment.ArchiveReference{}, err
+	}
+	return p.DetailStore.StoreDetail(ctx, organization, raw)
 }
 
 func (r *changeCreateProbeRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {

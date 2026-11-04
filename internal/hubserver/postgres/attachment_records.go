@@ -23,6 +23,10 @@ func (s *session) Attachment(ctx context.Context, project tracker.ProjectID, id 
 	r, err := scanAttachmentRecord(s.db.QueryRowContext(ctx, `SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND project_id=$2 AND id=$3`, s.organization, project, id))
 	return r, mapError(ctx, err)
 }
+func (s *session) LockAttachment(ctx context.Context, project tracker.ProjectID, id string) (attachmentstore.Record, error) {
+	r, err := scanAttachmentRecord(s.db.QueryRowContext(ctx, `SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND project_id=$2 AND id=$3 FOR SHARE`, s.organization, project, id))
+	return r, mapError(ctx, err)
+}
 func (s *session) AttachmentEvidence(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, attempt string, limit int) ([]attachmentstore.Record, error) {
 	if limit < 1 || limit > 201 {
 		return nil, corestore.ErrInvalidPage

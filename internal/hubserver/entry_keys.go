@@ -159,9 +159,15 @@ func (s *Service) entryKeyTools(ctx context.Context) ([]operatortool.Definition,
 		definition, _ := operatortool.Lookup(operatortool.ListChanges)
 		definitions = append(definitions, definition)
 	}
-	if _, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ResourceKind: "work_item", Action: operatortool.CreateChange}); err == nil {
-		definition, _ := operatortool.ChangeDefinition(operatortool.CreateChange)
-		definitions = append(definitions, definition)
+	for _, name := range []string{operatortool.CreateChange, operatortool.PublishChangeVersion, operatortool.ReviewChange} {
+		required := apikey.ScopeWrite
+		if name == operatortool.ReviewChange && s.config.Hosted != nil {
+			required = apikey.ScopeAdmin
+		}
+		if _, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: required, ResourceKind: "work_item", Action: name}); err == nil {
+			definition, _ := operatortool.ChangeDefinition(name)
+			definitions = append(definitions, definition)
+		}
 	}
 	supported := make([]operatortool.Definition, 0)
 	for _, definition := range definitions {
@@ -245,8 +251,12 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 		}
 		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ResourceKind: "comment", Action: name})
 		return err == nil, nil
-	case operatortool.CreateChange:
-		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ResourceKind: "work_item", Action: name})
+	case operatortool.CreateChange, operatortool.PublishChangeVersion, operatortool.ReviewChange:
+		required := apikey.ScopeWrite
+		if name == operatortool.ReviewChange && s.config.Hosted != nil {
+			required = apikey.ScopeAdmin
+		}
+		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: required, ResourceKind: "work_item", Action: name})
 		return err == nil, nil
 	case operatortool.ListChanges:
 		if _, found := operatortool.Lookup(name); !found {
@@ -261,7 +271,7 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 
 func entryKeyToolSupported(name string) bool {
 	switch name {
-	case "list_projects", "get_native_project", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, operatortool.AppBootstrapPayload, operatortool.MoveItem, operatortool.FileIssue, operatortool.AddComment, operatortool.ListComments, operatortool.ListChanges, operatortool.CreateChange, "list_threads", "get_thread":
+	case "list_projects", "get_native_project", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, operatortool.AppBootstrapPayload, operatortool.MoveItem, operatortool.FileIssue, operatortool.AddComment, operatortool.ListComments, operatortool.ListChanges, operatortool.CreateChange, operatortool.PublishChangeVersion, operatortool.ReviewChange, "list_threads", "get_thread":
 		return true
 	default:
 		return false

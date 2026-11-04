@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type hubOperatorExecutor struct{ service *Service }
@@ -154,15 +155,39 @@ func (s *Service) hubChangeAuthority(ctx context.Context, name string, raw json.
 	if args.ItemID == "" || d.Annotations.ReadOnly {
 		return ctx, app, nil
 	}
-	if name == operatortool.CreateChange && s.config.TenantRepository != nil {
+	if s.config.TenantRepository != nil && (name == operatortool.CreateChange || name == operatortool.PublishChangeVersion || name == operatortool.ReviewChange) {
 		owner, ok := app.(hubChangeApplication)
 		if !ok {
 			return ctx, nil, operatortool.ErrServiceUnavailable
 		}
-		if _, err := owner.authorized(ctx, args, true); err != nil {
+		owner.scope.action = name
+		if name == operatortool.ReviewChange {
+			if owner.scope.actor().Kind != "human" {
+				return ctx, nil, operatortool.ErrServiceUnavailable
+			}
+			if owner.scope.credential.Hosted != nil {
+				owner.scope.requireHostedAdmin = true
+			}
+		}
+		resolved, err := owner.authorized(ctx, args, true)
+		if err != nil {
 			return ctx, nil, hubSafeChangeError(fmt.Errorf("resolve change authority: %w", err))
 		}
-		return ctx, app, nil
+		if name != operatortool.CreateChange {
+			change, err := s.readChangeRecord(ctx, resolved, args.ItemID, args.ChangeID)
+			if err != nil {
+				return ctx, nil, hubSafeChangeError(fmt.Errorf("resolve change authority: %w", err))
+			}
+			if change.WorkItemID != tracker.NativeWorkItemID(args.ItemID) {
+				return ctx, nil, operatortool.ErrAccessDenied
+			}
+			if name == operatortool.ReviewChange {
+				if _, err := s.readChangeVersionRecord(ctx, resolved.organization, args.ChangeID, args.VersionID); err != nil {
+					return ctx, nil, hubSafeChangeError(err)
+				}
+			}
+		}
+		return ctx, owner, nil
 	}
 	value, err := app.ReadChange(ctx, readName, args)
 	if err != nil {
