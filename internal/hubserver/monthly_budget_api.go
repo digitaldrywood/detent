@@ -49,7 +49,7 @@ func (s *Service) updateMonthlyBudget(c echo.Context) error {
 	scope.requireHostedAdmin = true
 	c.Set("native_scope", scope)
 	if s.database.billingRepository != nil {
-		return s.nativeAPIError(c, ErrBillingBudgetUnavailable)
+		return s.updateMonthlyBudgetRecord(c, scope, request)
 	}
 	result, err := s.executeNativeMutation(c.Request().Context(), scope, nativeCommandOptions{OperationID: "PUT " + c.Request().URL.EscapedPath(), Feature: "collaboration"}, request.Mutation, request, updateMonthlyBudgetOperation(request))
 	if err != nil {
