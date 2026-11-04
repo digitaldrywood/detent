@@ -68,7 +68,12 @@ type preparedNativeRunEvent struct {
 	previousEvent   eventstore.Event
 }
 
-func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeScope, item string, request tracker.NativeRunEvent) (json.RawMessage, error) {
+func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeScope, item string, request tracker.NativeRunEvent) (result json.RawMessage, resultErr error) {
+	defer func() {
+		if errors.Is(resultErr, leasestore.ErrAttemptConflict) {
+			resultErr = nativeConflict(0)
+		}
+	}()
 	if s.config.NativeRunEvents == nil {
 		return nil, nativeRunEventStorageUnavailable()
 	}
@@ -401,7 +406,10 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		if !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		workItem, err := w.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+			return err
+		}
+		workItem, err := w.LockWorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
 		if err != nil {
 			return err
 		}

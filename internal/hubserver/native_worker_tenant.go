@@ -83,8 +83,18 @@ func (s *Service) releaseNativeLeaseTenant(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	err = s.config.TenantRepository.WriteTenant(c.Request().Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockWorkItemProject(c.Request().Context(), scope.project); err != nil {
+			return err
+		}
 		lease, err := w.Lease(c.Request().Context(), leaseID)
 		if err != nil {
+			return err
+		}
+		item, err := w.WorkItemByID(c.Request().Context(), scope.project, lease.IssueID)
+		if err != nil {
+			return err
+		}
+		if _, err := w.LockWorkItem(c.Request().Context(), scope.project, item.NativeID); err != nil {
 			return err
 		}
 		authority := NativeLeaseAuthority{Scope: scope, Lease: lease, Request: request, Operation: "release"}
@@ -146,6 +156,10 @@ func (s *Service) releaseNativeLeaseTenant(c echo.Context) error {
 }
 
 func (s *Service) prepareNativeLeaseCancellationTenant(ctx context.Context, scope nativeScope, leaseID string, request tracker.NativeLeaseMutation) (*preparedNativeLeaseCancellation, error) {
+	return s.prepareLeaseCancellationTenant(ctx, scope, leaseID, request, false)
+}
+
+func (s *Service) prepareLeaseCancellationTenant(ctx context.Context, scope nativeScope, leaseID string, request tracker.NativeLeaseMutation, human bool) (*preparedNativeLeaseCancellation, error) {
 	if s.runDetailStore() == nil {
 		return nil, nativeRunEventStorageUnavailable()
 	}
@@ -161,8 +175,14 @@ func (s *Service) prepareNativeLeaseCancellationTenant(ctx context.Context, scop
 			return err
 		}
 		authority := NativeLeaseAuthority{Scope: scope, Lease: lease, Request: request, Operation: "release"}
-		if err := s.config.NativeRunEvents.ValidateNativeLeaseMutation(ctx, r, &authority); err != nil {
-			return err
+		var validationErr error
+		if human {
+			validationErr = (tenantNativeRunEventParticipant{service: s}).validateNativeLeaseMutation(ctx, r, &authority, true)
+		} else {
+			validationErr = s.config.NativeRunEvents.ValidateNativeLeaseMutation(ctx, r, &authority)
+		}
+		if validationErr != nil {
+			return validationErr
 		}
 		attempt, err = r.LatestAttempt(ctx, lease.IssueID)
 		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, corestore.ErrNotFound) || errors.Is(err, leasestore.ErrAttemptConflict) {
@@ -211,7 +231,10 @@ func (s *Service) prepareNativeLeaseCancellationTenant(ctx context.Context, scop
 	data.Sequence = attempt.Sequence + 1
 	data.Outcome = "cancelled"
 	data.Handoff, data.ArtifactIDs = nil, nil
-	data.MachineID, data.SessionID, data.RunnerID = tracker.MachineID(lease.MachineID), lease.SessionID, scope.credential.Runner.RunnerID
+	data.MachineID, data.SessionID = tracker.MachineID(lease.MachineID), lease.SessionID
+	if !human {
+		data.RunnerID = scope.credential.Runner.RunnerID
+	}
 	now := s.config.now().UTC()
 	failure := nativeLeaseReleaseFailure(request.Reason, now)
 	data.TerminalFailure = &failure
