@@ -427,7 +427,8 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 			}
 		}
 	}
-	if credential.Hosted != nil && !s.appAllRunnerGrants(ctx, credential, projects...) {
+	organizationAdmin := runner.Scope == "organization" && (credential.HostedRole == "owner" || credential.HostedRole == "admin") && (credential.HostedKeyScope == "" || credential.HostedProjectAccess == hostedProjectsAll)
+	if credential.Hosted != nil && !organizationAdmin && !s.appAllRunnerGrants(ctx, credential, projects...) {
 		return runnerauth.Runner{}, nativeNotFound()
 	}
 	return runner, nil
@@ -522,24 +523,6 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 	for project := range change.ProjectRanks {
 		projects = append(projects, project)
 	}
-	if current.Scope == "organization" || change.Scope == "organization" {
-		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-			rows, err := reader.Projects(ctx, "", corestore.MaxPageSize)
-			if err != nil {
-				return err
-			}
-			if len(rows) == corestore.MaxPageSize {
-				return corestore.ErrInvalidPage
-			}
-			for _, project := range rows {
-				projects = append(projects, project.ID)
-			}
-			return nil
-		})
-		if err != nil {
-			return nil, projectRecordError(err)
-		}
-	}
 	slices.Sort(projects)
 	projects = slices.Compact(projects)
 	if len(projects) > corestore.MaxPageSize {
@@ -612,6 +595,13 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 	if identity.Revision != change.ExpectedRevision || current.Revision != identity.Revision {
 		return nil, nativeConflict(tracker.Revision(identity.Revision))
 	}
+	if change.CapacityLimit != current.CapacityLimit {
+		change.CapacityRequest = nil
+	}
+	if (change.CapacityLimit != current.CapacityLimit || current.CapacityRequiresApplication(change.CapacityLimit)) && change.CapacityLimit > 0 && freshCapacityConfig(current, s.config.now()) {
+		change.CapacityRequest = &runnerauth.CapacityRequest{ExpectedConfigRevision: current.CapacityConfig.Revision, Capacity: change.CapacityLimit}
+	}
+	identity.CapacityRequest = change.CapacityRequest
 	identity.Scope, identity.ProjectIDs = change.Scope, change.ProjectIDs
 	identity.DisplayName, identity.State, identity.Tags = change.DisplayName, change.State, change.Tags
 	identity.CapacityLimit, identity.MachineUse = int64(change.CapacityLimit), change.MachineUse

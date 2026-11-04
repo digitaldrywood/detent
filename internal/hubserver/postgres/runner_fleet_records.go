@@ -32,7 +32,7 @@ func (s *session) selectedFleetRecords(ctx context.Context, project tracker.Proj
 		args = append(args, runnerID)
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT r.organization_id,r.runner_id,r.machine_id,r.token_id,r.enrollment_id,r.scope,r.state,r.revision,r.tags,r.machine_use,r.isolation_tier,r.host_services,r.availability_timezone,r.availability_hard_deadline,r.operations,r.display_name,r.capacity_limit,r.reported_capacity,r.os,r.architecture,r.created_at,r.expires_at,r.last_heartbeat_at,
-coalesce(r.capacity_config_revision,''),coalesce(r.capacity_config_local_limit,0),coalesce(r.capacity_config_client_limit,0),coalesce(r.capacity_config_runtime_limit,0),coalesce(r.capacity_config_manageable,false),coalesce(r.capacity_config_constraint,''),r.capacity_config_observed_at,
+coalesce(r.capacity_config_revision,''),coalesce(r.capacity_config_local_limit,0),coalesce(r.capacity_config_client_limit,0),coalesce(r.capacity_config_runtime_limit,0),coalesce(r.capacity_config_manageable,false),coalesce(r.capacity_config_constraint,''),r.capacity_config_observed_at,r.capacity_request_revision,r.capacity_request_limit,r.capacity_request_backend,
 m.hostname,m.capacity,m.version,m.sprite_name,m.display_name,e.created_by,coalesce(nullif(t.hosted_user_id,''),membership.user_id,''),credential.revoked_at IS NOT NULL,credential.created_at,credential.expires_at,
 ARRAY(SELECT project_id FROM token_grants g WHERE g.organization_id=r.organization_id AND g.token_id=r.token_id ORDER BY project_id),
 ARRAY(SELECT window_spec FROM runner_availability_windows w WHERE w.organization_id=r.organization_id AND w.runner_id=r.runner_id ORDER BY position),
@@ -62,8 +62,9 @@ AND ($3='' OR (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHE
 		var tags, services, operations, projects, windows, slots, limits, ranks pq.StringArray
 		var slotValues, limitValues, rankValues pq.Int64Array
 		var capacity runnerauth.CapacityConfig
+		var application runnerauth.CapacityRequest
 		var observed, credentialExpires sql.NullTime
-		if err := rows.Scan(&identity.OrganizationID, &identity.RunnerID, &identity.MachineID, &identity.TokenID, &identity.EnrollmentID, &identity.Scope, &identity.State, &identity.Revision, &tags, &identity.MachineUse, &identity.IsolationTier, &services, &identity.Availability.Timezone, &identity.Availability.HardDeadline, &operations, &identity.DisplayName, &identity.CapacityLimit, &identity.ReportedCapacity, &identity.OS, &identity.Architecture, &identity.CreatedAt, &identity.ExpiresAt, &identity.LastHeartbeatAt, &capacity.Revision, &capacity.LocalLimit, &capacity.ClientLimit, &capacity.RuntimeLimit, &capacity.Manageable, &capacity.Constraint, &observed, &machine.Hostname, &machine.Capacity, &machine.Version, &machine.SpriteName, &machine.DisplayName, &record.OwnerPrincipalID, &record.OwnerUserID, &record.CredentialRevoked, &record.CredentialCreatedAt, &credentialExpires, &projects, &windows, &slots, &slotValues, &limits, &limitValues, &ranks, &rankValues); err != nil {
+		if err := rows.Scan(&identity.OrganizationID, &identity.RunnerID, &identity.MachineID, &identity.TokenID, &identity.EnrollmentID, &identity.Scope, &identity.State, &identity.Revision, &tags, &identity.MachineUse, &identity.IsolationTier, &services, &identity.Availability.Timezone, &identity.Availability.HardDeadline, &operations, &identity.DisplayName, &identity.CapacityLimit, &identity.ReportedCapacity, &identity.OS, &identity.Architecture, &identity.CreatedAt, &identity.ExpiresAt, &identity.LastHeartbeatAt, &capacity.Revision, &capacity.LocalLimit, &capacity.ClientLimit, &capacity.RuntimeLimit, &capacity.Manageable, &capacity.Constraint, &observed, &application.ExpectedConfigRevision, &application.Capacity, &application.Backend, &machine.Hostname, &machine.Capacity, &machine.Version, &machine.SpriteName, &machine.DisplayName, &record.OwnerPrincipalID, &record.OwnerUserID, &record.CredentialRevoked, &record.CredentialCreatedAt, &credentialExpires, &projects, &windows, &slots, &slotValues, &limits, &limitValues, &ranks, &rankValues); err != nil {
 			return nil, mapError(ctx, err)
 		}
 		if credentialExpires.Valid {
@@ -92,6 +93,12 @@ AND ($3='' OR (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHE
 		}
 		if len(ranks) > runnerstore.MaxRunnerProjectRanks {
 			return nil, runnerstore.ErrInvalidRecord
+		}
+		if application.ExpectedConfigRevision != "" {
+			if err := application.Validate(); err != nil {
+				return nil, corestore.ErrInvalidPage
+			}
+			identity.CapacityRequest = &application
 		}
 		if observed.Valid {
 			capacity.ObservedAt = observed.Time

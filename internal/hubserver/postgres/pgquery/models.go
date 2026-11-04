@@ -2559,6 +2559,9 @@ type RunnerIdentity struct {
 	CapacityConfigManageable   sql.NullBool
 	CapacityConfigConstraint   *string
 	CapacityConfigObservedAt   *time.Time
+	CapacityRequestRevision    string
+	CapacityRequestLimit       int32
+	CapacityRequestBackend     string
 }
 
 type RunnerIdentityEvent struct {

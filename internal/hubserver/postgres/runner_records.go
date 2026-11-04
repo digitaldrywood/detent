@@ -176,11 +176,12 @@ func (s *session) runnerIdentityRow(ctx context.Context, predicate string, value
 	var capacityLocal, capacityClient, capacityRuntime sql.NullInt64
 	var capacityManageable sql.NullBool
 	var capacityObserved sql.NullTime
-	query := `SELECT organization_id,runner_id,machine_id,token_id,enrollment_id,scope,state,revision,tags,machine_use,isolation_tier,host_services,availability_timezone,availability_hard_deadline,operations,display_name,capacity_limit,reported_capacity,os,architecture,created_at,expires_at,last_heartbeat_at,removed_at,capacity_config_revision,capacity_config_local_limit,capacity_config_client_limit,capacity_config_runtime_limit,capacity_config_manageable,capacity_config_constraint,capacity_config_observed_at FROM runner_identities WHERE organization_id=$1 AND ` + predicate
+	var application runnerauth.CapacityRequest
+	query := `SELECT organization_id,runner_id,machine_id,token_id,enrollment_id,scope,state,revision,tags,machine_use,isolation_tier,host_services,availability_timezone,availability_hard_deadline,operations,display_name,capacity_limit,reported_capacity,os,architecture,created_at,expires_at,last_heartbeat_at,removed_at,capacity_config_revision,capacity_config_local_limit,capacity_config_client_limit,capacity_config_runtime_limit,capacity_config_manageable,capacity_config_constraint,capacity_config_observed_at,capacity_request_revision,capacity_request_limit,capacity_request_backend FROM runner_identities WHERE organization_id=$1 AND ` + predicate
 	if !s.readOnly {
 		query += ` FOR UPDATE`
 	}
-	err := s.db.QueryRowContext(ctx, query, s.organization, value).Scan(&row.OrganizationID, &row.RunnerID, &machineID, &row.TokenID, &row.EnrollmentID, &row.Scope, &row.State, &row.Revision, &tags, &row.MachineUse, &row.IsolationTier, &hostServices, &row.Availability.Timezone, &row.Availability.HardDeadline, &operations, &row.DisplayName, &row.CapacityLimit, &row.ReportedCapacity, &row.OS, &row.Architecture, &row.CreatedAt, &row.ExpiresAt, &row.LastHeartbeatAt, &removedAt, &capacityRevision, &capacityLocal, &capacityClient, &capacityRuntime, &capacityManageable, &capacityConstraint, &capacityObserved)
+	err := s.db.QueryRowContext(ctx, query, s.organization, value).Scan(&row.OrganizationID, &row.RunnerID, &machineID, &row.TokenID, &row.EnrollmentID, &row.Scope, &row.State, &row.Revision, &tags, &row.MachineUse, &row.IsolationTier, &hostServices, &row.Availability.Timezone, &row.Availability.HardDeadline, &operations, &row.DisplayName, &row.CapacityLimit, &row.ReportedCapacity, &row.OS, &row.Architecture, &row.CreatedAt, &row.ExpiresAt, &row.LastHeartbeatAt, &removedAt, &capacityRevision, &capacityLocal, &capacityClient, &capacityRuntime, &capacityManageable, &capacityConstraint, &capacityObserved, &application.ExpectedConfigRevision, &application.Capacity, &application.Backend)
 	if err != nil {
 		return runnerstore.Identity{}, mapError(ctx, err)
 	}
@@ -197,6 +198,12 @@ func (s *session) runnerIdentityRow(ctx context.Context, predicate string, value
 			return runnerstore.Identity{}, corestore.ErrInvalidPage
 		}
 		row.CapacityConfig = &config
+	}
+	if application.ExpectedConfigRevision != "" {
+		if err := application.Validate(); err != nil {
+			return runnerstore.Identity{}, corestore.ErrInvalidPage
+		}
+		row.CapacityRequest = &application
 	}
 	return row, nil
 }
@@ -1216,7 +1223,14 @@ func (s *session) UpdateRunnerRouting(ctx context.Context, expectedRevision int6
 	if expectedRevision < 1 || row.Revision != expectedRevision {
 		return corestore.ErrRevisionConflict
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE runner_identities SET state=$4,revision=revision+1,tags=$5,machine_use=$6,isolation_tier=$7,host_services=$8,availability_timezone=$9,availability_hard_deadline=$10,scope=$11,display_name=$12,capacity_limit=$13 WHERE organization_id=$1 AND runner_id=$2 AND revision=$3 AND removed_at IS NULL`, row.OrganizationID, row.RunnerID, expectedRevision, row.State, pq.Array(row.Tags), row.MachineUse, row.IsolationTier, pq.Array(row.HostServices), row.Availability.Timezone, row.Availability.HardDeadline, row.Scope, row.DisplayName, row.CapacityLimit)
+	var application runnerauth.CapacityRequest
+	if row.CapacityRequest != nil {
+		application = *row.CapacityRequest
+		if err := application.Validate(); err != nil {
+			return runnerstore.ErrInvalidRecord
+		}
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE runner_identities SET state=$4,revision=revision+1,tags=$5,machine_use=$6,isolation_tier=$7,host_services=$8,availability_timezone=$9,availability_hard_deadline=$10,scope=$11,display_name=$12,capacity_limit=$13,capacity_request_revision=$14,capacity_request_limit=$15,capacity_request_backend=$16 WHERE organization_id=$1 AND runner_id=$2 AND revision=$3 AND removed_at IS NULL`, row.OrganizationID, row.RunnerID, expectedRevision, row.State, pq.Array(row.Tags), row.MachineUse, row.IsolationTier, pq.Array(row.HostServices), row.Availability.Timezone, row.Availability.HardDeadline, row.Scope, row.DisplayName, row.CapacityLimit, application.ExpectedConfigRevision, application.Capacity, application.Backend)
 	if err := updateOwned(ctx, result, err); err != nil {
 		if errors.Is(err, corestore.ErrNotFound) {
 			return corestore.ErrRevisionConflict
