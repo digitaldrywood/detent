@@ -156,7 +156,11 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 	}
 	create := func(user, id, state string) tracker.NativeIssue {
 		t.Helper()
-		response := request(user, base, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: id}, Title: "Example " + id, Body: workItemRecordBody, State: state, Type: "bug", Labels: []string{"example-label"}, Assignees: []string{"example-user"}, Priority: new(2)})
+		body := workItemRecordBody
+		if user == "reporter" {
+			body = reporterBugSections
+		}
+		response := request(user, base, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: id}, Title: "Example " + id, Body: body, State: state, Type: "bug", Labels: []string{"example-label"}, Assignees: []string{"example-user"}, Priority: new(2)})
 		requireNativeStatus(t, response, http.StatusOK)
 		var issue tracker.NativeIssue
 		decodeHubResponse(t, response, &issue)
@@ -485,15 +489,39 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, target := range []string{"Todo", "Cancelled"} {
-		requireNativeStatus(t, call("owner", move(changed, "active_"+target, target)), http.StatusConflict)
+	for _, test := range []struct {
+		target string
+		status int
+	}{{"Todo", http.StatusConflict}, {"Cancelled", http.StatusForbidden}} {
+		requireNativeStatus(t, call("owner", move(changed, "active_"+test.target, test.target)), test.status)
 	}
 	if err := repository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
 		lease, err := r.Lease(t.Context(), active.LeaseID)
 		if err == nil && lease.ReleasedAt != nil {
 			return fmt.Errorf("refusal released active lease")
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		attempt, err := r.LatestAttempt(t.Context(), lease.IssueID)
+		if err != nil {
+			return err
+		}
+		if attempt.Status != "running" || attempt.Sequence != 1 {
+			return fmt.Errorf("missing run evidence cancellation changed the active attempt")
+		}
+		row, err := r.WorkItem(t.Context(), "project_example", changed.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if row.Revision != int64(changed.Revision) || stringValue(row.WorkflowStateName) != changed.State {
+			return fmt.Errorf("refused transition changed the issue")
+		}
+		_, err = r.Receipt(t.Context(), "credential_owner", "POST /api/v2/organizations/org_startup/projects/project_example/work-items/"+string(issue.WorkItemID)+"/workflow", "active_Cancelled")
+		if !errors.Is(err, corestore.ErrNotFound) {
+			return fmt.Errorf("missing run evidence cancellation receipt: %v", err)
+		}
+		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
