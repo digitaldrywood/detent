@@ -1382,6 +1382,7 @@ type Machine struct {
 	RegisteredAt    time.Time
 	UpdatedAt       time.Time
 	SpriteName      string
+	RoutingRevision int64
 }
 
 type MessageReference struct {
