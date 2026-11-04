@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -227,8 +228,52 @@ func (s *Service) invalidAPIRequest(c echo.Context, err error) error {
 }
 
 func (s *Service) internalAPIError(c echo.Context, code string, message string, err error) error {
-	s.config.Logger.Error(message, append([]any{"error", err}, s.database.readTimeoutAttributes(err)...)...)
+	attributes := append([]any{"error", err}, s.database.readTimeoutAttributes(err)...)
+	attributes = append(attributes, postgresErrorAttributes(err)...)
+	s.config.Logger.Error(message, attributes...)
 	return c.JSON(http.StatusInternalServerError, apiErrorResponse{Code: code, Message: message})
+}
+
+func postgresErrorAttributes(err error) []any {
+	var postgresError *pq.Error
+	if !errors.As(err, &postgresError) || postgresError == nil {
+		return nil
+	}
+	attributes := make([]any, 0, 8)
+	state := string(postgresError.Code)
+	validState := len(state) == 5
+	for _, char := range state {
+		if (char < '0' || char > '9') && (char < 'A' || char > 'Z') {
+			validState = false
+		}
+	}
+	if validState {
+		attributes = append(attributes, "sqlstate", state)
+	}
+	if postgresError.Schema != "public" && postgresError.Schema != "platform" {
+		return attributes
+	}
+	attributes = append(attributes, "schema", postgresError.Schema)
+	if ordinaryPostgresIdentifier(postgresError.Table) {
+		attributes = append(attributes, "table", postgresError.Table)
+	}
+	if ordinaryPostgresIdentifier(postgresError.Column) {
+		attributes = append(attributes, "column", postgresError.Column)
+	}
+	return attributes
+}
+
+func ordinaryPostgresIdentifier(identifier string) bool {
+	if len(identifier) == 0 || len(identifier) > 63 {
+		return false
+	}
+	for index := range len(identifier) {
+		char := identifier[index]
+		if char != '_' && (char < 'a' || char > 'z') && (index == 0 || char < '0' || char > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) refusedAPIError(c echo.Context, status int, code, reason string, response any, attributes ...any) error {
