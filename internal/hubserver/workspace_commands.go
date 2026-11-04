@@ -40,21 +40,33 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope nativeScope,
 }
 
 func (s *Service) commandCreateAction(ctx context.Context, scope nativeScope, request projectActionRequest) (json.RawMessage, error) {
+	if s.config.TenantRepository != nil {
+		return s.mutateActionRecord(ctx, scope, "POST", "", request.Mutation, request)
+	}
 	return s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/actions"), Feature: "collaboration"}, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.applyCreateProjectAction(ctx, tx, scope, request, now)
 	})
 }
 func (s *Service) commandPatchAction(ctx context.Context, scope nativeScope, id string, request projectActionPatch) (json.RawMessage, error) {
+	if s.config.TenantRepository != nil {
+		return s.mutateActionRecord(ctx, scope, "PATCH", id, request.Mutation, request)
+	}
 	return s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: nativeOperation(scope, "PATCH", "/actions/"+url.PathEscape(id)), Feature: "collaboration"}, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.applyPatchProjectAction(ctx, tx, scope, id, request, now)
 	})
 }
 func (s *Service) commandRunAction(ctx context.Context, scope nativeScope, id string, request projectActionRunRequest) (json.RawMessage, error) {
+	if s.config.TenantRepository != nil {
+		return nil, projectActionsUnavailable("Project action execution requires a native workspace executor")
+	}
 	return s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/actions/"+url.PathEscape(id)+"/runs"), Feature: "collaboration"}, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.applyCreateProjectActionRun(ctx, tx, scope, id, request, now)
 	})
 }
 func (s *Service) commandDeleteAction(ctx context.Context, scope nativeScope, id string) (json.RawMessage, error) {
+	if s.config.TenantRepository != nil {
+		return s.mutateActionRecord(ctx, scope, "DELETE", id, tracker.Mutation{}, nil)
+	}
 	err := s.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
 		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
