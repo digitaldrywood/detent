@@ -1578,6 +1578,22 @@ type NativeComment struct {
 	RecordID             int64
 }
 
+type NativeDuplicateChallenge struct {
+	OrganizationID     tracker.OrganizationID
+	ProjectID          tracker.ProjectID
+	Token              string
+	PrincipalID        string
+	RequestID          string
+	ContentHash        string
+	PolicyHash         string
+	SourceSequence     int64
+	CandidateIds       []string
+	CandidateNumbers   []int64
+	CandidateRevisions []int64
+	CreatedAt          time.Time
+	ExpiresAt          time.Time
+}
+
 type NativePrPublication struct {
 	OrganizationID    tracker.OrganizationID
 	VersionID         string

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -139,56 +142,98 @@ func requireNativeIssueContractAtFiling(ctx context.Context, q nativeQueryer, sc
 	return nil
 }
 
-func (s *Service) validateWorkItemRecordFilingTenant(ctx context.Context, reader tenantstore.Reader, scope nativeScope, plan workItemRecordPlan) error {
-	if plan.issue.LinkedSource != nil && plan.issue.LinkedSource.Status != "complete" || strings.EqualFold(plan.issue.State, "Triage") || plan.issue.IssueContract != nil && plan.issue.IssueContract.Exempt || strings.Contains(strings.ToLower(plan.issue.Body), "detent:no-dispatch") {
-		return nil
-	}
-	revision, err := reader.ProjectPolicy(ctx, scope.project)
-	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+func (s *Service) validateWorkItemRecordFilingTenant(ctx context.Context, scope nativeScope, plan workItemRecordPlan) (policystore.Revision, bool, error) {
+	reporterCreate := scope.credential.HostedRole == "reporter" && plan.create
+	var revision policystore.Revision
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		var err error
+		revision, err = reader.ProjectPolicy(ctx, scope.project)
 		return err
+	})
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		return revision, false, err
+	}
+	found := err == nil
+	_, machine := issueorigin.Parse(plan.issue.Body)
+	exempt := !reporterCreate && (machine || plan.issue.LinkedSource != nil && plan.issue.LinkedSource.Status != "complete" || strings.EqualFold(plan.issue.State, "Triage") || plan.issue.IssueContract != nil && plan.issue.IssueContract.Exempt || strings.Contains(strings.ToLower(plan.issue.Body), "detent:no-dispatch"))
+	if exempt && (!plan.create || plan.project.Core.WorkflowSource == "") {
+		return revision, found, nil
 	}
 	descriptor := policy.Descriptor{}
-	if err == nil {
+	if found {
 		descriptor, err = eventstore.NewContent(s.runDetailStore()).ProjectPolicy(ctx, revision)
 		if err != nil {
-			return err
+			return revision, found, err
 		}
+	}
+	if plan.create {
+		if err := validateConfiguredWorkflowPolicy(plan.project, descriptor, found); err != nil {
+			return revision, found, err
+		}
+	}
+	if exempt {
+		return revision, found, nil
 	}
 	workflow := config.Workflow{Config: config.Default()}
 	if descriptor.ID != "" {
 		workflow, err = config.ApplyNativePolicy(workflow, descriptor)
 		if err != nil {
-			return policyMismatch(err.Error())
+			return revision, found, policyMismatch(err.Error())
 		}
 	}
 	target := workflow.Config.BacklogAdmission.TargetState
 	if target == "" {
 		target = "Todo"
 	}
-	if !strings.EqualFold(plan.issue.State, target) {
-		return nil
+	if !reporterCreate && !strings.EqualFold(plan.issue.State, target) {
+		return revision, found, nil
 	}
 	contract, err := config.ResolvePolicyIssueContract(descriptor)
 	if err != nil {
-		return err
+		return revision, found, err
 	}
-	if plan.issue.IssueContract != nil && plan.issue.IssueContract.ReleaseDelivery != nil {
-		return workItemStorageUnavailable()
-	}
-	evaluation := contract.Evaluate(nativeContractIssue(plan.issue))
-	if scope.credential.HostedRole == "reporter" && plan.create {
+	if reporterCreate {
 		reporterContracts, err := config.ResolveReporterContracts(contract.Context)
 		if err != nil {
-			return err
+			return revision, found, err
 		}
 		reporterContract := config.IssueContract{Sections: reporterContracts[plan.issue.Type]}
 		missing := reporterSectionsMissing(reporterContract.Evaluate(nativeContractIssue(plan.issue)).Missing, plan.issue.ReportContext)
 		if len(missing) > 0 {
-			return nativePublicInvalid("Add or complete these required Reporter sections: " + strings.Join(missing, ", "))
+			return revision, found, nativePublicInvalid("Add or complete these required Reporter sections: " + strings.Join(missing, ", "))
 		}
 	}
+	if strings.EqualFold(plan.issue.State, "Triage") {
+		return revision, found, nil
+	}
+	if !strings.EqualFold(plan.issue.State, target) {
+		return revision, found, nil
+	}
+	if plan.issue.IssueContract != nil && plan.issue.IssueContract.ReleaseDelivery != nil {
+		return revision, found, workItemStorageUnavailable()
+	}
+	evaluation := contract.Evaluate(nativeContractIssue(plan.issue))
 	if len(evaluation.Missing) > 0 {
-		return nativeWorkflowInvalid(strings.Join([]string{"Add or complete these required issue sections", strings.Join(evaluation.Missing, ", ")}, ": ") + ". File into Backlog/Triage to draft it first.")
+		return revision, found, nativeWorkflowInvalid(strings.Join([]string{"Add or complete these required issue sections", strings.Join(evaluation.Missing, ", ")}, ": ") + ". File into Backlog/Triage to draft it first.")
+	}
+	return revision, found, nil
+}
+
+func validateConfiguredWorkflowPolicy(project projectstore.Record, descriptor policy.Descriptor, found bool) error {
+	if project.Core.WorkflowSource == "" {
+		return nil
+	}
+	if !found || descriptor.Workflow == nil || descriptor.Validate() != nil {
+		return policyMismatch("The configured workflow requires its approved policy")
+	}
+	workflowRevision := descriptor.Workflow.Revision
+	if workflowRevision == "" {
+		workflowRevision = descriptor.SourceRevision
+	}
+	if descriptor.Workflow.Source != project.Core.WorkflowSource || workflowRevision != project.Core.WorkflowSourceRevision || !slices.EqualFunc(descriptor.Workflow.States, project.States, func(a, b policy.State) bool {
+		return a.Name == b.Name && a.Terminal == b.Terminal && a.Dispatchable == b.Dispatchable && a.OperatorOnly == b.OperatorOnly && slices.Equal(a.Transitions, b.Transitions)
+	}) {
+		return policyMismatch("The configured workflow differs from its approved policy")
 	}
 	return nil
 }

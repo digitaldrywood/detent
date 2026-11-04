@@ -23,7 +23,11 @@ import (
 func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
 	if s.config.TenantRepository != nil {
 		scope.action = operatortool.FileIssue
-		return s.executeWorkItemRecordMutation(ctx, scope, nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items", Feature: "collaboration"}, request.Mutation, request, "")
+		operation := "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items"
+		if request.ChallengeToken != "" {
+			operation += "/duplicate-confirmation"
+		}
+		return s.executeWorkItemRecordMutation(ctx, scope, nativeCommandOptions{OperationID: operation, Feature: "collaboration"}, request.Mutation, request, "")
 	}
 	if request.ScheduledFailure != nil {
 		return s.attributeScheduledFailure(ctx, scope, request)
@@ -183,6 +187,14 @@ func createNativeMachineIntakeTx(ctx context.Context, tx *sql.Tx, scope nativeSc
 	if err != nil {
 		return tracker.NativeIssue{}, err
 	}
+	request, err = normalizeNativeMachineIntake(scope, project.States, request)
+	if err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	return reportNativeMachineOccurrenceTx(ctx, tx, scope, request, now, terminalRepair)
+}
+
+func normalizeNativeMachineIntake(scope nativeScope, states []tracker.NativeState, request tracker.CreateIssue) (tracker.CreateIssue, error) {
 	origin, _ := issueorigin.Parse(request.Body)
 	canonical := issueorigin.DefectFingerprint(request.Body)
 	if canonical != "" {
@@ -192,12 +204,12 @@ func createNativeMachineIntakeTx(ctx context.Context, tx *sql.Tx, scope nativeSc
 		}
 		if string(scope.project) == issueorigin.DetentCloudProjectID {
 			backlog, todo := false, false
-			for _, state := range project.States {
+			for _, state := range states {
 				backlog = backlog || state.Name == "Backlog" && !state.Dispatchable && !state.Terminal && !state.OperatorOnly
 				todo = todo || state.Name == "Todo" && state.Dispatchable && !state.Terminal && !state.OperatorOnly
 			}
 			if !backlog || !todo {
-				return tracker.NativeIssue{}, nativePublicInvalid("Defect reporting requires nondispatchable Backlog and dispatchable Todo")
+				return request, nativePublicInvalid("Defect reporting requires nondispatchable Backlog and dispatchable Todo")
 			}
 			request.State = "Todo"
 			if request.Priority == nil || *request.Priority > 1 {
@@ -205,7 +217,7 @@ func createNativeMachineIntakeTx(ctx context.Context, tx *sql.Tx, scope nativeSc
 			}
 		}
 	}
-	return reportNativeMachineOccurrenceTx(ctx, tx, scope, request, now, terminalRepair)
+	return request, nil
 }
 
 func reportNativeMachineIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
