@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -158,6 +159,10 @@ func (s *Service) entryKeyTools(ctx context.Context) ([]operatortool.Definition,
 		definition, _ := operatortool.Lookup(operatortool.ListChanges)
 		definitions = append(definitions, definition)
 	}
+	if _, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ResourceKind: "work_item", Action: operatortool.CreateChange}); err == nil {
+		definition, _ := operatortool.ChangeDefinition(operatortool.CreateChange)
+		definitions = append(definitions, definition)
+	}
 	supported := make([]operatortool.Definition, 0)
 	for _, definition := range definitions {
 		if entryKeyToolSupported(definition.Name) {
@@ -240,6 +245,9 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 		}
 		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ResourceKind: "comment", Action: name})
 		return err == nil, nil
+	case operatortool.CreateChange:
+		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ResourceKind: "work_item", Action: name})
+		return err == nil, nil
 	case operatortool.ListChanges:
 		if _, found := operatortool.Lookup(name); !found {
 			return false, nil
@@ -253,7 +261,7 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 
 func entryKeyToolSupported(name string) bool {
 	switch name {
-	case "list_projects", "get_native_project", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, operatortool.AppBootstrapPayload, operatortool.MoveItem, operatortool.FileIssue, operatortool.AddComment, operatortool.ListComments, operatortool.ListChanges, "list_threads", "get_thread":
+	case "list_projects", "get_native_project", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, operatortool.AppBootstrapPayload, operatortool.MoveItem, operatortool.FileIssue, operatortool.AddComment, operatortool.ListComments, operatortool.ListChanges, operatortool.CreateChange, "list_threads", "get_thread":
 		return true
 	default:
 		return false
@@ -376,6 +384,9 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	}
 	result, err := (hostedOperatorExecutor{s}).Execute(ctx, operatortool.Call{Name: call.Name, Arguments: call.Arguments})
 	if err != nil {
+		if errors.Is(err, mutation.ErrConflict) {
+			return s.nativeAPIError(c, nativeConflict(0))
+		}
 		var request *operatortool.RequestError
 		if errors.As(err, &request) {
 			return s.refusedAPIError(c, http.StatusUnprocessableEntity, request.Code, request.Message, apiErrorResponse{Code: request.Code, Message: request.Message})

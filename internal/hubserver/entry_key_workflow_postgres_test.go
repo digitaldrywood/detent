@@ -17,6 +17,7 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
@@ -278,6 +279,201 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		t.Fatal("second tenant is not independently usable")
 	}
 	requireNativeStatus(t, call("owner", otherArgs), http.StatusForbidden)
+	t.Run("signed Change creation preserves tenant authority and HTTP replay", func(t *testing.T) {
+		for _, target := range []struct {
+			service *Service
+			issue   tracker.NativeIssue
+		}{{service, cached["completed"]}, {other, otherMoved}} {
+			for _, user := range []string{"owner", "admin", "member", "reporter", "reader"} {
+				catalog := requestFor(target.service, user, "/internal/v1/keys/catalog", map[string]any{})
+				requireNativeStatus(t, catalog, http.StatusOK)
+				var definitions []operatortool.Definition
+				decodeHubResponse(t, catalog, &definitions)
+				if entryKeyHasDefinition(definitions, operatortool.CreateChange) != (user != "reader" && user != "reporter") {
+					t.Fatalf("create_change catalog authorization incorrect for %s", user)
+				}
+			}
+			linkedPath := "/api/v2/organizations/" + string(target.issue.OrganizationID) + "/projects/project_example/work-items"
+			linkedResponse := requestFor(target.service, "owner", linkedPath, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "change-linked-item"}, Title: "Example linked issue", Body: workItemRecordBody, State: "Todo"})
+			requireNativeStatus(t, linkedResponse, http.StatusOK)
+			var linked tracker.NativeIssue
+			decodeHubResponse(t, linkedResponse, &linked)
+			args := operatortool.ChangeArguments{ProjectID: "project_example", ItemID: string(target.issue.WorkItemID), LinkedIssues: []tracker.NativeWorkItemID{linked.WorkItemID}, RequestID: "example-change", Title: "Example Change", Body: "Example discussion"}
+			invoke := func(user string, input operatortool.ChangeArguments) *httptest.ResponseRecorder {
+				return requestFor(target.service, user, "/internal/v1/keys/call", map[string]any{"name": operatortool.CreateChange, "arguments": input, "connection_id": "change_" + user})
+			}
+			response := invoke("owner", args)
+			requireNativeStatus(t, response, http.StatusOK)
+			var created operatortool.ChangeResult
+			decodeHubResponse(t, response, &created)
+			if created.ChangeID == "" || created.ProjectID != "project_example" || created.WorkItemID != string(target.issue.WorkItemID) || created.OrganizationID != string(target.issue.OrganizationID) {
+				t.Fatal("Change creation lost canonical identity or organization")
+			}
+			listed := requestFor(target.service, "owner", "/internal/v1/keys/call", map[string]any{"name": operatortool.ListChanges, "connection_id": "change_list", "arguments": map[string]any{"project_id": "project_example", "work_item_id": target.issue.WorkItemID}})
+			requireNativeStatus(t, listed, http.StatusOK)
+			var list operatortool.ChangeResult
+			decodeHubResponse(t, listed, &list)
+			if len(list.Changes) != 1 || list.Changes[0].ID != created.ChangeID || len(list.Changes[0].LinkedIssues) != 2 {
+				t.Fatal("typed Change list lost the newly created Change")
+			}
+			app := hubChangeApplication{service: target.service}
+			for _, name := range []string{operatortool.GetChange, operatortool.GetChangeVersion, operatortool.GetChangeReviewPolicy, operatortool.ArtifactReferences} {
+				if value, err := app.ReadChange(t.Context(), name, args); !errors.Is(err, operatortool.ErrServiceUnavailable) || value.Receipt != nil {
+					t.Fatalf("unsupported PostgreSQL read %s entered a legacy owner: %v", name, err)
+				}
+			}
+			replay := invoke("owner", args)
+			requireNativeStatus(t, replay, http.StatusOK)
+			var repeated operatortool.ChangeResult
+			decodeHubResponse(t, replay, &repeated)
+			if repeated.ChangeID != created.ChangeID || !bytes.Equal(repeated.Receipt, created.Receipt) {
+				t.Fatal("Change replay changed the canonical receipt")
+			}
+			path := "/api/v2/organizations/" + string(target.issue.OrganizationID) + "/projects/project_example/work-items/" + string(target.issue.WorkItemID) + "/changes"
+			httpReplay := requestFor(target.service, "owner", path, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: args.RequestID}, Title: args.Title, Body: args.Body, LinkedIssues: args.LinkedIssues})
+			requireNativeStatus(t, httpReplay, http.StatusOK)
+			var fromHTTP tracker.ChangeRequest
+			decodeHubResponse(t, httpReplay, &fromHTTP)
+			if fromHTTP.ID != created.ChangeID || fromHTTP.OrganizationID != target.issue.OrganizationID {
+				t.Fatal("HTTP replay created a second Change or crossed tenants")
+			}
+			changeRole := func(role string) error {
+				return repository.WriteTenant(t.Context(), target.issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					member, err := w.AccessMember(t.Context(), "owner")
+					if err != nil {
+						return err
+					}
+					member.Role = role
+					return w.UpdateAccessMember(t.Context(), member)
+				})
+			}
+			for _, replay := range []bool{false, true} {
+				input := args
+				if !replay {
+					input.RequestID = "revoked-new-change"
+				}
+				var before corestore.WorkItem
+				if err := repository.ReadTenant(t.Context(), target.issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					before, err = r.WorkItem(t.Context(), "project_example", target.issue.WorkItemID)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				func() {
+					target.service.config.TenantRepository = &projectUpdateBeforeWriteRepository{Repository: repository, before: func() error { return changeRole("reporter") }}
+					defer func() {
+						target.service.config.TenantRepository = repository
+						if err := changeRole("owner"); err != nil {
+							t.Error(err)
+						}
+					}()
+					requireNativeStatus(t, invoke("owner", input), http.StatusForbidden)
+				}()
+				if err := repository.ReadTenant(t.Context(), target.issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					item, err := r.WorkItem(t.Context(), "project_example", target.issue.WorkItemID)
+					if err != nil {
+						return err
+					}
+					if item.EventSequence != before.EventSequence {
+						return errors.New("revoked Change mutation appended an event")
+					}
+					if !replay {
+						_, err := r.Receipt(t.Context(), "credential_owner", http.MethodPost+" "+path, input.RequestID)
+						if !errors.Is(err, corestore.ErrNotFound) {
+							return fmt.Errorf("revoked creation left a receipt: %v", err)
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var receipt eventstore.Receipt
+			if err := repository.ReadTenant(t.Context(), target.issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				receipt, err = r.Receipt(t.Context(), "credential_owner", http.MethodPost+" "+path, args.RequestID)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			func() {
+				baseStore := target.service.config.RunDetails
+				read := &changeReceiptReadProbe{DetailStore: baseStore, key: receipt.PayloadObjectKey, before: func(ctx context.Context) error { return changeRole("reporter") }}
+				target.service.config.RunDetails = read
+				defer func() {
+					target.service.config.RunDetails = baseStore
+					if err := changeRole("owner"); err != nil {
+						t.Error(err)
+					}
+				}()
+				response := invoke("owner", args)
+				requireNativeStatus(t, response, http.StatusForbidden)
+				if !read.called || strings.Contains(response.Body.String(), created.ChangeID) {
+					t.Fatal("revoked receipt hydration leaked a Change or missed the interleaving")
+				}
+			}()
+			args.Title = "Different content"
+			requireNativeStatus(t, invoke("owner", args), http.StatusConflict)
+			for _, user := range []string{"reporter", "reader"} {
+				requireNativeStatus(t, invoke(user, args), http.StatusForbidden)
+			}
+			for _, user := range []string{"admin", "member"} {
+				input := args
+				input.RequestID = "change_" + user
+				response := invoke(user, input)
+				requireNativeStatus(t, response, http.StatusOK)
+				var value operatortool.ChangeResult
+				decodeHubResponse(t, response, &value)
+				if value.ChangeID == "" || value.ChangeID == created.ChangeID {
+					t.Fatal("authorized member did not create a distinct Change")
+				}
+			}
+			foreign := args
+			foreign.RequestID = "foreign-linked-change"
+			foreign.LinkedIssues = []tracker.NativeWorkItemID{otherMoved.WorkItemID}
+			if target.issue.OrganizationID == "org_other" {
+				foreign.LinkedIssues = []tracker.NativeWorkItemID{cached["completed"].WorkItemID}
+			}
+			requireNativeStatus(t, invoke("owner", foreign), http.StatusForbidden)
+			missing := args
+			missing.RequestID = "missing-linked-change"
+			missing.LinkedIssues = []tracker.NativeWorkItemID{"wi_missing"}
+			requireNativeStatus(t, invoke("owner", missing), http.StatusForbidden)
+			probed := 0
+			func() {
+				target.service.config.TenantRepository = &changeCreateProbeRepository{Repository: repository, before: func(ctx context.Context) error {
+					for _, id := range []tracker.NativeWorkItemID{target.issue.WorkItemID, linked.WorkItemID} {
+						tx, err := admin.BeginTx(ctx, nil)
+						if err != nil {
+							return err
+						}
+						var row int64
+						err = tx.QueryRowContext(ctx, "SELECT id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR NO KEY UPDATE NOWAIT", target.issue.OrganizationID, "project_example", id).Scan(&row)
+						rollbackErr := tx.Rollback()
+						var locked *pq.Error
+						if !errors.As(err, &locked) || locked.Code != "55P03" {
+							return fmt.Errorf("linked item was not locked before Change creation: %v", err)
+						}
+						if rollbackErr != nil {
+							return rollbackErr
+						}
+						probed++
+					}
+					return nil
+				}}
+				defer func() { target.service.config.TenantRepository = repository }()
+				input := args
+				input.RequestID = "locked-linked-change"
+				requireNativeStatus(t, invoke("owner", input), http.StatusOK)
+			}()
+			if probed != 2 {
+				t.Fatal("Change creation did not probe both linked row locks")
+			}
+			args.ProjectID = "project_foreign"
+			requireNativeStatus(t, invoke("owner", args), http.StatusForbidden)
+		}
+	})
 	issue := create("owner", "completed", "Done")
 	var historic leasestore.Attempt
 	var historicLease leasestore.Lease
@@ -856,4 +1052,42 @@ func TestWorkflowSafeError(t *testing.T) {
 			}
 		})
 	}
+}
+
+type changeReceiptReadProbe struct {
+	attachment.DetailStore
+	key    string
+	before func(context.Context) error
+	called bool
+}
+
+func (p *changeReceiptReadProbe) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	if ref.Key == p.key {
+		p.called = true
+		if err := p.before(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return p.DetailStore.ReadDetail(ctx, organization, ref)
+}
+
+type changeCreateProbeRepository struct {
+	tenantstore.Repository
+	before func(context.Context) error
+}
+
+func (r *changeCreateProbeRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	return r.Repository.WriteTenant(ctx, org, workload, func(w tenantstore.Writer) error { return write(changeCreateProbeWriter{Writer: w, before: r.before}) })
+}
+
+type changeCreateProbeWriter struct {
+	tenantstore.Writer
+	before func(context.Context) error
+}
+
+func (w changeCreateProbeWriter) CreateChange(ctx context.Context, value eventstore.Change) (eventstore.Change, error) {
+	if err := w.before(ctx); err != nil {
+		return eventstore.Change{}, err
+	}
+	return w.Writer.CreateChange(ctx, value)
 }

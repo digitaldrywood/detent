@@ -154,6 +154,16 @@ func (s *Service) hubChangeAuthority(ctx context.Context, name string, raw json.
 	if args.ItemID == "" || d.Annotations.ReadOnly {
 		return ctx, app, nil
 	}
+	if name == operatortool.CreateChange && s.config.TenantRepository != nil {
+		owner, ok := app.(hubChangeApplication)
+		if !ok {
+			return ctx, nil, operatortool.ErrServiceUnavailable
+		}
+		if _, err := owner.authorized(ctx, args, true); err != nil {
+			return ctx, nil, hubSafeChangeError(fmt.Errorf("resolve change authority: %w", err))
+		}
+		return ctx, app, nil
+	}
 	value, err := app.ReadChange(ctx, readName, args)
 	if err != nil {
 		return ctx, nil, hubSafeChangeError(fmt.Errorf("resolve change authority: %w", err))

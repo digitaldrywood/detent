@@ -67,6 +67,13 @@ func TestPostgresRunnerPublishesReviewsAndCompletesSuccessfully(t *testing.T) {
 	if err := native.Transport().Request(ctx, http.MethodPost, native.Scope()+"/leases/"+string(old.ID)+"/release", tracker.NativeLeaseMutation{FencingToken: old.FencingToken, Reason: "released"}, nil); err != nil {
 		t.Fatal(err)
 	}
+	replayed, err := native.CreateChange(ctx, old.WorkItemID, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "review_change"}, Title: "Example source"})
+	if err != nil || replayed.ID != change.ID {
+		t.Fatalf("released worker Change replay lost its committed receipt: id=%s error=%v", replayed.ID, err)
+	}
+	if _, err := native.CreateChange(ctx, old.WorkItemID, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "released_new_change"}, Title: "Example new source"}); err == nil {
+		t.Fatal("released worker lease created a new Change")
+	}
 	if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 		item, err := w.WorkItem(ctx, "prj_runner", old.WorkItemID)
 		if err != nil {

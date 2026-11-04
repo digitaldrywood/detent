@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -552,99 +553,171 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 func (s *Service) createChangeRecord(c echo.Context, request tracker.CreateChange) error {
 	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
 	scope := nativeRequestScope(c)
-	item := tracker.NativeWorkItemID(c.Param("item"))
+	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
+	raw, err := s.createChangeRecordCommand(ctx, scope, c.Param("item"), operation, request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, raw)
+}
+
+func (s *Service) createChangeRecordCommand(ctx context.Context, scope nativeScope, itemID, operation string, request tracker.CreateChange) (json.RawMessage, error) {
+	item := tracker.NativeWorkItemID(itemID)
 	if strings.TrimSpace(request.Title) == "" || len(request.Title) > 512 || len(request.Body) > 64<<10 || len(request.LinkedIssues) > 32 {
-		return s.nativeAPIError(c, nativePublicInvalid("Change requires a title up to 512 bytes, discussion up to 64 KiB, and at most 32 linked issues"))
+		return nil, nativePublicInvalid("Change requires a title up to 512 bytes, discussion up to 64 KiB, and at most 32 linked issues")
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return s.nativeAPIError(c, nativePublicInvalid("An idempotency key of at most 128 bytes is required"))
+		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+	}
+	linked := append([]tracker.NativeWorkItemID{item}, request.LinkedIssues...)
+	slices.Sort(linked)
+	linked = slices.Compact(linked)
+	if len(linked) > 32 {
+		return nil, nativePublicInvalid("A Change may link at most 32 work items")
 	}
 	hash, err := nativeCommandHash(request)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
 	content := eventstore.NewContent(s.runDetailStore())
-	replay, found, err := s.changeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash)
+	authorizeLinked := func(w tenantstore.Writer) error {
+		if err := s.authorizeWorkItemRecordScope(ctx, w, scope); err != nil {
+			return err
+		}
+		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+			return err
+		}
+		project, err := w.Project(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if project.DeletedAt != nil {
+			return corestore.ErrNotFound
+		}
+		for _, linkedID := range linked {
+			var item corestore.WorkItem
+			if scope.credential.Scope == apiScopeWorker {
+				item, err = w.WorkItem(ctx, scope.project, linkedID)
+			} else {
+				item, err = w.LockWorkItem(ctx, scope.project, linkedID)
+			}
+			if err != nil {
+				return err
+			}
+			if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(item.ActorPrincipalID)}) {
+				return corestore.ErrNotFound
+			}
+		}
+		return nil
+	}
+	replayRecord := func() (json.RawMessage, bool, error) {
+		var receipt eventstore.Receipt
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			receipt, err = r.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
+			return err
+		})
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, projectRecordError(err)
+		}
+		var raw json.RawMessage
+		var payloadErr error
+		if receipt.RequestHash == hash {
+			raw, payloadErr = content.Receipt(ctx, receipt)
+		}
+		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := authorizeLinked(w); err != nil {
+				return err
+			}
+			current, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
+			if err != nil {
+				return err
+			}
+			if current.RequestHash != hash {
+				return nativeConflict(0)
+			}
+			if current.ResponseExpired || current.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= current.ResponseReplayUntilNs {
+				return receiptstore.ErrExpired
+			}
+			if !reflect.DeepEqual(current, receipt) {
+				return nativeConflict(0)
+			}
+			return payloadErr
+		})
+		if err != nil {
+			return nil, false, projectRecordError(err)
+		}
+		return raw, true, nil
+	}
+	replay, found, err := replayRecord()
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if found {
-		return c.JSONBlob(http.StatusOK, replay)
-	}
-	if _, _, err := s.readWorkItemRecord(ctx, scope, string(item)); err != nil {
-		return s.nativeAPIError(c, err)
+		return replay, nil
 	}
 	var workerAttempt *leasestore.Attempt
 	if scope.credential.Scope == apiScopeWorker {
 		if len(request.LinkedIssues) != 0 {
-			return s.nativeAPIError(c, nativePublicInvalid("Worker changes may only link their leased work item"))
+			return nil, nativePublicInvalid("Worker changes may only link their leased work item")
 		}
 		if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 			attempt, _, err := s.runnerSessionFence(ctx, r, scope, runnersession.Mutation{LeaseID: request.LeaseID, FencingToken: request.FencingToken}, string(item), false)
 			workerAttempt = &attempt
 			return err
 		}); err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 	}
-	linked := append([]tracker.NativeWorkItemID{item}, request.LinkedIssues...)
-	slices.Sort(linked)
-	linked = slices.Compact(linked)
-	if len(linked) > 32 {
-		return s.nativeAPIError(c, nativePublicInvalid("A Change may link at most 32 work items"))
+	if _, _, err := s.readWorkItemRecord(ctx, scope, string(item)); err != nil {
+		return nil, err
 	}
 	for _, id := range linked {
 		if _, _, err := s.readWorkItemRecord(ctx, scope, string(id)); err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 	}
 	now, err := s.database.currentTime()
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	change := tracker.ChangeRequest{ID: payloadNativeID(ctx, "change"), OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, LinkedIssues: linked, Title: request.Title, Body: request.Body, Revision: 1, CreatedAt: payloadTimestamp(ctx, now), UpdatedAt: payloadTimestamp(ctx, now)}
 	raw, err := json.Marshal(change)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	changeRecord, err := content.PrepareChange(ctx, scope.organization, raw)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	receiptRaw, err := json.Marshal(change)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now}, receiptRaw)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	events := make([]eventstore.Event, 0, len(linked))
 	for _, linkedID := range linked {
 		eventValue := tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: linkedID, Type: "change.created", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: change.CreatedAt, Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID}}}
 		eventRaw, err := json.Marshal(eventValue)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		event, err := content.PrepareEvent(ctx, scope.organization, eventRaw)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		events = append(events, event)
 	}
 	for {
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+			if err := authorizeLinked(w); err != nil {
 				return err
-			}
-			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
-				return err
-			}
-			for _, linkedID := range linked {
-				if _, err := w.WorkItem(ctx, scope.project, linkedID); err != nil {
-					return err
-				}
 			}
 			if prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
 				if prior.RequestHash != hash {
@@ -663,6 +736,15 @@ func (s *Service) createChangeRecord(c echo.Context, request tracker.CreateChang
 					return corestore.ErrRevisionConflict
 				}
 			}
+			if s.database.plans() != nil {
+				currentTime, err := s.database.currentTime()
+				if err != nil {
+					return err
+				}
+				if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", currentTime); err != nil {
+					return err
+				}
+			}
 			if _, err := w.CreateChange(ctx, changeRecord); err != nil {
 				return err
 			}
@@ -676,21 +758,21 @@ func (s *Service) createChangeRecord(c echo.Context, request tracker.CreateChang
 					return err
 				}
 			}
-			_, err := w.PutReceipt(ctx, receipt)
+			_, err = w.PutReceipt(ctx, receipt)
 			return err
 		})
 		if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) {
-			replay, found, readErr := s.changeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash)
+			replay, found, readErr := replayRecord()
 			if readErr != nil {
-				return s.nativeAPIError(c, readErr)
+				return nil, readErr
 			}
 			if found {
-				return c.JSONBlob(http.StatusOK, replay)
+				return replay, nil
 			}
 			continue
 		}
 		if err != nil {
-			return s.nativeAPIError(c, projectRecordError(err))
+			return nil, projectRecordError(err)
 		}
 		break
 	}
@@ -698,7 +780,7 @@ func (s *Service) createChangeRecord(c echo.Context, request tracker.CreateChang
 	case s.boardRefresh <- struct{}{}:
 	default:
 	}
-	return c.JSONBlob(http.StatusOK, receiptRaw)
+	return receiptRaw, nil
 }
 
 func (s *Service) changeRecordReceipt(ctx context.Context, scope nativeScope, operation, key, hash string) (json.RawMessage, bool, error) {

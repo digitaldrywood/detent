@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -27,8 +28,23 @@ func (a hubChangeApplication) authorized(ctx context.Context, args operatortool.
 	if scope.credential.Scope != apiScopeOperator && scope.credential.Scope != apiScopeAdmin || scope.credential.Runner.RunnerID != "" {
 		return scope, operatortool.ErrAccessDenied
 	}
+	if a.service.config.TenantRepository != nil && a.service.config.AccessRepository == nil {
+		return scope, operatortool.ErrServiceUnavailable
+	}
 	if err := a.service.requireHostedProject(ctx, a.service.database.reader, scope, write); err != nil {
 		return scope, operatortool.ErrAccessDenied
+	}
+	if a.service.config.TenantRepository != nil {
+		project, err := a.service.readProjectRecord(ctx, scope)
+		if err != nil || project.Core.DeletedAt != nil {
+			return scope, operatortool.ErrAccessDenied
+		}
+		if args.ItemID != "" {
+			if _, _, err := a.service.readWorkItemRecord(ctx, scope, args.ItemID); err != nil {
+				return scope, operatortool.ErrAccessDenied
+			}
+		}
+		return scope, nil
 	}
 	if err := a.service.database.authorizeNativeProject(ctx, scope); err != nil {
 		return scope, operatortool.ErrAccessDenied
@@ -65,8 +81,11 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 			resultErr = fmt.Errorf("%s: %w", strings.ReplaceAll(name, "_", " "), resultErr)
 		}
 	}()
-	if a.service.config.TenantRepository != nil && name == operatortool.ListChanges {
-		return a.readChangeListRecords(ctx, args)
+	if a.service.config.TenantRepository != nil {
+		if name == operatortool.ListChanges {
+			return a.readChangeListRecords(ctx, args)
+		}
+		return operatortool.ChangeResult{}, operatortool.ErrServiceUnavailable
 	}
 
 	scope, err := a.authorized(ctx, args, false)
@@ -191,6 +210,25 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 	s := a.service
 	result := a.result(scope, args)
 	command := tracker.Mutation{IdempotencyKey: args.RequestID}
+	if s.config.TenantRepository != nil {
+		if name != operatortool.CreateChange {
+			return result, operatortool.ErrServiceUnavailable
+		}
+		scope.action = name
+		request := tracker.CreateChange{Mutation: command, Title: args.Title, Body: args.Body, LinkedIssues: args.LinkedIssues}
+		ctx = isolateContentContext(s.runDetailContext(ctx))
+		result.Receipt, err = s.createChangeRecordCommand(ctx, scope, args.ItemID, http.MethodPost+" "+result.URL+"/changes", request)
+		if err != nil {
+			return result, err
+		}
+		var change tracker.ChangeRequest
+		if err := json.Unmarshal(result.Receipt, &change); err != nil {
+			return result, err
+		}
+		args.ChangeID, result.ChangeID = change.ID, change.ID
+		result.URL = a.result(scope, args).URL
+		return result, nil
+	}
 	var input any
 	var op func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)
 	path := result.URL
