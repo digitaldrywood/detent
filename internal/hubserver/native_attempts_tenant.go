@@ -236,13 +236,13 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 		return tracker.NativeAttempt{}, err
 	}
 	if value.Data.Run == nil {
-		return tracker.NativeAttempt{}, artifact.ErrIntegrity
+		return tracker.NativeAttempt{}, fmt.Errorf("hydrate attempt run: %w", artifact.ErrIntegrity)
 	}
 	run := *value.Data.Run
 	attempt := snapshot.attempt
 	lease := snapshot.lease
 	if run.AttemptID != attempt.ID || run.RunID != attempt.RunID || run.LeaseID != tracker.LeaseID(lease.LeaseID) || run.FencingToken != tracker.FencingToken(lease.FencingToken) || run.Sequence != attempt.Sequence {
-		return tracker.NativeAttempt{}, artifact.ErrIntegrity
+		return tracker.NativeAttempt{}, fmt.Errorf("hydrate attempt identity: %w", artifact.ErrIntegrity)
 	}
 	result := tracker.NativeAttempt{NativeRunData: run, Status: attempt.Status, StartedAt: attempt.StartedAt, UpdatedAt: attempt.UpdatedAt,
 		WorkItemRevision: tracker.Revision(attempt.WorkItemRevision), DispatchGeneration: attempt.DispatchGeneration,
@@ -254,7 +254,7 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 		budget := 1 << 20
 		for _, record := range snapshot.evidenceRows {
 			if record.OrganizationID != attempt.OrganizationID || record.Metadata.ProjectID != string(snapshot.event.ProjectID) || record.Metadata.WorkItemID != string(snapshot.event.WorkItemID) || record.EvidenceAttemptID != attempt.ID || record.Metadata.Validate() != nil {
-				return tracker.NativeAttempt{}, artifact.ErrIntegrity
+				return tracker.NativeAttempt{}, fmt.Errorf("hydrate attempt evidence: %w", artifact.ErrIntegrity)
 			}
 			file := tracker.NativeEvidence{AttachmentID: record.Metadata.ID, Caption: record.EvidenceCaption, Reference: record.Metadata.Markdown(string(attempt.OrganizationID))}
 			raw, err := json.Marshal(file)
