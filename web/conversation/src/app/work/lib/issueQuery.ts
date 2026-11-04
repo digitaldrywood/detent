@@ -80,13 +80,17 @@ interface IssueHead {
 }
 
 function related(http: WorkHttp, projectId: string, workItemId: string, signal: AbortSignal, project?: NativeProject, issue?: NativeIssue) {
-  return Promise.all([
-    project?.project_id === projectId ? project : http.getProject(projectId, signal),
+  const projectRead = project?.project_id === projectId ? Promise.resolve(project) : http.getProject(projectId, signal);
+  const lists = Promise.all([
     issue?.archive_summary !== undefined ? Promise.resolve({ items: Schema.decodeUnknownSync(Schema.Array(NativeAttemptSchema))(issue.archive_summary.attempts), next_cursor: null }) : http.listAttempts(projectId, workItemId, 100, signal, undefined, "newest").catch((error: unknown) => { if (error instanceof ArchiveUnavailable) throw error; return null; }),
     http.listHistory({ projectId, itemId: workItemId, limit: 100, direction: "newest", view: "timeline", signal }).catch(() => null),
     http.listComments({ projectId, itemId: workItemId, limit: 100, direction: "newest", signal }).catch(() => ({ items: [] as readonly NativeComment[], next_cursor: null })),
     http.listChanges(projectId, workItemId).catch(() => [] as ChangeRequestList),
   ]);
+  return {
+    project: projectRead.then((value) => ({ value }), (error: unknown) => ({ error })),
+    lists: lists.then((value) => ({ value }), (error: unknown) => ({ error })),
+  };
 }
 
 export function readIssue(http: WorkHttp, workItemId: string, requestedChange: string | null, refreshProject = false, snapshot = false): Read<IssueData | null> {
@@ -96,25 +100,25 @@ export function readIssue(http: WorkHttp, workItemId: string, requestedChange: s
       const head = getQueryData<IssueHead>(headKey(http, workItemId));
       const known = cached?.issue.project_id ?? head?.project.project_id ?? projectHints.get(workItemId);
       const knownProject = refreshProject ? undefined : cached?.project ?? head?.project;
-      let issue: NativeIssue;
-      let rest: Awaited<ReturnType<typeof related>>;
-      if (known === undefined || snapshot) {
-        issue = await http.getWorkItemById(workItemId, signal);
-        rest = await related(http, issue.project_id, workItemId, signal,
-          issue.project_id === known ? knownProject : undefined, issue);
-      } else {
-        const [resolved, speculative] = await Promise.all([
-          http.getWorkItemById(workItemId, signal),
-          related(http, known, workItemId, signal, knownProject, cached?.issue ?? head?.issue).then((value) => ({ value }), (error: unknown) => ({ error })),
-        ]);
-        issue = resolved;
-        if (issue.project_id !== known) rest = await related(http, issue.project_id, workItemId, signal, undefined, issue);
-        else if ("error" in speculative) throw speculative.error;
-        else rest = speculative.value;
-      }
+      const speculative = known === undefined || snapshot ? undefined : related(http, known, workItemId, signal, knownProject, cached?.issue ?? head?.issue);
+      const issue = await http.getWorkItemById(workItemId, signal);
       const projectId = issue.project_id;
+      const reads = speculative !== undefined && projectId === known ? speculative : related(http, projectId, workItemId, signal,
+        projectId === known ? knownProject : undefined, issue);
+      const resolvedProject = await reads.project;
+      if ("error" in resolvedProject) throw resolvedProject.error;
+      const project = resolvedProject.value;
       hintIssueProject(workItemId, projectId);
-      const [project, attempts, history, comments, changes] = rest;
+      const core: IssueData = {
+        issue, project, attempts: [], history: [], comments: [], change: null, changes: [],
+        attemptsAvailable: false, historyAvailable: false,
+      };
+      signal.throwIfAborted();
+      partial(core);
+      const lists = await reads.lists;
+      signal.throwIfAborted();
+      if ("error" in lists) throw lists.error;
+      const [attempts, history, comments, changes] = lists.value;
       const first: IssueData = {
         issue, project, attempts: [...(attempts?.items ?? [])].sort((a, b) => Number(BigInt(a.fencing_token) - BigInt(b.fencing_token))),
         history: [...(history?.items ?? [])].sort((a, b) => Number(BigInt(a.aggregate_sequence) - BigInt(b.aggregate_sequence))),
@@ -123,7 +127,7 @@ export function readIssue(http: WorkHttp, workItemId: string, requestedChange: s
         attemptsAvailable: attempts !== null, historyAvailable: history !== null, change: null, changes: changes.map((record) => ({ record, detail: null, pending: true })),
       };
       if (changes.length === 0 || issue.archive_summary !== undefined && requestedChange === null) return { ...first, changes: first.changes.map((entry) => ({ ...entry, pending: false, deferred: true })) };
-      if (cached === undefined || cached === null) partial(first);
+      partial(first);
       const details = await Promise.all(
         changes.map(async (record) => ({
           record,

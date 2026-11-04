@@ -103,13 +103,18 @@ export function useIssue(
   apply: React.Dispatch<React.SetStateAction<IssueData | null>>;
 } {
   const key = issueKey(http, workItemId, requestedChange);
-  const owner = React.useMemo(() => ({ active: true, projectChanged: false, stream: null as ReturnType<typeof subscribeProjectQuery> | null,
+  const owner = React.useMemo(() => ({ active: true, projectVersion: 0, projectReadVersion: 0, coreReady: false, stream: null as ReturnType<typeof subscribeProjectQuery> | null,
     controller: null as AbortController | null }), [http, workItemId, requestedChange]);
   React.useEffect(() => {
     owner.active = true;
     return () => { owner.active = false; owner.controller?.abort(); owner.stream?.close(); owner.stream = null; };
   }, [owner]);
   const query = useQuery<IssueData | null>(key, async (signal, partial) => {
+    const supersede = () => {
+      const controller = owner.controller;
+      invalidateQueries(["issue", workItemId]);
+      controller?.abort();
+    };
     if (typeof globalThis.EventSource === "function" && owner.stream === null) {
       let project = issueProjectHint(http, workItemId);
       if (project === undefined) {
@@ -119,13 +124,20 @@ export function useIssue(
       }
       if (!owner.active || signal.aborted) throw new Error("Issue read cancelled");
       owner.stream = subscribeProjectQuery(http, project, {
-        topics: ["work_item", "human_action", "board", "lane"],
-        accepts: (event) => event.type === "lane" || eventNamesItem(event, workItemId),
-        apply: (event) => { owner.projectChanged ||= event.type === "lane"; owner.stream?.refresh(); },
+        topics: ["work_item", "human_action", "board"],
+        accepts: (event) => eventNamesItem(event, workItemId),
+        connection: { lane: () => {
+          owner.projectVersion++;
+          if (owner.coreReady) supersede();
+          else invalidateQueries(["issue", workItemId]);
+        } },
+        apply: supersede,
         refresh: () => invalidateQueries(["issue", workItemId]),
-        restart: () => { owner.projectChanged = true; owner.controller?.abort(); invalidateQueries(["issue", workItemId]); },
+        restart: () => { owner.projectVersion++; supersede(); },
       });
     }
+    const projectVersion = owner.projectVersion;
+    owner.coreReady = false;
     const snapshot = owner.stream?.beginSnapshot();
     const controller = new AbortController();
     owner.controller = controller;
@@ -137,10 +149,21 @@ export function useIssue(
       if (readSignal.aborted) cancel();
     });
     try {
-      const result = await Promise.race([readIssue(http, workItemId, requestedChange, owner.projectChanged, owner.stream !== null)(readSignal,
-        (next) => { if (owner.active && !readSignal.aborted && snapshot?.current() !== false) partial(next); }), aborted]);
-      if (!owner.active || snapshot?.current() === false) throw new QuerySuperseded("Issue snapshot superseded");
-      owner.projectChanged = false;
+      const result = await Promise.race([readIssue(http, workItemId, requestedChange, projectVersion !== owner.projectReadVersion, owner.stream !== null)(readSignal,
+        (next) => {
+          if (!owner.active || readSignal.aborted || snapshot?.current() === false) return;
+          partial(next);
+          if (!owner.coreReady && next !== null) {
+            owner.coreReady = true;
+            owner.projectReadVersion = projectVersion;
+            snapshot?.complete(next.issue.change_sequence);
+            if (owner.projectVersion !== projectVersion) {
+              invalidateQueries(["issue", workItemId]);
+              controller.abort();
+            }
+          }
+        }), aborted]);
+      if (!owner.active || readSignal.aborted || snapshot?.current() === false) throw new QuerySuperseded("Issue snapshot superseded");
       setQueryData(key, result);
       snapshot?.complete(result?.issue.change_sequence);
       return result;

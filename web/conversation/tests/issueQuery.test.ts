@@ -51,8 +51,9 @@ describe("issue first paint", () => {
     const data = await readIssue(http, workItemId, null)(new AbortController().signal, (value) => painted.push(value));
     const firstPaint = calls.filter((entry) => entry.name !== "change" && entry.project !== "project_old");
     expect(new Set(firstPaint.map((entry) => entry.wave)).size).toBe(waves);
-    expect(painted).toHaveLength(1);
-    expect(painted[0]?.changes[0]?.pending).toBe(true);
+    expect(painted[0]?.issue.work_item_id).toBe(workItemId);
+    expect(painted[0]?.project.project_id).toBe("project_a");
+    expect(painted.at(-1)?.changes[0]?.pending).toBe(true);
     const detail = calls.find((entry) => entry.name === "change")!;
     expect(detail.wave).toBeGreaterThan(Math.max(...firstPaint.map((entry) => entry.wave)));
     expect(data?.change).not.toBeNull();
