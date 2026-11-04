@@ -342,6 +342,11 @@ func (c *Client) requestOnceWithClient(ctx context.Context, httpClient *http.Cli
 	return c.requestWithToken(ctx, httpClient, method, path, headers, input, output, token)
 }
 
+type responseWithHeaders struct {
+	value  any
+	header http.Header
+}
+
 func (c *Client) requestWithToken(ctx context.Context, httpClient *http.Client, method, path string, headers http.Header, input, output any, token string) error {
 	var body io.Reader
 	stream, streaming := input.(io.Reader)
@@ -400,6 +405,10 @@ func (c *Client) requestWithToken(ctx context.Context, httpClient *http.Client, 
 			return errors.Join(ErrUnavailable, apiErr)
 		}
 		return apiErr
+	}
+	if result, ok := output.(*responseWithHeaders); ok {
+		result.header = response.Header.Clone()
+		output = result.value
 	}
 	if output == nil || response.StatusCode == http.StatusNoContent {
 		return nil

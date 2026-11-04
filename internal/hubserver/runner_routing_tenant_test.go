@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
+	hubapi "github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -105,6 +107,9 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, err := admin.ExecContext(t.Context(), `UPDATE machines SET routing_revision=CASE WHEN id='machine_one' THEN 7 ELSE 9 END`); err != nil {
+		t.Fatal(err)
+	}
 	now = asOf.Add(time.Second)
 	e := echo.New()
 	service.registerPostgresRoutes(e)
@@ -157,7 +162,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 				}
 				for _, got := range runners {
 					project := tracker.ProjectID("project_" + tc.id)
-					if got.RunnerID != "runner_"+tc.id || got.OrganizationID != tracker.OrganizationID(org) || got.Hostname != org+"-"+tc.id || got.CapacityLimit != 3 || got.HostCapacity != 5 || got.HostUsed != 1 || got.Used != 1 || got.ProjectUsed[project] != 1 || got.ProjectRanks[project] != 7 || got.ProjectCapacityLimits[project] != 2 || got.CapacityConfig == nil {
+					if got.RunnerID != "runner_"+tc.id || got.OrganizationID != tracker.OrganizationID(org) || got.Hostname != org+"-"+tc.id || got.CapacityLimit != 3 || got.HostCapacity != 5 || got.HostRevision != map[string]int64{"one": 7, "two": 9}[tc.id] || got.HostUsed != 1 || got.Used != 1 || got.ProjectUsed[project] != 1 || got.ProjectRanks[project] != 7 || got.ProjectCapacityLimits[project] != 2 || got.CapacityConfig == nil {
 						t.Fatalf("fleet facts=%+v", got)
 					}
 					if len(got.Leases) != 1 || got.Leases[0].ProjectID != project || got.Leases[0].ProviderReservation == nil || len(got.ProviderCapacity) != 1 || got.ProviderCapacity[0].Used != 2 || got.ProviderCapacity[0].MaxConcurrent != 3 {
@@ -204,6 +209,47 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 					if err := json.Unmarshal(rec.Body.Bytes(), &runners); err != nil || len(runners) != 51 {
 						t.Fatalf("large page count=%d error=%v", len(runners), err)
 					}
+				}
+			}
+			var pageMu sync.Mutex
+			var pages []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				pageMu.Lock()
+				pages = append(pages, r.URL.RawQuery)
+				pageMu.Unlock()
+				hosted.ServeHTTP(w, r)
+			}))
+			defer server.Close()
+			client, err := hubapi.New(hubapi.Config{URL: server.URL, TokenSource: func() string { return org + "_list" }, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			adapter, err := hubapi.NewFleetClient(client, tracker.OrganizationID(org), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fleet, err := adapter.Fleet(t.Context())
+			if err != nil || len(fleet.Runners) != 51 || !fleet.Editable {
+				t.Fatalf("consumer fleet: count=%d editable=%v error=%v", len(fleet.Runners), fleet.Editable, err)
+			}
+			pageMu.Lock()
+			observedPages := slices.Clone(pages)
+			pageMu.Unlock()
+			if !slices.Equal(observedPages, []string{"limit=50&offset=0", "limit=50&offset=50"}) {
+				t.Fatalf("consumer pages=%v", observedPages)
+			}
+			seen := map[string]bool{}
+			for _, runner := range fleet.Runners {
+				if seen[runner.RunnerID] || runner.OrganizationID != tracker.OrganizationID(org) {
+					t.Fatalf("duplicate or cross-organization runner: %+v", runner)
+				}
+				seen[runner.RunnerID] = true
+				wantRevision := int64(7)
+				if runner.MachineID == "machine_two" {
+					wantRevision = 9
+				}
+				if runner.HostRevision != wantRevision {
+					t.Fatalf("consumer host revision=%d want=%d", runner.HostRevision, wantRevision)
 				}
 			}
 			req := httptest.NewRequest(http.MethodGet, "/api/v2/organizations/org_other/runners", nil)

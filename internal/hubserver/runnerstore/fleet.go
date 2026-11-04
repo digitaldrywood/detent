@@ -29,6 +29,7 @@ type FleetLease struct {
 }
 
 type FleetRecord struct {
+	HostRevision        int64
 	OwnerPrincipalID    string
 	OwnerUserID         string
 	CredentialRevoked   bool

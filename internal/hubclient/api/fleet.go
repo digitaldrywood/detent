@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"strconv"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -45,9 +46,27 @@ func (f *FleetClient) Fleet(ctx context.Context) (runnerauth.Fleet, error) {
 		result.Runners = append(result.Runners, runner)
 		return result, nil
 	}
-	err := f.client.request(ctx, http.MethodGet, f.base()+"/runners", nil, &result.Runners)
-	result.Editable = err == nil
-	return result, err
+	for offset := 0; ; {
+		var page []runnerauth.Runner
+		response := responseWithHeaders{value: &page}
+		if err := f.client.request(ctx, http.MethodGet, f.base()+"/runners?limit=50&offset="+strconv.Itoa(offset), nil, &response); err != nil {
+			return runnerauth.Fleet{}, err
+		}
+		if len(page) > 50 {
+			return runnerauth.Fleet{}, errors.New("Hub fleet page exceeds requested limit")
+		}
+		result.Runners = append(result.Runners, page...)
+		next := response.header.Get("X-Next-Offset")
+		if next == "" {
+			result.Editable = true
+			return result, nil
+		}
+		value, err := strconv.Atoi(next)
+		if err != nil || value <= offset || value != offset+len(page) || value > 100000 {
+			return runnerauth.Fleet{}, errors.New("Hub fleet pagination is invalid")
+		}
+		offset = value
+	}
 }
 
 func (f *FleetClient) UpdateRunner(ctx context.Context, id string, change runnerauth.RoutingChange) error {

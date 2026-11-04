@@ -207,6 +207,7 @@ export function makeAccountApi(options: AccountApiOptions) {
     path: string,
     body?: unknown,
     signal?: AbortSignal,
+    responseHeaders?: (headers: Headers) => void,
   ): Promise<A> {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (body !== undefined && !(body instanceof FormData)) headers["Content-Type"] = "application/json";
@@ -237,6 +238,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       }
     }
     if (!response.ok) throw failure(response.status, parsed);
+    responseHeaders?.(response.headers);
     if (schema === null) return undefined as A;
     try {
       return Schema.decodeUnknownSync(schema)(parsed ?? {});
@@ -558,7 +560,21 @@ export function makeAccountApi(options: AccountApiOptions) {
         ttl_seconds: input.ttlSeconds ?? 900,
       }),
     removeRunner: (runner: string) => send(Empty, "DELETE", `${base}/runners/${encodeURIComponent(runner)}`),
-    runners: () => send(Schema.Array(Schema.Unknown), "GET", `${base}/runners`),
+    runners: async () => {
+      const runners: unknown[] = [];
+      for (let offset = 0; ;) {
+        let next = "";
+        const page = await send(Schema.Array(Schema.Unknown), "GET", `${base}/runners?limit=50&offset=${offset}`, undefined, undefined, (headers) => { next = headers.get("X-Next-Offset") ?? ""; });
+        if (page.length > 50) throw new AccountError({ status: 502, code: "invalid", message: "Hub fleet page exceeds requested limit" });
+        runners.push(...page);
+        if (next === "") return runners;
+        const value = Number(next);
+        if (!Number.isSafeInteger(value) || value <= offset || value !== offset + page.length || value > 100000) {
+          throw new AccountError({ status: 502, code: "invalid", message: "Hub fleet pagination is invalid" });
+        }
+        offset = value;
+      }
+    },
     runnerRouting: (runner: string) => send(Schema.Record(Schema.String, Schema.Unknown), "GET", `${base}/runners/${encodeURIComponent(runner)}/routing`),
     /**
      * Routing is a read-modify-write: only the tags come from the form, and

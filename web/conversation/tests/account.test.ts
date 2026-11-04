@@ -638,3 +638,27 @@ describe("support and the organization switch", () => {
     expect((failure as AccountError).status).toBe(404);
   });
 });
+
+describe("runner list pagination", () => {
+  it("follows every page before returning the fleet", async () => {
+    const requests: string[] = [];
+    const client = makeAccountApi({ origin: "http://example.test", apiBase: "/api/v2/organizations/org_example", csrfToken: "", fetch: async (input) => {
+      requests.push(String(input));
+      const offset = Number(new URL(String(input)).searchParams.get("offset"));
+      const page = Array.from({ length: offset === 0 ? 50 : 1 }, (_, i) => ({ runner_id: `runner_${offset + i}` }));
+      return new Response(JSON.stringify(page), { headers: offset === 0 ? { "X-Next-Offset": "50" } : {} });
+    } });
+    expect(await client.runners()).toHaveLength(51);
+    expect(requests.map((url) => new URL(url).search)).toEqual(["?limit=50&offset=0", "?limit=50&offset=50"]);
+  });
+
+  it.each(["0", "invalid", "2", "100001"])("rejects invalid continuation %s", async (next) => {
+    let calls = 0;
+    const client = makeAccountApi({ origin: "http://example.test", apiBase: "/api/v2/organizations/org_example", csrfToken: "", fetch: async () => {
+      calls++;
+      return new Response('[{"runner_id":"runner_example"}]', { headers: { "X-Next-Offset": next } });
+    } });
+    await expect(client.runners()).rejects.toMatchObject({ code: "invalid" });
+    expect(calls).toBe(1);
+  });
+});
