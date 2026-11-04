@@ -156,7 +156,7 @@ func (s *session) ChangeReviewEvidence(ctx context.Context, change, version stri
 	if before.CurrentVersionID == nil || *before.CurrentVersionID != version || before.EvidenceSequence != through || before.ReviewSummarySequence != through {
 		return nil, false, corestore.ErrRevisionConflict
 	}
-	sequences, err := s.queries.RecordCurrentChangeReviewSequences(ctx, pgquery.RecordCurrentChangeReviewSequencesParams{OrganizationID: s.organization, ChangeID: change, VersionID: version, ReviewingActor: actor})
+	sequences, err := s.queries.RecordCurrentChangeReviewSequences(ctx, pgquery.RecordCurrentChangeReviewSequencesParams{OrganizationID: s.organization, ChangeID: change, VersionID: version, ReviewingActor: actor, Through: through})
 	if err != nil {
 		return nil, false, mapError(ctx, err)
 	}

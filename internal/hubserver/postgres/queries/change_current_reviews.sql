@@ -8,9 +8,17 @@ WITH selected AS MATERIALIZED (
   ORDER BY h.evidence_sequence DESC LIMIT 1
  ) current
  UNION ALL
+ SELECT latest.sequence FROM (VALUES ('validator'),('implementation'),('security_audit')) roles(review_kind)
+ CROSS JOIN LATERAL (
+  SELECT e.sequence FROM change_evidence e
+  WHERE e.organization_id=sqlc.arg(organization_id) AND e.change_id=sqlc.arg(change_id) AND e.version_id=sqlc.arg(version_id)
+  AND e.kind='review' AND NOT e.review_landing AND e.review_kind=roles.review_kind AND e.sequence<=sqlc.arg(through)
+  ORDER BY e.sequence DESC LIMIT 1
+ ) latest
+ UNION ALL
  SELECT h.evidence_sequence FROM current_change_reviews h
  WHERE h.organization_id=sqlc.arg(organization_id) AND h.change_id=sqlc.arg(change_id) AND h.version_id=sqlc.arg(version_id)
- AND h.review_kind IN ('validator','implementation','security_audit','security_audit_failure') AND h.actor_key=''
+ AND h.review_kind='security_audit_failure' AND h.actor_key=''
 )
 SELECT DISTINCT evidence_sequence FROM selected ORDER BY evidence_sequence;
 

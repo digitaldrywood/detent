@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -20,11 +21,14 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -1112,7 +1116,7 @@ func TestChangeSummaryVisitsCurrentActorsInsteadOfReviewHistory(t *testing.T) {
 						}
 						probe := &searchPlanProbe{DBTX: tx}
 						queries := pgquery.New(probe)
-						args := pgquery.RecordCurrentChangeReviewSequencesParams{OrganizationID: org, ChangeID: fmt.Sprintf("change_current_%d", actors), VersionID: fmt.Sprintf("version_current_%d", actors), ReviewingActor: actor}
+						args := pgquery.RecordCurrentChangeReviewSequencesParams{OrganizationID: org, ChangeID: fmt.Sprintf("change_current_%d", actors), VersionID: fmt.Sprintf("version_current_%d", actors), ReviewingActor: actor, Through: 30001}
 						sequences, err := queries.RecordCurrentChangeReviewSequences(t.Context(), args)
 						if err != nil {
 							t.Fatal(err)
@@ -1147,18 +1151,7 @@ func TestChangeSummaryVisitsCurrentActorsInsteadOfReviewHistory(t *testing.T) {
 							if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
 								t.Fatalf("decode review lookup plan: %v", err)
 							}
-							var visits func(searchPlanNode) float64
-							visits = func(node searchPlanNode) float64 {
-								var count float64
-								if node.Relation == "change_evidence" || node.Relation == "current_change_reviews" {
-									count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
-								}
-								for _, child := range node.Plans {
-									count += visits(child)
-								}
-								return count
-							}
-							visited += visits(plans[0].Plan)
+							visited += currentReviewLookupVisits(plans[0].Plan)
 							t.Logf("current actors=%d historical reviews=30000 cumulative visits=%.0f plan=%s", actors, visited, raw)
 						}
 						if visited > 32 {
@@ -1185,6 +1178,85 @@ func TestChangeSummaryVisitsCurrentActorsInsteadOfReviewHistory(t *testing.T) {
 	}
 }
 
+func currentReviewLookupVisits(node searchPlanNode) float64 {
+	var count float64
+	if node.Relation == "change_evidence" || node.Relation == "current_change_reviews" {
+		count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
+	}
+	for _, child := range node.Plans {
+		count += currentReviewLookupVisits(child)
+	}
+	return count
+}
+
+func TestMachineReviewLookupsSeekPastHistoryAndLandingRows(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedRepository(t, repository, org)
+		f := seedHistory(t, repository, org, "machine_plan")
+		for index, kind := range []string{"validator", "implementation", "security_audit"} {
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence
+(organization_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,review_kind,review_landing,review_session_known)
+SELECT $1,$2,$4+n+1,$3,'review','worker',$5||'_'||n::text,CASE WHEN n%2=0 THEN 'commented' ELSE 'approved' END,
+$6::timestamptz,$7,$8,1,1,$5,($5='security_audit' AND n>20000),true FROM generate_series(1,30000)n`, org, f.change.ID, f.version.ID, index*30000, kind, historyAt(), f.evidence.PayloadObjectKey, f.evidence.PayloadSHA256); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	pool := rolePool(t, admin, "detent_runtime_v2", "")
+	for _, analyzed := range []bool{false, true} {
+		if analyzed {
+			if _, err := admin.ExecContext(t.Context(), `ANALYZE change_evidence; ANALYZE current_change_reviews`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+			for _, test := range []struct {
+				through int64
+				missing bool
+				want    []int64
+			}{
+				{through: 1}, {through: 4, want: []int64{4}}, {through: 30001, want: []int64{30001}},
+				{through: 60001, want: []int64{30001, 60001}}, {through: 90001, want: []int64{30001, 60001, 80001}}, {through: 90001, missing: true},
+			} {
+				t.Run(fmt.Sprintf("%s/analyzed=%t/through=%d/missing=%t", org, analyzed, test.through, test.missing), func(t *testing.T) {
+					tx, err := pool.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer tx.Rollback()
+					if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, org); err != nil {
+						t.Fatal(err)
+					}
+					probe := &searchPlanProbe{DBTX: tx}
+					change := "change_machine_plan"
+					if test.missing {
+						change = "change_missing"
+					}
+					got, err := pgquery.New(probe).RecordCurrentChangeReviewSequences(t.Context(), pgquery.RecordCurrentChangeReviewSequencesParams{OrganizationID: org, ChangeID: change, VersionID: "version_machine_plan", ReviewingActor: "example-owner", Through: test.through})
+					if err != nil || !slices.Equal(got, test.want) {
+						t.Fatalf("machine prefix=%v want=%v error=%v", got, test.want, err)
+					}
+					var raw []byte
+					if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
+						t.Fatal(err)
+					}
+					var plans []struct{ Plan searchPlanNode }
+					if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
+						t.Fatalf("decode machine head plan: %v", err)
+					}
+					visited := currentReviewLookupVisits(plans[0].Plan)
+					t.Logf("machine reviews=90000 visited=%.0f plan=%s", visited, raw)
+					if visited > 32 {
+						t.Errorf("fixed3-role lookup visited %.0f rows", visited)
+					}
+				})
+			}
+		}
+	}
+}
+
 type currentReviewReadProbe struct {
 	attachment.DetailStore
 	before func(context.Context) error
@@ -1195,6 +1267,113 @@ func (p currentReviewReadProbe) ReadDetail(ctx context.Context, organization str
 		return nil, err
 	}
 	return p.DetailStore.ReadDetail(ctx, organization, ref)
+}
+
+func TestCurrentMachineWaitSupersedesAnAlreadyCertifiedPass(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	pool := rolePool(t, admin, "detent_runtime_v2", "")
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedRepository(t, repository, org)
+		for _, kind := range []string{"validator", "implementation", "security_audit"} {
+			t.Run(string(org)+"/"+kind, func(t *testing.T) {
+				f := seedHistory(t, repository, org, kind)
+				if _, err := admin.ExecContext(t.Context(), `UPDATE change_requests SET current_version_id=$3 WHERE organization_id=$1 AND id=$2`, org, f.change.ID, f.version.ID); err != nil {
+					t.Fatal(err)
+				}
+				reviewNumber := int64(0)
+				appendReview := func(decision string, landing bool) {
+					t.Helper()
+					reviewNumber++
+					verdict := "pass"
+					if decision == "commented" {
+						verdict = "wait"
+					}
+					review := tracker.ChangeReview{ID: fmt.Sprintf("review_%s_%d", kind, reviewNumber), VersionID: f.version.ID, Decision: decision, Actor: historyActor(), CreatedAt: historyAt()}
+					result := &gate.ValidatorResult{VersionID: f.version.ID, SessionID: 1, Verdict: verdict}
+					switch kind {
+					case "validator":
+						review.Validator = result
+					case "implementation":
+						review.ImplementationReview = result
+					case "security_audit":
+						review.SecurityAudit = &tracker.SecurityAuditReview{VersionID: f.version.ID, SessionID: 1, Landing: landing}
+					}
+					row, err := f.content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.change.ID, Kind: "review"}, historyJSON(t, review))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error { _, err := w.AppendEvidence(t.Context(), row); return err }); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.content, 200); err != nil {
+						t.Fatal(err)
+					}
+				}
+				assertHead := func(sequence int64, decision string) {
+					t.Helper()
+					tx, err := pool.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer tx.Rollback()
+					if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, org); err != nil {
+						t.Fatal(err)
+					}
+					sequences, err := pgquery.New(tx).RecordCurrentChangeReviewSequences(t.Context(), pgquery.RecordCurrentChangeReviewSequencesParams{OrganizationID: org, ChangeID: f.change.ID, VersionID: f.version.ID, ReviewingActor: "example-owner", Through: reviewNumber + 1})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(sequences) != 1 || sequences[0] != sequence {
+						t.Fatalf("%s latest %s review lost: selected=%v want=%d", kind, decision, sequences, sequence)
+					}
+					if kind == "security_audit" {
+						return
+					}
+					var evidence []eventstore.Evidence
+					if err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(r eventstore.Reader) error {
+						var err error
+						evidence, _, err = r.(eventstore.ChangeReviewEvidenceReader).ChangeReviewEvidence(t.Context(), f.change.ID, f.version.ID, sequence, nil, "example-owner")
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					version := tracker.ChangeVersion{ID: f.version.ID, ChangeVersionInput: tracker.ChangeVersionInput{PolicyID: "example-policy"}, Policy: policy.Descriptor{ID: "example-policy"}, ReviewPolicy: tracker.ChangeReviewPolicy{ID: "example-review-policy"}}
+					if kind == "validator" {
+						version.Policy.Gates.Validator = true
+					} else {
+						version.Policy.Gates.AutomatedReview = gate.AutomatedReviewRequired
+					}
+					detail := tracker.ChangeDetail{Change: tracker.ChangeRequest{CurrentVersion: f.version.ID}, Versions: []tracker.ChangeVersion{version}}
+					for _, row := range evidence {
+						raw, err := f.content.Evidence(t.Context(), row)
+						if err != nil {
+							t.Fatal(err)
+						}
+						review, err := eventstore.DecodeChangeReview(row, raw)
+						if err != nil {
+							t.Fatal(err)
+						}
+						detail.Reviews = append(detail.Reviews, review)
+					}
+					summary := changerequest.SummarizeCurrentVersion(detail, version.PolicyID, version.ReviewPolicy.ID, historyAt(), false)
+					if (summary.Status == "reviewed") != (decision == "approved") {
+						t.Fatalf("%s %s inherited wrong approval: %+v", kind, decision, summary)
+					}
+				}
+				appendReview("approved", false)
+				assertHead(2, "approved")
+				appendReview("commented", false)
+				assertHead(3, "commented")
+				appendReview("approved", false)
+				assertHead(4, "approved")
+				if kind == "security_audit" {
+					appendReview("commented", true)
+					assertHead(4, "approved")
+				}
+			})
+		}
+	}
 }
 
 func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testing.T) {
@@ -1426,6 +1605,45 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 				})
 			}
 		})
+	}
+}
+
+func TestMachineReviewMigrationRejectsAnIndexThatIncludesLandingRows(t *testing.T) {
+	admin := template.Database(t)
+	admin.SetMaxOpenConns(1)
+	provider, err := migrationProvider(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `SET ROLE detent_migration_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.DownTo(t.Context(), 20261104090048); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `CREATE INDEX change_current_machine_reviews_idx ON change_evidence(organization_id,change_id,version_id,review_kind,sequence DESC) WHERE kind='review'`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Up(t.Context())
+	var refused *pq.Error
+	if !errors.As(err, &refused) || refused.Code != "P0001" {
+		t.Fatalf("wrong machine review predicate was accepted: %v", err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `DROP INDEX CONCURRENTLY change_current_machine_reviews_idx`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Up(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.DownTo(t.Context(), 20261104090048); err != nil {
+		t.Fatal(err)
+	}
+	var exists bool
+	if err := admin.QueryRowContext(t.Context(), `SELECT to_regclass('public.change_current_machine_reviews_idx') IS NOT NULL`).Scan(&exists); err != nil || exists {
+		t.Fatalf("machine index rollback exists=%t error=%v", exists, err)
+	}
+	if _, err := provider.Up(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 }
 

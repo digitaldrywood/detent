@@ -160,9 +160,17 @@ WITH selected AS MATERIALIZED (
   ORDER BY h.evidence_sequence DESC LIMIT 1
  ) current
  UNION ALL
+ SELECT latest.sequence FROM (VALUES ('validator'),('implementation'),('security_audit')) roles(review_kind)
+ CROSS JOIN LATERAL (
+  SELECT e.sequence FROM change_evidence e
+  WHERE e.organization_id=$1 AND e.change_id=$2 AND e.version_id=$3
+  AND e.kind='review' AND NOT e.review_landing AND e.review_kind=roles.review_kind AND e.sequence<=$5
+  ORDER BY e.sequence DESC LIMIT 1
+ ) latest
+ UNION ALL
  SELECT h.evidence_sequence FROM current_change_reviews h
  WHERE h.organization_id=$1 AND h.change_id=$2 AND h.version_id=$3
- AND h.review_kind IN ('validator','implementation','security_audit','security_audit_failure') AND h.actor_key=''
+ AND h.review_kind='security_audit_failure' AND h.actor_key=''
 )
 SELECT DISTINCT evidence_sequence FROM selected ORDER BY evidence_sequence
 `
@@ -172,6 +180,7 @@ type RecordCurrentChangeReviewSequencesParams struct {
 	ChangeID       string
 	VersionID      string
 	ReviewingActor string
+	Through        int64
 }
 
 func (q *Queries) RecordCurrentChangeReviewSequences(ctx context.Context, arg RecordCurrentChangeReviewSequencesParams) ([]int64, error) {
@@ -180,6 +189,7 @@ func (q *Queries) RecordCurrentChangeReviewSequences(ctx context.Context, arg Re
 		arg.ChangeID,
 		arg.VersionID,
 		arg.ReviewingActor,
+		arg.Through,
 	)
 	if err != nil {
 		return nil, err
