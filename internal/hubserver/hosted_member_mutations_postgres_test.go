@@ -2,8 +2,12 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +22,111 @@ import (
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestPostgresHostedEntitlementRoutesUseCurrentTenant(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	details := &memoryRunDetails{}
+	now := time.Date(2026, time.November, 4, 0, 0, 0, 0, time.UTC)
+	organizations := []string{"org_first", "org_second"}
+	services := make(map[string]*Service, len(organizations))
+	tokens := map[string]string{"org_first": strings.Repeat("a", 32), "org_second": strings.Repeat("b", 32)}
+
+	for _, organization := range organizations {
+		plans := pilotHostedPlans()
+		database := &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: tracker.OrganizationID(organization), now: func() time.Time { return now }, logger: discardLogger()}
+		hosted := &HostedConfig{OrganizationID: organization, EntitlementAdministrator: "operator_example", EntitlementAdminToken: []byte(tokens[organization]), Plans: &plans}
+		service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: database, config: Config{Logger: discardLogger(), now: func() time.Time { return now }, RunDetails: details, Hosted: hosted}}
+		if err := repository.WriteTenant(t.Context(), tracker.OrganizationID(organization), corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: tracker.OrganizationID(organization), Name: "Example organization", CreatedAt: now}); err != nil {
+				return err
+			}
+			return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: tracker.OrganizationID(organization), ProviderID: "provider_" + organization})
+		}); err != nil {
+			t.Fatalf("create tenant %s: %v", organization, err)
+		}
+		if err := database.configureHostedPlans(t.Context(), hosted); err != nil {
+			t.Fatalf("configure plans for %s: %v", organization, err)
+		}
+		service.registerRoutes(service.echo)
+		services[organization] = service
+	}
+
+	request := func(t *testing.T, service *Service, token, method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.Header.Set(echo.HeaderAuthorization, "Bearer "+token)
+		response := httptest.NewRecorder()
+		service.echo.ServeHTTP(response, request)
+		return response
+	}
+
+	for _, organization := range organizations {
+		service := services[organization]
+		path := "/api/v2/organizations/" + organization + "/entitlements"
+		if response := request(t, service, "wrong-admin-token", http.MethodGet, path, ""); response.Code != http.StatusForbidden {
+			t.Fatalf("unauthorized GET for %s status=%d body=%s", organization, response.Code, response.Body)
+		}
+		otherOrganization := organizations[1]
+		if organization == otherOrganization {
+			otherOrganization = organizations[0]
+		}
+		otherPath := "/api/v2/organizations/" + otherOrganization + "/entitlements"
+		if response := request(t, service, tokens[otherOrganization], http.MethodGet, otherPath, ""); response.Code != http.StatusNotFound {
+			t.Fatalf("cross-tenant GET for %s through %s status=%d body=%s", otherOrganization, organization, response.Code, response.Body)
+		}
+		if response := request(t, service, tokens[otherOrganization], http.MethodGet, path, ""); response.Code != http.StatusForbidden {
+			t.Fatalf("other tenant admin GET for %s status=%d body=%s", organization, response.Code, response.Body)
+		}
+		response := request(t, service, tokens[organization], http.MethodGet, path, "")
+		if response.Code != http.StatusOK {
+			t.Fatalf("authorized GET for %s status=%d body=%s", organization, response.Code, response.Body)
+		}
+		var report hostedEntitlementReport
+		if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
+			t.Fatalf("decode GET for %s: %v", organization, err)
+		}
+		if report.OrganizationID != organization || report.Base.ID != "pilot_free" || len(report.Grants) != 0 {
+			t.Fatalf("unexpected initial report for %s: %#v", organization, report)
+		}
+
+		body := `{"idempotency_key":"grant-` + organization + `","action":"grant","expected_revision":1,"plan":{"id":"comp_team","version":1},"grant_id":"grant-` + organization + `","scope":["collaboration_bytes"],"starts_at":"2026-11-03T00:00:00Z","reason":"example grant"}`
+		if response := request(t, service, "wrong-admin-token", http.MethodPost, path, body); response.Code != http.StatusForbidden {
+			t.Fatalf("unauthorized POST for %s status=%d body=%s", organization, response.Code, response.Body)
+		}
+		if response := request(t, service, tokens[otherOrganization], http.MethodPost, path, body); response.Code != http.StatusForbidden {
+			t.Fatalf("other tenant admin POST for %s status=%d body=%s", organization, response.Code, response.Body)
+		}
+		if response := request(t, service, tokens[organization], http.MethodPost, path, body); response.Code != http.StatusNoContent {
+			t.Fatalf("authorized POST for %s status=%d body=%s", organization, response.Code, response.Body)
+		}
+	}
+
+	for _, organization := range organizations {
+		response := request(t, services[organization], tokens[organization], http.MethodGet, "/api/v2/organizations/"+organization+"/entitlements", "")
+		if response.Code != http.StatusOK {
+			t.Fatalf("read updated report for %s status=%d body=%s", organization, response.Code, response.Body)
+		}
+		var report hostedEntitlementReport
+		if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
+			t.Fatalf("decode updated report for %s: %v", organization, err)
+		}
+		if report.OrganizationID != organization || report.Revision != 2 || len(report.Grants) != 1 || report.Grants[0].ID != "grant-"+organization || len(report.Grants[0].Scope) != 1 || report.Grants[0].Scope[0] != "collaboration_bytes" || !report.Grants[0].StartsAt.Equal(time.Date(2026, time.November, 3, 0, 0, 0, 0, time.UTC)) || report.Grants[0].ExpiresAt != nil {
+			t.Fatalf("unexpected updated report for %s: %#v", organization, report)
+		}
+		if !slices.ContainsFunc(report.Plans, func(plan HostedPlan) bool {
+			return plan.PlanReference == (PlanReference{ID: "comp_team", Version: 1}) && plan.Allowances["collaboration_bytes"] == 128<<20
+		}) {
+			t.Fatalf("updated report for %s omitted the effective grant plan", organization)
+		}
+		entitlement, err := services[organization].database.hostedEntitlement(t.Context(), nil, now)
+		if err != nil {
+			t.Fatalf("read effective entitlement for %s: %v", organization, err)
+		}
+		if entitlement.OrganizationID != organization || entitlement.Allowances["collaboration_bytes"] != 128<<20 {
+			t.Fatalf("unexpected effective allowance for %s: %#v", organization, entitlement.Allowances)
+		}
+	}
+}
 
 func TestPostgresMemberMutationRoutesPreserveCurrentAuthority(t *testing.T) {
 	repository := projectRecordPostgres(t)
