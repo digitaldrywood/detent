@@ -252,7 +252,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 		if err != nil {
 			return err
 		}
-		if item.NativeID != plan.candidate.WorkItemID || item.Archived || plan.replay == nil && item.Revision != plan.candidate.Revision {
+		if item.NativeID != plan.candidate.WorkItemID || item.Archived || plan.replay == nil && (item.Revision != plan.candidate.Revision || item.DispatchGeneration != plan.item.DispatchGeneration) {
 			return ErrNoClaimableWork
 		}
 		currentLinked, err := w.LinkedSource(ctx, scope.project, item.NativeID)
@@ -284,8 +284,20 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 		if err != nil {
 			return err
 		}
-		if item.Archived || plan.replay == nil && item.Revision != plan.candidate.Revision {
+		if item.Archived || plan.replay == nil && (item.Revision != plan.candidate.Revision || item.DispatchGeneration != plan.item.DispatchGeneration) {
 			return corestore.ErrRevisionConflict
+		}
+		if plan.replay == nil {
+			latest, err := w.LatestAttempt(ctx, item.ID)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			current := plan
+			current.item = item
+			current.latestAttempt, current.latestAttemptFound = latest, err == nil
+			if nativeClaimDispatchSatisfied(current) {
+				return ErrNoClaimableWork
+			}
 		}
 		if stringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending {
 			latest, err := w.LatestChange(ctx, scope.project, plan.candidate.WorkItemID)
@@ -718,6 +730,9 @@ func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope nativeScope,
 	}
 	if err := json.Unmarshal(raw, &plan.issue); err != nil || plan.issue.OrganizationID != plan.item.OrganizationID || plan.issue.ProjectID != plan.item.ProjectID || plan.issue.WorkItemID != plan.item.NativeID || int64(plan.issue.Revision) != plan.item.Revision || int64(plan.issue.Number) != plan.item.Number || plan.issue.Title != plan.item.Title || plan.issue.Archived != plan.item.Archived || plan.issue.Actor.Kind != valueOrEmpty(plan.item.ActorKind) || plan.issue.Actor.PrincipalID != valueOrEmpty(plan.item.ActorPrincipalID) {
 		return nativeClaimPlan{}, corestore.ErrRevisionConflict
+	}
+	if nativeClaimDispatchSatisfied(plan) {
+		return nativeClaimPlan{}, ErrNoClaimableWork
 	}
 	plan.issue.State = valueOrEmpty(plan.item.WorkflowStateName)
 	plan.issue.LastActivityAt = plan.item.LastActivityAt

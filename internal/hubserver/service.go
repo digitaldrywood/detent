@@ -237,6 +237,9 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if service.config.NativeRunEvents == nil && service.config.TenantRepository != nil {
 		service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
 	}
+	if service.config.ConversationDispatch == nil && service.config.TenantRepository != nil {
+		service.config.ConversationDispatch = tenantNativeRunEventParticipant{service: service}
+	}
 	if service.config.ProjectParticipants == nil && service.config.TenantRepository != nil && service.config.AccessRepository != nil {
 		service.config.ProjectParticipants = tenantProjectParticipants{service: service}
 	}

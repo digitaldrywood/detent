@@ -1267,6 +1267,8 @@ type Issue struct {
 	LastActivityAt         time.Time
 	IssueType              string
 	Priority               *int
+	DispatchGeneration     int64
+	DispatchRequestedAt    *time.Time
 }
 
 type IssueClaimFact struct {
