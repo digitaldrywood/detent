@@ -13,8 +13,11 @@ import { useSidebarHumanActions } from "../src/app/adapters/sidebarHumanActions.
 import { HealthFindingsProvider, useHealthFindings } from "../src/app/diagnostics/healthFindings.tsx";
 import { ActivityRoute } from "../src/app/activity/ActivityPage.tsx";
 import { DEFAULT_VIEW_STATE } from "../src/app/work/lib/viewState.ts";
+import { WorkApiError } from "../src/app/work/lib/workHttp.ts";
+import { hintIssueProject } from "../src/app/work/lib/issueQuery.ts";
+import { PROJECT_SNAPSHOT_BUFFER } from "../src/app/work/lib/projectEvents.ts";
 import { clearBoardCache } from "../src/app/work/lib/boardStore.ts";
-import type { Action, ActionRun, NativeIssue, NativeProject, Workspace } from "../src/contracts/work.ts";
+import type { Action, ActionRun, ChangeDetail, NativeIssue, NativeProject, Workspace } from "../src/contracts/work.ts";
 import issueFixture from "../src/contracts/fixtures/work-item.json";
 import projectFixture from "../src/contracts/fixtures/work-project.json";
 
@@ -176,8 +179,8 @@ it.each(["success", "failure", "unmount"])("replaces a reset snapshot without hi
     await act(async () => { Source.instances[0]!.emit("reset", {}, 21); });
     await waitFor(() => expect(head).toHaveBeenCalledTimes(3));
     expect(detail.error).toBeNull();
-    expect(detail.loading).toBe(true);
-    expect(detail.data).toBeNull();
+    expect(detail.loading).toBe(false);
+    expect(detail.data?.issue).toBe(issue);
     if (outcome === "unmount") {
       view.unmount();
       expect(head.mock.calls[2]?.[1]?.aborted).toBe(true);
@@ -197,5 +200,193 @@ it.each(["success", "failure", "unmount"])("replaces a reset snapshot without hi
   } finally {
     view.unmount();
     await act(async () => { releaseFirst({ items: [] }); releaseSecond(issue); });
+  }
+});
+
+it.each([false, true])("opens the current issue before related reads settle (lane traffic: %s)", async (laneTraffic) => {
+  vi.stubGlobal("EventSource", Source);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  Source.instances = [];
+  const http = workHttpFor({ http: { origin: "", apiBase: "/api/v2/organizations/first-paint", csrfToken: "" }, bootstrap: { organization: { id: "first-paint" }, projects: [] } } as unknown as ConversationClient);
+  const issue = { ...issueFixture, work_item_id: "wi_first_paint", project_id: "first-paint", change_sequence: 10 } as NativeIssue;
+  hintIssueProject(issue.work_item_id, issue.project_id);
+  let releaseProject!: (value: NativeProject) => void;
+  let releaseRelated!: (value: { items: [] }) => void;
+  const project = { ...projectFixture, project_id: issue.project_id } as NativeProject;
+  const projectBarrier = new Promise<NativeProject>((resolve) => { releaseProject = resolve; });
+  const relatedBarrier = new Promise<{ items: [] }>((resolve) => { releaseRelated = resolve; });
+  const head = vi.spyOn(http, "getWorkItemById").mockResolvedValue(issue);
+  const projectRead = vi.spyOn(http, "getProject").mockReturnValue(projectBarrier);
+  const attempts = vi.spyOn(http, "listAttempts").mockReturnValue(relatedBarrier);
+  vi.spyOn(http, "listHistory").mockReturnValue(relatedBarrier);
+  vi.spyOn(http, "listComments").mockReturnValue(relatedBarrier);
+  vi.spyOn(http, "listChanges").mockResolvedValue([]);
+  let detail!: ReturnType<typeof useIssue>;
+  function Probe() { detail = useIssue(http, issue.work_item_id); return null; }
+  const view = render(<Probe />);
+  try {
+    await act(async () => {});
+    expect(attempts).toHaveBeenCalledOnce();
+    await act(async () => {
+      for (let i = 0; laneTraffic && i <= PROJECT_SNAPSHOT_BUFFER; i++) Source.instances[0]!.emit("lane", { entity_id: "Other lane", entity_revision: 20 + i }, 20 + i);
+    });
+    expect(head).toHaveBeenCalledOnce();
+    await act(async () => releaseProject(project));
+    expect(detail.data?.issue.title).toBe(issue.title);
+    expect(detail.loading).toBe(false);
+    expect(detail.error).toBeNull();
+    const updatedProject = { ...project, require_dependencies: !project.require_dependencies };
+    projectRead.mockResolvedValue(updatedProject);
+    await act(async () => Source.instances[0]!.emit("lane", { entity_id: "Todo", entity_revision: 500 }, 500));
+    expect(detail.data?.project.require_dependencies).toBe(updatedProject.require_dependencies);
+    expect(detail.data?.issue.blockers).toEqual(issue.blockers);
+    await act(async () => releaseRelated({ items: [] }));
+    expect(detail.data?.project).toBe(updatedProject);
+    const settledHeads = head.mock.calls.length;
+    await act(async () => Source.instances[0]!.emit("work_item", { entity_id: issue.work_item_id, entity_revision: 501 }, 501));
+    expect(head).toHaveBeenCalledTimes(settledHeads + 1);
+    expect(detail.error).toBeNull();
+    expect(detail.data?.issue).toBe(issue);
+  } finally {
+    view.unmount();
+    await act(async () => { releaseProject(project); releaseRelated({ items: [] }); });
+  }
+});
+
+it.each(["source", "route"])("rejects late related results after a %s change while publishing current dependencies", async (transition) => {
+  vi.stubGlobal("EventSource", Source);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  Source.instances = [];
+  const http = workHttpFor({ http: { origin: "", apiBase: "/api/v2/organizations/coherence", csrfToken: "" }, bootstrap: { organization: { id: "coherence" }, projects: [] } } as unknown as ConversationClient);
+  const original = { ...issueFixture, work_item_id: "wi_original", project_id: "coherence", change_sequence: 10 } as NativeIssue;
+  const next = { ...original, work_item_id: transition === "route" ? "wi_next" : original.work_item_id, title: "Current source", body: "Updated body", revision: "5", change_sequence: 30, dependencies: [], blockers: [], ignore_dependencies: true } as NativeIssue;
+  hintIssueProject(original.work_item_id, original.project_id);
+  hintIssueProject(next.work_item_id, next.project_id);
+  let releaseOld!: (value: { items: [] }) => void;
+  let releaseCurrent!: (value: { items: [] }) => void;
+  const oldRelated = new Promise<{ items: [] }>((resolve) => { releaseOld = resolve; });
+  const currentRelated = new Promise<{ items: [] }>((resolve) => { releaseCurrent = resolve; });
+  const head = vi.spyOn(http, "getWorkItemById").mockResolvedValueOnce(original).mockResolvedValue(next);
+  vi.spyOn(http, "getProject").mockResolvedValue({ ...projectFixture, project_id: original.project_id } as NativeProject);
+  vi.spyOn(http, "listAttempts").mockReturnValueOnce(oldRelated).mockReturnValue(currentRelated);
+  vi.spyOn(http, "listHistory").mockResolvedValue({ items: [] });
+  vi.spyOn(http, "listComments").mockResolvedValue({ items: [] });
+  const oldChange = { change_id: "change_old", title: "Obsolete change" };
+  vi.spyOn(http, "listChanges").mockResolvedValueOnce([oldChange] as never).mockResolvedValue([]);
+  const change = vi.spyOn(http, "getChange").mockResolvedValue(null as never);
+  let detail!: ReturnType<typeof useIssue>;
+  function Probe({ id }: { id: string }) { detail = useIssue(http, id); return null; }
+  const view = render(<Probe id={original.work_item_id} />);
+  try {
+    await act(async () => {});
+    expect(detail.data?.issue).toBe(original);
+    if (transition === "route") view.rerender(<Probe id={next.work_item_id} />);
+    else await act(async () => Source.instances[0]!.emit("work_item", { entity_id: original.work_item_id, entity_revision: 5 }, 30));
+    await act(async () => {});
+    expect(head).toHaveBeenCalledTimes(2);
+    expect(detail.data?.issue.body).toBe(next.body);
+    expect(detail.data?.issue.blockers).toEqual([]);
+    expect(detail.data?.issue.ignore_dependencies).toBe(true);
+    expect(detail.loading).toBe(false);
+    await act(async () => releaseOld({ items: [] }));
+    expect(detail.data?.issue).toBe(next);
+    expect(detail.data?.changes).toEqual([]);
+    expect(change).not.toHaveBeenCalled();
+    await act(async () => releaseCurrent({ items: [] }));
+    expect(detail.error).toBeNull();
+    expect(detail.data?.issue).toBe(next);
+  } finally {
+    view.unmount();
+    await act(async () => { releaseOld({ items: [] }); releaseCurrent({ items: [] }); });
+  }
+});
+
+
+it.each([401, 403, 404])("removes a painted core on a current %s and never restores late related data", async (status) => {
+  vi.stubGlobal("EventSource", Source);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  Source.instances = [];
+  const http = workHttpFor({ http: { origin: "", apiBase: "/api/v2/organizations/refused-core", csrfToken: "" }, bootstrap: { organization: { id: "refused-core" }, projects: [] } } as unknown as ConversationClient);
+  const issue = { ...issueFixture, work_item_id: `wi_refused_${status}`, project_id: "refused-core", change_sequence: 10 } as NativeIssue;
+  hintIssueProject(issue.work_item_id, issue.project_id);
+  let release!: (value: { items: [] }) => void;
+  const related = new Promise<{ items: [] }>((resolve) => { release = resolve; });
+  const refused = new WorkApiError({ status, code: status === 404 ? "not_found" : "forbidden", message: `Refused ${status}` });
+  const head = vi.spyOn(http, "getWorkItemById").mockResolvedValueOnce(issue).mockRejectedValue(refused);
+  vi.spyOn(http, "getProject").mockResolvedValue({ ...projectFixture, project_id: issue.project_id } as NativeProject);
+  vi.spyOn(http, "listAttempts").mockReturnValue(related);
+  vi.spyOn(http, "listHistory").mockResolvedValue({ items: [] });
+  vi.spyOn(http, "listComments").mockResolvedValue({ items: [] });
+  vi.spyOn(http, "listChanges").mockResolvedValue([]);
+  let detail!: ReturnType<typeof useIssue>;
+  function Probe() { detail = useIssue(http, issue.work_item_id); return null; }
+  const view = render(<Probe />);
+  try {
+    await act(async () => {});
+    expect(detail.data?.issue).toBe(issue);
+    await act(async () => Source.instances[0]!.emit("work_item", { entity_id: issue.work_item_id, entity_revision: 5 }, 20));
+    expect(detail.data).toBeNull();
+    expect(detail.error).toBe(refused.message);
+    expect(detail.loading).toBe(false);
+    await act(async () => release({ items: [] }));
+    expect(detail.data).toBeNull();
+    expect(detail.error).toBe(refused.message);
+    head.mockResolvedValue(issue);
+    await act(async () => detail.reload());
+    expect(detail.data?.issue).toBe(issue);
+    expect(detail.error).toBeNull();
+  } finally {
+    view.unmount();
+    await act(async () => release({ items: [] }));
+  }
+});
+
+
+it("fences a buffered own-source event and an already-running old change detail", async () => {
+  vi.stubGlobal("EventSource", Source);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  Source.instances = [];
+  const http = workHttpFor({ http: { origin: "", apiBase: "/api/v2/organizations/buffered-source", csrfToken: "" }, bootstrap: { organization: { id: "buffered-source" }, projects: [] } } as unknown as ConversationClient);
+  const issue = { ...issueFixture, work_item_id: "wi_buffered", project_id: "buffered-source", change_sequence: 10 } as NativeIssue;
+  const next = { ...issue, title: "Current source", revision: "5", change_sequence: 20, dependencies: [], blockers: [] } as NativeIssue;
+  hintIssueProject(issue.work_item_id, issue.project_id);
+  const project = { ...projectFixture, project_id: issue.project_id } as NativeProject;
+  let releaseProject!: (value: NativeProject) => void;
+  let releaseDetail!: (value: ChangeDetail) => void;
+  const projectBarrier = new Promise<NativeProject>((resolve) => { releaseProject = resolve; });
+  const detailBarrier = new Promise<ChangeDetail>((resolve) => { releaseDetail = resolve; });
+  const head = vi.spyOn(http, "getWorkItemById").mockResolvedValueOnce(issue).mockResolvedValue(next);
+  vi.spyOn(http, "getProject").mockReturnValue(projectBarrier);
+  vi.spyOn(http, "listAttempts").mockResolvedValue({ items: [] });
+  vi.spyOn(http, "listHistory").mockResolvedValue({ items: [] });
+  vi.spyOn(http, "listComments").mockResolvedValue({ items: [] });
+  vi.spyOn(http, "listChanges").mockResolvedValue([{ change_id: "old_change", title: "Old change" }] as never);
+  const change = vi.spyOn(http, "getChange").mockReturnValue(detailBarrier);
+  let detail!: ReturnType<typeof useIssue>;
+  function Probe() { detail = useIssue(http, issue.work_item_id); return null; }
+  const view = render(<Probe />);
+  const oldDetail = { summary: { status: "open" } } as ChangeDetail;
+  try {
+    await act(async () => {});
+    expect(detail.data).toBeNull();
+    await act(async () => Source.instances[0]!.emit("work_item", { entity_id: issue.work_item_id, entity_revision: 5 }, 20));
+    expect(head).toHaveBeenCalledOnce();
+    await act(async () => releaseProject(project));
+    expect(head).toHaveBeenCalledTimes(2);
+    expect(detail.data?.issue).toBe(next);
+    expect(detail.data?.issue.blockers).toEqual([]);
+    expect(change).toHaveBeenCalledOnce();
+    head.mockResolvedValue({ ...next, title: "Newest source", revision: "6", change_sequence: 30 } as NativeIssue);
+    vi.mocked(http.listChanges).mockResolvedValue([]);
+    await act(async () => Source.instances[0]!.emit("work_item", { entity_id: issue.work_item_id, entity_revision: 6 }, 30));
+    expect(detail.data?.issue.title).toBe("Newest source");
+    await act(async () => releaseDetail(oldDetail));
+    expect(detail.data?.issue.title).toBe("Newest source");
+    expect(detail.data?.change).toBeNull();
+    expect(detail.data?.changes).toEqual([]);
+    expect(detail.error).toBeNull();
+  } finally {
+    view.unmount();
+    await act(async () => { releaseProject(project); releaseDetail(oldDetail); });
   }
 });
