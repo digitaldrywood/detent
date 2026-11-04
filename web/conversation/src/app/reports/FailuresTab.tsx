@@ -27,12 +27,14 @@ export function failureRows(report: ReportsReport, kind: ReportsSearch["kind"]) 
 
 export function FailuresTab({ report, search }: { readonly report: ReportsReport; readonly search: ReportsSearch }): React.ReactElement {
   const compare = search.compare;
+  const outcomesMissing = report.unavailable.includes("attempt_outcomes_unavailable");
   const usageMissing = report.unavailable.includes("recorded_usage");
   const buckets = reportBuckets(report);
   const categories = bucketCategories(buckets);
-  const splitKnown = report.series !== undefined;
+  const splitKnown = report.series !== undefined && !report.unavailable.includes("failure_classification");
   const failed = buckets.reduce((sum, bucket) => sum + bucket.failed, 0);
   const classes = report.failure_classes;
+  const classificationUnavailable = report.unavailable.includes("failure_classification");
   const classTotal = classes.reduce((sum, item) => sum + item.count, 0);
   const failedSpend = classes.reduce((sum, item) => sum + item.cost_usd, 0);
   const infraCount = classes.filter((item) => failureKind(item.kind) === "infrastructure").reduce((sum, item) => sum + item.count, 0);
@@ -46,22 +48,22 @@ export function FailuresTab({ report, search }: { readonly report: ReportsReport
   return (
     <div className="flex flex-col gap-6">
       <MetricTileGroup aria-label="Failures headline" className="lg:grid-cols-4">
-        <MetricTile label="Failed attempts" value={formatCount(failed)} delta={compare ? countDelta(failed, report.previous_failed, false) : undefined} />
+        <MetricTile label="Failed attempts" value={outcomesMissing ? null : formatCount(failed)} delta={compare && !outcomesMissing ? countDelta(failed, report.previous_failed, false) : undefined} />
         <MetricTile
           label="Spend on failed attempts"
-          value={usageMissing ? null : formatUsd(failedSpend)}
+          value={usageMissing || outcomesMissing || classificationUnavailable ? null : formatUsd(failedSpend)}
           delta={
-            usageMissing || report.cost_usd <= 0
+            usageMissing || outcomesMissing || classificationUnavailable || report.cost_usd <= 0
               ? undefined
               : { text: `${percentText((100 * failedSpend) / report.cost_usd)} of spend`, direction: "flat", tone: "bad" }
           }
         />
         <MetricTile
           label="Issues hit"
-          value={issuesHit === null ? null : formatCount(issuesHit)}
+          value={outcomesMissing || issuesHit === null ? null : formatCount(issuesHit)}
           detail={report.analytics.quality ? `of ${formatCount(report.analytics.quality.worked_items)} worked` : undefined}
         />
-        <MetricTile label="Infrastructure share" value={infraShare === null ? null : percentText(infraShare)} detail="attributed to runners" />
+        <MetricTile label="Infrastructure share" value={classificationUnavailable || infraShare === null ? null : percentText(infraShare)} detail="attributed to runners" />
       </MetricTileGroup>
 
       <ChartPanel
@@ -81,7 +83,7 @@ export function FailuresTab({ report, search }: { readonly report: ReportsReport
         }
         footnote={splitKnown ? undefined : "The infrastructure and issue split per day is not recorded."}
       >
-        <Chart
+        {outcomesMissing ? <Muted>Attempt outcomes are not available in this report source.</Muted> : <Chart
           ariaLabel="Failed attempts per bucket split by infrastructure and issue"
           categories={categories}
           height={200}
@@ -100,7 +102,7 @@ export function FailuresTab({ report, search }: { readonly report: ReportsReport
                 ]
               : [{ id: "failed", label: "Failed attempts", color: KIND_COLORS.unknown, kind: "bar" as const, values: buckets.map((bucket) => bucket.failed) }]
           }
-        />
+        />}
       </ChartPanel>
 
       <ChartPanel
@@ -108,7 +110,7 @@ export function FailuresTab({ report, search }: { readonly report: ReportsReport
         actions={<span className="text-muted-foreground text-xs">Grouped by class · full evidence stays in the issue's run history</span>}
       >
         {rows.length === 0 ? (
-          <Muted>No recorded failures in this range.</Muted>
+          <Muted>{classificationUnavailable ? "Failure classification is not available in this report source." : "No recorded failures in this range."}</Muted>
         ) : (
           <div className="flex flex-col">
             <div className="hidden gap-3 pb-2 text-muted-foreground text-xs sm:flex">

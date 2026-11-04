@@ -14,6 +14,8 @@ sql:
           head_sha: "HeadSHA"
           base_sha: "BaseSHA"
           merge_base_sha: "MergeBaseSHA"
+          landed_head_sha: "LandedHeadSHA"
+          landed_merge_sha: "LandedMergeSHA"
           external_url: "ExternalURL"
           landing_head_sha: "LandingHeadSHA"
         overrides:
@@ -58,6 +60,10 @@ sql:
             go_type:
               import: "github.com/digitaldrywood/detent/internal/tracker"
               type: "NativeWorkItemID"
+          - column: "issues.priority"
+            go_type:
+              type: "int"
+              pointer: true
           - column: "native_comments.work_item_id"
             go_type:
               import: "github.com/digitaldrywood/detent/internal/tracker"

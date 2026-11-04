@@ -113,6 +113,8 @@ export function CostTab({
   const [showAll, setShowAll] = React.useState(false);
   const compare = search.compare;
   const usageMissing = report.unavailable.includes("recorded_usage");
+  const stageUsageMissing = report.unavailable.includes("stage_usage");
+  const runnerUsageMissing = report.unavailable.includes("runner_usage");
   const shippedKnown = report.spend.some((item) => item.shipped !== undefined);
   const perShipped = report.completion.done > 0 ? report.completion.cost_usd / report.completion.done : null;
   const priorPerShipped = priorRecorded(report) && report.previous.done > 0 ? report.previous.cost_usd / report.previous.done : undefined;
@@ -210,11 +212,11 @@ export function CostTab({
           </ToggleGroup>
         }
       >
-        {search.group === "runner" && report.runners === undefined ? (
+        {search.group === "runner" && (report.runners === undefined || runnerUsageMissing) ? (
           <Muted>
             <Dash /> Spend by runner is not recorded.
           </Muted>
-        ) : usageMissing ? (
+        ) : usageMissing || stageUsageMissing ? (
           <Muted>
             <Dash /> Recorded usage is not available.
           </Muted>

@@ -1,3 +1,5 @@
+import { Schema } from "effect";
+
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
@@ -6,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeAccountApi, type AccountApi } from "../../src/app/account/api.ts";
 import { plainSearchOptions } from "../../src/app/lib/searchParams.ts";
 import { ReportsRoute } from "../../src/app/reports/ReportsPage.tsx";
-import type { OrganizationReports } from "../../src/contracts/reports.ts";
+import { ReportsReport, type OrganizationReports } from "../../src/contracts/reports.ts";
 import organizationFixture from "../../src/contracts/fixtures/organizationReports.json";
 import projectFixture from "../../src/contracts/fixtures/reports.json";
 
@@ -245,6 +247,34 @@ describe("organization Reports Overview", () => {
     await openReports(`/reports/${tab}`);
     expect(organizationReads()).toHaveLength(0);
     expect(screen.getByRole("heading", { name: heading })).toBeTruthy();
+  });
+
+  it("explains when PostgreSQL report failure classes are unavailable", async () => {
+    activeProjectId = "prj_alpha";
+    vi.spyOn(api, "reports").mockResolvedValue(Schema.decodeUnknownSync(ReportsReport)({
+      ...projectFixture,
+      failure_classes: [],
+      unavailable: [...projectFixture.unavailable, "failure_classification", "attempt_outcomes_unavailable"],
+    }));
+    await openReports("/reports/failures");
+    expect(screen.getByText("Failure classification is not available in this report source.")).toBeTruthy();
+    expect(screen.queryByText("No recorded failures in this range.")).toBeNull();
+    expect(screen.getByText("Attempt outcomes are not available in this report source.")).toBeTruthy();
+  });
+
+  it("explains when PostgreSQL report rework timelines are unavailable", async () => {
+    activeProjectId = "prj_alpha";
+    vi.spyOn(api, "reports").mockResolvedValue(Schema.decodeUnknownSync(ReportsReport)({
+      ...projectFixture,
+      rework_classes: [],
+      analytics: { ...projectFixture.analytics, quality: { ...projectFixture.analytics.quality!, escapes: 987654, infrastructure_returns: 987653, unavailable: ["escape_classification", "infrastructure_return_classification"] } },
+      unavailable: [...projectFixture.unavailable, "rework_timeline_unavailable"],
+    }));
+    await openReports("/reports/quality");
+    expect(screen.getByText("Rework returns per day are not available in this report source.")).toBeTruthy();
+    expect(screen.getByText("Rework classifications are not available in this report source.")).toBeTruthy();
+    expect(screen.queryByText("987,654")).toBeNull();
+    expect(screen.queryByText("987,653")).toBeNull();
   });
 
   it("keeps the project Overview and Reports read", async () => {

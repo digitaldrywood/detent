@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -132,6 +133,13 @@ func (p tenantNativeRunEventParticipant) ValidateNativeRunEvent(ctx context.Cont
 func (p tenantNativeRunEventParticipant) ApplyNativeRunEvent(ctx context.Context, writer tenantstore.Writer, authority NativeRunEventAuthority) error {
 	if len(authority.UsageCosts) > 0 {
 		if _, err := writer.RecordBillingCosts(ctx, authority.UsageCosts); err != nil {
+			return err
+		}
+		reports, ok := writer.(reportstore.UsageWriter)
+		if !ok {
+			return nativeRunEventStorageUnavailable()
+		}
+		if err := reports.RefreshReportUsage(ctx, authority.UsageCosts); err != nil {
 			return err
 		}
 	}

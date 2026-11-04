@@ -132,6 +132,9 @@ func (s *Service) reportsReadableProjects(ctx context.Context, credential apiCre
 }
 
 func (s *Service) hostedReports(c echo.Context) error {
+	if s.database.postgres != nil {
+		return s.hostedReportsPostgres(c)
+	}
 	ctx := c.Request().Context()
 	credential, _, err := s.hostedCredential(ctx, c)
 	if err != nil {
@@ -234,6 +237,9 @@ func (s *Service) readOrganizationReport(ctx context.Context, credential apiCred
 // from the projects the viewer's report can read. It is a separate read so
 // the report itself runs only its own statements.
 func (s *Service) hostedReportOptions(c echo.Context) error {
+	if s.database.postgres != nil {
+		return s.hostedReportOptionsPostgres(c)
+	}
 	ctx := c.Request().Context()
 	credential, _, err := s.hostedCredential(ctx, c)
 	if err != nil {

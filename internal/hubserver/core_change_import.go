@@ -36,7 +36,7 @@ func ImportCoreChanges(ctx context.Context, target *postgres.Repository, source 
 		}
 		after := ""
 		for {
-			changes, err := readCoreChangePage(ctx, tx, source.OrganizationID, after)
+			changes, err := readCoreChangePage(ctx, tx, source, after)
 			if err != nil {
 				return err
 			}
@@ -82,7 +82,8 @@ type coreChangeImportRow struct {
 	links  []tracker.NativeWorkItemID
 }
 
-func readCoreChangePage(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, after string) ([]coreChangeImportRow, error) {
+func readCoreChangePage(ctx context.Context, tx *sql.Tx, source CoreChangeImportSource, after string) ([]coreChangeImportRow, error) {
+	organization := source.OrganizationID
 	rows, err := tx.QueryContext(ctx, `SELECT id,project_id,work_item_id,record_json FROM change_requests WHERE organization_id=? AND id>? ORDER BY id LIMIT 100`, organization, after)
 	if err != nil {
 		return nil, err
@@ -103,6 +104,9 @@ func readCoreChangePage(ctx context.Context, tx *sql.Tx, organization tracker.Or
 			return nil, err
 		}
 		change.LinkedIssues = links
+		if err := restoreCoreReportLanding(ctx, tx, source, &change); err != nil {
+			return nil, err
+		}
 		result = append(result, coreChangeImportRow{change: change, links: links})
 	}
 	return result, closeCoreChangeRows(rows)

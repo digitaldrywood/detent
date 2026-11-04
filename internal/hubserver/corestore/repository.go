@@ -120,6 +120,8 @@ type WorkItem struct {
 	NativeUpdatedAt        time.Time
 	WorkflowStateName      *string
 	LastActivityAt         time.Time
+	IssueType              string
+	Priority               *int
 }
 
 type Comment struct {

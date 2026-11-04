@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"reflect"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -146,8 +147,8 @@ func (r *Repository) FinalizeCoreChangeImport(ctx context.Context, record events
 		if _, err := s.Version(ctx, record.ID, *record.CurrentVersionID); err != nil {
 			return err
 		}
-		result, err := s.db.ExecContext(ctx, `UPDATE change_requests SET current_version_id=$1,payload_object_key=$2,payload_sha256=$3,payload_bytes=$4,payload_content_bytes=$5,updated_at=$6
-WHERE organization_id=$7 AND project_id=$8 AND id=$9 AND work_item_id=$10 AND revision=$11 AND current_version_id IS NULL`, record.CurrentVersionID, record.PayloadObjectKey, record.PayloadSHA256, record.PayloadBytes, record.PayloadContentBytes, recordTime(record.UpdatedAt), record.OrganizationID, record.ProjectID, record.ID, record.WorkItemID, record.Revision)
+		result, err := s.db.ExecContext(ctx, `UPDATE change_requests SET current_version_id=$1,payload_object_key=$2,payload_sha256=$3,payload_bytes=$4,payload_content_bytes=$5,updated_at=$6,landed_version_id=$7,landed_at=$8,landed_head_sha=$9,landed_merge_sha=$10,landed_base_ref=$11
+WHERE organization_id=$12 AND project_id=$13 AND id=$14 AND work_item_id=$15 AND revision=$16 AND current_version_id IS NULL`, record.CurrentVersionID, record.PayloadObjectKey, record.PayloadSHA256, record.PayloadBytes, record.PayloadContentBytes, recordTime(record.UpdatedAt), record.LandedVersionID, nullableCoreImportTime(record.LandedAt), record.LandedHeadSHA, record.LandedMergeSHA, record.LandedBaseRef, record.OrganizationID, record.ProjectID, record.ID, record.WorkItemID, record.Revision)
 		if err != nil {
 			return mapError(ctx, err)
 		}
@@ -171,7 +172,7 @@ WHERE organization_id=$7 AND project_id=$8 AND id=$9 AND work_item_id=$10 AND re
 
 func sameCoreChangeCurrent(current, expected eventstore.Change) bool {
 	if current.CurrentVersionID == nil || expected.CurrentVersionID == nil {
-		return current.CurrentVersionID == nil && expected.CurrentVersionID == nil && current.PayloadObjectKey == expected.PayloadObjectKey && current.PayloadSHA256 == expected.PayloadSHA256 && current.PayloadBytes == expected.PayloadBytes && current.PayloadContentBytes == expected.PayloadContentBytes
+		return current.CurrentVersionID == nil && expected.CurrentVersionID == nil && current.PayloadObjectKey == expected.PayloadObjectKey && current.PayloadSHA256 == expected.PayloadSHA256 && current.PayloadBytes == expected.PayloadBytes && current.PayloadContentBytes == expected.PayloadContentBytes && reflect.DeepEqual(current.LandedVersionID, expected.LandedVersionID) && sameCoreImportOptionalTime(current.LandedAt, expected.LandedAt) && reflect.DeepEqual(current.LandedHeadSHA, expected.LandedHeadSHA) && reflect.DeepEqual(current.LandedMergeSHA, expected.LandedMergeSHA) && reflect.DeepEqual(current.LandedBaseRef, expected.LandedBaseRef)
 	}
-	return *current.CurrentVersionID == *expected.CurrentVersionID && current.PayloadObjectKey == expected.PayloadObjectKey && current.PayloadSHA256 == expected.PayloadSHA256 && current.PayloadBytes == expected.PayloadBytes && current.PayloadContentBytes == expected.PayloadContentBytes
+	return *current.CurrentVersionID == *expected.CurrentVersionID && current.PayloadObjectKey == expected.PayloadObjectKey && current.PayloadSHA256 == expected.PayloadSHA256 && current.PayloadBytes == expected.PayloadBytes && current.PayloadContentBytes == expected.PayloadContentBytes && reflect.DeepEqual(current.LandedVersionID, expected.LandedVersionID) && sameCoreImportOptionalTime(current.LandedAt, expected.LandedAt) && reflect.DeepEqual(current.LandedHeadSHA, expected.LandedHeadSHA) && reflect.DeepEqual(current.LandedMergeSHA, expected.LandedMergeSHA) && reflect.DeepEqual(current.LandedBaseRef, expected.LandedBaseRef)
 }

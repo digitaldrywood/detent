@@ -310,8 +310,8 @@ type ChangeRequest struct {
 	PayloadContentBytes int64
 	LandedVersionID     *string
 	LandedAt            *time.Time
-	LandedHeadSha       *string
-	LandedMergeSha      *string
+	LandedHeadSHA       *string
+	LandedMergeSHA      *string
 	LandedBaseRef       *string
 }
 
@@ -1266,7 +1266,7 @@ type Issue struct {
 	WorkflowStateName      *string
 	LastActivityAt         time.Time
 	IssueType              string
-	Priority               sql.NullInt16
+	Priority               *int
 }
 
 type IssueClaimFact struct {

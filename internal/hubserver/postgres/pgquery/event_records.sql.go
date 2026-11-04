@@ -384,8 +384,8 @@ func (q *Queries) RecordGetChange(ctx context.Context, arg RecordGetChangeParams
 		&i.PayloadContentBytes,
 		&i.LandedVersionID,
 		&i.LandedAt,
-		&i.LandedHeadSha,
-		&i.LandedMergeSha,
+		&i.LandedHeadSHA,
+		&i.LandedMergeSHA,
 		&i.LandedBaseRef,
 	)
 	return i, err
@@ -979,8 +979,8 @@ func (q *Queries) RecordGetVersionByID(ctx context.Context, arg RecordGetVersion
 }
 
 const recordInsertChange = `-- name: RecordInsertChange :one
-INSERT INTO change_requests (organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, landed_version_id, landed_at, landed_head_sha, landed_merge_sha, landed_base_ref
+INSERT INTO change_requests (organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, landed_version_id, landed_at, landed_head_sha, landed_merge_sha, landed_base_ref)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) RETURNING organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, landed_version_id, landed_at, landed_head_sha, landed_merge_sha, landed_base_ref
 `
 
 type RecordInsertChangeParams struct {
@@ -998,6 +998,11 @@ type RecordInsertChangeParams struct {
 	PayloadSHA256       string
 	PayloadBytes        int64
 	PayloadContentBytes int64
+	LandedVersionID     *string
+	LandedAt            *time.Time
+	LandedHeadSHA       *string
+	LandedMergeSHA      *string
+	LandedBaseRef       *string
 }
 
 func (q *Queries) RecordInsertChange(ctx context.Context, arg RecordInsertChangeParams) (ChangeRequest, error) {
@@ -1016,6 +1021,11 @@ func (q *Queries) RecordInsertChange(ctx context.Context, arg RecordInsertChange
 		arg.PayloadSHA256,
 		arg.PayloadBytes,
 		arg.PayloadContentBytes,
+		arg.LandedVersionID,
+		arg.LandedAt,
+		arg.LandedHeadSHA,
+		arg.LandedMergeSHA,
+		arg.LandedBaseRef,
 	)
 	var i ChangeRequest
 	err := row.Scan(
@@ -1035,8 +1045,8 @@ func (q *Queries) RecordInsertChange(ctx context.Context, arg RecordInsertChange
 		&i.PayloadContentBytes,
 		&i.LandedVersionID,
 		&i.LandedAt,
-		&i.LandedHeadSha,
-		&i.LandedMergeSha,
+		&i.LandedHeadSHA,
+		&i.LandedMergeSHA,
 		&i.LandedBaseRef,
 	)
 	return i, err
@@ -1593,8 +1603,8 @@ func (q *Queries) RecordLatestChange(ctx context.Context, arg RecordLatestChange
 		&i.PayloadContentBytes,
 		&i.LandedVersionID,
 		&i.LandedAt,
-		&i.LandedHeadSha,
-		&i.LandedMergeSha,
+		&i.LandedHeadSHA,
+		&i.LandedMergeSHA,
 		&i.LandedBaseRef,
 	)
 	return i, err
@@ -1637,8 +1647,8 @@ type RecordLatestChangesByWorkItemsRow struct {
 	PayloadContentBytes int64
 	LandedVersionID     *string
 	LandedAt            *time.Time
-	LandedHeadSha       *string
-	LandedMergeSha      *string
+	LandedHeadSHA       *string
+	LandedMergeSHA      *string
 	LandedBaseRef       *string
 }
 
@@ -1669,8 +1679,8 @@ func (q *Queries) RecordLatestChangesByWorkItems(ctx context.Context, arg Record
 			&i.PayloadContentBytes,
 			&i.LandedVersionID,
 			&i.LandedAt,
-			&i.LandedHeadSha,
-			&i.LandedMergeSha,
+			&i.LandedHeadSHA,
+			&i.LandedMergeSHA,
 			&i.LandedBaseRef,
 		); err != nil {
 			return nil, err
@@ -1945,8 +1955,8 @@ func (q *Queries) RecordListChange(ctx context.Context, arg RecordListChangePara
 			&i.PayloadContentBytes,
 			&i.LandedVersionID,
 			&i.LandedAt,
-			&i.LandedHeadSha,
-			&i.LandedMergeSha,
+			&i.LandedHeadSHA,
+			&i.LandedMergeSHA,
 			&i.LandedBaseRef,
 		); err != nil {
 			return nil, err
@@ -2366,8 +2376,8 @@ func (q *Queries) RecordLockChange(ctx context.Context, arg RecordLockChangePara
 		&i.PayloadContentBytes,
 		&i.LandedVersionID,
 		&i.LandedAt,
-		&i.LandedHeadSha,
-		&i.LandedMergeSha,
+		&i.LandedHeadSHA,
+		&i.LandedMergeSHA,
 		&i.LandedBaseRef,
 	)
 	return i, err
@@ -2690,8 +2700,9 @@ func (q *Queries) RecordUnprojectedChangeReviews(ctx context.Context, arg Record
 const recordUpdateChange = `-- name: RecordUpdateChange :one
 UPDATE change_requests SET revision=revision+1, title=$1, current_version_id=$2,
 updated_at=$3, payload_object_key=$4, payload_sha256=$5,
-payload_bytes=$6, payload_content_bytes=$7
-WHERE organization_id=$8 AND id=$9 AND project_id=$10 AND work_item_id=$11 AND revision=$12
+payload_bytes=$6, payload_content_bytes=$7, landed_version_id=$8,
+landed_at=$9, landed_head_sha=$10, landed_merge_sha=$11, landed_base_ref=$12
+WHERE organization_id=$13 AND id=$14 AND project_id=$15 AND work_item_id=$16 AND revision=$17
 RETURNING organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, landed_version_id, landed_at, landed_head_sha, landed_merge_sha, landed_base_ref
 `
 
@@ -2703,6 +2714,11 @@ type RecordUpdateChangeParams struct {
 	PayloadSHA256       string
 	PayloadBytes        int64
 	PayloadContentBytes int64
+	LandedVersionID     *string
+	LandedAt            *time.Time
+	LandedHeadSHA       *string
+	LandedMergeSHA      *string
+	LandedBaseRef       *string
 	OrganizationID      tracker.OrganizationID
 	ID                  string
 	ProjectID           tracker.ProjectID
@@ -2719,6 +2735,11 @@ func (q *Queries) RecordUpdateChange(ctx context.Context, arg RecordUpdateChange
 		arg.PayloadSHA256,
 		arg.PayloadBytes,
 		arg.PayloadContentBytes,
+		arg.LandedVersionID,
+		arg.LandedAt,
+		arg.LandedHeadSHA,
+		arg.LandedMergeSHA,
+		arg.LandedBaseRef,
 		arg.OrganizationID,
 		arg.ID,
 		arg.ProjectID,
@@ -2743,8 +2764,8 @@ func (q *Queries) RecordUpdateChange(ctx context.Context, arg RecordUpdateChange
 		&i.PayloadContentBytes,
 		&i.LandedVersionID,
 		&i.LandedAt,
-		&i.LandedHeadSha,
-		&i.LandedMergeSha,
+		&i.LandedHeadSHA,
+		&i.LandedMergeSHA,
 		&i.LandedBaseRef,
 	)
 	return i, err

@@ -59,6 +59,8 @@ func (s *session) createWorkItem(ctx context.Context, record corestore.WorkItem)
 		Number:                 record.Number,
 		NativeSourceKey:        record.NativeSourceKey,
 		Title:                  record.Title,
+		IssueType:              record.IssueType,
+		Priority:               record.Priority,
 		BodyObjectKey:          record.BodyObjectKey,
 		IssueContractObjectKey: record.IssueContractObjectKey,
 		ReportContextObjectKey: record.ReportContextObjectKey,
@@ -82,6 +84,8 @@ func (s *session) UpdateWorkItem(ctx context.Context, record corestore.WorkItem)
 		EventSequence:          record.EventSequence,
 		NativeSourceKey:        record.NativeSourceKey,
 		Title:                  record.Title,
+		IssueType:              record.IssueType,
+		Priority:               record.Priority,
 		BodyObjectKey:          record.BodyObjectKey,
 		IssueContractObjectKey: record.IssueContractObjectKey,
 		ReportContextObjectKey: record.ReportContextObjectKey,
@@ -152,5 +156,5 @@ func optionalTime(value time.Time) *time.Time {
 }
 
 func workItemRecord(row pgquery.Issue) corestore.WorkItem {
-	return corestore.WorkItem{OrganizationID: row.OrganizationID, ID: row.ID, NativeID: row.NativeID, ProjectID: row.ProjectID, Number: row.Number, Revision: row.Revision, EventSequence: row.EventSequence, NativeSourceKey: row.NativeSourceKey, Title: row.Title, BodyObjectKey: row.BodyObjectKey, IssueContractObjectKey: row.IssueContractObjectKey, ReportContextObjectKey: row.ReportContextObjectKey, ActorKind: row.ActorKind, ActorPrincipalID: row.ActorPrincipalID, ProvenanceProvider: row.ProvenanceProvider, ProvenanceExternalID: row.ProvenanceExternalID, Archived: row.Archived, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, NativeCreatedAt: row.NativeCreatedAt, NativeUpdatedAt: row.NativeUpdatedAt, WorkflowStateName: row.WorkflowStateName, LastActivityAt: row.LastActivityAt}
+	return corestore.WorkItem{IssueType: row.IssueType, Priority: row.Priority, OrganizationID: row.OrganizationID, ID: row.ID, NativeID: row.NativeID, ProjectID: row.ProjectID, Number: row.Number, Revision: row.Revision, EventSequence: row.EventSequence, NativeSourceKey: row.NativeSourceKey, Title: row.Title, BodyObjectKey: row.BodyObjectKey, IssueContractObjectKey: row.IssueContractObjectKey, ReportContextObjectKey: row.ReportContextObjectKey, ActorKind: row.ActorKind, ActorPrincipalID: row.ActorPrincipalID, ProvenanceProvider: row.ProvenanceProvider, ProvenanceExternalID: row.ProvenanceExternalID, Archived: row.Archived, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, NativeCreatedAt: row.NativeCreatedAt, NativeUpdatedAt: row.NativeUpdatedAt, WorkflowStateName: row.WorkflowStateName, LastActivityAt: row.LastActivityAt}
 }

@@ -381,6 +381,8 @@ func prepareCoreWorkItemImport(ctx context.Context, tx *sql.Tx, objects *eventst
 	if err := json.Unmarshal(latestRaw, &current); err != nil || current.OrganizationID != source.OrganizationID || current.ProjectID != item.ProjectID || current.WorkItemID != item.NativeID || int64(current.Number) != item.Number || int64(current.Revision) != item.Revision || current.Title != item.Title || current.Body != row.Body || current.State != row.WorkflowState.String || current.Archived != item.Archived || !current.CreatedAt.Equal(item.NativeCreatedAt) || !current.UpdatedAt.Equal(item.NativeUpdatedAt) || current.Actor.Kind != row.CurrentIssueSnapshot.Actor.Kind || current.Actor.PrincipalID != row.CurrentIssueSnapshot.Actor.PrincipalID || !sameCoreImportStrings(current.Labels, row.CurrentIssueSnapshot.Labels) || !sameCoreImportStrings(current.Assignees, row.CurrentIssueSnapshot.Assignees) {
 		return postgres.CoreWorkItemImport{}, errors.New("current issue row does not match immutable history")
 	}
+	item.IssueType, item.Priority = current.Type, current.Priority
+	record.Item = item
 	var sourceContract *issuecontract.State
 	if row.Contract.Valid && row.Contract.String != "" {
 		if err := json.Unmarshal([]byte(row.Contract.String), &sourceContract); err != nil {
@@ -588,7 +590,7 @@ FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item
 		if err := json.Unmarshal([]byte(actorJSON), &actor); err != nil || actor.Kind == "" || actor.PrincipalID == "" {
 			return eventstore.ErrInvalidRecord
 		}
-		if err := json.Unmarshal([]byte(dataJSON), &data); err != nil {
+		if err := decodeCoreReportData(ctx, tx, source, []byte(dataJSON), &data); err != nil {
 			return eventstore.ErrInvalidRecord
 		}
 		recordedAt, err := time.Parse(time.RFC3339Nano, recorded)

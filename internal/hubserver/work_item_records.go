@@ -1154,6 +1154,7 @@ func writeWorkItemRecord(ctx context.Context, w tenantstore.Writer, plan workIte
 	row.OrganizationID, row.ProjectID, row.NativeID = issue.OrganizationID, issue.ProjectID, issue.WorkItemID
 	row.Archived = issue.Archived
 	row.Number, row.Title, row.WorkflowStateName = int64(issue.Number), issue.Title, &issue.State
+	row.IssueType, row.Priority = issue.Type, issue.Priority
 	row.LastActivityAt = issue.LastActivityAt
 	row.BodyObjectKey = &fields.Body
 	row.IssueContractObjectKey = fields.Contract

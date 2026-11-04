@@ -93,8 +93,8 @@ CROSS JOIN LATERAL (
 ) c;
 
 -- name: RecordInsertChange :one
-INSERT INTO change_requests (organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
-VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id), sqlc.arg(id), sqlc.arg(revision), sqlc.arg(title), sqlc.narg(current_version_id), sqlc.arg(evidence_sequence), sqlc.arg(created_at), sqlc.arg(updated_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes)) RETURNING *;
+INSERT INTO change_requests (organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, landed_version_id, landed_at, landed_head_sha, landed_merge_sha, landed_base_ref)
+VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id), sqlc.arg(id), sqlc.arg(revision), sqlc.arg(title), sqlc.narg(current_version_id), sqlc.arg(evidence_sequence), sqlc.arg(created_at), sqlc.arg(updated_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.narg(landed_version_id), sqlc.narg(landed_at), sqlc.narg(landed_head_sha), sqlc.narg(landed_merge_sha), sqlc.narg(landed_base_ref)) RETURNING *;
 
 -- name: RecordListChange :many
 SELECT c.* FROM change_requests c WHERE c.organization_id=sqlc.arg(organization_id) AND c.project_id=sqlc.arg(project_id) AND c.id>sqlc.arg(after)
@@ -199,7 +199,8 @@ SELECT * FROM change_issue_links WHERE organization_id=$1 AND change_id=$2 AND w
 -- name: RecordUpdateChange :one
 UPDATE change_requests SET revision=revision+1, title=sqlc.arg(title), current_version_id=sqlc.narg(current_version_id),
 updated_at=sqlc.arg(updated_at), payload_object_key=sqlc.arg(payload_object_key), payload_sha256=sqlc.arg(payload_sha256),
-payload_bytes=sqlc.arg(payload_bytes), payload_content_bytes=sqlc.arg(payload_content_bytes)
+payload_bytes=sqlc.arg(payload_bytes), payload_content_bytes=sqlc.arg(payload_content_bytes), landed_version_id=sqlc.narg(landed_version_id),
+landed_at=sqlc.narg(landed_at), landed_head_sha=sqlc.narg(landed_head_sha), landed_merge_sha=sqlc.narg(landed_merge_sha), landed_base_ref=sqlc.narg(landed_base_ref)
 WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND revision=sqlc.arg(expected_revision)
 RETURNING *;
 
