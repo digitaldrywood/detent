@@ -85,22 +85,53 @@ func (s *session) RunnerProjects(ctx context.Context, runnerID string, limit int
 	if limit < 1 || limit > runnerstore.MaxRunnerProjectList {
 		return nil, corestore.ErrInvalidPage
 	}
-	identity, err := s.RunnerIdentity(ctx, runnerID)
+	identity, err := s.runnerIdentityRow(ctx, `runner_id=$2`, runnerID)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT p.id FROM projects p WHERE p.organization_id=$1 AND p.deleted_at IS NULL AND ($3='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.organization_id=$1 AND g.token_id=$2 AND g.project_id=p.id)) ORDER BY p.id LIMIT $4`, s.organization, identity.TokenID, identity.Scope, limit+1)
+	rows, err := s.db.QueryContext(ctx, `SELECT kind,key,number,value FROM (
+SELECT 0 AS kind,'' AS key,position AS number,window_spec AS value FROM runner_availability_windows WHERE organization_id=$1 AND runner_id=$2
+UNION ALL
+SELECT 1,slot_key,capacity,'' FROM runner_availability_window_slots WHERE organization_id=$1 AND runner_id=$2
+UNION ALL
+SELECT 2,project_id,capacity_limit,'' FROM runner_project_capacity_limits WHERE organization_id=$1 AND runner_id=$2
+UNION ALL
+(SELECT 3,project_id,rank,'' FROM runner_project_ranks WHERE organization_id=$1 AND runner_id=$2 ORDER BY project_id LIMIT $6)
+UNION ALL
+(SELECT 4,p.id,0,'' FROM projects p WHERE p.organization_id=$1 AND p.deleted_at IS NULL AND ($4='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.organization_id=$1 AND g.token_id=$3 AND g.project_id=p.id)) ORDER BY p.id LIMIT $5)
+) routing_projects ORDER BY kind,key,number`, s.organization, runnerID, identity.TokenID, identity.Scope, limit+1, runnerstore.MaxRunnerProjectRanks+1)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
 	defer rows.Close()
 	projects := make([]tracker.ProjectID, 0)
+	identity.Availability.WindowSlots = make(map[string]int)
+	identity.ProjectCapacityLimits = make(map[tracker.ProjectID]int)
+	identity.ProjectRanks = make(map[tracker.ProjectID]int)
 	for rows.Next() {
-		var project tracker.ProjectID
-		if err := rows.Scan(&project); err != nil {
+		var kind, number int
+		var key, value string
+		if err := rows.Scan(&kind, &key, &number, &value); err != nil {
 			return nil, mapError(ctx, err)
 		}
-		projects = append(projects, project)
+		switch kind {
+		case 0:
+			if number != len(identity.Availability.Windows) {
+				return nil, corestore.ErrInvalidPage
+			}
+			identity.Availability.Windows = append(identity.Availability.Windows, value)
+		case 1:
+			identity.Availability.WindowSlots[key] = number
+		case 2:
+			identity.ProjectCapacityLimits[tracker.ProjectID(key)] = number
+		case 3:
+			identity.ProjectRanks[tracker.ProjectID(key)] = number
+			if len(identity.ProjectRanks) > runnerstore.MaxRunnerProjectRanks {
+				return nil, runnerstore.ErrInvalidRecord
+			}
+		case 4:
+			projects = append(projects, tracker.ProjectID(key))
+		}
 	}
 	if err := mapError(ctx, rows.Err()); err != nil {
 		return nil, err
@@ -125,6 +156,17 @@ AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.orga
 }
 
 func (s *session) runnerIdentity(ctx context.Context, predicate string, value any) (runnerstore.Identity, error) {
+	row, err := s.runnerIdentityRow(ctx, predicate, value)
+	if err != nil {
+		return runnerstore.Identity{}, err
+	}
+	if err := s.runnerIdentityRouting(ctx, &row); err != nil {
+		return runnerstore.Identity{}, err
+	}
+	return row, nil
+}
+
+func (s *session) runnerIdentityRow(ctx context.Context, predicate string, value any) (runnerstore.Identity, error) {
 	var row runnerstore.Identity
 	var operations pq.StringArray
 	var tags, hostServices pq.StringArray
@@ -155,9 +197,6 @@ func (s *session) runnerIdentity(ctx context.Context, predicate string, value an
 			return runnerstore.Identity{}, corestore.ErrInvalidPage
 		}
 		row.CapacityConfig = &config
-	}
-	if err := s.runnerIdentityRouting(ctx, &row); err != nil {
-		return runnerstore.Identity{}, err
 	}
 	return row, nil
 }

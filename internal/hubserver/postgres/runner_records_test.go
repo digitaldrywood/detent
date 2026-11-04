@@ -2,6 +2,8 @@ package postgres_test
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"slices"
@@ -409,11 +411,15 @@ func TestSetRunnerUrgentUpdateRejectsNonzeroRevisionWithoutCurrentRow(t *testing
 
 func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, smallPool())
+	repository, pool := repositoryFor(t, admin, smallPool())
 	ctx := t.Context()
 	now := historyAt()
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
 	for _, organization := range organizations {
+		if _, err := admin.ExecContext(ctx, `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, organization, now); err != nil {
+			t.Fatal(err)
+		}
+
 		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if _, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "project_shared", Name: "Example", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}); err != nil {
 				return err
@@ -469,6 +475,100 @@ func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 			}
 			t.Fatal(err)
 		}
+	}
+
+	conn, err := pool.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	counter := &reportCountingConnector{}
+	if err := conn.Raw(func(raw any) error { counter.conn = raw.(driver.Conn); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	countedPool := sql.OpenDB(counter)
+	countedPool.SetMaxOpenConns(1)
+	counted, err := postgres.NewRepository(ctx, countedPool, smallPool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := counted.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	for _, organization := range organizations {
+		if _, err := admin.ExecContext(ctx, `INSERT INTO runner_availability_window_slots(organization_id,runner_id,slot_key,capacity) VALUES($1,'runner_shared','example',1)`, organization); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, `INSERT INTO runner_project_capacity_limits(organization_id,runner_id,project_id,capacity_limit) VALUES($1,'runner_shared','project_shared',1)`, organization); err != nil {
+			t.Fatal(err)
+		}
+		t.Run(string(organization)+" projects preserve validity and bound queries", func(t *testing.T) {
+			for _, check := range []struct {
+				name      string
+				setup     string
+				runner    string
+				limit     int
+				want      []tracker.ProjectID
+				wantError error
+			}{
+				{name: "selected grant", runner: "runner_shared", limit: 1, want: []tracker.ProjectID{"project_shared"}},
+				{name: "missing identity", runner: "missing", limit: 1, wantError: corestore.ErrNotFound},
+				{name: "invalid page", runner: "missing", limit: 0, wantError: corestore.ErrInvalidPage},
+				{name: "oversized page", runner: "runner_shared", limit: runnerstore.MaxRunnerProjectList + 1, wantError: corestore.ErrInvalidPage},
+				{name: "window gap", setup: `INSERT INTO runner_availability_windows(organization_id,runner_id,position,window_spec) VALUES($1,'runner_shared',1,'example')`, runner: "runner_shared", limit: 1, wantError: corestore.ErrInvalidPage},
+				{name: "valid routing", setup: `UPDATE runner_availability_windows SET position=0 WHERE organization_id=$1`, runner: "runner_shared", limit: 1, want: []tracker.ProjectID{"project_shared"}},
+				{name: "invalid capacity", setup: `UPDATE runner_identities SET capacity_config_revision=repeat('a',64),capacity_config_local_limit=1,capacity_config_client_limit=1,capacity_config_runtime_limit=1,capacity_config_manageable=true,capacity_config_constraint='invalid',capacity_config_observed_at=created_at WHERE organization_id=$1`, runner: "runner_shared", limit: 1, wantError: corestore.ErrInvalidPage},
+				{name: "valid capacity", setup: `UPDATE runner_identities SET capacity_config_constraint='' WHERE organization_id=$1`, runner: "runner_shared", limit: 1, want: []tracker.ProjectID{"project_shared"}},
+				{name: "ungranted projects excluded", setup: `INSERT INTO projects(organization_id,id,name,profile) VALUES($1,'project_z','Z','native'),($1,'project_a','A','native'),($1,'project_deleted','Deleted','native')`, runner: "runner_shared", limit: 1, want: []tracker.ProjectID{"project_shared"}},
+				{name: "organization order", setup: `UPDATE runner_identities SET scope='organization' WHERE organization_id=$1`, runner: "runner_shared", limit: 4, want: []tracker.ProjectID{"project_a", "project_deleted", "project_shared", "project_z"}},
+				{name: "project limit", runner: "runner_shared", limit: 3, wantError: runnerstore.ErrLimitExceeded},
+				{name: "deleted project", setup: `UPDATE projects SET deleted_at=created_at WHERE organization_id=$1 AND id='project_deleted'`, runner: "runner_shared", limit: 3, want: []tracker.ProjectID{"project_a", "project_shared", "project_z"}},
+				{name: "selected scope restored", setup: `UPDATE runner_identities SET scope='projects' WHERE organization_id=$1`, runner: "runner_shared", limit: 1, want: []tracker.ProjectID{"project_shared"}},
+				{name: "rank boundary", setup: fmt.Sprintf(`WITH added AS (INSERT INTO projects(organization_id,id,name,profile) SELECT $1,'rank_'||i,'Rank '||i,'native' FROM generate_series(1,%d) i RETURNING id) INSERT INTO runner_project_ranks(organization_id,runner_id,project_id,rank) SELECT $1,'runner_shared',id,1 FROM added`, runnerstore.MaxRunnerProjectRanks), runner: "runner_shared", limit: 1, want: []tracker.ProjectID{"project_shared"}},
+				{name: "rank overflow", setup: `INSERT INTO runner_project_ranks(organization_id,runner_id,project_id,rank) VALUES($1,'runner_shared','project_shared',1)`, runner: "runner_shared", limit: 1, wantError: runnerstore.ErrInvalidRecord},
+				{name: "routing restored", setup: `DELETE FROM runner_project_ranks WHERE organization_id=$1 AND project_id='project_shared'`, runner: "runner_shared", limit: 1, want: []tracker.ProjectID{"project_shared"}},
+			} {
+				t.Run(check.name, func(t *testing.T) {
+					if check.setup != "" {
+						if _, err := admin.ExecContext(ctx, check.setup, organization); err != nil {
+							t.Fatal(err)
+						}
+					}
+					checkProjects := func(r tenantstore.Reader) error {
+						counter.count.Store(0)
+						projects, err := r.RunnerProjects(ctx, check.runner, check.limit)
+						queries := counter.count.Load()
+						if check.wantError == corestore.ErrInvalidPage && check.limit == 1 || check.wantError == runnerstore.ErrInvalidRecord {
+							if _, identityErr := r.RunnerIdentity(ctx, check.runner); !errors.Is(identityErr, check.wantError) {
+								t.Errorf("identity error=%v, want %v", identityErr, check.wantError)
+							}
+						}
+						if !errors.Is(err, check.wantError) || !slices.Equal(projects, check.want) {
+							t.Errorf("projects=%v error=%v, want %v error=%v", projects, err, check.want, check.wantError)
+						}
+						if check.wantError == nil {
+							t.Logf("RunnerProjects actual PostgreSQL queries=%d", queries)
+							if queries != 2 {
+								t.Errorf("RunnerProjects queries=%d, want 2", queries)
+							}
+						}
+						return nil
+					}
+					if err := counted.ReadTenant(ctx, organization, corestore.Serving, checkProjects); err != nil {
+						t.Fatal(err)
+					}
+					if err := counted.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error { return checkProjects(w) }); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
+		})
 	}
 
 	if err := repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
