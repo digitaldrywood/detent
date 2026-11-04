@@ -122,6 +122,8 @@ type WorkItem struct {
 	LastActivityAt         time.Time
 	IssueType              string
 	Priority               *int
+	DispatchGeneration     int64
+	DispatchRequestedAt    *time.Time
 }
 
 type Comment struct {

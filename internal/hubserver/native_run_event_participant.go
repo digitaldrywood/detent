@@ -88,6 +88,20 @@ func (p tenantNativeRunEventParticipant) ValidateNativeRunEvent(ctx context.Cont
 	}
 	event := authority.Event
 	item, lease := authority.WorkItem, authority.Lease
+	if event.Data.Sequence == 1 {
+		dispatch, ok := reader.(tenantstore.DispatchReader)
+		if !ok {
+			return nativeRunEventStorageUnavailable()
+		}
+		state, err := dispatch.IssueDispatchState(ctx, authority.ProjectID, item.NativeID)
+		if err != nil {
+			return err
+		}
+		if state.Revision != lease.WorkItemRevision {
+			return tracker.ErrStaleFencingToken
+		}
+		authority.DispatchGeneration = state.Generation
+	}
 	if event.Data.Sequence > 1 {
 		attempt, err := reader.Attempt(ctx, event.Data.AttemptID)
 		if err != nil {
