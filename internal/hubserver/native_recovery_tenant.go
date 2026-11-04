@@ -88,7 +88,11 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 	var events []eventstore.Event
 	var mergeHistoryTruncated bool
 	var projectSequence int64
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return tracker.NativeRecovery{}, nativeRunEventStorageUnavailable()
+	}
+	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -803,7 +807,11 @@ func findRecoveryAttemptSnapshot(snapshots []tenantAttemptSnapshot, attemptID st
 
 func (s *Service) readNativeRecoveryAttemptSnapshot(ctx context.Context, scope nativeScope, item string, issueID int64, attemptID string) (tenantAttemptSnapshot, error) {
 	var snapshot tenantAttemptSnapshot
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return tenantAttemptSnapshot{}, nativeRunEventStorageUnavailable()
+	}
+	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
