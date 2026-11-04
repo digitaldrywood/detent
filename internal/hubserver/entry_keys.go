@@ -144,10 +144,20 @@ func (s *Service) entryKeyTools(ctx context.Context) ([]operatortool.Definition,
 	definitions = append(definitions, projects...)
 	definitions = append(definitions, fleet...)
 	definitions = append(definitions, (hostedContextExecutor{service: s}).listTools(ctx)...)
+	if catalog, err := operatorCatalog(ctx); err == nil && catalog.credential.HostedRole != "account" {
+		for _, definition := range operatortool.ThreadCatalog() {
+			if definition.Name != "list_threads" && definition.Name != "get_thread" {
+				continue
+			}
+			if _, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, Action: definition.Name}); err == nil {
+				definitions = append(definitions, definition)
+			}
+		}
+	}
 	supported := make([]operatortool.Definition, 0)
 	for _, definition := range definitions {
 		switch definition.Name {
-		case "list_projects", "get_native_project", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates:
+		case "list_projects", "get_native_project", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, "list_threads", "get_thread":
 			supported = append(supported, definition)
 		}
 	}
