@@ -205,6 +205,16 @@ type CreditTransaction struct {
 	RecordedAt           time.Time
 }
 
+type CreditExportEntry struct {
+	ID                   int64
+	RecordedAt           time.Time
+	Kind                 string
+	TurnID               string
+	Tokens               *int64
+	AmountMicros         int64
+	IncludedAmountMicros int64
+}
+
 type CreditHistoryEntry struct {
 	ID                   int64
 	AmountMicros         int64
@@ -311,6 +321,7 @@ type Reader interface {
 	BillingCreditTransactions(context.Context, string, int64, int) ([]CreditTransaction, error)
 	BillingRecentCreditTransactions(context.Context, string, int) ([]CreditTransaction, error)
 	BillingCreditTransactionBySource(context.Context, string, string) (CreditTransaction, error)
+	BillingCreditExport(context.Context, string, int64, int64, int64, time.Time, int64, int) (int64, []CreditExportEntry, error)
 	BillingCreditHistory(context.Context, string, int64, int64, int64, int64, int64, int) (int64, int64, []CreditHistoryEntry, error)
 	BillingCreditUsage(context.Context, string, time.Time, time.Time) (int64, error)
 	BillingMonthlyPolicy(context.Context, tracker.ProjectID) (MonthlyPolicy, error)
