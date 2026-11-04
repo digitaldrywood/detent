@@ -271,3 +271,34 @@ func (s *session) SpendBillingIncludedCredit(ctx context.Context, row billingsto
 	err = s.queries.SpendBillingCreditPeriod(ctx, pgquery.SpendBillingCreditPeriodParams{OrganizationID: s.organization, Mode: row.Mode, PeriodStart: row.StartsAt, PeriodEnd: row.EndsAt, UsedMicros: used})
 	return used, mapError(ctx, err)
 }
+
+func (s *session) BillingCreditExport(ctx context.Context, mode string, snapshot, from, to int64, beforeAt time.Time, beforeID int64, limit int) (int64, []billingstore.CreditExportEntry, error) {
+	if err := checkPage(limit); err != nil {
+		return snapshot, nil, err
+	}
+	if snapshot == 0 {
+		if err := s.db.QueryRowContext(ctx, `SELECT coalesce(max(id),0) FROM ai_credit_transactions WHERE organization_id=$1 AND mode=$2`, s.organization, mode).Scan(&snapshot); err != nil {
+			return 0, nil, mapError(ctx, err)
+		}
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT t.id,t.recorded_at,t.kind,
+ CASE WHEN t.kind='usage' THEN substr(t.source,7) ELSE '' END,
+ CASE WHEN t.kind='usage' THEN u.input+u.output ELSE NULL END,t.amount_micros,t.included_amount_micros
+ FROM ai_credit_transactions t LEFT JOIN conversation_usage u ON t.kind='usage' AND left(t.source,6)='usage:' AND u.organization_id=t.organization_id AND u.turn_id=substr(t.source,7)
+ WHERE t.organization_id=$1 AND t.mode=$2 AND t.id<=$3
+ AND t.recorded_at >= $4 AND t.recorded_at < $5
+ AND (t.recorded_at,t.id)<($6,$7) ORDER BY t.recorded_at DESC,t.id DESC LIMIT $8`, s.organization, mode, snapshot, time.UnixMicro(from), time.UnixMicro(to), beforeAt, beforeID, limit)
+	if err != nil {
+		return snapshot, nil, mapError(ctx, err)
+	}
+	defer rows.Close()
+	result := make([]billingstore.CreditExportEntry, 0, limit)
+	for rows.Next() {
+		var row billingstore.CreditExportEntry
+		if err := rows.Scan(&row.ID, &row.RecordedAt, &row.Kind, &row.TurnID, &row.Tokens, &row.AmountMicros, &row.IncludedAmountMicros); err != nil {
+			return snapshot, nil, mapError(ctx, err)
+		}
+		result = append(result, row)
+	}
+	return snapshot, result, mapError(ctx, rows.Err())
+}

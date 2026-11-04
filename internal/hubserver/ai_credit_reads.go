@@ -195,12 +195,12 @@ func (s *Service) hostedCreditTransactions(c echo.Context) error {
 }
 
 func (s *Service) exportCreditTransactions(ctx context.Context, c echo.Context, credential apiCredential, p creditPageRequest) error {
-	if s.database.billingRepository != nil {
-		return s.nativeAPIError(c, ErrBillingUsageUnavailable)
-	}
 	from, to, err := p.bounds()
 	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	if s.database.billingRepository != nil {
+		return s.exportPostgresCreditTransactions(ctx, c, credential, from, to)
 	}
 	d := s.database
 	rows, err := d.reader.QueryContext(ctx, `SELECT t.recorded_at,t.kind,
@@ -212,15 +212,8 @@ func (s *Service) exportCreditTransactions(ctx context.Context, c echo.Context, 
 		return s.nativeAPIError(c, err)
 	}
 	defer rows.Close()
-	auditCtx := mutation.WithContext(ctx, mutation.Metadata{Action: "billing_export", Source: "http", CorrelationID: s.config.newLeaseID()})
-	if err := s.hostedAudit(auditCtx, credential.Hosted, "billing_exported", c.Path(), "", http.StatusOK); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	c.Response().Header().Set(echo.HeaderContentType, "text/csv; charset=utf-8")
-	c.Response().Header().Set(echo.HeaderContentDisposition, `attachment; filename="credit-transactions.csv"`)
-	c.Response().Header().Set(echo.HeaderCacheControl, "no-store")
-	writer := csv.NewWriter(c.Response())
-	if err := writer.Write([]string{"recorded_at", "kind", "turn_id", "tokens", "charged_amount_usd", "included_amount_usd"}); err != nil {
+	writer, err := s.creditCSVWriter(ctx, c, credential)
+	if err != nil {
 		return err
 	}
 	for rows.Next() {
@@ -230,18 +223,7 @@ func (s *Service) exportCreditTransactions(ctx context.Context, c echo.Context, 
 		if err := rows.Scan(&at, &kind, &turn, &tokens, &amount, &included); err != nil {
 			return err
 		}
-		tokenText := ""
-		if tokens != nil {
-			tokenText = strconv.FormatInt(*tokens, 10)
-		}
-		signed := strconv.FormatInt(amount, 10)
-		sign := ""
-		if strings.HasPrefix(signed, "-") {
-			sign, signed = "-", signed[1:]
-		}
-		signed = strings.Repeat("0", max(0, 7-len(signed))) + signed
-		dollars := sign + signed[:len(signed)-6] + "." + signed[len(signed)-6:]
-		if err := writer.Write([]string{time.UnixMicro(at).UTC().Format(time.RFC3339Nano), kind, creditCSVCell(turn), tokenText, dollars, fmt.Sprintf("%d.%06d", included/1000000, included%1000000)}); err != nil {
+		if err := writeCreditCSVEntry(writer, billingstore.CreditExportEntry{RecordedAt: time.UnixMicro(at).UTC(), Kind: kind, TurnID: turn, Tokens: tokens, AmountMicros: amount, IncludedAmountMicros: included}); err != nil {
 			return err
 		}
 	}
@@ -258,4 +240,76 @@ func creditCSVCell(value string) string {
 		return "'" + value
 	}
 	return value
+}
+
+func (s *Service) creditCSVWriter(ctx context.Context, c echo.Context, credential apiCredential) (*csv.Writer, error) {
+	auditCtx := mutation.WithContext(ctx, mutation.Metadata{Action: "billing_export", Source: "http", CorrelationID: s.config.newLeaseID()})
+	if err := s.hostedAudit(auditCtx, credential.Hosted, "billing_exported", c.Path(), "", http.StatusOK); err != nil {
+		return nil, s.nativeAPIError(c, err)
+	}
+	c.Response().Header().Set(echo.HeaderContentType, "text/csv; charset=utf-8")
+	c.Response().Header().Set(echo.HeaderContentDisposition, `attachment; filename="credit-transactions.csv"`)
+	c.Response().Header().Set(echo.HeaderCacheControl, "no-store")
+	writer := csv.NewWriter(c.Response())
+	if err := writer.Write([]string{"recorded_at", "kind", "turn_id", "tokens", "charged_amount_usd", "included_amount_usd"}); err != nil {
+		return nil, err
+	}
+	return writer, nil
+}
+
+func writeCreditCSVEntry(writer *csv.Writer, row billingstore.CreditExportEntry) error {
+	at, kind, turn, tokens, amount, included := row.RecordedAt, row.Kind, row.TurnID, row.Tokens, row.AmountMicros, row.IncludedAmountMicros
+	tokenText := ""
+	if tokens != nil {
+		tokenText = strconv.FormatInt(*tokens, 10)
+	}
+	signed := strconv.FormatInt(amount, 10)
+	sign := ""
+	if strings.HasPrefix(signed, "-") {
+		sign, signed = "-", signed[1:]
+	}
+	signed = strings.Repeat("0", max(0, 7-len(signed))) + signed
+	dollars := sign + signed[:len(signed)-6] + "." + signed[len(signed)-6:]
+	if err := writer.Write([]string{at.UTC().Format(time.RFC3339Nano), kind, creditCSVCell(turn), tokenText, dollars, fmt.Sprintf("%d.%06d", included/1000000, included%1000000)}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Service) exportPostgresCreditTransactions(ctx context.Context, c echo.Context, credential apiCredential, from, to int64) error {
+	const pageSize = 100
+	var snapshot int64
+	beforeAt, beforeID := time.UnixMicro(math.MaxInt64), int64(math.MaxInt64)
+	var writer *csv.Writer
+	for {
+		var rows []billingstore.CreditExportEntry
+		err := s.database.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+			var err error
+			snapshot, rows, err = reader.BillingCreditExport(ctx, s.database.aiCreditMode, snapshot, from, to, beforeAt, beforeID, pageSize)
+			return err
+		})
+		if err != nil {
+			if writer == nil {
+				return s.nativeAPIError(c, err)
+			}
+			return err
+		}
+		if writer == nil {
+			writer, err = s.creditCSVWriter(ctx, c, credential)
+			if err != nil {
+				return err
+			}
+		}
+		for _, row := range rows {
+			if err := writeCreditCSVEntry(writer, row); err != nil {
+				return err
+			}
+			beforeAt, beforeID = row.RecordedAt, row.ID
+		}
+		if len(rows) < pageSize {
+			break
+		}
+	}
+	writer.Flush()
+	return writer.Error()
 }

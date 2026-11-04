@@ -50,7 +50,7 @@ func (s *Service) registerHostedRoutes(e *echo.Echo) {
 	e.PUT("/api/v2/organizations/:organization/billing/credits/auto-fund", s.hostedCreditAutoFund)
 	e.POST("/webhooks/stripe", s.hostedStripeWebhook)
 	e.GET("/api/cloud/billing/subscription", s.hostedBillingExport)
-	e.GET("/api/v2/organizations/:organization/billing/credits/transactions", s.hostedCreditTransactions)
+	s.registerHostedCreditReadRoutes(e)
 	e.POST("/organization/create", s.createHostedOrganization)
 	e.POST("/organization/switch", s.switchHostedOrganization)
 	e.POST("/organization/invite", s.inviteHostedMember)
@@ -440,4 +440,8 @@ func (s *Service) hostedAccountSetupFor(ctx context.Context, session auth.Sessio
 	}
 	staff := s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == ""
 	return hostedAccountSetup{Email: session.Email, CanCreate: members == 0 && session.Identity.Subject == s.config.Hosted.BootstrapSubject && session.Identity.SupportActor == "" && (s.config.Hosted.SharedEntry != nil || !staff), CanSupport: session.Identity.SupportActor == "" && hostedEmailListed(s.config.Hosted.SupportActors, session.Email), Staff: staff}, nil
+}
+
+func (s *Service) registerHostedCreditReadRoutes(e *echo.Echo) {
+	e.GET(hostedOrganizationBase+"/billing/credits/transactions", s.hostedCreditTransactions)
 }

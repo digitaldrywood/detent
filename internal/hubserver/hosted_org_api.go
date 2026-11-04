@@ -54,7 +54,7 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	e.GET(hostedOrganizationBase+"/integrations/slack", s.getSlackIntegration, session)
 	e.PUT(hostedOrganizationBase+"/integrations/slack", s.setSlackIntegration, administration)
 	e.POST(hostedOrganizationBase+"/integrations/slack/test", s.testSlackIntegration, administration)
-	e.GET(hostedOrganizationBase+"/monthly-budget", s.organizationMonthlyBudgetScope, session)
+	s.registerOrganizationBudgetReadRoutes(e)
 	e.PUT(hostedOrganizationBase+"/monthly-budget", s.organizationMonthlyBudgetScope, administration)
 	e.GET(hostedOrganizationBase+"/projects", s.listHostedProjects, session)
 	e.GET(hostedOrganizationBase+"/project-rank", s.hostedProjectRank, session)
@@ -791,4 +791,8 @@ func (s *Service) readHostedOperation(ctx context.Context, command hostedCommand
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	return s.readHostedOperationRecord(ctx, command.forContext(ctx))
+}
+
+func (s *Service) registerOrganizationBudgetReadRoutes(e *echo.Echo) {
+	e.GET(hostedOrganizationBase+"/monthly-budget", s.organizationMonthlyBudgetScope, s.hostedSessionOnly)
 }
