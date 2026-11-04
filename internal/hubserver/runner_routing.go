@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -492,153 +493,209 @@ func (s *Service) updateRunnerRouting(c echo.Context) error {
 }
 
 func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeScope, resource string, request runnerRoutingRequest) (any, error) {
-	change := request.RoutingChange
-	if len(request.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("Project capacity updates require an idempotency key of 1 to 128 characters")
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	if len(request.IdempotencyKey) > 128 || scope.credential.Runner.RunnerID != "" {
+		return nil, nativeInvalid("Invalid runner routing command")
 	}
-	scope.managedRunner = resource
-	scope.managedRunnerScope = request.Normalized().Scope
-	scope.managedRunnerProjects = request.Normalized().ProjectIDs
-	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
-		organization := tracker.OrganizationID(string(scope.organization))
-		r, err := readRunner(ctx, tx, organization, resource, now)
-		if err != nil {
-			return nil, err
+	current, err := s.readRunnerRouting(ctx, scope, resource)
+	if err != nil {
+		return nil, err
+	}
+	change := request.effective(current.Routing)
+	if request.ProjectRanks == nil {
+		change.ProjectRanks = current.ProjectRanks
+	}
+	if err := change.Validate(); err != nil {
+		return nil, nativeInvalid(err.Error())
+	}
+	if !maps.Equal(change.ProjectCapacityLimits, current.ProjectCapacityLimits) && strings.TrimSpace(request.IdempotencyKey) == "" {
+		return nil, nativeInvalid("Project capacity updates require an idempotency key")
+	}
+	projects := append(slices.Clone(runnerManagementProjects(current)), change.ProjectIDs...)
+	for project := range change.ProjectCapacityLimits {
+		if !change.AllowsProject(project) {
+			return nil, nativeInvalid("Project capacity limits require existing runner project access")
 		}
-		if request.ProjectCapacityLimits != nil && !maps.Equal(request.ProjectCapacityLimits, r.ProjectCapacityLimits) && strings.TrimSpace(request.IdempotencyKey) == "" {
-			return nil, nativePublicInvalid("Project capacity updates require an idempotency key of 1 to 128 characters")
-		}
-		operation := "runner_routing " + resource
-		hash, err := nativeCommandHash(request)
-		if err != nil {
-			return nil, err
-		}
-		if request.IdempotencyKey != "" {
-			raw, found, err := nativeCommandReceipt(ctx, tx, scope, operation, request.IdempotencyKey, hash)
+		projects = append(projects, project)
+	}
+	for project := range change.ProjectRanks {
+		projects = append(projects, project)
+	}
+	if current.Scope == "organization" || change.Scope == "organization" {
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			rows, err := reader.Projects(ctx, "", corestore.MaxPageSize)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			if found {
-				return json.RawMessage(raw), nil
+			if len(rows) == corestore.MaxPageSize {
+				return corestore.ErrInvalidPage
 			}
+			for _, project := range rows {
+				projects = append(projects, project.ID)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, projectRecordError(err)
 		}
-		if r.Revision != change.ExpectedRevision {
-			return nil, nativeConflict(tracker.Revision(r.Revision))
-		}
-		change = request.effective(r.Routing)
-		if change.Scope != r.Scope || !slices.Equal(change.ProjectIDs, r.ProjectIDs) {
-			owned, err := runnerOwnedBy(ctx, tx, organization, r.RunnerID, scope.credential)
-			if err != nil {
-				return nil, err
-			}
-			if !owned && r.Scope == "projects" && change.Scope == "organization" && canManageProjectSecrets(scope.credential) {
-				adminScope := scope
-				adminScope.requireHostedAdmin = true
-				if err := s.requireRunnerAdministration(ctx, tx, adminScope, now); err != nil {
-					return nil, err
-				}
-				owned = true
-			}
-			if !owned {
-				return nil, &nativeError{Code: "access_denied", Message: "Only the runner owner may change its allowed projects", status: http.StatusForbidden, publicMessage: true}
-			}
-		}
-		if change.ProjectRanks == nil {
-			var settings runnerSettings
-			var raw string
-			if err := tx.QueryRowContext(ctx, "SELECT routing_settings_json FROM runner_identities WHERE id=?", r.RunnerID).Scan(&raw); err != nil {
-				return nil, err
-			}
-			if err := decodeStorageJSON(ctx, []byte(raw), &settings); err != nil {
-				return nil, err
-			}
-			change.ProjectRanks = settings.ProjectRanks
-		}
-		if change.CapacityLimit != r.CapacityLimit {
-			change.CapacityRequest = nil
-		}
-		if (change.CapacityLimit != r.CapacityLimit || r.CapacityRequiresApplication(change.CapacityLimit)) && change.CapacityLimit > 0 && freshCapacityConfig(r, now) {
-			change.CapacityRequest = &runnerauth.CapacityRequest{ExpectedConfigRevision: r.CapacityConfig.Revision, Capacity: change.CapacityLimit}
-		}
-		if err := change.Validate(); err != nil {
-			return nil, nativeInvalid(err.Error())
-		}
-		for project := range change.ProjectCapacityLimits {
-			if !change.AllowsProject(project) {
-				return nil, nativePublicInvalid("Project capacity limits require existing runner project access")
-			}
-		}
-		projects := slices.Clone(change.ProjectIDs)
-		for project := range change.ProjectCapacityLimits {
-			if !slices.Contains(projects, project) {
-				projects = append(projects, project)
-			}
-		}
-		for project := range change.ProjectRanks {
-			if !slices.Contains(projects, project) {
-				projects = append(projects, project)
-			}
+	}
+	slices.Sort(projects)
+	projects = slices.Compact(projects)
+	if len(projects) > corestore.MaxPageSize {
+		return nil, corestore.ErrInvalidPage
+	}
+	authorize := func(reader tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, reader, scope, true); err != nil {
+			return err
 		}
 		for _, project := range projects {
-			var count int
-			if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id = ? AND id = ?", organization, project).Scan(&count); err != nil {
-				return nil, err
+			row, err := reader.Project(ctx, project)
+			if err != nil {
+				return err
 			}
-			if count != 1 {
-				return nil, nativePublicInvalid("Runner projects must belong to the organization")
+			if row.DeletedAt != nil {
+				return corestore.ErrNotFound
 			}
-		}
-		tags, err := marshalNative(change.Tags)
-		if err != nil {
-			return nil, err
-		}
-		change.ProjectRankOverrides = change.ProjectRanks
-		settings, err := marshalNative(settingsFromRouting(change.Routing))
-		if err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE runner_identities SET display_name = ?, tags_json = ?, state = ?, capacity_limit = ?, routing_settings_json = ?, revision = revision + 1, scope = ? WHERE id = ?`, change.DisplayName, tags, change.State, change.CapacityLimit, settings, change.Scope, r.RunnerID); err != nil {
-			return nil, err
-		}
-		if err := storeRunnerRoutingFacts(ctx, tx, r.RunnerID, settings); err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, "DELETE FROM token_grants WHERE token_id = (SELECT token_id FROM runner_identities WHERE id = ?)", r.RunnerID); err != nil {
-			return nil, err
-		}
-		for _, project := range change.ProjectIDs {
-			if _, err := tx.ExecContext(ctx, "INSERT INTO token_grants (token_id, organization_id, project_id) SELECT token_id, organization_id, ? FROM runner_identities WHERE id = ?", project, r.RunnerID); err != nil {
-				return nil, err
+			selected := scope
+			selected.project = project
+			if err := s.authorizeAccessScope(ctx, reader, selected, true); err != nil {
+				return err
 			}
-		}
-		if request.ProjectCapacityLimits != nil && !maps.Equal(request.ProjectCapacityLimits, r.ProjectCapacityLimits) {
-			if _, err := tx.ExecContext(ctx, "DELETE FROM runner_project_capacity_limits WHERE organization_id=? AND runner_id=?", organization, r.RunnerID); err != nil {
-				return nil, err
-			}
-			for project, limit := range request.ProjectCapacityLimits {
-				if _, err := tx.ExecContext(ctx, "INSERT INTO runner_project_capacity_limits (organization_id, runner_id, project_id, capacity_limit) VALUES (?, ?, ?, ?)", organization, r.RunnerID, project, limit); err != nil {
-					return nil, err
+			if scope.credential.Hosted != nil {
+				member, err := reader.AccessMember(ctx, scope.credential.Hosted.Subject)
+				if err != nil {
+					return err
+				}
+				if lesserHostedRole(member.Role, scope.credential.HostedRole) == "member" {
+					grant, err := reader.AccessProjectGrant(ctx, member.UserID, project)
+					if err != nil || !grant.ManageRunner {
+						return accessstore.ErrDenied
+					}
 				}
 			}
 		}
-		if err := refreshRunnerProblems(ctx, tx, organization, r.RunnerID, now); err != nil {
-			return nil, err
+		return nil
+	}
+	hash, err := nativeCommandHash(request)
+	if err != nil {
+		return nil, err
+	}
+	operation := "runner_routing " + resource
+	var identity runnerstore.Identity
+	var receipt eventstore.Receipt
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := authorize(reader); err != nil {
+			return err
 		}
-		updated, err := readRunner(ctx, tx, organization, r.RunnerID, now)
+		var err error
+		identity, err = reader.RunnerIdentity(ctx, resource)
+		if err != nil || request.IdempotencyKey == "" {
+			return err
+		}
+		receipt, err = reader.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		return nil, projectRecordError(err)
+	}
+	content := eventstore.NewContent(s.runDetailStore())
+	if receipt.CommandKey != "" {
+		if receipt.RequestHash != hash {
+			return nil, nativeConflict(0)
+		}
+		return content.Receipt(ctx, receipt)
+	}
+	if identity.Revision != change.ExpectedRevision || current.Revision != identity.Revision {
+		return nil, nativeConflict(tracker.Revision(identity.Revision))
+	}
+	identity.Scope, identity.ProjectIDs = change.Scope, change.ProjectIDs
+	identity.DisplayName, identity.State, identity.Tags = change.DisplayName, change.State, change.Tags
+	identity.CapacityLimit, identity.MachineUse = int64(change.CapacityLimit), change.MachineUse
+	identity.IsolationTier, identity.HostServices = change.IsolationTier, change.HostServices
+	identity.Availability = runnerstore.Availability(change.Availability)
+	identity.ProjectCapacityLimits, identity.ProjectRanks = change.ProjectCapacityLimits, change.ProjectRanks
+	previousRouting := current.Routing
+	current.Routing, current.Revision = change.Routing, identity.Revision+1
+	raw, err := json.Marshal(current)
+	if err != nil {
+		return nil, err
+	}
+	if request.IdempotencyKey != "" {
+		receipt, err = content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.now()}, raw)
 		if err != nil {
 			return nil, err
 		}
+	}
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		if err := authorize(writer); err != nil {
+			return err
+		}
 		if request.IdempotencyKey != "" {
-			raw, err := marshalNative(updated)
-			if err != nil {
-				return nil, err
+			previous, err := writer.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
+			if err == nil {
+				if previous.RequestHash != hash {
+					return nativeConflict(0)
+				}
+				receipt = previous
+				return nil
 			}
-			if _, err := insertNativeCommandReceipt(ctx, tx, organization, scope.credential.ID, operation, request.IdempotencyKey, hash, raw, formatHubTime(now)); err != nil {
-				return nil, err
+			if !errors.Is(err, corestore.ErrNotFound) {
+				return err
 			}
 		}
-		return updated, nil
+		if change.Scope != previousRouting.Scope || !slices.Equal(change.ProjectIDs, previousRouting.ProjectIDs) {
+			enrollment, err := writer.RunnerEnrollment(ctx, identity.EnrollmentID)
+			if err != nil {
+				return err
+			}
+			owned := enrollment.CreatedBy == scope.credential.ID
+			if !owned && scope.credential.Hosted != nil {
+				creator, err := writer.AccessCredential(ctx, enrollment.CreatedBy)
+				if err != nil {
+					return err
+				}
+				owned = creator.UserID == scope.credential.Hosted.Subject
+			}
+			if !owned && previousRouting.Scope == "projects" && change.Scope == "organization" && canManageProjectSecrets(scope.credential) {
+				administrator := scope
+				administrator.requireHostedAdmin = true
+				owned = s.authorizeAccessScope(ctx, writer, administrator, true) == nil
+			}
+			if !owned {
+				return accessstore.ErrDenied
+			}
+			for _, project := range previousRouting.ProjectIDs {
+				if err := writer.DeleteAccessTokenGrant(ctx, identity.TokenID, project); err != nil {
+					return err
+				}
+			}
+			for _, project := range change.ProjectIDs {
+				if err := writer.CreateAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: scope.organization, TokenID: identity.TokenID, ProjectID: project}); err != nil {
+					return err
+				}
+			}
+		}
+		if err := writer.UpdateRunnerRouting(ctx, change.ExpectedRevision, identity); err != nil {
+			return err
+		}
+		if request.IdempotencyKey != "" {
+			var err error
+			receipt, err = writer.PutReceipt(ctx, receipt)
+			return err
+		}
+		return nil
 	})
+	if err != nil {
+		return nil, projectRecordError(err)
+	}
+	if request.IdempotencyKey != "" {
+		return content.Receipt(ctx, receipt)
+	}
+	return json.RawMessage(raw), nil
 }
 
 func (s *Service) updateRunnerHost(c echo.Context) error {

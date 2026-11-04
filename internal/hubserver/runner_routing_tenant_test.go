@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -33,7 +34,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	asOf := now
-	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: slog.Default(), now: func() time.Time { return now }, Version: "0.177.4"}}
+	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Logger: slog.Default(), now: func() time.Time { return now }, Version: "0.177.4"}}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: strings.ReplaceAll(string(org), "_", "-"), CreatedAt: now}); err != nil {
@@ -64,7 +65,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 				if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: org, ID: "enrollment_" + id, RunnerID: runner, MachineID: tracker.MachineID(machine), TokenHash: apikey.HashToken(string(org) + "_enroll_" + id), Scope: "projects", Operations: []string{runnerauth.Read, runnerauth.Claim}, CreatedAt: now.Add(-time.Hour), ExpiresAt: expires, CreatedBy: "admin_" + string(org)}); err != nil {
 					return err
 				}
-				identity := runnerstore.Identity{OrganizationID: org, RunnerID: runner, MachineID: tracker.MachineID(machine), TokenID: runner, EnrollmentID: "enrollment_" + id, Scope: "projects", State: "active", DisplayName: "Example runner " + id, Operations: []string{runnerauth.Read, runnerauth.Claim}, CapacityLimit: 4, ReportedCapacity: 3, OS: "linux", Architecture: "arm64", MachineUse: "shared", IsolationTier: "native-trusted", Tags: []string{"example"}, HostServices: []string{"docker"}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now.Add(-time.Hour), ExpiresAt: expires, LastHeartbeatAt: now}
+				identity := runnerstore.Identity{OrganizationID: org, RunnerID: runner, MachineID: tracker.MachineID(machine), TokenID: runner, EnrollmentID: "enrollment_" + id, Scope: "projects", State: "active", DisplayName: "Example runner " + id, Operations: []string{runnerauth.Read, runnerauth.Claim}, CapacityLimit: 4, ReportedCapacity: 3, OS: "linux", Architecture: "arm64", MachineUse: "shared", IsolationTier: "native-trusted", Tags: []string{"example"}, HostServices: []string{"tcp:127.0.0.1:5432"}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now.Add(-time.Hour), ExpiresAt: expires, LastHeartbeatAt: now}
 				if err := w.CreateRunnerIdentity(t.Context(), identity); err != nil {
 					return err
 				}
@@ -221,6 +222,94 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("manageable runner status=%d body=%s", rec.Code, rec.Body.String())
 		}
+
+		parentContext := t.Context()
+		t.Run("hosted routing PUT preserves facts and replays", func(t *testing.T) {
+			membership.Role.Slug = "admin"
+			provider.members[membership.ID] = membership
+			defer func() { membership.Role.Slug = "member"; provider.members[membership.ID] = membership }()
+			if _, err := admin.ExecContext(t.Context(), `UPDATE hosted_members SET role='admin' WHERE organization_id='org_first' AND user_id='user_example'`); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if _, err := admin.ExecContext(parentContext, `UPDATE hosted_members SET role='member' WHERE organization_id='org_first' AND user_id='user_example'`); err != nil {
+					t.Error(err)
+				}
+			})
+			hosted := echo.New()
+			service.registerPostgresRoutes(hosted)
+			read := func(runner string) runnerauth.Runner {
+				t.Helper()
+				config := service.config.Hosted
+				service.config.Hosted = nil
+				rec := request("org_first", runner, "org_first_admin")
+				service.config.Hosted = config
+				var got runnerauth.Runner
+				if rec.Code != http.StatusOK {
+					t.Fatalf("GET status=%d body=%s", rec.Code, rec.Body.String())
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+					t.Fatal(err)
+				}
+				return got
+			}
+			before, other := read("runner_one"), read("runner_two")
+			change := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: before.Revision, Routing: before.Routing}, IdempotencyKey: "zero_runner_one"}
+			change.ProjectCapacityLimits = map[tracker.ProjectID]int{"project_one": 0}
+			put := func(token string, change runnerRoutingRequest) *httptest.ResponseRecorder {
+				t.Helper()
+				raw, err := json.Marshal(change)
+				if err != nil {
+					t.Fatal(err)
+				}
+				req := httptest.NewRequest(http.MethodPut, "/api/v2/organizations/org_first/runners/runner_one/routing", strings.NewReader(string(raw)))
+				req.Header.Set(echo.HeaderAuthorization, "Bearer "+token)
+				req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+				rec := httptest.NewRecorder()
+				hosted.ServeHTTP(rec, req)
+				return rec
+			}
+			var receipt string
+			for _, tc := range []struct {
+				name, token, key string
+				status           int
+			}{
+				{"apply", "example_member_token", "zero_runner_one", http.StatusOK},
+				{"replay", "example_member_token", "zero_runner_one", http.StatusOK},
+				{"stale", "example_member_token", "stale_runner_one", http.StatusConflict},
+				{"receipt mismatch", "example_member_token", "zero_runner_one", http.StatusConflict},
+				{"worker denied", "org_first_runner_one", "worker_runner_one", http.StatusNotFound},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					change.IdempotencyKey = tc.key
+					input := change
+					if tc.name == "receipt mismatch" {
+						input.ProjectCapacityLimits = map[tracker.ProjectID]int{"project_one": 1}
+					}
+					rec := put(tc.token, input)
+					if rec.Code != tc.status {
+						t.Fatalf("PUT status=%d body=%s", rec.Code, rec.Body.String())
+					}
+					if tc.name == "apply" {
+						receipt = rec.Body.String()
+					}
+					if tc.name == "replay" && rec.Body.String() != receipt {
+						t.Fatal("replay changed receipt")
+					}
+				})
+			}
+			after := read("runner_one")
+			if after.Revision != before.Revision+1 || after.ProjectCapacityLimits["project_one"] != 0 || len(after.ProjectCapacityLimits) != 1 {
+				t.Fatalf("updated routing=%+v", after)
+			}
+			after.ProjectCapacityLimits = before.ProjectCapacityLimits
+			if !reflect.DeepEqual(after.Routing, before.Routing) {
+				t.Fatal("unrequested routing fields changed")
+			}
+			if got := read("runner_two"); !reflect.DeepEqual(got, other) {
+				t.Fatal("unrelated runner changed")
+			}
+		})
 
 		identity := auth.HostedIdentity{Subject: "user_example", OrganizationID: "provider_org_first", SessionID: "session_support_routing", CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), SupportActor: "support@example.test", SupportReason: "customer-request"}
 		provider.sessions[identity.SessionID] = identity
