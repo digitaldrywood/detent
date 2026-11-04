@@ -15,7 +15,7 @@ import (
 )
 
 const boundProjectRecord = `-- name: BoundProjectRecord :many
-SELECT p.organization_id, p.id, p.name, p.slug, p.profile, p.require_dependencies, p.scheduling_rank, p.content_settings_revision, p.workflow_source, p.workflow_source_revision, p.workflow_object_key, p.states_object_key, p.model_selection_object_key, p.created_at, p.deleted_at,s.organization_id, s.project_id, s.revision, s.require_visual_attachments, s.model_revision, s.model_key, s.model_sha256, s.model_bytes, s.model_content_bytes, s.intake, s.projection, s.repository_enabled, s.repository, s.checkout_repository, s.aging_enabled, s.duplicate_challenge, s.archive_completed_after_days, s.archive_cancelled_after_days, s.workflow_key, s.workflow_sha256, s.workflow_bytes, s.workflow_content_bytes,w.name AS state_name,COALESCE(w.terminal,false)::boolean AS state_terminal,COALESCE(w.dispatchable,false)::boolean AS state_dispatchable,COALESCE(w.operator_only,false)::boolean AS state_operator_only,t.target_name
+SELECT p.organization_id, p.id, p.name, p.slug, p.profile, p.require_dependencies, p.scheduling_rank, p.content_settings_revision, p.workflow_source, p.workflow_source_revision, p.workflow_object_key, p.states_object_key, p.model_selection_object_key, p.created_at, p.deleted_at, p.duplicate_source_sequence,s.organization_id, s.project_id, s.revision, s.require_visual_attachments, s.model_revision, s.model_key, s.model_sha256, s.model_bytes, s.model_content_bytes, s.intake, s.projection, s.repository_enabled, s.repository, s.checkout_repository, s.aging_enabled, s.duplicate_challenge, s.archive_completed_after_days, s.archive_cancelled_after_days, s.workflow_key, s.workflow_sha256, s.workflow_bytes, s.workflow_content_bytes,w.name AS state_name,COALESCE(w.terminal,false)::boolean AS state_terminal,COALESCE(w.dispatchable,false)::boolean AS state_dispatchable,COALESCE(w.operator_only,false)::boolean AS state_operator_only,t.target_name
 FROM projects p JOIN project_settings s ON s.organization_id=p.organization_id AND s.project_id=p.id
 LEFT JOIN project_workflow_states w ON w.organization_id=p.organization_id AND w.project_id=p.id
 LEFT JOIN project_workflow_transitions t ON t.organization_id=w.organization_id AND t.project_id=w.project_id AND t.source_name=w.name
@@ -63,6 +63,7 @@ func (q *Queries) BoundProjectRecord(ctx context.Context, arg BoundProjectRecord
 			&i.Project.ModelSelectionObjectKey,
 			&i.Project.CreatedAt,
 			&i.Project.DeletedAt,
+			&i.Project.DuplicateSourceSequence,
 			&i.ProjectSetting.OrganizationID,
 			&i.ProjectSetting.ProjectID,
 			&i.ProjectSetting.Revision,

@@ -22,6 +22,9 @@ func (s *session) CreateComment(ctx context.Context, record corestore.Comment) (
 	if err := s.checkOrganization(record.OrganizationID); err != nil {
 		return corestore.Comment{}, err
 	}
+	if err := s.lockDuplicateSourceProject(ctx, record.ProjectID, "comment"); err != nil {
+		return corestore.Comment{}, err
+	}
 	row, err := s.queries.CreateComment(ctx, pgquery.CreateCommentParams{
 		ImportedID:           record.RecordID,
 		CreatedAt:            optionalTime(record.CreatedAt),
@@ -49,6 +52,9 @@ func (s *session) UpdateComment(ctx context.Context, record corestore.Comment) (
 	if err := s.checkOrganization(record.OrganizationID); err != nil {
 		return corestore.Comment{}, err
 	}
+	if err := s.lockDuplicateSourceProject(ctx, record.ProjectID, "comment"); err != nil {
+		return corestore.Comment{}, err
+	}
 	row, err := s.queries.UpdateComment(ctx, pgquery.UpdateCommentParams{
 		Sequence:             record.Sequence,
 		BodyObjectKey:        record.BodyObjectKey,
@@ -70,6 +76,9 @@ func (s *session) UpdateComment(ctx context.Context, record corestore.Comment) (
 }
 
 func (s *session) DeleteComment(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, id string) error {
+	if err := s.advanceDuplicateSource(ctx, project); err != nil {
+		return err
+	}
 	rows, err := s.queries.DeleteComment(ctx, pgquery.DeleteCommentParams{
 		OrganizationID: s.organization,
 		ProjectID:      project,

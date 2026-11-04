@@ -20,6 +20,9 @@ func (s *session) LockWorkItemProject(ctx context.Context, project tracker.Proje
 }
 
 func (s *session) LockWorkItem(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (corestore.WorkItem, error) {
+	if err := s.LockWorkItemProject(ctx, project); err != nil {
+		return corestore.WorkItem{}, err
+	}
 	row, err := s.queries.LockWorkItem(ctx, pgquery.LockWorkItemParams{OrganizationID: s.organization, ProjectID: project, NativeID: item})
 	return corestore.WorkItem(row), mapError(ctx, err)
 }

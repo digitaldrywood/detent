@@ -15,7 +15,7 @@ func (s *session) Project(ctx context.Context, id tracker.ProjectID) (corestore.
 		OrganizationID: s.organization,
 		ID:             id,
 	})
-	return corestore.Project(row), mapError(ctx, err)
+	return project(row), mapError(ctx, err)
 }
 
 func (s *session) CreateProject(ctx context.Context, record corestore.Project) (corestore.Project, error) {
@@ -37,7 +37,7 @@ func (s *session) CreateProject(ctx context.Context, record corestore.Project) (
 		StatesObjectKey:         record.StatesObjectKey,
 		ModelSelectionObjectKey: record.ModelSelectionObjectKey,
 	})
-	return corestore.Project(row), mapError(ctx, err)
+	return project(row), mapError(ctx, err)
 }
 
 func (s *session) UpdateProject(ctx context.Context, record corestore.Project) (corestore.Project, error) {
@@ -60,7 +60,7 @@ func (s *session) UpdateProject(ctx context.Context, record corestore.Project) (
 		ID:                      record.ID,
 		ExpectedRevision:        record.ContentSettingsRevision,
 	})
-	return corestore.Project(row), updated(ctx, err)
+	return project(row), updated(ctx, err)
 }
 
 func (s *session) DeleteProject(ctx context.Context, id tracker.ProjectID) error {
@@ -102,7 +102,27 @@ func (s *session) Projects(ctx context.Context, after tracker.ProjectID, limit i
 	}
 	records := make([]corestore.Project, len(rows))
 	for i, row := range rows {
-		records[i] = corestore.Project(row)
+		records[i] = project(row)
 	}
 	return records, nil
+}
+
+func project(row pgquery.Project) corestore.Project {
+	return corestore.Project{
+		OrganizationID:          row.OrganizationID,
+		ID:                      row.ID,
+		Name:                    row.Name,
+		Slug:                    row.Slug,
+		Profile:                 row.Profile,
+		RequireDependencies:     row.RequireDependencies,
+		SchedulingRank:          row.SchedulingRank,
+		ContentSettingsRevision: row.ContentSettingsRevision,
+		WorkflowSource:          row.WorkflowSource,
+		WorkflowSourceRevision:  row.WorkflowSourceRevision,
+		WorkflowObjectKey:       row.WorkflowObjectKey,
+		StatesObjectKey:         row.StatesObjectKey,
+		ModelSelectionObjectKey: row.ModelSelectionObjectKey,
+		CreatedAt:               row.CreatedAt,
+		DeletedAt:               row.DeletedAt,
+	}
 }
