@@ -56,6 +56,10 @@ type RoutingRecord struct {
 	Providers []providercapacity.View
 }
 
+type RoutingPageReader interface {
+	RunnerRoutingRecords(context.Context, int, int, time.Time) ([]RoutingRecord, error)
+}
+
 type RoutingReader interface {
 	RunnerRoutingRecord(context.Context, string, time.Time) (RoutingRecord, error)
 }

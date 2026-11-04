@@ -21,15 +21,21 @@ func (s *session) fleetRecords(ctx context.Context, project tracker.ProjectID, a
 	return s.selectedFleetRecords(ctx, project, after, limit, paged, "")
 }
 
-func (s *session) selectedFleetRecords(ctx context.Context, project tracker.ProjectID, after string, limit int, paged bool, runnerID string) ([]runnerstore.FleetRecord, error) {
+func (s *session) selectedFleetRecords(ctx context.Context, project tracker.ProjectID, after string, limit int, paged bool, runnerID string, offsets ...int) ([]runnerstore.FleetRecord, error) {
 	if limit < 1 || limit > 10000 {
 		return nil, corestore.ErrInvalidPage
 	}
 	selector := ""
+	ending := " ORDER BY r.runner_id LIMIT $2"
 	args := []any{s.organization, limit + 1, project, after}
 	if runnerID != "" {
 		selector = " AND r.runner_id=$5"
 		args = append(args, runnerID)
+	}
+	if len(offsets) > 0 {
+		ending = " ORDER BY r.runner_id LIMIT $2 OFFSET $5"
+		args[1] = limit
+		args = append(args, offsets[0])
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT r.organization_id,r.runner_id,r.machine_id,r.token_id,r.enrollment_id,r.scope,r.state,r.revision,r.tags,r.machine_use,r.isolation_tier,r.host_services,r.availability_timezone,r.availability_hard_deadline,r.operations,r.display_name,r.capacity_limit,r.reported_capacity,r.os,r.architecture,r.created_at,r.expires_at,r.last_heartbeat_at,
 coalesce(r.capacity_config_revision,''),coalesce(r.capacity_config_local_limit,0),coalesce(r.capacity_config_client_limit,0),coalesce(r.capacity_config_runtime_limit,0),coalesce(r.capacity_config_manageable,false),coalesce(r.capacity_config_constraint,''),r.capacity_config_observed_at,r.capacity_request_revision,r.capacity_request_limit,r.capacity_request_backend,
@@ -49,7 +55,7 @@ LEFT JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=e.created
 LEFT JOIN hosted_members membership ON membership.organization_id=r.organization_id AND membership.principal_id=e.created_by
 WHERE r.organization_id=$1 AND r.removed_at IS NULL AND r.runner_id>$4
 AND ($3='' OR (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.organization_id=r.organization_id AND g.token_id=r.token_id AND g.project_id=$3)))
-`+selector+` ORDER BY r.runner_id LIMIT $2`, args...)
+`+selector+ending, args...)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}

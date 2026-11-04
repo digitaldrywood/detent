@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -378,30 +379,7 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 		if err != nil {
 			return err
 		}
-		runner = runnerFromFleetRecord(record.Record, now, urgent)
-		runner.ProviderCapacity = record.Providers
-		runner.ProjectUsed = map[tracker.ProjectID]int{}
-		runner.Leases = []runnerauth.RunnerLease{}
-		hostSlots, runnerSlots := map[string]bool{}, map[string]bool{}
-		for _, lease := range record.Leases {
-			key := string(lease.Lease.ID)
-			if lease.LandingCapacity > 0 {
-				if group := landingCapacityKey(lease.MachineID, string(lease.Lease.ProjectID), lease.SessionID); group != "" {
-					key = group
-				}
-			}
-			hostSlots[key] = true
-			if lease.RunnerID != runnerID {
-				continue
-			}
-			if !runnerSlots[key] {
-				runner.ProjectUsed[lease.Lease.ProjectID]++
-			}
-			runnerSlots[key] = true
-			lease.Lease.ProviderReservation = lease.Reservation
-			runner.Leases = append(runner.Leases, lease.Lease)
-		}
-		runner.HostUsed, runner.Used = len(hostSlots), len(runnerSlots)
+		runner = runnerFromRoutingRecord(record, now, urgent)
 		return nil
 	})
 	if err != nil {
@@ -726,56 +704,91 @@ func (s *Service) updateRunnerHostCommand(ctx context.Context, scope nativeScope
 	})
 }
 
+func runnerFromRoutingRecord(record runnerstore.RoutingRecord, now time.Time, urgent runnerstore.UrgentUpdate) runnerauth.Runner {
+	runner := runnerFromFleetRecord(record.Record, now, urgent)
+	runner.ProviderCapacity = record.Providers
+	runner.ProjectUsed = map[tracker.ProjectID]int{}
+	runner.Leases = []runnerauth.RunnerLease{}
+	hostSlots, runnerSlots := map[string]bool{}, map[string]bool{}
+	for _, lease := range record.Leases {
+		if lease.MachineID != runner.MachineID {
+			continue
+		}
+		key := string(lease.Lease.ID)
+		if lease.LandingCapacity > 0 {
+			if group := landingCapacityKey(lease.MachineID, string(lease.Lease.ProjectID), lease.SessionID); group != "" {
+				key = group
+			}
+		}
+		hostSlots[key] = true
+		if lease.RunnerID != runner.RunnerID {
+			continue
+		}
+		if !runnerSlots[key] {
+			runner.ProjectUsed[lease.Lease.ProjectID]++
+		}
+		runnerSlots[key] = true
+		lease.Lease.ProviderReservation = lease.Reservation
+		runner.Leases = append(runner.Leases, lease.Lease)
+	}
+	runner.HostUsed, runner.Used = len(hostSlots), len(runnerSlots)
+	return runner
+}
+
 func (s *Service) listRunnerRouting(c echo.Context) error {
-	result, err := s.listRunnerRoutingData(c.Request().Context(), tracker.OrganizationID(c.Param("organization")), 0, 0)
+	limit, err := parsePageLimit(c.QueryParam("limit"))
+	if err != nil {
+		return s.nativeAPIError(c, nativePublicInvalid("Page limit is invalid"))
+	}
+	offset := 0
+	if value := c.QueryParam("offset"); value != "" {
+		offset, err = strconv.Atoi(value)
+		if err != nil || offset < 0 || offset > 100000 {
+			return s.nativeAPIError(c, nativePublicInvalid("Page offset is invalid"))
+		}
+	}
+	result, err := s.listRunnerRoutingData(c.Request().Context(), tracker.OrganizationID(c.Param("organization")), limit+1, offset)
 	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	if len(result) > limit {
+		if c.QueryParam("limit") == "" {
+			return s.nativeAPIError(c, nativePublicInvalid("Fleet requires pagination; specify limit and follow X-Next-Offset"))
+		}
+		result = result[:limit]
+		c.Response().Header().Set("X-Next-Offset", strconv.Itoa(offset+limit))
 	}
 	return c.JSON(http.StatusOK, result)
 }
 
 func (s *Service) listRunnerRoutingData(ctx context.Context, organization tracker.OrganizationID, limit, offset int) ([]runnerauth.Runner, error) {
-	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	query := "SELECT id FROM runner_identities WHERE organization_id = ? AND removed_at IS NULL ORDER BY display_name, id"
-	args := []any{organization}
-	if limit > 0 {
-		query += " LIMIT ? OFFSET ?"
-		args = append(args, limit, offset)
-	}
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	ids := []string{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return nil, err
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return nil, nativeRunEventStorageUnavailable()
 	}
 	result := []runnerauth.Runner{}
-	for _, id := range ids {
-		r, err := readRunnerWithClock(ctx, tx, organization, id, s.config.now)
-		if err != nil {
-			return nil, err
+	err := repository.ReadTenantSnapshot(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		fleet, ok := reader.(runnerstore.RoutingPageReader)
+		if !ok {
+			return nativeRunEventStorageUnavailable()
 		}
-		result = append(result, r)
-	}
-	return result, nil
+		now := s.config.now()
+		records, err := fleet.RunnerRoutingRecords(ctx, limit, offset, now)
+		if err != nil {
+			return err
+		}
+		urgent, err := reader.RunnerUrgentUpdate(ctx)
+		if err != nil {
+			return err
+		}
+		for _, record := range records {
+			result = append(result, runnerFromRoutingRecord(record, now, urgent))
+		}
+		return nil
+	})
+	return result, projectRecordError(err)
 }
 
 func runnerExcluded(exclusions []runnerauth.Exclusion) error {
