@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -66,24 +65,7 @@ func (s *Service) commandDeleteAction(ctx context.Context, scope nativeScope, id
 }
 
 func (s *Service) readAttachment(ctx context.Context, scope nativeScope, conversationID, id string) (conversationAttachmentRecord, []byte, error) {
-	if s.conversationRecordsSelected() {
-		return conversationAttachmentRecord{}, nil, conversationUnsupported("Conversation attachments require the PostgreSQL attachment owner")
-	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	record, err := s.conversations.loadConversation(ctx, s.database.reader, scope, conversationID)
-	if err != nil {
-		return conversationAttachmentRecord{}, nil, err
-	}
-	if err := conversation.ValidateAttachmentID(id); err != nil {
-		return conversationAttachmentRecord{}, nil, nativeNotFound()
-	}
-	attachment, err := s.conversations.store.readAttachment(ctx, s.database.reader, record.ID, id)
-	if err != nil {
-		return conversationAttachmentRecord{}, nil, translateConversationError(err)
-	}
-	content, err := s.conversations.store.readAttachmentContent(ctx, s.database.reader, attachment.ArtifactRef)
-	return attachment, content, translateConversationError(err)
+	return s.readAttachmentPG(ctx, scope, conversationID, id)
 }
 
 func (s *Service) readRecording(ctx context.Context, scope nativeScope, workspaceID, id string) (terminalRecordingRecord, error) {
