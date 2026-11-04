@@ -12,6 +12,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/readableurl"
@@ -120,8 +121,14 @@ func projectIntegrationChanges(current projectstore.Record, request updateProjec
 	return request.States != nil || request.WorkflowMarkdown != nil || (!preserve && request.Intake != current.Settings.Intake) || request.Projection != current.Settings.Projection || request.RepositoryEnabled != current.Settings.RepositoryEnabled
 }
 
-func (s *Service) projectRecordModel(ctx context.Context, record projectstore.Record) (cloudModelSelection, error) {
-	inherited, err := s.readOrganizationModels(ctx, record.Core.OrganizationID)
+func (s *Service) projectRecordModel(ctx context.Context, record projectstore.Record, models ...policystore.OrganizationModels) (cloudModelSelection, error) {
+	var inherited cloudModelSelection
+	var err error
+	if len(models) > 0 {
+		inherited, err = s.organizationModelsFromRecord(ctx, record.Core.OrganizationID, models[0])
+	} else {
+		inherited, err = s.readOrganizationModels(ctx, record.Core.OrganizationID)
+	}
 	if err != nil {
 		return cloudModelSelection{}, err
 	}

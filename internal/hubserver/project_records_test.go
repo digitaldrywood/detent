@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -16,8 +17,11 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -552,10 +556,14 @@ type countedProjectReads struct {
 	tenantstore.Repository
 	transactions int
 	projects     int
+	models       int
+	active       int
 }
 
 func (r *countedProjectReads) ReadTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
 	r.transactions++
+	r.active++
+	defer func() { r.active-- }()
 	return r.Repository.ReadTenant(ctx, org, workload, func(reader tenantstore.Reader) error { return read(countedProjectReader{Reader: reader, owner: r}) })
 }
 
@@ -569,12 +577,23 @@ func (r countedProjectReader) ProjectRecord(ctx context.Context, project tracker
 	return r.Reader.ProjectRecord(ctx, project)
 }
 
+func (r countedProjectReader) OrganizationModels(ctx context.Context) (policystore.OrganizationModels, error) {
+	r.owner.models++
+	return r.Reader.OrganizationModels(ctx)
+}
+
 func TestPostgresProjectReadAvoidsRepeatedAdmissions(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	counted := &countedProjectReads{Repository: repository}
 	accessCounted := &countedProjectReads{Repository: repository}
 	now := time.Now().UTC()
-	service := &Service{echo: echo.New(), database: &database{postgres: repository}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), TenantRepository: counted, AccessRepository: accessCounted, RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }}}
+	details := &memoryRunDetails{beforeRead: func(context.Context) error {
+		if counted.active != 0 || accessCounted.active != 0 {
+			return errors.New("archive read inside tenant transaction")
+		}
+		return nil
+	}}
+	service := &Service{echo: echo.New(), database: &database{postgres: repository}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), TenantRepository: counted, AccessRepository: accessCounted, RunDetails: details, now: func() time.Time { return now }}}
 	service.registerNativeRoutes(service.echo)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {
@@ -603,17 +622,21 @@ func TestPostgresProjectReadAvoidsRepeatedAdmissions(t *testing.T) {
 			base := "/api/v2/organizations/" + string(org) + "/projects/"
 			read := func(id tracker.ProjectID) tracker.NativeProject {
 				t.Helper()
-				counted.transactions, counted.projects = 0, 0
-				accessCounted.transactions, accessCounted.projects = 0, 0
+				counted.transactions, counted.projects, counted.models = 0, 0, 0
+				accessCounted.transactions, accessCounted.projects, accessCounted.models = 0, 0, 0
 				response := performHubAPIRequest(t, service, http.MethodGet, base+string(id), token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
 				transactions := counted.transactions + accessCounted.transactions
+				t.Logf("project GET: tenant admissions=%d project reads=%d model reads=%d", transactions, counted.projects+accessCounted.projects, counted.models+accessCounted.models)
 				projects := counted.projects + accessCounted.projects
-				if transactions != 3 || projects != 1 {
-					t.Errorf("project GET used %d tenant admissions and %d project reads; want 3 and 1", transactions, projects)
+				if transactions != 2 || projects != 1 {
+					t.Errorf("project GET used %d tenant admissions and %d project reads; want 2 and 1", transactions, projects)
 				}
 				if accessCounted.transactions != 1 || accessCounted.projects != 1 {
 					t.Errorf("project authorization owner used %d admissions and %d project reads; want 1 and 1", accessCounted.transactions, accessCounted.projects)
+				}
+				if models := counted.models + accessCounted.models; models != 1 {
+					t.Errorf("model reads=%d, want 1", models)
 				}
 				var got tracker.NativeProject
 				decodeHubResponse(t, response, &got)
@@ -625,7 +648,66 @@ func TestPostgresProjectReadAvoidsRepeatedAdmissions(t *testing.T) {
 			if got := read(project); got.Name != string(project) {
 				t.Fatalf("initial project name=%q", got.Name)
 			}
+			for revision := int64(1); revision <= 2; revision++ {
+				enabled := (org == "org_first") == (revision == 1)
+				raw, err := json.Marshal(config.ModelSelection{Enabled: new(enabled)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				receipt, err := eventstore.NewContent(details).PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: org}, raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.SetOrganizationModels(t.Context(), policystore.OrganizationModels{OrganizationID: org, Revision: revision, Payload: eventstore.Reference(receipt.PayloadObjectKey, receipt.PayloadSHA256, receipt.PayloadBytes, receipt.PayloadContentBytes)}, revision-1)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				got := read(project)
+				var selection config.ModelSelection
+				if err := json.Unmarshal(got.ModelSelection, &selection); err != nil {
+					t.Fatal(err)
+				}
+				if selection.Enabled == nil || *selection.Enabled != enabled {
+					t.Fatalf("inherited model revision %d enabled=%v, want %t", revision, selection.Enabled, enabled)
+				}
+			}
+			overrideEnabled := org == "org_first"
+			raw, err := json.Marshal(config.ModelSelection{Enabled: new(overrideEnabled)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt, err := eventstore.NewContent(details).PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: org}, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.UpdateProjectModel(t.Context(), projectstore.Settings{OrganizationID: org, ProjectID: project, ModelRevision: 1, ModelKey: receipt.PayloadObjectKey, ModelSHA256: receipt.PayloadSHA256, ModelBytes: receipt.PayloadBytes, ModelContentBytes: receipt.PayloadContentBytes})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got := read(project)
+			var overridden config.ModelSelection
+			if err := json.Unmarshal(got.ModelSelection, &overridden); err != nil {
+				t.Fatal(err)
+			}
+			if overridden.Enabled == nil || *overridden.Enabled != overrideEnabled {
+				t.Fatalf("project override ignored: %+v", overridden)
+			}
+			originalRead := details.beforeRead
+			details.beforeRead = func(context.Context) error { return errors.New("archive unavailable") }
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, base+string(project), token, nil), http.StatusInternalServerError)
+			details.beforeRead = originalRead
+			counted.models, accessCounted.models = 0, 0
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, base+string(project)+"/integration", token, nil), http.StatusOK)
+			if counted.models+accessCounted.models != 0 {
+				t.Fatal("integration route read organization models")
+			}
+
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, base+"hidden_"+string(project), token, nil), http.StatusForbidden)
+			if counted.models+accessCounted.models != 0 {
+				t.Fatal("denied project read organization models")
+			}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				record, err := w.ProjectRecord(t.Context(), project)
 				if err != nil {

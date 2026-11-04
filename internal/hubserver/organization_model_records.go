@@ -24,6 +24,10 @@ func (s *Service) readOrganizationModels(ctx context.Context, organization track
 	if err != nil {
 		return cloudModelSelection{}, projectRecordError(err)
 	}
+	return s.organizationModelsFromRecord(ctx, organization, row)
+}
+
+func (s *Service) organizationModelsFromRecord(ctx context.Context, organization tracker.OrganizationID, row policystore.OrganizationModels) (cloudModelSelection, error) {
 	selection := config.ModelSelection{}
 	if row.Revision > 0 {
 		raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, eventstore.Receipt{OrganizationID: organization, PayloadObjectKey: row.Payload.Key, PayloadSHA256: row.Payload.SHA256, PayloadBytes: row.Payload.CompressedSize, PayloadContentBytes: row.Payload.UncompressedSize})
