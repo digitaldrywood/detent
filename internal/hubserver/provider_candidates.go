@@ -215,7 +215,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 				planIndexes[index] = len(plans) - 1
 			}
 			if needsSharedChangePolicy {
-				changePolicy, err := readCurrentChangePolicyRows(ctx, r, scope)
+				changePolicy, err := readChangeSummaryPolicyRows(ctx, r, scope)
 				if err != nil {
 					return err
 				}
