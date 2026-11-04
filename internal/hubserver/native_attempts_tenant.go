@@ -30,7 +30,11 @@ type tenantAttemptSnapshot struct {
 
 func (s *Service) readNativeAttemptTenant(ctx context.Context, scope nativeScope, item, id string) (tracker.NativeAttempt, error) {
 	var snapshot tenantAttemptSnapshot
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return tracker.NativeAttempt{}, nativeRunEventStorageUnavailable()
+	}
+	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -119,7 +123,11 @@ func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope nativeS
 
 	var snapshots []tenantAttemptSnapshot
 	var page leasestore.AttemptPage
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return nativeAttemptPage{}, nativeRunEventStorageUnavailable()
+	}
+	err = snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
