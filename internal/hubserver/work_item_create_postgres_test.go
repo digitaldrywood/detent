@@ -19,8 +19,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -31,6 +33,102 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/labstack/echo/v4"
 )
+
+func TestPostgresCookieIssueLifecycle(t *testing.T) {
+	repository, f, owner, _ := newChangePolicyPostgresFixtureWithAdmin(t, 3)
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	f.service.database.billingRepository = repository
+	free := normalizeHostedPlan(pilotHostedPlans().Plans[0])
+	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		plan := billingstore.Plan{OrganizationID: "org_security", PlanReference: billingstore.PlanReference{ID: free.ID, Version: free.Version}, Name: free.Name, Allowances: free.Allowances, Features: free.Features}
+		if err := w.CreateBillingPlan(t.Context(), plan); err != nil {
+			return err
+		}
+		if err := w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: "org_security", Base: plan.PlanReference}, 0); err != nil {
+			return err
+		}
+		project, err := w.ProjectRecord(t.Context(), f.project)
+		if err != nil {
+			return err
+		}
+		project.States = append(humanWorkflowFixtureStates(), tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo", "Cancelled"}})
+		project.Settings.DuplicateChallenge = true
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	configureHumanWorkflowProject(t, f.service, "org_security", f.project)
+	originalDB, originalReader, originalPostgres := f.service.database.db, f.service.database.reader, f.service.database.postgres
+	f.service.database.db, f.service.database.reader = nil, nil
+	f.service.database.postgres = repository.(*postgres.Repository)
+	t.Cleanup(func() {
+		f.service.database.db, f.service.database.reader, f.service.database.postgres = originalDB, originalReader, originalPostgres
+	})
+	if err := repository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+		state, err := r.(searchstore.DuplicateSourceReader).DuplicateSourceState(t.Context(), f.project)
+		if err == nil && !state.Ready {
+			t.Fatal("cookie lifecycle must start with a ready duplicate index")
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	items := f.base + "/work-items"
+	create := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "cookie-lifecycle-create"}, Title: "Example cookie lifecycle", Body: workItemRecordBody, State: "Backlog", Type: "bug"}
+	created := f.request(t, owner, http.MethodPost, items, create)
+	requireNativeStatus(t, created, http.StatusOK)
+	var issue tracker.NativeIssue
+	decodeHubResponse(t, created, &issue)
+	if issue.WorkItemID == "" || issue.State != "Backlog" || issue.Body != create.Body || issue.Actor.Kind != "human" {
+		t.Fatal("cookie creation lost issue identity, body, state or actor")
+	}
+	replayed := f.request(t, owner, http.MethodPost, items, create)
+	requireNativeStatus(t, replayed, http.StatusOK)
+	if !bytes.Equal(created.Body.Bytes(), replayed.Body.Bytes()) {
+		t.Fatal("cookie create replay changed the canonical response")
+	}
+	itemPath := items + "/" + string(issue.WorkItemID)
+	read := f.request(t, owner, http.MethodGet, itemPath, nil)
+	requireNativeStatus(t, read, http.StatusOK)
+	var opened tracker.NativeIssue
+	decodeHubResponse(t, read, &opened)
+	if opened.WorkItemID != issue.WorkItemID || opened.Body != create.Body || opened.State != "Backlog" {
+		t.Fatal("opening the cookie-created issue lost content or state")
+	}
+	comment := f.request(t, owner, http.MethodPost, itemPath+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "cookie-lifecycle-comment"}, Body: "Example lifecycle observation"})
+	requireNativeStatus(t, comment, http.StatusOK)
+	var observation tracker.NativeComment
+	decodeHubResponse(t, comment, &observation)
+	if observation.WorkItemID != issue.WorkItemID || observation.Body != "Example lifecycle observation" {
+		t.Fatal("cookie comment lost its issue or body")
+	}
+	for index, target := range []string{"Todo", "Cancelled", "Todo"} {
+		previous := issue
+		transition := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("cookie-lifecycle-transition-%d", index)}, ExpectedRevision: previous.Revision, State: target, Reason: "user_requested"}
+		response := f.request(t, owner, http.MethodPost, itemPath+"/workflow", transition)
+		requireNativeStatus(t, response, http.StatusOK)
+		decodeHubResponse(t, response, &issue)
+		if issue.State != target || issue.Revision != previous.Revision+1 || issue.Body != create.Body || issue.WorkItemID != previous.WorkItemID {
+			t.Fatalf("transition to %s lost canonical state, revision, body or identity", target)
+		}
+		replay := f.request(t, owner, http.MethodPost, itemPath+"/workflow", transition)
+		requireNativeStatus(t, replay, http.StatusOK)
+		if !bytes.Equal(response.Body.Bytes(), replay.Body.Bytes()) {
+			t.Fatalf("transition to %s did not replay canonically", target)
+		}
+		read = f.request(t, owner, http.MethodGet, itemPath, nil)
+		requireNativeStatus(t, read, http.StatusOK)
+		decodeHubResponse(t, read, &opened)
+		if opened.State != target || opened.Revision != issue.Revision {
+			t.Fatalf("opening after %s returned stale state", target)
+		}
+	}
+	patch := f.request(t, owner, http.MethodPatch, itemPath, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "cookie-unsupported-edit"}, ExpectedRevision: issue.Revision, Title: new("Example unsupported edit")})
+	requireNativeStatus(t, patch, http.StatusServiceUnavailable)
+}
 
 func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 	repository, admin := projectRecordPostgresWithAdmin(t, 4)
