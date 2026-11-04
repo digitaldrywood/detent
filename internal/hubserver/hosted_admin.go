@@ -56,11 +56,11 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 				}
 				return next(c)
 			}
-			runner, err := readRunnerWithClock(c.Request().Context(), s.database.reader, tracker.OrganizationID(c.Param("organization")), c.Param("runner"), s.config.now)
+			runner, err := s.readRunnerRouting(c.Request().Context(), nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, c.Param("runner"))
 			if err != nil {
 				return s.nativeAPIError(c, err)
 			}
-			if err := s.requireHostedRunnerProjects(c.Request().Context(), s.database.reader, credential, runnerManagementProjects(runner)); err != nil {
+			if err := s.requireHostedRunnerProjects(c.Request().Context(), nil, credential, runnerManagementProjects(runner)); err != nil {
 				if c.Request().Method == http.MethodGet {
 					return s.nativeAPIError(c, nativeNotFound())
 				}
