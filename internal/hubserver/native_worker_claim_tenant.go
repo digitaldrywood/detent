@@ -677,7 +677,7 @@ func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope nativeScope
 		}
 		plan.landingPending = nativeClaimPendingLanding(plan)
 		if (stringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending) && plan.changeRecord.ID != "" {
-			plan.changePolicy, err = readCurrentChangePolicyRows(ctx, r, scope)
+			plan.changePolicy, err = readChangeSummaryPolicyRows(ctx, r, scope)
 			if err != nil {
 				return err
 			}

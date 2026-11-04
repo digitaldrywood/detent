@@ -6,20 +6,28 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -256,7 +264,17 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	details := &memoryRunDetails{}
-	service := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: details, now: func() time.Time { return now }}}
+	var previewLogs bytes.Buffer
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log(previewLogs.String())
+		}
+	})
+	service := &Service{database: &database{postgres: repository}, echo: echo.New(), secretRewrapReady: make(chan struct{}), config: Config{TenantRepository: repository, AccessRepository: repository, Logger: slog.New(slog.NewTextHandler(&previewLogs, nil)), SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: details, Clock: func() time.Time { return now }}.normalized()}
+	service.echo.POST(nativeBase+"/claims/preview", service.previewProviderCandidates, service.requireNativeScope(apiScopeWorker))
+	if service.database.db != nil {
+		t.Fatal("preview fixture has a legacy database")
+	}
 	content := eventstore.NewContent(details)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		service.localOrganization = string(org)
@@ -276,7 +294,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 		}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			var err error
-			project, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "example", Name: "Example", Profile: "native"}, States: nativeFixtureStates()})
+			project, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "example", Name: "Example", Profile: "native"}, States: append(nativeFixtureStates(), tracker.NativeState{Name: "Merging", Dispatchable: true})})
 			if err != nil {
 				return err
 			}
@@ -408,6 +426,109 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			return err
 		}); !errors.Is(err, corestore.ErrTenantMismatch) {
 			t.Fatalf("stale publication policy accepted: %v", err)
+		}
+
+		secret := "example-preview-secret-" + string(org)
+		tokenHash := apikey.HashToken(secret)
+		expires := now.Add(time.Hour)
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "preview_credential", Name: "Example runner", Hash: tokenHash, Fingerprint: tokenFingerprint(tokenHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: "preview_credential", ProjectID: "example"}); err != nil {
+				return err
+			}
+			if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: org, ID: "preview_enrollment", RunnerID: "preview_runner", MachineID: "preview_machine", TokenHash: apikey.HashToken("example-enrollment-" + string(org)), Scope: "projects", ProjectIDs: []tracker.ProjectID{"example"}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "test_hub_admin"}); err != nil {
+				return err
+			}
+			if err := w.RedeemRunnerEnrollment(t.Context(), "preview_enrollment", "preview_runner", "preview_machine", now); err != nil {
+				return err
+			}
+			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: org, ID: "preview_machine", Hostname: "example-host", Capacity: 2, Version: "example"}); err != nil {
+				return err
+			}
+			if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: org, RunnerID: "preview_runner", MachineID: "preview_machine", TokenID: "preview_credential", EnrollmentID: "preview_enrollment", Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, CapacityLimit: 2, ReportedCapacity: 2, ProjectIDs: []tracker.ProjectID{"example"}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
+				return err
+			}
+			for index := range 2 {
+				id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index))
+				item, err := w.WorkItemByNativeID(t.Context(), id)
+				if err != nil {
+					return err
+				}
+				state := "Todo"
+				if index == 0 {
+					state = "Merging"
+				}
+				item.WorkflowStateName = &state
+				item, err = w.UpdateWorkItem(t.Context(), item)
+				if err != nil {
+					return err
+				}
+				issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "example", WorkItemID: id, Number: index + 1, Revision: tracker.Revision(item.Revision)}, Title: "Example", Body: workItemRecordBody, State: state, Actor: tracker.Actor{Kind: "human", PrincipalID: "test_hub_admin"}, CreatedAt: now, UpdatedAt: now}
+				raw, err := json.Marshal(issue)
+				if err != nil {
+					return err
+				}
+				version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "example", WorkItemID: id, RecordID: string(id), Revision: item.Revision}, raw)
+				if err != nil {
+					return err
+				}
+				if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
+					return err
+				}
+				if err := w.PutWorkItemFacts(t.Context(), claimstore.WorkItemFacts{OrganizationID: org, ProjectID: "example", WorkItemID: id}); err != nil {
+					return err
+				}
+				if err := w.PutQueueEntry(t.Context(), claimstore.QueueEntry{OrganizationID: org, ProjectID: "example", WorkItemID: id, Scope: "example", State: state, CreatedAt: now, UpdatedAt: now}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		base := "/api/v2/organizations/" + string(org) + "/projects/example"
+		for _, session := range []string{"", "example-session"} {
+			request := tracker.NativeCapacityPreview{NativeClaim: tracker.NativeClaim{PolicyID: nextDescriptor.ID, MachineID: "preview_machine", SessionID: session}, Limit: 2}
+			response := performHubAPIRequest(t, service, http.MethodPost, base+"/claims/preview", secret, request)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page tracker.NativeCapacityPage
+			decodeHubResponse(t, response, &page)
+			if len(page.Items) != 1 || page.Items[0].WorkItemID != "wi_001" || page.Items[0].OrganizationID != org || page.Items[0].ProjectID != "example" {
+				t.Fatalf("stale-policy preview lost real scoped Todo candidate or admitted stale Merging: %+v", page.Items)
+			}
+			request.PolicyID = descriptor.ID
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, base+"/claims/preview", secret, request), http.StatusConflict)
+		}
+
+		currentReview, err := content.PrepareReviewPolicy(t.Context(), eventstore.ReviewPolicy{OrganizationID: org, ProjectID: "example", PolicyRevisionID: nextDescriptor.ID, Revision: 2, UpdatedBy: "test_hub_admin", UpdatedAt: now}, defaultChangeReviewPolicy(nextDescriptor))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.SetReviewPolicy(t.Context(), currentReview, review.ReviewPolicyID)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			_, err := readCurrentChangePolicyRows(t.Context(), r, scope)
+			return err
+		}); err != nil {
+			t.Fatalf("current review policy rejected: %v", err)
+		}
+		currentResponse := performHubAPIRequest(t, service, http.MethodPost, base+"/claims/preview", secret, tracker.NativeCapacityPreview{NativeClaim: tracker.NativeClaim{PolicyID: nextDescriptor.ID, MachineID: "preview_machine"}, Limit: 2})
+		requireNativeStatus(t, currentResponse, http.StatusOK)
+		var currentPage tracker.NativeCapacityPage
+		decodeHubResponse(t, currentResponse, &currentPage)
+		if len(currentPage.Items) != 1 || currentPage.Items[0].WorkItemID != "wi_001" || currentPage.Items[0].OrganizationID != org {
+			t.Fatalf("current-policy preview lost scoped candidate: %+v", currentPage.Items)
+		}
+		if org == "org_second" {
+			foreign := performHubAPIRequest(t, service, http.MethodPost, base+"/claims/preview", "example-preview-secret-org_first", tracker.NativeCapacityPreview{NativeClaim: tracker.NativeClaim{PolicyID: nextDescriptor.ID, MachineID: "preview_machine"}})
+			if foreign.Code != http.StatusUnauthorized && foreign.Code != http.StatusForbidden && foreign.Code != http.StatusNotFound {
+				t.Fatalf("foreign organization preview status=%d", foreign.Code)
+			}
 		}
 
 	}
