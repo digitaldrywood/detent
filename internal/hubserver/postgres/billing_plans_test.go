@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -295,6 +297,254 @@ func TestBillingPlanAuditRetainsArchiveReferenceAndCommandReplay(t *testing.T) {
 		}
 		if len(rows) != 1 || rows[0].ID != got.ID {
 			return fmt.Errorf("audit page=%+v", rows)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHostedBillingSourceParityRestoresSourceWithoutReplacingCurrentTenantData(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	org := tracker.OrganizationID("org_source_parity")
+	otherOrg := tracker.OrganizationID("org_source_parity_other")
+	seedTenantAccess(t, repository, org)
+	seedTenantAccess(t, repository, otherOrg)
+	now := time.Date(2026, 11, 4, 2, 0, 0, 0, time.UTC)
+	free := billingstore.Plan{OrganizationID: org, PlanReference: billingstore.PlanReference{ID: "free", Version: 1}, Name: "Free", Features: []string{}, Allowances: map[string]int64{"collaboration_bytes": 1 << 20}}
+	monthlyPrice := int64(4900)
+	currentStarter := billingstore.Plan{OrganizationID: org, PlanReference: billingstore.PlanReference{ID: "starter", Version: 1}, Name: "Starter", MonthlyUSDCents: &monthlyPrice, Features: []string{"collaboration"}, Allowances: map[string]int64{"collaboration_bytes": 1 << 30}}
+	otherFree := billingstore.Plan{OrganizationID: otherOrg, PlanReference: free.PlanReference, Name: free.Name, Features: []string{}, Allowances: map[string]int64{"collaboration_bytes": 1 << 20}}
+	otherMonthlyPrice := int64(4900)
+	otherStarter := billingstore.Plan{OrganizationID: otherOrg, PlanReference: currentStarter.PlanReference, Name: currentStarter.Name, MonthlyUSDCents: &otherMonthlyPrice, Features: []string{"collaboration"}, Allowances: map[string]int64{"collaboration_bytes": 2 << 30}}
+	operatorPlan := billingstore.Plan{OrganizationID: org, PlanReference: billingstore.PlanReference{ID: "operator", Version: 1}, Name: "Operator", Features: []string{}, Allowances: map[string]int64{}}
+	currentAssignment := billingstore.Assignment{OrganizationID: org, Base: free.PlanReference, Revision: 1}
+	otherAssignment := billingstore.Assignment{OrganizationID: otherOrg, Base: free.PlanReference, Revision: 1}
+	operatorGrant := billingstore.Grant{OrganizationID: org, ID: "current_operator_grant", Plan: operatorPlan.PlanReference, Scope: []string{"collaboration_bytes"}, StartsAt: now.Add(-time.Hour)}
+	seedArchive := attachment.ArchiveReference{BindingID: "binding_source_parity", Key: "billing/source-parity-seed", SHA256: strings.Repeat("a", 64), CompressedSize: 10, UncompressedSize: 20, Codec: "gzip", SchemaVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention}
+	seedAudit := billingstore.PlanAudit{OrganizationID: org, CommandID: "seed_starter_1", RequestHash: strings.Repeat("b", 64), ActorID: "configuration", Action: "create_plan", RecordedAt: now.Add(-time.Hour), Reference: billingstore.AuditReferenceFromArchive(seedArchive)}
+	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		for _, plan := range []billingstore.Plan{free, currentStarter, operatorPlan} {
+			if err := w.CreateBillingPlan(t.Context(), plan); err != nil {
+				return err
+			}
+		}
+		if err := w.SetBillingAssignment(t.Context(), currentAssignment, 0); err != nil {
+			return err
+		}
+		if err := w.CreateBillingGrant(t.Context(), operatorGrant); err != nil {
+			return err
+		}
+		_, err := w.CreateBillingPlanAudit(t.Context(), seedAudit)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.WriteTenant(t.Context(), otherOrg, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateBillingPlan(t.Context(), otherFree); err != nil {
+			return err
+		}
+		if err := w.CreateBillingPlan(t.Context(), otherStarter); err != nil {
+			return err
+		}
+		return w.SetBillingAssignment(t.Context(), otherAssignment, 0)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	expires := now.Add(-time.Hour).Add(57_298_070)
+	expiredGrant := billingstore.Grant{OrganizationID: org, ID: "source_expired_starter", Plan: currentStarter.PlanReference, Scope: []string{"collaboration_bytes"}, StartsAt: now.Add(-48 * time.Hour).Add(487_589_706), ExpiresAt: &expires}
+	sourceAssignmentExpiry := now.Add(10 * 24 * time.Hour).Add(34_657)
+	sourceAssignment := billingstore.Assignment{OrganizationID: org, Base: free.PlanReference, Subscription: &currentStarter.PlanReference, ExpiresAt: &sourceAssignmentExpiry, Revision: 2}
+	sourceStarter := currentStarter
+	sourceStarter.Allowances = map[string]int64{"collaboration_bytes": 25 << 30}
+	sourceAuditArchive := attachment.ArchiveReference{BindingID: "binding_source_parity", Key: "billing/source-parity-grant", SHA256: strings.Repeat("c", 64), CompressedSize: 12, UncompressedSize: 22, Codec: "gzip", SchemaVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention}
+	sourceAudit := billingstore.PlanAudit{OrganizationID: org, CommandID: "source_expired_starter_grant", RequestHash: strings.Repeat("d", 64), ActorID: "detent-operator", Action: "grant", RecordedAt: now.Add(-48 * time.Hour).Add(487_589_706), Reference: billingstore.AuditReferenceFromArchive(sourceAuditArchive)}
+	sourcePlanSHA, err := postgres.HostedBillingPlanParityDigest(sourceStarter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedPlanSHA, err := postgres.HostedBillingPlanParityDigest(currentStarter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repair := postgres.HostedBillingSourceParityRepair{
+		OrganizationID:       org,
+		SourceManifestSHA256: strings.Repeat("e", 64),
+		SourceDatabaseSHA256: strings.Repeat("f", 64),
+		SourceAssignment:     sourceAssignment,
+		ExpectedAssignment:   currentAssignment,
+		Plans: []postgres.HostedBillingPlanSourceParity{{
+			Source:                 sourceStarter,
+			SourceSHA256:           sourcePlanSHA,
+			Expected:               &currentStarter,
+			ExpectedSHA256:         expectedPlanSHA,
+			SeedAuditCommandID:     seedAudit.CommandID,
+			SeedAuditRequestHash:   seedAudit.RequestHash,
+			SeedAuditArchiveSHA256: seedAudit.Reference.SHA256,
+		}},
+		SourceGrants:     []billingstore.Grant{expiredGrant},
+		ExpectedGrants:   []billingstore.Grant{operatorGrant},
+		SourcePlanAudits: []billingstore.PlanAudit{sourceAudit},
+	}
+	if err := postgres.SealHostedBillingSourceParityRepair(&repair); err != nil {
+		t.Fatal(err)
+	}
+	result, err := repository.RepairHostedBillingSourceParity(t.Context(), repair)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PlansRepaired != 1 || result.AssignmentsSet != true || result.GrantsCreated != 1 || result.AuditsCreated != 1 || result.PlansCreated != 0 {
+		t.Fatalf("repair result=%+v", result)
+	}
+	if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+		assignment, err := r.BillingAssignment(t.Context())
+		if err != nil {
+			return err
+		}
+		if assignment.Base != sourceAssignment.Base || assignment.Subscription == nil || *assignment.Subscription != *sourceAssignment.Subscription || assignment.ExpiresAt == nil || !assignment.ExpiresAt.Equal(sourceAssignmentExpiry.Truncate(time.Microsecond)) || assignment.Revision != 2 {
+			return fmt.Errorf("source assignment=%+v", assignment)
+		}
+		plan, err := r.BillingPlan(t.Context(), sourceStarter.PlanReference)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(plan, sourceStarter) {
+			return fmt.Errorf("source plan=%+v", plan)
+		}
+		grant, err := r.BillingGrant(t.Context(), expiredGrant.ID)
+		if err != nil {
+			return err
+		}
+		if grant.OrganizationID != expiredGrant.OrganizationID || grant.ID != expiredGrant.ID || grant.Plan != expiredGrant.Plan || !reflect.DeepEqual(grant.Scope, expiredGrant.Scope) || !grant.StartsAt.Equal(expiredGrant.StartsAt.Truncate(time.Microsecond)) || grant.RevokedAt != nil || grant.ExpiresAt == nil || !grant.ExpiresAt.Equal(expires.Truncate(time.Microsecond)) || grant.ExpiresAt.After(now) {
+			return fmt.Errorf("expired source grant=%+v", grant)
+		}
+		grants, err := r.BillingGrants(t.Context(), "", 20)
+		if err != nil {
+			return err
+		}
+		if len(grants) != 2 {
+			return fmt.Errorf("grant count=%d", len(grants))
+		}
+		active, err := r.BillingEffectiveGrants(t.Context(), now)
+		if err != nil {
+			return err
+		}
+		if len(active) != 1 || active[0].ID != operatorGrant.ID {
+			return fmt.Errorf("effective grants=%+v", active)
+		}
+		gotAudit, err := r.BillingPlanAudit(t.Context(), sourceAudit.CommandID)
+		if err != nil {
+			return err
+		}
+		if gotAudit.OrganizationID != sourceAudit.OrganizationID || gotAudit.CommandID != sourceAudit.CommandID || gotAudit.RequestHash != sourceAudit.RequestHash || gotAudit.ActorID != sourceAudit.ActorID || gotAudit.Action != sourceAudit.Action || !gotAudit.RecordedAt.Equal(sourceAudit.RecordedAt.Truncate(time.Microsecond)) || gotAudit.Reference != sourceAudit.Reference {
+			return fmt.Errorf("source audit=%+v", gotAudit)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err = repository.RepairHostedBillingSourceParity(t.Context(), repair)
+	if err != nil || result != (postgres.HostedBillingSourceParityResult{}) {
+		t.Fatalf("idempotent repair=%+v err=%v", result, err)
+	}
+	if err := repository.ReadTenant(t.Context(), otherOrg, corestore.Serving, func(r tenantstore.Reader) error {
+		assignment, err := r.BillingAssignment(t.Context())
+		if err != nil {
+			return err
+		}
+		plan, err := r.BillingPlan(t.Context(), otherStarter.PlanReference)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(assignment, otherAssignment) || !reflect.DeepEqual(plan, otherStarter) {
+			return fmt.Errorf("other tenant changed: assignment=%+v plan=%+v", assignment, plan)
+		}
+		grants, err := r.BillingGrants(t.Context(), "", 10)
+		if err != nil {
+			return err
+		}
+		if len(grants) != 0 {
+			return fmt.Errorf("other tenant grants=%+v", grants)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHostedBillingSourceParityRefusesChangedSeedPlan(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	org := tracker.OrganizationID("org_source_parity_cas")
+	seedTenantAccess(t, repository, org)
+	now := time.Date(2026, 11, 4, 2, 0, 0, 0, time.UTC)
+	base := billingstore.Plan{OrganizationID: org, PlanReference: billingstore.PlanReference{ID: "base", Version: 1}, Name: "Base", Features: []string{}, Allowances: map[string]int64{}}
+	current := billingstore.Plan{OrganizationID: org, PlanReference: billingstore.PlanReference{ID: "starter", Version: 1}, Name: "Starter", Features: []string{}, Allowances: map[string]int64{"collaboration_bytes": 1 << 30}}
+	changed := current
+	changed.RuntimeID = "runtime_current"
+	assignment := billingstore.Assignment{OrganizationID: org, Base: base.PlanReference, Revision: 1}
+	archive := attachment.ArchiveReference{BindingID: "binding_source_parity", Key: "billing/source-parity-seed", SHA256: strings.Repeat("a", 64), CompressedSize: 10, UncompressedSize: 20, Codec: "gzip", SchemaVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention}
+	audit := billingstore.PlanAudit{OrganizationID: org, CommandID: "seed_starter_1", RequestHash: strings.Repeat("b", 64), ActorID: "configuration", Action: "create_plan", RecordedAt: now.Add(-time.Hour), Reference: billingstore.AuditReferenceFromArchive(archive)}
+	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateBillingPlan(t.Context(), base); err != nil {
+			return err
+		}
+		if err := w.CreateBillingPlan(t.Context(), current); err != nil {
+			return err
+		}
+		if err := w.SetBillingAssignment(t.Context(), assignment, 0); err != nil {
+			return err
+		}
+		_, err := w.CreateBillingPlanAudit(t.Context(), audit)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.SetBillingPlanRuntime(t.Context(), changed.PlanReference, changed.RuntimeID)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	source := current
+	source.Allowances = map[string]int64{"collaboration_bytes": 25 << 30}
+	sourceSHA, err := postgres.HostedBillingPlanParityDigest(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentSHA, err := postgres.HostedBillingPlanParityDigest(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repair := postgres.HostedBillingSourceParityRepair{
+		OrganizationID:       org,
+		SourceManifestSHA256: strings.Repeat("c", 64),
+		SourceDatabaseSHA256: strings.Repeat("d", 64),
+		SourceAssignment:     assignment,
+		ExpectedAssignment:   assignment,
+		Plans: []postgres.HostedBillingPlanSourceParity{{
+			Source:                 source,
+			SourceSHA256:           sourceSHA,
+			Expected:               &current,
+			ExpectedSHA256:         currentSHA,
+			SeedAuditCommandID:     audit.CommandID,
+			SeedAuditRequestHash:   audit.RequestHash,
+			SeedAuditArchiveSHA256: audit.Reference.SHA256,
+		}},
+	}
+	if err := postgres.SealHostedBillingSourceParityRepair(&repair); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.RepairHostedBillingSourceParity(t.Context(), repair); !errors.Is(err, corestore.ErrRevisionConflict) {
+		t.Fatalf("repair error=%v", err)
+	}
+	if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+		got, err := r.BillingPlan(t.Context(), changed.PlanReference)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(got, changed) {
+			return fmt.Errorf("changed plan overwritten: %+v", got)
 		}
 		return nil
 	}); err != nil {
