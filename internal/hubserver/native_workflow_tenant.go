@@ -394,6 +394,14 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 			if err := writeWorkItemRecord(ctx, w, plan, fields); err != nil {
 				return err
 			}
+			if human && previousState != request.State && dispatchableProjectState(currentProject, request.State) {
+				if s.config.ConversationDispatch == nil {
+					return conversationDispatchUnavailable()
+				}
+				if err := s.config.ConversationDispatch.RequestDispatch(ctx, w, scope.project, string(issue.WorkItemID), leasestore.Fence{}, currentTime); err != nil {
+					return err
+				}
+			}
 			if err := w.PutSearch(ctx, searchDocument, row.Revision); err != nil {
 				if !errors.Is(err, corestore.ErrNotFound) {
 					return err

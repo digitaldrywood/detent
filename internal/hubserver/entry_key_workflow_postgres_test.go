@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lib/pq"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
@@ -278,6 +280,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 	requireNativeStatus(t, call("owner", otherArgs), http.StatusForbidden)
 	issue := create("owner", "completed", "Done")
 	var historic leasestore.Attempt
+	var historicLease leasestore.Lease
 	if err := repository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 		row, err := w.WorkItem(t.Context(), "project_example", issue.WorkItemID)
 		if err != nil {
@@ -295,15 +298,99 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		_, err = w.Release(t.Context(), fence, "completed")
+		historicLease, err = w.Release(t.Context(), fence, "completed")
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
+	readIntent := func() tenantstore.DispatchState {
+		t.Helper()
+		var state tenantstore.DispatchState
+		if err := repository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			state, err = r.(tenantstore.DispatchReader).IssueDispatchState(t.Context(), "project_example", issue.WorkItemID)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+	t.Run("human intent rollback and required CAS", func(t *testing.T) {
+		before := readIntent()
+		requireNativeStatus(t, call("owner", move(issue, "", "Rework")), http.StatusUnprocessableEntity)
+		withoutRevision := move(issue, "missing-revision", "Rework")
+		withoutRevision.ExpectedRevision = 0
+		requireNativeStatus(t, call("owner", withoutRevision), http.StatusUnprocessableEntity)
+		original := service.config.ConversationDispatch
+		called := false
+		service.config.ConversationDispatch = conversationDispatchRequestFunc(func(ctx context.Context, w tenantstore.Writer, project tracker.ProjectID, item string, fence leasestore.Fence, at time.Time) error {
+			if err := original.RequestDispatch(ctx, w, project, item, fence, at); err != nil {
+				return err
+			}
+			called = true
+			return workItemStorageUnavailable()
+		})
+		defer func() { service.config.ConversationDispatch = original }()
+		refused := call("owner", move(issue, "rollback-intent", "Rework"))
+		service.config.ConversationDispatch = original
+		requireNativeStatus(t, refused, http.StatusServiceUnavailable)
+		if !called || !reflect.DeepEqual(before, readIntent()) {
+			t.Fatal("failed transition committed or skipped the dispatch intent")
+		}
+		if err := repository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+			row, err := r.WorkItem(t.Context(), "project_example", issue.WorkItemID)
+			if err != nil {
+				return err
+			}
+			if row.Revision != int64(issue.Revision) || stringValue(row.WorkflowStateName) != issue.State {
+				return fmt.Errorf("failed dispatch intent changed issue state")
+			}
+			bound, err := (mutation.Metadata{PrincipalID: "credential_owner", OrganizationID: "org_startup", ProjectID: "project_example", Action: operatortool.MoveItem}).Bind("rollback-intent", nil)
+			if err != nil {
+				return err
+			}
+			operation := "POST /api/v2/organizations/org_startup/projects/project_example/work-items/" + string(issue.WorkItemID) + "/workflow"
+			_, err = r.Receipt(t.Context(), "credential_owner", operation, bound.RetryIdentity)
+			if !errors.Is(err, corestore.ErrNotFound) {
+				return fmt.Errorf("failed intent receipt: %v", err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
 	args := move(issue, "rework", "Rework")
+	originalDispatch := service.config.ConversationDispatch
+	defer func() { service.config.ConversationDispatch = originalDispatch }()
+	resolved := 0
+	service.config.ConversationDispatch = conversationDispatchLockProbe{delegate: originalDispatch, probe: func() error {
+		resolved++
+		probe, err := admin.BeginTx(t.Context(), nil)
+		if err != nil {
+			return err
+		}
+		var id int64
+		lockErr := probe.QueryRowContext(t.Context(), `SELECT id FROM issues WHERE organization_id=$1 AND native_id=$2 FOR NO KEY UPDATE NOWAIT`, "org_startup", issue.WorkItemID).Scan(&id)
+		if err := probe.Rollback(); err != nil {
+			return err
+		}
+		var refused *pq.Error
+		if !errors.As(lockErr, &refused) || refused.Code != "55P03" {
+			return fmt.Errorf("human issue was not locked during dispatch fence resolution: %w", lockErr)
+		}
+		return nil
+	}}
 	changed := decode(call("owner", args))
+	service.config.ConversationDispatch = originalDispatch
+	if resolved != 1 {
+		t.Fatalf("human intent fence resolutions=%d want 1", resolved)
+	}
 	if changed.State != "Rework" || changed.Revision != issue.Revision+1 || changed.Title != issue.Title || changed.Body != issue.Body || changed.Type != issue.Type || !reflect.DeepEqual(changed.Labels, issue.Labels) || !reflect.DeepEqual(changed.Assignees, issue.Assignees) || !reflect.DeepEqual(changed.Priority, issue.Priority) || !reflect.DeepEqual(changed.Actor, issue.Actor) || !changed.CreatedAt.Equal(issue.CreatedAt) {
 		t.Fatal("MoveItem lost workflow or content fidelity")
+	}
+	intent := readIntent()
+	if intent.Revision != int64(changed.Revision) || intent.Revision <= historic.WorkItemRevision || intent.Generation <= historic.DispatchGeneration || intent.RequestedAt == nil {
+		t.Fatalf("human Rework did not supersede the consumed success: revision=%d generation=%d requested=%t", intent.Revision, intent.Generation, intent.RequestedAt != nil)
 	}
 	archiveBytes := func() int64 {
 		t.Helper()
@@ -435,6 +522,9 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 	if !reflect.DeepEqual(changed, replayed) {
 		t.Fatal("MoveItem did not replay the canonical result")
 	}
+	if !reflect.DeepEqual(intent, readIntent()) {
+		t.Fatal("replay created another dispatch intent")
+	}
 	if err := repository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
 		row, err := r.WorkItem(t.Context(), "project_example", issue.WorkItemID)
 		if err != nil {
@@ -471,12 +561,19 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		if count != 1 {
 			return fmt.Errorf("transition events=%d", count)
 		}
-		attempt, err := r.Attempt(t.Context(), historic.ID)
+		attempt, err := r.LatestAttempt(t.Context(), row.ID)
 		if err != nil {
 			return err
 		}
 		if !reflect.DeepEqual(attempt, historic) {
 			return fmt.Errorf("historical attempt changed")
+		}
+		lease, err := r.Lease(t.Context(), historicLease.LeaseID)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(lease, historicLease) {
+			return fmt.Errorf("historical lease changed")
 		}
 		return nil
 	}); err != nil {
@@ -506,6 +603,9 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 			input.ExpectedRevision = test.revision
 			requireNativeStatus(t, call(test.user, input), test.status)
 		})
+	}
+	if !reflect.DeepEqual(intent, readIntent()) {
+		t.Fatal("refused mutation changed the current dispatch intent")
 	}
 	own := create("reporter", "reporter_own", "Triage")
 	requireNativeStatus(t, call("reporter", move(own, "reporter_not_cancel", "Todo")), http.StatusForbidden)
