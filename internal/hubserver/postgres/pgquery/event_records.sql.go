@@ -1840,6 +1840,7 @@ CROSS JOIN LATERAL (
   SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state FROM collaboration_events
   WHERE organization_id=$2 AND project_id=$3
     AND attempt_id=requested.attempt_id
+    AND attempt_id<>''
   ORDER BY sequence DESC
   LIMIT 1
 ) latest

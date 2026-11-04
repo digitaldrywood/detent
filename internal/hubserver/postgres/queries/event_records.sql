@@ -230,6 +230,7 @@ CROSS JOIN LATERAL (
   SELECT * FROM collaboration_events
   WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
     AND attempt_id=requested.attempt_id
+    AND attempt_id<>''
   ORDER BY sequence DESC
   LIMIT 1
 ) latest;
