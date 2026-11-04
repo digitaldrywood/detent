@@ -12,6 +12,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -311,6 +313,21 @@ func decodeChangeColumnCheckpoint(ctx context.Context, raw string) (*tracker.Nat
 const changeColumnsPerTick = 100
 
 func (s *Service) populateChangeColumns(ctx context.Context) error {
+	if s.config.TenantRepository != nil {
+		owner, ok := s.config.TenantRepository.(interface {
+			BackfillCurrentChangeReviewsAfter(context.Context, tracker.OrganizationID, *eventstore.Content, int, string) (int, string, error)
+		})
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		after, _ := s.changeColumnAfter.(string)
+		_, next, err := owner.BackfillCurrentChangeReviewsAfter(ctx, tracker.OrganizationID(s.appOrganizationID()), eventstore.NewContent(s.runDetailStore()), corestore.MaxPageSize, after)
+		if next != "" || err == nil {
+			s.changeColumnAfter = next
+		}
+		return err
+	}
+
 	ctx = s.runDetailContext(ctx)
 	var failures error
 	for range changeColumnsPerTick {

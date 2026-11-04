@@ -675,6 +675,7 @@ func (s *Service) runPostgresMaintenance(ctx context.Context) {
 	defer close(s.workerDone)
 	s.maintainNativeBoard(ctx)
 	s.maintainNativeSearch(ctx)
+	s.maintainPostgresChangeReviews(ctx)
 	ticker := time.NewTicker(s.config.WebhookMaintenanceInterval)
 	defer ticker.Stop()
 	lastCleanup := s.config.now()
@@ -684,9 +685,11 @@ func (s *Service) runPostgresMaintenance(ctx context.Context) {
 			return
 		case <-s.boardRefresh:
 			s.maintainNativeBoard(ctx)
+			s.maintainPostgresChangeReviews(ctx)
 		case <-ticker.C:
 			s.maintainNativeBoard(ctx)
 			s.maintainNativeSearch(ctx)
+			s.maintainPostgresChangeReviews(ctx)
 			now := s.config.now()
 			if err := s.expireGoTestReceipts(ctx, now, s.config.now); err != nil && !errors.Is(err, context.Canceled) {
 				s.config.Logger.Warn("expire PostgreSQL Go test receipts", "error", err)
@@ -709,6 +712,12 @@ func (s *Service) runPostgresMaintenance(ctx context.Context) {
 				lastCleanup = now
 			}
 		}
+	}
+}
+
+func (s *Service) maintainPostgresChangeReviews(ctx context.Context) {
+	if err := s.populateChangeColumns(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		s.config.Logger.WarnContext(ctx, "populate PostgreSQL current Change reviews", "error", err)
 	}
 }
 

@@ -131,10 +131,26 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 			}
 		}
 		assertGate(false)
+		reviewRevision := func() int64 {
+			t.Helper()
+			var revision int64
+			if err := f.service.config.TenantRepository.ReadTenant(ctx, "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+				row, err := r.Change(ctx, changeID)
+				revision = row.ReviewEvidenceRevision
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			return revision
+		}
+		beforeDisposition := reviewRevision()
 		command := securityaudit.DispositionCommand{RequestID: "audit-replay", Key: key, FindingID: "finding_example", Evidence: "The exact source requires authenticated access.", Confirm: true}
 		disposition, err := native.RecordAuditDisposition(ctx, command)
 		if err != nil || disposition.ID < 1 || disposition.AuditRunID != sessionID {
 			t.Fatalf("Hub disposition: %+v %v", disposition, err)
+		}
+		if got := reviewRevision(); got != beforeDisposition+1 {
+			t.Fatalf("audit disposition did not invalidate review snapshot: got %d, want %d", got, beforeDisposition+1)
 		}
 		assertGate(index == 0)
 		restarted, restartedCtx := f.client(t, index)
@@ -237,6 +253,9 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		replay, err := restarted.RecordAuditDisposition(restartedCtx, command)
 		if err != nil || replay != disposition {
 			t.Errorf("lost acknowledgement replay changed archived receipt: %+v %v", replay, err)
+		}
+		if got := reviewRevision(); got != beforeDisposition+1 {
+			t.Fatalf("audit receipt replay changed review snapshot: got %d, want %d", got, beforeDisposition+1)
 		}
 		other := performHubAPIRequest(t, f.service, http.MethodPost, native.Scope()+"/security-audits/dispositions", f.tokens[1-index], command)
 		if other.Code == http.StatusOK {

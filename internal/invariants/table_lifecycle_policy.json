@@ -59,6 +59,7 @@
     "conversation_turn_batches": {"class": "immutable_payload"},
     "conversation_usage": {"class": "immutable_payload"},
     "conversations": {"class": "hot_state"},
+    "current_change_reviews": {"class": "derived_with_retention", "retention": "source Change version lifetime; replace current actor and role heads"},
     "daily_summary_preferences": {"class": "hot_state"},
     "daily_summary_receipts": {"class": "immutable_payload"},
     "dashboard_delivery_authorization": {"class": "hot_state"},

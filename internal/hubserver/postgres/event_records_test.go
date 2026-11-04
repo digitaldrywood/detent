@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lib/pq"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -1057,4 +1059,448 @@ func TestEventChangeCommandReceiptContention(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestChangeSummaryVisitsCurrentActorsInsteadOfReviewHistory(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedRepository(t, repository, org)
+		for _, actors := range []int{17, 10000} {
+			key := fmt.Sprintf("current_%d", actors)
+			fixture := seedHistory(t, repository, org, key)
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence
+    (organization_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,review_kind,review_session_known)
+    SELECT $1,$2,n+1,$3,'review','human','actor_'||lpad(((n-1)%$7)::text,5,'0'),
+    CASE WHEN n%37=0 THEN 'commented' WHEN ((n-1)%$7)%2=0 THEN 'changes_requested' ELSE 'approved' END,
+    $4::timestamptz,$5,$6,1,1,'human',true FROM generate_series(1,30000) n`, org, fixture.change.ID, fixture.version.ID, historyAt(), fixture.evidence.PayloadObjectKey, fixture.evidence.PayloadSHA256, actors); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO current_change_reviews(organization_id,change_id,version_id,review_kind,actor_key,decision,evidence_sequence)
+    SELECT DISTINCT ON (actor_principal_id) organization_id,change_id,version_id,'human',actor_principal_id,decision,sequence FROM change_evidence
+    WHERE organization_id=$1 AND change_id=$2 AND kind='review' AND decision<>'commented'
+    ORDER BY actor_principal_id,sequence DESC`, org, fixture.change.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `UPDATE change_requests SET evidence_sequence=30001,review_summary_sequence=30001,current_version_id=$3,review_evidence_revision=review_evidence_revision+1 WHERE organization_id=$1 AND id=$2`, org, fixture.change.ID, fixture.version.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	pool := rolePool(t, admin, "detent_runtime_v2", "")
+	for _, analyzed := range []bool{false, true} {
+		if analyzed {
+			if _, err := admin.ExecContext(t.Context(), `ANALYZE change_evidence; ANALYZE current_change_reviews`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+			for _, actors := range []int{17, 10000} {
+				excluded := "actor_00011"
+				if actors == 10000 {
+					excluded = "actor_09999"
+				}
+				for _, actor := range []string{"", excluded} {
+					t.Run(fmt.Sprintf("%s/analyzed=%v/actors=%d/exclude=%s", org, analyzed, actors, actor), func(t *testing.T) {
+						tx, err := pool.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer tx.Rollback()
+						if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, org); err != nil {
+							t.Fatal(err)
+						}
+						probe := &searchPlanProbe{DBTX: tx}
+						queries := pgquery.New(probe)
+						args := pgquery.RecordCurrentChangeReviewSequencesParams{OrganizationID: org, ChangeID: fmt.Sprintf("change_current_%d", actors), VersionID: fmt.Sprintf("version_current_%d", actors), ReviewingActor: actor}
+						sequences, err := queries.RecordCurrentChangeReviewSequences(t.Context(), args)
+						if err != nil {
+							t.Fatal(err)
+						}
+						headSQL, headArgs := probe.statement, append([]any(nil), probe.args...)
+						rows, err := queries.RecordCurrentChangeEvidenceBySequences(t.Context(), pgquery.RecordCurrentChangeEvidenceBySequencesParams{OrganizationID: org, ChangeID: args.ChangeID, Sequences: sequences})
+						if err != nil {
+							t.Fatal(err)
+						}
+						expected := []int64{30000, 30001}
+						if actor != "" {
+							expected = []int64{29999, 30000}
+						}
+						if len(rows) != len(expected) {
+							t.Fatalf("summary evidence=%d want=%d", len(rows), len(expected))
+						}
+						for i, row := range rows {
+							if row.OrganizationID != org || row.ChangeID != args.ChangeID || row.Sequence != expected[i] || row.ActorPrincipalID == actor {
+								t.Fatalf("summary lost current actor/tenant identity: %+v", row)
+							}
+						}
+						var visited float64
+						for _, statement := range []struct {
+							sql  string
+							args []any
+						}{{headSQL, headArgs}, {probe.statement, append([]any(nil), probe.args...)}} {
+							var raw []byte
+							if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement.sql, statement.args...).Scan(&raw); err != nil {
+								t.Fatal(err)
+							}
+							var plans []struct{ Plan searchPlanNode }
+							if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
+								t.Fatalf("decode review lookup plan: %v", err)
+							}
+							var visits func(searchPlanNode) float64
+							visits = func(node searchPlanNode) float64 {
+								var count float64
+								if node.Relation == "change_evidence" || node.Relation == "current_change_reviews" {
+									count = (node.Rows + node.Removed + node.IndexRemoved) * node.Loops
+								}
+								for _, child := range node.Plans {
+									count += visits(child)
+								}
+								return count
+							}
+							visited += visits(plans[0].Plan)
+							t.Logf("current actors=%d historical reviews=30000 cumulative visits=%.0f plan=%s", actors, visited, raw)
+						}
+						if visited > 32 {
+							t.Errorf("current review lookup visited %.0f rows for2 current decisions", visited)
+						}
+						args.OrganizationID = "org_foreign"
+						foreign, err := queries.RecordCurrentChangeReviewSequences(t.Context(), args)
+						if err != nil || len(foreign) != 0 {
+							t.Fatalf("foreign summary rows=%d error=%v", len(foreign), err)
+						}
+					})
+				}
+				if err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(r eventstore.Reader) error {
+					_, _, err := r.(eventstore.ChangeReviewEvidenceReader).ChangeReviewEvidence(t.Context(), fmt.Sprintf("change_current_%d", actors), fmt.Sprintf("version_current_%d", actors), 30000, nil, "actor_example")
+					if !errors.Is(err, corestore.ErrRevisionConflict) {
+						return fmt.Errorf("historical snapshot did not conflict: %v", err)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+}
+
+type currentReviewReadProbe struct {
+	attachment.DetailStore
+	before func(context.Context) error
+}
+
+func (p currentReviewReadProbe) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	if err := p.before(ctx); err != nil {
+		return nil, err
+	}
+	return p.DetailStore.ReadDetail(ctx, organization, ref)
+}
+
+func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	fixtures := map[tracker.OrganizationID]historyFixture{}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedRepository(t, repository, org)
+		f := seedHistory(t, repository, org, "backfill")
+		change, err := f.content.Change(t.Context(), f.change)
+		if err != nil {
+			t.Fatal(err)
+		}
+		change.CurrentVersion, change.Revision = f.version.ID, 2
+		updated, err := f.content.PrepareChange(t.Context(), org, historyJSON(t, change))
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated.Revision = 1
+		if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error { _, err := w.UpdateChange(t.Context(), updated); return err }); err != nil {
+			t.Fatal(err)
+		}
+		for i := range 301 {
+			decision := "approved"
+			if i%2 == 1 {
+				decision = "changes_requested"
+			}
+			review := tracker.ChangeReview{ID: fmt.Sprintf("review_%d", i), VersionID: f.version.ID, Decision: decision, Actor: tracker.Actor{Kind: "human", PrincipalID: fmt.Sprintf("reviewer_%d", i%2)}, CreatedAt: historyAt()}
+			row, err := f.content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.change.ID, Kind: "review"}, historyJSON(t, review))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if i == 198 {
+				row.ReviewKind = ""
+				row.ReviewSessionKnown = false
+			}
+			if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error { _, err := w.AppendEvidence(t.Context(), row); return err }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var derived int
+		if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM current_change_reviews WHERE organization_id=$1 AND change_id=$2`, org, f.change.ID).Scan(&derived); err != nil || derived != 0 {
+			t.Fatalf("request maintained derived current reviews: count=%d error=%v", derived, err)
+		}
+		fixtures[org] = f
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(org), func(t *testing.T) {
+			f := fixtures[org]
+			read := func(through int64) ([]eventstore.Evidence, error) {
+				var rows []eventstore.Evidence
+				err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(r eventstore.Reader) error {
+					var err error
+					rows, _, err = r.(eventstore.ChangeReviewEvidenceReader).ChangeReviewEvidence(t.Context(), f.change.ID, f.version.ID, through, nil, "new_reviewer")
+					return err
+				})
+				return rows, err
+			}
+			if _, err := read(302); !errors.Is(err, corestore.ErrRevisionConflict) {
+				t.Fatalf("unbuilt current reviews accepted: %v", err)
+			}
+			prepare := func(id, actor, decision string, sequence int64, known bool) eventstore.Evidence {
+				t.Helper()
+				row, err := f.content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.change.ID, Kind: "review", Sequence: sequence, SourceKey: new(id)}, historyJSON(t, tracker.ChangeReview{ID: id, VersionID: f.version.ID, Decision: decision, Actor: tracker.Actor{Kind: "human", PrincipalID: actor}, CreatedAt: historyAt()}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !known {
+					row.ReviewKind = ""
+					row.ReviewSessionKnown = false
+				}
+				return row
+			}
+			appendRow := func(ctx context.Context, row eventstore.Evidence) error {
+				return repository.WriteRecords(ctx, org, corestore.Serving, func(w eventstore.Writer) error { _, err := w.AppendEvidence(ctx, row); return err })
+			}
+			future := prepare("review_future", "reviewer_1", "changes_requested", 0, true)
+			var once sync.Once
+			var appendErr error
+			probe := currentReviewReadProbe{DetailStore: f.objects, before: func(ctx context.Context) error {
+				tx, err := admin.BeginTx(ctx, nil)
+				if err != nil {
+					return err
+				}
+				var id string
+				err = tx.QueryRowContext(ctx, `SELECT id FROM change_requests WHERE organization_id=$1 AND id=$2 FOR UPDATE NOWAIT`, org, f.change.ID).Scan(&id)
+				err = errors.Join(err, tx.Rollback())
+				if err != nil {
+					return fmt.Errorf("archive hydration held Change lock: %w", err)
+				}
+				once.Do(func() { appendErr = appendRow(ctx, future) })
+				return appendErr
+			}}
+			if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, eventstore.NewContent(probe), 200); err != nil || n != 200 {
+				t.Fatalf("first current review page=%d error=%v", n, err)
+			}
+			if _, err := read(303); !errors.Is(err, corestore.ErrRevisionConflict) {
+				t.Fatalf("partial current reviews accepted: %v", err)
+			}
+			if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.content, 200); err != nil || n != 103 {
+				t.Fatalf("final current review page=%d error=%v", n, err)
+			}
+			rows, err := read(303)
+			if err != nil || len(rows) != 2 || rows[0].Sequence != 302 || rows[1].Sequence != 303 {
+				t.Fatalf("forward review lost during backfill: rows=%+v error=%v", rows, err)
+			}
+			var before, after eventstore.Change
+			if err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(r eventstore.Reader) error {
+				var err error
+				before, err = r.Change(t.Context(), f.change.ID)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := appendRow(t.Context(), future); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(r eventstore.Reader) error {
+				var err error
+				after, err = r.Change(t.Context(), f.change.ID)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before, after) {
+				t.Fatal("review replay changed current-review source metadata")
+			}
+			replayedRows, err := read(303)
+			if err != nil || !reflect.DeepEqual(rows, replayedRows) {
+				t.Fatalf("review replay changed derived heads: rows=%+v error=%v", replayedRows, err)
+			}
+			sparse := prepare("review_sparse", "reviewer_1", "changes_requested", 500, true)
+			if err := appendRow(t.Context(), sparse); err != nil {
+				t.Fatal(err)
+			}
+			if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.content, 200); err != nil || n != 1 {
+				t.Fatalf("sparse source page=%d error=%v", n, err)
+			}
+			late := prepare("review_late", "reviewer_0", "approved", 400, true)
+			if err := appendRow(t.Context(), late); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(r eventstore.Reader) error {
+				var err error
+				after, err = r.Change(t.Context(), f.change.ID)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if after.EvidenceSequence != 500 || after.ReviewSummarySequence != 399 || after.ReviewEvidenceRevision != before.ReviewEvidenceRevision+1 {
+				t.Fatalf("late source did not advance its independent revision: %+v", after)
+			}
+			if _, err := read(500); !errors.Is(err, corestore.ErrRevisionConflict) {
+				t.Fatalf("late known review was treated as complete: %v", err)
+			}
+			if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.content, 200); err != nil || n != 2 {
+				t.Fatalf("late known source page=%d error=%v", n, err)
+			}
+			rows, err = read(500)
+			if err != nil || len(rows) != 2 || rows[0].Sequence != 400 || rows[1].Sequence != 500 {
+				t.Fatalf("late review lost: rows=%+v error=%v", rows, err)
+			}
+			unknown := prepare("review_legacy", "reviewer_0", "approved", 450, false)
+			if err := appendRow(t.Context(), unknown); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := read(500); !errors.Is(err, corestore.ErrRevisionConflict) {
+				t.Fatalf("late unprojected review was treated as complete: %v", err)
+			}
+			if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.content, 200); err != nil || n != 1 {
+				t.Fatalf("legacy source page=%d error=%v", n, err)
+			}
+			if _, err := read(500); !errors.Is(err, corestore.ErrRevisionConflict) {
+				t.Fatalf("unfinished suffix accepted: %v", err)
+			}
+			if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.content, 200); err != nil || n != 1 {
+				t.Fatalf("legacy suffix page=%d error=%v", n, err)
+			}
+			rows, err = read(500)
+			if err != nil || len(rows) != 2 || rows[0].Sequence != 450 || rows[1].Sequence != 500 {
+				t.Fatalf("legacy review not recovered: rows=%+v error=%v", rows, err)
+			}
+			for _, test := range []struct {
+				name  string
+				tip   int64
+				late  int64
+				known bool
+			}{
+				{name: "competing backfill", tip: 600},
+				{name: "late known insertion", tip: 700, late: 650, known: true},
+				{name: "late unknown insertion", tip: 800, late: 750},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					if err := appendRow(t.Context(), prepare(fmt.Sprintf("tip_%d", test.tip), "reviewer_0", "approved", test.tip, false)); err != nil {
+						t.Fatal(err)
+					}
+					interleaved := false
+					probe := currentReviewReadProbe{DetailStore: f.objects, before: func(ctx context.Context) error {
+						if interleaved {
+							return nil
+						}
+						interleaved = true
+						if test.late != 0 {
+							return appendRow(ctx, prepare(fmt.Sprintf("late_%d", test.late), "reviewer_1", "changes_requested", test.late, test.known))
+						}
+						_, err := repository.BackfillCurrentChangeReviews(ctx, org, f.content, 200)
+						return err
+					}}
+					if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, eventstore.NewContent(probe), 200); n != 0 || !errors.Is(err, corestore.ErrRevisionConflict) || !interleaved {
+						t.Fatalf("stale backfill committed: rows=%d interleaved=%t error=%v", n, interleaved, err)
+					}
+					if test.late != 0 {
+						if _, err := read(test.tip); !errors.Is(err, corestore.ErrRevisionConflict) {
+							t.Fatalf("late insertion left stale coverage certified: %v", err)
+						}
+						if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.content, 200); err != nil || n != map[bool]int{true: 2, false: 1}[test.known] {
+							t.Fatalf("late insertion rebuild rows=%d error=%v", n, err)
+						}
+						if !test.known {
+							if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.content, 200); err != nil || n != 1 {
+								t.Fatalf("late insertion suffix rows=%d error=%v", n, err)
+							}
+						}
+					}
+					rows, err := read(test.tip)
+					if err != nil || len(rows) != 2 || rows[1].Sequence != test.tip || test.late != 0 && rows[0].Sequence != test.late {
+						t.Fatalf("interleaved evidence lost: rows=%+v error=%v", rows, err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestCurrentReviewMigrationPreservesSourceIdentityOnRetry(t *testing.T) {
+	admin := template.Database(t)
+	admin.SetMaxOpenConns(1)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedRepository(t, repository, org)
+		seedHistory(t, repository, org, "migration")
+	}
+	provider, err := migrationProvider(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `SET ROLE detent_migration_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `CREATE UNIQUE INDEX change_evidence_source_identity_restore_idx ON change_evidence(organization_id,change_id,kind,source_key) NULLS NOT DISTINCT`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.DownTo(t.Context(), 20261104042809)
+	var nullSemantics *pq.Error
+	if !errors.As(err, &nullSemantics) || nullSemantics.Code != "P0001" {
+		t.Fatalf("NULLS NOT DISTINCT restore index was not refused: %v", err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `DROP INDEX CONCURRENTLY change_evidence_source_identity_restore_idx`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.DownTo(t.Context(), 20261104042809); err != nil {
+		t.Fatal(err)
+	}
+	check := func(phase int) {
+		t.Helper()
+		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+			_, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence(organization_id,change_id,sequence,version_id,kind,source_key,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
+    SELECT organization_id,change_id,$3,version_id,kind,source_key,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND sequence=1`, org, "change_migration", int64(1000+phase*10))
+			var duplicate *pq.Error
+			if !errors.As(err, &duplicate) || duplicate.Code != "23505" {
+				t.Fatalf("nonnull source identity phase=%d org=%s error=%v", phase, org, err)
+			}
+			for i := range 2 {
+				if _, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence(organization_id,change_id,sequence,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
+     SELECT organization_id,change_id,$3,version_id,kind,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND sequence=1`, org, "change_migration", int64(1001+phase*10+i)); err != nil {
+					t.Fatalf("null source identity phase=%d org=%s error=%v", phase, org, err)
+				}
+			}
+		}
+	}
+	check(0)
+	if _, err := admin.ExecContext(t.Context(), `CREATE UNIQUE INDEX change_evidence_source_identity_idx ON change_evidence(change_id,organization_id,kind,source_key) WHERE source_key IS NOT NULL`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Up(t.Context())
+	var refused *pq.Error
+	if !errors.As(err, &refused) || refused.Code != "P0001" {
+		t.Fatalf("wrong identity index was not refused by catalog validation: %v", err)
+	}
+	var preserved bool
+	if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='public.change_evidence'::regclass AND conname='change_evidence_organization_id_change_id_kind_source_key_key')`).Scan(&preserved); err != nil || !preserved {
+		t.Fatalf("failed migration dropped existing uniqueness: preserved=%v error=%v", preserved, err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `DROP INDEX CONCURRENTLY change_evidence_source_identity_idx`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Up(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	check(1)
+	if _, err := provider.DownTo(t.Context(), 20261104042809); err != nil {
+		t.Fatal(err)
+	}
+	check(2)
+	if _, err := provider.Up(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	check(3)
 }

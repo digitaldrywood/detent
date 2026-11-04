@@ -294,25 +294,27 @@ type ChangeLandingReceipt struct {
 }
 
 type ChangeRequest struct {
-	OrganizationID      tracker.OrganizationID
-	ProjectID           tracker.ProjectID
-	WorkItemID          tracker.NativeWorkItemID
-	ID                  string
-	Revision            int64
-	Title               string
-	CurrentVersionID    *string
-	EvidenceSequence    int64
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
-	PayloadObjectKey    string
-	PayloadSHA256       string
-	PayloadBytes        int64
-	PayloadContentBytes int64
-	LandedVersionID     *string
-	LandedAt            *time.Time
-	LandedHeadSHA       *string
-	LandedMergeSHA      *string
-	LandedBaseRef       *string
+	OrganizationID         tracker.OrganizationID
+	ProjectID              tracker.ProjectID
+	WorkItemID             tracker.NativeWorkItemID
+	ID                     string
+	Revision               int64
+	Title                  string
+	CurrentVersionID       *string
+	EvidenceSequence       int64
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	PayloadObjectKey       string
+	PayloadSHA256          string
+	PayloadBytes           int64
+	PayloadContentBytes    int64
+	LandedVersionID        *string
+	LandedAt               *time.Time
+	LandedHeadSHA          *string
+	LandedMergeSHA         *string
+	LandedBaseRef          *string
+	ReviewSummarySequence  int64
+	ReviewEvidenceRevision int64
 }
 
 type ChangeReviewPolicy struct {
@@ -817,6 +819,16 @@ type CreditHistoryImportRow struct {
 	SourceRowID    int64
 	RequestHash    string
 	CreatedAt      time.Time
+}
+
+type CurrentChangeReview struct {
+	OrganizationID   tracker.OrganizationID
+	ChangeID         string
+	VersionID        string
+	ReviewKind       string
+	ActorKey         string
+	Decision         string
+	EvidenceSequence int64
 }
 
 type DailySummaryPreference struct {

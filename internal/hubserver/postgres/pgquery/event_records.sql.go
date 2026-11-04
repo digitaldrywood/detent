@@ -356,7 +356,7 @@ func (q *Queries) RecordChangeSummaryEvidence(ctx context.Context, arg RecordCha
 }
 
 const recordGetChange = `-- name: RecordGetChange :one
-SELECT organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, landed_version_id, landed_at, landed_head_sha, landed_merge_sha, landed_base_ref FROM change_requests WHERE organization_id=$1 AND id=$2
+SELECT organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, landed_version_id, landed_at, landed_head_sha, landed_merge_sha, landed_base_ref, review_summary_sequence, review_evidence_revision FROM change_requests WHERE organization_id=$1 AND id=$2
 `
 
 type RecordGetChangeParams struct {
@@ -387,6 +387,8 @@ func (q *Queries) RecordGetChange(ctx context.Context, arg RecordGetChangeParams
 		&i.LandedHeadSHA,
 		&i.LandedMergeSHA,
 		&i.LandedBaseRef,
+		&i.ReviewSummarySequence,
+		&i.ReviewEvidenceRevision,
 	)
 	return i, err
 }
@@ -980,7 +982,7 @@ func (q *Queries) RecordGetVersionByID(ctx context.Context, arg RecordGetVersion
 
 const recordInsertChange = `-- name: RecordInsertChange :one
 INSERT INTO change_requests (organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, landed_version_id, landed_at, landed_head_sha, landed_merge_sha, landed_base_ref)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) RETURNING organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, landed_version_id, landed_at, landed_head_sha, landed_merge_sha, landed_base_ref
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) RETURNING organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, landed_version_id, landed_at, landed_head_sha, landed_merge_sha, landed_base_ref, review_summary_sequence, review_evidence_revision
 `
 
 type RecordInsertChangeParams struct {
@@ -1048,6 +1050,8 @@ func (q *Queries) RecordInsertChange(ctx context.Context, arg RecordInsertChange
 		&i.LandedHeadSHA,
 		&i.LandedMergeSHA,
 		&i.LandedBaseRef,
+		&i.ReviewSummarySequence,
+		&i.ReviewEvidenceRevision,
 	)
 	return i, err
 }
@@ -1571,7 +1575,7 @@ func (q *Queries) RecordInsertVersion(ctx context.Context, arg RecordInsertVersi
 }
 
 const recordLatestChange = `-- name: RecordLatestChange :one
-SELECT c.organization_id, c.project_id, c.work_item_id, c.id, c.revision, c.title, c.current_version_id, c.evidence_sequence, c.created_at, c.updated_at, c.payload_object_key, c.payload_sha256, c.payload_bytes, c.payload_content_bytes, c.landed_version_id, c.landed_at, c.landed_head_sha, c.landed_merge_sha, c.landed_base_ref FROM change_issue_links l
+SELECT c.organization_id, c.project_id, c.work_item_id, c.id, c.revision, c.title, c.current_version_id, c.evidence_sequence, c.created_at, c.updated_at, c.payload_object_key, c.payload_sha256, c.payload_bytes, c.payload_content_bytes, c.landed_version_id, c.landed_at, c.landed_head_sha, c.landed_merge_sha, c.landed_base_ref, c.review_summary_sequence, c.review_evidence_revision FROM change_issue_links l
 JOIN change_requests c ON c.organization_id=l.organization_id AND c.project_id=l.project_id AND c.id=l.change_id
 WHERE l.organization_id=$1 AND l.project_id=$2 AND l.work_item_id=$3
 ORDER BY l.created_at DESC,l.change_id DESC LIMIT 1
@@ -1606,15 +1610,17 @@ func (q *Queries) RecordLatestChange(ctx context.Context, arg RecordLatestChange
 		&i.LandedHeadSHA,
 		&i.LandedMergeSHA,
 		&i.LandedBaseRef,
+		&i.ReviewSummarySequence,
+		&i.ReviewEvidenceRevision,
 	)
 	return i, err
 }
 
 const recordLatestChangesByWorkItems = `-- name: RecordLatestChangesByWorkItems :many
-SELECT requested.work_item_id::text AS linked_work_item_id, c.organization_id, c.project_id, c.work_item_id, c.id, c.revision, c.title, c.current_version_id, c.evidence_sequence, c.created_at, c.updated_at, c.payload_object_key, c.payload_sha256, c.payload_bytes, c.payload_content_bytes, c.landed_version_id, c.landed_at, c.landed_head_sha, c.landed_merge_sha, c.landed_base_ref
+SELECT requested.work_item_id::text AS linked_work_item_id, c.organization_id, c.project_id, c.work_item_id, c.id, c.revision, c.title, c.current_version_id, c.evidence_sequence, c.created_at, c.updated_at, c.payload_object_key, c.payload_sha256, c.payload_bytes, c.payload_content_bytes, c.landed_version_id, c.landed_at, c.landed_head_sha, c.landed_merge_sha, c.landed_base_ref, c.review_summary_sequence, c.review_evidence_revision
 FROM unnest($1::text[]) AS requested(work_item_id)
 CROSS JOIN LATERAL (
-  SELECT c.organization_id, c.project_id, c.work_item_id, c.id, c.revision, c.title, c.current_version_id, c.evidence_sequence, c.created_at, c.updated_at, c.payload_object_key, c.payload_sha256, c.payload_bytes, c.payload_content_bytes, c.landed_version_id, c.landed_at, c.landed_head_sha, c.landed_merge_sha, c.landed_base_ref FROM change_issue_links l
+  SELECT c.organization_id, c.project_id, c.work_item_id, c.id, c.revision, c.title, c.current_version_id, c.evidence_sequence, c.created_at, c.updated_at, c.payload_object_key, c.payload_sha256, c.payload_bytes, c.payload_content_bytes, c.landed_version_id, c.landed_at, c.landed_head_sha, c.landed_merge_sha, c.landed_base_ref, c.review_summary_sequence, c.review_evidence_revision FROM change_issue_links l
   JOIN change_requests c ON c.organization_id=l.organization_id AND c.project_id=l.project_id AND c.id=l.change_id
   WHERE l.organization_id=$2 AND l.project_id=$3
     AND l.work_item_id=requested.work_item_id
@@ -1630,26 +1636,28 @@ type RecordLatestChangesByWorkItemsParams struct {
 }
 
 type RecordLatestChangesByWorkItemsRow struct {
-	LinkedWorkItemID    string
-	OrganizationID      tracker.OrganizationID
-	ProjectID           tracker.ProjectID
-	WorkItemID          tracker.NativeWorkItemID
-	ID                  string
-	Revision            int64
-	Title               string
-	CurrentVersionID    *string
-	EvidenceSequence    int64
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
-	PayloadObjectKey    string
-	PayloadSHA256       string
-	PayloadBytes        int64
-	PayloadContentBytes int64
-	LandedVersionID     *string
-	LandedAt            *time.Time
-	LandedHeadSHA       *string
-	LandedMergeSHA      *string
-	LandedBaseRef       *string
+	LinkedWorkItemID       string
+	OrganizationID         tracker.OrganizationID
+	ProjectID              tracker.ProjectID
+	WorkItemID             tracker.NativeWorkItemID
+	ID                     string
+	Revision               int64
+	Title                  string
+	CurrentVersionID       *string
+	EvidenceSequence       int64
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	PayloadObjectKey       string
+	PayloadSHA256          string
+	PayloadBytes           int64
+	PayloadContentBytes    int64
+	LandedVersionID        *string
+	LandedAt               *time.Time
+	LandedHeadSHA          *string
+	LandedMergeSHA         *string
+	LandedBaseRef          *string
+	ReviewSummarySequence  int64
+	ReviewEvidenceRevision int64
 }
 
 func (q *Queries) RecordLatestChangesByWorkItems(ctx context.Context, arg RecordLatestChangesByWorkItemsParams) ([]RecordLatestChangesByWorkItemsRow, error) {
@@ -1682,6 +1690,8 @@ func (q *Queries) RecordLatestChangesByWorkItems(ctx context.Context, arg Record
 			&i.LandedHeadSHA,
 			&i.LandedMergeSHA,
 			&i.LandedBaseRef,
+			&i.ReviewSummarySequence,
+			&i.ReviewEvidenceRevision,
 		); err != nil {
 			return nil, err
 		}
@@ -1911,7 +1921,7 @@ func (q *Queries) RecordLatestRunEventsByAttempts(ctx context.Context, arg Recor
 }
 
 const recordListChange = `-- name: RecordListChange :many
-SELECT c.organization_id, c.project_id, c.work_item_id, c.id, c.revision, c.title, c.current_version_id, c.evidence_sequence, c.created_at, c.updated_at, c.payload_object_key, c.payload_sha256, c.payload_bytes, c.payload_content_bytes, c.landed_version_id, c.landed_at, c.landed_head_sha, c.landed_merge_sha, c.landed_base_ref FROM change_requests c WHERE c.organization_id=$1 AND c.project_id=$2 AND c.id>$3
+SELECT c.organization_id, c.project_id, c.work_item_id, c.id, c.revision, c.title, c.current_version_id, c.evidence_sequence, c.created_at, c.updated_at, c.payload_object_key, c.payload_sha256, c.payload_bytes, c.payload_content_bytes, c.landed_version_id, c.landed_at, c.landed_head_sha, c.landed_merge_sha, c.landed_base_ref, c.review_summary_sequence, c.review_evidence_revision FROM change_requests c WHERE c.organization_id=$1 AND c.project_id=$2 AND c.id>$3
 AND EXISTS (SELECT 1 FROM change_issue_links l WHERE l.organization_id=c.organization_id AND l.project_id=c.project_id AND l.change_id=c.id AND l.work_item_id=$4)
 ORDER BY c.id LIMIT $5
 `
@@ -1959,6 +1969,8 @@ func (q *Queries) RecordListChange(ctx context.Context, arg RecordListChangePara
 			&i.LandedHeadSHA,
 			&i.LandedMergeSHA,
 			&i.LandedBaseRef,
+			&i.ReviewSummarySequence,
+			&i.ReviewEvidenceRevision,
 		); err != nil {
 			return nil, err
 		}
@@ -2349,7 +2361,7 @@ func (q *Queries) RecordListViewedFiles(ctx context.Context, arg RecordListViewe
 }
 
 const recordLockChange = `-- name: RecordLockChange :one
-SELECT organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, landed_version_id, landed_at, landed_head_sha, landed_merge_sha, landed_base_ref FROM change_requests WHERE organization_id=$1 AND id=$2 FOR UPDATE
+SELECT organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, landed_version_id, landed_at, landed_head_sha, landed_merge_sha, landed_base_ref, review_summary_sequence, review_evidence_revision FROM change_requests WHERE organization_id=$1 AND id=$2 FOR UPDATE
 `
 
 type RecordLockChangeParams struct {
@@ -2380,6 +2392,8 @@ func (q *Queries) RecordLockChange(ctx context.Context, arg RecordLockChangePara
 		&i.LandedHeadSHA,
 		&i.LandedMergeSHA,
 		&i.LandedBaseRef,
+		&i.ReviewSummarySequence,
+		&i.ReviewEvidenceRevision,
 	)
 	return i, err
 }
@@ -2704,7 +2718,7 @@ updated_at=$3, payload_object_key=$4, payload_sha256=$5,
 payload_bytes=$6, payload_content_bytes=$7, landed_version_id=$8,
 landed_at=$9, landed_head_sha=$10, landed_merge_sha=$11, landed_base_ref=$12
 WHERE organization_id=$13 AND id=$14 AND project_id=$15 AND work_item_id=$16 AND revision=$17
-RETURNING organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, landed_version_id, landed_at, landed_head_sha, landed_merge_sha, landed_base_ref
+RETURNING organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, landed_version_id, landed_at, landed_head_sha, landed_merge_sha, landed_base_ref, review_summary_sequence, review_evidence_revision
 `
 
 type RecordUpdateChangeParams struct {
@@ -2768,6 +2782,8 @@ func (q *Queries) RecordUpdateChange(ctx context.Context, arg RecordUpdateChange
 		&i.LandedHeadSHA,
 		&i.LandedMergeSHA,
 		&i.LandedBaseRef,
+		&i.ReviewSummarySequence,
+		&i.ReviewEvidenceRevision,
 	)
 	return i, err
 }

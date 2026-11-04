@@ -76,25 +76,27 @@ type CollaborationVersionsReader interface {
 }
 
 type Change struct {
-	OrganizationID      tracker.OrganizationID
-	ProjectID           tracker.ProjectID
-	WorkItemID          tracker.NativeWorkItemID
-	ID                  string
-	Revision            int64
-	Title               string
-	CurrentVersionID    *string
-	EvidenceSequence    int64
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
-	PayloadObjectKey    string
-	PayloadSHA256       string
-	PayloadBytes        int64
-	PayloadContentBytes int64
-	LandedVersionID     *string
-	LandedAt            *time.Time
-	LandedHeadSHA       *string
-	LandedMergeSHA      *string
-	LandedBaseRef       *string
+	OrganizationID         tracker.OrganizationID
+	ProjectID              tracker.ProjectID
+	WorkItemID             tracker.NativeWorkItemID
+	ID                     string
+	Revision               int64
+	Title                  string
+	CurrentVersionID       *string
+	EvidenceSequence       int64
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	PayloadObjectKey       string
+	PayloadSHA256          string
+	PayloadBytes           int64
+	PayloadContentBytes    int64
+	LandedVersionID        *string
+	LandedAt               *time.Time
+	LandedHeadSHA          *string
+	LandedMergeSHA         *string
+	LandedBaseRef          *string
+	ReviewSummarySequence  int64
+	ReviewEvidenceRevision int64
 }
 
 type ReviewPolicy struct {
@@ -295,6 +297,10 @@ type ChangeRecoveryReader interface {
 	ChangeSummaryEvidence(context.Context, string, string, int64, []string) ([]Evidence, bool, error)
 	ChangePublicationCheckpoints(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, tracker.NativeChangeReference) ([]Event, error)
 	ChangePublicationProvenance(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, tracker.NativeRunData) (bool, error)
+}
+
+type ChangeReviewEvidenceReader interface {
+	ChangeReviewEvidence(context.Context, string, string, int64, []string, string) ([]Evidence, bool, error)
 }
 
 type ValidatorReviewReader interface {

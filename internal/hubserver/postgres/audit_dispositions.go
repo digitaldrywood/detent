@@ -35,8 +35,16 @@ func (s *session) CreateAuditDisposition(ctx context.Context, row eventstore.Aud
 	if err := s.checkOrganization(row.Organization); err != nil {
 		return row, err
 	}
+	change, err := s.LockChange(ctx, row.ChangeID)
+	if err != nil {
+		return row, err
+	}
+	if change.ProjectID != row.Project {
+		return row, corestore.ErrNotFound
+	}
 	ref, d := row.Reference, row.Disposition
-	err := s.db.QueryRowContext(ctx, `INSERT INTO runner_audit_dispositions(organization_id,project_id,change_id,review_sequence,audit_session_id,finding_id,status,actor_id,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,request_key,request_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT(organization_id,actor_id,request_key) DO NOTHING RETURNING id`, s.organization, row.Project, row.ChangeID, row.ReviewSequence, d.AuditRunID, d.FindingID, d.Status, row.ActorID, d.RecordedAt, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize, row.RequestKey, row.RequestHash).Scan(&row.Disposition.ID)
+	err = s.db.QueryRowContext(ctx, `INSERT INTO runner_audit_dispositions(organization_id,project_id,change_id,review_sequence,audit_session_id,finding_id,status,actor_id,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,request_key,request_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT(organization_id,actor_id,request_key) DO NOTHING RETURNING id`, s.organization, row.Project, row.ChangeID, row.ReviewSequence, d.AuditRunID, d.FindingID, d.Status, row.ActorID, d.RecordedAt, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize, row.RequestKey, row.RequestHash).Scan(&row.Disposition.ID)
+	inserted := err == nil
 	if errors.Is(err, sql.ErrNoRows) {
 		var hash, key, digest string
 		var project tracker.ProjectID
@@ -46,6 +54,9 @@ func (s *session) CreateAuditDisposition(ctx context.Context, row eventstore.Aud
 			return row, corestore.ErrRevisionConflict
 		}
 		row.Reference = eventstore.Reference(key, digest, size, contentSize)
+	}
+	if err == nil && inserted {
+		_, err = s.db.ExecContext(ctx, `UPDATE change_requests SET review_evidence_revision=review_evidence_revision+1 WHERE organization_id=$1 AND id=$2`, s.organization, row.ChangeID)
 	}
 	return row, mapError(ctx, err)
 }

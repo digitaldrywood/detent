@@ -390,12 +390,15 @@ func (s *session) insertRecordVersion(ctx context.Context, record eventstore.Ver
 	row, err := s.queries.RecordInsertVersion(ctx, pgquery.RecordInsertVersionParams{OrganizationID: record.OrganizationID, ID: record.ID, ChangeID: record.ChangeID, Number: record.Number, HeadSHA: record.HeadSHA, BaseSHA: record.BaseSHA, MergeBaseSHA: record.MergeBaseSHA, Repository: record.Repository, PolicyRevisionID: record.PolicyRevisionID, AttemptID: record.AttemptID, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, ExternalProvider: record.ExternalProvider, ExternalID: record.ExternalID, ExternalURL: record.ExternalURL, CreatedAt: record.CreatedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion, SourceObjectKey: sourceKey, SourceSha256: sourceDigest, SourceBytes: sourceBytes, SourceContentBytes: sourceContentBytes, ImplementingSessionID: record.ImplementingSessionID, ImplementingMachineID: record.ImplementingMachineID})
 	return versionRecord(row), mapError(ctx, err)
 }
-func (s *session) insertRecordEvidence(ctx context.Context, record eventstore.Evidence) (eventstore.Evidence, error) {
+func (s *session) insertRecordEvidence(ctx context.Context, record eventstore.Evidence, previousThrough int64) (eventstore.Evidence, error) {
 	row, err := s.queries.RecordInsertEvidence(ctx, pgquery.RecordInsertEvidenceParams{ReviewKind: record.ReviewKind, ReviewLanding: record.ReviewLanding, ReviewSessionKnown: record.ReviewSessionKnown, ReviewSessionID: record.ReviewSessionID, ReviewSessionMachine: string(record.ReviewSessionMachine), OrganizationID: record.OrganizationID, ChangeID: record.ChangeID, Sequence: record.Sequence, VersionID: record.VersionID, Kind: record.Kind, SourceKey: record.SourceKey, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, Decision: record.Decision, CreatedAt: record.CreatedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
 	if err != nil {
 		return eventstore.Evidence{}, mapError(ctx, err)
 	}
 	record.Sequence = row.Sequence
+	if err := s.invalidateCurrentChangeReviews(ctx, record, previousThrough); err != nil {
+		return eventstore.Evidence{}, err
+	}
 	if err := s.putReportEscapeProjection(ctx, record); err != nil {
 		return eventstore.Evidence{}, err
 	}
@@ -506,6 +509,8 @@ func (s *session) CreateChange(ctx context.Context, record eventstore.Change) (e
 	if err == nil {
 		requested := record
 		requested.EvidenceSequence = previous.EvidenceSequence
+		requested.ReviewSummarySequence = previous.ReviewSummarySequence
+		requested.ReviewEvidenceRevision = previous.ReviewEvidenceRevision
 		if requested.CreatedAt.IsZero() || recordTime(requested.CreatedAt).Equal(previous.CreatedAt) {
 			requested.CreatedAt = previous.CreatedAt
 		}
@@ -600,7 +605,8 @@ func (s *session) AppendEvidence(ctx context.Context, record eventstore.Evidence
 	if err := validRecordPayload(record.OrganizationID, record.PayloadObjectKey, record.PayloadSHA256, record.PayloadBytes, record.PayloadContentBytes); err != nil {
 		return eventstore.Evidence{}, err
 	}
-	if _, err := s.queries.RecordLockChange(ctx, pgquery.RecordLockChangeParams{OrganizationID: s.organization, ID: record.ChangeID}); err != nil {
+	lockedChange, err := s.queries.RecordLockChange(ctx, pgquery.RecordLockChangeParams{OrganizationID: s.organization, ID: record.ChangeID})
+	if err != nil {
 		return eventstore.Evidence{}, mapError(ctx, err)
 	}
 	if record.SourceKey != nil || record.Sequence > 0 {
@@ -641,7 +647,7 @@ func (s *session) AppendEvidence(ctx context.Context, record eventstore.Evidence
 		record.Sequence = sequence
 	}
 	record.CreatedAt = recordTime(record.CreatedAt)
-	return s.insertRecordEvidence(ctx, record)
+	return s.insertRecordEvidence(ctx, record, lockedChange.EvidenceSequence)
 }
 
 func (s *session) LinkIssue(ctx context.Context, record eventstore.Link) error {
