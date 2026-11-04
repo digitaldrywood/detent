@@ -2037,6 +2037,7 @@ type Project struct {
 	ModelSelectionObjectKey *string
 	CreatedAt               time.Time
 	DeletedAt               *time.Time
+	DuplicateSourceSequence int64
 }
 
 type ProjectAction struct {

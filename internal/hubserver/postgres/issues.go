@@ -44,6 +44,9 @@ func (s *session) CreateWorkItem(ctx context.Context, record corestore.WorkItem)
 }
 
 func (s *session) createWorkItem(ctx context.Context, record corestore.WorkItem) (corestore.WorkItem, error) {
+	if err := s.advanceDuplicateSource(ctx, record.ProjectID); err != nil {
+		return corestore.WorkItem{}, err
+	}
 	row, err := s.queries.CreateWorkItem(ctx, pgquery.CreateWorkItemParams{
 		LastActivityAt:         optionalTime(record.LastActivityAt),
 		ImportedID:             record.ID,
@@ -78,6 +81,9 @@ func (s *session) UpdateWorkItem(ctx context.Context, record corestore.WorkItem)
 	if err := s.checkOrganization(record.OrganizationID); err != nil {
 		return corestore.WorkItem{}, err
 	}
+	if err := s.lockDuplicateSourceProject(ctx, record.ProjectID, "issue"); err != nil {
+		return corestore.WorkItem{}, err
+	}
 	row, err := s.queries.UpdateWorkItem(ctx, pgquery.UpdateWorkItemParams{
 		LastActivityAt:         optionalTime(record.LastActivityAt),
 		Number:                 record.Number,
@@ -104,6 +110,9 @@ func (s *session) UpdateWorkItem(ctx context.Context, record corestore.WorkItem)
 }
 
 func (s *session) DeleteWorkItem(ctx context.Context, project tracker.ProjectID, id tracker.NativeWorkItemID) error {
+	if err := s.advanceDuplicateSource(ctx, project); err != nil {
+		return err
+	}
 	rows, err := s.queries.DeleteWorkItem(ctx, pgquery.DeleteWorkItemParams{
 		OrganizationID: s.organization,
 		ProjectID:      project,

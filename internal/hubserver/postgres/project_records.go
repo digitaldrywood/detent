@@ -33,7 +33,7 @@ func (s *session) ProjectRecord(ctx context.Context, id tracker.ProjectID) (proj
 	if len(rows) == 0 {
 		return projectstore.Record{}, corestore.ErrNotFound
 	}
-	result := projectstore.Record{Core: corestore.Project(rows[0].Project), Settings: projectSettings(rows[0].ProjectSetting), States: []tracker.NativeState{}}
+	result := projectstore.Record{Core: project(rows[0].Project), Settings: projectSettings(rows[0].ProjectSetting), States: []tracker.NativeState{}}
 	positions := make(map[string]int)
 	for _, row := range rows {
 		if row.StateName == nil {

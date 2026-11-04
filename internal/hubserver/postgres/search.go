@@ -78,6 +78,9 @@ func (s *session) PutSearch(ctx context.Context, d searchstore.Document, expecte
 	if source == nil || source.Statistics.Validate() != nil {
 		return searchstore.ErrInvalid
 	}
+	if err := s.lockDuplicateSourceProject(ctx, d.ProjectID, d.Kind); err != nil {
+		return err
+	}
 	var project *tracker.ProjectID
 	var item *string
 	if d.ProjectID != "" {
@@ -101,6 +104,9 @@ func (s *session) PutSearch(ctx context.Context, d searchstore.Document, expecte
 }
 
 func (s *session) DeleteSearch(ctx context.Context, id string, revision int64) error {
+	if err := s.lockDuplicateSourceDocument(ctx, id); err != nil {
+		return err
+	}
 	count, err := s.queries.SearchDelete(ctx, pgquery.SearchDeleteParams{OrganizationID: s.organization, ID: id, Revision: revision})
 	return affected(ctx, count, err)
 }
