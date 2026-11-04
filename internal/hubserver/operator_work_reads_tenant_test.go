@@ -2,21 +2,27 @@ package hubserver
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -24,7 +30,8 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	details := &memoryRunDetails{}
-	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, Logger: discardLogger(), now: func() time.Time { return now }}}
+	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, SecretKeys: secretTestKeys(t, "1", "1"), Logger: discardLogger(), now: func() time.Time { return now }}}
+	var previousRecoveryCursor string
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		service.localOrganization = string(org)
 		credential := apiCredential{ID: "reader", Hash: apikey.HashToken(string(org) + "_reader"), Scope: apiScopeOperator}
@@ -41,6 +48,15 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 				}
 			}
 			return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: credential.ID, ProjectID: "example"})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		key, err := service.config.SecretKeys.Seal([]byte(strings.Repeat("k", 32)), accessstore.SecretAAD(org, "", accessstore.NativeCursorKeyKind))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Envelope: key, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: key.Version, RecordedAt: now})
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -70,6 +86,57 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 					t.Fatal(err)
 				}
 			}
+		}
+		change := tracker.ChangeRequest{OrganizationID: org, ProjectID: "example", WorkItemID: "wi_example_1", ID: "change_example", Title: string(org) + " retained change", Revision: 1, CreatedAt: now, UpdatedAt: now}
+		changeRaw, err := json.Marshal(change)
+		if err != nil {
+			t.Fatal(err)
+		}
+		changeRow, err := eventstore.NewContent(details).PrepareChange(t.Context(), org, changeRaw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		originalPolicy := policy.Descriptor{ID: "policy_original", SourceRevision: string(org) + " original policy"}
+		policyRow, err := eventstore.NewContent(details).PrepareProjectPolicy(t.Context(), org, originalPolicy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		policyRow.ProjectID, policyRow.ApprovedBy, policyRow.ApprovedAt = "example", "reader", now
+		originalVersion := tracker.ChangeVersion{ID: "version_original", ChangeID: change.ID, Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("a", 40), PolicyID: originalPolicy.ID}, Actor: tracker.Actor{Kind: "human", PrincipalID: "reader"}, CreatedAt: now}
+		versionRaw, err := json.Marshal(originalVersion)
+		if err != nil {
+			t.Fatal(err)
+		}
+		versionRow, err := eventstore.NewContent(details).PrepareVersion(t.Context(), org, versionRaw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		review := tracker.ChangeReview{ID: "review_example", VersionID: originalVersion.ID, Validator: &gate.ValidatorResult{VersionID: originalVersion.ID, Commands: []gate.CommandResult{{Command: "example-check", Output: string(org) + " retained command output", OutputTruncated: true}}}, Decision: "approve", Body: string(org) + strings.Repeat(" retained review text", 5000), Actor: tracker.Actor{Kind: "human", PrincipalID: "reader"}, CreatedAt: now}
+		reviewRaw, err := json.Marshal(review)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reviewRow, err := eventstore.NewContent(details).PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: change.ID, Kind: "review"}, reviewRaw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.CreateChange(t.Context(), changeRow); err != nil {
+				return err
+			}
+			if err := w.ImportProjectPolicyRevision(t.Context(), policyRow, false); err != nil {
+				return err
+			}
+			if _, err := w.CreateVersion(t.Context(), versionRow); err != nil {
+				return err
+			}
+			if err := w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: "example", WorkItemID: "wi_example_1", ChangeID: change.ID, CreatedAt: now}); err != nil {
+				return err
+			}
+			_, err := w.AppendEvidence(t.Context(), reviewRow)
+			return err
+		}); err != nil {
+			t.Fatal(err)
 		}
 		scope := nativeScope{organization: org, project: "example", credential: credential}
 		for _, test := range []struct {
@@ -144,10 +211,178 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 			})
 		}
 
+		var recoveryCursor string
+		for _, role := range []string{"", "reporter"} {
+			t.Run(string(org)+"/retained recovery/"+role, func(t *testing.T) {
+				scope := scope
+				scope.credential.HostedRole = role
+				defer func() {
+					if value := recover(); value != nil {
+						t.Fatalf("operator recovery panicked with nil legacy database: %v", value)
+					}
+				}()
+				request := operatortool.WorkReadRequest{ProjectID: "example", Reference: "1", View: "recovery", Limit: 1}
+				var assembled []byte
+				var section string
+				seen := map[string]bool{}
+				for {
+					result, err := (operatorWorkReads{service: service, scope: scope}).ReadWork(ctx, operatortool.WorkItem, request)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var response operatortool.WorkReadResult[tracker.NativeRecoveryPage]
+					if err := json.Unmarshal(result.Content, &response); err != nil {
+						t.Fatal(err)
+					}
+					page := response.Data
+					if page.OrganizationID != org || page.ProjectID != "example" || page.WorkItemID != "wi_example_1" || page.Revision != 1 {
+						t.Fatal("retained fragment lost tenant or source identity")
+					}
+					if page.Section == "complete" {
+						if page.NextCursor != "" || len(assembled) != 0 || !seen["reviews"] || !seen["change"] || !seen["issue_body"] || !seen["versions"] {
+							t.Fatal("recovery claimed completion before retained records")
+						}
+						break
+					}
+					if len(assembled) == 0 {
+						section = page.Section
+					}
+					if page.Section != section || page.Offset != int64(len(assembled)) || page.NextCursor == "" {
+						t.Fatal("fragment identity or continuation changed")
+					}
+					assembled = append(assembled, page.Data...)
+					if int64(len(assembled)) == page.TotalBytes {
+						digest := sha256.Sum256(assembled)
+						if page.SHA256 != hex.EncodeToString(digest[:]) {
+							t.Fatal("retained record digest mismatch")
+						}
+						switch page.Section {
+						case "reviews":
+							var value tracker.ChangeReview
+							if json.Unmarshal(assembled, &value) != nil || value.Body != review.Body || value.Validator == nil || !reflect.DeepEqual(value.Validator.Commands, review.Validator.Commands) || value.ID != review.ID || page.RecordID != "1" || page.VersionID != review.VersionID || page.Offset == 0 {
+								t.Fatal("retained review content or fragmentation lost")
+							}
+						case "versions":
+							var value tracker.ChangeVersion
+							if json.Unmarshal(assembled, &value) != nil || value.ID != originalVersion.ID || page.RecordID != value.ID || page.VersionID != value.ID || value.HeadSHA != originalVersion.HeadSHA || value.Policy.SourceRevision != originalPolicy.SourceRevision || value.Policy.ID != originalPolicy.ID {
+								t.Fatal("retained version source or original policy lost")
+							}
+						case "change":
+							var value tracker.ChangeRequest
+							if json.Unmarshal(assembled, &value) != nil || value.Title != change.Title || value.ID != change.ID || page.RecordID != change.ID {
+								t.Fatal("retained Change content lost")
+							}
+							if !reflect.DeepEqual(value.LinkedIssues, []tracker.NativeWorkItemID{"wi_example_1"}) {
+								t.Fatalf("visible linked issues=%v, want owned primary", value.LinkedIssues)
+							}
+
+						case "issue_body":
+							var value string
+							if json.Unmarshal(assembled, &value) != nil || value != "Example body" || page.RecordID != "wi_example_1" {
+								t.Fatal("retained body content lost")
+							}
+						default:
+							t.Fatalf("unexpected retained section %s", page.Section)
+						}
+						seen[page.Section] = true
+						assembled = nil
+					}
+					request.Cursor = page.NextCursor
+					if recoveryCursor == "" {
+						recoveryCursor = request.Cursor
+					}
+				}
+				if role == "" && previousRecoveryCursor != "" {
+					request.Cursor = previousRecoveryCursor
+					if _, err := (operatorWorkReads{service: service, scope: scope}).ReadWork(ctx, operatortool.WorkItem, request); err == nil {
+						t.Fatal("accepted other organization cursor")
+					}
+				}
+				if role == "" {
+					previousRecoveryCursor = recoveryCursor
+				}
+				request.Cursor = recoveryCursor
+				request.Reference = "2"
+				if _, err := (operatorWorkReads{service: service, scope: scope}).ReadWork(ctx, operatortool.WorkItem, request); err == nil {
+					t.Fatal("accepted foreign source cursor")
+				}
+				request.ProjectID, request.Reference = "hidden", "1"
+				if _, err := (operatorWorkReads{service: service, scope: scope}).ReadWork(ctx, operatortool.WorkItem, request); err == nil {
+					t.Fatal("accepted unauthorized project cursor")
+				}
+			})
+
+		}
+		t.Run(string(org)+"/reporter hidden primary owned linked", func(t *testing.T) {
+			hidden := change
+			hidden.ID, hidden.WorkItemID = "change_hidden_primary", "wi_example_2"
+			raw, err := json.Marshal(hidden)
+			if err != nil {
+				t.Fatal(err)
+			}
+			row, err := eventstore.NewContent(details).PrepareChange(t.Context(), org, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hiddenVersion := originalVersion
+			hiddenVersion.ID, hiddenVersion.ChangeID = "version_hidden", hidden.ID
+			raw, err = json.Marshal(hiddenVersion)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hiddenVersionRow, err := eventstore.NewContent(details).PrepareVersion(t.Context(), org, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hiddenReview := review
+			hiddenReview.VersionID = hiddenVersion.ID
+			raw, err = json.Marshal(hiddenReview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			evidence, err := eventstore.NewContent(details).PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: hidden.ID, Kind: "review"}, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if _, err := w.CreateChange(t.Context(), row); err != nil {
+					return err
+				}
+				if _, err := w.CreateVersion(t.Context(), hiddenVersionRow); err != nil {
+					return err
+				}
+				for _, item := range []tracker.NativeWorkItemID{"wi_example_1", "wi_example_2"} {
+					if err := w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: "example", WorkItemID: item, ChangeID: hidden.ID, CreatedAt: now}); err != nil {
+						return err
+					}
+				}
+				_, err := w.AppendEvidence(t.Context(), evidence)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			reporter := scope
+			reporter.credential.HostedRole = "reporter"
+			result, err := (operatorWorkReads{service: service, scope: reporter}).ReadWork(ctx, operatortool.WorkItem, operatortool.WorkReadRequest{ProjectID: "example", Reference: "1", View: "recovery", Limit: 1})
+			if err == nil {
+				var response operatortool.WorkReadResult[tracker.NativeRecoveryPage]
+				if err := json.Unmarshal(result.Content, &response); err != nil {
+					t.Fatal(err)
+				}
+				t.Fatalf("reporter leaked hidden primary first fragment: successful MCP response section=%s bytes=%d sha256=%s cursor=%t", response.Data.Section, len(response.Data.Data), response.Data.SHA256, response.Data.NextCursor != "")
+			}
+			if !errors.Is(err, explain.ErrNotFound) {
+				t.Fatalf("hidden primary error=%v, want not found", err)
+			}
+		})
+
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: credential.ID, ProjectID: "hidden"})
 		}); err != nil {
 			t.Fatal(err)
+		}
+		if _, err := (operatorWorkReads{service: service, scope: scope}).ReadWork(ctx, operatortool.WorkItem, operatortool.WorkReadRequest{ProjectID: "example", Reference: "wi_hidden_1", View: "recovery", Limit: 1}); err == nil {
+			t.Fatal("recovery accepted wrong authorized project")
 		}
 		if _, err := service.resolveOperatorNativeReadItem(t.Context(), nil, scope, "wi_hidden_1"); !isNativeNotFound(err) {
 			t.Fatalf("wrong authorized project error=%v", err)
@@ -175,6 +410,9 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 		}); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := (operatorWorkReads{service: service, scope: scope}).ReadWork(ctx, operatortool.WorkItem, operatortool.WorkReadRequest{ProjectID: "example", Reference: "1", View: "recovery", Limit: 1, Cursor: recoveryCursor}); err == nil {
+			t.Fatal("recovery accepted stale source revision")
+		}
 		current, err := service.resolveOperatorNativeReadItem(t.Context(), nil, scope, "1")
 		if err != nil {
 			t.Fatal(err)
@@ -182,6 +420,15 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 		if current.Revision != 2 || current.Title != "Current title" || current.Body != "Current body" {
 			t.Fatal("operator resolver read stale revision")
 		}
+		fresh, err := (operatorWorkReads{service: service, scope: scope}).ReadWork(ctx, operatortool.WorkItem, operatortool.WorkReadRequest{ProjectID: "example", Reference: "1", View: "recovery", Limit: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var freshPage operatortool.WorkReadResult[tracker.NativeRecoveryPage]
+		if err := json.Unmarshal(fresh.Content, &freshPage); err != nil {
+			t.Fatal(err)
+		}
+		recoveryCursor = freshPage.Data.NextCursor
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.DeleteAccessTokenGrant(t.Context(), credential.ID, "example")
 		}); err != nil {
@@ -193,6 +440,9 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 					t.Fatalf("revoked read panicked: %v", value)
 				}
 			}()
+			if _, err := (operatorWorkReads{service: service, scope: scope}).ReadWork(ctx, operatortool.WorkItem, operatortool.WorkReadRequest{ProjectID: "example", Reference: "1", View: "recovery", Limit: 1, Cursor: recoveryCursor}); err == nil {
+				t.Fatal("recovery accepted revoked grant")
+			}
 			if _, err := service.resolveOperatorNativeReadItem(t.Context(), nil, scope, "1"); err == nil {
 				t.Fatal("revoked project grant still reads item")
 			}

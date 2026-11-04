@@ -172,7 +172,11 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 	case operatortool.WorkItem:
 		if request.View == "recovery" {
 			params := url.Values{"view": {"recovery"}, "limit": {"1"}, "cursor": {request.Cursor}}
-			recovery, err := s.readNativeRecoveryPage(ctx, scope, request.Reference, "/api/v2/organizations/"+url.PathEscape(string(scope.organization))+"/projects/"+url.PathEscape(string(scope.project))+"/work-items/"+url.PathEscape(request.Reference), params)
+			read := s.readNativeRecoveryPage
+			if s.config.TenantRepository != nil {
+				read = s.readNativeRecoveryPageTenant
+			}
+			recovery, err := read(ctx, scope, request.Reference, "/api/v2/organizations/"+url.PathEscape(string(scope.organization))+"/projects/"+url.PathEscape(string(scope.project))+"/work-items/"+url.PathEscape(request.Reference), params)
 			return hubWorkResult(r, request, recovery.Continuation, err)
 		}
 		view := operatortool.NativeItemView(request.ProjectID, item)

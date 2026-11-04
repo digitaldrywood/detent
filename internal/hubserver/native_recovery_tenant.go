@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -540,49 +542,240 @@ func (s *Service) readNativeRecoveryPageTenant(ctx context.Context, scope native
 	if err != nil {
 		return tracker.NativeRecovery{}, projectRecordError(err)
 	}
+	if change.ID != "" {
+		visibleChange, visible, err := s.filterChangeRecord(ctx, scope, tracker.ChangeRequest{OrganizationID: change.OrganizationID, ProjectID: change.ProjectID, WorkItemID: change.WorkItemID, ID: change.ID})
+		if err != nil {
+			return tracker.NativeRecovery{}, err
+		}
+		if !visible || !slices.Contains(visibleChange.LinkedIssues, row.NativeID) {
+			return tracker.NativeRecovery{}, nativeNotFound()
+		}
+	}
 	var issue tracker.NativeIssue
 	issue, err = s.hydrateWorkItemRecord(ctx, row, version)
 	if err != nil {
 		return tracker.NativeRecovery{}, err
 	}
-	selection := recoveryEvidenceCursor{}
+	selection := recoveryEvidenceCursor{Change: change.ID, Version: valueOrEmpty(change.CurrentVersionID), IssueRevision: tracker.Revision(row.Revision)}
 	if cursor.After != "" {
-		if err := json.Unmarshal([]byte(cursor.After), &selection); err != nil || selection.Section != 7 || selection.After < 0 || selection.Offset < 0 || selection.IssueRevision != tracker.Revision(row.Revision) {
+		if json.Unmarshal([]byte(cursor.After), &selection) != nil || selection.Section < 0 || selection.Section > 8 || selection.After < 0 || selection.Offset < 0 {
 			return tracker.NativeRecovery{}, nativePublicInvalid("Recovery cursor is invalid")
 		}
-		if selection.Change != "" && (change.ID != selection.Change || selection.Version != valueOrEmpty(change.CurrentVersionID)) {
-			return tracker.NativeRecovery{}, nativeConflict(0)
+		if selection.IssueRevision != tracker.Revision(row.Revision) || selection.Change != change.ID || selection.Version != valueOrEmpty(change.CurrentVersionID) {
+			return tracker.NativeRecovery{}, nativeConflict(tracker.Revision(row.Revision))
 		}
 	}
-	if selection.Change == "" {
-		selection.Change, selection.Version = change.ID, valueOrEmpty(change.CurrentVersionID)
-	}
-	encodedBody, err := json.Marshal(issue.Body)
-	if err != nil {
-		return tracker.NativeRecovery{}, err
-	}
-	page := &tracker.NativeRecoveryPage{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: row.NativeID, Revision: tracker.Revision(row.Revision)}, Section: "issue_body", RecordID: item, VersionID: selection.Version}
-	if err := recoveryRecordFragment(page, encodedBody, selection.Offset, selection.Digest); err != nil {
-		return tracker.NativeRecovery{}, err
-	}
-	end := page.Offset + int64(len(page.Data))
-	if end < int64(len(encodedBody)) {
-		selection.Section = 7
-		selection.Offset, selection.Digest = end, page.SHA256
-	} else {
-		selection.Section = 8
-		selection.Offset, selection.After, selection.Digest = 0, 1, ""
-	}
-	position, err := json.Marshal(selection)
-	if err != nil {
-		return tracker.NativeRecovery{}, err
-	}
-	cursor.After = string(position)
-	page.NextCursor, err = encodeNativeCursor(cursor, key)
-	if err != nil {
-		return tracker.NativeRecovery{}, err
+	page := &tracker.NativeRecoveryPage{NativeReference: issue.NativeReference, Section: "complete"}
+	for selection.Section < 8 {
+		sequence, section, id, versionID, raw, err := s.readRecoveryEvidenceRecordTenant(ctx, scope, row, change, issue.Body, selection)
+		if errors.Is(err, sql.ErrNoRows) {
+			if selection.Offset != 0 {
+				return tracker.NativeRecovery{}, nativeConflict(0)
+			}
+			selection.Section++
+			selection.After, selection.Offset, selection.Digest = 0, 0, ""
+			continue
+		}
+		if err != nil {
+			return tracker.NativeRecovery{}, err
+		}
+		page.Section, page.RecordID, page.VersionID = section, id, versionID
+		if err := recoveryRecordFragment(page, raw, selection.Offset, selection.Digest); err != nil {
+			return tracker.NativeRecovery{}, err
+		}
+		end := page.Offset + int64(len(page.Data))
+		if end == int64(len(raw)) {
+			selection.After, selection.Offset, selection.Digest = sequence, 0, ""
+		} else {
+			selection.Offset, selection.Digest = end, page.SHA256
+		}
+		position, err := json.Marshal(selection)
+		if err != nil {
+			return tracker.NativeRecovery{}, err
+		}
+		cursor.After = string(position)
+		page.NextCursor, err = encodeNativeCursor(cursor, key)
+		if err != nil {
+			return tracker.NativeRecovery{}, err
+		}
+		break
 	}
 	return tracker.NativeRecovery{Continuation: page}, nil
+}
+
+func (s *Service) readRecoveryEvidenceRecordTenant(ctx context.Context, scope nativeScope, item corestore.WorkItem, change eventstore.Change, body string, cursor recoveryEvidenceCursor) (int64, string, string, string, []byte, error) {
+	var sequence int64
+	var section, id, versionID string
+	var hydrate func() ([]byte, error)
+	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		current, err := r.WorkItem(ctx, scope.project, item.NativeID)
+		if err != nil {
+			return err
+		}
+		if current.ID != item.ID || current.Revision != item.Revision || !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(current.ActorPrincipalID)}) {
+			return corestore.ErrRevisionConflict
+		}
+		latest, err := r.LatestChange(ctx, scope.project, item.NativeID)
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if latest.ID != change.ID || valueOrEmpty(latest.CurrentVersionID) != valueOrEmpty(change.CurrentVersionID) {
+			return corestore.ErrRevisionConflict
+		}
+		switch cursor.Section {
+		case 0:
+			if change.ID == "" {
+				return sql.ErrNoRows
+			}
+			rows, err := r.Evidence(ctx, change.ID, cursor.After, 1)
+			if err != nil {
+				return err
+			}
+			if len(rows) == 0 {
+				return sql.ErrNoRows
+			}
+			row := rows[0]
+			if row.OrganizationID != scope.organization || row.ChangeID != change.ID {
+				return artifact.ErrIntegrity
+			}
+			section = map[string]string{"review": "reviews", "check": "checks", "discussion": "change_discussion"}[row.Kind]
+			if section == "" {
+				return eventstore.ErrInvalidRecord
+			}
+			sequence, id, versionID = row.Sequence, strconv.FormatInt(row.Sequence, 10), valueOrEmpty(row.VersionID)
+			if versionID != "" {
+				if _, err := r.Version(ctx, change.ID, versionID); err != nil {
+					return err
+				}
+			}
+			hydrate = func() ([]byte, error) {
+				raw, err := content.Evidence(ctx, row)
+				if err != nil {
+					return nil, err
+				}
+				var detail tracker.ChangeDetail
+				if err := appendBoundedChangeEvidence(&detail, row, raw); err != nil {
+					return nil, err
+				}
+				return raw, nil
+			}
+		case 3:
+			rows, err := r.Comments(ctx, scope.project, item.NativeID, cursor.After, 1)
+			if err != nil {
+				return err
+			}
+			if len(rows) == 0 {
+				return sql.ErrNoRows
+			}
+			row := rows[0]
+			version, err := r.CollaborationVersion(ctx, row.ID, row.Revision)
+			if err != nil {
+				return err
+			}
+			sequence, section, id = row.Sequence, "discussion", row.ID
+			hydrate = func() ([]byte, error) {
+				value, err := s.hydrateCommentRecord(ctx, row, version)
+				if err != nil {
+					return nil, err
+				}
+				return json.Marshal(value)
+			}
+		case 4:
+			rows, err := r.AttemptPage(ctx, item.ID, leasestore.AttemptCursor{IssueID: item.ID, AfterFence: cursor.After, Oldest: true}, 1)
+			if err != nil {
+				return err
+			}
+			if len(rows.Items) == 0 {
+				return sql.ErrNoRows
+			}
+			row := rows.Items[0]
+			if row.OrganizationID != scope.organization || row.IssueID != item.ID {
+				return artifact.ErrIntegrity
+			}
+			sequence, section, id = row.FencingToken, "attempts", row.ID
+			hydrate = func() ([]byte, error) {
+				value, err := s.readNativeAttemptTenant(ctx, scope, string(item.NativeID), row.ID)
+				if err != nil {
+					return nil, err
+				}
+				return json.Marshal(value)
+			}
+		case 5:
+			if change.ID == "" {
+				return sql.ErrNoRows
+			}
+			rows, err := r.Versions(ctx, change.ID, cursor.After, 1)
+			if err != nil {
+				return err
+			}
+			if len(rows) == 0 {
+				return sql.ErrNoRows
+			}
+			row := rows[0]
+			if row.OrganizationID != scope.organization || row.ChangeID != change.ID {
+				return artifact.ErrIntegrity
+			}
+			sequence, section, id, versionID = row.Number, "versions", row.ID, row.ID
+			policyRow, err := r.ProjectPolicyRevision(ctx, scope.project, row.PolicyRevisionID)
+			if err != nil {
+				return err
+			}
+			if policyRow.OrganizationID != scope.organization || policyRow.ProjectID != scope.project || policyRow.PolicyID != row.PolicyRevisionID {
+				return artifact.ErrIntegrity
+			}
+			hydrate = func() ([]byte, error) {
+				value, err := content.Version(ctx, row)
+				if err != nil {
+					return nil, err
+				}
+				value.Policy, err = content.ProjectPolicy(ctx, policyRow)
+				if err != nil {
+					return nil, err
+				}
+				return json.Marshal(value)
+			}
+		case 6:
+			if change.ID == "" || cursor.After > 0 {
+				return sql.ErrNoRows
+			}
+			sequence, section, id = 1, "change", change.ID
+			hydrate = func() ([]byte, error) {
+				value, err := content.Change(ctx, change)
+				if err != nil {
+					return nil, err
+				}
+				value, visible, err := s.filterChangeRecord(ctx, scope, value)
+				if err == nil && (!visible || !slices.Contains(value.LinkedIssues, item.NativeID)) {
+					err = nativeNotFound()
+				}
+				if err != nil {
+					return nil, err
+				}
+				return json.Marshal(value)
+			}
+		case 7:
+			if cursor.After > 0 {
+				return sql.ErrNoRows
+			}
+			sequence, section, id = 1, "issue_body", string(item.NativeID)
+			hydrate = func() ([]byte, error) { return json.Marshal(body) }
+		default:
+			return sql.ErrNoRows
+		}
+		return nil
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, "", "", "", nil, err
+	}
+	if err != nil {
+		return 0, "", "", "", nil, projectRecordError(err)
+	}
+	raw, err := hydrate()
+	return sequence, section, id, versionID, raw, err
 }
 
 type checkpointAttemptCandidate struct {
