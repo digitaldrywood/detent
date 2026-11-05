@@ -49,13 +49,18 @@ func (s *Service) hostedArtifactPublisher(c echo.Context, credential apiCredenti
 	return err == nil && count == 1
 }
 
+type bindArtifactServiceRequest struct {
+	artifact.Binding
+	tracker.Mutation
+}
+
 func (s *Service) bindArtifactService(c echo.Context) error {
-	var request struct {
-		artifact.Binding
-		tracker.Mutation
-	}
+	var request bindArtifactServiceRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
+	}
+	if request.ServiceID != c.Param("service") {
+		return s.nativeAPIError(c, nativePublicInvalid("Invalid artifact service binding"))
 	}
 	// Existing dashboard callers may omit a key; typed clients supply one to
 	// replay the same binding command across reconnects.
@@ -359,6 +364,17 @@ func (s *Service) authorizeHostedArtifactRead(c echo.Context, principal, session
 func (s *Service) artifactServicesCommand(ctx context.Context, scope nativeScope) (result []artifact.Binding, err error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	if s.config.TenantRepository != nil {
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			result, err = r.ArtifactServices(ctx, scope.project)
+			return err
+		})
+		for i := range result {
+			result[i].PublisherTokenID = ""
+		}
+		return result, projectRecordError(err)
+	}
+
 	rows, err := s.database.reader.QueryContext(ctx, "SELECT binding_json FROM artifact_services WHERE organization_id=? AND project_id=? ORDER BY id LIMIT 16", scope.organization, scope.project)
 	if err != nil {
 		return result, err

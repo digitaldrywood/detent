@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -23,7 +25,7 @@ import (
 
 func isProjectRecordCommand(input any) bool {
 	switch input.(type) {
-	case createNativeProjectRequest, renameProjectRequest, updateProjectIntegrationRequest, deleteCloudProjectRequest, cloudModelSelectionRequest, cloudContentSettingsRequest:
+	case bindArtifactServiceRequest, createNativeProjectRequest, renameProjectRequest, updateProjectIntegrationRequest, deleteCloudProjectRequest, cloudModelSelectionRequest, cloudContentSettingsRequest:
 		return true
 	}
 	return false
@@ -265,6 +267,10 @@ func (s *Service) projectRecordNative(ctx context.Context, record projectstore.R
 }
 
 func (s *Service) executeProjectRecordMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any) (json.RawMessage, error) {
+	if _, ok := input.(bindArtifactServiceRequest); ok {
+		scope.requireHostedAdmin = true
+	}
+
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
 		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
@@ -358,6 +364,8 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 			return err
 		}
 		switch request := input.(type) {
+		case bindArtifactServiceRequest:
+			err = w.BindArtifactService(ctx, scope.project, request.Binding)
 		case createNativeProjectRequest:
 			var created projectstore.Record
 			created, err = w.CreateProjectRecord(ctx, planned)
@@ -450,6 +458,14 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 
 func (s *Service) planProjectRecordMutation(ctx context.Context, scope nativeScope, current projectstore.Record, input any) (projectstore.Record, any, error) {
 	switch request := input.(type) {
+	case bindArtifactServiceRequest:
+		binding := request.Binding
+		if !artifact.ValidID(binding.ServiceID, "service") || !artifact.ValidOrigin(binding.Origin) || !slices.Contains([]string{"customer", "hosted"}, binding.Mode) || binding.Mode == "hosted" && !binding.HostedOptIn || binding.PublisherTokenID == "" {
+			return current, nil, nativePublicInvalid("Invalid artifact service binding")
+		}
+		binding.PublisherTokenID = ""
+		return current, binding, nil
+
 	case cloudContentSettingsRequest:
 		if int64(request.ExpectedRevision) != current.Core.ContentSettingsRevision {
 			return current, nil, nativeConflict(tracker.Revision(current.Core.ContentSettingsRevision))

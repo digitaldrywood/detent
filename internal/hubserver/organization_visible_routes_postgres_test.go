@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -132,6 +133,51 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 		}
 		return response
 	}
+	for _, org := range []string{"org_startup", "org_second"} {
+		organization = org
+		base := "/organizations/" + org + "/api/v2/organizations/" + org + "/projects/project_first/artifact-services"
+		requireNativeStatus(t, request(http.MethodGet, base, nil), http.StatusOK)
+		body := map[string]any{"service_id": "service_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "origin": "https://" + org + ".example.test", "mode": "customer", "publisher_token_id": "credential_owner", "idempotency_key": "bind-example"}
+		bound := request(http.MethodPut, strings.Replace(base, "/artifact-services", "/onboarding/artifact-services", 1)+"/service_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", body)
+		requireNativeStatus(t, bound, http.StatusOK)
+		replay := request(http.MethodPut, strings.Replace(base, "/artifact-services", "/onboarding/artifact-services", 1)+"/service_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", body)
+		requireNativeStatus(t, replay, http.StatusOK)
+		if !bytes.Equal(bound.Body.Bytes(), replay.Body.Bytes()) {
+			t.Fatal("binding replay changed")
+		}
+		listed := request(http.MethodGet, base, nil)
+		requireNativeStatus(t, listed, http.StatusOK)
+		var bindings []struct {
+			Origin    string `json:"origin"`
+			Publisher string `json:"publisher_token_id"`
+		}
+		if err := json.Unmarshal(listed.Body.Bytes(), &bindings); err != nil || len(bindings) != 1 || bindings[0].Origin != body["origin"] || bindings[0].Publisher != "" {
+			t.Fatalf("binding list: %s error=%v", listed.Body.String(), err)
+		}
+		if err := repository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
+			binding, err := r.ArtifactService(t.Context(), "project_first", body["service_id"].(string))
+			if err != nil {
+				return err
+			}
+			if binding.Origin != body["origin"] || binding.PublisherTokenID != "credential_owner" {
+				t.Fatalf("stored binding: %+v", binding)
+			}
+			_, err = r.ArtifactService(t.Context(), "project_hidden", binding.ServiceID)
+			if !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("cross-project binding: %v", err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		body["origin"] = "https://changed.example.test"
+		requireNativeStatus(t, request(http.MethodPut, strings.Replace(base, "/artifact-services", "/onboarding/artifact-services", 1)+"/service_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", body), http.StatusConflict)
+		body["idempotency_key"] = "missing-publisher"
+		body["publisher_token_id"] = "credential_missing"
+		requireNativeStatus(t, request(http.MethodPut, strings.Replace(base, "/artifact-services", "/onboarding/artifact-services", 1)+"/service_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", body), http.StatusNotFound)
+
+	}
+	organization = "org_startup"
 	base := "/organizations/org_startup/api/v2/organizations/org_startup"
 	response := request(http.MethodGet, base+"/name", nil)
 	requireNativeStatus(t, response, http.StatusOK)

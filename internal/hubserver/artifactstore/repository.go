@@ -25,6 +25,8 @@ type ArchiveOwner struct {
 }
 
 type Reader interface {
+	ArtifactService(context.Context, tracker.ProjectID, string) (artifact.Binding, error)
+	ArtifactServices(context.Context, tracker.ProjectID) ([]artifact.Binding, error)
 	ArtifactReference(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string, int64) (artifact.Reference, error)
 	ArtifactReferences(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int) ([]artifact.Reference, error)
 	ArchiveObject(context.Context, string) (ArchiveObject, error)
@@ -33,6 +35,7 @@ type Reader interface {
 }
 
 type Writer interface {
+	BindArtifactService(context.Context, tracker.ProjectID, artifact.Binding) error
 	Reader
 	AppendArtifactReference(context.Context, artifact.Reference) (artifact.Reference, error)
 	RegisterArchiveObject(context.Context, ArchiveObject) (ArchiveObject, error)

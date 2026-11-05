@@ -170,6 +170,16 @@ type ArtifactReference struct {
 	ObservedAt     time.Time
 }
 
+type ArtifactService struct {
+	OrganizationID   tracker.OrganizationID
+	ProjectID        tracker.ProjectID
+	ID               string
+	Origin           string
+	BindingMode      string
+	HostedOptIn      bool
+	PublisherTokenID string
+}
+
 type Attachment struct {
 	OrganizationID    tracker.OrganizationID
 	ProjectID         tracker.ProjectID
