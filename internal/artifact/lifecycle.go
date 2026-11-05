@@ -49,15 +49,20 @@ func (s *Service) PublishPending(ctx context.Context, publisher Publisher) error
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
+	var failures []error
 	for _, ref := range refs {
 		if err := publisher.Publish(ctx, ref); err != nil {
-			return err
+			if ctx.Err() != nil {
+				return errors.Join(err, ctx.Err())
+			}
+			failures = append(failures, err)
+			continue
 		}
 		if _, err := s.catalog.db.ExecContext(ctx, "UPDATE outbox SET delivered=1 WHERE manifest_id=?", ref.ManifestID); err != nil {
 			return err
 		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 func (s *Service) Maintain(ctx context.Context) error {

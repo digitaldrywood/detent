@@ -199,7 +199,10 @@ func TestUploadRecoveryAndImmutableManifests(t *testing.T) {
 			if err := reopened.PublishPending(t.Context(), publisher); !errors.Is(err, ErrStorage) {
 				t.Fatal(err)
 			}
-			publisher.failure = nil
+			publisher.failure, publisher.rejectFirst = nil, true
+			if err := reopened.PublishPending(t.Context(), publisher); !errors.Is(err, ErrDenied) || len(publisher.refs) != 1 {
+				t.Fatalf("rejected receipt blocked later receipts: refs=%d error=%v", len(publisher.refs), err)
+			}
 			if err := reopened.PublishPending(t.Context(), publisher); err != nil {
 				t.Fatal(err)
 			}
@@ -214,13 +217,18 @@ func TestUploadRecoveryAndImmutableManifests(t *testing.T) {
 }
 
 type testPublisher struct {
-	failure error
-	refs    []Reference
+	failure     error
+	rejectFirst bool
+	refs        []Reference
 }
 
 func (p *testPublisher) Publish(_ context.Context, ref Reference) error {
 	if p.failure != nil {
 		return p.failure
+	}
+	if p.rejectFirst {
+		p.rejectFirst = false
+		return ErrDenied
 	}
 	p.refs = append(p.refs, ref)
 	return nil
