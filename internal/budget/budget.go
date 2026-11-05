@@ -280,6 +280,9 @@ func SpendUSD(spend store.TokenSpend, pricing PricingTable) float64 {
 	total := 0.0
 	for _, row := range spend.ByModel {
 		modelPricing, ok := pricing.Lookup(row.Model)
+		if row.Model == store.OverflowTokenModel {
+			modelPricing, ok = pricing.upperBound()
+		}
 		if !ok {
 			continue
 		}

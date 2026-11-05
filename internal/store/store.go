@@ -1199,6 +1199,8 @@ type IssueSpendSince struct {
 	LastSessionAt  time.Time
 }
 
+const OverflowTokenModel = ""
+
 type ModelTokenSpend struct {
 	Model                 string
 	InputTokens           int64
