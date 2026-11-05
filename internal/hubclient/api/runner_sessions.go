@@ -21,7 +21,9 @@ import (
 
 type RunnerSessions struct {
 	*NativeClient
-	mu sync.Mutex
+	mu        sync.Mutex
+	workersMu sync.Mutex
+	workers   map[int64]store.WorkerProcessRegistration
 }
 
 var _ runner.SessionStore = (*RunnerSessions)(nil)
@@ -152,6 +154,12 @@ func (s *RunnerSessions) LatestIssueAgentResumeState(ctx context.Context, issue 
 	return s.latestResume(ctx, store.AgentResumeLookup{IssueID: issue.IssueID}, true)
 }
 func (s *RunnerSessions) UpdateSessionWorkerProcess(ctx context.Context, id int64, process store.WorkerProcessRegistration) error {
+	s.workersMu.Lock()
+	if s.workers == nil {
+		s.workers = make(map[int64]store.WorkerProcessRegistration)
+	}
+	s.workers[id] = process
+	s.workersMu.Unlock()
 	_, err := s.mutate(ctx, runnersession.Mutation{SessionID: id, Worker: &process})
 	return err
 }
@@ -163,11 +171,25 @@ func (s *RunnerSessions) ListActiveWorkerProcesses(ctx context.Context) ([]store
 	if result.More {
 		return nil, errors.New("Hub process registrations are incomplete")
 	}
+	s.workersMu.Lock()
+	defer s.workersMu.Unlock()
+	for index := range result.Workers {
+		worker := &result.Workers[index]
+		worker.CleanupRoot, worker.CleanupPath = "", ""
+		if local, ok := s.workers[worker.SessionID]; ok {
+			worker.WorkerProcessIdentity, worker.CleanupRoot, worker.CleanupPath = local.WorkerProcessIdentity, local.CleanupRoot, local.CleanupPath
+		}
+	}
 	return result.Workers, nil
 }
 func (s *RunnerSessions) MarkSessionWorkerProcessReaped(ctx context.Context, id int64, reap store.WorkerProcessReap) error {
-	_, err := s.mutate(ctx, runnersession.Mutation{SessionID: id, Reaped: &reap})
-	return err
+	if _, err := s.mutate(ctx, runnersession.Mutation{SessionID: id, Reaped: &reap}); err != nil {
+		return err
+	}
+	s.workersMu.Lock()
+	delete(s.workers, id)
+	s.workersMu.Unlock()
+	return nil
 }
 
 func (c *NativeClient) runnerProcesses(ctx context.Context, attempt string) (runnersession.Processes, error) {

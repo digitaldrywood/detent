@@ -39,6 +39,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type runnerPGFixture struct {
@@ -297,6 +298,71 @@ func TestPostgresRunnerRestartDoesNotReleaseLiveProvider(t *testing.T) {
 	stopped, err = restarted.ReleasedProvidersStopped(restartedCtx, f.data[0].AttemptID)
 	if err != nil || !stopped {
 		t.Fatalf("stopped Hub-recorded provider could not reconcile: %t %v", stopped, err)
+	}
+}
+
+func TestPostgresRunnerProcessCleanupStaysBoundToLocalRegistration(t *testing.T) {
+	f := newRunnerPGFixture(t)
+	native, ctx := f.client(t, 0)
+	trusted := api.NewRunnerSessions(native)
+	attackerNative, attackerCtx := f.client(t, 0)
+	attacker := api.NewRunnerSessions(attackerNative)
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceRoot, victim := filepath.Join(base, "workspace"), filepath.Join(base, "victim")
+	scratch, secret := filepath.Join(workspaceRoot, "scratch"), filepath.Join(victim, "secret")
+	for _, dir := range []string{scratch, victim} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(secret, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	start := store.SessionStart{IssueID: string(f.leases[0].WorkItemID), StartedAt: time.Now().UTC(), Model: "example-model"}
+	trustedID, err := trusted.StartSession(ctx, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := trusted.UpdateSessionWorkerProcess(ctx, trustedID, store.WorkerProcessRegistration{CleanupRoot: workspaceRoot, CleanupPath: scratch}); err != nil {
+		t.Fatal(err)
+	}
+	forged := store.WorkerProcessRegistration{CleanupRoot: victim, CleanupPath: secret}
+	if err := attacker.UpdateSessionWorkerProcess(attackerCtx, trustedID, forged); err != nil {
+		t.Fatal(err)
+	}
+	foreignID, err := attacker.StartSession(attackerCtx, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := attacker.UpdateSessionWorkerProcess(attackerCtx, foreignID, forged); err != nil {
+		t.Fatal(err)
+	}
+	workers, err := trusted.ListActiveWorkerProcesses(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int64][2]string{trustedID: {workspaceRoot, scratch}, foreignID: {"", ""}}
+	for _, worker := range workers {
+		expected, ok := want[worker.SessionID]
+		if !ok {
+			continue
+		}
+		delete(want, worker.SessionID)
+		if got := [2]string{worker.CleanupRoot, worker.CleanupPath}; got != expected {
+			t.Fatalf("session %d cleanup = %q, want %q", worker.SessionID, got, expected)
+		}
+		if err := workspace.CleanupOwnedPath(worker.CleanupRoot, worker.CleanupPath); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("registered sessions missing from process listing: %v", want)
+	}
+	if _, err := os.Stat(secret); err != nil {
+		t.Fatalf("Hub-supplied cleanup path deleted a file outside the local registration: %v", err)
 	}
 }
 
