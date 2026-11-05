@@ -57,6 +57,12 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 			if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: "user_owner", Email: "owner@example.test", MembershipID: "membership_owner", Role: "owner", Active: true, PrincipalID: "credential_owner", CreatedAt: now, UpdatedAt: now}); err != nil {
 				return err
 			}
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "credential_reporter", Name: "Example reporter", Hash: "example_reporter", Scope: "operator", KeyScope: "write", ProjectAccess: "selected", Kind: "personal", UserID: "user_reporter", MembershipID: "membership_reporter", CreatedAt: now, UpdatedAt: now}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: "user_reporter", Email: "reporter@example.test", MembershipID: "membership_reporter", Role: "member", Active: true, PrincipalID: "credential_reporter", CreatedAt: now, UpdatedAt: now}); err != nil {
+				return err
+			}
 			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "credential_publisher", Name: "Example publisher", Hash: apikey.HashToken("publisher_" + string(organization)), Scope: "worker", NativeOnly: true, ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now}); err != nil {
 				return err
 			}
@@ -70,6 +76,12 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: "credential_owner", ProjectID: id}); err != nil {
 					return err
 				}
+			}
+			if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization, UserID: "user_reporter", ProjectID: "project_first", CanWrite: true}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: "credential_reporter", ProjectID: "project_first"}); err != nil {
+				return err
 			}
 			return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: "credential_publisher", ProjectID: "project_first"})
 		}); err != nil {
@@ -262,6 +274,65 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 			requireNativeStatus(t, publisherRequest(body["service_id"].(string), string(foreign)), http.StatusNotFound)
 		}
 		firstArtifactToken = grant.Token
+
+		reporterItem := tracker.NativeWorkItemID("wi_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+		reporterArtifact := "artifact_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		reporterVersion, err := eventstore.NewContent(cfg.RunDetails).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: tracker.OrganizationID(org), ProjectID: "project_first", WorkItemID: reporterItem, RecordID: string(reporterItem), Revision: 1}, []byte(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: tracker.OrganizationID(org), ProjectID: "project_first", NativeID: reporterItem, Number: 2, Title: "Reporter artifact", WorkflowStateName: new("Todo"), ActorKind: new("human"), ActorPrincipalID: new("credential_reporter")}); err != nil {
+				return err
+			}
+			_, err := w.CreateCollaborationVersion(t.Context(), reporterVersion)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO artifact_references(organization_id,project_id,work_item_id,service_id,artifact_id,revision,manifest_id,schema_version,sha256,kind,state,availability,bytes,objects,expires_at,observed_at) VALUES($1,'project_first',$2,$3,$4,1,$5,1,$6,'log','complete','available',12,1,$7,$8)`, org, reporterItem, body["service_id"], reporterArtifact, artifact.NewID("manifest"), artifact.Digest([]byte(org+"reporter")), now.Add(time.Hour), now); err != nil {
+			t.Fatal(err)
+		}
+		reporterMembership := auth.Membership{ID: "membership_reporter", UserID: "user_reporter", OrganizationID: "provider_" + org, Status: "active"}
+		reporterMembership.Role.Slug = "member"
+		provider.mu.Lock()
+		provider.members[reporterMembership.ID] = reporterMembership
+		provider.sessions["session_user_reporter"] = auth.HostedIdentity{Subject: "user_reporter", OrganizationID: "provider_" + org, SessionID: "session_user_reporter", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+		provider.mu.Unlock()
+		redeem := func(token, id string) *httptest.ResponseRecorder {
+			t.Helper()
+			raw, err := json.Marshal(artifact.ReadAuthorization{Token: token, ArtifactID: id, Revision: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return publisherRequest(body["service_id"].(string), string(raw))
+		}
+		subject, role = "user_reporter", "member"
+		memberGranted := request(http.MethodPost, accessPath, map[string]int{"revision": 1})
+		requireNativeStatus(t, memberGranted, http.StatusOK)
+		var memberGrant artifact.Grant
+		if err := json.Unmarshal(memberGranted.Body.Bytes(), &memberGrant); err != nil {
+			t.Fatal(err)
+		}
+		requireNativeStatus(t, redeem(memberGrant.Token, artifactID), http.StatusNoContent)
+		reporterMembership.Role.Slug = "reporter"
+		provider.mu.Lock()
+		provider.members[reporterMembership.ID] = reporterMembership
+		provider.mu.Unlock()
+		role = "reporter"
+		requireNativeStatus(t, redeem(memberGrant.Token, artifactID), http.StatusNotFound)
+		requireNativeStatus(t, request(http.MethodPost, accessPath, map[string]int{"revision": 1}), http.StatusNotFound)
+		reporterGranted := request(http.MethodPost, strings.Replace(accessPath, string(item)+"/artifacts/"+artifactID, string(reporterItem)+"/artifacts/"+reporterArtifact, 1), map[string]int{"revision": 1})
+		requireNativeStatus(t, reporterGranted, http.StatusOK)
+		var reporterGrant artifact.Grant
+		if err := json.Unmarshal(reporterGranted.Body.Bytes(), &reporterGrant); err != nil {
+			t.Fatal(err)
+		}
+		requireNativeStatus(t, redeem(reporterGrant.Token, reporterArtifact), http.StatusNoContent)
+		subject, role = "user_owner", "owner"
+		if _, err := admin.ExecContext(t.Context(), `DELETE FROM artifact_grants WHERE organization_id=$1 AND principal_id='credential_reporter'`, org); err != nil {
+			t.Fatal(err)
+		}
 
 		if err := repository.WriteTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(w tenantstore.Writer) error {
 			return w.DeleteAccessTokenGrant(t.Context(), "credential_owner", "project_first")

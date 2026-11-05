@@ -33,6 +33,13 @@ func (s *Service) artifactReadGrantTenant(ctx context.Context, scope nativeScope
 		if _, err := w.AccessTokenGrant(ctx, scope.credential.ID, scope.project); err != nil {
 			return err
 		}
+		workItem, err := w.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		if err != nil {
+			return err
+		}
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(workItem.ActorPrincipalID)}) {
+			return nativeNotFound()
+		}
 		ref, err := w.ArtifactReference(ctx, scope.project, tracker.NativeWorkItemID(item), artifactID, revision)
 		if err != nil {
 			return err
@@ -57,7 +64,7 @@ func (s *Service) artifactReadGrantTenant(ctx context.Context, scope nativeScope
 	return result, projectRecordError(err)
 }
 
-func (s *Service) readArtifactGrantTenant(ctx context.Context, scope nativeScope, service string, request artifact.ReadAuthorization) (grant artifactstore.ReadGrant, err error) {
+func (s *Service) readArtifactGrantTenant(ctx context.Context, scope nativeScope, service string, request artifact.ReadAuthorization) (grant artifactstore.ReadGrant, owner tracker.Actor, err error) {
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		grant, err = r.ArtifactReadGrant(ctx, scope.project, apikey.HashToken(request.Token))
@@ -74,10 +81,14 @@ func (s *Service) readArtifactGrantTenant(ctx context.Context, scope nativeScope
 		if !credential.Valid(credential.Hash, s.config.now()) {
 			return corestore.ErrNotFound
 		}
-		_, err = r.AccessTokenGrant(ctx, grant.PrincipalID, scope.project)
+		if _, err := r.AccessTokenGrant(ctx, grant.PrincipalID, scope.project); err != nil {
+			return err
+		}
+		item, err := r.WorkItem(ctx, scope.project, grant.WorkItemID)
+		owner.PrincipalID = stringValue(item.ActorPrincipalID)
 		return err
 	})
-	return grant, err
+	return grant, owner, err
 }
 
 func (s *Service) authorizeArtifactUploadTenant(ctx context.Context, scope nativeScope, reservation artifact.Reservation) error {
