@@ -4,10 +4,16 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -23,78 +29,161 @@ func patchLabels(t *testing.T, f nativeFixture, issue tracker.NativeIssue, key s
 }
 
 func TestNativeLabelCatalogue(t *testing.T) {
-	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
-
-	empty := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/labels", f.token, nil)
-	requireNativeStatus(t, empty, http.StatusOK)
-	var catalogue nativeLabelList
-	decodeHubResponse(t, empty, &catalogue)
-	if len(catalogue.Items) != 0 {
-		t.Fatalf("a project with no labelled issues has a catalogue of %#v", catalogue.Items)
+	repository := projectRecordPostgres(t)
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, TenantRepository: repository})
+	service.config.AccessRepository = repository
+	createProject := func(name, key string) (nativeOrganization, tracker.NativeProject) {
+		t.Helper()
+		organization := nativeOrganization{ID: tracker.OrganizationID("org_" + key), Name: name, Slug: key}
+		if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+			now := service.config.now()
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization.ID, Name: organization.Name, Slug: organization.Slug, Local: true, CreatedAt: now}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization.ID, ProviderID: "provider_" + key, AllocationGeneration: 1}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: bootstrapTokenID, Name: "Example admin", Hash: apikey.HashToken(testHubAdminToken), Scope: "admin", KeyScope: "admin", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now, Kind: "service"}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: "other-admin", Name: "Other admin", Hash: apikey.HashToken(testHubAdminToken + "_other"), Scope: "admin", KeyScope: "admin", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now, Kind: "service"}); err != nil {
+				return err
+			}
+			if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: organization.ID, PlanReference: billingstore.PlanReference{ID: "example", Version: 1}, Name: "Example plan", Features: []string{"collaboration"}, Allowances: map[string]int64{"api_mutations": 100}}); err != nil {
+				return err
+			}
+			return w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: organization.ID, Base: billingstore.PlanReference{ID: "example", Version: 1}}, 0)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		projects := "/api/v2/organizations/" + string(organization.ID) + "/projects"
+		response := performHubAPIRequest(t, service, http.MethodPost, projects, testHubAdminToken, map[string]any{"idempotency_key": key, "name": name + " project", "states": nativeFixtureStates()})
+		requireNativeStatus(t, response, http.StatusOK)
+		var project tracker.NativeProject
+		decodeHubResponse(t, response, &project)
+		if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+			record, err := w.ProjectRecord(t.Context(), project.ID)
+			if err != nil {
+				return err
+			}
+			record.Settings.DuplicateChallenge = false
+			_, err = w.UpdateProjectRecord(t.Context(), record)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return organization, project
 	}
-	// An empty catalogue is an empty array, not null: a client that decodes
-	// it into a list must not have to special-case the first label.
-	if !strings.Contains(empty.Body.String(), `"items":[]`) {
-		t.Fatalf("empty catalogue body = %s", empty.Body.String())
-	}
-
-	first := patchLabels(t, f, f.create(t, "one"), "labels-one", []string{"bug", "goal:reliability", "effort:medium"})
-	patchLabels(t, f, f.create(t, "two"), "labels-two", []string{"bug", "chore", "priority:high"})
-	// A label repeated inside one issue counts once, not twice.
-	patchLabels(t, f, first, "labels-one-again", []string{"bug", "bug", "goal:reliability", "effort:medium"})
-
-	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/labels", f.token, nil)
-	requireNativeStatus(t, response, http.StatusOK)
-	decodeHubResponse(t, response, &catalogue)
-
-	names := make([]string, 0, len(catalogue.Items))
-	counts := map[string]int{}
-	for _, label := range catalogue.Items {
-		names = append(names, label.Name)
-		counts[label.Name] = label.Count
-		if !strings.HasPrefix(label.Color, "#") || len(label.Color) != 7 {
-			t.Errorf("label %q has colour %q", label.Name, label.Color)
+	firstOrganization, firstProject := createProject("First organization", "first-project")
+	secondOrganization, secondProject := createProject("Second organization", "second-project")
+	firstBase := "/api/v2/organizations/" + string(firstOrganization.ID) + "/projects/" + string(firstProject.ID)
+	assertCatalog := func(base string, want []nativeLabel) {
+		t.Helper()
+		response := performHubAPIRequest(t, service, http.MethodGet, base+"/labels", testHubAdminToken, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var catalog nativeLabelList
+		decodeHubResponse(t, response, &catalog)
+		if catalog.Items == nil || !slices.Equal(catalog.Items, want) {
+			t.Fatalf("catalog=%+v want=%+v", catalog.Items, want)
 		}
 	}
+	assertCatalog(firstBase, []nativeLabel{})
+	createIssue := func(organization nativeOrganization, project tracker.NativeProject, key, title string, labels []string) tracker.NativeIssue {
+		t.Helper()
+		path := "/api/v2/organizations/" + string(organization.ID) + "/projects/" + string(project.ID) + "/work-items"
+		token := testHubAdminToken
+		if key == "target" {
+			token += "_other"
+		}
+		response := performHubAPIRequest(t, service, http.MethodPost, path, token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: key}, Title: title, Body: workItemRecordBody, Labels: labels})
+		requireNativeStatus(t, response, http.StatusOK)
+		var issue tracker.NativeIssue
+		decodeHubResponse(t, response, &issue)
+		return issue
+	}
+	source := createIssue(firstOrganization, firstProject, "source", "Source issue", []string{"feature", "feature", "effort:medium"})
+	target := createIssue(firstOrganization, firstProject, "target", "Target issue", []string{"feature", "another", "priority:high"})
+	foreign := createIssue(secondOrganization, secondProject, "foreign", "Foreign issue", []string{"other"})
+	if err := repository.ReadTenant(t.Context(), firstOrganization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		labels, err := r.LabelNames(t.Context(), firstProject.ID, corestore.LabelCursor{}, 10)
+		if err != nil {
+			return err
+		}
+		if !slices.Equal(labels.Items, []string{"another", "effort:medium", "feature", "priority:high"}) {
+			t.Fatalf("label membership=%+v", labels)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertCatalog(firstBase, []nativeLabel{{Name: "feature", Count: 2, Color: "#8a6bbf"}, {Name: "another", Count: 1, Color: labelColor("another")}})
+	secondBase := "/api/v2/organizations/" + string(secondOrganization.ID) + "/projects/" + string(secondProject.ID)
+	assertCatalog(secondBase, []nativeLabel{{Name: "other", Count: 1, Color: labelColor("other")}})
 	for _, test := range []struct {
-		name  string
-		want  bool
-		count int
+		principal string
+		labels    []nativeLabel
 	}{
-		{name: "bug", want: true, count: 2},
-		{name: "chore", want: true, count: 1},
-		{name: "goal:reliability", want: true, count: 1},
-		// A managed prefix names a field the hub owns and shows in its own
-		// row, so it is never offered as a label to attach.
-		{name: "effort:medium"},
-		{name: "priority:high"},
+		{principal: source.Actor.PrincipalID, labels: []nativeLabel{{Name: "feature", Count: 1, Color: labelColor("feature")}}},
+		{principal: target.Actor.PrincipalID, labels: []nativeLabel{{Name: "another", Count: 1, Color: labelColor("another")}, {Name: "feature", Count: 1, Color: labelColor("feature")}}},
+		{principal: "other-reporter", labels: []nativeLabel{}},
+		{labels: []nativeLabel{}},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			_, present := counts[test.name]
-			if present != test.want {
-				t.Fatalf("catalogue %v, %q present = %v, want %v", names, test.name, present, test.want)
-			}
-			if test.want && counts[test.name] != test.count {
-				t.Fatalf("%q count = %d, want %d", test.name, counts[test.name], test.count)
-			}
-		})
-	}
-	// Busiest first, then alphabetical, so the order is total.
-	if len(names) != 3 || names[0] != "bug" || names[1] != "chore" || names[2] != "goal:reliability" {
-		t.Fatalf("catalogue order = %v", names)
-	}
-
-	// The colour is derived from the name, so two reads cannot disagree.
-	second := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/labels", f.token, nil)
-	requireNativeStatus(t, second, http.StatusOK)
-	if second.Body.String() != response.Body.String() {
-		t.Fatalf("two reads disagree:\n%s\n%s", response.Body.String(), second.Body.String())
+		recorder := httptest.NewRecorder()
+		c := service.echo.NewContext(httptest.NewRequest(http.MethodGet, firstBase+"/labels", nil), recorder)
+		c.Set("native_scope", nativeScope{organization: firstOrganization.ID, project: firstProject.ID, sourceActor: &tracker.Actor{PrincipalID: test.principal}, credential: apiCredential{HostedRole: "reporter"}})
+		if err := service.listNativeLabels(c); err != nil {
+			t.Fatal(err)
+		}
+		requireNativeStatus(t, recorder, http.StatusOK)
+		var catalog nativeLabelList
+		decodeHubResponse(t, recorder, &catalog)
+		if catalog.Items == nil || !slices.Equal(catalog.Items, test.labels) {
+			t.Fatalf("reporter %q catalog=%+v want=%+v", test.principal, catalog.Items, test.labels)
+		}
 	}
 
-	// An unsupported query member is refused rather than ignored.
-	rejected := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/labels?colour=red", f.token, nil)
-	requireNativeStatus(t, rejected, http.StatusUnprocessableEntity)
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, firstBase+"/labels?colour=red", testHubAdminToken, nil), http.StatusUnprocessableEntity)
+	mismatched := "/api/v2/organizations/" + string(firstOrganization.ID) + "/projects/" + string(secondProject.ID) + "/labels"
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, mismatched, testHubAdminToken, nil), http.StatusNotFound)
+	updatedLabels := []string{"planning"}
+	labelUpdate := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "update-labels"}, ExpectedRevision: 1, Labels: &updatedLabels}
+	labelPath := itemPathFor(firstOrganization.ID, firstProject.ID, source.WorkItemID)
+	changed := performHubAPIRequest(t, service, http.MethodPatch, labelPath, testHubAdminToken, labelUpdate)
+	requireNativeStatus(t, changed, http.StatusOK)
+	repeated := performHubAPIRequest(t, service, http.MethodPatch, labelPath, testHubAdminToken, labelUpdate)
+	requireNativeStatus(t, repeated, http.StatusOK)
+	if changed.Body.String() != repeated.Body.String() {
+		t.Fatal("label replay changed response")
+	}
+	labelUpdate.IdempotencyKey = "stale-labels"
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPatch, labelPath, testHubAdminToken, labelUpdate), http.StatusConflict)
+	reserved := []string{"detent:workspace"}
+	reservedUpdate := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "reserved-label"}, ExpectedRevision: 2, Labels: &reserved}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPatch, labelPath, testHubAdminToken, reservedUpdate), http.StatusUnprocessableEntity)
+	assertCatalog(firstBase, []nativeLabel{{Name: "another", Count: 1, Color: labelColor("another")}, {Name: "feature", Count: 1, Color: "#8a6bbf"}, {Name: "planning", Count: 1, Color: labelColor("planning")}})
+	assertCatalog(secondBase, []nativeLabel{{Name: "other", Count: 1, Color: labelColor("other")}})
+	emptyLabels := []string{}
+	removeLabels := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "remove-labels"}, ExpectedRevision: foreign.Revision, Labels: &emptyLabels}
+	removed := performHubAPIRequest(t, service, http.MethodPatch, itemPathFor(secondOrganization.ID, secondProject.ID, foreign.WorkItemID), testHubAdminToken, removeLabels)
+	requireNativeStatus(t, removed, http.StatusOK)
+	var cleared tracker.NativeIssue
+	decodeHubResponse(t, removed, &cleared)
+	if cleared.Revision != foreign.Revision+1 || len(cleared.Labels) != 0 {
+		t.Fatalf("removed labels=%+v revision=%d", cleared.Labels, cleared.Revision)
+	}
+	assertCatalog(secondBase, []nativeLabel{})
+	if err := repository.ReadTenant(t.Context(), firstOrganization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		labels, err := r.LabelNames(t.Context(), firstProject.ID, corestore.LabelCursor{}, 10)
+		if err != nil {
+			return err
+		}
+		if !slices.Equal(labels.Items, []string{"another", "feature", "planning", "priority:high"}) {
+			t.Fatalf("updated label membership=%+v", labels)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestIsManagedLabel(t *testing.T) {

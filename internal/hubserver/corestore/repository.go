@@ -55,6 +55,7 @@ type Reader interface {
 	WorkItemPage(context.Context, tracker.ProjectID, Cursor, int) (Page[WorkItem], error)
 	CommentPage(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, Cursor, int) (Page[Comment], error)
 	Relationships(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, RelationshipCursor, int) (RelationshipPage, error)
+	LabelCatalog(context.Context, tracker.ProjectID, bool, string) ([]LabelCount, error)
 	LabelNames(context.Context, tracker.ProjectID, LabelCursor, int) (LabelPage, error)
 	WorkItemLabels(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, LabelCursor, int) (LabelPage, error)
 	ScanWorkItems(context.Context, tracker.ProjectID, ScanCursor, int) (Scan[WorkItem], error)
@@ -217,6 +218,11 @@ type RelationshipCursor struct {
 type RelationshipPage struct {
 	Items []Relationship
 	Next  RelationshipCursor
+}
+
+type LabelCount struct {
+	Name  string
+	Count int64
 }
 
 type LabelCursor struct {

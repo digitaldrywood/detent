@@ -234,6 +234,55 @@ func (q *Queries) InsertWorkItemLabel(ctx context.Context, arg InsertWorkItemLab
 	return err
 }
 
+const labelCatalog = `-- name: LabelCatalog :many
+SELECT l.label, count(*) AS usage_count
+FROM issue_labels l
+JOIN issues i ON i.organization_id=l.organization_id AND i.project_id=l.project_id AND i.native_id=l.work_item_id
+WHERE l.organization_id=$1 AND l.project_id=$2
+  AND (NOT $3::boolean OR ($4::text <> '' AND i.actor_principal_id=$4::text))
+GROUP BY l.label
+`
+
+type LabelCatalogParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Reporter       bool
+	PrincipalID    string
+}
+
+type LabelCatalogRow struct {
+	Label      string
+	UsageCount int64
+}
+
+func (q *Queries) LabelCatalog(ctx context.Context, arg LabelCatalogParams) ([]LabelCatalogRow, error) {
+	rows, err := q.db.QueryContext(ctx, labelCatalog,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.Reporter,
+		arg.PrincipalID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LabelCatalogRow{}
+	for rows.Next() {
+		var i LabelCatalogRow
+		if err := rows.Scan(&i.Label, &i.UsageCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const labelNamePage = `-- name: LabelNamePage :many
 SELECT DISTINCT label FROM issue_labels
 WHERE organization_id=$1 AND project_id=$2 AND label>$3

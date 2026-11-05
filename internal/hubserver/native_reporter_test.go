@@ -442,13 +442,6 @@ func TestReporterAggregateReads(t *testing.T) {
 	if len(facets.Labels) != 1 || facets.Labels[0] != "own-label" || len(facets.FiledBy) != 1 || facets.FiledBy[0].ID != own.Actor.PrincipalID {
 		t.Fatalf("facets=%+v", facets)
 	}
-	labels, err := readNativeLabels(t.Context(), v.service.database.reader, scope)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(labels) != 1 || labels[0].Name != "own-label" {
-		t.Fatalf("labels=%+v", labels)
-	}
 	if _, err := v.service.readRunnerProjectDiagnostics(ctx, scope, operatortool.LocalProjectArguments{ProjectID: string(v.project), IssueID: string(other.WorkItemID)}); !isNativeNotFound(err) {
 		t.Fatalf("hidden diagnostic=%v", err)
 	}

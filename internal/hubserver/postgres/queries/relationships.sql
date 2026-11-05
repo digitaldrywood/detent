@@ -157,3 +157,11 @@ WITH requested AS MATERIALIZED (
 )
 SELECT i.* FROM requested r JOIN issues i ON i.organization_id=sqlc.arg(organization_id) AND i.project_id=r.project_id AND i.native_id=r.native_id
 ORDER BY i.project_id COLLATE "C",i.native_id COLLATE "C" FOR UPDATE OF i;
+
+-- name: LabelCatalog :many
+SELECT l.label, count(*) AS usage_count
+FROM issue_labels l
+JOIN issues i ON i.organization_id=l.organization_id AND i.project_id=l.project_id AND i.native_id=l.work_item_id
+WHERE l.organization_id=sqlc.arg(organization_id) AND l.project_id=sqlc.arg(project_id)
+  AND (NOT sqlc.arg(reporter)::boolean OR (sqlc.arg(principal_id)::text <> '' AND i.actor_principal_id=sqlc.arg(principal_id)::text))
+GROUP BY l.label;

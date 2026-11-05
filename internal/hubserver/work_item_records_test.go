@@ -363,7 +363,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 		t.Fatal(err)
 	}
 	firstBase := "/api/v2/organizations/" + string(firstOrganization.ID) + "/projects/" + string(firstProject.ID)
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, firstBase+"/labels", testHubAdminToken, nil), http.StatusServiceUnavailable)
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, firstBase+"/labels", testHubAdminToken, nil), http.StatusOK)
 	updatedLabels := []string{"planning"}
 	labelUpdate := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "update-labels"}, ExpectedRevision: 1, Labels: &updatedLabels}
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPatch, itemPathFor(firstOrganization.ID, firstProject.ID, source.WorkItemID), testHubAdminToken, labelUpdate), http.StatusOK)

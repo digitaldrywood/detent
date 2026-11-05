@@ -345,3 +345,15 @@ WITH requested AS MATERIALIZED (
  AND left(blocker.native_source_key,length($4::text))=$4::text
 )
 DELETE FROM issue_dependencies d WHERE d.organization_id=$1 AND d.ctid=ANY(ARRAY(SELECT location FROM selected))`
+
+func (s *session) LabelCatalog(ctx context.Context, project tracker.ProjectID, reporter bool, principal string) ([]corestore.LabelCount, error) {
+	rows, err := s.queries.LabelCatalog(ctx, pgquery.LabelCatalogParams{OrganizationID: s.organization, ProjectID: project, Reporter: reporter, PrincipalID: principal})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	labels := make([]corestore.LabelCount, len(rows))
+	for i, row := range rows {
+		labels[i] = corestore.LabelCount{Name: row.Label, Count: row.UsageCount}
+	}
+	return labels, nil
+}

@@ -2,9 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
-	"fmt"
 	"hash/fnv"
 	"net/http"
 	"slices"
@@ -13,33 +10,10 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-// The project's label catalogue.
-//
-// A tracker that lets a reader pick a label has to be able to say which
-// labels exist. The hub models labels as a JSON array on each work item and
-// has no label table, so the catalogue is the union of what the project's
-// items actually carry — which is the honest answer, and the same set the
-// board's filter menu builds client-side from one loaded page. Serving it
-// here means the picker sees every label in the project rather than only the
-// ones on the page in front of it.
-//
-// Two kinds of label never appear:
-//
-//   - a managed label. `priority:` and `effort:` are fields the hub owns and
-//     shows in their own rows, and `detent:` names the reserved run-mode
-//     labels `requireUnreservedLabels` already refuses on a write. Offering
-//     any of them in a label picker would invite a reader to edit a field
-//     through the wrong control.
-//   - the empty string, which no write can produce but an imported item can.
-//
-// A colour comes with each name because Linear's picker draws a dot and the
-// hub has no colour to serve: it is derived from the name, so the same label
-// is the same colour in every client, on every project, for ever, without a
-// column to store it in. A tracker that does supply its own colours can
-// answer with them here later; nothing about the shape has to change.
 
 // managedLabelPrefixes are the prefixes the hub owns. Compared lower-case.
 var managedLabelPrefixes = []string{"priority:", "effort:", defaultLabelPrefix}
@@ -90,65 +64,40 @@ func (s *Service) listNativeLabels(c echo.Context) error {
 	if err := validateNativeQuery(c.QueryParams()); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if s.config.TenantRepository != nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
-	}
-	labels, err := readNativeLabels(ctx, s.database.reader, nativeRequestScope(c))
+	labels, err := s.readNativeLabels(ctx, nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, nativeLabelList{Items: labels})
 }
 
-func readNativeLabels(ctx context.Context, query nativeQueryer, scope nativeScope) ([]nativeLabel, error) {
-	if scope.credential.HostedRole == "reporter" {
-		pageQuery, pageErr := prepareNativePageQuery(ctx, query, scope, "", "native_issue_actors")
-		if pageErr != nil {
-			return nil, pageErr
-		}
-		query = pageQuery
+func (s *Service) readNativeLabels(ctx context.Context, scope nativeScope) ([]nativeLabel, error) {
+	if s.config.TenantRepository == nil {
+		return nil, workItemStorageUnavailable()
 	}
-	visibility, args := scope.issueVisibilitySQL("i")
-	args = append([]any{scope.organization, scope.project}, args...)
-	rows, err := query.QueryContext(ctx, `SELECT labels_json FROM issues i WHERE organization_id = ? AND project_id = ? AND (`+visibility+`)`, args...)
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	var counts []corestore.LabelCount
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		project, err := r.Project(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if project.DeletedAt != nil {
+			return corestore.ErrNotFound
+		}
+		counts, err = r.LabelCatalog(ctx, scope.project, scope.credential.HostedRole == "reporter", scope.actor().PrincipalID)
+		return err
+	})
 	if err != nil {
-		return nil, fmt.Errorf("read project labels: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	counts := map[string]int{}
-	for rows.Next() {
-		var encoded sql.NullString
-		if err := rows.Scan(&encoded); err != nil {
-			return nil, fmt.Errorf("scan project labels: %w", err)
-		}
-		if !encoded.Valid || encoded.String == "" {
-			continue
-		}
-		var names []string
-		if err := json.Unmarshal([]byte(encoded.String), &names); err != nil {
-			// One unreadable row must not take the catalogue down with it:
-			// the endpoint answers with every label it could read.
-			continue
-		}
-		seen := map[string]bool{}
-		for _, name := range names {
-			trimmed := strings.TrimSpace(name)
-			if isManagedLabel(trimmed) || seen[trimmed] {
-				continue
-			}
-			seen[trimmed] = true
-			counts[trimmed]++
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read project labels: %w", err)
+		return nil, projectRecordError(err)
 	}
 	labels := make([]nativeLabel, 0, len(counts))
-	for name, count := range counts {
-		labels = append(labels, nativeLabel{Name: name, Color: labelColor(name), Count: count})
+	for _, label := range counts {
+		if !isManagedLabel(label.Name) {
+			labels = append(labels, nativeLabel{Name: label.Name, Count: int(label.Count), Color: labelColor(label.Name)})
+		}
 	}
-	// Busiest first, then alphabetical, so the order is total and two calls
-	// against an unchanged project answer identically.
 	sort.Slice(labels, func(a, b int) bool {
 		if labels[a].Count != labels[b].Count {
 			return labels[a].Count > labels[b].Count

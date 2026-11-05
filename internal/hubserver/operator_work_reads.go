@@ -132,7 +132,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 				issueContract.ScheduledRepair = &nativeWorkScheduledRepair{PolicyID: approval.Policy.ID, Repository: repository, Workflow: workflow, Branches: branches, Body: repairContract.ScheduledRepairBody(), EvidenceSchema: 1, Priority: priority}
 			}
 		}
-		labels, err := readNativeLabels(ctx, s.database.reader, scope)
+		labels, err := s.readNativeLabels(ctx, scope)
 		return hubWorkResult(r, request, struct {
 			Project           tracker.NativeProject    `json:"project"`
 			Priorities        []int                    `json:"priorities"`
