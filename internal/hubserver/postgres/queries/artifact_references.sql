@@ -11,13 +11,17 @@ ON CONFLICT (organization_id,project_id,artifact_id,revision) DO NOTHING RETURNI
 -- name: ArtifactReferenceListLatest :many
 SELECT organization_id,project_id,work_item_id,service_id,artifact_id,revision,manifest_id,schema_version,run_id,attempt_id,version_id,sha256,kind,state,availability,bytes,objects,expires_at,observed_at
 FROM (
-    SELECT r.*,row_number() OVER (PARTITION BY r.artifact_id ORDER BY r.revision DESC) AS artifact_revision_rank
-    FROM artifact_references r
-    WHERE r.organization_id=sqlc.arg(organization_id) AND r.project_id=sqlc.arg(project_id) AND r.work_item_id=sqlc.arg(work_item_id)
-) latest
-WHERE artifact_revision_rank=1
-ORDER BY artifact_id
-LIMIT sqlc.arg(page_limit);
+    SELECT latest.*,row_number() OVER (PARTITION BY latest.service_id ORDER BY latest.artifact_id) AS service_rank
+    FROM (
+        SELECT r.*,row_number() OVER (PARTITION BY r.artifact_id ORDER BY r.revision DESC) AS artifact_revision_rank
+        FROM artifact_references r
+        WHERE r.organization_id=sqlc.arg(organization_id) AND r.project_id=sqlc.arg(project_id) AND r.work_item_id=sqlc.arg(work_item_id)
+    ) latest
+    WHERE latest.artifact_revision_rank=1
+    ORDER BY service_rank, latest.artifact_id
+    LIMIT sqlc.arg(page_limit)
+) fair
+ORDER BY artifact_id;
 
 -- name: ArtifactVersionAttemptMatches :one
 SELECT EXISTS (
