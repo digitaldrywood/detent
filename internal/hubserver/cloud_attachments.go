@@ -187,7 +187,7 @@ func (s *Service) registerCloudAttachmentRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/attempts/:attempt/evidence/check", s.checkCloudAttachment, s.requireNativeScope(apiScopeWorker))
 	e.POST(nativeBase+"/attempts/:attempt/evidence", s.recordCloudAttachment, s.requireNativeScope(apiScopeWorker))
 	e.GET(attachmentMetadataBase+"/:attachment", s.getCloudAttachment, read)
-	e.DELETE(attachmentMetadataBase+"/:attachment", s.deleteCloudAttachment, write)
+	e.DELETE(attachmentMetadataBase+"/:attachment", s.deleteCloudAttachment, s.requireNativeScope(apiScopeOperator))
 	e.POST(attachmentMetadataBase+"/:attachment/reference", s.referenceCloudAttachment, write)
 	e.POST("/internal/v1/attachments/expired", s.expiredCloudAttachments)
 	e.POST("/internal/v1/attachments/deleted", s.finishCloudAttachmentDeletion)
@@ -471,6 +471,9 @@ func (s *Service) deleteCloudAttachment(c echo.Context) error {
 }
 
 func (s *Service) deleteCloudAttachmentCommand(ctx context.Context, scope nativeScope, id string) error {
+	if scope.credential.Scope == apiScopeWorker {
+		return nativeNotFound()
+	}
 	if s.config.TenantRepository != nil {
 		return s.deleteCloudAttachmentTenant(ctx, scope, id)
 	}

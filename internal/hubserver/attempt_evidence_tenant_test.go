@@ -390,6 +390,19 @@ func TestPostgresAttemptEvidencePreflightChecksRunningFencedOwner(t *testing.T) 
 	}); err != nil {
 		t.Fatal(err)
 	}
+	for _, id := range []string{attachmentID, evidenceMetadata.ID} {
+		refused := performHubAPIRequest(t, service, http.MethodDelete, metadataPath+"/"+id, secret, nil)
+		requireNativeStatus(t, refused, http.StatusForbidden)
+		if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+			record, err := r.Attachment(t.Context(), project.ID, id)
+			if err == nil && record.Metadata.DeletedAt != nil {
+				t.Fatal("worker credential deleted an attachment")
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, "released")
 		return err
