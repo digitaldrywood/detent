@@ -170,7 +170,7 @@ func (p PricingTable) upperBound() (ModelPricing, bool) {
 		p = DefaultPricingTable()
 	}
 	for _, row := range p {
-		bound.USDPerInputToken = max(bound.USDPerInputToken, row.USDPerInputToken)
+		bound.USDPerInputToken = max(bound.USDPerInputToken, row.USDPerInputToken, row.USDPerCachedInputToken)
 		bound.USDPerCachedInputToken = max(bound.USDPerCachedInputToken, row.USDPerCachedInputToken)
 		bound.USDPerOutputToken = max(bound.USDPerOutputToken, row.USDPerOutputToken)
 		ok = true
