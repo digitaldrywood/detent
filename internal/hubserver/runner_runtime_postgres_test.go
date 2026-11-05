@@ -3,6 +3,7 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,6 +42,7 @@ import (
 )
 
 type runnerPGFixture struct {
+	admin    *sql.DB
 	bindings []runnerauth.Binding
 	service  *Service
 	server   *httptest.Server
@@ -312,7 +314,7 @@ func newRunnerPGFixture(t *testing.T, customize ...func(*policy.Descriptor)) run
 		}
 	})
 	seedStartupOrganization(t, service.config.TenantRepository, "org_startup")
-	f := runnerPGFixture{service: service, server: httptest.NewServer(service.Handler())}
+	f := runnerPGFixture{admin: admin, service: service, server: httptest.NewServer(service.Handler())}
 	t.Cleanup(f.server.Close)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	expires := now.Add(time.Hour)
