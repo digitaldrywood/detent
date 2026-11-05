@@ -1556,6 +1556,7 @@ type NativeBoardItem struct {
 	PayloadSHA256         string
 	PayloadBytes          int64
 	PayloadContentBytes   int64
+	IssueNumber           sql.NullInt64
 }
 
 type NativeBoardSequence struct {
