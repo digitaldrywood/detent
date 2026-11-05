@@ -113,6 +113,88 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 	now = asOf.Add(time.Second)
 	e := echo.New()
 	service.registerPostgresRoutes(e)
+	t.Run("capacity", func(t *testing.T) {
+		for _, org := range []string{"org_first", "org_second"} {
+			t.Run(org, func(t *testing.T) {
+				call := func(method, token, body string) *httptest.ResponseRecorder {
+					req := httptest.NewRequest(method, "/api/v2/organizations/"+org+"/runners/runner_one/capacity?backend=example", strings.NewReader(body))
+					req.Header.Set(echo.HeaderAuthorization, "Bearer "+token)
+					req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+					rec := httptest.NewRecorder()
+					e.ServeHTTP(rec, req)
+					return rec
+				}
+				read := call(http.MethodGet, org+"_admin", "")
+				if read.Code != http.StatusOK {
+					t.Fatalf("GET status=%d body=%s", read.Code, read.Body)
+				}
+				var got runnerCapacityRead
+				if err := json.Unmarshal(read.Body.Bytes(), &got); err != nil {
+					t.Fatal(err)
+				}
+				if got.Desired != 3 || !got.Recommendation.Partial || len(got.ProviderCapacity) != 1 || got.Projects["project_one"].Used != 1 {
+					t.Fatalf("capacity=%+v", got)
+				}
+				body := fmt.Sprintf(`{"expected_revision":2,"expected_config_revision":%q,"capacity":4,"backend":"example","idempotency_key":"capacity"}`, strings.Repeat("a", 64))
+				write := call(http.MethodPut, org+"_admin", body)
+				if write.Code != http.StatusOK {
+					t.Fatalf("PUT status=%d body=%s", write.Code, write.Body)
+				}
+				if err := json.Unmarshal(write.Body.Bytes(), &got); err != nil {
+					t.Fatal(err)
+				}
+				if got.Desired != 4 {
+					t.Fatalf("updated capacity=%+v", got)
+				}
+				replay := call(http.MethodPut, org+"_admin", body)
+				if replay.Code != http.StatusOK || replay.Body.String() != write.Body.String() {
+					t.Fatalf("replay=%d %s", replay.Code, replay.Body)
+				}
+				for _, tc := range []struct {
+					name, token, body string
+					status            int
+				}{
+					{"changed replay", org + "_admin", strings.Replace(body, `"capacity":4`, `"capacity":5`, 1), http.StatusConflict},
+					{"stale runner", org + "_admin", strings.Replace(body, `"idempotency_key":"capacity"`, `"idempotency_key":"stale"`, 1), http.StatusConflict},
+					{"stale configuration", org + "_admin", strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(body, `"expected_revision":2`, `"expected_revision":3`), strings.Repeat("a", 64), strings.Repeat("b", 64)), `"idempotency_key":"capacity"`, `"idempotency_key":"config"`), http.StatusConflict},
+					{"worker", org + "_runner_one", body, http.StatusForbidden},
+					{"other organization", map[string]string{"org_first": "org_second_admin", "org_second": "org_first_admin"}[org], body, http.StatusUnauthorized},
+				} {
+					t.Run(tc.name, func(t *testing.T) {
+						rec := call(http.MethodPut, tc.token, tc.body)
+						if rec.Code != tc.status {
+							t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+						}
+					})
+				}
+				for _, token := range []string{org + "_runner_one", map[string]string{"org_first": "org_second_admin", "org_second": "org_first_admin"}[org]} {
+					denied := call(http.MethodGet, token, "")
+					if denied.Code != http.StatusForbidden && denied.Code != http.StatusUnauthorized {
+						t.Fatalf("GET authority=%d %s", denied.Code, denied.Body)
+					}
+				}
+				freshNow := now
+				now = now.Add(runnerauth.HeartbeatTimeout)
+				stale := call(http.MethodPut, org+"_admin", strings.ReplaceAll(strings.ReplaceAll(body, `"expected_revision":2`, `"expected_revision":3`), `"idempotency_key":"capacity"`, `"idempotency_key":"expired-evidence"`))
+				now = freshNow
+				if stale.Code != http.StatusConflict {
+					t.Fatalf("expired evidence=%d %s", stale.Code, stale.Body)
+				}
+				if err := repository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
+					identity, err := r.RunnerIdentity(t.Context(), "runner_one")
+					if err == nil && (identity.Revision != 3 || identity.CapacityRequest == nil || identity.CapacityRequest.Backend != "example" || identity.CapacityLimit != 4) {
+						t.Fatalf("persisted=%+v", identity)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.ExecContext(t.Context(), `UPDATE runner_identities SET revision=2,capacity_limit=3,capacity_request_revision='',capacity_request_limit=0,capacity_request_backend='' WHERE organization_id=$1 AND runner_id='runner_one'`, org); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	})
 	request := func(org, runner, token string) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v2/organizations/%s/runners/%s/routing", org, runner), nil)
