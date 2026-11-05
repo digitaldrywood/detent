@@ -49,7 +49,7 @@ func (q *Queries) ArtifactReferencePublished(ctx context.Context, arg ArtifactRe
 
 const artifactUploadAuthorizationConsume = `-- name: ArtifactUploadAuthorizationConsume :execrows
 DELETE FROM artifact_upload_authorizations a
-WHERE a.organization_id=$1 AND a.project_id=$2 AND a.service_id=$3 AND a.idempotency_key=(
+WHERE a.organization_id=$1 AND a.project_id=$2 AND a.service_id=$3 AND a.attempt_id=$4 AND a.idempotency_key=(
     SELECT u.idempotency_key FROM artifact_upload_authorizations u
     WHERE u.organization_id=$1 AND u.project_id=$2 AND u.service_id=$3 AND u.attempt_id=$4 AND u.kind=$5
     AND u.expires_at>$6::timestamptz AND u.work_item_id=$7 AND u.run_id=$8 AND u.bytes>=$9
@@ -90,7 +90,7 @@ func (q *Queries) ArtifactUploadAuthorizationConsume(ctx context.Context, arg Ar
 const artifactUploadAuthorizationInsert = `-- name: ArtifactUploadAuthorizationInsert :execrows
 INSERT INTO artifact_upload_authorizations (organization_id,project_id,service_id,idempotency_key,work_item_id,run_id,attempt_id,kind,bytes,created_at,expires_at)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-ON CONFLICT (organization_id,project_id,service_id,idempotency_key) DO NOTHING
+ON CONFLICT (organization_id,project_id,service_id,attempt_id,idempotency_key) DO NOTHING
 `
 
 type ArtifactUploadAuthorizationInsertParams struct {
@@ -155,7 +155,7 @@ func (q *Queries) ArtifactUploadAuthorizationLiveCount(ctx context.Context, arg 
 }
 
 const artifactUploadAuthorizationPruneAttempt = `-- name: ArtifactUploadAuthorizationPruneAttempt :exec
-DELETE FROM artifact_upload_authorizations a WHERE a.organization_id=$1 AND a.project_id=$2 AND (a.service_id, a.idempotency_key) IN (
+DELETE FROM artifact_upload_authorizations a WHERE a.organization_id=$1 AND a.project_id=$2 AND a.attempt_id=$3 AND (a.service_id, a.idempotency_key) IN (
 SELECT e.service_id, e.idempotency_key FROM artifact_upload_authorizations e WHERE e.organization_id=$1 AND e.project_id=$2 AND e.attempt_id=$3 AND e.expires_at<=$4::timestamptz
 ORDER BY e.expires_at LIMIT $5::integer)
 `
