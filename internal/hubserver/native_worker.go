@@ -7,12 +7,16 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -253,66 +257,146 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 		return s.nativeAPIError(c, nativePublicInvalid("Machine identity, hostname, version, and nonnegative capacity are required"))
 	}
 	scope := nativeRequestScope(c)
-	now := formatHubTime(s.config.now())
 	if scope.credential.Runner.RunnerID != "" && request.ID != scope.credential.Runner.MachineID {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	if !workspacesession.ValidIsolation(request.WorkspaceIsolation) {
 		return s.nativeAPIError(c, nativePublicInvalid("Workspace isolation must be sandbox, container or user"))
 	}
-	if scope.credential.Runner.RunnerID != "" {
-		return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
-			if err := updateRunnerIsolationReport(ctx, tx, scope, request.BackendIsolation); err != nil {
-				return nil, err
-			}
-			if err := updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.Version, request.OS, request.Architecture, now); err != nil {
-				return nil, err
-			}
-			if err := updateRunnerWorkspaceReport(ctx, tx, scope, request.WorkspaceCapabilities, request.WorkspaceIsolation); err != nil {
-				return nil, err
-			}
-			if err := updateRunnerSkills(ctx, tx, scope, request.Skills, now); err != nil {
-				return nil, err
-			}
-			if err := updateRunnerCheckoutReport(ctx, tx, scope, request.CheckoutRepository, now); err != nil {
-				return nil, err
-			}
-			if err := updateProviderReports(ctx, tx, scope, request.ProviderReports, now); err != nil {
-				return nil, err
-			}
-			snapshot, err := readRunnerRoutingSnapshot(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
-			if err != nil {
-				return nil, err
-			}
-			err = s.readRunnerClaimState(ctx, tx, scope, &snapshot, now)
-			return snapshot, err
-		})
+	if s.config.TenantRepository == nil {
+		return s.nativeAPIError(c, nativeRunEventStorageUnavailable())
 	}
-	if request.WorkspaceCapabilities != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("Workspace capabilities require an enrolled runner"))
+	if scope.credential.Runner.RunnerID == "" {
+		if request.WorkspaceCapabilities != nil {
+			return s.nativeAPIError(c, nativePublicInvalid("Workspace capabilities require an enrolled runner"))
+		}
+		if len(request.ProviderReports) != 0 {
+			return s.nativeAPIError(c, nativePublicInvalid("Provider reports require an enrolled runner"))
+		}
+		if request.Skills != nil {
+			return s.nativeAPIError(c, nativePublicInvalid("Skill reports require an enrolled runner"))
+		}
+		if request.CheckoutRepository != nil && *request.CheckoutRepository != "" {
+			return s.nativeAPIError(c, nativePublicInvalid("Checkout reports require an enrolled runner"))
+		}
 	}
-	if len(request.ProviderReports) != 0 {
-		return s.nativeAPIError(c, nativePublicInvalid("Provider reports require an enrolled runner"))
+	if err := validateProviderReports(request.ProviderReports); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if err := request.BackendIsolation.Validate(); err != nil {
+		return s.nativeAPIError(c, nativeInvalid(err.Error()))
 	}
 	if request.Skills != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("Skill reports require an enrolled runner"))
+		if len(*request.Skills) > runnerstore.MaxProjectSkills {
+			return s.nativeAPIError(c, nativePublicInvalid("Runner skill report exceeds its item limit"))
+		}
+		for _, skill := range *request.Skills {
+			if !skills.ValidProviderSkill(skill) {
+				return s.nativeAPIError(c, nativePublicInvalid("Invalid runner skill metadata"))
+			}
+		}
 	}
-	if request.CheckoutRepository != nil && *request.CheckoutRepository != "" {
-		return s.nativeAPIError(c, nativePublicInvalid("Checkout reports require an enrolled runner"))
+	if scope.credential.Runner.RunnerID != "" {
+		if err := validateRunnerCheckoutReport(scope, request.CheckoutRepository); err != nil {
+			return s.nativeAPIError(c, err)
+		}
 	}
-	result, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO machines (id, hostname, display_name, capacity, version, last_heartbeat_at, registered_at, updated_at, organization_id, token_id,machine_facts_ready)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,1)
-ON CONFLICT(id) DO UPDATE SET hostname = excluded.hostname, display_name = excluded.display_name, capacity = excluded.capacity, version = excluded.version, last_heartbeat_at = excluded.last_heartbeat_at, updated_at = excluded.updated_at
-WHERE machines.organization_id = excluded.organization_id AND machines.token_id = excluded.token_id`, request.ID, request.Hostname, request.DisplayName, request.Capacity, request.Version, now, now, now, scope.organization, scope.credential.ID)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	var snapshot runnerauth.RoutingSnapshot
+	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		credential := scope.credential
+		if credential.Runner.RunnerID == "" {
+			if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+				return err
+			}
+			owner, ok := w.(leasestore.MachineRegistrationWriter)
+			if !ok {
+				return nativeRunEventStorageUnavailable()
+			}
+			return owner.RegisterOwnedMachine(ctx, leasestore.Machine{OrganizationID: scope.organization, ID: string(request.ID), Hostname: request.Hostname, DisplayName: request.DisplayName, Capacity: int64(request.Capacity), Version: request.Version}, credential.ID)
+		}
+		identity, err := w.RunnerIdentityByCredential(ctx, credential.ID)
+		if err != nil {
+			return err
+		}
+		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+			return err
+		}
+		current, err := w.AccessCredential(ctx, credential.ID)
+		if err != nil {
+			return err
+		}
+		now := s.config.now().UTC()
+		if !runnerIdentityMatchesHeldLease(identity, scope.organization, credential.Runner.RunnerID, credential.ID, request.ID, now) || current.Scope != string(apiScopeWorker) || current.Kind != "service" || !current.Valid(credential.Hash, now) || !slices.Contains(identity.Operations, runnerauth.Heartbeat) {
+			return runnerUnauthorized()
+		}
+		allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return nativeNotFound()
+		}
+		identity.ReportedCapacity, identity.OS, identity.Architecture = int64(request.Capacity), request.OS, request.Architecture
+		if now.After(identity.LastHeartbeatAt) {
+			identity.LastHeartbeatAt = now
+		}
+		if err := w.UpdateRunnerIdentity(ctx, identity); err != nil {
+			return err
+		}
+		machine, err := w.LockMachine(ctx, string(request.ID))
+		if err != nil {
+			return err
+		}
+		machine.Version = request.Version
+		if err := w.HeartbeatMachine(ctx, machine, now); err != nil {
+			return err
+		}
+		if err := w.ReplaceRunnerBackendIsolation(ctx, identity.RunnerID, request.BackendIsolation); err != nil {
+			return err
+		}
+		if request.WorkspaceCapabilities != nil {
+			if err := w.ReplaceRunnerWorkspaceReport(ctx, identity.RunnerID, *request.WorkspaceCapabilities, request.WorkspaceIsolation); err != nil {
+				return err
+			}
+		}
+		if request.Skills != nil {
+			if err := w.ReplaceRunnerProjectSkills(ctx, identity.RunnerID, scope.project, *request.Skills, now); err != nil {
+				return err
+			}
+		}
+		if request.CheckoutRepository != nil {
+			if err := w.ReplaceRunnerCheckoutReport(ctx, runnerstore.CheckoutReport{OrganizationID: scope.organization, RunnerID: identity.RunnerID, ProjectID: scope.project, Repository: *request.CheckoutRepository, ReportedAt: now}); err != nil {
+				return err
+			}
+		}
+		previous, err := w.RunnerProviderReports(ctx, identity.RunnerID)
+		if err != nil {
+			return err
+		}
+		if err := w.ReplaceRunnerProviderReports(ctx, identity.RunnerID, mergeRunnerProviderReports(previous, request.ProviderReports, now)); err != nil {
+			return err
+		}
+		snapshot.RunnerID = identity.RunnerID
+		active, err := w.RunnerHasActiveLease(ctx, identity.RunnerID, now)
+		if err != nil {
+			return err
+		}
+		return s.applyRunnerTenantUsage(ctx, w, now, newNativeID("runner_registration"), active, false)
+	})
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.nativeAPIError(c, projectRecordError(err))
 	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return s.nativeAPIError(c, err)
+	if scope.credential.Runner.RunnerID == "" {
+		return c.JSON(http.StatusOK, request)
 	}
-	if count != 1 {
-		return s.nativeAPIError(c, nativeNotFound())
+	if err := s.readRegistrationClaimStateTenant(ctx, scope, &snapshot); err != nil {
+		return s.nativeAPIError(c, projectRecordError(err))
 	}
-	return c.JSON(http.StatusOK, request)
+	if s.notifications != nil {
+		s.notifications.notify(dispatchNotificationKey(scope.organization))
+	}
+	c.Response().Header().Set("Cache-Control", "no-store")
+	return c.JSON(http.StatusOK, snapshot)
 }
