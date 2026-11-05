@@ -144,7 +144,8 @@ func (s *session) BindAttachment(ctx context.Context, reference attachmentstore.
 	if count != 1 {
 		return corestore.ErrRevisionConflict
 	}
-	return nil
+	_, err = s.db.ExecContext(ctx, `UPDATE attachments SET retention_class='work_item' WHERE organization_id=$1 AND project_id=$2 AND id=$3 AND retention_class IN ('','expiring')`, s.organization, project, id)
+	return mapError(ctx, err)
 }
 
 func (s *session) DeleteAttachment(ctx context.Context, project tracker.ProjectID, id string, at time.Time) error {
@@ -178,4 +179,48 @@ func (s *session) FinishAttachmentDeletion(ctx context.Context, id string, at ti
 	}
 	_, err = s.AdjustCollaborationBytes(ctx, -size, math.MaxInt64)
 	return err
+}
+
+const managedAttachmentPredicate = `kind='attachment' AND NOT customer_owned AND storage_binding_id='' AND pending_content IS NULL AND object_key IN ('','orgs/' || organization_id || '/attachments/' || id)`
+const orphanAttachmentPredicate = `deleted_at IS NULL AND object_deleted_at IS NULL AND retention_class IN ('','expiring') AND work_item_id IS NULL AND created_at<=$2`
+const attachmentHasReferences = `EXISTS(SELECT 1 FROM attachment_item_references r WHERE r.organization_id=attachments.organization_id AND r.attachment_id=attachments.id)`
+
+func (s *session) AttachmentDeletionCandidates(ctx context.Context, cutoff time.Time, limit int) ([]attachmentstore.Record, error) {
+	if cutoff.IsZero() || limit < 1 || limit > 100 {
+		return nil, corestore.ErrInvalidPage
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT * FROM (
+ (SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND `+managedAttachmentPredicate+` AND deleted_at IS NOT NULL AND object_deleted_at IS NULL ORDER BY created_at,id LIMIT $3)
+ UNION ALL
+ (SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND `+managedAttachmentPredicate+` AND `+orphanAttachmentPredicate+` ORDER BY created_at,id LIMIT $3)
+ ) candidates ORDER BY created_at,id LIMIT $3`, s.organization, cutoff, limit)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	defer rows.Close()
+	records := []attachmentstore.Record{}
+	for rows.Next() {
+		record, err := scanAttachmentRecord(rows)
+		if err != nil {
+			return nil, mapError(ctx, err)
+		}
+		records = append(records, record)
+	}
+	return records, mapError(ctx, rows.Err())
+}
+
+func (s *session) ExpireAttachment(ctx context.Context, project tracker.ProjectID, id string, cutoff, at time.Time) (bool, error) {
+	var locked tracker.ProjectID
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, project).Scan(&locked); err != nil {
+		return false, mapError(ctx, err)
+	}
+	var expired bool
+	err := s.db.QueryRowContext(ctx, `UPDATE attachments SET
+ retention_class=CASE WHEN `+attachmentHasReferences+` THEN 'work_item' ELSE retention_class END,
+ deleted_at=CASE WHEN `+attachmentHasReferences+` THEN NULL ELSE $5::timestamptz END
+ WHERE organization_id=$1 AND project_id=$3 AND id=$4 AND `+managedAttachmentPredicate+` AND `+orphanAttachmentPredicate+` RETURNING deleted_at IS NOT NULL`, s.organization, cutoff, project, id, at).Scan(&expired)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return expired, mapError(ctx, err)
 }

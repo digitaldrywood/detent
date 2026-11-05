@@ -676,3 +676,54 @@ func (s *Service) finishCloudAttachmentDeletionTenant(c echo.Context) error {
 	}
 	return c.NoContent(http.StatusNoContent)
 }
+
+func (s *Service) expiredCloudAttachmentsTenant(c echo.Context) error {
+	claims, ok := hostedSharedClaims(c)
+	if !ok || claims.Kind != cloudassert.KindService || claims.Audience == "" {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	organization := tracker.OrganizationID(claims.Audience)
+	now := s.config.now().UTC()
+	cutoff := now.Add(-attachment.OrphanTTL)
+	var candidates []attachmentstore.Record
+	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
+		owner, ok := r.(attachmentstore.ExpiryReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		var err error
+		candidates, err = owner.AttachmentDeletionCandidates(ctx, cutoff, 100)
+		return err
+	})
+	if err != nil {
+		return s.nativeAPIError(c, projectRecordError(err))
+	}
+	items := []attachment.Metadata{}
+	for _, candidate := range candidates {
+		metadata := candidate.Metadata
+		if metadata.DeletedAt == nil {
+			expired := false
+			err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+				project := tracker.ProjectID(metadata.ProjectID)
+				owner, ok := w.(attachmentstore.ExpiryWriter)
+				if !ok {
+					return workItemStorageUnavailable()
+				}
+				var err error
+				expired, err = owner.ExpireAttachment(ctx, project, metadata.ID, cutoff, now)
+				return err
+			})
+			if err != nil {
+				return s.nativeAPIError(c, projectRecordError(err))
+			}
+			if !expired {
+				continue
+			}
+			metadata.DeletedAt = &now
+		}
+		items = append(items, metadata)
+	}
+	return c.JSON(http.StatusOK, items)
+}

@@ -52,3 +52,11 @@ type DeletionWriter interface {
 	DeleteAttachment(context.Context, tracker.ProjectID, string, time.Time) error
 	FinishAttachmentDeletion(context.Context, string, time.Time) error
 }
+
+type ExpiryReader interface {
+	AttachmentDeletionCandidates(context.Context, time.Time, int) ([]Record, error)
+}
+
+type ExpiryWriter interface {
+	ExpireAttachment(context.Context, tracker.ProjectID, string, time.Time, time.Time) (bool, error)
+}

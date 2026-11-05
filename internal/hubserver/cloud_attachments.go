@@ -567,7 +567,7 @@ func (s *Service) referenceCloudAttachmentCommand(ctx context.Context, scope nat
 
 func (s *Service) expiredCloudAttachments(c echo.Context) error {
 	if s.config.TenantRepository != nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
+		return s.expiredCloudAttachmentsTenant(c)
 	}
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService {
