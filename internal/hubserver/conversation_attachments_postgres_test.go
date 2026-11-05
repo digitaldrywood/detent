@@ -563,3 +563,179 @@ func (r *attachmentReadCounter) ReadTenant(ctx context.Context, org tracker.Orga
 	r.reads++
 	return r.Repository.ReadTenant(ctx, org, workload, read)
 }
+
+func TestConversationAttachmentPostgresSweep(t *testing.T) {
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
+	objects := &conversationContentFixture{}
+	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: time.Now}}
+	service.conversations = &conversationService{server: service, store: &conversationStore{contents: objects}}
+	service.conversations.config.ControlQueueSize = 100
+	service.conversations.broker = newNotificationBroker()
+	service.conversations.coordinator = newConversationCoordinator(service.conversations)
+	service.ready.Store(true)
+	service.registerConversationAPIRoutes(service.echo)
+	type fixture struct {
+		org             tracker.OrganizationID
+		project         tracker.ProjectID
+		id, other, base string
+	}
+	fixtures := []fixture{}
+	for i := range 2 {
+		org := nativeOrganization{ID: tracker.OrganizationID(fmt.Sprintf("org_attachment_%d", i)), Name: "Example", Slug: fmt.Sprintf("example-%d", i)}
+		seedPostgresHubAdmin(t, repository, service, org)
+		f := fixture{org: org.ID, project: tracker.ProjectID(fmt.Sprintf("project_attachment_%d", i)), id: conversation.NewConversationID(), other: conversation.NewConversationID()}
+		f.base = fmt.Sprintf("/api/v2/organizations/%s/projects/%s", f.org, f.project)
+		now := time.Now().UTC()
+		if err := repository.WriteTenant(t.Context(), f.org, corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: f.org, ID: f.project, Name: "Example", Slug: "example", Profile: "native", CreatedAt: now}, States: nativeFixtureStates()}); err != nil {
+				return err
+			}
+			for _, id := range []string{f.id, f.other} {
+				if _, err := w.CreateConversation(t.Context(), conversationstore.Conversation{OrganizationID: f.org, ProjectID: f.project, ID: id, OwnerPrincipalID: "test_hub_admin", Origin: conversationOriginUser, Title: "Example", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Revision: 1, Execution: conversation.Execution{Status: conversation.ExecutionIdle, UpdatedAt: now}, Preferences: conversation.DefaultPreferences(), CreatedAt: now, UpdatedAt: now}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO hosted_usage_counters(organization_id,name,value) VALUES($1,'collaboration_bytes',0) ON CONFLICT(organization_id,name) DO UPDATE SET value=0`, f.org); err != nil {
+			t.Fatal(err)
+		}
+		fixtures = append(fixtures, f)
+	}
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	service.config.now = func() time.Time { return now }
+	type candidate struct {
+		fixture fixture
+		upload  conversation.AttachmentUpload
+		expired bool
+		deleted bool
+	}
+	var candidates []candidate
+	before := map[tracker.OrganizationID]int64{}
+	for _, f := range fixtures {
+		for _, state := range []string{"expired", "boundary", "live", "deleted", "sent"} {
+			upload := uploadConversationAttachmentFile(t, service, f.base, testHubAdminToken, f.id, state+".txt", "text/plain", []byte(state))
+			candidates = append(candidates, candidate{f, upload, state == "expired" || state == "boundary", state == "deleted"})
+			switch state {
+			case "expired", "boundary":
+				expires := now
+				if state == "expired" {
+					expires = now.Add(-time.Second)
+				}
+				if _, err := admin.ExecContext(t.Context(), `UPDATE conversation_attachments SET expires_at=$3 WHERE organization_id=$1 AND id=$2`, f.org, upload.ID, expires); err != nil {
+					t.Fatal(err)
+				}
+			case "deleted":
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
+			case "sent":
+				command := conversation.Command{Key: "cmd_sweep_sent", Kind: conversation.CommandMessage, Text: "sent", Attachments: []string{upload.ID}}
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/conversations/"+f.id+"/commands", testHubAdminToken, command), http.StatusOK)
+			}
+		}
+		if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			before[f.org], err = r.CollaborationBytes(t.Context())
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index, f := range fixtures {
+		t.Run(string(f.org), func(t *testing.T) {
+			service.localOrganization = string(f.org)
+			if err := repository.ReadTenant(t.Context(), f.org, corestore.Background, func(r tenantstore.Reader) error {
+				items, err := r.(conversationstore.AttachmentReader).ExpiredConversationAttachments(t.Context(), now, 1)
+				if err == nil && (len(items) != 1 || items[0].Name != "expired.txt") {
+					return fmt.Errorf("expiry ordering or bound differs: %+v", items)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var archiveBytes int64
+			if err := admin.QueryRowContext(t.Context(), `SELECT compressed_bytes FROM archive_usage_counters WHERE organization_id=$1`, f.org).Scan(&archiveBytes); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `UPDATE archive_usage_counters SET compressed_bytes=0 WHERE organization_id=$1`, f.org); err != nil {
+				t.Fatal(err)
+			}
+			if swept, err := service.conversations.sweepAttachments(t.Context()); err == nil || swept != 0 {
+				t.Fatalf("archive failure sweep=%d err=%v", swept, err)
+			}
+			if _, err := admin.ExecContext(t.Context(), `UPDATE archive_usage_counters SET compressed_bytes=$2 WHERE organization_id=$1`, f.org, archiveBytes); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
+				used, err := r.CollaborationBytes(t.Context())
+				if err == nil && used != before[f.org] {
+					return fmt.Errorf("failed cleanup refunded quota: %d", used)
+				}
+				items, readErr := r.(conversationstore.AttachmentReader).ExpiredConversationAttachments(t.Context(), now, 2)
+				if readErr == nil && len(items) != 2 {
+					return errors.New("failed cleanup removed attachment")
+				}
+				return errors.Join(err, readErr)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			counter := &attachmentReadCounter{Repository: repository, beforeWrite: func() error {
+				swept, err := service.conversations.sweepAttachments(t.Context())
+				if err == nil && swept != 2 {
+					return fmt.Errorf("concurrent sweep=%d want=2", swept)
+				}
+				return err
+			}}
+			service.config.TenantRepository = counter
+			t.Cleanup(func() { service.config.TenantRepository = repository })
+			for _, want := range []int{0, 0} {
+				if swept, err := service.conversations.sweepAttachments(t.Context()); err != nil || swept != want {
+					t.Fatalf("sweep = %d, %v; want %d", swept, err, want)
+				}
+			}
+			for otherIndex, other := range fixtures {
+				if err := repository.ReadTenant(t.Context(), other.org, corestore.Serving, func(r tenantstore.Reader) error {
+					used, err := r.CollaborationBytes(t.Context())
+					want := before[other.org]
+					if otherIndex <= index {
+						want -= int64(len("expired") + len("boundary"))
+					}
+					if err == nil && used != want {
+						return fmt.Errorf("organization %s usage=%d want=%d", other.org, used, want)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, a := range candidates {
+				if a.fixture.org != f.org {
+					continue
+				}
+				if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
+					stored, err := r.(conversationstore.AttachmentReader).ConversationAttachment(t.Context(), f.project, f.id, a.upload.ID)
+					if err == nil && ((stored.DeletedAt != nil) != (a.expired || a.deleted) || (stored.ContentID == "") != (a.expired || a.deleted)) {
+						return fmt.Errorf("incorrect attachment retention: %s", a.upload.Name)
+					}
+					var owners int
+					if err == nil {
+						err = admin.QueryRowContext(t.Context(), `SELECT count(*) FROM archive_object_owners WHERE organization_id=$1 AND owner_kind='conversation-attachment' AND owner_id=$2`, f.org, a.upload.ID).Scan(&owners)
+					}
+					if err == nil && (owners == 0) != (a.expired || a.deleted) {
+						return fmt.Errorf("incorrect archive ownership: %s", a.upload.ID)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				want := http.StatusOK
+				if a.expired || a.deleted {
+					want = http.StatusNotFound
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, a.upload.Attachment.URL, testHubAdminToken, nil), want)
+			}
+		})
+	}
+}

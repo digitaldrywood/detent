@@ -360,7 +360,7 @@ func (c *conversationService) bindMessageAttachments(ctx context.Context, tx *sq
 // many it removed.
 func (c *conversationService) sweepAttachments(ctx context.Context) (int, error) {
 	if c.server.conversationRecordsSelected() {
-		return 0, conversationUnsupported("Conversation attachment cleanup requires the PostgreSQL attachment owner")
+		return c.sweepAttachmentsPG(ctx)
 	}
 	swept := 0
 	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {

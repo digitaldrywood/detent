@@ -175,3 +175,23 @@ func (s *session) MessageSequences(ctx context.Context, conversationID string, m
 	}
 	return items, mapError(ctx, rows.Err())
 }
+
+func (s *session) ExpiredConversationAttachments(ctx context.Context, now time.Time, limit int) ([]conversationstore.Attachment, error) {
+	if now.IsZero() || limit < 1 || limit > corestore.MaxPageSize {
+		return nil, corestore.ErrInvalidPage
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+pgConversationAttachmentColumns+` FROM conversation_attachments WHERE organization_id=$1 AND message_id IS NULL AND deleted_at IS NULL AND expires_at<=$2 ORDER BY expires_at,id LIMIT $3`, s.organization, now, limit)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	defer rows.Close()
+	var items []conversationstore.Attachment
+	for rows.Next() {
+		a, err := scanPGConversationAttachment(rows)
+		if err != nil {
+			return nil, mapError(ctx, err)
+		}
+		items = append(items, a)
+	}
+	return items, mapError(ctx, rows.Err())
+}

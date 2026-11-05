@@ -8,6 +8,7 @@ import (
 )
 
 type AttachmentReader interface {
+	ExpiredConversationAttachments(context.Context, time.Time, int) ([]Attachment, error)
 	MessageAttachments(context.Context, tracker.ProjectID, string, []string) (map[string][]Attachment, error)
 	MessageSequences(context.Context, string, []string) (map[string]int64, error)
 	AttachmentConversation(context.Context, tracker.ProjectID, string) (Conversation, error)
