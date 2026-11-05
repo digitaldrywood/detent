@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -63,6 +64,67 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			t.Fatal(err)
 		}
 		fixtures = append(fixtures, f)
+	}
+	for _, f := range fixtures {
+		t.Run(string(f.org)+"_delete_retains_blob_charges", func(t *testing.T) {
+			plan := billingstore.PlanReference{ID: "example-storage", Version: 1}
+			if err := repository.WriteTenant(t.Context(), f.org, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: f.org, PlanReference: plan, Name: "Example storage", Features: []string{"collaboration"}, Allowances: map[string]int64{"collaboration_bytes": 36}}); err != nil {
+					return err
+				}
+				return w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: f.org, Base: plan}, 0)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			service.database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{Base: PlanReference{ID: plan.ID, Version: plan.Version}, WindowSeconds: 60, RetentionWindows: 10}})
+			t.Cleanup(func() { service.database.hostedRuntime.Store(nil) })
+			var want int64
+			for cycle := range 2 {
+				payload := []byte(fmt.Sprintf("retained payload %d", cycle))
+				upload := uploadConversationAttachmentFile(t, service, f.base, testHubAdminToken, f.id, "retained.txt", "text/plain", payload)
+				want += int64(len(payload))
+				var object conversationstore.ContentObject
+				var archive int64
+				if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
+					a, err := r.(conversationstore.AttachmentReader).ConversationAttachment(t.Context(), f.project, f.id, upload.ID)
+					if err != nil {
+						return err
+					}
+					object, err = r.ConversationContent(t.Context(), a.ContentID)
+					if err != nil {
+						return err
+					}
+					archive, err = r.ArchiveBytes(t.Context())
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNotFound)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNotFound)
+				if stored, err := objects.ReadContent(t.Context(), string(f.org), object.Reference); err != nil || !bytes.Equal(stored, payload) {
+					t.Fatalf("retained blob = %q, %v", stored, err)
+				}
+				if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
+					used, err := r.CollaborationBytes(t.Context())
+					if err != nil {
+						return err
+					}
+					if used != want {
+						t.Errorf("retained blobs charged %d bytes, want %d", used, want)
+					}
+					stored, err := r.ArchiveBytes(t.Context())
+					if err == nil && stored != archive {
+						t.Errorf("retained archive charged %d bytes, want %d", stored, archive)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			response := postConversationAttachment(t, service, f.base, testHubAdminToken, f.id, "overflow.txt", "text/plain", []byte("overflow"), "overflow")
+			requireNativeStatus(t, response, http.StatusTooManyRequests)
+		})
 	}
 	for _, f := range fixtures {
 		t.Run(string(f.org)+"_delete_downgrade", func(t *testing.T) {
@@ -389,15 +451,10 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 		})
 	}
 	baseUsage := map[tracker.OrganizationID]int64{}
-	baseArchive := map[tracker.OrganizationID]int64{}
 	for _, f := range fixtures {
 		if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			baseUsage[f.org], err = r.CollaborationBytes(t.Context())
-			if err != nil {
-				return err
-			}
-			baseArchive[f.org], err = r.ArchiveBytes(t.Context())
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -423,6 +480,14 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			var upload conversation.AttachmentUpload
 			decodeHubResponse(t, response, &upload)
 			usage(f, int64(len(payload)))
+			var archive int64
+			if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				archive, err = r.ArchiveBytes(t.Context())
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
 			before := objects.publications
 			replay := postConversationAttachment(t, service, f.base, testHubAdminToken, f.id, "example.txt", "text/plain", payload, "upload")
 			requireNativeStatus(t, replay, http.StatusCreated)
@@ -463,7 +528,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, duplicate.Attachment.URL, testHubAdminToken, nil), http.StatusInternalServerError)
 			objects.onIO = nil
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, duplicate.Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
-			usage(f, int64(len(payload)))
+			usage(f, int64(2*len(payload)))
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, upload.Attachment.URL, testHubAdminToken, nil), http.StatusOK)
 			if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
 				n, err := r.ArchiveBytes(t.Context())
@@ -475,10 +540,10 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 				t.Fatal(err)
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
-			usage(f, 0)
+			usage(f, int64(2*len(payload)))
 			if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
 				n, err := r.ArchiveBytes(t.Context())
-				if err == nil && n != baseArchive[f.org] {
+				if err == nil && n != archive {
 					return fmt.Errorf("deleted archive bytes=%d", n)
 				}
 				return err
@@ -488,6 +553,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNotFound)
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNotFound)
 			requireNativeStatus(t, postConversationAttachment(t, service, f.base, testHubAdminToken, f.id, "example.txt", "text/plain", payload, "upload"), http.StatusConflict)
+			baseUsage[f.org] += int64(2 * len(payload))
 		})
 	}
 	for _, f := range fixtures {
@@ -643,7 +709,7 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for index, f := range fixtures {
+	for _, f := range fixtures {
 		t.Run(string(f.org), func(t *testing.T) {
 			service.localOrganization = string(f.org)
 			if err := repository.ReadTenant(t.Context(), f.org, corestore.Background, func(r tenantstore.Reader) error {
@@ -659,14 +725,12 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 			if err := admin.QueryRowContext(t.Context(), `SELECT compressed_bytes FROM archive_usage_counters WHERE organization_id=$1`, f.org).Scan(&archiveBytes); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := admin.ExecContext(t.Context(), `UPDATE archive_usage_counters SET compressed_bytes=0 WHERE organization_id=$1`, f.org); err != nil {
-				t.Fatal(err)
-			}
-			if swept, err := service.conversations.sweepAttachments(t.Context()); err == nil || swept != 0 {
-				t.Fatalf("archive failure sweep=%d err=%v", swept, err)
-			}
-			if _, err := admin.ExecContext(t.Context(), `UPDATE archive_usage_counters SET compressed_bytes=$2 WHERE organization_id=$1`, f.org, archiveBytes); err != nil {
-				t.Fatal(err)
+			writeErr := errors.New("attachment write unavailable")
+			service.config.TenantRepository = &attachmentReadCounter{Repository: repository, beforeWrite: func() error { return writeErr }}
+			swept, err := service.conversations.sweepAttachments(t.Context())
+			service.config.TenantRepository = repository
+			if !errors.Is(err, writeErr) || swept != 0 {
+				t.Fatalf("failed sweep=%d err=%v", swept, err)
 			}
 			if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
 				used, err := r.CollaborationBytes(t.Context())
@@ -695,13 +759,10 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 					t.Fatalf("sweep = %d, %v; want %d", swept, err, want)
 				}
 			}
-			for otherIndex, other := range fixtures {
+			for _, other := range fixtures {
 				if err := repository.ReadTenant(t.Context(), other.org, corestore.Serving, func(r tenantstore.Reader) error {
 					used, err := r.CollaborationBytes(t.Context())
 					want := before[other.org]
-					if otherIndex <= index {
-						want -= int64(len("expired") + len("boundary"))
-					}
 					if err == nil && used != want {
 						return fmt.Errorf("organization %s usage=%d want=%d", other.org, used, want)
 					}
@@ -710,20 +771,29 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
+				stored, err := r.ArchiveBytes(t.Context())
+				if err == nil && stored != archiveBytes {
+					return fmt.Errorf("expiry refunded retained archive bytes: got %d, want %d", stored, archiveBytes)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
 			for _, a := range candidates {
 				if a.fixture.org != f.org {
 					continue
 				}
 				if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
 					stored, err := r.(conversationstore.AttachmentReader).ConversationAttachment(t.Context(), f.project, f.id, a.upload.ID)
-					if err == nil && ((stored.DeletedAt != nil) != (a.expired || a.deleted) || (stored.ContentID == "") != (a.expired || a.deleted)) {
+					if err == nil && ((stored.DeletedAt != nil) != (a.expired || a.deleted) || stored.ContentID == "") {
 						return fmt.Errorf("incorrect attachment retention: %s", a.upload.Name)
 					}
 					var owners int
 					if err == nil {
 						err = admin.QueryRowContext(t.Context(), `SELECT count(*) FROM archive_object_owners WHERE organization_id=$1 AND owner_kind='conversation-attachment' AND owner_id=$2`, f.org, a.upload.ID).Scan(&owners)
 					}
-					if err == nil && (owners == 0) != (a.expired || a.deleted) {
+					if err == nil && owners != 1 {
 						return fmt.Errorf("incorrect archive ownership: %s", a.upload.ID)
 					}
 					return err

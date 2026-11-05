@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"math"
 	"net/http"
 	"time"
 
@@ -251,9 +250,6 @@ func (s *Service) commandDeleteAttachmentPG(ctx context.Context, scope nativeSco
 		if a.MessageID != "" {
 			return conversationForbidden("An attachment that was sent cannot be deleted")
 		}
-		if _, err := w.AdjustCollaborationBytes(ctx, -a.Size, math.MaxInt64); err != nil {
-			return err
-		}
 		return owner.DeleteConversationAttachment(ctx, scope.project, conversationID, id, s.config.now().UTC())
 	})
 	if err != nil {
@@ -368,9 +364,6 @@ func (c *conversationService) sweepAttachmentsPG(ctx context.Context) (int, erro
 			}
 			if a.DeletedAt != nil || a.MessageID != "" || a.ExpiresAt == nil || a.ExpiresAt.After(now) {
 				return nil
-			}
-			if _, err := w.AdjustCollaborationBytes(ctx, -a.Size, math.MaxInt64); err != nil {
-				return err
 			}
 			if err := owner.DeleteConversationAttachment(ctx, a.ProjectID, a.ConversationID, a.ID, now); err != nil {
 				return err

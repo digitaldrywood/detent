@@ -79,11 +79,10 @@ func (s *session) DeleteConversationAttachment(ctx context.Context, project trac
 	if a.DeletedAt != nil || a.MessageID != "" || a.ContentID == "" || at.IsZero() {
 		return corestore.ErrNotFound
 	}
-	object, err := s.ConversationContent(ctx, a.ContentID)
-	if err != nil {
+	if _, err := s.ConversationContent(ctx, a.ContentID); err != nil {
 		return err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE conversation_attachments SET deleted_at=$5,content_attachment_id=NULL WHERE organization_id=$1 AND project_id=$2 AND conversation_id=$3 AND id=$4 AND message_id IS NULL AND deleted_at IS NULL`, s.organization, project, conversationID, id, at)
+	result, err := s.db.ExecContext(ctx, `UPDATE conversation_attachments SET deleted_at=$5 WHERE organization_id=$1 AND project_id=$2 AND conversation_id=$3 AND id=$4 AND message_id IS NULL AND deleted_at IS NULL`, s.organization, project, conversationID, id, at)
 	if err != nil {
 		return mapError(ctx, err)
 	}
@@ -94,7 +93,7 @@ func (s *session) DeleteConversationAttachment(ctx context.Context, project trac
 	if n != 1 {
 		return corestore.ErrNotFound
 	}
-	return s.RemoveArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: s.organization, ArchiveID: object.ArchiveID, Kind: "conversation-attachment", ID: id, CreatedAt: a.CreatedAt})
+	return nil
 }
 
 func (s *session) AttachmentConversation(ctx context.Context, project tracker.ProjectID, id string) (conversationstore.Conversation, error) {
