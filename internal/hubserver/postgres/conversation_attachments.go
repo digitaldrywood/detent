@@ -71,6 +71,12 @@ func (s *session) CreateConversationAttachment(ctx context.Context, a conversati
 	return s.AddArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: s.organization, ArchiveID: archive.ID, Kind: "conversation-attachment", ID: a.ID, CreatedAt: a.CreatedAt})
 }
 
+func (s *session) ConversationAttachmentContentRetained(ctx context.Context, contentID string) (bool, error) {
+	var retained bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM conversation_content_objects c JOIN archive_object_owners o ON o.organization_id=c.organization_id AND o.archive_id=c.archive_id AND o.owner_kind='conversation-attachment' WHERE c.organization_id=$1 AND c.id=$2)`, s.organization, contentID).Scan(&retained)
+	return retained, mapError(ctx, err)
+}
+
 func (s *session) DeleteConversationAttachment(ctx context.Context, project tracker.ProjectID, conversationID, id string, at time.Time) error {
 	a, err := s.ConversationAttachment(ctx, project, conversationID, id)
 	if err != nil {

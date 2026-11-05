@@ -79,10 +79,14 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			service.database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{Base: PlanReference{ID: plan.ID, Version: plan.Version}, WindowSeconds: 60, RetentionWindows: 10}})
 			t.Cleanup(func() { service.database.hostedRuntime.Store(nil) })
 			var want int64
-			for cycle := range 2 {
+			charged := map[string]bool{}
+			for _, cycle := range []int{0, 0, 0, 1} {
 				payload := []byte(fmt.Sprintf("retained payload %d", cycle))
 				upload := uploadConversationAttachmentFile(t, service, f.base, testHubAdminToken, f.id, "retained.txt", "text/plain", payload)
-				want += int64(len(payload))
+				if !charged[string(payload)] {
+					charged[string(payload)] = true
+					want += int64(len(payload))
+				}
 				var object conversationstore.ContentObject
 				var archive int64
 				if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
@@ -523,12 +527,12 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			objects.setFail(false)
 			usage(f, int64(len(payload)))
 			duplicate := uploadConversationAttachmentFile(t, service, f.base, testHubAdminToken, f.id, "duplicate.txt", "text/plain", payload)
-			usage(f, int64(2*len(payload)))
+			usage(f, int64(len(payload)))
 			objects.onIO = func() error { return fmt.Errorf("blob unavailable") }
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, duplicate.Attachment.URL, testHubAdminToken, nil), http.StatusInternalServerError)
 			objects.onIO = nil
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, duplicate.Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
-			usage(f, int64(2*len(payload)))
+			usage(f, int64(len(payload)))
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, upload.Attachment.URL, testHubAdminToken, nil), http.StatusOK)
 			if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
 				n, err := r.ArchiveBytes(t.Context())
@@ -540,7 +544,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 				t.Fatal(err)
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
-			usage(f, int64(2*len(payload)))
+			usage(f, int64(len(payload)))
 			if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
 				n, err := r.ArchiveBytes(t.Context())
 				if err == nil && n != archive {
@@ -553,7 +557,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNotFound)
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNotFound)
 			requireNativeStatus(t, postConversationAttachment(t, service, f.base, testHubAdminToken, f.id, "example.txt", "text/plain", payload, "upload"), http.StatusConflict)
-			baseUsage[f.org] += int64(2 * len(payload))
+			baseUsage[f.org] += int64(len(payload))
 		})
 	}
 	for _, f := range fixtures {
