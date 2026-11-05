@@ -88,7 +88,7 @@ func (s *Service) expireNativeRecords(ctx context.Context, now time.Time) error 
 			if _, err := w.PruneExpiredArtifactReadGrants(ctx, now, artifactstore.MaxReadGrantPruneBatch); err != nil {
 				return err
 			}
-			if _, err := w.PruneExpiredArtifactUploadAuthorizations(ctx, now, artifactstore.MaxUploadAuthorizationPruneBatch); err != nil {
+			if _, err := w.PruneExpiredArtifactUploadAuthorizations(ctx, artifactstore.MaxUploadAuthorizationPruneBatch); err != nil {
 				return err
 			}
 			writer, ok := w.(corestore.DuplicateChallengeWriter)
