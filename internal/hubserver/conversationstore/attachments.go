@@ -20,7 +20,6 @@ type AttachmentWriter interface {
 	BindConversationAttachment(context.Context, tracker.ProjectID, string, string, string, string, time.Time) error
 	LockAttachmentConversation(context.Context, tracker.ProjectID, string) (Conversation, error)
 	AttachmentReader
-	ConversationAttachmentContentRetained(context.Context, string) (bool, error)
 	CreateConversationAttachment(context.Context, Attachment, ContentObject) error
 	DeleteConversationAttachment(context.Context, tracker.ProjectID, string, string, time.Time) error
 }

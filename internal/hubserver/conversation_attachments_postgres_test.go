@@ -131,6 +131,67 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 		})
 	}
 	for _, f := range fixtures {
+		t.Run(string(f.org)+"_duplicate_records_bounded", func(t *testing.T) {
+			payload := []byte("duplicate record " + string(f.org))
+			size := int64(len(payload))
+			var start int64
+			if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				start, err = r.CollaborationBytes(t.Context())
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			state := func(want int64, ids map[string][2]int) {
+				t.Helper()
+				if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
+					used, err := r.CollaborationBytes(t.Context())
+					if err == nil && used != start+want {
+						t.Errorf("duplicate records charged %d bytes, want %d", used-start, want)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				for id, counts := range ids {
+					var rows, owners int
+					if err := admin.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM conversation_attachments WHERE organization_id=$1 AND id=$2),(SELECT count(*) FROM archive_object_owners WHERE organization_id=$1 AND owner_kind='conversation-attachment' AND owner_id=$2)`, f.org, id).Scan(&rows, &owners); err != nil {
+						t.Fatal(err)
+					}
+					if rows != counts[0] || owners != counts[1] {
+						t.Errorf("attachment %s rows=%d owners=%d, want %v", id, rows, owners, counts)
+					}
+				}
+			}
+			var uploads []conversation.AttachmentUpload
+			for range 3 {
+				uploads = append(uploads, uploadConversationAttachmentFile(t, service, f.base, testHubAdminToken, f.id, "duplicate.txt", "text/plain", payload))
+			}
+			state(3*size, map[string][2]int{uploads[0].ID: {1, 1}, uploads[1].ID: {1, 1}, uploads[2].ID: {1, 1}})
+			for _, upload := range uploads {
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, upload.Attachment.URL, testHubAdminToken, nil), http.StatusNotFound)
+			}
+			state(size, map[string][2]int{uploads[0].ID: {0, 0}, uploads[1].ID: {0, 0}, uploads[2].ID: {1, 1}})
+			expired := uploadConversationAttachmentFile(t, service, f.base, testHubAdminToken, f.id, "expired.txt", "text/plain", payload)
+			state(2*size, map[string][2]int{expired.ID: {1, 1}})
+			if _, err := admin.ExecContext(t.Context(), `UPDATE conversation_attachments SET expires_at=$3 WHERE organization_id=$1 AND id=$2`, f.org, expired.ID, time.Now().UTC().Add(-time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			previous := service.localOrganization
+			service.localOrganization = string(f.org)
+			t.Cleanup(func() { service.localOrganization = previous })
+			if swept, err := service.conversations.sweepAttachments(t.Context()); err != nil || swept != 1 {
+				t.Fatalf("sweep = %d, %v; want 1", swept, err)
+			}
+			state(size, map[string][2]int{expired.ID: {0, 0}, uploads[2].ID: {1, 1}})
+			if response := postConversationAttachment(t, service, f.base, testHubAdminToken, f.id, "retained.txt", "text/plain", payload, "retained"); response.Code != http.StatusCreated {
+				t.Fatalf("upload after reclaim status = %d", response.Code)
+			}
+			state(2*size, nil)
+		})
+	}
+	for _, f := range fixtures {
 		t.Run(string(f.org)+"_delete_downgrade", func(t *testing.T) {
 			payload := []byte("current write authority")
 			upload := uploadConversationAttachmentFile(t, service, f.base, testHubAdminToken, f.id, "example.txt", "text/plain", payload)
@@ -527,7 +588,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			objects.setFail(false)
 			usage(f, int64(len(payload)))
 			duplicate := uploadConversationAttachmentFile(t, service, f.base, testHubAdminToken, f.id, "duplicate.txt", "text/plain", payload)
-			usage(f, int64(len(payload)))
+			usage(f, 2*int64(len(payload)))
 			objects.onIO = func() error { return fmt.Errorf("blob unavailable") }
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, duplicate.Attachment.URL, testHubAdminToken, nil), http.StatusInternalServerError)
 			objects.onIO = nil
