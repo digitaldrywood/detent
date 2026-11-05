@@ -9,9 +9,11 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -82,7 +84,7 @@ func (s *Service) postAuditDisposition(c echo.Context) error {
 		if err := json.Unmarshal(raw, &review); err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		if review.SecurityAudit == nil {
+		if review.SecurityAudit == nil || candidate.VersionID == nil || review.SecurityAudit.VersionID != *candidate.VersionID || review.SecurityAudit.SessionID != review.SecurityAudit.Run.ID {
 			continue
 		}
 		audit := review.SecurityAudit.Run
@@ -100,6 +102,12 @@ func (s *Service) postAuditDisposition(c echo.Context) error {
 	}
 	if selected == nil || run.ID < 1 {
 		return s.nativeAPIError(c, nativeNotFound())
+	}
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		return s.authorizeAuditDisposition(ctx, r, scope, *selected, run, false)
+	})
+	if err != nil {
+		return s.nativeAPIError(c, err)
 	}
 	disposition := securityaudit.Disposition{AuditRunID: run.ID, FindingID: request.FindingID, Status: securityaudit.DispositionFalsePositive, Evidence: strings.TrimSpace(request.Evidence), ServiceIdentity: securityaudit.ServiceIdentity(string(scope.project)), RecordedAt: s.config.now().UTC()}
 	raw, err := json.Marshal(disposition)
@@ -120,14 +128,10 @@ func (s *Service) postAuditDisposition(c echo.Context) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
-		change, err := w.Change(ctx, row.ChangeID)
-		if err != nil {
+		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
 			return err
 		}
-		if change.ProjectID != scope.project {
-			return nativeNotFound()
-		}
-		if err := s.authorizeAuditChange(ctx, w, scope, row.ChangeID); err != nil {
+		if err := s.authorizeAuditDisposition(ctx, w, scope, *selected, run, true); err != nil {
 			return err
 		}
 		writer, ok := w.(eventstore.AuditDispositionWriter)
@@ -148,4 +152,58 @@ func (s *Service) postAuditDisposition(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, value)
+}
+
+func (s *Service) authorizeAuditDisposition(ctx context.Context, r tenantstore.Reader, scope nativeScope, evidence eventstore.Evidence, run securityaudit.Run, lock bool) error {
+	if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
+		return err
+	}
+	change, err := r.Change(ctx, evidence.ChangeID)
+	if err != nil {
+		return err
+	}
+	if change.ProjectID != scope.project || evidence.VersionID == nil {
+		return nativeNotFound()
+	}
+	version, err := r.Version(ctx, change.ID, *evidence.VersionID)
+	if err != nil {
+		return err
+	}
+	approved, err := r.ProjectPolicy(ctx, scope.project)
+	if err != nil {
+		return err
+	}
+	if version.PolicyRevisionID != approved.PolicyID || version.Repository != run.Repository || version.BaseSHA != run.BaseSHA || version.HeadSHA != run.HeadSHA {
+		return tracker.ErrStaleFencingToken
+	}
+	if scope.credential.Runner.RunnerID == "" {
+		if scope.credential.Scope != apiScopeAdmin && scope.credential.HostedRole != "owner" && scope.credential.HostedRole != "admin" {
+			return accessstore.ErrDenied
+		}
+		scope.requireHostedAdmin = true
+		return s.authorizeAccessScope(ctx, r, scope, true)
+	}
+	reader, ok := r.(runnersession.Reader)
+	if !ok {
+		return nativeRunEventStorageUnavailable()
+	}
+	session, err := reader.RunnerSession(ctx, scope.project, run.ID)
+	if err != nil {
+		return err
+	}
+	if session.Role != "security_audit" || session.IssueID != string(change.WorkItemID) || session.PolicyID != approved.PolicyID {
+		return accessstore.ErrDenied
+	}
+	attempt, err := r.Attempt(ctx, session.AttemptID)
+	if err != nil {
+		return err
+	}
+	current, _, err := s.runnerSessionFence(ctx, r, scope, runnersession.Mutation{LeaseID: tracker.LeaseID(attempt.LeaseID), FencingToken: tracker.FencingToken(attempt.FencingToken)}, session.IssueID, lock)
+	if err != nil {
+		return err
+	}
+	if current.ID != session.AttemptID {
+		return tracker.ErrStaleFencingToken
+	}
+	return nil
 }

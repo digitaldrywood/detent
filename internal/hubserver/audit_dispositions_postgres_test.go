@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/validation"
@@ -27,6 +28,33 @@ import (
 
 func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 	f := newRunnerPGFixture(t, func(p *policy.Descriptor) { p.Gates.SecurityAudit = true })
+	for _, role := range []string{"operator", "admin"} {
+		token := "example-disposition-" + role
+		credential := apiCredential{ID: "disposition_" + role, Hash: apikey.HashToken(token), Scope: apiScope(role)}
+		hostedRole, permission := "member", "write"
+		if role == "admin" {
+			hostedRole, permission = "admin", "admin"
+		}
+		membership, err := f.service.config.Hosted.Provider.CreateMembership(t.Context(), credential.ID, "provider_org_startup", hostedRole)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+			now := time.Now().UTC()
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_startup", ID: credential.ID, Hash: credential.Hash, Fingerprint: tokenFingerprint(credential.Hash), Name: "Example disposition " + role, Scope: "operator", NativeOnly: true, Kind: "personal", UserID: credential.ID, MembershipID: membership.ID, KeyScope: permission, ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: "org_startup", UserID: credential.ID, Email: role + "@example.test", MembershipID: membership.ID, Role: hostedRole, Active: true, PrincipalID: credential.ID, CreatedAt: now, UpdatedAt: now}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: "org_startup", UserID: credential.ID, ProjectID: "prj_runner", CanWrite: true}); err != nil {
+				return err
+			}
+			return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_startup", TokenID: credential.ID, ProjectID: "prj_runner"})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for index, lease := range f.leases {
 		native, ctx := f.client(t, index)
 		now := time.Now().UTC().Truncate(time.Microsecond)
@@ -145,6 +173,21 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		}
 		beforeDisposition := reviewRevision()
 		command := securityaudit.DispositionCommand{RequestID: "audit-replay", Key: key, FindingID: "finding_example", Evidence: "The exact source requires authenticated access.", Confirm: true}
+		for _, actor := range []struct {
+			name, token string
+			status      int
+		}{
+			{"unrelated events-capable runner", f.tokens[1-index], http.StatusConflict},
+			{"project writer", "example-disposition-operator", http.StatusForbidden},
+		} {
+			otherActor := performHubAPIRequest(t, f.service, http.MethodPost, native.Scope()+"/security-audits/dispositions", actor.token, command)
+			if otherActor.Code != actor.status {
+				t.Errorf("%s disposition status = %d, want %d: %s", actor.name, otherActor.Code, actor.status, otherActor.Body.String())
+			}
+		}
+		if got := reviewRevision(); got != beforeDisposition {
+			t.Fatal("unauthorized disposition changed review evidence")
+		}
 		disposition, err := native.RecordAuditDisposition(ctx, command)
 		if err != nil || disposition.ID < 1 || disposition.AuditRunID != sessionID {
 			t.Fatalf("Hub disposition: %+v %v", disposition, err)
@@ -261,6 +304,48 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		if other.Code == http.StatusOK {
 			t.Fatal("another actor inherited committed receipt")
 		}
+		if index == 1 {
+			review.SecurityAudit.Run = run
+			review.CreatedAt = now.Add(2 * time.Second)
+			reviewRaw, err = json.Marshal(review)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reviewRow, err = content.PrepareEvidence(ctx, eventstore.Evidence{OrganizationID: "org_startup", ChangeID: changeID, VersionID: &versionID, Kind: "review", CreatedAt: review.CreatedAt}, reviewRaw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+				_, err := w.AppendEvidence(ctx, reviewRow)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			adminCommand := command
+			adminCommand.RequestID = "admin-disposition"
+			response := performHubAPIRequest(t, f.service, http.MethodPost, native.Scope()+"/security-audits/dispositions", "example-disposition-admin", adminCommand)
+			requireNativeStatus(t, response, http.StatusOK)
+			nextPolicy, err := content.PrepareProjectPolicy(ctx, "org_startup", hubTestPolicy().WithID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			nextPolicy.ProjectID, nextPolicy.ApprovedAt, nextPolicy.ApprovedBy = "prj_runner", now, "example_admin"
+			if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+				return w.ApproveProjectPolicy(ctx, nextPolicy, f.policy.PolicyID)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			priorRevision := reviewRevision()
+			for _, token := range []string{f.tokens[index], "example-disposition-admin"} {
+				stale := command
+				stale.RequestID = "stale-policy"
+				response := performHubAPIRequest(t, f.service, http.MethodPost, native.Scope()+"/security-audits/dispositions", token, stale)
+				requireNativeStatus(t, response, http.StatusConflict)
+			}
+			if reviewRevision() != priorRevision {
+				t.Fatal("stale policy disposition changed review evidence")
+			}
+		}
 		changed := command
 		changed.Evidence = "Changed payload"
 		response := performHubAPIRequest(t, f.service, http.MethodPost, native.Scope()+"/security-audits/dispositions", f.tokens[index], changed)
@@ -276,6 +361,11 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		}
 		if _, err := restarted.RecordAuditDisposition(restartedCtx, command); err == nil {
 			t.Fatal("revoked current grant replayed a receipt")
+		}
+		if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: "org_startup", TokenID: scope.credential.ID, ProjectID: "prj_runner"})
+		}); err != nil {
+			t.Fatal(err)
 		}
 
 	}
