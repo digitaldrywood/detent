@@ -137,13 +137,17 @@ func (q *Queries) ArtifactReferenceInsert(ctx context.Context, arg ArtifactRefer
 const artifactReferenceListLatest = `-- name: ArtifactReferenceListLatest :many
 SELECT organization_id,project_id,work_item_id,service_id,artifact_id,revision,manifest_id,schema_version,run_id,attempt_id,version_id,sha256,kind,state,availability,bytes,objects,expires_at,observed_at
 FROM (
-    SELECT r.organization_id, r.project_id, r.work_item_id, r.service_id, r.artifact_id, r.revision, r.manifest_id, r.schema_version, r.run_id, r.attempt_id, r.version_id, r.sha256, r.kind, r.state, r.availability, r.bytes, r.objects, r.expires_at, r.observed_at,row_number() OVER (PARTITION BY r.artifact_id ORDER BY r.revision DESC) AS artifact_revision_rank
-    FROM artifact_references r
-    WHERE r.organization_id=$1 AND r.project_id=$2 AND r.work_item_id=$3
-) latest
-WHERE artifact_revision_rank=1
+    SELECT latest.organization_id, latest.project_id, latest.work_item_id, latest.service_id, latest.artifact_id, latest.revision, latest.manifest_id, latest.schema_version, latest.run_id, latest.attempt_id, latest.version_id, latest.sha256, latest.kind, latest.state, latest.availability, latest.bytes, latest.objects, latest.expires_at, latest.observed_at, latest.artifact_revision_rank,row_number() OVER (PARTITION BY latest.service_id ORDER BY latest.artifact_id) AS service_rank
+    FROM (
+        SELECT r.organization_id, r.project_id, r.work_item_id, r.service_id, r.artifact_id, r.revision, r.manifest_id, r.schema_version, r.run_id, r.attempt_id, r.version_id, r.sha256, r.kind, r.state, r.availability, r.bytes, r.objects, r.expires_at, r.observed_at,row_number() OVER (PARTITION BY r.artifact_id ORDER BY r.revision DESC) AS artifact_revision_rank
+        FROM artifact_references r
+        WHERE r.organization_id=$1 AND r.project_id=$2 AND r.work_item_id=$3
+    ) latest
+    WHERE latest.artifact_revision_rank=1
+    ORDER BY service_rank, latest.artifact_id
+    LIMIT $4
+) fair
 ORDER BY artifact_id
-LIMIT $4
 `
 
 type ArtifactReferenceListLatestParams struct {

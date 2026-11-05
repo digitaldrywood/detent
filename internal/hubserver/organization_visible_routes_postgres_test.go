@@ -334,6 +334,27 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		floodService, quietService := body["service_id"].(string), "service_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		quietArtifact := "artifact_ffffffffffffffffffffffffffffffff"
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO artifact_services(organization_id,project_id,id,origin,binding_mode,hosted_opt_in,publisher_token_id) VALUES($1,'project_first',$2,'https://quiet.example.test','customer',false,'credential_publisher')`, org, quietService); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO artifact_references(organization_id,project_id,work_item_id,service_id,artifact_id,revision,manifest_id,schema_version,sha256,kind,state,availability,bytes,objects,expires_at,observed_at) SELECT $1,'project_first',$2,$3,'artifact_'||lpad(n::text,32,'0'),1,'manifest_'||$1||'_flood_'||n,1,$4,'log','complete','available',12,1,$5::timestamptz,$6::timestamptz FROM generate_series(1,64) n UNION ALL SELECT $1,'project_first',$2,$7,$8,1,'manifest_'||$1||'_quiet',1,$4,'log','complete','available',12,1,$5::timestamptz,$6::timestamptz`, org, item, floodService, artifact.Digest([]byte(org)), now.Add(time.Hour), now, quietService, quietArtifact); err != nil {
+			t.Fatal(err)
+		}
+		floodList := request(http.MethodGet, strings.TrimSuffix(accessPath, "/"+artifactID+"/access"), nil)
+		requireNativeStatus(t, floodList, http.StatusOK)
+		var refs []artifact.Reference
+		if err := json.Unmarshal(floodList.Body.Bytes(), &refs); err != nil {
+			t.Fatal(err)
+		}
+		quietListed := slices.ContainsFunc(refs, func(ref artifact.Reference) bool {
+			return ref.ServiceID == quietService && ref.ArtifactID == quietArtifact
+		})
+		if len(refs) != 64 || !quietListed || !slices.IsSortedFunc(refs, func(a, b artifact.Reference) int { return strings.Compare(a.ArtifactID, b.ArtifactID) }) {
+			t.Fatalf("%s flooded artifact list returned %d references, quiet service listed=%t", org, len(refs), quietListed)
+		}
+
 		if err := repository.WriteTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(w tenantstore.Writer) error {
 			return w.DeleteAccessTokenGrant(t.Context(), "credential_owner", "project_first")
 		}); err != nil {
