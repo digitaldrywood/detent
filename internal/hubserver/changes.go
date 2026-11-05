@@ -15,6 +15,9 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -34,37 +37,67 @@ func (s *Service) hostedChangeCheckPrincipal(c echo.Context, credential apiCrede
 		return false
 	}
 	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
-	return s.requireHostedChangeCheckPrincipal(ctx, s.database.reader, scope) == nil
+	_, err := s.requireHostedChangeCheckPrincipal(ctx, scope)
+	return err == nil
 }
 
-func (s *Service) requireHostedChangeCheckPrincipal(ctx context.Context, query nativeQueryer, scope nativeScope) error {
-	credential := scope.credential
-	if credential.Scope != apiScopeOperator || credential.Hosted != nil || credential.Runner.RunnerID != "" || string(scope.organization) != s.config.Hosted.OrganizationID {
-		return nativeNotFound()
+func (s *Service) requireHostedChangeCheckPrincipal(ctx context.Context, scope nativeScope) (eventstore.ReviewPolicy, error) {
+	var row eventstore.ReviewPolicy
+	if s.config.TenantRepository == nil {
+		return row, nativeNotFound()
 	}
-	var created string
-	var expires sql.NullString
-	err := query.QueryRowContext(ctx, `SELECT t.created_at, t.expires_at FROM api_tokens t
-JOIN token_grants g ON g.token_id = t.id
-WHERE t.id = ? AND t.token_hash = ? AND t.scope = 'operator' AND t.revoked_at IS NULL
-AND g.organization_id = ? AND g.project_id = ?
-AND NOT EXISTS (SELECT 1 FROM runner_identities r WHERE r.token_id = t.id)`, credential.ID, credential.Hash, scope.organization, scope.project).Scan(&created, &expires)
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		row, err = r.ReviewPolicy(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		return s.recheckHostedChangeCheckPrincipal(ctx, r, scope, row)
+	})
 	if err != nil {
-		return err
+		return row, err
 	}
-	if expires.Valid && !runnerTimeValid(s.config.now(), created, expires.String) {
-		return nativeNotFound()
-	}
-	rules, err := readChangePolicy(ctx, query, scope)
+	rules, err := eventstore.NewContent(s.runDetailStore()).ReviewPolicy(ctx, row)
 	if err != nil {
-		return err
+		return row, err
 	}
 	for _, check := range rules.RequiredChecks {
-		if check.PrincipalID == credential.ID && check.Source == "independent" {
-			return nil
+		if check.PrincipalID == scope.credential.ID && check.Source == "independent" {
+			return row, nil
 		}
 	}
-	return nativeNotFound()
+	return row, nativeNotFound()
+}
+
+func (s *Service) recheckHostedChangeCheckPrincipal(ctx context.Context, r tenantstore.Reader, scope nativeScope, approved eventstore.ReviewPolicy) error {
+	credential := scope.credential
+	if s.config.Hosted == nil || credential.Scope != apiScopeOperator || credential.Hosted != nil || credential.Runner.RunnerID != "" || string(scope.organization) != s.config.Hosted.OrganizationID {
+		return nativeNotFound()
+	}
+	token, err := r.AccessCredential(ctx, credential.ID)
+	if err != nil {
+		return err
+	}
+	if token.Scope != string(apiScopeOperator) || !token.Valid(credential.Hash, s.config.now()) {
+		return nativeNotFound()
+	}
+	if _, err := r.AccessTokenGrant(ctx, credential.ID, scope.project); err != nil {
+		return err
+	}
+	if _, err := r.RunnerIdentityByCredential(ctx, credential.ID); !errors.Is(err, corestore.ErrNotFound) {
+		if err != nil {
+			return err
+		}
+		return nativeNotFound()
+	}
+	current, err := r.ReviewPolicy(ctx, scope.project)
+	if err != nil {
+		return err
+	}
+	if current != approved {
+		return nativeNotFound()
+	}
+	return nil
 }
 
 func (s *Service) registerChangeRoutes(e *echo.Echo) {

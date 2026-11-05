@@ -381,7 +381,44 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 		return s.nativeAPIError(c, err)
 	}
 	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
-	replay, found, err := s.changeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash)
+	var approved eventstore.ReviewPolicy
+	hostedCheck := s.config.Hosted != nil && scope.credential.Hosted == nil && scope.credential.Runner.RunnerID == ""
+	if hostedCheck {
+		approved, err = s.requireHostedChangeCheckPrincipal(ctx, scope)
+		if err != nil {
+			return s.nativeAPIError(c, projectRecordError(err))
+		}
+	}
+	readReceipt := func() (json.RawMessage, bool, error) {
+		if !hostedCheck {
+			return s.changeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash)
+		}
+		var receipt eventstore.Receipt
+		err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+				return err
+			}
+			if err := s.recheckHostedChangeCheckPrincipal(ctx, w, scope, approved); err != nil {
+				return err
+			}
+			var err error
+			receipt, err = w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
+			return err
+		})
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, projectRecordError(err)
+		}
+		if receipt.RequestHash != hash {
+			return nil, false, nativeConflict(0)
+		}
+		value, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, receipt)
+		return value, true, err
+	}
+
+	replay, found, err := readReceipt()
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -403,9 +440,9 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 	if err := changerequest.ValidateResult(version, request.ChangeCheckResult, scope.credential.ID, scope.credential.Scope == apiScopeWorker); err != nil {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
 	}
-	now, err := s.database.currentTime()
-	if err != nil {
-		return s.nativeAPIError(c, err)
+	now := s.config.now().UTC()
+	if now.IsZero() {
+		return s.nativeAPIError(c, ErrInvalidClock)
 	}
 	if request.CompletedAt.After(now) {
 		return s.nativeAPIError(c, nativePublicInvalid("CI completion time cannot be in the future"))
@@ -475,6 +512,11 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
 				return err
 			}
+			if hostedCheck {
+				if err := s.recheckHostedChangeCheckPrincipal(ctx, w, scope, approved); err != nil {
+					return err
+				}
+			}
 			if prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
 				if prior.RequestHash != hash {
 					return nativeConflict(change.Revision)
@@ -495,7 +537,7 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 			return err
 		})
 		if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) {
-			replay, found, readErr := s.changeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash)
+			replay, found, readErr := readReceipt()
 			if readErr != nil {
 				return s.nativeAPIError(c, readErr)
 			}

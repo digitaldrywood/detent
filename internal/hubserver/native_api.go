@@ -708,7 +708,7 @@ func (s *Service) commitNativeMutation(ctx context.Context, scope nativeScope, o
 		}
 	}
 	if s.config.Hosted != nil && scope.credential.Hosted == nil && scope.credential.Runner.RunnerID == "" && options.CheckPrincipal {
-		if err := s.requireHostedChangeCheckPrincipal(ctx, tx, scope); err != nil {
+		if _, err := s.requireHostedChangeCheckPrincipal(ctx, scope); err != nil {
 			return nil, err
 		}
 	}
