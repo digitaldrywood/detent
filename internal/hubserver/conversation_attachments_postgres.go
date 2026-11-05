@@ -159,22 +159,12 @@ func (s *Service) commandUploadAttachmentPG(ctx context.Context, scope nativeSco
 		if err != nil {
 			return err
 		}
-		usage, err := w.AdjustCollaborationBytes(ctx, 0, limit)
+		usage, err := w.AdjustCollaborationBytes(ctx, a.Size, limit)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return attachmentAccountingUnavailable()
 		}
 		if err != nil {
 			return err
-		}
-		retained, err := owner.ConversationAttachmentContentRetained(ctx, a.ContentID)
-		if err != nil {
-			return err
-		}
-		if !retained {
-			usage, err = w.AdjustCollaborationBytes(ctx, a.Size, limit)
-			if err != nil {
-				return err
-			}
 		}
 		if !usage.Allowed {
 			return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}

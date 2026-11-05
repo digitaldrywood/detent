@@ -503,6 +503,7 @@ type ConversationAttachment struct {
 	CreatedAt           time.Time
 	ExpiresAt           *time.Time
 	DeletedAt           *time.Time
+	CollaborationBytes  int64
 }
 
 type ConversationAudienceEvent struct {

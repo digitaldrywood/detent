@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"errors"
+	"math"
 	"time"
 
 	"github.com/lib/pq"
@@ -64,17 +66,11 @@ func (s *session) CreateConversationAttachment(ctx context.Context, a conversati
 	if stored.Reference != ref || stored.ArchiveID != archive.ID {
 		return corestore.ErrUniqueViolation
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO conversation_attachments (organization_id,project_id,conversation_id,id,principal_id,name,mime,size,artifact_ref,content_attachment_id,created_at,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, s.organization, a.ProjectID, a.ConversationID, a.ID, a.PrincipalID, a.Name, a.MIME, a.Size, a.ArtifactRef, a.ContentID, a.CreatedAt, a.ExpiresAt)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO conversation_attachments (organization_id,project_id,conversation_id,id,principal_id,name,mime,size,artifact_ref,content_attachment_id,created_at,expires_at,collaboration_bytes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$8)`, s.organization, a.ProjectID, a.ConversationID, a.ID, a.PrincipalID, a.Name, a.MIME, a.Size, a.ArtifactRef, a.ContentID, a.CreatedAt, a.ExpiresAt)
 	if err != nil {
 		return mapError(ctx, err)
 	}
 	return s.AddArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: s.organization, ArchiveID: archive.ID, Kind: "conversation-attachment", ID: a.ID, CreatedAt: a.CreatedAt})
-}
-
-func (s *session) ConversationAttachmentContentRetained(ctx context.Context, contentID string) (bool, error) {
-	var retained bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM conversation_content_objects c JOIN archive_object_owners o ON o.organization_id=c.organization_id AND o.archive_id=c.archive_id AND o.owner_kind='conversation-attachment' WHERE c.organization_id=$1 AND c.id=$2)`, s.organization, contentID).Scan(&retained)
-	return retained, mapError(ctx, err)
 }
 
 func (s *session) DeleteConversationAttachment(ctx context.Context, project tracker.ProjectID, conversationID, id string, at time.Time) error {
@@ -85,8 +81,25 @@ func (s *session) DeleteConversationAttachment(ctx context.Context, project trac
 	if a.DeletedAt != nil || a.MessageID != "" || a.ContentID == "" || at.IsZero() {
 		return corestore.ErrNotFound
 	}
-	if _, err := s.ConversationContent(ctx, a.ContentID); err != nil {
+	object, err := s.ConversationContent(ctx, a.ContentID)
+	if err != nil {
 		return err
+	}
+	_, err = s.AdjustCollaborationBytes(ctx, 0, math.MaxInt64)
+	accounted := err == nil
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		return err
+	}
+	if _, err := s.ArchiveBytes(ctx); err != nil {
+		return err
+	}
+	var shared bool
+	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM archive_object_owners o JOIN conversation_attachments c ON c.organization_id=o.organization_id AND c.id=o.owner_id WHERE o.organization_id=x.organization_id AND o.archive_id=x.id AND o.owner_kind='conversation-attachment' AND o.owner_id<>$3 AND c.collaboration_bytes>0) FROM archive_objects x WHERE x.organization_id=$1 AND x.id=$2 FOR UPDATE OF x`, s.organization, object.ArchiveID, id).Scan(&shared)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if accounted && shared {
+		return s.reclaimSharedConversationAttachment(ctx, project, conversationID, id, object.ArchiveID)
 	}
 	result, err := s.db.ExecContext(ctx, `UPDATE conversation_attachments SET deleted_at=$5 WHERE organization_id=$1 AND project_id=$2 AND conversation_id=$3 AND id=$4 AND message_id IS NULL AND deleted_at IS NULL`, s.organization, project, conversationID, id, at)
 	if err != nil {
@@ -100,6 +113,22 @@ func (s *session) DeleteConversationAttachment(ctx context.Context, project trac
 		return corestore.ErrNotFound
 	}
 	return nil
+}
+
+func (s *session) reclaimSharedConversationAttachment(ctx context.Context, project tracker.ProjectID, conversationID, id, archiveID string) error {
+	var charged int64
+	err := s.db.QueryRowContext(ctx, `DELETE FROM conversation_attachments WHERE organization_id=$1 AND project_id=$2 AND conversation_id=$3 AND id=$4 AND message_id IS NULL AND deleted_at IS NULL RETURNING collaboration_bytes`, s.organization, project, conversationID, id).Scan(&charged)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if err := s.RemoveArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: s.organization, ArchiveID: archiveID, Kind: "conversation-attachment", ID: id}); err != nil {
+		return err
+	}
+	if charged <= 0 {
+		return nil
+	}
+	_, err = s.AdjustCollaborationBytes(ctx, -charged, math.MaxInt64)
+	return err
 }
 
 func (s *session) AttachmentConversation(ctx context.Context, project tracker.ProjectID, id string) (conversationstore.Conversation, error) {
