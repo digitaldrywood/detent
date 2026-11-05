@@ -16,10 +16,14 @@ import (
 // Discovery, approval and annotations must not retain permission after the
 // application's current authority changes, or reach a read on denial.
 func TestCurrentAuthorityExecution(t *testing.T) {
+	lookupFailure := errors.New("secret lookup detail")
+	projectFailure := errors.New("secret project")
 	for _, test := range []struct {
 		name                string
 		change              func(*Connection, *Authority)
 		denied              bool
+		cause               error
+		stage               string
 		message             string
 		providerUnavailable bool
 	}{
@@ -34,11 +38,11 @@ func TestCurrentAuthorityExecution(t *testing.T) {
 				return fmt.Errorf("private provider detail: %w", ErrProviderUnavailable)
 			}
 		}},
-		{name: "revoked credential", denied: true, change: func(c *Connection, a *Authority) {
-			c.Resolve = func(context.Context) (Authority, error) { return Authority{}, errors.New("secret lookup detail") }
+		{name: "revoked credential", denied: true, cause: lookupFailure, stage: "resolve", change: func(c *Connection, a *Authority) {
+			c.Resolve = func(context.Context) (Authority, error) { return Authority{}, lookupFailure }
 		}},
-		{name: "removed membership or downgraded grant", denied: true, change: func(c *Connection, a *Authority) {
-			a.Check = func(context.Context, Requirement) error { return errors.New("secret project") }
+		{name: "removed membership or downgraded grant", denied: true, cause: projectFailure, stage: "check", change: func(c *Connection, a *Authority) {
+			a.Check = func(context.Context, Requirement) error { return projectFailure }
 		}},
 		{name: "named project denial", denied: true, message: "project missing", change: func(c *Connection, a *Authority) {
 			a.Check = func(context.Context, Requirement) error { return fmt.Errorf("%w: project missing", ErrAccessDenied) }
@@ -75,6 +79,12 @@ func TestCurrentAuthorityExecution(t *testing.T) {
 				}
 				if !errors.Is(err, wantError) || reads != 0 {
 					t.Fatalf("err=%v reads=%d", err, reads)
+				}
+				if test.cause != nil {
+					var diagnostic *AuthorizationError
+					if !errors.As(err, &diagnostic) || diagnostic.Cause != test.cause || diagnostic.Stage != test.stage {
+						t.Fatalf("authorization lost original cause or stage: %v", err)
+					}
 				}
 				if test.message != "" && !strings.Contains(err.Error(), test.message) {
 					t.Fatalf("denial detail lost: %v", err)

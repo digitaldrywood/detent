@@ -73,7 +73,29 @@ func (e nativeOperatorExecutor) workflowProposal(ctx context.Context, scope nati
 	return action, nil
 }
 
-func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
+func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call operatortool.Call) (result operatortool.Result, resultErr error) {
+	stage := "workflow_authority"
+	defer func() {
+		if !errors.Is(resultErr, operatortool.ErrAccessDenied) {
+			return
+		}
+		var request struct {
+			ProjectID string `json:"project_id"`
+		}
+		if json.Unmarshal(call.Arguments, &request) != nil {
+			return
+		}
+		identity := operatortool.ConnectionIdentity(ctx)
+		diagnostic := operatortool.AuthorizationError{Stage: stage, Cause: resultErr, PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: request.ProjectID}
+		var denied *operatortool.AuthorizationError
+		if errors.As(resultErr, &denied) {
+			diagnostic.Cause = denied.Cause
+			if denied.Stage != "workflow" {
+				diagnostic.Stage = denied.Stage
+			}
+		}
+		resultErr = &diagnostic
+	}()
 	ctx, scope, err := e.workflowAuthority(ctx, call.Arguments)
 	if err != nil {
 		return operatortool.Result{}, err
@@ -82,6 +104,7 @@ func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call ope
 	if err != nil {
 		return operatortool.Result{}, err
 	}
+	stage = "workflow_item"
 	issue, err := e.service.resolveWorkflowItem(ctx, scope, request.Identifier)
 	if err != nil {
 		return operatortool.Result{}, workflowSafeError(err)
@@ -104,6 +127,7 @@ func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call ope
 	defer func() { e.service.hubChangeAudit(ctx, action.Mutation, outcome) }()
 	mutationContext := mutation.WithContext(ctx, action.Mutation)
 	transition := tracker.Transition{Mutation: tracker.MutationForContext(mutationContext, request.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.TargetState, Reason: "user_requested", ReasonDetail: request.ReasonDetail}
+	stage = "workflow_replay"
 	replay, found, err := e.service.workflowCommandReplay(mutationContext, scope, request.Identifier, transition)
 	if err != nil {
 		return operatortool.Result{}, workflowSafeError(err)
@@ -112,6 +136,7 @@ func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call ope
 		outcome = "replayed"
 		return e.workflowReceipt(replay)
 	}
+	stage = "workflow_proposal"
 	proposal, err := e.workflowProposal(ctx, scope, request)
 	if err != nil {
 		_, err = workflowExecutionFailure(err)
@@ -119,6 +144,7 @@ func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call ope
 	}
 	proposal.RequestID, proposal.Arguments, proposal.Mutation = action.RequestID, action.Arguments, action.Mutation
 	action = proposal
+	stage = "workflow_transition"
 	execution, err := e.executeWorkflowTransition(ctx, action)
 	if err != nil {
 		return operatortool.Result{}, err

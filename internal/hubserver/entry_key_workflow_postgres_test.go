@@ -42,8 +42,9 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 	key := hostedSharedKey(64)
 	clock := time.Now().UTC().Truncate(time.Microsecond)
 	initialClock := clock
-	states := humanWorkflowFixtureStates()
+	states := append(humanWorkflowFixtureStates(), tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo", "Cancelled"}})
 	states = append(states, tracker.NativeState{Name: "Triage", Transitions: []string{"Todo", "Cancelled"}}, tracker.NativeState{Name: "Review", Transitions: []string{"Merging", "Rework", "Cancelled"}}, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Rework"}})
+	states = nativeTriageStates(states)
 	descriptor := hubTestPolicy()
 	descriptor.Workflow = &policy.Workflow{Source: "example-workflow.yaml", Revision: descriptor.SourceRevision, States: states}
 	descriptor = descriptor.WithID()
@@ -95,7 +96,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 			}
 			for _, user := range []string{"owner", "admin", "member", "reporter", "reader"} {
 				id := "credential_" + user
-				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: id, Name: "Example " + user, Hash: apikey.HashToken(string(organization) + user), Scope: "operator", NativeOnly: true, CreatedAt: clock, UpdatedAt: clock, UserID: user, MembershipID: "membership_" + user, KeyScope: string(permissions[user]), ProjectAccess: "all", Kind: "personal"}); err != nil {
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: id, Name: "Example " + user, Hash: apikey.HashToken(string(organization) + user), Scope: "operator", NativeOnly: true, CreatedAt: clock, UpdatedAt: clock, UserID: user, MembershipID: "membership_" + user, ProjectAccess: "selected", Kind: "personal"}); err != nil {
 					return err
 				}
 				if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: user, Email: user + "@example.test", MembershipID: "membership_" + user, Role: roles[user], Active: true, PrincipalID: id, CreatedAt: clock, UpdatedAt: clock}); err != nil {
@@ -202,7 +203,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		return result.Data
 	}
 	cached := map[string]tracker.NativeIssue{}
-	for _, input := range []struct{ user, id, state string }{{"owner", "completed", "Done"}, {"owner", "admin", "Done"}, {"owner", "member", "Done"}, {"reporter", "reporter_own", "Triage"}, {"reporter", "reporter_fresh_race", "Triage"}, {"reporter", "reporter_replay_race", "Triage"}} {
+	for _, input := range []struct{ user, id, state string }{{"owner", "backlog", "Backlog"}, {"owner", "completed", "Done"}, {"owner", "admin", "Done"}, {"owner", "member", "Done"}, {"reporter", "reporter_own", "Triage"}, {"reporter", "reporter_fresh_race", "Triage"}, {"reporter", "reporter_replay_race", "Triage"}} {
 		cached[input.id] = create(input.user, input.id, input.state)
 	}
 	create = func(user, id, state string) tracker.NativeIssue {
@@ -228,6 +229,13 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		}
 	}
 	configure("org_startup")
+	t.Run("owner cancels backlog with selected principal grants", func(t *testing.T) {
+		item := create("owner", "backlog", "Backlog")
+		got := decode(call("owner", move(item, "cancel_backlog", "Cancelled")))
+		if got.State != "Cancelled" || got.Revision != item.Revision+1 {
+			t.Fatal("owner could not cancel backlog item")
+		}
+	})
 	for _, user := range []string{"owner", "admin", "member", "reporter", "reader"} {
 		t.Run("catalog_"+user, func(t *testing.T) {
 			response := request(user, "/internal/v1/keys/catalog", map[string]any{})
@@ -1664,8 +1672,15 @@ func TestWorkflowSafeError(t *testing.T) {
 		{"storage failure", errors.New("example storage unavailable"), operatortool.ErrServiceUnavailable},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := workflowSafeError(test.input); !errors.Is(got, test.want) {
+			got := workflowSafeError(test.input)
+			if !errors.Is(got, test.want) {
 				t.Fatalf("classification=%v, want %v", got, test.want)
+			}
+			if test.want == operatortool.ErrAccessDenied {
+				var denied *operatortool.AuthorizationError
+				if !errors.As(got, &denied) || denied.Cause != test.input {
+					t.Fatal("workflow refusal lost its cause")
+				}
 			}
 		})
 	}
