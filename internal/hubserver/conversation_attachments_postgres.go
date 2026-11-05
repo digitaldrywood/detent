@@ -326,3 +326,64 @@ func loadCommandAttachmentsPG(ctx context.Context, reader tenantstore.Reader, sc
 	}
 	return records, nil
 }
+
+func (c *conversationService) sweepAttachmentsPG(ctx context.Context) (int, error) {
+	organization, err := c.lifecycleOrganization()
+	if err != nil {
+		return 0, err
+	}
+	now := c.server.config.now().UTC()
+	var candidates []conversationstore.Attachment
+	if err := c.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
+		owner, ok := r.(conversationstore.AttachmentReader)
+		if !ok {
+			return conversationContentUnavailable()
+		}
+		var err error
+		candidates, err = owner.ExpiredConversationAttachments(ctx, now, conversationAttachmentSweepBatch)
+		return err
+	}); err != nil {
+		return 0, err
+	}
+	swept := 0
+	for _, candidate := range candidates {
+		removed := false
+		err := c.server.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+			owner, ok := w.(conversationstore.AttachmentWriter)
+			if !ok {
+				return conversationContentUnavailable()
+			}
+			if _, err := owner.LockAttachmentConversation(ctx, candidate.ProjectID, candidate.ConversationID); err != nil {
+				if errors.Is(err, corestore.ErrNotFound) {
+					return nil
+				}
+				return err
+			}
+			a, err := owner.ConversationAttachment(ctx, candidate.ProjectID, candidate.ConversationID, candidate.ID)
+			if errors.Is(err, corestore.ErrNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if a.DeletedAt != nil || a.MessageID != "" || a.ExpiresAt == nil || a.ExpiresAt.After(now) {
+				return nil
+			}
+			if _, err := w.AdjustCollaborationBytes(ctx, -a.Size, math.MaxInt64); err != nil {
+				return err
+			}
+			if err := owner.DeleteConversationAttachment(ctx, a.ProjectID, a.ConversationID, a.ID, now); err != nil {
+				return err
+			}
+			removed = true
+			return nil
+		})
+		if err != nil {
+			return swept, err
+		}
+		if removed {
+			swept++
+		}
+	}
+	return swept, nil
+}
