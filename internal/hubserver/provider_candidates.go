@@ -177,6 +177,13 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 			needsSharedChangePolicy := false
 			for index, row := range rows {
 				candidate := candidates[index]
+				if errors.Is(row.Err, corestore.ErrNotFound) {
+					s.reportIncompletePreviewCandidate(ctx, scope, candidate, row.Err)
+					continue
+				}
+				if row.Err != nil {
+					return row.Err
+				}
 				if row.Item.Revision != candidate.Revision || row.Item.Archived {
 					continue
 				}
@@ -192,7 +199,8 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 				}
 				if row.ChangeVersion != nil {
 					if row.Change == nil || row.ChangePolicyRevision == nil {
-						return corestore.ErrNotFound
+						s.reportIncompletePreviewCandidate(ctx, scope, candidate, corestore.ErrNotFound)
+						continue
 					}
 					plan.changeVersion = *row.ChangeVersion
 					plan.changePolicyRevision = *row.ChangePolicyRevision
@@ -230,6 +238,10 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 				claim := request.NativeClaim
 				claim.WorkItemID = candidate.WorkItemID
 				plan, err := s.readNativeClaimPlanRows(ctx, scope, claim, now, r, &candidate, shared)
+				if errors.Is(err, corestore.ErrNotFound) {
+					s.reportIncompletePreviewCandidate(ctx, scope, candidate, err)
+					continue
+				}
 				if errors.Is(err, ErrNoClaimableWork) {
 					continue
 				}
@@ -333,4 +345,8 @@ func (s *Service) nativeClaimLandingCapacityAvailable(ctx context.Context, organ
 		return nil
 	})
 	return allowed, err
+}
+
+func (s *Service) reportIncompletePreviewCandidate(ctx context.Context, scope nativeScope, candidate claimstore.Candidate, err error) {
+	s.config.Logger.WarnContext(ctx, "skip incomplete preview candidate", "organization_id", scope.organization, "project_id", scope.project, "work_item_id", candidate.WorkItemID, "error", err)
 }

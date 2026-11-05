@@ -206,7 +206,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 			t.Log(logs.String())
 		}
 	})
-	repository := projectRecordPostgres(t)
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	clock := &leaseTestClock{value: time.Now().UTC()}
 	participant := &nativeRunEventParticipantFixture{}
 	details := &memoryRunDetails{}
@@ -472,6 +472,48 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	}
 	if twoCandidateCounts.claimPlanBatch != 1 {
 		t.Fatalf("two-candidate preview batch read calls = %d, want 1", twoCandidateCounts.claimPlanBatch)
+	}
+	for _, test := range []struct {
+		name       string
+		breakSQL   string
+		restoreSQL string
+		wantItems  int
+	}{
+		{"linked_source", "UPDATE issues SET native_source_key='missing-source' WHERE organization_id=$1 AND native_id=$2", "UPDATE issues SET native_source_key=NULL WHERE organization_id=$1 AND native_id=$2", 1},
+		{"all_linked_sources", "UPDATE issues SET native_source_key=native_id WHERE organization_id=$1 AND project_id=(SELECT project_id FROM issues WHERE organization_id=$1 AND native_id=$2)", "UPDATE issues SET native_source_key=NULL WHERE organization_id=$1 AND project_id=(SELECT project_id FROM issues WHERE organization_id=$1 AND native_id=$2)", 0},
+		{"item_version", "UPDATE issues SET revision=revision+100 WHERE organization_id=$1 AND native_id=$2", "UPDATE issues SET revision=revision-100 WHERE organization_id=$1 AND native_id=$2", 1},
+	} {
+		t.Run("preview_missing_"+test.name, func(t *testing.T) {
+			if _, err := admin.ExecContext(t.Context(), test.breakSQL, organization.ID, items[0].WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				deadline, _ := t.Deadline()
+				ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
+				defer cancel()
+				if _, err := admin.ExecContext(ctx, test.restoreSQL, organization.ID, items[0].WorkItemID); err != nil {
+					t.Error(err)
+				}
+			})
+			for _, sessionID := range []string{"", "example-preview-session"} {
+				claim := previewClaim
+				claim.SessionID = sessionID
+				logs.Reset()
+				response := performHubAPIRequest(t, service, http.MethodPost, claimPath+"/preview", secret, tracker.NativeCapacityPreview{NativeClaim: claim, Limit: 2})
+				requireNativeStatus(t, response, http.StatusOK)
+				var page tracker.NativeCapacityPage
+				decodeHubResponse(t, response, &page)
+				if len(page.Items) != test.wantItems || test.wantItems == 1 && page.Items[0].WorkItemID != items[1].WorkItemID || page.Next == 0 {
+					t.Fatalf("incomplete candidate affected valid results or cursor: %+v", page)
+				}
+				if !strings.Contains(logs.String(), "skip incomplete preview candidate") || !strings.Contains(logs.String(), string(items[0].WorkItemID)) {
+					t.Fatalf("missing candidate diagnostic: %s", logs.String())
+				}
+			}
+			if _, err := service.readNativeClaimPlan(t.Context(), scope, request, now); !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("claim plan accepted missing related data: %v", err)
+			}
+		})
 	}
 	service.config.TenantRepository = nativePreviewCountingRepository{Repository: repository, counts: counts, staleFirst: true}
 	stalePreviewResponse := performHubAPIRequest(t, service, http.MethodPost, claimPath+"/preview", secret, tracker.NativeCapacityPreview{NativeClaim: previewClaim, Limit: 2})

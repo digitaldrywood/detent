@@ -71,6 +71,7 @@ type ClaimPreviewPlanRowsReader interface {
 }
 
 type ClaimPreviewPlanRow struct {
+	Err                  error
 	Item                 corestore.WorkItem
 	Version              eventstore.CollaborationVersion
 	LinkedSource         *eventstore.LinkedSource

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -52,7 +53,7 @@ func (s *session) ClaimPreviewPlanRows(ctx context.Context, project tracker.Proj
 	}
 	for index := range result {
 		if result[index].Item.ID == 0 {
-			return nil, corestore.ErrNotFound
+			result[index].Err = fmt.Errorf("read work item: %w", corestore.ErrNotFound)
 		}
 	}
 	activeItemIDs := make([]int64, 0, len(candidates))
@@ -85,7 +86,7 @@ func (s *session) ClaimPreviewPlanRows(ctx context.Context, project tracker.Proj
 	}
 	for index, candidate := range candidates {
 		if result[index].Item.Revision == candidate.Revision && !result[index].Item.Archived && result[index].Version.RecordID == "" {
-			return nil, corestore.ErrNotFound
+			result[index].Err = fmt.Errorf("read work item version: %w", corestore.ErrNotFound)
 		}
 	}
 
@@ -107,7 +108,7 @@ func (s *session) ClaimPreviewPlanRows(ctx context.Context, project tracker.Proj
 	for index, candidate := range candidates {
 		item := result[index].Item
 		if item.Revision == candidate.Revision && !item.Archived && item.NativeSourceKey != nil && result[index].LinkedSource == nil {
-			return nil, corestore.ErrNotFound
+			result[index].Err = fmt.Errorf("read linked source: %w", corestore.ErrNotFound)
 		}
 	}
 
@@ -163,7 +164,7 @@ func (s *session) ClaimPreviewPlanRows(ctx context.Context, project tracker.Proj
 	}
 	for index := range result {
 		if result[index].Change != nil && result[index].Change.CurrentVersionID != nil && result[index].ChangeVersion == nil {
-			return nil, corestore.ErrNotFound
+			result[index].Err = fmt.Errorf("read change version: %w", corestore.ErrNotFound)
 		}
 	}
 	if len(policyIDs) > 0 {
@@ -185,14 +186,15 @@ func (s *session) ClaimPreviewPlanRows(ctx context.Context, project tracker.Proj
 			}
 			policy, ok := policiesByID[result[index].ChangeVersion.PolicyRevisionID]
 			if !ok {
-				return nil, corestore.ErrNotFound
+				result[index].Err = fmt.Errorf("read change policy revision: %w", corestore.ErrNotFound)
+				continue
 			}
 			result[index].ChangePolicyRevision = &policy
 		}
 	}
 	for index := range result {
 		if result[index].ChangeVersion != nil && result[index].ChangePolicyRevision == nil {
-			return nil, corestore.ErrNotFound
+			result[index].Err = fmt.Errorf("read change policy revision: %w", corestore.ErrNotFound)
 		}
 	}
 
