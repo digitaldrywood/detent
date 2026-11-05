@@ -6,15 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -351,6 +354,12 @@ func (s *Service) transferNativeSource(c echo.Context) error {
 }
 
 func (s *Service) transferNativeSourceCommand(ctx context.Context, scope nativeScope, item string, request sourceTransferRequest) (json.RawMessage, error) {
+	if s.config.TenantRepository != nil {
+		if _, err := s.selectNativeSourceTransferTenant(ctx, scope, item, request); err != nil {
+			return nil, err
+		}
+		return nil, workItemStorageUnavailable()
+	}
 	options := nativeCommandOptions{OperationID: "source_recovery " + string(scope.organization) + "/" + string(scope.project) + "/" + item, Item: item, Feature: "collaboration", RunnerAdministration: true}
 	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		view, id, err := readSourceRecoveryView(ctx, tx, scope, item)
@@ -417,4 +426,101 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope nativeS
 
 func sourceRecoveryRefusal(message string) error {
 	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity, publicMessage: true}
+}
+
+func (s *Service) authorizeSourceTransferTenant(ctx context.Context, r tenantstore.Reader, scope nativeScope) error {
+	if err := s.authorizeRunnerCapacity(ctx, r, scope); err != nil {
+		return err
+	}
+	if scope.credential.Hosted != nil {
+		member, err := r.AccessMember(ctx, scope.credential.Hosted.Subject)
+		if err != nil {
+			return err
+		}
+		switch lesserHostedRole(member.Role, scope.credential.HostedRole) {
+		case "owner", "admin":
+		case "member":
+			grant, err := r.AccessProjectGrant(ctx, member.UserID, scope.project)
+			if err != nil || !grant.ManageRunner {
+				return accessstore.ErrDenied
+			}
+		default:
+			return accessstore.ErrDenied
+		}
+	}
+	return nil
+}
+
+func (s *Service) selectNativeSourceTransferTenant(ctx context.Context, scope nativeScope, item string, request sourceTransferRequest) (sourceRecoveryView, error) {
+	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
+		return sourceRecoveryView{}, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+	}
+	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+		return sourceRecoveryView{}, err
+	}
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error { return s.authorizeSourceTransferTenant(ctx, r, scope) }); err != nil {
+		return sourceRecoveryView{}, projectRecordError(err)
+	}
+	view, err := s.readNativeSourceRecoveryTenant(ctx, scope, item, "")
+	if err != nil {
+		return view, err
+	}
+	if request.ExpectedRevision <= 0 || request.ExpectedRevision != view.Revision {
+		return view, nativeConflict(view.Revision)
+	}
+	if request.VersionID == "" || request.VersionID != view.VersionID {
+		return view, sourceRecoveryRefusal("Re-read the current source version before transfer")
+	}
+	if !view.Quiesced {
+		return view, sourceRecoveryRefusal(view.Reason)
+	}
+	if request.DestinationRunnerID != "" {
+		if !view.Available {
+			return view, sourceRecoveryRefusal(view.Reason)
+		}
+		approval, err := s.readTenantProjectPolicy(ctx, scope.organization, scope.project)
+		if err != nil {
+			return view, err
+		}
+		if approval.Policy.ID == "" {
+			return view, errNoApprovedRepositoryPolicy
+		}
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			return s.validateSourceDestinationTenant(ctx, r, scope, request.DestinationRunnerID, approval.Policy.Requirements)
+		})
+		if err != nil {
+			return view, projectRecordError(err)
+		}
+	}
+	return view, nil
+}
+
+func (s *Service) validateSourceDestinationTenant(ctx context.Context, r tenantstore.Reader, scope nativeScope, id string, requirements policy.Requirements) error {
+	reader, ok := r.(runnerstore.SourceRecoveryDestinationReader)
+	if !ok {
+		return workItemStorageUnavailable()
+	}
+	now := s.config.now().UTC()
+	candidate, err := reader.SourceRecoveryDestination(ctx, scope.project, id, now)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return sourceRecoveryRefusal("Destination runner must be online, eligible and have available capacity")
+	}
+	if err != nil {
+		return err
+	}
+	urgent, err := r.RunnerUrgentUpdate(ctx)
+	if err != nil {
+		return err
+	}
+	runner := runnerFromFleetRecord(candidate.Record, now, urgent)
+	runner.Used, runner.HostUsed = candidate.RunnerUsed, candidate.HostUsed
+	runner.ProjectUsed = map[tracker.ProjectID]int{scope.project: candidate.ProjectUsed}
+	runner.ProviderCapacity = candidate.Providers
+	if !placementRunnerCompatible(placementRunner{Runner: runner}, scope.project, requirements, now, false) {
+		return sourceRecoveryRefusal("Destination runner must be online, eligible and have available capacity")
+	}
+	if !candidate.Record.Isolation.SupportsOn(runner.IsolationTier, runner.OS) {
+		return sourceRecoveryRefusal("Destination runner must support its configured isolation tier")
+	}
+	return nil
 }

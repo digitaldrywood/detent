@@ -310,3 +310,22 @@ WHERE selected.organization_id=$1 AND selected.runner_id=ANY($2)`, s.organizatio
 	}
 	return result, nil
 }
+
+func (s *session) SourceRecoveryDestination(ctx context.Context, project tracker.ProjectID, runner string, now time.Time) (runnerstore.SourceRecoveryCandidate, error) {
+	if project == "" || runner == "" || len(runner) > 256 || now.IsZero() {
+		return runnerstore.SourceRecoveryCandidate{}, corestore.ErrInvalidPage
+	}
+	records, err := s.selectedFleetRecords(ctx, project, "", 1, true, runner)
+	if err != nil {
+		return runnerstore.SourceRecoveryCandidate{}, err
+	}
+	if len(records) != 1 {
+		return runnerstore.SourceRecoveryCandidate{}, corestore.ErrNotFound
+	}
+	candidate := runnerstore.SourceRecoveryCandidate{Record: records[0]}
+	if err := s.sourceRecoveryRunnerUsage(ctx, project, records[0], now, &candidate); err != nil {
+		return candidate, err
+	}
+	candidate.Providers, err = s.fleetRecordProviderViews(ctx, records[0], now)
+	return candidate, err
+}

@@ -89,3 +89,7 @@ type OnboardingReader interface {
 	ProjectRunnerChecks(context.Context, tracker.ProjectID, int) (map[string]runnerauth.LocalChecks, error)
 	RunnerRepositoryLists(context.Context, int) (map[string]runnerauth.RepositoryList, error)
 }
+
+type SourceRecoveryDestinationReader interface {
+	SourceRecoveryDestination(context.Context, tracker.ProjectID, string, time.Time) (SourceRecoveryCandidate, error)
+}
