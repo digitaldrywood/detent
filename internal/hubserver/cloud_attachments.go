@@ -472,7 +472,7 @@ func (s *Service) deleteCloudAttachment(c echo.Context) error {
 
 func (s *Service) deleteCloudAttachmentCommand(ctx context.Context, scope nativeScope, id string) error {
 	if s.config.TenantRepository != nil {
-		return workItemStorageUnavailable()
+		return s.deleteCloudAttachmentTenant(ctx, scope, id)
 	}
 	scope.action = operatortool.DeleteAttachment
 	tx, err := s.database.db.BeginTx(ctx, nil)
@@ -596,7 +596,7 @@ func (s *Service) expiredCloudAttachments(c echo.Context) error {
 
 func (s *Service) finishCloudAttachmentDeletion(c echo.Context) error {
 	if s.config.TenantRepository != nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
+		return s.finishCloudAttachmentDeletionTenant(c)
 	}
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService {

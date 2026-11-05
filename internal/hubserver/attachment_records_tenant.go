@@ -14,6 +14,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -630,4 +631,48 @@ func (s *Service) referenceCloudAttachmentTenant(ctx context.Context, scope nati
 		}
 		return w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.project, AttachmentID: id, WorkItemID: row.NativeID, CommentID: input.CommentID})
 	})
+}
+
+func (s *Service) deleteCloudAttachmentTenant(ctx context.Context, scope nativeScope, id string) error {
+	scope.action = operatortool.DeleteAttachment
+	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+			return err
+		}
+		if _, err := s.attachmentWriteAuthority(ctx, w, scope, nil); err != nil {
+			return err
+		}
+		owner, ok := w.(attachmentstore.DeletionWriter)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		return owner.DeleteAttachment(ctx, scope.project, id, s.config.now().UTC())
+	})
+	return projectRecordError(err)
+}
+
+func (s *Service) finishCloudAttachmentDeletionTenant(c echo.Context) error {
+	claims, ok := hostedSharedClaims(c)
+	if !ok || claims.Kind != cloudassert.KindService || claims.Audience == "" {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
+	var input struct {
+		ID string `json:"id"`
+	}
+	if err := c.Bind(&input); err != nil || conversation.ValidateAttachmentID(input.ID) != nil {
+		return s.nativeAPIError(c, nativePublicInvalid("Invalid attachment id"))
+	}
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	err := s.config.TenantRepository.WriteTenant(ctx, tracker.OrganizationID(claims.Audience), corestore.Serving, func(w tenantstore.Writer) error {
+		owner, ok := w.(attachmentstore.DeletionWriter)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		return owner.FinishAttachmentDeletion(ctx, input.ID, s.config.now().UTC())
+	})
+	if err != nil {
+		return s.nativeAPIError(c, projectRecordError(err))
+	}
+	return c.NoContent(http.StatusNoContent)
 }

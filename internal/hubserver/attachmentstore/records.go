@@ -47,3 +47,8 @@ type Writer interface {
 	CreateAttachment(context.Context, Record) error
 	BindAttachment(context.Context, Reference) error
 }
+
+type DeletionWriter interface {
+	DeleteAttachment(context.Context, tracker.ProjectID, string, time.Time) error
+	FinishAttachmentDeletion(context.Context, string, time.Time) error
+}

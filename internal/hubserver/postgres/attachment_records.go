@@ -3,6 +3,9 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"math"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
@@ -142,4 +145,37 @@ func (s *session) BindAttachment(ctx context.Context, reference attachmentstore.
 		return corestore.ErrRevisionConflict
 	}
 	return nil
+}
+
+func (s *session) DeleteAttachment(ctx context.Context, project tracker.ProjectID, id string, at time.Time) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE attachments SET deleted_at=COALESCE(deleted_at,$4) WHERE organization_id=$1 AND project_id=$2 AND id=$3 AND kind='attachment' AND retention_class<>'organization' AND NOT customer_owned AND storage_binding_id='' AND pending_content IS NULL AND object_key IN ('','orgs/' || organization_id || '/attachments/' || id)`, s.organization, project, id, at)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return corestore.ErrNotFound
+	}
+	return nil
+}
+
+func (s *session) FinishAttachmentDeletion(ctx context.Context, id string, at time.Time) error {
+	var size int64
+	err := s.db.QueryRowContext(ctx, `UPDATE attachments SET object_deleted_at=$3 WHERE organization_id=$1 AND id=$2 AND kind='attachment' AND deleted_at IS NOT NULL AND object_deleted_at IS NULL AND NOT customer_owned AND storage_binding_id='' AND pending_content IS NULL AND object_key IN ('','orgs/' || organization_id || '/attachments/' || id) RETURNING size`, s.organization, id, at).Scan(&size)
+	if errors.Is(err, sql.ErrNoRows) {
+		var completed bool
+		err = s.db.QueryRowContext(ctx, `SELECT object_deleted_at IS NOT NULL FROM attachments WHERE organization_id=$1 AND id=$2 AND deleted_at IS NOT NULL`, s.organization, id).Scan(&completed)
+		if err == nil && !completed {
+			return corestore.ErrNotFound
+		}
+		return mapError(ctx, err)
+	}
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	_, err = s.AdjustCollaborationBytes(ctx, -size, math.MaxInt64)
+	return err
 }
