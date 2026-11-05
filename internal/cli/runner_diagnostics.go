@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -187,7 +188,7 @@ func reportRunnerSetup(ctx context.Context, cfg globalconfig.Config, version str
 
 // collectRunnerSetupReports preserves real startup observations without sending
 // a second startup heartbeat or repeating local probes at each heartbeat tick.
-func collectRunnerSetupReports(ctx context.Context, cfg globalconfig.Config, client *hubclient.Client) (map[string]runnerauth.LocalChecks, error) {
+func collectRunnerSetupReports(ctx context.Context, cfg globalconfig.Config, client *hubclient.Client, report ...func(string, runnerauth.LocalChecks, error)) (map[string]runnerauth.LocalChecks, error) {
 	if cfg.Client.IdentityFile == "" || cfg.Path == "" {
 		return map[string]runnerauth.LocalChecks{}, nil
 	}
@@ -204,14 +205,26 @@ func collectRunnerSetupReports(ctx context.Context, cfg globalconfig.Config, cli
 		checks := collectRunnerLocalChecks(ctx, cfg, name, func(ctx context.Context, cfg doctorConfig) doctorReport {
 			return runDoctorStartupPreflight(ctx, cfg, options{}, doctorDeps{})
 		}, probeRunnerProviderAuth)
+		var setupErr error
 		if checks.Configuration == "passed" {
-			_, _, descriptor, err := resolveRunnerProjectPolicy(ctx, cfg, name)
-			if err != nil {
-				return nil, err
+			var descriptor policy.Descriptor
+			_, _, descriptor, setupErr = resolveRunnerProjectPolicy(ctx, cfg, name)
+			if setupErr == nil {
+				setupErr = native.ReportObservedPolicy(ctx, descriptor)
 			}
-			if err := native.ReportObservedPolicy(ctx, descriptor); err != nil {
-				return nil, err
+			if setupErr != nil {
+				var apiErr *hubclient.APIError
+				if ctx.Err() != nil || errors.As(setupErr, &apiErr) && (apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden) {
+					return nil, setupErr
+				}
+				checks.Configuration, checks.ConfigurationAt = "failed", time.Now().UTC()
+				checks.ConfigurationMessage = "Project policy could not be resolved or reported."
 			}
+		} else if checks.Configuration == "failed" {
+			setupErr = errors.New(checks.ConfigurationMessage)
+		}
+		for _, emit := range report {
+			emit(name, checks, setupErr)
 		}
 		reports[name] = checks
 	}

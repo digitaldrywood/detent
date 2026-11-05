@@ -128,7 +128,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 			setupResults[name] = "failed"
 		}
 	}
-	localChecks, err := collectRunnerSetupReports(ctx, cfg, client)
+	localChecks, err := collectRunnerSetupReports(ctx, cfg, client, projects.recordSetupProblem)
 	if err != nil {
 		return nil, err
 	}

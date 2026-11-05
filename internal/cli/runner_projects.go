@@ -87,6 +87,32 @@ func (p *runnerProjects) reportedProblems() []runnerauth.Problem {
 	return problems
 }
 
+func (p *runnerProjects) recordSetupProblem(name string, checks runnerauth.LocalChecks, err error) {
+	delete(p.problems, name)
+	if err == nil {
+		return
+	}
+	problem := runnerauth.NewProblem("settings_invalid")
+	problem.ProjectID = p.cfg.Client.NativeProjects[name]
+	problem.Subject = "checkout"
+	problem.ErrorOutput = err.Error()
+	problem.ReportedAt = time.Now()
+	if checks.CheckoutMessage != "" {
+		problem.Message, problem.FixHint = checks.CheckoutMessage, checks.CheckoutFix
+	}
+	if checks.ConfigurationMessage != "" {
+		problem.Message = checks.ConfigurationMessage
+	}
+	if checks.ConfigurationFix != "" {
+		problem.FixHint = checks.ConfigurationFix
+	}
+	if p.problems == nil {
+		p.problems = make(map[string]runnerauth.Problem)
+	}
+	p.problems[name] = runnerauth.SanitizeProblem(problem)
+	p.logger.Warn("prepare assigned runner project failed", "project", name, "attribution", "instance", "error", err)
+}
+
 func (p *runnerProjects) prepareConfiguration(ctx context.Context, cfg globalconfig.Config, name string) error {
 	for _, selected := range project.ManagerConfigFromGlobal(cfg).Projects {
 		if selected.ID != name {
@@ -355,23 +381,8 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 			}
 			p.observed[selected.ID] = time.Now()
 			p.checks[selected.ID] = run.checks
-			delete(p.problems, selected.ID)
 			changed = changed || !reflect.DeepEqual(previous, run.checks)
-			if run.err != nil {
-				problem := runnerauth.NewProblem("settings_invalid")
-				problem.ProjectID = p.cfg.Client.NativeProjects[selected.ID]
-				problem.Subject = "checkout"
-				problem.ErrorOutput = run.err.Error()
-				problem.ReportedAt = time.Now()
-				if run.checks.CheckoutMessage != "" {
-					problem.Message, problem.FixHint = run.checks.CheckoutMessage, run.checks.CheckoutFix
-				}
-				if p.problems == nil {
-					p.problems = make(map[string]runnerauth.Problem)
-				}
-				p.problems[selected.ID] = runnerauth.SanitizeProblem(problem)
-				p.logger.Warn("prepare assigned runner project failed", "project", selected.ID, "attribution", "instance", "error", run.err)
-			}
+			p.recordSetupProblem(selected.ID, run.checks, run.err)
 		default:
 			run.mu.Lock()
 			if run.snapshot.Checkout != "" {

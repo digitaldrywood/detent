@@ -3,10 +3,14 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,7 +18,13 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -320,6 +330,183 @@ func TestRunnerSetupHeartbeatOwnership(t *testing.T) {
 			}
 			if heartbeats.Load() != 2 {
 				t.Fatalf("registration heartbeats = %d, want 2", heartbeats.Load())
+			}
+		})
+	}
+}
+
+func TestRunnerStartupIsolatesProjectPolicyFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, status := range []int{0, http.StatusConflict, http.StatusInternalServerError, http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			root := t.TempDir()
+			var failed atomic.Bool
+			failed.Store(true)
+			checks := make(map[string]runnerauth.LocalChecks)
+			problems := make(map[string][]runnerauth.Problem)
+			claims := make(map[string]int)
+			var snapshot runnerauth.RoutingSnapshot
+			var identity runnerauth.Identity
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				name := "healthy"
+				if strings.Contains(r.URL.Path, "/prj_failed") {
+					name = "failed"
+				}
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/runners/"+identity.RunnerID):
+					_ = json.NewEncoder(w).Encode(identity)
+				case strings.HasSuffix(r.URL.Path, "/capabilities"):
+					_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeLocalChecksCapability, tracker.NativeProviderCapacityCapability}})
+				case strings.HasSuffix(r.URL.Path, "/policy/observed"):
+					if name == "failed" && failed.Load() && status != 0 {
+						w.WriteHeader(status)
+						_, _ = w.Write([]byte(`{"code":"policy_refused","message":"policy observation refused"}`))
+						return
+					}
+					w.WriteHeader(http.StatusNoContent)
+				case strings.HasSuffix(r.URL.Path, "/heartbeat"):
+					var body struct {
+						LocalChecks runnerauth.LocalChecks `json:"local_checks"`
+						Problems    []runnerauth.Problem   `json:"problems"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					checks[name], problems[name] = body.LocalChecks, body.Problems
+					_ = json.NewEncoder(w).Encode(snapshot)
+				case strings.HasSuffix(r.URL.Path, "/claims/preview"):
+					if checks[name].Configuration != "passed" {
+						w.WriteHeader(http.StatusConflict)
+						_, _ = w.Write([]byte(`{"code":"runner_setup_required"}`))
+						return
+					}
+					_ = json.NewEncoder(w).Encode(tracker.NativeCapacityPage{Items: []tracker.NativeIssue{{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: tracker.ProjectID("prj_" + name), WorkItemID: tracker.NativeWorkItemID("wi_" + name)}, State: "Todo", SchedulingEligible: new(true), DependencyReady: true}}})
+				case strings.HasSuffix(r.URL.Path, "/claims"):
+					claims[name]++
+					_ = json.NewEncoder(w).Encode(tracker.NativeLease{ID: tracker.LeaseID("lease_" + name), WorkItemID: tracker.NativeWorkItemID("wi_" + name), FencingToken: 1, ServerTime: time.Now(), ExpiresAt: time.Now().Add(time.Hour), ProviderReservation: &providercapacity.Reservation{}, IsolationPolicy: &isolation.Policy{Tier: isolation.NativeTrusted}})
+				case strings.Contains(r.URL.Path, "/work-items/wi_"):
+					_ = json.NewEncoder(w).Encode(tracker.NativeRecovery{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: tracker.ProjectID("prj_" + name), WorkItemID: tracker.NativeWorkItemID("wi_" + name)}, State: "Todo", SchedulingEligible: new(true), DependencyReady: true}})
+				case strings.HasSuffix(r.URL.Path, "/projects/prj_failed"), strings.HasSuffix(r.URL.Path, "/projects/prj_healthy"):
+					_ = json.NewEncoder(w).Encode(tracker.NativeProject{ID: tracker.ProjectID("prj_" + name), Profile: "native"})
+				default:
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			identityPath := filepath.Join(root, "private", "identity.json")
+			file, err := runnerauth.Initialize(identityPath, server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			file.Identity.OrganizationID = "org_example"
+			file.Identity.ProjectIDs = []tracker.ProjectID{"prj_failed", "prj_healthy"}
+			file.Identity.ExpiresAt = time.Now().Add(24 * time.Hour)
+			identity = file.Identity
+			if err := runnerauth.Save(identityPath, file); err != nil {
+				t.Fatal(err)
+			}
+			snapshot = runnerauth.RoutingSnapshot{RunnerID: file.Identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 2, ProjectIDs: file.Identity.ProjectIDs}.Normalized()}
+			if err := runnerauth.SaveRoutingCache(identityPath, snapshot); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := globalconfig.DefaultAt(filepath.Join(root, "global.yaml"), globalconfig.WithHome(root))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Client.URL, cfg.Client.IdentityFile, cfg.Client.OrganizationID = server.URL, identityPath, "org_example"
+			cfg.Client.Capacity = 2
+			cfg.Client.ProviderCapacityFile = writeProviderCapacityFixture(t, root)
+			cfg.Client.NativeProjects = map[string]string{"failed": "prj_failed", "healthy": "prj_healthy"}
+			for _, name := range []string{"failed", "healthy"} {
+				dir := filepath.Join(root, name)
+				if err := os.MkdirAll(dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				workflow := filepath.Join(dir, "WORKFLOW.md")
+				body := "---\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\nagents:\n  backends:\n    - id: pi\n      kind: pi_agent\n      command: 'true'\n  routes:\n    - backend: pi\n      default: true\n---\nInstructions.\n"
+				if err := os.WriteFile(workflow, []byte(body), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if name == "failed" && status == 0 {
+					if err := os.WriteFile(workflow, []byte("Instructions.\n"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(dir, "detent.yaml"), []byte("schema: 1\nroutines: {}\n"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				runDoctorWorkflowSourceGit(t, dir, "init")
+				runDoctorWorkflowSourceGit(t, dir, "add", ".")
+				runDoctorWorkflowSourceGit(t, dir, "-c", "user.name=Example", "-c", "user.email=example@example.test", "-c", "commit.gpgsign=false", "commit", "-m", "fixture")
+				cfg.Projects = append(cfg.Projects, globalconfig.Project{ID: name, Workdir: dir, Workflow: workflow, Weight: 1})
+			}
+			if err := globalconfig.Write(cfg.Path, cfg); err != nil {
+				t.Fatal(err)
+			}
+			source, err := newHubScheduling(t.Context(), cfg, "test", hubSchedulingOptions{workspaceSupport: testWorkspaceSupport})
+			if status == http.StatusUnauthorized || status == http.StatusForbidden {
+				var apiErr *hubclient.APIError
+				if !errors.As(err, &apiErr) || apiErr.Status != status {
+					t.Fatalf("startup error = %v, want fatal %d", err, status)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("project failure aborted startup: %v", err)
+			}
+			scheduler := source.(*hubclient.Scheduler)
+			if err := scheduler.Heartbeat(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if checks["failed"].Configuration != "failed" || checks["healthy"].Configuration != "passed" {
+				t.Fatalf("configuration checks: %+v", checks)
+			}
+			if status == 0 && (!strings.Contains(checks["failed"].ConfigurationMessage, "retired configuration key") || checks["failed"].ConfigurationFix == "") {
+				t.Fatalf("retired-key guidance missing: %+v", checks["failed"])
+			}
+			if !slices.ContainsFunc(problems["failed"], func(p runnerauth.Problem) bool { return p.Code == "settings_invalid" && p.ProjectID == "prj_failed" }) {
+				t.Fatalf("failed project problems: %+v", problems["failed"])
+			}
+			descriptor := policy.Descriptor{SourceRevision: strings.Repeat("a", 40), SourceDigest: policy.Digest([]byte("source")), ConfigDigest: policy.Digest([]byte("config")), Gates: policy.Gates{Kind: "human_review", PlanReview: "human", PlanStopDigest: policy.Digest([]byte("stop")), MergeMethod: "squash"}}.WithID()
+			for _, name := range []string{"failed", "healthy"} {
+				issues, err := scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: name, Policy: descriptor, ProviderRequirement: func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
+					return providercapacity.Requirement{Backend: "codex", Model: "provider_default"}, nil
+				}})
+				if name == "healthy" && (err != nil || len(issues) != 1) {
+					t.Fatalf("healthy project claim: %v, %v", issues, err)
+				}
+				if name == "failed" && len(issues) != 0 {
+					t.Fatalf("failed project dispatched: %v", issues)
+				}
+			}
+			if claims["healthy"] != 1 || claims["failed"] != 0 {
+				t.Fatalf("claims: %+v", claims)
+			}
+			if status == 0 {
+				return
+			}
+			failed.Store(false)
+			client, err := hubclient.New(hubclient.Config{URL: server.URL, IdentityFile: identityPath, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			projects := &runnerProjects{cfg: cfg, client: client, setup: project.NewRunnerSetup(file.Identity.RunnerID, nil, slog.Default()), logger: slog.Default()}
+			run := projects.startPreparation(t.Context(), cfg, cfg.Projects[0], false)
+			t.Cleanup(func() { run.cancel(); <-run.done })
+			<-run.done
+			if run.err != nil || run.checks.Configuration != "passed" {
+				t.Fatalf("observation retry: %+v, %v", run.checks, run.err)
+			}
+			if err := scheduler.SetNativeProjects("org_example", map[string]tracker.ProjectID{"healthy": "prj_healthy", "failed": "prj_failed"}, map[string]runnerauth.LocalChecks{"healthy": checks["healthy"], "failed": run.checks}); err != nil {
+				t.Fatal(err)
+			}
+			issues, err := scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "failed", Policy: descriptor, ProviderRequirement: func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
+				return providercapacity.Requirement{Backend: "codex", Model: "provider_default"}, nil
+			}})
+			if err != nil || len(issues) != 1 || claims["failed"] != 1 {
+				t.Fatalf("claim after successful observation: %v, %v, claims=%v", issues, err, claims)
 			}
 		})
 	}
