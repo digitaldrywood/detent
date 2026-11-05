@@ -200,13 +200,6 @@ func (s *session) ReadFacets(ctx context.Context, projects []tracker.ProjectID, 
 		return reportstore.Facets{}, errors.New("invalid PostgreSQL report facets query")
 	}
 	out := reportstore.Facets{Labels: []string{}, FiledBy: []reportstore.Facet{}, Runners: []reportstore.Facet{}, Models: []string{}, Stages: []string{}, Unavailable: []string{}}
-	var population int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT 1 FROM issues WHERE organization_id=$1 ORDER BY id LIMIT 5001) bounded`, s.organization).Scan(&population); err != nil {
-		return out, mapError(ctx, err)
-	}
-	if population > 5000 {
-		return out, reportstore.ErrPopulationExceeded
-	}
 	ids := []int64{}
 	filers := map[string]string{}
 	rows, err := s.db.QueryContext(ctx, `SELECT i.id,coalesce(i.actor_principal_id,''),coalesce(nullif(t.name,''),i.actor_principal_id,'') FROM issues i LEFT JOIN api_tokens t ON t.organization_id=i.organization_id AND t.id=i.actor_principal_id WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[]) AND ($3='' OR i.actor_principal_id=$3) ORDER BY i.id LIMIT 5001`, s.organization, pq.Array(projects), principal)

@@ -507,13 +507,32 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 
 	})
 	t.Run("facet input overflow fails even with one distinct filer", func(t *testing.T) {
-		if _, err := admin.ExecContext(ctx, `INSERT INTO issues(organization_id,id,project_id,native_id,number,title,actor_kind,actor_principal_id) SELECT $1,10000+n,$2,'wi_facet_'||n,10000+n,'Example','human','actor_example' FROM generate_series(1,5000) n`, organization, project); err != nil {
+		flood := tracker.ProjectID("project_reports_flood")
+		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: flood, Name: "Example flood", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}, {Name: "Done", Terminal: true}}})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, `INSERT INTO issues(organization_id,id,project_id,native_id,number,title,actor_kind,actor_principal_id) SELECT $1,10000+n,$2,'wi_facet_'||n,10000+n,'Example','human','actor_flood' FROM generate_series(1,5001) n`, organization, flood); err != nil {
 			t.Fatal(err)
 		}
 		if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
-			_, err := r.(reportstore.Reader).ReadFacets(ctx, []tracker.ProjectID{project}, now.Add(-time.Hour), now.Add(time.Hour), "", 10)
+			_, err := r.(reportstore.Reader).ReadFacets(ctx, []tracker.ProjectID{flood}, now.Add(-time.Hour), now.Add(time.Hour), "", 10)
 			if !errors.Is(err, reportstore.ErrPopulationExceeded) {
 				t.Fatalf("facet source overflow: %v", err)
+			}
+			for _, principal := range []string{"", actorID} {
+				facets, err := r.(reportstore.Reader).ReadFacets(ctx, []tracker.ProjectID{project}, now.Add(-time.Hour), now.Add(time.Hour), principal, 10)
+				if err != nil {
+					t.Fatalf("unrelated project facets principal=%q failed after flood: %v", principal, err)
+				}
+				if len(facets.FiledBy) != 1 || facets.FiledBy[0].ID != actorID {
+					t.Fatalf("unrelated project filers principal=%q = %+v", principal, facets.FiledBy)
+				}
+			}
+			if _, err := r.(reportstore.Reader).ReadFacets(ctx, []tracker.ProjectID{project, flood}, now.Add(-time.Hour), now.Add(time.Hour), actorID, 10); err != nil {
+				t.Fatalf("principal-scoped facets failed after another filer's flood: %v", err)
 			}
 			return nil
 		}); err != nil {
