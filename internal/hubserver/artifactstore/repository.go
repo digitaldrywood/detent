@@ -24,6 +24,8 @@ type ArchiveOwner struct {
 	CreatedAt      time.Time
 }
 
+const ReadGrantLimit = 64
+
 type ReadGrant struct {
 	ProjectID                                                  tracker.ProjectID
 	TokenHash, PrincipalID, ServiceID, ArtifactID, SessionHash string
@@ -44,7 +46,7 @@ type Reader interface {
 }
 
 type Writer interface {
-	CreateArtifactReadGrant(context.Context, ReadGrant) error
+	CreateArtifactReadGrant(context.Context, ReadGrant, time.Time) error
 	BindArtifactService(context.Context, tracker.ProjectID, artifact.Binding) error
 	Reader
 	AppendArtifactReference(context.Context, artifact.Reference) (artifact.Reference, error)

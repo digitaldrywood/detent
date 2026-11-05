@@ -52,7 +52,7 @@ func (s *Service) artifactReadGrantTenant(ctx context.Context, scope nativeScope
 			return artifact.ErrExpired
 		}
 		result = artifact.Grant{Token: token, Origin: binding.Origin, ArtifactID: ref.ArtifactID, Revision: ref.Revision, SHA256: ref.SHA256, ExpiresAt: expires}
-		return w.CreateArtifactReadGrant(ctx, artifactstore.ReadGrant{ProjectID: scope.project, TokenHash: apikey.HashToken(token), PrincipalID: scope.credential.ID, ServiceID: ref.ServiceID, ArtifactID: ref.ArtifactID, Revision: ref.Revision, ExpiresAt: expires, SessionHash: scope.credential.SessionHash})
+		return w.CreateArtifactReadGrant(ctx, artifactstore.ReadGrant{ProjectID: scope.project, TokenHash: apikey.HashToken(token), PrincipalID: scope.credential.ID, ServiceID: ref.ServiceID, ArtifactID: ref.ArtifactID, Revision: ref.Revision, ExpiresAt: expires, SessionHash: scope.credential.SessionHash}, now)
 	})
 	return result, projectRecordError(err)
 }

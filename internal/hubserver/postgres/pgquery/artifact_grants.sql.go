@@ -12,6 +12,21 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const artifactReadGrantDeleteExpired = `-- name: ArtifactReadGrantDeleteExpired :exec
+DELETE FROM artifact_grants WHERE organization_id=$1 AND principal_id=$2 AND expires_at<=$3
+`
+
+type ArtifactReadGrantDeleteExpiredParams struct {
+	OrganizationID tracker.OrganizationID
+	PrincipalID    string
+	ExpiresAt      time.Time
+}
+
+func (q *Queries) ArtifactReadGrantDeleteExpired(ctx context.Context, arg ArtifactReadGrantDeleteExpiredParams) error {
+	_, err := q.db.ExecContext(ctx, artifactReadGrantDeleteExpired, arg.OrganizationID, arg.PrincipalID, arg.ExpiresAt)
+	return err
+}
+
 const artifactReadGrantGet = `-- name: ArtifactReadGrantGet :one
 SELECT organization_id, project_id, token_hash, principal_id, service_id, artifact_id, revision, expires_at, hosted_session_hash FROM artifact_grants WHERE organization_id=$1 AND project_id=$2 AND token_hash=$3
 `
@@ -69,4 +84,27 @@ func (q *Queries) ArtifactReadGrantInsert(ctx context.Context, arg ArtifactReadG
 		arg.HostedSessionHash,
 	)
 	return err
+}
+
+const artifactReadGrantLiveCount = `-- name: ArtifactReadGrantLiveCount :one
+SELECT count(*) FROM (SELECT 1 FROM artifact_grants WHERE organization_id=$1 AND principal_id=$2 AND expires_at>$3 LIMIT $4) live
+`
+
+type ArtifactReadGrantLiveCountParams struct {
+	OrganizationID tracker.OrganizationID
+	PrincipalID    string
+	ExpiresAt      time.Time
+	Limit          int32
+}
+
+func (q *Queries) ArtifactReadGrantLiveCount(ctx context.Context, arg ArtifactReadGrantLiveCountParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, artifactReadGrantLiveCount,
+		arg.OrganizationID,
+		arg.PrincipalID,
+		arg.ExpiresAt,
+		arg.Limit,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
