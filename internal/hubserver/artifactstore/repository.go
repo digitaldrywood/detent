@@ -56,6 +56,8 @@ type Writer interface {
 	BindArtifactService(context.Context, tracker.ProjectID, artifact.Binding) error
 	Reader
 	AppendArtifactReference(context.Context, artifact.Reference) (artifact.Reference, error)
+	AuthorizeArtifactUpload(context.Context, artifact.Reservation, time.Time) error
+	BindArtifactUpload(context.Context, artifact.Reference) error
 	RegisterArchiveObject(context.Context, ArchiveObject) (ArchiveObject, error)
 	AddArchiveOwner(context.Context, ArchiveOwner) error
 	RemoveArchiveOwner(context.Context, ArchiveOwner) error

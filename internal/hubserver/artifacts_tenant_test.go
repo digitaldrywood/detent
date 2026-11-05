@@ -132,6 +132,8 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 				status int
 			}{
 				{"valid", func(*artifact.Reservation) {}, http.StatusNoContent},
+				{"replay", func(*artifact.Reservation) {}, http.StatusNoContent},
+				{"changed key reservation", func(r *artifact.Reservation) { r.Bytes++ }, http.StatusConflict},
 				{"wrong run", func(r *artifact.Reservation) { r.RunID = artifact.NewID("run") }, http.StatusNotFound},
 				{"wrong attempt", func(r *artifact.Reservation) { r.AttemptID = artifact.NewID("attempt") }, http.StatusNotFound},
 				{"stale fence", func(r *artifact.Reservation) { r.FencingToken++ }, http.StatusConflict},
@@ -226,6 +228,15 @@ func testPostgresArtifactReceipts(t *testing.T, service *Service, reservation ar
 		{"wrong run", func(r *artifact.Reference) { r.RunID = artifact.NewID("run") }, http.StatusNotFound},
 		{"wrong item", func(r *artifact.Reference) { r.WorkItemID = artifact.NewID("wi") }, http.StatusNotFound},
 		{"wrong attempt", func(r *artifact.Reference) { r.AttemptID = artifact.NewID("attempt") }, http.StatusNotFound},
+		{"unauthorized artifact", func(r *artifact.Reference) {
+			r.ArtifactID, r.ManifestID = artifact.NewID("artifact"), artifact.NewID("manifest")
+		}, http.StatusNotFound},
+		{"unauthorized kind", func(r *artifact.Reference) {
+			r.ArtifactID, r.ManifestID, r.Kind = artifact.NewID("artifact"), artifact.NewID("manifest"), "diff"
+		}, http.StatusNotFound},
+		{"unauthorized artifact sorted first", func(r *artifact.Reference) {
+			r.ArtifactID, r.ManifestID = "artifact_"+strings.Repeat("0", 32), artifact.NewID("manifest")
+		}, http.StatusNotFound},
 		{"missing version", func(r *artifact.Reference) { r.VersionID = artifact.NewID("version") }, http.StatusNotFound},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

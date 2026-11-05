@@ -138,8 +138,11 @@ func (s *Service) authorizeArtifactUploadTenant(ctx context.Context, scope nativ
 		if attempt.IssueID != item.ID || attempt.LeaseID != reservation.LeaseID || attempt.FencingToken != reservation.FencingToken || attempt.RunID != reservation.RunID || attempt.Status != "running" {
 			return nativeNotFound()
 		}
-		return nil
+		return w.AuthorizeArtifactUpload(ctx, reservation, s.config.now().UTC())
 	})
+	if errors.Is(err, corestore.ErrRevisionConflict) {
+		return nativeConflict(0)
+	}
 	return projectRecordError(err)
 }
 
@@ -183,6 +186,11 @@ func (s *Service) publishArtifactReceiptTenant(ctx context.Context, scope native
 		_, readErr := w.ArtifactReference(ctx, scope.project, tracker.NativeWorkItemID(reference.WorkItemID), reference.ArtifactID, reference.Revision)
 		if readErr != nil && !errors.Is(readErr, corestore.ErrNotFound) {
 			return readErr
+		}
+		if readErr != nil {
+			if err := w.BindArtifactUpload(ctx, reference); err != nil {
+				return err
+			}
 		}
 		if _, err = w.AppendArtifactReference(ctx, reference); err != nil {
 			return err
