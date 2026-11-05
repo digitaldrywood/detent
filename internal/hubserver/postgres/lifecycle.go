@@ -63,7 +63,7 @@ func migrationProvider(pool *sql.DB, migrations fs.FS) (*goose.Provider, error) 
 		return nil, ErrSchema
 	}
 	return goose.NewProvider(goose.DialectPostgres, pool, RoleMigrations(migrations),
-		goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
+		goose.WithDisableGlobalRegistry(true), goose.WithAllowOutofOrder(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
 }
 
 func validateSchema(ctx context.Context, pool *sql.DB, migrations fs.FS) error {
