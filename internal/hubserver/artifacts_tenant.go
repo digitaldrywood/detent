@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -108,6 +109,14 @@ func (s *Service) authorizeArtifactUploadTenant(ctx context.Context, scope nativ
 		if item.Archived {
 			return nativeNotFound()
 		}
+		locker, ok := w.(leasestore.FencedLeaseLocker)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		if _, err := locker.LockLease(ctx, reservation.LeaseID); err != nil {
+			return err
+		}
+
 		if err := s.authorizeDependencyReasonLease(ctx, w, scope, item, command, pinned, requirements, s.config.now().UTC()); err != nil {
 			return err
 		}

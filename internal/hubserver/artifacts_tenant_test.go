@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -93,7 +94,7 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				lease, err := w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(machineID), SessionID: "session_example", LeaseID: "lease_example", TTL: time.Hour})
+				lease, err := w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(machineID), SessionID: "session_example", LeaseID: "lease_example", TTL: time.Minute})
 				if err != nil {
 					return err
 				}
@@ -142,6 +143,29 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, request), tc.status)
 				})
 			}
+			for _, tc := range []struct {
+				name    string
+				expired bool
+				status  int
+			}{
+				{"expires while locking", true, http.StatusConflict},
+				{"renewed while locking", false, http.StatusNoContent},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					originalNow := now
+					defer func() { service.config.TenantRepository = repository; now = originalNow }()
+					service.config.TenantRepository = artifactLeaseClockRepository{Repository: repository, renew: !tc.expired, afterLock: func(lease leasestore.Lease) {
+						now = lease.RenewedAt
+						if tc.expired {
+							now = lease.ExpiresAt
+						} else {
+							originalNow = now
+						}
+					}}
+					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, reservation), tc.status)
+				})
+			}
+
 			if foreign.OrganizationID != "" {
 				foreign.OrganizationID, foreign.ProjectID, foreign.WorkItemID = reservation.OrganizationID, reservation.ProjectID, reservation.WorkItemID
 				foreign.LeaseID, foreign.FencingToken = reservation.LeaseID, reservation.FencingToken
@@ -340,4 +364,34 @@ func testPostgresArtifactReceipts(t *testing.T, service *Service, reservation ar
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, publisherToken, reference), http.StatusNotFound)
 	return reference
+}
+
+type artifactLeaseClockRepository struct {
+	tenantstore.Repository
+	renew     bool
+	afterLock func(leasestore.Lease)
+}
+
+func (r artifactLeaseClockRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	return r.Repository.WriteTenant(ctx, org, workload, func(w tenantstore.Writer) error {
+		return write(&artifactLeaseClockWriter{Writer: w, renew: r.renew, afterLock: r.afterLock})
+	})
+}
+
+type artifactLeaseClockWriter struct {
+	tenantstore.Writer
+	renew     bool
+	afterLock func(leasestore.Lease)
+}
+
+func (w *artifactLeaseClockWriter) LockLease(ctx context.Context, id string) (leasestore.Lease, error) {
+	lease, err := w.Writer.(leasestore.FencedLeaseLocker).LockLease(ctx, id)
+	if err == nil && w.renew {
+		w.renew = false
+		lease, err = w.Writer.Renew(ctx, leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, time.Minute)
+	}
+	if err == nil {
+		w.afterLock(lease)
+	}
+	return lease, err
 }
