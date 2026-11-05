@@ -63,11 +63,6 @@ func (s *session) ConsumeArtifactUpload(ctx context.Context, reference artifact.
 	return nil
 }
 
-func (s *session) ArtifactUploadAuthorityCutover(ctx context.Context) (time.Time, error) {
-	cutover, err := s.queries.ArtifactUploadAuthorityCutover(ctx)
-	return cutover, mapError(ctx, err)
-}
-
 func (s *session) PruneExpiredArtifactUploadAuthorizations(ctx context.Context, now time.Time, limit int) (int64, error) {
 	if now.IsZero() || limit < 1 || limit > artifactstore.MaxUploadAuthorizationPruneBatch {
 		return 0, corestore.ErrInvalidPage

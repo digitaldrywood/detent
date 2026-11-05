@@ -146,22 +146,6 @@ func (s *Service) authorizeArtifactUploadTenant(ctx context.Context, scope nativ
 	return projectRecordError(err)
 }
 
-func (s *Service) consumeArtifactUpload(ctx context.Context, w tenantstore.Writer, reference artifact.Reference, attemptStarted time.Time) error {
-	now := s.config.now().UTC()
-	err := w.ConsumeArtifactUpload(ctx, reference, now)
-	if !errors.Is(err, corestore.ErrNotFound) {
-		return err
-	}
-	cutover, cutoverErr := w.ArtifactUploadAuthorityCutover(ctx)
-	if cutoverErr != nil {
-		return cutoverErr
-	}
-	if attemptStarted.Before(cutover) && now.Before(cutover.Add(artifactstore.UploadAuthorizationLifetime)) {
-		return nil
-	}
-	return err
-}
-
 func (s *Service) publishArtifactReceiptTenant(ctx context.Context, scope nativeScope, reference artifact.Reference) error {
 	if s.config.TenantRepository == nil {
 		return workItemStorageUnavailable()
@@ -204,7 +188,7 @@ func (s *Service) publishArtifactReceiptTenant(ctx context.Context, scope native
 			return readErr
 		}
 		if readErr != nil {
-			if err := s.consumeArtifactUpload(ctx, w, reference, attempt.StartedAt); err != nil {
+			if err := w.ConsumeArtifactUpload(ctx, reference, s.config.now().UTC()); err != nil {
 				return err
 			}
 		}

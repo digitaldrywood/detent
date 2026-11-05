@@ -47,17 +47,6 @@ func (q *Queries) ArtifactReferencePublished(ctx context.Context, arg ArtifactRe
 	return exists, err
 }
 
-const artifactUploadAuthorityCutover = `-- name: ArtifactUploadAuthorityCutover :one
-SELECT cutover_at FROM artifact_upload_authority_cutover WHERE singleton
-`
-
-func (q *Queries) ArtifactUploadAuthorityCutover(ctx context.Context) (time.Time, error) {
-	row := q.db.QueryRowContext(ctx, artifactUploadAuthorityCutover)
-	var cutover_at time.Time
-	err := row.Scan(&cutover_at)
-	return cutover_at, err
-}
-
 const artifactUploadAuthorizationConsume = `-- name: ArtifactUploadAuthorizationConsume :execrows
 DELETE FROM artifact_upload_authorizations a
 WHERE a.organization_id=$1 AND a.project_id=$2 AND a.service_id=$3 AND a.idempotency_key=(

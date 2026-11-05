@@ -192,11 +192,6 @@ type ArtifactService struct {
 	PublisherTokenID string
 }
 
-type ArtifactUploadAuthorityCutover struct {
-	Singleton bool
-	CutoverAt time.Time
-}
-
 type ArtifactUploadAuthorization struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID

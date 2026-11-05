@@ -38,6 +38,3 @@ SELECT EXISTS (
     WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND artifact_id=sqlc.arg(artifact_id)
     AND service_id=sqlc.arg(service_id) AND work_item_id=sqlc.arg(work_item_id) AND run_id=sqlc.arg(run_id) AND attempt_id=sqlc.arg(attempt_id) AND kind=sqlc.arg(kind)
 );
-
--- name: ArtifactUploadAuthorityCutover :one
-SELECT cutover_at FROM artifact_upload_authority_cutover WHERE singleton;
