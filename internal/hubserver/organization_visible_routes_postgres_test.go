@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -282,6 +283,41 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 		body["publisher_token_id"] = "credential_missing"
 		requireNativeStatus(t, request(http.MethodPut, strings.Replace(base, "/artifact-services", "/onboarding/artifact-services", 1)+"/service_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", body), http.StatusNotFound)
 
+		grantRows := func(principal string) int {
+			t.Helper()
+			var count int
+			if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM artifact_grants WHERE organization_id=$1 AND principal_id=$2`, org, principal).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			return count
+		}
+		expireGrants := func() {
+			t.Helper()
+			if _, err := admin.ExecContext(t.Context(), `UPDATE artifact_grants SET expires_at=$2 WHERE organization_id=$1`, org, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		expireGrants()
+		for range artifactstore.ReadGrantLimit {
+			requireNativeStatus(t, request(http.MethodPost, accessPath, map[string]int{"revision": 1}), http.StatusOK)
+		}
+		requireNativeStatus(t, request(http.MethodPost, accessPath, map[string]int{"revision": 1}), http.StatusTooManyRequests)
+		if got := grantRows("credential_owner"); got != artifactstore.ReadGrantLimit {
+			t.Fatalf("%s owner grant rows=%d, want %d", org, got, artifactstore.ReadGrantLimit)
+		}
+		if org == "org_startup" {
+			subject, role = "user_member", "member"
+			requireNativeStatus(t, request(http.MethodPost, accessPath, map[string]int{"revision": 1}), http.StatusOK)
+			subject, role = "user_owner", "owner"
+			if got := grantRows("credential_member"); got != 1 {
+				t.Fatalf("member grant rows=%d, want 1", got)
+			}
+		}
+		expireGrants()
+		requireNativeStatus(t, request(http.MethodPost, accessPath, map[string]int{"revision": 1}), http.StatusOK)
+		if got := grantRows("credential_owner"); got != 1 {
+			t.Fatalf("%s owner grant rows after expiry=%d, want 1", org, got)
+		}
 	}
 	organization = "org_startup"
 	base := "/organizations/org_startup/api/v2/organizations/org_startup"

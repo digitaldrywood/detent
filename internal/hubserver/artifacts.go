@@ -234,6 +234,9 @@ func (s *Service) artifactReadGrant(c echo.Context) error {
 	if errors.Is(err, artifact.ErrExpired) {
 		return s.refusedAPIError(c, http.StatusGone, "expired", "Artifact retention has expired", apiErrorResponse{Code: "expired", Message: "Artifact retention has expired"})
 	}
+	if errors.Is(err, artifact.ErrQuota) {
+		return s.refusedAPIError(c, http.StatusTooManyRequests, "quota_exceeded", "Too many active artifact access grants; retry after they expire", apiErrorResponse{Code: "quota_exceeded", Message: "Too many active artifact access grants; retry after they expire"})
+	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
