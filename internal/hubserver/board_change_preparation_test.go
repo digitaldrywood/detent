@@ -272,6 +272,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 	})
 	service := &Service{database: &database{postgres: repository}, echo: echo.New(), secretRewrapReady: make(chan struct{}), config: Config{TenantRepository: repository, AccessRepository: repository, Logger: slog.New(slog.NewTextHandler(&previewLogs, nil)), SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: details, Clock: func() time.Time { return now }}.normalized()}
 	service.echo.POST(nativeBase+"/claims/preview", service.previewProviderCandidates, service.requireNativeScope(apiScopeWorker))
+	service.echo.GET(nativeBase+"/work-items/:item", service.getNativeIssue, service.requireNativeScope(apiScopeWorker, apiScopeOperator))
 	if service.database.db != nil {
 		t.Fatal("preview fixture has a legacy database")
 	}
@@ -421,11 +422,59 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 		if err != nil || bounded.Detail == nil || bounded.Detail.Change.OrganizationID != org || bounded.Detail.Summary.Status != "stale_policy" {
 			t.Fatalf("bounded stale-policy read=%+v error=%v", bounded.Detail, err)
 		}
+		authority := tenantChangeVersionAuthority{repository: repository, content: content}
+		for _, check := range []struct {
+			name string
+			read func() error
+		}{
+			{name: "publication preparation", read: func() error {
+				_, err := authority.Prepare(t.Context(), scope, detail.Change, tracker.PublishChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{PolicyID: nextDescriptor.ID}}, now)
+				return err
+			}},
+			{name: "publication authorization", read: func() error {
+				return repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					return authority.Authorize(t.Context(), w, scope, detail.Change, tracker.PublishChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{PolicyID: nextDescriptor.ID}}, ChangeVersionApproval{Policy: nextDescriptor, ReviewPolicy: rules}, now)
+				})
+			}},
+			{name: "review approval policy", read: func() error {
+				_, err := service.currentChangePolicyRows(t.Context(), scope)
+				return err
+			}},
+			{name: "landing transaction policy", read: func() error {
+				return repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					_, err := readCurrentChangePolicyRows(t.Context(), w, scope)
+					return err
+				})
+			}},
+		} {
+			if err := check.read(); !errors.Is(err, corestore.ErrTenantMismatch) {
+				t.Fatalf("%s: stale %s policy accepted: %v", org, check.name, err)
+			}
+		}
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-			_, err := readCurrentChangePolicyRows(t.Context(), r, scope)
+			foreign := scope
+			foreign.organization = "org_first"
+			if org == foreign.organization {
+				foreign.organization = "org_second"
+			}
+			_, err := readChangeSummaryPolicyRows(t.Context(), r, foreign)
 			return err
 		}); !errors.Is(err, corestore.ErrTenantMismatch) {
-			t.Fatalf("stale publication policy accepted: %v", err)
+			t.Fatalf("%s: cross-tenant summary policy accepted: %v", org, err)
+		}
+		for index := range 2 {
+			id := fmt.Sprintf("wi_%03d", index)
+			path := "/api/v2/organizations/" + string(org) + "/projects/example/work-items/" + id + "?view=recovery&projection=bounded"
+			response := performHubAPIRequest(t, service, http.MethodGet, path, testHubAdminToken, nil)
+			if response.Code != http.StatusOK {
+				t.Errorf("%s/%s: stale review prevents recovery: status=%d body=%s", org, id, response.Code, response.Body.String())
+				continue
+			}
+			var recovery tracker.NativeRecovery
+			decodeHubResponse(t, response, &recovery)
+			if recovery.Issue.OrganizationID != org || recovery.Issue.WorkItemID != tracker.NativeWorkItemID(id) || recovery.ChangeDetail == nil || recovery.ChangeDetail.Change.OrganizationID != org || recovery.ChangeDetail.Change.ProjectID != "example" || recovery.ChangeDetail.Change.ID != fmt.Sprintf("change_%03d", index) || recovery.ChangeDetail.Summary.Status != "stale_policy" {
+				t.Errorf("%s/%s: recovery lost scoped stale Change summary: %+v", org, id, recovery)
+			}
 		}
 
 		secret := "example-preview-secret-" + string(org)
