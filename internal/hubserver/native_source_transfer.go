@@ -3,11 +3,9 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -191,6 +189,13 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nati
 			break
 		}
 	}
+	row, _, err := s.readWorkItemRecord(ctx, scope, item)
+	if err != nil {
+		return view, err
+	}
+	if row.RecoveryVersionID == view.VersionID {
+		view.DestinationRunnerID = row.RecoveryRunnerID
+	}
 	view.Quiesced = view.Quiesced && !recovery.Issue.Archived && !recovery.Issue.Terminal
 	switch {
 	case recovery.Issue.Archived || recovery.Issue.Terminal:
@@ -351,77 +356,6 @@ func (s *Service) transferNativeSource(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return c.Blob(http.StatusOK, "application/json", result)
-}
-
-func (s *Service) transferNativeSourceCommand(ctx context.Context, scope nativeScope, item string, request sourceTransferRequest) (json.RawMessage, error) {
-	if s.config.TenantRepository != nil {
-		if _, err := s.selectNativeSourceTransferTenant(ctx, scope, item, request); err != nil {
-			return nil, err
-		}
-		return nil, workItemStorageUnavailable()
-	}
-	options := nativeCommandOptions{OperationID: "source_recovery " + string(scope.organization) + "/" + string(scope.project) + "/" + item, Item: item, Feature: "collaboration", RunnerAdministration: true}
-	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		view, id, err := readSourceRecoveryView(ctx, tx, scope, item)
-		if err != nil {
-			return nil, err
-		}
-		if request.ExpectedRevision <= 0 || request.ExpectedRevision != view.Revision {
-			return nil, nativeConflict(view.Revision)
-		}
-		if request.VersionID == "" || request.VersionID != view.VersionID {
-			return nil, sourceRecoveryRefusal("Re-read the current source version before transfer")
-		}
-		if !view.Quiesced {
-			return nil, sourceRecoveryRefusal(view.Reason)
-		}
-		if request.DestinationRunnerID != "" {
-			if !view.Available {
-				return nil, sourceRecoveryRefusal(view.Reason)
-			}
-			approval, err := requireProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
-			if err != nil {
-				return nil, err
-			}
-			runners, err := readPlacementRunners(ctx, tx, scope, now)
-			if err != nil {
-				return nil, err
-			}
-			var destination *placementRunner
-			for i := range runners {
-				if runners[i].RunnerID == request.DestinationRunnerID {
-					destination = &runners[i]
-					break
-				}
-			}
-			if destination == nil || !placementRunnerCompatible(*destination, scope.project, approval.Policy.Requirements, now, false) {
-				return nil, sourceRecoveryRefusal("Destination runner must be online, eligible and have available capacity")
-			}
-			if err := validateReadRunnerIsolation(ctx, tx, scope, destination.Runner); err != nil {
-				return nil, sourceRecoveryRefusal("Destination runner must support its configured isolation tier")
-			}
-		}
-		_, err = tx.ExecContext(ctx, `UPDATE issues SET recovery_runner_id=?,recovery_version_id=?,revision=revision+1,native_updated_at=?,updated_at=? WHERE id=?`, request.DestinationRunnerID, view.VersionID, formatHubTime(now), formatHubTime(now), id)
-		if err != nil {
-			return nil, err
-		}
-		if err := requestNativeDispatch(ctx, tx, scope, item, now); err != nil {
-			return nil, err
-		}
-		view.DestinationRunnerID, view.Revision = request.DestinationRunnerID, view.Revision+1
-		issue, _, err := readNativeIssue(ctx, tx, scope, item)
-		if err != nil {
-			return nil, err
-		}
-		audit, err := json.Marshal(view)
-		if err != nil {
-			return nil, err
-		}
-		if err := recordNativeChange(ctx, tx, scope, issue, item, view.Revision, "issue.edited", tracker.CollaborationData{Revision: view.Revision, Fields: []string{"recovery_runner_id"}, Operation: "source_recovery", ReasonDetail: string(audit)}, now); err != nil {
-			return nil, err
-		}
-		return view, nil
-	})
 }
 
 func sourceRecoveryRefusal(message string) error {

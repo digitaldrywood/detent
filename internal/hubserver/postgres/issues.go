@@ -163,3 +163,20 @@ func optionalTime(value time.Time) *time.Time {
 	}
 	return &value
 }
+
+func (s *session) CompareAndSwapSourceRecovery(ctx context.Context, item corestore.WorkItem, runner, version string) error {
+	if err := s.checkOrganization(item.OrganizationID); err != nil {
+		return err
+	}
+	if item.Revision < 1 || version == "" {
+		return corestore.ErrRevisionConflict
+	}
+	count, err := s.queries.CompareAndSwapSourceRecovery(ctx, pgquery.CompareAndSwapSourceRecoveryParams{OrganizationID: s.organization, ProjectID: item.ProjectID, NativeID: item.NativeID, ExpectedRevision: item.Revision, ExpectedEventSequence: item.EventSequence, RunnerID: runner, VersionID: version})
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if count != 1 {
+		return corestore.ErrRevisionConflict
+	}
+	return nil
+}

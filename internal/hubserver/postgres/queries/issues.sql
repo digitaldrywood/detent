@@ -150,3 +150,9 @@ SELECT id FROM issues
 WHERE organization_id=sqlc.arg(organization_id)
   AND project_id=sqlc.arg(project_id)
 ORDER BY id DESC LIMIT 1;
+
+-- name: CompareAndSwapSourceRecovery :execrows
+UPDATE issues SET recovery_runner_id=sqlc.arg(runner_id), recovery_version_id=sqlc.arg(version_id),
+ revision=revision+1, updated_at=CURRENT_TIMESTAMP, native_updated_at=CURRENT_TIMESTAMP
+WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND native_id=sqlc.arg(native_id)
+ AND revision=sqlc.arg(expected_revision) AND event_sequence=sqlc.arg(expected_event_sequence) AND NOT archived;

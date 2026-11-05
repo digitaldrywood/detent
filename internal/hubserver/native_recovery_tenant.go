@@ -352,6 +352,9 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 		result.ChangeDetail = &detail
 		if changeVersion != nil {
 			result.Change = &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: changeVersion.ID, HeadSHA: changeVersion.HeadSHA}
+			if row.RecoveryRunnerID != "" && row.RecoveryVersionID == changeVersion.ID {
+				result.SourceVersionID = changeVersion.ID
+			}
 		}
 	}
 	for i, comment := range comments {
@@ -369,7 +372,7 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 		result.Read = &tracker.NativeRecoveryRead{}
 	}
 	if scope.credential.Runner.RunnerID != "" {
-		result.Read.Omitted = append(result.Read.Omitted, "source_version_id", "instance_successes")
+		result.Read.Omitted = append(result.Read.Omitted, "instance_successes")
 	}
 	result.Read.DetailPath = "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "?view=recovery&limit=1"
 	var sourceAttemptID, changeAttemptID, landingAttemptID, checkpointAttemptID string

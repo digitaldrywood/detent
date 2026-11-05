@@ -1281,6 +1281,8 @@ type Issue struct {
 	Priority               *int
 	DispatchGeneration     int64
 	DispatchRequestedAt    *time.Time
+	RecoveryRunnerID       string
+	RecoveryVersionID      string
 }
 
 type IssueClaimFact struct {

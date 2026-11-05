@@ -341,7 +341,7 @@ const lockWorkItemBatch = `-- name: LockWorkItemBatch :many
 WITH requested AS MATERIALIZED (
  SELECT requested.project_id,requested.native_id FROM ROWS FROM(unnest($2::text[]),unnest($3::text[])) AS requested(project_id,native_id)
 )
-SELECT i.organization_id, i.id, i.native_id, i.project_id, i.number, i.revision, i.event_sequence, i.native_source_key, i.title, i.body_object_key, i.issue_contract_object_key, i.report_context_object_key, i.actor_kind, i.actor_principal_id, i.provenance_provider, i.provenance_external_id, i.archived, i.created_at, i.updated_at, i.native_created_at, i.native_updated_at, i.workflow_state_name, i.last_activity_at, i.issue_type, i.priority, i.dispatch_generation, i.dispatch_requested_at FROM requested r JOIN issues i ON i.organization_id=$1 AND i.project_id=r.project_id AND i.native_id=r.native_id
+SELECT i.organization_id, i.id, i.native_id, i.project_id, i.number, i.revision, i.event_sequence, i.native_source_key, i.title, i.body_object_key, i.issue_contract_object_key, i.report_context_object_key, i.actor_kind, i.actor_principal_id, i.provenance_provider, i.provenance_external_id, i.archived, i.created_at, i.updated_at, i.native_created_at, i.native_updated_at, i.workflow_state_name, i.last_activity_at, i.issue_type, i.priority, i.dispatch_generation, i.dispatch_requested_at, i.recovery_runner_id, i.recovery_version_id FROM requested r JOIN issues i ON i.organization_id=$1 AND i.project_id=r.project_id AND i.native_id=r.native_id
 ORDER BY i.project_id COLLATE "C",i.native_id COLLATE "C" FOR UPDATE OF i
 `
 
@@ -388,6 +388,8 @@ func (q *Queries) LockWorkItemBatch(ctx context.Context, arg LockWorkItemBatchPa
 			&i.Priority,
 			&i.DispatchGeneration,
 			&i.DispatchRequestedAt,
+			&i.RecoveryRunnerID,
+			&i.RecoveryVersionID,
 		); err != nil {
 			return nil, err
 		}

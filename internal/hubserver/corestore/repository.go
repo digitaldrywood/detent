@@ -129,6 +129,8 @@ type WorkItem struct {
 	Priority               *int
 	DispatchGeneration     int64
 	DispatchRequestedAt    *time.Time
+	RecoveryRunnerID       string
+	RecoveryVersionID      string
 }
 
 type Comment struct {
@@ -268,4 +270,8 @@ type DuplicateChallengeWriter interface {
 	CreateDuplicateChallenge(context.Context, DuplicateChallenge) error
 	ConsumeDuplicateChallenge(context.Context, DuplicateChallenge, time.Time) (DuplicateChallenge, error)
 	PruneDuplicateChallenges(context.Context, time.Time, int) (int64, error)
+}
+
+type SourceRecoveryWriter interface {
+	CompareAndSwapSourceRecovery(context.Context, WorkItem, string, string) error
 }

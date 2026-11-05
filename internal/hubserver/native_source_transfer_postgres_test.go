@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,7 +18,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/labstack/echo/v4"
 )
@@ -31,7 +37,7 @@ func sourceTransferPostgresFixture(t *testing.T) *Service {
 			t.Log(logs.String())
 		}
 	})
-	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(&logs, nil))}}
+	service := &Service{notifications: newNotificationBroker(), echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(&logs, nil))}}
 	provider := newHostedSecurityProvider()
 	service.config.Hosted = &HostedConfig{OrganizationID: "org_first", Provider: provider}
 	service.registerNativeRoutes(service.echo)
@@ -208,4 +214,102 @@ func seedSourceTransferAttempt(t *testing.T, s *Service, org tracker.Organizatio
 		t.Fatal(err)
 	}
 	return lease
+}
+
+func TestPostgresSourceTransferCommitsAndReplays(t *testing.T) {
+	s := sourceTransferPostgresFixture(t)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(org), func(t *testing.T) {
+			s.config.Hosted.OrganizationID = string(org)
+			lease := seedSourceTransferAttempt(t, s, org)
+			if err := s.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if _, err := w.Release(t.Context(), leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, "released"); err != nil {
+					return err
+				}
+				now := s.config.now()
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "destination", Name: "Example destination", Hash: apikey.HashToken(string(org) + "_destination"), Scope: "worker", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: "destination", ProjectID: "project"}); err != nil {
+					return err
+				}
+				if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: org, ID: "enrollment", RunnerID: "destination", MachineID: "machine", TokenHash: apikey.HashToken(string(org) + "_enrollment"), Scope: "projects", ProjectIDs: []tracker.ProjectID{"project"}, Operations: []string{runnerauth.Claim}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "owner"}); err != nil {
+					return err
+				}
+				if err := w.RedeemRunnerEnrollment(t.Context(), "enrollment", "destination", "machine", now); err != nil {
+					return err
+				}
+				if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: org, RunnerID: "destination", MachineID: "machine", TokenID: "destination", EnrollmentID: "enrollment", Scope: "projects", ProjectIDs: []tracker.ProjectID{"project"}, Operations: []string{runnerauth.Claim}, OS: "linux", IsolationTier: isolation.NativeTrusted, CapacityLimit: 2, ReportedCapacity: 2, CreatedAt: now, LastHeartbeatAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+					return err
+				}
+				return w.ReplaceRunnerBackendIsolation(t.Context(), "destination", isolation.Report{"example": {isolation.NativeTrusted}})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			path := "/api/v2/organizations/" + string(org) + "/projects/project/work-items/item/source-recovery"
+			request := sourceTransferRequest{Mutation: tracker.Mutation{IdempotencyKey: "transfer"}, ExpectedRevision: 1, VersionID: "version", DestinationRunnerID: "destination"}
+			responses := make([]*httptest.ResponseRecorder, 2)
+			var requests sync.WaitGroup
+			for i := range responses {
+				req := newHubAPIRequest(t, http.MethodPost, path, string(org)+"_token", request)
+				requests.Go(func() { responses[i] = httptest.NewRecorder(); s.Handler().ServeHTTP(responses[i], req) })
+			}
+			requests.Wait()
+			response := responses[0]
+			requireNativeStatus(t, responses[1], http.StatusOK)
+			if response.Body.String() != responses[1].Body.String() {
+				t.Fatal("concurrent transfer changed response")
+			}
+			requireNativeStatus(t, response, http.StatusOK)
+			var result sourceRecoveryView
+			decodeHubResponse(t, response, &result)
+			if result.DestinationRunnerID != "destination" || result.Revision != 2 || result.VersionID != "version" || !result.Quiesced || !result.Available {
+				t.Fatalf("transfer = %+v", result)
+			}
+			recoveryResponse := performHubAPIRequest(t, s, http.MethodGet, strings.TrimSuffix(path, "/source-recovery")+"?view=recovery", string(org)+"_token", nil)
+			requireNativeStatus(t, recoveryResponse, http.StatusOK)
+			var recovered tracker.NativeRecovery
+			decodeHubResponse(t, recoveryResponse, &recovered)
+			if recovered.SourceVersionID != "version" {
+				t.Fatalf("continuation source = %q", recovered.SourceVersionID)
+			}
+			replay := performHubAPIRequest(t, s, http.MethodPost, path, string(org)+"_token", request)
+			requireNativeStatus(t, replay, http.StatusOK)
+			if replay.Body.String() != response.Body.String() {
+				t.Fatal("replay changed committed response")
+			}
+			for _, tc := range []struct {
+				key, version, destination string
+				revision                  tracker.Revision
+				status                    int
+			}{
+				{"transfer", "other", "", 1, http.StatusConflict},
+				{"stale", "version", "", 1, http.StatusConflict},
+				{"destination", "version", "missing", 2, http.StatusUnprocessableEntity},
+			} {
+				request.IdempotencyKey, request.VersionID, request.DestinationRunnerID, request.ExpectedRevision = tc.key, tc.version, tc.destination, tc.revision
+				requireNativeStatus(t, performHubAPIRequest(t, s, http.MethodPost, path, string(org)+"_token", request), tc.status)
+			}
+			if err := s.config.TenantRepository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				row, err := r.WorkItem(t.Context(), "project", "item")
+				if err == nil && (row.Revision != 2 || row.DispatchGeneration != 1 || row.RecoveryRunnerID != "destination" || row.RecoveryVersionID != "version") {
+					t.Errorf("transfer or replay mutated revision/dispatch more than once: %+v", row)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			provider := s.config.Hosted.Provider.(*hostedSecurityProvider)
+			membership := provider.members["member_"+string(org)]
+			membership.Role.Slug = "member"
+			provider.members[membership.ID] = membership
+			if err := s.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: membership.UserID, ProjectID: "project", CanWrite: true})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			request = sourceTransferRequest{Mutation: tracker.Mutation{IdempotencyKey: "transfer"}, ExpectedRevision: 1, VersionID: "version", DestinationRunnerID: "destination"}
+			requireNativeStatus(t, performHubAPIRequest(t, s, http.MethodPost, path, string(org)+"_token", request), http.StatusForbidden)
+		})
+	}
 }
