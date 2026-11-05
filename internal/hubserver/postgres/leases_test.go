@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -899,6 +900,29 @@ func TestRunnerSpendRejectsCumulativeModelOverflow(t *testing.T) {
 	}
 }
 
+type repositorySpend struct {
+	repository   *postgres.Repository
+	organization tracker.OrganizationID
+}
+
+func (s repositorySpend) read(ctx context.Context, project string, issue string, day *time.Time) (store.TokenSpend, error) {
+	var spend store.TokenSpend
+	err := s.repository.ReadLeases(ctx, s.organization, corestore.Serving, func(reader leasestore.Reader) error {
+		var err error
+		spend, err = reader.(leasestore.RunnerSpendReader).RunnerTokenSpend(ctx, tracker.ProjectID(project), issue, day, nil)
+		return err
+	})
+	return spend, err
+}
+
+func (s repositorySpend) ProjectDailyTokenSpend(ctx context.Context, project string, day time.Time) (store.TokenSpend, error) {
+	return s.read(ctx, project, "", &day)
+}
+
+func (s repositorySpend) IssueTokenSpend(ctx context.Context, issue store.IssueIdentity) (store.TokenSpend, error) {
+	return s.read(ctx, issue.ProjectID, issue.IssueID, nil)
+}
+
 func TestRunnerSpendReportBoundAcceptsOtherAttempts(t *testing.T) {
 	r, _ := repositoryFor(t, template.Database(t), smallPool())
 	day := time.Date(2026, 12, 25, 12, 0, 0, 0, time.UTC)
@@ -936,8 +960,8 @@ func TestRunnerSpendReportBoundAcceptsOtherAttempts(t *testing.T) {
 			claim leasestore.Claim
 			usage tracker.NativeUsage
 		}{
-			{claim: otherIssue, usage: tracker.NativeUsage{Model: "example-real", Input: 29, Output: 4, To: day}},
-			{claim: sameIssue, usage: tracker.NativeUsage{Model: "example-real", Input: 7, Output: 2, To: next}},
+			{claim: otherIssue, usage: tracker.NativeUsage{Model: "gpt-6-astra", Input: 29, Output: 1_000_000, To: day}},
+			{claim: sameIssue, usage: tracker.NativeUsage{Model: "gpt-6-astra", Input: 7, Output: 1_000_000, To: next}},
 		} {
 			finished := attemptEvent(claimLease(t, r, org, completion.claim))
 			recordLeaseAttempt(t, r, org, finished)
@@ -957,10 +981,10 @@ func TestRunnerSpendReportBoundAcceptsOtherAttempts(t *testing.T) {
 			input, output, sessions int64
 			first                   store.ModelTokenSpend
 		}{
-			{day: &day, models: 201, input: 29, output: 4, sessions: 201, first: store.ModelTokenSpend{InputTokens: 29, OutputTokens: 4, TotalTokens: 33, Sessions: 1}},
-			{day: &next, models: 1, input: 7, output: 2, sessions: 1, first: store.ModelTokenSpend{Model: "example-real", InputTokens: 7, OutputTokens: 2, TotalTokens: 9, Sessions: 1}},
-			{issue: "wi_3", models: 1, input: 29, output: 4, sessions: 1, first: store.ModelTokenSpend{Model: "example-real", InputTokens: 29, OutputTokens: 4, TotalTokens: 33, Sessions: 1}},
-			{issue: "wi_1", models: 201, input: 7, output: 2, sessions: 201, first: store.ModelTokenSpend{InputTokens: 7, OutputTokens: 2, TotalTokens: 9, Sessions: 1}},
+			{day: &day, models: 201, input: 29, output: 1_000_000, sessions: 201, first: store.ModelTokenSpend{InputTokens: 29, OutputTokens: 1_000_000, TotalTokens: 1_000_029, Sessions: 1}},
+			{day: &next, models: 1, input: 7, output: 1_000_000, sessions: 1, first: store.ModelTokenSpend{Model: "gpt-6-astra", InputTokens: 7, OutputTokens: 1_000_000, TotalTokens: 1_000_007, Sessions: 1}},
+			{issue: "wi_3", models: 1, input: 29, output: 1_000_000, sessions: 1, first: store.ModelTokenSpend{Model: "gpt-6-astra", InputTokens: 29, OutputTokens: 1_000_000, TotalTokens: 1_000_029, Sessions: 1}},
+			{issue: "wi_1", models: 201, input: 7, output: 1_000_000, sessions: 201, first: store.ModelTokenSpend{InputTokens: 7, OutputTokens: 1_000_000, TotalTokens: 1_000_007, Sessions: 1}},
 		} {
 			err := r.ReadLeases(t.Context(), org, corestore.Serving, func(reader leasestore.Reader) error {
 				spend, err := reader.(leasestore.RunnerSpendReader).RunnerTokenSpend(t.Context(), "prj_1", want.issue, want.day, nil)
@@ -971,6 +995,21 @@ func TestRunnerSpendReportBoundAcceptsOtherAttempts(t *testing.T) {
 			})
 			if err != nil {
 				t.Errorf("%s issue %q day %v spend read = %v", org, want.issue, want.day, err)
+			}
+		}
+		spend := repositorySpend{repository: r, organization: org}
+		for _, limit := range []struct {
+			config budget.Config
+			issue  string
+			now    time.Time
+			want   budget.ReasonCode
+		}{
+			{config: budget.Config{ProjectID: "prj_1", BillingMode: "metered", Enabled: true, PerDayMaxUSD: 40}, now: day, want: budget.ReasonPerDayMaxUSD},
+			{config: budget.Config{ProjectID: "prj_1", BillingMode: "metered", Enabled: true, PerIssueMaxUSD: 40}, issue: "wi_1", now: next, want: budget.ReasonPerIssueMaxUSD},
+		} {
+			decision, err := budget.NewChecker(limit.config, spend, budget.DefaultPricingTable()).CheckDispatch(t.Context(), budget.DispatchRequest{IssueID: limit.issue, Model: "gpt-5.4-mini", Now: limit.now, Estimate: budget.TokenEstimate{OutputTokens: 1, TotalTokens: 1}})
+			if err != nil || decision.Allowed || decision.Refusal == nil || decision.Refusal.Code != limit.want {
+				t.Errorf("%s flooded %s dispatch = %+v error %v, want refusal", org, limit.want, decision, err)
 			}
 		}
 	}

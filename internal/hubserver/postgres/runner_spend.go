@@ -146,7 +146,7 @@ func (s *session) RunnerTokenSpend(ctx context.Context, project tracker.ProjectI
 		if err := rows.Scan(&model.Model, &model.InputTokens, &model.CachedInputTokens, &model.OutputTokens, &model.Sessions); err != nil {
 			return result, mapError(ctx, err)
 		}
-		if model.Model != "" {
+		if model.Model != store.OverflowTokenModel {
 			named++
 		}
 		if named > 200 {

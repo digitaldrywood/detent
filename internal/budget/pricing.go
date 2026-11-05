@@ -164,6 +164,20 @@ func (p PricingTable) Lookup(model string) (ModelPricing, bool) {
 	return row, ok
 }
 
+func (p PricingTable) upperBound() (ModelPricing, bool) {
+	bound, ok := p.Lookup(defaultPricingFallbackModel)
+	if p == nil {
+		p = DefaultPricingTable()
+	}
+	for _, row := range p {
+		bound.USDPerInputToken = max(bound.USDPerInputToken, row.USDPerInputToken)
+		bound.USDPerCachedInputToken = max(bound.USDPerCachedInputToken, row.USDPerCachedInputToken)
+		bound.USDPerOutputToken = max(bound.USDPerOutputToken, row.USDPerOutputToken)
+		ok = true
+	}
+	return bound, ok
+}
+
 func UsageCostUSD(pricing PricingTable, model string, inputTokens int64, cachedInputTokens int64, outputTokens int64) (float64, bool) {
 	modelPricing, ok := pricing.Lookup(model)
 	if !ok {
