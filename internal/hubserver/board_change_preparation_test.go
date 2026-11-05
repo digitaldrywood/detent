@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
@@ -33,8 +35,10 @@ import (
 
 type boardChangeCountingRepository struct {
 	tenantstore.Repository
-	reads  atomic.Int64
-	scalar bool
+	reads             atomic.Int64
+	scalar            bool
+	relationshipItems map[tracker.NativeWorkItemID]int
+	changeItems       map[tracker.NativeWorkItemID]int
 }
 type boardChangeScalarReader struct{ tenantstore.Reader }
 
@@ -44,12 +48,33 @@ func (r *boardChangeCountingRepository) ReadTenant(ctx context.Context, org trac
 		if r.scalar {
 			return read(boardChangeScalarReader{reader})
 		}
+		if r.relationshipItems != nil {
+			return read(boardHydrationCountingReader{Reader: reader, owner: r})
+		}
 		return read(reader)
 	})
 }
 func (r *boardChangeCountingRepository) ReadTenantSnapshot(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
 	r.reads.Add(1)
 	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, org, workload, read)
+}
+
+type boardHydrationCountingReader struct {
+	tenantstore.Reader
+	owner *boardChangeCountingRepository
+}
+
+func (r boardHydrationCountingReader) WorkItemRelationshipFacts(ctx context.Context, project tracker.ProjectID, ids []tracker.NativeWorkItemID) ([]tenantstore.WorkItemRelationshipFact, error) {
+	for _, id := range ids {
+		r.owner.relationshipItems[id]++
+	}
+	return r.Reader.(tenantstore.WorkItemRelationshipBatchReader).WorkItemRelationshipFacts(ctx, project, ids)
+}
+func (r boardHydrationCountingReader) BoardChangeRows(ctx context.Context, project tracker.ProjectID, requests []tenantstore.BoardChangeRequest) ([]tenantstore.BoardChangeRows, error) {
+	for _, request := range requests {
+		r.owner.changeItems[request.WorkItemID]++
+	}
+	return r.Reader.(tenantstore.BoardChangeRowsReader).BoardChangeRows(ctx, project, requests)
 }
 
 type boardDetailBatchCounter struct {
@@ -184,7 +209,10 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: "example", WorkItemID: "wi_002", ChangeID: "change_001", CreatedAt: now})
+			if err := w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: "example", WorkItemID: "wi_002", ChangeID: "change_001", CreatedAt: now}); err != nil {
+				return err
+			}
+			return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: org, ProjectID: "example", WorkItemID: "wi_001", RelatedProjectID: "example", RelatedWorkItemID: "wi_002", Type: "dependency"}, "add", now)
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -235,6 +263,87 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 			t.Fatalf("archived%d scalarUOW%d batchUOW%d", archived, scalarReads, batchReads)
 		}
 		t.Logf("tenant=%s cards=200 scalar_uows=%d batch_uows=%d", org, scalarReads, batchReads)
+		for _, limit := range []int{100, 150, 200} {
+			counted.relationshipItems = map[tracker.NativeWorkItemID]int{}
+			counted.changeItems = map[tracker.NativeWorkItemID]int{}
+			combined, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {fmt.Sprint(limit)}, "archived": {"all"}, "include": {"work"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(combined.Items) == 0 || len(combined.Items) > limit || combined.Work == nil || len(combined.Work.Items) == 0 || len(combined.Work.Items) > limit {
+				t.Fatalf("limit %d: incomplete ordinary/work page", limit)
+			}
+			for index, issue := range combined.Items {
+				if !reflect.DeepEqual(issue, operatortool.NativeListIssue(after.Cards[index].Issue)) {
+					t.Fatalf("limit %d: ordinary ordering or contents changed at %d", limit, index)
+				}
+			}
+			for index, issue := range combined.Work.Items {
+				if !reflect.DeepEqual(issue, operatortool.NativeListIssue(after.Cards[199-index].Issue)) {
+					t.Fatalf("limit %d: work ordering or contents changed at %d", limit, index)
+				}
+			}
+			for index := range 200 {
+				id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index))
+				if got := counted.relationshipItems[id]; got != 1 {
+					t.Errorf("%s limit %d: item %s hydrated %d times, want once", org, limit, id, got)
+				}
+				wantChange := 0
+				if index < limit {
+					wantChange = 1
+				}
+				if got := counted.changeItems[id]; got != wantChange {
+					t.Errorf("limit %d: item %s enriched %d times, want %d", limit, id, got, wantChange)
+				}
+			}
+			t.Logf("%s limit=%d distinct=%d ordinary=%d work=%d", org, limit, len(counted.relationshipItems), len(combined.Items), len(combined.Work.Items))
+		}
+		counted.relationshipItems = nil
+		counted.changeItems = nil
+
+		t.Run(string(org)+"/reuse keeps required integrity errors and separates Change failures", func(t *testing.T) {
+			var records []viewstore.BoardRecord
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				records, err = r.BoardPage(t.Context(), viewstore.BoardSelection{ProjectID: scope.project, Limit: 1})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			card, err := viewstore.NewContent(details).BoardRecord(t.Context(), records[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			card.Change.ID = "missing_change"
+			records[0].Payload, err = viewstore.NewContent(details).PrepareBoard(t.Context(), card)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared := map[tracker.NativeWorkItemID]boardPreparedRecord{}
+			ordinary := service.prepareBoardPage(t.Context(), scope, records, now, true, prepared)
+			_, err = ordinary.card(t.Context(), 0)
+			ordinary.close()
+			if !isNativeNotFound(err) {
+				t.Fatalf("missing ordinary Change error=%v", err)
+			}
+			reads := batchDetails.scalar.Load()
+			work := service.prepareBoardPage(t.Context(), scope, records, now, false, prepared)
+			got, err := work.card(t.Context(), 0)
+			work.close()
+			if err != nil || got.Issue.WorkItemID != card.Issue.WorkItemID {
+				t.Fatalf("work-only hydration inherited Change failure: %+v %v", got, err)
+			}
+			if batchDetails.scalar.Load() != reads {
+				t.Fatal("overlapping work item read its payload again")
+			}
+			records[0].ActorPrincipalID = "mismatched_actor"
+			invalid := service.prepareBoardPage(t.Context(), scope, records, now, false, prepared)
+			_, err = invalid.card(t.Context(), 0)
+			invalid.close()
+			if !errors.Is(err, artifact.ErrIntegrity) {
+				t.Fatalf("reuse bypassed changed projection integrity: %v", err)
+			}
+		})
 		reporter := scope
 		reporter.credential.HostedRole = "reporter"
 		reporterPage, err := service.readBoardRecords(t.Context(), reporter, url.Values{"limit": {"200"}, "archived": {"all"}, "include": {"board"}})
@@ -247,6 +356,9 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 				t.Fatal("reporter received another principal issue")
 			}
 			if card.Issue.WorkItemID == "wi_001" {
+				if len(card.Issue.Dependencies) != 0 || len(card.Issue.Blockers) != 0 {
+					t.Fatal("reporter reused another principal's relationship visibility")
+				}
 				found = true
 				if card.Change == nil || card.Change.ID != "change_001" {
 					t.Fatal("hidden secondary link suppressed the visible primary change")

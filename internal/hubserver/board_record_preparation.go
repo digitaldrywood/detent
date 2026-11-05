@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"time"
 
@@ -54,27 +55,28 @@ func (p *boardRecordPreparation) card(ctx context.Context, index int) (tracker.N
 }
 func (p *boardRecordPreparation) close() { p.cancel(); p.workers.Wait() }
 
-func (s *Service) prepareBoardPage(ctx context.Context, scope nativeScope, records []viewstore.BoardRecord, now time.Time, currentChange bool) *boardRecordPreparation {
+type boardPreparedRecord struct {
+	record viewstore.BoardRecord
+	card   tracker.NativeBoardCard
+	err    error
+}
+
+func (s *Service) hydrateBoardRecords(ctx context.Context, scope nativeScope, records []viewstore.BoardRecord) map[tracker.NativeWorkItemID]boardPreparedRecord {
 	refs := make([]attachment.ArchiveReference, 0, len(records))
 	for _, record := range records {
 		refs = append(refs, record.Payload)
 	}
 	finishPayloads := timeSpan(ctx, "board_payloads")
 	s.prefetchDetails(ctx, string(scope.organization), refs)
-
 	decoded := prepareBoardRecordPage(ctx, records, func(ctx context.Context, row viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
 		return viewstore.NewContent(s.runDetailStoreFor(ctx)).BoardRecord(ctx, row)
 	})
 	cards := make([]tracker.NativeBoardCard, len(records))
 	errors := make([]error, len(records))
-	indexes := make(map[tracker.NativeWorkItemID]int, len(records))
-	valid := []tracker.NativeBoardCard{}
 	issues := []*tracker.NativeIssue{}
-	for index, row := range records {
+	for index := range records {
 		cards[index], errors[index] = decoded.card(ctx, index)
-		indexes[row.WorkItemID] = index
 		if errors[index] == nil {
-			valid = append(valid, cards[index])
 			issues = append(issues, &cards[index].Issue)
 		}
 	}
@@ -83,19 +85,45 @@ func (s *Service) prepareBoardPage(ctx context.Context, scope nativeScope, recor
 	finishRelationships := timeSpan(ctx, "board_relationships")
 	relationshipErr := s.hydrateWorkItemRelationshipFactsPage(ctx, scope, issues)
 	finishRelationships()
+	prepared := make(map[tracker.NativeWorkItemID]boardPreparedRecord, len(records))
+	for index, row := range records {
+		if errors[index] == nil {
+			errors[index] = relationshipErr
+		}
+		prepared[row.WorkItemID] = boardPreparedRecord{record: row, card: cards[index], err: errors[index]}
+	}
+	return prepared
+}
+
+func (s *Service) prepareBoardPage(ctx context.Context, scope nativeScope, records []viewstore.BoardRecord, now time.Time, currentChange bool, prepared map[tracker.NativeWorkItemID]boardPreparedRecord) *boardRecordPreparation {
+	missing := make([]viewstore.BoardRecord, 0, len(records))
+	for _, row := range records {
+		prior, exists := prepared[row.WorkItemID]
+		if !exists || !reflect.DeepEqual(prior.record, row) {
+			missing = append(missing, row)
+		}
+	}
+	if len(missing) > 0 {
+		for id, record := range s.hydrateBoardRecords(ctx, scope, missing) {
+			prepared[id] = record
+		}
+	}
 	var changes boardChangePreparation
 	supported := false
 	if currentChange {
+		valid := make([]tracker.NativeBoardCard, 0, len(records))
+		for _, row := range records {
+			if value := prepared[row.WorkItemID]; value.err == nil {
+				valid = append(valid, value.card)
+			}
+		}
 		changes, supported = s.prepareBoardChangeRows(ctx, scope, valid)
 	}
 	return prepareBoardRecordPage(ctx, records, func(ctx context.Context, row viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
-		index := indexes[row.WorkItemID]
-		card := cards[index]
-		if errors[index] != nil {
-			return card, errors[index]
-		}
-		if relationshipErr != nil {
-			return card, relationshipErr
+		value := prepared[row.WorkItemID]
+		card := value.card
+		if value.err != nil {
+			return card, value.err
 		}
 		if currentChange && card.Change != nil {
 			var summary tracker.ChangeSummary
@@ -108,7 +136,9 @@ func (s *Service) prepareBoardPage(ctx context.Context, scope nativeScope, recor
 			if err != nil {
 				return card, err
 			}
-			card.Change.Status = summary.Status
+			change := *card.Change
+			change.Status = summary.Status
+			card.Change = &change
 		}
 		return card, nil
 	})
