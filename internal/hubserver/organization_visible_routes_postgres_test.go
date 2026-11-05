@@ -16,6 +16,7 @@ import (
 
 	"github.com/lib/pq"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -29,7 +30,7 @@ import (
 
 func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 	cfg.Clock = func() time.Time { return now }
 	key := hostedSharedKey(41)
@@ -54,6 +55,9 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 			if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: "user_owner", Email: "owner@example.test", MembershipID: "membership_owner", Role: "owner", Active: true, PrincipalID: "credential_owner", CreatedAt: now, UpdatedAt: now}); err != nil {
 				return err
 			}
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "credential_publisher", Name: "Example publisher", Hash: apikey.HashToken("publisher_" + string(organization)), Scope: "worker", NativeOnly: true, ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now}); err != nil {
+				return err
+			}
 			for i, id := range []tracker.ProjectID{"project_first", "project_hidden", "project_last"} {
 				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: id, Name: string(id), Profile: "native", SchedulingRank: int64(i)}, States: nativeFixtureStates()}); err != nil {
 					return err
@@ -65,7 +69,7 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 					return err
 				}
 			}
-			return nil
+			return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: "credential_publisher", ProjectID: "project_first"})
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -137,7 +141,7 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 		organization = org
 		base := "/organizations/" + org + "/api/v2/organizations/" + org + "/projects/project_first/artifact-services"
 		requireNativeStatus(t, request(http.MethodGet, base, nil), http.StatusOK)
-		body := map[string]any{"service_id": "service_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "origin": "https://" + org + ".example.test", "mode": "customer", "publisher_token_id": "credential_owner", "idempotency_key": "bind-example"}
+		body := map[string]any{"service_id": "service_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "origin": "https://" + org + ".example.test", "mode": "customer", "publisher_token_id": "credential_publisher", "idempotency_key": "bind-example"}
 		bound := request(http.MethodPut, strings.Replace(base, "/artifact-services", "/onboarding/artifact-services", 1)+"/service_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", body)
 		requireNativeStatus(t, bound, http.StatusOK)
 		replay := request(http.MethodPut, strings.Replace(base, "/artifact-services", "/onboarding/artifact-services", 1)+"/service_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", body)
@@ -159,7 +163,7 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if binding.Origin != body["origin"] || binding.PublisherTokenID != "credential_owner" {
+			if binding.Origin != body["origin"] || binding.PublisherTokenID != "credential_publisher" {
 				t.Fatalf("stored binding: %+v", binding)
 			}
 			_, err = r.ArtifactService(t.Context(), "project_hidden", binding.ServiceID)
@@ -169,6 +173,31 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 			return nil
 		}); err != nil {
 			t.Fatal(err)
+		}
+		for _, serviceID := range []string{body["service_id"].(string), "service_missing"} {
+			req := httptest.NewRequest(http.MethodPost, base+"/"+serviceID+"/authorize", strings.NewReader("["))
+			assertionID, err := cloudassert.NewID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertion, err := cloudassert.Sign(key, cloudassert.Claims{Issuer: "entry", Audience: org, Generation: 1, Kind: cloudassert.KindMachine, Method: http.MethodPost, Path: req.URL.Path, BodyDigest: cloudassert.BodyDigest([]byte("[")), IssuedAt: now, ExpiresAt: now.Add(20 * time.Second), ID: assertionID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set(cloudassert.Header, assertion)
+			req.Header.Set("Authorization", "Bearer publisher_"+org)
+			req.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			handler := service.Handler()
+			if org == "org_second" {
+				handler = secondService.Handler()
+			}
+			handler.ServeHTTP(response, req)
+			want := http.StatusUnprocessableEntity
+			if serviceID == "service_missing" {
+				want = http.StatusNotFound
+			}
+			requireNativeStatus(t, response, want)
 		}
 		body["origin"] = "https://changed.example.test"
 		requireNativeStatus(t, request(http.MethodPut, strings.Replace(base, "/artifact-services", "/onboarding/artifact-services", 1)+"/service_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", body), http.StatusConflict)

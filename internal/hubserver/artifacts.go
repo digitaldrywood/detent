@@ -44,9 +44,8 @@ func (s *Service) hostedArtifactPublisher(c echo.Context, credential apiCredenti
 	if c.Path() != nativeBase+"/artifact-services/:service/receipts" && c.Path() != nativeBase+"/artifact-services/:service/authorize" {
 		return false
 	}
-	var count int
-	err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM artifact_services WHERE organization_id=? AND project_id=? AND id=? AND publisher_token_id=?", c.Param("organization"), c.Param("project"), c.Param("service"), credential.ID).Scan(&count)
-	return err == nil && count == 1
+	id, err := s.artifactPublisherToken(ctx, nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project"))}, c.Param("service"))
+	return err == nil && id == credential.ID
 }
 
 type bindArtifactServiceRequest struct {
@@ -104,14 +103,24 @@ func (s *Service) artifactPublisher(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	scope := nativeRequestScope(c)
-	var id string
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT publisher_token_id FROM artifact_services WHERE organization_id=? AND project_id=? AND id=?", scope.organization, scope.project, c.Param("service")).Scan(&id); err != nil {
-		return nativeNotFound()
-	}
-	if id != scope.credential.ID {
+	id, err := s.artifactPublisherToken(ctx, scope, c.Param("service"))
+	if err != nil || id != scope.credential.ID {
 		return nativeNotFound()
 	}
 	return nil
+}
+
+func (s *Service) artifactPublisherToken(ctx context.Context, scope nativeScope, service string) (id string, err error) {
+	if s.config.TenantRepository != nil {
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			binding, err := r.ArtifactService(ctx, scope.project, service)
+			id = binding.PublisherTokenID
+			return err
+		})
+		return id, err
+	}
+	err = s.database.reader.QueryRowContext(ctx, "SELECT publisher_token_id FROM artifact_services WHERE organization_id=? AND project_id=? AND id=?", scope.organization, scope.project, service).Scan(&id)
+	return id, err
 }
 
 func (s *Service) artifactReceipt(c echo.Context) error {
