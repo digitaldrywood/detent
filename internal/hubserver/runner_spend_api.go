@@ -39,8 +39,12 @@ func (s *Service) getRunnerSpend(c echo.Context) error {
 		if !ok {
 			return nativeRunEventStorageUnavailable()
 		}
+		var reporter *string
+		if scope.credential.HostedRole == "reporter" {
+			reporter = new(scope.actor().PrincipalID)
+		}
 		var err error
-		result, err = reader.RunnerTokenSpend(ctx, scope.project, c.QueryParam("issue"), day)
+		result, err = reader.RunnerTokenSpend(ctx, scope.project, c.QueryParam("issue"), day, reporter)
 		return err
 	})
 	if err != nil {
@@ -69,8 +73,12 @@ func (s *Service) getRunnerModelQuantiles(c echo.Context) error {
 		if !ok {
 			return nativeRunEventStorageUnavailable()
 		}
+		var reporter *string
+		if scope.credential.HostedRole == "reporter" {
+			reporter = new(scope.actor().PrincipalID)
+		}
 		var err error
-		result, err = reader.RunnerModelTokenQuantiles(ctx, scope.project, store.ModelTokenQuantileQuery{Model: c.QueryParam("model"), Limit: limit})
+		result, err = reader.RunnerModelTokenQuantiles(ctx, scope.project, store.ModelTokenQuantileQuery{Model: c.QueryParam("model"), Limit: limit}, reporter)
 		return err
 	})
 	if err != nil {

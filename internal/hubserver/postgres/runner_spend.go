@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -96,10 +97,13 @@ func (s *session) recordRunnerTokenUsage(ctx context.Context, attempt leasestore
 	return mapError(ctx, err)
 }
 
-func (s *session) RunnerTokenSpend(ctx context.Context, project tracker.ProjectID, issue string, day *time.Time) (store.TokenSpend, error) {
+func (s *session) RunnerTokenSpend(ctx context.Context, project tracker.ProjectID, issue string, day *time.Time, reporter *string) (store.TokenSpend, error) {
 	result := store.TokenSpend{}
+	if reporter != nil && day != nil {
+		return result, accessstore.ErrDenied
+	}
 	var unaccounted bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE a.organization_id=$1 AND i.project_id=$2 AND ($3='' OR i.native_id=$3) AND NOT a.runner_tokens_recorded)`, s.organization, project, issue).Scan(&unaccounted); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE a.organization_id=$1 AND i.project_id=$2 AND ($3='' OR i.native_id=$3) AND ($4::text IS NULL OR ($4<>'' AND i.actor_principal_id=$4)) AND NOT a.runner_tokens_recorded)`, s.organization, project, issue, reporter).Scan(&unaccounted); err != nil {
 		return result, mapError(ctx, err)
 	}
 	if unaccounted {
@@ -111,7 +115,7 @@ func (s *session) RunnerTokenSpend(ctx context.Context, project tracker.ProjectI
 		result.Date = day.UTC().Format(time.DateOnly)
 		rows, err = s.db.QueryContext(ctx, `SELECT model,input_tokens,cached_input_tokens,output_tokens,sessions FROM runner_project_daily_tokens WHERE organization_id=$1 AND project_id=$2 AND usage_day=$3 ORDER BY model LIMIT 201`, s.organization, project, result.Date)
 	} else {
-		rows, err = s.db.QueryContext(ctx, `SELECT u.model,u.input_tokens,u.cached_input_tokens,u.output_tokens,u.sessions FROM runner_issue_tokens u JOIN issues i ON i.organization_id=u.organization_id AND i.id=u.issue_id WHERE u.organization_id=$1 AND u.project_id=$2 AND i.native_id=$3 ORDER BY u.model LIMIT 201`, s.organization, project, issue)
+		rows, err = s.db.QueryContext(ctx, `SELECT u.model,u.input_tokens,u.cached_input_tokens,u.output_tokens,u.sessions FROM runner_issue_tokens u JOIN issues i ON i.organization_id=u.organization_id AND i.id=u.issue_id WHERE u.organization_id=$1 AND u.project_id=$2 AND i.native_id=$3 AND ($4::text IS NULL OR ($4<>'' AND i.actor_principal_id=$4)) ORDER BY u.model LIMIT 201`, s.organization, project, issue, reporter)
 	}
 	if err != nil {
 		return result, mapError(ctx, err)
@@ -156,8 +160,11 @@ func (s *session) AccountRunnerTokenUsage(ctx context.Context, expected leasesto
 	return s.recordRunnerTokenUsage(ctx, expected, usage)
 }
 
-func (s *session) RunnerModelTokenQuantiles(ctx context.Context, project tracker.ProjectID, query store.ModelTokenQuantileQuery) (store.ModelTokenQuantiles, error) {
+func (s *session) RunnerModelTokenQuantiles(ctx context.Context, project tracker.ProjectID, query store.ModelTokenQuantileQuery, reporter *string) (store.ModelTokenQuantiles, error) {
 	result := store.ModelTokenQuantiles{Model: query.Model}
+	if reporter != nil {
+		return result, accessstore.ErrDenied
+	}
 	if query.Limit < 1 || query.Limit > 200 || query.Model == "" {
 		return result, corestore.ErrInvalidPage
 	}
