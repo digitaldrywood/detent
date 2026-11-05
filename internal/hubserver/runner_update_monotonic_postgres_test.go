@@ -170,6 +170,94 @@ func TestPostgresRunnerUpdateReceiptReconciliation(t *testing.T) {
 	}
 }
 
+func TestPostgresRunnerUpdateHeartbeatIgnoresUnknownReceipt(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		previousStatus string
+		changeBuild    bool
+		status         int
+	}{
+		{"no previous receipt", "", true, http.StatusOK},
+		{"previous refusal", "refused", true, http.StatusOK},
+		{"previous running receipt", "running", false, http.StatusOK},
+		{"previous running build conflict", "running", true, http.StatusConflict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newRunnerPGFixture(t)
+			f.service.config.Version = "dev"
+			now := time.Now().UTC().Truncate(time.Microsecond)
+			for index, binding := range f.bindings {
+				build := runnerauth.BuildEvidence{Version: "1.0.0", Commit: strings.Repeat("a", 40), SHA256: strings.Repeat("b", 64), Source: "release", VerifiedRelease: true, OS: "linux", Architecture: "amd64", ObservedAt: now.Add(-time.Hour)}
+				var retained *runnerauth.UpdateReceipt
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+					identity, err := w.RunnerIdentity(t.Context(), binding.RunnerID)
+					if err != nil {
+						return err
+					}
+					identity.DisplayName = "Example"
+					return w.UpdateRunnerIdentity(t.Context(), identity)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if test.previousStatus != "" {
+					request := runnerauth.UpdateRequest{ID: fmt.Sprintf("known_%d", index), RequestedAt: now.Add(-time.Hour), Service: "detent", Version: build.Version, Release: true, ExpectedBuildRevision: strings.Repeat("c", 64)}
+					seedMonotonicRequest(t, f, index, request)
+					retained = &runnerauth.UpdateReceipt{Request: request, Status: test.previousStatus, ObservedAt: now.Add(-time.Hour)}
+					if test.previousStatus == "running" {
+						applied := build
+						retained.Applied, retained.Running = &applied, &applied
+					} else {
+						retained.FailureReason = "Release unavailable"
+					}
+				}
+				observation := runnerauth.UpdateObservation{Discovery: "unknown", Protocol: 1, Service: "detent", Supported: true, Running: build, Receipt: retained, ObservedAt: build.ObservedAt}
+				observation.Revision = observation.BuildRevision()
+				path := "/api/v2/organizations/org_startup/projects/prj_runner/machines/" + string(binding.MachineID) + "/heartbeat"
+				heartbeat := nativeMachineHeartbeatRequest{DisplayName: "Example", Capacity: 1, Version: build.Version, OS: build.OS, Architecture: build.Architecture, ProtocolMajor: 2, WorkspaceIsolation: "sandbox", Update: &observation}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], heartbeat), http.StatusOK)
+				previousBuild := build
+				build.ObservedAt = now
+				if test.changeBuild {
+					build.Version = "1.1.0"
+				}
+				unknown := runnerauth.UpdateRequest{ID: fmt.Sprintf("obsolete_%d", index), RequestedAt: now.Add(-2 * time.Hour), Service: "detent", Version: "0.9.0", Release: true, ExpectedBuildRevision: strings.Repeat("d", 64)}
+				observation.Running, observation.ObservedAt = build, now
+				observation.Receipt = &runnerauth.UpdateReceipt{Request: unknown, Status: "refused", FailureReason: "Target no longer applicable", ObservedAt: now.Add(-time.Hour)}
+				observation.Revision = observation.BuildRevision()
+				heartbeat.Version = build.Version
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], heartbeat), test.status)
+				wantBuild, wantObservedAt := build, now
+				if test.status == http.StatusConflict {
+					wantBuild, wantObservedAt = previousBuild, previousBuild.ObservedAt
+				}
+				err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+					state, err := r.RunnerUpdateState(t.Context(), binding.RunnerID)
+					if err != nil {
+						return err
+					}
+					if state.Observation == nil || state.Observation.Running.Version != wantBuild.Version || !state.Observation.ObservedAt.Equal(wantObservedAt) || state.Observation.ReceivedAt.Before(now) {
+						t.Errorf("unknown receipt hid the fresh running build: %+v", state.Observation)
+					}
+					if state.Observation != nil {
+						got := state.Observation.Receipt
+						if retained == nil {
+							if got != nil {
+								t.Errorf("unknown receipt became accepted evidence: %+v", got)
+							}
+						} else if got == nil || !got.Request.Matches(retained.Request) || got.Status != retained.Status || got.FailureReason != retained.FailureReason || !got.ObservedAt.Equal(retained.ObservedAt) {
+							t.Errorf("unknown receipt replaced accepted evidence: got %+v want %+v", got, retained)
+						}
+					}
+					return nil
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func TestPostgresRunnerUpdateReceiptRequestSupersession(t *testing.T) {
 	for _, kinds := range []string{"normal-normal", "normal-urgent", "urgent-normal", "urgent-urgent"} {
 		t.Run(kinds, func(t *testing.T) {
