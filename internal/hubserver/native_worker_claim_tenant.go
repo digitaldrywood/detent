@@ -88,7 +88,6 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope nativeScope,
 		if err != nil {
 			return leasestore.Lease{}, err
 		}
-		var contractRefusal error
 		position := scan.cursor.Position
 		for _, candidate := range scan.candidates {
 			var plan nativeClaimPlan
@@ -106,7 +105,10 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope nativeScope,
 				}
 			}
 			if !nativeClaimIssueContractAllowed(plan) {
-				contractRefusal = &nativeError{Code: "issue_contract_unsatisfied", Message: "Current issue contract does not allow dispatch", status: http.StatusConflict}
+				s.config.Logger.InfoContext(ctx, "native claim candidate skipped",
+					"organization_id", scope.organization, "project_id", scope.project,
+					"work_item_id", candidate.WorkItemID, "work_item_revision", plan.item.Revision,
+					"runner_id", scope.credential.Runner.RunnerID, "reason", "issue_contract_unsatisfied")
 				position = claimCandidateCursor(candidate)
 				continue
 			}
@@ -122,9 +124,6 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope nativeScope,
 		scan.cursor.Position = scan.pageNext
 		if err := s.persistNativeClaimCursor(ctx, scope, scan.cursor); err != nil {
 			return leasestore.Lease{}, err
-		}
-		if contractRefusal != nil {
-			return leasestore.Lease{}, contractRefusal
 		}
 		return leasestore.Lease{}, ErrNoClaimableWork
 	}

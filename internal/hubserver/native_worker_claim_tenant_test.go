@@ -612,9 +612,8 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	}
 	unqualifiedRequest := tracker.NativeClaim{PolicyID: descriptor.ID, MachineID: "machine_example", SessionID: "session_unqualified", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 	_, err = service.claimNativeIssueTenant(t.Context(), scope, unqualifiedRequest, 5*time.Minute)
-	var refusal *nativeError
-	if !errors.As(err, &refusal) || refusal.Code != "issue_contract_unsatisfied" {
-		t.Fatalf("first bounded claim scan error=%v, want issue contract refusal after advancing cursor", err)
+	if !errors.Is(err, ErrNoClaimableWork) {
+		t.Fatalf("first bounded claim scan error=%v, want no claimable work after advancing cursor", err)
 	}
 	var cursor claimstore.SelectionCursor
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
@@ -665,8 +664,8 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	changedSourceRequest.SessionID = "session_changed_query"
 	changedSourceRequest.WorkflowStates = []string{"Todo"}
 	_, err = service.claimNativeIssueTenant(t.Context(), scope, changedSourceRequest, 5*time.Minute)
-	if !errors.As(err, &refusal) || refusal.Code != "issue_contract_unsatisfied" {
-		t.Fatalf("claim after query source change error=%v, want issue contract refusal", err)
+	if !errors.Is(err, ErrNoClaimableWork) {
+		t.Fatalf("claim after query source change error=%v, want no claimable work", err)
 	}
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
@@ -940,6 +939,121 @@ func TestTenantClaimUsesConcurrencyNotSubscriptionQuotaState(t *testing.T) {
 			selected, err := selectReservation()
 			if err != nil || selected.Requirement != requirement {
 				t.Fatalf("selection with %s subscription evidence = %+v, error %v", availability, selected, err)
+			}
+		})
+	}
+}
+
+func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	clock := &leaseTestClock{value: time.Now().UTC()}
+	var logs bytes.Buffer
+	service := openPostgresHubTestService(t, repository, Config{
+		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, Clock: clock.Now, SecretKeys: secretTestKeys(t, "1", "1"),
+		Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+	})
+	service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
+	for _, name := range []string{"Example organization one", "Example organization two"} {
+		t.Run(name, func(t *testing.T) {
+			organization, err := service.createNativeOrganizationFor(t.Context(), name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedPostgresHubAdmin(t, repository, service, organization)
+			projectPath := "/api/v2/organizations/" + string(organization.ID) + "/projects"
+			projectResponse := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{"idempotency_key": "contract-scan-project", "name": "Example project", "states": nativeFixtureStates()})
+			requireNativeStatus(t, projectResponse, http.StatusOK)
+			var project tracker.NativeProject
+			decodeHubResponse(t, projectResponse, &project)
+			descriptor := hubTestPolicy()
+			policyRevision, err := eventstore.NewContent(service.config.RunDetails).PrepareProjectPolicy(t.Context(), organization.ID, descriptor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			policyRevision.ProjectID = project.ID
+			policyRevision.ApprovedBy = "test_hub_admin"
+			policyRevision.ApprovedAt = clock.Now().UTC()
+			if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.ApproveProjectPolicy(t.Context(), policyRevision, "")
+			}); err != nil {
+				t.Fatal(err)
+			}
+			itemsPath := projectPath + "/" + string(project.ID) + "/work-items"
+			issueResponse := performHubAPIRequest(t, service, http.MethodPost, itemsPath, testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "contract-scan-issue"}, Title: "Example issue", Body: "Missing required sections\n\n<!-- detent:no-dispatch -->", State: "Todo"})
+			requireNativeStatus(t, issueResponse, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, issueResponse, &issue)
+			startedAt := clock.Now().UTC()
+			runnerID := "runner_contract_scan_" + string(organization.ID)
+			machineID := tracker.MachineID("machine_contract_scan_" + string(organization.ID))
+			credentialID := "credential_contract_scan_" + string(organization.ID)
+			enrollmentID := "enrollment_contract_scan_" + string(organization.ID)
+			secret := "example_runner_contract_scan_secret_" + string(organization.ID)
+			tokenHash := apikey.HashToken(secret)
+			expires := startedAt.Add(time.Hour)
+			if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: credentialID, Name: "Example runner", Hash: tokenHash, Fingerprint: tokenFingerprint(tokenHash), Scope: "worker", NativeOnly: true, CreatedAt: startedAt, UpdatedAt: startedAt, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: credentialID, ProjectID: project.ID}); err != nil {
+					return err
+				}
+				if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization.ID, ID: enrollmentID, RunnerID: runnerID, MachineID: machineID, TokenHash: apikey.HashToken("example_enrollment_secret"), Scope: "projects", ProjectIDs: []tracker.ProjectID{project.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, CreatedAt: startedAt, ExpiresAt: expires, CreatedBy: "example-admin"}); err != nil {
+					return err
+				}
+				if err := w.RedeemRunnerEnrollment(t.Context(), enrollmentID, runnerID, machineID, startedAt); err != nil {
+					return err
+				}
+				if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: string(machineID), Hostname: "example-host", Capacity: 1, Version: "example"}); err != nil {
+					return err
+				}
+				if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: runnerID, MachineID: machineID, TokenID: credentialID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, DisplayName: "Example runner", CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: startedAt, ExpiresAt: expires, LastHeartbeatAt: startedAt}); err != nil {
+					return err
+				}
+				return w.UpdateRunnerCapacityConfig(t.Context(), runnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: startedAt})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			scope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: credentialID, Hash: tokenHash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: organization.ID}}}
+			request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: machineID, SessionID: "contract-scan-session", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}
+
+			targeted := request
+			_, err = service.claimNativeIssueTenant(t.Context(), scope, targeted, 5*time.Minute)
+			var refusal *nativeError
+			if !errors.As(err, &refusal) || refusal.Code != "issue_contract_unsatisfied" {
+				t.Fatalf("targeted invalid claim error = %v", err)
+			}
+			request.WorkItemID = ""
+			logs.Reset()
+			_, err = service.claimNativeIssueTenant(t.Context(), scope, request, 5*time.Minute)
+			if !errors.Is(err, ErrNoClaimableWork) {
+				t.Errorf("invalid-only scan error = %v, want no claimable work", err)
+			}
+			for _, field := range []string{string(organization.ID), string(project.ID), string(issue.WorkItemID), runnerID, "issue_contract_unsatisfied"} {
+				if !strings.Contains(logs.String(), field) {
+					t.Errorf("refusal evidence missing %q: %s", field, logs.String())
+				}
+			}
+			validResponse := performHubAPIRequest(t, service, http.MethodPost, itemsPath, testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "valid-issue"}, Title: "Example valid issue", Body: workItemRecordBody, State: "Todo"})
+			requireNativeStatus(t, validResponse, http.StatusOK)
+			var valid tracker.NativeIssue
+			decodeHubResponse(t, validResponse, &valid)
+			request.WorkflowStates = []string{"Todo"}
+			lease, err := service.claimNativeIssueTenant(t.Context(), scope, request, 5*time.Minute)
+			if err != nil {
+				t.Fatalf("mixed scan: %v", err)
+			}
+			if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+				item, err := r.WorkItem(t.Context(), project.ID, valid.WorkItemID)
+				if err != nil {
+					return err
+				}
+				if lease.IssueID != item.ID {
+					t.Errorf("claimed issue %d, want valid issue %d", lease.IssueID, item.ID)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
