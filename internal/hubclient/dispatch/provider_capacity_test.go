@@ -882,3 +882,176 @@ func providerHandlerClient(handler http.Handler) *http.Client {
 		return recorder.Result(), nil
 	})}
 }
+
+func TestExecutionClaimHandoff(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		projectCapacity int
+		landing         bool
+		failRecovery    bool
+		rounds          int
+	}{
+		{name: "project one machine three", projectCapacity: 1, rounds: 1},
+		{name: "hydration failure releases exact fence", projectCapacity: 1, failRecovery: true, rounds: 1},
+		{name: "successive handoffs fill capacity", projectCapacity: 3, rounds: 3},
+		{name: "landing batch exceeds execution capacity", projectCapacity: 5, landing: true, rounds: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Now()
+			state := "Rework"
+			if test.landing {
+				state = "Merging"
+			}
+			count := 93
+			if test.landing {
+				count = 5
+			}
+			items := make([]tracker.NativeIssue, count)
+			for i := range items {
+				items[i] = tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_test", ProjectID: "prj_test", WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_item%d", i)), Revision: 1}, State: state}
+			}
+			held := make(map[tracker.NativeWorkItemID]tracker.NativeLease)
+			claims, recoveries, releases := 0, 0, 0
+			var scheduler *Scheduler
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.URL.Path == "/api/v2/capabilities":
+					_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeDispatchWaitCapability}})
+				case strings.HasSuffix(r.URL.Path, "/claims/preview"):
+					available := make([]tracker.NativeIssue, 0, len(items))
+					for _, item := range items {
+						if _, ok := held[item.WorkItemID]; !ok {
+							available = append(available, item)
+						}
+					}
+					_ = json.NewEncoder(w).Encode(tracker.NativeCapacityPage{Items: available})
+				case strings.HasSuffix(r.URL.Path, "/claims"):
+					claims++
+					var request tracker.NativeClaim
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+						t.Error(err)
+						return
+					}
+					if len(held) >= test.projectCapacity {
+						w.WriteHeader(http.StatusConflict)
+						_, _ = w.Write([]byte(`{"code":"no_claimable_work"}`))
+						return
+					}
+					if strings.HasPrefix(request.SessionID, "landing/") != test.landing {
+						t.Error("incorrect landing claim classification")
+					}
+					lease := tracker.NativeLease{ID: tracker.LeaseID(fmt.Sprintf("lease-%d", claims)), WorkItemID: request.WorkItemID, FencingToken: tracker.FencingToken(89555 + claims), ExpiresAt: now.Add(time.Minute)}
+					held[request.WorkItemID] = lease
+					_ = json.NewEncoder(w).Encode(lease)
+				case r.URL.Query().Get("view") == "recovery":
+					recoveries++
+					if test.failRecovery {
+						w.WriteHeader(http.StatusForbidden)
+						_, _ = w.Write([]byte(`{"code":"forbidden"}`))
+						return
+					}
+					for _, item := range items {
+						if strings.HasSuffix(r.URL.Path, "/"+string(item.WorkItemID)) {
+							_ = json.NewEncoder(w).Encode(tracker.NativeRecovery{Issue: item})
+							return
+						}
+					}
+					t.Error("unknown recovery item")
+				case strings.HasSuffix(r.URL.Path, "/release"):
+					releases++
+					var mutation tracker.NativeLeaseMutation
+					if err := json.NewDecoder(r.Body).Decode(&mutation); err != nil {
+						t.Error(err)
+						return
+					}
+					for id, lease := range held {
+						if strings.HasSuffix(r.URL.Path, "/"+string(lease.ID)+"/release") {
+							if mutation.FencingToken != lease.FencingToken || mutation.Reason != "work_item_hydration_failed" {
+								t.Errorf("incorrect release: %+v", mutation)
+							}
+							delete(held, id)
+							w.WriteHeader(http.StatusNoContent)
+							return
+						}
+					}
+					t.Error("release did not identify the held lease")
+				default:
+					t.Errorf("unexpected request: %s", r.URL)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			})
+			client, err := newTestClient(t, Config{URL: "https://hub.test", TokenSource: func() string { return "fixture" }, HTTPClient: providerHandlerClient(handler)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_test", "prj_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			source, err := NewNativeConnector(native)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scheduler = &Scheduler{client: client, machine: Machine{ID: "machine-test", Capacity: 3}, now: func() time.Time { return now }, sessionID: func() (string, error) { return fmt.Sprintf("session-%d", claims), nil }, leaseTTL: time.Minute, heartbeatInterval: time.Minute, nativeHeartbeats: map[tracker.ProjectID]time.Time{"prj_test": now}, claims: make(map[string]tracker.Lease), nativeClaims: make(map[string]nativeClaim), claimPolicies: make(map[string]claimPolicy)}
+			for round := range test.rounds {
+				laterReady := make(chan struct{}, 1)
+				unblock := make(chan struct{})
+				request := orchestrator.SchedulingRequest{ProjectID: "local", AdmissionLimit: 3, CandidateLimit: 100, NativeLandingBatch: true, WorkflowStates: []string{state}, CandidateReady: func(ctx context.Context, issue connector.Issue) bool {
+					if !test.landing && len(held) > len(scheduler.nativeClaims) {
+						select {
+						case laterReady <- struct{}{}:
+						default:
+						}
+						<-unblock
+						return false
+					}
+					return true
+				}}
+				type result struct {
+					issues []connector.Issue
+					err    error
+				}
+				done := make(chan result, 1)
+				go func() {
+					issues, err := scheduler.fetchNativeCandidate(t.Context(), request, source)
+					done <- result{issues, err}
+				}()
+				var got result
+				select {
+				case got = <-done:
+					close(unblock)
+				case <-laterReady:
+					close(unblock)
+					got = <-done
+					t.Error("next CandidateReady reached before acquired execution claim was hydrated and registered")
+				}
+				want := 1
+				if test.landing {
+					want = len(items)
+				}
+				if test.failRecovery {
+					if got.err == nil || len(got.issues) != 0 || len(held) != 0 || releases != 1 || recoveries != 1 || claims != 1 {
+						t.Fatalf("failed hydration: issues=%d held=%d releases=%d recoveries=%d claims=%d err=%v", len(got.issues), len(held), releases, recoveries, claims, got.err)
+					}
+					if len(scheduler.nativeClaims) != 0 {
+						t.Fatal("failed claim was registered")
+					}
+					continue
+				}
+				if got.err != nil || len(got.issues) != want {
+					t.Fatalf("handoff returned %d issues, %v; want %d", len(got.issues), got.err, want)
+				}
+				if claims != (round+1)*want || recoveries != claims || len(held) != claims || len(scheduler.nativeClaims) != claims {
+					t.Fatalf("handoff accounting: claims=%d recoveries=%d held=%d registered=%d", claims, recoveries, len(held), len(scheduler.nativeClaims))
+				}
+				for _, issue := range got.issues {
+					registered := scheduler.nativeClaims[issue.ID]
+					if registered.recovery.Issue.WorkItemID != tracker.NativeWorkItemID(issue.ID) || registered.lease.FencingToken != held[tracker.NativeWorkItemID(issue.ID)].FencingToken {
+						t.Fatal("claim was not hydrated and registered with its fence")
+					}
+				}
+			}
+		})
+	}
+}

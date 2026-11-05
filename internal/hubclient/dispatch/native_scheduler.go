@@ -508,9 +508,6 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	machineCapacity := s.machine.Capacity
 	limit := min(max(1, request.AdmissionLimit), machineCapacity)
 	s.mu.Unlock()
-	if request.NativeLandingBatch && machineCapacity > 0 {
-		limit = max(limit, request.CandidateLimit)
-	}
 	if request.CandidateLimit > 0 {
 		limit = min(limit, request.CandidateLimit)
 	}

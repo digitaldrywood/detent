@@ -118,7 +118,10 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 				if request.CandidateAdmitted != nil {
 					request.CandidateAdmitted(candidate)
 				}
-				if len(leases) == limit {
+				if !request.NativeLandingBatch || candidate.State != "Merging" {
+					return leases, nil
+				}
+				if len(leases) >= max(limit, request.CandidateLimit) {
 					return leases, nil
 				}
 				continue
