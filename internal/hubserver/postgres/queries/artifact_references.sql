@@ -18,3 +18,11 @@ FROM (
 WHERE artifact_revision_rank=1
 ORDER BY artifact_id
 LIMIT sqlc.arg(page_limit);
+
+-- name: ArtifactVersionAttemptMatches :one
+SELECT EXISTS (
+    SELECT 1 FROM change_versions v
+    JOIN change_requests c ON c.organization_id=v.organization_id AND c.id=v.change_id
+    WHERE v.organization_id=sqlc.arg(organization_id) AND c.project_id=sqlc.arg(project_id)
+    AND v.id=sqlc.arg(version_id) AND v.attempt_id=sqlc.arg(attempt_id)
+);

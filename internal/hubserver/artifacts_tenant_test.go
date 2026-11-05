@@ -1,6 +1,8 @@
 package hubserver
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -9,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -23,6 +26,7 @@ import (
 func TestPostgresArtifactUploadAuthority(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
 	var foreign artifact.Reservation
+	var foreignReceipt artifact.Reference
 	for _, suffix := range []string{"a", "b"} {
 		t.Run(suffix, func(t *testing.T) {
 			organization := tracker.OrganizationID("org_" + strings.Repeat(suffix, 32))
@@ -152,6 +156,188 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 				t.Fatal(err)
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, reservation), http.StatusConflict)
+			t.Run("receipts", func(t *testing.T) {
+				foreignReceipt = testPostgresArtifactReceipts(t, service, reservation, foreignReceipt, now)
+			})
 		})
 	}
+}
+
+func testPostgresArtifactReceipts(t *testing.T, service *Service, reservation artifact.Reservation, foreign artifact.Reference, now time.Time) artifact.Reference {
+	t.Helper()
+	organization, project := tracker.OrganizationID(reservation.OrganizationID), tracker.ProjectID(reservation.ProjectID)
+	const publisherID = "credential_publisher"
+	publisherToken := "publisher_" + string(organization)
+	repository := service.config.TenantRepository
+	service.database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}})
+	plan := billingstore.PlanReference{ID: "artifact_usage", Version: 1}
+	err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: organization, PlanReference: plan, Name: "Artifact usage", Allowances: map[string]int64{"api_mutations": 2}}); err != nil {
+			return err
+		}
+		if err := w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: organization, Base: plan}, 0); err != nil {
+			return err
+		}
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: publisherID, Name: "Example publisher", Hash: apikey.HashToken(publisherToken), Scope: "worker", NativeOnly: true, ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: publisherID, ProjectID: project}); err != nil {
+			return err
+		}
+		return w.BindArtifactService(t.Context(), project, artifact.Binding{ServiceID: reservation.ServiceID, Origin: "https://artifacts.example.test", Mode: "customer", PublisherTokenID: publisherID})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v2/organizations/" + string(organization) + "/projects/" + string(project) + "/artifact-services/" + reservation.ServiceID + "/receipts"
+	reference := artifact.Reference{SchemaVersion: 1, Scope: reservation.Scope, ServiceID: reservation.ServiceID, ArtifactID: "artifact_" + strings.Repeat("e", 32), ManifestID: artifact.NewID("manifest"), Revision: 1, SHA256: artifact.Digest([]byte("example")), Kind: "log", State: "complete", Availability: "available", Bytes: 10, Objects: 1, ObservedAt: now, ExpiresAt: now.Add(time.Hour)}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*artifact.Reference)
+		status int
+	}{
+		{"terminal attempt", func(*artifact.Reference) {}, http.StatusNoContent},
+		{"replay", func(*artifact.Reference) {}, http.StatusNoContent},
+		{"immutable conflict", func(r *artifact.Reference) { r.Bytes++ }, http.StatusConflict},
+		{"wrong run", func(r *artifact.Reference) { r.RunID = artifact.NewID("run") }, http.StatusNotFound},
+		{"wrong item", func(r *artifact.Reference) { r.WorkItemID = artifact.NewID("wi") }, http.StatusNotFound},
+		{"wrong attempt", func(r *artifact.Reference) { r.AttemptID = artifact.NewID("attempt") }, http.StatusNotFound},
+		{"missing version", func(r *artifact.Reference) { r.VersionID = artifact.NewID("version") }, http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := reference
+			tc.mutate(&request)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, publisherToken, request), tc.status)
+		})
+	}
+	if foreign.OrganizationID != "" {
+		foreign.OrganizationID, foreign.ProjectID, foreign.WorkItemID = reference.OrganizationID, reference.ProjectID, reference.WorkItemID
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, publisherToken, foreign), http.StatusNotFound)
+	}
+	content := eventstore.NewContent(service.runDetailStore())
+	for _, tc := range []struct {
+		name         string
+		attempt      string
+		otherProject bool
+		status       int
+	}{
+		{"matching version", reference.AttemptID, false, http.StatusNoContent},
+		{"other attempt version", artifact.NewID("attempt"), false, http.StatusNotFound},
+		{"other project version", reference.AttemptID, true, http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			versionProject := project
+			if tc.otherProject {
+				versionProject = tracker.ProjectID(artifact.NewID("prj"))
+			}
+			changeItem := tracker.NativeWorkItemID(reference.WorkItemID)
+			if tc.otherProject {
+				changeItem = tracker.NativeWorkItemID(artifact.NewID("wi"))
+			}
+			changeID, versionID := artifact.NewID("change"), artifact.NewID("version")
+			raw, err := json.Marshal(tracker.ChangeRequest{OrganizationID: organization, ProjectID: versionProject, WorkItemID: changeItem, ID: changeID, Title: "Example", Revision: 1, CreatedAt: now, UpdatedAt: now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			change, err := content.PrepareChange(t.Context(), organization, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := changeTestInput()
+			input.AttemptID = tc.attempt
+			raw, err = json.Marshal(tracker.ChangeVersion{ID: versionID, ChangeID: changeID, Number: 1, ChangeVersionInput: input, Policy: hubTestPolicy(), CreatedAt: now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			version, err := content.PrepareVersion(t.Context(), organization, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+				if tc.otherProject {
+					if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: versionProject, Name: "Other project", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+						return err
+					}
+				}
+				if tc.otherProject {
+					if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: versionProject, NativeID: changeItem, Number: 1, Revision: 1, Title: "Other item"}); err != nil {
+						return err
+					}
+				}
+
+				if _, err := w.CreateChange(t.Context(), change); err != nil {
+					return err
+				}
+				_, err := w.CreateVersion(t.Context(), version)
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := reference
+			request.VersionID, request.Revision, request.ManifestID = versionID, 2, artifact.NewID("manifest")
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, publisherToken, request), tc.status)
+		})
+	}
+	if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+		stored, err := r.ArtifactReference(t.Context(), project, tracker.NativeWorkItemID(reference.WorkItemID), reference.ArtifactID, 1)
+		if err != nil {
+			return err
+		}
+		if stored.Bytes != reference.Bytes || stored.AttemptID != reference.AttemptID || stored.ManifestID != reference.ManifestID {
+			t.Fatalf("receipt changed: %+v", stored)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	window := time.Unix(now.Unix()/60*60, 0).UTC()
+	if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+		used, err := r.BillingUsage(t.Context(), window, "api_mutations")
+		if err != nil {
+			return err
+		}
+		if used != 2 {
+			t.Errorf("receipt mutations = %d, want 2", used)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	denied := reference
+	denied.Revision, denied.ManifestID = 3, artifact.NewID("manifest")
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, publisherToken, denied), http.StatusTooManyRequests)
+	if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+		_, err := r.ArtifactReference(t.Context(), project, tracker.NativeWorkItemID(reference.WorkItemID), reference.ArtifactID, 3)
+		if !errors.Is(err, corestore.ErrNotFound) {
+			t.Errorf("denied receipt persisted: %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("later window replay", func(t *testing.T) {
+		originalClock := service.config.now
+		defer func() { service.config.now = originalClock }()
+		service.config.now = func() time.Time { return now.Add(2 * time.Minute) }
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, publisherToken, reference), http.StatusNoContent)
+		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+			usages, err := r.BillingUsages(t.Context(), window.Add(2*time.Minute), 64)
+			if len(usages) != 0 {
+				t.Errorf("replay charged a new window: %+v", usages)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	err = repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.BindArtifactService(t.Context(), project, artifact.Binding{ServiceID: reservation.ServiceID, Origin: "https://artifacts.example.test", Mode: "customer", PublisherTokenID: "credential_runner"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, publisherToken, reference), http.StatusNotFound)
+	return reference
 }

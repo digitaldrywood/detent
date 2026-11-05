@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -119,5 +120,60 @@ func (s *Service) authorizeArtifactUploadTenant(ctx context.Context, scope nativ
 		}
 		return nil
 	})
+	return projectRecordError(err)
+}
+
+func (s *Service) publishArtifactReceiptTenant(ctx context.Context, scope nativeScope, reference artifact.Reference) error {
+	if s.config.TenantRepository == nil {
+		return workItemStorageUnavailable()
+	}
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+			return err
+		}
+		binding, err := w.ArtifactService(ctx, scope.project, reference.ServiceID)
+		if err != nil {
+			return err
+		}
+		if binding.PublisherTokenID != scope.credential.ID {
+			return nativeNotFound()
+		}
+		item, err := w.LockWorkItem(ctx, scope.project, tracker.NativeWorkItemID(reference.WorkItemID))
+		if err != nil {
+			return err
+		}
+		attempt, err := w.Attempt(ctx, reference.AttemptID)
+		if err != nil {
+			return err
+		}
+		if attempt.IssueID != item.ID || attempt.RunID != reference.RunID {
+			return nativeNotFound()
+		}
+		if reference.VersionID != "" {
+			matches, err := w.ArtifactVersionAttemptMatches(ctx, scope.project, reference.VersionID, reference.AttemptID)
+			if err != nil {
+				return err
+			}
+			if !matches {
+				return nativeNotFound()
+			}
+		}
+		_, readErr := w.ArtifactReference(ctx, scope.project, tracker.NativeWorkItemID(reference.WorkItemID), reference.ArtifactID, reference.Revision)
+		if readErr != nil && !errors.Is(readErr, corestore.ErrNotFound) {
+			return readErr
+		}
+		if _, err = w.AppendArtifactReference(ctx, reference); err != nil {
+			return err
+		}
+		if readErr == nil {
+			return nil
+		}
+		return s.applyRunnerTenantUsage(ctx, w, s.config.now(), "artifact-receipt/"+reference.ManifestID, false, false)
+	})
+	if errors.Is(err, corestore.ErrRevisionConflict) {
+		return nativeConflict(0)
+	}
 	return projectRecordError(err)
 }

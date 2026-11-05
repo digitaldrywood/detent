@@ -32,6 +32,7 @@ type ReadGrant struct {
 }
 
 type Reader interface {
+	ArtifactVersionAttemptMatches(context.Context, tracker.ProjectID, string, string) (bool, error)
 	ArtifactReadGrant(context.Context, tracker.ProjectID, string) (ReadGrant, error)
 	ArtifactService(context.Context, tracker.ProjectID, string) (artifact.Binding, error)
 	ArtifactServices(context.Context, tracker.ProjectID) ([]artifact.Binding, error)

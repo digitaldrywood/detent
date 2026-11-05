@@ -124,8 +124,6 @@ func (s *Service) artifactPublisherToken(ctx context.Context, scope nativeScope,
 }
 
 func (s *Service) artifactReceipt(c echo.Context) error {
-	readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancelRead()
 	if err := s.artifactPublisher(c); err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -137,60 +135,10 @@ func (s *Service) artifactReceipt(c echo.Context) error {
 	if ref.SchemaVersion != 1 || ref.Validate() != nil || ref.OrganizationID != string(scope.organization) || ref.ProjectID != string(scope.project) || ref.ServiceID != c.Param("service") || !artifact.ValidID(ref.ArtifactID, "artifact") || !artifact.ValidID(ref.ManifestID, "manifest") || !artifact.ValidHash(ref.SHA256, 64) || ref.Revision < 1 || ref.Revision > artifact.MaxObjects+1 || !slices.Contains([]string{"log", "diff", "screenshot", "video"}, ref.Kind) || !slices.Contains([]string{"partial", "complete", "interrupted"}, ref.State) || ref.Availability != "available" || ref.Bytes < 0 || ref.Bytes > artifact.MaxArtifactBytes || ref.Objects < 0 || ref.Objects > artifact.MaxObjects || ref.ExpiresAt.IsZero() || ref.ObservedAt.IsZero() {
 		return s.nativeAPIError(c, nativePublicInvalid("Invalid artifact receipt"))
 	}
-	var count int
-	if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND id=? AND run_id=?", scope.organization, scope.project, ref.WorkItemID, ref.AttemptID, ref.RunID).Scan(&count); err != nil {
+	if err := s.publishArtifactReceiptTenant(c.Request().Context(), scope, ref); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if count != 1 {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	if ref.VersionID != "" {
-		matches, err := changeArtifactAttemptMatches(readCtx, s.database.reader, scope, ref.VersionID, ref.AttemptID)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		if !matches {
-			return s.nativeAPIError(c, nativeNotFound())
-		}
-	}
-	raw, err := json.Marshal(ref)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	ctx := c.Request().Context()
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	defer tx.Rollback()
-	now := s.config.now()
-	before, err := s.database.hostedConsumption(ctx, tx, now)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	inserted, err := tx.ExecContext(ctx, "INSERT INTO artifact_references(organization_id,project_id,work_item_id,service_id,artifact_id,revision,manifest_id,reference_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING", scope.organization, scope.project, ref.WorkItemID, ref.ServiceID, ref.ArtifactID, ref.Revision, ref.ManifestID, raw)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	var previous string
-	if err := tx.QueryRowContext(ctx, "SELECT reference_json FROM artifact_references WHERE organization_id=? AND project_id=? AND artifact_id=? AND revision=?", scope.organization, scope.project, ref.ArtifactID, ref.Revision).Scan(&previous); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if previous != string(raw) {
-		return s.nativeAPIError(c, nativeConflict(0))
-	}
-	added, err := inserted.RowsAffected()
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if added > 0 {
-		if err := s.database.checkHostedGrowth(ctx, tx, before, now, false); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return s.nativeAPIError(c, err)
-	}
+
 	return c.NoContent(http.StatusNoContent)
 }
 

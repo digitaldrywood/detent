@@ -92,3 +92,8 @@ func artifactReferenceRecord(row pgquery.ArtifactReference) artifact.Reference {
 		Bytes: row.Bytes, Objects: int(row.Objects), ExpiresAt: row.ExpiresAt, ObservedAt: row.ObservedAt,
 	}
 }
+
+func (s *session) ArtifactVersionAttemptMatches(ctx context.Context, project tracker.ProjectID, version, attempt string) (bool, error) {
+	matches, err := s.queries.ArtifactVersionAttemptMatches(ctx, pgquery.ArtifactVersionAttemptMatchesParams{OrganizationID: s.organization, ProjectID: project, VersionID: version, AttemptID: attempt})
+	return matches, mapError(ctx, err)
+}

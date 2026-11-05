@@ -200,3 +200,31 @@ func (q *Queries) ArtifactReferenceListLatest(ctx context.Context, arg ArtifactR
 	}
 	return items, nil
 }
+
+const artifactVersionAttemptMatches = `-- name: ArtifactVersionAttemptMatches :one
+SELECT EXISTS (
+    SELECT 1 FROM change_versions v
+    JOIN change_requests c ON c.organization_id=v.organization_id AND c.id=v.change_id
+    WHERE v.organization_id=$1 AND c.project_id=$2
+    AND v.id=$3 AND v.attempt_id=$4
+)
+`
+
+type ArtifactVersionAttemptMatchesParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	VersionID      string
+	AttemptID      string
+}
+
+func (q *Queries) ArtifactVersionAttemptMatches(ctx context.Context, arg ArtifactVersionAttemptMatchesParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, artifactVersionAttemptMatches,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.VersionID,
+		arg.AttemptID,
+	)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
