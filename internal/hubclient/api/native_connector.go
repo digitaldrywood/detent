@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -92,29 +93,16 @@ func (c *NativeConnector) FetchIssuesByStates(ctx context.Context, states []stri
 	}
 	var issues []connector.Issue
 	for _, state := range states {
-		cursor := ""
-		limit := 200
-		for {
-			page, pageLimit, err := c.client.issuePageWithinLimit(ctx, url.Values{"state": {state}, "cursor": {cursor}}, limit)
-			limit = pageLimit
+		native, err := c.client.completeIssueList(ctx, url.Values{"state": {state}}, 200)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range native {
+			converted, err := c.issueWithLanding(ctx, item)
 			if err != nil {
 				return nil, err
 			}
-			for _, issue := range page.Items {
-				converted, err := c.issueWithLanding(ctx, issue)
-				if err != nil {
-					return nil, err
-				}
-				issues = append(issues, converted)
-			}
-			connector.ReportProgress(ctx)
-			if page.NextCursor == "" {
-				break
-			}
-			if page.NextCursor == cursor {
-				return nil, errors.New("hub repeated issue cursor")
-			}
-			cursor = page.NextCursor
+			issues = append(issues, converted)
 		}
 	}
 	return issues, nil
@@ -123,10 +111,18 @@ func (c *NativeConnector) FetchIssuesByStates(ctx context.Context, states []stri
 func (c *NativeConnector) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]connector.Issue, error) {
 	issues := make([]connector.Issue, 0, len(ids))
 	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if _, err := NativeItemPath(tracker.NativeWorkItemID(id)); err != nil {
+			slog.WarnContext(ctx, "workspace authority reference unresolved", "project_id", c.client.project, "issue_id", id)
+			continue
+		}
 		issue, err := c.client.Issue(ctx, tracker.NativeWorkItemID(id))
 		if err != nil {
 			var apiErr *APIError
 			if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+				slog.WarnContext(ctx, "workspace authority reference missing", "project_id", c.client.project, "issue_id", id)
 				continue
 			}
 			return nil, err
@@ -318,27 +314,60 @@ func (c *NativeConnector) FetchIssueStatesByIdentifiers(ctx context.Context, ide
 			}
 			continue
 		}
-		for cursor := ""; ; {
-			page, err := client.Issues(ctx, url.Values{"q": {parsed}, "limit": {"100"}, "cursor": {cursor}})
-			if err != nil {
-				return nil, err
-			}
-			for _, native := range page.Items {
-				if strconv.Itoa(native.Number) == number && native.ProjectID == client.project {
-					converted, err := (&NativeConnector{client: client}).issueWithLanding(ctx, native)
-					if err != nil {
-						return nil, err
-					}
-					issues = append(issues, converted)
+		items, err := client.completeIssueList(ctx, url.Values{"q": {parsed}}, 100)
+		if err != nil {
+			return nil, err
+		}
+		for _, native := range items {
+			if strconv.Itoa(native.Number) == number && native.ProjectID == client.project {
+				converted, err := (&NativeConnector{client: client}).issueWithLanding(ctx, native)
+				if err != nil {
+					return nil, err
 				}
+				issues = append(issues, converted)
 			}
-			if page.NextCursor == "" {
-				break
-			}
-			cursor = page.NextCursor
 		}
 	}
 	return issues, nil
+}
+
+func (c *NativeClient) completeIssueList(ctx context.Context, query url.Values, limit int) ([]tracker.NativeIssue, error) {
+	var items []tracker.NativeIssue
+	seen := map[tracker.NativeWorkItemID]bool{}
+	cursor, restarted := "", false
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		query.Set("cursor", cursor)
+		page, pageLimit, err := c.issuePageWithinLimit(ctx, query, limit)
+		limit = pageLimit
+		if err != nil {
+			var apiErr *APIError
+			if cursor != "" && !restarted && errors.As(err, &apiErr) && apiErr.Status == http.StatusUnprocessableEntity && apiErr.Code == "invalid_request" && apiErr.Message == "Work list order changed; restart the query" {
+				items, seen, cursor, restarted = nil, map[tracker.NativeWorkItemID]bool{}, "", true
+				continue
+			}
+			return nil, err
+		}
+		for _, item := range page.Items {
+			if !seen[item.WorkItemID] {
+				seen[item.WorkItemID] = true
+				items = append(items, item)
+			}
+		}
+		connector.ReportProgress(ctx)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if page.NextCursor == "" {
+			return items, nil
+		}
+		if page.NextCursor == cursor {
+			return nil, errors.New("hub repeated issue cursor")
+		}
+		cursor = page.NextCursor
+	}
 }
 
 func NativeMutationKey() tracker.Mutation { return tracker.Mutation{IdempotencyKey: uuid.NewString()} }

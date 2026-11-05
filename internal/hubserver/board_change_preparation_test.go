@@ -257,6 +257,28 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 			t.Fatal("reporter lost visible primary issue")
 		}
 
+		query := url.Values{"limit": {"1"}, "archived": {"all"}}
+		first, err := service.readBoardRecords(t.Context(), scope, query)
+		if err != nil || first.NextCursor == "" {
+			t.Fatalf("first page: %+v %v", first, err)
+		}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: "example", WorkItemID: "wi_000", ExpectedRevision: 1, ExpectedProjectRevision: project.Core.ContentSettingsRevision})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		query.Set("cursor", first.NextCursor)
+		_, err = service.readBoardRecords(t.Context(), scope, query)
+		var invalid *nativeError
+		if !errors.As(err, &invalid) || invalid.status != http.StatusUnprocessableEntity || invalid.Code != "invalid_request" || invalid.Message != "Work list order changed; restart the query" {
+			t.Fatalf("changed PostgreSQL sequence accepted: %v", err)
+		}
+		query.Del("cursor")
+		restarted, err := service.readBoardRecords(t.Context(), scope, query)
+		if err != nil || len(restarted.Items) != 1 || restarted.Items[0].WorkItemID == "wi_000" {
+			t.Fatalf("restart failed: %+v %v", restarted, err)
+		}
+
 	}
 }
 

@@ -135,10 +135,15 @@ func TestRetentionUnremovableQuarantineWarnsOnce(t *testing.T) {
 type retentionTestReaper struct {
 	cleanupSweepReaper
 	completed map[string]time.Time
+	owned     []workspace.Issue
 }
 
 func (r *retentionTestReaper) SweepRetention(ctx context.Context, request workspace.RetentionRequest) (workspace.RetentionTotals, error) {
-	completed, err := request.Completed(ctx, []workspace.Issue{{ID: "issue"}})
+	owned := r.owned
+	if owned == nil {
+		owned = []workspace.Issue{{ID: "issue"}}
+	}
+	completed, err := request.Completed(ctx, owned)
 	r.completed = completed
 	return workspace.RetentionTotals{Workdir: "test", At: request.Now, HookLogs: workspace.RemovalTotal{Count: 2, Bytes: 32}}, err
 }
@@ -203,6 +208,67 @@ func TestRetentionCompletionClock(t *testing.T) {
 				}
 				if len(state.WorkspaceRetention) != 1 || state.WorkspaceRetention[0].HookLogs.Count != 2 {
 					t.Fatalf("totals=%+v", state.WorkspaceRetention)
+				}
+			})
+		}
+	}
+}
+
+type cleanupLookupConnector struct {
+	*rateLimitConnector
+	batches int
+}
+
+func (c *cleanupLookupConnector) FetchIssueStatesByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
+	c.batches++
+	var found []connector.Issue
+	for _, issue := range c.issuesByID {
+		if slices.Contains(ids, issue.ID) {
+			found = append(found, issue)
+		}
+	}
+	return found, c.fetchByIDErr
+}
+
+func TestCleanupConsumersPreserveUnverifiedReferences(t *testing.T) {
+	for _, consumer := range []string{"reaper", "retention"} {
+		for _, failure := range []error{nil, errors.New("pagination invalidated twice"), context.Canceled} {
+			t.Run(fmt.Sprintf("%s/%v", consumer, failure), func(t *testing.T) {
+				now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+				ids := []string{"wi_terminal", "I_kwDO_example", "wi_active"}
+				cfg := normalizeConfig(Config{ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+				terminal := connector.Issue{ID: ids[0], Identifier: "prj_example#7", State: "Done", StageUpdatedAt: &now}
+				active := connector.Issue{ID: ids[2], Identifier: "prj_example#8", State: "Todo"}
+				tracker := &cleanupLookupConnector{rateLimitConnector: &rateLimitConnector{issuesByID: []connector.Issue{terminal, active}, fetchByIDErr: failure}}
+				ids = append(slices.Repeat([]string{"I_kwDO_example"}, 100), ids...)
+				reaper := &retentionTestReaper{}
+				for _, id := range ids {
+					reaper.owned = append(reaper.owned, workspace.Issue{ID: id})
+				}
+				o := newRateLimitTestOrchestrator(cfg, tracker)
+				o.reaper = reaper
+				state := newState(cfg)
+				if consumer == "reaper" {
+					o.reapWorkspaceIssueIDs(t.Context(), &state, ids, now)
+					want := 0
+					if failure == nil {
+						want = 1
+					}
+					if len(reaper.issues) != want || want == 1 && reaper.issues[0].ID != terminal.ID {
+						t.Fatalf("reaped=%+v", reaper.issues)
+					}
+				} else {
+					o.sweepRetention(t.Context(), &state, now)
+					want := 0
+					if failure == nil {
+						want = 1
+						if tracker.batches != 2 {
+							t.Fatalf("invalid first batch starved completion: %d reads", tracker.batches)
+						}
+					}
+					if len(reaper.completed) != want || want == 1 && !reaper.completed[terminal.ID].Equal(now) {
+						t.Fatalf("completion authority=%v", reaper.completed)
+					}
 				}
 			})
 		}
