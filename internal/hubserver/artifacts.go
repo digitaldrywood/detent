@@ -213,7 +213,7 @@ func (s *Service) authorizeArtifactUpload(c echo.Context) error {
 		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
-	if r.Validate() != nil || r.OrganizationID != string(scope.organization) || r.ProjectID != string(scope.project) || r.WorkItemID != c.Param("item") || r.LeaseID == "" || r.FencingToken <= 0 || scope.credential.Scope != apiScopeWorker {
+	if r.Validate() != nil || r.OrganizationID != string(scope.organization) || r.ProjectID != string(scope.project) || r.WorkItemID != c.Param("item") || r.LeaseID == "" || r.FencingToken <= 0 || r.Key == "" || len(r.Key) > 128 || !slices.Contains([]string{"log", "diff", "screenshot", "video"}, r.Kind) || r.Bytes <= 0 || r.Bytes > artifact.MaxArtifactBytes || scope.credential.Scope != apiScopeWorker {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	if err := s.authorizeArtifactUploadTenant(c.Request().Context(), scope, r); err != nil {

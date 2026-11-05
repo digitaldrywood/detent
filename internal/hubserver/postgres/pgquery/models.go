@@ -192,6 +192,20 @@ type ArtifactService struct {
 	PublisherTokenID string
 }
 
+type ArtifactUploadAuthorization struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ServiceID      string
+	IdempotencyKey string
+	WorkItemID     string
+	RunID          string
+	AttemptID      string
+	Kind           string
+	Bytes          int64
+	ArtifactID     *string
+	CreatedAt      time.Time
+}
+
 type Attachment struct {
 	OrganizationID    tracker.OrganizationID
 	ProjectID         tracker.ProjectID
