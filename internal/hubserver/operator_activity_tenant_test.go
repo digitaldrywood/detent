@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -29,7 +30,7 @@ import (
 )
 
 func TestPostgresActivityReadsLiveOutcomesAndIssueClocksWithoutSQLite(t *testing.T) {
-	repository, admin := projectRecordPostgresWithAdmin(t, 2)
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	base := now.Add(-time.Hour)
 	observed := now
@@ -185,6 +186,73 @@ func TestPostgresActivityReadsLiveOutcomesAndIssueClocksWithoutSQLite(t *testing
 	}
 	if report.Partial || report.IssuesPartial {
 		t.Fatalf("complete fixture marked partial: %+v", report)
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		reader := &Service{database: service.database, config: service.config}
+		reader.config.Hosted = &HostedConfig{OrganizationID: string(org), Provider: provider}
+		for _, tc := range []struct {
+			name         string
+			bound        bool
+			tokenGrants  []tracker.ProjectID
+			revokeMember tracker.ProjectID
+		}{
+			{name: "key_grant", tokenGrants: []tracker.ProjectID{"project_1"}},
+			{name: "member_grant", bound: true, tokenGrants: []tracker.ProjectID{"project_1", "project_2"}, revokeMember: "project_2"},
+		} {
+			t.Run(string(org)+"/"+tc.name, func(t *testing.T) {
+				id := "selected_service_" + tc.name
+				hash := apikey.HashToken(string(org) + id)
+				key := apiCredential{ID: id, Hash: hash, Scope: apiScopeOperator, NativeOnly: true, HostedKeyKind: "service", HostedProjectAccess: hostedProjectsSelected, HostedRole: "owner"}
+				row := accessstore.Credential{OrganizationID: org, ID: id, Hash: hash, Name: "Example " + id, Kind: "service", Scope: "operator", NativeOnly: true, KeyScope: string(apikey.ScopeRead), ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}
+				if tc.bound {
+					key.Hosted, key.HostedMembership, key.HostedPrincipal, key.HostedKeyScope = &auth.HostedIdentity{Subject: "user"}, "member", "owner", apikey.ScopeRead
+					row.UserID, row.MembershipID = "user", "member"
+				}
+				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					if err := w.CreateAccessCredential(t.Context(), row); err != nil {
+						return err
+					}
+					for _, project := range tc.tokenGrants {
+						if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: id, ProjectID: project}); err != nil {
+							return err
+						}
+					}
+					if tc.revokeMember != "" {
+						return w.DeleteAccessProjectGrant(t.Context(), "user", tc.revokeMember)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if tc.revokeMember != "" {
+					t.Cleanup(func() {
+						if err := repository.WriteTenant(context.WithoutCancel(t.Context()), org, corestore.Serving, func(w tenantstore.Writer) error {
+							return w.CreateAccessProjectGrant(context.WithoutCancel(t.Context()), accessstore.ProjectGrant{OrganizationID: org, UserID: "user", ProjectID: tc.revokeMember, CanWrite: true})
+						}); err != nil {
+							t.Fatal(err)
+						}
+					})
+				}
+				got, err := reader.readActivityReport(t.Context(), key, operatortool.ActivityRequest{Limit: 100}, window)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(got.Running) != 1 || len(got.Finished) != 1 || len(got.RunningIssues) != 1 || len(got.FinishedIssues) != 1 {
+					t.Fatalf("selected service key read activity outside its grants: running=%d finished=%d running issues=%d finished issues=%d", len(got.Running), len(got.Finished), len(got.RunningIssues), len(got.FinishedIssues))
+				}
+				for _, project := range []string{got.Running[0].ProjectID, got.Finished[0].ProjectID, got.RunningIssues[0].ProjectID, got.FinishedIssues[0].ProjectID} {
+					if project != "project_1" {
+						t.Fatalf("selected service key read ungranted project %s", project)
+					}
+				}
+				if !strings.HasPrefix(got.Running[0].Title, string(org)+" ") {
+					t.Fatalf("activity crossed tenants: %s", got.Running[0].Title)
+				}
+				if _, err := reader.readActivityReport(t.Context(), key, operatortool.ActivityRequest{ProjectID: "project_2", Limit: 100}, window); !errors.Is(err, operatortool.ErrAccessDenied) {
+					t.Fatalf("ungranted project filter error = %v, want access denied", err)
+				}
+			})
+		}
 	}
 	request.Limit = 1
 	clipped, err := service.readActivityReport(t.Context(), credential, request, window)

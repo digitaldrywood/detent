@@ -46,9 +46,19 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 			projects = projects[:100]
 		}
 		for _, project := range projects {
-			if request.ProjectID == "" || request.ProjectID == string(project.ProjectID) {
-				filter.Projects = append(filter.Projects, project.ProjectID)
+			if request.ProjectID != "" && request.ProjectID != string(project.ProjectID) {
+				continue
 			}
+			if credential.EntryKey == nil && credential.HostedKeyKind == "service" {
+				err := s.authorizeAccessScope(ctx, r, nativeScope{organization: tracker.OrganizationID(out.OrganizationID), project: project.ProjectID, credential: credential}, false)
+				if errors.Is(err, accessstore.ErrDenied) {
+					continue
+				}
+				if err != nil {
+					return err
+				}
+			}
+			filter.Projects = append(filter.Projects, project.ProjectID)
 		}
 		if request.ProjectID != "" && len(filter.Projects) == 0 {
 			return operatortool.ErrAccessDenied
