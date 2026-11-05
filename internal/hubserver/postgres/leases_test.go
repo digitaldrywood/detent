@@ -927,43 +927,64 @@ func TestRunnerSpendReportBoundAcceptsOtherAttempts(t *testing.T) {
 	r, _ := repositoryFor(t, template.Database(t), smallPool())
 	day := time.Date(2026, 12, 25, 12, 0, 0, 0, time.UTC)
 	next := day.AddDate(0, 0, 1)
+	third := day.AddDate(0, 0, 2)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedLeaseFamily(t, r, org)
 		if err := r.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
-			_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ID: 3, ProjectID: "prj_1", NativeID: "wi_3", Number: 3, Title: "Example"})
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
-		flooding := claimLease(t, r, org, leaseClaim(1))
-		event := attemptEvent(flooding)
-		for batch := 0; batch < 7; batch++ {
-			event.Sequence = int64(batch + 1)
-			event.PayloadObjectKey = fmt.Sprintf("example/flood-%d", batch)
-			event.Usage = nil
-			for index := batch * 32; index < min((batch+1)*32, 200); index++ {
-				event.Usage = append(event.Usage, tracker.NativeUsage{Model: fmt.Sprintf("example-fabricated-%03d", index), To: day})
+			for _, id := range []int64{3, 4} {
+				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ID: id, ProjectID: "prj_1", NativeID: tracker.NativeWorkItemID(fmt.Sprintf("wi_%d", id)), Number: id, Title: "Example"}); err != nil {
+					return err
+				}
 			}
-			recordLeaseAttempt(t, r, org, event)
-		}
-		if err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-			_, err := w.Release(t.Context(), leaseFence(flooding), "finished")
-			return err
+			return nil
 		}); err != nil {
 			t.Fatal(err)
 		}
-		otherIssue := leaseClaim(2)
-		otherIssue.IssueID = 3
-		sameIssue := leaseClaim(1)
-		sameIssue.LeaseID, sameIssue.SessionID = "lease_1_next", "session_1_next"
+		claim := func(machine, issue int64, lease string) leasestore.Claim {
+			request := leaseClaim(machine)
+			request.IssueID, request.LeaseID, request.SessionID = issue, lease, "session_"+lease
+			return request
+		}
+		release := func(lease leasestore.Lease) {
+			t.Helper()
+			if err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+				_, err := w.Release(t.Context(), leaseFence(lease), "finished")
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, flood := range []struct {
+			claim leasestore.Claim
+			at    time.Time
+		}{
+			{claim: leaseClaim(1), at: day},
+			{claim: claim(1, 4, "lease_flood_4"), at: third},
+		} {
+			flooding := claimLease(t, r, org, flood.claim)
+			event := attemptEvent(flooding)
+			for batch := 0; batch < 7; batch++ {
+				event.Sequence = int64(batch + 1)
+				event.PayloadObjectKey = fmt.Sprintf("example/flood-%d", batch)
+				event.Usage = nil
+				for index := batch * 32; index < min((batch+1)*32, 200); index++ {
+					event.Usage = append(event.Usage, tracker.NativeUsage{Model: fmt.Sprintf("example-fabricated-%03d", index), To: flood.at})
+				}
+				recordLeaseAttempt(t, r, org, event)
+			}
+			release(flooding)
+		}
 		for _, completion := range []struct {
 			claim leasestore.Claim
 			usage tracker.NativeUsage
 		}{
-			{claim: otherIssue, usage: tracker.NativeUsage{Model: "gpt-6-astra", Input: 29, Output: 1_000_000, To: day}},
-			{claim: sameIssue, usage: tracker.NativeUsage{Model: "gpt-6-astra", Input: 7, Output: 1_000_000, To: next}},
+			{claim: claim(2, 3, "lease_2"), usage: tracker.NativeUsage{Model: "gpt-6-astra", Input: 29, Output: 1_000_000, To: day}},
+			{claim: claim(1, 1, "lease_1_next"), usage: tracker.NativeUsage{Model: "gpt-6-astra", Input: 7, Output: 1_000_000, To: next}},
+			{claim: claim(1, 4, "lease_4_input"), usage: tracker.NativeUsage{Model: "gpt-6-astra", Input: 5_000_000, To: third}},
+			{claim: claim(2, 4, "lease_4_cached"), usage: tracker.NativeUsage{Model: "example-cached-only", CachedInput: 5_000_000, To: third}},
 		} {
-			finished := attemptEvent(claimLease(t, r, org, completion.claim))
+			lease := claimLease(t, r, org, completion.claim)
+			finished := attemptEvent(lease)
 			recordLeaseAttempt(t, r, org, finished)
 			finished.Sequence, finished.Status, finished.PayloadObjectKey = 2, "succeeded", "example/finished"
 			finished.Usage = []tracker.NativeUsage{completion.usage}
@@ -973,6 +994,7 @@ func TestRunnerSpendReportBoundAcceptsOtherAttempts(t *testing.T) {
 			}); err != nil {
 				t.Errorf("%s completion after fabricated models = %v, want accepted", completion.claim.LeaseID, err)
 			}
+			release(lease)
 		}
 		for _, want := range []struct {
 			issue                   string
@@ -983,8 +1005,10 @@ func TestRunnerSpendReportBoundAcceptsOtherAttempts(t *testing.T) {
 		}{
 			{day: &day, models: 201, input: 29, output: 1_000_000, sessions: 201, first: store.ModelTokenSpend{InputTokens: 29, OutputTokens: 1_000_000, TotalTokens: 1_000_029, Sessions: 1}},
 			{day: &next, models: 1, input: 7, output: 1_000_000, sessions: 1, first: store.ModelTokenSpend{Model: "gpt-6-astra", InputTokens: 7, OutputTokens: 1_000_000, TotalTokens: 1_000_007, Sessions: 1}},
+			{day: &third, models: 201, input: 5_000_000, sessions: 202, first: store.ModelTokenSpend{InputTokens: 5_000_000, CachedInputTokens: 5_000_000, TotalTokens: 5_000_000, Sessions: 2}},
 			{issue: "wi_3", models: 1, input: 29, output: 1_000_000, sessions: 1, first: store.ModelTokenSpend{Model: "gpt-6-astra", InputTokens: 29, OutputTokens: 1_000_000, TotalTokens: 1_000_029, Sessions: 1}},
 			{issue: "wi_1", models: 201, input: 7, output: 1_000_000, sessions: 201, first: store.ModelTokenSpend{InputTokens: 7, OutputTokens: 1_000_000, TotalTokens: 1_000_007, Sessions: 1}},
+			{issue: "wi_4", models: 201, input: 5_000_000, sessions: 202, first: store.ModelTokenSpend{InputTokens: 5_000_000, CachedInputTokens: 5_000_000, TotalTokens: 5_000_000, Sessions: 2}},
 		} {
 			err := r.ReadLeases(t.Context(), org, corestore.Serving, func(reader leasestore.Reader) error {
 				spend, err := reader.(leasestore.RunnerSpendReader).RunnerTokenSpend(t.Context(), "prj_1", want.issue, want.day, nil)
@@ -1006,10 +1030,12 @@ func TestRunnerSpendReportBoundAcceptsOtherAttempts(t *testing.T) {
 		}{
 			{config: budget.Config{ProjectID: "prj_1", BillingMode: "metered", Enabled: true, PerDayMaxUSD: 40}, now: day, want: budget.ReasonPerDayMaxUSD},
 			{config: budget.Config{ProjectID: "prj_1", BillingMode: "metered", Enabled: true, PerIssueMaxUSD: 40}, issue: "wi_1", now: next, want: budget.ReasonPerIssueMaxUSD},
+			{config: budget.Config{ProjectID: "prj_1", BillingMode: "metered", Enabled: true, PerDayMaxUSD: 40}, now: third, want: budget.ReasonPerDayMaxUSD},
+			{config: budget.Config{ProjectID: "prj_1", BillingMode: "metered", Enabled: true, PerIssueMaxUSD: 40}, issue: "wi_4", now: third, want: budget.ReasonPerIssueMaxUSD},
 		} {
 			decision, err := budget.NewChecker(limit.config, spend, budget.DefaultPricingTable()).CheckDispatch(t.Context(), budget.DispatchRequest{IssueID: limit.issue, Model: "gpt-5.4-mini", Now: limit.now, Estimate: budget.TokenEstimate{OutputTokens: 1, TotalTokens: 1}})
 			if err != nil || decision.Allowed || decision.Refusal == nil || decision.Refusal.Code != limit.want {
-				t.Errorf("%s flooded %s dispatch = %+v error %v, want refusal", org, limit.want, decision, err)
+				t.Errorf("%s flooded %s %s %s dispatch = %+v error %v, want refusal", org, limit.want, limit.issue, limit.now.Format(time.DateOnly), decision, err)
 			}
 		}
 	}

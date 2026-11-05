@@ -280,15 +280,17 @@ func SpendUSD(spend store.TokenSpend, pricing PricingTable) float64 {
 	total := 0.0
 	for _, row := range spend.ByModel {
 		modelPricing, ok := pricing.Lookup(row.Model)
+		cachedInputTokens := row.CachedInputTokens
 		if row.Model == store.OverflowTokenModel {
 			modelPricing, ok = pricing.upperBound()
+			cachedInputTokens = 0
 		}
 		if !ok {
 			continue
 		}
 		total += tokenCostUSD(TokenEstimate{
 			InputTokens:       row.InputTokens,
-			CachedInputTokens: row.CachedInputTokens,
+			CachedInputTokens: cachedInputTokens,
 			OutputTokens:      row.OutputTokens,
 			TotalTokens:       row.TotalTokens,
 			Sessions:          row.Sessions,
