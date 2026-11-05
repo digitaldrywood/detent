@@ -2,8 +2,10 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -12,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -168,6 +171,73 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 				})
 			}
 
+			t.Run("authorization bound", func(t *testing.T) {
+				rows := func(expired bool) int {
+					t.Helper()
+					var count int
+					if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM artifact_upload_authorizations WHERE organization_id=$1 AND (expires_at<=$2)=$3`, organization, now, expired).Scan(&count); err != nil {
+						t.Fatal(err)
+					}
+					return count
+				}
+				flood := reservation
+				flood.Kind = "screenshot"
+				for i := range artifactstore.UploadAuthorizationLimit - 1 {
+					flood.Key = fmt.Sprintf("flood-%d", i)
+					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, flood), http.StatusNoContent)
+				}
+				flood.Key = "flood-over"
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, flood), http.StatusTooManyRequests)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, reservation), http.StatusNoContent)
+				if got := rows(false); got != artifactstore.UploadAuthorizationLimit {
+					t.Fatalf("live authorizations=%d, want %d", got, artifactstore.UploadAuthorizationLimit)
+				}
+				if _, err := admin.ExecContext(t.Context(), `UPDATE artifact_upload_authorizations SET created_at=$2::timestamptz-interval '2 hours',expires_at=$2::timestamptz-interval '1 hour' WHERE organization_id=$1 AND kind='screenshot'`, organization, now); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.ExecContext(t.Context(), `INSERT INTO artifact_upload_authorizations(organization_id,project_id,service_id,idempotency_key,work_item_id,run_id,attempt_id,kind,bytes,created_at,expires_at) SELECT $1,$2,$3,'backlog-'||n,$4,$5,$6,'video',1,$7::timestamptz-interval '2 hours',$7::timestamptz-interval '1 hour' FROM generate_series(1,300) n`, organization, project, reservation.ServiceID, reservation.WorkItemID, reservation.RunID, reservation.AttemptID, now); err != nil {
+					t.Fatal(err)
+				}
+				backlog := rows(true)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, flood), http.StatusNoContent)
+				if got, want := rows(true), backlog-artifactstore.UploadAuthorizationPruneBatch; got != want {
+					t.Fatalf("expired authorizations after bounded request cleanup=%d, want %d", got, want)
+				}
+				otherExpired := func() int {
+					t.Helper()
+					var count int
+					if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM artifact_upload_authorizations WHERE organization_id<>$1 AND expires_at<=$2`, organization, now).Scan(&count); err != nil {
+						t.Fatal(err)
+					}
+					return count
+				}
+				foreignExpired := otherExpired()
+				if err := repository.WriteTenant(t.Context(), organization, corestore.Background, func(w tenantstore.Writer) error {
+					pruned, err := w.PruneExpiredArtifactUploadAuthorizations(t.Context(), now, artifactstore.MaxUploadAuthorizationPruneBatch)
+					if want := int64(backlog - artifactstore.UploadAuthorizationPruneBatch); pruned != want {
+						t.Errorf("background pruned=%d, want %d", pruned, want)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if got := rows(true); got != 0 {
+					t.Fatalf("expired authorizations after background prune=%d", got)
+				}
+				if got := otherExpired(); got != foreignExpired {
+					t.Fatalf("background prune crossed organizations: %d expired rows, want %d", got, foreignExpired)
+				}
+				if got := rows(false); got != 2 {
+					t.Fatalf("live authorizations after expiry=%d, want 2", got)
+				}
+				if _, err := admin.ExecContext(t.Context(), `DELETE FROM artifact_upload_authorizations WHERE organization_id=$1 AND kind='screenshot'`, organization); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.ExecContext(t.Context(), `INSERT INTO artifact_upload_authorizations(organization_id,project_id,service_id,idempotency_key,work_item_id,run_id,attempt_id,kind,bytes,created_at,expires_at) SELECT $1,$2,$3,'kept-'||n,$4,$5,$6,'video',1,$7::timestamptz-interval '2 hours',$7::timestamptz-interval '1 hour' FROM generate_series(1,7) n`, organization, project, reservation.ServiceID, reservation.WorkItemID, reservation.RunID, reservation.AttemptID, now); err != nil {
+					t.Fatal(err)
+				}
+			})
+
 			if foreign.OrganizationID != "" {
 				foreign.OrganizationID, foreign.ProjectID, foreign.WorkItemID = reservation.OrganizationID, reservation.ProjectID, reservation.WorkItemID
 				foreign.LeaseID, foreign.FencingToken = reservation.LeaseID, reservation.FencingToken
@@ -183,13 +253,13 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, reservation), http.StatusConflict)
 			t.Run("receipts", func(t *testing.T) {
-				foreignReceipt = testPostgresArtifactReceipts(t, service, reservation, foreignReceipt, now)
+				foreignReceipt = testPostgresArtifactReceipts(t, admin, service, reservation, foreignReceipt, now)
 			})
 		})
 	}
 }
 
-func testPostgresArtifactReceipts(t *testing.T, service *Service, reservation artifact.Reservation, foreign artifact.Reference, now time.Time) artifact.Reference {
+func testPostgresArtifactReceipts(t *testing.T, admin *sql.DB, service *Service, reservation artifact.Reservation, foreign artifact.Reference, now time.Time) artifact.Reference {
 	t.Helper()
 	organization, project := tracker.OrganizationID(reservation.OrganizationID), tracker.ProjectID(reservation.ProjectID)
 	const publisherID = "credential_publisher"
@@ -364,6 +434,36 @@ func testPostgresArtifactReceipts(t *testing.T, service *Service, reservation ar
 			return err
 		}); err != nil {
 			t.Fatal(err)
+		}
+	})
+
+	t.Run("pre-cutover pending receipt", func(t *testing.T) {
+		var cutover time.Time
+		if err := admin.QueryRowContext(t.Context(), `SELECT cutover_at FROM artifact_upload_authority_cutover`).Scan(&cutover); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if _, err := admin.ExecContext(context.WithoutCancel(t.Context()), `UPDATE artifact_upload_authority_cutover SET cutover_at=$1`, cutover); err != nil {
+				t.Error(err)
+			}
+		})
+		if _, err := admin.ExecContext(t.Context(), `UPDATE artifact_upload_authority_cutover SET cutover_at=$1`, now.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		originalClock := service.config.now
+		defer func() { service.config.now = originalClock }()
+		for _, tc := range []struct {
+			name   string
+			after  time.Duration
+			status int
+		}{
+			{"within transition", 5 * time.Minute, http.StatusNoContent},
+			{"after transition", time.Hour + artifactstore.UploadAuthorizationLifetime + 5*time.Minute, http.StatusNotFound},
+		} {
+			service.config.now = func() time.Time { return now.Add(tc.after) }
+			pending := reference
+			pending.ArtifactID, pending.ManifestID = artifact.NewID("artifact"), artifact.NewID("manifest")
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, publisherToken, pending), tc.status)
 		}
 	})
 

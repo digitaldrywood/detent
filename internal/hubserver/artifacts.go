@@ -217,6 +217,9 @@ func (s *Service) authorizeArtifactUpload(c echo.Context) error {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	if err := s.authorizeArtifactUploadTenant(c.Request().Context(), scope, r); err != nil {
+		if errors.Is(err, artifact.ErrQuota) {
+			return s.refusedAPIError(c, http.StatusTooManyRequests, "quota_exceeded", "Too many pending artifact uploads; retry after they publish or expire", apiErrorResponse{Code: "quota_exceeded", Message: "Too many pending artifact uploads; retry after they publish or expire"})
+		}
 		return s.nativeAPIError(c, err)
 	}
 

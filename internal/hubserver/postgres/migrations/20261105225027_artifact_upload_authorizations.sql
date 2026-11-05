@@ -10,24 +10,35 @@ CREATE TABLE artifact_upload_authorizations (
  attempt_id text NOT NULL,
  kind text NOT NULL CHECK (kind IN ('log','diff','screenshot','video')),
  bytes bigint NOT NULL CHECK (bytes > 0 AND bytes <= 268435456),
- artifact_id text,
  created_at timestamptz NOT NULL,
+ expires_at timestamptz NOT NULL CHECK (expires_at > created_at),
  PRIMARY KEY (organization_id, project_id, service_id, idempotency_key),
- UNIQUE (organization_id, project_id, artifact_id),
  FOREIGN KEY (organization_id, project_id, service_id) REFERENCES artifact_services(organization_id, project_id, id),
  FOREIGN KEY (organization_id, project_id, work_item_id) REFERENCES issues(organization_id, project_id, native_id)
 );
-CREATE INDEX artifact_upload_authorizations_unbound ON artifact_upload_authorizations
- (organization_id, project_id, service_id, attempt_id, kind, created_at) WHERE artifact_id IS NULL;
+CREATE INDEX artifact_upload_authorizations_attempt ON artifact_upload_authorizations
+ (organization_id, project_id, attempt_id, expires_at);
+CREATE INDEX artifact_upload_authorizations_match ON artifact_upload_authorizations
+ (organization_id, project_id, service_id, attempt_id, kind, expires_at);
+CREATE INDEX artifact_upload_authorizations_expiry ON artifact_upload_authorizations
+ (organization_id, expires_at);
 ALTER TABLE artifact_upload_authorizations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE artifact_upload_authorizations FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON artifact_upload_authorizations FROM PUBLIC;
-GRANT SELECT, INSERT, UPDATE ON artifact_upload_authorizations TO detent_runtime, detent_platform;
+GRANT SELECT, INSERT, UPDATE, DELETE ON artifact_upload_authorizations TO detent_runtime, detent_platform;
 CREATE POLICY tenant_isolation ON artifact_upload_authorizations TO detent_runtime,detent_migration
  USING (organization_id=NULLIF(current_setting('detent.organization_id',true),''))
  WITH CHECK (organization_id=NULLIF(current_setting('detent.organization_id',true),''));
 CREATE POLICY platform_access ON artifact_upload_authorizations TO detent_platform USING (true) WITH CHECK (true);
+CREATE TABLE artifact_upload_authority_cutover (
+ singleton boolean PRIMARY KEY CHECK (singleton),
+ cutover_at timestamptz NOT NULL
+);
+INSERT INTO artifact_upload_authority_cutover (singleton, cutover_at) VALUES (true, now());
+REVOKE ALL ON artifact_upload_authority_cutover FROM PUBLIC;
+GRANT SELECT ON artifact_upload_authority_cutover TO detent_runtime, detent_platform;
 
 -- +goose Down
 SET LOCAL lock_timeout = '5s';
+DROP TABLE artifact_upload_authority_cutover;
 DROP TABLE artifact_upload_authorizations;
