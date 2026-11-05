@@ -126,6 +126,7 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 			}
 			stamp := now.Format("2006-01-02T15:04:05.000000000Z07:00")
 			source := threadstore.Import{Thread: threadstore.Record{Thread: teamThread{ID: "th_" + string(org) + "_" + name, Scope: scope, ProjectID: project, IssueID: issue, Title: "Example " + name, Status: "open", Creator: "credential_first", CreatedAt: stamp, UpdatedAt: stamp, PostCount: 1}, RequestKey: "create_" + name, InputHash: strings.Repeat("a", 64)}, Posts: []threadstore.PostRecord{{Post: teamPost{Sequence: 1, Author: "credential_first", Name: "Example", Kind: "note", Body: "Preserved body " + string(org) + " " + name, CreatedAt: stamp}, RequestKey: "post_" + name, InputHash: strings.Repeat("b", 64)}}}
+			source.Thread.Participants = []threadstore.Participant{{PrincipalID: "credential_first", Name: "Example"}}
 			if err := store.postgres.ImportTeamThread(t.Context(), org, source, cfg.RunDetails); err != nil {
 				t.Fatal(err)
 			}
@@ -146,6 +147,50 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 	if service.database.reader != nil || service.database.db != nil {
 		t.Fatal("fixture must use PostgreSQL without the legacy database")
 	}
+	t.Run("hosted_service_grants", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, user, access string
+			grant              bool
+			want               int
+		}{
+			{name: "selected_granted", user: "first", access: "selected", grant: true, want: 4},
+			{name: "selected_without_token_grant", user: "first", access: "selected", want: 1},
+			{name: "selected_without_member_grant", user: "second", access: "selected", grant: true, want: 1},
+			{name: "all_with_member_grants", user: "first", access: "all", want: 4},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				id := "service_" + tc.name
+				hash := apikey.HashToken(id)
+				if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+					if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_startup", ID: id, Name: tc.name, Hash: hash, Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, UserID: tc.user, MembershipID: "membership_" + tc.user, KeyScope: "read", ProjectAccess: tc.access, Kind: "service"}); err != nil {
+						return err
+					}
+					if tc.grant {
+						return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_startup", TokenID: id, ProjectID: "project_org_startup"})
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				credential := apiCredential{ID: id, Hash: hash, Scope: apiScopeOperator, NativeOnly: true, HostedMembership: "membership_" + tc.user, HostedPrincipal: "credential_" + tc.user, HostedRole: "owner", HostedKeyKind: "service", HostedKeyScope: apikey.ScopeRead, HostedProjectAccess: hostedProjectAccess(tc.access), Hosted: &auth.HostedIdentity{Subject: tc.user, OrganizationID: "provider_org_startup"}}
+				page, err := service.listThreadRecords(t.Context(), nativeScope{organization: "org_startup", credential: credential}, teamThreadInput{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(page.Threads) != tc.want {
+					t.Fatalf("visible threads = %+v; want %d", page.Threads, tc.want)
+				}
+				for _, thread := range page.Threads {
+					if strings.Contains(thread.ID, "org_other") || thread.ID == "th_org_startup_hidden" || tc.want == 1 && thread.Scope != "general" {
+						t.Fatalf("unauthorized thread exposed: %+v", thread)
+					}
+					if thread.Preview == "" || len(thread.Participants) == 0 {
+						t.Fatalf("authorized thread lost preview or participants: %+v", thread)
+					}
+				}
+			})
+		}
+	})
 	requestHandler := service.Handler()
 	var requestReadCounter *entryKeyReadCounter
 	request := func(path, user, connection string, arguments any, mutate func(*cloudassert.Claims)) *httptest.ResponseRecorder {
