@@ -1720,3 +1720,222 @@ func (w changeCreateProbeWriter) CreateChange(ctx context.Context, value eventst
 	}
 	return w.Writer.CreateChange(ctx, value)
 }
+
+func TestPostgresMutationReferencesWithoutLegacyDatabase(t *testing.T) {
+	admin := postgresStartupTemplate.Database(t)
+	connection := startupConnection(t, admin, "detent_runtime_v2", "")
+	key := hostedSharedKey(64)
+	clock := time.Now().UTC().Truncate(time.Microsecond)
+	states := humanWorkflowFixtureStates()
+	states = append(states, tracker.NativeState{Name: "Triage", Transitions: []string{"Todo", "Cancelled"}}, tracker.NativeState{Name: "Review", Transitions: []string{"Merging", "Rework", "Cancelled"}}, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Rework"}})
+	descriptor := hubTestPolicy()
+	descriptor.Workflow = &policy.Workflow{Source: "example-workflow.yaml", Revision: descriptor.SourceRevision, States: states}
+	descriptor = descriptor.WithID()
+	permissions := map[string]apikey.Scope{"owner": apikey.ScopeAdmin, "admin": apikey.ScopeAdmin, "member": apikey.ScopeWrite, "reporter": apikey.ScopeWrite, "reader": apikey.ScopeRead}
+	roles := map[string]string{"owner": "owner", "admin": "admin", "member": "member", "reporter": "reporter", "reader": "owner"}
+	revoked := false
+	blocked := []string(nil)
+	projectAccess := "all"
+	cfg := startupConfig(connection)
+	cfg.now = func() time.Time { return clock }
+	cfg.SecretKeys = secretTestKeys(t, "1", "1")
+	plans := capacityHostedPlans()
+	cfg.Hosted.Plans = &plans
+	cfg.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
+	resolver := func(organization string) entryauthority.Resolver {
+		return func(_ context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
+			if revoked {
+				return cloudassert.Claims{}, operatortool.ErrAccessDenied
+			}
+			return cloudassert.Claims{Issuer: origin.Issuer, Generation: origin.Generation, Audience: organization, ProviderOrganization: "provider_" + organization, Subject: origin.Subject, Role: roles[origin.Subject], Kind: cloudassert.KindKey, ExpiresAt: clock.Add(time.Minute), Key: &apikey.KeyAuthority{ID: origin.KeyID, CredentialBinding: origin.CredentialBinding, Kind: "personal", Permission: permissions[origin.Subject], BlockedProjects: blocked, ProjectContext: apikey.ProjectContext{Access: projectAccess, Projects: moveItemSelectedProjects(projectAccess)}}}, nil
+		}
+	}
+	cfg.Hosted.SharedEntry.ResolveKey = resolver("org_startup")
+	store, err := openDatabase(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, organization := range []tracker.OrganizationID{"org_startup", "org_other"} {
+		seedStartupOrganization(t, store.postgres, organization)
+		prepared, err := eventstore.NewContent(cfg.RunDetails).PrepareProjectPolicy(t.Context(), organization, descriptor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared.ProjectID, prepared.ApprovedBy, prepared.ApprovedAt = "project_example", "credential_owner", clock
+		rules := defaultChangeReviewPolicy(descriptor)
+		rules.RequireReview = true
+		rules.ID = changerequest.PolicyID(rules)
+		reviewPolicy, err := eventstore.NewContent(cfg.RunDetails).PrepareReviewPolicy(t.Context(), eventstore.ReviewPolicy{OrganizationID: organization, ProjectID: "project_example", PolicyRevisionID: descriptor.ID, Revision: 1, UpdatedBy: "credential_owner", UpdatedAt: clock}, rules)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			cursor, err := cfg.SecretKeys.Seal(bytes.Repeat([]byte{0x36}, 32), accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
+			if err != nil {
+				return err
+			}
+			if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: cursor, UpdatedAt: clock}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: cursor.Version, RecordedAt: clock}); err != nil {
+				return err
+			}
+			for _, user := range []string{"owner", "admin", "member", "reporter", "reader"} {
+				id := "credential_" + user
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: id, Name: "Example " + user, Hash: apikey.HashToken(string(organization) + user), Scope: "operator", NativeOnly: true, CreatedAt: clock, UpdatedAt: clock, UserID: user, MembershipID: "membership_" + user, KeyScope: string(permissions[user]), ProjectAccess: "all", Kind: "personal"}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: user, Email: user + "@example.test", MembershipID: "membership_" + user, Role: roles[user], Active: true, PrincipalID: id, CreatedAt: clock, UpdatedAt: clock}); err != nil {
+					return err
+				}
+			}
+			for _, id := range []tracker.ProjectID{"project_example", "project_foreign"} {
+				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: id, Name: "Example " + string(id), Slug: strings.ReplaceAll(string(id), "_", "-"), Profile: "native"}, States: states}); err != nil {
+					return err
+				}
+			}
+			for _, user := range []string{"owner", "admin", "member", "reporter", "reader"} {
+				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: "credential_" + user, ProjectID: "project_example"}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization, UserID: user, ProjectID: "project_example", CanWrite: true}); err != nil {
+					return err
+				}
+			}
+			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: "machine_example", Hostname: "example", Capacity: 2, Version: "test"}); err != nil {
+				return err
+			}
+			if err := w.ApproveProjectPolicy(t.Context(), prepared, ""); err != nil {
+				return err
+			}
+			return w.SetReviewPolicy(t.Context(), reviewPolicy, "")
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	service, err := Open(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if service.database.reader != nil || service.database.db != nil {
+		t.Fatal("fixture must be PostgreSQL only")
+	}
+	service.config.Hosted.SharedEntry.verifier.Now = cfg.now
+	requestFor := func(target *Service, user, path string, body any) *httptest.ResponseRecorder {
+		t.Helper()
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := cloudassert.NewID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		claims := cloudassert.Claims{Issuer: "entry", Audience: target.config.Hosted.OrganizationID, ProviderOrganization: "provider_" + target.config.Hosted.OrganizationID, Subject: user, Role: roles[user], Generation: 1, Kind: cloudassert.KindKey, Method: http.MethodPost, Path: path, BodyDigest: cloudassert.BodyDigest(raw), IssuedAt: clock, ExpiresAt: clock.Add(20 * time.Second), ID: id, Key: &apikey.KeyAuthority{ID: "key_" + user, CredentialBinding: strings.Repeat("a", 64), Kind: "personal", Permission: permissions[user], BlockedProjects: blocked, ProjectContext: apikey.ProjectContext{Access: projectAccess, Projects: moveItemSelectedProjects(projectAccess)}}}
+		assertion, err := cloudassert.Sign(key, claims)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(cloudassert.Header, assertion)
+		response := httptest.NewRecorder()
+		target.Handler().ServeHTTP(response, req)
+		return response
+	}
+	otherConfig := cfg
+	otherHosted := *cfg.Hosted
+	otherHosted.OrganizationID = "org_other"
+	otherHosted.WorkOSOrganizationID = "provider_org_other"
+	otherEntry := *cfg.Hosted.SharedEntry
+	otherEntry.ResolveKey = resolver("org_other")
+	otherHosted.SharedEntry = &otherEntry
+	otherConfig.Hosted = &otherHosted
+	other, err := Open(t.Context(), otherConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := other.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := other.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	other.config.Hosted.SharedEntry.verifier.Now = cfg.now
+	decode := func(t *testing.T, response *httptest.ResponseRecorder) tracker.NativeIssue {
+		t.Helper()
+		requireNativeStatus(t, response, http.StatusOK)
+		var result struct {
+			Data tracker.NativeIssue `json:"data"`
+		}
+		decodeHubResponse(t, response, &result)
+		return result.Data
+	}
+	items := map[*Service]tracker.NativeIssue{}
+	for _, target := range []*Service{service, other} {
+		organization := target.config.Hosted.OrganizationID
+		t.Run(organization, func(t *testing.T) {
+			path := "/api/v2/organizations/" + organization + "/projects/project_example/work-items"
+			created := requestFor(target, "owner", path, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "resolver_issue"}, Title: "Resolver example", Body: workItemRecordBody, State: "Todo", Type: "bug"})
+			requireNativeStatus(t, created, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, created, &issue)
+			items[target] = issue
+			references := []string{string(issue.WorkItemID), fmt.Sprint(issue.Number), fmt.Sprintf("#%d", issue.Number), fmt.Sprintf("project_example#%d", issue.Number), fmt.Sprintf("/example-%s/project-example/issues/%d", strings.TrimPrefix(organization, "org_"), issue.Number)}
+			for index, reference := range references {
+				t.Run(fmt.Sprint(index), func(t *testing.T) {
+					title := fmt.Sprintf("Resolved example %d", index)
+					args := map[string]any{"project_id": "project_example", "identifier": reference, "request_id": fmt.Sprintf("resolver_edit_%d", index), "expected_revision": fmt.Sprint(issue.Revision), "title": title}
+					invoke := func() *httptest.ResponseRecorder {
+						return requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": operatortool.EditItem, "arguments": args, "connection_id": "resolver"})
+					}
+					updated := decode(t, invoke())
+					if updated.OrganizationID != issue.OrganizationID || updated.WorkItemID != issue.WorkItemID || updated.Title != title || updated.Revision != issue.Revision+1 {
+						t.Fatalf("mutation lost tenant, identity, content or revision: %+v", updated)
+					}
+					if replay := decode(t, invoke()); !reflect.DeepEqual(updated, replay) {
+						t.Fatal("mutation replay changed its result")
+					}
+					args["request_id"] = fmt.Sprintf("resolver_stale_%d", index)
+					response := invoke()
+					requireNativeStatus(t, response, http.StatusConflict)
+					if !strings.Contains(response.Body.String(), "revision_conflict") {
+						t.Fatalf("missing revision conflict: %s", response.Body.String())
+					}
+					issue = updated
+				})
+			}
+		})
+	}
+	for _, target := range []*Service{service, other} {
+		foreign := items[other]
+		if target == other {
+			foreign = items[service]
+		}
+		for _, test := range []struct {
+			name, user, identifier string
+			status                 int
+		}{
+			{"foreign tenant", "owner", string(foreign.WorkItemID), http.StatusForbidden},
+			{"foreign project", "owner", "project_foreign#1", http.StatusForbidden},
+			{"read only", "reader", string(items[target].WorkItemID), http.StatusForbidden},
+		} {
+			t.Run(target.config.Hosted.OrganizationID+"/"+test.name, func(t *testing.T) {
+				args := map[string]any{"project_id": "project_example", "identifier": test.identifier, "request_id": "resolver_denied", "expected_revision": "1", "title": "Forbidden edit"}
+				response := requestFor(target, test.user, "/internal/v1/keys/call", map[string]any{"name": operatortool.EditItem, "arguments": args, "connection_id": "resolver"})
+				requireNativeStatus(t, response, test.status)
+			})
+		}
+	}
+
+}

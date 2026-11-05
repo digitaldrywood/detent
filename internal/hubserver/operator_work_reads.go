@@ -321,35 +321,12 @@ func (s *Service) resolveOperatorNativeReadItem(ctx context.Context, query nativ
 	return tracker.NativeIssue{}, explain.ErrNotFound
 }
 
-func (s *Service) resolveOperatorNativeItem(ctx context.Context, query nativeQueryer, scope nativeScope, reference string) (tracker.NativeIssue, error) {
-	if strings.Contains(reference, "/") {
-		id, err := s.readableReference(ctx, query, scope, reference)
-		if err != nil {
-			return tracker.NativeIssue{}, err
-		}
-		reference = id
+func (s *Service) resolveOperatorNativeItem(ctx context.Context, _ nativeQueryer, scope nativeScope, reference string) (tracker.NativeIssue, error) {
+	item, err := s.resolveOperatorRecordReadItem(ctx, scope, reference)
+	if errors.Is(err, explain.ErrNotFound) || errors.Is(err, operatortool.ErrProjectScopeRequired) {
+		return tracker.NativeIssue{}, nativeNotFound()
 	}
-	if strings.HasPrefix(reference, "wi_") {
-		item, _, err := readNativeIssue(ctx, query, scope, reference)
-		return s.nativeIssueResponse(item), err
-	}
-	value := reference
-	if prefix, number, ok := strings.Cut(reference, "#"); ok {
-		if prefix != "" && prefix != string(scope.project) {
-			return tracker.NativeIssue{}, explain.ErrNotFound
-		}
-		value = number
-	}
-	number, err := strconv.Atoi(value)
-	if err != nil || number <= 0 {
-		return tracker.NativeIssue{}, explain.ErrNotFound
-	}
-	var id string
-	if err := query.QueryRowContext(ctx, "SELECT native_id FROM issues WHERE organization_id=? AND project_id=? AND number=?", scope.organization, scope.project, number).Scan(&id); err != nil {
-		return tracker.NativeIssue{}, err
-	}
-	item, _, err := readNativeIssue(ctx, query, scope, id)
-	return s.nativeIssueResponse(item), err
+	return item, err
 }
 
 func (operatorWorkReads) WorkReadNames(context.Context) []string {
