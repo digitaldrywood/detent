@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -43,6 +44,18 @@ func (s *session) CreateAuditDisposition(ctx context.Context, row eventstore.Aud
 		return row, corestore.ErrNotFound
 	}
 	ref, d := row.Reference, row.Disposition
+	lockKey := fmt.Sprintf("audit-dispositions:%d:%s:%d:%s:%d", len(s.organization), s.organization, len(row.Project), row.Project, d.AuditRunID)
+	if _, err := s.db.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, lockKey); err != nil {
+		return row, mapError(ctx, err)
+	}
+	var full, replay bool
+	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runner_audit_dispositions WHERE organization_id=$1 AND project_id=$2 AND audit_session_id=$3 ORDER BY id OFFSET 199 LIMIT 1), EXISTS(SELECT 1 FROM runner_audit_dispositions WHERE organization_id=$1 AND actor_id=$4 AND request_key=$5)`, s.organization, row.Project, d.AuditRunID, row.ActorID, row.RequestKey).Scan(&full, &replay)
+	if err != nil {
+		return row, mapError(ctx, err)
+	}
+	if full && !replay {
+		return row, corestore.ErrRevisionConflict
+	}
 	err = s.db.QueryRowContext(ctx, `INSERT INTO runner_audit_dispositions(organization_id,project_id,change_id,review_sequence,audit_session_id,finding_id,status,actor_id,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,request_key,request_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT(organization_id,actor_id,request_key) DO NOTHING RETURNING id`, s.organization, row.Project, row.ChangeID, row.ReviewSequence, d.AuditRunID, d.FindingID, d.Status, row.ActorID, d.RecordedAt, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize, row.RequestKey, row.RequestHash).Scan(&row.Disposition.ID)
 	inserted := err == nil
 	if errors.Is(err, sql.ErrNoRows) {
