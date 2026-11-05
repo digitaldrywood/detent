@@ -117,6 +117,25 @@ func isNativeConflict(err error) bool {
 	return errors.As(err, &failure) && failure != nil && failure.Code == "revision_conflict"
 }
 
+func operatorAuthorizationCause(err error) string {
+	for _, cause := range []struct {
+		err  error
+		code string
+	}{
+		{context.DeadlineExceeded, "deadline_exceeded"},
+		{context.Canceled, "cancelled"},
+		{accessstore.ErrDenied, "access_denied"},
+		{auth.ErrHostedIdentity, "hosted_identity"},
+		{operatortool.ErrAccessDenied, "operator_access_denied"},
+		{sql.ErrNoRows, "not_found"},
+	} {
+		if errors.Is(err, cause.err) {
+			return cause.code
+		}
+	}
+	return "unclassified"
+}
+
 func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) error {
 	if errors.Is(err, receiptstore.ErrExpired) {
 		return s.nativeAPIError(c, commandResponseExpired(), attributes...)
@@ -148,7 +167,11 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 	}
 	if errors.Is(err, operatortool.ErrAccessDenied) {
 		message := operatortool.ErrAccessDenied.Error()
-		return s.refusedAPIError(c, http.StatusForbidden, "access_denied", message, apiErrorResponse{Code: "access_denied", Message: message})
+		var denied *operatortool.AuthorizationError
+		if errors.As(err, &denied) {
+			attributes = append(attributes, "authorization_stage", denied.Stage, "authorization_cause", operatorAuthorizationCause(denied.Cause), "cause_class", fmt.Sprintf("%T", denied.Cause), "principal_id", denied.PrincipalID, "authorization_organization_id", denied.OrganizationID, "authorization_project_id", denied.ProjectID)
+		}
+		return s.refusedAPIError(c, http.StatusForbidden, "access_denied", message, apiErrorResponse{Code: "access_denied", Message: message}, attributes...)
 	}
 	if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, auth.ErrInvalidSession) {
 		return s.refusedAPIError(c, http.StatusForbidden, "access_denied", "Access is no longer available", apiErrorResponse{Code: "access_denied", Message: "Access is no longer available"})

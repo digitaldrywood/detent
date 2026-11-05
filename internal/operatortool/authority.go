@@ -13,6 +13,23 @@ import (
 var ErrAccessDenied = errors.New("operator access is unavailable")
 var ErrProviderUnavailable = errors.New("identity provider is unavailable")
 
+type AuthorizationError struct {
+	Stage          string
+	Cause          error
+	PrincipalID    string
+	OrganizationID string
+	ProjectID      string
+}
+
+func (e *AuthorizationError) Error() string {
+	if errors.Is(e.Cause, ErrAccessDenied) {
+		return e.Cause.Error()
+	}
+	return ErrAccessDenied.Error()
+}
+
+func (e *AuthorizationError) Unwrap() error { return ErrAccessDenied }
+
 // Identity binds a connection to an authenticated credential/session and one
 // organization. It contains no grants: permissions are resolved for each call.
 type Identity struct {
@@ -97,30 +114,37 @@ func ProjectSnapshot(ctx context.Context, snapshot telemetry.Snapshot) (telemetr
 
 func AuthorizeCurrent(ctx context.Context, requirement Requirement) (context.Context, error) {
 	connection, ok := ctx.Value(connectionKey{}).(Connection)
+	denied := func(stage string, cause error) (context.Context, error) {
+		var original *AuthorizationError
+		if errors.As(cause, &original) {
+			stage, cause = original.Stage, original.Cause
+		}
+		return ctx, &AuthorizationError{Stage: stage, Cause: cause, PrincipalID: connection.Identity.PrincipalID, OrganizationID: connection.Identity.OrganizationID, ProjectID: requirement.ProjectID}
+	}
 	if !ok || !connection.Identity.Valid() || connection.Resolve == nil {
-		return ctx, ErrAccessDenied
+		return denied("connection", nil)
 	}
 	authority, err := connection.Resolve(ctx)
 	if errors.Is(err, ErrProviderUnavailable) {
 		return ctx, ErrProviderUnavailable
 	}
-	if err != nil || authority.Identity != connection.Identity || authority.Check == nil {
-		return ctx, ErrAccessDenied
+	if err != nil {
+		return denied("resolve", err)
+	}
+	if authority.Identity != connection.Identity || authority.Check == nil {
+		return denied("identity", nil)
 	}
 	if requirement.OrganizationID == "" {
 		requirement.OrganizationID = connection.Identity.OrganizationID
 	}
 	if requirement.OrganizationID != connection.Identity.OrganizationID || !apikey.ValidScope(requirement.Scope) {
-		return ctx, ErrAccessDenied
+		return denied("requirement", nil)
 	}
 	if err := authority.Check(ctx, requirement); err != nil {
 		if errors.Is(err, ErrProviderUnavailable) {
 			return ctx, ErrProviderUnavailable
 		}
-		if errors.Is(err, ErrAccessDenied) {
-			return ctx, err
-		}
-		return ctx, ErrAccessDenied
+		return denied("check", err)
 	}
 	if authority.BindContext != nil {
 		ctx = authority.BindContext(ctx)

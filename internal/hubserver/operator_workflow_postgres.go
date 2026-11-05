@@ -46,6 +46,10 @@ func (s *Service) workflowCommandReplay(ctx context.Context, scope nativeScope, 
 }
 
 func workflowSafeError(err error) error {
+	var denied *operatortool.AuthorizationError
+	if errors.As(err, &denied) {
+		return err
+	}
 	if errors.Is(operatorAuthorizationError(err), operatortool.ErrProviderUnavailable) {
 		return operatortool.ErrProviderUnavailable
 	}
@@ -57,9 +61,12 @@ func workflowSafeError(err error) error {
 		return receiptstore.ErrExpired
 	}
 	if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, operatortool.ErrProjectScopeRequired) {
-		return operatortool.ErrAccessDenied
+		return &operatortool.AuthorizationError{Stage: "workflow", Cause: err}
 	}
 	safe := hubSafeChangeError(err)
+	if errors.Is(safe, operatortool.ErrAccessDenied) {
+		return &operatortool.AuthorizationError{Stage: "workflow", Cause: err}
+	}
 	if errors.Is(safe, mutation.ErrConflict) {
 		if conflict := operatorNativeConflict(err); conflict != nil {
 			return conflict
