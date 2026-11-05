@@ -24,7 +24,15 @@ type ArchiveOwner struct {
 	CreatedAt      time.Time
 }
 
+type ReadGrant struct {
+	ProjectID                                                  tracker.ProjectID
+	TokenHash, PrincipalID, ServiceID, ArtifactID, SessionHash string
+	Revision                                                   int64
+	ExpiresAt                                                  time.Time
+}
+
 type Reader interface {
+	ArtifactReadGrant(context.Context, tracker.ProjectID, string) (ReadGrant, error)
 	ArtifactService(context.Context, tracker.ProjectID, string) (artifact.Binding, error)
 	ArtifactServices(context.Context, tracker.ProjectID) ([]artifact.Binding, error)
 	ArtifactReference(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string, int64) (artifact.Reference, error)
@@ -35,6 +43,7 @@ type Reader interface {
 }
 
 type Writer interface {
+	CreateArtifactReadGrant(context.Context, ReadGrant) error
 	BindArtifactService(context.Context, tracker.ProjectID, artifact.Binding) error
 	Reader
 	AppendArtifactReference(context.Context, artifact.Reference) (artifact.Reference, error)

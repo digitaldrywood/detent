@@ -335,6 +335,18 @@ func (s *Service) authorizeArtifactRead(c echo.Context) error {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	scope := nativeRequestScope(c)
+	if s.config.TenantRepository != nil {
+		grant, err := s.readArtifactGrantTenant(ctx, scope, c.Param("service"), r)
+		if err != nil {
+			return s.nativeAPIError(c, nativeNotFound())
+		}
+		if s.config.Hosted != nil {
+			if err := s.authorizeHostedArtifactRead(c, grant.PrincipalID, grant.SessionHash); err != nil {
+				return s.nativeAPIError(c, nativeNotFound())
+			}
+		}
+		return c.NoContent(http.StatusNoContent)
+	}
 	var created, principal, sessionHash string
 	var expires *string
 	var deadline int64
@@ -409,6 +421,9 @@ func (s *Service) artifactServicesCommand(ctx context.Context, scope nativeScope
 }
 
 func (s *Service) artifactReadGrantCommand(ctx context.Context, scope nativeScope, item, artifactID string, revision int64, now time.Time) (result artifact.Grant, err error) {
+	if s.config.TenantRepository != nil {
+		return s.artifactReadGrantTenant(ctx, scope, item, artifactID, revision, now)
+	}
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
 	var raw, bindingRaw []byte

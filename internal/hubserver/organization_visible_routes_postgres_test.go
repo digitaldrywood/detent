@@ -17,6 +17,7 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -137,8 +138,20 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 		}
 		return response
 	}
+	var firstArtifactToken string
 	for _, org := range []string{"org_startup", "org_second"} {
 		organization = org
+		selected := service
+		if org == "org_second" {
+			selected = secondService
+		}
+		provider := selected.config.Hosted.Provider.(*hostedSecurityProvider)
+		membership := auth.Membership{ID: "membership_owner", UserID: "user_owner", OrganizationID: "provider_" + org, Status: "active"}
+		membership.Role.Slug = "owner"
+		provider.mu.Lock()
+		provider.members[membership.ID] = membership
+		provider.sessions["session_user_owner"] = auth.HostedIdentity{Subject: "user_owner", OrganizationID: "provider_" + org, SessionID: "session_user_owner", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+		provider.mu.Unlock()
 		base := "/organizations/" + org + "/api/v2/organizations/" + org + "/projects/project_first/artifact-services"
 		requireNativeStatus(t, request(http.MethodGet, base, nil), http.StatusOK)
 		body := map[string]any{"service_id": "service_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "origin": "https://" + org + ".example.test", "mode": "customer", "publisher_token_id": "credential_publisher", "idempotency_key": "bind-example"}
@@ -174,13 +187,14 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		for _, serviceID := range []string{body["service_id"].(string), "service_missing"} {
-			req := httptest.NewRequest(http.MethodPost, base+"/"+serviceID+"/authorize", strings.NewReader("["))
+		publisherRequest := func(serviceID, raw string) *httptest.ResponseRecorder {
+			req := httptest.NewRequest(http.MethodPost, base+"/"+serviceID+"/authorize", strings.NewReader(raw))
 			assertionID, err := cloudassert.NewID()
 			if err != nil {
 				t.Fatal(err)
 			}
-			assertion, err := cloudassert.Sign(key, cloudassert.Claims{Issuer: "entry", Audience: org, Generation: 1, Kind: cloudassert.KindMachine, Method: http.MethodPost, Path: req.URL.Path, BodyDigest: cloudassert.BodyDigest([]byte("[")), IssuedAt: now, ExpiresAt: now.Add(20 * time.Second), ID: assertionID})
+			issued := time.Now().UTC()
+			assertion, err := cloudassert.Sign(key, cloudassert.Claims{Issuer: "entry", Audience: org, Generation: 1, Kind: cloudassert.KindMachine, Method: http.MethodPost, Path: req.URL.Path, BodyDigest: cloudassert.BodyDigest([]byte(raw)), IssuedAt: issued, ExpiresAt: issued.Add(20 * time.Second), ID: assertionID})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -193,12 +207,75 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 				handler = secondService.Handler()
 			}
 			handler.ServeHTTP(response, req)
-			want := http.StatusUnprocessableEntity
-			if serviceID == "service_missing" {
-				want = http.StatusNotFound
-			}
-			requireNativeStatus(t, response, want)
+			return response
 		}
+		requireNativeStatus(t, publisherRequest(body["service_id"].(string), "["), http.StatusUnprocessableEntity)
+		requireNativeStatus(t, publisherRequest("service_missing", "["), http.StatusNotFound)
+
+		item := tracker.NativeWorkItemID("wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+		version, err := eventstore.NewContent(cfg.RunDetails).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: tracker.OrganizationID(org), ProjectID: "project_first", WorkItemID: item, RecordID: string(item), Revision: 1}, []byte(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: tracker.OrganizationID(org), ProjectID: "project_first", NativeID: item, Number: 1, Title: "Example artifact", WorkflowStateName: new("Todo"), ActorKind: new("human"), ActorPrincipalID: new("credential_owner")}); err != nil {
+				return err
+			}
+			_, err := w.CreateCollaborationVersion(t.Context(), version)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		artifactID := "artifact_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO artifact_references(organization_id,project_id,work_item_id,service_id,artifact_id,revision,manifest_id,schema_version,sha256,kind,state,availability,bytes,objects,expires_at,observed_at) VALUES($1,'project_first',$2,$3,$4,1,$5,1,$6,'log','complete','available',12,1,$7,$8)`, org, item, body["service_id"], artifactID, artifact.NewID("manifest"), artifact.Digest([]byte(org)), now.Add(time.Hour), now); err != nil {
+			t.Fatal(err)
+		}
+		accessPath := strings.TrimSuffix(base, "/artifact-services") + "/work-items/" + string(item) + "/artifacts/" + artifactID + "/access"
+		granted := request(http.MethodPost, accessPath, map[string]int{"revision": 1})
+		requireNativeStatus(t, granted, http.StatusOK)
+		var grant artifact.Grant
+		if err := json.Unmarshal(granted.Body.Bytes(), &grant); err != nil {
+			t.Fatal(err)
+		}
+		if grant.Token == "" || grant.Origin != body["origin"] || grant.SHA256 != artifact.Digest([]byte(org)) || !grant.ExpiresAt.Equal(now.Add(time.Minute)) {
+			t.Fatalf("unexpected grant: %+v", grant)
+		}
+		authorize, err := json.Marshal(artifact.ReadAuthorization{Token: grant.Token, ArtifactID: artifactID, Revision: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		requireNativeStatus(t, publisherRequest(body["service_id"].(string), string(authorize)), http.StatusNoContent)
+		provider.mu.Lock()
+		savedSession := provider.sessions["session_user_owner"]
+		delete(provider.sessions, "session_user_owner")
+		provider.mu.Unlock()
+		requireNativeStatus(t, publisherRequest(body["service_id"].(string), string(authorize)), http.StatusNotFound)
+		provider.mu.Lock()
+		provider.sessions["session_user_owner"] = savedSession
+		provider.mu.Unlock()
+		if firstArtifactToken != "" {
+			foreign, err := json.Marshal(artifact.ReadAuthorization{Token: firstArtifactToken, ArtifactID: artifactID, Revision: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireNativeStatus(t, publisherRequest(body["service_id"].(string), string(foreign)), http.StatusNotFound)
+		}
+		firstArtifactToken = grant.Token
+
+		if err := repository.WriteTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(w tenantstore.Writer) error {
+			return w.DeleteAccessTokenGrant(t.Context(), "credential_owner", "project_first")
+		}); err != nil {
+			t.Fatal(err)
+		}
+		requireNativeStatus(t, publisherRequest(body["service_id"].(string), string(authorize)), http.StatusNotFound)
+		if err := repository.WriteTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(w tenantstore.Writer) error {
+			return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: tracker.OrganizationID(org), TokenID: "credential_owner", ProjectID: "project_first"})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(time.Minute)
+		requireNativeStatus(t, publisherRequest(body["service_id"].(string), string(authorize)), http.StatusNotFound)
+		now = now.Add(-time.Minute)
 		body["origin"] = "https://changed.example.test"
 		requireNativeStatus(t, request(http.MethodPut, strings.Replace(base, "/artifact-services", "/onboarding/artifact-services", 1)+"/service_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", body), http.StatusConflict)
 		body["idempotency_key"] = "missing-publisher"

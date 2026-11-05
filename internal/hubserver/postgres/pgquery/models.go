@@ -148,6 +148,18 @@ type ArchiveUsageCounter struct {
 	CompressedBytes int64
 }
 
+type ArtifactGrant struct {
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	TokenHash         string
+	PrincipalID       string
+	ServiceID         string
+	ArtifactID        string
+	Revision          int64
+	ExpiresAt         time.Time
+	HostedSessionHash string
+}
+
 type ArtifactReference struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
