@@ -93,6 +93,29 @@ func (s *session) recordRunnerTokenUsage(ctx context.Context, attempt leasestore
 			return mapError(ctx, err)
 		}
 	}
+	if len(issues) > 0 {
+		var overflow bool
+		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runner_issue_tokens WHERE organization_id=$1 AND project_id=$2 AND issue_id=$3 LIMIT 1 OFFSET 200)`, s.organization, project, attempt.IssueID).Scan(&overflow); err != nil {
+			return mapError(ctx, err)
+		}
+		if overflow {
+			return leasestore.ErrAttemptConflict
+		}
+	}
+	previousDay := ""
+	for _, delta := range daily {
+		if delta.day == previousDay {
+			continue
+		}
+		previousDay = delta.day
+		var overflow bool
+		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runner_project_daily_tokens WHERE organization_id=$1 AND project_id=$2 AND usage_day=$3 LIMIT 1 OFFSET 200)`, s.organization, project, delta.day).Scan(&overflow); err != nil {
+			return mapError(ctx, err)
+		}
+		if overflow {
+			return leasestore.ErrAttemptConflict
+		}
+	}
 	_, err := s.db.ExecContext(ctx, `UPDATE native_attempts SET runner_tokens_recorded=true WHERE organization_id=$1 AND id=$2`, s.organization, attempt.ID)
 	return mapError(ctx, err)
 }

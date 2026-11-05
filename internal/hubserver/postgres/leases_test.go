@@ -840,3 +840,73 @@ func TestLeaseClaimReplayOnlyRaisesLandingCapacity(t *testing.T) {
 		t.Fatalf("lower-capacity replay=%+v original=%+v", lowered, first)
 	}
 }
+
+func TestRunnerSpendRejectsCumulativeModelOverflow(t *testing.T) {
+	for _, scenario := range []string{"repeated observations", "daily across issues", "issue across days"} {
+		t.Run(scenario, func(t *testing.T) {
+			r, _ := repositoryFor(t, template.Database(t), smallPool())
+			day := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+				seedLeaseFamily(t, r, org)
+				lease := claimLease(t, r, org, leaseClaim(1))
+				event := attemptEvent(lease)
+				for batch := 0; batch < 7; batch++ {
+					event.Sequence = int64(batch + 1)
+					event.PayloadObjectKey = fmt.Sprintf("example/observation-%d", batch)
+					event.Usage = nil
+					count := 32
+					if batch == 6 {
+						count = 8
+					}
+					for index := 0; index < count; index++ {
+						event.Usage = append(event.Usage, tracker.NativeUsage{Model: fmt.Sprintf("example-model-%03d", batch*32+index), To: day})
+					}
+					recordLeaseAttempt(t, r, org, event)
+				}
+				overflow := event
+				overflow.Sequence++
+				overflow.PayloadObjectKey = "example/overflow"
+				overflow.Usage = []tracker.NativeUsage{{Model: "example-model-overflow", To: day}}
+				if scenario == "daily across issues" {
+					err := r.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
+						_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ID: 3, ProjectID: "prj_1", NativeID: "wi_3", Number: 3, Title: "Example"})
+						return err
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					claim := leaseClaim(2)
+					claim.IssueID = 3
+					overflow = attemptEvent(claimLease(t, r, org, claim))
+					overflow.Usage = []tracker.NativeUsage{{Model: "example-model-overflow", To: day}}
+				}
+				if scenario == "issue across days" {
+					overflow.Usage[0].To = day.AddDate(0, 0, 1)
+				}
+				err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+					_, err := w.RecordAttempt(t.Context(), overflow)
+					return err
+				})
+				if !errors.Is(err, leasestore.ErrAttemptConflict) {
+					t.Errorf("overflow error = %v, want attempt conflict", err)
+				}
+				event.Sequence++
+				event.PayloadObjectKey = "example/correction"
+				event.Usage = []tracker.NativeUsage{{Model: "example-model-000", Input: 20, CachedInput: 5, Output: 3, To: day}}
+				recordLeaseAttempt(t, r, org, event)
+				for _, at := range []*time.Time{&day, nil} {
+					err := r.ReadLeases(t.Context(), org, corestore.Serving, func(reader leasestore.Reader) error {
+						spend, err := reader.(leasestore.RunnerSpendReader).RunnerTokenSpend(t.Context(), "prj_1", "wi_1", at, nil)
+						if err == nil && (len(spend.ByModel) != 200 || spend.InputTokens != 20 || spend.CachedInputTokens != 5 || spend.OutputTokens != 3 || spend.TotalTokens != 23 || spend.Sessions != 200) {
+							t.Errorf("spend after rejection and correction = %+v", spend)
+						}
+						return err
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+		})
+	}
+}
