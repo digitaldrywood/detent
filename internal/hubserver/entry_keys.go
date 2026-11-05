@@ -207,7 +207,7 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 		}
 		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: projectToolScope(name, definition.Annotations.ReadOnly), ResourceKind: "work_item", Action: name})
 		return err == nil, nil
-	case "list_projects", "get_native_project":
+	case "list_projects", "get_native_project", "get_project_policy":
 		definitions := append(operatortool.ProjectCatalog(), operatortool.LocalProjectCatalog()...)
 		definition, found := entryKeyDefinition(definitions, name)
 		if !found {
@@ -271,7 +271,7 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 
 func entryKeyToolSupported(name string) bool {
 	switch name {
-	case "list_projects", "get_native_project", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, operatortool.AppBootstrapPayload, operatortool.MoveItem, operatortool.FileIssue, operatortool.AddComment, operatortool.ListComments, operatortool.ListChanges, operatortool.CreateChange, operatortool.PublishChangeVersion, operatortool.ReviewChange, "list_threads", "get_thread":
+	case "list_projects", "get_native_project", "get_project_policy", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, operatortool.AppBootstrapPayload, operatortool.MoveItem, operatortool.FileIssue, operatortool.AddComment, operatortool.ListComments, operatortool.ListChanges, operatortool.CreateChange, operatortool.PublishChangeVersion, operatortool.ReviewChange, "list_threads", "get_thread":
 		return true
 	default:
 		return false

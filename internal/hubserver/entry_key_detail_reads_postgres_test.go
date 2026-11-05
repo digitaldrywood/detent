@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -93,6 +94,19 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 	content := eventstore.NewContent(cfg.RunDetails)
 	for _, org := range []tracker.OrganizationID{"org_startup", "org_other"} {
 		project := tracker.ProjectID("project_" + string(org))
+		descriptor := hubTestPolicy()
+		descriptor.SourceDigest = policy.Digest([]byte(org))
+		descriptor = descriptor.WithID()
+		prepared, err := content.PrepareProjectPolicy(t.Context(), org, descriptor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared.ProjectID, prepared.ApprovedBy, prepared.ApprovedAt = project, "credential_first", now
+		if err := store.postgres.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.ApproveProjectPolicy(t.Context(), prepared, "")
+		}); err != nil {
+			t.Fatal(err)
+		}
 		for index, item := range []string{"wi_own", "wi_foreign"} {
 			actor := "credential_first"
 			if index == 1 {
@@ -263,6 +277,63 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 		service *Service
 	}{{"org_startup", firstService}, {"org_other", otherService}} {
 		service, currentOrganization = target.service, target.org
+		t.Run(target.org+"/get_project_policy", func(t *testing.T) {
+			args := map[string]any{"project_id": "project_" + currentOrganization}
+			for _, role := range []string{"owner", "admin"} {
+				currentRole, currentPermission = role, apikey.ScopeAdmin
+				catalog := request("/internal/v1/keys/catalog", "first", "", map[string]any{}, nil)
+				requireNativeStatus(t, catalog, http.StatusOK)
+				var definitions []operatortool.Definition
+				decodeHubResponse(t, catalog, &definitions)
+				definition, found := entryKeyDefinition(definitions, "get_project_policy")
+				if !found || !definition.Annotations.ReadOnly {
+					t.Errorf("%s policy read missing from signed catalog", role)
+				}
+				response := call("get_project_policy", args, nil)
+				if response.Code != http.StatusOK {
+					t.Errorf("%s policy call status=%d body=%s", role, response.Code, response.Body.String())
+					continue
+				}
+				var result struct {
+					OrganizationID string            `json:"organization_id"`
+					ProjectID      string            `json:"project_id"`
+					Data           projectPolicyRead `json:"data"`
+				}
+				decodeHubResponse(t, response, &result)
+				if result.OrganizationID != currentOrganization || result.ProjectID != args["project_id"] || result.Data.Policy == nil || result.Data.Policy.SourceDigest != policy.Digest([]byte(currentOrganization)) || result.Data.ApprovedBy != "credential_first" {
+					t.Fatalf("policy identity or tenant content incorrect: %+v", result)
+				}
+			}
+			currentRole, currentPermission = "owner", apikey.ScopeRead
+			for _, scenario := range []struct {
+				name  string
+				setup func()
+				reset func()
+			}{
+				{"selected", func() { selected = true }, func() { selected = false }},
+				{"blocked", func() { currentBlocked = []string{"project_" + currentOrganization} }, func() { currentBlocked = nil }},
+				{"revoked", func() { entryRevoked = true }, func() { entryRevoked = false }},
+				{"invalid_role", func() { currentRole = "invalid" }, func() { currentRole = "owner" }},
+			} {
+				t.Run(scenario.name, func(t *testing.T) {
+					scenario.setup()
+					defer scenario.reset()
+					response := call("get_project_policy", args, nil)
+					if response.Code != http.StatusForbidden || strings.Contains(response.Body.String(), "source_digest") {
+						t.Fatalf("policy access denial failed: %d %s", response.Code, response.Body.String())
+					}
+				})
+			}
+			for _, project := range []string{"hidden_project", "project_org_other", "project_org_startup"} {
+				if project == "project_"+currentOrganization {
+					continue
+				}
+				response := call("get_project_policy", map[string]any{"project_id": project}, nil)
+				if response.Code == http.StatusOK || strings.Contains(response.Body.String(), "source_digest") {
+					t.Fatalf("policy crossed project boundary: %d %s", response.Code, response.Body.String())
+				}
+			}
+		})
 		for _, name := range []string{operatortool.ListComments, operatortool.ListChanges} {
 			t.Run(target.org+"/"+name, func(t *testing.T) {
 				args := map[string]any{"project_id": "project_" + currentOrganization, "limit": 1}
