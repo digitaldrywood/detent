@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2252,5 +2253,53 @@ func TestPostgresObservedPolicyPreservesHubTriageAndOccupiedWorkflow(t *testing.
 				}
 			})
 		}
+	}
+}
+
+func TestNativeWorkflowPolicyCanonicalStates(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		change   func(*projectstore.Record)
+		conflict bool
+	}{
+		{name: "lane and transition order"},
+		{name: "triage dispatch permission", change: func(p *projectstore.Record) { p.States[len(p.States)-1].Dispatchable = true }, conflict: true},
+		{name: "triage terminal flag", change: func(p *projectstore.Record) { p.States[len(p.States)-1].Terminal = true }, conflict: true},
+		{name: "triage operator permission", change: func(p *projectstore.Record) { p.States[len(p.States)-1].OperatorOnly = true }, conflict: true},
+		{name: "repository lane permission", change: func(p *projectstore.Record) { p.States[0].Terminal = false }, conflict: true},
+		{name: "removed transition", change: func(p *projectstore.Record) { p.States[0].Transitions = nil }, conflict: true},
+		{name: "missing triage", change: func(p *projectstore.Record) { p.States = p.States[:len(p.States)-1] }, conflict: true},
+		{name: "workflow revision", change: func(p *projectstore.Record) { p.Core.WorkflowSourceRevision = "stale" }, conflict: true},
+		{name: "workflow source", change: func(p *projectstore.Record) { p.Core.WorkflowSource = "other.yaml" }, conflict: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			descriptor := hubTestPolicy()
+			descriptor.Workflow = &policy.Workflow{Source: "example-workflow.yaml", Revision: strings.Repeat("a", 40), States: nativeFixtureStates()}
+			descriptor = descriptor.WithID()
+			project := projectstore.Record{Core: corestore.Project{WorkflowSource: descriptor.Workflow.Source, WorkflowSourceRevision: descriptor.Workflow.Revision}, States: nativeTriageStates(descriptor.Workflow.States)}
+			slices.Reverse(project.States)
+			for i := range project.States {
+				project.States[i].Transitions = slices.Clone(project.States[i].Transitions)
+				slices.Reverse(project.States[i].Transitions)
+			}
+			if test.change != nil {
+				test.change(&project)
+			}
+			before, err := json.Marshal(project)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = validateNativeWorkflowPolicy(project, descriptor, true)
+			if (err != nil) != test.conflict {
+				t.Fatalf("workflow validation = %v, want conflict %t", err, test.conflict)
+			}
+			after, err := json.Marshal(project)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != string(after) {
+				t.Fatal("comparison mutated stored workflow")
+			}
+		})
 	}
 }
