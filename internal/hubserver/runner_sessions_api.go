@@ -2,6 +2,9 @@ package hubserver
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -183,6 +186,14 @@ func (s *Service) runnerSessionFence(ctx context.Context, r tenantstore.Reader, 
 	return attempt, current, nil
 }
 
+func runnerSessionProcessAuthority(key string) string {
+	if key == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])
+}
+
 func (s *Service) mutateRunnerSession(c echo.Context) error {
 	var request runnersession.Mutation
 	if err := decodeAPIJSON(c, &request); err != nil {
@@ -206,13 +217,14 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 	var record runnersession.Record
 	var snapshot runnersession.Snapshot
 	if request.Start != nil {
-		if request.SessionID != 0 || request.ExpectedRevision != 0 || request.Start.StartedAt.IsZero() || request.Start.IssueID == "" {
-			return s.nativeAPIError(c, nativePublicInvalid("new session requires an issue and start time"))
+		if request.SessionID != 0 || request.ExpectedRevision != 0 || request.Start.StartedAt.IsZero() || request.Start.IssueID == "" || len(request.ProcessKey) < 32 {
+			return s.nativeAPIError(c, nativePublicInvalid("new session requires an issue, start time and process key"))
 		}
 		record = runnersession.Record{Organization: scope.organization, Project: scope.project, IssueID: request.Start.IssueID, StartKey: request.Key, StartedAt: request.Start.StartedAt, Revision: 1}
 		snapshot.Start, snapshot.Identity = *request.Start, request.Start.RuntimeIdentity
 		snapshot.Resume = store.SessionResumeState{ResumedFromSessionID: request.Start.ResumedFromSessionID, OrphanRecoveryOutcome: request.Start.OrphanRecoveryOutcome, OrphanRecoveryFallbackReason: request.Start.OrphanRecoveryFallbackReason}
 		snapshot.Provider = store.SessionProviderIdentity{ThreadID: request.Start.ProviderThreadID, SessionID: request.Start.ProviderSessionID}
+		snapshot.Authority = runnerSessionProcessAuthority(request.ProcessKey)
 	} else {
 		var err error
 		record, err = s.runnerSessionRead(ctx, scope, request.SessionID, nil)
@@ -261,6 +273,10 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 	if request.Resume != nil {
 		snapshot.Resume = *request.Resume
 	}
+	if (request.Worker != nil || request.Reaped != nil) && (snapshot.Authority == "" || subtle.ConstantTimeCompare([]byte(snapshot.Authority), []byte(runnerSessionProcessAuthority(request.ProcessKey))) != 1) {
+		return s.nativeAPIError(c, runnerUnauthorized())
+	}
+	request.ProcessKey = ""
 	if request.Worker != nil {
 		reserved := request.Worker.PID == 0 && request.Worker.GroupID == 0 && request.Worker.StartedAt.IsZero() && request.Worker.CleanupRoot != "" && request.Worker.CleanupPath != ""
 		started := request.Worker.PID > 0 && request.Worker.GroupID > 0 && !request.Worker.StartedAt.IsZero()

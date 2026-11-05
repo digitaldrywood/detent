@@ -25,6 +25,7 @@ type Snapshot struct {
 	Policy    policy.Descriptor
 	Worker    *store.WorkerProcessRegistration
 	Reaped    *store.WorkerProcessReap
+	Authority string
 }
 
 type Mutation struct {
@@ -45,6 +46,7 @@ type Mutation struct {
 	Worker           *store.WorkerProcessRegistration
 	Reaped           *store.WorkerProcessReap
 	Policy           *policy.Descriptor
+	ProcessKey       string
 }
 
 type Activity struct {

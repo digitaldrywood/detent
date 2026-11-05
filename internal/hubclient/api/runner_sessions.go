@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"net/http"
 	"net/url"
@@ -23,6 +24,7 @@ type RunnerSessions struct {
 	*NativeClient
 	mu        sync.Mutex
 	workersMu sync.Mutex
+	keys      map[int64]string
 	workers   map[int64]store.WorkerProcessRegistration
 }
 
@@ -82,8 +84,24 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 }
 
 func (s *RunnerSessions) StartSession(ctx context.Context, start store.SessionStart) (int64, error) {
-	value, err := s.mutate(ctx, runnersession.Mutation{Start: &start})
-	return value.ID, err
+	key := rand.Text() + rand.Text()
+	value, err := s.mutate(ctx, runnersession.Mutation{Start: &start, ProcessKey: key})
+	if err != nil {
+		return value.ID, err
+	}
+	s.workersMu.Lock()
+	defer s.workersMu.Unlock()
+	if s.keys == nil {
+		s.keys = make(map[int64]string)
+	}
+	s.keys[value.ID] = key
+	return value.ID, nil
+}
+
+func (s *RunnerSessions) processKey(id int64) string {
+	s.workersMu.Lock()
+	defer s.workersMu.Unlock()
+	return s.keys[id]
 }
 func (s *RunnerSessions) FinishSession(ctx context.Context, id int64, finish store.SessionFinish) error {
 	_, err := s.mutate(ctx, runnersession.Mutation{SessionID: id, Finish: &finish})
@@ -159,8 +177,9 @@ func (s *RunnerSessions) UpdateSessionWorkerProcess(ctx context.Context, id int6
 		s.workers = make(map[int64]store.WorkerProcessRegistration)
 	}
 	s.workers[id] = process
+	key := s.keys[id]
 	s.workersMu.Unlock()
-	_, err := s.mutate(ctx, runnersession.Mutation{SessionID: id, Worker: &process})
+	_, err := s.mutate(ctx, runnersession.Mutation{SessionID: id, Worker: &process, ProcessKey: key})
 	return err
 }
 func (s *RunnerSessions) ListActiveWorkerProcesses(ctx context.Context) ([]store.WorkerProcess, error) {
@@ -173,17 +192,19 @@ func (s *RunnerSessions) ListActiveWorkerProcesses(ctx context.Context) ([]store
 	}
 	s.workersMu.Lock()
 	defer s.workersMu.Unlock()
-	for index := range result.Workers {
-		worker := &result.Workers[index]
-		worker.CleanupRoot, worker.CleanupPath = "", ""
-		if local, ok := s.workers[worker.SessionID]; ok {
-			worker.WorkerProcessIdentity, worker.CleanupRoot, worker.CleanupPath = local.WorkerProcessIdentity, local.CleanupRoot, local.CleanupPath
+	workers := make([]store.WorkerProcess, 0, len(result.Workers))
+	for _, worker := range result.Workers {
+		local, ok := s.workers[worker.SessionID]
+		if !ok {
+			continue
 		}
+		worker.WorkerProcessIdentity, worker.CleanupRoot, worker.CleanupPath = local.WorkerProcessIdentity, local.CleanupRoot, local.CleanupPath
+		workers = append(workers, worker)
 	}
-	return result.Workers, nil
+	return workers, nil
 }
 func (s *RunnerSessions) MarkSessionWorkerProcessReaped(ctx context.Context, id int64, reap store.WorkerProcessReap) error {
-	if _, err := s.mutate(ctx, runnersession.Mutation{SessionID: id, Reaped: &reap}); err != nil {
+	if _, err := s.mutate(ctx, runnersession.Mutation{SessionID: id, Reaped: &reap, ProcessKey: s.processKey(id)}); err != nil {
 		return err
 	}
 	s.workersMu.Lock()

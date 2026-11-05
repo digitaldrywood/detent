@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -301,7 +302,10 @@ func TestPostgresRunnerRestartDoesNotReleaseLiveProvider(t *testing.T) {
 	}
 }
 
-func TestPostgresRunnerProcessCleanupStaysBoundToLocalRegistration(t *testing.T) {
+func TestPostgresRunnerProcessRegistrationRequiresSessionAuthority(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses POSIX process groups")
+	}
 	f := newRunnerPGFixture(t)
 	native, ctx := f.client(t, 0)
 	trusted := api.NewRunnerSessions(native)
@@ -321,17 +325,41 @@ func TestPostgresRunnerProcessCleanupStaysBoundToLocalRegistration(t *testing.T)
 	if err := os.WriteFile(secret, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	identities := make([]store.WorkerProcessIdentity, 2)
+	for index := range identities {
+		cmd := exec.CommandContext(t.Context(), "sleep", "30")
+		procgroup.Configure(t.Context(), cmd)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+		identity, err := procgroup.Inspect(cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		identities[index] = store.WorkerProcessIdentity{PID: identity.PID, GroupID: identity.GroupID, StartedAt: identity.StartedAt}
+	}
+	owned, unrelated := identities[0], identities[1]
 	start := store.SessionStart{IssueID: string(f.leases[0].WorkItemID), StartedAt: time.Now().UTC(), Model: "example-model"}
 	trustedID, err := trusted.StartSession(ctx, start)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := trusted.UpdateSessionWorkerProcess(ctx, trustedID, store.WorkerProcessRegistration{CleanupRoot: workspaceRoot, CleanupPath: scratch}); err != nil {
-		t.Fatal(err)
+		t.Fatalf("trusted reservation refused: %v", err)
 	}
-	forged := store.WorkerProcessRegistration{CleanupRoot: victim, CleanupPath: secret}
-	if err := attacker.UpdateSessionWorkerProcess(attackerCtx, trustedID, forged); err != nil {
-		t.Fatal(err)
+	if err := trusted.UpdateSessionWorkerProcess(ctx, trustedID, store.WorkerProcessRegistration{WorkerProcessIdentity: owned, CleanupRoot: workspaceRoot, CleanupPath: scratch}); err != nil {
+		t.Fatalf("trusted started registration refused: %v", err)
+	}
+	forged := store.WorkerProcessRegistration{WorkerProcessIdentity: unrelated, CleanupRoot: victim, CleanupPath: secret}
+	for name, err := range map[string]error{
+		"reserved overwrite": attacker.UpdateSessionWorkerProcess(attackerCtx, trustedID, store.WorkerProcessRegistration{CleanupRoot: victim, CleanupPath: secret}),
+		"started overwrite":  attacker.UpdateSessionWorkerProcess(attackerCtx, trustedID, forged),
+		"reap":               attacker.MarkSessionWorkerProcessReaped(attackerCtx, trustedID, store.WorkerProcessReap{ReapedAt: time.Now().UTC(), Outcome: "exited", Reason: "forged"}),
+	} {
+		if err == nil {
+			t.Fatalf("Hub accepted %s without the session process authority", name)
+		}
 	}
 	foreignID, err := attacker.StartSession(attackerCtx, start)
 	if err != nil {
@@ -340,29 +368,42 @@ func TestPostgresRunnerProcessCleanupStaysBoundToLocalRegistration(t *testing.T)
 	if err := attacker.UpdateSessionWorkerProcess(attackerCtx, foreignID, forged); err != nil {
 		t.Fatal(err)
 	}
-	workers, err := trusted.ListActiveWorkerProcesses(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := map[int64][2]string{trustedID: {workspaceRoot, scratch}, foreignID: {"", ""}}
-	for _, worker := range workers {
-		expected, ok := want[worker.SessionID]
-		if !ok {
-			continue
+	restartedNative, restartedCtx := f.client(t, 0)
+	restarted := api.NewRunnerSessions(restartedNative)
+	for name, sessions := range map[string]*api.RunnerSessions{"trusted": trusted, "restarted": restarted} {
+		listCtx := ctx
+		if name == "restarted" {
+			listCtx = restartedCtx
 		}
-		delete(want, worker.SessionID)
-		if got := [2]string{worker.CleanupRoot, worker.CleanupPath}; got != expected {
-			t.Fatalf("session %d cleanup = %q, want %q", worker.SessionID, got, expected)
-		}
-		if err := workspace.CleanupOwnedPath(worker.CleanupRoot, worker.CleanupPath); err != nil {
+		workers, err := sessions.ListActiveWorkerProcesses(listCtx)
+		if err != nil {
 			t.Fatal(err)
 		}
+		var terminated []store.WorkerProcessIdentity
+		for _, worker := range workers {
+			terminated = append(terminated, worker.WorkerProcessIdentity)
+			if err := workspace.CleanupOwnedPath(worker.CleanupRoot, worker.CleanupPath); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if slices.Contains(terminated, unrelated) {
+			t.Fatalf("%s client would terminate a forged process identity: %+v", name, workers)
+		}
+		if name == "trusted" && (len(workers) != 1 || workers[0].SessionID != trustedID || workers[0].WorkerProcessIdentity != owned || workers[0].CleanupRoot != workspaceRoot || workers[0].CleanupPath != scratch) {
+			t.Fatalf("trusted client lost its own registration: %+v", workers)
+		}
+		if name == "restarted" && len(workers) != 0 {
+			t.Fatalf("restarted client trusted Hub-only registrations: %+v", workers)
+		}
 	}
-	if len(want) != 0 {
-		t.Fatalf("registered sessions missing from process listing: %v", want)
+	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
+		t.Fatalf("trusted cleanup did not remove its scratch: %v", err)
 	}
 	if _, err := os.Stat(secret); err != nil {
 		t.Fatalf("Hub-supplied cleanup path deleted a file outside the local registration: %v", err)
+	}
+	if err := trusted.MarkSessionWorkerProcessReaped(ctx, trustedID, store.WorkerProcessReap{ReapedAt: time.Now().UTC(), Outcome: "exited", Reason: "test"}); err != nil {
+		t.Fatalf("trusted reap refused: %v", err)
 	}
 }
 
