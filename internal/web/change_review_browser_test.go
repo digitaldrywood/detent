@@ -136,7 +136,11 @@ func TestReviewBrowserFixture(t *testing.T) {
 			for key, value := range viewed[version.ID] {
 				files = append(files, tracker.ChangeViewedFile{ManifestSHA256: ref.SHA256, FileSHA256: key, Viewed: value})
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"grant": artifact.Grant{Token: "fixture-grant", Origin: gateway.URL, ArtifactID: ref.ArtifactID, Revision: ref.Revision, SHA256: ref.SHA256, ExpiresAt: time.Now().Add(time.Minute)}, "viewed": files, "current_version_id": versions[current].ID})
+			result := map[string]any{"viewed": files, "current_version_id": versions[current].ID}
+			if r.FormValue("access") != "check" {
+				result["grant"] = artifact.Grant{Token: "fixture-grant", Origin: gateway.URL, ArtifactID: ref.ArtifactID, Revision: ref.Revision, SHA256: ref.SHA256, ExpiresAt: time.Now().Add(time.Minute)}
+			}
+			_ = json.NewEncoder(w).Encode(result)
 			return
 		}
 		if action == "viewed" {

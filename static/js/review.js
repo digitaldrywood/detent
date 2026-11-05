@@ -168,9 +168,9 @@
       for (const button of list.querySelectorAll('[data-file-index]')) button.setAttribute('aria-current', String(Number(button.dataset.fileIndex) === file.index));
       status.textContent = 'Checking current access…';
       try {
-        const access = await request('load', {}, controller.signal);
+        const access = await request('load', { access: 'check' }, controller.signal);
         if (serial !== generation) return;
-        grantBase(access.grant); setCurrent(access.current_version_id);
+        setCurrent(access.current_version_id);
         let message;
         if (file.binary) message = 'Binary file. The captured patch has no renderable source for this file.';
         else if (file.oversized) message = 'Oversized file. Rendering is limited to 256 KiB, 2,000 lines, and 16 KiB per line. Use the verified artifact download below for the complete patch.';

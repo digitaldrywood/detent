@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -82,6 +83,9 @@ func (s *Service) expireNativeRecords(ctx context.Context, now time.Time) error 
 		cutoff := now.UTC().Truncate(time.Hour).Add(-720 * time.Hour)
 		if err := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 			if err := w.PruneRunnerHostMetrics(ctx, cutoff, runnerstore.MaxRunnerHostPruneBatch); err != nil {
+				return err
+			}
+			if _, err := w.PruneExpiredArtifactReadGrants(ctx, now, artifactstore.MaxReadGrantPruneBatch); err != nil {
 				return err
 			}
 			writer, ok := w.(corestore.DuplicateChallengeWriter)

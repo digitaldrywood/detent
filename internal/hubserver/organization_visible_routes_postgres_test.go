@@ -298,7 +298,27 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 			}
 		}
 		expireGrants()
-		for range artifactstore.ReadGrantLimit {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO artifact_grants(organization_id,project_id,token_hash,principal_id,service_id,artifact_id,revision,expires_at,hosted_session_hash) SELECT $1,'project_first',encode(sha256(convert_to($1||':backlog:'||n,'UTF8')),'hex'),'credential_owner',$2,$3,1,$4,'' FROM generate_series(1,300) n`, org, body["service_id"], artifactID, now.Add(-time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		backlog := grantRows("credential_owner")
+		requireNativeStatus(t, request(http.MethodPost, accessPath, map[string]int{"revision": 1}), http.StatusOK)
+		if got, want := grantRows("credential_owner"), backlog-artifactstore.ReadGrantPruneBatch+1; got != want {
+			t.Fatalf("%s owner grant rows after bounded request cleanup=%d, want %d", org, got, want)
+		}
+		if err := repository.WriteTenant(t.Context(), tracker.OrganizationID(org), corestore.Background, func(w tenantstore.Writer) error {
+			pruned, err := w.PruneExpiredArtifactReadGrants(t.Context(), now, artifactstore.MaxReadGrantPruneBatch)
+			if want := int64(backlog - artifactstore.ReadGrantPruneBatch); pruned != want {
+				t.Errorf("%s background pruned=%d, want %d", org, pruned, want)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if got := grantRows("credential_owner"); got != 1 {
+			t.Fatalf("%s owner grant rows after background prune=%d, want 1", org, got)
+		}
+		for range artifactstore.ReadGrantLimit - 1 {
 			requireNativeStatus(t, request(http.MethodPost, accessPath, map[string]int{"revision": 1}), http.StatusOK)
 		}
 		requireNativeStatus(t, request(http.MethodPost, accessPath, map[string]int{"revision": 1}), http.StatusTooManyRequests)

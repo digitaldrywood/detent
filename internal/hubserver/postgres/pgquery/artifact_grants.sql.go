@@ -13,17 +13,25 @@ import (
 )
 
 const artifactReadGrantDeleteExpired = `-- name: ArtifactReadGrantDeleteExpired :exec
-DELETE FROM artifact_grants WHERE organization_id=$1 AND principal_id=$2 AND expires_at<=$3
+DELETE FROM artifact_grants g WHERE g.organization_id=$1 AND g.token_hash IN (
+SELECT e.token_hash FROM artifact_grants e WHERE e.organization_id=$1 AND e.principal_id=$2 AND e.expires_at<=$3::timestamptz
+ORDER BY e.expires_at LIMIT $4::integer)
 `
 
 type ArtifactReadGrantDeleteExpiredParams struct {
 	OrganizationID tracker.OrganizationID
 	PrincipalID    string
-	ExpiresAt      time.Time
+	Now            time.Time
+	BatchLimit     int32
 }
 
 func (q *Queries) ArtifactReadGrantDeleteExpired(ctx context.Context, arg ArtifactReadGrantDeleteExpiredParams) error {
-	_, err := q.db.ExecContext(ctx, artifactReadGrantDeleteExpired, arg.OrganizationID, arg.PrincipalID, arg.ExpiresAt)
+	_, err := q.db.ExecContext(ctx, artifactReadGrantDeleteExpired,
+		arg.OrganizationID,
+		arg.PrincipalID,
+		arg.Now,
+		arg.BatchLimit,
+	)
 	return err
 }
 
@@ -107,4 +115,24 @@ func (q *Queries) ArtifactReadGrantLiveCount(ctx context.Context, arg ArtifactRe
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const artifactReadGrantPruneExpired = `-- name: ArtifactReadGrantPruneExpired :execrows
+DELETE FROM artifact_grants g WHERE g.organization_id=$1 AND g.token_hash IN (
+SELECT e.token_hash FROM artifact_grants e WHERE e.organization_id=$1 AND e.expires_at<=$2::timestamptz
+ORDER BY e.expires_at LIMIT $3::integer)
+`
+
+type ArtifactReadGrantPruneExpiredParams struct {
+	OrganizationID tracker.OrganizationID
+	Now            time.Time
+	BatchLimit     int32
+}
+
+func (q *Queries) ArtifactReadGrantPruneExpired(ctx context.Context, arg ArtifactReadGrantPruneExpiredParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, artifactReadGrantPruneExpired, arg.OrganizationID, arg.Now, arg.BatchLimit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

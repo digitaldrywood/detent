@@ -57,23 +57,36 @@ func (s *Server) changeReviewAction(c echo.Context) error {
 		if err != nil {
 			return changeActionResponse(c, nil, err)
 		}
-		matched := false
+		var matched *artifact.Reference
 		for _, ref := range refs {
-			matched = matched || ref.ArtifactID == bundle.ArtifactID && ref.Revision == bundle.Revision && ref.SHA256 == bundle.SHA256 && bundle.HeadSHA == version.HeadSHA && changerequest.ReviewBundleMatches(version, ref)
+			if ref.ArtifactID == bundle.ArtifactID && ref.Revision == bundle.Revision && ref.SHA256 == bundle.SHA256 && bundle.HeadSHA == version.HeadSHA && changerequest.ReviewBundleMatches(version, ref) {
+				matched = &ref
+			}
 		}
-		if !matched || version.ID == "" {
+		if matched == nil || version.ID == "" {
 			return echo.NewHTTPError(http.StatusConflict, "Artifact does not match the selected version. Reload the change.")
 		}
-		grant, err := client.ArtifactGrant(ctx, item, bundle.ArtifactID, bundle.Revision)
-		if err != nil {
-			return changeActionResponse(c, nil, err)
+		var grant *artifact.Grant
+		if c.FormValue("access") == "check" {
+			if matched.Availability != "available" {
+				return echo.NewHTTPError(http.StatusUnprocessableEntity, "Review identity is invalid or the artifact is unavailable.")
+			}
+			if !s.now().Before(matched.ExpiresAt) {
+				return echo.NewHTTPError(http.StatusGone, "Artifact retention has expired.")
+			}
+		} else {
+			minted, err := client.ArtifactGrant(ctx, item, bundle.ArtifactID, bundle.Revision)
+			if err != nil {
+				return changeActionResponse(c, nil, err)
+			}
+			grant = &minted
 		}
 		viewed, err := client.ChangeViewedFiles(ctx, item, id, versionID)
 		if err != nil {
 			return changeActionResponse(c, nil, err)
 		}
 		return c.JSON(http.StatusOK, struct {
-			Grant            artifact.Grant             `json:"grant"`
+			Grant            *artifact.Grant            `json:"grant,omitempty"`
 			Viewed           []tracker.ChangeViewedFile `json:"viewed"`
 			CurrentVersionID string                     `json:"current_version_id"`
 		}{grant, viewed, detail.Change.CurrentVersion})

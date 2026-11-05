@@ -23,7 +23,7 @@ func (s *session) CreateArtifactReadGrant(ctx context.Context, grant artifactsto
 	if _, err := s.db.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "artifact_grants|"+string(s.organization)+"|"+grant.PrincipalID); err != nil {
 		return mapError(ctx, err)
 	}
-	if err := s.queries.ArtifactReadGrantDeleteExpired(ctx, pgquery.ArtifactReadGrantDeleteExpiredParams{OrganizationID: s.organization, PrincipalID: grant.PrincipalID, ExpiresAt: recordTime(now)}); err != nil {
+	if err := s.queries.ArtifactReadGrantDeleteExpired(ctx, pgquery.ArtifactReadGrantDeleteExpiredParams{OrganizationID: s.organization, PrincipalID: grant.PrincipalID, Now: recordTime(now), BatchLimit: artifactstore.ReadGrantPruneBatch}); err != nil {
 		return mapError(ctx, err)
 	}
 	live, err := s.queries.ArtifactReadGrantLiveCount(ctx, pgquery.ArtifactReadGrantLiveCountParams{OrganizationID: s.organization, PrincipalID: grant.PrincipalID, ExpiresAt: recordTime(now), Limit: artifactstore.ReadGrantLimit})
@@ -34,4 +34,12 @@ func (s *session) CreateArtifactReadGrant(ctx context.Context, grant artifactsto
 		return artifact.ErrQuota
 	}
 	return mapError(ctx, s.queries.ArtifactReadGrantInsert(ctx, pgquery.ArtifactReadGrantInsertParams{OrganizationID: s.organization, ProjectID: grant.ProjectID, TokenHash: grant.TokenHash, PrincipalID: grant.PrincipalID, ServiceID: grant.ServiceID, ArtifactID: grant.ArtifactID, Revision: grant.Revision, ExpiresAt: recordTime(grant.ExpiresAt), HostedSessionHash: grant.SessionHash}))
+}
+
+func (s *session) PruneExpiredArtifactReadGrants(ctx context.Context, now time.Time, limit int) (int64, error) {
+	if now.IsZero() || limit < 1 || limit > artifactstore.MaxReadGrantPruneBatch {
+		return 0, corestore.ErrInvalidPage
+	}
+	count, err := s.queries.ArtifactReadGrantPruneExpired(ctx, pgquery.ArtifactReadGrantPruneExpiredParams{OrganizationID: s.organization, Now: recordTime(now), BatchLimit: int32(limit)})
+	return count, mapError(ctx, err)
 }
