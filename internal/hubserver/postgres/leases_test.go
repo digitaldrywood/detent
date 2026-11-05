@@ -911,6 +911,77 @@ func TestRunnerSpendRejectsCumulativeModelOverflow(t *testing.T) {
 	}
 }
 
+func TestRunnerSpendRejectsCumulativeDecrease(t *testing.T) {
+	yesterday := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	today := yesterday.AddDate(0, 0, 1)
+	for _, test := range []struct {
+		name     string
+		decrease tracker.NativeUsage
+	}{
+		{name: "input", decrease: tracker.NativeUsage{Input: 99, CachedInput: 40, Output: 1_000_000}},
+		{name: "cached input", decrease: tracker.NativeUsage{Input: 100, CachedInput: 39, Output: 1_000_000}},
+		{name: "output", decrease: tracker.NativeUsage{Input: 100, CachedInput: 40}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r, _ := repositoryFor(t, template.Database(t), smallPool())
+			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+				seedLeaseFamily(t, r, org)
+				event := attemptEvent(claimLease(t, r, org, leaseClaim(1)))
+				event.Usage = []tracker.NativeUsage{{Model: "example-model", Input: 100, CachedInput: 40, Output: 1_000_000, To: yesterday}}
+				recordLeaseAttempt(t, r, org, event)
+				if err := r.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
+					_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ID: 3, ProjectID: "prj_1", NativeID: "wi_3", Number: 3, Title: "Example"})
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				claim := leaseClaim(2)
+				claim.IssueID = 3
+				other := attemptEvent(claimLease(t, r, org, claim))
+				other.Usage = []tracker.NativeUsage{{Model: "example-model", Input: 7, Output: 500, To: today}}
+				recordLeaseAttempt(t, r, org, other)
+				decreased := event
+				decreased.Sequence, decreased.PayloadObjectKey = 2, "example/decreased"
+				decreased.Usage = []tracker.NativeUsage{test.decrease}
+				decreased.Usage[0].Model, decreased.Usage[0].To = "example-model", today
+				err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+					_, err := w.RecordAttempt(t.Context(), decreased)
+					return err
+				})
+				if !errors.Is(err, leasestore.ErrAttemptConflict) {
+					t.Errorf("decreased cumulative usage error = %v, want attempt conflict", err)
+				}
+				grown := event
+				grown.Sequence, grown.PayloadObjectKey = 2, "example/grown"
+				grown.Usage = []tracker.NativeUsage{{Model: "example-model", Input: 110, CachedInput: 40, Output: 1_000_020, To: today}}
+				recordLeaseAttempt(t, r, org, grown)
+				for _, want := range []struct {
+					project       tracker.ProjectID
+					issue         string
+					day           *time.Time
+					input, output int64
+				}{
+					{project: "prj_1", day: &yesterday, input: 100, output: 1_000_000},
+					{project: "prj_1", day: &today, input: 17, output: 520},
+					{project: "prj_1", issue: "wi_3", input: 7, output: 500},
+					{project: "prj_1", issue: "wi_1", input: 110, output: 1_000_020},
+				} {
+					err := r.ReadLeases(t.Context(), org, corestore.Serving, func(reader leasestore.Reader) error {
+						spend, err := reader.(leasestore.RunnerSpendReader).RunnerTokenSpend(t.Context(), want.project, want.issue, want.day, nil)
+						if err == nil && (spend.InputTokens != want.input || spend.OutputTokens != want.output) {
+							t.Errorf("%s %s %v spend = %+v, want input %d output %d", org, want.project, want.day, spend, want.input, want.output)
+						}
+						return err
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestRunnerSpendConcurrentModelAdmission(t *testing.T) {
 	admin := template.Database(t)
 	r, _ := repositoryFor(t, admin, smallPool())

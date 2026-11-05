@@ -66,6 +66,9 @@ func (s *session) recordRunnerTokenUsage(ctx context.Context, attempt leasestore
 			return mapError(ctx, err)
 		}
 		delta := runnerTokenDelta{day: day, model: name, input: entry.Input - old.Input, cached: entry.CachedInput - old.CachedInput, output: entry.Output - old.Output, sessions: added}
+		if delta.input < 0 || delta.cached < 0 || delta.output < 0 {
+			return leasestore.ErrAttemptConflict
+		}
 		issues = append(issues, delta)
 		daily = append(daily, delta)
 		_, err = s.db.ExecContext(ctx, `INSERT INTO runner_attempt_token_usage(organization_id,attempt_id,model,project_id,issue_id,usage_day,observed_at,input_tokens,cached_input_tokens,output_tokens) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(organization_id,attempt_id,model) DO UPDATE SET usage_day=excluded.usage_day,observed_at=excluded.observed_at,input_tokens=excluded.input_tokens,cached_input_tokens=excluded.cached_input_tokens,output_tokens=excluded.output_tokens`, s.organization, attempt.ID, name, project, attempt.IssueID, day, at, entry.Input, entry.CachedInput, entry.Output)
