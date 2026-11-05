@@ -910,3 +910,77 @@ func TestRunnerSpendRejectsCumulativeModelOverflow(t *testing.T) {
 		})
 	}
 }
+
+func TestRunnerSpendConcurrentModelAdmission(t *testing.T) {
+	admin := template.Database(t)
+	r, _ := repositoryFor(t, admin, smallPool())
+	day := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedLeaseFamily(t, r, org)
+		if err := r.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
+			_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ID: 3, ProjectID: "prj_1", NativeID: "wi_3", Number: 3, Title: "Example"})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		first := attemptEvent(claimLease(t, r, org, leaseClaim(1)))
+		claim := leaseClaim(2)
+		claim.IssueID = 3
+		second := attemptEvent(claimLease(t, r, org, claim))
+		for batch := 0; batch < 7; batch++ {
+			first.Sequence = int64(batch + 1)
+			first.PayloadObjectKey = fmt.Sprintf("example/observation-%d", batch)
+			first.Usage = nil
+			for index := batch * 32; index < min((batch+1)*32, 199); index++ {
+				first.Usage = append(first.Usage, tracker.NativeUsage{Model: fmt.Sprintf("example-model-%03d", index), To: day})
+			}
+			recordLeaseAttempt(t, r, org, first)
+		}
+		first.Sequence++
+		first.PayloadObjectKey = "example/last-model"
+		first.Usage = []tracker.NativeUsage{{Model: "example-last", Input: 11, To: day}}
+		second.Usage = []tracker.NativeUsage{{Model: "example-overflow", Input: 29, To: day}}
+		var competing *repositoryTask
+		if err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+			if _, err := w.RecordAttempt(t.Context(), first); err != nil {
+				return err
+			}
+			competing = startRepositoryTask(t, func(ctx context.Context) error {
+				return r.WriteLeases(ctx, org, corestore.Background, func(other leasestore.Writer) error {
+					_, err := other.RecordAttempt(ctx, second)
+					return err
+				})
+			})
+			testenv.WaitUntil(t, t.Context(), func() error {
+				select {
+				case <-competing.done:
+					return nil
+				default:
+				}
+				var waiting bool
+				if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%pg_advisory_xact_lock%')`).Scan(&waiting); err != nil {
+					return err
+				}
+				if !waiting {
+					return errors.New("competing observation has not reached admission")
+				}
+				return nil
+			})
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := competing.wait(t); !errors.Is(err, leasestore.ErrAttemptConflict) {
+			t.Errorf("concurrent overflow error = %v, want attempt conflict", err)
+		}
+		if err := r.ReadLeases(t.Context(), org, corestore.Serving, func(reader leasestore.Reader) error {
+			spend, err := reader.(leasestore.RunnerSpendReader).RunnerTokenSpend(t.Context(), "prj_1", "", &day, nil)
+			if err == nil && (len(spend.ByModel) != 200 || spend.InputTokens != 11 || spend.TotalTokens != 11 || spend.Sessions != 200) {
+				t.Errorf("spend after concurrent admission = %+v", spend)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

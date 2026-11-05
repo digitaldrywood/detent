@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -24,6 +25,12 @@ func (s *session) recordRunnerTokenUsage(ctx context.Context, attempt leasestore
 	var project tracker.ProjectID
 	if err := s.db.QueryRowContext(ctx, `SELECT project_id FROM issues WHERE organization_id=$1 AND id=$2`, s.organization, attempt.IssueID).Scan(&project); err != nil {
 		return mapError(ctx, err)
+	}
+	if len(usage) > 0 {
+		lockKey := fmt.Sprintf("runner-token-models:%d:%s:%d:%s", len(s.organization), s.organization, len(project), project)
+		if _, err := s.db.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, lockKey); err != nil {
+			return mapError(ctx, err)
+		}
 	}
 	models := map[string]tracker.NativeUsage{}
 	for _, entry := range usage {
