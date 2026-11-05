@@ -768,7 +768,8 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope nativeSc
 		Source:         observation.Source,
 		Revision:       revision,
 	}
-	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+	apply := true
+	writeObservation := func(writer tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, writer, scope, true); err != nil {
 			return err
 		}
@@ -810,11 +811,20 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope nativeSc
 		if err != nil {
 			return err
 		}
-		if !accepted {
+		if !accepted || !apply {
 			return nil
 		}
 		return s.applyObservedTenantDefaultBranchPolicy(ctx, writer, scope, project, reporter, observation, canonical, previous, previousRevision, record.Revision, now)
-	})
+	}
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, writeObservation)
+	if !errors.Is(err, projectstore.ErrStateInUse) {
+		return err
+	}
+	apply = false
+	if err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, writeObservation); err != nil {
+		return err
+	}
+	return &nativeError{Code: "workflow_conflict", Message: "Repository workflow removes a state used by work items; observation retained without approval", status: http.StatusConflict}
 }
 
 func (s *Service) tenantProjectPolicyRevisionForDescriptor(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, descriptor policy.Descriptor, content *eventstore.Content) (policystore.Revision, bool, error) {
@@ -963,12 +973,13 @@ func reconcileTenantWorkflowPolicy(ctx context.Context, writer tenantstore.Write
 	if revision == "" {
 		revision = descriptor.SourceRevision
 	}
-	if project.Core.WorkflowSource == descriptor.Workflow.Source && project.Core.WorkflowSourceRevision == revision && reflect.DeepEqual(project.States, descriptor.Workflow.States) {
+	states := nativeTriageStates(descriptor.Workflow.States)
+	if project.Core.WorkflowSource == descriptor.Workflow.Source && project.Core.WorkflowSourceRevision == revision && reflect.DeepEqual(project.States, states) {
 		return nil
 	}
 	project.Core.WorkflowSource = descriptor.Workflow.Source
 	project.Core.WorkflowSourceRevision = revision
-	project.States = descriptor.Workflow.States
+	project.States = states
 	_, err := writer.UpdateProjectRecord(ctx, project)
 	return err
 }

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"html"
-	"slices"
 	"strings"
 	"time"
 
@@ -220,22 +219,7 @@ func (s *Service) validateWorkItemRecordFilingTenant(ctx context.Context, scope 
 }
 
 func validateConfiguredWorkflowPolicy(project projectstore.Record, descriptor policy.Descriptor, found bool) error {
-	if project.Core.WorkflowSource == "" {
-		return nil
-	}
-	if !found || descriptor.Workflow == nil || descriptor.Validate() != nil {
-		return policyMismatch("The configured workflow requires its approved policy")
-	}
-	workflowRevision := descriptor.Workflow.Revision
-	if workflowRevision == "" {
-		workflowRevision = descriptor.SourceRevision
-	}
-	if descriptor.Workflow.Source != project.Core.WorkflowSource || workflowRevision != project.Core.WorkflowSourceRevision || !slices.EqualFunc(descriptor.Workflow.States, project.States, func(a, b policy.State) bool {
-		return a.Name == b.Name && a.Terminal == b.Terminal && a.Dispatchable == b.Dispatchable && a.OperatorOnly == b.OperatorOnly && slices.Equal(a.Transitions, b.Transitions)
-	}) {
-		return policyMismatch("The configured workflow differs from its approved policy")
-	}
-	return nil
+	return validateNativeWorkflowPolicy(project, descriptor, found)
 }
 
 type nativeScheduledRepair struct {

@@ -45,7 +45,7 @@ func validateNativeWorkflowPolicy(project projectstore.Record, descriptor policy
 	if workflowRevision == "" {
 		workflowRevision = descriptor.SourceRevision
 	}
-	if descriptor.Workflow.Source != project.Core.WorkflowSource || workflowRevision != project.Core.WorkflowSourceRevision || !slices.EqualFunc(descriptor.Workflow.States, project.States, func(a, b policy.State) bool {
+	if descriptor.Workflow.Source != project.Core.WorkflowSource || workflowRevision != project.Core.WorkflowSourceRevision || !slices.EqualFunc(nativeTriageStates(descriptor.Workflow.States), project.States, func(a, b policy.State) bool {
 		return a.Name == b.Name && a.Terminal == b.Terminal && a.Dispatchable == b.Dispatchable && a.OperatorOnly == b.OperatorOnly && slices.Equal(a.Transitions, b.Transitions)
 	}) {
 		return policyMismatch("The configured workflow differs from its approved policy")

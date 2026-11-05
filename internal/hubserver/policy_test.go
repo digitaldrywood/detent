@@ -2120,3 +2120,137 @@ func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 		})
 	}
 }
+
+func TestPostgresObservedPolicyPreservesHubTriageAndOccupiedWorkflow(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}})
+	descriptor := func(instructions, revision string, legacy bool) policy.Descriptor {
+		t.Helper()
+		configuration := "schema: 1\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\n  lanes:\n    - {name: Backlog, role: holding}\n    - {name: Todo, role: active}\n    - {name: In Progress, role: active}\n    - {name: Done, role: terminal}\n    - {name: Blocked, role: holding}\n"
+		if legacy {
+			configuration += "    - {name: Legacy, role: holding}\n"
+		}
+		configuration += "gate:\n  run: true\n  required_status_checks: []\nserver:\n  kanban:\n    allowed_transitions:\n      Todo: [In Progress, Done]\n      In Progress: [Todo, Done]\n      Done: [Todo]\n"
+		if legacy {
+			configuration += "      Legacy: [Todo]\n"
+		}
+		definition, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{ConfigPath: "detent.yaml", HasConfig: true, Config: []byte(configuration), WorkflowPath: "WORKFLOW.md", Workflow: []byte(instructions)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := config.ResolvePolicy(definition)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result.Workflow.Revision = revision
+		return result.WithID()
+	}
+	original := descriptor("Implement the assigned issue.\n", strings.Repeat("a", 40), true)
+	candidate := descriptor("Implement the changed assigned issue.\n", strings.Repeat("b", 40), false)
+	for orgIndex := range 2 {
+		organization, err := service.createNativeOrganizationFor(t.Context(), fmt.Sprintf("Example organization %d", orgIndex))
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedPostgresHubAdmin(t, repository, service, organization)
+		for _, test := range []struct {
+			name, occupied string
+			archived       bool
+		}{
+			{name: "empty triage"}, {name: "occupied triage", occupied: "Triage"},
+			{name: "occupied removed lane", occupied: "Legacy"}, {name: "archived removed lane", occupied: "Legacy", archived: true},
+		} {
+			t.Run(fmt.Sprintf("organization_%d/%s", orgIndex, test.name), func(t *testing.T) {
+				path := "/api/v2/organizations/" + string(organization.ID) + "/projects"
+				response := performHubAPIRequest(t, service, http.MethodPost, path, testHubAdminToken, map[string]any{"idempotency_key": test.name, "name": test.name, "states": original.Workflow.States})
+				requireNativeStatus(t, response, http.StatusOK)
+				var project tracker.NativeProject
+				decodeHubResponse(t, response, &project)
+				base := path + "/" + string(project.ID)
+				f := nativeFixture{service: service, project: project, base: base, token: testHubAdminToken}
+				runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+				runner.enroll(t)
+				response = performHubAPIRequest(t, service, http.MethodPut, base+"/policy", testHubAdminToken, policy.Change{Policy: original})
+				requireNativeStatus(t, response, http.StatusOK)
+				var before projectstore.Record
+				err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+					record, err := w.ProjectRecord(t.Context(), project.ID)
+					if err != nil {
+						return err
+					}
+					record.Settings.Repository = "example-org/example-project"
+					record.Settings.CheckoutRepository = "example-org/example-project"
+					record.States = nativeTriageStates(original.Workflow.States)
+					before, err = w.UpdateProjectRecord(t.Context(), record)
+					if err != nil {
+						return err
+					}
+					if test.occupied != "" {
+						_, err = w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization.ID, ProjectID: project.ID, NativeID: tracker.NativeWorkItemID("item_" + string(project.ID)), Number: 1, Title: "Example item", WorkflowStateName: new(test.occupied), Archived: test.archived})
+					}
+					return err
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				source := &policy.RepositorySource{Repository: "example-org/example-project", Commit: candidate.Workflow.Revision, DefaultBranch: "develop", DefaultBranchHead: candidate.Workflow.Revision, DefaultBranchReachable: true}
+				for _, observed := range []policy.Descriptor{candidate, candidate} {
+					response = performHubAPIRequest(t, service, http.MethodPost, base+"/policy/observed", runner.redemption.Credential, policy.Observation{Descriptor: observed, Source: source})
+					expected := http.StatusNoContent
+					if test.occupied == "Legacy" {
+						expected = http.StatusConflict
+					}
+					if response.Code != expected {
+						t.Errorf("observation status = %d, want %d: %s", response.Code, expected, response.Body)
+					}
+					if expected == http.StatusConflict && !strings.Contains(response.Body.String(), `"code":"workflow_conflict"`) {
+						t.Errorf("missing typed workflow conflict: %s", response.Body)
+					}
+					err = repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+						after, err := r.ProjectRecord(t.Context(), project.ID)
+						if err != nil {
+							return err
+						}
+						if test.occupied == "Legacy" {
+							if !reflect.DeepEqual(before, after) {
+								t.Errorf("conflict changed project metadata, states or transitions: before=%+v after=%+v", before, after)
+							}
+						} else {
+							if !reflect.DeepEqual(after.States, nativeTriageStates(candidate.Workflow.States)) {
+								t.Errorf("Hub Triage was not preserved: %+v", after.States)
+							}
+							if after.Core.WorkflowSourceRevision != candidate.Workflow.Revision {
+								t.Errorf("workflow revision = %q", after.Core.WorkflowSourceRevision)
+							}
+							if err := validateNativeWorkflowPolicy(after, candidate, true); err != nil {
+								t.Errorf("normalized workflow refused: %v", err)
+							}
+							after.States[0].Dispatchable = true
+							if err := validateNativeWorkflowPolicy(after, candidate, true); err == nil {
+								t.Error("altered Hub Triage authorization accepted")
+							}
+						}
+						return nil
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					response = performHubAPIRequest(t, service, http.MethodGet, base+"/policy", testHubAdminToken, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var view projectPolicyRead
+					decodeHubResponse(t, response, &view)
+					expectedID := candidate.ID
+					if test.occupied == "Legacy" {
+						expectedID = original.ID
+						if len(view.ObservedPolicies) != 1 || view.ObservedPolicies[0].Policy.ID != candidate.ID {
+							t.Errorf("conflicting observation was not retained: %+v", view.ObservedPolicies)
+						}
+					}
+					if view.Policy == nil || view.Policy.ID != expectedID {
+						t.Errorf("approved policy = %+v, want %s", view.Policy, expectedID)
+					}
+				}
+			})
+		}
+	}
+}
