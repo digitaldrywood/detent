@@ -66,7 +66,11 @@ func (s *Service) threadRecordFilter(ctx context.Context, r tenantstore.Reader, 
 			if !ok {
 				return f, operatortool.ErrAccessDenied
 			}
-			rows, err := reader.ProjectAccessPage(ctx, projectAccessFilter(scope.credential, "", "", 200))
+			filter := projectAccessFilter(scope.credential, "", "", 200)
+			if scope.credential.EntryKey == nil {
+				filter.KeyKind = ""
+			}
+			rows, err := reader.ProjectAccessPage(ctx, filter)
 			if err != nil {
 				return f, err
 			}
