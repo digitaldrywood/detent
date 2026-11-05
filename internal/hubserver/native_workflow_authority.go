@@ -45,12 +45,24 @@ func validateNativeWorkflowPolicy(project projectstore.Record, descriptor policy
 	if workflowRevision == "" {
 		workflowRevision = descriptor.SourceRevision
 	}
-	if descriptor.Workflow.Source != project.Core.WorkflowSource || workflowRevision != project.Core.WorkflowSourceRevision || !slices.EqualFunc(nativeTriageStates(descriptor.Workflow.States), project.States, func(a, b policy.State) bool {
+	if descriptor.Workflow.Source != project.Core.WorkflowSource || workflowRevision != project.Core.WorkflowSourceRevision || !slices.EqualFunc(canonicalWorkflowStates(nativeTriageStates(descriptor.Workflow.States)), canonicalWorkflowStates(project.States), func(a, b policy.State) bool {
 		return a.Name == b.Name && a.Terminal == b.Terminal && a.Dispatchable == b.Dispatchable && a.OperatorOnly == b.OperatorOnly && slices.Equal(a.Transitions, b.Transitions)
 	}) {
 		return policyMismatch("The configured workflow differs from its approved policy")
 	}
 	return nil
+}
+
+func canonicalWorkflowStates(states []tracker.NativeState) []tracker.NativeState {
+	result := slices.Clone(states)
+	for i := range result {
+		result[i].Transitions = slices.Clone(result[i].Transitions)
+		slices.Sort(result[i].Transitions)
+	}
+	slices.SortFunc(result, func(a, b tracker.NativeState) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	return result
 }
 
 func (s *Service) settleHumanWorkflowLease(ctx context.Context, w tenantstore.Writer, scope nativeScope, lease leasestore.Lease, request tracker.Transition, prepared *preparedNativeLeaseCancellation, stopState string) error {
