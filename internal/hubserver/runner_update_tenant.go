@@ -47,7 +47,15 @@ func (s *Service) storeRunnerUpdateObservationTenant(ctx context.Context, writer
 			return err
 		}
 		known, accepted := acceptRunnerUpdateReceipt(state, urgent, report.Receipt, report.Running)
-		if !known || !accepted {
+		if !known {
+			report.Receipt = nil
+			if state.Observation != nil {
+				report.Receipt = state.Observation.Receipt
+			}
+			if report.Validate() != nil {
+				return nativeConflict(0)
+			}
+		} else if !accepted {
 			return nil
 		}
 	}
