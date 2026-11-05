@@ -103,6 +103,16 @@ func (p tenantNativeRunEventParticipant) validateNativeRunEvent(ctx context.Cont
 	if err := p.validateRunEventOwner(ctx, reader, authority, human); err != nil {
 		return err
 	}
+	if authority.ReplayPrefix {
+		if authority.Event.Data.Sequence == 1 {
+			attempt, err := reader.Attempt(ctx, authority.Event.Data.AttemptID)
+			if err != nil {
+				return err
+			}
+			authority.DispatchGeneration = attempt.DispatchGeneration
+		}
+		return nil
+	}
 	event := authority.Event
 	item, lease := authority.WorkItem, authority.Lease
 	if event.Data.Sequence == 1 {

@@ -33,6 +33,7 @@ type NativeRunEventAuthority struct {
 	Lease              leasestore.Lease
 	DispatchGeneration int64
 	UsageCorrection    bool
+	ReplayPrefix       bool
 	UsageCosts         []billingstore.CostObservation
 	UsageFacts         *runnerUsageFacts
 	Event              tracker.NativeRunEvent
@@ -124,11 +125,16 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 	var previousAttempt leasestore.Attempt
 	var previousRunEvent eventstore.Event
 	var previousRunEventFound bool
+	var cleanupPredecessor *tenantRunCleanupPredecessor
 	var usageFacts runnerUsageFacts
 	var usageFactsFound bool
 	var replay eventstore.Receipt
 	var replayed bool
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return nil, nativeRunEventStorageUnavailable()
+	}
+	if err := snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
@@ -159,6 +165,10 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			return nil
 		}
 		if !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		cleanupPredecessor, err = readTenantRunCleanupPredecessor(ctx, r, scope, request)
+		if err != nil {
 			return err
 		}
 		if request.Type == "run.finished" && request.Data.Sequence > 1 {
@@ -227,6 +237,10 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		}
 		return content.Receipt(ctx, replay)
 	}
+	cleanupData, committedCleanupData, err := readTenantRunCleanupData(ctx, content, cleanupPredecessor)
+	if err != nil {
+		return nil, err
+	}
 	var previousRunData *tracker.NativeRunData
 	if previousRunEventFound {
 		previous, err := content.Event(ctx, previousRunEvent)
@@ -283,6 +297,17 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		usageCorrection = true
 	}
 	for i, event := range events {
+		predecessor := cleanupData
+		if committed := committedCleanupData[event.Data.Sequence]; committed != nil {
+			predecessor = committed
+		}
+		if err := preserveTenantRunCleanup(predecessor, &event.Data); err != nil {
+			return nil, err
+		}
+		if cleanupData == nil || event.Data.Sequence > cleanupData.Sequence {
+			value := event.Data
+			cleanupData = &value
+		}
 		if err := validateNativeRunEvent(event); err != nil {
 			return nil, err
 		}
@@ -303,6 +328,15 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		data, err := json.Marshal(event.Data)
 		if err != nil {
 			return nil, err
+		}
+		if committed := committedCleanupData[event.Data.Sequence]; committed != nil {
+			expected, err := json.Marshal(committed)
+			if err != nil {
+				return nil, err
+			}
+			if !bytes.Equal(data, expected) {
+				return nil, leasestore.ErrAttemptConflict
+			}
 		}
 		ref, err := store.StoreDetail(ctx, string(scope.organization), data)
 		if err != nil {
@@ -427,6 +461,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		for _, event := range prepared {
 			authority := event.authority
 			authority.WorkItem, authority.Lease = workItem, lease
+			authority.ReplayPrefix = committedCleanupData[event.attempt.Sequence] != nil
 			if event.attempt.UsageCorrection {
 				currentAttempt, err := w.Attempt(ctx, event.attempt.ID)
 				if err != nil {
