@@ -71,6 +71,10 @@ type Machine struct {
 	SpriteName     string
 }
 
+type MachineRegistrationWriter interface {
+	RegisterOwnedMachine(context.Context, Machine, string) error
+}
+
 type Fence struct {
 	LeaseID      string
 	FencingToken int64

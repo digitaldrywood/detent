@@ -1374,17 +1374,18 @@ type LinkedIssueSource struct {
 }
 
 type Machine struct {
-	OrganizationID  tracker.OrganizationID
-	ID              string
-	Hostname        string
-	DisplayName     string
-	Capacity        int64
-	Version         string
-	LastHeartbeatAt time.Time
-	RegisteredAt    time.Time
-	UpdatedAt       time.Time
-	SpriteName      string
-	RoutingRevision int64
+	OrganizationID      tracker.OrganizationID
+	ID                  string
+	Hostname            string
+	DisplayName         string
+	Capacity            int64
+	Version             string
+	LastHeartbeatAt     time.Time
+	RegisteredAt        time.Time
+	UpdatedAt           time.Time
+	SpriteName          string
+	RoutingRevision     int64
+	RegistrationTokenID *string
 }
 
 type MessageReference struct {

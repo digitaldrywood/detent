@@ -861,6 +861,39 @@ func (q *Queries) RegisterLeaseMachine(ctx context.Context, arg RegisterLeaseMac
 	return err
 }
 
+const registerOwnedMachine = `-- name: RegisterOwnedMachine :execrows
+INSERT INTO machines (organization_id,id,hostname,display_name,capacity,version,last_heartbeat_at,registered_at,updated_at,registration_token_id)
+VALUES ($1,$2,$3,$4,$5,$6,clock_timestamp(),clock_timestamp(),clock_timestamp(),$7)
+ON CONFLICT (organization_id,id) DO UPDATE SET hostname=EXCLUDED.hostname,display_name=EXCLUDED.display_name,capacity=EXCLUDED.capacity,version=EXCLUDED.version,last_heartbeat_at=greatest(machines.last_heartbeat_at,EXCLUDED.last_heartbeat_at),updated_at=greatest(machines.updated_at,EXCLUDED.updated_at)
+WHERE machines.registration_token_id=EXCLUDED.registration_token_id
+`
+
+type RegisterOwnedMachineParams struct {
+	OrganizationID      tracker.OrganizationID
+	ID                  string
+	Hostname            string
+	DisplayName         string
+	Capacity            int64
+	Version             string
+	RegistrationTokenID *string
+}
+
+func (q *Queries) RegisterOwnedMachine(ctx context.Context, arg RegisterOwnedMachineParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, registerOwnedMachine,
+		arg.OrganizationID,
+		arg.ID,
+		arg.Hostname,
+		arg.DisplayName,
+		arg.Capacity,
+		arg.Version,
+		arg.RegistrationTokenID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const releaseLease = `-- name: ReleaseLease :one
 UPDATE leases SET released_at=$1::timestamptz,release_reason=$2
 WHERE organization_id=$3 AND lease_id=$4

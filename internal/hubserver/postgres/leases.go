@@ -360,3 +360,20 @@ func leaseMutationError(ctx context.Context, err error) error {
 	}
 	return mapError(ctx, err)
 }
+
+func (s *session) RegisterOwnedMachine(ctx context.Context, machine leasestore.Machine, token string) error {
+	if err := s.checkOrganization(machine.OrganizationID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(token) == "" {
+		return corestore.ErrNotFound
+	}
+	count, err := s.queries.RegisterOwnedMachine(ctx, pgquery.RegisterOwnedMachineParams{OrganizationID: machine.OrganizationID, ID: machine.ID, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version, RegistrationTokenID: &token})
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if count != 1 {
+		return corestore.ErrNotFound
+	}
+	return nil
+}

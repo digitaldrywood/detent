@@ -127,3 +127,9 @@ INSERT INTO native_attempt_events (organization_id,attempt_id,sequence,request_h
 
 -- name: BindAttemptRun :exec
 INSERT INTO native_attempt_runs (organization_id,run_id,issue_id) VALUES ($1,$2,$3) ON CONFLICT (organization_id,run_id) DO NOTHING;
+
+-- name: RegisterOwnedMachine :execrows
+INSERT INTO machines (organization_id,id,hostname,display_name,capacity,version,last_heartbeat_at,registered_at,updated_at,registration_token_id)
+VALUES ($1,$2,$3,$4,$5,$6,clock_timestamp(),clock_timestamp(),clock_timestamp(),$7)
+ON CONFLICT (organization_id,id) DO UPDATE SET hostname=EXCLUDED.hostname,display_name=EXCLUDED.display_name,capacity=EXCLUDED.capacity,version=EXCLUDED.version,last_heartbeat_at=greatest(machines.last_heartbeat_at,EXCLUDED.last_heartbeat_at),updated_at=greatest(machines.updated_at,EXCLUDED.updated_at)
+WHERE machines.registration_token_id=EXCLUDED.registration_token_id;
