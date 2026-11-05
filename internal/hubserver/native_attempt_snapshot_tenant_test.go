@@ -34,6 +34,7 @@ type attemptSnapshotRepository struct {
 	tenantstore.SnapshotRepository
 	beforeLatest func() error
 	archiveErr   error
+	hideReceipt  bool
 	active       int
 }
 
@@ -315,6 +316,50 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
+				for _, transactional := range []bool{false, true} {
+					var ref attachment.ArchiveReference
+					if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+						attempt, err := r.Attempt(t.Context(), event.Data.AttemptID)
+						if err != nil {
+							return err
+						}
+						object, err := r.(attemptArchiveReader).ArchiveObjectByKey(t.Context(), attempt.PayloadObjectKey)
+						ref = object.Reference
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					state := func() [5]int64 {
+						t.Helper()
+						var values [5]int64
+						err := admin.QueryRowContext(t.Context(), "SELECT sequence,(SELECT count(*) FROM native_attempt_events WHERE organization_id=$1 AND attempt_id=$2),(SELECT count(*) FROM native_commands WHERE organization_id=$1),(SELECT count(*) FROM runner_attempt_token_usage WHERE organization_id=$1 AND attempt_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1) FROM native_attempts WHERE organization_id=$1 AND id=$2", organization.ID, event.Data.AttemptID).Scan(&values[0], &values[1], &values[2], &values[3], &values[4])
+						if err != nil {
+							t.Fatal(err)
+						}
+						return values
+					}
+					before, applies := state(), participant.apply
+					if _, err := admin.ExecContext(t.Context(), "DELETE FROM archive_objects WHERE organization_id=$1 AND object_key=$2", organization.ID, ref.Key); err != nil {
+						t.Fatal(err)
+					}
+					wrapped.hideReceipt = transactional
+					ctx := context.WithValue(t.Context(), attemptSnapshotContextKey{}, true)
+					if _, err := service.appendNativeRunEventTenant(ctx, scope, string(second.WorkItemID), event); err != nil {
+						t.Fatal(err)
+					}
+					if wrapped.hideReceipt || state() != before || participant.apply != applies {
+						t.Fatal("request replay changed execution state or did not exercise receipt branch")
+					}
+					if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+						object, err := r.(attemptArchiveReader).ArchiveObjectByKey(t.Context(), ref.Key)
+						if err == nil && object.Reference != ref {
+							return errors.New("request replay metadata differs")
+						}
+						return err
+					}); err != nil {
+						t.Fatalf("request replay transactional=%v: %v", transactional, err)
+					}
+				}
 				run := got.NativeRunData
 				run.Sequence = 2
 				raw, err := json.Marshal(run)
@@ -542,4 +587,16 @@ func (s *verifiedAttemptDetails) ReadDetail(ctx context.Context, org string, ref
 		return nil, err
 	}
 	return attachment.ReadArchive(ctx, attemptArchiveStorage{data: compressed}, org, ref)
+}
+
+func (r attemptSnapshotReader) Receipt(ctx context.Context, actor, operation, key string) (eventstore.Receipt, error) {
+	if r.owner.hideReceipt {
+		r.owner.hideReceipt = false
+		return eventstore.Receipt{}, corestore.ErrNotFound
+	}
+	return r.Reader.Receipt(ctx, actor, operation, key)
+}
+
+func (r attemptSnapshotReader) RunEvent(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, id string) (eventstore.Event, error) {
+	return r.Reader.(nativeRunEventReader).RunEvent(ctx, project, item, id)
 }

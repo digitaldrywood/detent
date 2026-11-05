@@ -95,6 +95,11 @@ func (s *session) ProjectChanges(ctx context.Context, project tracker.ProjectID,
 	return changes, nil
 }
 
+func (s *session) RunEvent(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, id string) (eventstore.Event, error) {
+	row, err := s.queries.RecordGetEvent(ctx, pgquery.RecordGetEventParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item, ID: id})
+	return eventRecord(row), mapError(ctx, err)
+}
+
 func (s *session) LatestRunEvent(ctx context.Context, project tracker.ProjectID, attempt string) (eventstore.Event, error) {
 	row, err := s.queries.RecordLatestRunEvent(ctx, pgquery.RecordLatestRunEventParams{
 		OrganizationID: s.organization,

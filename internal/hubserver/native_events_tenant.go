@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -221,6 +222,9 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		return nil, err
 	}
 	if replayed {
+		if err := s.reconcileNativeRunEventReplay(ctx, scope, item, events, replay); err != nil {
+			return nil, err
+		}
 		return content.Receipt(ctx, replay)
 	}
 	var previousRunData *tracker.NativeRunData
@@ -469,6 +473,9 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		return nil, err
 	}
 	if replayed {
+		if err := s.reconcileNativeRunEventReplay(ctx, scope, item, events, replay); err != nil {
+			return nil, err
+		}
 		return content.Receipt(ctx, replay)
 	}
 	s.signalNativeDispatch(scope)
@@ -537,4 +544,88 @@ func validateNativeDetailReference(ctx context.Context, store attachment.DetailS
 func nativeAttemptHistoryID(kind string, data tracker.NativeRunData) string {
 	digest := sha256.Sum256([]byte(kind + "\n" + data.AttemptID + "\n" + strconv.FormatInt(data.Sequence, 10)))
 	return "evt_" + hex.EncodeToString(digest[:16])
+}
+
+type nativeRunEventReader interface {
+	RunEvent(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (eventstore.Event, error)
+}
+
+func (s *Service) reconcileNativeRunEventReplay(ctx context.Context, scope nativeScope, item string, events []tracker.NativeRunEvent, receipt eventstore.Receipt) error {
+	rows := make([]eventstore.Event, len(events))
+	attempts := make([]leasestore.Attempt, len(events))
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
+			return err
+		}
+		reader, ok := r.(nativeRunEventReader)
+		if !ok {
+			return nativeRunEventStorageUnavailable()
+		}
+		for i, event := range events {
+			row, err := reader.RunEvent(ctx, scope.project, tracker.NativeWorkItemID(item), nativeAttemptHistoryID(event.Type, event.Data))
+			if err != nil {
+				return err
+			}
+			if row.OrganizationID != scope.organization || row.ProjectID != scope.project || row.WorkItemID != tracker.NativeWorkItemID(item) || row.Type != event.Type {
+				return artifact.ErrIntegrity
+			}
+			attempt, err := r.Attempt(ctx, event.Data.AttemptID)
+			if err != nil {
+				return err
+			}
+			if attempt.RunID != event.Data.RunID || attempt.LeaseID != string(event.Data.LeaseID) || attempt.FencingToken != int64(event.Data.FencingToken) || attempt.Sequence < event.Data.Sequence {
+				return artifact.ErrIntegrity
+			}
+			attempts[i] = attempt
+			rows[i] = row
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	store := s.runDetailStore()
+	refs := make([]attachment.ArchiveReference, len(rows))
+	for i, row := range rows {
+		value, err := eventstore.NewContent(store).Event(ctx, row)
+		if err != nil {
+			return err
+		}
+		run, expected := value.Data.Run, events[i].Data
+		if run == nil || run.AttemptID != expected.AttemptID || run.RunID != expected.RunID || run.LeaseID != expected.LeaseID || run.FencingToken != expected.FencingToken || run.Sequence != expected.Sequence {
+			return artifact.ErrIntegrity
+		}
+		raw, err := json.Marshal(run)
+		if err != nil {
+			return err
+		}
+		ref, err := store.StoreDetail(ctx, string(scope.organization), raw)
+		if err != nil {
+			return err
+		}
+		if err := validateNativeDetailReference(ctx, store, scope.organization, ref, raw); err != nil {
+			return err
+		}
+		if attempts[i].Sequence == run.Sequence && attempts[i].PayloadObjectKey != ref.Key {
+			return artifact.ErrIntegrity
+		}
+		refs[i] = ref
+	}
+	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+			return err
+		}
+		current, err := w.Receipt(ctx, receipt.ActorID, receipt.Operation, receipt.CommandKey)
+		if err != nil {
+			return err
+		}
+		if current.RequestHash != receipt.RequestHash {
+			return corestore.ErrRevisionConflict
+		}
+		for _, ref := range refs {
+			if _, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: receipt.CreatedAt}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
