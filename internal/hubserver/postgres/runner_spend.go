@@ -76,6 +76,15 @@ func (s *session) recordRunnerTokenUsage(ctx context.Context, attempt leasestore
 			return mapError(ctx, err)
 		}
 	}
+	if len(names) > 0 {
+		var overflow bool
+		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runner_attempt_token_usage WHERE organization_id=$1 AND attempt_id=$2 OFFSET 200)`, s.organization, attempt.ID).Scan(&overflow); err != nil {
+			return mapError(ctx, err)
+		}
+		if overflow {
+			return leasestore.ErrAttemptConflict
+		}
+	}
 	slices.SortFunc(daily, func(a, b runnerTokenDelta) int {
 		if a.day < b.day {
 			return -1
@@ -92,38 +101,15 @@ func (s *session) recordRunnerTokenUsage(ctx context.Context, attempt leasestore
 		return 0
 	})
 	for _, delta := range daily {
-		_, err := s.db.ExecContext(ctx, `INSERT INTO runner_project_daily_tokens(organization_id,project_id,usage_day,model,input_tokens,cached_input_tokens,output_tokens,sessions) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(organization_id,project_id,usage_day,model) DO UPDATE SET input_tokens=runner_project_daily_tokens.input_tokens+excluded.input_tokens,cached_input_tokens=runner_project_daily_tokens.cached_input_tokens+excluded.cached_input_tokens,output_tokens=runner_project_daily_tokens.output_tokens+excluded.output_tokens,sessions=runner_project_daily_tokens.sessions+excluded.sessions`, s.organization, project, delta.day, delta.model, delta.input, delta.cached, delta.output, delta.sessions)
+		_, err := s.db.ExecContext(ctx, `INSERT INTO runner_project_daily_tokens(organization_id,project_id,usage_day,model,input_tokens,cached_input_tokens,output_tokens,sessions) SELECT $1,$2,$3::date,CASE WHEN EXISTS(SELECT 1 FROM runner_project_daily_tokens WHERE organization_id=$1 AND project_id=$2 AND usage_day=$3::date AND model=$4) OR NOT EXISTS(SELECT 1 FROM runner_project_daily_tokens WHERE organization_id=$1 AND project_id=$2 AND usage_day=$3::date AND model<>'' OFFSET 199) THEN $4::text ELSE '' END,$5::bigint,$6::bigint,$7::bigint,$8::bigint ON CONFLICT(organization_id,project_id,usage_day,model) DO UPDATE SET input_tokens=runner_project_daily_tokens.input_tokens+excluded.input_tokens,cached_input_tokens=runner_project_daily_tokens.cached_input_tokens+excluded.cached_input_tokens,output_tokens=runner_project_daily_tokens.output_tokens+excluded.output_tokens,sessions=runner_project_daily_tokens.sessions+excluded.sessions`, s.organization, project, delta.day, delta.model, delta.input, delta.cached, delta.output, delta.sessions)
 		if err != nil {
 			return mapError(ctx, err)
 		}
 	}
 	for _, delta := range issues {
-		_, err := s.db.ExecContext(ctx, `INSERT INTO runner_issue_tokens(organization_id,project_id,issue_id,model,input_tokens,cached_input_tokens,output_tokens,sessions) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(organization_id,project_id,issue_id,model) DO UPDATE SET input_tokens=runner_issue_tokens.input_tokens+excluded.input_tokens,cached_input_tokens=runner_issue_tokens.cached_input_tokens+excluded.cached_input_tokens,output_tokens=runner_issue_tokens.output_tokens+excluded.output_tokens,sessions=runner_issue_tokens.sessions+excluded.sessions`, s.organization, project, attempt.IssueID, delta.model, delta.input, delta.cached, delta.output, delta.sessions)
+		_, err := s.db.ExecContext(ctx, `INSERT INTO runner_issue_tokens(organization_id,project_id,issue_id,model,input_tokens,cached_input_tokens,output_tokens,sessions) SELECT $1,$2,$3::bigint,CASE WHEN EXISTS(SELECT 1 FROM runner_issue_tokens WHERE organization_id=$1 AND project_id=$2 AND issue_id=$3::bigint AND model=$4) OR NOT EXISTS(SELECT 1 FROM runner_issue_tokens WHERE organization_id=$1 AND project_id=$2 AND issue_id=$3::bigint AND model<>'' OFFSET 199) THEN $4::text ELSE '' END,$5::bigint,$6::bigint,$7::bigint,$8::bigint ON CONFLICT(organization_id,project_id,issue_id,model) DO UPDATE SET input_tokens=runner_issue_tokens.input_tokens+excluded.input_tokens,cached_input_tokens=runner_issue_tokens.cached_input_tokens+excluded.cached_input_tokens,output_tokens=runner_issue_tokens.output_tokens+excluded.output_tokens,sessions=runner_issue_tokens.sessions+excluded.sessions`, s.organization, project, attempt.IssueID, delta.model, delta.input, delta.cached, delta.output, delta.sessions)
 		if err != nil {
 			return mapError(ctx, err)
-		}
-	}
-	if len(issues) > 0 {
-		var overflow bool
-		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runner_issue_tokens WHERE organization_id=$1 AND project_id=$2 AND issue_id=$3 LIMIT 1 OFFSET 200)`, s.organization, project, attempt.IssueID).Scan(&overflow); err != nil {
-			return mapError(ctx, err)
-		}
-		if overflow {
-			return leasestore.ErrAttemptConflict
-		}
-	}
-	previousDay := ""
-	for _, delta := range daily {
-		if delta.day == previousDay {
-			continue
-		}
-		previousDay = delta.day
-		var overflow bool
-		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runner_project_daily_tokens WHERE organization_id=$1 AND project_id=$2 AND usage_day=$3 LIMIT 1 OFFSET 200)`, s.organization, project, delta.day).Scan(&overflow); err != nil {
-			return mapError(ctx, err)
-		}
-		if overflow {
-			return leasestore.ErrAttemptConflict
 		}
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE native_attempts SET runner_tokens_recorded=true WHERE organization_id=$1 AND id=$2`, s.organization, attempt.ID)
@@ -146,21 +132,25 @@ func (s *session) RunnerTokenSpend(ctx context.Context, project tracker.ProjectI
 	var err error
 	if day != nil {
 		result.Date = day.UTC().Format(time.DateOnly)
-		rows, err = s.db.QueryContext(ctx, `SELECT model,input_tokens,cached_input_tokens,output_tokens,sessions FROM runner_project_daily_tokens WHERE organization_id=$1 AND project_id=$2 AND usage_day=$3 ORDER BY model LIMIT 201`, s.organization, project, result.Date)
+		rows, err = s.db.QueryContext(ctx, `SELECT model,input_tokens,cached_input_tokens,output_tokens,sessions FROM runner_project_daily_tokens WHERE organization_id=$1 AND project_id=$2 AND usage_day=$3 ORDER BY model LIMIT 202`, s.organization, project, result.Date)
 	} else {
-		rows, err = s.db.QueryContext(ctx, `SELECT u.model,u.input_tokens,u.cached_input_tokens,u.output_tokens,u.sessions FROM runner_issue_tokens u JOIN issues i ON i.organization_id=u.organization_id AND i.id=u.issue_id WHERE u.organization_id=$1 AND u.project_id=$2 AND i.native_id=$3 AND ($4::text IS NULL OR ($4<>'' AND i.actor_principal_id=$4)) ORDER BY u.model LIMIT 201`, s.organization, project, issue, reporter)
+		rows, err = s.db.QueryContext(ctx, `SELECT u.model,u.input_tokens,u.cached_input_tokens,u.output_tokens,u.sessions FROM runner_issue_tokens u JOIN issues i ON i.organization_id=u.organization_id AND i.id=u.issue_id WHERE u.organization_id=$1 AND u.project_id=$2 AND i.native_id=$3 AND ($4::text IS NULL OR ($4<>'' AND i.actor_principal_id=$4)) ORDER BY u.model LIMIT 202`, s.organization, project, issue, reporter)
 	}
 	if err != nil {
 		return result, mapError(ctx, err)
 	}
 	defer rows.Close()
+	named := 0
 	for rows.Next() {
-		if len(result.ByModel) >= 200 {
-			return store.TokenSpend{}, corestore.ErrInvalidPage
-		}
 		var model store.ModelTokenSpend
 		if err := rows.Scan(&model.Model, &model.InputTokens, &model.CachedInputTokens, &model.OutputTokens, &model.Sessions); err != nil {
 			return result, mapError(ctx, err)
+		}
+		if model.Model != "" {
+			named++
+		}
+		if named > 200 {
+			return store.TokenSpend{}, corestore.ErrInvalidPage
 		}
 		model.TotalTokens = model.InputTokens + model.OutputTokens
 		result.ByModel = append(result.ByModel, model)

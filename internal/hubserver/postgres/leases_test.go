@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -842,7 +843,7 @@ func TestLeaseClaimReplayOnlyRaisesLandingCapacity(t *testing.T) {
 }
 
 func TestRunnerSpendRejectsCumulativeModelOverflow(t *testing.T) {
-	for _, scenario := range []string{"repeated observations", "daily across issues", "issue across days"} {
+	for _, scenario := range []string{"repeated observations", "issue across days"} {
 		t.Run(scenario, func(t *testing.T) {
 			r, _ := repositoryFor(t, template.Database(t), smallPool())
 			day := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
@@ -867,19 +868,6 @@ func TestRunnerSpendRejectsCumulativeModelOverflow(t *testing.T) {
 				overflow.Sequence++
 				overflow.PayloadObjectKey = "example/overflow"
 				overflow.Usage = []tracker.NativeUsage{{Model: "example-model-overflow", To: day}}
-				if scenario == "daily across issues" {
-					err := r.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
-						_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ID: 3, ProjectID: "prj_1", NativeID: "wi_3", Number: 3, Title: "Example"})
-						return err
-					})
-					if err != nil {
-						t.Fatal(err)
-					}
-					claim := leaseClaim(2)
-					claim.IssueID = 3
-					overflow = attemptEvent(claimLease(t, r, org, claim))
-					overflow.Usage = []tracker.NativeUsage{{Model: "example-model-overflow", To: day}}
-				}
 				if scenario == "issue across days" {
 					overflow.Usage[0].To = day.AddDate(0, 0, 1)
 				}
@@ -908,6 +896,83 @@ func TestRunnerSpendRejectsCumulativeModelOverflow(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRunnerSpendReportBoundAcceptsOtherAttempts(t *testing.T) {
+	r, _ := repositoryFor(t, template.Database(t), smallPool())
+	day := time.Date(2026, 12, 25, 12, 0, 0, 0, time.UTC)
+	next := day.AddDate(0, 0, 1)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedLeaseFamily(t, r, org)
+		if err := r.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
+			_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ID: 3, ProjectID: "prj_1", NativeID: "wi_3", Number: 3, Title: "Example"})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		flooding := claimLease(t, r, org, leaseClaim(1))
+		event := attemptEvent(flooding)
+		for batch := 0; batch < 7; batch++ {
+			event.Sequence = int64(batch + 1)
+			event.PayloadObjectKey = fmt.Sprintf("example/flood-%d", batch)
+			event.Usage = nil
+			for index := batch * 32; index < min((batch+1)*32, 200); index++ {
+				event.Usage = append(event.Usage, tracker.NativeUsage{Model: fmt.Sprintf("example-fabricated-%03d", index), To: day})
+			}
+			recordLeaseAttempt(t, r, org, event)
+		}
+		if err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+			_, err := w.Release(t.Context(), leaseFence(flooding), "finished")
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		otherIssue := leaseClaim(2)
+		otherIssue.IssueID = 3
+		sameIssue := leaseClaim(1)
+		sameIssue.LeaseID, sameIssue.SessionID = "lease_1_next", "session_1_next"
+		for _, completion := range []struct {
+			claim leasestore.Claim
+			usage tracker.NativeUsage
+		}{
+			{claim: otherIssue, usage: tracker.NativeUsage{Model: "example-real", Input: 29, Output: 4, To: day}},
+			{claim: sameIssue, usage: tracker.NativeUsage{Model: "example-real", Input: 7, Output: 2, To: next}},
+		} {
+			finished := attemptEvent(claimLease(t, r, org, completion.claim))
+			recordLeaseAttempt(t, r, org, finished)
+			finished.Sequence, finished.Status, finished.PayloadObjectKey = 2, "succeeded", "example/finished"
+			finished.Usage = []tracker.NativeUsage{completion.usage}
+			if err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+				_, err := w.RecordAttempt(t.Context(), finished)
+				return err
+			}); err != nil {
+				t.Errorf("%s completion after fabricated models = %v, want accepted", completion.claim.LeaseID, err)
+			}
+		}
+		for _, want := range []struct {
+			issue                   string
+			day                     *time.Time
+			models                  int
+			input, output, sessions int64
+			first                   store.ModelTokenSpend
+		}{
+			{day: &day, models: 201, input: 29, output: 4, sessions: 201, first: store.ModelTokenSpend{InputTokens: 29, OutputTokens: 4, TotalTokens: 33, Sessions: 1}},
+			{day: &next, models: 1, input: 7, output: 2, sessions: 1, first: store.ModelTokenSpend{Model: "example-real", InputTokens: 7, OutputTokens: 2, TotalTokens: 9, Sessions: 1}},
+			{issue: "wi_3", models: 1, input: 29, output: 4, sessions: 1, first: store.ModelTokenSpend{Model: "example-real", InputTokens: 29, OutputTokens: 4, TotalTokens: 33, Sessions: 1}},
+			{issue: "wi_1", models: 201, input: 7, output: 2, sessions: 201, first: store.ModelTokenSpend{InputTokens: 7, OutputTokens: 2, TotalTokens: 9, Sessions: 1}},
+		} {
+			err := r.ReadLeases(t.Context(), org, corestore.Serving, func(reader leasestore.Reader) error {
+				spend, err := reader.(leasestore.RunnerSpendReader).RunnerTokenSpend(t.Context(), "prj_1", want.issue, want.day, nil)
+				if err == nil && (len(spend.ByModel) != want.models || spend.ByModel[0] != want.first || spend.InputTokens != want.input || spend.OutputTokens != want.output || spend.Sessions != want.sessions) {
+					t.Errorf("%s issue %q day %v spend = %d models, first %+v, input %d output %d sessions %d", org, want.issue, want.day, len(spend.ByModel), spend.ByModel[:min(1, len(spend.ByModel))], spend.InputTokens, spend.OutputTokens, spend.Sessions)
+				}
+				return err
+			})
+			if err != nil {
+				t.Errorf("%s issue %q day %v spend read = %v", org, want.issue, want.day, err)
+			}
+		}
 	}
 }
 
@@ -1041,12 +1106,12 @@ func TestRunnerSpendConcurrentModelAdmission(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := competing.wait(t); !errors.Is(err, leasestore.ErrAttemptConflict) {
-			t.Errorf("concurrent overflow error = %v, want attempt conflict", err)
+		if err := competing.wait(t); err != nil {
+			t.Errorf("concurrent observation beyond report bound = %v, want accepted", err)
 		}
 		if err := r.ReadLeases(t.Context(), org, corestore.Serving, func(reader leasestore.Reader) error {
 			spend, err := reader.(leasestore.RunnerSpendReader).RunnerTokenSpend(t.Context(), "prj_1", "", &day, nil)
-			if err == nil && (len(spend.ByModel) != 200 || spend.InputTokens != 11 || spend.TotalTokens != 11 || spend.Sessions != 200) {
+			if err == nil && (len(spend.ByModel) != 201 || spend.ByModel[0] != (store.ModelTokenSpend{InputTokens: 29, TotalTokens: 29, Sessions: 1}) || spend.InputTokens != 40 || spend.TotalTokens != 40 || spend.Sessions != 201) {
 				t.Errorf("spend after concurrent admission = %+v", spend)
 			}
 			return err
