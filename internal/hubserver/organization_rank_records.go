@@ -38,6 +38,10 @@ func (s *Service) organizationRankRecord(ctx context.Context, r tenantstore.Read
 	if err != nil {
 		return value, nil, err
 	}
+	grants, err = s.grantedAccessProjects(ctx, r, scope.organization, scope.credential, grants)
+	if err != nil {
+		return value, nil, err
+	}
 	allowed := make(map[tracker.ProjectID]bool, len(grants))
 	for _, grant := range grants {
 		allowed[grant.ProjectID] = true

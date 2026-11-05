@@ -413,6 +413,24 @@ func projectAccessFilter(credential apiCredential, project tracker.ProjectID, af
 	return filter
 }
 
+func (s *Service) grantedAccessProjects(ctx context.Context, r accessstore.Reader, organization tracker.OrganizationID, credential apiCredential, projects []accessstore.ProjectAccess) ([]accessstore.ProjectAccess, error) {
+	if credential.EntryKey != nil || credential.HostedKeyKind != "service" {
+		return projects, nil
+	}
+	granted := make([]accessstore.ProjectAccess, 0, len(projects))
+	for _, project := range projects {
+		err := s.authorizeAccessScope(ctx, r, nativeScope{organization: organization, project: project.ProjectID, credential: credential}, false)
+		if errors.Is(err, accessstore.ErrDenied) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		granted = append(granted, project)
+	}
+	return granted, nil
+}
+
 func hostedSubject(credential apiCredential) string {
 	if credential.Hosted == nil || credential.EntryKey != nil && credential.EntryKey.Kind == "service" {
 		return ""

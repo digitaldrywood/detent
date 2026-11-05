@@ -410,6 +410,31 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 	if !slices.Equal(visible.ProjectIDs, []tracker.ProjectID{"project_first"}) {
 		t.Fatalf("revoked project grant retained: %v", visible.ProjectIDs)
 	}
+	for _, tenant := range []struct {
+		organization tracker.OrganizationID
+		service      *Service
+	}{{"org_startup", service}, {"org_second", secondService}} {
+		for _, tc := range []struct {
+			name         string
+			keyGrants    []tracker.ProjectID
+			memberGrants []tracker.ProjectID
+			want         []tracker.ProjectID
+		}{
+			{name: "key_grant", keyGrants: []tracker.ProjectID{"project_first"}, want: []tracker.ProjectID{"project_first"}},
+			{name: "member_grant", keyGrants: []tracker.ProjectID{"project_first", "project_last"}, memberGrants: []tracker.ProjectID{"project_last"}, want: []tracker.ProjectID{"project_last"}},
+		} {
+			t.Run(string(tenant.organization)+"/"+tc.name, func(t *testing.T) {
+				key := seedSelectedServiceKey(t, repository, tenant.organization, "rank_"+tc.name, tc.keyGrants, tc.memberGrants, now)
+				got, err := tenant.service.readOrganizationRankRecord(t.Context(), nativeScope{organization: tenant.organization, credential: key})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !slices.Equal(got.ProjectIDs, tc.want) {
+					t.Fatalf("selected service key rank projects=%v want %v", got.ProjectIDs, tc.want)
+				}
+			})
+		}
+	}
 
 	for _, tenant := range []string{"org_startup", "org_second"} {
 		organization = tenant

@@ -158,6 +158,32 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 	if len(report.Capacity) != 2 || report.Capacity[1].Slots <= 0 || report.Claimed == nil || *report.Claimed != 2 || report.Ready == nil || *report.Ready != 2 || report.Coverage[1].Observed == nil || *report.Coverage[1].Observed != 2 {
 		t.Fatalf("recorded diagnostics = %+v", report)
 	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		reader := &Service{database: service.database, config: service.config}
+		reader.config.Hosted = &HostedConfig{OrganizationID: string(org)}
+		for _, tc := range []struct {
+			name         string
+			keyGrants    []tracker.ProjectID
+			memberGrants []tracker.ProjectID
+		}{
+			{name: "key_grant", keyGrants: []tracker.ProjectID{"project_1"}},
+			{name: "member_grant", keyGrants: []tracker.ProjectID{"project_1", "project_2"}, memberGrants: []tracker.ProjectID{"project_2"}},
+		} {
+			t.Run(string(org)+"/"+tc.name, func(t *testing.T) {
+				key := seedSelectedServiceKey(t, repository, org, "diagnostics_"+tc.name, tc.keyGrants, tc.memberGrants, now)
+				got, err := reader.readCloudDiagnostics(t.Context(), key, operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Claimed == nil || got.Ready == nil {
+					t.Fatalf("diagnostics missing counts: %+v", got)
+				}
+				if *got.Claimed != 1 || *got.Ready != 1 {
+					t.Fatalf("selected service key read diagnostics outside its grants: claimed=%d ready=%d", *got.Claimed, *got.Ready)
+				}
+			})
+		}
+	}
 	if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
 		for index := range 17 {
 			value := tracker.CollaborationEvent{ID: fmt.Sprintf("recent_decision_%02d", index), OrganizationID: "org_first", ProjectID: "project_1", AggregateType: "issue", AggregateID: "item_1", Type: "scheduler.decision", SchemaVersion: 1, RecordedAt: now.Add(-time.Millisecond), Actor: tracker.Actor{Kind: "system", PrincipalID: "example-scheduler"}, Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "ready", At: now}}}
@@ -345,4 +371,40 @@ func BenchmarkTenantFleetProviderViewsTenThousandSharedRunners(b *testing.B) {
 			b.Fatal("shared runner capacity population is incomplete")
 		}
 	}
+}
+
+func seedSelectedServiceKey(t *testing.T, repository tenantstore.Repository, org tracker.OrganizationID, id string, keyGrants, memberGrants []tracker.ProjectID, now time.Time) apiCredential {
+	t.Helper()
+	hash := apikey.HashToken(string(org) + id)
+	key := apiCredential{ID: id, Hash: hash, Scope: apiScopeOperator, NativeOnly: true, HostedKeyKind: "service", HostedProjectAccess: hostedProjectsSelected, HostedRole: "owner"}
+	row := accessstore.Credential{OrganizationID: org, ID: id, Hash: hash, Name: "Example " + id, Kind: "service", Scope: "operator", NativeOnly: true, KeyScope: string(apikey.ScopeRead), ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}
+	user, membership := "user_"+id, "membership_"+id
+	if memberGrants != nil {
+		key.Hosted, key.HostedMembership, key.HostedPrincipal, key.HostedKeyScope = &auth.HostedIdentity{Subject: user}, membership, id, apikey.ScopeRead
+		row.UserID, row.MembershipID = user, membership
+	}
+	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessCredential(t.Context(), row); err != nil {
+			return err
+		}
+		if memberGrants != nil {
+			if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: org, UserID: user, Email: user + "@example.test", MembershipID: membership, Role: "member", Active: true, PrincipalID: id, CreatedAt: now, UpdatedAt: now}); err != nil {
+				return err
+			}
+		}
+		for _, project := range keyGrants {
+			if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: id, ProjectID: project}); err != nil {
+				return err
+			}
+		}
+		for _, project := range memberGrants {
+			if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: user, ProjectID: project}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return key
 }

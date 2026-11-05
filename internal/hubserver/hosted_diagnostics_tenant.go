@@ -36,6 +36,7 @@ func (s *Service) readCloudDiagnosticsTenant(ctx context.Context, credential api
 		}
 	}
 
+	organization := tracker.OrganizationID(s.appOrganizationID())
 	var snapshot diagnosticstore.Snapshot
 	policies := []policystore.Revision{}
 	read := func(r tenantstore.Reader) error {
@@ -54,6 +55,10 @@ func (s *Service) readCloudDiagnosticsTenant(ctx context.Context, credential api
 		if len(projects) > 100 {
 			projectPartial = true
 			projects = projects[:100]
+		}
+		projects, err = s.grantedAccessProjects(ctx, r, organization, credential, projects)
+		if err != nil {
+			return err
 		}
 		for _, project := range projects {
 			ids = append(ids, project.ProjectID)
@@ -78,7 +83,6 @@ func (s *Service) readCloudDiagnosticsTenant(ctx context.Context, credential api
 
 		return nil
 	}
-	organization := tracker.OrganizationID(s.appOrganizationID())
 	if repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository); ok {
 		err = repository.ReadTenantSnapshot(ctx, organization, corestore.Serving, read)
 	} else {
