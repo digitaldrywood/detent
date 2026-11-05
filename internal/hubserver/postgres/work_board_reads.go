@@ -245,8 +245,18 @@ func (s *session) BoardPage(ctx context.Context, f viewstore.BoardSelection) ([]
 		}
 		order += ",b.identifier"
 	}
+	projectedWorkOrder := false
 	if f.WorkOrder && !searchRanked {
+		var pending bool
+		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND issue_number IS NULL)`, s.organization, f.ProjectID).Scan(&pending); err != nil {
+			return nil, mapError(ctx, err)
+		}
+		projectedWorkOrder = !pending
 		order = "b.running DESC,b.dispatchable DESC,i.number DESC,b.identifier"
+		if projectedWorkOrder {
+			order = "b.running DESC,b.dispatchable DESC,b.issue_number DESC,b.identifier"
+			where += " AND (SELECT true FROM issues i WHERE i.organization_id=b.organization_id AND i.project_id=b.project_id AND i.native_id=b.work_item_id LIMIT 1)"
+		}
 	}
 	if p := f.After; p != nil {
 		base := len(args)
@@ -286,7 +296,7 @@ func (s *session) BoardPage(ctx context.Context, f viewstore.BoardSelection) ([]
 	if searchRanked {
 		projection += "," + exactProjection + " AS issue_search_exact," + rankProjection + " AS issue_search_rank,i.number"
 		from += " JOIN issues i ON i.organization_id=b.organization_id AND i.project_id=b.project_id AND i.native_id=b.work_item_id JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id"
-	} else if f.WorkOrder {
+	} else if f.WorkOrder && !projectedWorkOrder {
 		from += " JOIN issues i ON i.organization_id=b.organization_id AND i.project_id=b.project_id AND i.native_id=b.work_item_id"
 	}
 	rows, err := s.db.QueryContext(ctx, "SELECT "+projection+from+" WHERE "+where+" ORDER BY "+order+fmt.Sprintf(" LIMIT $%d", len(args)), args...)
