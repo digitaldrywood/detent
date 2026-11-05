@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -21,6 +24,7 @@ import (
 )
 
 type tenantAttemptSnapshot struct {
+	payload      *attachment.ArchiveReference
 	attempt      leasestore.Attempt
 	lease        leasestore.Lease
 	event        eventstore.Event
@@ -71,6 +75,9 @@ func (s *Service) readNativeAttemptTenant(ctx context.Context, scope nativeScope
 			return corestore.ErrNotFound
 		}
 		if err != nil {
+			return err
+		}
+		if err := readTenantAttemptPayload(ctx, r, &snapshot); err != nil {
 			return err
 		}
 		return readTenantAttemptEvidence(ctx, r, &snapshot)
@@ -170,6 +177,9 @@ func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope nativeS
 				return corestore.ErrNotFound
 			}
 			snapshot := tenantAttemptSnapshot{attempt: attempt, lease: lease, event: event}
+			if err := readTenantAttemptPayload(ctx, r, &snapshot); err != nil {
+				return err
+			}
 			if view != "recorded_blockers" && !attemptSummaryRead(ctx) {
 				if err := readTenantAttemptEvidence(ctx, r, &snapshot); err != nil {
 					return err
@@ -239,14 +249,10 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 	if s.runDetailStore() == nil {
 		return tracker.NativeAttempt{}, nativeRunEventStorageUnavailable()
 	}
-	value, err := eventstore.NewContent(s.runDetailStore()).Event(ctx, snapshot.event)
+	run, err := s.readNativeAttemptRunTenant(ctx, snapshot)
 	if err != nil {
 		return tracker.NativeAttempt{}, err
 	}
-	if value.Data.Run == nil {
-		return tracker.NativeAttempt{}, fmt.Errorf("hydrate attempt run: %w", artifact.ErrIntegrity)
-	}
-	run := *value.Data.Run
 	attempt := snapshot.attempt
 	lease := snapshot.lease
 	if run.AttemptID != attempt.ID || run.RunID != attempt.RunID || run.LeaseID != tracker.LeaseID(lease.LeaseID) || run.FencingToken != tracker.FencingToken(lease.FencingToken) || run.Sequence != attempt.Sequence {
@@ -316,4 +322,49 @@ func readTenantAttemptEvidence(ctx context.Context, r tenantstore.Reader, snapsh
 	}
 	snapshot.evidence, snapshot.evidenceRows = true, records
 	return nil
+}
+
+type attemptArchiveReader interface {
+	ArchiveObjectByKey(context.Context, string) (artifactstore.ArchiveObject, error)
+}
+
+func readTenantAttemptPayload(ctx context.Context, r tenantstore.Reader, snapshot *tenantAttemptSnapshot) error {
+	reader, ok := r.(attemptArchiveReader)
+	if !ok {
+		return nativeRunEventStorageUnavailable()
+	}
+	object, err := reader.ArchiveObjectByKey(ctx, snapshot.attempt.PayloadObjectKey)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if object.OrganizationID != snapshot.attempt.OrganizationID || object.Reference.Key != snapshot.attempt.PayloadObjectKey || object.Reference.Validate(string(snapshot.attempt.OrganizationID)) != nil {
+		return artifact.ErrIntegrity
+	}
+	snapshot.payload = &object.Reference
+	return nil
+}
+
+func (s *Service) readNativeAttemptRunTenant(ctx context.Context, snapshot tenantAttemptSnapshot) (tracker.NativeRunData, error) {
+	if snapshot.payload == nil {
+		value, err := eventstore.NewContent(s.runDetailStore()).Event(ctx, snapshot.event)
+		if err != nil {
+			return tracker.NativeRunData{}, err
+		}
+		if value.Data.Run == nil {
+			return tracker.NativeRunData{}, artifact.ErrIntegrity
+		}
+		return *value.Data.Run, nil
+	}
+	raw, err := s.runDetailStore().ReadDetail(ctx, string(snapshot.attempt.OrganizationID), *snapshot.payload)
+	if err != nil {
+		return tracker.NativeRunData{}, errors.Join(artifact.ErrIntegrity, err)
+	}
+	var run tracker.NativeRunData
+	if int64(len(raw)) != snapshot.payload.UncompressedSize || json.Unmarshal(raw, &run) != nil {
+		return run, artifact.ErrIntegrity
+	}
+	return run, nil
 }

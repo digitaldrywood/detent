@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -152,7 +153,8 @@ type AttemptDiff struct {
 }
 
 type AttemptEvent struct {
-	Usage               []tracker.NativeUsage `json:"-"`
+	PayloadReference    attachment.ArchiveReference `json:"-"`
+	Usage               []tracker.NativeUsage       `json:"-"`
 	ID                  string
 	Fence               Fence
 	RunID               string

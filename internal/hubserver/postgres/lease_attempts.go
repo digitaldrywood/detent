@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -31,6 +33,9 @@ func (s *session) lockAttemptScope(ctx context.Context, issueID int64) error {
 }
 
 func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.AttemptEvent) (leasestore.Attempt, bool, error) {
+	if event.PayloadReference != (attachment.ArchiveReference{}) && (event.PayloadReference.Validate(string(s.organization)) != nil || event.PayloadReference.Key != event.PayloadObjectKey || event.PayloadReference.SchemaVersion != 1 || event.PayloadReference.BindingID != "" || event.PayloadReference.CustomerOwned) {
+		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
+	}
 	if strings.TrimSpace(event.ID) == "" || strings.TrimSpace(event.RunID) == "" || strings.TrimSpace(event.PayloadObjectKey) == "" || event.Sequence < 1 || event.DispatchGeneration < 0 {
 		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
 	}
@@ -66,6 +71,9 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 	if err == nil {
 		if previous != digest {
 			return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
+		}
+		if err := s.registerAttemptPayload(ctx, event); err != nil {
+			return leasestore.Attempt{}, false, err
 		}
 		attempt, err := s.Attempt(ctx, event.ID)
 		return attempt, err == nil, err
@@ -115,9 +123,24 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 	if err != nil {
 		return leasestore.Attempt{}, false, mapError(ctx, err)
 	}
+	if err := s.registerAttemptPayload(ctx, event); err != nil {
+		return leasestore.Attempt{}, false, err
+	}
 	if err := s.recordRunnerTokenUsage(ctx, attemptFromPG(row), event.Usage); err != nil {
 		return leasestore.Attempt{}, false, err
 	}
 	err = s.queries.InsertAttemptReceipt(ctx, pgquery.InsertAttemptReceiptParams{OrganizationID: s.organization, AttemptID: event.ID, Sequence: event.Sequence, RequestHash: digest})
 	return attemptFromPG(row), false, mapError(ctx, err)
+}
+
+func (s *session) registerAttemptPayload(ctx context.Context, event leasestore.AttemptEvent) error {
+	if event.PayloadReference == (attachment.ArchiveReference{}) {
+		return nil
+	}
+	now, err := s.queries.LeaseTime(ctx)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	_, err = s.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: s.organization, ID: "archive_" + event.PayloadReference.SHA256, Reference: event.PayloadReference, CreatedAt: now})
+	return err
 }

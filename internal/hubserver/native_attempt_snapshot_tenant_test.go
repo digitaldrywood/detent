@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -16,7 +17,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -30,6 +33,7 @@ type attemptSnapshotRepository struct {
 	tenantstore.Repository
 	tenantstore.SnapshotRepository
 	beforeLatest func() error
+	archiveErr   error
 	active       int
 }
 
@@ -76,7 +80,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 	}
 	participant := &nativeRunEventParticipantFixture{}
 	keys := secretTestKeys(t, "1", "1")
-	details := &memoryRunDetails{}
+	details := &verifiedAttemptDetails{}
 	service := &Service{
 		echo: echo.New(), database: &database{now: time.Now, billingRepository: repository, billingAuditStore: details}, secretRewrapReady: make(chan struct{}),
 		notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1),
@@ -129,7 +133,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: "machine", Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
+				if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: "machine", Hostname: "example", Capacity: 2, Version: "example"}); err != nil {
 					return err
 				}
 				lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: "machine", SessionID: "session", LeaseID: "lease", TTL: time.Hour})
@@ -156,6 +160,257 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
+			t.Run("canonical_payload", func(t *testing.T) {
+				var original leasestore.Attempt
+				if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					original, err = r.Attempt(t.Context(), start.Data.AttemptID)
+					if err != nil {
+						return err
+					}
+					raw := details.data[original.PayloadObjectKey]
+					ref, _, err := attachment.PrepareArchive(string(organization.ID), 1, bytes.NewReader(raw))
+					if err != nil {
+						return err
+					}
+					_, err = r.(interface {
+						ArchiveObjectByReference(context.Context, attachment.ArchiveReference) (artifactstore.ArchiveObject, error)
+					}).ArchiveObjectByReference(t.Context(), ref)
+					return err
+				}); err != nil {
+					t.Errorf("live writer canonical metadata: %v", err)
+				}
+				defer func() {
+					if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET sequence=1,payload_object_key=$1 WHERE organization_id=$2 AND id=$3", original.PayloadObjectKey, organization.ID, original.ID); err != nil {
+						t.Error(err)
+					}
+				}()
+				for _, test := range []struct {
+					name     string
+					change   func(*tracker.NativeRunData)
+					register bool
+					sequence int64
+					wantErr  bool
+				}{
+					{"canonical outruns event", nil, true, 2, false},
+					{"absent matching event", nil, false, 1, false},
+					{"absent stale event", nil, false, 2, true},
+					{"tampered content", nil, true, 2, true},
+					{"wrong length", nil, true, 2, true},
+					{"foreign key", nil, false, 1, true},
+					{"malformed key", nil, false, 1, true},
+					{"attempt identity", func(r *tracker.NativeRunData) { r.AttemptID += "wrong" }, true, 2, true},
+					{"run identity", func(r *tracker.NativeRunData) { r.RunID += "wrong" }, true, 2, true},
+					{"lease identity", func(r *tracker.NativeRunData) { r.LeaseID += "wrong" }, true, 2, true},
+					{"fence identity", func(r *tracker.NativeRunData) { r.FencingToken++ }, true, 2, true},
+					{"sequence identity", func(r *tracker.NativeRunData) { r.Sequence++ }, true, 2, true},
+				} {
+					t.Run(test.name, func(t *testing.T) {
+						run := start.Data
+						run.Sequence = 2
+						if test.change != nil {
+							test.change(&run)
+						}
+						raw, err := json.Marshal(run)
+						if err != nil {
+							t.Fatal(err)
+						}
+						ref, err := details.StoreDetail(t.Context(), string(organization.ID), raw)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if _, err := admin.ExecContext(t.Context(), "DELETE FROM archive_objects WHERE organization_id=$1 AND object_key=$2", organization.ID, ref.Key); err != nil {
+							t.Fatal(err)
+						}
+						if test.register {
+							if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+								_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization.ID, ID: newNativeID("archive"), Reference: ref, CreatedAt: now})
+								return err
+							}); err != nil {
+								t.Fatal(err)
+							}
+						}
+						if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET sequence=$1,payload_object_key=$2 WHERE organization_id=$3 AND id=$4", test.sequence, ref.Key, organization.ID, original.ID); err != nil {
+							t.Fatal(err)
+						}
+						reads := details.reads
+						switch test.name {
+						case "tampered content":
+							details.data[ref.Key] = bytes.ReplaceAll(raw, []byte("example-model"), []byte("changed-model"))
+							defer func() { details.data[ref.Key] = raw }()
+						case "wrong length":
+							if _, err := admin.ExecContext(t.Context(), "UPDATE archive_objects SET uncompressed_size=uncompressed_size+1 WHERE organization_id=$1 AND object_key=$2", organization.ID, ref.Key); err != nil {
+								t.Fatal(err)
+							}
+						case "foreign key", "malformed key":
+							key := "malformed"
+							if test.name == "foreign key" {
+								key, err = attachment.ArchiveKey("org_foreign", ref.SHA256)
+								if err != nil {
+									t.Fatal(err)
+								}
+							}
+							if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key=$1 WHERE organization_id=$2 AND id=$3", key, organization.ID, original.ID); err != nil {
+								t.Fatal(err)
+							}
+						}
+						detail, detailErr := service.readNativeAttemptTenant(t.Context(), scope, string(issue.WorkItemID), original.ID)
+						page, pageErr := service.readNativeAttemptPageTenant(t.Context(), scope, string(issue.WorkItemID), url.Values{}, json.Marshal)
+						if (test.name == "foreign key" || test.name == "malformed key") && details.reads != reads {
+							t.Fatal("invalid key accessed object storage")
+						}
+						if test.wantErr {
+							if !errors.Is(detailErr, artifact.ErrIntegrity) || !errors.Is(pageErr, artifact.ErrIntegrity) || len(page.Items) != 0 {
+								t.Fatalf("invalid canonical read: detail=%v page=%v", detailErr, pageErr)
+							}
+						} else {
+							if detailErr != nil || pageErr != nil || len(page.Items) != 1 {
+								t.Fatalf("canonical read: detail=%v page=%v", detailErr, pageErr)
+							}
+							for _, got := range []tracker.NativeAttempt{detail, page.Items[0]} {
+								if got.Sequence != test.sequence || got.AttemptID != original.ID || got.RunID != original.RunID || got.LeaseID != tracker.LeaseID(lease.LeaseID) || got.FencingToken != tracker.FencingToken(lease.FencingToken) {
+									t.Fatalf("canonical identity = %+v", got.NativeRunData)
+								}
+							}
+						}
+					})
+				}
+			})
+			t.Run("second_item_and_writer_replay", func(t *testing.T) {
+				response := performHubAPIRequest(t, service, http.MethodPost, itemPath, testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "second-item"}, Title: "Second example issue", Body: workItemRecordBody})
+				requireNativeStatus(t, response, http.StatusOK)
+				var second tracker.NativeIssue
+				decodeHubResponse(t, response, &second)
+				var secondLease leasestore.Lease
+				if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+					item, err := w.WorkItem(t.Context(), project.ID, second.WorkItemID)
+					if err != nil {
+						return err
+					}
+					secondLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: "machine", SessionID: "second-session", LeaseID: "second-lease", TTL: time.Hour})
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				event := start
+				event.IdempotencyKey = "second-start"
+				event.Data.AttemptID, event.Data.RunID = newNativeID("attempt"), newNativeID("run")
+				event.Data.LeaseID, event.Data.FencingToken = tracker.LeaseID(secondLease.LeaseID), tracker.FencingToken(secondLease.FencingToken)
+				for range 2 {
+					if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(second.WorkItemID), event); err != nil {
+						t.Fatal(err)
+					}
+				}
+				got, err := service.readNativeAttemptTenant(t.Context(), scope, string(second.WorkItemID), event.Data.AttemptID)
+				if err != nil || got.Sequence != 1 {
+					t.Fatalf("second attempt: %+v %v", got, err)
+				}
+				if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+					attempt, err := r.Attempt(t.Context(), event.Data.AttemptID)
+					if err != nil {
+						return err
+					}
+					_, err = r.(attemptArchiveReader).ArchiveObjectByKey(t.Context(), attempt.PayloadObjectKey)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				run := got.NativeRunData
+				run.Sequence = 2
+				raw, err := json.Marshal(run)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ref, err := details.StoreDetail(t.Context(), string(organization.ID), raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := validateNativeDetailReference(t.Context(), details, organization.ID, attachment.ArchiveReference{}, raw); !errors.Is(err, artifact.ErrIntegrity) {
+					t.Fatalf("run-event accepted absent reference: %v", err)
+				}
+				write := leasestore.AttemptEvent{ID: run.AttemptID, RunID: run.RunID, Fence: leasestore.Fence{LeaseID: secondLease.LeaseID, FencingToken: secondLease.FencingToken}, Sequence: 2, Status: "running", DispatchGeneration: 7, PayloadObjectKey: ref.Key, PayloadReference: ref}
+				persist := func(input leasestore.AttemptEvent) (bool, error) {
+					var replay bool
+					err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+						_, duplicate, err := w.RecordAttemptEvent(t.Context(), input)
+						replay = duplicate
+						return err
+					})
+					return replay, err
+				}
+				for _, change := range []func(*leasestore.AttemptEvent){
+					func(e *leasestore.AttemptEvent) { e.PayloadObjectKey = "malformed" },
+					func(e *leasestore.AttemptEvent) { e.PayloadReference.CompressedSize++ },
+				} {
+					if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+						_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization.ID, ID: newNativeID("archive"), Reference: ref, CreatedAt: now})
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					invalid := write
+					change(&invalid)
+					if _, err := persist(invalid); err == nil {
+						t.Fatal("invalid write accepted")
+					}
+					var sequence, receipts, counters int64
+					if err := admin.QueryRowContext(t.Context(), "SELECT sequence,(SELECT count(*) FROM native_attempt_events WHERE organization_id=$1 AND attempt_id=$2),(SELECT count(*) FROM runner_attempt_token_usage WHERE organization_id=$1 AND attempt_id=$2) FROM native_attempts WHERE organization_id=$1 AND id=$2", organization.ID, run.AttemptID).Scan(&sequence, &receipts, &counters); err != nil {
+						t.Fatal(err)
+					}
+					if sequence != 1 || receipts != 1 || counters != 0 {
+						t.Fatalf("rejected write changed state: %d %d %d", sequence, receipts, counters)
+					}
+				}
+				for _, wantReplay := range []bool{false, true} {
+					if wantReplay {
+						if _, err := admin.ExecContext(t.Context(), "DELETE FROM archive_objects WHERE organization_id=$1 AND object_key=$2", organization.ID, ref.Key); err != nil {
+							t.Fatal(err)
+						}
+					}
+					duplicate, err := persist(write)
+					if err != nil || duplicate != wantReplay {
+						t.Fatalf("write replay=%v want=%v: %v", duplicate, wantReplay, err)
+					}
+					if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+						object, err := r.(attemptArchiveReader).ArchiveObjectByKey(t.Context(), ref.Key)
+						if err == nil && object.Reference != ref {
+							return errors.New("replayed metadata differs")
+						}
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+
+				write.Sequence, write.Status = 3, "cancelled"
+				write.PayloadReference = attachment.ArchiveReference{}
+				for _, wantReplay := range []bool{false, true} {
+					duplicate, err := persist(write)
+					if err != nil || duplicate != wantReplay {
+						t.Fatalf("cancellation replay=%v want=%v: %v", duplicate, wantReplay, err)
+					}
+				}
+				if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+					attempt, err := r.Attempt(t.Context(), write.ID)
+					if err == nil && (attempt.Status != "cancelled" || attempt.Sequence != 3) {
+						return fmt.Errorf("cancellation not persisted: %+v", attempt)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+
+			})
+			t.Run("metadata_unavailable", func(t *testing.T) {
+				wrapped.archiveErr = errors.New("metadata unavailable")
+				defer func() { wrapped.archiveErr = nil }()
+				ctx := context.WithValue(t.Context(), attemptSnapshotContextKey{}, true)
+				reads := details.reads
+				_, err := service.readNativeAttemptTenant(ctx, scope, string(issue.WorkItemID), start.Data.AttemptID)
+				if !errors.Is(err, wrapped.archiveErr) || details.reads != reads {
+					t.Fatalf("metadata failure fell back: %v", err)
+				}
+			})
 			readContext := context.WithValue(t.Context(), attemptSnapshotContextKey{}, true)
 			readers := []struct {
 				name string
@@ -237,7 +492,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 
 			if otherAttempt != "" {
 				_, err := service.readNativeAttemptTenant(readContext, scope, string(issue.WorkItemID), otherAttempt)
-				if !errors.Is(err, corestore.ErrNotFound) {
+				if !errors.Is(err, corestore.ErrNotFound) && !isNativeNotFound(err) {
 					t.Fatalf("cross-organization attempt read = %v", err)
 				}
 				_, err = service.readNativeRecoveryAttemptSnapshot(readContext, scope, string(issue.WorkItemID), issueID, otherAttempt)
@@ -259,4 +514,32 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (r attemptSnapshotReader) ArchiveObjectByKey(ctx context.Context, key string) (artifactstore.ArchiveObject, error) {
+	if r.owner.archiveErr != nil {
+		return artifactstore.ArchiveObject{}, r.owner.archiveErr
+	}
+	return r.Reader.(attemptArchiveReader).ArchiveObjectByKey(ctx, key)
+}
+
+type verifiedAttemptDetails struct{ memoryRunDetails }
+type attemptArchiveStorage struct {
+	attachment.Storage
+	data []byte
+}
+
+func (s attemptArchiveStorage) Open(context.Context, string) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(s.data)), nil
+}
+func (s *verifiedAttemptDetails) ReadDetail(ctx context.Context, org string, ref attachment.ArchiveReference) ([]byte, error) {
+	raw, err := s.memoryRunDetails.ReadDetail(ctx, org, ref)
+	if err != nil {
+		return nil, err
+	}
+	_, compressed, err := attachment.PrepareArchive(org, 1, bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	return attachment.ReadArchive(ctx, attemptArchiveStorage{data: compressed}, org, ref)
 }

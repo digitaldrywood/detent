@@ -3,7 +3,9 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"path"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -22,6 +24,26 @@ func (s *session) ArchiveObject(ctx context.Context, id string) (artifactstore.A
 	}
 	if err := ref.Validate(string(s.organization)); err != nil {
 		return artifactstore.ArchiveObject{}, corestore.ErrInvalidPage
+	}
+	object.Reference = ref
+	return object, nil
+}
+
+func (s *session) ArchiveObjectByKey(ctx context.Context, key string) (artifactstore.ArchiveObject, error) {
+	digest := path.Base(key)
+	expected, err := attachment.ArchiveKey(string(s.organization), digest)
+	if err != nil || expected != key {
+		return artifactstore.ArchiveObject{}, artifact.ErrIntegrity
+	}
+	var object artifactstore.ArchiveObject
+	var ref attachment.ArchiveReference
+	err = s.db.QueryRowContext(ctx, `SELECT organization_id,id,object_key,sha256,compressed_size,uncompressed_size,codec,schema_version,kind,retention,binding_id,customer_owned,created_at FROM archive_objects WHERE organization_id=$1 AND object_key=$2 AND sha256=$3`, s.organization, key, digest).Scan(
+		&object.OrganizationID, &object.ID, &ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize, &ref.Codec, &ref.SchemaVersion, &ref.Kind, &ref.Retention, &ref.BindingID, &ref.CustomerOwned, &object.CreatedAt)
+	if err != nil {
+		return artifactstore.ArchiveObject{}, mapError(ctx, err)
+	}
+	if ref.Validate(string(s.organization)) != nil {
+		return artifactstore.ArchiveObject{}, artifact.ErrIntegrity
 	}
 	object.Reference = ref
 	return object, nil
