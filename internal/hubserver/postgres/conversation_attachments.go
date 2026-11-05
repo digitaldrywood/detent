@@ -94,7 +94,7 @@ func (s *session) DeleteConversationAttachment(ctx context.Context, project trac
 		return err
 	}
 	var shared bool
-	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM archive_object_owners o JOIN conversation_attachments c ON c.organization_id=o.organization_id AND c.id=o.owner_id WHERE o.organization_id=x.organization_id AND o.archive_id=x.id AND o.owner_kind='conversation-attachment' AND o.owner_id<>$3 AND c.collaboration_bytes>0) FROM archive_objects x WHERE x.organization_id=$1 AND x.id=$2 FOR UPDATE OF x`, s.organization, object.ArchiveID, id).Scan(&shared)
+	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM conversation_attachments c JOIN archive_object_owners o ON o.organization_id=c.organization_id AND o.archive_id=x.id AND o.owner_kind='conversation-attachment' AND o.owner_id=c.id WHERE c.organization_id=x.organization_id AND c.content_attachment_id=$3 AND c.collaboration_bytes>0 AND c.id<>$4) FROM archive_objects x WHERE x.organization_id=$1 AND x.id=$2 FOR UPDATE OF x`, s.organization, object.ArchiveID, a.ContentID, id).Scan(&shared)
 	if err != nil {
 		return mapError(ctx, err)
 	}
