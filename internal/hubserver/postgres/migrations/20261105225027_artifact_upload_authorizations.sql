@@ -21,7 +21,7 @@ CREATE INDEX artifact_upload_authorizations_attempt ON artifact_upload_authoriza
 CREATE INDEX artifact_upload_authorizations_match ON artifact_upload_authorizations
  (organization_id, project_id, service_id, attempt_id, kind, expires_at);
 CREATE INDEX artifact_upload_authorizations_expiry ON artifact_upload_authorizations
- (organization_id, expires_at);
+ (expires_at);
 ALTER TABLE artifact_upload_authorizations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE artifact_upload_authorizations FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON artifact_upload_authorizations FROM PUBLIC;
@@ -30,7 +30,29 @@ CREATE POLICY tenant_isolation ON artifact_upload_authorizations TO detent_runti
  USING (organization_id=NULLIF(current_setting('detent.organization_id',true),''))
  WITH CHECK (organization_id=NULLIF(current_setting('detent.organization_id',true),''));
 CREATE POLICY platform_access ON artifact_upload_authorizations TO detent_platform USING (true) WITH CHECK (true);
+CREATE POLICY expired_read ON artifact_upload_authorizations FOR SELECT TO detent_migration USING (expires_at <= now());
+CREATE POLICY expired_prune ON artifact_upload_authorizations FOR DELETE TO detent_migration USING (expires_at <= now());
+-- +goose StatementBegin
+CREATE FUNCTION prune_expired_artifact_upload_authorizations(batch_limit integer) RETURNS bigint
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+    pruned bigint;
+BEGIN
+    IF batch_limit IS NULL OR batch_limit < 1 OR batch_limit > 5000 THEN
+        RAISE EXCEPTION 'invalid artifact upload authorization prune batch' USING ERRCODE = '22023';
+    END IF;
+    DELETE FROM public.artifact_upload_authorizations a WHERE a.ctid IN (
+        SELECT e.ctid FROM public.artifact_upload_authorizations e WHERE e.expires_at <= now() ORDER BY e.expires_at LIMIT batch_limit
+    );
+    GET DIAGNOSTICS pruned = ROW_COUNT;
+    RETURN pruned;
+END;
+$$;
+-- +goose StatementEnd
+REVOKE ALL ON FUNCTION prune_expired_artifact_upload_authorizations(integer) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION prune_expired_artifact_upload_authorizations(integer) TO detent_runtime;
 
 -- +goose Down
 SET LOCAL lock_timeout = '5s';
+DROP FUNCTION prune_expired_artifact_upload_authorizations(integer);
 DROP TABLE artifact_upload_authorizations;

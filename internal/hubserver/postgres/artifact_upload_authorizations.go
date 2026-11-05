@@ -63,10 +63,11 @@ func (s *session) ConsumeArtifactUpload(ctx context.Context, reference artifact.
 	return nil
 }
 
-func (s *session) PruneExpiredArtifactUploadAuthorizations(ctx context.Context, now time.Time, limit int) (int64, error) {
-	if now.IsZero() || limit < 1 || limit > artifactstore.MaxUploadAuthorizationPruneBatch {
+func (s *session) PruneExpiredArtifactUploadAuthorizations(ctx context.Context, limit int) (int64, error) {
+	if limit < 1 || limit > artifactstore.MaxUploadAuthorizationPruneBatch {
 		return 0, corestore.ErrInvalidPage
 	}
-	count, err := s.queries.ArtifactUploadAuthorizationPruneExpired(ctx, pgquery.ArtifactUploadAuthorizationPruneExpiredParams{OrganizationID: s.organization, Now: recordTime(now), BatchLimit: int32(limit)})
+	var count int64
+	err := s.db.QueryRowContext(ctx, `SELECT prune_expired_artifact_upload_authorizations($1)`, limit).Scan(&count)
 	return count, mapError(ctx, err)
 }

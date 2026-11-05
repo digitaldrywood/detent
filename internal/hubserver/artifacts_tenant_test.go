@@ -211,21 +211,14 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 					}
 					return count
 				}
-				foreignExpired := otherExpired()
-				if err := repository.WriteTenant(t.Context(), organization, corestore.Background, func(w tenantstore.Writer) error {
-					pruned, err := w.PruneExpiredArtifactUploadAuthorizations(t.Context(), now, artifactstore.MaxUploadAuthorizationPruneBatch)
-					if want := int64(backlog - artifactstore.UploadAuthorizationPruneBatch); pruned != want {
-						t.Errorf("background pruned=%d, want %d", pruned, want)
-					}
-					return err
-				}); err != nil {
+				if err := service.expireNativeRecords(t.Context(), now); err != nil {
 					t.Fatal(err)
 				}
 				if got := rows(true); got != 0 {
 					t.Fatalf("expired authorizations after background prune=%d", got)
 				}
-				if got := otherExpired(); got != foreignExpired {
-					t.Fatalf("background prune crossed organizations: %d expired rows, want %d", got, foreignExpired)
+				if got := otherExpired(); got != 0 {
+					t.Fatalf("background prune left %d expired rows in other tenants", got)
 				}
 				if got := rows(false); got != 2 {
 					t.Fatalf("live authorizations after expiry=%d, want 2", got)

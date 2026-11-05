@@ -179,26 +179,6 @@ func (q *Queries) ArtifactUploadAuthorizationPruneAttempt(ctx context.Context, a
 	return err
 }
 
-const artifactUploadAuthorizationPruneExpired = `-- name: ArtifactUploadAuthorizationPruneExpired :execrows
-DELETE FROM artifact_upload_authorizations a WHERE a.organization_id=$1 AND (a.project_id, a.service_id, a.idempotency_key) IN (
-SELECT e.project_id, e.service_id, e.idempotency_key FROM artifact_upload_authorizations e WHERE e.organization_id=$1 AND e.expires_at<=$2::timestamptz
-ORDER BY e.expires_at LIMIT $3::integer)
-`
-
-type ArtifactUploadAuthorizationPruneExpiredParams struct {
-	OrganizationID tracker.OrganizationID
-	Now            time.Time
-	BatchLimit     int32
-}
-
-func (q *Queries) ArtifactUploadAuthorizationPruneExpired(ctx context.Context, arg ArtifactUploadAuthorizationPruneExpiredParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, artifactUploadAuthorizationPruneExpired, arg.OrganizationID, arg.Now, arg.BatchLimit)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
 const artifactUploadAuthorizationRefresh = `-- name: ArtifactUploadAuthorizationRefresh :execrows
 UPDATE artifact_upload_authorizations SET expires_at=GREATEST(expires_at, $1::timestamptz)
 WHERE organization_id=$2 AND project_id=$3 AND service_id=$4 AND idempotency_key=$5
