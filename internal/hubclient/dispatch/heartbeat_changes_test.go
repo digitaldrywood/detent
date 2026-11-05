@@ -31,6 +31,7 @@ func TestRunnerHeartbeatIdleTraffic(t *testing.T) {
 			for index := range items {
 				items[index] = tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_test", ProjectID: "prj_test", WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_idle%d", index)), Number: index + 1, Revision: 1}, State: "Blocked", Title: "held", LastActivityAt: time.Now().UTC()}
 			}
+			capacityFull := false
 			transport := executionRoundTrip(func(r *http.Request) (*http.Response, error) {
 				w := httptest.NewRecorder()
 				w.Header().Set("Content-Type", "application/json")
@@ -67,6 +68,12 @@ func TestRunnerHeartbeatIdleTraffic(t *testing.T) {
 						snapshot.Changes = &runnerauth.HeartbeatChanges{Cursor: cursors[machine], Reset: *request.Cursor == "" || reset, PolicyID: approved.ID, CapabilitiesDigest: digest, Claimable: claimable, Items: delta}
 					}
 					result = snapshot
+				case strings.HasSuffix(path, "/routing"):
+					used := 0
+					if capacityFull {
+						used = 1
+					}
+					result = runnerauth.Runner{Routing: runnerauth.Routing{CapacityLimit: 8, ProjectCapacityLimits: map[tracker.ProjectID]int{"prj_test": 1}}, HostCapacity: 8, ReportedCapacity: 8, ProjectUsed: map[tracker.ProjectID]int{"prj_test": used}}
 				case strings.HasSuffix(path, "/policy"):
 					result = policy.Approval{Policy: approved}
 				case strings.HasSuffix(path, "/projects/prj_test"):
@@ -173,6 +180,18 @@ func TestRunnerHeartbeatIdleTraffic(t *testing.T) {
 			if mode != "delta" {
 				return
 			}
+			t.Run("occupied project still observes held work", func(t *testing.T) {
+				clear(counts)
+				capacityFull, claimable = true, true
+				cycle()
+				if counts["/api/v2/organizations/org_test/projects/prj_test/claims"] != 0 {
+					t.Fatal("occupied project attempted claims")
+				}
+				if counts["/api/v2/organizations/org_test/projects/prj_test/work-items/wi_idle0"] == 0 {
+					t.Fatal("occupied project stopped observing held work")
+				}
+				capacityFull, claimable = false, false
+			})
 			for _, test := range []struct {
 				name   string
 				change func()

@@ -520,23 +520,40 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		err = nil
 	} else if !source.NativeClient().ClaimHint() {
 		return nil, nil
-	} else if s.providerReports != nil || request.CandidateReady != nil || request.NativeLandingBatch {
-		leases, err = s.claimPreviewCandidates(ctx, request, source, claimRequest, limit)
 	} else {
-		for len(leases) < limit {
-			if len(leases) > 0 {
-				claimRequest.SessionID, err = s.sessionID()
-				if err != nil {
+		if s.client.Enrolled() {
+			file, loadErr := runnerauth.Load(s.client.IdentityFile())
+			if loadErr != nil {
+				return nil, schedulingError(loadErr)
+			}
+			var owner runnerauth.Runner
+			path := "/api/v2/organizations/" + string(file.Identity.OrganizationID) + "/runners/" + file.Identity.RunnerID + "/routing"
+			if err := s.client.Request(ctx, http.MethodGet, path, nil, &owner); err != nil {
+				return nil, schedulingError(err)
+			}
+			limit = min(limit, owner.HostCapacity-owner.HostUsed, owner.RemainingCapacity(source.NativeClient().ProjectID()))
+			if limit <= 0 {
+				return nil, nil
+			}
+		}
+		if s.providerReports != nil || request.CandidateReady != nil || request.NativeLandingBatch {
+			leases, err = s.claimPreviewCandidates(ctx, request, source, claimRequest, limit)
+		} else {
+			for len(leases) < limit {
+				if len(leases) > 0 {
+					claimRequest.SessionID, err = s.sessionID()
+					if err != nil {
+						break
+					}
+				}
+				var lease tracker.NativeLease
+				var admitted bool
+				lease, err, admitted = s.claimNative(ctx, source, claimRequest)
+				if err != nil || !admitted {
 					break
 				}
+				leases = append(leases, lease)
 			}
-			var lease tracker.NativeLease
-			var admitted bool
-			lease, err, admitted = s.claimNative(ctx, source, claimRequest)
-			if err != nil || !admitted {
-				break
-			}
-			leases = append(leases, lease)
 		}
 	}
 	if errors.Is(err, ErrNoClaimableWork) {
