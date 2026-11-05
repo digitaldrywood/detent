@@ -437,36 +437,6 @@ func testPostgresArtifactReceipts(t *testing.T, admin *sql.DB, service *Service,
 		}
 	})
 
-	t.Run("pre-cutover pending receipt", func(t *testing.T) {
-		var cutover time.Time
-		if err := admin.QueryRowContext(t.Context(), `SELECT cutover_at FROM artifact_upload_authority_cutover`).Scan(&cutover); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if _, err := admin.ExecContext(context.WithoutCancel(t.Context()), `UPDATE artifact_upload_authority_cutover SET cutover_at=$1`, cutover); err != nil {
-				t.Error(err)
-			}
-		})
-		if _, err := admin.ExecContext(t.Context(), `UPDATE artifact_upload_authority_cutover SET cutover_at=$1`, now.Add(time.Hour)); err != nil {
-			t.Fatal(err)
-		}
-		originalClock := service.config.now
-		defer func() { service.config.now = originalClock }()
-		for _, tc := range []struct {
-			name   string
-			after  time.Duration
-			status int
-		}{
-			{"within transition", 5 * time.Minute, http.StatusNoContent},
-			{"after transition", time.Hour + artifactstore.UploadAuthorizationLifetime + 5*time.Minute, http.StatusNotFound},
-		} {
-			service.config.now = func() time.Time { return now.Add(tc.after) }
-			pending := reference
-			pending.ArtifactID, pending.ManifestID = artifact.NewID("artifact"), artifact.NewID("manifest")
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, publisherToken, pending), tc.status)
-		}
-	})
-
 	err = repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.BindArtifactService(t.Context(), project, artifact.Binding{ServiceID: reservation.ServiceID, Origin: "https://artifacts.example.test", Mode: "customer", PublisherTokenID: "credential_runner"})
 	})

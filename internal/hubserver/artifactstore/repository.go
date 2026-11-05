@@ -63,7 +63,6 @@ type Writer interface {
 	AppendArtifactReference(context.Context, artifact.Reference) (artifact.Reference, error)
 	AuthorizeArtifactUpload(context.Context, artifact.Reservation, time.Time) error
 	ConsumeArtifactUpload(context.Context, artifact.Reference, time.Time) error
-	ArtifactUploadAuthorityCutover(context.Context) (time.Time, error)
 	PruneExpiredArtifactUploadAuthorizations(context.Context, time.Time, int) (int64, error)
 	RegisterArchiveObject(context.Context, ArchiveObject) (ArchiveObject, error)
 	AddArchiveOwner(context.Context, ArchiveOwner) error

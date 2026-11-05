@@ -30,15 +30,7 @@ CREATE POLICY tenant_isolation ON artifact_upload_authorizations TO detent_runti
  USING (organization_id=NULLIF(current_setting('detent.organization_id',true),''))
  WITH CHECK (organization_id=NULLIF(current_setting('detent.organization_id',true),''));
 CREATE POLICY platform_access ON artifact_upload_authorizations TO detent_platform USING (true) WITH CHECK (true);
-CREATE TABLE artifact_upload_authority_cutover (
- singleton boolean PRIMARY KEY CHECK (singleton),
- cutover_at timestamptz NOT NULL
-);
-INSERT INTO artifact_upload_authority_cutover (singleton, cutover_at) VALUES (true, now());
-REVOKE ALL ON artifact_upload_authority_cutover FROM PUBLIC;
-GRANT SELECT ON artifact_upload_authority_cutover TO detent_runtime, detent_platform;
 
 -- +goose Down
 SET LOCAL lock_timeout = '5s';
-DROP TABLE artifact_upload_authority_cutover;
 DROP TABLE artifact_upload_authorizations;
