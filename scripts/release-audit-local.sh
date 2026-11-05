@@ -66,6 +66,7 @@ mkdir -p "$root/tmp"
 output_dir="$(mktemp -d "$root/tmp/release-audit.XXXXXX")"
 worktree="$output_dir/source"
 last_message="$output_dir/last-message.json"
+events="$output_dir/codex-events.jsonl"
 findings="$output_dir/findings.json"
 cleanup() {
   git worktree remove --force "$worktree"
@@ -76,9 +77,30 @@ prompt="$(cat "$script_dir/release-audit-prompt.md")"
 prompt="${prompt//\{BASE\}/$base}"
 prompt="${prompt//\{HEAD\}/$sha}"
 echo "Audit output: $output_dir/codex.log"
+echo "Audit events: $events"
 echo "Audit findings: $findings"
-if ! codex exec -m gpt-6.1-terra -c model_reasoning_effort="max" --sandbox read-only -C "$worktree" -o "$last_message" "$prompt" < /dev/null > "$output_dir/codex.log" 2>&1; then
+if ! codex exec -m gpt-6.1-terra -c model_reasoning_effort="max" --sandbox read-only -C "$worktree" --json -o "$output_dir/codex-last-message.json" "$prompt" < /dev/null > "$events" 2> "$output_dir/codex.log"; then
   echo "Codex failed; no audit status posted. See $output_dir/codex.log" >&2
+  exit 1
+fi
+if ! jq -ner '
+  reduce inputs as $event (
+    {started: false, completed: false, message: null};
+    if ($event | type) != "object" then error("invalid event")
+    elif $event.type == "turn.started" then
+      if .started then error("multiple turns") else .started = true end
+    elif $event.type == "turn.failed" or $event.type == "error" then error("failed audit")
+    elif $event.type == "turn.completed" then
+      if .started and (.completed | not) then .completed = true else error("unexpected completion") end
+    elif $event.type == "item.completed" and $event.item.type == "agent_message" then
+      if (.started | not) or .completed or ($event.item.text | type) != "string" then error("invalid agent message")
+      elif ($event.item.text | test("\\S")) then .message = $event.item.text
+      else . end
+    else . end
+  )
+  | if .completed and .message != null then .message else error("missing completed audit message") end
+' "$events" > "$last_message"; then
+  echo "Invalid audit event stream; no audit status posted. See $events" >&2
   exit 1
 fi
 if ! jq -se '

@@ -17,6 +17,15 @@ class ReleaseAuditLocalTest(unittest.TestCase):
             ("suite superseded", {"verdict": "pass", "findings": []}, 0, "success", "superseded"),
             ("suite wrong SHA", {"verdict": "pass", "findings": []}, 0, "success", "wrong-sha"),
             ("fail", {"verdict": "fail", "findings": [finding]}, 0, "failure", "success"),
+            ("empty final pass", {"verdict": "pass", "findings": []}, 0, "success", "absent"),
+            ("empty final fail", {"verdict": "fail", "findings": [finding]}, 0, "failure", "absent"),
+            ("tool only", {"verdict": "pass", "findings": []}, 0, None, "absent"),
+            ("multiple turns", {"verdict": "pass", "findings": []}, 0, None, "absent"),
+            ("message after completion", {"verdict": "pass", "findings": []}, 0, None, "absent"),
+            ("missing completion", {"verdict": "pass", "findings": []}, 0, None, "absent"),
+            ("failed turn", {"verdict": "pass", "findings": []}, 0, None, "absent"),
+            ("malformed stream", {"verdict": "pass", "findings": []}, 0, None, "absent"),
+            ("later invalid message", {"verdict": "pass", "findings": []}, 0, None, "absent"),
             ("inconsistent", {"verdict": "pass", "findings": [finding]}, 0, None, "success"),
             ("malformed", "not json", 0, None, "success"),
             ("multiple objects", '{}\n{}', 0, None, "success"),
@@ -71,18 +80,33 @@ class ReleaseAuditLocalTest(unittest.TestCase):
                 )
                 (binaries / "codex").write_text(
                     '#!/usr/bin/env python3\n'
-                    'import os, pathlib, sys\n'
+                    'import json, os, pathlib, sys\n'
                     'a = sys.argv[1:]\n'
                     'assert a[0] == "exec" and a[a.index("--sandbox") + 1] == "read-only"\n'
                     'assert a[a.index("-m") + 1] == "gpt-6.1-terra" and a[a.index("-c") + 1] == "model_reasoning_effort=max" and sys.stdin.read() == ""\n'
                     'assert os.environ["BASE"] in a[-1] and os.environ["HEAD"] in a[-1]\n'
-                    'pathlib.Path(a[a.index("-o") + 1]).write_text(os.environ["MESSAGE"])\n'
+                    'mode = os.environ["MODE"]\n'
+                    'message = os.environ["MESSAGE"]\n'
+                    'pathlib.Path(a[a.index("-o") + 1]).write_text("" if mode.startswith("empty final") else message)\n'
+                    'if "--json" in a:\n'
+                    '    print(json.dumps({"type": "thread.started", "thread_id": "example"}))\n'
+                    '    print(json.dumps({"type": "turn.started"}))\n'
+                    '    print(json.dumps({"type": "item.completed", "item": {"type": "command_execution", "aggregated_output": json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": message}})}}))\n'
+                    '    if mode != "tool only": print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": message}}))\n'
+                    '    if mode == "later invalid message": print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Unable to finish"}}))\n'
+                    '    print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": ""}}))\n'
+                    '    if mode != "missing completion": print(json.dumps({"type": "turn.failed" if mode == "failed turn" else "turn.completed"}))\n'
+                    '    if mode == "multiple turns": print(json.dumps({"type": "turn.started"}))\n'
+                    '    if mode == "message after completion": print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": message}}))\n'
+                    '    if mode == "malformed stream": print("not json")\n'
+                    'else: print(message)\n'
+                    'print(message, file=sys.stderr)\n'
                     'sys.exit(int(os.environ["CODEX_EXIT"]))\n'
                 )
                 for binary in binaries.iterdir():
                     binary.chmod(0o755)
                 env.update(PATH=str(binaries) + os.pathsep + env["PATH"], CALLS=str(calls), BASE=base, HEAD=head,
-                           MESSAGE=json.dumps(message) if isinstance(message, dict) else message, CODEX_EXIT=str(codex_exit), SUITE=suite, AUDITED="{}")
+                           MESSAGE=json.dumps(message) if isinstance(message, dict) else message, CODEX_EXIT=str(codex_exit), SUITE=suite, AUDITED="{}", MODE=name)
                 result = subprocess.run(["bash", str(scripts / "release-audit-local.sh"), "release/v1.10"], cwd=repo, env=env, text=True, capture_output=True)
                 self.assertEqual(result.returncode == 0, state == "success", result.stdout + result.stderr)
                 requests = [json.loads(line) for line in calls.read_text().splitlines()]
@@ -157,7 +181,10 @@ class ReleaseAuditLocalTest(unittest.TestCase):
                     'import json, os, pathlib, sys\n'
                     'a = sys.argv[1:]\n'
                     'pathlib.Path(os.environ["PROMPT"]).write_text(a[-1])\n'
-                    'pathlib.Path(a[a.index("-o") + 1]).write_text(json.dumps({"verdict": "pass", "findings": []}))\n'
+                    'message = json.dumps({"verdict": "pass", "findings": []})\n'
+                    'pathlib.Path(a[a.index("-o") + 1]).write_text(message)\n'
+                    'if "--json" in a:\n'
+                    '    for event in ({"type": "turn.started"}, {"type": "item.completed", "item": {"type": "agent_message", "text": message}}, {"type": "turn.completed"}): print(json.dumps(event))\n'
                 )
                 for binary in binaries.iterdir():
                     binary.chmod(0o755)
