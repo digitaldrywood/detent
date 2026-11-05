@@ -13,7 +13,7 @@ import (
 
 func (s *session) ArtifactReadGrant(ctx context.Context, project tracker.ProjectID, hash string) (artifactstore.ReadGrant, error) {
 	row, err := s.queries.ArtifactReadGrantGet(ctx, pgquery.ArtifactReadGrantGetParams{OrganizationID: s.organization, ProjectID: project, TokenHash: hash})
-	return artifactstore.ReadGrant{ProjectID: row.ProjectID, TokenHash: row.TokenHash, PrincipalID: row.PrincipalID, ServiceID: row.ServiceID, ArtifactID: row.ArtifactID, Revision: row.Revision, ExpiresAt: row.ExpiresAt, SessionHash: row.HostedSessionHash}, mapError(ctx, err)
+	return artifactstore.ReadGrant{ProjectID: row.ProjectID, WorkItemID: tracker.NativeWorkItemID(row.WorkItemID), TokenHash: row.TokenHash, PrincipalID: row.PrincipalID, ServiceID: row.ServiceID, ArtifactID: row.ArtifactID, Revision: row.Revision, ExpiresAt: row.ExpiresAt, SessionHash: row.HostedSessionHash}, mapError(ctx, err)
 }
 
 func (s *session) CreateArtifactReadGrant(ctx context.Context, grant artifactstore.ReadGrant, now time.Time) error {

@@ -36,7 +36,10 @@ func (q *Queries) ArtifactReadGrantDeleteExpired(ctx context.Context, arg Artifa
 }
 
 const artifactReadGrantGet = `-- name: ArtifactReadGrantGet :one
-SELECT organization_id, project_id, token_hash, principal_id, service_id, artifact_id, revision, expires_at, hosted_session_hash FROM artifact_grants WHERE organization_id=$1 AND project_id=$2 AND token_hash=$3
+SELECT g.organization_id, g.project_id, g.token_hash, g.principal_id, g.service_id, g.artifact_id, g.revision, g.expires_at, g.hosted_session_hash, r.work_item_id
+FROM artifact_grants g
+JOIN artifact_references r ON r.organization_id=g.organization_id AND r.project_id=g.project_id AND r.artifact_id=g.artifact_id AND r.revision=g.revision
+WHERE g.organization_id=$1 AND g.project_id=$2 AND g.token_hash=$3
 `
 
 type ArtifactReadGrantGetParams struct {
@@ -45,9 +48,22 @@ type ArtifactReadGrantGetParams struct {
 	TokenHash      string
 }
 
-func (q *Queries) ArtifactReadGrantGet(ctx context.Context, arg ArtifactReadGrantGetParams) (ArtifactGrant, error) {
+type ArtifactReadGrantGetRow struct {
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	TokenHash         string
+	PrincipalID       string
+	ServiceID         string
+	ArtifactID        string
+	Revision          int64
+	ExpiresAt         time.Time
+	HostedSessionHash string
+	WorkItemID        string
+}
+
+func (q *Queries) ArtifactReadGrantGet(ctx context.Context, arg ArtifactReadGrantGetParams) (ArtifactReadGrantGetRow, error) {
 	row := q.db.QueryRowContext(ctx, artifactReadGrantGet, arg.OrganizationID, arg.ProjectID, arg.TokenHash)
-	var i ArtifactGrant
+	var i ArtifactReadGrantGetRow
 	err := row.Scan(
 		&i.OrganizationID,
 		&i.ProjectID,
@@ -58,6 +74,7 @@ func (q *Queries) ArtifactReadGrantGet(ctx context.Context, arg ArtifactReadGran
 		&i.Revision,
 		&i.ExpiresAt,
 		&i.HostedSessionHash,
+		&i.WorkItemID,
 	)
 	return i, err
 }

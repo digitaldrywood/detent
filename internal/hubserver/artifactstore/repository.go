@@ -32,6 +32,7 @@ const (
 
 type ReadGrant struct {
 	ProjectID                                                  tracker.ProjectID
+	WorkItemID                                                 tracker.NativeWorkItemID
 	TokenHash, PrincipalID, ServiceID, ArtifactID, SessionHash string
 	Revision                                                   int64
 	ExpiresAt                                                  time.Time

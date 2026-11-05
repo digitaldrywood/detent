@@ -1,5 +1,8 @@
 -- name: ArtifactReadGrantGet :one
-SELECT * FROM artifact_grants WHERE organization_id=$1 AND project_id=$2 AND token_hash=$3;
+SELECT g.organization_id, g.project_id, g.token_hash, g.principal_id, g.service_id, g.artifact_id, g.revision, g.expires_at, g.hosted_session_hash, r.work_item_id
+FROM artifact_grants g
+JOIN artifact_references r ON r.organization_id=g.organization_id AND r.project_id=g.project_id AND r.artifact_id=g.artifact_id AND r.revision=g.revision
+WHERE g.organization_id=$1 AND g.project_id=$2 AND g.token_hash=$3;
 
 -- name: ArtifactReadGrantInsert :exec
 INSERT INTO artifact_grants(organization_id, project_id, token_hash, principal_id, service_id, artifact_id, revision, expires_at, hosted_session_hash)

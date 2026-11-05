@@ -265,12 +265,13 @@ func (s *Service) authorizeArtifactRead(c echo.Context) error {
 	}
 	scope := nativeRequestScope(c)
 	if s.config.TenantRepository != nil {
-		grant, err := s.readArtifactGrantTenant(ctx, scope, c.Param("service"), r)
+		grant, owner, err := s.readArtifactGrantTenant(ctx, scope, c.Param("service"), r)
 		if err != nil {
 			return s.nativeAPIError(c, nativeNotFound())
 		}
 		if s.config.Hosted != nil {
-			if err := s.authorizeHostedArtifactRead(c, grant.PrincipalID, grant.SessionHash); err != nil {
+			reader, err := s.hostedArtifactReader(c, grant.PrincipalID, grant.SessionHash)
+			if err != nil || !(nativeScope{organization: scope.organization, project: scope.project, credential: reader}).reporterOwns(owner) {
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 		}
@@ -284,31 +285,31 @@ func (s *Service) authorizeArtifactRead(c echo.Context) error {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	if s.config.Hosted != nil {
-		if err := s.authorizeHostedArtifactRead(c, principal, sessionHash); err != nil {
+		if _, err := s.hostedArtifactReader(c, principal, sessionHash); err != nil {
 			return s.nativeAPIError(c, nativeNotFound())
 		}
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
-func (s *Service) authorizeHostedArtifactRead(c echo.Context, principal, sessionHash string) error {
+func (s *Service) hostedArtifactReader(c echo.Context, principal, sessionHash string) (apiCredential, error) {
 	ctx := c.Request().Context()
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
 	session, err := s.WebSession(ctx, sessionHash, s.config.now())
 	if err != nil {
-		return err
+		return apiCredential{}, err
 	}
 	credential, _, err := s.hostedSessionCredential(ctx, session, sessionHash)
 	if err != nil || credential.ID != principal {
-		return auth.ErrHostedIdentity
+		return apiCredential{}, auth.ErrHostedIdentity
 	}
 	scope := nativeRequestScope(c)
 	scope.credential = credential
 	if err := s.requireHostedProject(readCtx, s.database.reader, scope, false); err != nil {
-		return err
+		return apiCredential{}, err
 	}
-	return s.hostedAudit(ctx, session.Identity, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0)
+	return credential, s.hostedAudit(ctx, session.Identity, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0)
 }
 
 func (s *Service) artifactServicesCommand(ctx context.Context, scope nativeScope) (result []artifact.Binding, err error) {
