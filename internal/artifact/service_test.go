@@ -216,6 +216,58 @@ func TestUploadRecoveryAndImmutableManifests(t *testing.T) {
 	}
 }
 
+func TestPublishPendingProgressesPastRejectedReceipts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite catalog integration")
+	}
+
+	t.Parallel()
+	s, _ := testService(t)
+	start := time.Now().UTC().Truncate(time.Second)
+	var valid string
+	for i := range 65 {
+		s.now = func() time.Time { return start.Add(time.Duration(i) * time.Second) }
+		r := testReservation(s)
+		r.Key, r.Bytes = fmt.Sprintf("receipt-%d", i), 128<<10
+		u, err := s.Reserve(t.Context(), r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Append(t.Context(), u.ArtifactID, testPart(0, "log")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Finalize(t.Context(), u.ArtifactID, "complete", nil); err != nil {
+			t.Fatal(err)
+		}
+		valid = u.ArtifactID
+	}
+	publisher := &rejectingPublisher{accept: valid}
+	for range 8 {
+		if err := s.PublishPending(t.Context(), publisher); err != nil && !errors.Is(err, ErrDenied) {
+			t.Fatalf("publish error = %v, want denied", err)
+		}
+		if publisher.published {
+			return
+		}
+	}
+	t.Fatalf("valid receipt was not published after %d rejected attempts", publisher.attempts)
+}
+
+type rejectingPublisher struct {
+	accept    string
+	attempts  int
+	published bool
+}
+
+func (p *rejectingPublisher) Publish(_ context.Context, ref Reference) error {
+	p.attempts++
+	if ref.ArtifactID != p.accept {
+		return ErrDenied
+	}
+	p.published = true
+	return nil
+}
+
 type testPublisher struct {
 	failure     error
 	rejectFirst bool

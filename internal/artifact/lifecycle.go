@@ -28,8 +28,19 @@ func (s *Service) discardPending(ctx context.Context, id string) error {
 	return err
 }
 
+type publishCursor struct {
+	created  int64
+	upload   string
+	revision int64
+}
+
+const publishPage = 32
+
 func (s *Service) PublishPending(ctx context.Context, publisher Publisher) error {
-	rows, err := s.catalog.db.QueryContext(ctx, "SELECT m.reference_json FROM outbox o JOIN manifests m ON m.id=o.manifest_id JOIN uploads u ON u.id=m.upload_id WHERE o.delivered=0 AND u.state NOT IN ('deletion_pending','deleted') AND u.expires_at>? ORDER BY u.created_at,m.revision LIMIT 32", s.now().Unix())
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	after := s.publishAfter
+	rows, err := s.catalog.db.QueryContext(ctx, "SELECT m.reference_json,u.created_at,m.upload_id,m.revision FROM outbox o JOIN manifests m ON m.id=o.manifest_id JOIN uploads u ON u.id=m.upload_id WHERE o.delivered=0 AND u.state NOT IN ('deletion_pending','deleted') AND u.expires_at>? AND (u.created_at,m.upload_id,m.revision)>(?,?,?) ORDER BY u.created_at,m.upload_id,m.revision LIMIT ?", s.now().Unix(), after.created, after.upload, after.revision, publishPage)
 	if err != nil {
 		return err
 	}
@@ -38,7 +49,7 @@ func (s *Service) PublishPending(ctx context.Context, publisher Publisher) error
 	for rows.Next() {
 		var raw []byte
 		var ref Reference
-		if err := rows.Scan(&raw); err != nil {
+		if err := rows.Scan(&raw, &after.created, &after.upload, &after.revision); err != nil {
 			return errors.Join(err, rows.Close())
 		}
 		if err := json.Unmarshal(raw, &ref); err != nil {
@@ -49,6 +60,10 @@ func (s *Service) PublishPending(ctx context.Context, publisher Publisher) error
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
+	if len(refs) < publishPage {
+		after = publishCursor{}
+	}
+	s.publishAfter = after
 	var failures []error
 	for _, ref := range refs {
 		if err := publisher.Publish(ctx, ref); err != nil {

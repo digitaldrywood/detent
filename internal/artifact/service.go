@@ -98,6 +98,8 @@ type Service struct {
 	allowances       Allowances
 	now              func() time.Time
 	mu               sync.Mutex
+	publishMu        sync.Mutex
+	publishAfter     publishCursor
 }
 
 func (cfg Config) Validate() error {
