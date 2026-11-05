@@ -99,9 +99,9 @@ func (s *session) AttachmentReferences(ctx context.Context, project tracker.Proj
 }
 func (s *session) BindAttachment(ctx context.Context, reference attachmentstore.Reference) error {
 	project, id, item, comment := reference.ProjectID, reference.AttachmentID, reference.WorkItemID, reference.CommentID
-	record, err := s.Attachment(ctx, project, id)
+	record, err := scanAttachmentRecord(s.db.QueryRowContext(ctx, `SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE`, s.organization, project, id))
 	if err != nil {
-		return err
+		return mapError(ctx, err)
 	}
 	if record.Metadata.DeletedAt != nil || record.ObjectDeletedAt != nil || record.PendingContent != nil {
 		return corestore.ErrNotFound
@@ -112,6 +112,22 @@ func (s *session) BindAttachment(ctx context.Context, reference attachmentstore.
 	if comment != "" {
 		if _, err := s.Comment(ctx, project, item, comment); err != nil {
 			return err
+		}
+	}
+	references, err := s.AttachmentReferences(ctx, project, id, 200)
+	if err != nil {
+		return err
+	}
+	if len(references) == 200 {
+		existing := false
+		for _, current := range references {
+			if current.WorkItemID == item && current.CommentID == comment {
+				existing = true
+				break
+			}
+		}
+		if !existing {
+			return attachment.ErrInvalid
 		}
 	}
 	result, err := s.db.ExecContext(ctx, `INSERT INTO attachment_item_references (organization_id,project_id,attachment_id,work_item_id,comment_id,retain_with_work_item) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (organization_id,attachment_id,work_item_id,comment_id) DO UPDATE SET retain_with_work_item=attachment_item_references.retain_with_work_item OR EXCLUDED.retain_with_work_item WHERE attachment_item_references.project_id=EXCLUDED.project_id`, s.organization, project, id, item, comment, reference.RetainWithWorkItem)
