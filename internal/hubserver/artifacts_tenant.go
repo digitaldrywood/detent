@@ -77,3 +77,47 @@ func (s *Service) readArtifactGrantTenant(ctx context.Context, scope nativeScope
 	})
 	return grant, err
 }
+
+func (s *Service) authorizeArtifactUploadTenant(ctx context.Context, scope nativeScope, reservation artifact.Reservation) error {
+	if s.config.TenantRepository == nil {
+		return workItemStorageUnavailable()
+	}
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	command := tracker.Mutation{LeaseID: tracker.LeaseID(reservation.LeaseID), FencingToken: tracker.FencingToken(reservation.FencingToken)}
+	pinned, requirements, err := s.dependencyReasonPolicy(ctx, scope, command.LeaseID)
+	if err != nil {
+		return projectRecordError(err)
+	}
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		binding, err := w.ArtifactService(ctx, scope.project, reservation.ServiceID)
+		if err != nil {
+			return err
+		}
+		if binding.Mode != reservation.Mode || binding.HostedOptIn != reservation.HostedOptIn {
+			return nativeNotFound()
+		}
+		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+			return err
+		}
+		item, err := w.LockWorkItem(ctx, scope.project, tracker.NativeWorkItemID(reservation.WorkItemID))
+		if err != nil {
+			return err
+		}
+		if item.Archived {
+			return nativeNotFound()
+		}
+		if err := s.authorizeDependencyReasonLease(ctx, w, scope, item, command, pinned, requirements, s.config.now().UTC()); err != nil {
+			return err
+		}
+		attempt, err := w.Attempt(ctx, reservation.AttemptID)
+		if err != nil {
+			return err
+		}
+		if attempt.IssueID != item.ID || attempt.LeaseID != reservation.LeaseID || attempt.FencingToken != reservation.FencingToken || attempt.RunID != reservation.RunID || attempt.Status != "running" {
+			return nativeNotFound()
+		}
+		return nil
+	})
+	return projectRecordError(err)
+}

@@ -268,32 +268,10 @@ func (s *Service) authorizeArtifactUpload(c echo.Context) error {
 	if r.Validate() != nil || r.OrganizationID != string(scope.organization) || r.ProjectID != string(scope.project) || r.WorkItemID != c.Param("item") || r.LeaseID == "" || r.FencingToken <= 0 || scope.credential.Scope != apiScopeWorker {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	tx, err := s.database.db.BeginTx(c.Request().Context(), nil)
-	if err != nil {
+	if err := s.authorizeArtifactUploadTenant(c.Request().Context(), scope, r); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	defer tx.Rollback()
-	var bindingRaw []byte
-	if err := tx.QueryRowContext(c.Request().Context(), "SELECT binding_json FROM artifact_services WHERE organization_id=? AND project_id=? AND id=?", scope.organization, scope.project, r.ServiceID).Scan(&bindingRaw); err != nil {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	var binding artifact.Binding
-	if err := json.Unmarshal(bindingRaw, &binding); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if r.Mode != binding.Mode || r.HostedOptIn != binding.HostedOptIn {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	if err := requireNativeMutationLease(c.Request().Context(), tx, scope, r.WorkItemID, tracker.Mutation{LeaseID: tracker.LeaseID(r.LeaseID), FencingToken: tracker.FencingToken(r.FencingToken)}, s.config.now()); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	var count int
-	if err := tx.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM native_attempts WHERE id=? AND lease_id=? AND organization_id=? AND project_id=? AND work_item_id=? AND status='running' AND run_id=?", r.AttemptID, r.LeaseID, scope.organization, scope.project, r.WorkItemID, r.RunID).Scan(&count); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if count != 1 {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
+
 	return c.NoContent(http.StatusNoContent)
 }
 
