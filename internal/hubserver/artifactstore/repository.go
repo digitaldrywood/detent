@@ -28,6 +28,11 @@ const (
 	ReadGrantLimit         = 64
 	ReadGrantPruneBatch    = 2 * ReadGrantLimit
 	MaxReadGrantPruneBatch = 5000
+
+	UploadAuthorizationLimit         = 64
+	UploadAuthorizationPruneBatch    = 2 * UploadAuthorizationLimit
+	MaxUploadAuthorizationPruneBatch = 5000
+	UploadAuthorizationLifetime      = 7 * 24 * time.Hour
 )
 
 type ReadGrant struct {
@@ -57,7 +62,9 @@ type Writer interface {
 	Reader
 	AppendArtifactReference(context.Context, artifact.Reference) (artifact.Reference, error)
 	AuthorizeArtifactUpload(context.Context, artifact.Reservation, time.Time) error
-	BindArtifactUpload(context.Context, artifact.Reference) error
+	ConsumeArtifactUpload(context.Context, artifact.Reference, time.Time) error
+	ArtifactUploadAuthorityCutover(context.Context) (time.Time, error)
+	PruneExpiredArtifactUploadAuthorizations(context.Context, time.Time, int) (int64, error)
 	RegisterArchiveObject(context.Context, ArchiveObject) (ArchiveObject, error)
 	AddArchiveOwner(context.Context, ArchiveOwner) error
 	RemoveArchiveOwner(context.Context, ArchiveOwner) error

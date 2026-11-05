@@ -12,37 +12,82 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const artifactUploadAuthorizationBind = `-- name: ArtifactUploadAuthorizationBind :execrows
-UPDATE artifact_upload_authorizations a SET artifact_id=$1
-WHERE a.organization_id=$2 AND a.project_id=$3 AND a.service_id=$4 AND a.idempotency_key=(
-    SELECT u.idempotency_key FROM artifact_upload_authorizations u
-    WHERE u.organization_id=$2 AND u.project_id=$3 AND u.service_id=$4 AND u.attempt_id=$5 AND u.kind=$6
-    AND u.artifact_id IS NULL AND u.work_item_id=$7 AND u.run_id=$8 AND u.bytes>=$9
-    ORDER BY u.created_at, u.idempotency_key LIMIT 1 FOR UPDATE
+const artifactReferencePublished = `-- name: ArtifactReferencePublished :one
+SELECT EXISTS (
+    SELECT 1 FROM artifact_references
+    WHERE organization_id=$1 AND project_id=$2 AND artifact_id=$3
+    AND service_id=$4 AND work_item_id=$5 AND run_id=$6 AND attempt_id=$7 AND kind=$8
 )
-AND NOT EXISTS (SELECT 1 FROM artifact_upload_authorizations b WHERE b.organization_id=$2 AND b.project_id=$3 AND b.artifact_id=$1)
 `
 
-type ArtifactUploadAuthorizationBindParams struct {
-	ArtifactID     *string
+type ArtifactReferencePublishedParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ArtifactID     string
+	ServiceID      string
+	WorkItemID     string
+	RunID          string
+	AttemptID      string
+	Kind           string
+}
+
+func (q *Queries) ArtifactReferencePublished(ctx context.Context, arg ArtifactReferencePublishedParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, artifactReferencePublished,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.ArtifactID,
+		arg.ServiceID,
+		arg.WorkItemID,
+		arg.RunID,
+		arg.AttemptID,
+		arg.Kind,
+	)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const artifactUploadAuthorityCutover = `-- name: ArtifactUploadAuthorityCutover :one
+SELECT cutover_at FROM artifact_upload_authority_cutover WHERE singleton
+`
+
+func (q *Queries) ArtifactUploadAuthorityCutover(ctx context.Context) (time.Time, error) {
+	row := q.db.QueryRowContext(ctx, artifactUploadAuthorityCutover)
+	var cutover_at time.Time
+	err := row.Scan(&cutover_at)
+	return cutover_at, err
+}
+
+const artifactUploadAuthorizationConsume = `-- name: ArtifactUploadAuthorizationConsume :execrows
+DELETE FROM artifact_upload_authorizations a
+WHERE a.organization_id=$1 AND a.project_id=$2 AND a.service_id=$3 AND a.idempotency_key=(
+    SELECT u.idempotency_key FROM artifact_upload_authorizations u
+    WHERE u.organization_id=$1 AND u.project_id=$2 AND u.service_id=$3 AND u.attempt_id=$4 AND u.kind=$5
+    AND u.expires_at>$6::timestamptz AND u.work_item_id=$7 AND u.run_id=$8 AND u.bytes>=$9
+    ORDER BY u.expires_at, u.idempotency_key LIMIT 1 FOR UPDATE
+)
+`
+
+type ArtifactUploadAuthorizationConsumeParams struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
 	ServiceID      string
 	AttemptID      string
 	Kind           string
+	Now            time.Time
 	WorkItemID     string
 	RunID          string
 	Bytes          int64
 }
 
-func (q *Queries) ArtifactUploadAuthorizationBind(ctx context.Context, arg ArtifactUploadAuthorizationBindParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, artifactUploadAuthorizationBind,
-		arg.ArtifactID,
+func (q *Queries) ArtifactUploadAuthorizationConsume(ctx context.Context, arg ArtifactUploadAuthorizationConsumeParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, artifactUploadAuthorizationConsume,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ServiceID,
 		arg.AttemptID,
 		arg.Kind,
+		arg.Now,
 		arg.WorkItemID,
 		arg.RunID,
 		arg.Bytes,
@@ -53,46 +98,9 @@ func (q *Queries) ArtifactUploadAuthorizationBind(ctx context.Context, arg Artif
 	return result.RowsAffected()
 }
 
-const artifactUploadAuthorizationBound = `-- name: ArtifactUploadAuthorizationBound :one
-SELECT EXISTS (
-    SELECT 1 FROM artifact_upload_authorizations
-    WHERE organization_id=$1 AND project_id=$2 AND artifact_id=$3
-    AND service_id=$4 AND work_item_id=$5 AND run_id=$6 AND attempt_id=$7 AND kind=$8 AND bytes>=$9
-)
-`
-
-type ArtifactUploadAuthorizationBoundParams struct {
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	ArtifactID     *string
-	ServiceID      string
-	WorkItemID     string
-	RunID          string
-	AttemptID      string
-	Kind           string
-	Bytes          int64
-}
-
-func (q *Queries) ArtifactUploadAuthorizationBound(ctx context.Context, arg ArtifactUploadAuthorizationBoundParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, artifactUploadAuthorizationBound,
-		arg.OrganizationID,
-		arg.ProjectID,
-		arg.ArtifactID,
-		arg.ServiceID,
-		arg.WorkItemID,
-		arg.RunID,
-		arg.AttemptID,
-		arg.Kind,
-		arg.Bytes,
-	)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
 const artifactUploadAuthorizationInsert = `-- name: ArtifactUploadAuthorizationInsert :execrows
-INSERT INTO artifact_upload_authorizations (organization_id,project_id,service_id,idempotency_key,work_item_id,run_id,attempt_id,kind,bytes,created_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+INSERT INTO artifact_upload_authorizations (organization_id,project_id,service_id,idempotency_key,work_item_id,run_id,attempt_id,kind,bytes,created_at,expires_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 ON CONFLICT (organization_id,project_id,service_id,idempotency_key) DO NOTHING
 `
 
@@ -107,6 +115,7 @@ type ArtifactUploadAuthorizationInsertParams struct {
 	Kind           string
 	Bytes          int64
 	CreatedAt      time.Time
+	ExpiresAt      time.Time
 }
 
 func (q *Queries) ArtifactUploadAuthorizationInsert(ctx context.Context, arg ArtifactUploadAuthorizationInsertParams) (int64, error) {
@@ -121,6 +130,7 @@ func (q *Queries) ArtifactUploadAuthorizationInsert(ctx context.Context, arg Art
 		arg.Kind,
 		arg.Bytes,
 		arg.CreatedAt,
+		arg.ExpiresAt,
 	)
 	if err != nil {
 		return 0, err
@@ -128,15 +138,86 @@ func (q *Queries) ArtifactUploadAuthorizationInsert(ctx context.Context, arg Art
 	return result.RowsAffected()
 }
 
-const artifactUploadAuthorizationMatches = `-- name: ArtifactUploadAuthorizationMatches :one
-SELECT EXISTS (
-    SELECT 1 FROM artifact_upload_authorizations
-    WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND idempotency_key=$4
-    AND work_item_id=$5 AND run_id=$6 AND attempt_id=$7 AND kind=$8 AND bytes=$9
-)
+const artifactUploadAuthorizationLiveCount = `-- name: ArtifactUploadAuthorizationLiveCount :one
+SELECT count(*) FROM (SELECT 1 FROM artifact_upload_authorizations
+WHERE organization_id=$1 AND project_id=$2 AND attempt_id=$3 AND expires_at>$4::timestamptz
+LIMIT $5::integer) live
 `
 
-type ArtifactUploadAuthorizationMatchesParams struct {
+type ArtifactUploadAuthorizationLiveCountParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	AttemptID      string
+	Now            time.Time
+	PageLimit      int32
+}
+
+func (q *Queries) ArtifactUploadAuthorizationLiveCount(ctx context.Context, arg ArtifactUploadAuthorizationLiveCountParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, artifactUploadAuthorizationLiveCount,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.AttemptID,
+		arg.Now,
+		arg.PageLimit,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const artifactUploadAuthorizationPruneAttempt = `-- name: ArtifactUploadAuthorizationPruneAttempt :exec
+DELETE FROM artifact_upload_authorizations a WHERE a.organization_id=$1 AND a.project_id=$2 AND (a.service_id, a.idempotency_key) IN (
+SELECT e.service_id, e.idempotency_key FROM artifact_upload_authorizations e WHERE e.organization_id=$1 AND e.project_id=$2 AND e.attempt_id=$3 AND e.expires_at<=$4::timestamptz
+ORDER BY e.expires_at LIMIT $5::integer)
+`
+
+type ArtifactUploadAuthorizationPruneAttemptParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	AttemptID      string
+	Now            time.Time
+	BatchLimit     int32
+}
+
+func (q *Queries) ArtifactUploadAuthorizationPruneAttempt(ctx context.Context, arg ArtifactUploadAuthorizationPruneAttemptParams) error {
+	_, err := q.db.ExecContext(ctx, artifactUploadAuthorizationPruneAttempt,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.AttemptID,
+		arg.Now,
+		arg.BatchLimit,
+	)
+	return err
+}
+
+const artifactUploadAuthorizationPruneExpired = `-- name: ArtifactUploadAuthorizationPruneExpired :execrows
+DELETE FROM artifact_upload_authorizations a WHERE a.organization_id=$1 AND (a.project_id, a.service_id, a.idempotency_key) IN (
+SELECT e.project_id, e.service_id, e.idempotency_key FROM artifact_upload_authorizations e WHERE e.organization_id=$1 AND e.expires_at<=$2::timestamptz
+ORDER BY e.expires_at LIMIT $3::integer)
+`
+
+type ArtifactUploadAuthorizationPruneExpiredParams struct {
+	OrganizationID tracker.OrganizationID
+	Now            time.Time
+	BatchLimit     int32
+}
+
+func (q *Queries) ArtifactUploadAuthorizationPruneExpired(ctx context.Context, arg ArtifactUploadAuthorizationPruneExpiredParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, artifactUploadAuthorizationPruneExpired, arg.OrganizationID, arg.Now, arg.BatchLimit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const artifactUploadAuthorizationRefresh = `-- name: ArtifactUploadAuthorizationRefresh :execrows
+UPDATE artifact_upload_authorizations SET expires_at=GREATEST(expires_at, $1::timestamptz)
+WHERE organization_id=$2 AND project_id=$3 AND service_id=$4 AND idempotency_key=$5
+AND work_item_id=$6 AND run_id=$7 AND attempt_id=$8 AND kind=$9 AND bytes=$10
+`
+
+type ArtifactUploadAuthorizationRefreshParams struct {
+	ExpiresAt      time.Time
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
 	ServiceID      string
@@ -148,8 +229,9 @@ type ArtifactUploadAuthorizationMatchesParams struct {
 	Bytes          int64
 }
 
-func (q *Queries) ArtifactUploadAuthorizationMatches(ctx context.Context, arg ArtifactUploadAuthorizationMatchesParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, artifactUploadAuthorizationMatches,
+func (q *Queries) ArtifactUploadAuthorizationRefresh(ctx context.Context, arg ArtifactUploadAuthorizationRefreshParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, artifactUploadAuthorizationRefresh,
+		arg.ExpiresAt,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ServiceID,
@@ -160,7 +242,8 @@ func (q *Queries) ArtifactUploadAuthorizationMatches(ctx context.Context, arg Ar
 		arg.Kind,
 		arg.Bytes,
 	)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

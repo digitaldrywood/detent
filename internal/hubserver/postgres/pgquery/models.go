@@ -192,6 +192,11 @@ type ArtifactService struct {
 	PublisherTokenID string
 }
 
+type ArtifactUploadAuthorityCutover struct {
+	Singleton bool
+	CutoverAt time.Time
+}
+
 type ArtifactUploadAuthorization struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
@@ -202,8 +207,8 @@ type ArtifactUploadAuthorization struct {
 	AttemptID      string
 	Kind           string
 	Bytes          int64
-	ArtifactID     *string
 	CreatedAt      time.Time
+	ExpiresAt      time.Time
 }
 
 type Attachment struct {
