@@ -86,7 +86,7 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 				if err := w.RedeemRunnerEnrollment(t.Context(), "enrollment_runner", runnerID, machineID, now); err != nil {
 					return err
 				}
-				if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: string(machineID), Hostname: "example-host", Capacity: 1, Version: "example"}); err != nil {
+				if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: string(machineID), Hostname: "example-host", Capacity: 2, Version: "example"}); err != nil {
 					return err
 				}
 				if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: runnerID, MachineID: machineID, TokenID: tokenID, EnrollmentID: "enrollment_runner", Scope: "projects", State: "active", Revision: 1, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Events, runnerauth.Collaborate}, CapacityLimit: 2, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{project}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
@@ -227,6 +227,79 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 					t.Fatal(err)
 				}
 				if _, err := admin.ExecContext(t.Context(), `INSERT INTO artifact_upload_authorizations(organization_id,project_id,service_id,idempotency_key,work_item_id,run_id,attempt_id,kind,bytes,created_at,expires_at) SELECT $1,$2,$3,'kept-'||n,$4,$5,$6,'video',1,$7::timestamptz-interval '2 hours',$7::timestamptz-interval '1 hour' FROM generate_series(1,7) n`, organization, project, reservation.ServiceID, reservation.WorkItemID, reservation.RunID, reservation.AttemptID, now); err != nil {
+					t.Fatal(err)
+				}
+			})
+
+			t.Run("cross-attempt key", func(t *testing.T) {
+				attacker := reservation
+				attacker.WorkItemID, attacker.AttemptID, attacker.RunID = artifact.NewID("wi"), artifact.NewID("attempt"), artifact.NewID("run")
+				if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+					item, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: project, NativeID: tracker.NativeWorkItemID(attacker.WorkItemID), Number: 2, Revision: 1, Title: "Attacker issue", WorkflowStateName: new("Todo"), CreatedAt: now, UpdatedAt: now, NativeCreatedAt: now, NativeUpdatedAt: now})
+					if err != nil {
+						return err
+					}
+					lease, err := w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(machineID), SessionID: "session_attacker", LeaseID: "lease_attacker", TTL: time.Minute})
+					if err != nil {
+						return err
+					}
+					if err := w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: organization, ProjectID: project, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: descriptor.ID, BoundAt: now}); err != nil {
+						return err
+					}
+					if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: organization, LeaseID: lease.LeaseID, RunnerID: runnerID, AssignedAt: now}); err != nil {
+						return err
+					}
+					attacker.LeaseID, attacker.FencingToken = lease.LeaseID, lease.FencingToken
+					now = lease.RenewedAt
+					_, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: attacker.AttemptID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: attacker.RunID, Sequence: 1, Status: "running", StartedAt: now, PayloadObjectKey: "example/attacker"})
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				attackerVersion, err := eventstore.NewContent(service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: organization, ProjectID: project, WorkItemID: tracker.NativeWorkItemID(attacker.WorkItemID), RecordID: attacker.WorkItemID, Revision: 1}, []byte(`{}`))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+					_, err := w.CreateCollaborationVersion(t.Context(), attackerVersion)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				const crossPublisher = "credential_cross_publisher"
+				crossToken := "cross_publisher_" + string(organization)
+				bindPublisher := func(id string) {
+					t.Helper()
+					if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.BindArtifactService(t.Context(), project, artifact.Binding{ServiceID: reservation.ServiceID, Origin: "https://artifacts.example.test", Mode: "customer", PublisherTokenID: id})
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+					if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: crossPublisher, Name: "Example cross publisher", Hash: apikey.HashToken(crossToken), Scope: "worker", NativeOnly: true, ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now}); err != nil {
+						return err
+					}
+					return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: crossPublisher, ProjectID: project})
+				}); err != nil {
+					t.Fatal(err)
+				}
+				victim := reservation
+				victim.Key, victim.Kind = reservation.AttemptID+":diff", "diff"
+				attacker.Key, attacker.Kind = victim.Key, victim.Kind
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, victim), http.StatusNoContent)
+				receipt := artifact.Reference{SchemaVersion: 1, Scope: victim.Scope, ServiceID: victim.ServiceID, ArtifactID: artifact.NewID("artifact"), ManifestID: artifact.NewID("manifest"), Revision: 1, SHA256: artifact.Digest([]byte("partial")), Kind: "diff", State: "partial", Availability: "available", Bytes: 5, Objects: 1, ObservedAt: now, ExpiresAt: now.Add(time.Hour)}
+				receiptPath := "/api/v2/organizations/" + string(organization) + "/projects/" + string(project) + "/artifact-services/" + victim.ServiceID + "/receipts"
+				bindPublisher(crossPublisher)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, receiptPath, crossToken, receipt), http.StatusNoContent)
+				bindPublisher(tokenID)
+				attackerPath := "/api/v2/organizations/" + string(organization) + "/projects/" + string(project) + "/work-items/" + attacker.WorkItemID + "/artifact-authority"
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, attackerPath, workerToken, attacker), http.StatusNoContent)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, victim), http.StatusNoContent)
+				foreignAttempt := attacker
+				foreignAttempt.AttemptID, foreignAttempt.RunID = victim.AttemptID, victim.RunID
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, attackerPath, workerToken, foreignAttempt), http.StatusNotFound)
+				if _, err := admin.ExecContext(t.Context(), `DELETE FROM artifact_upload_authorizations WHERE organization_id=$1 AND idempotency_key=$2`, organization, victim.Key); err != nil {
 					t.Fatal(err)
 				}
 			})
