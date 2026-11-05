@@ -189,6 +189,27 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 				t.Fatalf("upload after reclaim status = %d", response.Code)
 			}
 			state(2*size, nil)
+			historical := []byte("historical duplicate " + string(f.org))
+			var backlog []conversation.AttachmentUpload
+			for range 20 {
+				backlog = append(backlog, uploadConversationAttachmentFile(t, service, f.base, testHubAdminToken, f.other, "historical.txt", "text/plain", historical))
+			}
+			if _, err := admin.ExecContext(t.Context(), `UPDATE conversation_attachments SET collaboration_bytes=0 WHERE organization_id=$1 AND conversation_id=$2 AND name='historical.txt'`, f.org, f.other); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				start, err = r.CollaborationBytes(t.Context())
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			charged := uploadConversationAttachmentFile(t, service, f.base, testHubAdminToken, f.other, "charged.txt", "text/plain", historical)
+			hsize := int64(len(historical))
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, charged.Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
+			state(hsize, map[string][2]int{charged.ID: {1, 1}})
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, backlog[0].Attachment.URL, testHubAdminToken, nil), http.StatusNoContent)
+			state(hsize, map[string][2]int{charged.ID: {1, 1}, backlog[0].ID: {0, 0}, backlog[1].ID: {1, 1}})
 		})
 	}
 	for _, f := range fixtures {
