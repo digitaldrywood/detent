@@ -24,7 +24,11 @@ type ArchiveOwner struct {
 	CreatedAt      time.Time
 }
 
-const ReadGrantLimit = 64
+const (
+	ReadGrantLimit         = 64
+	ReadGrantPruneBatch    = 2 * ReadGrantLimit
+	MaxReadGrantPruneBatch = 5000
+)
 
 type ReadGrant struct {
 	ProjectID                                                  tracker.ProjectID
@@ -47,6 +51,7 @@ type Reader interface {
 
 type Writer interface {
 	CreateArtifactReadGrant(context.Context, ReadGrant, time.Time) error
+	PruneExpiredArtifactReadGrants(context.Context, time.Time, int) (int64, error)
 	BindArtifactService(context.Context, tracker.ProjectID, artifact.Binding) error
 	Reader
 	AppendArtifactReference(context.Context, artifact.Reference) (artifact.Reference, error)

@@ -85,6 +85,7 @@ func TestChangeReviewWebAuthorizationAndBinding(t *testing.T) {
 		edit                 func(url.Values)
 	}{
 		{"load", "load", "member", 0, 200, nil},
+		{"access check", "load", "member", 0, 200, func(v url.Values) { v.Set("access", "check") }},
 		{"approve", "approved", "member", 0, 200, nil},
 		{"request changes", "changes_requested", "member", 0, 200, nil},
 		{"viewed", "viewed", "member", 0, 200, nil},
@@ -110,6 +111,9 @@ func TestChangeReviewWebAuthorizationAndBinding(t *testing.T) {
 			if tt.edit != nil {
 				tt.edit(form)
 			}
+			mu.Lock()
+			mintedBefore := accessCalls
+			mu.Unlock()
 			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
 			req.Header.Set("Authorization", "Bearer web-secret")
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -117,6 +121,16 @@ func TestChangeReviewWebAuthorizationAndBinding(t *testing.T) {
 			server.Handler().ServeHTTP(res, req)
 			if res.Code != tt.want {
 				t.Fatalf("status %d want %d: %s", res.Code, tt.want, res.Body)
+			}
+			wantMinted := 0
+			if tt.action == "load" && tt.want == 200 && form.Get("access") != "check" {
+				wantMinted = 1
+			}
+			mu.Lock()
+			minted := accessCalls - mintedBefore
+			mu.Unlock()
+			if minted != wantMinted || form.Get("access") == "check" && strings.Contains(res.Body.String(), `"grant"`) {
+				t.Fatalf("%s minted %d grants, want %d: %s", tt.name, minted, wantMinted, res.Body)
 			}
 			if strings.Contains(res.Body.String(), "private upstream failure") {
 				t.Fatal("upstream details leaked")
