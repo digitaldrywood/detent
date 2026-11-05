@@ -129,7 +129,7 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 				}
 				changeVersion = &value
 			}
-			policyRows, err = readCurrentChangePolicyRows(ctx, r, scope)
+			policyRows, err = readChangeSummaryPolicyRows(ctx, r, scope)
 			if err != nil {
 				return err
 			}
