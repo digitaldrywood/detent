@@ -22,7 +22,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -559,52 +561,44 @@ func TestPlatformAICreditBalanceReadsPostgresTenantLedger(t *testing.T) {
 }
 
 func TestHostedUsageUsesSelectedPostgresWindowsAndRefusesSQLiteWrites(t *testing.T) {
-	f := newHostedSharedFixture(t)
-	d := f.service.database
-	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
-	d.now = func() time.Time { return now }
-	plans := hostedTestPlans(t, f.service, map[string]int64{"api_mutations": 10})
-	cfg := *f.service.config.Hosted
-	cfg.Plans = &plans
-	if err := d.configureHostedPlans(t.Context(), &cfg); err != nil {
-		t.Fatal(err)
-	}
 	repository := projectRecordPostgres(t)
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	plans := HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}
 	window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
-	if err := repository.WriteTenant(t.Context(), d.hostedOrganization, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: d.hostedOrganization, Name: string(d.hostedOrganization), CreatedAt: now}); err != nil {
+	for index, organization := range []tracker.OrganizationID{"org_usage_first", "org_usage_second"} {
+		want := int64(index + 1)
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: string(organization), CreatedAt: now}); err != nil {
+				return err
+			}
+			_, err := w.ApplyBillingUsage(t.Context(), billingstore.UsageReceipt{OrganizationID: organization, ID: "request_example", WindowStart: window, Metric: "api_mutations", Amount: want}, 10)
 			return err
+		}); err != nil {
+			t.Fatal(err)
 		}
-		_, err := w.ApplyBillingUsage(t.Context(), billingstore.UsageReceipt{OrganizationID: d.hostedOrganization, ID: "request_example", WindowStart: window, Metric: "api_mutations", Amount: 1}, 10)
-		return err
-	}); err != nil {
-		t.Fatal(err)
 	}
-	d.billingRepository = repository
-	usage, err := d.hostedConsumption(t.Context(), d.db, now, "usage_windows")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if usage["api_mutations"] != 1 {
-		t.Fatalf("PostgreSQL usage window=%v", usage)
-	}
-	if _, err := d.hostedConsumption(t.Context(), d.db, now, "collaboration_bytes"); !errors.Is(err, ErrBillingUsageUnavailable) {
-		t.Fatalf("unsupported PG usage read error=%v", err)
-	}
-	tx, err := d.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	if err := d.recordHostedUsage(t.Context(), tx, now, "api_mutations", 1); !errors.Is(err, ErrBillingUsageUnavailable) {
-		t.Fatalf("selected PG usage write error=%v", err)
-	}
-	var sqliteRows int
-	if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_usage_windows").Scan(&sqliteRows); err != nil {
-		t.Fatal(err)
-	}
-	if sqliteRows != 0 {
-		t.Fatalf("selected PG request wrote %d SQLite usage rows", sqliteRows)
+	for index, organization := range []tracker.OrganizationID{"org_usage_first", "org_usage_second"} {
+		t.Run(string(organization), func(t *testing.T) {
+			d := &database{billingRepository: repository, hostedOrganization: organization, now: func() time.Time { return now }}
+			d.hostedRuntime.Store(&hostedRuntimeConfig{Plans: plans})
+			want := int64(index + 1)
+			for range 2 {
+				usage, err := d.hostedConsumption(t.Context(), nil, now, "usage_windows")
+				if err != nil || usage["api_mutations"] != want {
+					t.Fatalf("PostgreSQL usage window=%v error=%v, want %d", usage, err, want)
+				}
+				storage, err := d.hostedConsumption(t.Context(), nil, now, "collaboration_bytes")
+				if err != nil || len(storage) != 1 || storage["collaboration_bytes"] != 0 {
+					t.Fatalf("PostgreSQL collaboration usage=%v error=%v", storage, err)
+				}
+				if _, err := d.hostedConsumption(t.Context(), nil, now, "unsupported_metric"); !errors.Is(err, ErrBillingUsageUnavailable) {
+					t.Fatalf("unsupported PG usage read error=%v", err)
+				}
+				if err := d.recordHostedUsage(t.Context(), nil, now, "api_mutations", 1); !errors.Is(err, ErrBillingUsageUnavailable) {
+					t.Fatalf("selected PG usage write error=%v", err)
+				}
+			}
+		})
 	}
 }
 
@@ -722,63 +716,84 @@ func TestAICreditOwnerSettings(t *testing.T) {
 }
 
 func TestAICreditUsageDebit(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name       string
-		input      int64
-		multiplier float64
-		wantDebit  int64
+	repository := projectRecordPostgres(t)
+	for index, test := range []struct {
+		name             string
+		input            int64
+		multiplier       float64
+		wantDebit        int64
+		wantTransactions int
 	}{
-		{"ten cents with markup", 1000000, 1.5, 150000},
-		{"sub-cent exact micros", 10000, 1.5, 1500},
-		{"fractional micro rounds up", 1, 1.5, 1},
-		{"fractional micro above one", 10, 1.5, 2},
-		{"exact micro boundary", 20, 1.5, 3},
-		{"zero cost", 0, 1.5, 0},
-		{"custom markup", 1000000, 2, 200000},
-		{"at cost", 1000000, 1, 100000},
+		{"ten cents with markup", 1000000, 1.5, 150000, 1},
+		{"sub-cent exact micros", 10000, 1.5, 1500, 1},
+		{"fractional micro rounds up", 1, 1.5, 1, 1},
+		{"fractional micro above one", 10, 1.5, 2, 1},
+		{"exact micro boundary", 20, 1.5, 3, 1},
+		{"zero cost", 0, 1.5, 0, 0},
+		{"custom markup", 1000000, 2, 200000, 1},
+		{"at cost", 1000000, 1, 100000, 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			f := newCoordinatorFixture(t, "credit-usage")
-			d := f.service.database
-			d.hostedOrganization = f.organization
-			d.aiCreditMode = billing.ModeTest
-			d.aiCreditCostMultiplier = test.multiplier
-			f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.organization), Billing: &HostedBillingConfig{}}
-			if _, err := d.db.ExecContext(t.Context(), "INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'test',5000000)", f.organization); err != nil {
-				t.Fatal(err)
-			}
-			record := f.seed(t, "Credit usage", nil)
-			at := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-			usage := ConversationUsage{OrganizationID: f.organization, ProjectID: f.project.ID, ConversationID: record.ID, TurnID: "credit-usage-turn", Provider: "openai", Model: "gpt-6-luna", Tokens: runner.AgentTokenCounts{InputTokens: test.input}, Outcome: conversation.DeliveryCompleted, OccurredAt: at}
-			for range 2 {
-				if err := d.RecordConversationUsage(t.Context(), usage); err != nil {
-					t.Fatal(err)
-				}
-			}
-			view, err := f.service.readAICredits(t.Context())
-			if err != nil || view.BalanceMicros != 5000000-test.wantDebit || len(view.History) != 1 || view.History[0].AmountMicros != -test.wantDebit || view.History[0].Kind != "usage" {
-				t.Fatalf("credits=%+v err=%v", view, err)
-			}
-			window := usageWindow{From: at, To: at.Add(time.Hour)}
-			summary, err := d.chatUsageSummary(t.Context(), f.organization, window, nil)
-			wantCost := float64(test.input) * .1 / 1000000
-			if err != nil || summary.Turns != 1 || math.Abs(summary.CostUSD-wantCost) > 1e-12 {
-				t.Fatalf("raw usage=%+v want cost=%g err=%v", summary, wantCost, err)
-			}
-			rows, err := f.service.chatUsageRows(t.Context(), window, []string{string(f.project.ID)})
-			if err != nil || len(rows) != 1 || math.Abs(rows[0].Cost-wantCost) > 1e-12 {
-				t.Fatalf("raw report rows=%+v err=%v", rows, err)
-			}
-			usage.TurnID = "own-provider-turn"
-			usage.Provider = "codex"
-			if err := d.RecordConversationUsage(t.Context(), usage); err != nil {
-				t.Fatal(err)
-			}
-			view, err = f.service.readAICredits(t.Context())
-			if err != nil || view.BalanceMicros != 5000000-test.wantDebit || len(view.History) != 1 {
-				t.Fatalf("own-provider credits=%+v err=%v", view, err)
+			for _, suffix := range []string{"first", "second"} {
+				t.Run(suffix, func(t *testing.T) {
+					f := accountPreferencesPostgresFixture(t, repository)
+					organization := tracker.OrganizationID(fmt.Sprintf("org_debit_%d_%s", index, suffix))
+					seedPostgresHubAdmin(t, repository, f.service, nativeOrganization{ID: organization, Name: string(organization), Slug: string(organization)})
+					projectID := tracker.ProjectID("project_credit_usage")
+					conversationID := conversation.NewConversationID()
+					d := f.service.database
+					d.hostedOrganization = organization
+					d.aiCreditMode = billing.ModeTest
+					d.aiCreditCostMultiplier = test.multiplier
+					d.billingAuditStore = &memoryRunDetails{}
+					f.service.config.Hosted.Billing = &HostedBillingConfig{}
+					at := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+					d.now = func() time.Time { return at }
+					f.service.config.now = d.now
+					if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+						if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: projectID, Name: "Example project", Slug: "example-project", Profile: "native", CreatedAt: at}, States: nativeFixtureStates()}); err != nil {
+							return err
+						}
+						if _, err := w.CreateConversation(t.Context(), conversationstore.Conversation{OrganizationID: organization, ProjectID: projectID, ID: conversationID, OwnerPrincipalID: "test_hub_admin", Origin: "user", Title: "Credit usage", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Revision: 1, Execution: conversation.Execution{Status: conversation.ExecutionIdle, UpdatedAt: at}, Preferences: conversation.DefaultPreferences(), CreatedAt: at, UpdatedAt: at}); err != nil {
+							return err
+						}
+						if err := w.CreateConversationPrice(t.Context(), billingstore.ConversationPrice{OrganizationID: organization, ID: 1, Provider: "openai", Model: "gpt-6-luna", EffectiveAt: at.Add(-time.Hour), Input: .1, CachedInput: .01, Output: .5}); err != nil {
+							return err
+						}
+						return w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: organization, Mode: billing.ModeTest, BalanceMicros: 5000000})
+					}); err != nil {
+						t.Fatal(err)
+					}
+					usage := ConversationUsage{OrganizationID: organization, ProjectID: projectID, ConversationID: conversationID, TurnID: "credit-usage-turn", Provider: "openai", Model: "gpt-6-luna", Tokens: runner.AgentTokenCounts{InputTokens: test.input}, Outcome: conversation.DeliveryCompleted, OccurredAt: at}
+					for range 2 {
+						if err := d.RecordConversationUsage(t.Context(), usage); err != nil {
+							t.Fatal(err)
+						}
+					}
+					view, err := f.service.readAICredits(t.Context())
+					if err != nil || view.BalanceMicros != 5000000-test.wantDebit || len(view.History) != test.wantTransactions || test.wantTransactions > 0 && (view.History[0].AmountMicros != -test.wantDebit || view.History[0].Kind != "usage") {
+						t.Fatalf("credits=%+v err=%v", view, err)
+					}
+					window := usageWindow{From: at, To: at.Add(time.Hour)}
+					summary, err := d.chatUsageSummary(t.Context(), organization, window, nil)
+					wantCost := float64(test.input) * .1 / 1000000
+					if err != nil || summary.Turns != 1 || math.Abs(summary.CostUSD-wantCost) > 1e-12 {
+						t.Fatalf("raw usage=%+v want cost=%g err=%v", summary, wantCost, err)
+					}
+					rows, err := f.service.chatUsageRows(t.Context(), window, []string{string(projectID)})
+					if err != nil || len(rows) != 1 || math.Abs(rows[0].Cost-wantCost) > 1e-12 {
+						t.Fatalf("raw report rows=%+v err=%v", rows, err)
+					}
+					usage.TurnID = "own-provider-turn"
+					usage.Provider = "codex"
+					if err := d.RecordConversationUsage(t.Context(), usage); err != nil {
+						t.Fatal(err)
+					}
+					view, err = f.service.readAICredits(t.Context())
+					if err != nil || view.BalanceMicros != 5000000-test.wantDebit || len(view.History) != test.wantTransactions {
+						t.Fatalf("own-provider credits=%+v err=%v", view, err)
+					}
+				})
 			}
 		})
 	}
