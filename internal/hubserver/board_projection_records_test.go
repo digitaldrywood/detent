@@ -23,7 +23,9 @@ import (
 func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 1, 22, 0, 0, 0, time.UTC)
-	service := &Service{config: Config{TenantRepository: repository, RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }}, localOrganization: "org_first"}
+	details := &memoryRunDetails{}
+	service := &Service{config: Config{TenantRepository: repository, RunDetails: details, now: func() time.Time { return now }}, localOrganization: "org_first"}
+	var failingKey string
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), CreatedAt: now}); err != nil {
@@ -44,6 +46,9 @@ func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 			version, err := eventstore.NewContent(service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "example", WorkItemID: id, RecordID: string(id), Revision: 1}, raw)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if org == "org_first" && index == 1 {
+				failingKey = version.PayloadObjectKey
 			}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "example", NativeID: id, Number: int64(index + 1), Title: issue.Title, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State}); err != nil {
@@ -95,6 +100,20 @@ func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 	if got := assertPage("org_first", 34); got != sequence {
 		t.Fatalf("unchanged refresh advanced sequence %d to %d", sequence, got)
 	}
+	if err := repository.WriteTenant(t.Context(), "org_first", corestore.Background, func(w tenantstore.Writer) error {
+		row, err := w.BoardItem(t.Context(), "example", "wi_01")
+		if err != nil {
+			return err
+		}
+		row.Display.Ready = false
+		return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: row.ProjectID, WorkItemID: row.WorkItemID, ExpectedRevision: row.SourceRevision, ExpectedEventSequence: row.SourceEventSequence, ExpectedProjectRevision: row.SourceProjectRevision, Current: &row})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	details.mu.Lock()
+	missing := details.data[failingKey]
+	delete(details.data, failingKey)
+	details.mu.Unlock()
 	for _, test := range []struct {
 		name   string
 		index  int
@@ -126,13 +145,22 @@ func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 				t.Fatal(err)
 			}
 			service.boardRefreshCursor = test.cursor
-			if err := service.maintainBoardRecords(t.Context()); err != nil {
-				t.Fatal(err)
+			failed := false
+			for range 2 {
+				err := service.maintainBoardRecords(t.Context())
+				if errors.Is(err, artifact.ErrMissing) {
+					failed = true
+				} else if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !failed {
+				t.Fatal("missing payload was not attempted during the sweep")
 			}
 			if err := repository.ReadTenant(t.Context(), "org_first", corestore.Serving, func(r tenantstore.Reader) error {
 				row, err := r.BoardItem(t.Context(), "example", id)
 				if err == nil && (row.SourceRevision != 2 || row.Position.State != "Done") {
-					t.Fatalf("dirty card stayed stale after one bounded pass: revision=%d state=%s", row.SourceRevision, row.Position.State)
+					t.Fatalf("dirty card stayed stale behind a failing pending row after two bounded passes: revision=%d state=%s", row.SourceRevision, row.Position.State)
 				}
 				return err
 			}); err != nil {
@@ -141,6 +169,9 @@ func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 			assertPage("org_second", 0)
 		})
 	}
+	details.mu.Lock()
+	details.data[failingKey] = missing
+	details.mu.Unlock()
 	service.localOrganization, service.boardRefreshCursor = "org_second", ""
 	if err := service.maintainBoardRecords(t.Context()); err != nil {
 		t.Fatal(err)

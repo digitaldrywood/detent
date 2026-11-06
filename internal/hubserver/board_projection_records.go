@@ -32,6 +32,8 @@ func (s *Service) maintainBoardRecords(ctx context.Context) error {
 	if organization == "" {
 		return corestore.ErrTenantMismatch
 	}
+	var failures error
+	var first tracker.NativeWorkItemID
 	for range 32 {
 		var candidate viewstore.BoardCandidate
 		err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
@@ -41,17 +43,26 @@ func (s *Service) maintainBoardRecords(ctx context.Context) error {
 		})
 		if errors.Is(err, corestore.ErrNotFound) {
 			s.boardRefreshCursor = ""
-			return nil
+			return failures
 		}
 		if err != nil {
-			return err
+			return errors.Join(failures, err)
+		}
+		if candidate.WorkItemID == first {
+			return failures
+		}
+		if first == "" {
+			first = candidate.WorkItemID
 		}
 		s.boardRefreshCursor = string(candidate.WorkItemID)
 		if err := s.refreshBoardRecord(ctx, organization, candidate, s.config.now()); err != nil && !errors.Is(err, corestore.ErrRevisionConflict) {
-			return err
+			failures = errors.Join(failures, err)
+		}
+		if err := ctx.Err(); err != nil {
+			return errors.Join(failures, err)
 		}
 	}
-	return nil
+	return failures
 }
 
 func (s *Service) boardProjectionSnapshot(ctx context.Context, organization tracker.OrganizationID, candidate viewstore.BoardCandidate, now time.Time) (boardProjectionSnapshot, error) {

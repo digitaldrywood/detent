@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -491,6 +492,9 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 				issue.Provenance = &tracker.Provenance{Provider: "github", ExternalID: "123", AuthorID: "example-author", AuthorDisplayName: "Example author", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Minute), ObservedAt: now}
 			} else {
 				issue.Body = "Native issue detail"
+				issue.IssueContract = &issuecontract.State{HumanAction: "Confirm scope", ReturnState: "Todo"}
+				issue.ReportContext = &tracker.ReportContext{URL: "https://example.com/work", Browser: "Example browser"}
+				issue.ReleaseDelivery = &tracker.ReleaseDelivery{ChangeID: "release-change", VersionID: "release-version", AssociatedAt: now}
 			}
 			raw, _ := json.Marshal(issue)
 			collaboration, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "example", WorkItemID: id, RecordID: string(id), Revision: 1}, raw)
@@ -557,6 +561,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 					t.Fatal("imported card did not reach typed exact provenance projection")
 				}
 			}
+			wantCompact := map[tracker.NativeWorkItemID]tracker.NativeIssue{}
 			legacy := service.prepareBoardPage(t.Context(), scope, records, now, true, map[tracker.NativeWorkItemID]boardPreparedRecord{})
 			defer legacy.close()
 			for index, actual := range page.Cards {
@@ -566,6 +571,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 				}
 				expected.Issue = service.nativeIssueResponse(scope.reporterIssue(expected.Issue))
 				expected.StatusLine = nativeBoardStatusLine(expected)
+				wantCompact[actual.Issue.WorkItemID] = operatortool.NativeListIssue(expected.Issue)
 				want, err := json.Marshal(expected)
 				if err != nil {
 					t.Fatal(err)
@@ -576,6 +582,24 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 				}
 				if !bytes.Equal(got, want) {
 					t.Errorf("card %s differs field-by-field:\ngot %s\nwant %s", actual.Issue.WorkItemID, got, want)
+				}
+			}
+			for _, include := range []string{"work", "summary"} {
+				compact, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "include": {include}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(compact.Items) != 2 {
+					t.Fatalf("%s items=%d", include, len(compact.Items))
+				}
+				items := compact.Items
+				if compact.Work != nil {
+					items = append(items, compact.Work.Items...)
+				}
+				for _, issue := range items {
+					if !reflect.DeepEqual(issue, wantCompact[issue.WorkItemID]) {
+						t.Errorf("%s compact fields differ for %s: got %+v want %+v", include, issue.WorkItemID, issue, wantCompact[issue.WorkItemID])
+					}
 				}
 			}
 		}

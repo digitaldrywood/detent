@@ -41,14 +41,11 @@ func (s *Service) prepareProjectedBoardPage(ctx context.Context, scope nativeSco
 			cards[row.WorkItemID] = prior.card
 			continue
 		}
-		if !row.Display.Ready || exact && !row.Display.Exact {
+		if !row.Display.Ready || !row.Display.Exact {
 			fallback = append(fallback, row)
 			continue
 		}
 		card := projectedBoardCard(row)
-		if !exact {
-			card.Issue.OmittedFields = []string{"body", "issue_contract", "report_context", "linked_source", "provenance", "external_references", "release_delivery"}
-		}
 		if !scope.reporterOwns(tracker.Actor{PrincipalID: row.Display.ChangePrincipalID}) {
 			card.Change = nil
 		}
