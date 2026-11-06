@@ -1,10 +1,11 @@
 package config_test
 
 import (
+	"testing"
+
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"testing"
 )
 
 func TestNativeGitHubCIReviewPolicy(t *testing.T) {
