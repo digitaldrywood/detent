@@ -238,6 +238,20 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		}
 	}
 	configure("org_startup")
+	prepareReadProject := func(organization tracker.OrganizationID, project tracker.ProjectID) {
+		t.Helper()
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: string(project), Slug: strings.ReplaceAll(string(project), "_", "-"), Profile: "native"}, States: states}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: "credential_owner", ProjectID: project}); err != nil {
+				return err
+			}
+			return w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization, UserID: "owner", ProjectID: project, CanWrite: true})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	t.Run("concurrent board reads with one serving slot", func(t *testing.T) {
 		limited := cfg
 		limited.Postgres.Pool = postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}
@@ -251,8 +265,15 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 			}
 		})
 		target.config.Hosted.SharedEntry.verifier.Now = cfg.now
-		if err := target.maintainBoardRecords(t.Context()); err != nil {
-			t.Fatal(err)
+		prepareReadProject("org_startup", "project_parallel")
+		for index := range 2 {
+			response := requestFor(target, "owner", "/api/v2/organizations/org_startup/projects/project_parallel/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("parallel_%d", index)}, Title: "Example parallel item", Body: workItemRecordBody, State: "Todo", Type: "bug"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			if err := target.refreshBoardRecord(t.Context(), "org_startup", viewstore.BoardCandidate{ProjectID: "project_parallel", WorkItemID: issue.WorkItemID}, clock); err != nil {
+				t.Fatal(err)
+			}
 		}
 		start := make(chan struct{})
 		results := make(chan *httptest.ResponseRecorder, 5)
@@ -260,7 +281,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		for range 5 {
 			workers.Go(func() {
 				<-start
-				results <- requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": "project_example", "limit": 50}, "connection_id": "parallel_board"})
+				results <- requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": "project_parallel", "limit": 50}, "connection_id": "parallel_board"})
 			})
 		}
 		close(start)
@@ -278,8 +299,8 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 				t.Fatal(err)
 			}
-			if len(result.Data.Items) == 0 {
-				t.Error("authorized board returned no items")
+			if len(result.Data.Items) != 2 {
+				t.Errorf("authorized board returned %d items, want 2", len(result.Data.Items))
 			}
 		}
 	})
@@ -303,6 +324,9 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		})
 		other.config.Hosted.SharedEntry.verifier.Now = cfg.now
 		targets := []*Service{service, other}
+		for _, target := range targets {
+			prepareReadProject(tracker.OrganizationID(target.config.Hosted.OrganizationID), "project_scale")
+		}
 		previous := 0
 		for _, size := range []int{2, 2000} {
 			for _, target := range targets {
@@ -310,19 +334,19 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 				var project projectstore.Record
 				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 					var err error
-					project, err = r.ProjectRecord(t.Context(), "project_example")
+					project, err = r.ProjectRecord(t.Context(), "project_scale")
 					return err
 				}); err != nil {
 					t.Fatal(err)
 				}
 				for index := previous; index < size; index++ {
 					id := tracker.NativeWorkItemID(fmt.Sprintf("board_scale_%04d", index))
-					issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "project_example", WorkItemID: id, Number: 200000 + index, Revision: 1, Profile: "native"}, Title: fmt.Sprintf("Example %04d", index), State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "credential_owner"}, CreatedAt: clock, UpdatedAt: clock, LastActivityAt: clock}
+					issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "project_scale", WorkItemID: id, Number: 200000 + index, Revision: 1, Profile: "native"}, Title: fmt.Sprintf("Example %04d", index), State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "credential_owner"}, CreatedAt: clock, UpdatedAt: clock, LastActivityAt: clock}
 					raw, err := json.Marshal(issue)
 					if err != nil {
 						t.Fatal(err)
 					}
-					version, err := eventstore.NewContent(cfg.RunDetails).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "project_example", WorkItemID: id, RecordID: string(id), Revision: 1}, raw)
+					version, err := eventstore.NewContent(cfg.RunDetails).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "project_scale", WorkItemID: id, RecordID: string(id), Revision: 1}, raw)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -330,15 +354,15 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					record := viewstore.BoardRecord{Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Number: issue.Number, Actor: tracker.Actor{Kind: issue.Actor.Kind}}, OrganizationID: org, ProjectID: "project_example", WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("example#%06d", issue.Number)}, ActorPrincipalID: issue.Actor.PrincipalID, CreatedAt: clock, UpdatedAt: clock, Payload: payload}
+					record := viewstore.BoardRecord{Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Number: issue.Number, Actor: tracker.Actor{Kind: issue.Actor.Kind}}, OrganizationID: org, ProjectID: "project_scale", WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("example#%06d", issue.Number)}, ActorPrincipalID: issue.Actor.PrincipalID, CreatedAt: clock, UpdatedAt: clock, Payload: payload}
 					if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-						if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "project_example", NativeID: id, Number: int64(issue.Number), Title: issue.Title, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State}); err != nil {
+						if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "project_scale", NativeID: id, Number: int64(issue.Number), Title: issue.Title, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State}); err != nil {
 							return err
 						}
 						if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
 							return err
 						}
-						return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: "project_example", WorkItemID: id, ExpectedRevision: 1, ExpectedProjectRevision: project.Core.ContentSettingsRevision, Current: &record})
+						return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: "project_scale", WorkItemID: id, ExpectedRevision: 1, ExpectedProjectRevision: project.Core.ContentSettingsRevision, Current: &record})
 					}); err != nil {
 						t.Fatal(err)
 					}
@@ -355,7 +379,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 						statements = append(statements, strings.Join(strings.Fields(query), " "))
 					}}
 					started := time.Now()
-					response := requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": "project_example", "limit": 50}, "connection_id": "board_scale"})
+					response := requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": "project_scale", "limit": 50}, "connection_id": "board_scale"})
 					elapsed := time.Since(started)
 					timingHeader := requestTrace.header(time.Now())
 					requestTrace = nil
@@ -401,7 +425,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				scope := nativeScope{organization: org, project: "project_example", credential: credential}
+				scope := nativeScope{organization: org, project: "project_scale", credential: credential}
 				for sample := range 6 {
 					statements, begins := 0, 0
 					timing := &requestTiming{start: time.Now(), trace: func(query string, _ []driver.NamedValue) {
@@ -433,7 +457,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 				}
 				target.config.RunDetails = originalDetails
 				revoked = true
-				denied := requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": "project_example", "limit": 50}, "connection_id": "board_scale"})
+				denied := requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": "project_scale", "limit": 50}, "connection_id": "board_scale"})
 				revoked = false
 				requireNativeStatus(t, denied, http.StatusForbidden)
 
