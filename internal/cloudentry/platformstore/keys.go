@@ -5,15 +5,16 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -208,31 +209,43 @@ func (r *Repository) RevokeKey(ctx context.Context, owner, id string) error {
 
 func (r *Repository) Key(ctx context.Context, hash string) (Key, error) {
 	var k Key
-	err := r.read(ctx, corestore.Serving, func(tx pgquery.DBTX) error {
-		err := tx.QueryRow(ctx, `SELECT id,token_hash,name,kind,owner_subject,owner_email,permission,access_context,service_organization_id,created_at,expires_at,revoked_at FROM platform.access_keys WHERE token_hash=$1`, hash).Scan(&k.ID, &k.Hash, &k.Name, &k.Kind, &k.OwnerSubject, &k.OwnerEmail, &k.Permission, &k.AccessContext, &k.ServiceOrganizationID, &k.CreatedAt, &k.ExpiresAt, &k.RevokedAt)
-		if err != nil {
-			return err
-		}
-		rows, err := tx.Query(ctx, `SELECT o.organization_id,o.project_access,p.project_id FROM platform.access_key_organizations o LEFT JOIN platform.access_key_projects p ON p.organization_id=o.organization_id AND p.key_id=o.key_id  WHERE o.key_id=$1 AND o.selected ORDER BY o.organization_id,p.project_id LIMIT 40001`, k.ID)
+	err := r.read(ctx, corestore.Serving, func(reader pgquery.DBTX) error {
+		rows, err := reader.Query(ctx, `SELECT k.id,k.token_hash,k.name,k.kind,k.owner_subject,k.owner_email,k.permission,k.access_context,k.service_organization_id,k.created_at,k.expires_at,k.revoked_at,
+ o.organization_id,o.project_access,
+ ARRAY(SELECT project_id FROM platform.access_key_projects p WHERE p.organization_id=o.organization_id AND p.key_id=k.id ORDER BY project_id LIMIT 201)
+ FROM platform.access_keys k
+ LEFT JOIN LATERAL (SELECT organization_id,project_access FROM platform.access_key_organizations WHERE key_id=k.id AND selected ORDER BY organization_id LIMIT 201) o ON true
+ WHERE k.token_hash=$1 ORDER BY o.organization_id`, hash)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var org tracker.OrganizationID
-			var access string
-			var project pgtype.Text
-			if err := rows.Scan(&org, &access, &project); err != nil {
+			var organization, access *string
+			var projects []tracker.ProjectID
+			if err := rows.Scan(&k.ID, &k.Hash, &k.Name, &k.Kind, &k.OwnerSubject, &k.OwnerEmail, &k.Permission, &k.AccessContext, &k.ServiceOrganizationID, &k.CreatedAt, &k.ExpiresAt, &k.RevokedAt, &organization, &access, &projects); err != nil {
 				return err
 			}
-			if len(k.Organizations) == 0 || k.Organizations[len(k.Organizations)-1].OrganizationID != org {
-				k.Organizations = append(k.Organizations, KeyOrganization{OrganizationID: org, ProjectAccess: access})
-			}
-			if project.Valid {
-				k.Organizations[len(k.Organizations)-1].Projects = append(k.Organizations[len(k.Organizations)-1].Projects, tracker.ProjectID(project.String))
+			if organization != nil && access != nil {
+				k.Organizations = append(k.Organizations, KeyOrganization{OrganizationID: tracker.OrganizationID(*organization), ProjectAccess: *access, Projects: projects})
 			}
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if k.ID == "" {
+			return pgx.ErrNoRows
+		}
+		return nil
 	})
-	return k, err
+	if err != nil {
+		if errors.Is(err, corestore.ErrNotFound) {
+			return Key{}, err
+		}
+		return Key{}, fmt.Errorf("read platform key: %w", errors.Join(tenantauth.ErrUnavailable, err))
+	}
+	if !validKey(k) {
+		return Key{}, errors.Join(tenantauth.ErrDenied, &apikey.Refusal{Code: "key_context_invalid", Message: "The stored key context is invalid"})
+	}
+	return k, nil
 }
