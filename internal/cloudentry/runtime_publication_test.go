@@ -59,6 +59,9 @@ func TestSharedRuntimePublicationDoesNotVisitTenants(t *testing.T) {
 	f.service.config.transport = func(Organization) (http.RoundTripper, error) {
 		return nil, errors.New("shared publication must not use tenant HTTP")
 	}
+	if err := f.service.AdoptPublishedRuntime(t.Context(), hubmaintenance.Tenant{Organization: "org_alpha", Generation: 1}); !errors.Is(err, corestore.ErrNotFound) {
+		t.Fatalf("missing publication did not fail closed: %v", err)
+	}
 	if err := f.service.reloadConfiguration(t.Context()); err != nil {
 		t.Fatal(err)
 	}

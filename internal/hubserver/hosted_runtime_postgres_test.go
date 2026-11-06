@@ -370,5 +370,47 @@ func TestSharedRuntimeSnapshotsTenantIsolation(t *testing.T) {
 		if err != nil || after.StageID != revision || after.Plans.WindowSeconds != before.Plans.WindowSeconds {
 			t.Fatalf("failed adoption lost valid revision: %v", err)
 		}
+		abandoned := uuid.NewString()
+		if err := repo.WriteTenant(t.Context(), tracker.OrganizationID(tenant.Organization), corestore.Serving, func(w tenantstore.Writer) error {
+			return w.StageRuntime(t.Context(), billingstore.RuntimeRevision{ID: abandoned})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		update.StageID = uuid.NewString()
+		if _, err := admin.ExecContext(t.Context(), "INSERT INTO hosted_runtime_publications(id) VALUES($1)", update.StageID); err != nil {
+			t.Fatal(err)
+		}
+		price := HostedBillingPrice{PriceID: "price_shared", Label: "Example paid plan", Plan: before.Plans.Plans[1].PlanReference}
+		update.Prices = []HostedBillingPrice{price}
+		if err := restarted.Adopt(t.Context(), tenant, abandoned, update); err != nil {
+			t.Fatalf("abandoned preparation blocked adoption: %v", err)
+		}
+		applied := update.StageID
+		update.StageID = uuid.NewString()
+		if _, err := admin.ExecContext(t.Context(), "INSERT INTO hosted_runtime_publications(id) VALUES($1)", update.StageID); err != nil {
+			t.Fatal(err)
+		}
+		other := update.Plans.Plans[1]
+		other.ID = "other_paid"
+		update.Plans.Plans = append(update.Plans.Plans, other)
+		update.Prices[0].Plan = other.PlanReference
+		if err := restarted.Adopt(t.Context(), tenant, applied, update); err == nil {
+			t.Fatal("immutable price mapping changed")
+		}
+		update.Prices[0] = price
+		update.Plans.Plans[0].Name = "Changed plan"
+		if _, err := admin.ExecContext(t.Context(), "ALTER TABLE hosted_plan_audit ADD CONSTRAINT runtime_audit_refusal CHECK (action <> 'update_plan')"); err != nil {
+			t.Fatal(err)
+		}
+		if err := restarted.Adopt(t.Context(), tenant, applied, update); err == nil {
+			t.Fatal("audit refusal committed runtime adoption")
+		}
+		if _, err := admin.ExecContext(t.Context(), "ALTER TABLE hosted_plan_audit DROP CONSTRAINT runtime_audit_refusal"); err != nil {
+			t.Fatal(err)
+		}
+		retained, err := restarted.Load(t.Context(), tenant)
+		if err != nil || retained.StageID != applied || retained.Plans.Plans[0].Name == "Changed plan" {
+			t.Fatalf("price or audit refusal lost applied configuration: %v", err)
+		}
 	}
 }

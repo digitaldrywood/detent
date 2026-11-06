@@ -15,6 +15,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
+type publishedRuntimeCatalogWriter interface {
+	RuntimePrepared(context.Context) (string, error)
+	ApplyPublishedRuntimeCatalog(context.Context, billingstore.RuntimeRevision, []billingstore.Plan, []billingstore.Price, []billingstore.PlanAudit) error
+}
+
 func (d *database) applyRuntimeRecords(ctx context.Context, plans HostedPlansConfig, prices []HostedBillingPrice, actor, reason, stage string, validate bool) error {
 	return d.applyRuntimeRecordsAtRevision(ctx, plans, prices, actor, reason, stage, validate, nil)
 }
@@ -51,21 +56,54 @@ func (d *database) applyRuntimeRecordsAtRevision(ctx context.Context, plans Host
 		return err
 	}
 	rollback := errors.New("runtime validation rollback")
-	err = d.writeBillingTenant(ctx, func(w tenantstore.Writer) error {
+	write := d.writeBillingTenant
+	if expected != nil {
+		write = func(ctx context.Context, apply func(tenantstore.Writer) error) error {
+			return d.billingRepository.WriteTenant(ctx, d.hostedOrganization, corestore.Background, apply)
+		}
+	}
+	err = write(ctx, func(w tenantstore.Writer) error {
 		if expected != nil {
-			current, err := w.CurrentRuntime(ctx)
+			writer, ok := w.(publishedRuntimeCatalogWriter)
+			if !ok {
+				return errors.New("published runtime catalog requires native tenant storage")
+			}
+			prepared, err := writer.RuntimePrepared(ctx)
 			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 				return err
 			}
-			if current.ID == stage {
-				return nil
+			if prepared == stage {
+				published, err := w.RuntimePublished(ctx, stage)
+				if err != nil {
+					return err
+				}
+				if !published {
+					return corestore.ErrRevisionConflict
+				}
+				return d.validateConfiguredPlanReferences(ctx, w, plans)
 			}
-			if current.ID != *expected {
+			if prepared != *expected {
 				return corestore.ErrRevisionConflict
 			}
 		}
 		if err := d.validateConfiguredPlanReferences(ctx, w, plans); err != nil {
 			return err
+		}
+		if expected != nil {
+			writer, ok := w.(publishedRuntimeCatalogWriter)
+			if !ok {
+				return errors.New("published runtime catalog requires native tenant storage")
+			}
+			catalog := make([]billingstore.Plan, 0, len(plans.Plans))
+			for _, plan := range plans.Plans {
+				plan = normalizeHostedPlan(plan)
+				catalog = append(catalog, billingstore.Plan{OrganizationID: d.hostedOrganization, PlanReference: billingstore.PlanReference{ID: plan.ID, Version: plan.Version}, Name: plan.Name, MonthlyUSDCents: plan.MonthlyUSDCents, Features: plan.Features, Allowances: plan.Allowances})
+			}
+			mappings := make([]billingstore.Price, 0, len(prices))
+			for _, price := range prices {
+				mappings = append(mappings, billingstore.Price{OrganizationID: d.hostedOrganization, PriceID: price.PriceID, Plan: billingstore.PlanReference{ID: price.Plan.ID, Version: price.Plan.Version}})
+			}
+			return writer.ApplyPublishedRuntimeCatalog(ctx, revision, catalog, mappings, audits)
 		}
 		for i, command := range commands[:len(commands)-1] {
 			plan := *command.Definition

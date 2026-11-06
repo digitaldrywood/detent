@@ -57,16 +57,13 @@ func (s *Service) AdoptPublishedRuntime(ctx context.Context, tenant hubmaintenan
 		return errors.New("shared runtime adoption is unavailable")
 	}
 	target, err := s.registry.store.db.postgres.RuntimeAdoption(ctx, tracker.OrganizationID(tenant.Organization), s.config.Issuer)
-	if errors.Is(err, corestore.ErrNotFound) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}
 	if target.Generation != tenant.Generation {
 		return corestore.ErrRevisionConflict
 	}
-	if !target.Managed || target.State != "ready" && target.State != "allocating" || target.AppliedRevision == target.Publication.Revision {
+	if !target.Managed || target.State != "ready" && target.State != "allocating" || target.PreparedRevision == target.Publication.Revision {
 		return nil
 	}
 	raw, err := s.readEntryObject(ctx, target.Publication.ObjectKey)
@@ -84,7 +81,7 @@ func (s *Service) AdoptPublishedRuntime(ctx context.Context, tenant hubmaintenan
 		return err
 	}
 	organization := Organization{ID: tenant.Organization, Generation: tenant.Generation, Managed: target.Managed, State: target.State}
-	return adopter.AdoptRuntime(ctx, organization, target.AppliedRevision, payload.HostedRuntimeUpdate)
+	return adopter.AdoptRuntime(ctx, organization, target.PreparedRevision, payload.HostedRuntimeUpdate)
 }
 
 func (s *Service) allocationPrices(ctx context.Context) []hubserver.HostedBillingPrice {
@@ -257,6 +254,9 @@ func (s *Service) loadRuntime(ctx context.Context) (*entryRuntime, error) {
 	}
 	publication, err := s.registry.store.db.postgres.RuntimePublication(ctx, s.config.Issuer)
 	if errors.Is(err, corestore.ErrNotFound) {
+		if _, shared := s.runtimeAdopter(); shared {
+			return nil, err
+		}
 		return current, nil
 	}
 	if err != nil {

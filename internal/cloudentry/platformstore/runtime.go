@@ -15,11 +15,11 @@ import (
 type RuntimePublication struct{ Revision, ObjectKey string }
 
 type RuntimeAdoption struct {
-	Generation      int64
-	Managed         bool
-	State           string
-	Publication     RuntimePublication
-	AppliedRevision string
+	Generation       int64
+	Managed          bool
+	State            string
+	Publication      RuntimePublication
+	PreparedRevision string
 }
 
 func (r *Repository) RuntimeTenantPage(ctx context.Context, after string, limit int) ([]hubmaintenance.Tenant, error) {
@@ -30,7 +30,7 @@ func (r *Repository) RuntimeTenantPage(ctx context.Context, after string, limit 
 	err := r.read(ctx, corestore.Background, func(tx pgquery.DBTX) error {
 		rows, err := pgquery.New(tx).RuntimeTenantPage(ctx, pgquery.RuntimeTenantPageParams{AfterID: after, PageLimit: int32(limit)})
 		for _, row := range rows {
-			tenants = append(tenants, hubmaintenance.Tenant{Organization: string(row.ID), Generation: row.Generation})
+			tenants = append(tenants, hubmaintenance.Tenant{Organization: row.ID, Generation: row.Generation})
 		}
 		return err
 	})
@@ -41,7 +41,7 @@ func (r *Repository) RuntimeAdoption(ctx context.Context, organization tracker.O
 	var adoption RuntimeAdoption
 	err := r.read(ctx, corestore.Background, func(tx pgquery.DBTX) error {
 		row, err := pgquery.New(tx).RuntimeAdoptionTarget(ctx, pgquery.RuntimeAdoptionTargetParams{OrganizationID: string(organization), Issuer: issuer})
-		adoption = RuntimeAdoption{Generation: row.Generation, Managed: row.Managed, State: row.State, Publication: RuntimePublication{Revision: row.RevisionID, ObjectKey: row.ObjectKey}, AppliedRevision: row.AppliedRevision}
+		adoption = RuntimeAdoption{Generation: row.Generation, Managed: row.Managed, State: row.State, Publication: RuntimePublication{Revision: row.RevisionID, ObjectKey: row.ObjectKey}, PreparedRevision: row.PreparedRevision}
 		return err
 	})
 	return adoption, err
