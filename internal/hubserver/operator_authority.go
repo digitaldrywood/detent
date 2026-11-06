@@ -26,6 +26,14 @@ import (
 
 type operatorEntryOriginKey struct{}
 
+func operatorRequestCredential(c echo.Context) (apiCredential, error) {
+	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	if !ok || credential.ID == "" {
+		return apiCredential{}, operatortool.ErrAccessDenied
+	}
+	return credential, nil
+}
+
 type operatorAuthorizationFailure struct {
 	cause error
 	kind  error

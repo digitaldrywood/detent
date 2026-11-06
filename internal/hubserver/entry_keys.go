@@ -300,7 +300,7 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 			return s.nativeAPIError(c, err)
 		}
 	}
-	credential, _, err := s.authenticateAPIRequest(c)
+	credential, err := operatorRequestCredential(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
