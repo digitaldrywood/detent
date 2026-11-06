@@ -31,6 +31,7 @@ func TestArtifactReferencesAreImmutableAndTenantScoped(t *testing.T) {
 		project := tracker.ProjectID("prj_" + fmt.Sprintf("%032x", index+101))
 		item := tracker.NativeWorkItemID("wi_" + fmt.Sprintf("%032x", index+201))
 		organizations[index] = organization
+		seedTenantAccess(t, repository, organization)
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: organization, ID: project, Name: "Example project", Slug: "example-project", Profile: "native", WorkflowSource: "example", WorkflowSourceRevision: "revision", WorkflowObjectKey: new("example/workflow"), StatesObjectKey: new("example/states"), ModelSelectionObjectKey: new("example/models")}); err != nil {
 				return err
