@@ -27,6 +27,9 @@ func TestIssueUnsubscribeWithoutSession(t *testing.T) {
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					f := newEntryFixture(t)
+					if err := f.service.closeAllocator(); err != nil {
+						t.Fatal(err)
+					}
 					calls := 0
 					f.service.config.transport = func(organization Organization) (http.RoundTripper, error) {
 						return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

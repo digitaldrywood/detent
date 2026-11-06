@@ -21,13 +21,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
-func createTestAccessKey(t *testing.T, b *browser, context string, organizations []keyOrganization, serviceOrg string) accessKey {
+func createTestAccessKey(t *testing.T, b *browser, context string, organizations []keyOrganization, serviceOrg string, permissions ...string) accessKey {
 	t.Helper()
 	path := "/api/cloud/account/api-keys"
 	if serviceOrg != "" {
 		path = "/api/cloud/organizations/" + serviceOrg + "/service-keys"
 	}
-	input := map[string]any{"name": "Multi-org test", "permission": "write", "access_context": context, "organizations": organizations, "expires_days": 7}
+	permission := "write"
+	if len(permissions) > 0 {
+		permission = permissions[0]
+	}
+	input := map[string]any{"name": "Multi-org test", "permission": permission, "access_context": context, "organizations": organizations, "expires_days": 7}
 	raw, err := json.Marshal(input)
 	if err != nil {
 		t.Fatal(err)

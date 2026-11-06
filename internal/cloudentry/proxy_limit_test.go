@@ -82,7 +82,7 @@ func TestSharedEntryChangeSourcePublication(t *testing.T) {
 	f := newEntryFixture(t)
 	owner := newBrowser(t, f.service.Handler())
 	owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-	_, page := owner.get("/organizations/org_alpha/organization")
+	_, page := owner.get("/organizations/org_alpha/app/bootstrap")
 	csrf := csrfFrom(t, page)
 	project := attachmentProject(t, owner, "org_alpha")
 	base := "/api/v2/organizations/org_alpha/projects/" + project

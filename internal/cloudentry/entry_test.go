@@ -549,6 +549,9 @@ func (h handlerTransport) RoundTrip(request *http.Request) (*http.Response, erro
 
 func csrfFrom(t *testing.T, body string) string {
 	t.Helper()
+	if strings.HasPrefix(strings.TrimSpace(body), "{") {
+		return bootstrapCSRF(t, body)
+	}
 	_, rest, ok := strings.Cut(body, `name="csrf" value="`)
 	if !ok {
 		t.Fatalf("page has no CSRF token: %s", body)
@@ -574,14 +577,14 @@ func testSharedEntryTwoOrganizationsOneOrigin(t *testing.T, configureStorage fun
 	if location := alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha"); location != "/organizations/org_alpha/organization" {
 		t.Fatalf("post-login location = %q", location)
 	}
-	response, alphaPage := alice.get("/organizations/org_alpha/organization")
+	response, alphaPage := alice.get("/organizations/org_alpha/app/bootstrap")
 	if response.StatusCode != http.StatusOK || !strings.Contains(alphaPage, "Alpha secret project") || strings.Contains(alphaPage, "Beta secret project") {
 		t.Fatalf("alpha page status = %d body = %s", response.StatusCode, alphaPage)
 	}
-	if !strings.Contains(alphaPage, `href="/organizations/org_alpha/projects/`) || response.Header.Get("Content-Security-Policy") == "" || len(response.Header.Values("Set-Cookie")) != 0 {
+	if !strings.Contains(alphaPage, `"api_base":"/api/v2/organizations/org_alpha"`) || response.Header.Get("Content-Security-Policy") == "" || len(response.Header.Values("Set-Cookie")) != 0 {
 		t.Fatalf("alpha page is not scoped or hardened: %v", response.Header)
 	}
-	unauthorized, _ := alice.get("/organizations/org_beta/organization")
+	unauthorized, _ := alice.get("/organizations/org_beta/app/bootstrap")
 	if unauthorized.StatusCode != http.StatusSeeOther || !strings.HasPrefix(unauthorized.Header.Get("Location"), "/auth/oidc/start?organization=org_beta") {
 		t.Fatalf("unauthorized beta = %d %q", unauthorized.StatusCode, unauthorized.Header.Get("Location"))
 	}
@@ -589,14 +592,14 @@ func testSharedEntryTwoOrganizationsOneOrigin(t *testing.T, configureStorage fun
 	stale := newBrowser(t, f.service.Handler())
 	stale.jar.SetCookies(base, alice.jar.Cookies(base))
 	alice.login("/organizations/org_beta/organization", "user_alice:porg_beta")
-	if response, _ := stale.get("/organizations/org_alpha/organization"); response.StatusCode == http.StatusOK {
+	if response, _ := stale.get("/organizations/org_alpha/app/bootstrap"); response.StatusCode == http.StatusOK {
 		t.Fatal("the pre-authentication session cookie survived re-authentication")
 	}
-	_, betaPage := alice.get("/organizations/org_beta/organization")
+	_, betaPage := alice.get("/organizations/org_beta/app/bootstrap")
 	if !strings.Contains(betaPage, "Beta secret project") || strings.Contains(betaPage, "Alpha secret project") {
 		t.Fatalf("beta page = %s", betaPage)
 	}
-	response, alphaAgain := alice.get("/organizations/org_alpha/organization")
+	response, alphaAgain := alice.get("/organizations/org_alpha/app/bootstrap")
 	if response.StatusCode != http.StatusOK || !strings.Contains(alphaAgain, "Alpha secret project") {
 		t.Fatal("authorizing beta replaced the alpha authorization")
 	}
@@ -652,17 +655,22 @@ func testSharedEntryTwoOrganizationsOneOrigin(t *testing.T, configureStorage fun
 		{"other organization token", betaCSRF, testPublicURL, http.StatusForbidden},
 		{"cross-origin form", alphaCSRF, "https://attacker.example.test", http.StatusForbidden},
 		{"missing origin", alphaCSRF, "", http.StatusForbidden},
-		{"scoped token", alphaCSRF, testPublicURL, http.StatusSeeOther},
+		{"scoped token", alphaCSRF, testPublicURL, http.StatusCreated},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			response := alice.do(http.MethodPost, "/organizations/org_alpha/projects", url.Values{"name": {"Created " + test.name}, "grant_access": {"true"}, "csrf": {test.csrf}}, map[string]string{"Origin": test.origin})
+			body, err := json.Marshal(map[string]any{"name": "Created " + test.name, "grant_access": true, "idempotency_key": "create-" + strings.ReplaceAll(test.name, " ", "-")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			recorder := attachmentRequest(t, alice, http.MethodPost, "/api/v2/organizations/org_alpha/projects", bytes.NewReader(body), map[string]string{"Origin": test.origin, "Content-Type": "application/json", "X-CSRF-Token": test.csrf})
+			response := page{StatusCode: recorder.Code, Body: recorder.Body.String()}
 			if response.StatusCode != test.status {
 				t.Fatalf("status = %d, want %d", response.StatusCode, test.status)
 			}
 		})
 	}
-	_, alphaAfter := alice.get("/organizations/org_alpha/organization")
-	_, betaAfter := alice.get("/organizations/org_beta/organization")
+	_, alphaAfter := alice.get("/organizations/org_alpha/app/bootstrap")
+	_, betaAfter := alice.get("/organizations/org_beta/app/bootstrap")
 	if !strings.Contains(alphaAfter, "Created scoped token") || strings.Contains(betaAfter, "Created scoped token") {
 		t.Fatal("scoped mutation reached the wrong organization")
 	}
@@ -675,17 +683,17 @@ func testSharedEntryTwoOrganizationsOneOrigin(t *testing.T, configureStorage fun
 	}
 	f.provider.removeMember("user_alice", "porg_beta")
 	f.provider.expireAccess()
-	if response, _ := alice.get("/organizations/org_beta/organization"); response.StatusCode != http.StatusForbidden {
+	if response, _ := alice.get("/organizations/org_beta/app/bootstrap"); response.StatusCode != http.StatusForbidden {
 		t.Fatalf("removed membership status = %d", response.StatusCode)
 	}
-	if response, _ := alice.get("/organizations/org_alpha/organization"); response.StatusCode != http.StatusOK {
+	if response, _ := alice.get("/organizations/org_alpha/app/bootstrap"); response.StatusCode != http.StatusOK {
 		t.Fatal("removing beta membership affected alpha")
 	}
 	logout := alice.do(http.MethodPost, "/organizations/org_alpha/logout", url.Values{"csrf": {alphaCSRF}}, nil)
 	if logout.StatusCode != http.StatusSeeOther {
 		t.Fatalf("logout status = %d", logout.StatusCode)
 	}
-	if response, _ := alice.get("/organizations/org_alpha/organization"); response.StatusCode != http.StatusSeeOther {
+	if response, _ := alice.get("/organizations/org_alpha/app/bootstrap"); response.StatusCode != http.StatusSeeOther {
 		t.Fatal("signed-out browser still reads alpha")
 	}
 	if len(f.provider.revoked) < 2 {
@@ -723,7 +731,7 @@ func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 			} else {
 				client.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 			}
-			pagePath, logoutPath := "/organizations/org_alpha/organization", "/organizations/org_alpha/logout"
+			pagePath, logoutPath := "/organizations/org_alpha/app/bootstrap", "/organizations/org_alpha/logout"
 			if tt.name == "entry fallback" {
 				pagePath, logoutPath = "/platform", "/logout"
 			}
@@ -890,7 +898,7 @@ func TestSharedEntryBoundaries(t *testing.T) {
 				return transport, nil
 			}
 			if !failure.setup {
-				if response, _ := alice.get("/organizations/org_alpha/organization"); response.StatusCode != http.StatusOK {
+				if response, _ := alice.get("/organizations/org_alpha/app/bootstrap"); response.StatusCode != http.StatusOK {
 					t.Fatalf("tenant before stop = %d", response.StatusCode)
 				}
 				stop()
@@ -1002,7 +1010,7 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 				t.Fatalf("callback = %d %q, want %d %q", response.StatusCode, response.Header.Get("Location"), tt.status, tt.location)
 			}
 			for _, organization := range []string{"org_alpha", "org_beta"} {
-				response, _ := b.get("/organizations/" + organization + "/organization")
+				response, _ := b.get("/organizations/" + organization + "/app/bootstrap")
 				if organization == tt.authorized {
 					if response.StatusCode != http.StatusOK {
 						t.Fatalf("first selected tenant request = %d: %s", response.StatusCode, response.Body)
@@ -1054,7 +1062,7 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 		t.Fatalf("organization mismatch = %d", response.StatusCode)
 	}
 	for _, organization := range []string{"org_alpha", "org_beta"} {
-		response, _ := alice.get("/organizations/" + organization + "/organization")
+		response, _ := alice.get("/organizations/" + organization + "/app/bootstrap")
 		want := http.StatusOK
 		if organization == "org_alpha" {
 			want = http.StatusSeeOther
@@ -1131,7 +1139,7 @@ func TestSharedEntryLoginCookieReplacement(t *testing.T) {
 					}
 					var firstState, newestState string
 					for range test.starts {
-						start, _ := b.get("/auth/oidc/start?organization=org_beta&return=/organizations/org_beta/organization")
+						start, _ := b.get("/auth/oidc/start?organization=org_beta&return=/organizations/org_beta/app/bootstrap")
 						newestState = stateOf(t, start)
 						if firstState == "" {
 							firstState = newestState
@@ -1167,7 +1175,7 @@ func TestSharedEntryLoginCookieReplacement(t *testing.T) {
 						t.Fatalf("newest callback = %d %q: %s", response.StatusCode, response.Header.Get("Location"), response.Body)
 					}
 					assertLoginCookies(0)
-					if response, _ := b.get("/organizations/org_beta/organization"); response.StatusCode != http.StatusOK {
+					if response, _ := b.get("/organizations/org_beta/app/bootstrap"); response.StatusCode != http.StatusOK {
 						t.Fatalf("authenticated return path = %d", response.StatusCode)
 					}
 					if test.starts > 1 && !test.supersededFirst {
@@ -1215,13 +1223,13 @@ func TestSharedEntryInvitation(t *testing.T) {
 			f := newEntryFixture(t)
 			alice := newBrowser(t, f.service.Handler())
 			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-			_, page := alice.get("/organizations/org_alpha/organization")
+			_, page := alice.get("/organizations/org_alpha/app/bootstrap")
 			role := "member"
 			if tt.name == "reporter sign-in" {
 				role = "reporter"
 			}
-			invite := alice.do(http.MethodPost, "/organizations/org_alpha/organization/invite", url.Values{"email": {"carol@example.test"}, "role": {role}, "csrf": {csrfFrom(t, page)}}, nil)
-			if invite.StatusCode != http.StatusSeeOther {
+			invite := inviteEntryTestMember(t, alice, "carol@example.test", role, csrfFrom(t, page))
+			if invite.StatusCode != http.StatusCreated {
 				t.Fatalf("invite = %d: %s", invite.StatusCode, invite.Body)
 			}
 			if role == "reporter" {
@@ -1322,11 +1330,11 @@ func TestSharedEntryInvitation(t *testing.T) {
 				return
 			}
 			browser.login(accepted.Header.Get("Location"), "user_carol:porg_alpha")
-			response, body := browser.get("/organizations/org_alpha/organization")
+			response, body := browser.get("/organizations/org_alpha/app/bootstrap")
 			if response.StatusCode != http.StatusOK || strings.Contains(body, "Alpha secret project") {
 				t.Fatalf("member page = %d (project access must require explicit grant)", response.StatusCode)
 			}
-			if response, _ := browser.get("/organizations/org_beta/organization"); response.StatusCode != http.StatusSeeOther {
+			if response, _ := browser.get("/organizations/org_beta/app/bootstrap"); response.StatusCode != http.StatusSeeOther {
 				t.Fatalf("member reached other organization = %d", response.StatusCode)
 			}
 			if response, body := browser.get(path); response.StatusCode != http.StatusForbidden || !strings.Contains(body, "already been used") {
@@ -1440,7 +1448,7 @@ func testSharedEntrySupportAccess(t *testing.T, configureStorage func(*Config)) 
 	f := newEntryFixture(t, configureStorage)
 	support := newBrowser(t, f.service.Handler())
 	support.login("/organizations", "user_support:")
-	if response, _ := support.get("/organizations/org_alpha/organization"); response.StatusCode == http.StatusOK {
+	if response, _ := support.get("/organizations/org_alpha/app/bootstrap"); response.StatusCode == http.StatusOK {
 		t.Fatal("staff session read customer content without support access")
 	}
 	response, page := support.get("/support")
@@ -1460,18 +1468,18 @@ func testSharedEntrySupportAccess(t *testing.T, configureStorage func(*Config)) 
 	if callback.StatusCode != http.StatusSeeOther || callback.Header.Get("Location") != "/organizations/org_alpha/organization" {
 		t.Fatalf("support callback = %d %q %s", callback.StatusCode, callback.Header.Get("Location"), callback.Body)
 	}
-	response, body := support.get("/organizations/org_alpha/organization")
-	if response.StatusCode != http.StatusOK || !strings.Contains(body, "support@example.test is acting as alice@example.test") || !strings.Contains(body, "Alpha secret project") {
+	response, body := support.get("/organizations/org_alpha/app/bootstrap")
+	if response.StatusCode != http.StatusOK || (!strings.Contains(body, `"actor":"support@example.test"`) || !strings.Contains(body, `"email":"alice@example.test"`)) || !strings.Contains(body, "Alpha secret project") {
 		t.Fatalf("support page = %d %s", response.StatusCode, body)
 	}
-	if response, _ := support.get("/organizations/org_beta/organization"); response.StatusCode == http.StatusOK {
+	if response, _ := support.get("/organizations/org_beta/app/bootstrap"); response.StatusCode == http.StatusOK {
 		t.Fatal("support access for alpha opened beta")
 	}
 	if replay, _ := support.get("/auth/oidc/callback?code=" + url.QueryEscape("support|support@example.test|user_alice|porg_alpha|customer-request")); replay.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("replayed support callback = %d", replay.StatusCode)
 	}
 	support.login("/auth/oidc/start", "user_support:")
-	if response, _ := support.get("/organizations/org_alpha/organization"); response.StatusCode == http.StatusOK {
+	if response, _ := support.get("/organizations/org_alpha/app/bootstrap"); response.StatusCode == http.StatusOK {
 		t.Fatal("an ordinary sign-in carried support access into the new session")
 	}
 	alice := newBrowser(t, f.service.Handler())
@@ -1634,4 +1642,10 @@ func (f *conversationArchiveFixture) ReadContent(_ context.Context, organization
 		return nil, errors.New("archive content missing")
 	}
 	return bytes.Clone(content), nil
+}
+
+func inviteEntryTestMember(t *testing.T, b *browser, email, role, csrf string) page {
+	t.Helper()
+	response := attachmentRequest(t, b, http.MethodPost, "/api/v2/organizations/org_alpha/members/invitations", jsonBody(t, map[string]any{"email": email, "role": role, "idempotency_key": "invite-" + email}), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf})
+	return page{StatusCode: response.Code, Header: response.Header(), Body: response.Body.String()}
 }

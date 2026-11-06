@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -59,6 +60,33 @@ func supportIdentityBrowser(t *testing.T, f entryFixture) *browser {
 func platformAuditCount(t *testing.T, s *Service, subject, event string) int {
 	t.Helper()
 	var count int
+	if strings.HasPrefix(event, "support_requested:") {
+		rows, err := s.auth.store.reader.QueryContext(t.Context(), "SELECT event_object_key FROM audit WHERE subject = ? AND event = 'support_requested'", subject)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var keys []string
+		for rows.Next() {
+			var key string
+			if err := rows.Scan(&key); err != nil {
+				t.Fatal(err)
+			}
+			keys = append(keys, key)
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range keys {
+			raw, err := s.readEntryObject(t.Context(), key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(raw) == event {
+				count++
+			}
+		}
+		return count
+	}
 	if err := s.auth.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM audit WHERE subject = ? AND event = ?", subject, event).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
@@ -366,9 +394,9 @@ func TestPlatformMembersCreateAndJoinOrganizations(t *testing.T) {
 		f := newEntryFixture(t)
 		alice := newBrowser(t, f.service.Handler())
 		alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-		_, page := alice.get("/organizations/org_alpha/organization")
-		invitation := alice.do(http.MethodPost, "/organizations/org_alpha/organization/invite", url.Values{"email": {"support@example.test"}, "role": {"member"}, "csrf": {csrfFrom(t, page)}}, nil)
-		if invitation.StatusCode != http.StatusSeeOther {
+		_, page := alice.get("/organizations/org_alpha/app/bootstrap")
+		invitation := inviteEntryTestMember(t, alice, "support@example.test", "member", csrfFrom(t, page))
+		if invitation.StatusCode != http.StatusCreated {
 			t.Fatalf("invite platform member = %d: %s", invitation.StatusCode, invitation.Body)
 		}
 		staff := newBrowser(t, f.service.Handler())
@@ -805,12 +833,12 @@ func TestPlatformUsersSearch(t *testing.T) {
 	staff.login("/auth/oidc/start", "user_staff:")
 	alice := newBrowser(t, f.service.Handler())
 	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-	_, body := alice.get("/organizations/org_alpha/organization")
-	invited := alice.do(http.MethodPost, "/organizations/org_alpha/organization/invite", url.Values{"email": {"carol@example.test"}, "role": {"member"}, "csrf": {csrfFrom(t, body)}}, nil)
-	if invited.StatusCode != http.StatusSeeOther {
+	_, body := alice.get("/organizations/org_alpha/app/bootstrap")
+	invited := inviteEntryTestMember(t, alice, "carol@example.test", "member", csrfFrom(t, body))
+	if invited.StatusCode != http.StatusCreated {
 		t.Fatalf("invite = %d %s", invited.StatusCode, invited.Body)
 	}
-	now := f.service.auth.now()
+	now := f.service.auth.now().Truncate(time.Microsecond)
 	for _, item := range []struct {
 		hash, subject, email string
 		at                   time.Time

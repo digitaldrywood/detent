@@ -47,7 +47,7 @@ func TestNativeAgentEvidence(t *testing.T) {
 	f.service.attachments = storage
 	owner := newBrowser(t, f.service.Handler())
 	owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-	_, page := owner.get("/organizations/org_alpha/organization")
+	_, page := owner.get("/organizations/org_alpha/app/bootstrap")
 	o := pilotOrganization{id: "org_alpha", project: attachmentProject(t, owner, "org_alpha"), ownerCSRF: csrfFrom(t, page)}
 	var previousIssue tracker.NativeIssue
 	var previousAttempt string

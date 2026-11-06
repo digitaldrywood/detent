@@ -151,7 +151,7 @@ func TestArchiveBindingValidationIsolation(t *testing.T) {
 			}
 			alice := newBrowser(t, f.service.Handler())
 			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-			_, page := alice.get("/organizations/org_alpha/organization")
+			_, page := alice.get("/organizations/org_alpha/app/bootstrap")
 			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='deleting' WHERE id='org_beta'"); err != nil {
 				t.Fatal(err)
 			}
@@ -281,7 +281,7 @@ func TestArchiveUploadIsolation(t *testing.T) {
 			}
 			alice := newBrowser(t, f.service.Handler())
 			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-			_, page := alice.get("/organizations/org_alpha/organization")
+			_, page := alice.get("/organizations/org_alpha/app/bootstrap")
 			project := attachmentProject(t, alice, "org_alpha")
 			base := "/api/v2/organizations/org_alpha/projects/" + project
 			headers := map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrfFrom(t, page), "X-Detent-Archive-Schema": "1"}
@@ -455,7 +455,7 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 	var previous attachment.ArchiveReference
 	for _, org := range []string{"org_alpha", "org_beta"} {
 		alice.login("/organizations/"+org+"/organization", "user_alice:p"+org)
-		_, page := alice.get("/organizations/" + org + "/organization")
+		_, page := alice.get("/organizations/" + org + "/app/bootstrap")
 		csrf := csrfFrom(t, page)
 		project := attachmentProject(t, alice, org)
 		base := "/api/v2/organizations/" + org + "/projects/" + project

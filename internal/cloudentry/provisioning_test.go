@@ -353,7 +353,7 @@ func testProvisioningSelfServiceJourney(t *testing.T, configureStorage func(*Con
 		t.Fatalf("ready provisioning page = %d", status.StatusCode)
 	}
 	member.login("/organizations/"+id+"/organization", "user_member:porg_"+id)
-	response, body = member.get("/organizations/" + id + "/organization")
+	response, body = member.get("/organizations/" + id + "/app/bootstrap")
 	if response.StatusCode == http.StatusPermanentRedirect {
 		response, body = member.get(response.Header.Get("Location"))
 	}
@@ -383,7 +383,7 @@ func testProvisioningSelfServiceJourney(t *testing.T, configureStorage func(*Con
 		t.Fatalf("delete = %d: %s", deleted.StatusCode, deleted.Body)
 	}
 	f.waitState(t, id, "deleted")
-	if gone, _ := member.get("/organizations/" + id + "/organization"); gone.StatusCode != http.StatusNotFound {
+	if gone, _ := member.get("/organizations/" + id + "/app/bootstrap"); gone.StatusCode != http.StatusNotFound {
 		t.Fatalf("deleted organization still routes: %d", gone.StatusCode)
 	}
 	var retained int
@@ -428,7 +428,7 @@ func TestProvisioningCapacityAndRecovery(t *testing.T) {
 	if capacity.ErrorCode != "capacity" || capacity.ProviderID != "" {
 		t.Fatalf("capacity failure = %+v", capacity)
 	}
-	if response, _ := member.get("/organizations/" + id + "/organization"); response.StatusCode == http.StatusNotFound {
+	if response, _ := member.get("/organizations/" + id + "/app/bootstrap"); response.StatusCode == http.StatusNotFound {
 		t.Fatal("capacity refusal disturbed a ready organization")
 	}
 	if err := f.service.Close(); err != nil {

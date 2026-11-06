@@ -31,7 +31,7 @@ func TestProjectIconAttachmentLifecycle(t *testing.T) {
 			f.service.attachments = storage
 			alice := newBrowser(t, f.service.Handler())
 			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-			_, page := alice.get("/organizations/org_alpha/organization")
+			_, page := alice.get("/organizations/org_alpha/app/bootstrap")
 			csrf := csrfFrom(t, page)
 			project := attachmentProject(t, alice, "org_alpha")
 			base := "/api/v2/organizations/org_alpha/projects/" + project

@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubclient"
@@ -250,7 +251,7 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 	f.service.attachments = storage
 	alice := newBrowser(t, f.service.Handler())
 	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-	_, body := alice.get("/organizations/org_alpha/organization")
+	_, body := alice.get("/organizations/org_alpha/app/bootstrap")
 	csrf := csrfFrom(t, body)
 	project := attachmentProject(t, alice, "org_alpha")
 	base := "/organizations/org_alpha/api/v2/projects/" + project + "/attachments"
@@ -318,34 +319,17 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 		t.Fatal("download rendered inline")
 	}
 	anonymous := newBrowser(t, f.service.Handler())
-	other := alice.do(http.MethodPost, "/organizations/org_alpha/projects", url.Values{"name": {"Other attachment project"}, "grant_access": {"true"}, "csrf": {csrf}}, nil)
-	if other.StatusCode != http.StatusSeeOther {
-		t.Fatalf("other project=%d", other.StatusCode)
-	}
-	otherProject := strings.TrimPrefix(other.Header.Get("Location"), "/organizations/org_alpha/projects/")
+	otherProject := createEntryTestProject(t, alice, "Other attachment project", csrf)
 	var writeToken string
 	var readToken, foreignToken string
 	for _, test := range []struct {
 		scope, project       string
 		wantRead, wantUpload int
 	}{
-		{"read", project, 200, 404}, {"write", project, 200, 201}, {"write", otherProject, 404, 404},
+		{"read", project, 200, 404}, {"write", project, 200, 201}, {"write", otherProject, 404, 403},
 	} {
 		scope := test.scope
-		keyRequest, err := json.Marshal(map[string]any{"name": "attachment-key-" + scope + test.project, "scope": scope, "expires_days": 1, "project_ids": []string{test.project}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		created := attachmentRequest(t, alice, http.MethodPost, "/api/v2/organizations/org_alpha/api-keys", bytes.NewReader(keyRequest), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf})
-		if created.Code != http.StatusCreated {
-			t.Fatalf("key=%d %s", created.Code, created.Body.String())
-		}
-		var token struct {
-			Token string `json:"token"`
-		}
-		if err := json.Unmarshal(created.Body.Bytes(), &token); err != nil {
-			t.Fatal(err)
-		}
+		token := createTestAccessKey(t, alice, "project", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{test.project}}}}, "", scope)
 		headers := map[string]string{"Authorization": "Bearer " + token.Token, "Content-Type": "text/plain", "X-Attachment-Name": "token.txt"}
 		read := attachmentRequest(t, anonymous, http.MethodGet, base+"/"+record.ID, nil, headers)
 		if read.Code != test.wantRead {
@@ -353,8 +337,8 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 		}
 		before := len(store.requests())
 		upload := attachmentRequest(t, anonymous, http.MethodPost, base, strings.NewReader("token data"), headers)
-		if test.wantUpload == 404 {
-			if upload.Code != http.StatusNotFound || len(store.requests()) != before {
+		if test.wantUpload != http.StatusCreated {
+			if upload.Code != test.wantUpload || len(store.requests()) != before {
 				t.Fatalf("read token upload=%d touched storage=%v", upload.Code, len(store.requests()) != before)
 			}
 		} else if upload.Code != http.StatusCreated {
@@ -390,9 +374,9 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 	}
 	alice.login("/organizations/org_beta/organization", "user_alice:porg_beta")
 	betaProject := attachmentProject(t, alice, "org_beta")
-	_, betaBody := alice.get("/organizations/org_beta/organization")
+	_, betaBody := alice.get("/organizations/org_beta/app/bootstrap")
 	betaCSRF := csrfFrom(t, betaBody)
-	_, body = alice.get("/organizations/org_alpha/organization")
+	_, body = alice.get("/organizations/org_alpha/app/bootstrap")
 	csrf = csrfFrom(t, body)
 	for _, test := range []struct {
 		name, method, path string
@@ -416,7 +400,7 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 		{name: "missing attempt evidence", method: http.MethodPost, path: strings.TrimSuffix(base, "/attachments") + "/attempts/attempt_example/evidence", client: alice, headers: map[string]string{"X-CSRF-Token": csrf}, want: 400},
 		{name: "malformed attempt evidence", method: http.MethodPost, path: strings.TrimSuffix(base, "/attachments") + "/attempts/attempt_example/evidence", client: alice, headers: map[string]string{"X-CSRF-Token": csrf, "X-Detent-Evidence": "!"}, want: 400},
 		{name: "cross org write", method: http.MethodPost, path: base, client: alice, headers: map[string]string{"X-CSRF-Token": betaCSRF}, want: 404},
-		{name: "another project write", method: http.MethodPost, path: strings.Replace(base, project, betaProject, 1), client: alice, headers: map[string]string{"X-CSRF-Token": csrf}, want: 404},
+		{name: "another project write", method: http.MethodPost, path: strings.Replace(base, project, betaProject, 1), client: alice, headers: map[string]string{"X-CSRF-Token": csrf}, want: 403},
 		{name: "metadata injection", method: http.MethodPost, path: "/api/v2/organizations/org_alpha/projects/" + project + "/attachment-metadata", client: alice, want: 404},
 		{name: "private metadata read", method: http.MethodGet, path: "/api/v2/organizations/org_alpha/projects/" + project + "/attachment-metadata/" + record.ID, client: alice, want: 404},
 	} {
@@ -616,7 +600,7 @@ func TestAttachmentMetadataSettlement(t *testing.T) {
 			}
 			alice := newBrowser(t, f.service.Handler())
 			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-			_, body := alice.get("/organizations/org_alpha/organization")
+			_, body := alice.get("/organizations/org_alpha/app/bootstrap")
 			csrf := csrfFrom(t, body)
 			project := attachmentProject(t, alice, "org_alpha")
 			path := "/organizations/org_alpha/api/v2/projects/" + project + "/attachments"
@@ -796,4 +780,16 @@ func (s *lockProbeStorage) Walk(ctx context.Context, prefix string, visit func(a
 		}
 		return visit(object)
 	})
+}
+
+func createEntryTestProject(t *testing.T, browser *browser, name, csrf string) string {
+	t.Helper()
+	response := attachmentRequest(t, browser, http.MethodPost, "/api/v2/organizations/org_alpha/projects", jsonBody(t, map[string]any{"name": name, "grant_access": true, "idempotency_key": name}), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf})
+	var project struct {
+		ID string `json:"project_id"`
+	}
+	if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &project) != nil || project.ID == "" {
+		t.Fatalf("create project=%d %s", response.Code, response.Body)
+	}
+	return project.ID
 }

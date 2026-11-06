@@ -7,7 +7,6 @@ import (
 	"image"
 	"image/png"
 	"net/http"
-	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -276,7 +275,7 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 	if failed || json.Unmarshal(raw, &bound) != nil || len(bound.ReferencedBy) != 2 {
 		t.Fatalf("replayed references=%s", raw)
 	}
-	_, page := browser.get("/organizations/org_alpha/organization")
+	_, page := browser.get("/organizations/org_alpha/app/bootstrap")
 	csrf := csrfFrom(t, page)
 	foreignIssue := attachmentRequest(t, browser, http.MethodPost, "/api/v2/organizations/org_alpha/projects/"+otherProject+"/work-items", strings.NewReader(`{"idempotency_key":"foreign-binding-target","title":"Foreign target","state":"Backlog"}`), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf})
 	var foreignItem tracker.NativeIssue
@@ -295,15 +294,7 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 	}
 	for _, scenario := range []string{"direct", "revoked", "storage unavailable"} {
 		t.Run("attachment deletion "+scenario, func(t *testing.T) {
-			keyRaw, _ := json.Marshal(map[string]any{"name": "attachment-delete-" + scenario, "scope": "write", "expires_days": 1, "project_ids": []string{project}})
-			created := attachmentRequest(t, browser, http.MethodPost, "/api/v2/organizations/org_alpha/api-keys", bytes.NewReader(keyRaw), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf})
-			var credential struct {
-				ID    string `json:"id"`
-				Token string `json:"token"`
-			}
-			if created.Code != 201 || json.Unmarshal(created.Body.Bytes(), &credential) != nil {
-				t.Fatalf("key=%s", created.Body.String())
-			}
+			credential := createTestAccessKey(t, browser, "project", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{project}}}}, "")
 			invoke := attachmentMCPClient(t, anonymous, credential.Token, "2025-11-25")
 			upload := map[string]string{"request_id": "upload-" + scenario, "project_id": project, "name": "delete.txt", "content_base64": base64.StdEncoding.EncodeToString([]byte("delete evidence"))}
 			raw, failed := invoke(operatortool.UploadAttachment, upload)
@@ -317,7 +308,7 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 			}
 			input := map[string]string{"project_id": project, "attachment_id": uploaded.ID, "request_id": "delete-" + scenario}
 			if scenario == "revoked" {
-				revoked := attachmentRequest(t, browser, http.MethodDelete, "/api/v2/organizations/org_alpha/api-keys/"+credential.ID, nil, map[string]string{"X-CSRF-Token": csrf})
+				revoked := attachmentRequest(t, browser, http.MethodDelete, "/api/cloud/account/api-keys/"+credential.ID, nil, map[string]string{"X-CSRF-Token": csrf})
 				if revoked.Code != 204 {
 					t.Fatalf("revoke=%s", revoked.Body.String())
 				}
@@ -406,12 +397,8 @@ func TestAttachmentEntryKeyUploads(t *testing.T) {
 		scopedPersonal := createTestAccessKey(t, owner, "project", organizations, "")
 		service := createTestAccessKey(t, owner, "selected", organizations, "org_alpha")
 		readOnlyService := createTestAccessKey(t, owner, "selected", organizations, "org_alpha")
-		_, page := owner.get("/organizations/org_alpha/organization")
-		other := owner.do(http.MethodPost, "/organizations/org_alpha/projects", url.Values{"name": {"Other evidence project"}, "grant_access": {"true"}, "csrf": {csrfFrom(t, page)}}, nil)
-		if other.StatusCode != http.StatusSeeOther {
-			t.Fatalf("other project=%d", other.StatusCode)
-		}
-		otherProject := strings.TrimPrefix(other.Header.Get("Location"), "/organizations/org_alpha/projects/")
+		_, page := owner.get("/organizations/org_alpha/app/bootstrap")
+		otherProject := createEntryTestProject(t, owner, "Other evidence project", csrfFrom(t, page))
 		otherOrganizations := []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{otherProject}}}}
 		otherPersonal := createTestAccessKey(t, owner, "project", otherOrganizations, "")
 		otherService := createTestAccessKey(t, owner, "selected", otherOrganizations, "org_alpha")
@@ -579,20 +566,8 @@ func TestReporterAttachmentMCPRoundTrip(t *testing.T) {
 	f.provider.member("user_alice", "porg_alpha", "reporter")
 	browser := newBrowser(t, f.service.Handler())
 	browser.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-	_, body := browser.get("/organizations/org_alpha/organization")
-	csrf := csrfFrom(t, body)
 	project := attachmentProject(t, browser, "org_alpha")
-	keyRaw, err := json.Marshal(map[string]any{"name": "Reporter screenshot key", "scope": "write", "expires_days": 1, "project_ids": []string{project}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	created := attachmentRequest(t, browser, http.MethodPost, "/api/v2/organizations/org_alpha/api-keys", bytes.NewReader(keyRaw), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf})
-	var key struct {
-		Token string `json:"token"`
-	}
-	if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &key) != nil || key.Token == "" {
-		t.Fatalf("key=%d %s", created.Code, created.Body.String())
-	}
+	key := createTestAccessKey(t, browser, "project", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{project}}}}, "")
 	anonymous := newBrowser(t, f.service.Handler())
 	call := attachmentMCPClient(t, anonymous, key.Token, mcp.ProtocolVersion)
 	var pixels bytes.Buffer
