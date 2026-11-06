@@ -37,8 +37,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if err := checkMigrations(os.DirFS(*root), []migrationSchema{
 		{"internal/store/migrations", 68, 68},
 		{"internal/hubserver/migrations", 70, 71},
-		{"internal/cloudentry/migrations/registry", 5, 0},
-		{"internal/cloudentry/migrations/auth", 4, 0},
 	}); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

@@ -78,8 +78,6 @@ func TestRun(t *testing.T) {
 		{"sequential store addition", nil, "internal/store/migrations/00069_migration.sql", 1},
 		{"sequential Hub addition", nil, "internal/hubserver/migrations/00072_migration.sql", 1},
 		{"noncanonical Hub addition", nil, "internal/hubserver/migrations/00071_feature.sql", 1},
-		{"noncanonical registry addition", nil, "internal/cloudentry/migrations/registry/00006_feature.sql", 1},
-		{"noncanonical auth addition", nil, "internal/cloudentry/migrations/auth/00005_feature.sql", 1},
 		{"missing root", []string{"-root", filepath.Join(t.TempDir(), "missing")}, "", 1},
 		{"unknown flag", []string{"-unknown"}, "", 2},
 		{"positional argument", []string{"unexpected"}, "", 2},
@@ -87,7 +85,7 @@ func TestRun(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			for _, directory := range []string{"internal/store/migrations", "internal/hubserver/migrations", "internal/cloudentry/migrations/registry", "internal/cloudentry/migrations/auth"} {
+			for _, directory := range []string{"internal/store/migrations", "internal/hubserver/migrations"} {
 				writeMigration(t, root, directory+"/00001_initial.sql")
 			}
 			if test.migration != "" {
