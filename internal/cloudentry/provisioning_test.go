@@ -999,3 +999,16 @@ func TestOwnerFreeAllowance(t *testing.T) {
 		})
 	}
 }
+
+func TestAllocatorShutdownMissingLauncher(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	close(done)
+	s := &Service{config: Config{Allocation: &AllocationConfig{}}, stopAllocator: cancel, allocatorDone: done}
+	if err := s.closeAllocator(); err == nil {
+		t.Fatal("shutdown accepted an allocation without a launcher")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("shutdown did not cancel allocator work")
+	}
+}

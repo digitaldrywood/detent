@@ -141,6 +141,9 @@ func (s *Service) closeAllocator() error {
 	if s.config.Allocation == nil {
 		return nil
 	}
+	if s.config.Allocation.Launcher == nil {
+		return errors.New("allocation launcher is unavailable during shutdown")
+	}
 	return s.config.Allocation.Launcher.Close()
 }
 
