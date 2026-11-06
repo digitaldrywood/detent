@@ -21,6 +21,9 @@ import (
 )
 
 func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
+	if request.ScheduledFailure != nil {
+		return s.attributeScheduledFailure(ctx, scope, request)
+	}
 	scope.action = operatortool.FileIssue
 	operation := "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items"
 	if request.ChallengeToken != "" {

@@ -72,8 +72,12 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 					return err
 				}
 				for _, id := range []tracker.ProjectID{"prj_first", "prj_second"} {
-					_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_example", ID: id, Name: string(id), Slug: strings.ReplaceAll(string(id), "_", "-"), Profile: "native"}, Settings: projectstore.Settings{CheckoutRepository: repository}, States: nativeFixtureStates()})
+					record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_example", ID: id, Name: string(id), Slug: strings.ReplaceAll(string(id), "_", "-"), Profile: "native"}, States: nativeFixtureStates()})
 					if err != nil {
+						return err
+					}
+					record.Settings.CheckoutRepository = repository
+					if _, err := w.UpdateProjectRecord(t.Context(), record); err != nil {
 						return err
 					}
 				}
