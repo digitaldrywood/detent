@@ -1171,7 +1171,7 @@ func TestSharedEntryLoginCookieReplacement(t *testing.T) {
 					}
 					seedLegacy()
 					response := callback(newestState)
-					if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != "/organizations/org_beta/organization" {
+					if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != "/organizations/org_beta/app/bootstrap" {
 						t.Fatalf("newest callback = %d %q: %s", response.StatusCode, response.Header.Get("Location"), response.Body)
 					}
 					assertLoginCookies(0)
