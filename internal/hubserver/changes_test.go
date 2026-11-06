@@ -20,6 +20,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
@@ -43,10 +44,11 @@ func newChangeFixture(t *testing.T, service *Service) changeFixture {
 	t.Helper()
 	f := newNativeFixture(t, service, "", "changes")
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	var principal string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name = 'operator-changes'").Scan(&principal); err != nil {
+	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+	if err != nil {
 		t.Fatal(err)
 	}
+	principal := credential.ID
 	rules := tracker.ChangeReviewPolicy{PolicyID: hubTestPolicy().ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}}
 	response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: rules})
 	requireNativeStatus(t, response, http.StatusOK)
@@ -1205,7 +1207,7 @@ func TestChangeInvalidVersionAndReviewPolicy(t *testing.T) {
 		{"merge base", func(v *tracker.ChangeVersionInput) { v.MergeBaseSHA = "" }, http.StatusUnprocessableEntity},
 		{"repository", func(v *tracker.ChangeVersionInput) { v.Repository = "file:///source" }, http.StatusUnprocessableEntity},
 		{"code hash", func(v *tracker.ChangeVersionInput) { v.Code.SHA256 = "missing" }, http.StatusUnprocessableEntity},
-		{"unknown configuration", func(v *tracker.ChangeVersionInput) { v.PolicyID = "other" }, http.StatusUnprocessableEntity},
+		{"unknown configuration", func(v *tracker.ChangeVersionInput) { v.PolicyID = "other" }, http.StatusConflict},
 		{"unpaired attempt", func(v *tracker.ChangeVersionInput) { v.RunID = newNativeID("run") }, http.StatusUnprocessableEntity},
 		{"stale review disposition", func(v *tracker.ChangeVersionInput) {
 			v.ReviewDispositions = []tracker.ReviewDisposition{{HeadSHA: v.BaseSHA, ThreadID: "T1", Disposition: "fixed", Evidence: "regression passes"}}
@@ -1239,7 +1241,9 @@ func TestChangeInvalidVersionAndReviewPolicy(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: test.name}, ChangeVersionInput: input}), test.want)
 		})
 	}
-	for _, token := range []string{f.token, f.worker(t, "worker")} {
+	runner := prepareRunner(t, f.nativeFixture, runnerauth.Read)
+	runner.enroll(t)
+	for _, token := range []string{f.token, runner.redemption.Credential} {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", token, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "forge-policy"}, Policy: f.rules}), http.StatusForbidden)
 	}
 	request := tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "stale-policy"}, Policy: f.rules}
