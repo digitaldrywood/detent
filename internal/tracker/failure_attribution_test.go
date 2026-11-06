@@ -43,6 +43,7 @@ func TestFailureAttributionPublicRecord(t *testing.T) {
 		name, outcome string
 		failure       NativeTerminalFailure
 	}{
+		{"provider refusal", "instance", NativeTerminalFailure{Provider: "codex", ErrorClass: "provider_refusal", Error: "private-prompt", ProviderCode: "usage_limit_exceeded"}},
 		{"workspace_hook", "instance", NativeTerminalFailure{ErrorClass: "workspace_hook"}},
 		{"validation", "", NativeTerminalFailure{ErrorClass: "validation"}},
 		{"backend_startup", "instance", NativeTerminalFailure{ErrorClass: "backend_startup"}},
@@ -62,6 +63,9 @@ func TestFailureAttributionPublicRecord(t *testing.T) {
 			want := test.outcome
 			if want == "" {
 				want = outcome
+			}
+			if test.name == "provider refusal" && strings.Contains(input.Public().Error, "private-prompt") {
+				t.Fatal("private provider text retained")
 			}
 			if failure := input.Public(); failure.Attribution != want {
 				t.Fatalf("%s with decision %s: attribution=%s, want %s", test.name, outcome, failure.Attribution, want)

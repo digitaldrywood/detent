@@ -46,7 +46,7 @@ func (s *AppServer) disableTextOnlyMCP(ctx context.Context, transport Transport,
 	if err := sendRequest(ctx, transport, configReadRequestID, "config/read", map[string]any{"cwd": req.Workspace, "includeLayers": false}); err != nil {
 		return err
 	}
-	raw, err := s.awaitResponse(ctx, transport, configReadRequestID, nil, nil, nil)
+	raw, err := s.awaitResponse(ctx, transport, configReadRequestID, "", nil, nil, nil)
 	if err != nil {
 		return fmt.Errorf("read text-only tool configuration: %w", err)
 	}

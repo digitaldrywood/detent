@@ -331,9 +331,12 @@ func (t *localTransport) Send(ctx context.Context, msg Message) error {
 		}
 
 		closeErr := t.closeStdin()
-		<-writeDone
+		writeErr := <-writeDone
 		if closeErr != nil {
 			return transportContextError(ctx.Err(), "close stdin", closeErr)
+		}
+		if writeErr != nil {
+			return transportContextError(ctx.Err(), "write stdin", writeErr)
 		}
 		return ctx.Err()
 	}

@@ -68,6 +68,14 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 	if errors.Is(err, context.Canceled) {
 		return backendcapacity.Details{}, false
 	}
+	var refused *TurnFailedError
+	if errors.As(err, &refused) && refused.ProviderCode != "" {
+		typeOf := backendcapacity.ErrorTypeTransientOverload
+		if refused.ProviderCode == "usage_limit_exceeded" {
+			typeOf = backendcapacity.ErrorTypeUsageLimit
+		}
+		return backendcapacity.Details{Type: typeOf, Kind: refused.ProviderCode, Reason: "provider refused turn", Trigger: refused.ProviderCode}, true
+	}
 	text := codexCapacityErrorText(err)
 	startup, hasStartupEvidence := startupEvidence(err)
 	startupCause := err

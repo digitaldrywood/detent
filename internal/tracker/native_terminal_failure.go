@@ -49,7 +49,7 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	first, _, _ := strings.Cut(f.Error, "\n")
 	f.Error = text.publicText(nativeFailureAssignment.ReplaceAllString(strings.TrimSpace(first), "[redacted]"))
 	switch f.ErrorClass {
-	case "backend_startup", "protocol", "workspace_hook", "issue_configuration", "source_recovery", "acceptance_publication", "security_audit_publication", "event_publication", "finalization", "lease_released", "git_push", "commit", "validation", "checkpoint_recovery", "publication", "review", "review_publication", "validator", "validator_publication", "security_audit", "landing":
+	case "provider_refusal", "backend_startup", "protocol", "workspace_hook", "issue_configuration", "source_recovery", "acceptance_publication", "security_audit_publication", "event_publication", "finalization", "lease_released", "git_push", "commit", "validation", "checkpoint_recovery", "publication", "review", "review_publication", "validator", "validator_publication", "security_audit", "landing":
 	default:
 		f.ErrorClass = ""
 	}
@@ -114,8 +114,11 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	if !slices.Contains([]string{"initialize", "account/read", "config/read", "thread/read", "thread/start", "thread/resume", "turn/start", "turn/steer", "turn/completed", "model/list"}, f.Operation) {
 		f.Operation = ""
 	}
-	if f.ProviderCode != "input_too_large" {
+	if f.ProviderCode != "input_too_large" && f.ProviderCode != CodexErrorCode(f.ProviderCode) {
 		f.ProviderCode = ""
+	}
+	if f.ErrorClass == "provider_refusal" {
+		f.Error = "Codex provider refused turn: " + f.ProviderCode
 	}
 	if f.MaxChars != nil && *f.MaxChars < 0 {
 		f.MaxChars = nil
