@@ -94,6 +94,6 @@ if [ "$state" = failure ]; then
   exit 1
 fi
 if [ "$branch" != develop ]; then
-  gh workflow run release-finalize.yml --repo "$repository" --ref "$branch" --field postgres_cutover=false
+  gh workflow run release-finalize.yml --repo "$repository" --ref "$branch"
   echo "Dispatched release-finalize.yml on $branch; it tags only when every required status is green on $sha."
 fi

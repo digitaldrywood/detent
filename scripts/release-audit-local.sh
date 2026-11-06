@@ -141,5 +141,5 @@ if ! gh api --paginate --slurp "repos/$repository/commits/$sha/status?per_page=1
   echo "Waiting for local validation: no current scheduled-full-ci success on $sha; run scripts/release-validate-local.sh $branch."
   exit 0
 fi
-gh workflow run release-finalize.yml --repo "$repository" --ref "$branch" --field postgres_cutover=false
+gh workflow run release-finalize.yml --repo "$repository" --ref "$branch"
 echo "Dispatched release-finalize.yml on $branch."

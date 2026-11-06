@@ -119,7 +119,7 @@ class ReleaseAuditLocalTest(unittest.TestCase):
                     retained = list((repo / "tmp").glob("release-audit.*/findings.json"))
                     self.assertEqual(json.loads(retained[0].read_text()), message)
                 dispatches = [args for args in requests if args[:2] == ["workflow", "run"]]
-                self.assertEqual(dispatches, [["workflow", "run", "release-finalize.yml", "--repo", "example-org/example-project", "--ref", "release/v1.10", "--field", "postgres_cutover=false"]] if state == "success" and suite == "success" else [])
+                self.assertEqual(dispatches, [["workflow", "run", "release-finalize.yml", "--repo", "example-org/example-project", "--ref", "release/v1.10"]] if state == "success" and suite == "success" else [])
                 if state == "success" and suite != "success":
                     self.assertIn("Waiting for local validation", result.stdout)
                 self.assertEqual(git("worktree", "list", "--porcelain").count("worktree "), 1)

@@ -13,11 +13,6 @@ git() {
 scratch_dir="${TMPDIR:-${TMP:-${TEMP:?release finalization requires provided scratch}}}"
 : "${CI_RELEASE_BRANCH:?release finalization requires a release branch}"
 : "${CI_DEVELOP_SHA:?release finalization requires the validated commit}"
-: "${DETENT_RELEASE_POSTGRES_CUTOVER:?release finalization requires an explicit deployment mode}"
-case "$DETENT_RELEASE_POSTGRES_CUTOVER" in
-  true|false) ;;
-  *) echo "release deployment mode must be explicit" >&2; exit 2 ;;
-esac
 
 dispatch_release() {
   local release_tag="$1" runs
@@ -26,7 +21,7 @@ dispatch_release() {
     echo "Release workflow already exists for $release_tag; retain its execution and retry failed jobs there."
     return
   fi
-  gh api -X POST "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/dispatches" -f ref="$release_tag" -f "inputs[postgres_cutover]=$DETENT_RELEASE_POSTGRES_CUTOVER"
+  gh api -X POST "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/dispatches" -f ref="$release_tag"
 }
 
 if [[ ! "$CI_RELEASE_BRANCH" =~ ^release/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then

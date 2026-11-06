@@ -245,27 +245,21 @@ func TestDeployStagingRunsFromReleaseOnHostedRunner(t *testing.T) {
 
 	release := readNormalizedFile(t, ".github/workflows/release.yml")
 	if !strings.Contains(release, "concurrency:\n  group: validated-release\n  cancel-in-progress: false\n") {
-		t.Fatal("release must serialize the complete staging-to-production sequence without cancellation")
+		t.Fatal("release must serialize artifact publication without cancellation")
 	}
-	for _, test := range []struct {
-		name, dependency, end string
-	}{
-		{name: "staging", dependency: "prepare", end: "\n  production:"},
-		{name: "production", dependency: "[prepare, staging]"},
-	} {
-		t.Run(test.name+" release dependency", func(t *testing.T) {
-			t.Parallel()
-			job := workflowBetween(t, release, "\n  "+test.name+":\n", test.end)
-			for _, want := range []string{
-				"    needs: " + test.dependency + "\n",
-				"    uses: ./.github/workflows/deploy-" + test.name + ".yml\n",
-				"    with:\n      version: ${{ needs.prepare.outputs.version }}\n",
-			} {
-				if !strings.Contains(job, want) {
-					t.Fatalf("release %s job missing %q", test.name, want)
-				}
-			}
-		})
+	var publishing struct {
+		Jobs map[string]yaml.Node `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(release), &publishing); err != nil {
+		t.Fatal(err)
+	}
+	if len(publishing.Jobs) != 3 {
+		t.Fatalf("release jobs = %v, want source, prepare and release only", publishing.Jobs)
+	}
+	for _, name := range []string{"source", "prepare", "release"} {
+		if _, ok := publishing.Jobs[name]; !ok {
+			t.Fatalf("release is missing %s", name)
+		}
 	}
 	prepare := workflowBetween(t, release, "\n  prepare:\n", "\n  release:")
 	for _, want := range []string{
@@ -283,7 +277,7 @@ func TestDeployStagingRunsFromReleaseOnHostedRunner(t *testing.T) {
 			t.Fatalf("Hub preparation missing %q", want)
 		}
 	}
-	packaging := workflowBetween(t, release, "\n  release:\n", "\n  staging:")
+	packaging := workflowBetween(t, release, "\n  release:\n", "")
 	for _, want := range []string{
 		"    needs: prepare\n",
 		"          name: release-inputs\n",

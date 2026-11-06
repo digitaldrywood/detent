@@ -2,11 +2,6 @@ name: Release Finalize
 
 on:
   workflow_dispatch:
-    inputs:
-      postgres_cutover:
-        description: Use the PostgreSQL cutover deployment path for the validated release
-        required: true
-        type: boolean
 
 permissions:
   contents: read
@@ -39,7 +34,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CI_DEVELOP_SHA: ${{ github.sha }}
           CI_RELEASE_BRANCH: ${{ github.ref_name }}
-          DETENT_RELEASE_POSTGRES_CUTOVER: ${{ inputs.postgres_cutover }}
           TMPDIR: ${{ runner.temp }}
           DETENT_RELEASE_STATUS_CREATORS_JSON: ${{ vars.DETENT_RELEASE_STATUS_CREATORS_JSON }}
           DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}

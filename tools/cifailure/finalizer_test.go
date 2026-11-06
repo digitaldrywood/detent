@@ -184,9 +184,9 @@ case "$*" in
     if [[ "$*" == *"/$FIXTURE_PLATFORM_SHA/"* ]]; then cat "$FIXTURE_PLATFORM"; else printf '[[]]'; fi ;;
   *'/workflows/release.yml/runs?'*)
     if [ "$FIXTURE_RELEASE_RUN" = true ]; then
-      printf '[{"workflow_runs":[{"head_branch":"v1.2.3"}]}]\n'
+      printf '[{"workflow_runs":[{"head_branch":"v1.2.3","event":"workflow_dispatch"}]}]\n'
     else
-      printf '[{"workflow_runs":[{"head_branch":"v1.1.9"}]}]\n'
+      printf '[{"workflow_runs":[{"head_branch":"v1.1.9","event":"workflow_dispatch"}]}]\n'
     fi ;;
   *'/dispatches'*) ;;
   *) exit 9 ;;
