@@ -112,7 +112,7 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 		change, err := r.LatestChange(ctx, candidate.ProjectID, candidate.WorkItemID)
 		if err == nil {
 			snapshot.change = &change
-			primary, err := r.WorkItem(ctx, candidate.ProjectID, change.WorkItemID)
+			primary, err := r.WorkItemByNativeID(ctx, change.WorkItemID)
 			if err != nil {
 				return err
 			}
@@ -246,11 +246,12 @@ func boardProjectionRecord(snapshot boardProjectionSnapshot, card tracker.Native
 		position.Activity = &issue.LastActivityAt
 	}
 	record := viewstore.BoardRecord{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, SourceRevision: snapshot.item.Revision, SourceEventSequence: snapshot.item.EventSequence, SourceProjectRevision: snapshot.project.Core.ContentSettingsRevision, Position: position, Archived: issue.Archived, Terminal: issue.Terminal, Running: false, Dispatchable: dispatchable, ClosedAt: issue.ClosedAt, ActorPrincipalID: issue.Actor.PrincipalID, IssueType: issue.Type, Priority: issue.Priority, CreatedAt: issue.CreatedAt, UpdatedAt: issue.UpdatedAt, Labels: issue.Labels, Assignees: issue.Assignees}
-	record.Display = viewstore.BoardDisplay{ChangePrincipalID: snapshot.changePrincipalID, Title: issue.Title, Number: issue.Number, Actor: issue.Actor, Reason: issue.LatestTransitionReason, StatusLine: card.StatusLine, Attempt: card.Attempt, Execution: card.Execution, Change: card.Change}
+	record.Display = viewstore.BoardDisplay{Ready: true, Provenance: issue.Provenance, ChangePrincipalID: snapshot.changePrincipalID, Title: issue.Title, Number: issue.Number, Actor: issue.Actor, Reason: issue.LatestTransitionReason, StatusLine: card.StatusLine, Attempt: card.Attempt, Execution: card.Execution, Change: card.Change}
 	record.Display.Actor.PrincipalID = ""
 	if issue.Verification != nil {
 		record.VerificationState = issue.Verification.State
 	}
+	record.Display.Exact = exactBoardDisplay(record, card)
 	if card.Execution != nil {
 		record.Running = !issue.Terminal && card.Execution.Running
 		record.ExpiresAt = &card.Execution.ExpiresAt

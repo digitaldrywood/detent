@@ -21,6 +21,9 @@ type BoardPosition struct {
 }
 
 type BoardDisplay struct {
+	Ready             bool
+	Exact             bool
+	Provenance        *tracker.Provenance
 	ChangePrincipalID string
 	Title             string
 	Number            int

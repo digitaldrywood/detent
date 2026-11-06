@@ -20,7 +20,8 @@ import (
 )
 
 func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
 	objects := newHistoryObjects()
 	content := viewstore.NewContent(objects)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
@@ -297,6 +298,64 @@ func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+
+		t.Run(string(org)+"/display backfill cannot starve", func(t *testing.T) {
+			result, err := admin.ExecContext(t.Context(), "UPDATE native_board_items SET card_display_ready=false WHERE organization_id=$1", org)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pending, err := result.RowsAffected()
+			if err != nil {
+				t.Fatal(err)
+			}
+			seen := map[tracker.NativeWorkItemID]bool{}
+			cursor := tracker.NativeWorkItemID("zzzz")
+			for range pending {
+				if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_board_dirty(organization_id,project_id,work_item_id) SELECT organization_id,project_id,work_item_id FROM native_board_items WHERE organization_id=$1 ORDER BY work_item_id LIMIT 1 ON CONFLICT DO NOTHING`, org); err != nil {
+					t.Fatal(err)
+				}
+				var candidate viewstore.BoardCandidate
+				if err := repository.ReadTenant(t.Context(), org, corestore.Background, func(r tenantstore.Reader) error {
+					var err error
+					candidate, err = r.NextBoardCandidate(t.Context(), cursor)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if seen[candidate.WorkItemID] {
+					t.Fatalf("dirty row starved backfill: %s", candidate.WorkItemID)
+				}
+				seen[candidate.WorkItemID] = true
+				cursor = candidate.WorkItemID
+				if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+					row, err := w.BoardItem(t.Context(), candidate.ProjectID, candidate.WorkItemID)
+					if err != nil {
+						return err
+					}
+					item, err := w.WorkItem(t.Context(), row.ProjectID, row.WorkItemID)
+					if err != nil {
+						return err
+					}
+					project, err := w.Project(t.Context(), row.ProjectID)
+					if err != nil {
+						return err
+					}
+					row.SourceRevision, row.SourceEventSequence = item.Revision, item.EventSequence
+					row.SourceProjectRevision = project.ContentSettingsRevision
+					row.Display.Ready = true
+					return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: row.ProjectID, WorkItemID: row.WorkItemID, ExpectedRevision: row.SourceRevision, ExpectedEventSequence: row.SourceEventSequence, ExpectedProjectRevision: row.SourceProjectRevision, Current: &row})
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var remaining int
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_board_items WHERE organization_id=$1 AND NOT card_display_ready", org).Scan(&remaining); err != nil {
+				t.Fatal(err)
+			}
+			if remaining != 0 || int64(len(seen)) != pending {
+				t.Fatalf("backfill reached %d/%d, remaining %d", len(seen), pending, remaining)
+			}
+		})
 
 	}
 	t.Run("access revisions follow committed grants without crossing tenants", func(t *testing.T) {

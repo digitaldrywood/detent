@@ -14,8 +14,14 @@ func projectedBoardCard(row viewstore.BoardRecord) tracker.NativeBoardCard {
 	issue := tracker.NativeIssue{
 		NativeReference: tracker.NativeReference{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, WorkItemID: row.WorkItemID, Number: d.Number, Revision: tracker.Revision(row.SourceRevision), Profile: "native"},
 		Title:           d.Title, Type: row.IssueType, State: row.Position.State, Archived: row.Archived, Terminal: row.Terminal, Priority: row.Priority, Labels: row.Labels, Assignees: row.Assignees, Actor: actor,
-		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, ClosedAt: row.ClosedAt, LatestTransitionReason: d.Reason, ChangeSequence: row.SourceEventSequence,
-		OmittedFields: []string{"body", "issue_contract", "report_context", "linked_source", "provenance", "external_references", "release_delivery"},
+		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, ClosedAt: row.ClosedAt, LatestTransitionReason: d.Reason,
+		Provenance: d.Provenance,
+	}
+	if len(issue.Labels) == 0 {
+		issue.Labels = nil
+	}
+	if len(issue.Assignees) == 0 {
+		issue.Assignees = nil
 	}
 	if row.Position.Activity != nil {
 		issue.LastActivityAt = *row.Position.Activity
@@ -26,15 +32,23 @@ func projectedBoardCard(row viewstore.BoardRecord) tracker.NativeBoardCard {
 	return tracker.NativeBoardCard{Issue: issue, StatusLine: d.StatusLine, Attempt: d.Attempt, Execution: d.Execution, Change: d.Change}
 }
 
-func (s *Service) prepareProjectedBoardPage(ctx context.Context, scope nativeScope, records []viewstore.BoardRecord, prepared map[tracker.NativeWorkItemID]boardPreparedRecord) *boardRecordPreparation {
+func (s *Service) prepareProjectedBoardPage(ctx context.Context, scope nativeScope, records []viewstore.BoardRecord, exact bool, prepared map[tracker.NativeWorkItemID]boardPreparedRecord) *boardRecordPreparation {
 	cards := make(map[tracker.NativeWorkItemID]tracker.NativeBoardCard, len(records))
 	issues := make([]*tracker.NativeIssue, 0, len(records))
+	var fallback []viewstore.BoardRecord
 	for _, row := range records {
 		if prior, ok := prepared[row.WorkItemID]; ok {
 			cards[row.WorkItemID] = prior.card
 			continue
 		}
+		if !row.Display.Ready || exact && !row.Display.Exact {
+			fallback = append(fallback, row)
+			continue
+		}
 		card := projectedBoardCard(row)
+		if !exact {
+			card.Issue.OmittedFields = []string{"body", "issue_contract", "report_context", "linked_source", "provenance", "external_references", "release_delivery"}
+		}
 		if !scope.reporterOwns(tracker.Actor{PrincipalID: row.Display.ChangePrincipalID}) {
 			card.Change = nil
 		}
@@ -50,7 +64,18 @@ func (s *Service) prepareProjectedBoardPage(ctx context.Context, scope nativeSco
 		cards[issue.WorkItemID] = card
 	}
 	for _, row := range records {
+		if _, ok := cards[row.WorkItemID]; !ok {
+			continue
+		}
 		prepared[row.WorkItemID] = boardPreparedRecord{record: row, card: cards[row.WorkItemID], err: err}
+	}
+	if len(fallback) > 0 {
+		old := s.prepareBoardPage(ctx, scope, fallback, s.config.now(), exact, prepared)
+		for index, row := range fallback {
+			card, err := old.card(ctx, index)
+			prepared[row.WorkItemID] = boardPreparedRecord{record: row, card: card, err: err}
+		}
+		old.close()
 	}
 	return prepareBoardRecordPage(ctx, records, func(_ context.Context, row viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
 		value := prepared[row.WorkItemID]

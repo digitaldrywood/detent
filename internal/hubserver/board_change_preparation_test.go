@@ -171,7 +171,7 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 				t.Fatal(err)
 			}
 			board := viewstore.BoardRecord{OrganizationID: org, ProjectID: "example", WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("example#%03d", index)}, Archived: issue.Archived, ActorPrincipalID: issue.Actor.PrincipalID, CreatedAt: now, UpdatedAt: now, Payload: payload}
-			board.Display = viewstore.BoardDisplay{ChangePrincipalID: issue.Actor.PrincipalID, Title: issue.Title, Number: issue.Number, Actor: tracker.Actor{Kind: issue.Actor.Kind}, Change: card.Change}
+			board.Display = viewstore.BoardDisplay{Ready: true, Exact: true, ChangePrincipalID: issue.Actor.PrincipalID, Title: issue.Title, Number: issue.Number, Actor: tracker.Actor{Kind: issue.Actor.Kind}, Change: card.Change}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "example", NativeID: id, Number: int64(index + 1), Title: "Example", Archived: issue.Archived, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State}); err != nil {
 					return err
@@ -486,6 +486,12 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			changeID := fmt.Sprintf("change_%03d", index)
 			versionID := fmt.Sprintf("version_%03d", index)
 			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "example", WorkItemID: id, Number: index + 1, Revision: 1}, Title: "Example", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "test_hub_admin"}, Archived: false, CreatedAt: now, UpdatedAt: now}
+			issue.Profile = "native"
+			if index == 0 {
+				issue.Provenance = &tracker.Provenance{Provider: "github", ExternalID: "123", AuthorID: "example-author", AuthorDisplayName: "Example author", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Minute), ObservedAt: now}
+			} else {
+				issue.Body = "Native issue detail"
+			}
 			raw, _ := json.Marshal(issue)
 			collaboration, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "example", WorkItemID: id, RecordID: string(id), Revision: 1}, raw)
 			if err != nil {
@@ -534,6 +540,55 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			}
 		}
 		scope := nativeScope{organization: org, project: "example", credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+		assertExact := func(t *testing.T, page tracker.NativeIssuePage, ready bool) {
+			var records []viewstore.BoardRecord
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				records, err = r.BoardPage(t.Context(), viewstore.BoardSelection{ProjectID: scope.project, Limit: 2})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, row := range records {
+				if row.Display.Ready != ready {
+					t.Fatalf("display ready=%v want=%v", row.Display.Ready, ready)
+				}
+				if ready && row.WorkItemID == "wi_000" && (!row.Display.Exact || row.Display.Provenance == nil) {
+					t.Fatal("imported card did not reach typed exact provenance projection")
+				}
+			}
+			legacy := service.prepareBoardPage(t.Context(), scope, records, now, true, map[tracker.NativeWorkItemID]boardPreparedRecord{})
+			defer legacy.close()
+			for index, actual := range page.Cards {
+				expected, err := legacy.card(t.Context(), index)
+				if err != nil {
+					t.Fatal(err)
+				}
+				expected.Issue = service.nativeIssueResponse(scope.reporterIssue(expected.Issue))
+				expected.StatusLine = nativeBoardStatusLine(expected)
+				want, err := json.Marshal(expected)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := json.Marshal(actual)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got, want) {
+					t.Errorf("card %s differs field-by-field:\ngot %s\nwant %s", actual.Issue.WorkItemID, got, want)
+				}
+			}
+		}
+		t.Run(string(org)+"/unfilled cards retain exact response", func(t *testing.T) {
+			page, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "include": {"board"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Cards) != 2 {
+				t.Fatalf("unfilled cards=%d", len(page.Cards))
+			}
+			assertExact(t, page, false)
+		})
 		refresh := func() {
 			for index := range 2 {
 				if err := service.refreshBoardRecord(t.Context(), org, viewstore.BoardCandidate{ProjectID: "example", WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index))}, now); err != nil {
@@ -541,11 +596,15 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 				}
 			}
 		}
-		refresh()
+		service.boardRefreshCursor = "zzzz"
+		if err := service.maintainBoardRecords(t.Context()); err != nil {
+			t.Fatal(err)
+		}
 		before, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "include": {"board"}})
 		if err != nil || len(before.Cards) != 2 {
 			t.Fatalf("current-policy board cards=%d error=%v", len(before.Cards), err)
 		}
+		t.Run(string(org)+"/exact imported and native board cards", func(t *testing.T) { assertExact(t, before, true) })
 		for _, card := range before.Cards {
 			if card.Change == nil || card.Change.Status == "stale_policy" {
 				t.Fatalf("current policy incorrectly stale: %+v", card.Change)

@@ -220,6 +220,13 @@ func (s *session) adjustBoardWorkspaceCount(ctx context.Context, b viewstore.Boa
 }
 
 func comparableBoardDisplay(display viewstore.BoardDisplay) viewstore.BoardDisplay {
+	if display.Provenance != nil {
+		provenance := *display.Provenance
+		provenance.CreatedAt = provenance.CreatedAt.UTC().Truncate(time.Microsecond)
+		provenance.UpdatedAt = provenance.UpdatedAt.UTC().Truncate(time.Microsecond)
+		provenance.ObservedAt = provenance.ObservedAt.UTC().Truncate(time.Microsecond)
+		display.Provenance = &provenance
+	}
 	if display.Attempt != nil {
 		attempt := *display.Attempt
 		attempt.StartedAt = attempt.StartedAt.UTC().Truncate(time.Microsecond)

@@ -285,7 +285,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					record := viewstore.BoardRecord{OrganizationID: org, ProjectID: "project_example", WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("example#%06d", issue.Number)}, ActorPrincipalID: issue.Actor.PrincipalID, CreatedAt: clock, UpdatedAt: clock, Payload: payload}
+					record := viewstore.BoardRecord{Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Number: issue.Number, Actor: tracker.Actor{Kind: issue.Actor.Kind}}, OrganizationID: org, ProjectID: "project_example", WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("example#%06d", issue.Number)}, ActorPrincipalID: issue.Actor.PrincipalID, CreatedAt: clock, UpdatedAt: clock, Payload: payload}
 					if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 						if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "project_example", NativeID: id, Number: int64(issue.Number), Title: issue.Title, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State}); err != nil {
 							return err

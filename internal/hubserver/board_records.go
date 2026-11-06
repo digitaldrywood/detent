@@ -338,7 +338,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 	prepared := make(map[tracker.NativeWorkItemID]boardPreparedRecord, len(records)+len(workRecordsForResponse))
 	var preparation *boardRecordPreparation
 	if includeBoard || includeSummary || includeWork {
-		preparation = s.prepareProjectedBoardPage(ctx, scope, records, prepared)
+		preparation = s.prepareProjectedBoardPage(ctx, scope, records, includeBoard, prepared)
 	} else {
 		preparation = s.prepareBoardPage(ctx, scope, records, now, false, prepared)
 	}
@@ -383,7 +383,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 	}
 	preparation.close()
 	if includeWork {
-		workPreparation := s.prepareProjectedBoardPage(ctx, scope, workRecordsForResponse, prepared)
+		workPreparation := s.prepareProjectedBoardPage(ctx, scope, workRecordsForResponse, false, prepared)
 		defer workPreparation.close()
 		for index, record := range workRecordsForResponse {
 			card, err := workPreparation.card(ctx, index)
