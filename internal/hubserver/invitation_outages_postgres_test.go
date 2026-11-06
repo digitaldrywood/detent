@@ -78,6 +78,7 @@ func TestPostgresInvitationAcceptanceOutages(t *testing.T) {
 				{name: "invitation outage", stage: "invitation", want: 503},
 				{name: "write outage", stage: "write", commit: true, want: 503},
 				{name: "accept rejected", accept: auth.ErrHostedIdentity, want: 403},
+				{name: "accept identity error after commit", accept: auth.ErrHostedIdentity, commit: true, want: 204},
 				{name: "accept uncertain pending", accept: outage, want: 503},
 				{name: "accept uncertain committed", accept: outage, commit: true, want: 204},
 				{name: "accept uncertain reconciliation outage", accept: outage, reconcile: outage, commit: true, want: 503},

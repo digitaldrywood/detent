@@ -55,12 +55,15 @@ func (s *Service) acceptAccessInvitation(ctx context.Context, identity auth.Iden
 			err = s.config.Hosted.Provider.AcceptInvitation(ctx, token, identity.Subject)
 		}
 		if err != nil {
-			if errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-				return err
-			}
 			current, lookupErr := auth.LookupInvitationID(ctx, s.config.Hosted.Provider, invitation.ID)
-			if lookupErr != nil || current.State == "pending" {
+			if lookupErr != nil {
 				return errors.Join(tenantauth.ErrUnavailable, err, lookupErr)
+			}
+			if current.State == "pending" {
+				if errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+					return err
+				}
+				return errors.Join(tenantauth.ErrUnavailable, err)
 			}
 			if current.ID != invitation.ID || current.OrganizationID != invitation.OrganizationID || !strings.EqualFold(current.Email, invitation.Email) || current.State != "accepted" || current.AcceptedUserID != identity.Subject {
 				return auth.ErrHostedIdentity
