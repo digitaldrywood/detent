@@ -74,8 +74,10 @@ func fixture(t *testing.T) (*sql.DB, *pgtransport.Pools) {
 	}
 	t.Cleanup(pools.Close)
 	for _, org := range []string{"first", "second"} {
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO hosted_tenant VALUES ($1,$1,'','','',1);
-`, org); err != nil {
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO organizations VALUES ($1,$1,$1,true,'2026-01-01')`, org); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO hosted_tenant VALUES ($1,$1,'','','',1)`, org); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.ExecContext(t.Context(), `INSERT INTO api_tokens (organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) VALUES ($1,'same','same','same-proof','fixture','operator',true,'2026-01-01','2026-01-01')`, org); err != nil {
