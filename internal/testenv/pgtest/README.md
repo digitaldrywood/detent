@@ -47,11 +47,14 @@ TMPDIR="$PWD/tmp" DETENT_TEST_POSTGRES=binary \
   go test -race ./internal/testenv/pgtest -timeout=120s
 ```
 
-At most four fixture databases are live per template owner, with two client
-connections per fixture and one administrative connection. This bounds the
-normal process total at nine connections, regardless of the number of test
-cases or tenants. The admin pool serializes cloning. Ownership checks use exact
-generated names; cleanup never enumerates or drops other processes' databases.
+At most four top-level tests own fixtures per template at once. A test and its
+subtests share admission, so requesting another database cannot wait on a slot
+held by that same test. Every database remains isolated, with two client
+connections per database and one administrative connection per template. Total
+connections depend on the number of databases those tests keep open; close
+unused pools promptly. The admin pool serializes cloning. Ownership checks use
+exact generated names; cleanup never enumerates or drops other processes'
+databases.
 Failed migration and fixture setup close their connection pools and drop their
 databases, preserving the primary error. Cleanup detaches cancellation while
 retaining the test deadline. Process readiness and parallel test coordination

@@ -35,7 +35,9 @@ type Template struct {
 	server  *server
 	name    string
 	err     error
-	slots   chan struct{}
+	mu      sync.Mutex
+	owners  map[string]int
+	changed chan struct{}
 }
 
 type server struct {
@@ -47,7 +49,7 @@ type server struct {
 }
 
 func NewTemplate(migrate func(context.Context, *sql.DB) error) *Template {
-	return &Template{migrate: migrate, slots: make(chan struct{}, fixtureLimit)}
+	return &Template{migrate: migrate, owners: make(map[string]int), changed: make(chan struct{})}
 }
 
 func (p *Template) Database(t *testing.T) *sql.DB {
@@ -61,7 +63,7 @@ func (p *Template) Database(t *testing.T) *sql.DB {
 	if p.err != nil {
 		t.Fatalf("initialize PostgreSQL fixture: %v", p.err)
 	}
-	db, cleanup, err := p.clone(ctx, func(context.Context, *sql.DB) error { return nil })
+	db, cleanup, err := p.clone(ctx, t.Name(), func(context.Context, *sql.DB) error { return nil })
 	if err != nil {
 		t.Fatalf("clone PostgreSQL fixture: %v", err)
 	}
@@ -181,18 +183,48 @@ func (p *Template) initialize(ctx context.Context, selection string) (resultErr 
 	return err
 }
 
-func (p *Template) clone(ctx context.Context, setup func(context.Context, *sql.DB) error) (_ *sql.DB, _ func(context.Context) error, resultErr error) {
+func (p *Template) acquire(ctx context.Context, name string) (func(), error) {
+	owner, _, _ := strings.Cut(name, "/")
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		p.mu.Lock()
+		if p.owners[owner] > 0 || len(p.owners) < fixtureLimit {
+			p.owners[owner]++
+			p.mu.Unlock()
+			return func() {
+				p.mu.Lock()
+				defer p.mu.Unlock()
+				p.owners[owner]--
+				if p.owners[owner] == 0 {
+					delete(p.owners, owner)
+					close(p.changed)
+					p.changed = make(chan struct{})
+				}
+			}, nil
+		}
+		changed := p.changed
+		p.mu.Unlock()
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func (p *Template) clone(ctx context.Context, owner string, setup func(context.Context, *sql.DB) error) (_ *sql.DB, _ func(context.Context) error, resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
-	select {
-	case p.slots <- struct{}{}:
-	case <-ctx.Done():
-		return nil, nil, ctx.Err()
+	release, err := p.acquire(ctx, owner)
+	if err != nil {
+		return nil, nil, err
 	}
 	name, err := p.server.create(ctx, p.name)
 	if err != nil {
-		<-p.slots
+		release()
 		return nil, nil, err
 	}
 	db, err := p.server.database(name)
@@ -200,12 +232,12 @@ func (p *Template) clone(ctx context.Context, setup func(context.Context, *sql.D
 		cleanupCtx, cancel := cleanupContext(ctx)
 		defer cancel()
 		err = errors.Join(err, p.server.drop(cleanupCtx, name))
-		<-p.slots
+		release()
 		return nil, nil, err
 	}
 	cleanup := func(ctx context.Context) error {
 		err := errors.Join(db.Close(), p.server.drop(ctx, name))
-		<-p.slots
+		release()
 		return err
 	}
 	complete := false

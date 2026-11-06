@@ -227,8 +227,31 @@ func TestConnectionConfigDoesNotScanHost(t *testing.T) {
 func TestFixtureAdmissionWaitsBeforeCancellation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		p := NewTemplate(nil)
-		for range fixtureLimit {
-			p.slots <- struct{}{}
+		for i := range fixtureLimit {
+			if _, err := p.acquire(t.Context(), fmt.Sprint(i)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		nestedCtx, nestedCancel := context.WithCancel(t.Context())
+		defer nestedCancel()
+		nested := make(chan error, 1)
+		go func() {
+			release, err := p.acquire(nestedCtx, "0/child")
+			if err == nil {
+				release()
+			}
+			nested <- err
+		}()
+		synctest.Wait()
+		select {
+		case err := <-nested:
+			if err != nil {
+				t.Fatalf("nested fixture admission: %v", err)
+			}
+		default:
+			nestedCancel()
+			<-nested
+			t.Fatal("nested fixture waited on its own top-level test slot")
 		}
 		ctx, cancel := context.WithCancel(t.Context())
 		result := make(chan error, 1)
@@ -238,7 +261,7 @@ func TestFixtureAdmissionWaitsBeforeCancellation(t *testing.T) {
 					result <- fmt.Errorf("fixture bypassed admission: %v", recovered)
 				}
 			}()
-			_, _, err := p.clone(ctx, nil)
+			_, _, err := p.clone(ctx, "waiting", nil)
 			result <- err
 		}()
 		t.Cleanup(func() {
@@ -346,7 +369,7 @@ func TestPostgresFailedSetupCleanup(t *testing.T) {
 			defer cancel()
 			var databaseName string
 			requireSetupFailure(t, func() error {
-				_, _, err := processTemplate.clone(ctx, func(ctx context.Context, db *sql.DB) error {
+				_, _, err := processTemplate.clone(ctx, t.Name(), func(ctx context.Context, db *sql.DB) error {
 					if err := db.QueryRowContext(ctx, "SELECT current_database()").Scan(&databaseName); err != nil {
 						return err
 					}
@@ -443,8 +466,8 @@ func TestPostgresFixtureBounds(t *testing.T) {
 			}
 		}
 	})
-	for range fixtureLimit {
-		db, release, err := p.clone(t.Context(), func(context.Context, *sql.DB) error { return nil })
+	for i := range fixtureLimit {
+		db, release, err := p.clone(t.Context(), fmt.Sprint(i), func(context.Context, *sql.DB) error { return nil })
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -478,7 +501,7 @@ func TestPostgresFixtureBounds(t *testing.T) {
 	}
 	result := make(chan cloneResult, 1)
 	go func() {
-		_, release, err := p.clone(attempt, func(context.Context, *sql.DB) error { return nil })
+		_, release, err := p.clone(attempt, "waiting", func(context.Context, *sql.DB) error { return nil })
 		result <- cloneResult{release: release, err: err}
 	}()
 	joined := false
@@ -517,7 +540,7 @@ func TestPostgresRoleWaitsForOwnerBackendExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	role := name + "_role"
-	if _, err := processTemplate.server.admin.ExecContext(ctx, "CREATE ROLE "+identifier(role)+" LOGIN"); err != nil {
+	if _, err := processTemplate.server.admin.ExecContext(ctx, "CREATE ROLE "+identifier(role)+" LOGIN PASSWORD 'detent-test-only'"); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -596,28 +619,33 @@ func TestPostgresParallelIsolation(t *testing.T) {
 		for _, name := range []string{"one", "two", "three", "four", "five", "six", "seven", "eight"} {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				db := processTemplate.Database(t)
-				var databaseName string
-				if err := db.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&databaseName); err != nil {
-					t.Fatal(err)
-				}
-				if _, loaded := names.LoadOrStore(databaseName, true); loaded {
-					t.Fatal("parallel fixtures reused a database")
-				}
-				for _, organization := range []string{"first", "second"} {
-					if _, err := db.ExecContext(t.Context(), "INSERT INTO records VALUES ($1, 'same-key', $2)", organization, name); err != nil {
+				for fixture := range fixtureLimit + 1 {
+					db := processTemplate.Database(t)
+					var databaseName string
+					if err := db.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&databaseName); err != nil {
 						t.Fatal(err)
 					}
-					var value string
-					if err := db.QueryRowContext(t.Context(), "SELECT value FROM records WHERE organization_id=$1 AND id='same-key'", organization).Scan(&value); err != nil {
+					if _, loaded := names.LoadOrStore(databaseName, true); loaded {
+						t.Fatal("parallel fixtures reused a database")
+					}
+					for _, organization := range []string{"first", "second"} {
+						if _, err := db.ExecContext(t.Context(), "INSERT INTO records VALUES ($1, 'same-key', $2)", organization, fmt.Sprintf("%s-%d", name, fixture)); err != nil {
+							t.Fatal(err)
+						}
+						var value string
+						if err := db.QueryRowContext(t.Context(), "SELECT value FROM records WHERE organization_id=$1 AND id='same-key'", organization).Scan(&value); err != nil {
+							t.Fatal(err)
+						}
+						if want := fmt.Sprintf("%s-%d", name, fixture); value != want {
+							t.Fatalf("fixture value = %q, want %q", value, want)
+						}
+					}
+					if _, err := db.ExecContext(t.Context(), "ALTER TABLE records ADD COLUMN fixture_only text"); err != nil {
 						t.Fatal(err)
 					}
-					if value != name {
-						t.Fatalf("fixture value = %q, want %q", value, name)
+					if err := db.Close(); err != nil {
+						t.Fatal(err)
 					}
-				}
-				if _, err := db.ExecContext(t.Context(), "ALTER TABLE records ADD COLUMN fixture_only text"); err != nil {
-					t.Fatal(err)
 				}
 			})
 		}
