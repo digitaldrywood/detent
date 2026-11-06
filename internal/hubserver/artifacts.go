@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -66,29 +64,15 @@ func (s *Service) bindArtifactService(c echo.Context) error {
 	if request.IdempotencyKey == "" {
 		request.IdempotencyKey = newNativeID("command")
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		return s.bindArtifactServiceCommand(ctx, tx, scope, c.Param("service"), request.Binding)
-	})
-}
-
-func (s *Service) bindArtifactServiceCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, serviceID string, binding artifact.Binding) (artifact.Binding, error) {
-	if !artifact.ValidID(binding.ServiceID, "service") || binding.ServiceID != serviceID || !artifact.ValidOrigin(binding.Origin) || !slices.Contains([]string{"customer", "hosted"}, binding.Mode) || binding.Mode == "hosted" && !binding.HostedOptIn || binding.PublisherTokenID == "" {
-		return artifact.Binding{}, nativePublicInvalid("Invalid artifact service binding")
+	if s.config.TenantRepository == nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
 	}
-	var count int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM api_tokens t JOIN token_grants g ON g.token_id=t.id WHERE t.id=? AND t.revoked_at IS NULL AND g.organization_id=? AND g.project_id=?", binding.PublisherTokenID, scope.organization, scope.project).Scan(&count); err != nil {
-		return artifact.Binding{}, err
-	}
-	if count != 1 {
-		return artifact.Binding{}, nativeNotFound()
-	}
-	raw, err := json.Marshal(binding)
+	options := nativeCommandOptions{OperationID: c.Request().Method + " " + c.Request().URL.EscapedPath()}
+	result, err := s.executeProjectRecordMutation(c.Request().Context(), nativeRequestScope(c), options, request.Mutation, request)
 	if err != nil {
-		return artifact.Binding{}, err
+		return s.nativeAPIError(c, err)
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO artifact_services(organization_id,project_id,id,binding_json,publisher_token_id,binding_mode,hosted_opt_in) VALUES(?,?,?,?,?,?,?) ON CONFLICT(organization_id,project_id,id) DO UPDATE SET binding_json=excluded.binding_json,publisher_token_id=excluded.publisher_token_id,binding_mode=excluded.binding_mode,hosted_opt_in=excluded.hosted_opt_in", scope.organization, scope.project, binding.ServiceID, raw, binding.PublisherTokenID, binding.Mode, binding.HostedOptIn)
-	binding.PublisherTokenID = ""
-	return binding, err
+	return c.JSONBlob(http.StatusOK, result)
 }
 
 func (s *Service) artifactServices(c echo.Context) error {
@@ -111,15 +95,14 @@ func (s *Service) artifactPublisher(c echo.Context) error {
 }
 
 func (s *Service) artifactPublisherToken(ctx context.Context, scope nativeScope, service string) (id string, err error) {
-	if s.config.TenantRepository != nil {
-		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			binding, err := r.ArtifactService(ctx, scope.project, service)
-			id = binding.PublisherTokenID
-			return err
-		})
-		return id, err
+	if s.config.TenantRepository == nil {
+		return "", workItemStorageUnavailable()
 	}
-	err = s.database.reader.QueryRowContext(ctx, "SELECT publisher_token_id FROM artifact_services WHERE organization_id=? AND project_id=? AND id=?", scope.organization, scope.project, service).Scan(&id)
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		binding, err := r.ArtifactService(ctx, scope.project, service)
+		id = binding.PublisherTokenID
+		return err
+	})
 	return id, err
 }
 
@@ -153,56 +136,29 @@ func (s *Service) artifactReferences(c echo.Context) error {
 func (s *Service) readArtifactReferences(ctx context.Context, scope nativeScope, item string) ([]artifact.Reference, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	if s.config.TenantRepository != nil {
-		row, _, err := s.readWorkItemRecord(ctx, scope, item)
-		if err != nil {
-			return nil, err
-		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
-			return nil, nativeNotFound()
-		}
-		var refs []artifact.Reference
-		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			var err error
-			refs, err = r.ArtifactReferences(ctx, scope.project, tracker.NativeWorkItemID(item), 64)
-			return err
-		})
-		if err != nil {
-			return nil, projectRecordError(err)
-		}
-		for i := range refs {
-			if !s.config.now().Before(refs[i].ExpiresAt) {
-				refs[i].Availability = "expired"
-			}
-		}
-		return refs, nil
+	if s.config.TenantRepository == nil {
+		return nil, workItemStorageUnavailable()
 	}
-	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
-		return nil, err
-	}
-
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT a.reference_json FROM artifact_references a WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.revision=(SELECT max(b.revision) FROM artifact_references b WHERE b.organization_id=a.organization_id AND b.project_id=a.project_id AND b.artifact_id=a.artifact_id) ORDER BY a.artifact_id LIMIT 64", scope.organization, scope.project, item)
+	row, _, err := s.readWorkItemRecord(ctx, scope, item)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	refs := []artifact.Reference{}
-	for rows.Next() {
-		var raw []byte
-		var ref artifact.Reference
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(raw, &ref); err != nil {
-			return nil, err
-		}
-		if !s.config.now().Before(ref.ExpiresAt) {
-			ref.Availability = "expired"
-		}
-		refs = append(refs, ref)
+	if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
+		return nil, nativeNotFound()
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	var refs []artifact.Reference
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		refs, err = r.ArtifactReferences(ctx, scope.project, tracker.NativeWorkItemID(item), 64)
+		return err
+	})
+	if err != nil {
+		return nil, projectRecordError(err)
+	}
+	for i := range refs {
+		if !s.config.now().Before(refs[i].ExpiresAt) {
+			refs[i].Availability = "expired"
+		}
 	}
 	return refs, nil
 }
@@ -267,28 +223,13 @@ func (s *Service) authorizeArtifactRead(c echo.Context) error {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	scope := nativeRequestScope(c)
-	if s.config.TenantRepository != nil {
-		grant, owner, err := s.readArtifactGrantTenant(ctx, scope, c.Param("service"), r)
-		if err != nil {
-			return s.nativeAPIError(c, nativeNotFound())
-		}
-		if s.config.Hosted != nil {
-			reader, err := s.hostedArtifactReader(c, grant.PrincipalID, grant.SessionHash)
-			if err != nil || !(nativeScope{organization: scope.organization, project: scope.project, credential: reader}).reporterOwns(owner) {
-				return s.nativeAPIError(c, nativeNotFound())
-			}
-		}
-		return c.NoContent(http.StatusNoContent)
-	}
-	var created, principal, sessionHash string
-	var expires *string
-	var deadline int64
-	err := s.database.reader.QueryRowContext(ctx, "SELECT t.created_at,t.expires_at,a.expires_at,a.principal_id,a.hosted_session_hash FROM artifact_grants a JOIN api_tokens t ON t.id=a.principal_id JOIN token_grants g ON g.token_id=t.id AND g.organization_id=a.organization_id AND g.project_id=a.project_id WHERE a.token_hash=? AND a.organization_id=? AND a.project_id=? AND a.service_id=? AND a.artifact_id=? AND a.revision=? AND t.revoked_at IS NULL", apikey.HashToken(r.Token), scope.organization, scope.project, c.Param("service"), r.ArtifactID, r.Revision).Scan(&created, &expires, &deadline, &principal, &sessionHash)
-	if err != nil || s.config.now().Unix() >= deadline || expires != nil && !runnerTimeValid(s.config.now(), created, *expires) {
+	grant, owner, err := s.readArtifactGrantTenant(ctx, scope, c.Param("service"), r)
+	if err != nil {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	if s.config.Hosted != nil {
-		if _, err := s.hostedArtifactReader(c, principal, sessionHash); err != nil {
+		reader, err := s.hostedArtifactReader(c, grant.PrincipalID, grant.SessionHash)
+		if err != nil || !(nativeScope{organization: scope.organization, project: scope.project, credential: reader}).reporterOwns(owner) {
 			return s.nativeAPIError(c, nativeNotFound())
 		}
 	}
@@ -303,13 +244,21 @@ func (s *Service) hostedArtifactReader(c echo.Context, principal, sessionHash st
 	if err != nil {
 		return apiCredential{}, err
 	}
+	if s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && (session.Identity == nil || session.Identity.SupportActor == "") {
+		return apiCredential{}, auth.ErrHostedIdentity
+	}
 	credential, _, err := s.hostedSessionCredential(ctx, session, sessionHash)
 	if err != nil || credential.ID != principal {
 		return apiCredential{}, auth.ErrHostedIdentity
 	}
 	scope := nativeRequestScope(c)
 	scope.credential = credential
-	if err := s.requireHostedProject(readCtx, s.database.reader, scope, false); err != nil {
+	if s.config.TenantRepository == nil {
+		return apiCredential{}, workItemStorageUnavailable()
+	}
+	if err := s.config.TenantRepository.ReadTenant(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		return s.authorizeAccessScope(readCtx, r, scope, false)
+	}); err != nil {
 		return apiCredential{}, err
 	}
 	return credential, s.hostedAudit(ctx, session.Identity, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0)
@@ -318,118 +267,39 @@ func (s *Service) hostedArtifactReader(c echo.Context, principal, sessionHash st
 func (s *Service) artifactServicesCommand(ctx context.Context, scope nativeScope) (result []artifact.Binding, err error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	if s.config.TenantRepository != nil {
-		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			result, err = r.ArtifactServices(ctx, scope.project)
-			return err
-		})
-		for i := range result {
-			result[i].PublisherTokenID = ""
-		}
-		return result, projectRecordError(err)
+	if s.config.TenantRepository == nil {
+		return nil, workItemStorageUnavailable()
 	}
-
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT binding_json FROM artifact_services WHERE organization_id=? AND project_id=? ORDER BY id LIMIT 16", scope.organization, scope.project)
-	if err != nil {
-		return result, err
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		result, err = r.ArtifactServices(ctx, scope.project)
+		return err
+	})
+	for i := range result {
+		result[i].PublisherTokenID = ""
 	}
-	defer rows.Close()
-	bindings := []artifact.Binding{}
-	for rows.Next() {
-		var raw []byte
-		var b artifact.Binding
-		if err := rows.Scan(&raw); err != nil {
-			return result, err
-		}
-		if err := json.Unmarshal(raw, &b); err != nil {
-			return result, err
-		}
-		b.PublisherTokenID = ""
-		bindings = append(bindings, b)
-	}
-	if err := rows.Err(); err != nil {
-		return result, err
-	}
-	return bindings, nil
+	return result, projectRecordError(err)
 }
 
-func (s *Service) artifactReadGrantCommand(ctx context.Context, scope nativeScope, item, artifactID string, revision int64, now time.Time) (result artifact.Grant, err error) {
-	if s.config.TenantRepository != nil {
-		return s.artifactReadGrantTenant(ctx, scope, item, artifactID, revision, now)
+func (s *Service) artifactReadGrantCommand(ctx context.Context, scope nativeScope, item, artifactID string, revision int64, now time.Time) (artifact.Grant, error) {
+	if s.config.TenantRepository == nil {
+		return artifact.Grant{}, workItemStorageUnavailable()
 	}
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancelRead()
-	var raw, bindingRaw []byte
-	if err := s.database.reader.QueryRowContext(readCtx, "SELECT a.reference_json,s.binding_json FROM artifact_references a JOIN artifact_services s ON s.organization_id=a.organization_id AND s.project_id=a.project_id AND s.id=a.service_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.artifact_id=? AND a.revision=?", scope.organization, scope.project, item, artifactID, revision).Scan(&raw, &bindingRaw); err != nil {
-		return result, err
-	}
-	var ref artifact.Reference
-	var binding artifact.Binding
-	if err := json.Unmarshal(raw, &ref); err != nil {
-		return result, err
-	}
-	if err := json.Unmarshal(bindingRaw, &binding); err != nil {
-		return result, err
-	}
-	now = now.UTC()
-	expires := minTime(now.Add(time.Minute), ref.ExpiresAt)
-	if scope.credential.Hosted != nil {
-		expires = minTime(expires, scope.credential.Hosted.ExpiresAt)
-	}
-	if !artifact.ValidOrigin(binding.Origin) || ref.Availability != "available" {
-		return result, artifact.ErrMissing
-	}
-	if !now.Before(expires) {
-		return result, artifact.ErrExpired
-	}
-	token, err := apikey.GenerateToken()
-	if err != nil {
-		return result, err
-	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return result, err
-	}
-	defer tx.Rollback()
-	if err := s.recheckHostedArtifactReader(ctx, tx, scope); err != nil {
-		return result, err
-	}
-
-	var count int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM token_grants g JOIN api_tokens t ON t.id=g.token_id WHERE g.token_id=? AND g.organization_id=? AND g.project_id=? AND t.revoked_at IS NULL", scope.credential.ID, scope.organization, scope.project).Scan(&count); err != nil {
-		return result, err
-	}
-	if count != 1 {
-		return result, nativeNotFound()
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM artifact_grants WHERE expires_at<=?", now.Unix()); err != nil {
-		return result, err
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO artifact_grants(token_hash,principal_id,organization_id,project_id,service_id,artifact_id,revision,expires_at,hosted_session_hash) VALUES(?,?,?,?,?,?,?,?,?)", apikey.HashToken(token), scope.credential.ID, scope.organization, scope.project, ref.ServiceID, ref.ArtifactID, ref.Revision, expires.Unix(), scope.credential.SessionHash); err != nil {
-		return result, err
-	}
-	if err := tx.Commit(); err != nil {
-		return result, err
-	}
-	return artifact.Grant{Token: token, Origin: binding.Origin, ArtifactID: ref.ArtifactID, Revision: ref.Revision, SHA256: ref.SHA256, ExpiresAt: expires}, nil
+	return s.artifactReadGrantTenant(ctx, scope, item, artifactID, revision, now)
 }
 
-// Read grants preserve dashboard read authority, including viewer membership.
-func (s *Service) recheckHostedArtifactReader(ctx context.Context, tx *sql.Tx, scope nativeScope) error {
+func (s *Service) recheckHostedArtifactReader(ctx context.Context, _ *sql.Tx, scope nativeScope) error {
 	if scope.credential.Hosted == nil {
 		return nil
+	}
+	if s.config.TenantRepository == nil {
+		return workItemStorageUnavailable()
 	}
 	if _, _, err := s.hostedMutationIdentity(ctx, scope.credential); err != nil {
 		return err
 	}
-	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM hosted_sessions WHERE token_hash=? AND revoked_at IS NULL AND julianday(expires_at)>julianday(?)`, scope.credential.SessionHash, formatHubTime(s.config.now())).Scan(&count); err != nil {
-		return err
-	}
-	if count != 1 {
-		return nativeNotFound()
-	}
-	return s.requireHostedProject(ctx, tx, scope, false)
+	return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		return s.authorizeAccessScope(ctx, r, scope, false)
+	})
 }
 
 func (s *Service) getArtifactReference(c echo.Context) error {
@@ -439,44 +309,31 @@ func (s *Service) getArtifactReference(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, nativePublicInvalid("Invalid artifact revision"))
 	}
-	result, err := s.artifactReferenceCommand(ctx, s.database.reader, nativeRequestScope(c), c.Param("item"), c.Param("artifact"), revision, s.config.now())
+	result, err := s.artifactReferenceCommand(ctx, nativeRequestScope(c), c.Param("item"), c.Param("artifact"), revision, s.config.now())
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, result)
 }
-func (s *Service) artifactReferenceCommand(ctx context.Context, query nativeQueryer, scope nativeScope, item, id string, revision int64, now time.Time) (artifact.Reference, error) {
+func (s *Service) artifactReferenceCommand(ctx context.Context, scope nativeScope, item, id string, revision int64, now time.Time) (artifact.Reference, error) {
 	var result artifact.Reference
-	if s.config.TenantRepository != nil {
-		row, _, err := s.readWorkItemRecord(ctx, scope, item)
-		if err != nil {
-			return result, err
-		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
-			return result, nativeNotFound()
-		}
-		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			var err error
-			result, err = r.ArtifactReference(ctx, scope.project, tracker.NativeWorkItemID(item), id, revision)
-			return err
-		})
-		if err != nil {
-			return artifact.Reference{}, projectRecordError(err)
-		}
-		if !now.Before(result.ExpiresAt) {
-			result.Availability = "expired"
-		}
-		return result, nil
+	if s.config.TenantRepository == nil {
+		return result, workItemStorageUnavailable()
 	}
-	var raw []byte
-	if _, _, err := readNativeIssue(ctx, query, scope, item); err != nil {
+	row, _, err := s.readWorkItemRecord(ctx, scope, item)
+	if err != nil {
 		return result, err
 	}
-	if err := query.QueryRowContext(ctx, `SELECT reference_json FROM artifact_references WHERE organization_id=? AND project_id=? AND work_item_id=? AND artifact_id=? AND revision=?`, scope.organization, scope.project, item, id, revision).Scan(&raw); err != nil {
-		return result, err
+	if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
+		return result, nativeNotFound()
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return result, err
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		result, err = r.ArtifactReference(ctx, scope.project, tracker.NativeWorkItemID(item), id, revision)
+		return err
+	})
+	if err != nil {
+		return artifact.Reference{}, projectRecordError(err)
 	}
 	if !now.Before(result.ExpiresAt) {
 		result.Availability = "expired"

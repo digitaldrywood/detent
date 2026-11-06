@@ -7,9 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -80,6 +84,19 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: tokenID, ProjectID: project}); err != nil {
 					return err
 				}
+				for _, role := range []string{"operator", "publisher"} {
+					scope := role
+					if role == "publisher" {
+						scope = "worker"
+					}
+					id := "credential_" + role + "_boundary"
+					if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: id, Name: role, Hash: apikey.HashToken("boundary_" + role + "_" + suffix), Scope: scope, NativeOnly: true, ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now}); err != nil {
+						return err
+					}
+					if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: id, ProjectID: project}); err != nil {
+						return err
+					}
+				}
 				if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization, ID: "enrollment_runner", RunnerID: runnerID, MachineID: machineID, TokenHash: apikey.HashToken("example_enrollment_secret"), Scope: "projects", ProjectIDs: []tracker.ProjectID{project}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Events, runnerauth.Collaborate}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "test_hub_admin"}); err != nil {
 					return err
 				}
@@ -129,6 +146,8 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 			}
 
 			path := "/api/v2/organizations/" + string(organization) + "/projects/" + string(project) + "/work-items/" + reservation.WorkItemID + "/artifact-authority"
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, "boundary_operator_"+suffix, reservation), http.StatusForbidden)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, "boundary_publisher_"+suffix, reservation), http.StatusNotFound)
 			for _, tc := range []struct {
 				name   string
 				mutate func(*artifact.Reservation)
@@ -137,6 +156,10 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 				{"valid", func(*artifact.Reservation) {}, http.StatusNoContent},
 				{"replay", func(*artifact.Reservation) {}, http.StatusNoContent},
 				{"changed key reservation", func(r *artifact.Reservation) { r.Bytes++ }, http.StatusConflict},
+				{"wrong service", func(r *artifact.Reservation) { r.ServiceID = artifact.NewID("service") }, http.StatusNotFound},
+				{"wrong project", func(r *artifact.Reservation) { r.ProjectID = artifact.NewID("prj") }, http.StatusNotFound},
+				{"unapproved hosted opt in", func(r *artifact.Reservation) { r.HostedOptIn = true }, http.StatusNotFound},
+				{"wrong custody", func(r *artifact.Reservation) { r.Mode = "hosted" }, http.StatusNotFound},
 				{"wrong run", func(r *artifact.Reservation) { r.RunID = artifact.NewID("run") }, http.StatusNotFound},
 				{"wrong attempt", func(r *artifact.Reservation) { r.AttemptID = artifact.NewID("attempt") }, http.StatusNotFound},
 				{"stale fence", func(r *artifact.Reservation) { r.FencingToken++ }, http.StatusConflict},
@@ -319,13 +342,13 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, reservation), http.StatusConflict)
 			t.Run("receipts", func(t *testing.T) {
-				foreignReceipt = testPostgresArtifactReceipts(t, admin, service, reservation, foreignReceipt, now)
+				foreignReceipt = testPostgresArtifactReceipts(t, admin, service, reservation, foreignReceipt, workerToken, now)
 			})
 		})
 	}
 }
 
-func testPostgresArtifactReceipts(t *testing.T, admin *sql.DB, service *Service, reservation artifact.Reservation, foreign artifact.Reference, now time.Time) artifact.Reference {
+func testPostgresArtifactReceipts(t *testing.T, admin *sql.DB, service *Service, reservation artifact.Reservation, foreign artifact.Reference, workerToken string, now time.Time) artifact.Reference {
 	t.Helper()
 	organization, project := tracker.OrganizationID(reservation.OrganizationID), tracker.ProjectID(reservation.ProjectID)
 	const publisherID = "credential_publisher"
@@ -353,6 +376,7 @@ func testPostgresArtifactReceipts(t *testing.T, admin *sql.DB, service *Service,
 	}
 	path := "/api/v2/organizations/" + string(organization) + "/projects/" + string(project) + "/artifact-services/" + reservation.ServiceID + "/receipts"
 	reference := artifact.Reference{SchemaVersion: 1, Scope: reservation.Scope, ServiceID: reservation.ServiceID, ArtifactID: "artifact_" + strings.Repeat("e", 32), ManifestID: artifact.NewID("manifest"), Revision: 1, SHA256: artifact.Digest([]byte("example")), Kind: "log", State: "complete", Availability: "available", Bytes: 10, Objects: 1, ObservedAt: now, ExpiresAt: now.Add(time.Hour)}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, reference), http.StatusNotFound)
 	for _, tc := range []struct {
 		name   string
 		mutate func(*artifact.Reference)
@@ -361,6 +385,7 @@ func testPostgresArtifactReceipts(t *testing.T, admin *sql.DB, service *Service,
 		{"terminal attempt", func(*artifact.Reference) {}, http.StatusNoContent},
 		{"replay", func(*artifact.Reference) {}, http.StatusNoContent},
 		{"immutable conflict", func(r *artifact.Reference) { r.Bytes++ }, http.StatusConflict},
+		{"foreign scope", func(r *artifact.Reference) { r.OrganizationID = artifact.NewID("org") }, http.StatusUnprocessableEntity},
 		{"wrong run", func(r *artifact.Reference) { r.RunID = artifact.NewID("run") }, http.StatusNotFound},
 		{"wrong item", func(r *artifact.Reference) { r.WorkItemID = artifact.NewID("wi") }, http.StatusNotFound},
 		{"wrong attempt", func(r *artifact.Reference) { r.AttemptID = artifact.NewID("attempt") }, http.StatusNotFound},
@@ -462,6 +487,48 @@ func testPostgresArtifactReceipts(t *testing.T, admin *sql.DB, service *Service,
 	}); err != nil {
 		t.Fatal(err)
 	}
+	t.Run("reference without legacy database", func(t *testing.T) {
+		reader := &Service{config: service.config}
+		response := httptest.NewRecorder()
+		c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), response)
+		c.SetParamNames("item", "artifact", "revision")
+		c.SetParamValues(reference.WorkItemID, reference.ArtifactID, "1")
+		c.Set("native_scope", nativeScope{organization: organization, project: project})
+		if err := reader.getArtifactReference(c); err != nil {
+			t.Fatal(err)
+		}
+		if response.Code != http.StatusOK {
+			t.Fatalf("reference status = %d", response.Code)
+		}
+		var stored artifact.Reference
+		if err := json.Unmarshal(response.Body.Bytes(), &stored); err != nil {
+			t.Fatal(err)
+		}
+		if stored.ArtifactID != reference.ArtifactID || stored.Revision != 1 {
+			t.Fatalf("reference = %+v", stored)
+		}
+		bindings, err := reader.artifactServicesCommand(t.Context(), nativeScope{organization: organization, project: project})
+		if err != nil || len(bindings) != 1 || bindings[0].PublisherTokenID != "" {
+			t.Fatalf("artifact service bindings = %+v, error = %v", bindings, err)
+		}
+		references, err := reader.readArtifactReferences(t.Context(), nativeScope{organization: organization, project: project}, reference.WorkItemID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, current := range references {
+			if current.ArtifactID == reference.ArtifactID {
+				found = true
+				if current.Bytes != reference.Bytes || current.SHA256 != reference.SHA256 {
+					t.Fatalf("artifact reference changed: %+v", current)
+				}
+			}
+		}
+		if !found {
+			t.Fatal("artifact reference missing")
+		}
+
+	})
 	window := time.Unix(now.Unix()/60*60, 0).UTC()
 	if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 		used, err := r.BillingUsage(t.Context(), window, "api_mutations")
@@ -541,4 +608,108 @@ func (w *artifactLeaseClockWriter) LockLease(ctx context.Context, id string) (le
 		w.afterLock(lease)
 	}
 	return lease, err
+}
+
+type postgresArtifactFixture struct {
+	hostedSecurityFixture
+	admin *sql.DB
+}
+
+func newPostgresArtifactFixture(t *testing.T) postgresArtifactFixture {
+	t.Helper()
+	admin := postgresStartupTemplate.Database(t)
+	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
+	cfg.Hosted.OrganizationID = "org_" + strings.Repeat("a", 32)
+	cfg.Hosted.WorkOSOrganizationID = "org_provider"
+	cfg.Hosted.BootstrapSubject = "user_owner"
+	cfg.Hosted.StaffEmails = []string{"staff@example.test", "support@example.test"}
+	cfg.Hosted.SupportActors = []string{"support@example.test"}
+	cfg.SecretKeys = secretTestKeys(t, "1", "1")
+	service, err := Open(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	org := tracker.OrganizationID(cfg.Hosted.OrganizationID)
+	project := tracker.ProjectID("prj_" + strings.Repeat("b", 32))
+	err = service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", Slug: "example", CreatedAt: time.Now()}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "org_provider", AllocationGeneration: 1}); err != nil {
+			return err
+		}
+		_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: project, Name: "Example project", Slug: "example-project", Profile: "native"}, States: nativeFixtureStates()})
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return postgresArtifactFixture{hostedSecurityFixture: hostedSecurityFixture{service: service, provider: cfg.Hosted.Provider.(*hostedSecurityProvider), project: project, base: "/api/v2/organizations/" + string(org) + "/projects/" + string(project)}, admin: admin}
+}
+
+func (f postgresArtifactFixture) user(t *testing.T, name, role, email, grant, support string) hostedSecurityUser {
+	t.Helper()
+	user := f.hostedSecurityFixture.user(t, name, role, email, "", support)
+	org := tracker.OrganizationID(f.service.config.Hosted.OrganizationID)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		member, err := w.AccessMember(t.Context(), user.identity.Subject)
+		if err != nil {
+			return err
+		}
+		if err := w.DeleteAccessTokenGrant(t.Context(), member.PrincipalID, f.project); err != nil {
+			return err
+		}
+		if grant == "" {
+			return w.DeleteAccessProjectGrant(t.Context(), member.UserID, f.project)
+		}
+		if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: member.UserID, ProjectID: f.project, CanWrite: grant == "write"}); err != nil {
+			return err
+		}
+		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: member.PrincipalID, ProjectID: f.project})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return user
+}
+
+func seedPostgresHostedArtifact(t *testing.T, f postgresArtifactFixture) (artifact.Reference, string, string) {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	org := tracker.OrganizationID(f.service.config.Hosted.OrganizationID)
+	item := tracker.NativeWorkItemID(artifact.NewID("wi"))
+	publisher := "artifact-publisher-token"
+	binding := artifact.Binding{ServiceID: artifact.NewID("service"), Origin: "https://artifacts.example.test", Mode: "customer", PublisherTokenID: "artifact-publisher"}
+	ref := artifact.Reference{SchemaVersion: 1, Scope: artifact.Scope{OrganizationID: string(org), ProjectID: string(f.project), WorkItemID: string(item), RunID: artifact.NewID("run"), AttemptID: artifact.NewID("attempt")}, ServiceID: binding.ServiceID, ArtifactID: artifact.NewID("artifact"), ManifestID: artifact.NewID("manifest"), Revision: 1, SHA256: artifact.Digest([]byte("manifest")), Kind: "log", State: "partial", Availability: "available", Bytes: 100, Objects: 1, ExpiresAt: now.Add(time.Hour), ObservedAt: now}
+	version, err := eventstore.NewContent(f.service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: f.project, WorkItemID: item, RecordID: string(item), Revision: 1}, []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: f.project, NativeID: item, Number: 1, Revision: 1, Title: "private-issue-sentinel"}); err != nil {
+			return err
+		}
+		if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
+			return err
+		}
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: binding.PublisherTokenID, Name: "Example publisher", Hash: apikey.HashToken(publisher), Scope: "worker", NativeOnly: true, ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: binding.PublisherTokenID, ProjectID: f.project}); err != nil {
+			return err
+		}
+		if err := w.BindArtifactService(t.Context(), f.project, binding); err != nil {
+			return err
+		}
+		_, err := w.AppendArtifactReference(t.Context(), ref)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ref, publisher, f.base + "/artifact-services/" + binding.ServiceID
 }
