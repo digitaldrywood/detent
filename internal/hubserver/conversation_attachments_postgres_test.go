@@ -769,8 +769,12 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 	before := map[tracker.OrganizationID]int64{}
 	for _, f := range fixtures {
 		for _, state := range []string{"expired", "boundary", "live", "deleted", "sent"} {
-			upload := uploadConversationAttachmentFile(t, service, f.base, testHubAdminToken, f.id, state+".txt", "text/plain", []byte(state))
-			candidates = append(candidates, candidate{f, upload, state == "expired" || state == "boundary", state == "deleted"})
+			attachmentFixture := f
+			if state == "expired" {
+				attachmentFixture.id = f.other
+			}
+			upload := uploadConversationAttachmentFile(t, service, f.base, testHubAdminToken, attachmentFixture.id, state+".txt", "text/plain", []byte(state))
+			candidates = append(candidates, candidate{attachmentFixture, upload, state == "expired" || state == "boundary", state == "deleted"})
 			switch state {
 			case "expired", "boundary":
 				expires := now
@@ -787,6 +791,11 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/conversations/"+f.id+"/commands", testHubAdminToken, command), http.StatusOK)
 			}
 		}
+		if err := repository.WriteTenant(t.Context(), f.org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.(conversationstore.RemovalWriter).DeleteConversation(t.Context(), f.project, f.other, now)
+		}); err != nil {
+			t.Fatal(err)
+		}
 		if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			before[f.org], err = r.CollaborationBytes(t.Context())
@@ -799,7 +808,11 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 		t.Run(string(f.org), func(t *testing.T) {
 			service.localOrganization = string(f.org)
 			if err := repository.ReadTenant(t.Context(), f.org, corestore.Background, func(r tenantstore.Reader) error {
-				items, err := r.(conversationstore.AttachmentReader).ExpiredConversationAttachments(t.Context(), now, 1)
+				owner := r.(conversationstore.AttachmentReader)
+				if _, err := owner.AttachmentConversation(t.Context(), f.project, f.other); !errors.Is(err, corestore.ErrNotFound) {
+					return fmt.Errorf("removed attachment parent remains readable: %v", err)
+				}
+				items, err := owner.ExpiredConversationAttachments(t.Context(), now, 1)
 				if err == nil && (len(items) != 1 || items[0].Name != "expired.txt") {
 					return fmt.Errorf("expiry ordering or bound differs: %+v", items)
 				}
@@ -871,7 +884,7 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 					continue
 				}
 				if err := repository.ReadTenant(t.Context(), f.org, corestore.Serving, func(r tenantstore.Reader) error {
-					stored, err := r.(conversationstore.AttachmentReader).ConversationAttachment(t.Context(), f.project, f.id, a.upload.ID)
+					stored, err := r.(conversationstore.AttachmentReader).ConversationAttachment(t.Context(), f.project, a.fixture.id, a.upload.ID)
 					if err == nil && ((stored.DeletedAt != nil) != (a.expired || a.deleted) || stored.ContentID == "") {
 						return fmt.Errorf("incorrect attachment retention: %s", a.upload.Name)
 					}

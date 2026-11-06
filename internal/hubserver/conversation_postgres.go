@@ -372,6 +372,12 @@ func (s *Service) readPGConversation(ctx context.Context, scope nativeScope, id 
 			return err
 		}
 		result = conversationRecordFromStore(stored)
+		if result.ReadAudience != "" {
+			audience, err := conversationReadAudienceRecord(ctx, reader, scope.organization, scope.credential)
+			if err != nil || audience != result.ReadAudience {
+				return nativeNotFound()
+			}
+		}
 		if err := authorizeConversationLinkedItemPG(ctx, reader, scope, result); err != nil {
 			return err
 		}
@@ -397,7 +403,7 @@ func (s *Service) readPGConversation(ctx context.Context, scope nativeScope, id 
 	if err != nil {
 		return conversationRecord{}, translateConversationError(err)
 	}
-	if result.ReadAudience != "" || result.OrganizationID != scope.organization || result.ProjectID != scope.project {
+	if result.OrganizationID != scope.organization || result.ProjectID != scope.project {
 		return conversationRecord{}, nativeNotFound()
 	}
 	if result.Visibility == conversation.VisibilityPrivate && result.OwnerPrincipalID != scope.credential.ID {
@@ -466,7 +472,13 @@ func (s *Service) readPGConversationPage(ctx context.Context, scope nativeScope,
 			return err
 		}
 		page.record = conversationRecordFromStore(stored)
-		if page.record.ReadAudience != "" || (page.record.Visibility == conversation.VisibilityPrivate && page.record.OwnerPrincipalID != scope.credential.ID) {
+		if page.record.ReadAudience != "" {
+			audience, err := conversationReadAudienceRecord(ctx, reader, scope.organization, scope.credential)
+			if err != nil || audience != page.record.ReadAudience {
+				return nativeNotFound()
+			}
+		}
+		if page.record.Visibility == conversation.VisibilityPrivate && page.record.OwnerPrincipalID != scope.credential.ID {
 			return nativeNotFound()
 		}
 		if err := authorizeConversationLinkedItemPG(ctx, reader, scope, page.record); err != nil {
@@ -562,7 +574,13 @@ func (s *Service) replayPGConversationEvents(ctx context.Context, scope nativeSc
 				return err
 			}
 			current := conversationRecordFromStore(record)
-			if current.ReadAudience != "" || (current.Visibility == conversation.VisibilityPrivate && current.OwnerPrincipalID != scope.credential.ID) {
+			if current.ReadAudience != "" {
+				audience, err := conversationReadAudienceRecord(ctx, reader, scope.organization, scope.credential)
+				if err != nil || audience != current.ReadAudience {
+					return nativeNotFound()
+				}
+			}
+			if current.Visibility == conversation.VisibilityPrivate && current.OwnerPrincipalID != scope.credential.ID {
 				return nativeNotFound()
 			}
 			if err := authorizeConversationLinkedItemPG(ctx, reader, scope, current); err != nil {
@@ -627,7 +645,13 @@ func (s *Service) replayPGConversationEvents(ctx context.Context, scope nativeSc
 					return err
 				}
 				current := conversationRecordFromStore(record)
-				if current.ReadAudience != "" || (current.Visibility == conversation.VisibilityPrivate && current.OwnerPrincipalID != scope.credential.ID) {
+				if current.ReadAudience != "" {
+					audience, err := conversationReadAudienceRecord(ctx, reader, scope.organization, scope.credential)
+					if err != nil || audience != current.ReadAudience {
+						return nativeNotFound()
+					}
+				}
+				if current.Visibility == conversation.VisibilityPrivate && current.OwnerPrincipalID != scope.credential.ID {
 					return nativeNotFound()
 				}
 				if err := authorizeConversationLinkedItemPG(ctx, reader, scope, current); err != nil {
@@ -901,7 +925,13 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 		if storedConversation.Revision != current.Revision {
 			return conversationStale("The conversation changed; retry the command")
 		}
-		if storedConversation.ReadAudience != "" || (storedConversation.Visibility == conversation.VisibilityPrivate && storedConversation.OwnerPrincipalID != scope.credential.ID) {
+		if storedConversation.ReadAudience != "" {
+			audience, err := conversationReadAudienceRecord(ctx, writer, scope.organization, scope.credential)
+			if err != nil || audience != storedConversation.ReadAudience {
+				return nativeNotFound()
+			}
+		}
+		if storedConversation.Visibility == conversation.VisibilityPrivate && storedConversation.OwnerPrincipalID != scope.credential.ID {
 			return nativeNotFound()
 		}
 		if err := authorizeConversationLinkedItemPG(ctx, writer, scope, conversationRecordFromStore(storedConversation)); err != nil {
@@ -1227,7 +1257,13 @@ func (s *Service) commandPatchConversationPG(ctx context.Context, scope nativeSc
 		if err != nil {
 			return err
 		}
-		if current.ReadAudience != "" || (current.Visibility == conversation.VisibilityPrivate && current.OwnerPrincipalID != scope.credential.ID) {
+		if current.ReadAudience != "" {
+			audience, err := conversationReadAudienceRecord(ctx, writer, scope.organization, scope.credential)
+			if err != nil || audience != current.ReadAudience {
+				return nativeNotFound()
+			}
+		}
+		if current.Visibility == conversation.VisibilityPrivate && current.OwnerPrincipalID != scope.credential.ID {
 			return nativeNotFound()
 		}
 		if err := authorizeConversationLinkedItemPG(ctx, writer, scope, conversationRecordFromStore(current)); err != nil {
