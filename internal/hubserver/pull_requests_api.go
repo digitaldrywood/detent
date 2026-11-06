@@ -213,9 +213,6 @@ WHERE p.organization_id = ? AND p.id = ?`, scope.organization, scope.project).Sc
 	return &pullRequestConnector{Provider: "github", Repository: owner.String + "/" + name.String}, repositoryID.Int64, enabled, nil
 }
 
-// readConnectorPullRequest reads the projection row for one external URL. The
-// join is by URL because that is the only identity a change version records
-// for its pull request.
 func readConnectorPullRequest(ctx context.Context, query nativeQueryer, repositoryID int64, url string) (tracker.PullRequestSummary, time.Time, bool, error) {
 	var summary tracker.PullRequestSummary
 	var checksJSON, reviewsJSON, synchronized string
@@ -243,11 +240,9 @@ FROM pull_requests WHERE repository_id = ? AND url = ?`, repositoryID, url).Scan
 	return summary, fetched, true, nil
 }
 
-// changePullRequestView assembles one row from a change request and, when the
-// project has a connector and the change names a pull request, the projection.
 func (s *Service) changePullRequestView(ctx context.Context, scope nativeScope, item string, change tracker.ChangeRequest,
 	connector *pullRequestConnector, repositoryID int64, now time.Time) (pullRequestView, error) {
-	detail, err := readChangeDetail(ctx, s.database.reader, scope, item, change.ID, now)
+	detail, err := s.selectedChangeDetail(ctx, scope, item, change.ID, now)
 	if err != nil {
 		return pullRequestView{}, err
 	}
@@ -256,7 +251,7 @@ func (s *Service) changePullRequestView(ctx context.Context, scope nativeScope, 
 		Head: pullRequestRef{}, Base: pullRequestRef{}, Checks: []pullRequestCheck{}, Reviews: []pullRequestReview{},
 		Labels: []string{}, UpdatedAt: change.UpdatedAt, FetchedAt: change.UpdatedAt,
 	}
-	delivery, associated, err := readReleaseDelivery(ctx, s.database.reader, scope, item)
+	delivery, associated, err := s.readReleaseDeliveryRecord(ctx, scope, item)
 	if err != nil {
 		return view, err
 	}
@@ -303,46 +298,6 @@ func (s *Service) changePullRequestView(ctx context.Context, scope nativeScope, 
 		view.Reviews = append(view.Reviews, pullRequestReview{Author: review.Actor.PrincipalID, State: review.Decision, SubmittedAt: review.CreatedAt})
 	}
 	view.ReviewDecision = detail.Summary.NativeReview
-	if connector == nil || current == nil || current.External == nil {
-		return view, nil
-	}
-	summary, fetched, found, err := readConnectorPullRequest(ctx, s.database.reader, repositoryID, current.External.URL)
-	if err != nil {
-		return view, err
-	}
-	if !found {
-		// The change names a pull request the projection has not seen yet.
-		// The connector is reported, so the client shows the panel rather
-		// than the unavailable state, and the rest stays native.
-		// The number comes from the change's own external reference, so a
-		// forced refresh can queue hydration for exactly this pull request.
-		bound := *connector
-		view.Connector = &bound
-		view.URL = current.External.URL
-		view.Number = externalPullRequestNumber(*current.External)
-		return view, nil
-	}
-	bound := *connector
-	bound.SynchronizedAt = fetched
-	view.Connector = &bound
-	view.Number, view.URL, view.Draft = summary.Number, summary.URL, summary.Draft
-	view.State = connectorPullRequestState(summary.State)
-	view.Head.Ref, view.Head.SHA = summary.HeadRef, summary.HeadSHA
-	view.Base.Ref = summary.BaseRef
-	if summary.BaseSHA != "" {
-		view.Base.SHA = summary.BaseSHA
-	}
-	// The projection records no head repository and no fork flag, so a pull
-	// request the hub can see is always on the bound repository.
-	view.Head.Repository = connector.Repository
-	view.Mergeable = mergeableFromState(summary.Merge.State)
-	if summary.Reviews.Decision != "" {
-		view.ReviewDecision = summary.Reviews.Decision
-	}
-	if summary.Title != "" {
-		view.Title = summary.Title
-	}
-	view.FetchedAt = fetched
 	return view, nil
 }
 
@@ -392,7 +347,7 @@ func (s *Service) listWorkItemPullRequests(c echo.Context) error {
 func (s *Service) readWorkItemPullRequests(ctx context.Context, scope nativeScope, item, refresh string) ([]pullRequestView, error) {
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
-	if _, _, err := readNativeIssue(readCtx, s.database.reader, scope, item); err != nil {
+	if _, _, err := s.readWorkItemRecord(readCtx, scope, item); err != nil {
 		return nil, err
 	}
 	now := s.config.now()
@@ -404,19 +359,17 @@ func (s *Service) readWorkItemPullRequests(ctx context.Context, scope nativeScop
 	} else if !s.pullRequests.allowRefresh(scope.organization, now) {
 		return nil, pullRequestRefreshLimited()
 	}
-	connector, repositoryID, err := s.projectConnector(readCtx, s.database.reader, scope)
+	connector, repositoryID, err := s.projectConnector(readCtx, nil, scope)
 	if err != nil {
 		return nil, err
 	}
-	changes, err := changeRows[tracker.ChangeRequest](readCtx, s.database.reader, `SELECT c.record_json FROM change_requests c
-JOIN change_issue_links l ON l.change_id = c.id
-WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? ORDER BY c.rowid`, scope.organization, scope.project, item)
+	changes, err := s.listChangeRecords(readCtx, scope, item)
 	if err != nil {
 		return nil, err
 	}
 	views := []pullRequestView{}
 	for _, change := range changes {
-		view, err := s.changePullRequestView(ctx, scope, item, change, connector, repositoryID, now)
+		view, err := s.changePullRequestView(readCtx, scope, item, change, connector, repositoryID, now)
 		if err != nil {
 			return nil, err
 		}

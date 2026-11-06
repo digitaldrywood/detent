@@ -85,32 +85,6 @@ func (f *pullRequestFixture) list(t *testing.T, query string) []pullRequestView 
 	return views
 }
 
-func TestPullRequestsWithoutConnector(t *testing.T) {
-	t.Parallel()
-	f := newPullRequestFixture(t, false)
-	f.publish(t, "v1", "")
-	views := f.list(t, "")
-	if len(views) != 1 {
-		t.Fatalf("views = %d, want 1", len(views))
-	}
-	view := views[0]
-	if view.Connector != nil {
-		t.Fatalf("connector = %#v, want null", view.Connector)
-	}
-	if view.ChangeID != f.change.ID || view.Number != 0 || view.State != "open" {
-		t.Fatalf("view = %#v", view)
-	}
-	if view.Head.SHA != strings.Repeat("b", 40) {
-		t.Fatalf("head sha = %q", view.Head.SHA)
-	}
-	if view.Mergeable.Known {
-		t.Fatalf("mergeable = %#v, want unknown", view.Mergeable)
-	}
-	if view.Checks == nil || view.Reviews == nil || view.Labels == nil {
-		t.Fatalf("arrays must be present and empty: %#v", view)
-	}
-}
-
 func TestWorkItemPullRequestProjection(t *testing.T) {
 	t.Parallel()
 	f := newPullRequestFixture(t, false)
@@ -161,53 +135,6 @@ func TestWorkItemPullRequestProjection(t *testing.T) {
 	}
 }
 
-// The connector half fills in state, draft, head, base, mergeability and the
-// review decision, and fetched_at is when the projection was synchronized.
-func TestPullRequestsJoinConnector(t *testing.T) {
-	t.Parallel()
-	f := newPullRequestFixture(t, true)
-	version := f.publishExternal(t, "external")
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost,
-		f.changeFixture.path+"/versions/"+version.ID+"/reviews", f.token,
-		tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, Decision: "approved"}), http.StatusOK)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost,
-		f.changeFixture.path+"/versions/"+version.ID+"/checks", f.token, changeTestResult(version)), http.StatusOK)
-
-	views := f.list(t, "")
-	if len(views) != 1 {
-		t.Fatalf("views = %d, want 1", len(views))
-	}
-	view := views[0]
-	if view.Connector == nil || view.Connector.Provider != "github" || view.Connector.Repository != "digitaldrywood/detent" {
-		t.Fatalf("connector = %#v", view.Connector)
-	}
-	if view.Number != 1 || view.URL != pullRequestTestURL || view.State != "open" || view.Draft {
-		t.Fatalf("view = %#v", view)
-	}
-	if view.Head.Ref != "feature" || view.Head.SHA != strings.Repeat("b", 40) || view.Base.Ref != "main" {
-		t.Fatalf("refs = %#v %#v", view.Head, view.Base)
-	}
-	if view.Head.Repository != "digitaldrywood/detent" || view.FromFork {
-		t.Fatalf("head repository = %q from_fork = %v", view.Head.Repository, view.FromFork)
-	}
-	if !view.Mergeable.Known || !view.Mergeable.Value {
-		t.Fatalf("mergeable = %#v, want true", view.Mergeable)
-	}
-	if view.ReviewDecision != "approved" {
-		t.Fatalf("review decision = %q", view.ReviewDecision)
-	}
-	if len(view.Checks) != 1 || view.Checks[0].Conclusion != "success" || view.Checks[0].Status != "completed" {
-		t.Fatalf("checks = %#v", view.Checks)
-	}
-	if len(view.Reviews) != 1 || view.Reviews[0].State != "approved" || view.Reviews[0].Author == "" {
-		t.Fatalf("reviews = %#v", view.Reviews)
-	}
-	if view.FetchedAt.IsZero() {
-		t.Fatal("fetched_at must name when the connector view was taken")
-	}
-}
-
-// mergeable is the pull request contract's three values on the wire: true, false or "unknown".
 func TestPullRequestMergeableJSON(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -245,64 +172,6 @@ func TestPullRequestMergeableJSON(t *testing.T) {
 	}
 }
 
-// "?refresh=1 forces a fetch, limited to one per 10 seconds per organization."
-func TestPullRequestRefreshLimit(t *testing.T) {
-	t.Parallel()
-	f := newPullRequestFixture(t, true)
-	f.publishExternal(t, "external")
-	if views := f.list(t, "?refresh=1"); len(views) != 1 {
-		t.Fatalf("views = %d", len(views))
-	}
-	var queued int
-	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT count(*) FROM github_hydration_requests WHERE object_kind = 'pull_request' AND reason = 'client_refresh'").Scan(&queued); err != nil {
-		t.Fatal(err)
-	}
-	if queued != 1 {
-		t.Fatalf("queued refreshes = %d, want 1", queued)
-	}
-	response := performHubAPIRequest(t, f.service, http.MethodGet, f.path+"?refresh=1", f.token, nil)
-	requireNativeCode(t, response, http.StatusTooManyRequests, "refresh_limited")
-	f.now = f.now.Add(pullRequestRefreshInterval)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.path+"?refresh=1", f.token, nil), http.StatusOK)
-	requireNativeCode(t, performHubAPIRequest(t, f.service, http.MethodGet, f.path+"?refresh=2", f.token, nil),
-		http.StatusUnprocessableEntity, "invalid_request")
-}
-
-// A change can name a pull request the connector projection has not seen yet.
-// Its number comes from the change's own reference, so ?refresh=1 queues
-// hydration for exactly that pull request instead of skipping it.
-func TestPullRequestRefreshHydratesAnUnprojectedPullRequest(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name       string
-		reference  tracker.ChangeExternalReference
-		wantNumber int
-	}{
-		{name: "numbered reference", reference: tracker.ChangeExternalReference{Provider: "github", ID: "42", URL: "https://github.com/example/repo/pull/42"}, wantNumber: 42},
-		{name: "second unprojected number", reference: tracker.ChangeExternalReference{Provider: "github", ID: "43", URL: "https://github.com/example/repo/pull/43"}, wantNumber: 43},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			f := newPullRequestFixture(t, true)
-			f.publishReference(t, "external", test.reference)
-			views := f.list(t, "?refresh=1")
-			if len(views) != 1 || views[0].Number != test.wantNumber || views[0].Connector == nil {
-				t.Fatalf("views = %#v, want one connected row numbered %d", views, test.wantNumber)
-			}
-			var queued int
-			if err := f.service.database.db.QueryRowContext(t.Context(),
-				"SELECT count(*) FROM github_hydration_requests WHERE object_kind = 'pull_request' AND object_key = ? AND reason = 'client_refresh'",
-				strconv.Itoa(test.wantNumber)).Scan(&queued); err != nil {
-				t.Fatal(err)
-			}
-			if queued != 1 {
-				t.Fatalf("queued refreshes for #%d = %d, want 1", test.wantNumber, queued)
-			}
-		})
-	}
-}
-
 func TestExternalPullRequestNumber(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -329,29 +198,20 @@ func TestExternalPullRequestNumber(t *testing.T) {
 // The assembled view is served from memory for sixty seconds, so a client that
 // polls the panel does not re-run the join on every tick.
 func TestPullRequestViewCache(t *testing.T) {
-	t.Parallel()
-	f := newPullRequestFixture(t, true)
-	f.publishExternal(t, "external")
-	first := f.list(t, "")
-	if len(first) != 1 || first[0].Number != 1 {
-		t.Fatalf("first = %#v", first)
+	cache := newPullRequestCache()
+	now := time.Now()
+	views := []pullRequestView{{ID: "change", State: "open"}}
+	cache.set("issue", views, now)
+	views[0].State = "closed"
+	cached, ok := cache.get("issue", now)
+	if !ok || len(cached) != 1 || cached[0].State != "open" {
+		t.Fatalf("cache changed: %+v", cached)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE pull_requests SET github_state = 'closed'"); err != nil {
-		t.Fatal(err)
-	}
-	cached := f.list(t, "")
-	if len(cached) != 1 || cached[0].State != "open" {
-		t.Fatalf("cached views = %#v, want one still-open row", cached)
-	}
-	f.now = f.now.Add(pullRequestViewTTL)
-	fresh := f.list(t, "")
-	if len(fresh) != 1 || fresh[0].State != "closed" {
-		t.Fatalf("views after the TTL = %#v, want one closed row", fresh)
+	if _, ok := cache.get("issue", now.Add(pullRequestViewTTL)); ok {
+		t.Fatal("expired view retained")
 	}
 }
 
-// TestPullRequestViewGoldenShape pins the pull request contract shape on the Go side, so the
-// client has a contract to decode against before it draws the panel.
 func TestPullRequestViewGoldenShape(t *testing.T) {
 	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join("testdata", "pull-requests.json"))

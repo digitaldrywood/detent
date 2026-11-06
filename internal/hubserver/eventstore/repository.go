@@ -247,6 +247,7 @@ type LinkedSource struct {
 type Receipt = receiptstore.Record
 
 type Reader interface {
+	ReleaseDelivery(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (ReleaseDelivery, error)
 	ReviewPolicy(context.Context, tracker.ProjectID) (ReviewPolicy, error)
 	LandingReceipt(context.Context, string) (LandingReceipt, error)
 	LatestLandingReceipt(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (LandingReceipt, error)
