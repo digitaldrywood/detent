@@ -111,25 +111,23 @@ var errHostedBillingUnbound = errors.New("organization has no billing customer y
 func (d *database) hostedBillingBinding(ctx context.Context, c *HostedBillingConfig) (billing.Binding, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	if d.billingRepository != nil {
-		var result billing.Binding
-		err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
-			account, err := reader.BillingAccount(ctx)
-			if err != nil {
-				return err
-			}
-			if account.Binding.AccountID != c.AccountID || account.Mode != c.mode() {
-				return errors.New("hosted Stripe binding belongs to a different account or mode")
-			}
-			result = account.Binding
-			return nil
-		})
-		if errors.Is(err, corestore.ErrNotFound) {
-			return billing.Binding{}, errHostedBillingUnbound
+
+	var result billing.Binding
+	err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+		account, err := reader.BillingAccount(ctx)
+		if err != nil {
+			return err
 		}
-		return result, err
+		if account.Binding.AccountID != c.AccountID || account.Mode != c.mode() {
+			return errors.New("hosted Stripe binding belongs to a different account or mode")
+		}
+		result = account.Binding
+		return nil
+	})
+	if errors.Is(err, corestore.ErrNotFound) {
+		return billing.Binding{}, errHostedBillingUnbound
 	}
-	return readHostedBillingBinding(ctx, d.reader, d.hostedOrganization, c)
+	return result, err
 }
 
 func readHostedBillingBinding(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, c *HostedBillingConfig) (billing.Binding, error) {
@@ -152,80 +150,8 @@ func (d *database) configureHostedBilling(ctx context.Context, cfg *HostedConfig
 		return nil
 	}
 	c := cfg.Billing
-	if d.billingRepository != nil {
-		return d.configureHostedBillingRecords(ctx, c)
-	}
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if c.CustomerID != "" {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO hosted_billing_accounts(organization_id,account_id,customer_id,mode) VALUES(?,?,?,?) ON CONFLICT DO NOTHING`, d.hostedOrganization, c.AccountID, c.CustomerID, c.mode()); err != nil {
-			return err
-		}
-	}
-	var account, customer, mode string
-	err = tx.QueryRowContext(ctx, "SELECT account_id,customer_id,mode FROM hosted_billing_accounts WHERE organization_id=?", d.hostedOrganization).Scan(&account, &customer, &mode)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if err == nil && mode == billing.ModeTest && c.mode() == billing.ModeLive && c.CustomerID == "" {
-		if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_billing_retired(organization_id,account_id,customer_id,mode,state_json,retired_at) SELECT organization_id,account_id,customer_id,mode,state_json,? FROM hosted_billing_accounts WHERE organization_id=?", formatHubTime(d.now()), d.hostedOrganization); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, "DELETE FROM hosted_billing_accounts WHERE organization_id=?", d.hostedOrganization); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, "DELETE FROM hosted_billing_customer_intents WHERE organization_id=? AND mode='test'", d.hostedOrganization); err != nil {
-			return err
-		}
-		err = sql.ErrNoRows
-	}
-	if err == nil && (account != c.AccountID || mode != c.mode() || c.CustomerID != "" && customer != c.CustomerID) {
-		return errors.New("hosted Stripe account, customer and mode binding is immutable; a mode change cannot reinterpret existing billing records")
-	}
-	if err := seedHostedBillingPrices(ctx, tx, c.Prices); err != nil {
-		return err
-	}
-	for _, pack := range c.CreditPacks {
-		var cents int64
-		err := tx.QueryRowContext(ctx, "SELECT usd_cents FROM ai_credit_packs WHERE price_id=? AND mode=?", pack.PriceID, c.mode()).Scan(&cents)
-		if err == nil && cents != pack.USDCents {
-			return errors.New("AI credit pack amounts are immutable; configure a new Stripe price")
-		}
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO ai_credit_packs(price_id,mode,usd_cents) VALUES(?,?,?) ON CONFLICT DO NOTHING", pack.PriceID, c.mode(), pack.USDCents); err != nil {
-			return err
-		}
-	}
-	if len(c.CreditPacks) > 0 {
-		if _, err := tx.ExecContext(ctx, "INSERT INTO ai_credit_accounts(organization_id,mode) VALUES(?,?) ON CONFLICT DO NOTHING", d.hostedOrganization, c.mode()); err != nil {
-			return err
-		}
-	}
-	var creditAccounts int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM ai_credit_accounts WHERE organization_id=? AND mode=?", d.hostedOrganization, c.mode()).Scan(&creditAccounts); err != nil {
-		return err
-	}
-	if creditAccounts > 0 {
-		if _, ok := c.Provider.(billing.CreditProvider); !ok {
-			return errors.New("existing AI credits require a credit-capable billing provider")
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	if creditAccounts > 0 {
-		d.aiCreditMode = c.mode()
-		d.aiCreditCostMultiplier = c.CreditCostMultiplier
-	} else {
-		d.aiCreditMode = ""
-	}
-	d.hostedBilling = true
-	return nil
+
+	return d.configureHostedBillingRecords(ctx, c)
 }
 
 func (d *database) configureHostedBillingRecords(ctx context.Context, config *HostedBillingConfig) error {

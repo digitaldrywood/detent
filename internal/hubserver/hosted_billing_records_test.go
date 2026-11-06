@@ -19,10 +19,8 @@ import (
 
 func TestConfigureHostedBillingRecordsPreservesPaidAccount(t *testing.T) {
 	t.Parallel()
-	f := newHostedSharedFixture(t)
 	repository := projectRecordPostgres(t)
-	d := f.service.database
-	d.billingRepository = repository
+	d := &database{billingRepository: repository, hostedOrganization: "org_example", billingAuditStore: &memoryRunDetails{}, now: time.Now, logger: discardLogger()}
 	org := tracker.OrganizationID(d.hostedOrganization)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	seedHostedBillingRecordAccount(t, repository, org, billingstore.Account{
@@ -53,10 +51,8 @@ func TestConfigureHostedBillingRecordsPreservesPaidAccount(t *testing.T) {
 
 func TestConfigureHostedBillingRecordsPreservesConcurrentPaidInsert(t *testing.T) {
 	t.Parallel()
-	f := newHostedSharedFixture(t)
 	repository := projectRecordPostgres(t)
-	d := f.service.database
-	d.billingRepository = repository
+	d := &database{billingRepository: repository, hostedOrganization: "org_example", billingAuditStore: &memoryRunDetails{}, now: time.Now, logger: discardLogger()}
 	org := tracker.OrganizationID(d.hostedOrganization)
 	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(writer tenantstore.Writer) error {
 		return writer.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example organization", CreatedAt: time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)})
@@ -101,10 +97,8 @@ func TestConfigureHostedBillingRecordsPreservesConcurrentPaidInsert(t *testing.T
 
 func TestConfigureHostedBillingRecordsRejectsChangedBindingBeforeRetire(t *testing.T) {
 	t.Parallel()
-	f := newHostedSharedFixture(t)
 	repository := projectRecordPostgres(t)
-	d := f.service.database
-	d.billingRepository = repository
+	d := &database{billingRepository: repository, hostedOrganization: "org_example", billingAuditStore: &memoryRunDetails{}, now: time.Now, logger: discardLogger()}
 	org := tracker.OrganizationID(d.hostedOrganization)
 	seedHostedBillingRecordAccount(t, repository, org, billingstore.Account{
 		OrganizationID: org,
@@ -133,10 +127,8 @@ func TestConfigureHostedBillingRecordsRejectsChangedBindingBeforeRetire(t *testi
 
 func TestConfigureHostedBillingRecordsRetiresUnchangedTestBinding(t *testing.T) {
 	t.Parallel()
-	f := newHostedSharedFixture(t)
 	repository := projectRecordPostgres(t)
-	d := f.service.database
-	d.billingRepository = repository
+	d := &database{billingRepository: repository, hostedOrganization: "org_example", billingAuditStore: &memoryRunDetails{}, now: time.Now, logger: discardLogger()}
 	org := tracker.OrganizationID(d.hostedOrganization)
 	seedHostedBillingRecordAccount(t, repository, org, billingstore.Account{
 		OrganizationID: org,
@@ -161,10 +153,8 @@ func TestConfigureHostedBillingRecordsRetiresUnchangedTestBinding(t *testing.T) 
 
 func TestCommitHostedBillingRecordsUpdatesReconcileState(t *testing.T) {
 	t.Parallel()
-	f := newHostedSharedFixture(t)
 	repository := projectRecordPostgres(t)
-	d := f.service.database
-	d.billingRepository = repository
+	d := &database{billingRepository: repository, hostedOrganization: "org_example", billingAuditStore: &memoryRunDetails{}, now: time.Now, logger: discardLogger()}
 	org := tracker.OrganizationID(d.hostedOrganization)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	seedHostedBillingRecordAccount(t, repository, org, billingstore.Account{

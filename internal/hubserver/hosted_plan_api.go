@@ -100,7 +100,7 @@ func (d *database) hostedEntitlementReport(ctx context.Context, historyAfter int
 	if err != nil {
 		return report, err
 	}
-	entitlement, err := d.hostedEntitlement(ctx, d.reader, now)
+	entitlement, err := d.hostedEntitlement(ctx, nil, now)
 	if err != nil {
 		return report, err
 	}
@@ -109,63 +109,20 @@ func (d *database) hostedEntitlementReport(ctx context.Context, historyAfter int
 	if err != nil {
 		return report, err
 	}
-	if d.billingRepository != nil {
-		if d.billingAuditStore == nil {
-			return report, errors.New("hosted plan audit storage is unavailable")
-		}
-		history, next, err := d.readHostedGrantAudits(ctx, historyAfter, historyLimit)
-		if err != nil {
-			return report, err
-		}
-		report = d.finishHostedEntitlementReport(report, entitlement, now)
-		report.GrantHistory = history
-		d.mergeHostedGrantAuditDetails(&report, history)
-		if next > 0 {
-			report.NextGrantHistory = strconv.FormatInt(next, 10)
-		}
-		return report, nil
+
+	if d.billingAuditStore == nil {
+		return report, errors.New("hosted plan audit storage is unavailable")
 	}
-	granted := make([]hostedGrantRecord, 0, historyLimit)
-	audits, err := d.reader.QueryContext(ctx, "SELECT id,actor_id,reason,recorded_at,record_json FROM hosted_plan_audit WHERE action = 'grant' AND id > ? ORDER BY id LIMIT ?", historyAfter, historyLimit+1)
+	history, next, err := d.readHostedGrantAudits(ctx, historyAfter, historyLimit)
 	if err != nil {
 		return report, err
 	}
-	defer audits.Close()
-	var lastID int64
-	var included int
-	for audits.Next() {
-		var id int64
-		var actor, reason, recorded, raw string
-		var command hostedPlanCommand
-		if err := audits.Scan(&id, &actor, &reason, &recorded, &raw); err != nil {
-			return report, err
-		}
-		if included == historyLimit {
-			report.NextGrantHistory = strconv.FormatInt(lastID, 10)
-			break
-		}
-		if err := json.Unmarshal([]byte(raw), &command); err != nil {
-			return report, err
-		}
-		record := hostedGrantRecord{Reason: reason, GrantedBy: actor}
-		if at, err := parseTimeValue(recorded); err == nil {
-			record.GrantedAt = &at
-		}
-		grant, err := d.readHostedGrant(ctx, command.GrantID)
-		if err != nil {
-			return report, err
-		}
-		record.HostedGrant = grant
-		granted = append(granted, record)
-		included++
-		lastID = id
-	}
-	if err := audits.Err(); err != nil {
-		return report, err
-	}
 	report = d.finishHostedEntitlementReport(report, entitlement, now)
-	report.GrantHistory = granted
-	d.mergeHostedGrantAuditDetails(&report, granted)
+	report.GrantHistory = history
+	d.mergeHostedGrantAuditDetails(&report, history)
+	if next > 0 {
+		report.NextGrantHistory = strconv.FormatInt(next, 10)
+	}
 	return report, nil
 }
 
@@ -235,27 +192,17 @@ func (d *database) readHostedGrantAudits(ctx context.Context, after int64, limit
 }
 
 func (d *database) readHostedGrant(ctx context.Context, id string) (HostedGrant, error) {
-	if d.billingRepository != nil {
-		var result HostedGrant
-		err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
-			grant, err := reader.BillingGrant(ctx, id)
-			if err != nil {
-				return err
-			}
-			result = HostedGrant{ID: grant.ID, Plan: PlanReference{ID: grant.Plan.ID, Version: grant.Plan.Version}, Scope: grant.Scope, StartsAt: grant.StartsAt, ExpiresAt: grant.ExpiresAt, RevokedAt: grant.RevokedAt}
-			return nil
-		})
-		return result, err
-	}
-	var raw string
-	if err := d.reader.QueryRowContext(ctx, "SELECT record_json FROM hosted_complimentary_grants WHERE id = ?", id).Scan(&raw); err != nil {
-		return HostedGrant{}, err
-	}
-	var grant HostedGrant
-	if err := json.Unmarshal([]byte(raw), &grant); err != nil {
-		return HostedGrant{}, err
-	}
-	return grant, nil
+
+	var result HostedGrant
+	err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+		grant, err := reader.BillingGrant(ctx, id)
+		if err != nil {
+			return err
+		}
+		result = HostedGrant{ID: grant.ID, Plan: PlanReference{ID: grant.Plan.ID, Version: grant.Plan.Version}, Scope: grant.Scope, StartsAt: grant.StartsAt, ExpiresAt: grant.ExpiresAt, RevokedAt: grant.RevokedAt}
+		return nil
+	})
+	return result, err
 }
 
 func (s *Service) updateHostedPlan(c echo.Context) error {
@@ -286,102 +233,12 @@ func (d *database) applyHostedPlanCommand(ctx context.Context, actor string, com
 	}
 	digest := sha256.Sum256(raw)
 	hash := hex.EncodeToString(digest[:])
-	if d.billingRepository != nil {
-		now, err := d.currentTime()
-		if err != nil {
-			return err
-		}
-		return d.applyHostedPlanCommandRecord(ctx, actor, command, hash, raw, now)
-	}
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+
 	now, err := d.currentTime()
 	if err != nil {
 		return err
 	}
-	var existing string
-	err = tx.QueryRowContext(ctx, "SELECT request_hash FROM hosted_plan_audit WHERE command_id = ?", command.ID).Scan(&existing)
-	if err == nil {
-		if existing != hash {
-			return nativeConflict(tracker.Revision(command.ExpectedRevision))
-		}
-		return nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	var revision int64
-	if err := tx.QueryRowContext(ctx, "SELECT revision FROM hosted_plan_assignments WHERE organization_id = ?", d.hostedOrganization).Scan(&revision); err != nil {
-		return err
-	}
-	if revision != command.ExpectedRevision {
-		return nativeConflict(tracker.Revision(revision))
-	}
-	if slices.Contains([]string{"base", "subscription", "grant"}, command.Action) {
-		if _, err := d.readHostedPlan(ctx, tx, command.Plan); err != nil {
-			return nativePublicInvalid("The plan version must exist")
-		}
-	}
-	switch command.Action {
-	case "create_plan":
-		if command.Definition == nil || command.Plan != command.Definition.PlanReference || validateHostedPlan(*command.Definition) != nil {
-			return nativePublicInvalid("A valid new plan definition matching the plan reference is required")
-		}
-		var exists bool
-		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM hosted_plans WHERE id=? AND version=?)", command.Plan.ID, command.Plan.Version).Scan(&exists); err != nil {
-			return err
-		}
-		if exists {
-			return nativeConflict(tracker.Revision(revision))
-		}
-		encoded, encodeErr := json.Marshal(normalizeHostedPlan(*command.Definition))
-		if encodeErr != nil {
-			return encodeErr
-		}
-		_, err = tx.ExecContext(ctx, "INSERT INTO hosted_plans(id,version,record_json,collaboration_bytes) VALUES(?,?,?,?)", command.Plan.ID, command.Plan.Version, string(encoded), normalizeHostedPlan(*command.Definition).Allowances["collaboration_bytes"])
-	case "base":
-		_, err = tx.ExecContext(ctx, "UPDATE hosted_plan_assignments SET base_id = ?,base_version = ? WHERE organization_id = ?", command.Plan.ID, command.Plan.Version, d.hostedOrganization)
-	case "subscription":
-		if command.ExpiresAt == nil || !command.ExpiresAt.After(now) {
-			return nativePublicInvalid("Subscription-derived access requires a future validity deadline")
-		}
-		_, err = tx.ExecContext(ctx, "UPDATE hosted_plan_assignments SET subscription_id = ?,subscription_version = ?,subscription_expires_at = ? WHERE organization_id = ?", command.Plan.ID, command.Plan.Version, formatHubTime(*command.ExpiresAt), d.hostedOrganization)
-	case "end_subscription":
-		_, err = tx.ExecContext(ctx, "UPDATE hosted_plan_assignments SET subscription_id = NULL,subscription_version = NULL,subscription_expires_at = NULL WHERE organization_id = ?", d.hostedOrganization)
-	case "grant":
-		err = insertHostedComplimentaryGrant(ctx, tx, command, now)
-	case "revoke":
-		var raw string
-		var grant HostedGrant
-		if err := tx.QueryRowContext(ctx, "SELECT record_json FROM hosted_complimentary_grants WHERE id = ?", command.GrantID).Scan(&raw); err != nil {
-			return err
-		}
-		if err := json.Unmarshal([]byte(raw), &grant); err != nil {
-			return err
-		}
-		if grant.RevokedAt == nil {
-			stamp := now.UTC()
-			grant.RevokedAt = &stamp
-		}
-		encoded, encodeErr := json.Marshal(grant)
-		if encodeErr != nil {
-			return encodeErr
-		}
-		_, err = tx.ExecContext(ctx, "UPDATE hosted_complimentary_grants SET record_json = ? WHERE id = ?", string(encoded), grant.ID)
-	}
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE hosted_plan_assignments SET revision = revision + 1 WHERE organization_id = ?", d.hostedOrganization); err != nil {
-		return err
-	}
-	if err := d.auditHostedPlanCommand(ctx, tx, actor, command, now); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return d.applyHostedPlanCommandRecord(ctx, actor, command, hash, raw, now)
 }
 
 func (d *database) applyHostedPlanCommandRecord(ctx context.Context, actor string, command hostedPlanCommand, hash string, raw []byte, now time.Time) error {
