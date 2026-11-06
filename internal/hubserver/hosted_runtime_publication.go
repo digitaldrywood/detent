@@ -6,14 +6,134 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
+	"golang.org/x/sync/singleflight"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type runtimeSnapshotKey struct {
+	hubmaintenance.Tenant
+	Revision string
+}
+
+type HostedRuntimeSnapshots struct {
+	repository tenantstore.Repository
+	objects    attachment.DetailStore
+	mu         sync.Mutex
+	cache      map[runtimeSnapshotKey][]byte
+	loads      singleflight.Group
+}
+
+func NewHostedRuntimeSnapshots(repository tenantstore.Repository, objects attachment.DetailStore) (*HostedRuntimeSnapshots, error) {
+	if repository == nil || objects == nil {
+		return nil, errors.New("runtime snapshots require tenant records and immutable object storage")
+	}
+	return &HostedRuntimeSnapshots{repository: repository, objects: objects, cache: make(map[runtimeSnapshotKey][]byte)}, nil
+}
+
+func (s *HostedRuntimeSnapshots) tenantDatabase(tenant hubmaintenance.Tenant) (*database, error) {
+	if tenant.Organization == "" || len(tenant.Organization) > 128 || tenant.Generation <= 0 {
+		return nil, nativePublicInvalid("Invalid hosted runtime scope or payload")
+	}
+	return &database{billingRepository: s.repository, billingAuditStore: s.objects, hostedOrganization: tracker.OrganizationID(tenant.Organization), now: time.Now}, nil
+}
+
+func (s *HostedRuntimeSnapshots) Load(ctx context.Context, tenant hubmaintenance.Tenant) (HostedRuntimeUpdate, error) {
+	d, err := s.tenantDatabase(tenant)
+	if err != nil {
+		return HostedRuntimeUpdate{}, err
+	}
+	var revision billingstore.RuntimeRevision
+	if err := d.readBillingTenant(ctx, func(r tenantstore.Reader) error {
+		var err error
+		revision, err = r.CurrentRuntime(ctx)
+		return err
+	}); err != nil {
+		return HostedRuntimeUpdate{}, err
+	}
+	key := runtimeSnapshotKey{Tenant: tenant, Revision: revision.ID}
+	flight, err := json.Marshal(key)
+	if err != nil {
+		return HostedRuntimeUpdate{}, err
+	}
+	value, err, _ := s.loads.Do(string(flight), func() (any, error) {
+		s.mu.Lock()
+		raw := s.cache[key]
+		s.mu.Unlock()
+		if raw == nil {
+			var err error
+			raw, err = s.objects.ReadDetail(ctx, tenant.Organization, revision.Reference.ArchiveReference())
+			if err != nil {
+				return nil, err
+			}
+		}
+		if len(raw) > 1<<20 {
+			return nil, nativePublicInvalid("Invalid hosted runtime scope or payload")
+		}
+		var update HostedRuntimeUpdate
+		if err := json.Unmarshal(raw, &update); err != nil {
+			return nil, err
+		}
+		update.Reason = "published runtime snapshot"
+		update.StageID = revision.ID
+		if err := ValidateHostedRuntimeUpdate(update); err != nil {
+			return nil, err
+		}
+		if err := d.readBillingTenant(ctx, func(r tenantstore.Reader) error {
+			current, err := r.CurrentRuntime(ctx)
+			if err != nil {
+				return err
+			}
+			if current.ID != revision.ID {
+				return corestore.ErrRevisionConflict
+			}
+			return d.validateConfiguredPlanReferences(ctx, r, *update.Plans)
+		}); err != nil {
+			return nil, err
+		}
+		s.mu.Lock()
+		if len(s.cache) == 128 {
+			for evicted := range s.cache {
+				delete(s.cache, evicted)
+				break
+			}
+		}
+		s.cache[key] = slices.Clone(raw)
+		s.mu.Unlock()
+		return json.Marshal(update)
+	})
+	if err != nil {
+		return HostedRuntimeUpdate{}, err
+	}
+	var update HostedRuntimeUpdate
+	err = json.Unmarshal(value.([]byte), &update)
+	return update, err
+}
+
+func (s *HostedRuntimeSnapshots) Adopt(ctx context.Context, tenant hubmaintenance.Tenant, expected string, update HostedRuntimeUpdate) error {
+	d, err := s.tenantDatabase(tenant)
+	if err != nil {
+		return err
+	}
+	if _, err := uuid.Parse(update.StageID); err != nil || update.ValidateOnly {
+		return nativePublicInvalid("Invalid hosted runtime scope or payload")
+	}
+	if err := ValidateHostedRuntimeUpdate(update); err != nil {
+		return err
+	}
+	return d.applyRuntimeRecordsAtRevision(ctx, *update.Plans, update.Prices, "configuration", update.Reason, update.StageID, false, &expected)
+}
 
 func (d *database) archiveRuntime(ctx context.Context, plans HostedPlansConfig, prices []HostedBillingPrice, id string, published bool) (billingstore.RuntimeRevision, error) {
 	if id == "" {
@@ -57,6 +177,10 @@ func (d *database) refreshRuntime(ctx context.Context) error {
 		}
 		if update.Plans == nil {
 			return nil, workItemStorageUnavailable()
+		}
+		update.Reason = "published runtime snapshot"
+		if err := ValidateHostedRuntimeUpdate(update); err != nil {
+			return nil, err
 		}
 		if err := d.applyPublishedPlans(ctx, revision, *update.Plans); err != nil {
 			return nil, err

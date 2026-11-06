@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -287,4 +288,87 @@ func configuredPlanPostgresServices(t *testing.T, plans HostedPlansConfig, repo 
 		services = append(services, s)
 	}
 	return services
+}
+
+func TestSharedRuntimeSnapshotsTenantIsolation(t *testing.T) {
+	repo, admin := projectRecordPostgresWithAdmin(t, 4)
+	objects := &memoryRunDetails{}
+	snapshots, err := NewHostedRuntimeSnapshots(repo, objects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := uuid.NewString()
+	if _, err := admin.ExecContext(t.Context(), "INSERT INTO hosted_runtime_publications(id) VALUES($1)", revision); err != nil {
+		t.Fatal(err)
+	}
+	tenants := []hubmaintenance.Tenant{{Organization: "org_first", Generation: 1}, {Organization: "org_second", Generation: 1}}
+	for i, tenant := range tenants {
+		if err := repo.WriteTenant(t.Context(), tracker.OrganizationID(tenant.Organization), corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: tracker.OrganizationID(tenant.Organization), Name: "Example", CreatedAt: time.Now()})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := snapshots.Load(t.Context(), tenant); !errors.Is(err, corestore.ErrNotFound) {
+			t.Fatalf("unconfigured tenant served runtime: %v", err)
+		}
+		plans := pilotHostedPlans()
+		plans.WindowSeconds = int64(120 * (i + 1))
+		update := HostedRuntimeUpdate{Plans: &plans, Reason: "adopt published configuration", StageID: revision}
+		if err := snapshots.Adopt(t.Context(), tenant, "", update); err != nil {
+			t.Fatal(err)
+		}
+		if err := snapshots.Adopt(t.Context(), tenant, "", update); err != nil {
+			t.Fatalf("idempotent adoption: %v", err)
+		}
+		if err := repo.WriteTenant(t.Context(), tracker.OrganizationID(tenant.Organization), corestore.Serving, func(w tenantstore.Writer) error {
+			return w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: tracker.OrganizationID(tenant.Organization), Base: billingstore.PlanReference{ID: plans.Base.ID, Version: plans.Base.Version}}, 0)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, tenant := range tenants {
+		update, err := snapshots.Load(t.Context(), tenant)
+		if err != nil || update.StageID != revision || update.Plans.WindowSeconds != int64(120*(i+1)) {
+			t.Fatalf("%s snapshot=%+v error=%v", tenant.Organization, update, err)
+		}
+		update.Plans.WindowSeconds = 600
+		update.Plans.Plans[0].Allowances["concurrent_work"] = 999
+		cached, err := snapshots.Load(t.Context(), tenant)
+		if err != nil || cached.Plans.WindowSeconds != int64(120*(i+1)) || cached.Plans.Plans[0].Allowances["concurrent_work"] == 999 {
+			t.Fatalf("caller mutated cached configuration: %v", err)
+		}
+		before := objects.reads
+		tenant.Generation++
+		if _, err := snapshots.Load(t.Context(), tenant); err != nil || objects.reads != before+1 {
+			t.Fatalf("generation reused old cache: reads=%d before=%d error=%v", objects.reads, before, err)
+		}
+	}
+	restarted, err := NewHostedRuntimeSnapshots(repo, objects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tenant := range tenants {
+		before, err := restarted.Load(t.Context(), tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plans := *before.Plans
+		plans.Plans = plans.Plans[1:]
+		plans.Base = plans.Plans[0].PlanReference
+		update := HostedRuntimeUpdate{Plans: &plans, Reason: "omit referenced plan", StageID: uuid.NewString()}
+		if err := restarted.Adopt(t.Context(), tenant, revision, update); err == nil {
+			t.Fatal("referenced missing plan was adopted")
+		}
+		update.Plans = before.Plans
+		if err := restarted.Adopt(t.Context(), tenant, "stale", update); !errors.Is(err, corestore.ErrRevisionConflict) {
+			t.Fatalf("stale adoption error=%v", err)
+		}
+		if err := restarted.Adopt(t.Context(), tenant, revision, update); !errors.Is(err, corestore.ErrRevisionConflict) {
+			t.Fatalf("unpublished adoption error=%v", err)
+		}
+		after, err := restarted.Load(t.Context(), tenant)
+		if err != nil || after.StageID != revision || after.Plans.WindowSeconds != before.Plans.WindowSeconds {
+			t.Fatalf("failed adoption lost valid revision: %v", err)
+		}
+	}
 }

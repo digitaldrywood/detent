@@ -116,6 +116,9 @@ func (d *database) applyRuntimeRecordsAtRevision(ctx context.Context, plans Host
 			return err
 		}
 		published, err := w.RuntimePublished(ctx, revision.ID)
+		if err == nil && !published && expected != nil {
+			return corestore.ErrRevisionConflict
+		}
 		if err != nil || !published {
 			return err
 		}

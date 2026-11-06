@@ -144,6 +144,23 @@ func TestRuntimeRefreshRetainsSnapshotOnError(t *testing.T) {
 	}
 }
 
+func TestRuntimeRefreshRejectsInvalidPublishedSnapshot(t *testing.T) {
+	s := runtimeProbeService(&runtimeReadProbe{revision: "invalid"})
+	before := s.database.runtimeState()
+	plans := pilotHostedPlans()
+	plans.WindowSeconds = 61
+	raw, err := json.Marshal(HostedRuntimeUpdate{Plans: &plans})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	close(release)
+	s.database.billingAuditStore = &runtimeObjectProbe{release: release, raw: raw}
+	if err := s.database.refreshRuntime(t.Context()); err == nil || s.database.runtimeState() != before {
+		t.Fatalf("invalid publication replaced valid snapshot: %v", err)
+	}
+}
+
 type runtimeObjectProbe struct {
 	attachment.DetailStore
 	calls   atomic.Int32
