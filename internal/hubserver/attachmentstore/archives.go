@@ -2,9 +2,10 @@ package attachmentstore
 
 import (
 	"context"
+	"time"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"time"
 )
 
 type ArchiveQuery struct {
