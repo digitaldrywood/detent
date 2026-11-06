@@ -1,6 +1,8 @@
 package hubserver
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,12 +14,93 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type sharedMetricRepository struct {
+	metricsstore.Repository
+	merge func(context.Context, tracker.OrganizationID, []metricsstore.Metric) error
+}
+
+func (r sharedMetricRepository) MergeRequestMetrics(ctx context.Context, org tracker.OrganizationID, _ time.Time, rows []metricsstore.Metric) error {
+	return r.merge(ctx, org, rows)
+}
+
+func TestSharedMetricsCapIncludesInflightAndFailurePreservesCounts(t *testing.T) {
+	first := hubmaintenance.Tenant{Organization: "org_first", Generation: 1}
+	second := hubmaintenance.Tenant{Organization: "org_second", Generation: 2}
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	entered, release := make(chan struct{}), make(chan struct{})
+	failure := errors.New("metrics unavailable")
+	collector, err := NewRequestMetrics(sharedMetricRepository{merge: func(context.Context, tracker.OrganizationID, []metricsstore.Metric) error {
+		close(entered)
+		<-release
+		return failure
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !collector.Record(first, now, "GET /example", "runner", "example", 200, time.Millisecond) {
+		t.Fatal("first sample refused")
+	}
+	done := make(chan error, 1)
+	go func() { done <- collector.Flush(t.Context(), first, now) }()
+	<-entered
+	collector.Record(first, now, "GET /example", "runner", "example", 200, 2*time.Millisecond)
+	collector.Record(second, now, "GET /example", "browser", "example", 200, time.Millisecond)
+	for i := range sharedMetricKeyLimit * 2 {
+		collector.Record(second, now, "GET /example", "browser", fmt.Sprintf("example_%d", i), 200, time.Millisecond)
+	}
+	if len(collector.pending)+collector.inflight > sharedMetricKeyLimit {
+		t.Errorf("unbounded telemetry: pending=%d inflight=%d", len(collector.pending), collector.inflight)
+	}
+	close(release)
+	if err := <-done; !errors.Is(err, failure) {
+		t.Fatalf("flush failure lost: %v", err)
+	}
+	collector.repository = sharedMetricRepository{merge: func(_ context.Context, org tracker.OrganizationID, rows []metricsstore.Metric) error {
+		if org != "org_first" || len(rows) != 1 || rows[0].Count != 2 || rows[0].Sum != 3 {
+			t.Errorf("retry lost or mixed samples: org=%s rows=%+v", org, rows)
+		}
+		return nil
+	}}
+	if err := collector.Flush(t.Context(), first, now); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSharedMetricsPostgresKeepsTenantGenerationSeparate(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	collector, err := NewRequestMetrics(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	for index, tenant := range []hubmaintenance.Tenant{{Organization: "org_first", Generation: 1}, {Organization: "org_second", Generation: 1}, {Organization: "org_first", Generation: 2}} {
+		for range index + 1 {
+			collector.Record(tenant, now.Add(-time.Minute), "GET /example", "runner", "example", 200, time.Millisecond)
+		}
+	}
+	for _, tenant := range []hubmaintenance.Tenant{{Organization: "org_first", Generation: 1}, {Organization: "org_second", Generation: 1}} {
+		if err := collector.Flush(t.Context(), tenant, now); err != nil {
+			t.Fatal(err)
+		}
+		_, rows, err := repository.RequestMetricTotals(t.Context(), tracker.OrganizationID(tenant.Organization), now.Add(-time.Hour), now)
+		want := int64(1)
+		if tenant.Organization == "org_second" {
+			want = 2
+		}
+		if err != nil || len(rows) != 1 || rows[0].Count != want {
+			t.Fatalf("tenant/generation mixed: tenant=%+v rows=%+v err=%v", tenant, rows, err)
+		}
+	}
+}
 
 func testRequestMetrics(t *testing.T, organization tracker.OrganizationID) *tenantRequestMetrics {
 	t.Helper()
