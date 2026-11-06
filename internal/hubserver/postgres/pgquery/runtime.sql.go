@@ -7,6 +7,7 @@ package pgquery
 
 import (
 	"context"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -40,6 +41,36 @@ func (q *Queries) CurrentRuntime(ctx context.Context, organizationID tracker.Org
 	return i, err
 }
 
+const deleteRuntimeAllowances = `-- name: DeleteRuntimeAllowances :exec
+DELETE FROM hosted_plan_allowances WHERE organization_id=$1 AND (plan_id,plan_version) IN (SELECT q.id,q.version FROM ROWS FROM (unnest($2::text[]),unnest($3::bigint[])) q(id,version))
+`
+
+type DeleteRuntimeAllowancesParams struct {
+	OrganizationID tracker.OrganizationID
+	Ids            []string
+	Versions       []int64
+}
+
+func (q *Queries) DeleteRuntimeAllowances(ctx context.Context, arg DeleteRuntimeAllowancesParams) error {
+	_, err := q.db.Exec(ctx, deleteRuntimeAllowances, arg.OrganizationID, arg.Ids, arg.Versions)
+	return err
+}
+
+const deleteRuntimeFeatures = `-- name: DeleteRuntimeFeatures :exec
+DELETE FROM hosted_plan_features WHERE organization_id=$1 AND (plan_id,plan_version) IN (SELECT q.id,q.version FROM ROWS FROM (unnest($2::text[]),unnest($3::bigint[])) q(id,version))
+`
+
+type DeleteRuntimeFeaturesParams struct {
+	OrganizationID tracker.OrganizationID
+	Ids            []string
+	Versions       []int64
+}
+
+func (q *Queries) DeleteRuntimeFeatures(ctx context.Context, arg DeleteRuntimeFeaturesParams) error {
+	_, err := q.db.Exec(ctx, deleteRuntimeFeatures, arg.OrganizationID, arg.Ids, arg.Versions)
+	return err
+}
+
 const entryRuntime = `-- name: EntryRuntime :one
 SELECT revision_id,object_key FROM platform.runtime_heads WHERE issuer=$1
 `
@@ -54,6 +85,138 @@ func (q *Queries) EntryRuntime(ctx context.Context, issuer string) (EntryRuntime
 	var i EntryRuntimeRow
 	err := row.Scan(&i.RevisionID, &i.ObjectKey)
 	return i, err
+}
+
+const insertRuntimeAllowances = `-- name: InsertRuntimeAllowances :exec
+INSERT INTO hosted_plan_allowances(organization_id,plan_id,plan_version,metric,amount)
+SELECT $1,id,version,metric,amount FROM ROWS FROM (unnest($2::text[]),unnest($3::bigint[]),unnest($4::text[]),unnest($5::bigint[])) q(id,version,metric,amount)
+`
+
+type InsertRuntimeAllowancesParams struct {
+	OrganizationID tracker.OrganizationID
+	Ids            []string
+	Versions       []int64
+	Metrics        []string
+	Amounts        []int64
+}
+
+func (q *Queries) InsertRuntimeAllowances(ctx context.Context, arg InsertRuntimeAllowancesParams) error {
+	_, err := q.db.Exec(ctx, insertRuntimeAllowances,
+		arg.OrganizationID,
+		arg.Ids,
+		arg.Versions,
+		arg.Metrics,
+		arg.Amounts,
+	)
+	return err
+}
+
+const insertRuntimeAudits = `-- name: InsertRuntimeAudits :exec
+INSERT INTO hosted_plan_audit(organization_id,command_id,request_hash,actor_id,action,recorded_at,binding_id,customer_owned,object_key,sha256,compressed_bytes,content_bytes,codec,format_version,kind,retention)
+SELECT $1,q.command,q.hash,q.actor,q.action,q.recorded,q.binding,q.customer_owned,q.object_key,q.digest,q.compressed,q.content,q.codec,q.format_version,q.kind,q.retention FROM ROWS FROM (unnest($2::text[]),unnest($3::text[]),unnest($4::text[]),unnest($5::text[]),unnest($6::timestamptz[]),unnest($7::text[]),unnest($8::boolean[]),unnest($9::text[]),unnest($10::text[]),unnest($11::bigint[]),unnest($12::bigint[]),unnest($13::text[]),unnest($14::integer[]),unnest($15::text[]),unnest($16::text[])) q(command,hash,actor,action,recorded,binding,customer_owned,object_key,digest,compressed,content,codec,format_version,kind,retention)
+`
+
+type InsertRuntimeAuditsParams struct {
+	OrganizationID tracker.OrganizationID
+	Commands       []string
+	Hashes         []string
+	Actors         []string
+	Actions        []string
+	Times          []time.Time
+	Bindings       []string
+	CustomerOwned  []bool
+	Keys           []string
+	Digests        []string
+	Compressed     []int64
+	Content        []int64
+	Codecs         []string
+	Formats        []int32
+	Kinds          []string
+	Retentions     []string
+}
+
+func (q *Queries) InsertRuntimeAudits(ctx context.Context, arg InsertRuntimeAuditsParams) error {
+	_, err := q.db.Exec(ctx, insertRuntimeAudits,
+		arg.OrganizationID,
+		arg.Commands,
+		arg.Hashes,
+		arg.Actors,
+		arg.Actions,
+		arg.Times,
+		arg.Bindings,
+		arg.CustomerOwned,
+		arg.Keys,
+		arg.Digests,
+		arg.Compressed,
+		arg.Content,
+		arg.Codecs,
+		arg.Formats,
+		arg.Kinds,
+		arg.Retentions,
+	)
+	return err
+}
+
+const insertRuntimeFeatures = `-- name: InsertRuntimeFeatures :exec
+INSERT INTO hosted_plan_features(organization_id,plan_id,plan_version,feature)
+SELECT $1,id,version,feature FROM ROWS FROM (unnest($2::text[]),unnest($3::bigint[]),unnest($4::text[])) q(id,version,feature)
+`
+
+type InsertRuntimeFeaturesParams struct {
+	OrganizationID tracker.OrganizationID
+	Ids            []string
+	Versions       []int64
+	Features       []string
+}
+
+func (q *Queries) InsertRuntimeFeatures(ctx context.Context, arg InsertRuntimeFeaturesParams) error {
+	_, err := q.db.Exec(ctx, insertRuntimeFeatures,
+		arg.OrganizationID,
+		arg.Ids,
+		arg.Versions,
+		arg.Features,
+	)
+	return err
+}
+
+const insertRuntimePrices = `-- name: InsertRuntimePrices :many
+INSERT INTO hosted_billing_prices(organization_id,price_id,plan_id,plan_version)
+SELECT $1,price,id,version FROM ROWS FROM (unnest($2::text[]),unnest($3::text[]),unnest($4::bigint[])) q(price,id,version)
+ON CONFLICT(organization_id,price_id) DO UPDATE SET plan_id=EXCLUDED.plan_id
+WHERE hosted_billing_prices.plan_id=EXCLUDED.plan_id AND hosted_billing_prices.plan_version=EXCLUDED.plan_version
+RETURNING price_id
+`
+
+type InsertRuntimePricesParams struct {
+	OrganizationID tracker.OrganizationID
+	Prices         []string
+	Ids            []string
+	Versions       []int64
+}
+
+func (q *Queries) InsertRuntimePrices(ctx context.Context, arg InsertRuntimePricesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, insertRuntimePrices,
+		arg.OrganizationID,
+		arg.Prices,
+		arg.Ids,
+		arg.Versions,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var price_id string
+		if err := rows.Scan(&price_id); err != nil {
+			return nil, err
+		}
+		items = append(items, price_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const insertRuntimeRevision = `-- name: InsertRuntimeRevision :exec
@@ -146,7 +309,7 @@ func (q *Queries) PublishRuntime(ctx context.Context, id string) error {
 }
 
 const runtimeAdoptionTarget = `-- name: RuntimeAdoptionTarget :one
-SELECT o.generation,o.managed,o.state,r.revision_id,r.object_key,COALESCE(h.prepared_id,'')::text AS applied_revision
+SELECT o.generation,o.managed,o.state,r.revision_id,r.object_key,COALESCE(h.prepared_id,'')::text AS prepared_revision
 FROM platform.organizations o
 JOIN platform.runtime_heads r ON r.issuer=$1::text
 LEFT JOIN public.hosted_runtime_heads h ON h.organization_id=o.id
@@ -159,12 +322,12 @@ type RuntimeAdoptionTargetParams struct {
 }
 
 type RuntimeAdoptionTargetRow struct {
-	Generation      int64
-	Managed         bool
-	State           string
-	RevisionID      string
-	ObjectKey       string
-	AppliedRevision string
+	Generation       int64
+	Managed          bool
+	State            string
+	RevisionID       string
+	ObjectKey        string
+	PreparedRevision string
 }
 
 func (q *Queries) RuntimeAdoptionTarget(ctx context.Context, arg RuntimeAdoptionTargetParams) (RuntimeAdoptionTargetRow, error) {
@@ -176,9 +339,67 @@ func (q *Queries) RuntimeAdoptionTarget(ctx context.Context, arg RuntimeAdoption
 		&i.State,
 		&i.RevisionID,
 		&i.ObjectKey,
-		&i.AppliedRevision,
+		&i.PreparedRevision,
 	)
 	return i, err
+}
+
+const runtimePlanCatalog = `-- name: RuntimePlanCatalog :many
+SELECT p.id,p.version,p.name,p.monthly_usd_cents,p.runtime_id,COALESCE(c.metric,'')::text AS metric,COALESCE(c.amount,0)::bigint AS amount,COALESCE(c.feature,'')::text AS feature
+FROM ROWS FROM (unnest($1::text[]),unnest($2::bigint[])) q(id,version)
+JOIN hosted_plans p ON p.organization_id=$3 AND p.id=q.id AND p.version=q.version
+LEFT JOIN LATERAL (
+ SELECT a.metric,a.amount,NULL::text AS feature FROM hosted_plan_allowances a WHERE a.organization_id=p.organization_id AND a.plan_id=p.id AND a.plan_version=p.version
+ UNION ALL
+ SELECT NULL::text,NULL::bigint,f.feature FROM hosted_plan_features f WHERE f.organization_id=p.organization_id AND f.plan_id=p.id AND f.plan_version=p.version
+) c ON true
+ORDER BY p.id,p.version
+`
+
+type RuntimePlanCatalogParams struct {
+	Ids            []string
+	Versions       []int64
+	OrganizationID tracker.OrganizationID
+}
+
+type RuntimePlanCatalogRow struct {
+	ID              string
+	Version         int64
+	Name            string
+	MonthlyUsdCents pgtype.Int8
+	RuntimeID       string
+	Metric          string
+	Amount          int64
+	Feature         string
+}
+
+func (q *Queries) RuntimePlanCatalog(ctx context.Context, arg RuntimePlanCatalogParams) ([]RuntimePlanCatalogRow, error) {
+	rows, err := q.db.Query(ctx, runtimePlanCatalog, arg.Ids, arg.Versions, arg.OrganizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RuntimePlanCatalogRow{}
+	for rows.Next() {
+		var i RuntimePlanCatalogRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Version,
+			&i.Name,
+			&i.MonthlyUsdCents,
+			&i.RuntimeID,
+			&i.Metric,
+			&i.Amount,
+			&i.Feature,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const runtimePublished = `-- name: RuntimePublished :one
@@ -260,5 +481,35 @@ type SetRuntimeHeadParams struct {
 
 func (q *Queries) SetRuntimeHead(ctx context.Context, arg SetRuntimeHeadParams) error {
 	_, err := q.db.Exec(ctx, setRuntimeHead, arg.OrganizationID, arg.ActiveID, arg.PreparedID)
+	return err
+}
+
+const upsertRuntimePlans = `-- name: UpsertRuntimePlans :exec
+INSERT INTO hosted_plans(organization_id,id,version,name,monthly_usd_cents,runtime_id)
+SELECT $1,id,version,name,CASE WHEN priced THEN price ELSE NULL END,$2
+FROM ROWS FROM (unnest($3::text[]),unnest($4::bigint[]),unnest($5::text[]),unnest($6::bigint[]),unnest($7::boolean[])) q(id,version,name,price,priced)
+ON CONFLICT(organization_id,id,version) DO UPDATE SET name=EXCLUDED.name,monthly_usd_cents=EXCLUDED.monthly_usd_cents,runtime_id=EXCLUDED.runtime_id
+`
+
+type UpsertRuntimePlansParams struct {
+	OrganizationID tracker.OrganizationID
+	RevisionID     string
+	Ids            []string
+	Versions       []int64
+	Names          []string
+	Prices         []int64
+	Priced         []bool
+}
+
+func (q *Queries) UpsertRuntimePlans(ctx context.Context, arg UpsertRuntimePlansParams) error {
+	_, err := q.db.Exec(ctx, upsertRuntimePlans,
+		arg.OrganizationID,
+		arg.RevisionID,
+		arg.Ids,
+		arg.Versions,
+		arg.Names,
+		arg.Prices,
+		arg.Priced,
+	)
 	return err
 }
