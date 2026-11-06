@@ -35,7 +35,7 @@ func (a *Authority) Resolve(ctx context.Context, input RequestIdentity) (Scope, 
 	return a.ReadTenantAuthority(ctx, input)
 }
 
-func (a *Authority) ReadTenantAuthority(ctx context.Context, input RequestIdentity) (Scope, error) {
+func (a *Authority) ReadTenantAuthority(ctx context.Context, input RequestIdentity) (result Scope, resultErr error) {
 	if input.Organization == "" || input.CredentialHash == "" {
 		return Scope{}, ErrDenied
 	}
@@ -48,9 +48,17 @@ func (a *Authority) ReadTenantAuthority(ctx context.Context, input RequestIdenti
 	if err != nil {
 		return Scope{}, unavailable(err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		if err := tx.Rollback(ctx); err != nil {
+			result = Scope{}
+			resultErr = errors.Join(resultErr, unavailable(err))
+		}
+	}()
 	scope, readErr := scanAuthority(results.QueryRow(), input, a.now())
 	closeErr := results.Close()
+	if closeErr != nil {
+		closeErr = unavailable(closeErr)
+	}
 	if err := errors.Join(readErr, closeErr); err != nil {
 		return Scope{}, err
 	}
@@ -85,7 +93,7 @@ func scanAuthority(row pgx.Row, input RequestIdentity, now time.Time) (Scope, er
 		return Scope{}, ErrDenied
 	}
 	if scope.RunnerID() != "" {
-		if p.Scope != "worker" || p.Kind != "service" || runnerRemoved != nil || runnerExpires == nil || !scope.runner.Binding.Valid() || !runnerauth.ValidOperations(scope.runner.Operations) {
+		if p.Scope != "worker" || p.Kind != "service" || runnerRemoved != nil || runnerExpires == nil || !scope.runner.Valid() || !runnerauth.ValidOperations(scope.runner.Operations) {
 			return Scope{}, ErrDenied
 		}
 		if len(projects) > runnerstore.MaxRunnerProjectList {
