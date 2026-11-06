@@ -158,14 +158,19 @@ func newPostgresTenantEntryFixture(t *testing.T, configureEntry ...func(*Config)
 	return newEntryFixtureWithConfig(t, slog.New(slog.DiscardHandler), configureEntry)
 }
 
-func configurePostgresTenant(t *testing.T, cfg *hubserver.Config) *sql.DB {
+func configurePostgresTenant(t *testing.T, cfg *hubserver.Config, databases ...*sql.DB) *sql.DB {
 	t.Helper()
 	keys, err := hubsecrets.FromEnvironment(entrySecretEnvironment(1, 1))
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg.SecretKeys = keys
-	admin := entryPostgresDatabase(t)
+	var admin *sql.DB
+	if len(databases) == 0 {
+		admin = entryPostgresDatabase(t)
+	} else {
+		admin = databases[0]
+	}
 	name, password := "example_"+strings.ReplaceAll(uuid.NewString(), "-", ""), uuid.NewString()
 	quoted := pq.QuoteIdentifier(name)
 	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(password)+" IN ROLE "+postgres.RuntimeRoleName); err != nil {

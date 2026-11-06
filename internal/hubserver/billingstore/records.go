@@ -290,6 +290,7 @@ func EvaluateMonthlyBudget(input MonthlyBudgetInput) (budget.MonthlyDecision, er
 }
 
 type Reader interface {
+	RuntimeReader
 	ConversationUsageBuckets(context.Context, time.Time, time.Time, []string, bool) ([]ConversationUsageBucket, error)
 	ConversationUsageSummary(context.Context, time.Time, time.Time, []string) (ConversationUsageSummary, error)
 	ConversationPrice(context.Context, string, string, time.Time) (ConversationPrice, error)
@@ -333,6 +334,7 @@ type Reader interface {
 }
 
 type Writer interface {
+	RuntimeWriter
 	CreateConversationPrice(context.Context, ConversationPrice) error
 	RecordConversationUsage(context.Context, ConversationUsage) (bool, error)
 	Reader

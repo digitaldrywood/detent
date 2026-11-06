@@ -1277,6 +1277,33 @@ type HostedReleasePreference struct {
 	BuildTime      time.Time
 }
 
+type HostedRuntimeHead struct {
+	OrganizationID tracker.OrganizationID
+	ActiveID       *string
+	PreparedID     string
+}
+
+type HostedRuntimePublication struct {
+	ID          string
+	PublishedAt time.Time
+}
+
+type HostedRuntimeRevision struct {
+	OrganizationID  tracker.OrganizationID
+	ID              string
+	LocalPublished  bool
+	BindingID       string
+	CustomerOwned   bool
+	ObjectKey       string
+	Sha256          string
+	CompressedBytes int64
+	ContentBytes    int64
+	Codec           string
+	FormatVersion   int32
+	Kind            string
+	Retention       string
+}
+
 type HostedSession struct {
 	OrganizationID         tracker.OrganizationID
 	TokenHash              string
@@ -2201,6 +2228,12 @@ type PlatformPlatformNotification struct {
 	Plan        string
 	OccurredAt  time.Time
 	AttemptedAt *time.Time
+}
+
+type PlatformRuntimeHead struct {
+	Issuer     string
+	RevisionID string
+	ObjectKey  string
 }
 
 type PlatformSession struct {
