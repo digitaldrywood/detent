@@ -98,7 +98,7 @@ func (s *Service) keyOrganizations(ctx context.Context, key accessKey) ([]Organi
 		}
 		if _, err := s.keyTenantCall(ctx, key, org, "/internal/v1/keys/catalog", struct{}{}); err != nil {
 			var refusal *apikey.Refusal
-			if errors.As(err, &refusal) {
+			if !errors.Is(err, tenantauth.ErrUnavailable) && errors.As(err, &refusal) {
 				continue
 			}
 			return nil, err
@@ -159,7 +159,7 @@ func (e accessKeyExecutor) ListTools(ctx context.Context) ([]operatortool.Defini
 		raw, err := e.service.keyTenantCall(ctx, key, org, "/internal/v1/keys/catalog", struct{}{})
 		if err != nil {
 			var refusal *apikey.Refusal
-			if errors.As(err, &refusal) && (refusal.Code == "membership_denied" || refusal.Code == "access_denied") {
+			if !errors.Is(err, tenantauth.ErrUnavailable) && errors.As(err, &refusal) && (refusal.Code == "membership_denied" || refusal.Code == "access_denied") {
 				continue
 			}
 			return nil, err
@@ -284,8 +284,8 @@ func (e accessKeyExecutor) Execute(ctx context.Context, call operatortool.Call) 
 			EntryAttachment string            `json:"entry_attachment"`
 			Mutation        mutation.Metadata `json:"mutation"`
 		}
-		if json.Unmarshal(raw, &authorized) != nil {
-			return operatortool.Result{}, operatortool.ErrAccessDenied
+		if err := json.Unmarshal(raw, &authorized); err != nil {
+			return operatortool.Result{}, errors.Join(tenantauth.ErrUnavailable, err)
 		}
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, e.service.config.PublicURL+"/mcp", nil)
 		if err != nil {
@@ -305,6 +305,9 @@ func (e accessKeyExecutor) Execute(ctx context.Context, call operatortool.Call) 
 		}
 		if err != nil {
 			return operatortool.Result{}, err
+		}
+		if response.status >= http.StatusInternalServerError {
+			return operatortool.Result{}, tenantauth.ErrUnavailable
 		}
 		if response.status != http.StatusCreated && response.status != http.StatusOK {
 			var refusal apikey.Refusal

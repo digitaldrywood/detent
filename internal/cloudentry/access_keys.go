@@ -221,7 +221,10 @@ func (s *Service) accountKeySession(c echo.Context) (accountSession, error) {
 		return accountSession{}, errNoSession
 	}
 	session, err := s.session(c)
-	if err != nil || session.Identity.SupportActor != "" {
+	if err != nil {
+		return accountSession{}, err
+	}
+	if session.Identity.SupportActor != "" {
 		return accountSession{}, errNoSession
 	}
 	return session, nil
@@ -413,6 +416,9 @@ func (s *Service) keyAdmin(c echo.Context, session accountSession) (Organization
 	})
 	if err != nil {
 		return org, err
+	}
+	if status != http.StatusOK && status != http.StatusUnauthorized && status != http.StatusForbidden {
+		return org, tenantauth.ErrUnavailable
 	}
 	if status != http.StatusOK {
 		return org, &apikey.Refusal{Code: "role_denied", Message: "Current organization administrator authority is required"}

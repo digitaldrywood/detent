@@ -72,6 +72,13 @@ func oauthError(c echo.Context, status int, code string) error {
 	return c.JSON(status, map[string]string{"error": code})
 }
 
+func oauthAuthorityError(c echo.Context, err error, status int, code string) error {
+	if entryAuthStatus(oauthCredentialError(err), status) == http.StatusServiceUnavailable {
+		return oauthError(c, http.StatusServiceUnavailable, "server_error")
+	}
+	return oauthError(c, status, code)
+}
+
 func (s *Service) oauthChallenge(c echo.Context) error {
 	c.Response().Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+s.config.PublicURL+`/.well-known/oauth-protected-resource", scope="`+oauthScope+`"`)
 	return oauthError(c, http.StatusUnauthorized, "invalid_token")
@@ -119,7 +126,10 @@ func (s *Service) openOAuth(purpose, value string, target any) error {
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal([]byte(raw), target)
+	if err := json.Unmarshal([]byte(raw), target); err != nil {
+		return errNoSession
+	}
+	return nil
 }
 
 func validOAuthRedirect(raw string) bool {
@@ -197,7 +207,7 @@ func (s *Service) oauthAuthorize(c echo.Context) error {
 	}
 	registration, err := s.oauthRegistration(c.Request().Context(), q.Get("client_id"))
 	if err != nil {
-		return oauthError(c, 400, "unauthorized_client")
+		return oauthAuthorityError(c, err, 400, "unauthorized_client")
 	}
 	if !slices.Contains(registration.RedirectURIs, q.Get("redirect_uri")) {
 		return oauthError(c, 400, "invalid_request")
@@ -244,9 +254,12 @@ func (s *Service) oauthBrowserRequest(c echo.Context) (oauthRequest, error) {
 	var r oauthRequest
 	cookie, err := c.Cookie(s.cookieName("oauth"))
 	if err != nil {
+		return r, errNoSession
+	}
+	if err := s.openOAuth("oauth-consent", cookie.Value, &r); err != nil {
 		return r, err
 	}
-	if err := s.openOAuth("oauth-consent", cookie.Value, &r); err != nil || r.ID != c.Param("request") || !r.ExpiresAt.After(s.config.now()) {
+	if r.ID != c.Param("request") || !r.ExpiresAt.After(s.config.now()) {
 		return r, errNoSession
 	}
 	r.Registration, err = s.oauthRegistration(c.Request().Context(), r.Client)
@@ -267,10 +280,13 @@ func (s *Service) oauthBrowserRequest(c echo.Context) (oauthRequest, error) {
 func (s *Service) oauthConsent(c echo.Context) error {
 	r, err := s.oauthBrowserRequest(c)
 	if err != nil {
-		return oauthError(c, 400, "invalid_request")
+		return oauthAuthorityError(c, err, 400, "invalid_request")
 	}
 	session, err := s.accountKeySession(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return oauthError(c, 503, "server_error")
+		}
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?"+url.Values{"return": {"/oauth/consent/" + r.ID}}.Encode())
 	}
 	choices, err := s.organizationChoices(c.Request().Context(), session)
@@ -287,14 +303,14 @@ func (s *Service) oauthConsent(c echo.Context) error {
 func (s *Service) oauthApprove(c echo.Context) (resultErr error) {
 	session, err := s.accountKeySession(c)
 	if err != nil {
-		return oauthError(c, 403, "access_denied")
+		return oauthAuthorityError(c, err, 403, "access_denied")
 	}
 	if !s.csrfValid(c, session, "") {
 		return oauthError(c, 403, "access_denied")
 	}
 	r, err := s.oauthBrowserRequest(c)
 	if err != nil {
-		return oauthError(c, 400, "invalid_request")
+		return oauthAuthorityError(c, err, 400, "invalid_request")
 	}
 	redirect, err := url.Parse(r.Redirect)
 	if err != nil {
@@ -314,11 +330,11 @@ func (s *Service) oauthApprove(c echo.Context) (resultErr error) {
 	}
 	org, err := s.readyOrganization(c.Request().Context(), c.FormValue("organization"))
 	if err != nil {
-		return oauthError(c, 403, "access_denied")
+		return oauthAuthorityError(c, err, 403, "access_denied")
 	}
 	reach, err := s.ownerKeyReach(c.Request().Context(), session.Subject, session.Email, org)
 	if err != nil {
-		return oauthError(c, 403, "access_denied")
+		return oauthAuthorityError(c, err, 403, "access_denied")
 	}
 	policy, err := s.personalKeyPolicy(c.Request().Context(), org.ID)
 	if err != nil {
@@ -365,7 +381,10 @@ func (s *Service) oauthApprove(c echo.Context) (resultErr error) {
 		return oauthError(c, 503, "server_error")
 	}
 	count, err := result.RowsAffected()
-	if err != nil || count != 1 {
+	if err != nil {
+		return oauthError(c, 503, "server_error")
+	}
+	if count != 1 {
 		return oauthError(c, 400, "invalid_request")
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -446,6 +465,9 @@ func (s *Service) oauthToken(c echo.Context) error {
 	}
 	client, err := s.oauthClientAuthentication(c, form)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return oauthError(c, 503, "server_error")
+		}
 		c.Response().Header().Set("WWW-Authenticate", `Basic realm="oauth"`)
 		return oauthError(c, 401, "invalid_client")
 	}

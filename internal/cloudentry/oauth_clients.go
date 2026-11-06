@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 )
 
 func (s *Service) oauthRegistration(ctx context.Context, id string) (_ oauthRegistration, resultErr error) {
@@ -15,18 +17,22 @@ func (s *Service) oauthRegistration(ctx context.Context, id string) (_ oauthRegi
 	}
 	rows, err := s.auth.store.reader.QueryContext(ctx, `SELECT c.name,c.auth_method,c.secret_hash,u.uri FROM platform.oauth_clients c JOIN platform.oauth_client_redirect_uris u ON u.client_id=c.id WHERE c.id=$1 ORDER BY u.position`, id)
 	if err != nil {
-		return registration, err
+		return registration, errors.Join(tenantauth.ErrUnavailable, err)
 	}
-	defer closeEntryRows(rows, &resultErr)
+	defer func() {
+		if err := rows.Close(); err != nil {
+			resultErr = errors.Join(tenantauth.ErrUnavailable, resultErr, err)
+		}
+	}()
 	for rows.Next() {
 		var uri string
 		if err := rows.Scan(&registration.Name, &registration.AuthMethod, &registration.SecretHash, &uri); err != nil {
-			return registration, err
+			return registration, errors.Join(tenantauth.ErrUnavailable, err)
 		}
 		registration.RedirectURIs = append(registration.RedirectURIs, uri)
 	}
 	if err := rows.Err(); err != nil {
-		return registration, err
+		return registration, errors.Join(tenantauth.ErrUnavailable, err)
 	}
 	if len(registration.RedirectURIs) > 0 {
 		return registration, nil

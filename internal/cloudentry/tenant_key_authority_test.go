@@ -3,6 +3,7 @@ package cloudentry
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,8 +16,10 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
 )
 
@@ -61,6 +64,81 @@ func TestKeyAuthorityOutagesRemainRetryable(t *testing.T) {
 	var refusal *apikey.Refusal
 	if !errors.Is(err, tenantauth.ErrUnavailable) || errors.As(err, &refusal) {
 		t.Fatalf("tenant outage became a denial: %v", err)
+	}
+	t.Run("attachment authority outage", func(t *testing.T) {
+		transport := f.service.config.transport
+		f.service.config.transport = func(Organization) (http.RoundTripper, error) {
+			return handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })}, nil
+		}
+		t.Cleanup(func() { f.service.config.transport = transport })
+		personal := key
+		personal.ID, personal.Hash, personal.Kind, personal.Owner, personal.ServiceOrganization = "key_personal", apikey.HashToken("personal_token"), "personal", "user_alice", ""
+		if err := f.service.auth.postgresCreateKey(t.Context(), personal); err != nil {
+			t.Fatal(err)
+		}
+		provider := f.service.config.Provider
+		f.service.config.Provider = oauthMembershipProvider{HostedProvider: provider, memberships: func(context.Context, string, string) ([]auth.Membership, error) {
+			return nil, &apikey.Refusal{Code: "membership_denied"}
+		}}
+		t.Cleanup(func() { f.service.config.Provider = provider })
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
+		request.Header.Set("Authorization", "Bearer personal_token")
+		c := echo.New().NewContext(request, httptest.NewRecorder())
+		c.SetParamNames("project")
+		c.SetParamValues("prj_example")
+		status, _, err := f.service.attachmentCall(c, org, http.MethodGet, "", nil)
+		if !errors.Is(err, tenantauth.ErrUnavailable) || status == http.StatusForbidden {
+			t.Fatalf("attachment authority outage became denial: status=%d err=%v", status, err)
+		}
+	})
+	for _, status := range []int{0, http.StatusForbidden, http.StatusBadGateway, http.StatusServiceUnavailable} {
+		t.Run(fmt.Sprintf("attachment/%d", status), func(t *testing.T) {
+			f.service.config.transport = func(Organization) (http.RoundTripper, error) {
+				return handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					body := `{"entry_attachment":"read_attachment_metadata"}`
+					if status == 0 {
+						body = "{"
+					}
+					if _, err := w.Write([]byte(body)); err != nil {
+						t.Error(err)
+					}
+				})}, nil
+			}
+			f.service.echo.GET("/organizations/:organization/api/v2/projects/:project/attachments/:attachment/metadata", func(c echo.Context) error { return c.JSON(status, apikey.Refusal{Code: "access_denied"}) })
+			ctx := context.WithValue(t.Context(), accessKeyContext{}, accessKeyConnection{hash: key.Hash})
+			_, err := (accessKeyExecutor{f.service}).Execute(ctx, operatortool.Call{Name: operatortool.ReadAttachmentMetadata, Arguments: json.RawMessage(`{"organization_id":"org_alpha","project_id":"prj_example","attachment_id":"att_00000000000000000000000000000001"}`)})
+			if status == 0 || status >= http.StatusInternalServerError {
+				if !errors.Is(err, tenantauth.ErrUnavailable) {
+					t.Fatalf("attachment outage became denial: %v", err)
+				}
+			} else if !errors.As(err, &refusal) {
+				t.Fatalf("attachment denial lost: %v", err)
+			}
+		})
+	}
+	for _, organization := range []string{"org_alpha", "org_beta"} {
+		for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable} {
+			t.Run(fmt.Sprintf("%s/admin/%d", organization, status), func(t *testing.T) {
+				f.service.config.transport = func(Organization) (http.RoundTripper, error) {
+					return handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) })}, nil
+				}
+				response := httptest.NewRecorder()
+				c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), response)
+				c.SetParamNames("organization")
+				c.SetParamValues(organization)
+				_, err := f.service.keyAdmin(c, accountSession{Subject: "user_alice", Email: "alice@example.test"})
+				if err := keyError(c, err); err != nil {
+					t.Fatal(err)
+				}
+				want := http.StatusServiceUnavailable
+				if status == http.StatusUnauthorized || status == http.StatusForbidden {
+					want = http.StatusForbidden
+				}
+				if response.Code != want {
+					t.Fatalf("admin outage status=%d want=%d", response.Code, want)
+				}
+			})
+		}
 	}
 }
 

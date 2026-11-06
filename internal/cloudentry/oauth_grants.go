@@ -95,6 +95,9 @@ func (s *Service) revokeOAuthGrant(ctx context.Context, owner, id string) error 
 func (s *Service) oauthGrantsJSON(c echo.Context) error {
 	session, err := s.accountKeySession(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return oauthError(c, 503, "server_error")
+		}
 		return c.NoContent(http.StatusUnauthorized)
 	}
 	cursor := c.QueryParam("cursor")
@@ -111,10 +114,13 @@ func (s *Service) oauthGrantsJSON(c echo.Context) error {
 func (s *Service) oauthRevokeJSON(c echo.Context) error {
 	session, err := s.accountKeySession(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusForbidden) == http.StatusServiceUnavailable {
+			return oauthError(c, 503, "server_error")
+		}
 		return c.NoContent(http.StatusForbidden)
 	}
 	if err = s.revokeOAuthGrant(c.Request().Context(), session.Subject, c.Param("grant")); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if entryAuthStatus(err, http.StatusNotFound) != http.StatusServiceUnavailable && errors.Is(err, sql.ErrNoRows) {
 			return c.NoContent(http.StatusNotFound)
 		}
 		return oauthError(c, 503, "server_error")

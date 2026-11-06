@@ -19,6 +19,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
+type oauthSessionProvider struct{ auth.HostedProvider }
+
+func (p oauthSessionProvider) CurrentSession(context.Context, auth.HostedIdentity) (auth.HostedIdentity, error) {
+	return auth.HostedIdentity{}, &auth.HostedIdentityError{Reason: auth.HostedReasonProviderUnavailable}
+}
+
 const testOAuthVerifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
 const testOAuthChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
 
@@ -33,7 +39,7 @@ func (p oauthMembershipProvider) Memberships(ctx context.Context, user, organiza
 
 func TestOAuthEndpointAuthorityFailures(t *testing.T) {
 	for _, orgID := range []string{"org_alpha", "org_beta"} {
-		for _, endpoint := range []string{"authorization_code", "refresh_token", "bearer"} {
+		for _, endpoint := range []string{"authorization_code", "refresh_token", "bearer", "authorize", "consent", "approve", "grants", "revoke"} {
 			t.Run(orgID+"/"+endpoint, func(t *testing.T) {
 				ctx := t.Context()
 				admin := entryPostgresDatabase(t)
@@ -42,8 +48,25 @@ func TestOAuthEndpointAuthorityFailures(t *testing.T) {
 				<-s.oauthBackfillDone
 				owner := newBrowser(t, s.Handler())
 				owner.login("/organizations", "user_alice:")
-				client := registerTestOAuth(t, owner, "Example assistant", "none")
-				for _, fault := range []string{"provider", "registry", "exchange registry", "exchange provider", "authority query", "refusal audit", "membership denied", "policy denied", "organization missing", "revoked", "missing"} {
+				client := registerTestOAuth(t, owner, "Example assistant", "client_secret_post")
+				faults := []string{"client registration", "registration scan", "unknown client", "bad secret", "provider", "registry", "exchange registry", "exchange provider", "authority query", "refusal audit", "membership denied", "policy denied", "organization missing", "revoked", "missing"}
+				browserEndpoint := endpoint != "authorization_code" && endpoint != "refresh_token" && endpoint != "bearer"
+				if browserEndpoint {
+					switch endpoint {
+					case "authorize":
+						faults = []string{"client registration", "registration scan", "unknown client"}
+					case "consent":
+						faults = []string{"client registration", "registration scan", "consent query", "session", "session provider", "missing session"}
+					case "approve":
+						faults = []string{"client registration", "registration scan", "consent query", "session", "session provider", "provider", "registry", "owner context", "authority query", "membership denied", "policy denied", "organization missing", "missing session"}
+					default:
+						faults = []string{"session", "session provider", "missing session"}
+					}
+				}
+				for _, fault := range faults {
+					if endpoint == "bearer" && (fault == "unknown client" || fault == "bad secret" || fault == "registration scan") {
+						continue
+					}
 					if endpoint == "bearer" && (strings.HasPrefix(fault, "exchange ") || fault == "authority query" || fault == "refusal audit" || fault == "policy denied") {
 						continue
 					}
@@ -54,9 +77,28 @@ func TestOAuthEndpointAuthorityFailures(t *testing.T) {
 							t.Fatal(err)
 						}
 						var token oauthTokenResponse
-						if endpoint != "authorization_code" {
+						if endpoint == "refresh_token" || endpoint == "bearer" {
 							token = exchangeTestOAuth(t, owner, form)
-							form = url.Values{"client_id": {client.ID}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
+							form = url.Values{"client_id": {client.ID}, "client_secret": {client.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
+						}
+						path := "/oauth/authorize?" + testOAuthQuery(client).Encode()
+						browserForm := url.Values{}
+						method := http.MethodGet
+						switch endpoint {
+						case "consent", "approve":
+							started := owner.do(http.MethodGet, path, nil, nil)
+							path = started.Header.Get("Location")
+							consent := owner.do(http.MethodGet, path, nil, nil)
+							browserForm = url.Values{"csrf": {csrfFrom(t, consent.Body)}, "organization": {orgID}, "decision": {"allow"}}
+							if endpoint == "approve" {
+								method = http.MethodPost
+							}
+						case "grants", "revoke":
+							path = "/api/cloud/account/oauth-grants"
+							if endpoint == "revoke" {
+								path += "/" + grant
+								method = http.MethodDelete
+							}
 						}
 						exec := func(query string, args ...any) {
 							t.Helper()
@@ -66,7 +108,7 @@ func TestOAuthEndpointAuthorityFailures(t *testing.T) {
 						}
 						provider, transport := s.config.Provider, s.config.transport
 						t.Cleanup(func() { s.config.Provider, s.config.transport = provider, transport })
-						outage := fault == "provider" || fault == "registry" || strings.HasPrefix(fault, "exchange ") || fault == "authority query" || fault == "refusal audit"
+						outage := fault == "provider" || fault == "registry" || strings.HasPrefix(fault, "exchange ") || fault == "authority query" || fault == "refusal audit" || fault == "client registration" || fault == "registration scan" || fault == "consent query" || fault == "session" || fault == "session provider" || fault == "owner context"
 						membershipCalls := 0
 						s.config.Provider = oauthMembershipProvider{HostedProvider: provider, memberships: func(ctx context.Context, user, organization string) ([]auth.Membership, error) {
 							membershipCalls++
@@ -83,6 +125,43 @@ func TestOAuthEndpointAuthorityFailures(t *testing.T) {
 							return provider.Memberships(ctx, user, organization)
 						}}
 						switch fault {
+						case "client registration":
+							exec("ALTER TABLE platform.oauth_clients RENAME TO oauth_clients_unavailable")
+							t.Cleanup(func() { exec("ALTER TABLE platform.oauth_clients_unavailable RENAME TO oauth_clients") })
+						case "registration scan":
+							exec("ALTER TABLE platform.oauth_clients ALTER COLUMN name DROP NOT NULL")
+							exec("UPDATE platform.oauth_clients SET name=NULL WHERE id=$1", client.ID)
+							t.Cleanup(func() {
+								exec("UPDATE platform.oauth_clients SET name=$1 WHERE id=$2", client.Name, client.ID)
+								exec("ALTER TABLE platform.oauth_clients ALTER COLUMN name SET NOT NULL")
+							})
+						case "consent query":
+							exec("ALTER TABLE platform.oauth_requests RENAME TO oauth_requests_unavailable")
+							t.Cleanup(func() { exec("ALTER TABLE platform.oauth_requests_unavailable RENAME TO oauth_requests") })
+						case "session", "missing session":
+							if fault == "session" {
+								exec("ALTER TABLE platform.sessions RENAME TO sessions_unavailable")
+								t.Cleanup(func() { exec("ALTER TABLE platform.sessions_unavailable RENAME TO sessions") })
+							} else {
+								exec("UPDATE platform.sessions SET revoked_at=now()")
+								t.Cleanup(func() { exec("UPDATE platform.sessions SET revoked_at=NULL") })
+							}
+						case "session provider":
+							s.verified.mu.Lock()
+							s.verified.verified = make(map[string]time.Time)
+							s.verified.mu.Unlock()
+							s.config.Provider = oauthSessionProvider{HostedProvider: provider}
+						case "owner context":
+							s.config.transport = func(Organization) (http.RoundTripper, error) {
+								return handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) })}, nil
+							}
+						case "unknown client":
+							form.Set("client_id", "oauth_client_unknown")
+							q := testOAuthQuery(client)
+							q.Set("client_id", "oauth_client_unknown")
+							path = "/oauth/authorize?" + q.Encode()
+						case "bad secret":
+							form.Set("client_secret", "incorrect_secret")
 						case "registry":
 							exec("ALTER TABLE platform.organizations RENAME TO organizations_unavailable")
 							t.Cleanup(func() { exec("ALTER TABLE platform.organizations_unavailable RENAME TO organizations") })
@@ -119,10 +198,33 @@ func TestOAuthEndpointAuthorityFailures(t *testing.T) {
 						if endpoint == "bearer" {
 							want = http.StatusUnauthorized
 						}
+						if fault == "unknown client" || fault == "bad secret" {
+							want = http.StatusUnauthorized
+						}
+						if browserEndpoint {
+							want = http.StatusForbidden
+							if endpoint == "authorize" {
+								want = http.StatusBadRequest
+							}
+							if endpoint == "consent" || endpoint == "grants" {
+								want = http.StatusUnauthorized
+							}
+							if endpoint == "consent" && fault == "missing session" {
+								want = http.StatusSeeOther
+							}
+						}
 						if outage {
 							want = http.StatusServiceUnavailable
 						}
-						if endpoint == "bearer" {
+						if browserEndpoint {
+							response := owner.do(method, path, browserForm, nil)
+							if response.StatusCode != want || outage && response.Header.Get("WWW-Authenticate") != "" || outage && response.Header.Get("Location") != "" {
+								t.Fatalf("browser status=%d want=%d challenge=%q redirect=%q body=%s", response.StatusCode, want, response.Header.Get("WWW-Authenticate"), response.Header.Get("Location"), response.Body)
+							}
+							if outage && response.Body != "{\"error\":\"server_error\"}\n" {
+								t.Fatalf("outage body=%s", response.Body)
+							}
+						} else if endpoint == "bearer" {
 							response := owner.do(http.MethodPost, "/mcp", nil, map[string]string{"Authorization": "Bearer " + token.AccessToken})
 							if response.StatusCode != want || outage && response.Header.Get("WWW-Authenticate") != "" || !outage && response.Header.Get("WWW-Authenticate") == "" {
 								t.Fatalf("bearer status=%d want=%d challenge=%q body=%s", response.StatusCode, want, response.Header.Get("WWW-Authenticate"), response.Body)
@@ -130,13 +232,16 @@ func TestOAuthEndpointAuthorityFailures(t *testing.T) {
 						} else {
 							response := owner.do(http.MethodPost, "/oauth/token", form, nil)
 							code := "invalid_grant"
+							if fault == "unknown client" || fault == "bad secret" {
+								code = "invalid_client"
+							}
 							if outage {
 								code = "server_error"
 							}
 							var body struct {
 								Error string `json:"error"`
 							}
-							if err := json.Unmarshal([]byte(response.Body), &body); err != nil || response.StatusCode != want || body.Error != code {
+							if err := json.Unmarshal([]byte(response.Body), &body); err != nil || response.StatusCode != want || body.Error != code || outage && response.Header.Get("WWW-Authenticate") != "" || code == "invalid_client" && response.Header.Get("WWW-Authenticate") == "" {
 								t.Fatalf("token status=%d want=%d error=%q want=%q body=%s", response.StatusCode, want, body.Error, code, response.Body)
 							}
 							if outage {

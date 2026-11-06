@@ -135,6 +135,9 @@ func (s *Service) attachmentCall(c echo.Context, organization Organization, meth
 	}
 	if keyHash != "" {
 		key, keyErr := s.activeAccessKey(c.Request().Context(), keyHash)
+		if keyErr != nil && entryAuthStatus(keyErr, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return 0, nil, keyErr
+		}
 		if keyErr != nil && !errors.Is(keyErr, sql.ErrNoRows) {
 			var refusal *apikey.Refusal
 			if errors.As(keyErr, &refusal) {
@@ -145,6 +148,9 @@ func (s *Service) attachmentCall(c echo.Context, organization Organization, meth
 		}
 		if keyErr == nil {
 			claims, err = s.keyClaims(c.Request().Context(), key, organization, method, path, body)
+			if err != nil && entryAuthStatus(err, http.StatusForbidden) == http.StatusServiceUnavailable {
+				return 0, nil, err
+			}
 			if err != nil {
 				var refusal *apikey.Refusal
 				if errors.As(err, &refusal) {
