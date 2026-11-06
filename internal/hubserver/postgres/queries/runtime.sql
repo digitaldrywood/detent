@@ -30,3 +30,13 @@ ON CONFLICT(issuer) DO UPDATE SET revision_id=EXCLUDED.revision_id,object_key=EX
 
 -- name: EntryRuntime :one
 SELECT revision_id,object_key FROM platform.runtime_heads WHERE issuer=$1;
+
+-- name: RuntimeTenantPage :many
+SELECT id,generation FROM platform.organizations WHERE id>sqlc.arg(after_id)::text ORDER BY id LIMIT sqlc.arg(page_limit)::integer;
+
+-- name: RuntimeAdoptionTarget :one
+SELECT o.generation,o.managed,o.state,r.revision_id,r.object_key,COALESCE(h.prepared_id,'')::text AS applied_revision
+FROM platform.organizations o
+JOIN platform.runtime_heads r ON r.issuer=sqlc.arg(issuer)::text
+LEFT JOIN public.hosted_runtime_heads h ON h.organization_id=o.id
+WHERE o.id=sqlc.arg(organization_id)::text;

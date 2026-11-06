@@ -11,6 +11,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 
@@ -20,10 +21,70 @@ import (
 )
 
 type entryRuntime struct {
-	Update    hubserver.HostedRuntimeUpdate
-	Prices    []hubserver.HostedBillingPrice
-	Configure func(TenantSpec) ([]byte, error)
-	Revision  string
+	Update         hubserver.HostedRuntimeUpdate
+	Prices         []hubserver.HostedBillingPrice
+	Configure      func(TenantSpec) ([]byte, error)
+	Revision       string
+	AllowedEmails  []string
+	AllowedDomains []string
+}
+
+type RuntimeAdopter interface {
+	AdoptRuntime(context.Context, Organization, string, hubserver.HostedRuntimeUpdate) error
+}
+
+type entryRuntimeObject struct {
+	hubserver.HostedRuntimeUpdate
+	AllowedEmails  []string `json:"allowed_emails"`
+	AllowedDomains []string `json:"allowed_domains"`
+}
+
+func (s *Service) runtimeAdopter() (RuntimeAdopter, bool) {
+	if s.config.Allocation == nil {
+		return nil, false
+	}
+	adopter, ok := s.config.Allocation.Launcher.(RuntimeAdopter)
+	return adopter, ok
+}
+
+func (s *Service) RuntimeTenantPage(ctx context.Context, after string, limit int) ([]hubmaintenance.Tenant, error) {
+	return s.registry.store.db.postgres.RuntimeTenantPage(ctx, after, limit)
+}
+
+func (s *Service) AdoptPublishedRuntime(ctx context.Context, tenant hubmaintenance.Tenant) error {
+	adopter, ok := s.runtimeAdopter()
+	if !ok {
+		return errors.New("shared runtime adoption is unavailable")
+	}
+	target, err := s.registry.store.db.postgres.RuntimeAdoption(ctx, tracker.OrganizationID(tenant.Organization), s.config.Issuer)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if target.Generation != tenant.Generation {
+		return corestore.ErrRevisionConflict
+	}
+	if !target.Managed || target.State != "ready" && target.State != "allocating" || target.AppliedRevision == target.Publication.Revision {
+		return nil
+	}
+	raw, err := s.readEntryObject(ctx, target.Publication.ObjectKey)
+	if err != nil {
+		return err
+	}
+	var payload entryRuntimeObject
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return err
+	}
+	if payload.StageID != target.Publication.Revision {
+		return corestore.ErrRevisionConflict
+	}
+	if err := hubserver.ValidateHostedRuntimeUpdate(payload.HostedRuntimeUpdate); err != nil {
+		return err
+	}
+	organization := Organization{ID: tenant.Organization, Generation: tenant.Generation, Managed: target.Managed, State: target.State}
+	return adopter.AdoptRuntime(ctx, organization, target.AppliedRevision, payload.HostedRuntimeUpdate)
 }
 
 func (s *Service) allocationPrices(ctx context.Context) []hubserver.HostedBillingPrice {
@@ -70,8 +131,6 @@ func (s *Service) reloadConfiguration(ctx context.Context) error {
 }
 
 func (s *Service) publishRuntimeConfiguration(ctx context.Context) ([]Organization, error) {
-	s.reloadMu.Lock()
-	defer s.reloadMu.Unlock()
 	next, err := s.config.Reload()
 	if err != nil {
 		return nil, fmt.Errorf("validate cloud file: %w", err)
@@ -83,6 +142,11 @@ func (s *Service) publishRuntimeConfiguration(ctx context.Context) ([]Organizati
 	if s.config.Allocation == nil || next.Allocation == nil || next.Runtime == nil {
 		return nil, errors.New("changing allocation availability requires a restart")
 	}
+	if _, shared := s.runtimeAdopter(); shared {
+		return nil, s.publishSharedRuntimeConfiguration(ctx, next)
+	}
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	if s.config.ConfigureRuntime == nil {
 		return nil, errors.New("runtime reload requires the configured tenant launcher")
 	}
@@ -136,7 +200,39 @@ func (s *Service) publishRuntimeConfiguration(ctx context.Context) ([]Organizati
 	return tenants, nil
 }
 
+func (s *Service) publishSharedRuntimeConfiguration(ctx context.Context, next Config) error {
+	update := *next.Runtime
+	update.Reason = "SIGHUP cloud configuration reload"
+	update.ValidateOnly = false
+	update.StageID = uuid.NewString()
+	if update.Plans == nil {
+		update.Plans = &hubserver.HostedPlansConfig{}
+	}
+	if err := hubserver.ValidateHostedRuntimeUpdate(update); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(entryRuntimeObject{HostedRuntimeUpdate: update, AllowedEmails: next.Allocation.AllowedEmails, AllowedDomains: next.Allocation.AllowedDomains})
+	if err != nil {
+		return err
+	}
+	key, err := s.storeEntryObject(ctx, raw)
+	if err != nil {
+		return err
+	}
+	s.reloadMu.Lock()
+	err = s.registry.store.db.postgres.PublishRuntime(ctx, update.StageID, s.config.Issuer, key, nil)
+	s.reloadMu.Unlock()
+	if err != nil {
+		return err
+	}
+	_, err = s.loadRuntime(ctx)
+	return err
+}
+
 func (s *Service) publishTenantRuntime(ctx context.Context, organization Organization) error {
+	if _, shared := s.runtimeAdopter(); shared {
+		return s.AdoptPublishedRuntime(ctx, hubmaintenance.Tenant{Organization: organization.ID, Generation: organization.Generation})
+	}
 	state, err := s.loadRuntime(ctx)
 	if err != nil || state == nil {
 		return err
@@ -173,16 +269,34 @@ func (s *Service) loadRuntime(ctx context.Context) (*entryRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
-	var update hubserver.HostedRuntimeUpdate
-	if err := json.Unmarshal(raw, &update); err != nil {
+	var payload entryRuntimeObject
+	if err := json.Unmarshal(raw, &payload); err != nil {
 		return nil, err
 	}
-	if s.config.ConfigureRuntime == nil {
+	update := payload.HostedRuntimeUpdate
+	_, shared := s.runtimeAdopter()
+	if shared {
+		if update.StageID != publication.Revision {
+			return nil, corestore.ErrRevisionConflict
+		}
+		if err := hubserver.ValidateHostedRuntimeUpdate(update); err != nil {
+			return nil, err
+		}
+	}
+	if s.config.ConfigureRuntime == nil && !shared {
 		return nil, errors.New("runtime reload requires the configured tenant launcher")
 	}
-	state := &entryRuntime{Update: update, Prices: update.Prices, Configure: s.config.ConfigureRuntime(update), Revision: publication.Revision}
-	s.runtime.Store(state)
-	return state, nil
+	state := &entryRuntime{Update: update, Prices: update.Prices, Revision: publication.Revision, AllowedEmails: slices.Clone(payload.AllowedEmails), AllowedDomains: slices.Clone(payload.AllowedDomains)}
+	if s.config.ConfigureRuntime != nil {
+		state.Configure = s.config.ConfigureRuntime(update)
+	}
+	if s.runtime.CompareAndSwap(current, state) {
+		if shared {
+			s.allowlist.Store(&signupAllowlist{emails: state.AllowedEmails, domains: state.AllowedDomains})
+		}
+		return state, nil
+	}
+	return s.runtime.Load(), nil
 }
 
 func (s *Service) currentRuntime(ctx context.Context) *entryRuntime {

@@ -2,6 +2,7 @@ package cloudentry
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
@@ -27,6 +29,107 @@ import (
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type sharedRuntimeLauncher struct {
+	*silentLauncher
+	adopt func(context.Context, Organization, string, hubserver.HostedRuntimeUpdate) error
+}
+
+func (l *sharedRuntimeLauncher) AdoptRuntime(ctx context.Context, org Organization, expected string, update hubserver.HostedRuntimeUpdate) error {
+	return l.adopt(ctx, org, expected, update)
+}
+
+func TestSharedRuntimePublicationDoesNotVisitTenants(t *testing.T) {
+	f, _ := runtimePublicationFixture(t)
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true"); err != nil {
+		t.Fatal(err)
+	}
+	plans := *f.fixtures["org_alpha"].config.Hosted.Plans
+	f.service.config.Allocation = &AllocationConfig{
+		TenantRoot: t.TempDir(), SocketRoot: t.TempDir(), MaxTenants: 2, MaxConcurrent: 1, RetryLimit: 5,
+		Launcher: &sharedRuntimeLauncher{silentLauncher: &silentLauncher{}, adopt: func(context.Context, Organization, string, hubserver.HostedRuntimeUpdate) error {
+			t.Error("publication adopted a tenant synchronously")
+			return nil
+		}},
+	}
+	f.service.config.ConfigureRuntime = nil
+	next := f.service.config
+	next.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &plans}
+	f.service.config.Reload = func() (Config, error) { return next, nil }
+	f.service.config.transport = func(Organization) (http.RoundTripper, error) {
+		return nil, errors.New("shared publication must not use tenant HTTP")
+	}
+	if err := f.service.reloadConfiguration(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if state := f.service.currentRuntime(t.Context()); state == nil || state.Revision == "" {
+		t.Fatal("desired runtime was not durable")
+	}
+	repo := tenantPostgresRepository(t, f.fixtures["org_alpha"])
+	snapshots, err := hubserver.NewHostedRuntimeSnapshots(repo, tenantDetailFixture{&conversationArchiveFixture{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failBeta := true
+	calls := 0
+	launcher := f.service.config.Allocation.Launcher.(*sharedRuntimeLauncher)
+	launcher.adopt = func(ctx context.Context, org Organization, expected string, update hubserver.HostedRuntimeUpdate) error {
+		calls++
+		if !f.service.reloadMu.TryLock() {
+			t.Fatal("publication mutex held during adoption")
+		}
+		f.service.reloadMu.Unlock()
+		if failBeta && org.ID == "org_beta" {
+			return errors.New("tenant adoption unavailable")
+		}
+		return snapshots.Adopt(ctx, hubmaintenance.Tenant{Organization: org.ID, Generation: org.Generation}, expected, update)
+	}
+	tenants, err := f.service.RuntimeTenantPage(t.Context(), "", 2)
+	if err != nil || len(tenants) != 2 {
+		t.Fatalf("tenant page=%+v error=%v", tenants, err)
+	}
+	stale := tenants[0]
+	stale.Generation++
+	if err := f.service.AdoptPublishedRuntime(t.Context(), stale); !errors.Is(err, corestore.ErrRevisionConflict) || calls != 0 {
+		t.Fatalf("stale generation adopted: %v", err)
+	}
+	if err := f.service.AdoptPublishedRuntime(t.Context(), tenants[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.AdoptPublishedRuntime(t.Context(), tenants[1]); err == nil {
+		t.Fatal("failed adoption reported success")
+	}
+	failBeta = false
+	if err := f.service.AdoptPublishedRuntime(t.Context(), tenants[1]); err != nil {
+		t.Fatal(err)
+	}
+	for _, tenant := range tenants {
+		if err := f.service.AdoptPublishedRuntime(t.Context(), tenant); err != nil || calls != 3 {
+			t.Fatalf("applied revision repeated adoption: calls=%d error=%v", calls, err)
+		}
+	}
+	plans.WindowSeconds = 480
+	if err := f.service.reloadConfiguration(t.Context()); err != nil || calls != 3 {
+		t.Fatalf("new desired revision visited tenants: %v", err)
+	}
+	if err := f.service.AdoptPublishedRuntime(t.Context(), tenants[0]); err != nil {
+		t.Fatal(err)
+	}
+	for i, tenant := range tenants {
+		update, err := snapshots.Load(t.Context(), tenant)
+		want := plans.WindowSeconds
+		if i == 1 {
+			want = f.fixtures["org_beta"].config.Hosted.Plans.WindowSeconds
+		}
+		if err != nil || update.Plans.WindowSeconds != want {
+			t.Fatalf("%s applied window=%+v want=%d error=%v", tenant.Organization, update.Plans, want, err)
+		}
+	}
+	f.service.runtime.Store(nil)
+	if state, err := f.service.loadRuntime(t.Context()); err != nil || state.Update.Plans.WindowSeconds != 480 {
+		t.Fatalf("restart lost desired revision: %v", err)
+	}
+}
 
 func runtimePublicationFixture(t *testing.T) (entryFixture, *sql.DB) {
 	t.Helper()
