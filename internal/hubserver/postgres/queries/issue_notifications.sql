@@ -1,9 +1,17 @@
+-- name: LockNotificationProject :many
+SELECT c.*, (SELECT p.profile='native' FROM projects p WHERE p.organization_id=c.organization_id AND p.id=c.project_id)::boolean AS native
+FROM project_event_cursors c
+WHERE c.organization_id=$1 AND c.notification_sequence<c.sequence
+ORDER BY c.project_id LIMIT 1 FOR UPDATE OF c;
+
 -- name: NotificationEvents :many
-SELECT e.* FROM collaboration_events e JOIN issues i ON i.organization_id=e.organization_id AND i.native_id=e.work_item_id
-JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
-LEFT JOIN issue_notification_cursors c ON c.organization_id=e.organization_id AND c.work_item_id=e.work_item_id
-WHERE e.organization_id=$1 AND p.profile='native' AND e.sequence>coalesce(c.sequence,0)
-ORDER BY e.project_id,e.project_sequence,e.work_item_id,e.sequence LIMIT 256;
+SELECT sqlc.embed(e), coalesce((SELECT c.sequence FROM issue_notification_cursors c WHERE c.organization_id=e.organization_id AND c.work_item_id=e.work_item_id),0)::bigint AS consumed_sequence
+FROM collaboration_events e
+WHERE e.organization_id=$1 AND e.project_id=$2 AND e.project_sequence>$3
+ORDER BY e.project_sequence,e.work_item_id LIMIT 256;
+
+-- name: AdvanceNotificationProject :exec
+UPDATE project_event_cursors SET notification_sequence=$3 WHERE organization_id=$1 AND project_id=$2;
 
 -- name: EnsureNotificationCursor :exec
 INSERT INTO issue_notification_cursors(organization_id,work_item_id) VALUES($1,$2) ON CONFLICT DO NOTHING;

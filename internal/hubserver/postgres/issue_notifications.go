@@ -19,15 +19,34 @@ var _ accountstore.NotificationCollector = (*Repository)(nil)
 
 func (r *Repository) NotificationEvents(ctx context.Context, org tracker.OrganizationID) ([]eventstore.Event, error) {
 	result := []eventstore.Event{}
-	err := r.transaction(ctx, org, corestore.Background, true, func(s *session) error {
-		rows, err := s.queries.NotificationEvents(ctx, org)
+	err := r.transaction(ctx, org, corestore.Background, false, func(s *session) error {
+		projects, err := s.queries.LockNotificationProject(ctx, org)
 		if err != nil {
 			return mapError(ctx, err)
 		}
-		for _, row := range rows {
-			result = append(result, eventRecord(row))
+		if len(projects) == 0 {
+			return nil
 		}
-		return nil
+		project := projects[0]
+		rows, err := s.queries.NotificationEvents(ctx, pgquery.NotificationEventsParams{OrganizationID: org, ProjectID: project.ProjectID, ProjectSequence: project.NotificationSequence})
+		if err != nil {
+			return mapError(ctx, err)
+		}
+		after := project.NotificationSequence
+		for _, row := range rows {
+			if project.Native && row.CollaborationEvent.Sequence > row.ConsumedSequence {
+				result = append(result, eventRecord(row.CollaborationEvent))
+			} else if len(result) == 0 {
+				after = row.CollaborationEvent.ProjectSequence
+			}
+		}
+		if len(result) == 0 && len(rows) < 256 {
+			after = project.Sequence
+		}
+		if after == project.NotificationSequence {
+			return nil
+		}
+		return mapError(ctx, s.queries.AdvanceNotificationProject(ctx, pgquery.AdvanceNotificationProjectParams{OrganizationID: org, ProjectID: project.ProjectID, NotificationSequence: after}))
 	})
 	return result, err
 }

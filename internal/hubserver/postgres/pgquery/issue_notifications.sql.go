@@ -35,6 +35,21 @@ func (q *Queries) AdvanceNotificationCursor(ctx context.Context, arg AdvanceNoti
 	return err
 }
 
+const advanceNotificationProject = `-- name: AdvanceNotificationProject :exec
+UPDATE project_event_cursors SET notification_sequence=$3 WHERE organization_id=$1 AND project_id=$2
+`
+
+type AdvanceNotificationProjectParams struct {
+	OrganizationID       tracker.OrganizationID
+	ProjectID            tracker.ProjectID
+	NotificationSequence int64
+}
+
+func (q *Queries) AdvanceNotificationProject(ctx context.Context, arg AdvanceNotificationProjectParams) error {
+	_, err := q.db.ExecContext(ctx, advanceNotificationProject, arg.OrganizationID, arg.ProjectID, arg.NotificationSequence)
+	return err
+}
+
 const appendIssueNotification = `-- name: AppendIssueNotification :exec
 INSERT INTO issue_notification_notices(organization_id,work_item_id,user_id,event_id,due_at,state_from,state_to,author,comment_id,related,verify,source_item)
 SELECT s.organization_id,s.work_item_id,s.user_id,$4,$5,$6,$7,$8,$9,$10,$11,$12 FROM issue_subscriptions s WHERE s.organization_id=$1 AND s.work_item_id=$2 AND s.user_id=$3 AND NOT s.unsubscribed
@@ -154,6 +169,50 @@ func (q *Queries) LockNotificationCursor(ctx context.Context, arg LockNotificati
 	return i, err
 }
 
+const lockNotificationProject = `-- name: LockNotificationProject :many
+SELECT c.organization_id, c.project_id, c.sequence, c.notification_sequence, (SELECT p.profile='native' FROM projects p WHERE p.organization_id=c.organization_id AND p.id=c.project_id)::boolean AS native
+FROM project_event_cursors c
+WHERE c.organization_id=$1 AND c.notification_sequence<c.sequence
+ORDER BY c.project_id LIMIT 1 FOR UPDATE OF c
+`
+
+type LockNotificationProjectRow struct {
+	OrganizationID       tracker.OrganizationID
+	ProjectID            tracker.ProjectID
+	Sequence             int64
+	NotificationSequence int64
+	Native               bool
+}
+
+func (q *Queries) LockNotificationProject(ctx context.Context, organizationID tracker.OrganizationID) ([]LockNotificationProjectRow, error) {
+	rows, err := q.db.QueryContext(ctx, lockNotificationProject, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LockNotificationProjectRow{}
+	for rows.Next() {
+		var i LockNotificationProjectRow
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.Sequence,
+			&i.NotificationSequence,
+			&i.Native,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const notificationAuthor = `-- name: NotificationAuthor :one
 SELECT email FROM hosted_members WHERE organization_id=$1 AND principal_id=$2
 `
@@ -171,57 +230,68 @@ func (q *Queries) NotificationAuthor(ctx context.Context, arg NotificationAuthor
 }
 
 const notificationEvents = `-- name: NotificationEvents :many
-SELECT e.organization_id, e.project_id, e.work_item_id, e.id, e.sequence, e.type, e.schema_version, e.actor_kind, e.actor_principal_id, e.event_revision, e.change_id, e.version_id, e.head_sha, e.run_id, e.attempt_id, e.from_state, e.to_state, e.recorded_at, e.payload_object_key, e.payload_sha256, e.payload_bytes, e.payload_content_bytes, e.payload_format_version, e.landing_waiting, e.landing_change_id, e.landing_version_id, e.landing_head_sha, e.project_sequence, e.push_known, e.push_change_id, e.push_version_id, e.push_head_sha, e.push_external_effect, e.push_effect_state FROM collaboration_events e JOIN issues i ON i.organization_id=e.organization_id AND i.native_id=e.work_item_id
-JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id
-LEFT JOIN issue_notification_cursors c ON c.organization_id=e.organization_id AND c.work_item_id=e.work_item_id
-WHERE e.organization_id=$1 AND p.profile='native' AND e.sequence>coalesce(c.sequence,0)
-ORDER BY e.project_id,e.project_sequence,e.work_item_id,e.sequence LIMIT 256
+SELECT e.organization_id, e.project_id, e.work_item_id, e.id, e.sequence, e.type, e.schema_version, e.actor_kind, e.actor_principal_id, e.event_revision, e.change_id, e.version_id, e.head_sha, e.run_id, e.attempt_id, e.from_state, e.to_state, e.recorded_at, e.payload_object_key, e.payload_sha256, e.payload_bytes, e.payload_content_bytes, e.payload_format_version, e.landing_waiting, e.landing_change_id, e.landing_version_id, e.landing_head_sha, e.project_sequence, e.push_known, e.push_change_id, e.push_version_id, e.push_head_sha, e.push_external_effect, e.push_effect_state, coalesce((SELECT c.sequence FROM issue_notification_cursors c WHERE c.organization_id=e.organization_id AND c.work_item_id=e.work_item_id),0)::bigint AS consumed_sequence
+FROM collaboration_events e
+WHERE e.organization_id=$1 AND e.project_id=$2 AND e.project_sequence>$3
+ORDER BY e.project_sequence,e.work_item_id LIMIT 256
 `
 
-func (q *Queries) NotificationEvents(ctx context.Context, organizationID tracker.OrganizationID) ([]CollaborationEvent, error) {
-	rows, err := q.db.QueryContext(ctx, notificationEvents, organizationID)
+type NotificationEventsParams struct {
+	OrganizationID  tracker.OrganizationID
+	ProjectID       tracker.ProjectID
+	ProjectSequence int64
+}
+
+type NotificationEventsRow struct {
+	CollaborationEvent CollaborationEvent
+	ConsumedSequence   int64
+}
+
+func (q *Queries) NotificationEvents(ctx context.Context, arg NotificationEventsParams) ([]NotificationEventsRow, error) {
+	rows, err := q.db.QueryContext(ctx, notificationEvents, arg.OrganizationID, arg.ProjectID, arg.ProjectSequence)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []CollaborationEvent{}
+	items := []NotificationEventsRow{}
 	for rows.Next() {
-		var i CollaborationEvent
+		var i NotificationEventsRow
 		if err := rows.Scan(
-			&i.OrganizationID,
-			&i.ProjectID,
-			&i.WorkItemID,
-			&i.ID,
-			&i.Sequence,
-			&i.Type,
-			&i.SchemaVersion,
-			&i.ActorKind,
-			&i.ActorPrincipalID,
-			&i.EventRevision,
-			&i.ChangeID,
-			&i.VersionID,
-			&i.HeadSHA,
-			&i.RunID,
-			&i.AttemptID,
-			&i.FromState,
-			&i.ToState,
-			&i.RecordedAt,
-			&i.PayloadObjectKey,
-			&i.PayloadSHA256,
-			&i.PayloadBytes,
-			&i.PayloadContentBytes,
-			&i.PayloadFormatVersion,
-			&i.LandingWaiting,
-			&i.LandingChangeID,
-			&i.LandingVersionID,
-			&i.LandingHeadSHA,
-			&i.ProjectSequence,
-			&i.PushKnown,
-			&i.PushChangeID,
-			&i.PushVersionID,
-			&i.PushHeadSha,
-			&i.PushExternalEffect,
-			&i.PushEffectState,
+			&i.CollaborationEvent.OrganizationID,
+			&i.CollaborationEvent.ProjectID,
+			&i.CollaborationEvent.WorkItemID,
+			&i.CollaborationEvent.ID,
+			&i.CollaborationEvent.Sequence,
+			&i.CollaborationEvent.Type,
+			&i.CollaborationEvent.SchemaVersion,
+			&i.CollaborationEvent.ActorKind,
+			&i.CollaborationEvent.ActorPrincipalID,
+			&i.CollaborationEvent.EventRevision,
+			&i.CollaborationEvent.ChangeID,
+			&i.CollaborationEvent.VersionID,
+			&i.CollaborationEvent.HeadSHA,
+			&i.CollaborationEvent.RunID,
+			&i.CollaborationEvent.AttemptID,
+			&i.CollaborationEvent.FromState,
+			&i.CollaborationEvent.ToState,
+			&i.CollaborationEvent.RecordedAt,
+			&i.CollaborationEvent.PayloadObjectKey,
+			&i.CollaborationEvent.PayloadSHA256,
+			&i.CollaborationEvent.PayloadBytes,
+			&i.CollaborationEvent.PayloadContentBytes,
+			&i.CollaborationEvent.PayloadFormatVersion,
+			&i.CollaborationEvent.LandingWaiting,
+			&i.CollaborationEvent.LandingChangeID,
+			&i.CollaborationEvent.LandingVersionID,
+			&i.CollaborationEvent.LandingHeadSHA,
+			&i.CollaborationEvent.ProjectSequence,
+			&i.CollaborationEvent.PushKnown,
+			&i.CollaborationEvent.PushChangeID,
+			&i.CollaborationEvent.PushVersionID,
+			&i.CollaborationEvent.PushHeadSha,
+			&i.CollaborationEvent.PushExternalEffect,
+			&i.CollaborationEvent.PushEffectState,
+			&i.ConsumedSequence,
 		); err != nil {
 			return nil, err
 		}

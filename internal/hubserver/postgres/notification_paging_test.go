@@ -53,6 +53,18 @@ func TestNotificationRelatedRecipientPagingResumesWithoutDuplicates(t *testing.T
 			t.Fatal(err)
 		}
 	}
+	events, err := delivery.NotificationEvents(t.Context(), org)
+	if err != nil || len(events) != 256 {
+		t.Fatalf("participant events=%d error=%v", len(events), err)
+	}
+	for _, event := range events {
+		if done, _, err := delivery.QueueNotification(t.Context(), org, event, accountstore.IssueNotice{}, "", false, 256); err != nil || !done {
+			t.Fatalf("participant done=%v error=%v", done, err)
+		}
+	}
+	if events, err := delivery.NotificationEvents(t.Context(), org); err != nil || len(events) != 0 {
+		t.Fatalf("consumed participants=%d error=%v", len(events), err)
+	}
 	value := tracker.CollaborationEvent{ID: "event_related", OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_1", Type: "issue.edited", SchemaVersion: 1, Actor: tracker.Actor{Kind: "machine", PrincipalID: "worker"}, RecordedAt: historyAt().Add(time.Second), Data: tracker.CollaborationData{Operation: "add", Fields: []string{"related"}, RelatedWorkItemID: "wi_first_2"}}
 	record, err := content.PrepareEvent(t.Context(), org, historyJSON(t, value))
 	if err != nil {
@@ -72,6 +84,16 @@ func TestNotificationRelatedRecipientPagingResumesWithoutDuplicates(t *testing.T
 		done, count, err := delivery.QueueNotification(t.Context(), org, record, accountstore.IssueNotice{Related: true}, "wi_first_2", true, 256)
 		if err != nil || done != test.done || count != test.count {
 			t.Fatalf("done=%v count=%d error=%v", done, count, err)
+		}
+		events, err := delivery.NotificationEvents(t.Context(), org)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !test.done && (len(events) != 1 || events[0].ID != record.ID) {
+			t.Fatalf("unfinished event lost: %+v", events)
+		}
+		if test.done && len(events) != 0 {
+			t.Fatalf("completed event rediscovered: %+v", events)
 		}
 	}
 	tx, err := pool.BeginTx(t.Context(), nil)
