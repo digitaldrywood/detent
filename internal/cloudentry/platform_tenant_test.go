@@ -35,7 +35,7 @@ func TestPlatformTenantDetail(t *testing.T) {
 		user := "user_" + role
 		email := role + "@example.test"
 		f.provider.users[user] = email
-		if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?,'test','time','time') ON CONFLICT(email) DO UPDATE SET role=excluded.role", email, role); err != nil {
+		if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?,'test','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z') ON CONFLICT(email) DO UPDATE SET role=excluded.role", email, role); err != nil {
 			t.Fatal(err)
 		}
 		b := newBrowser(t, f.service.Handler())
@@ -94,7 +94,7 @@ func TestPlatformTenantAICreditBalance(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
 	f.provider.users["user_admin"] = "admin@example.test"
-	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES('admin@example.test','admin','test','time','time')"); err != nil {
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES('admin@example.test','admin','test','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')"); err != nil {
 		t.Fatal(err)
 	}
 	b := newBrowser(t, f.service.Handler())
@@ -153,7 +153,7 @@ func TestPlatformResumeProvisioning(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
 	f.service.config.Allocation = &AllocationConfig{}
-	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO organizations(id,name,state,endpoint,generation,managed,creator_subject,creator_email,error_code,step,created_at,updated_at) VALUES('org_failed','Failed','failed','unix:/unused.sock',1,1,'user_alice','alice@example.test','tenant_start_failed','tenant_files','2026-10-05T12:00:00Z','2026-10-05T12:00:00Z')"); err != nil {
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO organizations(id,name,state,endpoint,generation,managed,creator_subject,creator_email,error_code,step,created_at,updated_at) VALUES('org_failed','Failed','failed','unix:/unused.sock',1,true,'user_alice','alice@example.test','tenant_start_failed','tenant_files','2026-10-05T12:00:00Z','2026-10-05T12:00:00Z')"); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -166,7 +166,7 @@ func TestPlatformResumeProvisioning(t *testing.T) {
 		t.Run(test.role+map[bool]string{true: " valid csrf", false: " no csrf"}[test.csrf], func(t *testing.T) {
 			user, email := "user_"+test.role, test.role+"@example.test"
 			f.provider.users[user] = email
-			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?,'test','time','time') ON CONFLICT(email) DO NOTHING", email, test.role); err != nil {
+			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?,'test','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z') ON CONFLICT(email) DO NOTHING", email, test.role); err != nil {
 				t.Fatal(err)
 			}
 			b := newBrowser(t, f.service.Handler())

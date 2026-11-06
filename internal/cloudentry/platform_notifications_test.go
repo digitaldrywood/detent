@@ -37,7 +37,7 @@ func (s *platformMailSender) SendEmail(ctx context.Context, message auth.EmailMe
 
 func platformMailConfig(t *testing.T, sender auth.EmailSender, output *logBuffer) Config {
 	t.Helper()
-	return Config{
+	cfg := Config{
 		Platform:  PlatformConfig{BootstrapAdminEmail: "admin-a@example.test"},
 		PublicURL: "https://cloud.example.test", ListenAddress: "127.0.0.1:0", Issuer: "entry",
 		SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), Provider: newFakeProvider(),
@@ -47,6 +47,8 @@ func platformMailConfig(t *testing.T, sender auth.EmailSender, output *logBuffer
 			return time.Date(2026, 10, 19, 18, 0, 0, 759375872, time.FixedZone("fixture", 2*60*60))
 		},
 	}
+	entryPostgresRestartConfig(t)(&cfg)
+	return cfg
 }
 
 func TestPlatformNotifications(t *testing.T) {
@@ -86,7 +88,7 @@ func TestPlatformNotifications(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			s.config.Allocation = &AllocationConfig{SocketRoot: filepath.Join(t.TempDir(), "s"), Prices: []hubserver.HostedBillingPrice{{PriceID: "price_team", Plan: hubserver.PlanReference{ID: "team", Version: 1}}}}
+			s.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}, SocketRoot: filepath.Join(t.TempDir(), "s"), Prices: []hubserver.HostedBillingPrice{{PriceID: "price_team", Plan: hubserver.PlanReference{ID: "team", Version: 1}}}}
 			if test.customBase {
 				s.config.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &hubserver.HostedPlansConfig{Base: hubserver.PlanReference{ID: "pilot_free", Version: 1}}}
 			}
@@ -97,7 +99,7 @@ func TestPlatformNotifications(t *testing.T) {
 				{"admin-a@example.test", "admin"}, {"admin-b@example.test", "admin"},
 				{"support@example.test", "support"}, {"viewer@example.test", "viewer"}, {"billing@example.test", "billing"},
 			} {
-				if _, err := s.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?,'fixture','time','time') ON CONFLICT(email) DO UPDATE SET role=excluded.role", member.email, member.role); err != nil {
+				if _, err := s.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?,'fixture','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z') ON CONFLICT(email) DO UPDATE SET role=excluded.role", member.email, member.role); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -120,7 +122,7 @@ func TestPlatformNotifications(t *testing.T) {
 				t.Helper()
 				email := subject + "@example.test"
 				if test.event == "signup" {
-					identity := auth.Identity{Subject: subject, Email: email, Hosted: &auth.HostedIdentity{Subject: subject, ExpiresAt: cfg.now().Add(time.Hour)}}
+					identity := auth.Identity{Subject: subject, Email: email, Hosted: &auth.HostedIdentity{Subject: subject, SessionID: "session_" + subject, CreatedAt: cfg.now(), ExpiresAt: cfg.now().Add(time.Hour)}}
 					recorder := httptest.NewRecorder()
 					c := s.echo.NewContext(httptest.NewRequest(http.MethodGet, "/auth/oidc/callback", nil), recorder)
 					if _, err := s.establishSession(c, identity); err != nil {
@@ -239,10 +241,11 @@ func TestPlatformNotifications(t *testing.T) {
 			if err := s.Close(); err != nil {
 				t.Fatal(err)
 			}
-			s, err = Open(t.Context(), cfg)
+			restarted, err := Open(t.Context(), cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
+			s = restarted
 			s.closePlatformNotifications()
 			s.config.Allocation, s.config.Billing, s.config.Runtime = allocation, billing, runtime
 			for _, subject := range []string{"user_alpha", "user_beta"} {
@@ -284,7 +287,7 @@ func TestPlatformNotificationRecipientsAtSendTime(t *testing.T) {
 		}
 	}
 	for _, member := range []struct{ email, role string }{{"new-admin@example.test", "admin"}, {"former-admin@example.test", "viewer"}} {
-		if _, err := s.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?,'fixture','time','time') ON CONFLICT(email) DO UPDATE SET role=excluded.role", member.email, member.role); err != nil {
+		if _, err := s.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?,'fixture','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z') ON CONFLICT(email) DO UPDATE SET role=excluded.role", member.email, member.role); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -292,10 +295,11 @@ func TestPlatformNotificationRecipientsAtSendTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.Platform.BootstrapAdminEmail = ""
-	s, err = Open(t.Context(), cfg)
+	restarted, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
+	s = restarted
 	for range 2 {
 		select {
 		case message := <-sender.messages:

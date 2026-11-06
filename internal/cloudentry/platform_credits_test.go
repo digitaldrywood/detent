@@ -63,7 +63,7 @@ func TestPlatformAICreditsRESTAndMCP(t *testing.T) {
 			f.provider.users["user_billing"] = "billing@example.test"
 			f.provider.users["user_viewer"] = "viewer@example.test"
 			for _, role := range []string{"admin", "billing", "viewer"} {
-				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?,'test','time','time')", role+"@example.test", role); err != nil {
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?,'test','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", role+"@example.test", role); err != nil {
 					t.Fatal(err)
 				}
 			}
