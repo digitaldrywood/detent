@@ -23,6 +23,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -40,7 +42,7 @@ func runtimePublicationFixture(t *testing.T) (entryFixture, *sql.DB) {
 }
 
 func TestRuntimePublicationTenantIsolation(t *testing.T) {
-	f, _ := runtimePublicationFixture(t)
+	f, admin := runtimePublicationFixture(t)
 	organizations := []tracker.OrganizationID{"org_alpha", "org_beta"}
 	repos := make(map[tracker.OrganizationID]tenantstore.Repository)
 	stage := func(org tracker.OrganizationID, id string, published bool) {
@@ -93,20 +95,18 @@ func TestRuntimePublicationTenantIsolation(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE public.hosted_runtime_heads SET organization_id=organization_id WHERE organization_id=$1", "org_alpha"); err == nil {
-		t.Fatal("platform changed tenant runtime head")
+	if _, err := f.service.registry.store.db.ExecContext(pgtest.UnboundProbe(t.Context()), "UPDATE public.hosted_runtime_heads SET organization_id=organization_id WHERE organization_id=$1", "org_alpha"); pgtransport.SQLState(err) != "42501" {
+		t.Fatalf("platform runtime head write = %v", err)
 	}
-	native, err := f.fixtures["org_alpha"].config.Postgres.Connection.PoolConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
+	connection := f.fixtures["org_alpha"].config.Postgres.Connection
+	native := entryPostgresTemplate.NativeConfig(t, admin, connection.User, connection.Password)
 	runtimeDB, err := pgxpool.NewWithConfig(t.Context(), native)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer runtimeDB.Close()
-	if _, err := runtimeDB.Exec(t.Context(), "INSERT INTO hosted_runtime_publications(id) VALUES('forged')"); err == nil {
-		t.Fatal("tenant published a platform revision")
+	if _, err := runtimeDB.Exec(pgtest.UnboundProbe(t.Context()), "INSERT INTO hosted_runtime_publications(id) VALUES('forged')"); pgtransport.SQLState(err) != "42501" {
+		t.Fatalf("tenant platform publication = %v", err)
 	}
 }
 

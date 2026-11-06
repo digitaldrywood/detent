@@ -21,11 +21,81 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 var migrationCount atomic.Int32
+
+func TestNativeGuardDistinguishesTenantAndPlatformPolicies(t *testing.T) {
+	db := processTemplate.Database(t)
+	var database string
+	if err := db.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&database); err != nil {
+		t.Fatal(err)
+	}
+	suffix := strings.TrimPrefix(database, "detent_test_")
+	tenant, platform := "example_tenant_"+suffix, "example_platform_"+suffix
+	if _, err := db.ExecContext(t.Context(), `CREATE ROLE `+tenant+` LOGIN PASSWORD 'fixture-only'; CREATE ROLE `+platform+` LOGIN PASSWORD 'fixture-only';
+		ALTER TABLE records ENABLE ROW LEVEL SECURITY;
+		ALTER TABLE records FORCE ROW LEVEL SECURITY;
+		CREATE POLICY tenant_scope ON records TO `+tenant+` USING (organization_id=current_setting('detent.organization_id',true));
+		CREATE POLICY platform_read ON records FOR SELECT TO `+platform+` USING (true);
+		GRANT SELECT ON records TO `+tenant+`,`+platform+`;
+		INSERT INTO records VALUES ('first','same','first'),('second','same','second')`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.ExecContext(context.WithoutCancel(t.Context()), `DROP OWNED BY `+tenant+`,`+platform+`; DROP ROLE `+tenant+`,`+platform); err != nil {
+			t.Error(err)
+		}
+	})
+	for _, test := range []struct {
+		role             string
+		rows, violations int
+	}{{tenant, 0, 1}, {platform, 2, 0}} {
+		config := processTemplate.NativeConfig(t, db, test.role, "fixture-only")
+		violations := 0
+		config.ConnConfig.Tracer.(*TenantGuard).report = func(string) { violations++ }
+		conn, err := pgx.ConnectConfig(t.Context(), config.ConnConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rows int
+		err = conn.QueryRow(t.Context(), `SELECT count(*) FROM records`).Scan(&rows)
+		closeErr := conn.Close(t.Context())
+		if err != nil || closeErr != nil || rows != test.rows || violations != test.violations {
+			t.Fatalf("role=%s rows=%d violations=%d query=%v close=%v", test.role, rows, violations, err, closeErr)
+		}
+	}
+	if _, err := db.ExecContext(t.Context(), `CREATE POLICY tenant_global_read ON records FOR SELECT TO `+tenant+` USING (true); GRANT INSERT,UPDATE ON records TO `+tenant); err != nil {
+		t.Fatal(err)
+	}
+	config := processTemplate.NativeConfig(t, db, tenant, "fixture-only")
+	violations := 0
+	config.ConnConfig.Tracer.(*TenantGuard).report = func(string) { violations++ }
+	conn, err := pgx.ConnectConfig(t.Context(), config.ConnConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(t.Context())
+	var rows int
+	if err := conn.QueryRow(t.Context(), `SELECT count(*) FROM records`).Scan(&rows); err != nil || rows != 2 || violations != 0 {
+		t.Fatalf("global read rows=%d violations=%d err=%v", rows, violations, err)
+	}
+	if _, err := conn.Exec(t.Context(), `INSERT INTO records VALUES ('first','unguarded','value')`); err == nil || violations != 1 {
+		t.Fatalf("tenant write violations=%d err=%v", violations, err)
+	}
+	locked, err := conn.Query(t.Context(), `SELECT id FROM records FOR UPDATE`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked.Close()
+	if violations != 2 {
+		t.Fatalf("tenant lock violations=%d", violations)
+	}
+}
 
 var processTemplate = NewTemplate(func(ctx context.Context, db *sql.DB) error {
 	migrationCount.Add(1)

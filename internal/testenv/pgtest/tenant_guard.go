@@ -16,6 +16,8 @@ type TenantGuard struct {
 	tenants   map[*pgx.Conn]string
 	failed    map[*pgx.Conn]bool
 	protected *regexp.Regexp
+	readable  map[string]bool
+	lockable  map[string]bool
 	report    func(string)
 }
 
@@ -95,9 +97,43 @@ func (g *TenantGuard) record(ctx context.Context, conn *pgx.Conn, query string, 
 		return
 	}
 	probe, hasProbe := ctx.Value(unboundProbeKey{}).(bool)
-	if (!hasProbe || !probe) && (err == nil || !g.failed[conn]) && g.protected.MatchString(query) && g.tenants[conn] == "" {
+	if (!hasProbe || !probe) && (err == nil || !g.failed[conn]) && g.requiresTenant(query) && g.tenants[conn] == "" {
 		g.report("protected PostgreSQL query executed without a bound tenant")
 	}
+}
+
+var rowLock = regexp.MustCompile(`(?i)\bFOR\s+(?:NO\s+KEY\s+UPDATE|KEY\s+SHARE|UPDATE|SHARE)\b`)
+
+func (g *TenantGuard) requiresTenant(query string) bool {
+	matches := g.protected.FindAllStringSubmatch(query, -1)
+	if len(matches) == 0 {
+		return false
+	}
+	statement := strings.TrimSpace(query)
+	for strings.HasPrefix(statement, "--") {
+		_, rest, found := strings.Cut(statement, "\n")
+		if !found {
+			return true
+		}
+		statement = strings.TrimSpace(rest)
+	}
+	statement = strings.TrimSuffix(statement, ";")
+	if !strings.HasPrefix(strings.ToUpper(statement), "SELECT ") && !strings.HasPrefix(strings.ToUpper(statement), "SELECT\n") {
+		return true
+	}
+	if strings.Contains(statement, ";") {
+		return true
+	}
+	allowed := g.readable
+	if rowLock.MatchString(statement) {
+		allowed = g.lockable
+	}
+	for _, match := range matches {
+		if !allowed[strings.ToLower(match[1])] {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *TenantGuard) expire(conn *pgx.Conn) {
