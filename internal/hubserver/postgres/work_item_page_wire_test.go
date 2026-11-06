@@ -90,8 +90,7 @@ func (c *pageWireConn) Write(data []byte) (int, error) {
 func pageMeasuredRepository(t *testing.T, source *pgxpool.Pool, counts *pageWireCounts) *postgres.Repository {
 	t.Helper()
 	config := source.Config()
-	prepare, before := config.PrepareConn, config.BeforeAcquire
-	config.BeforeAcquire = nil
+	prepare := config.PrepareConn
 	config.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return true }
 	config.PrepareConn = func(ctx context.Context, conn *pgx.Conn) (bool, error) {
 		if prepare != nil {
@@ -99,9 +98,6 @@ func pageMeasuredRepository(t *testing.T, source *pgxpool.Pool, counts *pageWire
 			if !ok || err != nil {
 				return ok, err
 			}
-		}
-		if before != nil && !before(ctx, conn) {
-			return false, nil
 		}
 		counts.beginServing()
 		return true, nil
