@@ -52,7 +52,10 @@ func (s *Service) createAccessToken(ctx context.Context, request tokenRequest) (
 			return tokenResponse{}, nativePublicInvalid(message)
 		}
 		identity, current, err := s.hostedMutationIdentity(ctx, issuer)
-		if err != nil || identity.Subject != issuer.Hosted.Subject || current.ID != issuer.HostedMembership {
+		if err != nil {
+			return tokenResponse{}, operatorAuthorizationError(err)
+		}
+		if identity.Subject != issuer.Hosted.Subject || current.ID != issuer.HostedMembership {
 			return tokenResponse{}, auth.ErrHostedIdentity
 		}
 		row.Kind = request.Kind
