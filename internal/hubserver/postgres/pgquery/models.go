@@ -896,6 +896,42 @@ type DailySummaryReceipt struct {
 	RecordedAt     int64
 }
 
+type GithubImport struct {
+	OrganizationID  tracker.OrganizationID
+	ProjectID       tracker.ProjectID
+	ID              string
+	IssueNumber     int64
+	WorkItemID      string
+	Stage           string
+	Cursor          string
+	Revision        int64
+	Pages           int64
+	Status          string
+	Gaps            []string
+	LastError       string
+	RetryAfter      *time.Time
+	SourceUpdatedAt *time.Time
+	ObservedAt      time.Time
+	IntakePending   bool
+	EditSequence    int64
+}
+
+type GithubImportRecord struct {
+	OrganizationID       tracker.OrganizationID
+	ProjectID            tracker.ProjectID
+	ImportID             string
+	Sequence             int64
+	SourceKey            string
+	Kind                 string
+	CurrentDependency    bool
+	DependencyID         string
+	ProvenanceExternalID string
+	PayloadObjectKey     string
+	PayloadSHA256        string
+	PayloadBytes         int64
+	PayloadContentBytes  int64
+}
+
 type GoTestReceipt struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
