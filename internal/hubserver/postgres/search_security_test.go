@@ -359,7 +359,6 @@ func TestSearchExcludedHistoryDoesNotGrowCandidateWork(t *testing.T) {
 	}
 	body = strings.TrimSuffix(strings.TrimSpace(body), "END")
 	body = strings.TrimSuffix(strings.TrimSpace(body), ";")
-	examinedAtLimit := make(map[string]float64)
 	for _, size := range []int{2000, 10000} {
 		seedSearchPlanHistory(t, f, d, map[int]int{2000: 1, 10000: 2001}[size], size)
 		for _, statement := range []string{"VACUUM (ANALYZE) search_documents", "VACUUM (ANALYZE) search_postings", "VACUUM (ANALYZE) search_scope_documents"} {
@@ -401,12 +400,7 @@ func TestSearchExcludedHistoryDoesNotGrowCandidateWork(t *testing.T) {
 							}
 							work := plan[0].Plan.documentWork()
 							key := test.name + "/" + kind + "/" + text + "/" + cursor
-							if size == 2000 {
-								examinedAtLimit[key] = work
-							} else if work != examinedAtLimit[key] {
-								t.Errorf("%s history work grew from %.0f to %.0f", key, examinedAtLimit[key], work)
-							}
-							if work > 12*searchstore.CandidateLimit {
+							if work > searchstore.CandidateLimit {
 								t.Errorf("%s history=%d examined=%.0f: %s", kind, size, work, raw)
 							}
 							t.Logf("%s history=%d examined=%.0f", key, size, work)
