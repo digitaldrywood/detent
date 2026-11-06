@@ -230,6 +230,8 @@ type Reader interface {
 	HubIdentity(context.Context) (HubIdentity, error)
 	AccessMemberCredentials(context.Context, string, string, int) ([]Credential, error)
 	AccessAudit(context.Context, int64) (Audit, error)
+	AccessAccountAudit(context.Context, string, string) (Audit, error)
+	AccessMissingUsageGrant(context.Context, string) (bool, error)
 	AccessMembers(context.Context, string, int) ([]Member, error)
 	AccessMembersByEmail(context.Context, string, string, int) ([]Member, error)
 	AccessCredentials(context.Context, string, int) ([]Credential, error)
@@ -277,6 +279,7 @@ type Writer interface {
 	AddAccessOrganizationSlug(context.Context, string) error
 	SetAccessOrganizationSlug(context.Context, *string, string) error
 	CreateAccessTenant(context.Context, Tenant) error
+	BindAccessTenantProvider(context.Context, string) error
 	CreateAccessCredential(context.Context, Credential) error
 	CreateAccessMember(context.Context, Member) error
 	CreateAccessProjectGrant(context.Context, ProjectGrant) error
