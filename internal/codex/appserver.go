@@ -1374,7 +1374,7 @@ func (s *AppServer) streamTurn(
 			return fmt.Errorf("stream turn: %w", err)
 		}
 
-		if failure := earlyTurnFailure(msg, threadID, turnID); failure != nil && (msg.Method != "turn/completed" || failure.ProviderCode != "other") {
+		if failure := earlyTurnFailure(msg, threadID, turnID); failure != nil && failure.ProviderCode != "other" {
 			return failure
 		}
 

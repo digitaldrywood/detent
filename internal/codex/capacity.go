@@ -76,10 +76,6 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 		}
 		return backendcapacity.Details{Type: typeOf, Kind: refused.ProviderCode, Reason: "provider refused turn", Trigger: refused.ProviderCode}, true
 	}
-	var toolFailure *ToolError
-	if errors.As(err, &toolFailure) {
-		return backendcapacity.Details{}, false
-	}
 	text := codexCapacityErrorText(err)
 	startup, hasStartupEvidence := startupEvidence(err)
 	startupCause := err

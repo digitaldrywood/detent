@@ -173,10 +173,11 @@ func (w cancelledCheckpointWorkspace) PushCheckpointRef(ctx context.Context, _ w
 
 func TestCheckpointRefHonorsFinalizationCancellation(t *testing.T) {
 	for _, test := range []struct {
-		name            string
-		final, deadline bool
+		name                   string
+		final, deadline, wired bool
 	}{
 		{name: "active push cancellation"}, {name: "final retry cancellation", final: true}, {name: "shared retry deadline", final: true, deadline: true},
+		{name: "completion owns detached two minute budget", wired: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -190,12 +191,22 @@ func TestCheckpointRefHonorsFinalizationCancellation(t *testing.T) {
 					ctx, cancel = context.WithTimeout(t.Context(), 3*time.Minute)
 					expected = 3 * time.Minute
 				}
+				if test.wired {
+					expected = 2 * time.Minute
+					r.workspace = backend
+					r.afterRunTimeout = time.Second
+				}
 				defer cancel()
 				started := time.Now()
 				done := make(chan struct{})
 				go func() {
 					defer close(done)
-					if test.final {
+					if test.wired {
+						_, err := r.prepareExecutionCompletion(ctx, RunRequest{Execution: &testExecution{}, checkpointRefs: refs}, backend, workspace.Info{}, workspace.Issue{}, AgentResume{}, true)
+						if err == nil {
+							t.Error("cancelled completion succeeded")
+						}
+					} else if test.final {
 						r.finishCheckpointRef(ctx, refs, RunRequest{})
 					} else {
 						r.pushCheckpointRef(ctx, refs, RunRequest{}, "stage_finished")

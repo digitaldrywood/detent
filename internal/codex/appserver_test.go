@@ -19,6 +19,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
@@ -39,7 +40,7 @@ func TestAppServerEarlyTurnRejection(t *testing.T) {
 		{"other thread", "turn/completed", `{"threadId":"other","turn":{"status":"failed","error":{"codexErrorInfo":"usageLimitExceeded"}}}`, "", true},
 	} {
 		for _, streaming := range []bool{false, true} {
-			if streaming && (tt.ignored || tt.method == "turn/completed" && tt.code == "other") {
+			if streaming && (tt.ignored || tt.code == "other") {
 				continue
 			}
 			t.Run(tt.name+"/stream="+strconv.FormatBool(streaming), func(t *testing.T) {
@@ -799,45 +800,104 @@ func TestAppServerRunTurnRequiresSubscriptionAuthenticationInSameTransport(t *te
 }
 
 func TestAppServerPreservesToolFailure(t *testing.T) {
-	for _, failed := range []bool{false, true} {
-		t.Run(strconv.FormatBool(failed), func(t *testing.T) {
-			transport := newFakeAppServerTransport([]Message{
-				responseMessage(t, 1, `{"userAgent":"codex-cli/test"}`),
-				responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
-				responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
-				serverRequestMessage(t, 99, "item/tool/call", `{"tool":"get_change","arguments":{}}`),
-				notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
-			})
-			if failed {
-				transport.received[4] = notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed"}}`)
-			}
-			server, err := NewAppServer(staticTransportFactory{transport: transport})
-			if err != nil {
-				t.Fatal(err)
-			}
-			cause := errors.New("private tool credential failure")
-			_, err = server.RunTurn(t.Context(), RunTurnRequest{Model: "example-model", ToolHandler: func(context.Context, DynamicToolCall) (DynamicToolResult, error) {
-				return DynamicToolResult{}, cause
-			}}, nil)
-			if !failed {
-				if err != nil {
-					t.Fatalf("recovered tool failure failed turn: %v", err)
+	for _, test := range []struct {
+		name                                            string
+		failed, followup, blocking, hang, stall, parent bool
+		capacity                                        string
+	}{
+		{name: "recovered refusal then success"},
+		{name: "recovered refusal then failed completion", failed: true},
+		{name: "recovered refusal then startup EOF", followup: true, capacity: backendcapacity.StartupFailureKind},
+		{name: "recovered refusal then startup deadline", followup: true, blocking: true, capacity: backendcapacity.StartupTimeoutKind},
+		{name: "unresolved tool at deadline", blocking: true, hang: true},
+		{name: "unresolved tool at parent deadline", blocking: true, hang: true, parent: true},
+		{name: "recovered refusal then stream stall", blocking: true, stall: true},
+		{name: "unresolved tool at stall deadline", blocking: true, stall: true, hang: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				messages := []Message{
+					responseMessage(t, 1, `{"userAgent":"codex-cli/test"}`),
+					responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
+					responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+					serverRequestMessage(t, 99, "item/tool/call", `{"tool":"get_change","arguments":{}}`),
 				}
-				return
-			}
-			var tool *ToolError
-			var provider *TurnFailedError
-			if !errors.As(err, &tool) || !errors.Is(err, cause) || !errors.As(err, &provider) {
-				t.Fatalf("lost typed causes: %v", err)
-			}
-			joined := errors.Join(tool, &StartupError{Err: context.DeadlineExceeded})
-			if details, ok := ClassifyCapacityError(joined, nil, time.Now()); ok {
-				t.Fatalf("tool failure classified as capacity: %+v", details)
-			}
-			failure := tool.NativeTerminalFailure().Public()
-			if failure.ErrorClass != "tool_error" || failure.Attribution != "instance" || failure.Operation != "item/tool/call" || strings.Contains(err.Error(), "private") {
-				t.Fatalf("failure = %+v, %v", failure, err)
-			}
+				if !test.hang && !test.stall {
+					status := "completed"
+					if test.failed {
+						status = "failed"
+					}
+					messages = append(messages, notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"`+status+`"}}`))
+				}
+				var transport Transport = newFakeAppServerTransport(messages)
+				if test.blocking {
+					transport = newBlockingAppServerTransport(messages)
+				}
+				server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Minute))
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := RunTurnRequest{Model: "example-model", ToolHandler: func(ctx context.Context, _ DynamicToolCall) (DynamicToolResult, error) {
+					if test.hang {
+						<-ctx.Done()
+						return DynamicToolResult{}, ctx.Err()
+					}
+					return DynamicToolResult{}, &operatortool.RequestError{Code: "invalid_request", Message: "private refusal"}
+				}}
+				if test.stall {
+					request.StallTimeout = time.Second
+				}
+				if test.followup {
+					request.FinalPrompt = func() string { return "Finish" }
+				}
+				callCtx := t.Context()
+				if test.parent {
+					var cancel context.CancelFunc
+					callCtx, cancel = context.WithTimeout(callCtx, time.Second)
+					defer cancel()
+				}
+				_, err = server.RunTurn(callCtx, request, nil)
+				var tool *ToolError
+				if errors.As(err, &tool) != test.hang {
+					t.Fatalf("tool cause = %v, want %t: %v", tool, test.hang, err)
+				}
+				details, capacity := ClassifyCapacityError(err, nil, time.Now())
+				if capacity != (test.capacity != "") || details.Kind != test.capacity {
+					t.Fatalf("capacity = %+v, %v; want %s", details, capacity, test.capacity)
+				}
+				if test.hang {
+					failure := tool.NativeTerminalFailure().Public()
+					cause := error(context.DeadlineExceeded)
+					if test.stall {
+						cause = ErrStreamStalled
+					}
+					if !errors.Is(err, cause) || failure.ErrorClass != "tool_error" || failure.Attribution != "instance" {
+						t.Fatalf("unresolved failure = %+v, %v", failure, err)
+					}
+				} else if test.stall {
+					if !errors.Is(err, ErrStreamStalled) {
+						t.Fatalf("lost stream stall: %v", err)
+					}
+				} else if test.followup {
+					cause := error(io.EOF)
+					if test.blocking {
+						cause = context.DeadlineExceeded
+					}
+					if !errors.Is(err, cause) {
+						t.Fatalf("lost primary cause: %v", err)
+					}
+				} else if test.failed {
+					var provider *TurnFailedError
+					if !errors.As(err, &provider) {
+						t.Fatalf("lost provider cause: %v", err)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				if err != nil && strings.Contains(err.Error(), "private") {
+					t.Fatalf("private refusal retained: %v", err)
+				}
+			})
 		})
 	}
 }
@@ -2536,6 +2596,7 @@ func TestAppServerRunTurnReportsTurnErrorBody(t *testing.T) {
 		responseMessage(t, 1, `{"userAgent":"codex-cli/0.142.5"}`),
 		responseMessage(t, 2, `{"thread":{"id":"thread-1","model":"gpt-5-codex"}}`),
 		responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+		notificationMessage(t, "error", `{"threadId":"thread-1","error":{"codexErrorInfo":"unknownErrorCode","message":"private refusal"},"willRetry":false}`),
 		notificationMessage(t, "turn/completed", backendError),
 	})
 	server, err := NewAppServer(staticTransportFactory{transport: transport},
@@ -2918,9 +2979,7 @@ func waitForControlledTimeout(
 
 func (t *blockingAppServerTransport) Receive(ctx context.Context) (Message, error) {
 	if len(t.received) > 0 {
-		msg := t.received[0]
-		t.received = t.received[1:]
-		return msg, nil
+		return t.fakeAppServerTransport.Receive(ctx)
 	}
 	if controlled, ok := ctx.(*controlledTimeoutContext); ok {
 		controlled.activate()

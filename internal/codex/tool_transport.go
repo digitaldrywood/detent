@@ -19,16 +19,16 @@ func (e *ToolError) NativeTerminalFailure() tracker.NativeTerminalFailure {
 
 type toolTransport struct {
 	Transport
-	receive func(context.Context) (Message, error)
-	cancel  context.CancelCauseFunc
-	handler DynamicToolHandler
-	logger  *slog.Logger
-	done    chan struct{}
-	wake    chan struct{}
-	sendMu  sync.Mutex
-	mu      sync.Mutex
-	pending []Message
-	failure error
+	receive    func(context.Context) (Message, error)
+	cancel     context.CancelCauseFunc
+	handler    DynamicToolHandler
+	logger     *slog.Logger
+	done       chan struct{}
+	wake       chan struct{}
+	sendMu     sync.Mutex
+	mu         sync.Mutex
+	pending    []Message
+	unresolved bool
 }
 
 func newToolTransport(ctx context.Context, transport Transport, handler DynamicToolHandler, logger *slog.Logger) *toolTransport {
@@ -94,17 +94,14 @@ func (t *toolTransport) run(ctx context.Context) {
 		msg := t.pending[0]
 		t.pending[0] = Message{}
 		t.pending = t.pending[1:]
+		t.unresolved = true
 		t.mu.Unlock()
-		handler := func(ctx context.Context, call DynamicToolCall) (DynamicToolResult, error) {
-			result, err := t.handler(ctx, call)
-			if err != nil && ctx.Err() == nil {
-				t.mu.Lock()
-				t.failure = &ToolError{Err: err}
-				t.mu.Unlock()
-			}
-			return result, err
+		_, err := handleServerRequest(ctx, t, msg, t.handler, nil, t.logger)
+		t.mu.Lock()
+		if err == nil && ctx.Err() == nil {
+			t.unresolved = false
 		}
-		_, err := handleServerRequest(ctx, t, msg, handler, nil, t.logger)
+		t.mu.Unlock()
 		if err != nil && ctx.Err() == nil {
 			t.cancel(err)
 		}
@@ -112,19 +109,19 @@ func (t *toolTransport) run(ctx context.Context) {
 }
 
 func (t *toolTransport) finish(err error) error {
+	t.mu.Lock()
+	unresolved := t.unresolved
+	t.mu.Unlock()
 	t.cancel(nil)
 	<-t.done
-	if err == nil {
-		return nil
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.failure != nil {
-		var provider *TurnFailedError
-		if errors.As(err, &provider) && provider.ProviderCode != "" {
-			return errors.Join(err, t.failure)
+	if unresolved && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrStreamStalled)) {
+		var startup *StartupError
+		var primary interface {
+			NativeTerminalFailure() tracker.NativeTerminalFailure
 		}
-		return errors.Join(t.failure, err)
+		if !errors.As(err, &startup) && !errors.As(err, &primary) {
+			return &ToolError{Err: err}
+		}
 	}
 	return err
 }
