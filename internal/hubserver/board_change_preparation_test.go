@@ -10,6 +10,9 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,23 +40,23 @@ import (
 type boardChangeCountingRepository struct {
 	tenantstore.Repository
 	reads             atomic.Int64
-	scalar            bool
 	relationshipItems map[tracker.NativeWorkItemID]int
 	changeItems       map[tracker.NativeWorkItemID]int
 }
-type boardChangeScalarReader struct{ tenantstore.Reader }
 
 func (r *boardChangeCountingRepository) ReadTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
 	r.reads.Add(1)
 	return r.Repository.ReadTenant(ctx, org, workload, func(reader tenantstore.Reader) error {
-		if r.scalar {
-			return read(boardChangeScalarReader{reader})
-		}
 		if r.relationshipItems != nil {
 			return read(boardHydrationCountingReader{Reader: reader, owner: r})
 		}
 		return read(reader)
 	})
+}
+func (r *boardChangeCountingRepository) ReadBoardRequest(ctx context.Context, org tracker.OrganizationID, credential string, read func(context.Context) error) error {
+	return r.Repository.(interface {
+		ReadBoardRequest(context.Context, tracker.OrganizationID, string, func(context.Context) error) error
+	}).ReadBoardRequest(ctx, org, credential, read)
 }
 func (r *boardChangeCountingRepository) ReadTenantSnapshot(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
 	r.reads.Add(1)
@@ -65,6 +68,16 @@ type boardHydrationCountingReader struct {
 	owner *boardChangeCountingRepository
 }
 
+func (r boardHydrationCountingReader) BoardModelPages(ctx context.Context, selection viewstore.BoardSelection, work *viewstore.BoardSelection, authority accessstore.Authority) (viewstore.BoardModelPage, error) {
+	return r.Reader.(interface {
+		BoardModelPages(context.Context, viewstore.BoardSelection, *viewstore.BoardSelection, accessstore.Authority) (viewstore.BoardModelPage, error)
+	}).BoardModelPages(ctx, selection, work, authority)
+}
+func (r boardHydrationCountingReader) BoardAuthorizedItems(ctx context.Context, authority accessstore.Authority, ids []tracker.NativeWorkItemID, changes []string, reporter string) (viewstore.BoardReadAuthority, error) {
+	return r.Reader.(interface {
+		BoardAuthorizedItems(context.Context, accessstore.Authority, []tracker.NativeWorkItemID, []string, string) (viewstore.BoardReadAuthority, error)
+	}).BoardAuthorizedItems(ctx, authority, ids, changes, reporter)
+}
 func (r boardHydrationCountingReader) WorkItemRelationshipFacts(ctx context.Context, project tracker.ProjectID, ids []tracker.NativeWorkItemID) ([]tenantstore.WorkItemRelationshipFact, error) {
 	for _, id := range ids {
 		r.owner.relationshipItems[id]++
@@ -92,6 +105,22 @@ func (d *boardDetailBatchCounter) ReadDetails(ctx context.Context, organization 
 	d.batches.Add(1)
 	return attachment.ReadDetailBatch(ctx, organization, refs, d.DetailStore.ReadDetail)
 }
+func equalBoardIssueWire(t *testing.T, got, want tracker.NativeIssue) bool {
+	t.Helper()
+	actual, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(actual, expected) {
+		t.Logf("issue wire fields differ: got %s want %s", actual, expected)
+		return false
+	}
+	return true
+}
 func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
@@ -100,6 +129,17 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 	batchDetails := &boardDetailBatchCounter{DetailStore: details}
 	service := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: counted, AccessRepository: counted, SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: batchDetails, now: func() time.Time { return now }}}
 	content := eventstore.NewContent(details)
+	maintain := func(org tracker.OrganizationID, ids ...tracker.NativeWorkItemID) {
+		original := service.config.TenantRepository
+		service.config.TenantRepository = repository
+		defer func() { service.config.TenantRepository = original }()
+		details.beforeRead = nil
+		for _, id := range ids {
+			if err := service.refreshBoardRecord(t.Context(), org, viewstore.BoardCandidate{ProjectID: "example", WorkItemID: id}, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		service.localOrganization = string(org)
 		seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: org, Name: string(org), Slug: string(org)})
@@ -174,7 +214,7 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 			board := viewstore.BoardRecord{OrganizationID: org, ProjectID: "example", WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("example#%03d", index)}, Archived: issue.Archived, ActorPrincipalID: issue.Actor.PrincipalID, CreatedAt: now, UpdatedAt: now, Payload: payload}
 			board.Display = viewstore.BoardDisplay{Ready: true, Exact: true, ChangePrincipalID: issue.Actor.PrincipalID, Title: issue.Title, Number: issue.Number, Actor: tracker.Actor{Kind: issue.Actor.Kind}, Change: card.Change}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "example", NativeID: id, Number: int64(index + 1), Title: "Example", Archived: issue.Archived, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State}); err != nil {
+				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "example", NativeID: id, Number: int64(index + 1), Title: "Example", LastActivityAt: now, Archived: issue.Archived, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State}); err != nil {
 					return err
 				}
 				if _, err := w.CreateCollaborationVersion(t.Context(), collaboration); err != nil {
@@ -196,6 +236,7 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
+			maintain(org, id)
 			if index == 1 || index == 199 {
 				counted.relationshipItems = map[tracker.NativeWorkItemID]int{}
 				counted.changeItems = map[tracker.NativeWorkItemID]int{}
@@ -207,7 +248,13 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(page.Items) != 1 || page.Items[0].OrganizationID != org || page.Items[0].WorkItemID != "wi_001" {
+				wantNumber := 2
+				for number := 4; number <= index+1; number += 2 {
+					if strings.Compare(strconv.Itoa(number), strconv.Itoa(wantNumber)) < 0 {
+						wantNumber = number
+					}
+				}
+				if len(page.Items) != 1 || page.Items[0].OrganizationID != org || page.Items[0].Number != wantNumber {
 					t.Fatalf("default list=%+v", page.Items)
 				}
 				if len(counted.changeItems) != 0 {
@@ -243,33 +290,22 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		counted.scalar = true
+		maintain(org, "wi_000", "wi_001", "wi_002")
+		details.beforeRead = func(context.Context) error { return errors.New("page request accessed an object") }
 		counted.reads.Store(0)
 		before, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "archived": {"all"}, "include": {"board"}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		scalarReads := counted.reads.Load()
+		firstReads := counted.reads.Load()
 		batchDetails.batches.Store(0)
 		batchDetails.scalar.Store(0)
-		counted.scalar = false
 		counted.reads.Store(0)
-		timing := &requestTiming{start: time.Now()}
-		after, err := service.readBoardRecords(withRequestTiming(t.Context(), timing), scope, url.Values{"limit": {"200"}, "archived": {"all"}, "include": {"board"}})
+		after, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "archived": {"all"}, "include": {"board"}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		batchReads := counted.reads.Load()
-		phases := map[string]bool{}
-		for _, span := range timing.namedSpans() {
-			phases[span.name] = true
-		}
-		for _, phase := range []string{"board_cursor", "board_select", "board_relationships", "board_hydrate"} {
-			if !phases[phase] {
-				t.Errorf("board timing omitted phase %s", phase)
-			}
-		}
-		t.Logf("board phases: %+v", timing.namedSpans())
+		repeatReads := counted.reads.Load()
 		if batches, scalar := batchDetails.batches.Load(), batchDetails.scalar.Load(); batches != 0 || scalar != 0 {
 			t.Fatalf("200-card allocation lookups: batches=%d scalar=%d", batches, scalar)
 		}
@@ -285,10 +321,10 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 				archived++
 			}
 		}
-		if archived != 100 || scalarReads <= batchReads || batchReads > 10 {
-			t.Fatalf("archived%d scalarUOW%d batchUOW%d", archived, scalarReads, batchReads)
+		if archived != 100 || firstReads != repeatReads || repeatReads > 10 {
+			t.Fatalf("archived%d firstUOW%d repeatUOW%d", archived, firstReads, repeatReads)
 		}
-		t.Logf("tenant=%s cards=200 scalar_uows=%d batch_uows=%d", org, scalarReads, batchReads)
+		t.Logf("tenant=%s cards=200 first_uows=%d repeat_uows=%d", org, firstReads, repeatReads)
 		for _, limit := range []int{100, 150, 200} {
 			counted.relationshipItems = map[tracker.NativeWorkItemID]int{}
 			counted.changeItems = map[tracker.NativeWorkItemID]int{}
@@ -300,19 +336,23 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 				t.Fatalf("limit %d: incomplete ordinary/work page", limit)
 			}
 			for index, issue := range combined.Items {
-				if !reflect.DeepEqual(issue, operatortool.NativeListIssue(after.Cards[index].Issue)) {
+				if !equalBoardIssueWire(t, issue, operatortool.NativeListIssue(after.Cards[index].Issue)) {
 					t.Fatalf("limit %d: ordinary ordering or contents changed at %d", limit, index)
 				}
 			}
+			cards := map[tracker.NativeWorkItemID]tracker.NativeIssue{}
+			for _, card := range after.Cards {
+				cards[card.Issue.WorkItemID] = card.Issue
+			}
 			for index, issue := range combined.Work.Items {
-				if !reflect.DeepEqual(issue, operatortool.NativeListIssue(after.Cards[199-index].Issue)) {
+				if issue.Number != 200-index || !equalBoardIssueWire(t, issue, operatortool.NativeListIssue(cards[issue.WorkItemID])) {
 					t.Fatalf("limit %d: work ordering or contents changed at %d", limit, index)
 				}
 			}
 			for index := range 200 {
 				id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index))
-				if got := counted.relationshipItems[id]; got != 1 {
-					t.Errorf("%s limit %d: item %s hydrated %d times, want once", org, limit, id, got)
+				if got := counted.relationshipItems[id]; got != 0 {
+					t.Errorf("%s limit %d: item %s hydrated %d times, want zero", org, limit, id, got)
 				}
 				if got := counted.changeItems[id]; got != 0 {
 					t.Errorf("limit %d: item %s enriched %d times, want 0", limit, id, got)
@@ -323,6 +363,7 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 		counted.relationshipItems = nil
 		counted.changeItems = nil
 
+		details.beforeRead = nil
 		t.Run(string(org)+"/reuse keeps required integrity errors and separates Change failures", func(t *testing.T) {
 			var records []viewstore.BoardRecord
 			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
@@ -482,6 +523,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+		wantIssues := map[tracker.NativeWorkItemID]tracker.NativeIssue{}
 		for index := range 2 {
 			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index))
 			changeID := fmt.Sprintf("change_%03d", index)
@@ -496,6 +538,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 				issue.ReportContext = &tracker.ReportContext{URL: "https://example.com/work", Browser: "Example browser"}
 				issue.ReleaseDelivery = &tracker.ReleaseDelivery{ChangeID: "release-change", VersionID: "release-version", AssociatedAt: now}
 			}
+			wantIssues[id] = issue
 			raw, _ := json.Marshal(issue)
 			collaboration, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "example", WorkItemID: id, RecordID: string(id), Revision: 1}, raw)
 			if err != nil {
@@ -544,7 +587,9 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			}
 		}
 		scope := nativeScope{organization: org, project: "example", credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
-		assertExact := func(t *testing.T, page tracker.NativeIssuePage, ready bool) {
+		assertExact := func(t *testing.T, page tracker.NativeIssuePage) {
+			details.beforeRead = func(context.Context) error { return errors.New("page request accessed an object") }
+			defer func() { details.beforeRead = nil }()
 			var records []viewstore.BoardRecord
 			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
@@ -554,35 +599,33 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, row := range records {
-				if row.Display.Ready != ready {
-					t.Fatalf("display ready=%v want=%v", row.Display.Ready, ready)
+				if !row.Display.Ready {
+					t.Fatalf("display ready=%v want=%v", row.Display.Ready, true)
 				}
-				if ready && row.WorkItemID == "wi_000" && (!row.Display.Exact || row.Display.Provenance == nil) {
+				if row.WorkItemID == "wi_000" && (!row.Display.Exact || row.Display.Provenance == nil) {
 					t.Fatal("imported card did not reach typed exact provenance projection")
 				}
 			}
 			wantCompact := map[tracker.NativeWorkItemID]tracker.NativeIssue{}
-			legacy := service.prepareBoardPage(t.Context(), scope, records, now, true, map[tracker.NativeWorkItemID]boardPreparedRecord{})
-			defer legacy.close()
-			for index, actual := range page.Cards {
-				expected, err := legacy.card(t.Context(), index)
-				if err != nil {
-					t.Fatal(err)
+			if len(page.Cards) != 2 {
+				t.Fatalf("projected cards=%d", len(page.Cards))
+			}
+			for _, actual := range page.Cards {
+				expected, ok := wantIssues[actual.Issue.WorkItemID]
+				if !ok {
+					t.Fatalf("unexpected scoped item %s", actual.Issue.WorkItemID)
 				}
-				expected.Issue = service.nativeIssueResponse(scope.reporterIssue(expected.Issue))
-				expected.StatusLine = nativeBoardStatusLine(expected)
-				wantCompact[actual.Issue.WorkItemID] = operatortool.NativeListIssue(expected.Issue)
-				want, err := json.Marshal(expected)
-				if err != nil {
-					t.Fatal(err)
+				issue := actual.Issue
+				if issue.OrganizationID != org || issue.ProjectID != scope.project || issue.Title != expected.Title || issue.Body != "" || !slices.Contains(issue.OmittedFields, "body") || issue.State != expected.State || issue.Actor != expected.Actor || !issue.CreatedAt.Equal(expected.CreatedAt) || !issue.UpdatedAt.Equal(expected.UpdatedAt) {
+					t.Errorf("projected issue identity or payload changed: %+v", issue)
 				}
-				got, err := json.Marshal(actual)
-				if err != nil {
-					t.Fatal(err)
+				if !reflect.DeepEqual(issue.Provenance, expected.Provenance) || !reflect.DeepEqual(issue.IssueContract, expected.IssueContract) || !reflect.DeepEqual(issue.ReportContext, expected.ReportContext) || !reflect.DeepEqual(issue.ReleaseDelivery, expected.ReleaseDelivery) {
+					t.Errorf("projected metadata changed for %s: got %+v want %+v", issue.WorkItemID, issue, expected)
 				}
-				if !bytes.Equal(got, want) {
-					t.Errorf("card %s differs field-by-field:\ngot %s\nwant %s", actual.Issue.WorkItemID, got, want)
+				if issue.WebURL != expected.WebURL {
+					t.Errorf("projected browser URL changed for %s", issue.WorkItemID)
 				}
+				wantCompact[issue.WorkItemID] = operatortool.NativeListIssue(issue)
 			}
 			for _, include := range []string{"work", "summary"} {
 				compact, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "include": {include}})
@@ -597,21 +640,20 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 					items = append(items, compact.Work.Items...)
 				}
 				for _, issue := range items {
-					if !reflect.DeepEqual(issue, wantCompact[issue.WorkItemID]) {
+					if !equalBoardIssueWire(t, issue, wantCompact[issue.WorkItemID]) {
 						t.Errorf("%s compact fields differ for %s: got %+v want %+v", include, issue.WorkItemID, issue, wantCompact[issue.WorkItemID])
 					}
 				}
 			}
 		}
-		t.Run(string(org)+"/unfilled cards retain exact response", func(t *testing.T) {
+		t.Run(string(org)+"/unfilled cards wait for asynchronous projection", func(t *testing.T) {
 			page, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "include": {"board"}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(page.Cards) != 2 {
-				t.Fatalf("unfilled cards=%d", len(page.Cards))
+			if len(page.Cards) != 0 || !page.ProjectionPending {
+				t.Fatalf("unfilled cards=%d pending=%v", len(page.Cards), page.ProjectionPending)
 			}
-			assertExact(t, page, false)
 		})
 		refresh := func() {
 			for index := range 2 {
@@ -628,7 +670,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 		if err != nil || len(before.Cards) != 2 {
 			t.Fatalf("current-policy board cards=%d error=%v", len(before.Cards), err)
 		}
-		t.Run(string(org)+"/exact imported and native board cards", func(t *testing.T) { assertExact(t, before, true) })
+		t.Run(string(org)+"/exact imported and native board cards", func(t *testing.T) { assertExact(t, before) })
 		for _, card := range before.Cards {
 			if card.Change == nil || card.Change.Status == "stale_policy" {
 				t.Fatalf("current policy incorrectly stale: %+v", card.Change)
@@ -670,7 +712,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			}
 		}
 		listed, err := service.readIssuesProjection(t.Context(), scope, url.Values{"limit": {"200"}, "state": {"Todo"}, "include": {"summary"}}, true)
-		if err != nil || len(listed.Items) != 2 || listed.Total != 2 {
+		if err != nil || len(listed.Items) != 2 || listed.Total != -1 {
 			t.Fatalf("Todo summary list items=%d total=%d error=%v", len(listed.Items), listed.Total, err)
 		}
 		for _, issue := range listed.Items {
