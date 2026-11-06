@@ -210,6 +210,19 @@ SELECT * FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND sequ
 -- name: RecordGetReceipt :one
 SELECT * FROM native_commands WHERE organization_id=$1 AND actor_id=$2 AND operation=$3 AND command_key=$4;
 
+-- name: RecordReplayOperation :one
+SELECT operation FROM (
+ SELECT c.operation, c.created_at FROM native_commands c
+ WHERE c.organization_id=sqlc.arg(organization_id) AND c.actor_id=sqlc.arg(actor_id) AND c.command_key=sqlc.arg(command_key)
+ AND c.operation>=sqlc.arg(operation)::text AND c.operation<sqlc.arg(operation)::text || '!'
+ AND (c.operation=sqlc.arg(operation) OR left(c.operation,length(sqlc.arg(operation)::text)+1)=sqlc.arg(operation)::text || ' ')
+ UNION ALL
+ SELECT c.operation, c.created_at FROM native_command_states c
+ WHERE c.organization_id=sqlc.arg(organization_id) AND c.actor_id=sqlc.arg(actor_id) AND c.command_key=sqlc.arg(command_key)
+ AND c.operation>=sqlc.arg(operation)::text AND c.operation<sqlc.arg(operation)::text || '!'
+ AND (c.operation=sqlc.arg(operation) OR left(c.operation,length(sqlc.arg(operation)::text)+1)=sqlc.arg(operation)::text || ' ')
+) candidates ORDER BY created_at, operation LIMIT 1;
+
 -- name: RecordInsertReceipt :one
 INSERT INTO native_commands (organization_id,actor_id,operation,command_key,request_hash,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)

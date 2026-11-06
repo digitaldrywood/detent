@@ -253,6 +253,7 @@ type Reader interface {
 	LatestLandingReceipt(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (LandingReceipt, error)
 	ViewedFiles(context.Context, string, string, int) ([]ViewedFile, error)
 	Receipt(context.Context, string, string, string) (Receipt, error)
+	ReplayReceipt(context.Context, string, string, string) (Receipt, error)
 	Events(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
 	EventsBefore(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
 	ProjectEventSequence(context.Context, tracker.ProjectID) (int64, error)

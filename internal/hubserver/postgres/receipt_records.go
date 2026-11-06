@@ -213,3 +213,11 @@ LEFT JOIN native_command_states state USING(organization_id,actor_id,operation,c
 WHERE c.command_key IS NOT NULL OR state.command_key IS NOT NULL`, s.organization, actor, operation, key).Scan(&record.OrganizationID, &record.ActorID, &record.Operation, &record.CommandKey, &record.RequestHash, &record.CreatedAt, &record.PayloadObjectKey, &record.PayloadSHA256, &record.PayloadBytes, &record.PayloadContentBytes, &record.ResponseClaimed, &record.ResponsePending, &record.ResponseRequestID, &record.ResponseExpired, &record.ResponseReplayUntilNs, &record.ResponseReconciliationHash)
 	return record, mapError(ctx, err)
 }
+
+func (s *session) ReplayReceipt(ctx context.Context, actor, operation, key string) (receiptstore.Record, error) {
+	selected, err := s.queries.RecordReplayOperation(ctx, pgquery.RecordReplayOperationParams{OrganizationID: s.organization, ActorID: actor, Operation: operation, CommandKey: key})
+	if err != nil {
+		return receiptstore.Record{}, mapError(ctx, err)
+	}
+	return s.receiptRecord(ctx, actor, selected, key)
+}

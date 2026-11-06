@@ -2543,6 +2543,39 @@ func (q *Queries) RecordProjectPolicyLanding(ctx context.Context, arg RecordProj
 	return i, err
 }
 
+const recordReplayOperation = `-- name: RecordReplayOperation :one
+SELECT operation FROM (
+ SELECT c.operation, c.created_at FROM native_commands c
+ WHERE c.organization_id=$1 AND c.actor_id=$2 AND c.command_key=$3
+ AND c.operation>=$4::text AND c.operation<$4::text || '!'
+ AND (c.operation=$4 OR left(c.operation,length($4::text)+1)=$4::text || ' ')
+ UNION ALL
+ SELECT c.operation, c.created_at FROM native_command_states c
+ WHERE c.organization_id=$1 AND c.actor_id=$2 AND c.command_key=$3
+ AND c.operation>=$4::text AND c.operation<$4::text || '!'
+ AND (c.operation=$4 OR left(c.operation,length($4::text)+1)=$4::text || ' ')
+) candidates ORDER BY created_at, operation LIMIT 1
+`
+
+type RecordReplayOperationParams struct {
+	OrganizationID tracker.OrganizationID
+	ActorID        string
+	CommandKey     string
+	Operation      string
+}
+
+func (q *Queries) RecordReplayOperation(ctx context.Context, arg RecordReplayOperationParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, recordReplayOperation,
+		arg.OrganizationID,
+		arg.ActorID,
+		arg.CommandKey,
+		arg.Operation,
+	)
+	var operation string
+	err := row.Scan(&operation)
+	return operation, err
+}
+
 const recordSetViewedFile = `-- name: RecordSetViewedFile :one
 INSERT INTO change_viewed_files (organization_id, project_id, change_id, version_id, principal_id, manifest_sha256, file_sha256, viewed, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)

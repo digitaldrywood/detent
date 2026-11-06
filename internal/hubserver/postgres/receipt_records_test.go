@@ -34,6 +34,9 @@ func TestReceiptImportPreservesUncertainAndExpiredOutcomes(t *testing.T) {
 			{name: "expired", expired: true},
 			{name: "elapsed", old: true},
 			{name: "ready"},
+			{name: "historical", operation: "example.operation session_legacy"},
+			{name: "historical-expired", operation: "example.operation session_legacy", expired: true},
+			{name: "historical-held", operation: "example.operation session_legacy", claimed: true, pending: true, old: true},
 			{name: "unreconciled", operation: "urgent_runner_update", old: true},
 			{name: "reconciled", operation: "urgent_runner_update", old: true, reconciled: true},
 		} {
@@ -80,6 +83,18 @@ func TestReceiptImportPreservesUncertainAndExpiredOutcomes(t *testing.T) {
 				}
 				if stored.ResponseClaimed != tc.claimed || stored.ResponsePending != tc.pending || stored.ResponseExpired != wantExpired || stored.ResponseReplayUntilNs != deadline.UnixNano() || stored.ResponseReconciliationHash != record.ResponseReconciliationHash {
 					t.Fatalf("import changed receipt state: claimed=%t pending=%t expired=%t", stored.ResponseClaimed, stored.ResponsePending, stored.ResponseExpired)
+				}
+				if err := r.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
+					replayed, err := reader.ReplayReceipt(t.Context(), record.ActorID, strings.SplitN(operation, " ", 2)[0], record.CommandKey)
+					if err != nil {
+						return err
+					}
+					if replayed.OrganizationID != org || replayed.Operation != operation || replayed.ResponseClaimed != tc.claimed || replayed.ResponseExpired != wantExpired {
+						t.Fatalf("replay lost receipt identity or state: %+v", replayed)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
 				}
 				if wantExpired {
 					if _, err := content.Receipt(t.Context(), stored); !errors.Is(err, receiptstore.ErrExpired) {
