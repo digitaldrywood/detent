@@ -530,6 +530,10 @@ func NativeListIssue(issue tracker.NativeIssue) tracker.NativeIssue {
 }
 
 func BoundNativeListIssue(issue tracker.NativeIssue) (tracker.NativeIssue, error) {
+	return BoundNativeListIssueBytes(issue, WorkListPageBytes)
+}
+
+func BoundNativeListIssueBytes(issue tracker.NativeIssue, maximum int) (tracker.NativeIssue, error) {
 	issue = NativeListIssue(issue)
 	raw, err := json.Marshal(issue)
 	if err != nil {
@@ -560,7 +564,7 @@ func BoundNativeListIssue(issue tracker.NativeIssue) (tracker.NativeIssue, error
 		if err != nil {
 			return tracker.NativeIssue{}, err
 		}
-		if len(raw) <= WorkListPageBytes/4 {
+		if len(raw) <= maximum/4 {
 			var bounded tracker.NativeIssue
 			if err := json.Unmarshal(raw, &bounded); err != nil {
 				return tracker.NativeIssue{}, err

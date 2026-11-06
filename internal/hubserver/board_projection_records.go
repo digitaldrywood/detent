@@ -28,6 +28,7 @@ func (e *boardRefreshError) Error() string { return e.cause.Error() }
 func (e *boardRefreshError) Unwrap() error { return e.cause }
 
 type boardProjectionSnapshot struct {
+	organizationSlug  string
 	changePrincipalID string
 	project           projectstore.Record
 	item              corestore.WorkItem
@@ -119,6 +120,11 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 				return err
 			}
 		}
+		organizationRecord, err := r.AccessOrganization(ctx)
+		if err != nil {
+			return err
+		}
+		snapshot.organizationSlug = organizationRecord.Slug
 		step = "work_item"
 		snapshot.item, err = r.WorkItem(ctx, candidate.ProjectID, candidate.WorkItemID)
 		if errors.Is(err, corestore.ErrNotFound) {
@@ -274,11 +280,44 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 			return err
 		}
 		record := boardProjectionRecord(snapshot, card)
+		record.ProjectedAt = now
+		issue.WebURL = issueBrowserPath(snapshot.organizationSlug, snapshot.project.Core.Slug, issue.Number)
+		projected, reporter, err := s.boardProjectedRelationshipIssues(ctx, organization, candidate.ProjectID, issue)
+		if err != nil {
+			return err
+		}
+		if record.Terminal && record.ClosedAt != nil {
+			for index, span := range nativeShippedWindowSpans {
+				expires := record.ClosedAt.Add(span.span)
+				if now.Before(expires) && !record.ClosedAt.After(now) {
+					record.WindowMask |= 1 << index
+					if record.RefreshAfter == nil || expires.Before(*record.RefreshAfter) {
+						record.RefreshAfter = &expires
+					}
+				}
+			}
+		}
+		if record.ExpiresAt != nil && now.Before(*record.ExpiresAt) && (record.RefreshAfter == nil || record.ExpiresAt.Before(*record.RefreshAfter)) {
+			record.RefreshAfter = record.ExpiresAt
+		}
+		projected = s.nativeIssueResponse(projected)
+		board, list, boundedReporter, listBytes, err := boundBoardProjection(projected, reporter)
+		if err != nil {
+			return err
+		}
+		record.ListIssue = &list
+		record.ListBytes = listBytes
+		record.PageIssue = &board
+		record.ReporterRelations = &boundedReporter
 		record.Payload = payload
 		update.Current = &record
 	}
 	step = "replace_board_item"
-	return s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error { return w.ReplaceBoardItem(ctx, update) })
+	err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error { return w.ReplaceBoardItem(ctx, update) })
+	if err == nil && update.Current != nil && candidate.QueuedAt != nil && s.config.Logger != nil {
+		s.config.Logger.Info("board projection checkpoint", "organization_id", organization, "project_id", candidate.ProjectID, "work_item_id", candidate.WorkItemID, "source_revision", snapshot.item.Revision, "source_event_sequence", snapshot.item.EventSequence, "projected_at", now, "projection_lag", max(time.Duration(0), now.Sub(*candidate.QueuedAt)))
+	}
+	return err
 }
 
 func boardAttemptCurrent(snapshot tenantAttemptSnapshot, now time.Time) bool {
