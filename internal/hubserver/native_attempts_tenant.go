@@ -354,7 +354,7 @@ func (s *Service) readNativeAttemptRunTenant(ctx context.Context, snapshot tenan
 			return tracker.NativeRunData{}, err
 		}
 		if value.Data.Run == nil {
-			return tracker.NativeRunData{}, artifact.ErrIntegrity
+			return tracker.NativeRunData{}, fmt.Errorf("hydrate attempt run: %w", artifact.ErrIntegrity)
 		}
 		return *value.Data.Run, nil
 	}
