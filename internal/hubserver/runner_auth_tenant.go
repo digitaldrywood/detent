@@ -87,6 +87,9 @@ func (s *Service) authenticateTenantAPIHash(ctx context.Context, organization tr
 		})
 	}
 	if err != nil {
+		if errors.Is(err, tenantauth.ErrUnavailable) {
+			return apiCredential{}, http.StatusServiceUnavailable, err
+		}
 		if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, corestore.ErrNotFound) {
 			return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
 		}
@@ -99,6 +102,9 @@ func (s *Service) authenticateTenantAPIHash(ctx context.Context, organization tr
 		}
 		credential.Hosted = &auth.HostedIdentity{Subject: token.UserID, OrganizationID: provider}
 		current, err := s.hostedMembership(ctx, credential.Hosted)
+		if errors.Is(err, tenantauth.ErrUnavailable) {
+			return apiCredential{}, http.StatusServiceUnavailable, err
+		}
 		if err != nil || current.ID != token.MembershipID {
 			return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
 		}

@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -137,6 +138,9 @@ func (s *Service) accessMemberCredential(ctx context.Context, session auth.Sessi
 		credential.HostedRole = lesserHostedRole(credential.HostedRole, member.Role)
 		return nil
 	})
+	if errors.Is(err, tenantauth.ErrUnavailable) {
+		return apiCredential{}, http.StatusServiceUnavailable, err
+	}
 	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
@@ -185,6 +189,9 @@ func (s *Service) authenticateAccessHash(ctx context.Context, hash, renewalRunne
 		return err
 	})
 	if err != nil {
+		if errors.Is(err, tenantauth.ErrUnavailable) {
+			return apiCredential{}, http.StatusServiceUnavailable, err
+		}
 		if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, corestore.ErrNotFound) {
 			return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
 		}
@@ -194,6 +201,9 @@ func (s *Service) authenticateAccessHash(ctx context.Context, hash, renewalRunne
 	if token.UserID != "" {
 		credential.Hosted = &auth.HostedIdentity{Subject: token.UserID, OrganizationID: provider}
 		current, err := s.hostedMembership(ctx, credential.Hosted)
+		if err != nil && errors.Is(err, tenantauth.ErrUnavailable) {
+			return apiCredential{}, http.StatusServiceUnavailable, err
+		}
 		if err != nil || current.ID != token.MembershipID {
 			return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
 		}

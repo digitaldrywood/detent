@@ -43,8 +43,8 @@ func (s *Service) WebSession(ctx context.Context, hash string, now time.Time) (a
 		return auth.Session{}, err
 	}
 	current, err := s.config.Hosted.Provider.CurrentSession(ctx, *session.Identity)
-	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
-		return auth.Session{}, err
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return auth.Session{}, errors.Join(tenantauth.ErrUnavailable, err)
 	}
 	if err != nil || !current.ExpiresAt.After(now) || current.Subject != session.Identity.Subject || current.SessionID != session.Identity.SessionID || current.OrganizationID != session.Identity.OrganizationID || current.SupportActor != session.Identity.SupportActor || current.SupportReason != session.Identity.SupportReason {
 		return auth.Session{}, auth.ErrInvalidSession
@@ -110,8 +110,14 @@ func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (apiCred
 		return s.hostedSessionCredential(ctx, session, hash)
 	}
 	credential, status, err = read()
-	if status == http.StatusForbidden && s.completePendingHostedInvitation(ctx, session) {
-		credential, status, err = read()
+	if status == http.StatusForbidden {
+		completed, completionErr := s.completePendingHostedInvitation(ctx, session)
+		if completionErr != nil {
+			return apiCredential{}, http.StatusServiceUnavailable, completionErr
+		}
+		if completed {
+			credential, status, err = read()
+		}
 	}
 	if err != nil && status >= http.StatusInternalServerError {
 		return apiCredential{}, http.StatusServiceUnavailable, errors.Join(tenantauth.ErrUnavailable, err)
@@ -133,6 +139,9 @@ func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Sessi
 		member, err = r.AccessMember(ctx, session.Identity.Subject)
 		return err
 	})
+	if errors.Is(err, tenantauth.ErrUnavailable) {
+		return apiCredential{}, http.StatusServiceUnavailable, err
+	}
 	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) || errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
@@ -155,9 +164,9 @@ func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Sessi
 // role, and its conditional update admits one acceptance, so no shared lock is
 // held across the provider calls. It reports true whenever completion was
 // attempted, since a concurrent request may have completed it first.
-func (s *Service) completePendingHostedInvitation(ctx context.Context, session auth.Session) bool {
+func (s *Service) completePendingHostedInvitation(ctx context.Context, session auth.Session) (bool, error) {
 	if session.Identity == nil || session.Identity.SupportActor != "" || session.Email == "" || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
-		return false
+		return false, nil
 	}
 	readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	var id string
@@ -186,16 +195,24 @@ func (s *Service) completePendingHostedInvitation(ctx context.Context, session a
 	}
 	cancel()
 	if err != nil {
-		return false
+		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return false, operatorAuthorizationError(err)
+		}
+		return false, nil
 	}
 	invitation, err := auth.LookupInvitationID(ctx, s.config.Hosted.Provider, id)
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return false, operatorAuthorizationError(err)
+	}
 	if err != nil || invitation.State != "accepted" || invitation.AcceptedUserID != session.Identity.Subject {
-		return false
+		return false, nil
 	}
 	if err := s.acceptHostedInvitationIDFor(ctx, auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true, Hosted: session.Identity}, id); err != nil {
-		s.config.Logger.Warn("pending invitation completion refused", "invitation", id, "error", err)
+		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return false, operatorAuthorizationError(err)
+		}
 	}
-	return true
+	return true, nil
 }
 
 // lesserHostedRole returns the less privileged of two organization roles, so
@@ -353,8 +370,8 @@ func (s *Service) hostedMutationIdentity(ctx context.Context, credential apiCred
 		return *credential.Hosted, membership, nil
 	}
 	identity, err := s.config.Hosted.Provider.CurrentSession(ctx, *credential.Hosted)
-	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
-		return auth.HostedIdentity{}, auth.Membership{}, err
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return auth.HostedIdentity{}, auth.Membership{}, errors.Join(tenantauth.ErrUnavailable, err)
 	}
 	if err != nil || !identity.ExpiresAt.After(s.config.now()) || identity.Subject != credential.Hosted.Subject || identity.SessionID != credential.Hosted.SessionID || identity.SupportActor != credential.Hosted.SupportActor || identity.SupportReason != credential.Hosted.SupportReason || identity.OrganizationID != credential.Hosted.OrganizationID {
 		return auth.HostedIdentity{}, auth.Membership{}, auth.ErrHostedIdentity
@@ -379,8 +396,8 @@ func (s *Service) recheckHostedAuthority(ctx context.Context, tx *sql.Tx, scope 
 	}
 	identity, membership, err := s.hostedMutationIdentity(ctx, scope.credential)
 	if err != nil {
-		if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
-			return operatortool.ErrProviderUnavailable
+		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return operatorAuthorizationError(err)
 		}
 		return auth.ErrHostedIdentity
 	}
