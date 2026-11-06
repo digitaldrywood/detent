@@ -108,6 +108,7 @@ type NativeRuntimeObservation struct {
 }
 
 type NativeWorkerLaunch struct {
+	HubVersion       string    `json:"hub_version,omitempty"`
 	PID              int       `json:"pid"`
 	GroupID          int       `json:"pgid"`
 	ProcessStart     time.Time `json:"process_start"`

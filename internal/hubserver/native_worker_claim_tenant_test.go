@@ -573,6 +573,10 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 			Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: report.Backend, Model: report.Models[0]}},
 	}
 	startedAt := clock.value.Truncate(time.Second).Add(123456789 * time.Nanosecond)
+	service.config.Version = "2.0.0"
+	started.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", WorkerLaunch: &tracker.NativeWorkerLaunch{
+		PID: 123, ProcessStart: startedAt, ExecutionVersion: "1.1.0", ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), ControlVersion: "1.0.0", PolicyID: descriptor.ID, Protocol: 1, SelectedAt: startedAt,
+	}}
 	started.OccurredAt = startedAt
 	clock.value = startedAt.Add(2 * time.Second)
 	finishedAt := clock.value
@@ -612,6 +616,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	corrected.Data.Usage[0].Input = 14
 	corrected.PriorEvents = nil
 	clock.value = finishedAt.Add(time.Minute)
+	service.config.Version = "2.1.0"
 	correctionResponse := performHubAPIRequest(t, service, http.MethodPost, eventPath, secret, corrected)
 	requireNativeStatus(t, correctionResponse, http.StatusOK)
 	var correctedAttempt leasestore.Attempt
@@ -629,6 +634,13 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	}
 	if correctedAttempt.Status != "succeeded" || correctedAttempt.Sequence != 3 || !correctedAttempt.UpdatedAt.Equal(terminalAttempt.UpdatedAt) || correctedAttempt.PayloadObjectKey == terminalAttempt.PayloadObjectKey || costRevision.Revision != 3 {
 		t.Fatalf("usage correction changed attempt lifecycle or missed cost receipt: before=%+v after=%+v cost=%+v", terminalAttempt, correctedAttempt, costRevision)
+	}
+	correctedData, err := service.readNativeAttemptTenant(t.Context(), scope, string(items[0].WorkItemID), started.Data.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if correctedData.Runtime == nil || correctedData.Runtime.WorkerLaunch == nil || correctedData.Runtime.WorkerLaunch.HubVersion != "2.0.0" || correctedData.Runtime.WorkerLaunch.ExecutionVersion != "1.1.0" {
+		t.Fatalf("usage correction lost execution versions: %+v", correctedData.Runtime)
 	}
 	blockedResponse := performHubAPIRequest(t, service, http.MethodPost, itemsPath, testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "issue-blocked"}, Title: "Example ineligible issue", Body: "detent:no-dispatch", State: "Todo"})
 	requireNativeStatus(t, blockedResponse, http.StatusOK)

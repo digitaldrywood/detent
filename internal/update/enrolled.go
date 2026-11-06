@@ -34,8 +34,8 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 			s.mu.RLock()
 			pendingVerification := !s.enrolledStateValid && s.enrolledReceipt != nil && s.enrolledReceipt.AdvancedFollowHubRelease()
 			s.mu.RUnlock()
-			refresh := (s.cfg.WorkerArtifacts != nil || pendingVerification) && !s.cfg.Enabled && (lastCheck == nil || !s.cfg.Now().Before(lastCheck.Add(s.cfg.CheckInterval)))
-			if (s.enrolledDiscovery == "" || refresh) && s.cfg.Updater != nil {
+			refresh := pendingVerification && !s.cfg.Enabled && (lastCheck == nil || !s.cfg.Now().Before(lastCheck.Add(s.cfg.CheckInterval)))
+			if s.cfg.WorkerArtifacts == nil && (s.enrolledDiscovery == "" || refresh) && s.cfg.Updater != nil {
 				s.updateStatus(func(*AutoStatus) { s.enrolledDiscovery = "unknown" })
 				if !s.cfg.Enabled {
 					checkedAt := s.cfg.Now().UTC()

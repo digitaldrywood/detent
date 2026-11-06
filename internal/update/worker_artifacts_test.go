@@ -139,6 +139,9 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 				now = now.Add(time.Hour)
 				updater.checkStatus.LatestVersion = "1.0.2"
 				updater.applyStatus.LatestVersion = "1.0.2"
+				if _, err := scheduler.CheckNow(t.Context()); err != nil {
+					t.Fatal(err)
+				}
 				observed = scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), nil)
 				if observed.AvailableVersion != "1.0.2" || observed.Discovery != "available" {
 					t.Fatalf("later release discovery stalled: %+v", observed)
@@ -705,5 +708,86 @@ func TestWorkerArtifactsReleaseSelectionBoundary(t *testing.T) {
 	}
 	if err := second.Release(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWorkerDiscoveryRunsOutsideHeartbeat(t *testing.T) {
+	t.Parallel()
+	for _, failure := range []string{"none", "manual apply", "prerelease controller", "discovery outage", "bad signature", "no stable release"} {
+		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
+			artifacts, fixture, publish := workerArtifactFixture(t)
+			publish("1.0.0")
+			active, err := artifacts.Acquire(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := active.Release(); err != nil {
+					t.Error(err)
+				}
+			})
+			release := publish("1.0.2")
+			publish("1.0.1")
+			publish("2.0.0-rc.1")
+			switch failure {
+			case "discovery outage":
+				fixture.listErr = errors.New("discovery unavailable")
+			case "bad signature":
+				fixture.downloads[release.Assets[2].BrowserDownloadURL] = []byte("invalid signature")
+			case "no stable release":
+				fixture.releases = nil
+			}
+			if failure == "prerelease controller" {
+				artifacts.service.cfg.CurrentVersion = "1.0.0-rc.1"
+			}
+			now := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
+			checks, waits := 0, 0
+			fixture.list = func() { checks++ }
+			scheduler, err := NewScheduler(SchedulerConfig{WorkerArtifacts: artifacts, Updater: artifacts.service,
+				Enabled: failure == "manual apply", CheckInterval: time.Hour, Now: func() time.Time { return now },
+				NextDelay: func(interval time.Duration) time.Duration { return interval },
+				Wait: func(_ context.Context, delay time.Duration) bool {
+					waits++
+					now = now.Add(delay)
+					return waits == 1
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), nil)
+			if checks != 0 {
+				t.Errorf("heartbeat performed %d release discoveries", checks)
+			}
+			scheduler.Run(t.Context())
+			if checks == 0 {
+				t.Fatal("disabled automatic apply stopped background worker discovery")
+			}
+			selected, err := artifacts.AcquireLaunch(t.Context(), nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := selected.Release(); err != nil {
+					t.Error(err)
+				}
+			}()
+			want := "1.0.0"
+			if failure == "none" || failure == "manual apply" || failure == "prerelease controller" {
+				want = "1.0.2"
+			}
+			if selected.Status.LatestVersion != want || !selected.Status.VerifiedRelease {
+				t.Fatalf("selected worker = %+v, want verified %s", selected.Status, want)
+			}
+			if want == "1.0.0" && scheduler.Status().LastError == "" {
+				t.Fatal("discovery failure was not exposed")
+			}
+			before := checks
+			scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), nil)
+			if checks != before {
+				t.Fatal("heartbeat retried failed discovery")
+			}
+		})
 	}
 }

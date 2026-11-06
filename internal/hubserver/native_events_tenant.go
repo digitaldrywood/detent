@@ -285,6 +285,9 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 	request.Data.MachineID = tracker.MachineID(lease.MachineID)
 	request.Data.SessionID = lease.SessionID
 	request.Data.RunnerID = scope.credential.Runner.RunnerID
+	if previousRunEventFound {
+		s.recordWorkerHubVersion(previousRunData, &request.Data)
+	}
 	request.PriorEvents = nil
 	events[len(events)-1] = request
 	usageCorrection := false
@@ -305,6 +308,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		if err := preserveTenantRunCleanup(predecessor, &event.Data); err != nil {
 			return nil, err
 		}
+		s.recordWorkerHubVersion(predecessor, &event.Data)
 		if cleanupData == nil || event.Data.Sequence > cleanupData.Sequence {
 			value := event.Data
 			cleanupData = &value

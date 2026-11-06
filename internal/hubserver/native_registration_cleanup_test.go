@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -12,10 +13,12 @@ import (
 
 func TestTenantRunReconnectPreservesWorkerCleanupIdentity(t *testing.T) {
 	f := newRunnerPGFixture(t)
+	f.service.config.Version = "2.0.0"
 	for index, lease := range f.leases {
 		t.Run([]string{"separate observations", "batched observations"}[index], func(t *testing.T) {
+			f.service.config.Version = "2.0.0"
 			now := time.Now().UTC()
-			launch := tracker.NativeWorkerLaunch{PID: 123, ProcessStart: now, ExecutionVersion: "example", ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), ControlVersion: "example", PolicyID: f.policy.PolicyID, Protocol: 1, SelectedAt: now}
+			launch := tracker.NativeWorkerLaunch{HubVersion: "untrusted", PID: 123, ProcessStart: now, ExecutionVersion: "example", ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), ControlVersion: "example", PolicyID: f.policy.PolicyID, Protocol: 1, SelectedAt: now}
 			data := f.data[index]
 			data.Sequence = 2
 			data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", WorkerLaunch: &launch}
@@ -39,9 +42,26 @@ func TestTenantRunReconnectPreservesWorkerCleanupIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if attempt.Runtime == nil || attempt.Runtime.WorkerLaunch == nil || *attempt.Runtime.WorkerLaunch != launch {
+			expectedLaunch := launch
+			expectedLaunch.HubVersion = "2.0.0"
+			if attempt.Runtime == nil || attempt.Runtime.WorkerLaunch == nil || *attempt.Runtime.WorkerLaunch != expectedLaunch {
 				t.Fatalf("reconnect lost archived worker launch: %+v", attempt.Runtime)
 			}
+			raw, err := json.Marshal(attempt.Runtime.WorkerLaunch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var versions struct {
+				Hub    string `json:"hub_version"`
+				Worker string `json:"execution_version"`
+			}
+			if err := json.Unmarshal(raw, &versions); err != nil {
+				t.Fatal(err)
+			}
+			if versions.Hub != "2.0.0" || versions.Worker != "example" {
+				t.Fatalf("attempt versions = %+v, want Hub 2.0.0 and worker example", versions)
+			}
+			f.service.config.Version = "2.1.0"
 			prefix := reconnect
 			prefix.PriorEvents = nil
 			replay := prefix
@@ -55,6 +75,13 @@ func TestTenantRunReconnectPreservesWorkerCleanupIdentity(t *testing.T) {
 			replay.PriorEvents = nil
 			older.PriorEvents = []tracker.NativeRunEvent{prefix, replay}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], older), http.StatusOK)
+			afterUpgrade, err := f.service.readNativeAttemptTenant(t.Context(), nativeScope{organization: "org_startup", project: "prj_runner", credential: credential}, string(lease.WorkItemID), data.AttemptID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if afterUpgrade.Runtime.WorkerLaunch.HubVersion != "2.0.0" {
+				t.Fatalf("Hub upgrade changed attempt version: %+v", afterUpgrade.Runtime.WorkerLaunch)
+			}
 			altered := prefix
 			altered.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "rework"}
 			rejected := older

@@ -114,15 +114,14 @@ func enrolledSignedReleaseFixture(t *testing.T) (SchedulerConfig, *workerRelease
 
 func TestSchedulerEnrolledLegacyReleaseAdvance(t *testing.T) {
 	t.Parallel()
-	for _, automatic := range []bool{false, true} {
+	for _, owner := range []string{"enrolled", "automatic", "worker scheduler"} {
+		automatic := owner == "automatic"
+		workerDiscovery := owner == "worker scheduler"
 		for _, failure := range []string{"", "signature", "source outage", "checksum", "provenance", "platform", "digest", "commit", "binary identity", "private source", "unverified", "pinned request", "older applied release", "conflicting target", "invalid receipt", "missing verifier", "running drift"} {
-			if automatic && failure != "" && failure != "signature" && failure != "source outage" {
+			if (automatic || workerDiscovery) && failure != "" && failure != "signature" && failure != "source outage" {
 				continue
 			}
-			name := "enrolled/" + failure
-			if automatic {
-				name = "automatic/" + failure
-			}
+			name := owner + "/" + failure
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				config, fixture, publish := enrolledSignedReleaseFixture(t)
@@ -136,6 +135,12 @@ func TestSchedulerEnrolledLegacyReleaseAdvance(t *testing.T) {
 				now := config.RunningBuild.ObservedAt
 				config.Now = func() time.Time { return now }
 				config.Enabled = automatic
+				if workerDiscovery {
+					config.WorkerArtifacts, err = NewWorkerArtifacts(service, t.TempDir())
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
 				request := runnerauth.UpdateRequest{ID: "legacy-follow", Service: "detent", Release: true, FollowHub: true, Version: "1.0.1", ExpectedBuildRevision: strings.Repeat("b", 64), RequestedAt: now}
 				evidence := runnerauth.BuildEvidence{Version: "1.0.2", Commit: applied.LatestCommit, Source: "release", SHA256: applied.BinarySHA256, OS: "linux", Architecture: "amd64", VerifiedRelease: true, ObservedAt: now}
 				receipt := runnerauth.UpdateReceipt{Request: request, Status: "applied", Applied: &evidence, ObservedAt: now}
@@ -204,7 +209,7 @@ func TestSchedulerEnrolledLegacyReleaseAdvance(t *testing.T) {
 				}
 				fixture.list = nil
 				observed := scheduler.EnrolledUpdate(t.Context(), config.RunningBuild, nil)
-				if automatic {
+				if automatic || workerDiscovery {
 					if observed.Supported || observed.Receipt != nil {
 						t.Fatalf("legacy evidence trusted before a release check: %+v", observed)
 					}
@@ -239,7 +244,7 @@ func TestSchedulerEnrolledLegacyReleaseAdvance(t *testing.T) {
 						t.Fatal("enrolled observation repeated legacy downloads before the next check")
 					}
 					now = now.Add(config.CheckInterval)
-					if automatic {
+					if automatic || workerDiscovery {
 						if _, err := scheduler.CheckNow(t.Context()); err != nil {
 							t.Fatal(err)
 						}

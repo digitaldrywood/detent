@@ -110,9 +110,9 @@ func (a *WorkerArtifacts) PrepareLaunch(ctx context.Context, preflight BinaryPre
 	if err != nil {
 		return nil, fmt.Errorf("resolve worker release: %w", err)
 	}
-	release, found, err := SelectLatestRelease(a.service.cfg.CurrentVersion, releases)
-	if err != nil || !found {
-		return nil, fmt.Errorf("resolve worker release: %w", errors.Join(err, errors.New("no eligible worker release")))
+	release, found := selectLatestRelease(releases, false)
+	if !found {
+		return nil, errors.New("resolve worker release: no eligible worker release")
 	}
 	status := Status{CurrentVersion: a.service.cfg.CurrentVersion, LatestVersion: displayVersion(release.TagName), LatestTag: release.TagName, Critical: releaseCritical(release)}
 	if capture != nil {

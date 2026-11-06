@@ -809,6 +809,11 @@ func SelectLatestRelease(current string, releases []Release) (Release, bool, err
 		return Release{}, false, err
 	}
 
+	latest, found := selectLatestRelease(releases, len(currentVersion.prerelease) != 0)
+	return latest, found, nil
+}
+
+func selectLatestRelease(releases []Release, allowPrerelease bool) (Release, bool) {
 	var latest Release
 	var latestVersion semVersion
 	found := false
@@ -816,11 +821,14 @@ func SelectLatestRelease(current string, releases []Release) (Release, bool, err
 		if release.Draft {
 			continue
 		}
-		if release.Prerelease && len(currentVersion.prerelease) == 0 {
+		if release.Prerelease && !allowPrerelease {
 			continue
 		}
 		version, err := parseVersion(release.TagName)
 		if err != nil {
+			continue
+		}
+		if !allowPrerelease && len(version.prerelease) != 0 {
 			continue
 		}
 		if !found || compareSemVersions(version, latestVersion) > 0 {
@@ -829,7 +837,7 @@ func SelectLatestRelease(current string, releases []Release) (Release, bool, err
 			found = true
 		}
 	}
-	return latest, found, nil
+	return latest, found
 }
 
 func CompareVersions(a string, b string) (int, error) {

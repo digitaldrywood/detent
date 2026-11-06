@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -29,4 +30,18 @@ func (s *Service) runnerReleasePublished(ctx context.Context, version, platform,
 	}
 	s.runnerPublishedReleases.Store(key, true)
 	return true
+}
+
+func (s *Service) recordWorkerHubVersion(previous *tracker.NativeRunData, current *tracker.NativeRunData) {
+	if current.Runtime == nil || current.Runtime.WorkerLaunch == nil {
+		return
+	}
+	runtime := *current.Runtime
+	launch := *runtime.WorkerLaunch
+	launch.HubVersion = s.config.Version
+	if previous != nil && previous.Runtime != nil && previous.Runtime.WorkerLaunch != nil {
+		launch.HubVersion = previous.Runtime.WorkerLaunch.HubVersion
+	}
+	runtime.WorkerLaunch = &launch
+	current.Runtime = &runtime
 }

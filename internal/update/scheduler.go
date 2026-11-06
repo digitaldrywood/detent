@@ -201,6 +201,20 @@ func (s *Scheduler) PrepareWorkers(ctx context.Context) error {
 	}
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
+	_, err := s.prepareWorkersLocked(ctx)
+	if err != nil {
+		return err
+	}
+	if receipt := s.enrolledObservation(s.cfg.RunningBuild).Receipt; receipt != nil && receipt.Applied != nil && receipt.Applied.VerifiedRelease {
+		opts := s.cfg.ApplyOptions
+		opts.ExpectedVersion = receipt.Applied.Version
+		opts.FromRelease = receipt.Request.FromRelease
+		s.installControlLocked(ctx, opts, receipt.Applied.Version)
+	}
+	return nil
+}
+
+func (s *Scheduler) prepareWorkersLocked(ctx context.Context) (Status, error) {
 	artifact, err := s.cfg.WorkerArtifacts.PrepareLaunch(ctx, s.cfg.WorkerPreflight, func(status Status) error {
 		if status.Critical {
 			comparison, err := CompareVersions(status.LatestVersion, status.CurrentVersion)
@@ -214,26 +228,19 @@ func (s *Scheduler) PrepareWorkers(ctx context.Context) error {
 		return nil
 	})
 	if errors.Is(err, ErrWorkerCriticalUpdate) || errors.Is(err, ErrWorkerProtocolIncompatible) {
-		_, err = s.applyExceptionalWorkerUpdateLocked(ctx, s.cfg.ApplyOptions, err)
-		return err
+		return s.applyExceptionalWorkerUpdateLocked(ctx, s.cfg.ApplyOptions, err)
 	}
 	if err != nil {
-		return err
+		return Status{}, err
 	}
 	if err := artifact.Release(); err != nil {
-		return err
+		return Status{}, err
 	}
-	if receipt := s.enrolledObservation(s.cfg.RunningBuild).Receipt; receipt != nil && receipt.Applied != nil && receipt.Applied.VerifiedRelease {
-		opts := s.cfg.ApplyOptions
-		opts.ExpectedVersion = receipt.Applied.Version
-		opts.FromRelease = receipt.Request.FromRelease
-		s.installControlLocked(ctx, opts, receipt.Applied.Version)
-	}
-	return nil
+	return artifact.Status, nil
 }
 
 func (s *Scheduler) Run(ctx context.Context) {
-	if s == nil || !s.cfg.Enabled {
+	if s == nil || !s.cfg.Enabled && s.cfg.WorkerArtifacts == nil {
 		return
 	}
 	if ctx == nil {
@@ -273,23 +280,27 @@ func (s *Scheduler) checkLocked(ctx context.Context) (Status, error) {
 	if err != nil {
 		return checked, err
 	}
+	return checked, s.verifyEnrolledStateLocked(ctx)
+}
+
+func (s *Scheduler) verifyEnrolledStateLocked(ctx context.Context) error {
 	s.mu.RLock()
 	valid := s.enrolledStateValid
 	receipt := cloneEnrolledReceipt(s.enrolledReceipt)
 	s.mu.RUnlock()
 	if !valid && receipt != nil && receipt.AdvancedFollowHubRelease() {
 		if err := verifyAdvancedEnrolledReceipt(ctx, s.cfg, receipt); err != nil {
-			return checked, err
+			return err
 		}
 		s.mu.Lock()
 		s.enrolledStateValid = true
 		s.mu.Unlock()
 	}
-	return checked, nil
+	return nil
 }
 
 func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
-	if s == nil || !s.cfg.Enabled {
+	if s == nil || !s.cfg.Enabled && s.cfg.WorkerArtifacts == nil {
 		return Status{}, nil
 	}
 	if ctx == nil {
@@ -308,6 +319,34 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 			status.NextCheckAt = nil
 		})
 		return installed, s.persistLastCheck(checkedAt)
+	}
+
+	if (!s.cfg.Enabled || !s.cfg.AutoApplyEnabled) && s.cfg.WorkerArtifacts != nil {
+		selected, err := s.prepareWorkersLocked(ctx)
+		checkedAt := s.cfg.Now().UTC()
+		if err != nil {
+			return selected, errors.Join(err, s.recordCheckFailure(checkedAt, err))
+		}
+		if err := s.verifyEnrolledStateLocked(ctx); err != nil {
+			return Status{}, errors.Join(err, s.recordCheckFailure(s.cfg.Now(), err))
+		}
+		comparison, err := CompareVersions(selected.LatestVersion, selected.CurrentVersion)
+		if err != nil {
+			return selected, err
+		}
+		selected.UpdateAvailable = comparison > 0
+		s.updateStatus(func(status *AutoStatus) {
+			status.LastCheckAt = &checkedAt
+			status.NextCheckAt = nil
+			status.LastError = ""
+			status.AvailableVersion = ""
+			s.enrolledDiscovery = "up_to_date"
+			if selected.UpdateAvailable {
+				status.AvailableVersion = selected.LatestVersion
+				s.enrolledDiscovery = "available"
+			}
+		})
+		return selected, s.persistLastCheck(checkedAt)
 	}
 
 	s.updateStatus(func(status *AutoStatus) {
