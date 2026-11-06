@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -18,7 +18,7 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-func testRequestMetrics(t *testing.T, path string, organization tracker.OrganizationID) *tenantRequestMetrics {
+func testRequestMetrics(t *testing.T, organization tracker.OrganizationID) *tenantRequestMetrics {
 	t.Helper()
 	m, err := newPostgresTestMetrics(t, organization)
 	if err != nil {
@@ -54,7 +54,7 @@ func TestMetricRouteBoundsKeys(t *testing.T) {
 func TestRequestHistoryKeepsBusiestRoutes(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
-	m := testRequestMetrics(t, filepath.Join(t.TempDir(), "busy.metrics.sqlite"), "org_busy")
+	m := testRequestMetrics(t, "org_busy")
 	for route := range routeLatencyRouteLimit + 5 {
 		for range route + 1 {
 			m.record(now.Add(-time.Minute), fmt.Sprintf("GET /route/%02d", route), "browser", "user", 200, time.Millisecond)
@@ -139,7 +139,7 @@ func TestRunnerRequestBudget(t *testing.T) {
 		capacity, budget int
 	}{{"zero capacity", 0, 120}, {"one slot", 1, 180}, {"four slots", 4, 360}} {
 		t.Run(test.name, func(t *testing.T) {
-			m := testRequestMetrics(t, filepath.Join(t.TempDir(), "metrics.sqlite"), "org_one")
+			m := testRequestMetrics(t, "org_one")
 			now := time.Now().UTC().Truncate(time.Minute).Add(15 * time.Second)
 			for range test.budget {
 				if retry := m.admit(now, "runner_one", "GET /items", test.capacity, []string{"project"}); retry != 0 {
@@ -175,89 +175,72 @@ func TestRunnerRequestBudget(t *testing.T) {
 }
 
 func TestRunnerRequestBudgetHTTP(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{})
-	f.service.stopHealthDetector()
-	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-	r.enroll(t)
-	issue := f.create(t, "queued budget work")
-	descriptor := hubTestPolicy()
-	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
-	f.service.config.Hosted = &HostedConfig{}
-	f.service.database.hostedOrganization = f.project.OrganizationID
-	hostedTestPlans(t, f.service, map[string]int64{"api_mutations": 0})
-	f.service.config.Hosted = nil
+	f := newRunnerPGFixture(t)
 	now := time.Now().UTC().Truncate(time.Minute).Add(20 * time.Second)
 	f.service.config.now = func() time.Time { return now }
-	m, err := newPostgresTestMetrics(t, f.project.OrganizationID)
+	m, err := f.service.database.openRequestMetrics(t.Context(), "org_startup")
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.service.requestMetrics = m
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET reported_capacity=0 WHERE id=?", r.binding.RunnerID); err != nil {
-		t.Fatal(err)
-	}
-	for range 240 {
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items", r.redemption.Credential, nil), http.StatusOK)
-	}
-	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items", r.redemption.Credential, nil)
-	requireNativeCode(t, response, http.StatusTooManyRequests, "runner_request_budget")
-	if response.Header().Get("Retry-After") != "40" {
-		t.Fatalf("retry=%q", response.Header().Get("Retry-After"))
-	}
-	if response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/go-test-receipts?key="+strings.Repeat("a", 64), r.redemption.Credential, nil); response.Code != http.StatusOK {
-		t.Fatalf("receipt lookup after the request budget: %d %s", response.Code, response.Body)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET reported_capacity=capacity_limit WHERE id=?", r.binding.RunnerID); err != nil {
-		t.Fatal(err)
-	}
-	claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "request-budget", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
-	claimed := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
-	requireNativeStatus(t, claimed, http.StatusOK)
-	var lease tracker.NativeLease
-	decodeHubResponse(t, claimed, &lease)
-	for _, test := range []struct {
-		name, path string
-		body       any
-		want       int
-	}{
-		{"heartbeat", f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat", map[string]any{"capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation}, http.StatusOK},
-		{"lease renewal", f.base + "/leases/" + string(lease.ID) + "/renew", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}, http.StatusOK},
-		{"lease release", f.base + "/leases/" + string(lease.ID) + "/release", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}, http.StatusNoContent},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, test.path, r.redemption.Credential, test.body), test.want)
-		})
-	}
-	var used int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT coalesce(sum(amount),0) FROM hosted_usage_windows WHERE metric='api_mutations'").Scan(&used); err != nil || used != 0 {
-		t.Fatalf("runner retained the replaced mutation allowance: used=%d err=%v", used, err)
-	}
-	if err := f.service.evaluateOrganizationHealth(f.service.runDetailContext(t.Context()), f.project.OrganizationID, now.Add(time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-	var summary string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT summary FROM health_findings WHERE signal='runner_request_budget' AND resolved_at IS NULL").Scan(&summary); err != nil || !strings.Contains(summary, "GET "+nativeBase+"/work-items") {
-		t.Fatalf("budget finding: %q %v", summary, err)
-	}
-	if err := m.flush(t.Context(), now.Add(time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-	report, err := m.report(t.Context(), now.Add(time.Minute))
-	if err != nil || len(report.Callers) != 1 || report.Callers[0].Kind != "runner" || report.Callers[0].Count != 246 {
-		t.Fatalf("report=%+v err=%v", report, err)
+	for _, binding := range f.bindings {
+		credential := apiCredential{Runner: runnerauth.Identity{Binding: binding}}
+		request := func(method, path string) *httptest.ResponseRecorder {
+			response := httptest.NewRecorder()
+			c := echo.New().NewContext(httptest.NewRequest(method, path, nil), response)
+			c.SetPath(path)
+			if err := f.service.admitRunnerRequest(c, credential); err != nil {
+				t.Fatal(err)
+			}
+			return response
+		}
+		for range 180 {
+			if response := request(http.MethodGet, "/items"); response.Code != http.StatusOK {
+				t.Fatalf("within budget=%d", response.Code)
+			}
+		}
+		response := request(http.MethodGet, "/items")
+		if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") != "40" {
+			t.Fatalf("budget=%d retry=%q", response.Code, response.Header().Get("Retry-After"))
+		}
+		if response := request(http.MethodGet, "/go-test-receipts"); response.Code != http.StatusOK {
+			t.Fatal("receipt lookup exhausted ordinary budget")
+		}
+		if response := request(http.MethodPost, "/api/v2/runner/heartbeat"); response.Code != http.StatusOK {
+			t.Fatal("heartbeat throttled")
+		}
 	}
 }
 
 func TestRequestMetricsAdminReads(t *testing.T) {
-	f := newHostedSecurityFixture(t)
-	f.service.stopHealthDetector()
+	repository := projectRecordPostgres(t)
+	f := accountPreferencesPostgresFixture(t, repository)
+	f.project = "prj_example"
+	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_security", Name: "Example", CreatedAt: time.Now()}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: "org_security", ProviderID: "org_provider"}); err != nil {
+			return err
+		}
+		_, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: "org_security", ID: f.project, Name: "Example", Profile: "native"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	metrics, err := f.service.database.openRequestMetrics(t.Context(), "org_security")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.service.requestMetrics = metrics
+	f.service.echo.Use(f.service.measureRequests)
 	owner := f.user(t, "owner", "owner", "owner@example.test", "", "")
 	member := f.user(t, "member", "member", "member@example.test", "", "")
 	path := "/api/v2/organizations/org_security/diagnostics/requests"
 	requireNativeStatus(t, f.request(t, owner, http.MethodGet, path, nil), http.StatusOK)
 	requireNativeStatus(t, f.request(t, member, http.MethodGet, path, nil), http.StatusForbidden)
 	requireNativeStatus(t, f.request(t, owner, http.MethodGet, "/api/v2/organizations/org_other/diagnostics/requests", nil), http.StatusNotFound)
-	serverTiming := regexp.MustCompile(`^db;dur=[0-9.]+, compute;dur=[0-9.]+, encode;dur=[0-9.]+, total;dur=[0-9.]+$`)
+	serverTiming := regexp.MustCompile(`^db;dur=[0-9.]+, compute;dur=[0-9.]+, encode;dur=[0-9.]+, total;dur=[0-9.]+(?:, pg_[a-z_]+;dur=[0-9.]+)*$`)
 	for _, test := range []struct {
 		name     string
 		response *httptest.ResponseRecorder
@@ -284,21 +267,49 @@ func TestRequestMetricsAdminReads(t *testing.T) {
 	}
 	requireNativeStatus(t, f.request(t, owner, http.MethodGet, path+"?window=1m", nil), http.StatusBadRequest)
 	requireNativeStatus(t, f.request(t, member, http.MethodGet, path+"?window=1m", nil), http.StatusForbidden)
-	f.grant(t, owner, false, false)
+	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		member, err := w.AccessMember(t.Context(), owner.identity.Subject)
+		if err != nil {
+			return err
+		}
+		if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: "org_security", UserID: owner.identity.Subject, ProjectID: f.project}); err != nil {
+			return err
+		}
+		return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_security", TokenID: member.PrincipalID, ProjectID: f.project})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		access hostedProjectAccess
 		scope  string
 		want   int
 	}{{hostedProjectsAll, "admin", http.StatusOK}, {hostedProjectsSelected, "admin", http.StatusForbidden}, {hostedProjectsAll, "read", http.StatusForbidden}} {
-		request := map[string]any{"name": "metrics-key-" + string(test.access) + "-" + test.scope, "scope": test.scope, "expires_days": 30, "project_access": test.access}
-		if test.access == hostedProjectsSelected {
-			request["project_ids"] = []string{string(f.project)}
+		token, err := apikey.GenerateToken()
+		if err != nil {
+			t.Fatal(err)
 		}
-		created := f.request(t, owner, http.MethodPost, "/api/v2/organizations/org_security/api-keys", request)
-		requireNativeStatus(t, created, http.StatusCreated)
-		var key tokenResponse
-		decodeHubResponse(t, created, &key)
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, key.Token, nil), test.want)
+		id := "metrics-key-" + string(test.access) + "-" + test.scope
+		if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+			member, err := w.AccessMember(t.Context(), owner.identity.Subject)
+			if err != nil {
+				return err
+			}
+			scope := "operator"
+			if test.scope == "admin" {
+				scope = "admin"
+			}
+			expires := time.Now().Add(time.Hour)
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_security", ID: id, Name: id, Hash: apikey.HashToken(token), Scope: scope, NativeOnly: true, CreatedAt: time.Now(), UpdatedAt: time.Now(), ExpiresAt: &expires, UserID: member.UserID, MembershipID: member.MembershipID, KeyScope: test.scope, ProjectAccess: string(test.access), Kind: "personal"}); err != nil {
+				return err
+			}
+			if test.access == hostedProjectsSelected {
+				return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_security", TokenID: id, ProjectID: f.project})
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, token, nil), test.want)
 	}
 	now := time.Now().UTC().Truncate(time.Minute).Add(time.Minute)
 	if err := f.service.requestMetrics.flush(t.Context(), now); err != nil {

@@ -15,7 +15,6 @@ func TestSQLiteSchemaInventory(t *testing.T) {
 		open func(*testing.T) *sql.DB
 	}{
 		{"hub", sqliteHubInventoryFixture},
-		{"metrics", sqliteMetricsInventoryFixture},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
 			db := fixture.open(t)
@@ -54,17 +53,4 @@ SELECT organization_id,id,'example','example',x'0102',x'0304',x'0506',1,'2026-01
 		t.Fatal(err)
 	}
 	return db
-}
-
-func sqliteMetricsInventoryFixture(t *testing.T) *sql.DB {
-	t.Helper()
-	m := testRequestMetrics(t, filepath.Join(t.TempDir(), "metrics.db"), "org_example")
-	if _, err := m.db.ExecContext(t.Context(), `
-INSERT INTO request_minutes VALUES (1,'GET /items','runner','runner_example',2,2,1.5,0.5,1.0,1.0,'[1,1]');
-INSERT INTO request_hours VALUES (0,'GET /items',2,2,1.5,0.5,1.0,1.0,'[1,1]');
-INSERT INTO request_days VALUES (0,'GET /items','runner',2,2,1.5,1.0);
-`); err != nil {
-		t.Fatal(err)
-	}
-	return m.db
 }
