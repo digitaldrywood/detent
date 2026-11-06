@@ -124,7 +124,7 @@ func (r *Runner) pushCheckpointRef(ctx context.Context, c *checkpointRefs, req R
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), checkpointTimeout)
+	pushCtx, cancel := context.WithTimeout(ctx, checkpointTimeout)
 	defer cancel()
 	next, pushed, err := c.publisher.PushCheckpointRef(pushCtx, c.info, c.issue, c.last, c.execution.Validate)
 	c.failed = err != nil
@@ -148,8 +148,17 @@ func (r *Runner) pushCheckpointRef(ctx context.Context, c *checkpointRefs, req R
 // not leave the newest work only on this machine.
 func (r *Runner) finishCheckpointRef(ctx context.Context, c *checkpointRefs, req RunRequest) {
 	for attempt := range checkpointRefFinalAttempts {
+		if ctx.Err() != nil {
+			return
+		}
 		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * checkpointRefRetryDelay)
+			timer := time.NewTimer(time.Duration(attempt) * checkpointRefRetryDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 		}
 		r.pushCheckpointRef(ctx, c, req, "stage_finished")
 		if c == nil || !c.lastPushFailed() {

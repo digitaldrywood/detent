@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -151,6 +152,66 @@ func (w *checkpointFinalizingWorkspace) FinalizeNativeWork(ctx context.Context, 
 		return "", err
 	}
 	return "", validate(ctx)
+}
+
+type cancelledCheckpointWorkspace struct {
+	workspace.Backend
+	started chan struct{}
+}
+
+func (w cancelledCheckpointWorkspace) PushCheckpointRef(ctx context.Context, _ workspace.Info, _ workspace.Issue, previous workspace.CheckpointRef, _ func(context.Context) error) (workspace.CheckpointRef, bool, error) {
+	if w.started != nil {
+		select {
+		case <-w.started:
+		default:
+			close(w.started)
+		}
+	}
+	<-ctx.Done()
+	return previous, false, ctx.Err()
+}
+
+func TestCheckpointRefHonorsFinalizationCancellation(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		final, deadline bool
+	}{
+		{name: "active push cancellation"}, {name: "final retry cancellation", final: true}, {name: "shared retry deadline", final: true, deadline: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				backend := cancelledCheckpointWorkspace{started: make(chan struct{})}
+				refs := newCheckpointRefs(backend, &testExecution{}, workspace.Info{}, workspace.Issue{}, nil)
+				r := &Runner{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+				ctx, cancel := context.WithCancel(t.Context())
+				expected := time.Duration(0)
+				if test.deadline {
+					cancel()
+					ctx, cancel = context.WithTimeout(t.Context(), 3*time.Minute)
+					expected = 3 * time.Minute
+				}
+				defer cancel()
+				started := time.Now()
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					if test.final {
+						r.finishCheckpointRef(ctx, refs, RunRequest{})
+					} else {
+						r.pushCheckpointRef(ctx, refs, RunRequest{}, "stage_finished")
+					}
+				}()
+				<-backend.started
+				if !test.deadline {
+					cancel()
+				}
+				<-done
+				if time.Since(started) != expected {
+					t.Fatalf("cancelled finalization took %s", time.Since(started))
+				}
+			})
+		})
+	}
 }
 
 func TestCheckpointRefsPushAfterCompletedTurn(t *testing.T) {
