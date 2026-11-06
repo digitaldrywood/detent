@@ -72,13 +72,24 @@ func (s *Service) entryKeyTools(ctx context.Context) ([]operatortool.Definition,
 	}
 	definitions = append(definitions, projects...)
 	definitions = append(definitions, fleet...)
+	workspace, err := (workspaceOperatorExecutor{server: s}).ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, definition := range workspace {
+		if entryKeyWorkspaceTool(definition.Name) {
+			definitions = append(definitions, definition)
+		}
+	}
+
 	definitions = append(definitions, (hostedContextExecutor{service: s}).listTools(ctx)...)
 	if catalog, err := operatorCatalog(ctx); err == nil && catalog.credential.HostedRole != "account" {
 		for _, definition := range operatortool.ThreadCatalog() {
-			if definition.Name != "list_threads" && definition.Name != "get_thread" {
-				continue
+			required := apikey.ScopeRead
+			if !definition.Annotations.ReadOnly {
+				required = apikey.ScopeWrite
 			}
-			if _, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, Action: definition.Name}); err == nil {
+			if _, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: required, Action: definition.Name}); err == nil {
 				definitions = append(definitions, definition)
 			}
 		}
@@ -113,6 +124,10 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 			return false, err
 		}
 		return entryKeyHasDefinition(definitions, name), nil
+	}
+	if entryKeyWorkspaceTool(name) {
+		definitions, err := (workspaceOperatorExecutor{server: s}).ListTools(ctx)
+		return entryKeyHasDefinition(definitions, name), err
 	}
 	if !entryKeyToolSupported(name) {
 		return false, nil
@@ -164,14 +179,18 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 		}
 		_, err := s.authorizeCatalog(ctx, requirement)
 		return err == nil, nil
-	case "list_threads", "get_thread":
+	case "list_threads", "get_thread", "create_thread", "post_to_thread", "resolve_thread":
 		if catalog.credential.HostedRole == "account" {
 			return false, nil
 		}
 		if _, found := entryKeyDefinition(operatortool.ThreadCatalog(), name); !found {
 			return false, nil
 		}
-		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, Action: name})
+		required := apikey.ScopeRead
+		if name != "list_threads" && name != "get_thread" {
+			required = apikey.ScopeWrite
+		}
+		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: required, Action: name})
 		return err == nil, nil
 	case operatortool.ListComments:
 		if _, found := operatortool.Lookup(name); !found {
@@ -199,7 +218,7 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 
 func entryKeyToolSupported(name string) bool {
 	switch name {
-	case "list_projects", "get_native_project", "get_project_policy", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, operatortool.AppBootstrapPayload, operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.ListComments, operatortool.ListChanges, operatortool.CreateChange, operatortool.PublishChangeVersion, operatortool.ReviewChange, "list_threads", "get_thread":
+	case "list_projects", "get_native_project", "get_project_policy", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, operatortool.AppBootstrapPayload, operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.ListComments, operatortool.ListChanges, operatortool.CreateChange, operatortool.PublishChangeVersion, operatortool.ReviewChange, "list_threads", "get_thread", "create_thread", "post_to_thread", "resolve_thread":
 		return true
 	default:
 		return false
@@ -424,4 +443,14 @@ func (s *Service) entryKeyContext(c echo.Context) error {
 		Role     string                `json:"role"`
 		Projects []appBootstrapProject `json:"projects"`
 	}{credential.HostedRole, projects})
+}
+
+func entryKeyWorkspaceTool(name string) bool {
+	if name == operatortool.ActionResult || name == operatortool.ConnectionInfo {
+		return true
+	}
+	if _, err := operatortool.WorkspaceDefinition(name); err != nil {
+		return false
+	}
+	return strings.Contains(name, "conversation") || name == "list_work_item_references"
 }
