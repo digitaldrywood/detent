@@ -63,6 +63,10 @@ func (s *Service) readNativeAttemptTenant(ctx context.Context, scope nativeScope
 		if snapshot.attempt.IssueID != workItem.ID {
 			return nativeNotFound()
 		}
+		r, err = readAttemptMetadataSnapshot(ctx, r, scope, item, []leasestore.Attempt{snapshot.attempt}, true)
+		if err != nil {
+			return err
+		}
 		snapshot.lease, err = r.Lease(ctx, snapshot.attempt.LeaseID)
 		if err != nil {
 			return err
@@ -154,6 +158,10 @@ func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope nativeS
 		}
 		typedCursor.IssueID = workItem.ID
 		page, err = r.AttemptPage(ctx, workItem.ID, typedCursor, limit)
+		if err != nil {
+			return err
+		}
+		r, err = readAttemptMetadataSnapshot(ctx, r, scope, item, page.Items, view != "recorded_blockers" && !attemptSummaryRead(ctx))
 		if err != nil {
 			return err
 		}
