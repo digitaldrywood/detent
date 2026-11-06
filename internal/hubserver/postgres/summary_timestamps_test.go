@@ -28,7 +28,7 @@ func TestDailySummaryTimestampMigrationPreservesOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.DownTo(t.Context(), 20261105234909); err != nil {
+	if _, err := provider.DownTo(t.Context(), 20261106024239); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
