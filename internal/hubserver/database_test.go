@@ -25,6 +25,10 @@ import (
 
 	"github.com/pressly/goose/v3"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -994,6 +998,38 @@ func TestBackupCancellationRemovesPartialDestination(t *testing.T) {
 	}
 }
 
+func TestOpenTestServiceUsesPostgres(t *testing.T) {
+	for _, hosted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("hosted=%t", hosted), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hub.db")
+			cfg := Config{DatabasePath: path, InitialAdminToken: []byte("example_fixture_admin_token")}
+			if hosted {
+				cfg.Hosted = &HostedConfig{
+					OrganizationID:       "org_example",
+					WorkOSOrganizationID: "provider_example",
+					PublicURL:            "https://hub.example.test",
+					Provider:             newHostedSecurityProvider(),
+				}
+			}
+			service := openTestService(t, cfg)
+			if service.database.postgres == nil || service.database.db != nil || service.database.reader != nil || service.database.authReader != nil || service.database.claimReader != nil {
+				t.Fatal("shared service fixture must use PostgreSQL without legacy SQL handles")
+			}
+			if hosted && service.config.Hosted != cfg.Hosted {
+				t.Fatal("shared service fixture replaced the supplied hosted configuration")
+			}
+			response := performHubAPIRequest(t, service, http.MethodGet, "/health", string(cfg.InitialAdminToken), nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			if err := service.retainHostedOperationRecords(t.Context(), time.Now().UTC()); err != nil {
+				t.Fatalf("retain hosted operation records: %v", err)
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("legacy database path exists or cannot be checked: %v", err)
+			}
+		})
+	}
+}
+
 var testChangeObjects sync.Map
 
 func openTestService(t *testing.T, cfg Config) *Service {
@@ -1007,9 +1043,6 @@ func openTestService(t *testing.T, cfg Config) *Service {
 	}
 	if cfg.RunnerReleaseClient == nil {
 		cfg.RunnerReleaseClient = &runnerReleaseFixture{}
-	}
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
 	}
 	if cfg.Conversation != nil && cfg.Conversation.Enabled {
 		conversationConfig := *cfg.Conversation
@@ -1035,7 +1068,38 @@ func openTestService(t *testing.T, cfg Config) *Service {
 	if len(cfg.InitialAdminToken) == 0 {
 		cfg.InitialAdminToken = []byte(testHubAdminToken)
 	}
-	seedHubDatabaseTemplate(t, cfg.DatabasePath)
+	if cfg.Postgres == nil {
+		admin := postgresStartupTemplate.Database(t)
+		defaults := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
+		cfg.DatabaseBackend = DatabasePostgres
+		cfg.DatabasePath = ""
+		cfg.Postgres = defaults.Postgres
+		if cfg.Hosted == nil {
+			cfg.Hosted = defaults.Hosted
+		}
+		store, err := openDatabase(t.Context(), cfg.normalized())
+		if err != nil {
+			t.Fatalf("open PostgreSQL fixture: %v", err)
+		}
+		organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
+		now := cfg.normalized().now().UTC()
+		err = store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: "example", CreatedAt: now}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: cfg.Hosted.WorkOSOrganizationID, AllocationGeneration: 1}); err != nil {
+				return err
+			}
+			return w.CreateAccessCredential(t.Context(), accessstore.Credential{
+				OrganizationID: organization, ID: "test_hub_admin", Name: "Example administrator",
+				Hash: apikey.HashToken(string(cfg.InitialAdminToken)), Scope: "admin",
+				CreatedAt: now, UpdatedAt: now, KeyScope: "admin", ProjectAccess: "all", Kind: "service",
+			})
+		})
+		if err := errors.Join(err, store.Close()); err != nil {
+			t.Fatalf("seed PostgreSQL fixture: %v", err)
+		}
+	}
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
