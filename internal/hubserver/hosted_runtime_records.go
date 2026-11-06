@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 
@@ -47,12 +48,15 @@ func (d *database) applyRuntimeRecords(ctx context.Context, plans HostedPlansCon
 	}
 	rollback := errors.New("runtime validation rollback")
 	err = d.writeBillingTenant(ctx, func(w tenantstore.Writer) error {
+		if err := d.validateConfiguredPlanReferences(ctx, w, plans); err != nil {
+			return err
+		}
 		for i, command := range commands[:len(commands)-1] {
 			plan := *command.Definition
 			ref := billingstore.PlanReference{ID: plan.ID, Version: plan.Version}
 			stored, err := w.BillingPlan(ctx, ref)
 			if errors.Is(err, corestore.ErrNotFound) {
-				if err := w.CreateBillingPlan(ctx, billingstore.Plan{OrganizationID: d.hostedOrganization, PlanReference: ref, Name: plan.Name, MonthlyUSDCents: plan.MonthlyUSDCents, RuntimeID: stage, Allowances: plan.Allowances, Features: plan.Features}); err != nil {
+				if err := w.CreateBillingPlan(ctx, billingstore.Plan{OrganizationID: d.hostedOrganization, PlanReference: ref, Name: plan.Name, MonthlyUSDCents: plan.MonthlyUSDCents, RuntimeID: revision.ID, Allowances: plan.Allowances, Features: plan.Features}); err != nil {
 					return err
 				}
 				if _, err := w.CreateBillingPlanAudit(ctx, audits[i]); err != nil {
@@ -66,7 +70,7 @@ func (d *database) applyRuntimeRecords(ctx context.Context, plans HostedPlansCon
 					return err
 				}
 				if !visible {
-					if err := w.SetBillingPlanRuntime(ctx, ref, stage); err != nil {
+					if err := w.SetBillingPlanRuntime(ctx, ref, revision.ID); err != nil {
 						return err
 					}
 				}
@@ -98,4 +102,19 @@ func (d *database) applyRuntimeRecords(ctx context.Context, plans HostedPlansCon
 		return nil
 	}
 	return err
+}
+
+func (d *database) validateConfiguredPlanReferences(ctx context.Context, r billingstore.Reader, plans HostedPlansConfig) error {
+	refs := make([]billingstore.PlanReference, 0, len(plans.Plans))
+	for _, plan := range plans.Plans {
+		refs = append(refs, billingstore.PlanReference{ID: plan.ID, Version: plan.Version})
+	}
+	ref, err := r.MissingConfiguredBillingPlan(ctx, refs, d.now().UTC())
+	if errors.Is(err, corestore.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return nativePublicInvalid(fmt.Sprintf("Hosted plan configuration omits referenced plan %s version %d; restore the definition before startup or reload", ref.ID, ref.Version))
 }

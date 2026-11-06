@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -17,8 +19,6 @@ import (
 func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 	for _, mode := range []string{"startup", "reload", "publication", "audit refusal"} {
 		t.Run(mode, func(t *testing.T) {
-			repo, admin := projectRecordPostgresWithAdmin(t, 4)
-			var services []*Service
 			plans := pilotHostedPlans()
 			plans.Plans[0].ID = "free"
 			plans.Base = plans.Plans[0].PlanReference
@@ -26,23 +26,14 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 			plans.Plans[1].ID = "starter"
 			plans.Plans[1].Features = []string{"collaboration"}
 			plans.Plans[1].Allowances["api_mutations"] = 0
-			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-				if err := repo.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-					return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: time.Now()})
+			repo, admin := projectRecordPostgresWithAdmin(t, 4)
+			services := configuredPlanPostgresServices(t, plans, repo)
+			for _, s := range services {
+				if err := s.database.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+					return w.CreateBillingGrant(t.Context(), billingstore.Grant{OrganizationID: s.database.hostedOrganization, ID: "grant_" + string(s.database.hostedOrganization), Plan: billingstore.PlanReference{ID: plans.Plans[1].ID, Version: 1}, Scope: []string{"api_mutations", "ingested_events"}, StartsAt: time.Now().Add(-time.Hour)})
 				}); err != nil {
 					t.Fatal(err)
 				}
-				d := &database{postgres: repo, billingRepository: repo, hostedOrganization: org, billingAuditStore: &memoryRunDetails{}, now: time.Now, logger: discardLogger()}
-				s := &Service{database: d, config: Config{Hosted: &HostedConfig{OrganizationID: string(org), Plans: &plans, EntitlementAdministrator: "operator"}, now: time.Now, Logger: discardLogger()}}
-				if err := d.configureHostedPlans(t.Context(), s.config.Hosted); err != nil {
-					t.Fatal(err)
-				}
-				if err := d.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
-					return w.CreateBillingGrant(t.Context(), billingstore.Grant{OrganizationID: org, ID: "grant_" + string(org), Plan: billingstore.PlanReference{ID: plans.Plans[1].ID, Version: 1}, Scope: []string{"api_mutations", "ingested_events"}, StartsAt: time.Now().Add(-time.Hour)})
-				}); err != nil {
-					t.Fatal(err)
-				}
-				services = append(services, s)
 			}
 			denied := errors.New("usage refused")
 			request := func(s *Service, id string) error {
@@ -235,4 +226,25 @@ func TestPostgresRuntimeValidationDoesNotPublish(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func configuredPlanPostgresServices(t *testing.T, plans HostedPlansConfig, repo *postgres.Repository) []*Service {
+	t.Helper()
+	var services []*Service
+	suffix := sha256.Sum256([]byte(t.Name()))
+	for _, name := range []string{"first", "second"} {
+		org := tracker.OrganizationID(fmt.Sprintf("org_%x_%s", suffix[:6], name))
+		if err := repo.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: time.Now()})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		d := &database{postgres: repo, billingRepository: repo, hostedOrganization: org, billingAuditStore: &memoryRunDetails{}, now: time.Now, logger: discardLogger()}
+		s := &Service{database: d, config: Config{Hosted: &HostedConfig{OrganizationID: string(org), Plans: &plans, EntitlementAdministrator: "operator"}, now: time.Now, Logger: discardLogger()}}
+		if err := d.configureHostedPlans(t.Context(), s.config.Hosted); err != nil {
+			t.Fatal(err)
+		}
+		services = append(services, s)
+	}
+	return services
 }

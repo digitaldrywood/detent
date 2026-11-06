@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"maps"
 	"slices"
 	"time"
@@ -214,4 +215,13 @@ func (s *session) CreateBillingGrant(ctx context.Context, row billingstore.Grant
 func (s *session) RevokeBillingGrant(ctx context.Context, id string, at time.Time) error {
 	n, err := s.queries.RevokeBillingGrant(ctx, pgquery.RevokeBillingGrantParams{OrganizationID: s.organization, ID: id, RevokedAt: &at})
 	return affected(ctx, n, err)
+}
+
+func (s *session) MissingConfiguredBillingPlan(ctx context.Context, configured []billingstore.PlanReference, now time.Time) (billingstore.PlanReference, error) {
+	refs := make([]string, 0, len(configured))
+	for _, ref := range configured {
+		refs = append(refs, fmt.Sprintf("%s:%d", ref.ID, ref.Version))
+	}
+	row, err := s.queries.MissingConfiguredBillingPlan(ctx, pgquery.MissingConfiguredBillingPlanParams{OrganizationID: s.organization, ConfiguredRefs: refs, AsOf: &now})
+	return billingstore.PlanReference{ID: row.ID, Version: row.Version}, mapError(ctx, err)
 }

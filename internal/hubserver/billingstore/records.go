@@ -298,6 +298,7 @@ type Reader interface {
 	BillingCostRevision(context.Context, CostSource) (CostRevision, error)
 	BillingMonthlySpend(context.Context, tracker.ProjectID, time.Time) (budget.MonthlySpend, error)
 	BillingPlan(context.Context, PlanReference) (Plan, error)
+	MissingConfiguredBillingPlan(context.Context, []PlanReference, time.Time) (PlanReference, error)
 	BillingPlans(context.Context, PlanReference, int) ([]Plan, error)
 	BillingAssignment(context.Context) (Assignment, error)
 	BillingGrants(context.Context, string, int) ([]Grant, error)

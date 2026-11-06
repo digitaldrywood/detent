@@ -60,10 +60,14 @@ func (p runtimeWriteProbe) CurrentRuntime(ctx context.Context) (billingstore.Run
 	return runtimeRevisionProbe{id: p.revision}.CurrentRuntime(ctx)
 }
 
+func (p runtimeWriteProbe) MissingConfiguredBillingPlan(context.Context, []billingstore.PlanReference, time.Time) (billingstore.PlanReference, error) {
+	return billingstore.PlanReference{}, corestore.ErrNotFound
+}
+
 func (p runtimeWriteProbe) BillingPlan(_ context.Context, ref billingstore.PlanReference) (billingstore.Plan, error) {
 	for _, plan := range pilotHostedPlans().Plans {
 		if plan.ID == ref.ID && plan.Version == ref.Version {
-			return billingstore.Plan{PlanReference: ref, Features: plan.Features, Allowances: plan.Allowances}, nil
+			return billingstore.Plan{PlanReference: ref, RuntimeID: p.revision, Features: plan.Features, Allowances: plan.Allowances}, nil
 		}
 	}
 	return billingstore.Plan{}, corestore.ErrNotFound
@@ -82,7 +86,7 @@ func (p runtimeRevisionProbe) CurrentRuntime(context.Context) (billingstore.Runt
 	return billingstore.RuntimeRevision{ID: id}, nil
 }
 func runtimeProbeService(repo tenantstore.Repository) *Service {
-	d := &database{billingRepository: repo, postgres: &postgres.Repository{}, logger: discardLogger()}
+	d := &database{billingRepository: repo, postgres: &postgres.Repository{}, logger: discardLogger(), now: time.Now}
 	d.hostedRuntime.Store(&hostedRuntimeConfig{Revision: "loaded", Plans: pilotHostedPlans()})
 	return &Service{database: d, config: Config{Logger: discardLogger(), now: time.Now, Hosted: &HostedConfig{OrganizationID: "org_example", EntitlementAdminToken: []byte(testHostedPlanAdminToken)}}}
 }

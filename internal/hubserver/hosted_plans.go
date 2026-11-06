@@ -303,7 +303,12 @@ func (d *database) configureHostedPlans(ctx context.Context, cfg *HostedConfig) 
 		config = *cfg.Plans
 	}
 	if config.IsZero() {
-		return nil
+		if d.billingRepository == nil {
+			return nil
+		}
+		return d.readBillingTenant(ctx, func(r tenantstore.Reader) error {
+			return d.validateConfiguredPlanReferences(ctx, r, config)
+		})
 	}
 	if err := config.validate(); err != nil {
 		return err

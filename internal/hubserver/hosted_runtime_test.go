@@ -160,6 +160,7 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 			if err := f.service.database.applyHostedPlanCommand(t.Context(), "test-operator", command); err == nil {
 				t.Fatal("reload bypassed Stripe subscription ownership")
 			}
+			previous.Plans.Plans = append(previous.Plans.Plans, plan)
 			previous.Reason = "SIGHUP reload failed; restore previous runtime settings"
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, previous), http.StatusNoContent)
 			if f.service.database.plans().WindowSeconds != before.Plans.WindowSeconds || !slices.Equal(f.service.hostedBillingConfig().Prices, previous.Prices) {
@@ -167,7 +168,7 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 			}
 			entitlement, err = f.service.database.hostedEntitlement(t.Context(), f.service.database.db, time.Now())
 			if err != nil || entitlement.Base != plan.PlanReference || entitlement.Allowances["collaboration_bytes"] != 1<<34 {
-				t.Fatalf("rollback changed an independently assigned immutable version: %+v %v", entitlement, err)
+				t.Fatalf("rollback changed an independently assigned version: %+v %v", entitlement, err)
 			}
 			if audits = runtimeAuditCount(t, f.service, "reload", previous.Reason); audits != 1 {
 				t.Fatalf("rollback audit=%d", audits)
@@ -179,15 +180,13 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 
 func TestHostedRuntimeReloadCatalogTransitions(t *testing.T) {
 	t.Parallel()
-	cloud := capacityHostedPlans()
 	for _, test := range []struct {
-		name    string
-		plans   *HostedPlansConfig
-		invalid bool
+		name  string
+		plans *HostedPlansConfig
 	}{
 		{name: "omitted catalog"},
 		{name: "empty catalog", plans: &HostedPlansConfig{}},
-		{name: "partial catalog", plans: &HostedPlansConfig{WindowSeconds: 120}, invalid: true},
+		{name: "partial catalog", plans: &HostedPlansConfig{WindowSeconds: 120}},
 	} {
 		for _, prepare := range []bool{false, true} {
 			name := test.name
@@ -196,62 +195,15 @@ func TestHostedRuntimeReloadCatalogTransitions(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				s, admin := newRuntimePostgresService(t, cloud, false)
-				hosted := s.config.Hosted
-
-				before := s.database.plans()
+				s, _ := newRuntimePostgresService(t, capacityHostedPlans(), false)
+				before := s.database.runtimeState()
 				update := HostedRuntimeUpdate{Plans: test.plans, Reason: "catalog transition"}
 				if prepare {
 					s.config.Hosted.SharedEntry = &HostedSharedEntry{}
 					update.StageID = "00000000-0000-4000-8000-000000000002"
 				}
-				err := s.applyHostedRuntime(t.Context(), &update)
-				if test.invalid {
-					if err == nil || s.database.plans() != before {
-						t.Fatalf("invalid catalog changed runtime: %v", err)
-					}
-					return
-				}
-				if err != nil {
-					t.Fatal(err)
-				}
-				if prepare {
-					if s.database.plans() != before {
-						t.Fatal("preparation changed active plans")
-					}
-					if _, err := admin.ExecContext(t.Context(), "INSERT INTO hosted_runtime_publications(id) VALUES($1)", update.StageID); err != nil {
-						t.Fatal(err)
-					}
-					if err := s.database.refreshRuntime(t.Context()); err != nil {
-						t.Fatal(err)
-					}
-
-				}
-				if s.database.plans() != nil {
-					t.Fatal("catalog removal retained plan restrictions")
-				}
-
-				if err := s.database.checkHostedClaim(t.Context(), nil, time.Now()); err != nil {
-					t.Fatalf("disabled catalog restricted execution: %v", err)
-				}
-				if err := s.database.checkHostedGrowth(t.Context(), nil, nil, time.Now(), false); err != nil {
-					t.Fatalf("disabled catalog restricted growth: %v", err)
-				}
-				if err := s.database.requireHostedFeature(t.Context(), nil, "hosted_artifacts", time.Now()); err != nil {
-					t.Fatalf("disabled catalog restricted features: %v", err)
-				}
-				var base string
-				if err := admin.QueryRowContext(t.Context(), "SELECT base_id FROM hosted_plan_assignments WHERE organization_id=$1", hosted.OrganizationID).Scan(&base); err != nil || base != "free" {
-					t.Fatalf("catalog removal changed assignment=%q %v", base, err)
-				}
-
-				restore := HostedRuntimeUpdate{Plans: &cloud, Reason: "restore catalog"}
-				if err := s.applyHostedRuntime(t.Context(), &restore); err != nil {
-					t.Fatal(err)
-				}
-				entitlement, err := s.database.hostedEntitlement(t.Context(), s.database.db, time.Now())
-				if err != nil || entitlement.Base != (PlanReference{ID: "free", Version: 1}) || entitlement.Allowances["concurrent_work"] != 2 {
-					t.Fatalf("restored Cloud entitlement = %+v, %v", entitlement, err)
+				if err := s.applyHostedRuntime(t.Context(), &update); err == nil || s.database.runtimeState() != before {
+					t.Fatalf("invalid catalog changed runtime: %v", err)
 				}
 			})
 		}

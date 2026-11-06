@@ -111,6 +111,12 @@ retention periods.
 Operator configuration owns plan definitions by `(id, version)`. Startup and
 runtime reload replace configured names, prices, features and allowances in the
 typed plan owner, with an audit record attributed to `configuration`.
+A startup or reload fails if it omits a configuration-owned plan still used by
+an assignment or a non-revoked, unexpired grant, including a future grant.
+Administrator-created plans and the checkout `payment_pending` version 1 plan
+may remain outside the file catalog. Remove references before removing other
+configured definitions. Rejected updates retain the current runtime.
+
 Configured `base` initializes a new assignment;
 restarting or changing the file does not overwrite an existing assignment or a
 later administrator decision. Existing plan versions remain available for audit

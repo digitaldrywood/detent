@@ -501,6 +501,40 @@ func (q *Queries) CreateBillingPlanFeature(ctx context.Context, arg CreateBillin
 	return err
 }
 
+const missingConfiguredBillingPlan = `-- name: MissingConfiguredBillingPlan :one
+WITH referenced AS (
+ SELECT base_id AS id, base_version AS version FROM hosted_plan_assignments WHERE organization_id=$1
+ UNION
+ SELECT subscription_id, subscription_version FROM hosted_plan_assignments WHERE organization_id=$1 AND subscription_id IS NOT NULL
+ UNION
+ SELECT plan_id, plan_version FROM hosted_complimentary_grants WHERE organization_id=$1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>$3)
+)
+SELECT p.id,p.version FROM referenced r
+JOIN hosted_plans p ON p.organization_id=$1 AND p.id=r.id AND p.version=r.version
+WHERE NOT (p.id='payment_pending' AND p.version=1)
+ AND NOT (p.id||':'||p.version::text=ANY($2::text[]))
+ AND (p.runtime_id<>'' OR EXISTS(SELECT 1 FROM hosted_plan_audit a WHERE a.organization_id=p.organization_id AND a.command_id='seed_'||p.id||'_'||p.version::text AND a.actor_id='configuration' AND a.action='create_plan'))
+ORDER BY p.id,p.version LIMIT 1
+`
+
+type MissingConfiguredBillingPlanParams struct {
+	OrganizationID tracker.OrganizationID
+	ConfiguredRefs []string
+	AsOf           *time.Time
+}
+
+type MissingConfiguredBillingPlanRow struct {
+	ID      string
+	Version int64
+}
+
+func (q *Queries) MissingConfiguredBillingPlan(ctx context.Context, arg MissingConfiguredBillingPlanParams) (MissingConfiguredBillingPlanRow, error) {
+	row := q.db.QueryRowContext(ctx, missingConfiguredBillingPlan, arg.OrganizationID, pq.Array(arg.ConfiguredRefs), arg.AsOf)
+	var i MissingConfiguredBillingPlanRow
+	err := row.Scan(&i.ID, &i.Version)
+	return i, err
+}
+
 const revokeBillingGrant = `-- name: RevokeBillingGrant :execrows
 UPDATE hosted_complimentary_grants SET revoked_at=COALESCE(revoked_at,$3) WHERE organization_id=$1 AND id=$2
 `

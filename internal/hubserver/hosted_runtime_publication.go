@@ -96,6 +96,9 @@ func (d *database) applyPublishedPlans(ctx context.Context, revision billingstor
 		if current.ID != revision.ID {
 			return corestore.ErrRevisionConflict
 		}
+		if err := d.validateConfiguredPlanReferences(ctx, w, plans); err != nil {
+			return err
+		}
 		for _, configured := range plans.Plans {
 			configured = normalizeHostedPlan(configured)
 			ref := billingstore.PlanReference{ID: configured.ID, Version: configured.Version}
@@ -105,6 +108,11 @@ func (d *database) applyPublishedPlans(ctx context.Context, revision billingstor
 			}
 			existing := normalizeHostedPlan(HostedPlan{PlanReference: configured.PlanReference, Name: stored.Name, MonthlyUSDCents: stored.MonthlyUSDCents, Features: stored.Features, Allowances: stored.Allowances})
 			if reflect.DeepEqual(existing, configured) {
+				if stored.RuntimeID == "" {
+					if err := w.SetBillingPlanRuntime(ctx, ref, revision.ID); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 			stored.Name, stored.MonthlyUSDCents = configured.Name, configured.MonthlyUSDCents
