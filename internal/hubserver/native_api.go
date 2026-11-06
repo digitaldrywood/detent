@@ -337,6 +337,8 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	}
 	e.GET(nativeBase+"/labels", s.listNativeLabels, read)
 	e.GET(nativeBase+"/work-items", s.listNativeIssues, read)
+	e.GET(nativeBase+"/board/counts", s.boardModelCounts, read)
+	e.GET(nativeBase+"/board/status", s.boardModelStatus, read)
 	e.GET(nativeBase+"/work-items/export", s.exportNativeWorkItems, read)
 	e.POST(nativeBase+"/work-items", s.createNativeIssue, write)
 	e.POST(nativeBase+"/scheduled-ci-decisions", s.classifyScheduledFailure, s.requireNativeScope(apiScopeOperator))
