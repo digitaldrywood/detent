@@ -47,6 +47,7 @@ type WorkItemPageWriter interface {
 }
 
 type RelationshipPageRecord struct {
+	TargetExists bool
 	Relationship corestore.Relationship
 	WebURL       string
 	Identifier   string

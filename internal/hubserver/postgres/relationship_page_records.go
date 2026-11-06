@@ -22,12 +22,15 @@ func (s *session) RelationshipPageRecords(ctx context.Context, project tracker.P
 	if err := checkPage(limit); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(ctx, `SELECT COALESCE(p.relationship_type,''),COALESCE(p.direction,''),COALESCE(p.related_project_id,''),COALESCE(p.related_work_item_id,''),COALESCE(p.number,0),COALESCE(p.title,''),COALESCE(p.state,''),COALESCE(p.terminal,false),COALESCE(p.dispatchable,false),p.actor_principal_id,COALESCE(p.web_url,''),COALESCE(p.identifier,''),p.closed_at,p.started_at
+	rows, err := s.db.Query(ctx, `SELECT COALESCE(p.relationship_type,''),COALESCE(p.direction,''),COALESCE(p.related_project_id,''),COALESCE(p.related_work_item_id,''),COALESCE(p.number,0),CASE WHEN target.id IS NULL THEN '' ELSE COALESCE(p.title,'') END,COALESCE(p.state,''),COALESCE(p.terminal,false),COALESCE(p.dispatchable,false),target.actor_principal_id,(target.id IS NOT NULL AND target_project.id IS NOT NULL),COALESCE(p.web_url,''),COALESCE(p.identifier,''),p.closed_at,p.started_at
  FROM native_relationship_page_heads h LEFT JOIN LATERAL (
  SELECT p.* FROM native_relationship_pages p WHERE p.organization_id=h.organization_id AND p.project_id=h.project_id AND p.work_item_id=h.work_item_id AND p.generation=h.generation
  AND (relationship_type,direction,related_project_id,related_work_item_id)>($4,$5,$6,$7)
  ORDER BY relationship_type,direction,related_project_id,related_work_item_id LIMIT $8
- ) p ON true WHERE h.organization_id=$1 AND h.project_id=$2 AND h.work_item_id=$3
+ ) p ON true
+ LEFT JOIN issues target ON target.organization_id=h.organization_id AND target.project_id=p.related_project_id AND target.native_id=p.related_work_item_id
+ LEFT JOIN projects target_project ON target_project.organization_id=target.organization_id AND target_project.id=target.project_id AND target_project.deleted_at IS NULL
+ WHERE h.organization_id=$1 AND h.project_id=$2 AND h.work_item_id=$3
  ORDER BY p.relationship_type,p.direction,p.related_project_id,p.related_work_item_id`, s.organization, project, item, after.Type, after.Direction, after.RelatedProjectID, after.RelatedWorkItemID, limit+1)
 	if err != nil {
 		return nil, mapError(ctx, err)
@@ -39,7 +42,7 @@ func (s *session) RelationshipPageRecords(ctx context.Context, project tracker.P
 		found = true
 		record := viewstore.RelationshipPageRecord{Relationship: corestore.Relationship{OrganizationID: s.organization, ProjectID: project, WorkItemID: item}}
 		r := &record.Relationship
-		if err := rows.Scan(&r.Type, &r.Direction, &r.RelatedProjectID, &r.RelatedWorkItemID, &r.Number, &r.Title, &r.State, &r.Terminal, &r.Dispatchable, &r.ActorPrincipalID, &record.WebURL, &record.Identifier, &r.ClosedAt, &r.StartedAt); err != nil {
+		if err := rows.Scan(&r.Type, &r.Direction, &r.RelatedProjectID, &r.RelatedWorkItemID, &r.Number, &r.Title, &r.State, &r.Terminal, &r.Dispatchable, &r.ActorPrincipalID, &record.TargetExists, &record.WebURL, &record.Identifier, &r.ClosedAt, &r.StartedAt); err != nil {
 			return nil, mapError(ctx, err)
 		}
 		if r.Type != "" {

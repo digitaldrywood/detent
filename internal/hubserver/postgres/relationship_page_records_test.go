@@ -1,6 +1,7 @@
 package postgres_test
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -114,6 +115,43 @@ func TestRelationshipReadModelHasFixedPageCost(t *testing.T) {
 					t.Fatalf("statements=%d exchanges=%d, want 4/3", statements, exchanges)
 				}
 			}
+			if size == 50 {
+				id := "wi_page_2_0"
+				if _, err := admin.ExecContext(t.Context(), `UPDATE issues SET actor_principal_id='new_owner' WHERE organization_id=$1 AND project_id='prj_second' AND native_id=$2`, org, id); err != nil {
+					t.Fatal(err)
+				}
+				check := func(deleted bool) {
+					t.Helper()
+					if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+						rows, err := r.(viewstore.RelationshipPageReader).RelationshipPageRecords(context.Background(), "prj_first", "wi_first_1", corestore.RelationshipCursor{}, 100)
+						if err != nil {
+							return err
+						}
+						for _, row := range rows {
+							if string(row.Relationship.RelatedWorkItemID) == id {
+								if !deleted && (row.Relationship.ActorPrincipalID == nil || *row.Relationship.ActorPrincipalID != "new_owner") {
+									t.Error("projected target ownership remained stale")
+								}
+								if deleted && row.Relationship.Title != "" {
+									t.Error("deleted target still discloses projected title")
+								}
+							}
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				check(false)
+				if _, err := admin.ExecContext(t.Context(), `DELETE FROM issue_dependencies WHERE organization_id=$1 AND blocker_issue_id=(SELECT id FROM issues WHERE organization_id=$1 AND native_id=$2)`, org, id); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.ExecContext(t.Context(), `DELETE FROM issues WHERE organization_id=$1 AND project_id='prj_second' AND native_id=$2`, org, id); err != nil {
+					t.Fatal(err)
+				}
+				check(true)
+			}
+
 		}
 	}
 }

@@ -219,6 +219,9 @@ func (s *Service) readRelationshipPageModel(ctx context.Context, scope nativeSco
 	}
 	for _, record := range records[:min(limit, len(records))] {
 		relation := record.Relationship
+		if !record.TargetExists {
+			continue
+		}
 		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(relation.ActorPrincipalID)}) {
 			continue
 		}
