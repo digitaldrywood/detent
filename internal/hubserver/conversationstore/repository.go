@@ -273,3 +273,7 @@ type Repository interface {
 	Read(context.Context, tracker.OrganizationID, corestore.Workload, func(Reader) error) error
 	Write(context.Context, tracker.OrganizationID, corestore.Workload, func(Writer) error) error
 }
+
+type AttentionReader interface {
+	CoordinatorAttentionItems(context.Context, []tracker.ProjectID, int) ([]corestore.WorkItemReference, error)
+}

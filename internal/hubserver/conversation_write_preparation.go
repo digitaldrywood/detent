@@ -15,18 +15,11 @@ type conversationPublicationKey struct{}
 
 func (c *conversationService) newPublicationPlan(ctx context.Context, id string) (*conversationPublicationPlan, error) {
 	ctx = newConversationArchiveReads(ctx)
-	record, err := c.store.readConversationByID(ctx, c.store.reader, id)
+	record, err := c.readPublicationConversation(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if err := resolveConversationWorkItems(ctx, c.store.reader, []*conversationRecord{&record}); err != nil {
-		return nil, err
-	}
-	now, err := c.server.database.currentTime()
-	if err != nil {
-		return nil, err
-	}
-	return &conversationPublicationPlan{service: c, record: record, original: record, now: now, reads: conversationArchiveCache(ctx)}, nil
+	return &conversationPublicationPlan{service: c, record: record, original: record, now: c.server.config.now(), reads: conversationArchiveCache(ctx)}, nil
 }
 
 func (p *conversationPublicationPlan) context(ctx context.Context) context.Context {
@@ -43,9 +36,6 @@ func (p *conversationPublicationPlan) context(ctx context.Context) context.Conte
 		if p.reads == nil {
 			p.reads = &conversationArchiveReads{content: map[string][]byte{}}
 		}
-	}
-	if p.toolRevisions != nil {
-		ctx = context.WithValue(ctx, legacyToolRevisionKey{}, p.toolRevisions)
 	}
 	ctx = context.WithValue(ctx, conversationContentsKey{}, p.prepared)
 	ctx = context.WithValue(ctx, conversationArchiveReadsKey{}, p.reads)

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -73,4 +74,50 @@ func (t *coordinatorToolset) restrictReadAudience(ctx context.Context, record co
 		_, err := tx.ExecContext(ctx, "UPDATE conversations SET read_audience=? WHERE id=?", audience, record.ID)
 		return err
 	})
+}
+
+func conversationReadAudienceRecord(ctx context.Context, reader tenantstore.Reader, organization tracker.OrganizationID, credential apiCredential) (string, error) {
+	if credential.Hosted == nil {
+		raw := sha256.Sum256([]byte(string(organization) + ":" + credential.ID + ":" + string(credential.Scope)))
+		return hex.EncodeToString(raw[:]), nil
+	}
+	member, err := reader.AccessMember(ctx, credential.Hosted.Subject)
+	if err != nil {
+		return "", err
+	}
+	if !member.Active {
+		return "", operatortool.ErrAccessDenied
+	}
+	type grant struct {
+		Project       string
+		Write, Runner bool
+	}
+	grants := []grant{}
+	var after tracker.ProjectID
+	for {
+		rows, err := reader.AccessProjectGrants(ctx, member.UserID, after, 100)
+		if err != nil {
+			return "", err
+		}
+		for _, row := range rows {
+			grants = append(grants, grant{string(row.ProjectID), row.CanWrite, row.ManageRunner})
+		}
+		if len(rows) < 100 {
+			break
+		}
+		after = rows[len(rows)-1].ProjectID
+	}
+	raw, err := json.Marshal(struct {
+		Organization tracker.OrganizationID
+		Role         string
+		Scope        apiScope
+		KeyScope     string
+		SupportActor string
+		Grants       []grant
+	}{organization, lesserHostedRole(credential.HostedRole, member.Role), credential.Scope, string(credential.HostedKeyScope), credential.Hosted.SupportActor, grants})
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:]), nil
 }

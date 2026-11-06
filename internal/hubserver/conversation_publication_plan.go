@@ -8,11 +8,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 type conversationPublicationPlan struct {
+	coordinator      bool
+	eventCursor      int
+	events           []any
 	receiptLogs      [][]any
-	toolRevisions    map[string]legacyToolRevision
 	prepared         preparedConversationContents
 	reads            *conversationArchiveReads
 	retryMessage     *conversationMessageRecord
@@ -33,6 +37,7 @@ type conversationPublicationPlan struct {
 }
 
 func (p *conversationPublicationPlan) event(ctx context.Context, body any) error {
+	p.events = append(p.events, body)
 	ctx = p.context(ctx)
 	if question, ok := body.(conversation.Question); ok {
 		if err := p.prepareQuestion(ctx, conversationQuestionRecord{Question: question}); err != nil {
@@ -44,6 +49,9 @@ func (p *conversationPublicationPlan) event(ctx context.Context, body any) error
 		return err
 	}
 	_, err = p.prepare(ctx, []byte(raw))
+	if err == nil && p.coordinator {
+		p.record.EventSeq++
+	}
 	return err
 }
 
@@ -102,6 +110,9 @@ func (p *conversationPublicationPlan) appendMessage(ctx context.Context, message
 	}
 	p.revisions[message.ID] = 1
 	p.rememberMessage(prepared)
+	if p.coordinator {
+		p.record.MessageCount++
+	}
 	if p.record.LastMessageAt == nil || p.record.LastMessageAt.Before(message.CreatedAt) {
 		at := message.CreatedAt
 		p.record.LastMessageAt = &at
@@ -123,7 +134,12 @@ func (p *conversationPublicationPlan) nextMessageRevision(ctx context.Context, m
 	}
 	revision, ok := p.revisions[messageID]
 	if !ok {
-		if err := p.service.store.reader.QueryRowContext(ctx, "SELECT revision FROM conversation_messages WHERE conversation_id=? AND id=?", p.record.ID, messageID).Scan(&revision); err != nil {
+		err := p.service.server.config.TenantRepository.ReadTenant(ctx, p.record.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			message, err := r.Message(ctx, p.record.ID, messageID)
+			revision = message.Revision
+			return err
+		})
+		if err != nil {
 			return 0, err
 		}
 	}
@@ -134,19 +150,6 @@ func (p *conversationPublicationPlan) nextMessageRevision(ctx context.Context, m
 
 func (p *conversationPublicationPlan) updateMessage(ctx context.Context, message conversationMessageRecord) error {
 	ctx = p.context(ctx)
-	if message.Kind == conversation.MessageTool && message.Actor.Kind == conversation.ActorCoordinator {
-		var err error
-		ctx, err = p.service.store.prepareLegacyToolRevision(ctx, p.record.ID, message.ID)
-		if err != nil {
-			return err
-		}
-		if revisions, ok := ctx.Value(legacyToolRevisionKey{}).(map[string]legacyToolRevision); ok {
-			p.toolRevisions = revisions
-		}
-		if contents, ok := ctx.Value(conversationContentsKey{}).(preparedConversationContents); ok {
-			p.prepared = contents
-		}
-	}
 	prepared, err := p.message(ctx, message)
 	if err != nil {
 		return err
@@ -237,7 +240,13 @@ func (p *conversationPublicationPlan) setControlDelivery(ctx context.Context, me
 	if message.CommandKey == "" {
 		return nil
 	}
-	receipt, found, err := p.service.readReceipt(ctx, p.service.store.reader, message.ConversationID, message.CommandKey)
+	var receipt conversation.Receipt
+	var found bool
+	err := p.service.server.config.TenantRepository.ReadTenant(ctx, p.record.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		command, exists, err := r.Command(ctx, message.ConversationID, message.CommandKey)
+		receipt, found = command.Receipt, exists
+		return err
+	})
 	if err != nil || !found {
 		return err
 	}
