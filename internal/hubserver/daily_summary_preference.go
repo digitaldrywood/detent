@@ -12,9 +12,6 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type dailySummaryPreference struct {
@@ -157,25 +154,4 @@ func (s *Service) unsubscribeDailySummary(c echo.Context) error {
 		return c.NoContent(http.StatusNoContent)
 	}
 	return c.String(http.StatusOK, "You are unsubscribed from this organization's daily summary.")
-}
-
-func (d *database) saveDailySummaryPreference(ctx context.Context, user, org string, value dailySummaryPreference, now time.Time) error {
-	minute, zone, err := value.validate()
-	if err != nil {
-		return err
-	}
-	next := summarySchedule(now, minute, zone, value.Days == "weekdays", 1)
-	if d.postgres == nil {
-		return errors.New("account repository unavailable")
-	}
-	var membership, principal string
-	err = d.postgres.ReadTenant(ctx, tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
-		member, err := r.AccessMember(ctx, user)
-		membership, principal = member.MembershipID, member.PrincipalID
-		return err
-	})
-	if err != nil {
-		return err
-	}
-	return d.postgres.SetDailySummaryPreference(ctx, tracker.OrganizationID(org), user, membership, principal, accountstore.DailySummaryPreference{Enabled: value.Enabled, SendMinute: minute, TimeZone: value.TimeZone, Weekdays: value.Days == "weekdays", WindowEnd: next.Unix()}, newNativeID("unsub"), next.Add(summaryJitter(user, org, next)).Unix())
 }

@@ -2,6 +2,7 @@ package accountstore
 
 import (
 	"context"
+
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
