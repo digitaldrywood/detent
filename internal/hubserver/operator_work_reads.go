@@ -13,6 +13,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -94,11 +97,29 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		return hubWorkResult(r, request, operatortool.NativeWorkPageView(request.ProjectID, page), err)
 	}
 	if name == operatortool.WorkConfig {
-		project, err := readNativeProject(ctx, s.database.reader, scope)
+		if err := s.authorizeProjectRecord(ctx, scope, false); err != nil {
+			return operatortool.Result{}, safeWorkReadError(err)
+		}
+		record, err := s.readProjectRecord(ctx, scope)
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
-		contract, err := nativeIssueContract(ctx, s.database.reader, scope)
+		project, err := s.projectRecordNative(ctx, record)
+		if err != nil {
+			return operatortool.Result{}, safeWorkReadError(err)
+		}
+		approval, err := s.readTenantProjectPolicy(ctx, scope.organization, scope.project)
+		if err != nil {
+			return operatortool.Result{}, safeWorkReadError(err)
+		}
+		contract, err := config.ResolvePolicyIssueContract(approval.Policy)
+		if approval.Policy.Authored != nil && len(approval.Policy.Authored.Files) > 0 {
+			workflow, workflowErr := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(scope.project), approval.Policy)
+			if workflowErr != nil {
+				return operatortool.Result{}, safeWorkReadError(workflowErr)
+			}
+			contract, err = config.ResolveIssueContract(workflow.SharedPrompt)
+		}
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
@@ -107,23 +128,18 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
 		issueContract := nativeWorkIssueContract{RequiredSections: contract.Sections}
-		delivery, err := readReleaseDeliveryDelegation(ctx, s.database.reader, scope)
-		if err != nil {
-			return operatortool.Result{}, safeWorkReadError(err)
-		}
-		if delivery.Body != "" {
-			issueContract.ReleaseDelivery = &delivery
-		}
-		approval, found, approvalErr := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
-		if approvalErr == nil && found && approval.Policy.Authored != nil {
+		if approval.Policy.Authored != nil {
 			repairContract, err := config.ResolvePolicyIssueContract(approval.Policy)
 			if err != nil {
 				return operatortool.Result{}, safeWorkReadError(err)
 			}
+			if body := repairContract.ReleaseDeliveryBody(); body != "" {
+				issueContract.ReleaseDelivery = &nativeReleaseDeliveryDelegation{PolicyID: approval.Policy.ID, Body: body}
+			}
 			if workflow, branch, priority, authorized := repairContract.ScheduledRepairWorkflow(); authorized {
-				repository, err := policyRepository(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
-				if err != nil {
-					return operatortool.Result{}, safeWorkReadError(err)
+				repository := record.Settings.CheckoutRepository
+				if repository == "" {
+					repository = record.Settings.Repository
 				}
 				branches := []string{branch}
 				if branch == "" {
@@ -133,6 +149,11 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			}
 		}
 		labels, err := s.readNativeLabels(ctx, scope)
+		if err == nil {
+			err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				return s.authorizeBulkExportItem(ctx, r, scope, "")
+			})
+		}
 		return hubWorkResult(r, request, struct {
 			Project           tracker.NativeProject    `json:"project"`
 			Priorities        []int                    `json:"priorities"`
@@ -141,7 +162,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			IssueContract     nativeWorkIssueContract  `json:"issue_contract"`
 		}{project, []int{0, 1, 2, 3}, labels, templates, issueContract}, err)
 	}
-	item, err := s.resolveOperatorNativeReadItem(ctx, s.database.reader, scope, request.Reference)
+	item, err := s.resolveOperatorRecordReadItem(ctx, scope, request.Reference)
 	if err != nil {
 		return operatortool.Result{}, safeWorkReadError(err)
 	}
@@ -172,11 +193,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 	case operatortool.WorkItem:
 		if request.View == "recovery" {
 			params := url.Values{"view": {"recovery"}, "limit": {"1"}, "cursor": {request.Cursor}}
-			read := s.readNativeRecoveryPage
-			if s.config.TenantRepository != nil {
-				read = s.readNativeRecoveryPageTenant
-			}
-			recovery, err := read(ctx, scope, request.Reference, "/api/v2/organizations/"+url.PathEscape(string(scope.organization))+"/projects/"+url.PathEscape(string(scope.project))+"/work-items/"+url.PathEscape(request.Reference), params)
+			recovery, err := s.readNativeRecoveryPageTenant(ctx, scope, request.Reference, "/api/v2/organizations/"+url.PathEscape(string(scope.organization))+"/projects/"+url.PathEscape(string(scope.project))+"/work-items/"+url.PathEscape(request.Reference), params)
 			return hubWorkResult(r, request, recovery.Continuation, err)
 		}
 		view := operatortool.NativeItemView(request.ProjectID, item)
@@ -187,23 +204,11 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 	case operatortool.WorkExport:
 		return hubWorkResult(r, request, item, nil)
 	case operatortool.WorkRelationships:
-		if s.config.TenantRepository != nil {
-			related, err := s.readWorkItemRelationshipPage(ctx, scope, request, item)
-			if err != nil {
-				return operatortool.Result{}, safeWorkReadError(err)
-			}
-			return hubWorkResult(r, request, related, nil)
-		}
-		related, err := readNativeRelated(ctx, s.database.reader, scope, item.WorkItemID)
+		related, err := s.readWorkItemRelationshipPage(ctx, scope, request, item)
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
-		return hubWorkResult(r, request, struct {
-			Dependencies []tracker.NativeWorkItemID  `json:"dependencies"`
-			Blockers     []tracker.NativeDependency  `json:"blockers"`
-			References   []tracker.ExternalReference `json:"references"`
-			Related      []tracker.NativeDependency  `json:"related"`
-		}{item.Dependencies, item.Blockers, item.ExternalReferences, related}, nil)
+		return hubWorkResult(r, request, related, nil)
 	case operatortool.WorkComments:
 		page, err := s.readComments(ctx, scope, request.Reference, params)
 		return hubWorkResult(r, request, page, err)
@@ -287,38 +292,8 @@ func safeWorkReadError(err error) error {
 	return &operatortool.ReadUnavailableError{Err: err}
 }
 
-func (s *Service) resolveOperatorNativeReadItem(ctx context.Context, query nativeQueryer, scope nativeScope, reference string) (tracker.NativeIssue, error) {
-	if s.config.TenantRepository != nil {
-		return s.resolveOperatorRecordReadItem(ctx, scope, reference)
-	}
-	item, err := s.resolveOperatorNativeItem(ctx, query, scope, reference)
-	if scope.credential.HostedRole == "reporter" || !errors.Is(err, sql.ErrNoRows) || !strings.HasPrefix(reference, "wi_") {
-		return item, err
-	}
-	var project string
-	lookupErr := query.QueryRowContext(ctx, "SELECT project_id FROM issues WHERE organization_id=? AND native_id=?", scope.organization, reference).Scan(&project)
-	if errors.Is(lookupErr, sql.ErrNoRows) {
-		return tracker.NativeIssue{}, explain.ErrNotFound
-	}
-	if lookupErr != nil {
-		return tracker.NativeIssue{}, lookupErr
-	}
-	if project == string(scope.project) {
-		return tracker.NativeIssue{}, err
-	}
-	otherScope := scope
-	otherScope.project = tracker.ProjectID(project)
-	authErr := s.requireHostedProject(ctx, query, otherScope, false)
-	if authErr == nil {
-		authErr = authorizeNativeProject(ctx, query, otherScope)
-	}
-	if isNativeNotFound(authErr) || errors.Is(authErr, operatortool.ErrAccessDenied) {
-		return tracker.NativeIssue{}, operatortool.ErrProjectScopeRequired
-	}
-	if authErr != nil {
-		return tracker.NativeIssue{}, authErr
-	}
-	return tracker.NativeIssue{}, explain.ErrNotFound
+func (s *Service) resolveOperatorNativeReadItem(ctx context.Context, _ nativeQueryer, scope nativeScope, reference string) (tracker.NativeIssue, error) {
+	return s.resolveOperatorRecordReadItem(ctx, scope, reference)
 }
 
 func (s *Service) resolveOperatorNativeItem(ctx context.Context, _ nativeQueryer, scope nativeScope, reference string) (tracker.NativeIssue, error) {
@@ -343,15 +318,11 @@ func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (ex
 	}
 	scope := r.scope
 	scope.project = tracker.ProjectID(query.ProjectID)
-	issue, err := r.service.resolveOperatorNativeReadItem(ctx, r.service.database.reader, scope, query.Reference)
+	issue, err := r.service.resolveOperatorRecordReadItem(ctx, scope, query.Reference)
 	if err != nil {
 		return explain.IssueExplanation{}, safeWorkReadError(err)
 	}
-	evidence, err := r.service.readNativeRuntime(ctx, scope, string(issue.WorkItemID), "")
-	if err != nil {
-		return explain.IssueExplanation{}, safeWorkReadError(err)
-	}
-	failures, partial, err := readExplanationFailures(ctx, r.service.database.reader, scope, string(issue.WorkItemID))
+	evidence, failures, partial, err := r.service.readOperatorExplanation(ctx, scope, issue)
 	if err != nil {
 		return explain.IssueExplanation{}, safeWorkReadError(err)
 	}
@@ -360,4 +331,109 @@ func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (ex
 		return explain.IssueExplanation{}, safeWorkReadError(err)
 	}
 	return out, nil
+}
+
+func (s *Service) readOperatorExplanation(ctx context.Context, scope nativeScope, issue tracker.NativeIssue) (tracker.NativeRuntimeEvidence, []nativeFailure, bool, error) {
+	item := string(issue.WorkItemID)
+	now := s.config.now().UTC()
+	evidence := tracker.NativeRuntimeEvidence{Issue: issue.RuntimeReference(), Selection: "latest", ObservedAt: now,
+		Unavailable: []string{"efficiency_receipt", "scheduler_history_projection", "runner_capacity_projection", "native_admission_projection"}, Capacity: []tracker.NativeRuntimeCapacity{},
+		Scheduling: tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "unknown", At: now, WorkItemRevision: issue.Revision, Reason: "Runner capacity and admission projection are not available from this typed read"}}
+	snapshots, sequence, partial, err := s.readOperatorAttemptSnapshots(ctx, scope, item)
+	if err != nil {
+		return evidence, nil, false, err
+	}
+	evidence.ChangeSequence, evidence.Issue.ChangeSequence = sequence, sequence
+	if len(snapshots) > 0 {
+		evidence, err = s.readNativeRuntime(ctx, scope, item, snapshots[0].attempt.ID)
+		if err != nil {
+			return evidence, nil, false, err
+		}
+		evidence.Selection = "latest"
+	}
+	failures := make([]nativeFailure, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot, now)
+		if err != nil {
+			return evidence, nil, false, err
+		}
+		example, class := failureFromAttempt(attempt.NativeRunData, snapshot.attempt.Status)
+		if example == "" {
+			continue
+		}
+		at := attempt.UpdatedAt
+		if attempt.Runtime != nil && attempt.Runtime.Landing != nil && !attempt.Runtime.Landing.ObservedAt.IsZero() {
+			at = attempt.Runtime.Landing.ObservedAt
+		}
+		failures = append(failures, nativeFailure{attemptID: attempt.AttemptID, workItem: item, at: at, started: attempt.StartedAt, finished: attempt.UpdatedAt, example: example, class: class})
+	}
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		return s.authorizeBulkExportItem(ctx, r, scope, issue.WorkItemID)
+	})
+	return evidence, failures, partial, err
+}
+
+func (s *Service) readOperatorAttemptSnapshots(ctx context.Context, scope nativeScope, item string) ([]tenantAttemptSnapshot, int64, bool, error) {
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return nil, 0, false, nativeRunEventStorageUnavailable()
+	}
+	var snapshots []tenantAttemptSnapshot
+	var sequence int64
+	var partial bool
+	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		project, err := r.Project(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if project.DeletedAt != nil {
+			return corestore.ErrNotFound
+		}
+		work, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		if err != nil {
+			return err
+		}
+		if !scope.reporterOwns(tracker.Actor{Kind: stringValue(work.ActorKind), PrincipalID: stringValue(work.ActorPrincipalID)}) {
+			return nativeNotFound()
+		}
+		board, err := r.BoardSequence(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		sequence = board.Sequence
+		page, err := r.AttemptPage(ctx, work.ID, leasestore.AttemptCursor{}, 64)
+		if err != nil {
+			return err
+		}
+		partial = page.Next != (leasestore.AttemptCursor{})
+		for _, attempt := range page.Items {
+			if attempt.OrganizationID != scope.organization || attempt.IssueID != work.ID {
+				return corestore.ErrNotFound
+			}
+			lease, err := r.Lease(ctx, attempt.LeaseID)
+			if err != nil {
+				return err
+			}
+			if lease.OrganizationID != scope.organization || lease.IssueID != work.ID || lease.FencingToken != attempt.FencingToken {
+				return corestore.ErrNotFound
+			}
+			event, err := r.LatestRunEvent(ctx, scope.project, attempt.ID)
+			if err != nil {
+				return err
+			}
+			if event.OrganizationID != scope.organization || event.ProjectID != scope.project || event.WorkItemID != work.NativeID || event.AttemptID != attempt.ID {
+				return corestore.ErrNotFound
+			}
+			snapshot := tenantAttemptSnapshot{attempt: attempt, lease: lease, event: event}
+			if err := readTenantAttemptPayload(ctx, r, &snapshot); err != nil {
+				return err
+			}
+			snapshots = append(snapshots, snapshot)
+		}
+		return nil
+	})
+	return snapshots, sequence, partial, err
 }

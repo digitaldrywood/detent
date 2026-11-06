@@ -177,12 +177,12 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		}
 		if request.Target != "pr" {
 			resolve := e.service.resolveOperatorNativeItem
-			if definition.Annotations.ReadOnly || call.Name == operatortool.AddComment && e.service.config.TenantRepository != nil {
+			if definition.Annotations.ReadOnly || call.Name == operatortool.AddComment {
 				resolve = e.service.resolveOperatorNativeReadItem
 			}
-			item, resolveErr := resolve(ctx, e.service.database.reader, scope, request.Identifier)
+			item, resolveErr := resolve(ctx, nil, scope, request.Identifier)
 			if resolveErr != nil {
-				if call.Name == operatortool.AddComment && e.service.config.TenantRepository != nil {
+				if call.Name == operatortool.AddComment {
 					if errors.Is(resolveErr, explain.ErrNotFound) {
 						return operatortool.Result{}, operatortool.ErrAccessDenied
 					}
@@ -199,7 +199,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 				return operatortool.Result{}, operatortool.ErrInvalidArguments
 			}
 			if request.Related != "" && !strings.HasPrefix(request.Related, "wi_") {
-				related, resolveErr := e.service.resolveOperatorNativeItem(ctx, e.service.database.reader, scope, request.Related)
+				related, resolveErr := e.service.resolveOperatorNativeItem(ctx, nil, scope, request.Related)
 				if resolveErr != nil {
 					return operatortool.Result{}, hubSafeChangeError(resolveErr)
 				}
@@ -259,7 +259,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		return operatortool.Result{}, operatortool.ErrSnapshotUnavailable
 	}
 	if err != nil {
-		if call.Name == operatortool.AddComment && e.service.config.TenantRepository != nil {
+		if call.Name == operatortool.AddComment {
 			return operatortool.Result{}, hubSafeChangeError(err)
 		}
 		return operatortool.Result{}, safeNativeWorkError(fmt.Errorf("execute work command: %w", err))

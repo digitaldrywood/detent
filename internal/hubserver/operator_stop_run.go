@@ -31,7 +31,7 @@ func (e nativeOperatorExecutor) stopRunAuthority(ctx context.Context, raw json.R
 	}
 	scope.project = tracker.ProjectID(request.ProjectID)
 	scope.action, scope.actionItem, scope.actionTarget = operatortool.StopRun, request.Identifier, request.Destination
-	issue, err := e.service.resolveOperatorNativeItem(ctx, e.service.database.reader, scope, request.Identifier)
+	issue, err := e.service.resolveOperatorNativeItem(ctx, nil, scope, request.Identifier)
 	if err != nil {
 		return ctx, nativeScope{}, request, hubSafeChangeError(err)
 	}

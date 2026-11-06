@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -8,12 +9,14 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -143,6 +146,75 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 	if evidence.CurrentLease == nil || evidence.CurrentLease.ID != tracker.LeaseID(lease.LeaseID) || evidence.CurrentLease.FencingToken != tracker.FencingToken(lease.FencingToken) || evidence.CurrentLease.PolicyID != descriptor.ID {
 		t.Fatalf("runtime current lease differs from the claim: %#v", evidence.CurrentLease)
 	}
+	admin, _, err := service.authenticateTenantAPIHash(t.Context(), organization.ID, apikey.HashToken(testHubAdminToken), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	operatorContext := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: operatorIdentity(admin, string(organization.ID)), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+		current, _, err := service.authenticateTenantAPIHash(ctx, organization.ID, apikey.HashToken(testHubAdminToken), "", "")
+		if err != nil {
+			return operatortool.Authority{}, err
+		}
+		return service.operatorCurrentAuthority(ctx, current, string(organization.ID))
+	}})
+	reads := operatorWorkReads{service: service, scope: nativeScope{organization: organization.ID, project: project.ID, credential: admin}}
+	t.Run("work_config", func(t *testing.T) {
+		defer func() {
+			if value := recover(); value != nil {
+				t.Fatalf("configuration used legacy storage: %v", value)
+			}
+		}()
+		result, err := reads.ReadWork(operatorContext, operatortool.WorkConfig, operatortool.WorkReadRequest{ProjectID: string(project.ID)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(result.Content), string(project.ID)) || !strings.Contains(string(result.Content), "reporter_templates") {
+			t.Fatalf("configuration omitted authorized project: %s", result.Content)
+		}
+		if _, err := reads.ReadWork(operatorContext, operatortool.WorkConfig, operatortool.WorkReadRequest{ProjectID: "project_missing"}); err == nil {
+			t.Fatal("configuration accepted missing project")
+		}
+	})
+	t.Run("explain_without_attempt", func(t *testing.T) {
+		defer func() {
+			if value := recover(); value != nil {
+				t.Fatalf("explanation used legacy storage: %v", value)
+			}
+		}()
+		result, err := reads.Explain(operatorContext, explain.Query{ProjectID: string(project.ID), Reference: string(other.WorkItemID)})
+		if err != nil || result.Identity.IssueID != string(other.WorkItemID) {
+			t.Fatalf("explanation lost authorized issue: %#v error=%v", result.Identity, err)
+		}
+	})
+	for _, target := range []tracker.NativeIssue{issue, other} {
+		explanation, failures, partial, err := service.readOperatorExplanation(t.Context(), scope, target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if explanation.Issue.WorkItemID != target.WorkItemID || explanation.Selection != "latest" || len(failures) != 0 || partial {
+			t.Fatalf("unexpected explanation history: %#v failures=%+v partial=%v", explanation, failures, partial)
+		}
+		if target.WorkItemID == issue.WorkItemID {
+			if explanation.Attempt == nil || explanation.Attempt.AttemptID != started.Data.AttemptID {
+				t.Fatalf("explanation did not select the latest attempt: %#v", explanation.Attempt)
+			}
+		} else if explanation.Attempt != nil || explanation.Scheduling.Outcome != "unknown" || explanation.Scheduling.At.IsZero() {
+			t.Fatalf("unattempted issue lost explicit unknown evidence: %#v", explanation)
+		}
+	}
+	finished := started
+	finished.IdempotencyKey, finished.Type = "runtime-finished", "run.finished"
+	finished.Data.Sequence, finished.Data.Outcome = 2, "failed"
+	finished.Data.TerminalFailure = &tracker.NativeTerminalFailure{Error: "example provider failure", Stage: "implement", ObservedAt: clock.Now()}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, eventPath, token, finished), http.StatusOK)
+	_, failures, partial, err := service.readOperatorExplanation(t.Context(), scope, issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature := latestNativeFailureSignature(failures, partial)
+	if signature == nil || signature.Signature != "example provider failure" || signature.Count != 1 || signature.Partial {
+		t.Fatalf("recorded failure signature lost: %#v", signature)
+	}
 	wrongItemPath := itemPath + "/" + string(other.WorkItemID) + "/runtime?native_attempt_id=" + started.Data.AttemptID
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, wrongItemPath, token, nil), http.StatusNotFound)
 
@@ -153,5 +225,76 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 	decodeHubResponse(t, response, &evidence)
 	if evidence.Attempt == nil || evidence.Attempt.Current || evidence.CurrentLease != nil {
 		t.Fatalf("expired lease remained current in runtime evidence: attempt=%#v lease=%#v", evidence.Attempt, evidence.CurrentLease)
+	}
+	snapshots, _, _, err := service.readOperatorAttemptSnapshots(t.Context(), scope, string(issue.WorkItemID))
+	if err != nil || len(snapshots) != 1 {
+		t.Fatalf("load attempt hook: %v snapshots=%d", err, len(snapshots))
+	}
+	changed := false
+	service.config.RunDetails = &changeReadInterceptionStore{DetailStore: service.config.RunDetails, key: snapshots[0].attempt.PayloadObjectKey, afterRead: func(ctx context.Context) error {
+		changed = true
+		return repository.WriteTenant(ctx, organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.DeleteAccessTokenGrant(ctx, credentialID, project.ID)
+		})
+	}}
+	if _, _, _, err := service.readOperatorExplanation(t.Context(), scope, issue); !changed || err == nil {
+		t.Fatalf("explanation accepted revoked project grant: hook=%v error=%v", changed, err)
+	}
+
+}
+
+func TestPostgresOperatorReadsRejectRoleChanges(t *testing.T) {
+	for _, tool := range []string{operatortool.WorkConfig, operatortool.ExplainItem} {
+		t.Run(tool, func(t *testing.T) {
+			repository, f, owner, _ := newExportPostgresFixture(t)
+			response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "explain-role"}, Title: "Example issue", Body: workItemRecordBody, State: "Todo"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			scope := nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: owner.identity.Subject, Scope: apiScopeOperator, Hosted: owner.identity.Hosted, SessionHash: apikey.HashToken(owner.token), HostedRole: "owner"}}
+			if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				member, err := r.AccessMember(t.Context(), owner.identity.Subject)
+				if err != nil {
+					return err
+				}
+				principal, err := r.AccessCredential(t.Context(), member.PrincipalID)
+				scope.credential.ID, scope.credential.Hash = principal.ID, principal.Hash
+				scope.credential.HostedPrincipal, scope.credential.HostedMembership = principal.ID, member.MembershipID
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			identity := operatorIdentity(scope.credential, "org_security")
+			ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: identity, Resolve: func(context.Context) (operatortool.Authority, error) {
+				return operatortool.Authority{Identity: identity, Check: func(ctx context.Context, req operatortool.Requirement) error {
+					return repository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error { return f.service.authorizeAccessScope(ctx, r, scope, false) })
+				}}, nil
+			}})
+			changed := false
+			details := f.service.config.RunDetails.(*memoryRunDetails)
+			details.beforeRead = func(ctx context.Context) error {
+				details.beforeRead = nil
+				changed = true
+				return repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					member, err := w.AccessMember(ctx, owner.identity.Subject)
+					if err != nil {
+						return err
+					}
+					member.Role = "reporter"
+					return w.UpdateAccessMember(ctx, member)
+				})
+			}
+			t.Cleanup(func() { details.beforeRead = nil })
+			reads := operatorWorkReads{service: f.service, scope: scope}
+			var err error
+			if tool == operatortool.WorkConfig {
+				_, err = reads.ReadWork(ctx, tool, operatortool.WorkReadRequest{ProjectID: string(f.project), Limit: 10})
+			} else {
+				_, err = reads.Explain(ctx, explain.Query{ProjectID: string(f.project), Reference: string(issue.WorkItemID)})
+			}
+			if !changed || err == nil {
+				t.Fatalf("explanation accepted downgraded role: hook=%v error=%v", changed, err)
+			}
+		})
 	}
 }
