@@ -345,7 +345,8 @@ func TestAccessImportMissingProjectReferenceDoesNotAdvanceCheckpoint(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	for range 5 {
+	failingStage := int64(slices.Index(accessFixtureTables, "token_grants"))
+	for range failingStage {
 		if _, err := importer.Step(t.Context(), postgres.AccessImportLimit); err != nil {
 			t.Fatal(err)
 		}
@@ -357,7 +358,7 @@ func TestAccessImportMissingProjectReferenceDoesNotAdvanceCheckpoint(t *testing.
 	if err := db.QueryRowContext(t.Context(), `SELECT stage,processed FROM access_imports WHERE organization_id=$1`, organization).Scan(&stage, &processed); err != nil {
 		t.Fatal(err)
 	}
-	if stage != 5 || processed != 5 {
+	if stage != failingStage || processed != failingStage {
 		t.Fatalf("missing project page advanced checkpoint: stage=%d processed=%d", stage, processed)
 	}
 	var grants int
@@ -410,7 +411,8 @@ func TestAccessImportMalformedInvitationDoesNotAdvanceCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for range 8 {
+	failingStage := int64(slices.Index(accessFixtureTables, "hosted_invitations"))
+	for range failingStage {
 		if _, err := importer.Step(t.Context(), postgres.AccessImportLimit); err != nil {
 			t.Fatal(err)
 		}
@@ -422,7 +424,7 @@ func TestAccessImportMalformedInvitationDoesNotAdvanceCheckpoint(t *testing.T) {
 	if err := db.QueryRowContext(t.Context(), `SELECT stage,processed FROM access_imports WHERE organization_id=$1`, organization).Scan(&stage, &processed); err != nil {
 		t.Fatal(err)
 	}
-	if stage != 8 || processed != 8 {
+	if stage != failingStage || processed != failingStage {
 		t.Fatalf("failed invitation page advanced checkpoint: stage=%d processed=%d", stage, processed)
 	}
 	var invitations int

@@ -67,16 +67,16 @@ func TestRepositoryDeadlockFailure(t *testing.T) {
 	run := func(first, second string, locked, wait <-chan struct{}, signal chan<- struct{}) func(context.Context) error {
 		return func(ctx context.Context) error {
 			workload := corestore.Serving
-			if first == "prj_second" {
+			if first == "second" {
 				workload = corestore.Background
 			}
 			return repository.WriteTenant(ctx, "org_first", workload, func(w tenantstore.Writer) error {
-				p, err := w.Project(ctx, tracker.ProjectID(first))
+				p, err := w.WorkItem(ctx, tracker.ProjectID("prj_"+first), tracker.NativeWorkItemID("wi_"+first+"_1"))
 				if err != nil {
 					return err
 				}
-				p.Name += "_changed"
-				if _, err := w.UpdateProject(ctx, p); err != nil {
+				p.Title += "_changed"
+				if _, err := w.UpdateWorkItem(ctx, p); err != nil {
 					return err
 				}
 				close(signal)
@@ -87,21 +87,21 @@ func TestRepositoryDeadlockFailure(t *testing.T) {
 						return ctx.Err()
 					}
 				}
-				p, err = w.Project(ctx, tracker.ProjectID(second))
+				p, err = w.WorkItem(ctx, tracker.ProjectID("prj_"+second), tracker.NativeWorkItemID("wi_"+second+"_1"))
 				if err != nil {
 					return err
 				}
-				p.Name += "_changed"
-				_, err = w.UpdateProject(ctx, p)
+				p.Title += "_changed"
+				_, err = w.UpdateWorkItem(ctx, p)
 				return err
 			})
 		}
 	}
 	ready := make(chan struct{})
 	close(ready)
-	first := startRepositoryTask(t, run("prj_first", "prj_second", secondLocked, ready, firstLocked))
+	first := startRepositoryTask(t, run("first", "second", secondLocked, ready, firstLocked))
 	waitRepositorySignal(t, firstLocked)
-	second := startRepositoryTask(t, run("prj_second", "prj_first", firstLocked, finishSecond, secondLocked))
+	second := startRepositoryTask(t, run("second", "first", firstLocked, finishSecond, secondLocked))
 	waitRepositorySignal(t, secondLocked)
 	testenv.WaitUntil(t, t.Context(), func() error {
 		var waiting bool

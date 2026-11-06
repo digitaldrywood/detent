@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func TestRecordPagesAndScansRevisitLateCommits(t *testing.T) {
 				var record recordIdentity
 				if err := repository.Write(t.Context(), "org_first", corestore.Serving, func(w corestore.Writer) error {
 					var err error
-					record, err = family.create(t.Context(), w, "org_first", recordIdentity{Name: name, Sequence: sequence, CreatedAt: created})
+					record, err = family.create(t.Context(), w, "org_first", recordIdentity{ID: sequence, Name: name, Sequence: sequence, CreatedAt: created})
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -41,41 +42,9 @@ func TestRecordPagesAndScansRevisitLateCommits(t *testing.T) {
 				return record
 			}
 			first := create("first", 1)
-			release := make(chan struct{})
-			ready := make(chan recordIdentity, 1)
-			done := make(chan struct{})
-			var writeErr error
-			ctx, cancel := context.WithCancel(t.Context())
-			t.Cleanup(func() { cancel(); <-done })
-			go func() {
-				defer close(done)
-				writeErr = repository.Write(ctx, "org_first", corestore.Serving, func(w corestore.Writer) error {
-					record, err := family.create(ctx, w, "org_first", recordIdentity{Name: "late", Sequence: 2, CreatedAt: created})
-					if err != nil {
-						ready <- recordIdentity{}
-						return err
-					}
-					ready <- record
-					select {
-					case <-release:
-						return nil
-					case <-ctx.Done():
-						return ctx.Err()
-					}
-				})
-			}()
-			var late recordIdentity
-			select {
-			case late = <-ready:
-			case <-done:
-				t.Fatalf("late transaction failed: %v", writeErr)
-			}
-			if late.ID == 0 {
-				t.Fatal("late insert failed")
-			}
 			high := create("committed", 3)
-			if late.ID <= first.ID || high.ID <= late.ID {
-				t.Fatalf("allocation order = %d, %d, %d", first.ID, late.ID, high.ID)
+			if high.ID <= first.ID+1 {
+				t.Fatalf("import has no reserved gap: first=%d high=%d", first.ID, high.ID)
 			}
 			scan := func(cursor corestore.ScanCursor) ([]recordIdentity, corestore.ScanCursor) {
 				t.Helper()
@@ -118,11 +87,7 @@ func TestRecordPagesAndScansRevisitLateCommits(t *testing.T) {
 			if len(rows) != 1 || rows[0].Name != "committed" || cursor != (corestore.ScanCursor{}) {
 				t.Fatalf("bounded sweep = %+v, next = %+v", rows, cursor)
 			}
-			close(release)
-			<-done
-			if writeErr != nil {
-				t.Fatal(writeErr)
-			}
+			create("late", 2)
 			var names []string
 			for range 5 {
 				rows, cursor = scan(cursor)
@@ -449,8 +414,9 @@ func TestImportedIDsWaitForConcurrentAllocations(t *testing.T) {
 			admin := template.Database(t)
 			repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 			prepareRecords(t, repository, "org_first", family.name == "comments")
-			ctx, cancel := context.WithCancel(t.Context())
+			ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 			release := make(chan struct{})
+			releaseAllocation := sync.OnceFunc(func() { close(release) })
 			ready := make(chan recordIdentity, 1)
 			allocated := make(chan struct{})
 			imported := make(chan struct{})
@@ -471,7 +437,7 @@ func TestImportedIDsWaitForConcurrentAllocations(t *testing.T) {
 					}
 				})
 			}()
-			t.Cleanup(func() { cancel(); <-allocated })
+			t.Cleanup(func() { cancel(); releaseAllocation(); <-allocated })
 			select {
 			case row := <-ready:
 				if row.ID <= 0 {
@@ -495,7 +461,7 @@ func TestImportedIDsWaitForConcurrentAllocations(t *testing.T) {
 				default:
 				}
 				var waiting bool
-				if err := admin.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND NOT granted AND database=(SELECT oid FROM pg_database WHERE datname=current_database()))`).Scan(&waiting); err != nil {
+				if err := admin.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE NOT granted AND pid IN (SELECT pid FROM pg_stat_activity WHERE datname=current_database()))`).Scan(&waiting); err != nil {
 					return err
 				}
 				if !waiting {
@@ -503,7 +469,7 @@ func TestImportedIDsWaitForConcurrentAllocations(t *testing.T) {
 				}
 				return nil
 			})
-			close(release)
+			releaseAllocation()
 			<-allocated
 			if allocationErr != nil {
 				t.Fatal(allocationErr)
