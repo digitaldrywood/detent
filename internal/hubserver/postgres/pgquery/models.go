@@ -1510,6 +1510,7 @@ type NativeBoardCount struct {
 	Archived       bool
 	State          string
 	Total          int64
+	WorkspaceTotal int64
 }
 
 type NativeBoardDelta struct {
@@ -1572,6 +1573,7 @@ type NativeBoardItem struct {
 	PayloadBytes          int64
 	PayloadContentBytes   int64
 	IssueNumber           sql.NullInt64
+	WorkspaceCounted      bool
 }
 
 type NativeBoardSequence struct {

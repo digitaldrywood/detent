@@ -71,6 +71,12 @@ func (s *session) ReplaceBoardItem(ctx context.Context, u viewstore.BoardUpdate)
 	} else if !errors.Is(err, corestore.ErrNotFound) {
 		return err
 	}
+	counted := false
+	if previous != nil {
+		if err := s.db.QueryRowContext(ctx, "SELECT workspace_counted FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", s.organization, u.ProjectID, u.WorkItemID).Scan(&counted); err != nil {
+			return mapError(ctx, err)
+		}
+	}
 	same := sameBoardContent(previous, next)
 	if !same && previous != nil {
 		result, err := s.db.ExecContext(ctx, "UPDATE native_board_counts SET total=total-1 WHERE organization_id=$1 AND project_id=$2 AND archived=$3 AND state=$4 AND total>0", s.organization, u.ProjectID, previous.Archived, previous.Position.State)
@@ -96,6 +102,18 @@ func (s *session) ReplaceBoardItem(ctx context.Context, u viewstore.BoardUpdate)
 		if !same {
 			if _, err := s.db.ExecContext(ctx, `INSERT INTO native_board_counts(organization_id,project_id,archived,state,total) VALUES($1,$2,$3,$4,1) ON CONFLICT(organization_id,project_id,archived,state) DO UPDATE SET total=native_board_counts.total+1`, s.organization, u.ProjectID, next.Archived, next.Position.State); err != nil {
 				return mapError(ctx, err)
+			}
+		}
+	}
+	if !same || !counted {
+		if counted && previous != nil && slices.Contains(previous.Labels, "detent:workspace") {
+			if err := s.adjustBoardWorkspaceCount(ctx, *previous, -1); err != nil {
+				return err
+			}
+		}
+		if next != nil && slices.Contains(next.Labels, "detent:workspace") {
+			if err := s.adjustBoardWorkspaceCount(ctx, *next, 1); err != nil {
+				return err
 			}
 		}
 	}
@@ -146,9 +164,9 @@ func sameBoardContent(a, b *viewstore.BoardRecord) bool {
 }
 
 func (s *session) putBoardItem(ctx context.Context, b viewstore.BoardRecord, number int64) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO native_board_items(organization_id,project_id,work_item_id,source_revision,source_event_sequence,source_project_revision,state,archived,terminal,running,dispatchable,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,execution_fence,actor_principal_id,issue_type,verification_state,priority,created_at,updated_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,issue_number)
-	 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
-	 ON CONFLICT(organization_id,project_id,work_item_id) DO UPDATE SET issue_number=excluded.issue_number,source_revision=excluded.source_revision,source_event_sequence=excluded.source_event_sequence,source_project_revision=excluded.source_project_revision,state=excluded.state,archived=excluded.archived,terminal=excluded.terminal,running=excluded.running,dispatchable=excluded.dispatchable,lane_rank=excluded.lane_rank,priority_rank=excluded.priority_rank,activity_missing=excluded.activity_missing,activity_at=excluded.activity_at,identifier=excluded.identifier,closed_at=excluded.closed_at,expires_at=excluded.expires_at,execution_fence=excluded.execution_fence,actor_principal_id=excluded.actor_principal_id,issue_type=excluded.issue_type,verification_state=excluded.verification_state,priority=excluded.priority,created_at=excluded.created_at,updated_at=excluded.updated_at,payload_object_key=excluded.payload_object_key,payload_sha256=excluded.payload_sha256,payload_bytes=excluded.payload_bytes,payload_content_bytes=excluded.payload_content_bytes`,
+	_, err := s.db.ExecContext(ctx, `INSERT INTO native_board_items(organization_id,project_id,work_item_id,source_revision,source_event_sequence,source_project_revision,state,archived,terminal,running,dispatchable,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,execution_fence,actor_principal_id,issue_type,verification_state,priority,created_at,updated_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,issue_number,workspace_counted)
+	 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,true)
+	 ON CONFLICT(organization_id,project_id,work_item_id) DO UPDATE SET workspace_counted=true,issue_number=excluded.issue_number,source_revision=excluded.source_revision,source_event_sequence=excluded.source_event_sequence,source_project_revision=excluded.source_project_revision,state=excluded.state,archived=excluded.archived,terminal=excluded.terminal,running=excluded.running,dispatchable=excluded.dispatchable,lane_rank=excluded.lane_rank,priority_rank=excluded.priority_rank,activity_missing=excluded.activity_missing,activity_at=excluded.activity_at,identifier=excluded.identifier,closed_at=excluded.closed_at,expires_at=excluded.expires_at,execution_fence=excluded.execution_fence,actor_principal_id=excluded.actor_principal_id,issue_type=excluded.issue_type,verification_state=excluded.verification_state,priority=excluded.priority,created_at=excluded.created_at,updated_at=excluded.updated_at,payload_object_key=excluded.payload_object_key,payload_sha256=excluded.payload_sha256,payload_bytes=excluded.payload_bytes,payload_content_bytes=excluded.payload_content_bytes`,
 		s.organization, b.ProjectID, b.WorkItemID, b.SourceRevision, b.SourceEventSequence, b.SourceProjectRevision, b.Position.State, b.Archived, b.Terminal, b.Running, b.Dispatchable, b.Position.Lane, b.Position.Priority, b.Position.ActivityMissing, b.Position.Activity, b.Position.Identifier, b.ClosedAt, b.ExpiresAt, b.ExecutionFence, b.ActorPrincipalID, b.IssueType, b.VerificationState, b.Priority, b.CreatedAt, b.UpdatedAt, b.Payload.Key, b.Payload.SHA256, b.Payload.CompressedSize, b.Payload.UncompressedSize, number)
 	if err != nil {
 		return mapError(ctx, err)
@@ -168,6 +186,21 @@ func (s *session) putBoardItem(ctx context.Context, b viewstore.BoardRecord, num
 		if _, err := s.db.ExecContext(ctx, "INSERT INTO native_board_filter_values(organization_id,project_id,work_item_id,kind,value) SELECT $1,$2,$3,$4,unnest($5::text[])", s.organization, b.ProjectID, b.WorkItemID, kind, pq.Array(values)); err != nil {
 			return mapError(ctx, err)
 		}
+	}
+	return nil
+}
+
+func (s *session) adjustBoardWorkspaceCount(ctx context.Context, b viewstore.BoardRecord, delta int64) error {
+	result, err := s.db.ExecContext(ctx, "UPDATE native_board_counts SET workspace_total=workspace_total+$5 WHERE organization_id=$1 AND project_id=$2 AND archived=$3 AND state=$4", s.organization, b.ProjectID, b.Archived, b.Position.State, delta)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return viewstore.ErrInvalidView
 	}
 	return nil
 }

@@ -334,13 +334,23 @@ func (s *session) BoardLanes(ctx context.Context, f viewstore.BoardSelection, no
 	args = append(args, now)
 	current := fmt.Sprintf("b.running AND b.expires_at>$%d AND EXISTS(SELECT 1 FROM issues i JOIN leases l ON l.organization_id=i.organization_id AND l.issue_id=i.id WHERE i.organization_id=b.organization_id AND i.project_id=b.project_id AND i.native_id=b.work_item_id AND l.fencing_token=b.execution_fence AND l.released_at IS NULL AND l.renewed_at<=$%d AND l.expires_at>$%d)", len(args), len(args), len(args))
 	statement := "SELECT b.state,count(*),count(*) FILTER (WHERE " + current + ") FROM native_board_items b WHERE " + where + " GROUP BY b.state ORDER BY b.state LIMIT 201"
-	filtered := f.SearchText != "" || f.WorkItemIDs != nil || f.Reporter || f.ActorPrincipalID != "" || f.ExcludeWorkspace || len(f.Types)+len(f.Verification)+len(f.Labels)+len(f.Assignees)+len(f.Priorities) > 0 || f.CreatedAfter != nil || f.CreatedBefore != nil || f.UpdatedAfter != nil || f.NativeCreatedAfter != nil || f.NativeCreatedBefore != nil || f.NativeUpdatedAfter != nil || f.CompletedFrom != nil || f.CompletedTo != nil
+	filtered := f.SearchText != "" || f.WorkItemIDs != nil || f.Reporter || f.ActorPrincipalID != "" || f.Fingerprint != "" || len(f.Types)+len(f.Verification)+len(f.Labels)+len(f.Assignees)+len(f.Priorities) > 0 || f.CreatedAfter != nil || f.CreatedBefore != nil || f.UpdatedAfter != nil || f.NativeCreatedAfter != nil || f.NativeCreatedBefore != nil || f.NativeUpdatedAfter != nil || f.CompletedFrom != nil || f.CompletedTo != nil
+	if !filtered && f.ExcludeWorkspace {
+		if err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT workspace_counted)", s.organization, f.ProjectID).Scan(&filtered); err != nil {
+			return nil, mapError(ctx, err)
+		}
+	}
 	if !filtered {
-		counterWhere := "c.organization_id=$1 AND c.project_id=$2 AND c.total>0"
+		total := "c.total"
+		if f.ExcludeWorkspace {
+			total = "(c.total-c.workspace_total)"
+			current += " AND NOT EXISTS(SELECT 1 FROM native_board_filter_values f WHERE f.organization_id=b.organization_id AND f.project_id=b.project_id AND f.work_item_id=b.work_item_id AND f.kind='label' AND f.value='detent:workspace')"
+		}
+		counterWhere := "c.organization_id=$1 AND c.project_id=$2 AND " + total + ">0"
 		if f.Archived != nil {
 			counterWhere += " AND c.archived=$3"
 		}
-		statement = "SELECT c.state,sum(c.total)::bigint,sum((SELECT count(*) FROM native_board_items b WHERE b.organization_id=c.organization_id AND b.project_id=c.project_id AND b.archived=c.archived AND b.state=c.state AND " + current + "))::bigint FROM native_board_counts c WHERE " + counterWhere + " GROUP BY c.state ORDER BY c.state LIMIT 201"
+		statement = "SELECT c.state,sum(" + total + ")::bigint,sum((SELECT count(*) FROM native_board_items b WHERE b.organization_id=c.organization_id AND b.project_id=c.project_id AND b.archived=c.archived AND b.state=c.state AND " + current + "))::bigint FROM native_board_counts c WHERE " + counterWhere + " GROUP BY c.state ORDER BY c.state LIMIT 201"
 	}
 	rows, err := s.db.QueryContext(ctx, statement, args...)
 	if err != nil {
