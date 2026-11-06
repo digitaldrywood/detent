@@ -2,10 +2,9 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 
@@ -53,7 +52,7 @@ func sourceRecoveryLimit(first, second int) int {
 }
 
 func (s *session) sourceRecoveryRunnerUsage(ctx context.Context, project tracker.ProjectID, record runnerstore.FleetRecord, now time.Time, candidate *runnerstore.SourceRecoveryCandidate) error {
-	err := s.db.QueryRowContext(ctx, `WITH selected AS (
+	err := s.db.QueryRow(ctx, `WITH selected AS (
 SELECT l.lease_id,l.machine_id,l.session_id,l.landing_capacity,i.project_id,a.runner_id,'runner' AS kind
 FROM runner_lease_assignments a JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id
 JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
@@ -75,7 +74,7 @@ count(DISTINCT slot) FILTER(WHERE kind='host') FROM slots`, s.organization, reco
 
 func (s *session) sourceRecoveryProviderUsage(ctx context.Context, runner string, report providercapacity.Report, now time.Time) (int, int, error) {
 	var used, retainedLimit int
-	err := s.db.QueryRowContext(ctx, `SELECT count(DISTINCT CASE
+	err := s.db.QueryRow(ctx, `SELECT count(DISTINCT CASE
 WHEN p.requirement_backend='git' AND p.requirement_role='merge' AND l.session_id ~ '^landing/[^/]+/[^/]+$'
 THEN l.machine_id||'/'||i.project_id||'/'||split_part(l.session_id,'/',2)||'/'||a.runner_id ELSE l.lease_id END),
 coalesce(min(nullif(p.max_concurrent,0)) FILTER(WHERE NOT EXISTS(
@@ -95,7 +94,7 @@ func (s *session) FleetNames(ctx context.Context, limit int) ([]runnerstore.Flee
 	if limit < 1 || limit > 10000 {
 		return nil, corestore.ErrInvalidPage
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT r.runner_id,r.display_name,m.hostname,r.removed_at IS NOT NULL
+	rows, err := s.db.Query(ctx, `SELECT r.runner_id,r.display_name,m.hostname,r.removed_at IS NOT NULL
 FROM runner_identities r JOIN machines m ON m.organization_id=r.organization_id AND m.id=r.machine_id
 WHERE r.organization_id=$1 ORDER BY r.runner_id LIMIT $2`, s.organization, limit+1)
 	if err != nil {
@@ -132,9 +131,9 @@ func (s *session) fleetLeases(ctx context.Context, now time.Time, limit int, mac
 	}
 	if len(machines) > 0 {
 		selector = " AND l.machine_id=ANY($4)"
-		args = append(args, pq.Array(machines))
+		args = append(args, machines)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT coalesce(r.runner_id,''),l.machine_id,l.session_id,l.landing_capacity,l.lease_id,l.fencing_token,i.native_id,i.title,i.project_id,l.expires_at,coalesce(i.actor_principal_id,''),coalesce(p.requirement_role,''),coalesce(p.requirement_backend,''),coalesce(p.requirement_model,''),coalesce(p.provider,''),coalesce(p.backend,''),coalesce(p.account_alias,''),coalesce(p.shared_account_alias,''),coalesce(p.billing,''),coalesce(p.max_concurrent,0),coalesce(p.availability,''),p.observed_at,p.reset_at,coalesce(p.reason,'')
+	rows, err := s.db.Query(ctx, `SELECT coalesce(r.runner_id,''),l.machine_id,l.session_id,l.landing_capacity,l.lease_id,l.fencing_token,i.native_id,i.title,i.project_id,l.expires_at,coalesce(i.actor_principal_id,''),coalesce(p.requirement_role,''),coalesce(p.requirement_backend,''),coalesce(p.requirement_model,''),coalesce(p.provider,''),coalesce(p.backend,''),coalesce(p.account_alias,''),coalesce(p.shared_account_alias,''),coalesce(p.billing,''),coalesce(p.max_concurrent,0),coalesce(p.availability,''),p.observed_at,p.reset_at,coalesce(p.reason,'')
 FROM leases l JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
 LEFT JOIN runner_lease_assignments r ON r.organization_id=l.organization_id AND r.lease_id=l.lease_id
 LEFT JOIN provider_reservations p ON p.organization_id=l.organization_id AND p.lease_id=l.lease_id
@@ -148,7 +147,7 @@ WHERE l.organization_id=$1 AND l.released_at IS NULL AND l.renewed_at<=$2 AND l.
 	for rows.Next() {
 		var row runnerstore.FleetLease
 		var reservation providercapacity.Reservation
-		var observed, reset sql.NullTime
+		var observed, reset pgtype.Timestamptz
 		if err := rows.Scan(&row.RunnerID, &row.MachineID, &row.SessionID, &row.LandingCapacity, &row.Lease.ID, &row.Lease.FencingToken, &row.Lease.WorkItemID, &row.Lease.Title, &row.Lease.ProjectID, &row.Lease.ExpiresAt, &row.ActorPrincipalID, &reservation.Role, &reservation.Backend, &reservation.Model, &reservation.Report.Provider, &reservation.Report.Backend, &reservation.Report.AccountAlias, &reservation.Report.SharedAccountAlias, &reservation.Report.Billing, &reservation.Report.MaxConcurrent, &reservation.Report.Availability, &observed, &reset, &reservation.Reason); err != nil {
 			return nil, mapError(ctx, err)
 		}
@@ -170,7 +169,7 @@ func (s *session) FleetProjectCount(ctx context.Context, limit int) (int, error)
 		return 0, corestore.ErrInvalidPage
 	}
 	var count int
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT id FROM projects WHERE organization_id=$1 AND deleted_at IS NULL LIMIT $2) selected`, s.organization, limit+1).Scan(&count)
+	err := s.db.QueryRow(ctx, `SELECT count(*) FROM (SELECT id FROM projects WHERE organization_id=$1 AND deleted_at IS NULL LIMIT $2) selected`, s.organization, limit+1).Scan(&count)
 	return count, mapError(ctx, err)
 }
 
@@ -241,7 +240,7 @@ func (s *session) RunnerRoutingRecords(ctx context.Context, limit, offset int, n
 	for _, lease := range leases {
 		byMachine[lease.MachineID] = append(byMachine[lease.MachineID], lease)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT selected.runner_id,selected.backend,account.*,usage.*
+	rows, err := s.db.Query(ctx, `SELECT selected.runner_id,selected.backend,account.*,usage.*
 FROM runner_provider_reports selected
 CROSS JOIN LATERAL (SELECT
     COALESCE(bool_or(p.runner_id=selected.runner_id AND p.backend=selected.backend AND p.account_alias=selected.account_alias),false),
@@ -270,7 +269,7 @@ JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
 JOIN runner_lease_assignments a ON a.organization_id=l.organization_id AND a.lease_id=l.lease_id
 WHERE p.organization_id=$1 AND p.provider=selected.provider AND l.released_at IS NULL AND l.expires_at>$3
 AND ((selected.shared_account_alias<>'' AND p.shared_account_alias=selected.shared_account_alias) OR (selected.shared_account_alias='' AND p.shared_account_alias='' AND a.runner_id=selected.runner_id AND p.account_alias=selected.account_alias)) LIMIT 10001) p) usage
-WHERE selected.organization_id=$1 AND selected.runner_id=ANY($2)`, s.organization, pq.Array(ids), now)
+WHERE selected.organization_id=$1 AND selected.runner_id=ANY($2)`, s.organization, ids, now)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}

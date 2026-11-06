@@ -27,7 +27,7 @@ type ArtifactReferenceGetParams struct {
 }
 
 func (q *Queries) ArtifactReferenceGet(ctx context.Context, arg ArtifactReferenceGetParams) (ArtifactReference, error) {
-	row := q.db.QueryRowContext(ctx, artifactReferenceGet,
+	row := q.db.QueryRow(ctx, artifactReferenceGet,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -88,7 +88,7 @@ type ArtifactReferenceInsertParams struct {
 }
 
 func (q *Queries) ArtifactReferenceInsert(ctx context.Context, arg ArtifactReferenceInsertParams) (ArtifactReference, error) {
-	row := q.db.QueryRowContext(ctx, artifactReferenceInsert,
+	row := q.db.QueryRow(ctx, artifactReferenceInsert,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -158,7 +158,7 @@ type ArtifactReferenceListLatestParams struct {
 }
 
 func (q *Queries) ArtifactReferenceListLatest(ctx context.Context, arg ArtifactReferenceListLatestParams) ([]ArtifactReference, error) {
-	rows, err := q.db.QueryContext(ctx, artifactReferenceListLatest,
+	rows, err := q.db.Query(ctx, artifactReferenceListLatest,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -196,9 +196,6 @@ func (q *Queries) ArtifactReferenceListLatest(ctx context.Context, arg ArtifactR
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -222,7 +219,7 @@ type ArtifactVersionAttemptMatchesParams struct {
 }
 
 func (q *Queries) ArtifactVersionAttemptMatches(ctx context.Context, arg ArtifactVersionAttemptMatchesParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, artifactVersionAttemptMatches,
+	row := q.db.QueryRow(ctx, artifactVersionAttemptMatches,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.VersionID,

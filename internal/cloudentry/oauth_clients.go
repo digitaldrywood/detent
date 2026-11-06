@@ -13,7 +13,7 @@ func (s *Service) oauthRegistration(ctx context.Context, id string) (_ oauthRegi
 	if !ok || len(id) > 2048 {
 		return registration, errNoSession
 	}
-	rows, err := s.auth.store.reader.QueryContext(ctx, `SELECT c.name,c.auth_method,c.secret_hash,u.uri FROM oauth_clients c JOIN oauth_client_redirect_uris u ON u.client_id=c.id WHERE c.id=? ORDER BY u.position`, id)
+	rows, err := s.auth.store.reader.QueryContext(ctx, `SELECT c.name,c.auth_method,c.secret_hash,u.uri FROM platform.oauth_clients c JOIN platform.oauth_client_redirect_uris u ON u.client_id=c.id WHERE c.id=$1 ORDER BY u.position`, id)
 	if err != nil {
 		return registration, err
 	}
@@ -37,7 +37,7 @@ func (s *Service) oauthRegistration(ctx context.Context, id string) (_ oauthRegi
 
 func insertOAuthRedirectURIs(ctx context.Context, tx *entryTransaction, id string, uris []string) error {
 	for position, uri := range uris {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO oauth_client_redirect_uris(client_id,position,uri) VALUES(?,?,?) ON CONFLICT DO NOTHING`, id, position, uri); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO platform.oauth_client_redirect_uris(client_id,position,uri) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, id, position, uri); err != nil {
 			return err
 		}
 	}
@@ -61,7 +61,7 @@ func (s *Service) backfillOAuthClients(ctx context.Context) error {
 	var after string
 	for {
 		var id, created string
-		err := s.auth.store.reader.QueryRowContext(ctx, `SELECT c.id,c.created_at FROM oauth_clients c WHERE c.id>? AND NOT EXISTS(SELECT 1 FROM oauth_client_redirect_uris u WHERE u.client_id=c.id) ORDER BY c.id LIMIT 1`, after).Scan(&id, &created)
+		err := s.auth.store.reader.QueryRowContext(ctx, `SELECT c.id,c.created_at FROM platform.oauth_clients c WHERE c.id>$1 AND NOT EXISTS(SELECT 1 FROM platform.oauth_client_redirect_uris u WHERE u.client_id=c.id) ORDER BY c.id LIMIT 1`, after).Scan(&id, &created)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -86,9 +86,9 @@ func (s *Service) backfillOAuthClient(ctx context.Context, id string, uris []str
 	if err != nil {
 		return err
 	}
-	defer tx.cleanup(&resultErr)
+	defer tx.cleanup(ctx, &resultErr)
 	if err := insertOAuthRedirectURIs(ctx, tx, id, uris); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return tx.Commit(ctx)
 }

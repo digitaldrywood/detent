@@ -2,11 +2,12 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"maps"
 	"slices"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -60,9 +61,9 @@ func (s *session) CreateBillingPlan(ctx context.Context, plan billingstore.Plan)
 	if err := s.checkOrganization(plan.OrganizationID); err != nil {
 		return err
 	}
-	var price sql.NullInt64
+	var price pgtype.Int8
 	if plan.MonthlyUSDCents != nil {
-		price = sql.NullInt64{Int64: *plan.MonthlyUSDCents, Valid: true}
+		price = pgtype.Int8{Int64: *plan.MonthlyUSDCents, Valid: true}
 	}
 	if err := s.queries.CreateBillingPlan(ctx, pgquery.CreateBillingPlanParams{OrganizationID: s.organization, ID: plan.ID, Version: plan.Version, Name: plan.Name, MonthlyUsdCents: price, RuntimeID: plan.RuntimeID}); err != nil {
 		return mapError(ctx, err)
@@ -88,25 +89,24 @@ func (s *session) ReplaceBillingPlan(ctx context.Context, plan billingstore.Plan
 	if err := s.checkOrganization(plan.OrganizationID); err != nil {
 		return err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE hosted_plans SET name=$4,monthly_usd_cents=$5,runtime_id=$6 WHERE organization_id=$1 AND id=$2 AND version=$3`, s.organization, plan.ID, plan.Version, plan.Name, plan.MonthlyUSDCents, plan.RuntimeID)
+	result, err := s.db.Exec(ctx, `UPDATE hosted_plans SET name=$4,monthly_usd_cents=$5,runtime_id=$6 WHERE organization_id=$1 AND id=$2 AND version=$3`, s.organization, plan.ID, plan.Version, plan.Name, plan.MonthlyUSDCents, plan.RuntimeID)
 	if err != nil {
 		return mapError(ctx, err)
 	}
-	count, err := result.RowsAffected()
-	if err := affected(ctx, count, err); err != nil {
+	if err := affected(ctx, result.RowsAffected(), nil); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM hosted_plan_allowances WHERE organization_id=$1 AND plan_id=$2 AND plan_version=$3`, s.organization, plan.ID, plan.Version); err != nil {
+	if _, err := s.db.Exec(ctx, `DELETE FROM hosted_plan_allowances WHERE organization_id=$1 AND plan_id=$2 AND plan_version=$3`, s.organization, plan.ID, plan.Version); err != nil {
 		return mapError(ctx, err)
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM hosted_plan_features WHERE organization_id=$1 AND plan_id=$2 AND plan_version=$3`, s.organization, plan.ID, plan.Version); err != nil {
+	if _, err := s.db.Exec(ctx, `DELETE FROM hosted_plan_features WHERE organization_id=$1 AND plan_id=$2 AND plan_version=$3`, s.organization, plan.ID, plan.Version); err != nil {
 		return mapError(ctx, err)
 	}
 	return s.createBillingPlanContents(ctx, plan)
 }
 
 func (s *session) SetBillingPlanRuntime(ctx context.Context, ref billingstore.PlanReference, runtimeID string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE hosted_plans SET runtime_id=$1 WHERE organization_id=$2 AND id=$3 AND version=$4`, runtimeID, s.organization, ref.ID, ref.Version)
+	_, err := s.db.Exec(ctx, `UPDATE hosted_plans SET runtime_id=$1 WHERE organization_id=$2 AND id=$3 AND version=$4`, runtimeID, s.organization, ref.ID, ref.Version)
 	return mapError(ctx, err)
 }
 
@@ -124,10 +124,10 @@ func (s *session) SetBillingAssignment(ctx context.Context, row billingstore.Ass
 		return err
 	}
 	var subscription *string
-	var version sql.NullInt64
+	var version pgtype.Int8
 	if row.Subscription != nil {
 		subscription = &row.Subscription.ID
-		version = sql.NullInt64{Int64: row.Subscription.Version, Valid: true}
+		version = pgtype.Int8{Int64: row.Subscription.Version, Valid: true}
 	}
 	if expected == 0 {
 		return mapError(ctx, s.queries.CreateBillingAssignment(ctx, pgquery.CreateBillingAssignmentParams{OrganizationID: s.organization, BaseID: row.Base.ID, BaseVersion: row.Base.Version, SubscriptionID: subscription, SubscriptionVersion: version, SubscriptionExpiresAt: row.ExpiresAt}))

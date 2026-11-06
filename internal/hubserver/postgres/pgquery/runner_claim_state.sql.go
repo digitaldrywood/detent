@@ -24,11 +24,11 @@ type RemoveRunnerIdentityParams struct {
 }
 
 func (q *Queries) RemoveRunnerIdentity(ctx context.Context, arg RemoveRunnerIdentityParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, removeRunnerIdentity, arg.RemovedAt, arg.OrganizationID, arg.RunnerID)
+	result, err := q.db.Exec(ctx, removeRunnerIdentity, arg.RemovedAt, arg.OrganizationID, arg.RunnerID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const runnerClaimSlots = `-- name: RunnerClaimSlots :many
@@ -51,7 +51,7 @@ type RunnerClaimSlotsRow struct {
 }
 
 func (q *Queries) RunnerClaimSlots(ctx context.Context, arg RunnerClaimSlotsParams) ([]RunnerClaimSlotsRow, error) {
-	rows, err := q.db.QueryContext(ctx, runnerClaimSlots, arg.OrganizationID, arg.MachineID, arg.Now)
+	rows, err := q.db.Query(ctx, runnerClaimSlots, arg.OrganizationID, arg.MachineID, arg.Now)
 	if err != nil {
 		return nil, err
 	}
@@ -63,9 +63,6 @@ func (q *Queries) RunnerClaimSlots(ctx context.Context, arg RunnerClaimSlotsPara
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -105,7 +102,7 @@ type RunnerReleasedAttemptCandidatesRow struct {
 }
 
 func (q *Queries) RunnerReleasedAttemptCandidates(ctx context.Context, arg RunnerReleasedAttemptCandidatesParams) ([]RunnerReleasedAttemptCandidatesRow, error) {
-	rows, err := q.db.QueryContext(ctx, runnerReleasedAttemptCandidates,
+	rows, err := q.db.Query(ctx, runnerReleasedAttemptCandidates,
 		arg.ProjectID,
 		arg.RunnerID,
 		arg.MachineID,
@@ -124,9 +121,6 @@ func (q *Queries) RunnerReleasedAttemptCandidates(ctx context.Context, arg Runne
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

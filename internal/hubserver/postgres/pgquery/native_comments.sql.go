@@ -27,7 +27,7 @@ type CommentScanThroughParams struct {
 }
 
 func (q *Queries) CommentScanThrough(ctx context.Context, arg CommentScanThroughParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, commentScanThrough, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
+	row := q.db.QueryRow(ctx, commentScanThrough, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
 	var record_id int64
 	err := row.Scan(&record_id)
 	return record_id, err
@@ -98,7 +98,7 @@ type CreateCommentParams struct {
 }
 
 func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) (NativeComment, error) {
-	row := q.db.QueryRowContext(ctx, createComment,
+	row := q.db.QueryRow(ctx, createComment,
 		arg.ImportedID,
 		arg.CreatedAt,
 		arg.UpdatedAt,
@@ -158,7 +158,7 @@ type DeleteCommentParams struct {
 }
 
 func (q *Queries) DeleteComment(ctx context.Context, arg DeleteCommentParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, deleteComment,
+	result, err := q.db.Exec(ctx, deleteComment,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -167,7 +167,7 @@ func (q *Queries) DeleteComment(ctx context.Context, arg DeleteCommentParams) (i
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const getComment = `-- name: GetComment :one
@@ -186,7 +186,7 @@ type GetCommentParams struct {
 }
 
 func (q *Queries) GetComment(ctx context.Context, arg GetCommentParams) (NativeComment, error) {
-	row := q.db.QueryRowContext(ctx, getComment,
+	row := q.db.QueryRow(ctx, getComment,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -237,7 +237,7 @@ type GetCommentCursorRow struct {
 }
 
 func (q *Queries) GetCommentCursor(ctx context.Context, arg GetCommentCursorParams) (GetCommentCursorRow, error) {
-	row := q.db.QueryRowContext(ctx, getCommentCursor,
+	row := q.db.QueryRow(ctx, getCommentCursor,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -266,7 +266,7 @@ type ListLegacyCommentsParams struct {
 }
 
 func (q *Queries) ListLegacyComments(ctx context.Context, arg ListLegacyCommentsParams) ([]NativeComment, error) {
-	rows, err := q.db.QueryContext(ctx, listLegacyComments,
+	rows, err := q.db.Query(ctx, listLegacyComments,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -304,9 +304,6 @@ func (q *Queries) ListLegacyComments(ctx context.Context, arg ListLegacyComments
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -332,7 +329,7 @@ type PageCommentsParams struct {
 }
 
 func (q *Queries) PageComments(ctx context.Context, arg PageCommentsParams) ([]NativeComment, error) {
-	rows, err := q.db.QueryContext(ctx, pageComments,
+	rows, err := q.db.Query(ctx, pageComments,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -371,9 +368,6 @@ func (q *Queries) PageComments(ctx context.Context, arg PageCommentsParams) ([]N
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -399,7 +393,7 @@ type ScanCommentsParams struct {
 }
 
 func (q *Queries) ScanComments(ctx context.Context, arg ScanCommentsParams) ([]NativeComment, error) {
-	rows, err := q.db.QueryContext(ctx, scanComments,
+	rows, err := q.db.Query(ctx, scanComments,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -437,9 +431,6 @@ func (q *Queries) ScanComments(ctx context.Context, arg ScanCommentsParams) ([]N
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -483,7 +474,7 @@ type UpdateCommentParams struct {
 }
 
 func (q *Queries) UpdateComment(ctx context.Context, arg UpdateCommentParams) (NativeComment, error) {
-	row := q.db.QueryRowContext(ctx, updateComment,
+	row := q.db.QueryRow(ctx, updateComment,
 		arg.Sequence,
 		arg.BodyObjectKey,
 		arg.ActorKind,

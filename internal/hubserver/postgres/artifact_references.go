@@ -2,9 +2,10 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"slices"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -54,7 +55,7 @@ func (s *session) AppendArtifactReference(ctx context.Context, reference artifac
 		Sha256: reference.SHA256, Kind: reference.Kind, State: reference.State, Availability: reference.Availability,
 		Bytes: reference.Bytes, Objects: int32(reference.Objects), ExpiresAt: recordTime(reference.ExpiresAt), ObservedAt: recordTime(reference.ObservedAt),
 	})
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		stored, readErr := s.queries.ArtifactReferenceGet(ctx, pgquery.ArtifactReferenceGetParams{OrganizationID: s.organization, ProjectID: tracker.ProjectID(reference.ProjectID), WorkItemID: reference.WorkItemID, ArtifactID: reference.ArtifactID, Revision: reference.Revision})
 		if readErr == nil {
 			current := artifactReferenceRecord(stored)

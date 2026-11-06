@@ -110,7 +110,7 @@ func TestCostImportResumesAndPreservesCurrentAndHistoricalCosts(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = tx.Rollback() }()
-			if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, organization); err != nil {
+			if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, organization); err != nil {
 				t.Fatal(err)
 			}
 			var revisions, older int

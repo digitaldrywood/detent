@@ -19,7 +19,7 @@ func (s *session) RunnerHostMetrics(ctx context.Context, runnerID string, from, 
 	if runnerID == "" || from.IsZero() || to.IsZero() || !from.Before(to) || to.Sub(from) > maxRunnerHostHistoryHours*time.Hour {
 		return nil, corestore.ErrInvalidPage
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT hour,segment_id,partial,sample_count,logical_cores,memory_total_bytes,memory_available_min_bytes,memory_available_sum_bytes,memory_sample_count,swap_used_max_bytes,swap_sample_count,psi_some_avg10_sum,psi_some_sample_count,psi_full_avg10_sum,psi_full_sample_count,pressure_warn_count,pressure_critical_count,pressure_sample_count,cpu_busy_sum_percent,cpu_busy_max_percent,cpu_sample_count,load1_max,load_sample_count,disk_free_min_bytes,disk_total_min_bytes,disk_sample_count FROM runner_host_metric_segments WHERE organization_id=$1 AND runner_id=$2 AND hour >= $3 AND hour < $4 ORDER BY hour,segment_id LIMIT $5`, s.organization, runnerID, from.UTC(), to.UTC(), maxRunnerHostSegmentsPerHour*maxRunnerHostHistoryHours+1)
+	rows, err := s.db.Query(ctx, `SELECT hour,segment_id,partial,sample_count,logical_cores,memory_total_bytes,memory_available_min_bytes,memory_available_sum_bytes,memory_sample_count,swap_used_max_bytes,swap_sample_count,psi_some_avg10_sum,psi_some_sample_count,psi_full_avg10_sum,psi_full_sample_count,pressure_warn_count,pressure_critical_count,pressure_sample_count,cpu_busy_sum_percent,cpu_busy_max_percent,cpu_sample_count,load1_max,load_sample_count,disk_free_min_bytes,disk_total_min_bytes,disk_sample_count FROM runner_host_metric_segments WHERE organization_id=$1 AND runner_id=$2 AND hour >= $3 AND hour < $4 ORDER BY hour,segment_id LIMIT $5`, s.organization, runnerID, from.UTC(), to.UTC(), maxRunnerHostSegmentsPerHour*maxRunnerHostHistoryHours+1)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -87,24 +87,24 @@ func (s *session) AppendRunnerHostMetricSegments(ctx context.Context, runnerID s
 			continue
 		}
 		lock := runnerHostMetricLockKey(s.organization, runnerID, segment.Hour)
-		if _, err := s.db.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, lock); err != nil {
+		if _, err := s.db.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, lock); err != nil {
 			return nil, mapError(ctx, err)
 		}
 		var exists bool
-		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM runner_host_metric_segments WHERE organization_id=$1 AND runner_id=$2 AND hour=$3 AND segment_id=$4)`, s.organization, runnerID, segment.Hour, segment.SegmentID).Scan(&exists); err != nil {
+		if err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM runner_host_metric_segments WHERE organization_id=$1 AND runner_id=$2 AND hour=$3 AND segment_id=$4)`, s.organization, runnerID, segment.Hour, segment.SegmentID).Scan(&exists); err != nil {
 			return nil, mapError(ctx, err)
 		}
 		if exists {
 			continue
 		}
 		var count int
-		if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM runner_host_metric_segments WHERE organization_id=$1 AND runner_id=$2 AND hour=$3`, s.organization, runnerID, segment.Hour).Scan(&count); err != nil {
+		if err := s.db.QueryRow(ctx, `SELECT count(*) FROM runner_host_metric_segments WHERE organization_id=$1 AND runner_id=$2 AND hour=$3`, s.organization, runnerID, segment.Hour).Scan(&count); err != nil {
 			return nil, mapError(ctx, err)
 		}
 		if count >= maxRunnerHostSegmentsPerHour {
 			continue
 		}
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO runner_host_metric_segments (organization_id,runner_id,hour,segment_id,partial,sample_count,logical_cores,memory_total_bytes,memory_available_min_bytes,memory_available_sum_bytes,memory_sample_count,swap_used_max_bytes,swap_sample_count,psi_some_avg10_sum,psi_some_sample_count,psi_full_avg10_sum,psi_full_sample_count,pressure_warn_count,pressure_critical_count,pressure_sample_count,cpu_busy_sum_percent,cpu_busy_max_percent,cpu_sample_count,load1_max,load_sample_count,disk_free_min_bytes,disk_total_min_bytes,disk_sample_count) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`, s.organization, runnerID, segment.Hour, segment.SegmentID, segment.Partial, int64(segment.SampleCount), segment.LogicalCores, int64(segment.MemoryTotalBytes), int64(segment.MemoryAvailableMinBytes), int64(segment.MemoryAvailableSumBytes), int64(segment.MemorySampleCount), int64(segment.SwapUsedMaxBytes), int64(segment.SwapSampleCount), segment.PSISomeAvg10Sum, int64(segment.PSISomeSampleCount), segment.PSIFullAvg10Sum, int64(segment.PSIFullSampleCount), int64(segment.PressureWarnCount), int64(segment.PressureCriticalCount), int64(segment.PressureSampleCount), segment.CPUBusySumPercent, segment.CPUBusyMaxPercent, int64(segment.CPUSampleCount), segment.Load1Max, int64(segment.LoadSampleCount), int64(segment.DiskFreeMinBytes), int64(segment.DiskTotalMinBytes), int64(segment.DiskSampleCount)); err != nil {
+		if _, err := s.db.Exec(ctx, `INSERT INTO runner_host_metric_segments (organization_id,runner_id,hour,segment_id,partial,sample_count,logical_cores,memory_total_bytes,memory_available_min_bytes,memory_available_sum_bytes,memory_sample_count,swap_used_max_bytes,swap_sample_count,psi_some_avg10_sum,psi_some_sample_count,psi_full_avg10_sum,psi_full_sample_count,pressure_warn_count,pressure_critical_count,pressure_sample_count,cpu_busy_sum_percent,cpu_busy_max_percent,cpu_sample_count,load1_max,load_sample_count,disk_free_min_bytes,disk_total_min_bytes,disk_sample_count) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`, s.organization, runnerID, segment.Hour, segment.SegmentID, segment.Partial, int64(segment.SampleCount), segment.LogicalCores, int64(segment.MemoryTotalBytes), int64(segment.MemoryAvailableMinBytes), int64(segment.MemoryAvailableSumBytes), int64(segment.MemorySampleCount), int64(segment.SwapUsedMaxBytes), int64(segment.SwapSampleCount), segment.PSISomeAvg10Sum, int64(segment.PSISomeSampleCount), segment.PSIFullAvg10Sum, int64(segment.PSIFullSampleCount), int64(segment.PressureWarnCount), int64(segment.PressureCriticalCount), int64(segment.PressureSampleCount), segment.CPUBusySumPercent, segment.CPUBusyMaxPercent, int64(segment.CPUSampleCount), segment.Load1Max, int64(segment.LoadSampleCount), int64(segment.DiskFreeMinBytes), int64(segment.DiskTotalMinBytes), int64(segment.DiskSampleCount)); err != nil {
 			return nil, mapError(ctx, err)
 		}
 	}
@@ -152,11 +152,11 @@ func validRunnerHostMetricSegment(segment hostmetrics.Summary) bool {
 
 func (s *session) RunnerAdmissionObservation(ctx context.Context, runnerID string, project tracker.ProjectID) (tracker.NativeAdmissionObservation, error) {
 	var row tracker.NativeAdmissionObservation
-	err := s.db.QueryRowContext(ctx, `SELECT runner_revision,received_at,observed_at,policy_id,last_refresh_at,refresh_duration FROM runner_native_admission_observations WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, s.organization, runnerID, project).Scan(&row.RunnerRevision, &row.ReceivedAt, &row.Context.ObservedAt, &row.Context.PolicyID, &row.Context.LastRefreshAt, &row.Context.RefreshDuration)
+	err := s.db.QueryRow(ctx, `SELECT runner_revision,received_at,observed_at,policy_id,last_refresh_at,refresh_duration FROM runner_native_admission_observations WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, s.organization, runnerID, project).Scan(&row.RunnerRevision, &row.ReceivedAt, &row.Context.ObservedAt, &row.Context.PolicyID, &row.Context.LastRefreshAt, &row.Context.RefreshDuration)
 	if err != nil {
 		return tracker.NativeAdmissionObservation{}, mapError(ctx, err)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT kind,value FROM runner_native_admission_selectors WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3 ORDER BY kind,position LIMIT $4`, s.organization, runnerID, project, 161)
+	rows, err := s.db.Query(ctx, `SELECT kind,value FROM runner_native_admission_selectors WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3 ORDER BY kind,position LIMIT $4`, s.organization, runnerID, project, 161)
 	if err != nil {
 		return tracker.NativeAdmissionObservation{}, mapError(ctx, err)
 	}
@@ -196,10 +196,10 @@ func (s *session) ReplaceRunnerAdmissionObservation(ctx context.Context, runnerI
 	if runnerID == "" || project == "" || row.RunnerRevision < 1 || row.ReceivedAt.IsZero() || row.Context.Validate() != nil {
 		return runnerstore.ErrInvalidRecord
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO runner_native_admission_observations (organization_id,runner_id,project_id,runner_revision,received_at,observed_at,policy_id,last_refresh_at,refresh_duration) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (organization_id,runner_id,project_id) DO UPDATE SET runner_revision=EXCLUDED.runner_revision,received_at=EXCLUDED.received_at,observed_at=EXCLUDED.observed_at,policy_id=EXCLUDED.policy_id,last_refresh_at=EXCLUDED.last_refresh_at,refresh_duration=EXCLUDED.refresh_duration`, s.organization, runnerID, project, row.RunnerRevision, row.ReceivedAt, row.Context.ObservedAt, row.Context.PolicyID, row.Context.LastRefreshAt, row.Context.RefreshDuration); err != nil {
+	if _, err := s.db.Exec(ctx, `INSERT INTO runner_native_admission_observations (organization_id,runner_id,project_id,runner_revision,received_at,observed_at,policy_id,last_refresh_at,refresh_duration) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (organization_id,runner_id,project_id) DO UPDATE SET runner_revision=EXCLUDED.runner_revision,received_at=EXCLUDED.received_at,observed_at=EXCLUDED.observed_at,policy_id=EXCLUDED.policy_id,last_refresh_at=EXCLUDED.last_refresh_at,refresh_duration=EXCLUDED.refresh_duration`, s.organization, runnerID, project, row.RunnerRevision, row.ReceivedAt, row.Context.ObservedAt, row.Context.PolicyID, row.Context.LastRefreshAt, int64(row.Context.RefreshDuration)); err != nil {
 		return mapError(ctx, err)
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM runner_native_admission_selectors WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, s.organization, runnerID, project); err != nil {
+	if _, err := s.db.Exec(ctx, `DELETE FROM runner_native_admission_selectors WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, s.organization, runnerID, project); err != nil {
 		return mapError(ctx, err)
 	}
 	selectors := []struct {
@@ -208,7 +208,7 @@ func (s *session) ReplaceRunnerAdmissionObservation(ctx context.Context, runnerI
 	}{{"workflow", row.Context.WorkflowStates}, {"author", row.Context.Authors}, {"assignee", row.Context.Assignees}, {"include", row.Context.LabelInclude}, {"exclude", row.Context.LabelExclude}}
 	for _, selector := range selectors {
 		for position, value := range selector.values {
-			if _, err := s.db.ExecContext(ctx, `INSERT INTO runner_native_admission_selectors (organization_id,runner_id,project_id,kind,position,value) VALUES ($1,$2,$3,$4,$5,$6)`, s.organization, runnerID, project, selector.kind, position, value); err != nil {
+			if _, err := s.db.Exec(ctx, `INSERT INTO runner_native_admission_selectors (organization_id,runner_id,project_id,kind,position,value) VALUES ($1,$2,$3,$4,$5,$6)`, s.organization, runnerID, project, selector.kind, position, value); err != nil {
 				return mapError(ctx, err)
 			}
 		}
@@ -220,6 +220,6 @@ func (s *session) PruneRunnerHostMetrics(ctx context.Context, cutoff time.Time, 
 	if cutoff.IsZero() || limit < 1 || limit > runnerstore.MaxRunnerHostPruneBatch {
 		return corestore.ErrInvalidPage
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM runner_host_metric_segments WHERE ctid IN (SELECT ctid FROM runner_host_metric_segments WHERE organization_id=$1 AND hour <= $2 ORDER BY hour,runner_id,segment_id LIMIT $3)`, s.organization, cutoff.UTC(), limit)
+	_, err := s.db.Exec(ctx, `DELETE FROM runner_host_metric_segments WHERE ctid IN (SELECT ctid FROM runner_host_metric_segments WHERE organization_id=$1 AND hour <= $2 ORDER BY hour,runner_id,segment_id LIMIT $3)`, s.organization, cutoff.UTC(), limit)
 	return mapError(ctx, err)
 }

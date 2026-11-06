@@ -169,11 +169,11 @@ func (s *Service) platformOrganizationJSON(c echo.Context) (resultErr error) {
 	}
 	detail := platformTenantDetail{Events: []platformOrganizationEvent{}, Unavailable: []string{}, CSRF: cloudassert.CSRFToken(session.CSRFSecret, ""), CanGrant: s.entitlementAdministrator(ctx, session), CanResume: s.sessionPlatformRole(ctx, session) == "admin" && s.config.Allocation != nil && organization.Managed && provisioningRetryable(organization)}
 	item := &detail.Organization
-	err = s.registry.store.db.QueryRowContext(ctx, "SELECT id,name,state,step,attempts,error_code,error_detail,managed,creator_email,created_at,updated_at FROM organizations WHERE id = ?", id).Scan(&item.ID, &item.Name, &item.State, &item.Step, &item.Attempts, &item.ErrorCode, &item.ErrorDetail, &item.Managed, &item.CreatorEmail, &item.CreatedAt, &item.UpdatedAt)
+	err = s.registry.store.db.QueryRowContext(ctx, "SELECT id,name,state,step,attempts,error_code,error_detail,managed,creator_email,created_at,updated_at FROM platform.organizations WHERE id = $1", id).Scan(&item.ID, &item.Name, &item.State, &item.Step, &item.Attempts, &item.ErrorCode, &item.ErrorDetail, &item.Managed, &item.CreatorEmail, &item.CreatedAt, &item.UpdatedAt)
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "registry_unavailable", "message": "The organization registry is temporarily unavailable"})
 	}
-	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT event,generation,recorded_at FROM organization_events WHERE organization_id = ? ORDER BY recorded_at,id", id)
+	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT event,generation,recorded_at FROM platform.organization_events WHERE organization_id = $1 ORDER BY recorded_at,id", id)
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "registry_unavailable", "message": "The provisioning timeline is temporarily unavailable"})
 	}
@@ -217,7 +217,7 @@ func (s *Service) platformOrganizationJSON(c echo.Context) (resultErr error) {
 	}
 	if s.config.Billing != nil {
 		var customer string
-		err := s.registry.store.db.QueryRowContext(ctx, "SELECT customer_id FROM billing_customers WHERE organization_id = ? AND mode = ? AND account_id = ?", id, s.config.Billing.Mode, s.config.Billing.AccountID).Scan(&customer)
+		err := s.registry.store.db.QueryRowContext(ctx, "SELECT customer_id FROM platform.billing_customers WHERE organization_id = $1 AND mode = $2 AND account_id = $3", id, s.config.Billing.Mode, s.config.Billing.AccountID).Scan(&customer)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}

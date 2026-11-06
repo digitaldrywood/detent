@@ -25,7 +25,7 @@ type DeleteConversationRecordParams struct {
 }
 
 func (q *Queries) DeleteConversationRecord(ctx context.Context, arg DeleteConversationRecordParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, deleteConversationRecord,
+	result, err := q.db.Exec(ctx, deleteConversationRecord,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ID,
@@ -34,7 +34,7 @@ func (q *Queries) DeleteConversationRecord(ctx context.Context, arg DeleteConver
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const workItemConversationReferences = `-- name: WorkItemConversationReferences :many
@@ -63,7 +63,7 @@ type WorkItemConversationReferencesRow struct {
 }
 
 func (q *Queries) WorkItemConversationReferences(ctx context.Context, arg WorkItemConversationReferencesParams) ([]WorkItemConversationReferencesRow, error) {
-	rows, err := q.db.QueryContext(ctx, workItemConversationReferences,
+	rows, err := q.db.Query(ctx, workItemConversationReferences,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.TargetID,
@@ -87,9 +87,6 @@ func (q *Queries) WorkItemConversationReferences(ctx context.Context, arg WorkIt
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

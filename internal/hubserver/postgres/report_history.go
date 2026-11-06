@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 
-	"github.com/lib/pq"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -30,7 +28,7 @@ func (s *session) reportQueryArgs(query reportstore.OverviewQuery) ([]any, error
 		}
 		projects[i] = string(p)
 	}
-	return []any{s.organization, pq.Array(projects), query.Principal, query.From.UTC(), query.To.UTC(), pq.Array(query.Filter.Types), pq.Array(query.Filter.Priorities), pq.Array(query.Filter.FiledBy), pq.Array(query.Filter.Labels), pq.Array(query.Filter.Runners), query.Limit + 1, pq.Array(query.Filter.Models), pq.Array(query.Filter.Stages)}, nil
+	return []any{s.organization, projects, query.Principal, query.From.UTC(), query.To.UTC(), query.Filter.Types, query.Filter.Priorities, query.Filter.FiledBy, query.Filter.Labels, query.Filter.Runners, query.Limit + 1, query.Filter.Models, query.Filter.Stages}, nil
 }
 
 func (s *session) ReadHistory(ctx context.Context, query reportstore.OverviewQuery) ([]reportstore.ProjectHistory, error) {
@@ -44,7 +42,7 @@ func (s *session) ReadHistory(ctx context.Context, query reportstore.OverviewQue
 		projects[id] = i
 		out[i] = reportstore.ProjectHistory{ProjectID: id, States: []tracker.NativeState{}, Issues: []reportstore.HistoryIssue{}}
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT project_id,name,terminal,dispatchable FROM project_workflow_states WHERE organization_id=$1 AND project_id=ANY($2::text[]) ORDER BY project_id,board_rank LIMIT 5001`, args[0], args[1])
+	rows, err := s.db.Query(ctx, `SELECT project_id,name,terminal,dispatchable FROM project_workflow_states WHERE organization_id=$1 AND project_id=ANY($2::text[]) ORDER BY project_id,board_rank LIMIT 5001`, args[0], args[1])
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -59,13 +57,13 @@ func (s *session) ReadHistory(ctx context.Context, query reportstore.OverviewQue
 		stateCount++
 		out[projects[project]].States = append(out[projects[project]].States, state)
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, mapError(ctx, err)
 	}
 	if stateCount > 5000 {
 		return nil, reportstore.ErrPopulationExceeded
 	}
-	rows, err = s.db.QueryContext(ctx, `SELECT i.project_id,i.native_id,i.created_at,coalesce(
+	rows, err = s.db.Query(ctx, `SELECT i.project_id,i.native_id,i.created_at,coalesce(
 (SELECT e.from_state FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' ORDER BY e.sequence LIMIT 1),
 CASE WHEN EXISTS(SELECT 1 FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='issue.created') THEN i.workflow_state_name END,'')
 FROM issues i LEFT JOIN project_workflow_states ws ON ws.organization_id=i.organization_id AND ws.project_id=i.project_id AND ws.name=i.workflow_state_name
@@ -90,7 +88,7 @@ ORDER BY i.project_id,i.native_id LIMIT $11`, args...)
 		out[index].Issues = append(out[index].Issues, issue)
 		ids = append(ids, string(issue.WorkItemID))
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, mapError(ctx, err)
 	}
 	if len(ids) > query.Limit {
@@ -100,10 +98,10 @@ ORDER BY i.project_id,i.native_id LIMIT $11`, args...)
 		return out, nil
 	}
 	eventLimit := min(query.Limit*100, 100000)
-	rows, err = s.db.QueryContext(ctx, `SELECT e.work_item_id,e.id,e.version_id,e.recorded_at,e.type,e.from_state,e.to_state,coalesce(f.rework_class,''),coalesce(f.rework_kind,'')
+	rows, err = s.db.Query(ctx, `SELECT e.work_item_id,e.id,e.version_id,e.recorded_at,e.type,e.from_state,e.to_state,coalesce(f.rework_class,''),coalesce(f.rework_kind,'')
 FROM collaboration_events e LEFT JOIN report_event_facts f ON f.organization_id=e.organization_id AND f.event_id=e.id
 WHERE e.organization_id=$1 AND e.work_item_id=ANY($2::text[]) AND e.recorded_at<$3 AND e.type IN ('workflow.transitioned','scheduler.decision')
-ORDER BY e.project_id,e.work_item_id,e.sequence LIMIT $4`, s.organization, pq.Array(ids), query.To.UTC(), eventLimit+1)
+ORDER BY e.project_id,e.work_item_id,e.sequence LIMIT $4`, s.organization, ids, query.To.UTC(), eventLimit+1)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -119,7 +117,7 @@ ORDER BY e.project_id,e.work_item_id,e.sequence LIMIT $4`, s.organization, pq.Ar
 		out[location.project].Issues[location.issue].Events = append(out[location.project].Issues[location.issue].Events, event)
 		count++
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, mapError(ctx, err)
 	}
 	if count > eventLimit {

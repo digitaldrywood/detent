@@ -42,7 +42,7 @@ func NewTenantGuard(relations []string, report func(string)) *TenantGuard {
 	}
 	pattern := "a^"
 	if len(names) > 0 {
-		pattern = `(?i)\b(` + strings.Join(names, "|") + `)\b`
+		pattern = `(?i)\b(?:FROM|JOIN|UPDATE|INTO|TABLE)\s+(?:public\.)?"?(` + strings.Join(names, "|") + `)\b`
 	}
 	return &TenantGuard{tenants: make(map[*pgx.Conn]string), failed: make(map[*pgx.Conn]bool), protected: regexp.MustCompile(pattern), report: report}
 }

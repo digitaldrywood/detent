@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -10,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -91,12 +90,12 @@ func (r *Repository) ImportCoreRunnerEnrollment(ctx context.Context, record Core
 		if err != nil {
 			return err
 		}
-		_, err = s.db.ExecContext(ctx, `INSERT INTO runner_enrollments (organization_id,id,runner_id,machine_id,token_hash,scope,shared_machine,operations,created_at,expires_at,created_by,redeemed_at,revoked_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (organization_id,id) DO NOTHING`, row.OrganizationID, row.ID, row.RunnerID, row.MachineID, row.TokenHash, row.Scope, row.SharedMachine, pq.Array(row.Operations), recordTime(row.CreatedAt), recordTime(row.ExpiresAt), row.CreatedBy, nullableCoreImportTime(row.RedeemedAt), nullableCoreImportTime(row.RevokedAt))
+		_, err = s.db.Exec(ctx, `INSERT INTO runner_enrollments (organization_id,id,runner_id,machine_id,token_hash,scope,shared_machine,operations,created_at,expires_at,created_by,redeemed_at,revoked_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (organization_id,id) DO NOTHING`, row.OrganizationID, row.ID, row.RunnerID, row.MachineID, row.TokenHash, row.Scope, row.SharedMachine, row.Operations, recordTime(row.CreatedAt), recordTime(row.ExpiresAt), row.CreatedBy, nullableCoreImportTime(row.RedeemedAt), nullableCoreImportTime(row.RevokedAt))
 		if err != nil {
 			return mapError(ctx, err)
 		}
 		for _, projectID := range row.ProjectIDs {
-			if _, err := s.db.ExecContext(ctx, `INSERT INTO runner_enrollment_projects (organization_id,enrollment_id,project_id) VALUES ($1,$2,$3) ON CONFLICT (organization_id,enrollment_id,project_id) DO NOTHING`, row.OrganizationID, row.ID, projectID); err != nil {
+			if _, err := s.db.Exec(ctx, `INSERT INTO runner_enrollment_projects (organization_id,enrollment_id,project_id) VALUES ($1,$2,$3) ON CONFLICT (organization_id,enrollment_id,project_id) DO NOTHING`, row.OrganizationID, row.ID, projectID); err != nil {
 				return mapError(ctx, err)
 			}
 		}
@@ -131,7 +130,7 @@ func (r *Repository) ImportCoreRunnerIdentity(ctx context.Context, record CoreRu
 			}
 			if row.CapacityConfig != nil {
 				config := row.CapacityConfig
-				if _, err := s.db.ExecContext(ctx, `UPDATE runner_identities SET capacity_config_revision=$3,capacity_config_local_limit=$4,capacity_config_client_limit=$5,capacity_config_runtime_limit=$6,capacity_config_manageable=$7,capacity_config_constraint=$8,capacity_config_observed_at=$9 WHERE organization_id=$1 AND runner_id=$2`, row.OrganizationID, row.RunnerID, config.Revision, config.LocalLimit, config.ClientLimit, config.RuntimeLimit, config.Manageable, config.Constraint, recordTime(config.ObservedAt)); err != nil {
+				if _, err := s.db.Exec(ctx, `UPDATE runner_identities SET capacity_config_revision=$3,capacity_config_local_limit=$4,capacity_config_client_limit=$5,capacity_config_runtime_limit=$6,capacity_config_manageable=$7,capacity_config_constraint=$8,capacity_config_observed_at=$9 WHERE organization_id=$1 AND runner_id=$2`, row.OrganizationID, row.RunnerID, config.Revision, config.LocalLimit, config.ClientLimit, config.RuntimeLimit, config.Manageable, config.Constraint, recordTime(config.ObservedAt)); err != nil {
 					return mapError(ctx, err)
 				}
 			}
@@ -160,7 +159,7 @@ func (r *Repository) ImportCoreRunnerLeaseAssignment(ctx context.Context, record
 		if err != nil {
 			return err
 		}
-		_, err = s.db.ExecContext(ctx, `INSERT INTO runner_lease_assignments (organization_id,lease_id,runner_id,assigned_at) VALUES ($1,$2,$3,$4) ON CONFLICT (organization_id,lease_id) DO NOTHING`, row.OrganizationID, row.LeaseID, row.RunnerID, recordTime(row.AssignedAt))
+		_, err = s.db.Exec(ctx, `INSERT INTO runner_lease_assignments (organization_id,lease_id,runner_id,assigned_at) VALUES ($1,$2,$3,$4) ON CONFLICT (organization_id,lease_id) DO NOTHING`, row.OrganizationID, row.LeaseID, row.RunnerID, recordTime(row.AssignedAt))
 		if err != nil {
 			return mapError(ctx, err)
 		}
@@ -170,7 +169,7 @@ func (r *Repository) ImportCoreRunnerLeaseAssignment(ctx context.Context, record
 			return err
 		}
 		var assignedAt time.Time
-		if err := s.db.QueryRowContext(ctx, `SELECT assigned_at FROM runner_lease_assignments WHERE organization_id=$1 AND lease_id=$2`, row.OrganizationID, row.LeaseID).Scan(&assignedAt); err != nil {
+		if err := s.db.QueryRow(ctx, `SELECT assigned_at FROM runner_lease_assignments WHERE organization_id=$1 AND lease_id=$2`, row.OrganizationID, row.LeaseID).Scan(&assignedAt); err != nil {
 			return mapError(ctx, err)
 		}
 		if current.RunnerID != row.RunnerID || !assignedAt.Equal(recordTime(row.AssignedAt)) {
@@ -193,13 +192,13 @@ func (r *Repository) ImportCoreRunnerIdentityEvent(ctx context.Context, record C
 		if err != nil {
 			return err
 		}
-		_, err = s.db.ExecContext(ctx, `INSERT INTO runner_identity_events (organization_id,import_source_id,runner_id,actor_id,kind,occurred_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (organization_id,import_source_id) WHERE import_source_id IS NOT NULL DO NOTHING`, row.OrganizationID, record.SourceID, row.RunnerID, row.ActorID, row.Kind, recordTime(row.OccurredAt))
+		_, err = s.db.Exec(ctx, `INSERT INTO runner_identity_events (organization_id,import_source_id,runner_id,actor_id,kind,occurred_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (organization_id,import_source_id) WHERE import_source_id IS NOT NULL DO NOTHING`, row.OrganizationID, record.SourceID, row.RunnerID, row.ActorID, row.Kind, recordTime(row.OccurredAt))
 		if err != nil {
 			return mapError(ctx, err)
 		}
 		var current runnerstore.Event
 		var occurredAt time.Time
-		err = s.db.QueryRowContext(ctx, `SELECT organization_id,runner_id,actor_id,kind,occurred_at FROM runner_identity_events WHERE organization_id=$1 AND import_source_id=$2`, row.OrganizationID, record.SourceID).Scan(&current.OrganizationID, &current.RunnerID, &current.ActorID, &current.Kind, &occurredAt)
+		err = s.db.QueryRow(ctx, `SELECT organization_id,runner_id,actor_id,kind,occurred_at FROM runner_identity_events WHERE organization_id=$1 AND import_source_id=$2`, row.OrganizationID, record.SourceID).Scan(&current.OrganizationID, &current.RunnerID, &current.ActorID, &current.Kind, &occurredAt)
 		if err != nil {
 			return mapError(ctx, err)
 		}
@@ -223,17 +222,17 @@ func (r *Repository) ImportCoreWorkEvent(ctx context.Context, record CoreWorkEve
 		if err != nil {
 			return err
 		}
-		_, err = s.db.ExecContext(ctx, `INSERT INTO core_work_events (organization_id,source_id,issue_id,fencing_token,machine_id,session_id,run_id,kind,payload_json,occurred_at,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (organization_id,source_id) DO NOTHING`, record.OrganizationID, record.ID, record.IssueID, record.FencingToken, record.MachineID, record.SessionID, record.RunID, record.Kind, record.PayloadJSON, recordTime(record.OccurredAt), recordTime(record.RecordedAt))
+		_, err = s.db.Exec(ctx, `INSERT INTO core_work_events (organization_id,source_id,issue_id,fencing_token,machine_id,session_id,run_id,kind,payload_json,occurred_at,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (organization_id,source_id) DO NOTHING`, record.OrganizationID, record.ID, record.IssueID, record.FencingToken, record.MachineID, record.SessionID, record.RunID, record.Kind, record.PayloadJSON, recordTime(record.OccurredAt), recordTime(record.RecordedAt))
 		if err != nil {
 			return mapError(ctx, err)
 		}
 		var issueID int64
-		var fencing sql.NullInt64
-		var machine sql.NullString
-		var sessionID, runID sql.NullString
+		var fencing pgtype.Int8
+		var machine pgtype.Text
+		var sessionID, runID pgtype.Text
 		var kind, payload string
 		var occurred, recorded time.Time
-		if err := s.db.QueryRowContext(ctx, `SELECT issue_id,fencing_token,machine_id,session_id,run_id,kind,payload_json,occurred_at,recorded_at FROM core_work_events WHERE organization_id=$1 AND source_id=$2`, record.OrganizationID, record.ID).Scan(&issueID, &fencing, &machine, &sessionID, &runID, &kind, &payload, &occurred, &recorded); err != nil {
+		if err := s.db.QueryRow(ctx, `SELECT issue_id,fencing_token,machine_id,session_id,run_id,kind,payload_json,occurred_at,recorded_at FROM core_work_events WHERE organization_id=$1 AND source_id=$2`, record.OrganizationID, record.ID).Scan(&issueID, &fencing, &machine, &sessionID, &runID, &kind, &payload, &occurred, &recorded); err != nil {
 			return mapError(ctx, err)
 		}
 		if issueID != record.IssueID || !sameCoreOptionalInt(fencing, record.FencingToken) || !sameCoreOptionalString(machine, record.MachineID) || !sameCoreOptionalString(sessionID, record.SessionID) || !sameCoreOptionalString(runID, record.RunID) || kind != record.Kind || payload != record.PayloadJSON || !occurred.Equal(recordTime(record.OccurredAt)) || !recorded.Equal(recordTime(record.RecordedAt)) {
@@ -256,14 +255,14 @@ func (r *Repository) ImportCoreMachine(ctx context.Context, record CoreMachineIm
 		if err != nil {
 			return err
 		}
-		_, err = s.db.ExecContext(ctx, `INSERT INTO machines (organization_id,id,hostname,display_name,capacity,version,sprite_name,last_heartbeat_at,registered_at,updated_at)
+		_, err = s.db.Exec(ctx, `INSERT INTO machines (organization_id,id,hostname,display_name,capacity,version,sprite_name,last_heartbeat_at,registered_at,updated_at)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (organization_id,id) DO NOTHING`, machine.OrganizationID, machine.ID, machine.Hostname, machine.DisplayName, machine.Capacity, machine.Version, machine.SpriteName, recordTime(record.LastHeartbeatAt), recordTime(record.RegisteredAt), recordTime(record.UpdatedAt))
 		if err != nil {
 			return mapError(ctx, err)
 		}
 		var current leasestore.Machine
 		var registeredAt, heartbeatAt, updatedAt time.Time
-		err = s.db.QueryRowContext(ctx, `SELECT organization_id,id,hostname,display_name,capacity,version,sprite_name,registered_at,last_heartbeat_at,updated_at
+		err = s.db.QueryRow(ctx, `SELECT organization_id,id,hostname,display_name,capacity,version,sprite_name,registered_at,last_heartbeat_at,updated_at
 FROM machines WHERE organization_id=$1 AND id=$2`, machine.OrganizationID, machine.ID).Scan(&current.OrganizationID, &current.ID, &current.Hostname, &current.DisplayName, &current.Capacity, &current.Version, &current.SpriteName, &registeredAt, &heartbeatAt, &updatedAt)
 		if err != nil {
 			return mapError(ctx, err)
@@ -300,20 +299,20 @@ func (r *Repository) ImportCoreLease(ctx context.Context, record CoreLeaseImport
 		}
 		if !replayed {
 			var allocated int64
-			if err := s.db.QueryRowContext(ctx, `SELECT allocate_imported_lease_fencing_token($1)`, lease.FencingToken).Scan(&allocated); err != nil {
+			if err := s.db.QueryRow(ctx, `SELECT allocate_imported_lease_fencing_token($1)`, lease.FencingToken).Scan(&allocated); err != nil {
 				return mapError(ctx, err)
 			}
 			if allocated != lease.FencingToken {
 				return mutation.ErrConflict
 			}
 		}
-		_, err = s.db.ExecContext(ctx, `INSERT INTO leases (organization_id,lease_id,fencing_token,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,released_at,release_reason)
+		_, err = s.db.Exec(ctx, `INSERT INTO leases (organization_id,lease_id,fencing_token,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,released_at,release_reason)
 OVERRIDING SYSTEM VALUE VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (organization_id,lease_id) DO NOTHING`, lease.OrganizationID, lease.LeaseID, lease.FencingToken, lease.IssueID, lease.MachineID, lease.SessionID, lease.WorkItemRevision, lease.LandingCapacity, recordTime(lease.AcquiredAt), recordTime(lease.RenewedAt), recordTime(lease.ExpiresAt), nullableCoreImportTime(lease.ReleasedAt), lease.ReleaseReason)
 		if err != nil {
 			return mapError(ctx, err)
 		}
 		var current leasestore.Lease
-		err = s.db.QueryRowContext(ctx, `SELECT organization_id,lease_id,fencing_token,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,released_at,release_reason
+		err = s.db.QueryRow(ctx, `SELECT organization_id,lease_id,fencing_token,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,released_at,release_reason
 FROM leases WHERE organization_id=$1 AND lease_id=$2`, lease.OrganizationID, lease.LeaseID).Scan(&current.OrganizationID, &current.LeaseID, &current.FencingToken, &current.IssueID, &current.MachineID, &current.SessionID, &current.WorkItemRevision, &current.LandingCapacity, &current.AcquiredAt, &current.RenewedAt, &current.ExpiresAt, &current.ReleasedAt, &current.ReleaseReason)
 		if err != nil {
 			return mapError(ctx, err)
@@ -323,7 +322,7 @@ FROM leases WHERE organization_id=$1 AND lease_id=$2`, lease.OrganizationID, lea
 		}
 		if record.LeasePolicy != nil {
 			var projectID string
-			if err := s.db.QueryRowContext(ctx, `SELECT project_id FROM issues WHERE organization_id=$1 AND id=$2`, lease.OrganizationID, lease.IssueID).Scan(&projectID); err != nil {
+			if err := s.db.QueryRow(ctx, `SELECT project_id FROM issues WHERE organization_id=$1 AND id=$2`, lease.OrganizationID, lease.IssueID).Scan(&projectID); err != nil {
 				return mapError(ctx, err)
 			}
 			if projectID != string(record.LeasePolicy.ProjectID) || !record.LeasePolicy.BoundAt.Equal(recordTime(lease.AcquiredAt)) {
@@ -361,12 +360,12 @@ func (r *Repository) ImportCoreAttempt(ctx context.Context, record CoreAttemptIm
 		if _, err := checkCoreImportReceipt(ctx, s, record.Receipt); err != nil {
 			return err
 		}
-		_, err := s.db.ExecContext(ctx, `INSERT INTO native_attempt_runs (organization_id,run_id,issue_id) VALUES ($1,$2,$3) ON CONFLICT (organization_id,run_id) DO NOTHING`, attempt.OrganizationID, attempt.RunID, attempt.IssueID)
+		_, err := s.db.Exec(ctx, `INSERT INTO native_attempt_runs (organization_id,run_id,issue_id) VALUES ($1,$2,$3) ON CONFLICT (organization_id,run_id) DO NOTHING`, attempt.OrganizationID, attempt.RunID, attempt.IssueID)
 		if err != nil {
 			return mapError(ctx, err)
 		}
 		var runIssue int64
-		if err := s.db.QueryRowContext(ctx, `SELECT issue_id FROM native_attempt_runs WHERE organization_id=$1 AND run_id=$2`, attempt.OrganizationID, attempt.RunID).Scan(&runIssue); err != nil {
+		if err := s.db.QueryRow(ctx, `SELECT issue_id FROM native_attempt_runs WHERE organization_id=$1 AND run_id=$2`, attempt.OrganizationID, attempt.RunID).Scan(&runIssue); err != nil {
 			return mapError(ctx, err)
 		}
 		if runIssue != attempt.IssueID {
@@ -375,7 +374,7 @@ func (r *Repository) ImportCoreAttempt(ctx context.Context, record CoreAttemptIm
 		started := attempt.StartedAt.UTC()
 		startedSubmicro := int16(started.Nanosecond() % 1000)
 		started = started.Truncate(time.Microsecond)
-		_, err = s.db.ExecContext(ctx, `INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at)
+		_, err = s.db.Exec(ctx, `INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (organization_id,id) DO NOTHING`, attempt.OrganizationID, attempt.ID, attempt.IssueID, attempt.LeaseID, attempt.FencingToken, attempt.RunID, attempt.Sequence, attempt.Status, attempt.WorkItemRevision, attempt.DispatchGeneration, attempt.PayloadObjectKey, attempt.CheckpointObjectKey, attempt.ArtifactsObjectKey, started, startedSubmicro, recordTime(attempt.UpdatedAt))
 		if err != nil {
 			return mapError(ctx, err)
@@ -383,7 +382,7 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (org
 		var current leasestore.Attempt
 		var startedAt time.Time
 		var startedSubmicroNs int16
-		if err := s.db.QueryRowContext(ctx, `SELECT organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at
+		if err := s.db.QueryRow(ctx, `SELECT organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at
 FROM native_attempts WHERE organization_id=$1 AND id=$2`, attempt.OrganizationID, attempt.ID).Scan(&current.OrganizationID, &current.ID, &current.IssueID, &current.LeaseID, &current.FencingToken, &current.RunID, &current.Sequence, &current.Status, &current.WorkItemRevision, &current.DispatchGeneration, &current.PayloadObjectKey, &current.CheckpointObjectKey, &current.ArtifactsObjectKey, &startedAt, &startedSubmicroNs, &current.UpdatedAt); err != nil {
 			return mapError(ctx, err)
 		}
@@ -405,12 +404,12 @@ func (r *Repository) ImportCoreAttemptEvents(ctx context.Context, organization t
 			if event.Sequence <= previous || !validHexDigest(event.RequestHash) {
 				return eventstore.ErrInvalidRecord
 			}
-			_, err := s.db.ExecContext(ctx, `INSERT INTO native_attempt_events (organization_id,attempt_id,sequence,request_hash) VALUES ($1,$2,$3,$4) ON CONFLICT (organization_id,attempt_id,sequence) DO NOTHING`, organization, attemptID, event.Sequence, event.RequestHash)
+			_, err := s.db.Exec(ctx, `INSERT INTO native_attempt_events (organization_id,attempt_id,sequence,request_hash) VALUES ($1,$2,$3,$4) ON CONFLICT (organization_id,attempt_id,sequence) DO NOTHING`, organization, attemptID, event.Sequence, event.RequestHash)
 			if err != nil {
 				return mapError(ctx, err)
 			}
 			var current string
-			if err := s.db.QueryRowContext(ctx, `SELECT request_hash FROM native_attempt_events WHERE organization_id=$1 AND attempt_id=$2 AND sequence=$3`, organization, attemptID, event.Sequence).Scan(&current); err != nil {
+			if err := s.db.QueryRow(ctx, `SELECT request_hash FROM native_attempt_events WHERE organization_id=$1 AND attempt_id=$2 AND sequence=$3`, organization, attemptID, event.Sequence).Scan(&current); err != nil {
 				return mapError(ctx, err)
 			}
 			if current != event.RequestHash {
@@ -469,11 +468,11 @@ func canonicalCoreRunnerIdentity(row runnerstore.Identity) runnerstore.Identity 
 	return row
 }
 
-func sameCoreOptionalInt(left sql.NullInt64, right *int64) bool {
+func sameCoreOptionalInt(left pgtype.Int8, right *int64) bool {
 	return left.Valid == (right != nil) && (!left.Valid || left.Int64 == *right)
 }
 
-func sameCoreOptionalString(left sql.NullString, right *string) bool {
+func sameCoreOptionalString(left pgtype.Text, right *string) bool {
 	return left.Valid == (right != nil) && (!left.Valid || left.String == *right)
 }
 
@@ -485,7 +484,7 @@ func (r *Repository) CompleteCoreAttemptImport(ctx context.Context, attempt leas
 		var current leasestore.Attempt
 		var startedAt time.Time
 		var startedSubmicro int16
-		if err := s.db.QueryRowContext(ctx, `SELECT organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at
+		if err := s.db.QueryRow(ctx, `SELECT organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at
 FROM native_attempts WHERE organization_id=$1 AND id=$2`, attempt.OrganizationID, attempt.ID).Scan(&current.OrganizationID, &current.ID, &current.IssueID, &current.LeaseID, &current.FencingToken, &current.RunID, &current.Sequence, &current.Status, &current.WorkItemRevision, &current.DispatchGeneration, &current.PayloadObjectKey, &current.CheckpointObjectKey, &current.ArtifactsObjectKey, &startedAt, &startedSubmicro, &current.UpdatedAt); err != nil {
 			return mapError(ctx, err)
 		}
@@ -494,7 +493,7 @@ FROM native_attempts WHERE organization_id=$1 AND id=$2`, attempt.OrganizationID
 			return mutation.ErrConflict
 		}
 		var eventCount, minSequence, maxSequence int64
-		if err := s.db.QueryRowContext(ctx, `SELECT count(sequence),COALESCE(min(sequence),0),COALESCE(max(sequence),0)
+		if err := s.db.QueryRow(ctx, `SELECT count(sequence),COALESCE(min(sequence),0),COALESCE(max(sequence),0)
 FROM native_attempt_events WHERE organization_id=$1 AND attempt_id=$2`, attempt.OrganizationID, attempt.ID).Scan(&eventCount, &minSequence, &maxSequence); err != nil {
 			return mapError(ctx, err)
 		}

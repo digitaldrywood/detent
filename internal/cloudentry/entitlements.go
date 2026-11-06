@@ -112,7 +112,7 @@ func activeGrants(grants []entitlementGrant, now time.Time) []entitlementGrant {
 }
 
 func (r *Registry) entitlementGranters(ctx context.Context, organization string) (_ map[string]string, resultErr error) {
-	rows, err := r.store.db.QueryContext(ctx, "SELECT grant_id,staff_email FROM entitlement_changes WHERE organization_id = ? AND action = 'grant'", organization)
+	rows, err := r.store.db.QueryContext(ctx, "SELECT grant_id,staff_email FROM platform.entitlement_changes WHERE organization_id = $1 AND action = 'grant'", organization)
 	if err != nil {
 		return nil, err
 	}
@@ -331,7 +331,7 @@ func (r *Registry) recordEntitlementChange(ctx context.Context, organization str
 	if command.ExpiresAt != nil {
 		expires = formatTime(*command.ExpiresAt)
 	}
-	_, err := r.store.db.ExecContext(ctx, "INSERT INTO entitlement_changes(organization_id,idempotency_key,action,grant_id,plan_id,plan_version,expires_at,reason,staff_email,staff_subject,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(organization_id,idempotency_key) DO NOTHING",
+	_, err := r.store.db.ExecContext(ctx, "INSERT INTO platform.entitlement_changes(organization_id,idempotency_key,action,grant_id,plan_id,plan_version,expires_at,reason,staff_email,staff_subject,recorded_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(organization_id,idempotency_key) DO NOTHING",
 		organization, command.ID, command.Action, command.GrantID, command.Plan.ID, command.Plan.Version, expires, command.Reason, strings.ToLower(session.Email), session.Subject, formatTime(now))
 	return err
 }

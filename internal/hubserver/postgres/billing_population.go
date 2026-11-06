@@ -30,6 +30,6 @@ func (s *session) BillingPopulation(ctx context.Context, metric string, now time
 		after = now.Add(-connected)
 	}
 	var count int64
-	err := s.db.QueryRowContext(ctx, statement, s.organization, after, limit).Scan(&count)
+	err := s.db.QueryRow(ctx, statement, s.organization, after, limit).Scan(&count)
 	return count, count < limit, mapError(ctx, err)
 }

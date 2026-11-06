@@ -66,7 +66,7 @@ func validPlatformEmail(email string) bool {
 
 func (s *Service) platformRole(ctx context.Context, email string) string {
 	var role string
-	if err := s.registry.store.db.QueryRowContext(ctx, "SELECT role FROM platform_members WHERE email=?", platformEmail(email)).Scan(&role); err != nil {
+	if err := s.registry.store.db.QueryRowContext(ctx, "SELECT role FROM platform.platform_members WHERE email=$1", platformEmail(email)).Scan(&role); err != nil {
 		return ""
 	}
 	return role
@@ -88,12 +88,12 @@ func (r *Registry) seedPlatformMembers(ctx context.Context, cfg Config) (resultE
 	if err != nil {
 		return err
 	}
-	defer tx.cleanup(&resultErr)
-	if _, err := tx.ExecContext(ctx, "LOCK TABLE platform_members IN SHARE ROW EXCLUSIVE MODE"); err != nil {
+	defer tx.cleanup(ctx, &resultErr)
+	if _, err := tx.ExecContext(ctx, "LOCK TABLE platform.platform_members IN SHARE ROW EXCLUSIVE MODE"); err != nil {
 		return err
 	}
 	var count int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM platform_members").Scan(&count); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM platform.platform_members").Scan(&count); err != nil {
 		return err
 	}
 	roles := map[string]string{}
@@ -127,27 +127,27 @@ func (r *Registry) seedPlatformMembers(ctx context.Context, cfg Config) (resultE
 			return fmt.Errorf("invalid platform seed email %q", email)
 		}
 		var previous string
-		err := tx.QueryRowContext(ctx, "SELECT role FROM platform_members WHERE email=?", email).Scan(&previous)
+		err := tx.QueryRowContext(ctx, "SELECT role FROM platform.platform_members WHERE email=$1", email).Scan(&previous)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		if previous == roles[email] {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO platform_members(email,role,added_by,added_at,updated_at) VALUES(?,?,'bootstrap',?,?) ON CONFLICT(email) DO UPDATE SET role=excluded.role,updated_at=excluded.updated_at`, email, roles[email], now, now); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO platform.platform_members(email,role,added_by,added_at,updated_at) VALUES($1,$2,'bootstrap',$3,$4) ON CONFLICT(email) DO UPDATE SET role=excluded.role,updated_at=excluded.updated_at`, email, roles[email], now, now); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO platform_member_changes(email,action,previous_role,role,actor_email,actor_subject,reason,recorded_at) VALUES(?,'seeded',?,?,'bootstrap','','Platform startup bootstrap',?)`, email, previous, roles[email], now); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO platform.platform_member_changes(email,action,previous_role,role,actor_email,actor_subject,reason,recorded_at) VALUES($1,'seeded',$2,$3,'bootstrap','','Platform startup bootstrap',$4)`, email, previous, roles[email], now); err != nil {
 			return err
 		}
 	}
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM platform_members WHERE role='admin'").Scan(&count); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM platform.platform_members WHERE role='admin'").Scan(&count); err != nil {
 		return err
 	}
 	if count == 0 {
 		return errors.New("platform requires platform.bootstrap_admin_email or an existing admin member")
 	}
-	return tx.Commit()
+	return tx.Commit(ctx)
 }
 
 func platformMemberOperation(name string) bool {
@@ -160,8 +160,8 @@ func (s *Service) readPlatformMembers(ctx context.Context, session accountSessio
 	if err != nil {
 		return result, err
 	}
-	defer tx.cleanup(&resultErr)
-	rows, err := tx.QueryContext(ctx, "SELECT email,role,added_by,added_at,updated_at FROM platform_members ORDER BY email")
+	defer tx.cleanup(ctx, &resultErr)
+	rows, err := tx.QueryContext(ctx, "SELECT email,role,added_by,added_at,updated_at FROM platform.platform_members ORDER BY email")
 	if err != nil {
 		return result, err
 	}
@@ -181,10 +181,10 @@ func (s *Service) readPlatformMembers(ctx context.Context, session accountSessio
 	if err != nil {
 		return result, err
 	}
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM platform_member_changes").Scan(&result.Revision); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM platform.platform_member_changes").Scan(&result.Revision); err != nil {
 		return result, err
 	}
-	return result, tx.Commit()
+	return result, tx.Commit(ctx)
 }
 
 func (a entryAdministration) executePlatformMember(ctx context.Context, name string, in operatoradmin.Input, m mutation.Metadata, session accountSession) (_ operatoradmin.Output, resultErr error) {
@@ -204,19 +204,19 @@ func (a entryAdministration) executePlatformMember(ctx context.Context, name str
 	if err != nil {
 		return operatoradmin.Output{}, err
 	}
-	defer tx.cleanup(&resultErr)
-	if _, err := tx.ExecContext(ctx, "LOCK TABLE platform_members IN SHARE ROW EXCLUSIVE MODE"); err != nil {
+	defer tx.cleanup(ctx, &resultErr)
+	if _, err := tx.ExecContext(ctx, "LOCK TABLE platform.platform_members IN SHARE ROW EXCLUSIVE MODE"); err != nil {
 		return operatoradmin.Output{}, err
 	}
 	var revision int64
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM platform_member_changes").Scan(&revision); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM platform.platform_member_changes").Scan(&revision); err != nil {
 		return operatoradmin.Output{}, err
 	}
 	if revision != in.ExpectedRevision {
 		return operatoradmin.Output{}, mutation.ErrConflict
 	}
 	var previous string
-	err = tx.QueryRowContext(ctx, "SELECT role FROM platform_members WHERE email=?", in.Email).Scan(&previous)
+	err = tx.QueryRowContext(ctx, "SELECT role FROM platform.platform_members WHERE email=$1", in.Email).Scan(&previous)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return operatoradmin.Output{}, err
 	}
@@ -234,7 +234,7 @@ func (a entryAdministration) executePlatformMember(ctx context.Context, name str
 	}
 	if previous == "admin" && (name == platformMemberRemove || in.Role != "admin") {
 		var admins int
-		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM platform_members WHERE role='admin'").Scan(&admins); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM platform.platform_members WHERE role='admin'").Scan(&admins); err != nil {
 			return operatoradmin.Output{}, err
 		}
 		if admins <= 1 {
@@ -249,21 +249,21 @@ func (a entryAdministration) executePlatformMember(ctx context.Context, name str
 	action, role := "added", in.Role
 	switch name {
 	case platformMemberAdd:
-		_, err = tx.ExecContext(ctx, "INSERT INTO platform_members(email,role,added_by,added_at,updated_at) VALUES(?,?,?,?,?)", in.Email, in.Role, platformEmail(session.Email), now, now)
+		_, err = tx.ExecContext(ctx, "INSERT INTO platform.platform_members(email,role,added_by,added_at,updated_at) VALUES($1,$2,$3,$4,$5)", in.Email, in.Role, platformEmail(session.Email), now, now)
 	case platformMemberChange:
 		action = "role_changed"
-		_, err = tx.ExecContext(ctx, "UPDATE platform_members SET role=?,updated_at=? WHERE email=?", in.Role, now, in.Email)
+		_, err = tx.ExecContext(ctx, "UPDATE platform.platform_members SET role=$1,updated_at=$2 WHERE email=$3", in.Role, now, in.Email)
 	case platformMemberRemove:
 		action, role = "removed", ""
-		_, err = tx.ExecContext(ctx, "DELETE FROM platform_members WHERE email=?", in.Email)
+		_, err = tx.ExecContext(ctx, "DELETE FROM platform.platform_members WHERE email=$1", in.Email)
 	}
 	if err != nil {
 		return operatoradmin.Output{}, err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO platform_member_changes(email,action,previous_role,role,actor_email,actor_subject,reason,recorded_at) VALUES(?,?,?,?,?,?,?,?)", in.Email, action, previous, role, platformEmail(session.Email), session.Subject, in.Reason, now); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO platform.platform_member_changes(email,action,previous_role,role,actor_email,actor_subject,reason,recorded_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", in.Email, action, previous, role, platformEmail(session.Email), session.Subject, in.Reason, now); err != nil {
 		return operatoradmin.Output{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return operatoradmin.Output{}, err
 	}
 	data, err := json.Marshal(map[string]any{"email": in.Email, "role": role, "revision": revision + 1})

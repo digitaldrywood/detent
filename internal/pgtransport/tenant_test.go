@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/goleak"
 
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
@@ -26,6 +27,10 @@ var template = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if err := template.Close(context.Background()); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = 1
+	}
+	if err := goleak.Find(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		code = 1
 	}

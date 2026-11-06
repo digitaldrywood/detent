@@ -2,7 +2,8 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -23,7 +24,7 @@ func (r *Repository) ReadRequest(ctx context.Context, organization tracker.Organ
 		}
 		return run(ctx)
 	}
-	return r.transactionIsolation(ctx, organization, corestore.Serving, true, sql.LevelRepeatableRead, func(s *session) error {
+	return r.transactionIsolation(ctx, organization, corestore.Serving, true, pgx.RepeatableRead, func(s *session) error {
 		s.projectGrants = make(map[projectAccessKey]accessstore.ProjectGrant)
 		s.tokenGrants = make(map[projectAccessKey]accessstore.TokenGrant)
 		s.projectRows = make(map[tracker.ProjectID][]pgquery.BoundProjectRecordRow)

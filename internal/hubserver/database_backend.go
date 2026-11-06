@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io/fs"
 
-	"github.com/lib/pq"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
@@ -56,7 +56,7 @@ func openPostgresDatabase(ctx context.Context, cfg postgres.Config) (*database, 
 	return &database{postgres: repository, schemaVersion: version, schemaFingerprint: fingerprint}, nil
 }
 
-func MigratePostgres(ctx context.Context, connection pq.Config) error {
+func MigratePostgres(ctx context.Context, connection pgtransport.Connection) error {
 	migrations, err := fs.Sub(migrationFiles, "postgres/migrations")
 	if err != nil {
 		return err

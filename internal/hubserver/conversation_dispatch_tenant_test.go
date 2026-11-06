@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/conversation"
@@ -208,7 +208,7 @@ func TestPostgresConversationDispatchReachesFencedRunner(t *testing.T) {
 		if rollbackErr != nil {
 			return rollbackErr
 		}
-		var refused *pq.Error
+		var refused *pgconn.PgError
 		if !errors.As(lockErr, &refused) || refused.Code != "55P03" {
 			return fmt.Errorf("linked issue was not locked during fence resolution: %w", lockErr)
 		}

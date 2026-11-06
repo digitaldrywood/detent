@@ -24,7 +24,7 @@ type AccessAccountAuditIDParams struct {
 }
 
 func (q *Queries) AccessAccountAuditID(ctx context.Context, arg AccessAccountAuditIDParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, accessAccountAuditID, arg.OrganizationID, arg.ActualActor, arg.AccountRetry)
+	row := q.db.QueryRow(ctx, accessAccountAuditID, arg.OrganizationID, arg.ActualActor, arg.AccountRetry)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
@@ -43,7 +43,7 @@ type AccessMissingUsageGrantParams struct {
 }
 
 func (q *Queries) AccessMissingUsageGrant(ctx context.Context, arg AccessMissingUsageGrantParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, accessMissingUsageGrant, arg.OrganizationID, arg.UserID)
+	row := q.db.QueryRow(ctx, accessMissingUsageGrant, arg.OrganizationID, arg.UserID)
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -60,9 +60,9 @@ type BindAccessTenantProviderParams struct {
 }
 
 func (q *Queries) BindAccessTenantProvider(ctx context.Context, arg BindAccessTenantProviderParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, bindAccessTenantProvider, arg.OrganizationID, arg.ProviderID)
+	result, err := q.db.Exec(ctx, bindAccessTenantProvider, arg.OrganizationID, arg.ProviderID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }

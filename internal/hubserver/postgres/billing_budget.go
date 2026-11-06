@@ -12,7 +12,7 @@ import (
 
 func (s *session) BillingMonthlyPolicy(ctx context.Context, project tracker.ProjectID) (billingstore.MonthlyPolicy, error) {
 	var row billingstore.MonthlyPolicy
-	err := s.db.QueryRowContext(ctx, `SELECT organization_id,project_id,revision,enabled,mode,luna_micros,runner_micros,sprite_micros,total_micros,actor_id,updated_at FROM monthly_budget_policies WHERE organization_id=$1 AND project_id=$2 ORDER BY revision DESC LIMIT 1`, s.organization, project).Scan(&row.OrganizationID, &row.ProjectID, &row.Revision, &row.Policy.Enabled, &row.Policy.Mode, &row.Policy.LunaMicros, &row.Policy.RunnerMicros, &row.Policy.SpriteMicros, &row.Policy.TotalMicros, &row.Actor, &row.UpdatedAt)
+	err := s.db.QueryRow(ctx, `SELECT organization_id,project_id,revision,enabled,mode,luna_micros,runner_micros,sprite_micros,total_micros,actor_id,updated_at FROM monthly_budget_policies WHERE organization_id=$1 AND project_id=$2 ORDER BY revision DESC LIMIT 1`, s.organization, project).Scan(&row.OrganizationID, &row.ProjectID, &row.Revision, &row.Policy.Enabled, &row.Policy.Mode, &row.Policy.LunaMicros, &row.Policy.RunnerMicros, &row.Policy.SpriteMicros, &row.Policy.TotalMicros, &row.Actor, &row.UpdatedAt)
 	return row, mapError(ctx, err)
 }
 
@@ -24,7 +24,7 @@ func (s *session) SetBillingMonthlyPolicy(ctx context.Context, row billingstore.
 		return err
 	}
 	var id tracker.OrganizationID
-	if err := s.db.QueryRowContext(ctx, `SELECT organization_id FROM organizations WHERE organization_id=$1 FOR UPDATE`, s.organization).Scan(&id); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT organization_id FROM organizations WHERE organization_id=$1 FOR UPDATE`, s.organization).Scan(&id); err != nil {
 		return mapError(ctx, err)
 	}
 	previous, err := s.BillingMonthlyPolicy(ctx, row.ProjectID)
@@ -34,7 +34,7 @@ func (s *session) SetBillingMonthlyPolicy(ctx context.Context, row billingstore.
 	if previous.Revision != expected {
 		return corestore.ErrRevisionConflict
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO monthly_budget_policies(organization_id,project_id,revision,enabled,mode,luna_micros,runner_micros,sprite_micros,total_micros,actor_id,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, s.organization, row.ProjectID, expected+1, row.Policy.Enabled, row.Policy.EffectiveMode(), row.Policy.LunaMicros, row.Policy.RunnerMicros, row.Policy.SpriteMicros, row.Policy.TotalMicros, row.Actor, row.UpdatedAt)
+	_, err = s.db.Exec(ctx, `INSERT INTO monthly_budget_policies(organization_id,project_id,revision,enabled,mode,luna_micros,runner_micros,sprite_micros,total_micros,actor_id,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, s.organization, row.ProjectID, expected+1, row.Policy.Enabled, row.Policy.EffectiveMode(), row.Policy.LunaMicros, row.Policy.RunnerMicros, row.Policy.SpriteMicros, row.Policy.TotalMicros, row.Actor, row.UpdatedAt)
 	return mapError(ctx, err)
 }
 
@@ -55,13 +55,13 @@ func (s *session) ImportBillingMonthlyPolicy(ctx context.Context, row billingsto
 	}
 	row.Policy.Mode = row.Policy.EffectiveMode()
 	row.UpdatedAt = recordTime(row.UpdatedAt)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO monthly_budget_policies(organization_id,project_id,revision,enabled,mode,luna_micros,runner_micros,sprite_micros,total_micros,actor_id,updated_at)
+	_, err := s.db.Exec(ctx, `INSERT INTO monthly_budget_policies(organization_id,project_id,revision,enabled,mode,luna_micros,runner_micros,sprite_micros,total_micros,actor_id,updated_at)
 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (organization_id,project_id,revision) DO NOTHING`, s.organization, row.ProjectID, row.Revision, row.Policy.Enabled, row.Policy.Mode, row.Policy.LunaMicros, row.Policy.RunnerMicros, row.Policy.SpriteMicros, row.Policy.TotalMicros, row.Actor, row.UpdatedAt)
 	if err != nil {
 		return mapError(ctx, err)
 	}
 	var current billingstore.MonthlyPolicy
-	if err := s.db.QueryRowContext(ctx, `SELECT organization_id,project_id,revision,enabled,mode,luna_micros,runner_micros,sprite_micros,total_micros,actor_id,updated_at
+	if err := s.db.QueryRow(ctx, `SELECT organization_id,project_id,revision,enabled,mode,luna_micros,runner_micros,sprite_micros,total_micros,actor_id,updated_at
 FROM monthly_budget_policies WHERE organization_id=$1 AND project_id=$2 AND revision=$3`, s.organization, row.ProjectID, row.Revision).Scan(&current.OrganizationID, &current.ProjectID, &current.Revision, &current.Policy.Enabled, &current.Policy.Mode, &current.Policy.LunaMicros, &current.Policy.RunnerMicros, &current.Policy.SpriteMicros, &current.Policy.TotalMicros, &current.Actor, &current.UpdatedAt); err != nil {
 		return mapError(ctx, err)
 	}

@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -72,10 +74,10 @@ func (ctx *admissionContext) Done() <-chan struct{} {
 	return ctx.Context.Done()
 }
 
-func poolPIDs(t *testing.T, admin, pool *sql.DB) []int {
+func poolPIDs(t *testing.T, admin *sql.DB, pool *pgxpool.Pool) []int {
 	t.Helper()
 	var login string
-	if err := pool.QueryRowContext(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
+	if err := pool.QueryRow(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := admin.QueryContext(t.Context(), `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 ORDER BY pid`, login)
@@ -156,7 +158,7 @@ func TestRepositoryPoolBudgetsAndReuse(t *testing.T) {
 			for range serving {
 				held = append(held, hold(corestore.Serving, "org_second"))
 			}
-			if stats := pool.Stats(); stats.MaxOpenConnections != config.MaxConnections || stats.InUse != serving+config.BackgroundConnections {
+			if stats := pool.Stat(); stats.MaxConns() != int32(config.MaxConnections) || stats.AcquiredConns() != int32(serving+config.BackgroundConnections) {
 				t.Fatalf("pool stats = %+v", stats)
 			}
 			if err := repository.Ping(t.Context()); err != nil {
@@ -196,7 +198,7 @@ func TestRepositoryPoolBudgetsAndReuse(t *testing.T) {
 			if after := poolPIDs(t, admin, pool); !reflect.DeepEqual(after, before) {
 				t.Errorf("tenant reads replaced shared connections: before=%v after=%v", before, after)
 			}
-			if stats := pool.Stats(); stats.InUse != 0 || stats.OpenConnections > config.MaxConnections {
+			if stats := pool.Stat(); stats.AcquiredConns() != 0 || stats.TotalConns() > int32(config.MaxConnections) {
 				t.Errorf("pool leaked connections: %+v", stats)
 			}
 		})
@@ -208,7 +210,7 @@ func TestRepositoryPoolConfiguration(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		config postgres.PoolConfig
-		pool   *sql.DB
+		pool   *pgxpool.Pool
 	}{
 		{"nil pool", smallPool(), nil},
 		{"no health reserve", postgres.PoolConfig{MaxConnections: 2, ServingConnections: 1, BackgroundConnections: 1}, pool},
@@ -253,7 +255,7 @@ func TestRepositoryReadCommittedAndReadOnly(t *testing.T) {
 	admin := template.Database(t)
 	repository, pool := repositoryFor(t, admin, smallPool())
 	seedRepository(t, repository, "org_first")
-	if _, err := pool.ExecContext(t.Context(), `SET default_transaction_isolation='serializable'`); err != nil {
+	if _, err := pool.Exec(t.Context(), `SET default_transaction_isolation='serializable'`); err != nil {
 		t.Fatal(err)
 	}
 	for _, readOnly := range []bool{false, true} {

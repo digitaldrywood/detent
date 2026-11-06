@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	_ "modernc.org/sqlite"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -173,7 +175,7 @@ WHERE organization_id=? AND project_id>? ORDER BY project_id LIMIT 100`, source.
 						return corestore.ErrRevisionConflict
 					}
 					expected = currentPolicy.ReviewPolicyID
-				} else if !errors.Is(currentErr, sql.ErrNoRows) {
+				} else if !errors.Is(currentErr, pgx.ErrNoRows) {
 					return mapError(ctx, currentErr)
 				}
 				if err := s.SetReviewPolicy(ctx, row, expected); err != nil {

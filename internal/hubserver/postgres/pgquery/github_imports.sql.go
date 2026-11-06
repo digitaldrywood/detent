@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
 )
 
 const createGitHubImport = `-- name: CreateGitHubImport :one
@@ -29,7 +28,7 @@ type CreateGitHubImportParams struct {
 }
 
 func (q *Queries) CreateGitHubImport(ctx context.Context, arg CreateGitHubImportParams) (GithubImport, error) {
-	row := q.db.QueryRowContext(ctx, createGitHubImport,
+	row := q.db.QueryRow(ctx, createGitHubImport,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ID,
@@ -50,7 +49,7 @@ func (q *Queries) CreateGitHubImport(ctx context.Context, arg CreateGitHubImport
 		&i.Revision,
 		&i.Pages,
 		&i.Status,
-		pq.Array(&i.Gaps),
+		&i.Gaps,
 		&i.LastError,
 		&i.RetryAfter,
 		&i.SourceUpdatedAt,
@@ -72,7 +71,7 @@ type ReadGitHubImportParams struct {
 }
 
 func (q *Queries) ReadGitHubImport(ctx context.Context, arg ReadGitHubImportParams) (GithubImport, error) {
-	row := q.db.QueryRowContext(ctx, readGitHubImport, arg.OrganizationID, arg.ProjectID, arg.ID)
+	row := q.db.QueryRow(ctx, readGitHubImport, arg.OrganizationID, arg.ProjectID, arg.ID)
 	var i GithubImport
 	err := row.Scan(
 		&i.OrganizationID,
@@ -85,7 +84,7 @@ func (q *Queries) ReadGitHubImport(ctx context.Context, arg ReadGitHubImportPara
 		&i.Revision,
 		&i.Pages,
 		&i.Status,
-		pq.Array(&i.Gaps),
+		&i.Gaps,
 		&i.LastError,
 		&i.RetryAfter,
 		&i.SourceUpdatedAt,
@@ -107,7 +106,7 @@ type ReadGitHubImportForIssueParams struct {
 }
 
 func (q *Queries) ReadGitHubImportForIssue(ctx context.Context, arg ReadGitHubImportForIssueParams) (GithubImport, error) {
-	row := q.db.QueryRowContext(ctx, readGitHubImportForIssue, arg.OrganizationID, arg.ProjectID, arg.IssueNumber)
+	row := q.db.QueryRow(ctx, readGitHubImportForIssue, arg.OrganizationID, arg.ProjectID, arg.IssueNumber)
 	var i GithubImport
 	err := row.Scan(
 		&i.OrganizationID,
@@ -120,7 +119,7 @@ func (q *Queries) ReadGitHubImportForIssue(ctx context.Context, arg ReadGitHubIm
 		&i.Revision,
 		&i.Pages,
 		&i.Status,
-		pq.Array(&i.Gaps),
+		&i.Gaps,
 		&i.LastError,
 		&i.RetryAfter,
 		&i.SourceUpdatedAt,
@@ -156,7 +155,7 @@ type UpdateGitHubImportParams struct {
 }
 
 func (q *Queries) UpdateGitHubImport(ctx context.Context, arg UpdateGitHubImportParams) (GithubImport, error) {
-	row := q.db.QueryRowContext(ctx, updateGitHubImport,
+	row := q.db.QueryRow(ctx, updateGitHubImport,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ID,
@@ -166,7 +165,7 @@ func (q *Queries) UpdateGitHubImport(ctx context.Context, arg UpdateGitHubImport
 		arg.Cursor,
 		arg.Pages,
 		arg.Status,
-		pq.Array(arg.Gaps),
+		arg.Gaps,
 		arg.LastError,
 		arg.RetryAfter,
 		arg.SourceUpdatedAt,
@@ -186,7 +185,7 @@ func (q *Queries) UpdateGitHubImport(ctx context.Context, arg UpdateGitHubImport
 		&i.Revision,
 		&i.Pages,
 		&i.Status,
-		pq.Array(&i.Gaps),
+		&i.Gaps,
 		&i.LastError,
 		&i.RetryAfter,
 		&i.SourceUpdatedAt,

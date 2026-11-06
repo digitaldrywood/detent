@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
@@ -39,7 +39,7 @@ func accessSQLiteCopy(t *testing.T, source postgres.AccessImportSource) string {
 				t.Fatalf("invalid fixture column %s.%s", table, name)
 			}
 			kind := fields[2].(string)
-			ddl := pq.QuoteIdentifier(name) + " " + kind
+			ddl := pgx.Identifier{name}.Sanitize() + " " + kind
 			if fields[3].(float64) != 0 {
 				ddl += " NOT NULL"
 			}
@@ -53,7 +53,7 @@ func accessSQLiteCopy(t *testing.T, source postgres.AccessImportSource) string {
 		var primary []column
 		for _, c := range columns {
 			definitions = append(definitions, c.ddl)
-			names = append(names, pq.QuoteIdentifier(c.name))
+			names = append(names, pgx.Identifier{c.name}.Sanitize())
 			placeholders = append(placeholders, "?")
 			if c.primary > 0 {
 				primary = append(primary, c)
@@ -62,15 +62,15 @@ func accessSQLiteCopy(t *testing.T, source postgres.AccessImportSource) string {
 		slices.SortFunc(primary, func(a, b column) int { return a.primary - b.primary })
 		var keys []string
 		for _, c := range primary {
-			keys = append(keys, pq.QuoteIdentifier(c.name))
+			keys = append(keys, pgx.Identifier{c.name}.Sanitize())
 		}
 		if len(keys) > 0 {
 			definitions = append(definitions, "PRIMARY KEY ("+strings.Join(keys, ",")+")")
 		}
-		if _, err := db.ExecContext(t.Context(), "CREATE TABLE "+pq.QuoteIdentifier(table)+" ("+strings.Join(definitions, ",")+")"); err != nil {
+		if _, err := db.ExecContext(t.Context(), "CREATE TABLE "+pgx.Identifier{table}.Sanitize()+" ("+strings.Join(definitions, ",")+")"); err != nil {
 			t.Fatal(err)
 		}
-		rows, err := source.DB.QueryContext(t.Context(), "SELECT "+strings.Join(names, ",")+" FROM "+pq.QuoteIdentifier(source.Source.Schema)+"."+pq.QuoteIdentifier(table))
+		rows, err := source.DB.QueryContext(t.Context(), "SELECT "+strings.Join(names, ",")+" FROM "+pgx.Identifier{source.Source.Schema}.Sanitize()+"."+pgx.Identifier{table}.Sanitize())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -97,7 +97,7 @@ func accessSQLiteCopy(t *testing.T, source postgres.AccessImportSource) string {
 				insertPlaceholders = append(insertPlaceholders, placeholders[n])
 				insertValues = append(insertValues, value)
 			}
-			if _, err := db.ExecContext(t.Context(), fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", pq.QuoteIdentifier(table), strings.Join(insertNames, ","), strings.Join(insertPlaceholders, ",")), insertValues...); err != nil {
+			if _, err := db.ExecContext(t.Context(), fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", pgx.Identifier{table}.Sanitize(), strings.Join(insertNames, ","), strings.Join(insertPlaceholders, ",")), insertValues...); err != nil {
 				t.Fatal(err)
 			}
 		}

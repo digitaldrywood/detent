@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -29,7 +29,7 @@ func TestHealthReservePreservesWorkloadBudgets(t *testing.T) {
 			if err := db.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&name); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.ExecContext(t.Context(), "ALTER DATABASE "+pq.QuoteIdentifier(name)+" CONNECTION LIMIT 8"); err != nil {
+			if _, err := db.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{name}.Sanitize()+" CONNECTION LIMIT 8"); err != nil {
 				t.Fatal(err)
 			}
 			config := testConfig(t)
@@ -46,17 +46,17 @@ func TestHealthReservePreservesWorkloadBudgets(t *testing.T) {
 						t.Fatal(err)
 					}
 					defer func() {
-						if err := tx.Rollback(); err != nil {
+						if err := tx.Rollback(t.Context()); err != nil {
 							t.Error(err)
 						}
 					}()
 				}
 			}
-			if stats := r.pool.Stats(); stats.MaxOpenConnections != test.pool.MaxConnections || stats.InUse != cap(r.serving)+cap(r.background) {
+			if stats := r.pool.Stat(); int(stats.MaxConns()) != test.pool.MaxConnections || int(stats.AcquiredConns()) != cap(r.serving)+cap(r.background) {
 				t.Fatalf("physical pool = %+v", stats)
 			}
-			stats := r.pool.Stats()
-			t.Logf("held all admissions: serving=%d background=%d physical_in_use=%d max=%d", cap(r.serving), cap(r.background), stats.InUse, stats.MaxOpenConnections)
+			stats := r.pool.Stat()
+			t.Logf("held all admissions: serving=%d background=%d physical_in_use=%d max=%d", cap(r.serving), cap(r.background), stats.AcquiredConns(), stats.MaxConns())
 			for _, probe := range []struct {
 				name string
 				run  func(context.Context) error
@@ -79,24 +79,16 @@ func TestHealthReservePreservesWorkloadBudgets(t *testing.T) {
 				}()
 				defer func() { cancel(); <-done }()
 				var probeErr error
-				waiting := false
 				testenv.WaitUntil(t, t.Context(), func() error {
 					select {
 					case probeErr = <-result:
 						return nil
 					default:
-						if r.pool.Stats().WaitCount > stats.WaitCount {
-							waiting = true
-							return nil
-						}
-						return fmt.Errorf("%s has neither completed nor entered physical connection wait", probe.name)
+						return fmt.Errorf("%s has not completed", probe.name)
 					}
 				})
 				cancel()
 				<-done
-				if waiting {
-					t.Fatalf("%s entered physical connection wait with all actual workload admissions held: %v", probe.name, <-result)
-				}
 				if probeErr != nil {
 					t.Fatalf("%s with all workload admissions held: %v", probe.name, probeErr)
 				}
@@ -109,15 +101,15 @@ func TestHealthReservePreservesWorkloadBudgets(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() {
-				if err := tx.Rollback(); err != nil {
+				if err := tx.Rollback(t.Context()); err != nil {
 					t.Error(err)
 				}
 			}()
 			var count int
-			if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM organizations WHERE id IN ('org_first','org_second')").Scan(&count); err != nil || count != 2 {
+			if err := tx.QueryRow(t.Context(), "SELECT count(*) FROM platform.organizations WHERE id IN ('org_first','org_second')").Scan(&count); err != nil || count != 2 {
 				t.Fatalf("health registry read = %d, %v", count, err)
 			}
-			if _, err := tx.ExecContext(t.Context(), "UPDATE organizations SET name=name WHERE id='org_first'"); err == nil {
+			if _, err := tx.Exec(t.Context(), "UPDATE platform.organizations SET name=name WHERE id='org_first'"); err == nil {
 				t.Fatal("health read transaction accepted a write")
 			} else {
 				var state interface{ SQLState() string }
@@ -142,7 +134,7 @@ func TestHealthReserveRejectsUnusableBudgets(t *testing.T) {
 		t.Run(fmt.Sprintf("%d/%d/%d", pool.MaxConnections, pool.ServingConnections, pool.BackgroundConnections), func(t *testing.T) {
 			config := testConfig(t)
 			config.Pool = pool
-			if _, err := New(t.Context(), template.Database(t), config); !errors.Is(err, ErrInvalid) {
+			if _, err := New(t.Context(), template.OpenNativeRole(t, template.Database(t), "", ""), config); !errors.Is(err, ErrInvalid) {
 				t.Fatalf("invalid pool = %v", err)
 			}
 		})

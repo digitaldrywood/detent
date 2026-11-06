@@ -5,13 +5,15 @@ import (
 	"cmp"
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"slices"
 	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/budget"
@@ -39,7 +41,7 @@ func (s *session) BillingCostRevision(ctx context.Context, source billingstore.C
 	var result billingstore.CostRevision
 	var received string
 	r := &result.Reference
-	err := s.db.QueryRowContext(ctx, `SELECT s.project_id,s.revision,r.received_at,r.binding_id,r.customer_owned,r.object_key,r.sha256,r.compressed_bytes,r.content_bytes,r.codec,r.format_version,r.kind,r.retention FROM cost_sources s JOIN cost_observation_revisions r ON r.organization_id=s.organization_id AND r.source_key=s.source_key AND r.revision=s.revision WHERE s.organization_id=$1 AND s.source_key=$2`, s.organization, key).Scan(&result.ProjectID, &result.Revision, &received, &r.BindingID, &r.CustomerOwned, &r.Key, &r.SHA256, &r.CompressedBytes, &r.ContentBytes, &r.Codec, &r.FormatVersion, &r.Kind, &r.Retention)
+	err := s.db.QueryRow(ctx, `SELECT s.project_id,s.revision,r.received_at,r.binding_id,r.customer_owned,r.object_key,r.sha256,r.compressed_bytes,r.content_bytes,r.codec,r.format_version,r.kind,r.retention FROM cost_sources s JOIN cost_observation_revisions r ON r.organization_id=s.organization_id AND r.source_key=s.source_key AND r.revision=s.revision WHERE s.organization_id=$1 AND s.source_key=$2`, s.organization, key).Scan(&result.ProjectID, &result.Revision, &received, &r.BindingID, &r.CustomerOwned, &r.Key, &r.SHA256, &r.CompressedBytes, &r.ContentBytes, &r.Codec, &r.FormatVersion, &r.Kind, &r.Retention)
 	if err != nil {
 		return result, mapError(ctx, err)
 	}
@@ -50,7 +52,7 @@ func (s *session) BillingCostRevision(ctx context.Context, source billingstore.C
 func (s *session) BillingMonthlySpend(ctx context.Context, project tracker.ProjectID, month time.Time) (budget.MonthlySpend, error) {
 	month = month.UTC()
 	month = time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, time.UTC)
-	rows, err := s.db.QueryContext(ctx, `SELECT bucket, GREATEST(amount_micros,0)::bigint FROM cost_monthly_totals WHERE organization_id=$1 AND project_id=$2 AND month=$3 AND currency='USD' AND bucket IN ('luna_api','runner_api','sprite_infrastructure')`, s.organization, project, month)
+	rows, err := s.db.Query(ctx, `SELECT bucket, GREATEST(amount_micros,0)::bigint FROM cost_monthly_totals WHERE organization_id=$1 AND project_id=$2 AND month=$3 AND currency='USD' AND bucket IN ('luna_api','runner_api','sprite_infrastructure')`, s.organization, project, month)
 	if err != nil {
 		return budget.MonthlySpend{}, mapError(ctx, err)
 	}
@@ -97,7 +99,7 @@ func (s *session) RecordBillingCosts(ctx context.Context, records []billingstore
 	}
 	slices.Sort(keys)
 	for _, key := range slices.Compact(keys) {
-		if _, err := s.db.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, key); err != nil {
+		if _, err := s.db.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, key); err != nil {
 			return nil, mapError(ctx, err)
 		}
 	}
@@ -128,7 +130,7 @@ func (s *session) RecordBillingCosts(ctx context.Context, records []billingstore
 		return cmp.Compare(a.currency, b.currency)
 	})
 	for _, delta := range deltas {
-		_, err := s.db.ExecContext(ctx, `INSERT INTO cost_monthly_totals (organization_id,project_id,month,bucket,currency,amount_micros) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (organization_id,project_id,month,bucket,currency) DO UPDATE SET amount_micros=cost_monthly_totals.amount_micros+EXCLUDED.amount_micros`, s.organization, delta.project, delta.month, delta.bucket, delta.currency, delta.amount)
+		_, err := s.db.Exec(ctx, `INSERT INTO cost_monthly_totals (organization_id,project_id,month,bucket,currency,amount_micros) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (organization_id,project_id,month,bucket,currency) DO UPDATE SET amount_micros=cost_monthly_totals.amount_micros+EXCLUDED.amount_micros`, s.organization, delta.project, delta.month, delta.bucket, delta.currency, delta.amount)
 		if err != nil {
 			return nil, mapError(ctx, err)
 		}
@@ -178,10 +180,10 @@ func (s *session) recordBillingCost(ctx context.Context, record billingstore.Cos
 	attribution := costIdentity(string(record.ProjectID), o.ResourceID, o.Bucket, o.Metric, o.Unit, o.Currency, o.AttemptID, o.WorkItemID, o.Model, o.UsageKind, o.RunnerID, o.MachineID, o.Placement)
 	var revision int64
 	var previousHash, previousAttribution string
-	var previousAmount sql.NullInt64
+	var previousAmount pgtype.Int8
 	var previousVoided bool
-	err = s.db.QueryRowContext(ctx, `SELECT revision,payload_hash,attribution_hash,amount_micros,voided FROM cost_sources WHERE organization_id=$1 AND source_key=$2 FOR UPDATE`, s.organization, key).Scan(&revision, &previousHash, &previousAttribution, &previousAmount, &previousVoided)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	err = s.db.QueryRow(ctx, `SELECT revision,payload_hash,attribution_hash,amount_micros,voided FROM cost_sources WHERE organization_id=$1 AND source_key=$2 FOR UPDATE`, s.organization, key).Scan(&revision, &previousHash, &previousAttribution, &previousAmount, &previousVoided)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return false, nil, mapError(ctx, err)
 	}
 	if err == nil {
@@ -199,19 +201,19 @@ func (s *session) recordBillingCost(ctx context.Context, record billingstore.Cos
 		}
 	}
 	var overlap bool
-	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM cost_sources WHERE organization_id=$1 AND provider=$2 AND provider_account=$3 AND resource_id=$4 AND bucket=$5 AND metric=$6 AND NOT voided AND source_key<>$7 AND period_start<$8 AND period_end>$9)`, s.organization, o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, key, to, from).Scan(&overlap)
+	err = s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM cost_sources WHERE organization_id=$1 AND provider=$2 AND provider_account=$3 AND resource_id=$4 AND bucket=$5 AND metric=$6 AND NOT voided AND source_key<>$7 AND period_start<$8 AND period_end>$9)`, s.organization, o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, key, to, from).Scan(&overlap)
 	if err != nil {
 		return false, nil, mapError(ctx, err)
 	}
 	if overlap && !o.Voided {
 		return false, nil, mutation.ErrConflict
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO cost_sources (organization_id,source_key,project_id,provider,provider_account,resource_id,bucket,metric,period_start,period_end,revision,attribution_hash,payload_hash,amount_micros,currency,voided) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (organization_id,source_key) DO UPDATE SET revision=EXCLUDED.revision,payload_hash=EXCLUDED.payload_hash,amount_micros=EXCLUDED.amount_micros,voided=EXCLUDED.voided`, s.organization, key, record.ProjectID, o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, from, to, o.Revision, attribution, record.Reference.SHA256, o.AmountMicros, o.Currency, o.Voided)
+	_, err = s.db.Exec(ctx, `INSERT INTO cost_sources (organization_id,source_key,project_id,provider,provider_account,resource_id,bucket,metric,period_start,period_end,revision,attribution_hash,payload_hash,amount_micros,currency,voided) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (organization_id,source_key) DO UPDATE SET revision=EXCLUDED.revision,payload_hash=EXCLUDED.payload_hash,amount_micros=EXCLUDED.amount_micros,voided=EXCLUDED.voided`, s.organization, key, record.ProjectID, o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, from, to, o.Revision, attribution, record.Reference.SHA256, o.AmountMicros, o.Currency, o.Voided)
 	if err != nil {
 		return false, nil, mapError(ctx, err)
 	}
 	r := record.Reference
-	_, err = s.db.ExecContext(ctx, `INSERT INTO cost_observation_revisions (organization_id,source_key,revision,received_at,binding_id,customer_owned,object_key,sha256,compressed_bytes,content_bytes,codec,format_version,kind,retention) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, s.organization, key, o.Revision, record.ReceivedAt.UTC().Format(costPeriodLayout), r.BindingID, r.CustomerOwned, r.Key, r.SHA256, r.CompressedBytes, r.ContentBytes, r.Codec, r.FormatVersion, r.Kind, r.Retention)
+	_, err = s.db.Exec(ctx, `INSERT INTO cost_observation_revisions (organization_id,source_key,revision,received_at,binding_id,customer_owned,object_key,sha256,compressed_bytes,content_bytes,codec,format_version,kind,retention) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, s.organization, key, o.Revision, record.ReceivedAt.UTC().Format(costPeriodLayout), r.BindingID, r.CustomerOwned, r.Key, r.SHA256, r.CompressedBytes, r.ContentBytes, r.Codec, r.FormatVersion, r.Kind, r.Retention)
 	if err != nil {
 		return false, nil, mapError(ctx, err)
 	}
@@ -245,7 +247,7 @@ func (s *session) ImportBillingCostRevision(ctx context.Context, record billings
 	attribution := costIdentity(string(record.ProjectID), o.ResourceID, o.Bucket, o.Metric, o.Unit, o.Currency, o.AttemptID, o.WorkItemID, o.Model, o.UsageKind, o.RunnerID, o.MachineID, o.Placement)
 	var latest int64
 	var currentAttribution string
-	err := s.db.QueryRowContext(ctx, `SELECT revision,attribution_hash FROM cost_sources WHERE organization_id=$1 AND source_key=$2 FOR UPDATE`, s.organization, key).Scan(&latest, &currentAttribution)
+	err := s.db.QueryRow(ctx, `SELECT revision,attribution_hash FROM cost_sources WHERE organization_id=$1 AND source_key=$2 FOR UPDATE`, s.organization, key).Scan(&latest, &currentAttribution)
 	if err != nil {
 		return false, mapError(ctx, err)
 	}
@@ -253,17 +255,17 @@ func (s *session) ImportBillingCostRevision(ctx context.Context, record billings
 		return false, mutation.ErrConflict
 	}
 	var digest string
-	err = s.db.QueryRowContext(ctx, `SELECT sha256 FROM cost_observation_revisions WHERE organization_id=$1 AND source_key=$2 AND revision=$3`, s.organization, key, o.Revision).Scan(&digest)
+	err = s.db.QueryRow(ctx, `SELECT sha256 FROM cost_observation_revisions WHERE organization_id=$1 AND source_key=$2 AND revision=$3`, s.organization, key, o.Revision).Scan(&digest)
 	if err == nil {
 		if digest != record.Reference.SHA256 {
 			return false, mutation.ErrConflict
 		}
 		return false, nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return false, mapError(ctx, err)
 	}
 	r := record.Reference
-	_, err = s.db.ExecContext(ctx, `INSERT INTO cost_observation_revisions (organization_id,source_key,revision,received_at,binding_id,customer_owned,object_key,sha256,compressed_bytes,content_bytes,codec,format_version,kind,retention) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, s.organization, key, o.Revision, record.ReceivedAt.UTC().Format(costPeriodLayout), r.BindingID, r.CustomerOwned, r.Key, r.SHA256, r.CompressedBytes, r.ContentBytes, r.Codec, r.FormatVersion, r.Kind, r.Retention)
+	_, err = s.db.Exec(ctx, `INSERT INTO cost_observation_revisions (organization_id,source_key,revision,received_at,binding_id,customer_owned,object_key,sha256,compressed_bytes,content_bytes,codec,format_version,kind,retention) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, s.organization, key, o.Revision, record.ReceivedAt.UTC().Format(costPeriodLayout), r.BindingID, r.CustomerOwned, r.Key, r.SHA256, r.CompressedBytes, r.ContentBytes, r.Codec, r.FormatVersion, r.Kind, r.Retention)
 	return err == nil, mapError(ctx, err)
 }

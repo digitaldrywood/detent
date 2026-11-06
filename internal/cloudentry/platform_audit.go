@@ -104,9 +104,9 @@ func parseAuditFilter(query url.Values) (platformAuditFilter, error) {
 
 const (
 	auditPagePrefix         = `WITH events AS (`
-	organizationAuditEvents = `SELECT CAST(id AS TEXT) AS id,recorded_at,organization_id,'system' AS actor,'organization_' || event AS event,'generation ' || generation AS detail FROM organization_events`
+	organizationAuditEvents = `SELECT CAST(id AS TEXT) AS id,recorded_at,organization_id,'system' AS actor,'organization_' || event AS event,'generation ' || generation AS detail FROM platform.organization_events`
 	memberAuditEvents       = `SELECT CAST(id AS TEXT) AS id,recorded_at,'' AS organization_id,actor_email AS actor,'member_' || action AS event,
-email || CASE WHEN action='role_changed' THEN ' from ' || previous_role || ' to ' || role WHEN role!='' THEN ' as ' || role ELSE '' END || ' · ' || reason AS detail FROM platform_member_changes`
+email || CASE WHEN action='role_changed' THEN ' from ' || previous_role || ' to ' || role WHEN role!='' THEN ' as ' || role ELSE '' END || ' · ' || reason AS detail FROM platform.platform_member_changes`
 )
 
 func readAuditRows(ctx context.Context, db *entryDatabase, query, source string, f platformAuditFilter) (_ []platformAuditRow, resultErr error) {
@@ -201,7 +201,7 @@ func (s *Service) readPlatformAudit(ctx context.Context, f platformAuditFilter) 
 		result.Events = append(result.Events, event)
 	}
 	slices.Sort(result.Events)
-	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT id,name,state='deleted' FROM organizations ORDER BY name,id")
+	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT id,name,state='deleted' FROM platform.organizations ORDER BY name,id")
 	if err != nil {
 		return result, err
 	}
@@ -233,7 +233,7 @@ func (s *Service) platformAuditJSON(c echo.Context) error {
 	}
 	filter, err := parseAuditFilter(c.QueryParams())
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"code": "invalid_request", "message": "Choose valid dates, a page size from 1 to 200, and a valid audit cursor"})
+		return c.JSON(http.StatusBadRequest, map[string]string{"code": "invalid_request", "message": "Choose valid dates, a page size from 1 to 200, and a valid platform.audit cursor"})
 	}
 	result, err := s.readPlatformAudit(c.Request().Context(), filter)
 	if err != nil {
@@ -244,14 +244,14 @@ func (s *Service) platformAuditJSON(c echo.Context) error {
 
 const postgresAuditPageSuffix = `), keyed AS (SELECT *,to_char(recorded_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US') || '000' AS at FROM events)
 SELECT id,recorded_at,organization_id,actor,event,detail FROM keyed
-WHERE (?='' OR organization_id=?) AND (?='' OR strpos(lower(actor),lower(?))>0)
-AND (?='' OR event=?) AND (?='' OR at>=?) AND (?='' OR at<=?)
-AND (?='' OR (at,?::text,id)<(?,?,?)) ORDER BY at DESC,id DESC LIMIT ?`
+WHERE ($1='' OR organization_id=$2) AND ($3='' OR strpos(lower(actor),lower($4))>0)
+AND ($5='' OR event=$6) AND ($7='' OR at>=$8) AND ($9='' OR at<=$10)
+AND ($11='' OR (at,$12::text,id)<($13,$14,$15)) ORDER BY at DESC,id DESC LIMIT $16`
 const postgresAuthAuditEvents = `SELECT CAST(id AS TEXT) AS id,recorded_at,organization_id,
-COALESCE((SELECT email FROM sessions WHERE subject=a.subject ORDER BY created_at DESC,token_hash DESC LIMIT 1),subject) AS actor,
+COALESCE((SELECT email FROM platform.sessions WHERE subject=a.subject ORDER BY created_at DESC,token_hash DESC LIMIT 1),subject) AS actor,
 CASE WHEN event LIKE 'support_requested:%' OR event LIKE 'support_started:%' THEN split_part(event,':',1) ELSE event END AS event,
-CASE WHEN event='support_requested' THEN coalesce(reason,'') WHEN event='ai_credits_adjusted' THEN '$' || amount_usd::text || ' · ' || coalesce(reason,'') WHEN event LIKE 'support_requested:%' OR event LIKE 'support_started:%' THEN substr(event,strpos(event,':')+1) ELSE '' END AS detail FROM audit a
+CASE WHEN event='support_requested' THEN coalesce(reason,'') WHEN event='ai_credits_adjusted' THEN '$' || amount_usd::text || ' · ' || coalesce(reason,'') WHEN event LIKE 'support_requested:%' OR event LIKE 'support_started:%' THEN substr(event,strpos(event,':')+1) ELSE '' END AS detail FROM platform.audit a
 WHERE event<>'operator_administration'`
 const postgresEntitlementAuditEvents = `SELECT organization_id || ':' || idempotency_key AS id,recorded_at,organization_id,staff_email AS actor,
 CASE action WHEN 'grant' THEN 'plan_granted' WHEN 'create_plan' THEN 'plan_created' WHEN 'base' THEN 'plan_base_changed' WHEN 'subscription' THEN 'plan_subscription_changed' WHEN 'end_subscription' THEN 'plan_subscription_ended' ELSE 'plan_revoked' END AS event,
-plan_id || ' v' || plan_version || CASE WHEN expires_at IS NULL THEN '' ELSE ' until ' || rtrim(rtrim(to_char(expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), '0'), '.') || 'Z' END || ' · ' || reason AS detail FROM entitlement_changes`
+plan_id || ' v' || plan_version || CASE WHEN expires_at IS NULL THEN '' ELSE ' until ' || rtrim(rtrim(to_char(expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), '0'), '.') || 'Z' END || ' · ' || reason AS detail FROM platform.entitlement_changes`

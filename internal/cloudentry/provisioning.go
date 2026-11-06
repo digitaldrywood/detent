@@ -227,7 +227,7 @@ func (s *Service) provision(ctx context.Context, organization Organization) {
 		if step == "publish" {
 			organization.State = "ready"
 		}
-		if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = ?, provider_id = ?, step = ?, attempts = 0, next_attempt_at = NULL, error_code = '', error_detail = '', updated_at = ? WHERE id = ?",
+		if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state = $1, provider_id = $2, step = $3, attempts = 0, next_attempt_at = NULL, error_code = '', error_detail = '', updated_at = $4 WHERE id = $5",
 			organization.State, organization.ProviderID, step, formatTime(s.config.now()), organization.ID); err != nil {
 			return
 		}
@@ -251,7 +251,7 @@ func (s *Service) recordFailure(ctx context.Context, organization Organization, 
 	}
 	detail := failureDetail(cause)
 	s.config.Logger.Warn("organization provisioning step failed", "organization", organization.ID, "step", step, "attempt", attempts, "retry_limit", s.config.Allocation.RetryLimit, "state", state, "detail", detail)
-	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = ?, attempts = ?, next_attempt_at = NULLIF(?, '')::timestamptz, error_code = ?, error_detail = ?, updated_at = ? WHERE id = ?",
+	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state = $1, attempts = $2, next_attempt_at = NULLIF($3, '')::timestamptz, error_code = $4, error_detail = $5, updated_at = $6 WHERE id = $7",
 		state, attempts, next, code, detail, formatTime(s.config.now()), organization.ID); err != nil {
 		s.config.Logger.Warn("organization provisioning state could not be recorded", "organization", organization.ID)
 	}
@@ -353,8 +353,8 @@ func (s *Service) runStep(ctx context.Context, organization *Organization, step 
 
 func (s *Service) admissionLoad(ctx context.Context, id string) (holding, allocating int, err error) {
 	err = s.registry.store.db.QueryRowContext(ctx, `SELECT
-  (SELECT count(*) FROM organizations WHERE managed = true AND id != ? AND (state IN ('allocating','ready','disabled','deleting') OR state = 'failed' AND step NOT IN ('', 'admission'))),
-  (SELECT count(*) FROM organizations WHERE managed = true AND id != ? AND state = 'allocating')`, id, id).Scan(&holding, &allocating)
+  (SELECT count(*) FROM platform.organizations WHERE managed = true AND id != $1 AND (state IN ('allocating','ready','disabled','deleting') OR state = 'failed' AND step NOT IN ('', 'admission'))),
+  (SELECT count(*) FROM platform.organizations WHERE managed = true AND id != $2 AND state = 'allocating')`, id, id).Scan(&holding, &allocating)
 	return holding, allocating, err
 }
 
@@ -486,9 +486,9 @@ func (s *Service) recordIntent(ctx context.Context, session accountSession, key,
 	if err != nil {
 		return "", err
 	}
-	defer tx.cleanup(&resultErr)
+	defer tx.cleanup(ctx, &resultErr)
 	var existing, existingFingerprint string
-	err = tx.QueryRowContext(ctx, "SELECT organization_id, fingerprint FROM organization_intents WHERE subject = ? AND idempotency_key = ?", session.Subject, key).Scan(&existing, &existingFingerprint)
+	err = tx.QueryRowContext(ctx, "SELECT organization_id, fingerprint FROM platform.organization_intents WHERE subject = $1 AND idempotency_key = $2", session.Subject, key).Scan(&existing, &existingFingerprint)
 	if err == nil {
 		if existingFingerprint != fingerprint {
 			return "", errIntentConflict
@@ -513,11 +513,11 @@ func (s *Service) recordIntent(ctx context.Context, session accountSession, key,
 	}
 	id := "org_" + random[:20]
 	now := formatTime(s.config.now())
-	if _, err := tx.ExecContext(ctx, "INSERT INTO organizations(id,provider_id,name,state,endpoint,generation,managed,creator_subject,creator_email,checkout_price,created_at,updated_at) VALUES (?,'',?,'requested',?,1,true,?,?,?,?,?)",
+	if _, err := tx.ExecContext(ctx, "INSERT INTO platform.organizations(id,provider_id,name,state,endpoint,generation,managed,creator_subject,creator_email,checkout_price,created_at,updated_at) VALUES ($1,'',$2,'requested',$3,1,true,$4,$5,$6,$7,$8)",
 		id, name, "unix:"+filepath.Join(s.config.Allocation.SocketRoot, id+".sock"), session.Subject, strings.ToLower(session.Email), price, now, now); err != nil {
 		return "", err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO organization_intents(subject,idempotency_key,fingerprint,organization_id,created_at) VALUES (?,?,?,?,?)", session.Subject, key, fingerprint, id, now); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO platform.organization_intents(subject,idempotency_key,fingerprint,organization_id,created_at) VALUES ($1,$2,$3,$4,$5)", session.Subject, key, fingerprint, id, now); err != nil {
 		return "", err
 	}
 	if s.notifications != nil {
@@ -525,7 +525,7 @@ func (s *Service) recordIntent(ctx context.Context, session accountSession, key,
 			return "", err
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return "", err
 	}
 	s.wakePlatformNotifications()
@@ -594,7 +594,7 @@ func (s *Service) resumeOrganization(ctx context.Context, organization Organizat
 	if organization.Step == "" {
 		state = "requested"
 	}
-	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = ?, attempts = 0, next_attempt_at = NULL, error_code = '', error_detail = '', updated_at = ? WHERE id = ? AND state = 'failed'", state, formatTime(s.config.now()), organization.ID); err != nil {
+	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state = $1, attempts = 0, next_attempt_at = NULL, error_code = '', error_detail = '', updated_at = $2 WHERE id = $3 AND state = 'failed'", state, formatTime(s.config.now()), organization.ID); err != nil {
 		return Organization{}, err
 	}
 	s.wakeAllocator()
@@ -674,7 +674,7 @@ func (s *Service) resumeProvisioning(c echo.Context) error {
 }
 
 func (s *Service) pendingOrganizations(ctx context.Context, subject string) (_ []templates.HostedOrganizationChoice, resultErr error) {
-	rows, err := s.registry.store.db.QueryContext(ctx, organizationSelect+" WHERE managed = true AND creator_subject = ? AND state IN ('requested','allocating','failed') ORDER BY created_at", subject)
+	rows, err := s.registry.store.db.QueryContext(ctx, organizationSelect+" WHERE managed = true AND creator_subject = $1 AND state IN ('requested','allocating','failed') ORDER BY created_at", subject)
 	if err != nil {
 		return nil, err
 	}
@@ -750,12 +750,12 @@ func (s *Service) finishDeletion(ctx context.Context, id string) error {
 	if err := s.config.Allocation.Launcher.Stop(id); err != nil {
 		return err
 	}
-	_, err = s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = 'deleted', updated_at = ? WHERE id = ? AND state = 'deleting'", formatTime(s.config.now()), id)
+	_, err = s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state = 'deleted', updated_at = $1 WHERE id = $2 AND state = 'deleting'", formatTime(s.config.now()), id)
 	return err
 }
 
 func (s *Service) deletingOrganizations(ctx context.Context) (_ []string, resultErr error) {
-	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT id FROM organizations WHERE managed = true AND state = 'deleting'")
+	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT id FROM platform.organizations WHERE managed = true AND state = 'deleting'")
 	if err != nil {
 		return nil, err
 	}
@@ -788,13 +788,13 @@ func (a *authStore) revokeOrganization(ctx context.Context, organization string)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.cleanup(&resultErr)
-	items, err := activeAuthorizations(ctx, tx, "organization_id = ? AND revoked_at IS NULL", organization)
+	defer tx.cleanup(ctx, &resultErr)
+	items, err := postgresAuthorizations(ctx, tx, authorizationSelector{Kind: lookupOrganization, Organization: organization})
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE authorizations SET revoked_at = ? WHERE organization_id = ? AND revoked_at IS NULL", formatTime(a.now()), organization); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE platform.authorizations SET revoked_at = $1 WHERE organization_id = $2 AND revoked_at IS NULL", formatTime(a.now()), organization); err != nil {
 		return nil, err
 	}
-	return items, tx.Commit()
+	return items, tx.Commit(ctx)
 }

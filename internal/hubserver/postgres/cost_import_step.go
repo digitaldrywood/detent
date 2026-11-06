@@ -129,11 +129,11 @@ func (i *costImporter) retainRow(ctx context.Context, s *session, row preparedCo
 		}
 	}
 	r := row.record.Reference
-	_, err := s.db.ExecContext(ctx, `INSERT INTO cost_import_rows (organization_id,source_key,revision,project_id,received_at,source_voided,binding_id,customer_owned,object_key,sha256,compressed_bytes,content_bytes,codec,format_version,kind,retention) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, i.organization, row.sourceKey, row.record.Observation.Revision, row.record.ProjectID, row.record.ReceivedAt.UTC().Format(costPeriodLayout), row.sourceVoided, r.BindingID, r.CustomerOwned, r.Key, r.SHA256, r.CompressedBytes, r.ContentBytes, r.Codec, r.FormatVersion, r.Kind, r.Retention)
+	_, err := s.db.Exec(ctx, `INSERT INTO cost_import_rows (organization_id,source_key,revision,project_id,received_at,source_voided,binding_id,customer_owned,object_key,sha256,compressed_bytes,content_bytes,codec,format_version,kind,retention) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, i.organization, row.sourceKey, row.record.Observation.Revision, row.record.ProjectID, row.record.ReceivedAt.UTC().Format(costPeriodLayout), row.sourceVoided, r.BindingID, r.CustomerOwned, r.Key, r.SHA256, r.CompressedBytes, r.ContentBytes, r.Codec, r.FormatVersion, r.Kind, r.Retention)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO cost_import_heads (organization_id,source_key,revision) VALUES ($1,$2,$3) ON CONFLICT (organization_id,source_key) DO UPDATE SET revision=GREATEST(cost_import_heads.revision,EXCLUDED.revision)`, i.organization, row.sourceKey, row.record.Observation.Revision)
+	_, err = s.db.Exec(ctx, `INSERT INTO cost_import_heads (organization_id,source_key,revision) VALUES ($1,$2,$3) ON CONFLICT (organization_id,source_key) DO UPDATE SET revision=GREATEST(cost_import_heads.revision,EXCLUDED.revision)`, i.organization, row.sourceKey, row.record.Observation.Revision)
 	return err
 }
 
@@ -158,7 +158,7 @@ func (i *costImporter) prepareRetainedPage(ctx context.Context, checkpoint costI
 			statement += ` ORDER BY r.source_key,r.revision LIMIT $` + strconv.Itoa(len(args)+1)
 			args = append(args, limit)
 		}
-		rows, err := s.db.QueryContext(ctx, statement, args...)
+		rows, err := s.db.Query(ctx, statement, args...)
 		if err != nil {
 			return err
 		}

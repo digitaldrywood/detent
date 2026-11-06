@@ -2,10 +2,12 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"reflect"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -179,7 +181,7 @@ func (s *session) CreateLandingReceipt(ctx context.Context, record eventstore.La
 		return eventstore.LandingReceipt{}, eventstore.ErrInvalidRecord
 	}
 	row, err := s.queries.RecordInsertLandingReceipt(ctx, pgquery.RecordInsertLandingReceiptParams{OrganizationID: s.organization, AttemptID: record.AttemptID, VersionID: record.VersionID, MergeSha: record.MergeSHA, Repository: record.Repository, BaseRef: record.BaseRef, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes})
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		row, err = s.queries.RecordGetLandingReceipt(ctx, pgquery.RecordGetLandingReceiptParams{OrganizationID: s.organization, AttemptID: record.AttemptID})
 		if err == nil && landingReceiptRecord(row) != record {
 			return eventstore.LandingReceipt{}, corestore.ErrRevisionConflict
@@ -385,12 +387,12 @@ func (s *session) insertRecordChange(ctx context.Context, record eventstore.Chan
 }
 func (s *session) insertRecordVersion(ctx context.Context, record eventstore.Version) (eventstore.Version, error) {
 	var sourceKey, sourceDigest *string
-	var sourceBytes, sourceContentBytes sql.NullInt64
+	var sourceBytes, sourceContentBytes pgtype.Int8
 	if record.SourceObjectKey != "" {
 		sourceKey = &record.SourceObjectKey
 		sourceDigest = &record.SourceSHA256
-		sourceBytes = sql.NullInt64{Int64: record.SourceBytes, Valid: true}
-		sourceContentBytes = sql.NullInt64{Int64: record.SourceContentBytes, Valid: true}
+		sourceBytes = pgtype.Int8{Int64: record.SourceBytes, Valid: true}
+		sourceContentBytes = pgtype.Int8{Int64: record.SourceContentBytes, Valid: true}
 	}
 	row, err := s.queries.RecordInsertVersion(ctx, pgquery.RecordInsertVersionParams{OrganizationID: record.OrganizationID, ID: record.ID, ChangeID: record.ChangeID, Number: record.Number, HeadSHA: record.HeadSHA, BaseSHA: record.BaseSHA, MergeBaseSHA: record.MergeBaseSHA, Repository: record.Repository, PolicyRevisionID: record.PolicyRevisionID, AttemptID: record.AttemptID, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, ExternalProvider: record.ExternalProvider, ExternalID: record.ExternalID, ExternalURL: record.ExternalURL, CreatedAt: record.CreatedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion, SourceObjectKey: sourceKey, SourceSha256: sourceDigest, SourceBytes: sourceBytes, SourceContentBytes: sourceContentBytes, ImplementingSessionID: record.ImplementingSessionID, ImplementingMachineID: record.ImplementingMachineID})
 	return versionRecord(row), mapError(ctx, err)
@@ -450,7 +452,7 @@ func (s *session) AppendEvent(ctx context.Context, record eventstore.Event) (eve
 		}
 		return eventRecord(previous), nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return eventstore.Event{}, mapError(ctx, err)
 	}
 	sequence, err := s.queries.RecordAdvanceIssue(ctx, pgquery.RecordAdvanceIssueParams{OrganizationID: s.organization, ProjectID: record.ProjectID, NativeID: record.WorkItemID, ImportedSequence: record.Sequence, ActivityAt: recordTime(record.RecordedAt)})
@@ -488,7 +490,7 @@ func (s *session) CreateCollaborationVersion(ctx context.Context, record eventst
 		}
 		return eventstore.CollaborationVersion(previous), nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return eventstore.CollaborationVersion{}, mapError(ctx, err)
 	}
 	return s.insertRecordCollaborationVersion(ctx, record)
@@ -527,7 +529,7 @@ func (s *session) CreateChange(ctx context.Context, record eventstore.Change) (e
 		}
 		return eventstore.Change(previous), nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return eventstore.Change{}, mapError(ctx, err)
 	}
 	record.CreatedAt = recordTime(record.CreatedAt)
@@ -587,7 +589,7 @@ func (s *session) CreateVersion(ctx context.Context, record eventstore.Version) 
 		}
 		return versionRecord(previous), nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return eventstore.Version{}, mapError(ctx, err)
 	}
 	record.CreatedAt = recordTime(record.CreatedAt)
@@ -640,7 +642,7 @@ func (s *session) AppendEvidence(ctx context.Context, record eventstore.Evidence
 			}
 			return evidenceRecord(previous), nil
 		}
-		if !errors.Is(err, sql.ErrNoRows) {
+		if !errors.Is(err, pgx.ErrNoRows) {
 			return eventstore.Evidence{}, mapError(ctx, err)
 		}
 	}
@@ -670,7 +672,7 @@ func (s *session) LinkIssue(ctx context.Context, record eventstore.Link) error {
 		}
 		return nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return mapError(ctx, err)
 	}
 	_, err = s.queries.RecordInsertLink(ctx, pgquery.RecordInsertLinkParams{OrganizationID: s.organization, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ChangeID: record.ChangeID})

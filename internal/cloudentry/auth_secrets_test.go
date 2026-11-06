@@ -247,7 +247,7 @@ func TestEntrySecretResealCASAndSkips(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.auth.store.db.ExecContext(t.Context(), "UPDATE authorizations SET access_token=?,refresh_token=? WHERE binding=?", access, refresh, items[name].Binding); err != nil {
+		if _, err := s.auth.store.db.ExecContext(t.Context(), "UPDATE platform.authorizations SET access_token=$1,refresh_token=$2 WHERE binding=$3", access, refresh, items[name].Binding); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -255,10 +255,10 @@ func TestEntrySecretResealCASAndSkips(t *testing.T) {
 		query string
 		args  []any
 	}{
-		{"UPDATE authorizations SET revoked_at=? WHERE binding=?", []any{formatTime(s.config.now()), items["revoked"].Binding}},
-		{"UPDATE authorizations SET access_token='',refresh_token='' WHERE binding=?", []any{items["empty"].Binding}},
-		{"UPDATE authorizations SET refresh_token='' WHERE binding=?", []any{items["partial"].Binding}},
-		{"UPDATE authorizations SET access_token=? WHERE binding=?", []any{"broken-secret-material", items["broken"].Binding}},
+		{"UPDATE platform.authorizations SET revoked_at=$1 WHERE binding=$2", []any{formatTime(s.config.now()), items["revoked"].Binding}},
+		{"UPDATE platform.authorizations SET access_token='',refresh_token='' WHERE binding=$1", []any{items["empty"].Binding}},
+		{"UPDATE platform.authorizations SET refresh_token='' WHERE binding=$1", []any{items["partial"].Binding}},
+		{"UPDATE platform.authorizations SET access_token=$1 WHERE binding=$2", []any{"broken-secret-material", items["broken"].Binding}},
 	} {
 		if _, err := s.auth.store.db.ExecContext(t.Context(), row.query, row.args...); err != nil {
 			t.Fatal(err)
@@ -270,7 +270,7 @@ func TestEntrySecretResealCASAndSkips(t *testing.T) {
 	before := map[string][2]string{}
 	for name, item := range items {
 		var pair [2]string
-		if err := s.auth.store.reader.QueryRowContext(t.Context(), "SELECT access_token,refresh_token FROM authorizations WHERE binding=?", item.Binding).Scan(&pair[0], &pair[1]); err != nil {
+		if err := s.auth.store.reader.QueryRowContext(t.Context(), "SELECT access_token,refresh_token FROM platform.authorizations WHERE binding=$1", item.Binding).Scan(&pair[0], &pair[1]); err != nil {
 			t.Fatal(err)
 		}
 		before[name] = pair
@@ -294,7 +294,7 @@ func TestEntrySecretResealCASAndSkips(t *testing.T) {
 	}
 	for _, owner := range []string{"first-user", "second-user"} {
 		var sealed string
-		if err := s.auth.store.reader.QueryRowContext(t.Context(), `SELECT access_token FROM github_user_connections WHERE owner_subject=?`, owner).Scan(&sealed); err != nil {
+		if err := s.auth.store.reader.QueryRowContext(t.Context(), `SELECT access_token FROM platform.github_user_connections WHERE owner_subject=$1`, owner).Scan(&sealed); err != nil {
 			t.Fatal(err)
 		}
 		if !strings.HasPrefix(sealed, "hk1.2.") {
@@ -310,7 +310,7 @@ func TestEntrySecretResealCASAndSkips(t *testing.T) {
 	}
 	for name, item := range items {
 		var pair [2]string
-		if err := s.auth.store.reader.QueryRowContext(t.Context(), "SELECT access_token,refresh_token FROM authorizations WHERE binding=?", item.Binding).Scan(&pair[0], &pair[1]); err != nil {
+		if err := s.auth.store.reader.QueryRowContext(t.Context(), "SELECT access_token,refresh_token FROM platform.authorizations WHERE binding=$1", item.Binding).Scan(&pair[0], &pair[1]); err != nil {
 			t.Fatal(err)
 		}
 		switch name {

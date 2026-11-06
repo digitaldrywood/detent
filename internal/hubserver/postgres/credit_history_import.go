@@ -15,6 +15,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -119,11 +121,11 @@ func (r *Repository) beginCreditHistoryImport(ctx context.Context, organization 
 	var completed bool
 	var result CreditHistoryImportResult
 	err := r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO credit_history_imports(organization_id,source_schema,snapshot_id,catalog_digest) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id) DO NOTHING`, organization, sourceSchema, snapshotID, catalogDigest); err != nil {
+		if _, err := s.db.Exec(ctx, `INSERT INTO credit_history_imports(organization_id,source_schema,snapshot_id,catalog_digest) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id) DO NOTHING`, organization, sourceSchema, snapshotID, catalogDigest); err != nil {
 			return mapError(ctx, err)
 		}
 		var storedSchema, storedSnapshot, storedCatalog string
-		err := s.db.QueryRowContext(ctx, `SELECT source_schema,snapshot_id,catalog_digest,completed,account_rows,pack_rows,transaction_rows FROM credit_history_imports WHERE organization_id=$1`, organization).Scan(&storedSchema, &storedSnapshot, &storedCatalog, &completed, &result.Accounts, &result.Packs, &result.Transactions)
+		err := s.db.QueryRow(ctx, `SELECT source_schema,snapshot_id,catalog_digest,completed,account_rows,pack_rows,transaction_rows FROM credit_history_imports WHERE organization_id=$1`, organization).Scan(&storedSchema, &storedSnapshot, &storedCatalog, &completed, &result.Accounts, &result.Packs, &result.Transactions)
 		if err != nil {
 			return mapError(ctx, err)
 		}
@@ -137,14 +139,11 @@ func (r *Repository) beginCreditHistoryImport(ctx context.Context, organization 
 
 func (r *Repository) completeCreditHistoryImport(ctx context.Context, organization tracker.OrganizationID, sourceSchema, snapshotID, catalogDigest string, result CreditHistoryImportResult) error {
 	return r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
-		written, err := s.db.ExecContext(ctx, `UPDATE credit_history_imports SET completed=true,account_rows=$5,pack_rows=$6,transaction_rows=$7 WHERE organization_id=$1 AND source_schema=$2 AND snapshot_id=$3 AND catalog_digest=$4 AND (NOT completed OR (account_rows=$5 AND pack_rows=$6 AND transaction_rows=$7))`, organization, sourceSchema, snapshotID, catalogDigest, result.Accounts, result.Packs, result.Transactions)
+		written, err := s.db.Exec(ctx, `UPDATE credit_history_imports SET completed=true,account_rows=$5,pack_rows=$6,transaction_rows=$7 WHERE organization_id=$1 AND source_schema=$2 AND snapshot_id=$3 AND catalog_digest=$4 AND (NOT completed OR (account_rows=$5 AND pack_rows=$6 AND transaction_rows=$7))`, organization, sourceSchema, snapshotID, catalogDigest, result.Accounts, result.Packs, result.Transactions)
 		if err != nil {
 			return mapError(ctx, err)
 		}
-		count, err := written.RowsAffected()
-		if err != nil {
-			return mapError(ctx, err)
-		}
+		count := written.RowsAffected()
 		if count != 1 {
 			return mutation.ErrConflict
 		}
@@ -302,14 +301,14 @@ func (r *Repository) importCreditHistoryRow(ctx context.Context, organization tr
 	}
 	return r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
 		var previousSnapshot, previousHash string
-		err := s.db.QueryRowContext(ctx, `SELECT snapshot_id,request_hash FROM credit_history_import_rows WHERE organization_id=$1 AND source_table=$2 AND source_row_id=$3`, organization, table, row.id).Scan(&previousSnapshot, &previousHash)
+		err := s.db.QueryRow(ctx, `SELECT snapshot_id,request_hash FROM credit_history_import_rows WHERE organization_id=$1 AND source_table=$2 AND source_row_id=$3`, organization, table, row.id).Scan(&previousSnapshot, &previousHash)
 		if err == nil {
 			if previousSnapshot != copyHash || previousHash != requestHash {
 				return mutation.ErrConflict
 			}
 			return nil
 		}
-		if !errors.Is(err, sql.ErrNoRows) {
+		if !errors.Is(err, pgx.ErrNoRows) {
 			return mapError(ctx, err)
 		}
 		switch table {
@@ -336,21 +335,21 @@ func (r *Repository) importCreditHistoryRow(ctx context.Context, organization tr
 			if err := validateCreditKind(row.value["kind"].Text); err != nil {
 				return err
 			}
-			if _, err := s.db.ExecContext(ctx, `INSERT INTO ai_credit_transactions(organization_id,id,mode,source,amount_micros,included_amount_micros,kind,actor,recorded_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, organization, id, row.value["mode"].Text, row.value["source"].Text, row.value["amount_micros"].Integer, row.value["included_amount_micros"].Integer, row.value["kind"].Text, row.value["actor"].Text, recordedAt); err != nil {
+			if _, err := s.db.Exec(ctx, `INSERT INTO ai_credit_transactions(organization_id,id,mode,source,amount_micros,included_amount_micros,kind,actor,recorded_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, organization, id, row.value["mode"].Text, row.value["source"].Text, row.value["amount_micros"].Integer, row.value["included_amount_micros"].Integer, row.value["kind"].Text, row.value["actor"].Text, recordedAt); err != nil {
 				return mapError(ctx, err)
 			}
 			if reason.Key != "" {
 				if reason.ArchiveReference().Validate(string(organization)) != nil {
 					return billingstore.ErrInvalidAmount
 				}
-				if _, err := s.db.ExecContext(ctx, `INSERT INTO ai_credit_reason_references(organization_id,mode,source,binding_id,customer_owned,object_key,sha256,compressed_bytes,content_bytes,codec,format_version,kind,retention) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, organization, row.value["mode"].Text, row.value["source"].Text, reason.BindingID, reason.CustomerOwned, reason.Key, reason.SHA256, reason.CompressedBytes, reason.ContentBytes, reason.Codec, reason.FormatVersion, reason.Kind, reason.Retention); err != nil {
+				if _, err := s.db.Exec(ctx, `INSERT INTO ai_credit_reason_references(organization_id,mode,source,binding_id,customer_owned,object_key,sha256,compressed_bytes,content_bytes,codec,format_version,kind,retention) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, organization, row.value["mode"].Text, row.value["source"].Text, reason.BindingID, reason.CustomerOwned, reason.Key, reason.SHA256, reason.CompressedBytes, reason.ContentBytes, reason.Codec, reason.FormatVersion, reason.Kind, reason.Retention); err != nil {
 					return mapError(ctx, err)
 				}
 			}
 		default:
 			return storagecatalog.ErrUnmapped
 		}
-		_, err = s.db.ExecContext(ctx, `INSERT INTO credit_history_import_rows(organization_id,snapshot_id,source_table,source_row_id,request_hash,created_at) VALUES($1,$2,$3,$4,$5,$6)`, organization, copyHash, table, row.id, requestHash, createdAt)
+		_, err = s.db.Exec(ctx, `INSERT INTO credit_history_import_rows(organization_id,snapshot_id,source_table,source_row_id,request_hash,created_at) VALUES($1,$2,$3,$4,$5,$6)`, organization, copyHash, table, row.id, requestHash, createdAt)
 		return mapError(ctx, err)
 	})
 }
@@ -385,7 +384,7 @@ func prepareCreditHistoryReason(ctx context.Context, objects attachment.DetailSt
 
 func (r *Repository) advanceCreditTransactionSequence(ctx context.Context, organization tracker.OrganizationID) error {
 	return r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
-		_, err := s.db.ExecContext(ctx, `SELECT advance_imported_credit_transaction_id(COALESCE((SELECT max(id) FROM ai_credit_transactions),0))`)
+		_, err := s.db.Exec(ctx, `SELECT advance_imported_credit_transaction_id(COALESCE((SELECT max(id) FROM ai_credit_transactions),0))`)
 		return mapError(ctx, err)
 	})
 }

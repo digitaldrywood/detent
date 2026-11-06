@@ -2,9 +2,10 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -113,7 +114,7 @@ func (s *session) DuplicateSources(ctx context.Context, query searchstore.Duplic
 			parent, found = parents[document.WorkItemID]
 			if !found {
 				record, err := s.queries.DuplicateParentSource(ctx, pgquery.DuplicateParentSourceParams{OrganizationID: s.organization, ProjectID: new(query.ProjectID), SourceID: string(document.WorkItemID)})
-				if errors.Is(err, sql.ErrNoRows) {
+				if errors.Is(err, pgx.ErrNoRows) {
 					return searchstore.DuplicateSourcePage{State: searchstore.DuplicateSourceState{Sequence: state.Sequence}}, searchstore.ErrIndexPending
 				}
 				if err != nil {

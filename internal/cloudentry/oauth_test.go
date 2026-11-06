@@ -47,7 +47,7 @@ func TestOAuthAnonymousRequestsDoNotPersist(t *testing.T) {
 	}
 	for _, table := range []string{"oauth_clients", "oauth_requests", "oauth_grants", "oauth_refresh_tokens"} {
 		var count int
-		if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&count); err != nil {
+		if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM platform."+table).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count != 0 {
@@ -129,7 +129,7 @@ func TestOAuthAnonymousRequestThrottling(t *testing.T) {
 			}
 			for _, table := range []string{"oauth_clients", "oauth_requests", "oauth_grants", "oauth_refresh_tokens"} {
 				var count int
-				if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&count); err != nil || count != 0 {
+				if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM platform."+table).Scan(&count); err != nil || count != 0 {
 					t.Fatalf("anonymous requests in %s=%d err=%v", table, count, err)
 				}
 			}
@@ -274,7 +274,7 @@ func testOAuthCodeExchangeAndRotation(t *testing.T, configureStorage func(*Confi
 	for _, c := range []oauthClient{client, other} {
 		form := approveTestOAuth(t, owner, c, "org_beta")
 		var stored string
-		if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT secret_hash FROM oauth_clients WHERE id=?", c.ID).Scan(&stored); err != nil || stored == c.Secret {
+		if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT secret_hash FROM platform.oauth_clients WHERE id=$1", c.ID).Scan(&stored); err != nil || stored == c.Secret {
 			t.Fatal("consented client secret not hashed")
 		}
 		token := exchangeTestOAuth(t, owner, form)
@@ -285,7 +285,7 @@ func testOAuthCodeExchangeAndRotation(t *testing.T, configureStorage func(*Confi
 		if err != nil || key.Owner != "user_alice" || key.Organizations[0].OrganizationID != "org_beta" {
 			t.Fatalf("actor=%+v err=%v", key, err)
 		}
-		if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE oauth_grants SET access_expires_at='2000-01-01T00:00:00Z' WHERE id=?", key.ID); err != nil {
+		if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE platform.oauth_grants SET access_expires_at='2000-01-01T00:00:00Z' WHERE id=$1", key.ID); err != nil {
 			t.Fatal(err)
 		}
 		for _, path := range []string{"/mcp", "/organizations/org_beta/mcp"} {
@@ -296,18 +296,18 @@ func testOAuthCodeExchangeAndRotation(t *testing.T, configureStorage func(*Confi
 		}
 		refresh := url.Values{"client_id": {c.ID}, "client_secret": {c.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
 		restoreToken := f.service.config.generateToken
-		if _, err := f.service.auth.store.db.ExecContext(t.Context(), `INSERT INTO oauth_grants(id,client_id,owner_subject,owner_email,organization_id,permission,resource,created_at,access_hash) VALUES('example_collision',?,'user_alice','alice@example.test','org_beta','read',?,?,?)`, c.ID, testPublicURL+"/mcp", f.service.config.now(), apikey.HashToken(oauthAccessPrefix+"example_collision")); err != nil {
+		if _, err := f.service.auth.store.db.ExecContext(t.Context(), `INSERT INTO platform.oauth_grants(id,client_id,owner_subject,owner_email,organization_id,permission,resource,created_at,access_hash) VALUES('example_collision',$1,'user_alice','alice@example.test','org_beta','read',$2,$3,$4)`, c.ID, testPublicURL+"/mcp", f.service.config.now(), apikey.HashToken(oauthAccessPrefix+"example_collision")); err != nil {
 			t.Fatal(err)
 		}
 		f.service.config.generateToken = func() (string, error) { return "example_collision", nil }
 		if response := owner.do(http.MethodPost, "/oauth/token", refresh, nil); response.StatusCode < 400 {
 			t.Fatal("rotation succeeded without retaining spent token")
 		}
-		if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT token_hash FROM oauth_refresh_tokens WHERE grant_id=?", key.ID).Scan(&stored); err != nil || stored != apikey.HashToken(token.RefreshToken) {
+		if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT token_hash FROM platform.oauth_refresh_tokens WHERE grant_id=$1", key.ID).Scan(&stored); err != nil || stored != apikey.HashToken(token.RefreshToken) {
 			t.Fatalf("failed rotation changed current token: %v", err)
 		}
 		f.service.config.generateToken = restoreToken
-		if _, err := f.service.auth.store.db.ExecContext(t.Context(), "DELETE FROM oauth_grants WHERE id='example_collision' AND organization_id='org_beta'"); err != nil {
+		if _, err := f.service.auth.store.db.ExecContext(t.Context(), "DELETE FROM platform.oauth_grants WHERE id='example_collision' AND organization_id='org_beta'"); err != nil {
 			t.Fatal(err)
 		}
 		rotated := exchangeTestOAuth(t, owner, refresh)
@@ -323,7 +323,7 @@ func testOAuthCodeExchangeAndRotation(t *testing.T, configureStorage func(*Confi
 			rotated = exchangeTestOAuth(t, owner, rotating)
 		}
 		var retained int
-		if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM oauth_refresh_tokens WHERE grant_id=?", key.ID).Scan(&retained); err != nil || retained != 1 {
+		if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM platform.oauth_refresh_tokens WHERE grant_id=$1", key.ID).Scan(&retained); err != nil || retained != 1 {
 			t.Fatalf("refresh history retained=%d want=1 err=%v", retained, err)
 		}
 		foreign := client
@@ -471,7 +471,7 @@ func TestOAuthConsentBinding(t *testing.T) {
 		t.Fatalf("consent replay=%+v", response)
 	}
 	var grants int
-	if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM oauth_grants").Scan(&grants); err != nil || grants != 1 {
+	if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM platform.oauth_grants").Scan(&grants); err != nil || grants != 1 {
 		t.Fatalf("consent replay left grants=%d err=%v", grants, err)
 	}
 }
@@ -723,11 +723,11 @@ func TestOAuthCurrentAuthority(t *testing.T) {
 			case "role downgraded":
 				f.provider.member("user_alice", "porg_alpha", "viewer")
 			case "policy blocked":
-				exec("INSERT INTO organization_key_policy(organization_id,personal_keys) VALUES(?,?)", "org_alpha", "blocked")
+				exec("INSERT INTO platform.organization_key_policy(organization_id,personal_keys) VALUES($1,$2)", "org_alpha", "blocked")
 			case "policy approval":
-				exec("INSERT INTO organization_key_policy(organization_id,personal_keys) VALUES(?,?)", "org_alpha", "approval")
+				exec("INSERT INTO platform.organization_key_policy(organization_id,personal_keys) VALUES($1,$2)", "org_alpha", "approval")
 			case "refresh expired":
-				exec("UPDATE oauth_refresh_tokens SET expires_at='2000-01-01T00:00:00Z' WHERE grant_id=?", key.ID)
+				exec("UPDATE platform.oauth_refresh_tokens SET expires_at='2000-01-01T00:00:00Z' WHERE grant_id=$1", key.ID)
 			case "expired consumed refresh":
 				now := f.service.config.now()
 				f.service.config.now = func() time.Time { return now.Add(29 * 24 * time.Hour) }

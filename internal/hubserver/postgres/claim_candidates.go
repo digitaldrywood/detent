@@ -2,13 +2,12 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"encoding/hex"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -27,12 +26,12 @@ func (s *session) PutWorkItemFacts(ctx context.Context, facts claimstore.WorkIte
 			return claimstore.ErrInvalidCandidateFact
 		}
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO issue_claim_facts
+	_, err := s.db.Exec(ctx, `INSERT INTO issue_claim_facts
  (organization_id,project_id,work_item_id,author_login,repository,assignees,dispatch_wait_since)
  VALUES($1,$2,$3,$4,$5,$6,$7)
  ON CONFLICT(organization_id,project_id,work_item_id) DO UPDATE SET
  author_login=EXCLUDED.author_login,repository=EXCLUDED.repository,assignees=EXCLUDED.assignees,dispatch_wait_since=EXCLUDED.dispatch_wait_since`,
-		s.organization, facts.ProjectID, facts.WorkItemID, strings.ToLower(strings.TrimSpace(facts.Author)), strings.ToLower(strings.TrimSpace(facts.Repository)), pq.Array(normalizedClaimValues(facts.Assignees)), facts.DispatchWaitSince)
+		s.organization, facts.ProjectID, facts.WorkItemID, strings.ToLower(strings.TrimSpace(facts.Author)), strings.ToLower(strings.TrimSpace(facts.Repository)), normalizedClaimValues(facts.Assignees), facts.DispatchWaitSince)
 	if err != nil {
 		return mapError(ctx, err)
 	}
@@ -61,9 +60,9 @@ func (s *session) CreateWorkItemWithClaimFacts(ctx context.Context, item coresto
 
 func (s *session) WorkItemFacts(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (claimstore.WorkItemFacts, error) {
 	var facts claimstore.WorkItemFacts
-	var assignees pq.StringArray
-	var wait sql.NullTime
-	err := s.db.QueryRowContext(ctx, `SELECT organization_id,project_id,work_item_id,author_login,repository,assignees,dispatch_wait_since
+	var assignees []string
+	var wait pgtype.Timestamptz
+	err := s.db.QueryRow(ctx, `SELECT organization_id,project_id,work_item_id,author_login,repository,assignees,dispatch_wait_since
 	 FROM issue_claim_facts WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3`, s.organization, project, item).
 		Scan(&facts.OrganizationID, &facts.ProjectID, &facts.WorkItemID, &facts.Author, &facts.Repository, &assignees, &wait)
 	if err != nil {
@@ -78,8 +77,8 @@ func (s *session) WorkItemFacts(ctx context.Context, project tracker.ProjectID, 
 
 func (s *session) QueueEntry(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, scope string) (claimstore.QueueEntry, error) {
 	var entry claimstore.QueueEntry
-	var priority sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT organization_id,project_id,work_item_id,scope,state,rank,priority_override,created_at,updated_at
+	var priority pgtype.Int8
+	err := s.db.QueryRow(ctx, `SELECT organization_id,project_id,work_item_id,scope,state,rank,priority_override,created_at,updated_at
  FROM queue_entries WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND scope=$4`, s.organization, project, item, scope).
 		Scan(&entry.OrganizationID, &entry.ProjectID, &entry.WorkItemID, &entry.Scope, &entry.State, &entry.Rank, &priority, &entry.CreatedAt, &entry.UpdatedAt)
 	if err != nil {
@@ -98,7 +97,7 @@ func (s *session) PutQueueEntry(ctx context.Context, entry claimstore.QueueEntry
 	if entry.ProjectID == "" || entry.WorkItemID == "" || strings.TrimSpace(entry.Scope) == "" || strings.TrimSpace(entry.State) == "" || entry.CreatedAt.IsZero() || entry.UpdatedAt.Before(entry.CreatedAt) || entry.Priority != nil && (*entry.Priority < 0 || *entry.Priority > 3) {
 		return claimstore.ErrInvalidCandidateFact
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO queue_entries
+	_, err := s.db.Exec(ctx, `INSERT INTO queue_entries
  (organization_id,project_id,work_item_id,scope,state,rank,priority_override,created_at,updated_at)
  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
  ON CONFLICT(organization_id,scope,work_item_id) DO UPDATE SET
@@ -112,14 +111,11 @@ func (s *session) DeleteQueueEntry(ctx context.Context, project tracker.ProjectI
 	if project == "" || item == "" || strings.TrimSpace(scope) == "" {
 		return claimstore.ErrInvalidCandidateFact
 	}
-	result, err := s.db.ExecContext(ctx, `DELETE FROM queue_entries WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND scope=$4`, s.organization, project, item, scope)
+	result, err := s.db.Exec(ctx, `DELETE FROM queue_entries WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND scope=$4`, s.organization, project, item, scope)
 	if err != nil {
 		return mapError(ctx, err)
 	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return mapError(ctx, err)
-	}
+	count := result.RowsAffected()
 	if count == 0 {
 		return corestore.ErrNotFound
 	}
@@ -128,7 +124,7 @@ func (s *session) DeleteQueueEntry(ctx context.Context, project tracker.ProjectI
 
 func (s *session) SelectionCursor(ctx context.Context, runnerID string, project tracker.ProjectID) (claimstore.SelectionCursor, error) {
 	var cursor claimstore.SelectionCursor
-	err := s.db.QueryRowContext(ctx, `SELECT organization_id,runner_id,project_id,source_revision,
+	err := s.db.QueryRow(ctx, `SELECT organization_id,runner_id,project_id,source_revision,
  priority,state_rank,label_rank,aging_boost,landing_rank,lane_rank,unblocker_rank,rank,created_at,work_item_id,cursor_source_revision,revision
  FROM runner_selection_cursors WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, s.organization, runnerID, project).
 		Scan(&cursor.OrganizationID, &cursor.RunnerID, &cursor.ProjectID, &cursor.SourceRevision,
@@ -159,7 +155,7 @@ func (s *session) PutSelectionCursor(ctx context.Context, cursor claimstore.Sele
 		return false, claimstore.ErrInvalidCandidateFact
 	}
 	cursor.Revision = expectedRevision + 1
-	result, err := s.db.ExecContext(ctx, `INSERT INTO runner_selection_cursors
+	result, err := s.db.Exec(ctx, `INSERT INTO runner_selection_cursors
  (organization_id,runner_id,project_id,source_revision,priority,state_rank,label_rank,aging_boost,landing_rank,lane_rank,unblocker_rank,rank,created_at,work_item_id,cursor_source_revision,revision)
  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
  ON CONFLICT(organization_id,runner_id,project_id) DO UPDATE SET
@@ -174,10 +170,7 @@ func (s *session) PutSelectionCursor(ctx context.Context, cursor claimstore.Sele
 	if err != nil {
 		return false, mapError(ctx, err)
 	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return false, mapError(ctx, err)
-	}
+	rows := result.RowsAffected()
 	return rows == 1, nil
 }
 
@@ -210,11 +203,11 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 	}
 	statePriority := "0::bigint"
 	if len(query.StatePriority) > 0 {
-		statePriority = "COALESCE(array_position(" + bind(pq.Array(normalizedClaimValues(query.StatePriority))) + "::text[],lower(trim(ws.name))),2147483647)::bigint"
+		statePriority = "COALESCE(array_position(" + bind(normalizedClaimValues(query.StatePriority)) + "::text[],lower(trim(ws.name))),2147483647)::bigint"
 	}
 	labelPriority := "0::bigint"
 	if len(query.LabelPriority) > 0 {
-		labelPriority = "COALESCE((SELECT min(array_position(" + bind(pq.Array(query.LabelPriority)) + "::text[],l.label)) FROM issue_labels l WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id AND l.label=ANY(" + bind(pq.Array(query.LabelPriority)) + "::text[])),2147483647)::bigint"
+		labelPriority = "COALESCE((SELECT min(array_position(" + bind(query.LabelPriority) + "::text[],l.label)) FROM issue_labels l WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id AND l.label=ANY(" + bind(query.LabelPriority) + "::text[])),2147483647)::bigint"
 	}
 	priority := "CASE WHEN q.priority_override BETWEEN 0 AND 3 THEN q.priority_override+1 ELSE 5 END::bigint"
 	rank := "COALESCE(q.rank,'')"
@@ -262,13 +255,13 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 			filterSQL.WriteString(" AND ")
 			filterSQL.WriteString(filter.expr)
 			filterSQL.WriteString("=ANY(")
-			filterSQL.WriteString(bind(pq.Array(filter.values)))
+			filterSQL.WriteString(bind(filter.values))
 			filterSQL.WriteString("::text[])")
 		}
 	}
 	statement += filterSQL.String()
 	if len(query.Assignees) > 0 {
-		statement += ` AND f.assignees && ` + bind(pq.Array(normalizedClaimValues(query.Assignees))) + `::text[]`
+		statement += ` AND f.assignees && ` + bind(normalizedClaimValues(query.Assignees)) + `::text[]`
 	}
 	var labelSQL strings.Builder
 	for _, label := range query.IncludeLabels {
@@ -278,13 +271,17 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 	}
 	statement += labelSQL.String()
 	if len(query.ExcludeLabels) > 0 {
-		statement += ` AND NOT EXISTS(SELECT 1 FROM issue_labels l WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id AND l.label=ANY(` + bind(pq.Array(query.ExcludeLabels)) + `::text[]))`
+		statement += ` AND NOT EXISTS(SELECT 1 FROM issue_labels l WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id AND l.label=ANY(` + bind(query.ExcludeLabels) + `::text[]))`
 	}
 	if query.WorkItemID != "" {
 		statement += ` AND i.native_id=` + bind(query.WorkItemID)
 	}
 	if len(query.WorkItemIDs) > 0 {
-		statement += ` AND i.native_id=ANY(` + bind(pq.Array(query.WorkItemIDs)) + `::text[])`
+		itemIDs := make([]string, len(query.WorkItemIDs))
+		for i, id := range query.WorkItemIDs {
+			itemIDs[i] = string(id)
+		}
+		statement += ` AND i.native_id=ANY(` + bind(itemIDs) + `::text[])`
 	}
 	if query.After.WorkItemID != "" {
 		cursorOrder := strings.Join([]string{priority, aging, landing, statePriority, labelPriority, unblockerRank, rank, created, "i.native_id"}, ",")
@@ -300,7 +297,7 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 		statement += ` AND (` + cursorOrder + `) > (` + strings.Join(cursorPlaceholders, ",") + `)`
 	}
 	statement += ` ORDER BY ` + order + ` LIMIT ` + bind(query.Limit)
-	rows, err := s.db.QueryContext(ctx, statement, args...)
+	rows, err := s.db.Query(ctx, statement, args...)
 	if err != nil {
 		return claimstore.CandidatePage{}, mapError(ctx, err)
 	}
@@ -308,8 +305,8 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 	page := claimstore.CandidatePage{}
 	for rows.Next() {
 		var item claimstore.Candidate
-		var assignees, labels pq.StringArray
-		var wait sql.NullTime
+		var assignees, labels []string
+		var wait pgtype.Timestamptz
 		if err := rows.Scan(&item.ID, &item.Revision, &item.Number, &item.WorkItemID, &item.State, &item.Author, &item.Repository, &assignees, &labels, &item.Rank, &item.Priority, &item.StateRank, &item.LabelRank, &item.AgingBoost, &item.LandingRank, &item.LaneRank, &item.CreatedAt, &wait, &item.Unblockers, &item.UnblockerRank); err != nil {
 			return claimstore.CandidatePage{}, mapError(ctx, err)
 		}
@@ -354,7 +351,7 @@ LEFT JOIN LATERAL (
 ) pending ON true
 WHERE l.organization_id=$1 AND i.project_id=$2 AND l.released_at IS NULL AND l.expires_at>$3`
 	var usage claimstore.LandingCapacityUsage
-	err := s.db.QueryRowContext(ctx, statement, s.organization, project, recordTime(now)).Scan(&usage.Active, &usage.Limit, &usage.Unknown)
+	err := s.db.QueryRow(ctx, statement, s.organization, project, recordTime(now)).Scan(&usage.Active, &usage.Limit, &usage.Unknown)
 	if err != nil {
 		return claimstore.LandingCapacityUsage{}, mapError(ctx, err)
 	}

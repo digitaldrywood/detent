@@ -12,8 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/labstack/echo/v4"
-	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -253,7 +254,7 @@ func (s *Service) internalAPIError(c echo.Context, code string, message string, 
 }
 
 func postgresErrorAttributes(err error) []any {
-	var postgresError *pq.Error
+	var postgresError *pgconn.PgError
 	if !errors.As(err, &postgresError) || postgresError == nil {
 		return nil
 	}
@@ -268,15 +269,15 @@ func postgresErrorAttributes(err error) []any {
 	if validState {
 		attributes = append(attributes, "sqlstate", state)
 	}
-	if postgresError.Schema != "public" && postgresError.Schema != "platform" {
+	if postgresError.SchemaName != "public" && postgresError.SchemaName != "platform" {
 		return attributes
 	}
-	attributes = append(attributes, "schema", postgresError.Schema)
-	if ordinaryPostgresIdentifier(postgresError.Table) {
-		attributes = append(attributes, "table", postgresError.Table)
+	attributes = append(attributes, "schema", postgresError.SchemaName)
+	if ordinaryPostgresIdentifier(postgresError.TableName) {
+		attributes = append(attributes, "table", postgresError.TableName)
 	}
-	if ordinaryPostgresIdentifier(postgresError.Column) {
-		attributes = append(attributes, "column", postgresError.Column)
+	if ordinaryPostgresIdentifier(postgresError.ColumnName) {
+		attributes = append(attributes, "column", postgresError.ColumnName)
 	}
 	return attributes
 }

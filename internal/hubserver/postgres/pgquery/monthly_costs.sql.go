@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
 )
 
 const monthlyAttemptCoverage = `-- name: MonthlyAttemptCoverage :one
@@ -35,12 +34,12 @@ type MonthlyAttemptCoverageRow struct {
 }
 
 func (q *Queries) MonthlyAttemptCoverage(ctx context.Context, arg MonthlyAttemptCoverageParams) (MonthlyAttemptCoverageRow, error) {
-	row := q.db.QueryRowContext(ctx, monthlyAttemptCoverage,
+	row := q.db.QueryRow(ctx, monthlyAttemptCoverage,
 		arg.OrganizationID,
 		arg.PeriodEnd,
 		arg.PeriodStart,
 		arg.AllProjects,
-		pq.Array(arg.Projects),
+		arg.Projects,
 	)
 	var i MonthlyAttemptCoverageRow
 	err := row.Scan(&i.Active, &i.Unreported)
@@ -63,12 +62,12 @@ type MonthlyConversationUsageParams struct {
 }
 
 func (q *Queries) MonthlyConversationUsage(ctx context.Context, arg MonthlyConversationUsageParams) ([]ConversationUsage, error) {
-	rows, err := q.db.QueryContext(ctx, monthlyConversationUsage,
+	rows, err := q.db.Query(ctx, monthlyConversationUsage,
 		arg.OrganizationID,
 		arg.PeriodStart,
 		arg.PeriodEnd,
 		arg.AllProjects,
-		pq.Array(arg.Projects),
+		arg.Projects,
 	)
 	if err != nil {
 		return nil, err
@@ -97,9 +96,6 @@ func (q *Queries) MonthlyConversationUsage(ctx context.Context, arg MonthlyConve
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -145,12 +141,12 @@ type MonthlyCostRevisionsRow struct {
 }
 
 func (q *Queries) MonthlyCostRevisions(ctx context.Context, arg MonthlyCostRevisionsParams) ([]MonthlyCostRevisionsRow, error) {
-	rows, err := q.db.QueryContext(ctx, monthlyCostRevisions,
+	rows, err := q.db.Query(ctx, monthlyCostRevisions,
 		arg.OrganizationID,
 		arg.PeriodEnd,
 		arg.PeriodStart,
 		arg.AllProjects,
-		pq.Array(arg.Projects),
+		arg.Projects,
 	)
 	if err != nil {
 		return nil, err
@@ -181,9 +177,6 @@ func (q *Queries) MonthlyCostRevisions(ctx context.Context, arg MonthlyCostRevis
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -220,7 +213,7 @@ type MonthlySpriteResourcesRow struct {
 }
 
 func (q *Queries) MonthlySpriteResources(ctx context.Context, arg MonthlySpriteResourcesParams) ([]MonthlySpriteResourcesRow, error) {
-	rows, err := q.db.QueryContext(ctx, monthlySpriteResources, arg.OrganizationID, arg.AllProjects, pq.Array(arg.Projects))
+	rows, err := q.db.Query(ctx, monthlySpriteResources, arg.OrganizationID, arg.AllProjects, arg.Projects)
 	if err != nil {
 		return nil, err
 	}
@@ -232,9 +225,6 @@ func (q *Queries) MonthlySpriteResources(ctx context.Context, arg MonthlySpriteR
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

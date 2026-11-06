@@ -2,9 +2,11 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -66,7 +68,7 @@ func (s *session) GitHubRepositoryBindings(ctx context.Context, after tracker.Pr
 	if err := checkPage(limit); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT p.id,ps.repository,ps.checkout_repository
+	rows, err := s.db.Query(ctx, `SELECT p.id,ps.repository,ps.checkout_repository
 FROM projects p
 JOIN project_settings ps ON ps.organization_id=p.organization_id AND ps.project_id=p.id
 WHERE p.organization_id=$1 AND p.id>$2 AND p.deleted_at IS NULL AND p.profile='native'
@@ -139,7 +141,7 @@ func (s *session) CreateProjectRecord(ctx context.Context, record projectstore.R
 			return projectstore.Record{}, corestore.ErrUniqueViolation
 		}
 		slug = projectstore.CollisionSlug(base, record.Core.ID)
-	} else if !errors.Is(err, sql.ErrNoRows) {
+	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return projectstore.Record{}, mapError(ctx, err)
 	}
 	record.Core.Slug = slug
@@ -192,11 +194,11 @@ func (s *session) replaceProjectStates(ctx context.Context, id tracker.ProjectID
 	return nil
 }
 
-func nullableDays(value *int64) sql.NullInt64 {
+func nullableDays(value *int64) pgtype.Int8 {
 	if value == nil {
-		return sql.NullInt64{}
+		return pgtype.Int8{}
 	}
-	return sql.NullInt64{Int64: *value, Valid: true}
+	return pgtype.Int8{Int64: *value, Valid: true}
 }
 
 func (s *session) UpdateProjectRecord(ctx context.Context, record projectstore.Record) (projectstore.Record, error) {
@@ -349,11 +351,11 @@ func (s *session) UpdateProjectSlug(ctx context.Context, id tracker.ProjectID, e
 }
 
 func (s *session) UpdateProjectIcon(ctx context.Context, project tracker.ProjectID, revision int64, icon projecticon.Icon) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE project_settings SET icon_kind=$4,icon_name=$5,icon_color=$6,icon_emoji=$7,icon_image_key=$8,icon_image_sha256=$9,revision=revision+1 WHERE organization_id=$1 AND project_id=$2 AND revision=$3`, s.organization, project, revision, icon.Kind, icon.Name, icon.Color, icon.Emoji, icon.ImageKey, icon.ImageSHA256)
+	result, err := s.db.Exec(ctx, `UPDATE project_settings SET icon_kind=$4,icon_name=$5,icon_color=$6,icon_emoji=$7,icon_image_key=$8,icon_image_sha256=$9,revision=revision+1 WHERE organization_id=$1 AND project_id=$2 AND revision=$3`, s.organization, project, revision, icon.Kind, icon.Name, icon.Color, icon.Emoji, icon.ImageKey, icon.ImageSHA256)
 	if err != nil {
 		return mapError(ctx, err)
 	}
-	n, err := result.RowsAffected()
+	n := result.RowsAffected()
 	if err == nil && n == 0 {
 		return corestore.ErrRevisionConflict
 	}

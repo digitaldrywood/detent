@@ -9,6 +9,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -84,7 +86,7 @@ func (i *MetricsImporter) Step(ctx context.Context, limit int) (MetricsImportPro
 		}
 		var err error
 		checkpoint, err = s.queries.ReadRequestMetricImport(ctx, i.organization)
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrMetricImport
 		}
 		return err

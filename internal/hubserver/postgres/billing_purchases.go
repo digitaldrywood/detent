@@ -21,7 +21,7 @@ func (s *session) BillingCreditPurchase(ctx context.Context, key string) (billin
 }
 
 func (s *session) BillingPendingCreditPurchase(ctx context.Context, mode string, automatic bool) (billingstore.CreditPurchase, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT organization_id,purchase_key,mode,price_id,usd_cents,automatic,payment_method,state,payment_id,session_id,session_url,session_expires_at,created_at FROM ai_credit_purchases WHERE organization_id=$1 AND mode=$2 AND automatic=$3 AND state='pending' ORDER BY created_at LIMIT 1`, s.organization, mode, automatic)
+	row := s.db.QueryRow(ctx, `SELECT organization_id,purchase_key,mode,price_id,usd_cents,automatic,payment_method,state,payment_id,session_id,session_url,session_expires_at,created_at FROM ai_credit_purchases WHERE organization_id=$1 AND mode=$2 AND automatic=$3 AND state='pending' ORDER BY created_at LIMIT 1`, s.organization, mode, automatic)
 	var result billingstore.CreditPurchase
 	var sessionExpires *time.Time
 	err := row.Scan(&result.OrganizationID, &result.Key, &result.Mode, &result.PriceID, &result.USDCents, &result.Automatic, &result.PaymentMethod, &result.State, &result.PaymentID, &result.Session.ID, &result.Session.URL, &sessionExpires, &result.CreatedAt)
@@ -35,7 +35,7 @@ func (s *session) CreateBillingCreditPurchase(ctx context.Context, row billingst
 	if err := s.checkOrganization(row.OrganizationID); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO ai_credit_purchases(organization_id,purchase_key,mode,price_id,usd_cents,automatic,payment_method,state,payment_id,session_id,session_url,session_expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(organization_id,purchase_key) DO NOTHING`, s.organization, row.Key, row.Mode, row.PriceID, row.USDCents, row.Automatic, row.PaymentMethod, row.State, row.PaymentID, row.Session.ID, row.Session.URL, optionalTime(row.Session.ExpiresAt), row.CreatedAt)
+	_, err := s.db.Exec(ctx, `INSERT INTO ai_credit_purchases(organization_id,purchase_key,mode,price_id,usd_cents,automatic,payment_method,state,payment_id,session_id,session_url,session_expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(organization_id,purchase_key) DO NOTHING`, s.organization, row.Key, row.Mode, row.PriceID, row.USDCents, row.Automatic, row.PaymentMethod, row.State, row.PaymentID, row.Session.ID, row.Session.URL, optionalTime(row.Session.ExpiresAt), row.CreatedAt)
 	if err != nil {
 		return mapError(ctx, err)
 	}

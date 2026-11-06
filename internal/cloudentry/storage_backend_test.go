@@ -3,20 +3,24 @@ package cloudentry
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net"
-	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+
 	"github.com/google/uuid"
-	"github.com/lib/pq"
+
 	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -61,7 +65,7 @@ func entryPostgresDatabase(t *testing.T) *sql.DB {
 	if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&name); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pq.QuoteIdentifier(name)+" CONNECTION LIMIT 6"); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{name}.Sanitize()+" CONNECTION LIMIT 6"); err != nil {
 		t.Fatal(err)
 	}
 	return admin
@@ -87,8 +91,8 @@ func entryPostgresStorageConfig(t *testing.T, restart bool, databases ...*sql.DB
 	}
 	name := "example_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	password := uuid.NewString()
-	quoted := pq.QuoteIdentifier(name)
-	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(password)+" IN ROLE "+postgres.PlatformRoleName); err != nil {
+	quoted := pgx.Identifier{name}.Sanitize()
+	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(password)+" IN ROLE "+postgres.PlatformRoleName); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -110,18 +114,17 @@ func entryPostgresStorageConfig(t *testing.T, restart bool, databases ...*sql.DB
 	return func(cfg *Config) {
 		cfg.Storage = StorageConfig{Backend: "postgres", Pool: platformstore.PoolConfig{MaxConnections: 5, ServingConnections: 3, BackgroundConnections: 1}}
 		if restart {
-			connection, err := pq.NewConfig(os.Getenv(pgtest.Environment))
+			native := entryPostgresTemplate.NativeConfig(t, admin, name, password)
+			cfg.Storage.PostgresDSN = native.ConnString()
+		} else {
+			native := entryPostgresTemplate.NativeConfig(t, admin, name, password)
+			native.MaxConns = int32(cfg.Storage.Pool.MaxConnections)
+			var err error
+			cfg.Storage.PostgresPool, err = pgxpool.NewWithConfig(t.Context(), native)
 			if err != nil {
-				t.Fatal("invalid PostgreSQL fixture configuration")
-			}
-			var database string
-			if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&database); err != nil {
 				t.Fatal(err)
 			}
-			address := url.URL{Scheme: "postgres", User: url.UserPassword(name, password), Host: net.JoinHostPort(connection.Host, strconv.Itoa(int(connection.Port))), Path: "/" + database, RawQuery: "sslmode=disable"}
-			cfg.Storage.PostgresDSN = address.String()
-		} else {
-			cfg.Storage.PostgresPool = entryPostgresTemplate.OpenRole(t, admin, name, password)
+			t.Cleanup(cfg.Storage.PostgresPool.Close)
 		}
 		if cfg.Attachments == nil {
 			config := objects.config()
@@ -172,8 +175,8 @@ func configurePostgresTenant(t *testing.T, cfg *hubserver.Config, databases ...*
 		admin = databases[0]
 	}
 	name, password := "example_"+strings.ReplaceAll(uuid.NewString(), "-", ""), uuid.NewString()
-	quoted := pq.QuoteIdentifier(name)
-	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(password)+" IN ROLE "+postgres.RuntimeRoleName); err != nil {
+	quoted := pgx.Identifier{name}.Sanitize()
+	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(password)+" IN ROLE "+postgres.RuntimeRoleName); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -187,7 +190,13 @@ func configurePostgresTenant(t *testing.T, cfg *hubserver.Config, databases ...*
 			t.Error(err)
 		}
 	})
-	pool := entryPostgresTemplate.OpenRole(t, admin, name, password)
+	native := entryPostgresTemplate.NativeConfig(t, admin, name, password)
+	native.MaxConns = 4
+	pool, err := pgxpool.NewWithConfig(t.Context(), native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
 	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -223,14 +232,11 @@ func configurePostgresTenant(t *testing.T, cfg *hubserver.Config, databases ...*
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	connection, err := pq.NewConfig(os.Getenv(pgtest.Environment))
-	if err != nil {
-		t.Fatal("invalid PostgreSQL fixture configuration")
-	}
+	connection := entryPostgresTemplate.Connection(t, admin, name, password)
 	if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&connection.Database); err != nil {
 		t.Fatal(err)
 	}
-	connection = pq.Config{Host: connection.Host, Port: connection.Port, Database: connection.Database, SSLMode: pq.SSLModeDisable, User: name, Password: password}
+	connection = pgtransport.Connection{Host: connection.Host, Port: connection.Port, Database: connection.Database, SSLMode: "disable", User: name, Password: password}
 	if connection.Host == "localhost" {
 		connection.Host = "127.0.0.1"
 	}
@@ -243,11 +249,17 @@ func configurePostgresTenant(t *testing.T, cfg *hubserver.Config, databases ...*
 
 func tenantPostgresRepository(t *testing.T, fixture tenantFixture) *postgres.Repository {
 	t.Helper()
-	connector, err := pq.NewConnectorConfig(fixture.config.Postgres.Connection)
+	native, err := fixture.config.Postgres.Connection.PoolConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	repository, err := postgres.NewRepository(t.Context(), sql.OpenDB(connector), fixture.config.Postgres.Pool)
+	native.MaxConns = int32(fixture.config.Postgres.Pool.MaxConnections)
+	pool, err := pgxpool.NewWithConfig(t.Context(), native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository, err := postgres.NewRepository(t.Context(), pool, fixture.config.Postgres.Pool)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,14 +333,18 @@ func TestEntryBackendPlatformOwners(t *testing.T) {
 						t.Fatal(err)
 					}
 					if err := enqueuePlatformNotification(t.Context(), tx, "organization", id, session.Email, organization.Name, "Free", formatTime(s.config.now())); err != nil {
-						tx.Rollback()
+						tx.Rollback(t.Context())
 						t.Fatal(err)
 					}
-					if err := tx.Commit(); err != nil {
+					if err := tx.Commit(t.Context()); err != nil {
 						t.Fatal(err)
 					}
 					var count int
-					if err := source.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM platform_notifications WHERE entity_id=?", id).Scan(&count); err != nil || count != 1 {
+					queueQuery := "SELECT count(*) FROM platform.platform_notifications WHERE entity_id=$1"
+					if source.db.auth {
+						queueQuery = "SELECT count(*) FROM platform.auth_notifications WHERE entity_id=$1"
+					}
+					if err := source.reader.QueryRowContext(t.Context(), queueQuery, id).Scan(&count); err != nil || count != 1 {
 						t.Fatalf("notification queue: %d %v", count, err)
 					}
 				}
@@ -375,7 +391,7 @@ func TestEntryBackendPlatformOwners(t *testing.T) {
 				if err != nil || tokens.AccessToken != "access_"+id || tokens.RefreshToken != "refresh_"+id {
 					t.Fatalf("restarted tokens: %+v %v", tokens, err)
 				}
-				if _, err := reopened.auth.store.db.ExecContext(t.Context(), "UPDATE sessions SET expires_at=? WHERE token_hash=?", formatTime(reopened.config.now().Add(-time.Hour)), session.Hash); err != nil {
+				if _, err := reopened.auth.store.db.ExecContext(t.Context(), "UPDATE platform.sessions SET expires_at=$1 WHERE token_hash=$2", formatTime(reopened.config.now().Add(-time.Hour)), session.Hash); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := reopened.auth.authorizationByBinding(t.Context(), item.Binding); backend == "postgres" && !errors.Is(err, errNoSession) {
@@ -420,5 +436,25 @@ func TestEntryStorageSelectionFailsClosed(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestEntryDSNRejectsAmbientCredentialDiscovery(t *testing.T) {
+	cfg := Config{SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))}
+	entryPostgresRestartConfig(t)(&cfg)
+	t.Setenv("PGPASSWORD", "example-untrusted")
+	registry, authStore, err := openEntryStores(t.Context(), cfg, nil)
+	if registry != nil {
+		if closeErr := registry.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+	}
+	if authStore != nil {
+		if closeErr := authStore.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+	}
+	if !errors.Is(err, pgtransport.ErrConnectionConfig) {
+		t.Fatalf("ambient DSN authority=%v", err)
 	}
 }

@@ -7,7 +7,7 @@ sql:
       go:
         package: "pgquery"
         out: "pgquery"
-        sql_package: "database/sql"
+        sql_package: "pgx/v5"
         emit_empty_slices: true
         rename:
           payload_sha256: "PayloadSHA256"
@@ -19,6 +19,30 @@ sql:
           external_url: "ExternalURL"
           landing_head_sha: "LandingHeadSHA"
         overrides:
+          - db_type: "json"
+            nullable: false
+            go_type:
+              import: "encoding/json"
+              type: "RawMessage"
+          - db_type: "json"
+            nullable: true
+            go_type:
+              import: "encoding/json"
+              type: "RawMessage"
+          - db_type: "jsonb"
+            nullable: false
+            go_type:
+              import: "encoding/json"
+              type: "RawMessage"
+          - db_type: "jsonb"
+            nullable: true
+            go_type:
+              import: "encoding/json"
+              type: "RawMessage"
+          - db_type: "timestamptz"
+            go_type:
+              import: "time"
+              type: "Time"
           - db_type: "tsvector"
             go_type: "string"
           - db_type: "tsquery"

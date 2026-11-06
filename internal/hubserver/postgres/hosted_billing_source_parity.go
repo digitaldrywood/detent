@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -93,7 +95,7 @@ func (r *Repository) RepairHostedBillingSourceParity(ctx context.Context, repair
 	if err != nil || expectedDigest != repair.ExpectedStateSHA256 {
 		return result, ErrHostedBillingSourceParity
 	}
-	err = r.transactionIsolation(ctx, repair.OrganizationID, corestore.Background, false, sql.LevelSerializable, func(s *session) error {
+	err = r.transactionIsolation(ctx, repair.OrganizationID, corestore.Background, false, pgx.Serializable, func(s *session) error {
 		assignment, err := lockBillingAssignment(ctx, s, repair.OrganizationID)
 		if err != nil {
 			return err
@@ -529,9 +531,9 @@ func sameOptionalBillingTime(left, right *time.Time) bool {
 func lockBillingAssignment(ctx context.Context, s *session, organization tracker.OrganizationID) (billingstore.Assignment, error) {
 	var row billingstore.Assignment
 	row.OrganizationID = organization
-	var subscription sql.NullString
-	var version sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT base_id,base_version,subscription_id,subscription_version,subscription_expires_at,revision FROM hosted_plan_assignments WHERE organization_id=$1 FOR UPDATE`, organization).Scan(&row.Base.ID, &row.Base.Version, &subscription, &version, &row.ExpiresAt, &row.Revision)
+	var subscription pgtype.Text
+	var version pgtype.Int8
+	err := s.db.QueryRow(ctx, `SELECT base_id,base_version,subscription_id,subscription_version,subscription_expires_at,revision FROM hosted_plan_assignments WHERE organization_id=$1 FOR UPDATE`, organization).Scan(&row.Base.ID, &row.Base.Version, &subscription, &version, &row.ExpiresAt, &row.Revision)
 	if err != nil {
 		return billingstore.Assignment{}, mapError(ctx, err)
 	}
@@ -543,8 +545,8 @@ func lockBillingAssignment(ctx context.Context, s *session, organization tracker
 
 func lockBillingPlan(ctx context.Context, s *session, organization tracker.OrganizationID, reference billingstore.PlanReference) (billingstore.Plan, bool, error) {
 	var found string
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM hosted_plans WHERE organization_id=$1 AND id=$2 AND version=$3 FOR UPDATE`, organization, reference.ID, reference.Version).Scan(&found)
-	if errors.Is(err, sql.ErrNoRows) {
+	err := s.db.QueryRow(ctx, `SELECT id FROM hosted_plans WHERE organization_id=$1 AND id=$2 AND version=$3 FOR UPDATE`, organization, reference.ID, reference.Version).Scan(&found)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return billingstore.Plan{}, false, nil
 	}
 	if err != nil {
@@ -555,7 +557,7 @@ func lockBillingPlan(ctx context.Context, s *session, organization tracker.Organ
 }
 
 func lockBillingGrants(ctx context.Context, s *session, organization tracker.OrganizationID) (map[string]billingstore.Grant, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM hosted_complimentary_grants WHERE organization_id=$1 ORDER BY id LIMIT 1001 FOR UPDATE`, organization)
+	rows, err := s.db.Query(ctx, `SELECT id FROM hosted_complimentary_grants WHERE organization_id=$1 ORDER BY id LIMIT 1001 FOR UPDATE`, organization)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -572,9 +574,7 @@ func lockBillingGrants(ctx context.Context, s *session, organization tracker.Org
 		rows.Close()
 		return nil, mapError(ctx, err)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, mapError(ctx, err)
-	}
+	rows.Close()
 	if count > 1000 {
 		return nil, ErrHostedBillingSourceParity
 	}
@@ -639,26 +639,26 @@ func verifySeedPlanAudit(ctx context.Context, s *session, organization tracker.O
 }
 
 func replaceBillingPlan(ctx context.Context, s *session, plan billingstore.Plan) error {
-	var monthly sql.NullInt64
+	var monthly pgtype.Int8
 	if plan.MonthlyUSDCents != nil {
-		monthly = sql.NullInt64{Int64: *plan.MonthlyUSDCents, Valid: true}
+		monthly = pgtype.Int8{Int64: *plan.MonthlyUSDCents, Valid: true}
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE hosted_plans SET name=$1,monthly_usd_cents=$2,runtime_id=$3 WHERE organization_id=$4 AND id=$5 AND version=$6`, plan.Name, monthly, plan.RuntimeID, s.organization, plan.ID, plan.Version); err != nil {
+	if _, err := s.db.Exec(ctx, `UPDATE hosted_plans SET name=$1,monthly_usd_cents=$2,runtime_id=$3 WHERE organization_id=$4 AND id=$5 AND version=$6`, plan.Name, monthly, plan.RuntimeID, s.organization, plan.ID, plan.Version); err != nil {
 		return mapError(ctx, err)
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM hosted_plan_allowances WHERE organization_id=$1 AND plan_id=$2 AND plan_version=$3`, s.organization, plan.ID, plan.Version); err != nil {
+	if _, err := s.db.Exec(ctx, `DELETE FROM hosted_plan_allowances WHERE organization_id=$1 AND plan_id=$2 AND plan_version=$3`, s.organization, plan.ID, plan.Version); err != nil {
 		return mapError(ctx, err)
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM hosted_plan_features WHERE organization_id=$1 AND plan_id=$2 AND plan_version=$3`, s.organization, plan.ID, plan.Version); err != nil {
+	if _, err := s.db.Exec(ctx, `DELETE FROM hosted_plan_features WHERE organization_id=$1 AND plan_id=$2 AND plan_version=$3`, s.organization, plan.ID, plan.Version); err != nil {
 		return mapError(ctx, err)
 	}
 	for metric, amount := range plan.Allowances {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO hosted_plan_allowances(organization_id,plan_id,plan_version,metric,amount) VALUES($1,$2,$3,$4,$5)`, s.organization, plan.ID, plan.Version, metric, amount); err != nil {
+		if _, err := s.db.Exec(ctx, `INSERT INTO hosted_plan_allowances(organization_id,plan_id,plan_version,metric,amount) VALUES($1,$2,$3,$4,$5)`, s.organization, plan.ID, plan.Version, metric, amount); err != nil {
 			return mapError(ctx, err)
 		}
 	}
 	for _, feature := range plan.Features {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO hosted_plan_features(organization_id,plan_id,plan_version,feature) VALUES($1,$2,$3,$4)`, s.organization, plan.ID, plan.Version, feature); err != nil {
+		if _, err := s.db.Exec(ctx, `INSERT INTO hosted_plan_features(organization_id,plan_id,plan_version,feature) VALUES($1,$2,$3,$4)`, s.organization, plan.ID, plan.Version, feature); err != nil {
 			return mapError(ctx, err)
 		}
 	}
@@ -667,17 +667,17 @@ func replaceBillingPlan(ctx context.Context, s *session, plan billingstore.Plan)
 
 func setBillingAssignmentSource(ctx context.Context, s *session, current, source billingstore.Assignment) error {
 	var subscription *string
-	var version sql.NullInt64
+	var version pgtype.Int8
 	if source.Subscription != nil {
 		subscription = &source.Subscription.ID
-		version = sql.NullInt64{Int64: source.Subscription.Version, Valid: true}
+		version = pgtype.Int8{Int64: source.Subscription.Version, Valid: true}
 	}
 	nextRevision := max(current.Revision+1, source.Revision)
-	result, err := s.db.ExecContext(ctx, `UPDATE hosted_plan_assignments SET base_id=$1,base_version=$2,subscription_id=$3,subscription_version=$4,subscription_expires_at=$5,revision=$6 WHERE organization_id=$7 AND revision=$8 AND base_id=$9 AND base_version=$10 AND subscription_id IS NOT DISTINCT FROM $11 AND subscription_version IS NOT DISTINCT FROM $12 AND subscription_expires_at IS NOT DISTINCT FROM $13`, source.Base.ID, source.Base.Version, subscription, version, source.ExpiresAt, nextRevision, s.organization, current.Revision, current.Base.ID, current.Base.Version, nullableBillingReferenceID(current.Subscription), nullableBillingReferenceVersion(current.Subscription), current.ExpiresAt)
+	result, err := s.db.Exec(ctx, `UPDATE hosted_plan_assignments SET base_id=$1,base_version=$2,subscription_id=$3,subscription_version=$4,subscription_expires_at=$5,revision=$6 WHERE organization_id=$7 AND revision=$8 AND base_id=$9 AND base_version=$10 AND subscription_id IS NOT DISTINCT FROM $11 AND subscription_version IS NOT DISTINCT FROM $12 AND subscription_expires_at IS NOT DISTINCT FROM $13`, source.Base.ID, source.Base.Version, subscription, version, source.ExpiresAt, nextRevision, s.organization, current.Revision, current.Base.ID, current.Base.Version, nullableBillingReferenceID(current.Subscription), nullableBillingReferenceVersion(current.Subscription), current.ExpiresAt)
 	if err != nil {
 		return mapError(ctx, err)
 	}
-	count, err := result.RowsAffected()
+	count := result.RowsAffected()
 	if err != nil || count != 1 {
 		if err != nil {
 			return mapError(ctx, err)

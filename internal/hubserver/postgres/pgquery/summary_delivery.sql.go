@@ -25,7 +25,7 @@ type AdvanceSummaryParams struct {
 }
 
 func (q *Queries) AdvanceSummary(ctx context.Context, arg AdvanceSummaryParams) error {
-	_, err := q.db.ExecContext(ctx, advanceSummary,
+	_, err := q.db.Exec(ctx, advanceSummary,
 		arg.OrganizationID,
 		arg.UserID,
 		arg.WindowEnd,
@@ -51,7 +51,7 @@ type ClaimSummaryParams struct {
 }
 
 func (q *Queries) ClaimSummary(ctx context.Context, arg ClaimSummaryParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, claimSummary,
+	result, err := q.db.Exec(ctx, claimSummary,
 		arg.Status,
 		arg.RecordedAt,
 		arg.OrganizationID,
@@ -61,7 +61,7 @@ func (q *Queries) ClaimSummary(ctx context.Context, arg ClaimSummaryParams) (int
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const dueSummaries = `-- name: DueSummaries :many
@@ -94,7 +94,7 @@ type DueSummariesRow struct {
 }
 
 func (q *Queries) DueSummaries(ctx context.Context, arg DueSummariesParams) ([]DueSummariesRow, error) {
-	rows, err := q.db.QueryContext(ctx, dueSummaries, arg.OrganizationID, arg.DueAt, arg.NowAt)
+	rows, err := q.db.Query(ctx, dueSummaries, arg.OrganizationID, arg.DueAt, arg.NowAt)
 	if err != nil {
 		return nil, err
 	}
@@ -119,9 +119,6 @@ func (q *Queries) DueSummaries(ctx context.Context, arg DueSummariesParams) ([]D
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -141,7 +138,7 @@ type FinishSummaryParams struct {
 }
 
 func (q *Queries) FinishSummary(ctx context.Context, arg FinishSummaryParams) error {
-	_, err := q.db.ExecContext(ctx, finishSummary,
+	_, err := q.db.Exec(ctx, finishSummary,
 		arg.OrganizationID,
 		arg.UserID,
 		arg.WindowEnd,
@@ -165,7 +162,7 @@ type RetrySummaryParams struct {
 }
 
 func (q *Queries) RetrySummary(ctx context.Context, arg RetrySummaryParams) error {
-	_, err := q.db.ExecContext(ctx, retrySummary,
+	_, err := q.db.Exec(ctx, retrySummary,
 		arg.NowAt,
 		arg.OrganizationID,
 		arg.UserID,
@@ -186,7 +183,7 @@ type SummaryStatusParams struct {
 }
 
 func (q *Queries) SummaryStatus(ctx context.Context, arg SummaryStatusParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, summaryStatus, arg.OrganizationID, arg.UserID, arg.WindowEnd)
+	row := q.db.QueryRow(ctx, summaryStatus, arg.OrganizationID, arg.UserID, arg.WindowEnd)
 	var status string
 	err := row.Scan(&status)
 	return status, err

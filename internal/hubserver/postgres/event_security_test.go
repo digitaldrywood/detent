@@ -66,19 +66,19 @@ func TestEventChangeRowSecurity(t *testing.T) {
 			}{{"", 0}, {"org_first", 2}, {"org_second", 2}, {"org_unknown", 0}} {
 				tx := tenantTx(t, runtime, pool, scope.org)
 				var count int
-				if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&count); err != nil {
+				if err := tx.QueryRow(t.Context(), "SELECT count(*) FROM "+table).Scan(&count); err != nil {
 					t.Fatal(err)
 				}
 				if count != scope.want {
 					t.Errorf("scope=%s count=%d want=%d", scope.org, count, scope.want)
 				}
-				if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table+" WHERE organization_id='org_foreign'").Scan(&count); err != nil {
+				if err := tx.QueryRow(t.Context(), "SELECT count(*) FROM "+table+" WHERE organization_id='org_foreign'").Scan(&count); err != nil {
 					t.Fatal(err)
 				}
 				if count != 0 {
 					t.Error("foreign filter escaped RLS")
 				}
-				if err := tx.Rollback(); err != nil {
+				if err := tx.Rollback(t.Context()); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -88,22 +88,22 @@ func TestEventChangeRowSecurity(t *testing.T) {
 			}
 			tx := tenantTx(t, runtime, pool, "org_first")
 			selected := strings.ReplaceAll(columns, "payload_object_key", "replace(payload_object_key,'org_first','org_foreign')")
-			_, err := tx.ExecContext(t.Context(), fmt.Sprintf("INSERT INTO %s(organization_id,%s) SELECT 'org_foreign',%s FROM %s LIMIT 1", table, columns, selected, table))
+			_, err := tx.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s(organization_id,%s) SELECT 'org_foreign',%s FROM %s LIMIT 1", table, columns, selected, table))
 			requireSQLState(t, err, "42501")
-			if err := tx.Rollback(); err != nil {
+			if err := tx.Rollback(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 			for _, statement := range []string{"UPDATE " + table + " SET organization_id='org_first' WHERE organization_id='org_second'", "DELETE FROM " + table + " WHERE organization_id='org_second'"} {
 				tx := tenantTx(t, runtime, pool, "org_first")
-				result, err := tx.ExecContext(t.Context(), statement)
+				result, err := tx.Exec(t.Context(), statement)
 				if err != nil {
 					t.Fatal(err)
 				}
-				count, err := result.RowsAffected()
-				if err != nil || count != 0 {
+				count := result.RowsAffected()
+				if count != 0 {
 					t.Fatalf("foreign mutation affected=%d error=%v", count, err)
 				}
-				if err := tx.Rollback(); err != nil {
+				if err := tx.Rollback(t.Context()); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -142,12 +142,12 @@ func TestEventChangeRelationships(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tx := tenantTx(t, runtime, pool, "org_first")
-			_, err := tx.ExecContext(t.Context(), tc.statement)
+			_, err := tx.Exec(t.Context(), tc.statement)
 			if err == nil && tc.name == "foreign current version" {
-				_, err = tx.ExecContext(t.Context(), "SET CONSTRAINTS ALL IMMEDIATE")
+				_, err = tx.Exec(t.Context(), "SET CONSTRAINTS ALL IMMEDIATE")
 			}
 			requireSQLState(t, err, tc.state)
-			if err := tx.Rollback(); err != nil {
+			if err := tx.Rollback(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 		})

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
+
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -58,7 +60,7 @@ func TestAccessTenantSchemaEnforcesIsolation(t *testing.T) {
 		}
 	}
 	var count int
-	if err := pool.QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_members`).Scan(&count); err != nil || count != 0 {
+	if err := pool.QueryRow(pgtest.UnboundProbe(t.Context()), `SELECT count(*) FROM hosted_members`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("unbound access count=%d error=%v", count, err)
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -92,12 +94,12 @@ func TestAccessTenantSchemaEnforcesIsolation(t *testing.T) {
 	}
 	platform := rolePool(t, admin, "detent_platform_v2", "")
 	defer platform.Close()
-	if _, err := platform.ExecContext(t.Context(), `SELECT * FROM api_tokens`); err == nil {
+	if _, err := platform.Exec(pgtest.UnboundProbe(t.Context()), `SELECT * FROM api_tokens`); err == nil {
 		t.Fatal("platform authority read tenant credentials")
 	}
 	for _, table := range []string{"api_tokens", "hub_server_identities", "organization_slugs", "hosted_work_view_preferences", "hosted_work_views", "hosted_work_view_values", "hosted_work_view_projects", "hosted_work_view_favorites", "native_board_items", "native_board_filter_values", "native_board_counts", "native_board_sequences", "native_board_deltas", "native_board_dirty", "native_board_access_revisions"} {
 		var allowed bool
-		if err := platform.QueryRowContext(t.Context(), `SELECT has_table_privilege(current_user,$1,'SELECT,INSERT,UPDATE,DELETE')`, table).Scan(&allowed); err != nil {
+		if err := platform.QueryRow(t.Context(), `SELECT has_table_privilege(current_user,$1,'SELECT,INSERT,UPDATE,DELETE')`, table).Scan(&allowed); err != nil {
 			t.Fatal(err)
 		}
 		if allowed {

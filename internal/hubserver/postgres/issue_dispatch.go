@@ -17,7 +17,7 @@ func (s *session) IssueDispatchState(ctx context.Context, project tracker.Projec
 	if !s.readOnly {
 		statement += ` FOR NO KEY UPDATE`
 	}
-	err := s.db.QueryRowContext(ctx, statement, s.organization, project, item).Scan(&state.Revision, &state.Generation, &state.RequestedAt)
+	err := s.db.QueryRow(ctx, statement, s.organization, project, item).Scan(&state.Revision, &state.Generation, &state.RequestedAt)
 	return state, mapError(ctx, err)
 }
 
@@ -55,7 +55,7 @@ func (s *session) RequestIssueDispatch(ctx context.Context, project tracker.Proj
 	} else if !errors.Is(err, corestore.ErrNotFound) {
 		return err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE issues SET dispatch_generation=GREATEST(dispatch_generation,$5)+1,dispatch_requested_at=$4 WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 AND revision=$6`, s.organization, project, item, at.UTC(), attempt.DispatchGeneration, current.Revision)
+	result, err := s.db.Exec(ctx, `UPDATE issues SET dispatch_generation=GREATEST(dispatch_generation,$5)+1,dispatch_requested_at=$4 WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 AND revision=$6`, s.organization, project, item, at.UTC(), attempt.DispatchGeneration, current.Revision)
 	return updateOwned(ctx, result, err)
 }
 

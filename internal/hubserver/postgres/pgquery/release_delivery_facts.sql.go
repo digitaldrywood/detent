@@ -7,9 +7,9 @@ package pgquery
 
 import (
 	"context"
-	"database/sql"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const releaseDeliveryFacts = `-- name: ReleaseDeliveryFacts :one
@@ -44,11 +44,11 @@ type ReleaseDeliveryFactsParams struct {
 type ReleaseDeliveryFactsRow struct {
 	DependsOnSource bool
 	DependencyReady bool
-	ConflictingPr   sql.NullBool
+	ConflictingPr   pgtype.Bool
 }
 
 func (q *Queries) ReleaseDeliveryFacts(ctx context.Context, arg ReleaseDeliveryFactsParams) (ReleaseDeliveryFactsRow, error) {
-	row := q.db.QueryRowContext(ctx, releaseDeliveryFacts,
+	row := q.db.QueryRow(ctx, releaseDeliveryFacts,
 		arg.SourceItem,
 		arg.PrNumber,
 		arg.Repository,
@@ -72,7 +72,7 @@ type ReleaseSourceReviewsParams struct {
 }
 
 func (q *Queries) ReleaseSourceReviews(ctx context.Context, arg ReleaseSourceReviewsParams) ([]ChangeEvidence, error) {
-	rows, err := q.db.QueryContext(ctx, releaseSourceReviews, arg.OrganizationID, arg.ChangeID, arg.VersionID)
+	rows, err := q.db.Query(ctx, releaseSourceReviews, arg.OrganizationID, arg.ChangeID, arg.VersionID)
 	if err != nil {
 		return nil, err
 	}
@@ -105,9 +105,6 @@ func (q *Queries) ReleaseSourceReviews(ctx context.Context, arg ReleaseSourceRev
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

@@ -13,20 +13,25 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+
 	"github.com/google/uuid"
-	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func rolePool(t *testing.T, admin *sql.DB, group, attributes string) *sql.DB {
+func rolePool(t *testing.T, admin *sql.DB, group, attributes string) *pgxpool.Pool {
 	t.Helper()
 	return rolePoolFromTemplate(t, template, admin, group, attributes)
 }
 
-func rolePoolFromTemplate(t *testing.T, owner *pgtest.Template, admin *sql.DB, group, attributes string) *sql.DB {
+func rolePoolFromTemplate(t *testing.T, owner *pgtest.Template, admin *sql.DB, group, attributes string) *pgxpool.Pool {
 	t.Helper()
 	admin.SetMaxIdleConns(1)
 	var database string
@@ -35,14 +40,14 @@ func rolePoolFromTemplate(t *testing.T, owner *pgtest.Template, admin *sql.DB, g
 		t.Fatal(err)
 	}
 	if limit >= 0 && limit < 3 {
-		if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pq.QuoteIdentifier(database)+" CONNECTION LIMIT 3"); err != nil {
+		if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{database}.Sanitize()+" CONNECTION LIMIT 3"); err != nil {
 			t.Fatal(err)
 		}
 	}
 	name := "example_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	password := uuid.NewString()
-	quoted := pq.QuoteIdentifier(name)
-	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(password)+" "+attributes); err != nil {
+	quoted := pgx.Identifier{name}.Sanitize()
+	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(password)+" "+attributes); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -61,14 +66,21 @@ func rolePoolFromTemplate(t *testing.T, owner *pgtest.Template, admin *sql.DB, g
 		}
 	})
 	if group != "" {
-		if _, err := admin.ExecContext(t.Context(), "GRANT "+pq.QuoteIdentifier(group)+" TO "+quoted); err != nil {
+		if _, err := admin.ExecContext(t.Context(), "GRANT "+pgx.Identifier{group}.Sanitize()+" TO "+quoted); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return owner.OpenRole(t, admin, name, password)
+	config := owner.NativeConfig(t, admin, name, password)
+	config.MaxConns = 3
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
 }
 
-func runtimeFor(t *testing.T, reader, writer *sql.DB) *postgres.Runtime {
+func runtimeFor(t *testing.T, reader, writer *pgxpool.Pool) *postgres.Runtime {
 	t.Helper()
 	runtime, err := postgres.NewRuntime(t.Context(), reader, writer)
 	if err != nil {
@@ -77,19 +89,37 @@ func runtimeFor(t *testing.T, reader, writer *sql.DB) *postgres.Runtime {
 	return runtime
 }
 
-func tenantTx(t *testing.T, runtime *postgres.Runtime, pool *sql.DB, organization string) *sql.Tx {
+type testTenantTx interface {
+	pgtransport.Executor
+	Commit(context.Context) error
+	Rollback(context.Context) error
+}
+type unboundTransaction struct{ pgx.Tx }
+
+func (t unboundTransaction) Exec(ctx context.Context, query string, args ...any) (pgconn.CommandTag, error) {
+	return t.Tx.Exec(pgtest.UnboundProbe(ctx), query, args...)
+}
+func (t unboundTransaction) Query(ctx context.Context, query string, args ...any) (pgx.Rows, error) {
+	return t.Tx.Query(pgtest.UnboundProbe(ctx), query, args...)
+}
+func (t unboundTransaction) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
+	return t.Tx.QueryRow(pgtest.UnboundProbe(ctx), query, args...)
+}
+func tenantTx(t *testing.T, runtime *postgres.Runtime, pool *pgxpool.Pool, organization string) testTenantTx {
 	t.Helper()
-	var tx *sql.Tx
+	var tx testTenantTx
 	var err error
 	if organization == "" {
-		tx, err = pool.BeginTx(t.Context(), nil)
+		var raw pgx.Tx
+		raw, err = pool.BeginTx(t.Context(), pgx.TxOptions{})
+		tx = unboundTransaction{raw}
 	} else {
-		tx, err = runtime.Begin(t.Context(), tracker.OrganizationID(organization), nil)
+		tx, err = runtime.Begin(t.Context(), tracker.OrganizationID(organization), pgtransport.Options{})
 	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { tx.Rollback() })
+	t.Cleanup(func() { tx.Rollback(t.Context()) })
 	return tx
 }
 
@@ -108,19 +138,23 @@ func TestCoreRowSecurity(t *testing.T) {
 		{"second tenant", "org_second", 2},
 	} {
 		t.Run(scope.name, func(t *testing.T) {
-			tx, err := pool.BeginTx(t.Context(), nil)
+			tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer tx.Rollback()
+			defer tx.Rollback(t.Context())
 			if scope.organization != "" {
-				if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, scope.organization); err != nil {
+				if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, scope.organization); err != nil {
 					t.Fatal(err)
 				}
 			}
 			for _, table := range []string{"projects", "issues", "native_comments"} {
 				t.Run(table, func(t *testing.T) {
-					rows, err := tx.QueryContext(t.Context(), "SELECT organization_id FROM "+pq.QuoteIdentifier(table))
+					scopeCtx := t.Context()
+					if scope.organization == "" {
+						scopeCtx = pgtest.UnboundProbe(scopeCtx)
+					}
+					rows, err := tx.Query(scopeCtx, "SELECT organization_id FROM "+pgx.Identifier{table}.Sanitize())
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -146,7 +180,7 @@ func TestCoreRowSecurity(t *testing.T) {
 					if scope.organization == other {
 						other = "org_second"
 					}
-					if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM "+pq.QuoteIdentifier(table)+" WHERE organization_id=$1", other).Scan(&count); err != nil {
+					if err := tx.QueryRow(scopeCtx, "SELECT count(*) FROM "+pgx.Identifier{table}.Sanitize()+" WHERE organization_id=$1", other).Scan(&count); err != nil {
 						t.Fatal(err)
 					}
 					if count != 0 {
@@ -177,18 +211,18 @@ func TestCoreRowSecurityRejectsCrossTenantWrites(t *testing.T) {
 				if organization == "org_first" || organization == "org_second" {
 					t.Run("insert own tenant", func(t *testing.T) {
 						tx := tenantTx(t, runtime, pool, organization)
-						if _, err := tx.ExecContext(t.Context(), tc.insert, organization); err != nil {
+						if _, err := tx.Exec(t.Context(), tc.insert, organization); err != nil {
 							t.Fatal(err)
 						}
 						var count int
-						if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM "+pq.QuoteIdentifier(tc.table)).Scan(&count); err != nil || count != 3 {
+						if err := tx.QueryRow(t.Context(), "SELECT count(*) FROM "+pgx.Identifier{tc.table}.Sanitize()).Scan(&count); err != nil || count != 3 {
 							t.Fatalf("own tenant has %d rows, want 3: %v", count, err)
 						}
 					})
 				}
 				t.Run("unfiltered update", func(t *testing.T) {
 					tx := tenantTx(t, runtime, pool, organization)
-					result, err := tx.ExecContext(t.Context(), tc.update)
+					result, err := tx.Exec(t.Context(), tc.update)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -196,7 +230,7 @@ func TestCoreRowSecurityRejectsCrossTenantWrites(t *testing.T) {
 					if organization == "org_first" || organization == "org_second" {
 						want = 2
 					}
-					if affected, err := result.RowsAffected(); err != nil || affected != want {
+					if affected := result.RowsAffected(); affected != want {
 						t.Fatalf("updated %d rows, want %d: %v", affected, want, err)
 					}
 				})
@@ -209,23 +243,23 @@ func TestCoreRowSecurityRejectsCrossTenantWrites(t *testing.T) {
 						tx := tenantTx(t, runtime, pool, organization)
 						switch operation {
 						case "insert":
-							_, err := tx.ExecContext(t.Context(), tc.insert, target)
+							_, err := tx.Exec(t.Context(), tc.insert, target)
 							requireSQLState(t, err, "42501")
 						case "move tenant":
-							result, err := tx.ExecContext(t.Context(), "UPDATE "+pq.QuoteIdentifier(tc.table)+" SET organization_id=$1", target)
+							result, err := tx.Exec(t.Context(), "UPDATE "+pgx.Identifier{tc.table}.Sanitize()+" SET organization_id=$1", target)
 							if organization == "org_first" || organization == "org_second" {
 								requireSQLState(t, err, "42501")
 							} else if err != nil {
 								t.Fatal(err)
-							} else if affected, err := result.RowsAffected(); err != nil || affected != 0 {
+							} else if affected := result.RowsAffected(); affected != 0 {
 								t.Fatalf("moved %d rows without scope: %v", affected, err)
 							}
 						case "delete wrong tenant":
-							result, err := tx.ExecContext(t.Context(), "DELETE FROM "+pq.QuoteIdentifier(tc.table)+" WHERE organization_id=$1", target)
+							result, err := tx.Exec(t.Context(), "DELETE FROM "+pgx.Identifier{tc.table}.Sanitize()+" WHERE organization_id=$1", target)
 							if err != nil {
 								t.Fatal(err)
 							}
-							if affected, err := result.RowsAffected(); err != nil || affected != 0 {
+							if affected := result.RowsAffected(); affected != 0 {
 								t.Fatalf("deleted %d rows from another tenant: %v", affected, err)
 							}
 						}
@@ -249,46 +283,46 @@ func TestTenantTransactionsDoNotLeakContext(t *testing.T) {
 				if readOnly {
 					pool = reader
 				}
-				if _, err := pool.ExecContext(t.Context(), "SET search_path=pg_catalog"); err != nil {
+				if _, err := pool.Exec(t.Context(), "SET search_path=pg_catalog"); err != nil {
 					t.Fatal(err)
 				}
 				var pid int
-				if err := pool.QueryRowContext(t.Context(), `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+				if err := pool.QueryRow(t.Context(), `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
 					t.Fatal(err)
 				}
 				for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
-					tx, err := runtime.Begin(t.Context(), organization, &sql.TxOptions{ReadOnly: readOnly})
+					tx, err := runtime.Begin(t.Context(), organization, pgtransport.Options{ReadOnly: readOnly})
 					if err != nil {
 						t.Fatal(err)
 					}
-					defer tx.Rollback()
+					defer tx.Rollback(t.Context())
 					var bound, searchPath string
 					var currentPID, count int
-					if err := tx.QueryRowContext(t.Context(), `SELECT current_setting('detent.organization_id'),pg_backend_pid(),(SELECT count(*) FROM projects),current_setting('search_path')`).Scan(&bound, &currentPID, &count, &searchPath); err != nil {
+					if err := tx.QueryRow(t.Context(), `SELECT current_setting('detent.organization_id'),pg_backend_pid(),(SELECT count(*) FROM projects),current_setting('search_path')`).Scan(&bound, &currentPID, &count, &searchPath); err != nil {
 						t.Fatal(err)
 					}
 					if bound != string(organization) || currentPID != pid || count != 2 || searchPath != "public, pg_catalog" {
 						t.Fatalf("scope=%q pid=%d rows=%d, want %q pid=%d rows=2", bound, currentPID, count, organization, pid)
 					}
 					if !readOnly {
-						if _, err := tx.ExecContext(t.Context(), `UPDATE issues SET title='Changed' WHERE native_id='wi_shared'`); err != nil {
+						if _, err := tx.Exec(t.Context(), `UPDATE issues SET title='Changed' WHERE native_id='wi_shared'`); err != nil {
 							t.Fatal(err)
 						}
 					}
 					switch completion {
 					case "commit":
-						err = tx.Commit()
+						err = tx.Commit(t.Context())
 					case "rollback":
-						err = tx.Rollback()
+						err = tx.Rollback(t.Context())
 					case "statement error":
-						_, statementErr := tx.ExecContext(t.Context(), `SELECT 1/0`)
+						_, statementErr := tx.Exec(t.Context(), `SELECT 1/0`)
 						requireSQLState(t, statementErr, "22012")
-						err = tx.Rollback()
+						err = tx.Rollback(t.Context())
 					}
 					if err != nil {
 						t.Fatal(err)
 					}
-					if err := pool.QueryRowContext(t.Context(), `SELECT COALESCE(current_setting('detent.organization_id',true),''),pg_backend_pid(),(SELECT count(*) FROM public.projects),current_setting('search_path')`).Scan(&bound, &currentPID, &count, &searchPath); err != nil {
+					if err := pool.QueryRow(pgtest.UnboundProbe(t.Context()), `SELECT COALESCE(current_setting('detent.organization_id',true),''),pg_backend_pid(),(SELECT count(*) FROM public.projects),current_setting('search_path')`).Scan(&bound, &currentPID, &count, &searchPath); err != nil {
 						t.Fatal(err)
 					}
 					if bound != "" || currentPID != pid || count != 0 || searchPath != "pg_catalog" {
@@ -307,7 +341,7 @@ func TestTenantTransactionsDoNotLeakContext(t *testing.T) {
 					}
 				}
 				for _, organization := range []tracker.OrganizationID{"", " ", "\t\n"} {
-					if tx, err := runtime.Begin(t.Context(), organization, nil); !errors.Is(err, postgres.ErrTenantRequired) || tx != nil {
+					if tx, err := runtime.Begin(t.Context(), organization, pgtransport.Options{}); !errors.Is(err, postgres.ErrTenantRequired) || tx != nil {
 						t.Fatalf("missing organization returned transaction=%v error=%v", tx, err)
 					}
 				}
@@ -332,10 +366,10 @@ func TestRuntimeRejectsPrivilegedPools(t *testing.T) {
 			pool := rolePool(t, admin, tc.group, tc.attributes)
 			if tc.name == "table owner" {
 				var login string
-				if err := pool.QueryRowContext(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
+				if err := pool.QueryRow(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := admin.ExecContext(t.Context(), "ALTER TABLE projects OWNER TO "+pq.QuoteIdentifier(login)); err != nil {
+				if _, err := admin.ExecContext(t.Context(), "ALTER TABLE projects OWNER TO "+pgx.Identifier{login}.Sanitize()); err != nil {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() {
@@ -351,14 +385,15 @@ func TestRuntimeRejectsPrivilegedPools(t *testing.T) {
 					}
 				})
 			}
-			for _, pools := range [][2]*sql.DB{{pool, valid}, {valid, pool}} {
+			for _, pools := range [][2]*pgxpool.Pool{{pool, valid}, {valid, pool}} {
 				if runtime, err := postgres.NewRuntime(t.Context(), pools[0], pools[1]); !errors.Is(err, postgres.ErrRuntimeRole) || runtime != nil {
 					t.Fatalf("privileged pool accepted: runtime=%v error=%v", runtime, err)
 				}
 			}
 		})
 	}
-	for _, pool := range []*sql.DB{nil, admin} {
+	adminPool := template.OpenNativeRole(t, admin, "", "")
+	for _, pool := range []*pgxpool.Pool{nil, adminPool} {
 		if runtime, err := postgres.NewRuntime(t.Context(), pool, valid); !errors.Is(err, postgres.ErrRuntimeRole) || runtime != nil {
 			t.Fatalf("invalid pool accepted: runtime=%v error=%v", runtime, err)
 		}
@@ -427,7 +462,7 @@ func TestPostgresStartupSeparatesRuntimeAndMigrationParameters(t *testing.T) {
 				}
 				<-joined
 			})
-			cfg := pq.Config{Host: "127.0.0.1", Port: uint16(listener.Addr().(*net.TCPAddr).Port), Database: "example", User: "example", Password: "example", SSLMode: pq.SSLMode("disable")}
+			cfg := pgtransport.Connection{Host: "127.0.0.1", Port: uint16(listener.Addr().(*net.TCPAddr).Port), Database: "example", User: "example", Password: "example", SSLMode: "disable"}
 			if migration {
 				err = postgres.Migrate(t.Context(), cfg, os.DirFS("migrations"))
 			} else {
@@ -440,7 +475,7 @@ func TestPostgresStartupSeparatesRuntimeAndMigrationParameters(t *testing.T) {
 			if err == nil {
 				t.Fatal("test server refusal was ignored")
 			}
-			var refusal *pq.Error
+			var refusal *pgconn.PgError
 			if !errors.As(err, &refusal) || refusal.Message != "example startup inspected" {
 				t.Fatalf("startup did not reach the test server: %v", err)
 			}

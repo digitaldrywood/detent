@@ -31,7 +31,7 @@ type HostedArtifactPublisherBoundParams struct {
 }
 
 func (q *Queries) HostedArtifactPublisherBound(ctx context.Context, arg HostedArtifactPublisherBoundParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, hostedArtifactPublisherBound,
+	row := q.db.QueryRow(ctx, hostedArtifactPublisherBound,
 		arg.OrganizationID,
 		arg.ServiceID,
 		arg.PublisherID,
@@ -53,7 +53,7 @@ type HostedArtifactUsageEnsureParams struct {
 }
 
 func (q *Queries) HostedArtifactUsageEnsure(ctx context.Context, arg HostedArtifactUsageEnsureParams) error {
-	_, err := q.db.ExecContext(ctx, hostedArtifactUsageEnsure, arg.OrganizationID, arg.ServiceID)
+	_, err := q.db.Exec(ctx, hostedArtifactUsageEnsure, arg.OrganizationID, arg.ServiceID)
 	return err
 }
 
@@ -67,7 +67,7 @@ type HostedArtifactUsageLockRow struct {
 }
 
 func (q *Queries) HostedArtifactUsageLock(ctx context.Context, organizationID tracker.OrganizationID) (HostedArtifactUsageLockRow, error) {
-	row := q.db.QueryRowContext(ctx, hostedArtifactUsageLock, organizationID)
+	row := q.db.QueryRow(ctx, hostedArtifactUsageLock, organizationID)
 	var i HostedArtifactUsageLockRow
 	err := row.Scan(&i.ServiceID, &i.ObservedAt)
 	return i, err
@@ -86,7 +86,7 @@ type HostedArtifactUsageMetricParams struct {
 }
 
 func (q *Queries) HostedArtifactUsageMetric(ctx context.Context, arg HostedArtifactUsageMetricParams) error {
-	_, err := q.db.ExecContext(ctx, hostedArtifactUsageMetric,
+	_, err := q.db.Exec(ctx, hostedArtifactUsageMetric,
 		arg.OrganizationID,
 		arg.WindowStart,
 		arg.Metric,
@@ -107,7 +107,7 @@ type HostedArtifactUsageUpdateParams struct {
 }
 
 func (q *Queries) HostedArtifactUsageUpdate(ctx context.Context, arg HostedArtifactUsageUpdateParams) error {
-	_, err := q.db.ExecContext(ctx, hostedArtifactUsageUpdate,
+	_, err := q.db.Exec(ctx, hostedArtifactUsageUpdate,
 		arg.OrganizationID,
 		arg.ObservedAt,
 		arg.RetainedBytes,

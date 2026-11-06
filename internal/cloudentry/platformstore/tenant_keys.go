@@ -3,12 +3,11 @@ package platformstore
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"strings"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -34,9 +33,9 @@ func (r *Repository) TenantKey(ctx context.Context, id string, organization trac
 	if oauth {
 		source = `SELECT id,access_hash AS token_hash,'personal' AS kind,owner_subject,owner_email,permission,'selected' AS access_context,NULL::text AS service_organization_id,access_expires_at AS expires_at,resource FROM platform.oauth_grants WHERE id=$1 AND organization_id=$2 AND revoked_at IS NULL AND access_hash IS NOT NULL AND access_expires_at IS NOT NULL AND (SELECT count(*) FROM (SELECT 1 FROM platform.oauth_grants WHERE id=$1 LIMIT 2) duplicate)=1`
 	}
-	var projects, blocked pq.StringArray
+	var projects, blocked []string
 	var access string
-	err := r.pool.QueryRowContext(ctx, `WITH k AS (`+source+`)
+	err := r.pool.QueryRow(ctx, `WITH k AS (`+source+`)
  SELECT k.token_hash,k.kind,k.owner_subject,k.owner_email,k.permission,k.expires_at,k.resource,
  tenant.provider_id,tenant.slug,tenant.endpoint,tenant.generation,
  coalesce(o.project_access,'all'),
@@ -52,7 +51,7 @@ func (r *Repository) TenantKey(ctx context.Context, id string, organization trac
  AND (k.kind<>'personal' OR (coalesce(p.personal_keys,'allowed')<>'blocked' AND (coalesce(p.personal_keys,'allowed')<>'approval' OR o.approved_at IS NOT NULL)))`,
 		id, organization, r.now(), oauth).Scan(&result.Key.Hash, &result.Key.Kind, &result.Key.OwnerSubject, &result.Key.OwnerEmail, &result.Key.Permission, &result.Key.ExpiresAt, &result.Resource,
 		&result.Organization.ProviderID, &result.Organization.Slug, &result.Organization.Endpoint, &result.Organization.Generation, &access, &projects, &blocked)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return TenantKeySnapshot{}, ErrNoSession
 	}
 	if err != nil {

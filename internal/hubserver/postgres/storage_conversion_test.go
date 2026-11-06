@@ -538,7 +538,7 @@ func TestStorageConversionRollbackAndAuthority(t *testing.T) {
 				if err != nil || changed {
 					t.Fatalf("scope %q bypassed tenant authority: %v, %v", boundOrg, changed, err)
 				}
-				if err := tx.Rollback(); err != nil {
+				if err := tx.Rollback(t.Context()); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -552,12 +552,12 @@ func TestStorageConversionRollbackAndAuthority(t *testing.T) {
 				tx := tenantTx(t, runtime, pool, "org_first")
 				var err error
 				if bytes.Contains([]byte(statement), []byte("$1")) {
-					_, err = tx.ExecContext(t.Context(), statement, target.Key, target.SHA256, target.CompressedSize, target.UncompressedSize)
+					_, err = tx.Exec(t.Context(), statement, target.Key, target.SHA256, target.CompressedSize, target.UncompressedSize)
 				} else {
-					_, err = tx.ExecContext(t.Context(), statement)
+					_, err = tx.Exec(t.Context(), statement)
 				}
 				requireSQLState(t, err, "23514")
-				if err := tx.Rollback(); err != nil {
+				if err := tx.Rollback(t.Context()); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -592,17 +592,17 @@ CREATE TRIGGER reject_conversion_progress BEFORE INSERT OR UPDATE ON storage_con
 			}{{"", 0}, {"org_first", 2}, {"org_second", 2}, {"org_unknown", 0}} {
 				tx := tenantTx(t, runtime, pool, bound.org)
 				var count int
-				if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM storage_conversion_progress").Scan(&count); err != nil || count != bound.want {
+				if err := tx.QueryRow(t.Context(), "SELECT count(*) FROM storage_conversion_progress").Scan(&count); err != nil || count != bound.want {
 					t.Fatalf("scope %q progress rows = %d, %v; want %d", bound.org, count, err, bound.want)
 				}
-				if err := tx.Rollback(); err != nil {
+				if err := tx.Rollback(t.Context()); err != nil {
 					t.Fatal(err)
 				}
 			}
 			tx := tenantTx(t, runtime, pool, "org_first")
-			_, err = tx.ExecContext(t.Context(), "UPDATE storage_conversion_progress SET converted_rows=1000")
+			_, err = tx.Exec(t.Context(), "UPDATE storage_conversion_progress SET converted_rows=1000")
 			requireSQLState(t, err, "42501")
-			if err := tx.Rollback(); err != nil {
+			if err := tx.Rollback(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 		})

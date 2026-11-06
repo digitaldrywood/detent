@@ -129,7 +129,7 @@ func testPlatformEntitlement(t *testing.T, feature, planID string) {
 		})
 	}
 	var changes int
-	if err := p.service.registry.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM entitlement_changes").Scan(&changes); err != nil || changes != 0 {
+	if err := p.service.registry.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM platform.entitlement_changes").Scan(&changes); err != nil || changes != 0 {
 		t.Fatalf("refused requests recorded %d changes (%v)", changes, err)
 	}
 
@@ -196,7 +196,7 @@ func testPlatformEntitlement(t *testing.T, feature, planID string) {
 		t.Fatalf("entitlements after revoke = %+v", state)
 	}
 
-	rows, err := p.service.registry.store.db.QueryContext(t.Context(), "SELECT action,grant_id,plan_id,plan_version,expires_at,reason,staff_email FROM entitlement_changes WHERE organization_id = ? ORDER BY recorded_at, action", organization)
+	rows, err := p.service.registry.store.db.QueryContext(t.Context(), "SELECT action,grant_id,plan_id,plan_version,expires_at,reason,staff_email FROM platform.entitlement_changes WHERE organization_id = $1 ORDER BY recorded_at, action", organization)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,7 +15,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -601,7 +601,7 @@ func TestPostgresProgressLocksGraphBeforeScopedEndpoints(t *testing.T) {
 		}
 		err = orgUpdate.QueryRowContext(t.Context(), `SELECT organization_id FROM organizations WHERE organization_id=$1 FOR NO KEY UPDATE NOWAIT`, organization).Scan(&organizationID)
 		rollbackErr = orgUpdate.Rollback()
-		var updateLock *pq.Error
+		var updateLock *pgconn.PgError
 		if !errors.As(err, &updateLock) || updateLock.Code != "55P03" {
 			t.Fatalf("graph lock did not serialize organization updates: %v", err)
 		}
@@ -642,7 +642,7 @@ func TestPostgresProgressLocksGraphBeforeScopedEndpoints(t *testing.T) {
 					var id int64
 					err = tx.QueryRowContext(ctx, `SELECT id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR UPDATE NOWAIT`, organization, endpoint.ProjectID, endpoint.WorkItemID).Scan(&id)
 					rollbackErr := tx.Rollback()
-					var locked *pq.Error
+					var locked *pgconn.PgError
 					if !errors.As(err, &locked) || locked.Code != "55P03" {
 						return fmt.Errorf("progress endpoint was not locked: %v", err)
 					}

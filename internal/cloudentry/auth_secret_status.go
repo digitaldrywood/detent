@@ -35,9 +35,9 @@ func readAuthSecretStatus(ctx context.Context, db *entryDatabase, keys *hubsecre
 	if err := db.QueryRowContext(ctx, `SELECT to_regclass('platform.github_user_connections') IS NOT NULL`).Scan(&hasGitHubConnections); err != nil {
 		return err
 	}
-	query := `SELECT binding,'provider-access',access_token FROM authorizations UNION ALL SELECT binding,'provider-refresh',refresh_token FROM authorizations`
+	query := `SELECT binding,'provider-access',access_token FROM platform.authorizations UNION ALL SELECT binding,'provider-refresh',refresh_token FROM platform.authorizations`
 	if hasGitHubConnections {
-		query += ` UNION ALL SELECT owner_subject,'github-user-access',access_token FROM github_user_connections`
+		query += ` UNION ALL SELECT owner_subject,'github-user-access',access_token FROM platform.github_user_connections`
 	}
 	rows, err := db.QueryContext(ctx, query+` ORDER BY 1,2`)
 	if err != nil {
@@ -90,7 +90,7 @@ func readAuthSecretStatus(ctx context.Context, db *entryDatabase, keys *hubsecre
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	return db.QueryRowContext(ctx, `SELECT count(CASE WHEN EXISTS(SELECT 1 FROM oauth_client_redirect_uris u WHERE u.client_id=c.id) THEN 1 END),count(CASE WHEN NOT EXISTS(SELECT 1 FROM oauth_client_redirect_uris u WHERE u.client_id=c.id) THEN 1 END) FROM oauth_clients c`).Scan(&status.ClientsWithRedirectURIs, &status.ClientsWithoutRedirectURIs)
+	return db.QueryRowContext(ctx, `SELECT count(CASE WHEN EXISTS(SELECT 1 FROM platform.oauth_client_redirect_uris u WHERE u.client_id=c.id) THEN 1 END),count(CASE WHEN NOT EXISTS(SELECT 1 FROM platform.oauth_client_redirect_uris u WHERE u.client_id=c.id) THEN 1 END) FROM platform.oauth_clients c`).Scan(&status.ClientsWithRedirectURIs, &status.ClientsWithoutRedirectURIs)
 }
 
 func (s *Service) AuthSecretStatus(ctx context.Context) AuthSecretDatabaseStatus {

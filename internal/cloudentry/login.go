@@ -332,7 +332,7 @@ func (s *Service) establishSession(c echo.Context, identity auth.Identity) (acco
 	if err := s.auth.createSession(ctx, hash, csrfSecret, stored); err != nil {
 		return accountSession{}, err
 	}
-	if _, err := s.auth.store.db.ExecContext(ctx, "UPDATE sessions SET expires_at = ? WHERE token_hash = ?", formatTime(s.config.now().Add(sessionLifetime)), hash); err != nil {
+	if _, err := s.auth.store.db.ExecContext(ctx, "UPDATE platform.sessions SET expires_at = $1 WHERE token_hash = $2", formatTime(s.config.now().Add(sessionLifetime)), hash); err != nil {
 		return accountSession{}, err
 	}
 	if err := s.recordSignIn(ctx, identity); err != nil {

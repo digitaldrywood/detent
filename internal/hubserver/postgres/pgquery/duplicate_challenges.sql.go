@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
 )
 
 const consumeDuplicateChallenge = `-- name: ConsumeDuplicateChallenge :one
@@ -35,7 +34,7 @@ type ConsumeDuplicateChallengeParams struct {
 }
 
 func (q *Queries) ConsumeDuplicateChallenge(ctx context.Context, arg ConsumeDuplicateChallengeParams) (NativeDuplicateChallenge, error) {
-	row := q.db.QueryRowContext(ctx, consumeDuplicateChallenge,
+	row := q.db.QueryRow(ctx, consumeDuplicateChallenge,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.Token,
@@ -56,9 +55,9 @@ func (q *Queries) ConsumeDuplicateChallenge(ctx context.Context, arg ConsumeDupl
 		&i.ContentHash,
 		&i.PolicyHash,
 		&i.SourceSequence,
-		pq.Array(&i.CandidateIds),
-		pq.Array(&i.CandidateNumbers),
-		pq.Array(&i.CandidateRevisions),
+		&i.CandidateIds,
+		&i.CandidateNumbers,
+		&i.CandidateRevisions,
 		&i.CreatedAt,
 		&i.ExpiresAt,
 	)
@@ -87,7 +86,7 @@ type CreateDuplicateChallengeParams struct {
 }
 
 func (q *Queries) CreateDuplicateChallenge(ctx context.Context, arg CreateDuplicateChallengeParams) error {
-	_, err := q.db.ExecContext(ctx, createDuplicateChallenge,
+	_, err := q.db.Exec(ctx, createDuplicateChallenge,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.Token,
@@ -96,9 +95,9 @@ func (q *Queries) CreateDuplicateChallenge(ctx context.Context, arg CreateDuplic
 		arg.ContentHash,
 		arg.PolicyHash,
 		arg.SourceSequence,
-		pq.Array(arg.CandidateIds),
-		pq.Array(arg.CandidateNumbers),
-		pq.Array(arg.CandidateRevisions),
+		arg.CandidateIds,
+		arg.CandidateNumbers,
+		arg.CandidateRevisions,
 		arg.CreatedAt,
 		arg.ExpiresAt,
 	)
@@ -117,7 +116,7 @@ type DuplicateChallengeParams struct {
 }
 
 func (q *Queries) DuplicateChallenge(ctx context.Context, arg DuplicateChallengeParams) (NativeDuplicateChallenge, error) {
-	row := q.db.QueryRowContext(ctx, duplicateChallenge, arg.OrganizationID, arg.ProjectID, arg.Token)
+	row := q.db.QueryRow(ctx, duplicateChallenge, arg.OrganizationID, arg.ProjectID, arg.Token)
 	var i NativeDuplicateChallenge
 	err := row.Scan(
 		&i.OrganizationID,
@@ -128,9 +127,9 @@ func (q *Queries) DuplicateChallenge(ctx context.Context, arg DuplicateChallenge
 		&i.ContentHash,
 		&i.PolicyHash,
 		&i.SourceSequence,
-		pq.Array(&i.CandidateIds),
-		pq.Array(&i.CandidateNumbers),
-		pq.Array(&i.CandidateRevisions),
+		&i.CandidateIds,
+		&i.CandidateNumbers,
+		&i.CandidateRevisions,
 		&i.CreatedAt,
 		&i.ExpiresAt,
 	)
@@ -148,7 +147,7 @@ type PruneDuplicateChallengesParams struct {
 }
 
 func (q *Queries) PruneDuplicateChallenges(ctx context.Context, arg PruneDuplicateChallengesParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, pruneDuplicateChallenges, arg.OrganizationID, arg.Now, arg.BatchLimit)
+	row := q.db.QueryRow(ctx, pruneDuplicateChallenges, arg.OrganizationID, arg.Now, arg.BatchLimit)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err

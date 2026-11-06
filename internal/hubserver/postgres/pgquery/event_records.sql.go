@@ -7,11 +7,10 @@ package pgquery
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const recordAdvanceEvidence = `-- name: RecordAdvanceEvidence :one
@@ -26,7 +25,7 @@ type RecordAdvanceEvidenceParams struct {
 }
 
 func (q *Queries) RecordAdvanceEvidence(ctx context.Context, arg RecordAdvanceEvidenceParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, recordAdvanceEvidence, arg.ImportedSequence, arg.OrganizationID, arg.ID)
+	row := q.db.QueryRow(ctx, recordAdvanceEvidence, arg.ImportedSequence, arg.OrganizationID, arg.ID)
 	var evidence_sequence int64
 	err := row.Scan(&evidence_sequence)
 	return evidence_sequence, err
@@ -47,7 +46,7 @@ type RecordAdvanceIssueParams struct {
 }
 
 func (q *Queries) RecordAdvanceIssue(ctx context.Context, arg RecordAdvanceIssueParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, recordAdvanceIssue,
+	row := q.db.QueryRow(ctx, recordAdvanceIssue,
 		arg.ActivityAt,
 		arg.ImportedSequence,
 		arg.OrganizationID,
@@ -72,7 +71,7 @@ type RecordAdvanceProjectEventSequenceParams struct {
 }
 
 func (q *Queries) RecordAdvanceProjectEventSequence(ctx context.Context, arg RecordAdvanceProjectEventSequenceParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, recordAdvanceProjectEventSequence, arg.OrganizationID, arg.ProjectID)
+	row := q.db.QueryRow(ctx, recordAdvanceProjectEventSequence, arg.OrganizationID, arg.ProjectID)
 	var sequence int64
 	err := row.Scan(&sequence)
 	return sequence, err
@@ -102,7 +101,7 @@ type RecordChangePriorApprovalRow struct {
 }
 
 func (q *Queries) RecordChangePriorApproval(ctx context.Context, arg RecordChangePriorApprovalParams) (RecordChangePriorApprovalRow, error) {
-	row := q.db.QueryRowContext(ctx, recordChangePriorApproval,
+	row := q.db.QueryRow(ctx, recordChangePriorApproval,
 		arg.OrganizationID,
 		arg.ChangeID,
 		arg.VersionID,
@@ -141,7 +140,7 @@ type RecordChangePublicationCheckpointsParams struct {
 }
 
 func (q *Queries) RecordChangePublicationCheckpoints(ctx context.Context, arg RecordChangePublicationCheckpointsParams) ([]CollaborationEvent, error) {
-	rows, err := q.db.QueryContext(ctx, recordChangePublicationCheckpoints,
+	rows, err := q.db.Query(ctx, recordChangePublicationCheckpoints,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -196,9 +195,6 @@ func (q *Queries) RecordChangePublicationCheckpoints(ctx context.Context, arg Re
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -230,7 +226,7 @@ type RecordChangePublicationProvenanceParams struct {
 }
 
 func (q *Queries) RecordChangePublicationProvenance(ctx context.Context, arg RecordChangePublicationProvenanceParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, recordChangePublicationProvenance,
+	row := q.db.QueryRow(ctx, recordChangePublicationProvenance,
 		arg.ProjectID,
 		arg.PolicyID,
 		arg.RunSequence,
@@ -306,12 +302,12 @@ type RecordChangeSummaryEvidenceRow struct {
 }
 
 func (q *Queries) RecordChangeSummaryEvidence(ctx context.Context, arg RecordChangeSummaryEvidenceParams) ([]RecordChangeSummaryEvidenceRow, error) {
-	rows, err := q.db.QueryContext(ctx, recordChangeSummaryEvidence,
+	rows, err := q.db.Query(ctx, recordChangeSummaryEvidence,
 		arg.OrganizationID,
 		arg.ChangeID,
 		arg.VersionID,
 		arg.Through,
-		pq.Array(arg.CheckIds),
+		arg.CheckIds,
 	)
 	if err != nil {
 		return nil, err
@@ -346,9 +342,6 @@ func (q *Queries) RecordChangeSummaryEvidence(ctx context.Context, arg RecordCha
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -365,7 +358,7 @@ type RecordGetChangeParams struct {
 }
 
 func (q *Queries) RecordGetChange(ctx context.Context, arg RecordGetChangeParams) (ChangeRequest, error) {
-	row := q.db.QueryRowContext(ctx, recordGetChange, arg.OrganizationID, arg.ID)
+	row := q.db.QueryRow(ctx, recordGetChange, arg.OrganizationID, arg.ID)
 	var i ChangeRequest
 	err := row.Scan(
 		&i.OrganizationID,
@@ -404,7 +397,7 @@ type RecordGetCollaborationVersionParams struct {
 }
 
 func (q *Queries) RecordGetCollaborationVersion(ctx context.Context, arg RecordGetCollaborationVersionParams) (CollaborationVersion, error) {
-	row := q.db.QueryRowContext(ctx, recordGetCollaborationVersion, arg.OrganizationID, arg.RecordID, arg.Revision)
+	row := q.db.QueryRow(ctx, recordGetCollaborationVersion, arg.OrganizationID, arg.RecordID, arg.Revision)
 	var i CollaborationVersion
 	err := row.Scan(
 		&i.OrganizationID,
@@ -432,7 +425,7 @@ type RecordGetCollaborationVersionsParams struct {
 }
 
 func (q *Queries) RecordGetCollaborationVersions(ctx context.Context, arg RecordGetCollaborationVersionsParams) ([]CollaborationVersion, error) {
-	rows, err := q.db.QueryContext(ctx, recordGetCollaborationVersions, pq.Array(arg.RecordIds), pq.Array(arg.Revisions), arg.OrganizationID)
+	rows, err := q.db.Query(ctx, recordGetCollaborationVersions, arg.RecordIds, arg.Revisions, arg.OrganizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -455,9 +448,6 @@ func (q *Queries) RecordGetCollaborationVersions(ctx context.Context, arg Record
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -476,7 +466,7 @@ type RecordGetEventParams struct {
 }
 
 func (q *Queries) RecordGetEvent(ctx context.Context, arg RecordGetEventParams) (CollaborationEvent, error) {
-	row := q.db.QueryRowContext(ctx, recordGetEvent,
+	row := q.db.QueryRow(ctx, recordGetEvent,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -534,7 +524,7 @@ type RecordGetEvidenceParams struct {
 }
 
 func (q *Queries) RecordGetEvidence(ctx context.Context, arg RecordGetEvidenceParams) (ChangeEvidence, error) {
-	row := q.db.QueryRowContext(ctx, recordGetEvidence,
+	row := q.db.QueryRow(ctx, recordGetEvidence,
 		arg.OrganizationID,
 		arg.ChangeID,
 		arg.Kind,
@@ -578,7 +568,7 @@ type RecordGetEvidenceBySourceParams struct {
 }
 
 func (q *Queries) RecordGetEvidenceBySource(ctx context.Context, arg RecordGetEvidenceBySourceParams) (ChangeEvidence, error) {
-	row := q.db.QueryRowContext(ctx, recordGetEvidenceBySource,
+	row := q.db.QueryRow(ctx, recordGetEvidenceBySource,
 		arg.OrganizationID,
 		arg.ChangeID,
 		arg.Kind,
@@ -621,7 +611,7 @@ type RecordGetEvidenceSequenceParams struct {
 }
 
 func (q *Queries) RecordGetEvidenceSequence(ctx context.Context, arg RecordGetEvidenceSequenceParams) (ChangeEvidence, error) {
-	row := q.db.QueryRowContext(ctx, recordGetEvidenceSequence, arg.OrganizationID, arg.ChangeID, arg.Sequence)
+	row := q.db.QueryRow(ctx, recordGetEvidenceSequence, arg.OrganizationID, arg.ChangeID, arg.Sequence)
 	var i ChangeEvidence
 	err := row.Scan(
 		&i.OrganizationID,
@@ -658,7 +648,7 @@ type RecordGetLandingReceiptParams struct {
 }
 
 func (q *Queries) RecordGetLandingReceipt(ctx context.Context, arg RecordGetLandingReceiptParams) (ChangeLandingReceipt, error) {
-	row := q.db.QueryRowContext(ctx, recordGetLandingReceipt, arg.OrganizationID, arg.AttemptID)
+	row := q.db.QueryRow(ctx, recordGetLandingReceipt, arg.OrganizationID, arg.AttemptID)
 	var i ChangeLandingReceipt
 	err := row.Scan(
 		&i.OrganizationID,
@@ -692,7 +682,7 @@ type RecordGetLatestLandingReceiptForWorkItemParams struct {
 }
 
 func (q *Queries) RecordGetLatestLandingReceiptForWorkItem(ctx context.Context, arg RecordGetLatestLandingReceiptForWorkItemParams) (ChangeLandingReceipt, error) {
-	row := q.db.QueryRowContext(ctx, recordGetLatestLandingReceiptForWorkItem, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
+	row := q.db.QueryRow(ctx, recordGetLatestLandingReceiptForWorkItem, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
 	var i ChangeLandingReceipt
 	err := row.Scan(
 		&i.OrganizationID,
@@ -720,7 +710,7 @@ type RecordGetLinkParams struct {
 }
 
 func (q *Queries) RecordGetLink(ctx context.Context, arg RecordGetLinkParams) (ChangeIssueLink, error) {
-	row := q.db.QueryRowContext(ctx, recordGetLink, arg.OrganizationID, arg.ChangeID, arg.WorkItemID)
+	row := q.db.QueryRow(ctx, recordGetLink, arg.OrganizationID, arg.ChangeID, arg.WorkItemID)
 	var i ChangeIssueLink
 	err := row.Scan(
 		&i.OrganizationID,
@@ -743,7 +733,7 @@ type RecordGetLinkedIssueSourceParams struct {
 }
 
 func (q *Queries) RecordGetLinkedIssueSource(ctx context.Context, arg RecordGetLinkedIssueSourceParams) (LinkedIssueSource, error) {
-	row := q.db.QueryRowContext(ctx, recordGetLinkedIssueSource, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
+	row := q.db.QueryRow(ctx, recordGetLinkedIssueSource, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
 	var i LinkedIssueSource
 	err := row.Scan(
 		&i.OrganizationID,
@@ -773,7 +763,7 @@ type RecordGetLinkedIssueSourceByURLParams struct {
 }
 
 func (q *Queries) RecordGetLinkedIssueSourceByURL(ctx context.Context, arg RecordGetLinkedIssueSourceByURLParams) (LinkedIssueSource, error) {
-	row := q.db.QueryRowContext(ctx, recordGetLinkedIssueSourceByURL, arg.OrganizationID, arg.ProjectID, arg.SourceUrl)
+	row := q.db.QueryRow(ctx, recordGetLinkedIssueSourceByURL, arg.OrganizationID, arg.ProjectID, arg.SourceUrl)
 	var i LinkedIssueSource
 	err := row.Scan(
 		&i.OrganizationID,
@@ -805,7 +795,7 @@ type RecordGetLinkedIssueSourcesByWorkItemsParams struct {
 }
 
 func (q *Queries) RecordGetLinkedIssueSourcesByWorkItems(ctx context.Context, arg RecordGetLinkedIssueSourcesByWorkItemsParams) ([]LinkedIssueSource, error) {
-	rows, err := q.db.QueryContext(ctx, recordGetLinkedIssueSourcesByWorkItems, arg.OrganizationID, arg.ProjectID, pq.Array(arg.WorkItemIds))
+	rows, err := q.db.Query(ctx, recordGetLinkedIssueSourcesByWorkItems, arg.OrganizationID, arg.ProjectID, arg.WorkItemIds)
 	if err != nil {
 		return nil, err
 	}
@@ -831,9 +821,6 @@ func (q *Queries) RecordGetLinkedIssueSourcesByWorkItems(ctx context.Context, ar
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -852,7 +839,7 @@ type RecordGetReceiptParams struct {
 }
 
 func (q *Queries) RecordGetReceipt(ctx context.Context, arg RecordGetReceiptParams) (NativeCommand, error) {
-	row := q.db.QueryRowContext(ctx, recordGetReceipt,
+	row := q.db.QueryRow(ctx, recordGetReceipt,
 		arg.OrganizationID,
 		arg.ActorID,
 		arg.Operation,
@@ -885,7 +872,7 @@ type RecordGetVersionParams struct {
 }
 
 func (q *Queries) RecordGetVersion(ctx context.Context, arg RecordGetVersionParams) (ChangeVersion, error) {
-	row := q.db.QueryRowContext(ctx, recordGetVersion, arg.OrganizationID, arg.ChangeID, arg.ID)
+	row := q.db.QueryRow(ctx, recordGetVersion, arg.OrganizationID, arg.ChangeID, arg.ID)
 	var i ChangeVersion
 	err := row.Scan(
 		&i.OrganizationID,
@@ -929,7 +916,7 @@ type RecordGetVersionAttemptIDParams struct {
 }
 
 func (q *Queries) RecordGetVersionAttemptID(ctx context.Context, arg RecordGetVersionAttemptIDParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, recordGetVersionAttemptID, arg.OrganizationID, arg.ID)
+	row := q.db.QueryRow(ctx, recordGetVersionAttemptID, arg.OrganizationID, arg.ID)
 	var attempt_id string
 	err := row.Scan(&attempt_id)
 	return attempt_id, err
@@ -946,7 +933,7 @@ type RecordGetVersionByIDParams struct {
 }
 
 func (q *Queries) RecordGetVersionByID(ctx context.Context, arg RecordGetVersionByIDParams) (ChangeVersion, error) {
-	row := q.db.QueryRowContext(ctx, recordGetVersionByID, arg.OrganizationID, arg.ChangeID, arg.ID)
+	row := q.db.QueryRow(ctx, recordGetVersionByID, arg.OrganizationID, arg.ChangeID, arg.ID)
 	var i ChangeVersion
 	err := row.Scan(
 		&i.OrganizationID,
@@ -1008,7 +995,7 @@ type RecordInsertChangeParams struct {
 }
 
 func (q *Queries) RecordInsertChange(ctx context.Context, arg RecordInsertChangeParams) (ChangeRequest, error) {
-	row := q.db.QueryRowContext(ctx, recordInsertChange,
+	row := q.db.QueryRow(ctx, recordInsertChange,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -1074,7 +1061,7 @@ type RecordInsertCollaborationVersionParams struct {
 }
 
 func (q *Queries) RecordInsertCollaborationVersion(ctx context.Context, arg RecordInsertCollaborationVersionParams) (CollaborationVersion, error) {
-	row := q.db.QueryRowContext(ctx, recordInsertCollaborationVersion,
+	row := q.db.QueryRow(ctx, recordInsertCollaborationVersion,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -1143,7 +1130,7 @@ type RecordInsertEventParams struct {
 }
 
 func (q *Queries) RecordInsertEvent(ctx context.Context, arg RecordInsertEventParams) (CollaborationEvent, error) {
-	row := q.db.QueryRowContext(ctx, recordInsertEvent,
+	row := q.db.QueryRow(ctx, recordInsertEvent,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -1248,7 +1235,7 @@ type RecordInsertEvidenceParams struct {
 }
 
 func (q *Queries) RecordInsertEvidence(ctx context.Context, arg RecordInsertEvidenceParams) (ChangeEvidence, error) {
-	row := q.db.QueryRowContext(ctx, recordInsertEvidence,
+	row := q.db.QueryRow(ctx, recordInsertEvidence,
 		arg.OrganizationID,
 		arg.ChangeID,
 		arg.Sequence,
@@ -1316,7 +1303,7 @@ type RecordInsertLandingReceiptParams struct {
 }
 
 func (q *Queries) RecordInsertLandingReceipt(ctx context.Context, arg RecordInsertLandingReceiptParams) (ChangeLandingReceipt, error) {
-	row := q.db.QueryRowContext(ctx, recordInsertLandingReceipt,
+	row := q.db.QueryRow(ctx, recordInsertLandingReceipt,
 		arg.OrganizationID,
 		arg.AttemptID,
 		arg.VersionID,
@@ -1358,7 +1345,7 @@ type RecordInsertLinkParams struct {
 }
 
 func (q *Queries) RecordInsertLink(ctx context.Context, arg RecordInsertLinkParams) (ChangeIssueLink, error) {
-	row := q.db.QueryRowContext(ctx, recordInsertLink,
+	row := q.db.QueryRow(ctx, recordInsertLink,
 		arg.WorkItemID,
 		arg.OrganizationID,
 		arg.ProjectID,
@@ -1391,12 +1378,12 @@ type RecordInsertLinkedIssueSourceParams struct {
 	BodyOwned            bool
 	SnapshotObjectKey    *string
 	SnapshotSha256       *string
-	SnapshotBytes        sql.NullInt64
-	SnapshotContentBytes sql.NullInt64
+	SnapshotBytes        pgtype.Int8
+	SnapshotContentBytes pgtype.Int8
 }
 
 func (q *Queries) RecordInsertLinkedIssueSource(ctx context.Context, arg RecordInsertLinkedIssueSourceParams) (LinkedIssueSource, error) {
-	row := q.db.QueryRowContext(ctx, recordInsertLinkedIssueSource,
+	row := q.db.QueryRow(ctx, recordInsertLinkedIssueSource,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -1448,7 +1435,7 @@ type RecordInsertReceiptParams struct {
 }
 
 func (q *Queries) RecordInsertReceipt(ctx context.Context, arg RecordInsertReceiptParams) (NativeCommand, error) {
-	row := q.db.QueryRowContext(ctx, recordInsertReceipt,
+	row := q.db.QueryRow(ctx, recordInsertReceipt,
 		arg.OrganizationID,
 		arg.ActorID,
 		arg.Operation,
@@ -1505,14 +1492,14 @@ type RecordInsertVersionParams struct {
 	PayloadFormatVersion  int64
 	SourceObjectKey       *string
 	SourceSha256          *string
-	SourceBytes           sql.NullInt64
-	SourceContentBytes    sql.NullInt64
+	SourceBytes           pgtype.Int8
+	SourceContentBytes    pgtype.Int8
 	ImplementingSessionID int64
 	ImplementingMachineID string
 }
 
 func (q *Queries) RecordInsertVersion(ctx context.Context, arg RecordInsertVersionParams) (ChangeVersion, error) {
-	row := q.db.QueryRowContext(ctx, recordInsertVersion,
+	row := q.db.QueryRow(ctx, recordInsertVersion,
 		arg.OrganizationID,
 		arg.ID,
 		arg.ChangeID,
@@ -1588,7 +1575,7 @@ type RecordLatestChangeParams struct {
 }
 
 func (q *Queries) RecordLatestChange(ctx context.Context, arg RecordLatestChangeParams) (ChangeRequest, error) {
-	row := q.db.QueryRowContext(ctx, recordLatestChange, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
+	row := q.db.QueryRow(ctx, recordLatestChange, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
 	var i ChangeRequest
 	err := row.Scan(
 		&i.OrganizationID,
@@ -1661,7 +1648,7 @@ type RecordLatestChangesByWorkItemsRow struct {
 }
 
 func (q *Queries) RecordLatestChangesByWorkItems(ctx context.Context, arg RecordLatestChangesByWorkItemsParams) ([]RecordLatestChangesByWorkItemsRow, error) {
-	rows, err := q.db.QueryContext(ctx, recordLatestChangesByWorkItems, pq.Array(arg.WorkItemIds), arg.OrganizationID, arg.ProjectID)
+	rows, err := q.db.Query(ctx, recordLatestChangesByWorkItems, arg.WorkItemIds, arg.OrganizationID, arg.ProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -1697,9 +1684,6 @@ func (q *Queries) RecordLatestChangesByWorkItems(ctx context.Context, arg Record
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -1726,8 +1710,8 @@ type RecordLatestCheckpointEventsParams struct {
 }
 
 func (q *Queries) RecordLatestCheckpointEvents(ctx context.Context, arg RecordLatestCheckpointEventsParams) ([]CollaborationEvent, error) {
-	rows, err := q.db.QueryContext(ctx, recordLatestCheckpointEvents,
-		pq.Array(arg.AttemptIds),
+	rows, err := q.db.Query(ctx, recordLatestCheckpointEvents,
+		arg.AttemptIds,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -1779,9 +1763,6 @@ func (q *Queries) RecordLatestCheckpointEvents(ctx context.Context, arg RecordLa
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -1802,7 +1783,7 @@ type RecordLatestRunEventParams struct {
 }
 
 func (q *Queries) RecordLatestRunEvent(ctx context.Context, arg RecordLatestRunEventParams) (CollaborationEvent, error) {
-	row := q.db.QueryRowContext(ctx, recordLatestRunEvent, arg.OrganizationID, arg.ProjectID, arg.AttemptID)
+	row := q.db.QueryRow(ctx, recordLatestRunEvent, arg.OrganizationID, arg.ProjectID, arg.AttemptID)
 	var i CollaborationEvent
 	err := row.Scan(
 		&i.OrganizationID,
@@ -1863,7 +1844,7 @@ type RecordLatestRunEventsByAttemptsParams struct {
 }
 
 func (q *Queries) RecordLatestRunEventsByAttempts(ctx context.Context, arg RecordLatestRunEventsByAttemptsParams) ([]CollaborationEvent, error) {
-	rows, err := q.db.QueryContext(ctx, recordLatestRunEventsByAttempts, pq.Array(arg.AttemptIds), arg.OrganizationID, arg.ProjectID)
+	rows, err := q.db.Query(ctx, recordLatestRunEventsByAttempts, arg.AttemptIds, arg.OrganizationID, arg.ProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -1911,9 +1892,6 @@ func (q *Queries) RecordLatestRunEventsByAttempts(ctx context.Context, arg Recor
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -1935,7 +1913,7 @@ type RecordListChangeParams struct {
 }
 
 func (q *Queries) RecordListChange(ctx context.Context, arg RecordListChangeParams) ([]ChangeRequest, error) {
-	rows, err := q.db.QueryContext(ctx, recordListChange,
+	rows, err := q.db.Query(ctx, recordListChange,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.After,
@@ -1976,9 +1954,6 @@ func (q *Queries) RecordListChange(ctx context.Context, arg RecordListChangePara
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -1998,7 +1973,7 @@ type RecordListEventParams struct {
 }
 
 func (q *Queries) RecordListEvent(ctx context.Context, arg RecordListEventParams) ([]CollaborationEvent, error) {
-	rows, err := q.db.QueryContext(ctx, recordListEvent,
+	rows, err := q.db.Query(ctx, recordListEvent,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -2052,9 +2027,6 @@ func (q *Queries) RecordListEvent(ctx context.Context, arg RecordListEventParams
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -2074,7 +2046,7 @@ type RecordListEventBeforeParams struct {
 }
 
 func (q *Queries) RecordListEventBefore(ctx context.Context, arg RecordListEventBeforeParams) ([]CollaborationEvent, error) {
-	rows, err := q.db.QueryContext(ctx, recordListEventBefore,
+	rows, err := q.db.Query(ctx, recordListEventBefore,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -2128,9 +2100,6 @@ func (q *Queries) RecordListEventBefore(ctx context.Context, arg RecordListEvent
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -2149,7 +2118,7 @@ type RecordListEvidenceParams struct {
 }
 
 func (q *Queries) RecordListEvidence(ctx context.Context, arg RecordListEvidenceParams) ([]ChangeEvidence, error) {
-	rows, err := q.db.QueryContext(ctx, recordListEvidence,
+	rows, err := q.db.Query(ctx, recordListEvidence,
 		arg.OrganizationID,
 		arg.ChangeID,
 		arg.After,
@@ -2188,9 +2157,6 @@ func (q *Queries) RecordListEvidence(ctx context.Context, arg RecordListEvidence
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -2209,7 +2175,7 @@ type RecordListLinkParams struct {
 }
 
 func (q *Queries) RecordListLink(ctx context.Context, arg RecordListLinkParams) ([]ChangeIssueLink, error) {
-	rows, err := q.db.QueryContext(ctx, recordListLink,
+	rows, err := q.db.Query(ctx, recordListLink,
 		arg.OrganizationID,
 		arg.ChangeID,
 		arg.After,
@@ -2233,9 +2199,6 @@ func (q *Queries) RecordListLink(ctx context.Context, arg RecordListLinkParams) 
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -2254,7 +2217,7 @@ type RecordListVersionParams struct {
 }
 
 func (q *Queries) RecordListVersion(ctx context.Context, arg RecordListVersionParams) ([]ChangeVersion, error) {
-	rows, err := q.db.QueryContext(ctx, recordListVersion,
+	rows, err := q.db.Query(ctx, recordListVersion,
 		arg.OrganizationID,
 		arg.ChangeID,
 		arg.After,
@@ -2300,9 +2263,6 @@ func (q *Queries) RecordListVersion(ctx context.Context, arg RecordListVersionPa
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -2323,7 +2283,7 @@ type RecordListViewedFilesParams struct {
 }
 
 func (q *Queries) RecordListViewedFiles(ctx context.Context, arg RecordListViewedFilesParams) ([]ChangeViewedFile, error) {
-	rows, err := q.db.QueryContext(ctx, recordListViewedFiles,
+	rows, err := q.db.Query(ctx, recordListViewedFiles,
 		arg.OrganizationID,
 		arg.VersionID,
 		arg.PrincipalID,
@@ -2351,9 +2311,6 @@ func (q *Queries) RecordListViewedFiles(ctx context.Context, arg RecordListViewe
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -2370,7 +2327,7 @@ type RecordLockChangeParams struct {
 }
 
 func (q *Queries) RecordLockChange(ctx context.Context, arg RecordLockChangeParams) (ChangeRequest, error) {
-	row := q.db.QueryRowContext(ctx, recordLockChange, arg.OrganizationID, arg.ID)
+	row := q.db.QueryRow(ctx, recordLockChange, arg.OrganizationID, arg.ID)
 	var i ChangeRequest
 	err := row.Scan(
 		&i.OrganizationID,
@@ -2409,7 +2366,7 @@ type RecordLockIssueParams struct {
 }
 
 func (q *Queries) RecordLockIssue(ctx context.Context, arg RecordLockIssueParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, recordLockIssue, arg.OrganizationID, arg.ProjectID, arg.NativeID)
+	row := q.db.QueryRow(ctx, recordLockIssue, arg.OrganizationID, arg.ProjectID, arg.NativeID)
 	var event_sequence int64
 	err := row.Scan(&event_sequence)
 	return event_sequence, err
@@ -2459,7 +2416,7 @@ type RecordProjectChangesRow struct {
 }
 
 func (q *Queries) RecordProjectChanges(ctx context.Context, arg RecordProjectChangesParams) ([]RecordProjectChangesRow, error) {
-	rows, err := q.db.QueryContext(ctx, recordProjectChanges,
+	rows, err := q.db.Query(ctx, recordProjectChanges,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.PageLimit,
@@ -2479,9 +2436,6 @@ func (q *Queries) RecordProjectChanges(ctx context.Context, arg RecordProjectCha
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -2498,7 +2452,7 @@ type RecordProjectEventSequenceParams struct {
 }
 
 func (q *Queries) RecordProjectEventSequence(ctx context.Context, arg RecordProjectEventSequenceParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, recordProjectEventSequence, arg.OrganizationID, arg.ProjectID)
+	row := q.db.QueryRow(ctx, recordProjectEventSequence, arg.OrganizationID, arg.ProjectID)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -2531,7 +2485,7 @@ type RecordProjectPolicyLandingRow struct {
 }
 
 func (q *Queries) RecordProjectPolicyLanding(ctx context.Context, arg RecordProjectPolicyLandingParams) (RecordProjectPolicyLandingRow, error) {
-	row := q.db.QueryRowContext(ctx, recordProjectPolicyLanding,
+	row := q.db.QueryRow(ctx, recordProjectPolicyLanding,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.MergeSha,
@@ -2565,7 +2519,7 @@ type RecordReplayOperationParams struct {
 }
 
 func (q *Queries) RecordReplayOperation(ctx context.Context, arg RecordReplayOperationParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, recordReplayOperation,
+	row := q.db.QueryRow(ctx, recordReplayOperation,
 		arg.OrganizationID,
 		arg.ActorID,
 		arg.CommandKey,
@@ -2597,7 +2551,7 @@ type RecordSetViewedFileParams struct {
 }
 
 func (q *Queries) RecordSetViewedFile(ctx context.Context, arg RecordSetViewedFileParams) (ChangeViewedFile, error) {
-	row := q.db.QueryRowContext(ctx, recordSetViewedFile,
+	row := q.db.QueryRow(ctx, recordSetViewedFile,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ChangeID,
@@ -2634,7 +2588,7 @@ type RecordUnprojectedChangePushesParams struct {
 }
 
 func (q *Queries) RecordUnprojectedChangePushes(ctx context.Context, arg RecordUnprojectedChangePushesParams) ([]CollaborationEvent, error) {
-	rows, err := q.db.QueryContext(ctx, recordUnprojectedChangePushes, arg.OrganizationID, arg.Limit)
+	rows, err := q.db.Query(ctx, recordUnprojectedChangePushes, arg.OrganizationID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -2682,9 +2636,6 @@ func (q *Queries) RecordUnprojectedChangePushes(ctx context.Context, arg RecordU
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -2702,7 +2653,7 @@ type RecordUnprojectedChangeReviewsParams struct {
 }
 
 func (q *Queries) RecordUnprojectedChangeReviews(ctx context.Context, arg RecordUnprojectedChangeReviewsParams) ([]ChangeEvidence, error) {
-	rows, err := q.db.QueryContext(ctx, recordUnprojectedChangeReviews, arg.OrganizationID, arg.Limit)
+	rows, err := q.db.Query(ctx, recordUnprojectedChangeReviews, arg.OrganizationID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -2735,9 +2686,6 @@ func (q *Queries) RecordUnprojectedChangeReviews(ctx context.Context, arg Record
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -2775,7 +2723,7 @@ type RecordUpdateChangeParams struct {
 }
 
 func (q *Queries) RecordUpdateChange(ctx context.Context, arg RecordUpdateChangeParams) (ChangeRequest, error) {
-	row := q.db.QueryRowContext(ctx, recordUpdateChange,
+	row := q.db.QueryRow(ctx, recordUpdateChange,
 		arg.Title,
 		arg.CurrentVersionID,
 		arg.UpdatedAt,
@@ -2832,8 +2780,8 @@ type RecordUpdateLinkedIssueSourceParams struct {
 	BodyOwned              bool
 	SnapshotObjectKey      *string
 	SnapshotSha256         *string
-	SnapshotBytes          sql.NullInt64
-	SnapshotContentBytes   sql.NullInt64
+	SnapshotBytes          pgtype.Int8
+	SnapshotContentBytes   pgtype.Int8
 	OrganizationID         tracker.OrganizationID
 	ProjectID              tracker.ProjectID
 	WorkItemID             string
@@ -2842,7 +2790,7 @@ type RecordUpdateLinkedIssueSourceParams struct {
 }
 
 func (q *Queries) RecordUpdateLinkedIssueSource(ctx context.Context, arg RecordUpdateLinkedIssueSourceParams) (LinkedIssueSource, error) {
-	row := q.db.QueryRowContext(ctx, recordUpdateLinkedIssueSource,
+	row := q.db.QueryRow(ctx, recordUpdateLinkedIssueSource,
 		arg.TitleOwned,
 		arg.BodyOwned,
 		arg.SnapshotObjectKey,
@@ -2925,7 +2873,7 @@ type RecordValidatorReviewEvidenceRow struct {
 }
 
 func (q *Queries) RecordValidatorReviewEvidence(ctx context.Context, arg RecordValidatorReviewEvidenceParams) ([]RecordValidatorReviewEvidenceRow, error) {
-	rows, err := q.db.QueryContext(ctx, recordValidatorReviewEvidence,
+	rows, err := q.db.Query(ctx, recordValidatorReviewEvidence,
 		arg.OrganizationID,
 		arg.ChangeID,
 		arg.VersionID,
@@ -2965,9 +2913,6 @@ func (q *Queries) RecordValidatorReviewEvidence(ctx context.Context, arg RecordV
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

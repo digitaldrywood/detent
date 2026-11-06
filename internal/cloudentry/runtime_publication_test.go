@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -31,7 +33,7 @@ func runtimePublicationFixture(t *testing.T) (entryFixture, *sql.DB) {
 	if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&database); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pq.QuoteIdentifier(database)+" CONNECTION LIMIT 32"); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{database}.Sanitize()+" CONNECTION LIMIT 32"); err != nil {
 		t.Fatal(err)
 	}
 	return newEntryFixtureWithConfig(t, slog.New(slog.DiscardHandler), []func(*Config){entryPostgresConfig(t, admin)}, func(cfg *hubserver.Config) { configurePostgresTenant(t, cfg, admin) }), admin
@@ -91,16 +93,19 @@ func TestRuntimePublicationTenantIsolation(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE public.hosted_runtime_heads SET organization_id=organization_id WHERE organization_id=?", "org_alpha"); err == nil {
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE public.hosted_runtime_heads SET organization_id=organization_id WHERE organization_id=$1", "org_alpha"); err == nil {
 		t.Fatal("platform changed tenant runtime head")
 	}
-	connector, err := pq.NewConnectorConfig(f.fixtures["org_alpha"].config.Postgres.Connection)
+	native, err := f.fixtures["org_alpha"].config.Postgres.Connection.PoolConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtimeDB := sql.OpenDB(connector)
+	runtimeDB, err := pgxpool.NewWithConfig(t.Context(), native)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer runtimeDB.Close()
-	if _, err := runtimeDB.ExecContext(t.Context(), "INSERT INTO hosted_runtime_publications(id) VALUES('forged')"); err == nil {
+	if _, err := runtimeDB.Exec(t.Context(), "INSERT INTO hosted_runtime_publications(id) VALUES('forged')"); err == nil {
 		t.Fatal("tenant published a platform revision")
 	}
 }
@@ -120,7 +125,7 @@ func TestRuntimePublicationRefreshesAllowanceConsumers(t *testing.T) {
 			f.service.config.ConfigureRuntime = func(update hubserver.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error) {
 				return func(TenantSpec) ([]byte, error) { return json.Marshal(update) }
 			}
-			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=true"); err != nil {
+			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true"); err != nil {
 				t.Fatal(err)
 			}
 			plans := *f.fixtures["org_alpha"].config.Hosted.Plans

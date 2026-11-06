@@ -12,8 +12,13 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+
 	"github.com/labstack/echo/v4"
-	"github.com/lib/pq"
+
 	"github.com/pressly/goose/v3"
 
 	"time"
@@ -80,12 +85,12 @@ func projectRecordPostgresWithAdmin(t *testing.T, maxConnections int) (*postgres
 	if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&databaseName); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pq.QuoteIdentifier(databaseName)+" CONNECTION LIMIT "+strconv.Itoa(maxConnections+1)); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{databaseName}.Sanitize()+" CONNECTION LIMIT "+strconv.Itoa(maxConnections+1)); err != nil {
 		t.Fatal(err)
 	}
 	name, password := newNativeID("example"), newNativeID("password")
-	quoted := pq.QuoteIdentifier(name)
-	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(password)); err != nil {
+	quoted := pgx.Identifier{name}.Sanitize()
+	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(password)); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -102,7 +107,13 @@ func projectRecordPostgresWithAdmin(t *testing.T, maxConnections int) (*postgres
 	if _, err := admin.ExecContext(t.Context(), "GRANT detent_runtime_v2 TO "+quoted); err != nil {
 		t.Fatal(err)
 	}
-	pool := template.OpenRole(t, admin, name, password)
+	native := template.NativeConfig(t, admin, name, password)
+	native.MaxConns = int32(maxConnections)
+	pool, err := pgxpool.NewWithConfig(t.Context(), native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
 	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: maxConnections, ServingConnections: maxConnections - 1, BackgroundConnections: 1})
 	if err != nil {
 		t.Fatal(err)

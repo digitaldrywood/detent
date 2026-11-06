@@ -3,7 +3,7 @@ package platformstore
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
+
 	"errors"
 	"fmt"
 	"sync"
@@ -11,57 +11,33 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type countedConnector struct {
-	driver.Connector
-	calls *atomic.Int64
-}
+type countedTracer struct{ calls *atomic.Int64 }
 
-func (c countedConnector) Connect(ctx context.Context) (driver.Conn, error) {
-	conn, err := c.Connector.Connect(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return countedConnection{Conn: conn, calls: c.calls}, nil
-}
-
-type countedConnection struct {
-	driver.Conn
-	calls *atomic.Int64
-}
-
-func (c countedConnection) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+func (c countedTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
 	c.calls.Add(1)
-	return c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
+	return ctx
 }
-func (c countedConnection) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	c.calls.Add(1)
-	return c.Conn.(driver.ExecerContext).ExecContext(ctx, query, args)
-}
-func (c countedConnection) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
-	c.calls.Add(1)
-	return c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
-}
-
+func (c countedTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 func TestTenantKeyConcurrentReads(t *testing.T) {
 	db := template.Database(t)
 	var database string
 	if err := db.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&database); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), "ALTER DATABASE "+pq.QuoteIdentifier(database)+" CONNECTION LIMIT 12"); err != nil {
+	if _, err := db.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{database}.Sanitize()+" CONNECTION LIMIT 12"); err != nil {
 		t.Fatal(err)
 	}
 	config := testConfig(t)
 	config.Pool = PoolConfig{MaxConnections: 10, ServingConnections: 8, BackgroundConnections: 1}
 	var calls atomic.Int64
-	pool := rolePool(t, db, postgres.PlatformRoleName, "", func(c driver.Connector) driver.Connector { return countedConnector{Connector: c, calls: &calls} })
+	pool := rolePool(t, db, postgres.PlatformRoleName, "", countedTracer{calls: &calls})
 	r, err := New(t.Context(), pool, config)
 	if err != nil {
 		t.Fatal(err)

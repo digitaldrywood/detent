@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -1312,7 +1312,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 						var row int64
 						err = tx.QueryRowContext(ctx, "SELECT id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR NO KEY UPDATE NOWAIT", target.issue.OrganizationID, "project_example", id).Scan(&row)
 						rollbackErr := tx.Rollback()
-						var locked *pq.Error
+						var locked *pgconn.PgError
 						if !errors.As(err, &locked) || locked.Code != "55P03" {
 							return fmt.Errorf("linked item was not locked before Change creation: %v", err)
 						}
@@ -1431,7 +1431,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		if err := probe.Rollback(); err != nil {
 			return err
 		}
-		var refused *pq.Error
+		var refused *pgconn.PgError
 		if !errors.As(lockErr, &refused) || refused.Code != "55P03" {
 			return fmt.Errorf("human issue was not locked during dispatch fence resolution: %w", lockErr)
 		}

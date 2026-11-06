@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -31,7 +31,7 @@ func metricSourceKeys(stage int64) []string {
 }
 
 func (i *MetricsImporter) sourceTable(name string) string {
-	return pq.QuoteIdentifier(i.source.Source.Schema) + "." + pq.QuoteIdentifier(name)
+	return pgx.Identifier{i.source.Source.Schema}.Sanitize() + "." + pgx.Identifier{name}.Sanitize()
 }
 
 func (i *MetricsImporter) validateSource(ctx context.Context) error {
@@ -75,7 +75,7 @@ AND NOT EXISTS (SELECT 1 FROM unnest(i.indoption) option WHERE option<>0)
 AND ARRAY(SELECT a.attname::text FROM unnest(i.indkey) WITH ORDINALITY k(attnum,n)
 JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.attnum WHERE k.n<=i.indnkeyatts ORDER BY k.n)=$2::text[]
 AND NOT EXISTS (SELECT 1 FROM unnest(i.indcollation) WITH ORDINALITY k(coll,n)
-WHERE k.n<=i.indnkeyatts AND k.coll<>'"C"'::regcollation))`, i.sourceTable("request_"+string(grain)+"s"), pq.Array(metricSourceKeys(int64(stage)))).Scan(&indexed)
+WHERE k.n<=i.indnkeyatts AND k.coll<>'"C"'::regcollation))`, i.sourceTable("request_"+string(grain)+"s"), metricSourceKeys(int64(stage))).Scan(&indexed)
 		if err != nil {
 			return err
 		}
@@ -120,12 +120,12 @@ func (i *MetricsImporter) readPage(ctx context.Context, checkpoint pgquery.Reque
 	slices.Sort(columns)
 	quoted := make([]string, len(columns))
 	for n, column := range columns {
-		quoted[n] = pq.QuoteIdentifier(column)
+		quoted[n] = pgx.Identifier{column}.Sanitize()
 	}
 	order, placeholders := make([]string, len(keys)), make([]string, len(keys))
 	args := make([]any, 0, len(keys)+1)
 	for n, key := range keys {
-		order[n] = pq.QuoteIdentifier(key) + ` COLLATE "C"`
+		order[n] = pgx.Identifier{key}.Sanitize() + ` COLLATE "C"`
 		placeholders[n] = fmt.Sprintf("$%d::text", n+1)
 		args = append(args, after[key])
 	}

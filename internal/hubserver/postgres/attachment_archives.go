@@ -21,16 +21,13 @@ func (s *session) PrepareAttachmentArchive(ctx context.Context, r attachmentstor
 	if ref.Validate(string(s.organization)) != nil || r.ID == "" || r.ProjectID == "" || r.Uploader == "" || r.CreatedAt.IsZero() {
 		return false, attachment.ErrInvalid
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO attachments (organization_id,project_id,id,uploader,name,content_type,size,sha256,created_at,kind,retention_class,object_key,uncompressed_size,codec,schema_version,storage_binding_id,customer_owned)
+	result, err := s.db.Exec(ctx, `INSERT INTO attachments (organization_id,project_id,id,uploader,name,content_type,size,sha256,created_at,kind,retention_class,object_key,uncompressed_size,codec,schema_version,storage_binding_id,customer_owned)
  VALUES ($1,$2,$3,$4,'archive.gz','application/gzip',$5,$6,$7,'archive',$8,$9,$10,$11,$12,$13,$14) ON CONFLICT (organization_id,id) DO NOTHING`, s.organization, r.ProjectID, r.ID, r.Uploader, ref.CompressedSize, ref.SHA256, r.CreatedAt, ref.Retention, ref.Key, ref.UncompressedSize, ref.Codec, ref.SchemaVersion, ref.BindingID, ref.CustomerOwned)
 	if err != nil {
 		return false, mapError(ctx, err)
 	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	row, err := scanAttachmentRecord(s.db.QueryRowContext(ctx, `SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, r.ID))
+	n := result.RowsAffected()
+	row, err := scanAttachmentRecord(s.db.QueryRow(ctx, `SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, r.ID))
 	if err != nil {
 		return false, mapError(ctx, err)
 	}
@@ -44,19 +41,19 @@ func (s *session) PublishAttachmentArchive(ctx context.Context, r attachmentstor
 	if err := s.checkOrganization(r.OrganizationID); err != nil {
 		return err
 	}
-	row, err := scanAttachmentRecord(s.db.QueryRowContext(ctx, `SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, r.ID))
+	row, err := scanAttachmentRecord(s.db.QueryRow(ctx, `SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, r.ID))
 	if err != nil {
 		return mapError(ctx, err)
 	}
 	if archiveReference(row) != r.Reference || row.Metadata.DeletedAt != nil || row.ObjectDeletedAt != nil {
 		return corestore.ErrRevisionConflict
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO attachment_archive_references (organization_id,project_id,work_item_id,attachment_id) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, s.organization, r.ProjectID, item, r.ID)
+	_, err = s.db.Exec(ctx, `INSERT INTO attachment_archive_references (organization_id,project_id,work_item_id,attachment_id) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, s.organization, r.ProjectID, item, r.ID)
 	return mapError(ctx, err)
 }
 
 func (s *session) AttachmentArchive(ctx context.Context, q attachmentstore.ArchiveQuery) (attachment.ArchiveReference, error) {
-	row, err := scanAttachmentRecord(s.db.QueryRowContext(ctx, `SELECT `+attachmentRecordColumns+` FROM attachments a WHERE organization_id=$1 AND kind='archive' AND sha256=$4 AND deleted_at IS NULL AND object_deleted_at IS NULL
+	row, err := scanAttachmentRecord(s.db.QueryRow(ctx, `SELECT `+attachmentRecordColumns+` FROM attachments a WHERE organization_id=$1 AND kind='archive' AND sha256=$4 AND deleted_at IS NULL AND object_deleted_at IS NULL
  AND ($5::text IS NULL OR storage_binding_id=$5)
  AND EXISTS (SELECT 1 FROM attachment_archive_references r WHERE r.organization_id=a.organization_id AND r.project_id=$2 AND r.work_item_id=$3 AND r.attachment_id=a.id)
  AND (($6='' AND NOT EXISTS (SELECT 1 FROM issue_archive_sections r JOIN attachments b ON b.organization_id=r.organization_id AND b.id=r.attachment_id WHERE r.organization_id=$1 AND r.project_id=$2 AND r.work_item_id=$3 AND b.sha256=$4))

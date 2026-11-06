@@ -68,6 +68,6 @@ func (s *session) PruneExpiredArtifactUploadAuthorizations(ctx context.Context, 
 		return 0, corestore.ErrInvalidPage
 	}
 	var count int64
-	err := s.db.QueryRowContext(ctx, `SELECT prune_expired_artifact_upload_authorizations($1)`, limit).Scan(&count)
+	err := s.db.QueryRow(ctx, `SELECT prune_expired_artifact_upload_authorizations($1)`, limit).Scan(&count)
 	return count, mapError(ctx, err)
 }

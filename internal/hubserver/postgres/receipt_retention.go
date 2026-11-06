@@ -12,7 +12,7 @@ func (s *session) ReceiptExpiryPage(ctx context.Context, cutoff time.Time, limit
 	if cutoff.IsZero() || limit < 1 || limit > receiptstore.MaxRetentionBatch {
 		return nil, corestore.ErrInvalidPage
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT state.organization_id,state.actor_id,state.operation,state.command_key,state.request_hash,c.created_at,c.payload_object_key,c.payload_sha256,c.payload_bytes,c.payload_content_bytes,state.response_claimed,state.response_pending,state.response_request_id,state.response_expired,state.response_replay_until_ns,state.response_reconciliation_hash
+	rows, err := s.db.Query(ctx, `SELECT state.organization_id,state.actor_id,state.operation,state.command_key,state.request_hash,c.created_at,c.payload_object_key,c.payload_sha256,c.payload_bytes,c.payload_content_bytes,state.response_claimed,state.response_pending,state.response_request_id,state.response_expired,state.response_replay_until_ns,state.response_reconciliation_hash
 FROM native_command_states state JOIN native_commands c USING(organization_id,actor_id,operation,command_key)
 WHERE state.organization_id=$1 AND NOT state.response_claimed AND NOT state.response_pending AND NOT state.response_expired
 AND state.response_replay_until_ns>0 AND state.response_replay_until_ns<$2
@@ -47,7 +47,7 @@ func (s *session) ExpireReceipt(ctx context.Context, expected receiptstore.Recor
 	if current.ResponseClaimed || current.ResponsePending || current.ResponseExpired || current.ResponseReplayUntilNs <= 0 || current.ResponseReplayUntilNs >= cutoff.UnixNano() || current.Operation == "urgent_runner_update" && current.ResponseReconciliationHash == "" {
 		return false, nil
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE native_command_states SET response_expired=true WHERE organization_id=$1 AND actor_id=$2 AND operation=$3 AND command_key=$4`, s.organization, current.ActorID, current.Operation, current.CommandKey); err != nil {
+	if _, err := s.db.Exec(ctx, `UPDATE native_command_states SET response_expired=true WHERE organization_id=$1 AND actor_id=$2 AND operation=$3 AND command_key=$4`, s.organization, current.ActorID, current.Operation, current.CommandKey); err != nil {
 		return false, mapError(ctx, err)
 	}
 	if err := s.releaseReceipt(ctx, current); err != nil {

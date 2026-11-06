@@ -192,7 +192,7 @@ func TestEntryHealthLifecycleApplicability(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newEntryFixture(t)
-			if _, err := f.service.registry.store.db.ExecContext(t.Context(), `UPDATE organizations SET state=?`, test.state); err != nil {
+			if _, err := f.service.registry.store.db.ExecContext(t.Context(), `UPDATE platform.organizations SET state=$1`, test.state); err != nil {
 				t.Fatal(err)
 			}
 			response := httptest.NewRecorder()

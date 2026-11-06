@@ -2,11 +2,12 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -21,7 +22,7 @@ func (r *Repository) ClaimNotification(ctx context.Context, org tracker.Organiza
 	found := false
 	err := r.transaction(ctx, org, corestore.Background, false, func(s *session) error {
 		subscription, err := s.queries.LockDueNotification(ctx, pgquery.LockDueNotificationParams{OrganizationID: org, DueAt: now})
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
@@ -33,7 +34,7 @@ func (r *Repository) ClaimNotification(ctx context.Context, org tracker.Organiza
 		}
 		found = true
 		recipient, err := s.queries.NotificationRecipient(ctx, pgquery.NotificationRecipientParams{OrganizationID: org, WorkItemID: subscription.WorkItemID, UserID: subscription.UserID, ExpiresAt: &now})
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {

@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
-	"database/sql/driver"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -14,8 +13,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/multitracer"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+
 	"github.com/google/uuid"
-	"github.com/lib/pq"
+
 	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -69,12 +75,12 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func rolePool(t *testing.T, admin *sql.DB, group, attributes string, wrappers ...func(driver.Connector) driver.Connector) *sql.DB {
+func rolePool(t *testing.T, admin *sql.DB, group, attributes string, wrappers ...pgx.QueryTracer) *pgxpool.Pool {
 	t.Helper()
 	name := "example_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	password := uuid.NewString()
-	quoted := pq.QuoteIdentifier(name)
-	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(password)+" "+attributes); err != nil {
+	quoted := pgx.Identifier{name}.Sanitize()
+	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(password)+" "+attributes); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -97,33 +103,17 @@ func rolePool(t *testing.T, admin *sql.DB, group, attributes string, wrappers ..
 			t.Fatal(err)
 		}
 	}
-	pool := template.OpenRole(t, admin, name, password)
-	if len(wrappers) == 0 {
-		return pool
+	native := template.NativeConfig(t, admin, name, password)
+	native.MaxConns = 3
+	if len(wrappers) > 0 {
+		native.MaxConns = 10
+		native.ConnConfig.Tracer = multitracer.New(append([]pgx.QueryTracer{native.ConnConfig.Tracer}, wrappers...)...)
 	}
-	var database string
-	if err := pool.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&database); err != nil {
+	pool, err := pgxpool.NewWithConfig(t.Context(), native)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.Close(); err != nil {
-		t.Fatal(err)
-	}
-	config, err := pq.NewConfig(os.Getenv(pgtest.Environment))
-	if err != nil {
-		t.Fatal("configure test connection")
-	}
-	config.Database, config.User, config.Password = database, name, password
-	config.SSLMode = pq.SSLModeDisable
-	connector, err := pq.NewConnectorConfig(config)
-	if err != nil {
-		t.Fatal("configure test connector")
-	}
-	pool = sql.OpenDB(wrappers[0](connector))
-	t.Cleanup(func() {
-		if err := pool.Close(); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(pool.Close)
 	return pool
 }
 
@@ -139,7 +129,16 @@ func testConfig(t *testing.T) Config {
 
 func repository(t *testing.T, db *sql.DB, config Config) *Repository {
 	t.Helper()
-	r, err := New(t.Context(), rolePool(t, db, postgres.PlatformRoleName, ""), config)
+	pool := rolePool(t, db, postgres.PlatformRoleName, "")
+	native := pool.Config()
+	pool.Close()
+	native.MaxConns = int32(config.Pool.MaxConnections)
+	pool, err := pgxpool.NewWithConfig(t.Context(), native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	r, err := New(t.Context(), pool, config)
 	if err != nil {
 		t.Fatal(err)
 	}

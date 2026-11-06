@@ -2,7 +2,6 @@ package postgres_test
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"math"
@@ -11,7 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
@@ -271,14 +271,14 @@ func TestRequestMetricsRejectInvalidBatch(t *testing.T) {
 	}
 }
 
-func seedMetric(t *testing.T, pool *sql.DB, org tracker.OrganizationID, grain metricsstore.Grain, m metricsstore.Metric) {
+func seedMetric(t *testing.T, pool *pgxpool.Pool, org tracker.OrganizationID, grain metricsstore.Grain, m metricsstore.Metric) {
 	t.Helper()
-	tx, err := pool.BeginTx(t.Context(), nil)
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, org); err != nil {
+	defer tx.Rollback(t.Context())
+	if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
 		t.Fatal(err)
 	}
 	var query string
@@ -286,18 +286,18 @@ func seedMetric(t *testing.T, pool *sql.DB, org tracker.OrganizationID, grain me
 	switch grain {
 	case metricsstore.Minute:
 		query = `INSERT INTO request_minutes(organization_id,minute,route,caller_kind,caller_id,status_class,count,sum_ms,max_ms,histogram) VALUES($1,$2,$3,$4,$5,2,4,24,16,$6)`
-		args = append(args, m.CallerKind, m.CallerID, pq.Array(m.Histogram[:]))
+		args = append(args, m.CallerKind, m.CallerID, m.Histogram[:])
 	case metricsstore.Hour:
 		query = `INSERT INTO request_hours(organization_id,hour,route,status_class,count,sum_ms,max_ms,histogram) VALUES($1,$2,$3,2,4,24,16,$4)`
-		args = append(args, pq.Array(m.Histogram[:]))
+		args = append(args, m.Histogram[:])
 	case metricsstore.Day:
 		query = `INSERT INTO request_days(organization_id,day,route,caller_kind,status_class,count,sum_ms,max_ms) VALUES($1,$2,$3,$4,2,4,24,16)`
 		args = append(args, m.CallerKind)
 	}
-	if _, err := tx.ExecContext(t.Context(), query, args...); err != nil {
+	if _, err := tx.Exec(t.Context(), query, args...); err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -470,16 +470,16 @@ func TestRequestMetricsRetentionBatchLimits(t *testing.T) {
 			args := []any{org, now.Add(-401 * 24 * time.Hour)}
 			if seed.histogram {
 				sample := metricSample(now, "GET /example", "caller")
-				args = append(args, pq.Array(sample.Histogram[:]))
+				args = append(args, sample.Histogram[:])
 			}
-			if _, err := tx.ExecContext(t.Context(), seed.query, args...); err != nil {
+			if _, err := tx.Exec(t.Context(), seed.query, args...); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if _, err := tx.ExecContext(t.Context(), `INSERT INTO request_metric_callers(organization_id,minute,caller_kind,caller_id) SELECT organization_id,minute,'runner',c FROM request_metric_windows CROSS JOIN (VALUES('first'),('second')) caller(c) WHERE organization_id=$1`, org); err != nil {
+		if _, err := tx.Exec(t.Context(), `INSERT INTO request_metric_callers(organization_id,minute,caller_kind,caller_id) SELECT organization_id,minute,'runner',c FROM request_metric_windows CROSS JOIN (VALUES('first'),('second')) caller(c) WHERE organization_id=$1`, org); err != nil {
 			t.Fatal(err)
 		}
-		if err := tx.Commit(); err != nil {
+		if err := tx.Commit(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -494,7 +494,7 @@ func TestRequestMetricsRetentionBatchLimits(t *testing.T) {
 			for _, org := range []string{"org_first", "org_second"} {
 				tx := tenantTx(t, runtime, pool, org)
 				var count int
-				if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM "+tc.table).Scan(&count); err != nil {
+				if err := tx.QueryRow(t.Context(), "SELECT count(*) FROM "+tc.table).Scan(&count); err != nil {
 					t.Fatal(err)
 				}
 				expected := want * tc.multiplier
@@ -504,7 +504,7 @@ func TestRequestMetricsRetentionBatchLimits(t *testing.T) {
 				if count != expected {
 					t.Errorf("%s %s rows = %d, want %d", org, tc.table, count, expected)
 				}
-				if err := tx.Rollback(); err != nil {
+				if err := tx.Rollback(t.Context()); err != nil {
 					t.Fatal(err)
 				}
 			}

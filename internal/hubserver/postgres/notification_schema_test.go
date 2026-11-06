@@ -3,6 +3,8 @@ package postgres_test
 import (
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -16,12 +18,12 @@ func TestNotificationSchemaKeepsTwoRecipientsPerTenant(t *testing.T) {
 	repository, pool := repositoryFor(t, admin, smallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedNotificationMembers(t, repository, org)
-		tx, err := pool.BeginTx(t.Context(), nil)
+		tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _ = tx.Rollback() })
-		if _, err := tx.ExecContext(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", org); err != nil {
+		t.Cleanup(func() { _ = tx.Rollback(t.Context()) })
+		if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id', $1, true)", string(org)); err != nil {
 			t.Fatal(err)
 		}
 		q := pgquery.New(tx)
@@ -39,7 +41,7 @@ func TestNotificationSchemaKeepsTwoRecipientsPerTenant(t *testing.T) {
 				t.Fatalf("notices=%+v error=%v", rows, err)
 			}
 		}
-		if err := tx.Commit(); err != nil {
+		if err := tx.Commit(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 	}

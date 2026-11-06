@@ -9,7 +9,6 @@ import (
 	"context"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
 )
 
 const recordCurrentChangeEvidenceBySequences = `-- name: RecordCurrentChangeEvidenceBySequences :many
@@ -24,7 +23,7 @@ type RecordCurrentChangeEvidenceBySequencesParams struct {
 }
 
 func (q *Queries) RecordCurrentChangeEvidenceBySequences(ctx context.Context, arg RecordCurrentChangeEvidenceBySequencesParams) ([]ChangeEvidence, error) {
-	rows, err := q.db.QueryContext(ctx, recordCurrentChangeEvidenceBySequences, arg.OrganizationID, arg.ChangeID, pq.Array(arg.Sequences))
+	rows, err := q.db.Query(ctx, recordCurrentChangeEvidenceBySequences, arg.OrganizationID, arg.ChangeID, arg.Sequences)
 	if err != nil {
 		return nil, err
 	}
@@ -58,9 +57,6 @@ func (q *Queries) RecordCurrentChangeEvidenceBySequences(ctx context.Context, ar
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -82,7 +78,7 @@ type RecordCurrentChangePriorApprovalParams struct {
 }
 
 func (q *Queries) RecordCurrentChangePriorApproval(ctx context.Context, arg RecordCurrentChangePriorApprovalParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, recordCurrentChangePriorApproval, arg.OrganizationID, arg.ChangeID, arg.VersionID)
+	row := q.db.QueryRow(ctx, recordCurrentChangePriorApproval, arg.OrganizationID, arg.ChangeID, arg.VersionID)
 	var approved bool
 	err := row.Scan(&approved)
 	return approved, err
@@ -102,11 +98,11 @@ type RecordCurrentChangeReviewChecksParams struct {
 }
 
 func (q *Queries) RecordCurrentChangeReviewChecks(ctx context.Context, arg RecordCurrentChangeReviewChecksParams) ([]ChangeEvidence, error) {
-	rows, err := q.db.QueryContext(ctx, recordCurrentChangeReviewChecks,
+	rows, err := q.db.Query(ctx, recordCurrentChangeReviewChecks,
 		arg.OrganizationID,
 		arg.ChangeID,
 		arg.VersionID,
-		pq.Array(arg.CheckIds),
+		arg.CheckIds,
 	)
 	if err != nil {
 		return nil, err
@@ -140,9 +136,6 @@ func (q *Queries) RecordCurrentChangeReviewChecks(ctx context.Context, arg Recor
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -184,7 +177,7 @@ type RecordCurrentChangeReviewSequencesParams struct {
 }
 
 func (q *Queries) RecordCurrentChangeReviewSequences(ctx context.Context, arg RecordCurrentChangeReviewSequencesParams) ([]int64, error) {
-	rows, err := q.db.QueryContext(ctx, recordCurrentChangeReviewSequences,
+	rows, err := q.db.Query(ctx, recordCurrentChangeReviewSequences,
 		arg.OrganizationID,
 		arg.ChangeID,
 		arg.VersionID,
@@ -203,9 +196,6 @@ func (q *Queries) RecordCurrentChangeReviewSequences(ctx context.Context, arg Re
 		}
 		items = append(items, evidence_sequence)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -223,7 +213,7 @@ type RecordPendingChangeReviewSummaryParams struct {
 }
 
 func (q *Queries) RecordPendingChangeReviewSummary(ctx context.Context, arg RecordPendingChangeReviewSummaryParams) (ChangeRequest, error) {
-	row := q.db.QueryRowContext(ctx, recordPendingChangeReviewSummary, arg.OrganizationID, arg.AfterID)
+	row := q.db.QueryRow(ctx, recordPendingChangeReviewSummary, arg.OrganizationID, arg.AfterID)
 	var i ChangeRequest
 	err := row.Scan(
 		&i.OrganizationID,

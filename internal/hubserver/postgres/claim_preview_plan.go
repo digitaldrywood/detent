@@ -11,7 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
 )
 
 var _ tenantstore.ClaimPreviewPlanRowsReader = (*session)(nil)
@@ -235,11 +234,11 @@ func (s *session) ClaimPreviewPlanRows(ctx context.Context, project tracker.Proj
 }
 
 func (s *session) claimPreviewCollaborationVersions(ctx context.Context, project tracker.ProjectID, recordIDs []string, revisions []int64) ([]pgquery.CollaborationVersion, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT cv.organization_id,cv.project_id,cv.work_item_id,cv.record_id,cv.revision,cv.payload_object_key,cv.payload_sha256,cv.payload_bytes,cv.payload_content_bytes
+	rows, err := s.db.Query(ctx, `SELECT cv.organization_id,cv.project_id,cv.work_item_id,cv.record_id,cv.revision,cv.payload_object_key,cv.payload_sha256,cv.payload_bytes,cv.payload_content_bytes
 FROM collaboration_versions cv
 JOIN unnest($3::text[],$4::bigint[]) AS requested(record_id,revision)
   ON cv.record_id=requested.record_id AND cv.revision=requested.revision
-WHERE cv.organization_id=$1 AND cv.project_id=$2`, s.organization, project, pq.Array(recordIDs), pq.Array(revisions))
+WHERE cv.organization_id=$1 AND cv.project_id=$2`, s.organization, project, recordIDs, revisions)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -252,9 +251,7 @@ WHERE cv.organization_id=$1 AND cv.project_id=$2`, s.organization, project, pq.A
 		}
 		result = append(result, row)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, mapError(ctx, err)
-	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -262,11 +259,11 @@ WHERE cv.organization_id=$1 AND cv.project_id=$2`, s.organization, project, pq.A
 }
 
 func (s *session) claimPreviewChangeVersions(ctx context.Context, changeIDs, versionIDs []string) ([]pgquery.ChangeVersion, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT cv.organization_id,cv.id,cv.change_id,cv.number,cv.head_sha,cv.base_sha,cv.merge_base_sha,cv.repository,cv.policy_revision_id,cv.attempt_id,cv.actor_kind,cv.actor_principal_id,cv.external_provider,cv.external_id,cv.external_url,cv.created_at,cv.payload_object_key,cv.payload_sha256,cv.payload_bytes,cv.payload_content_bytes,cv.payload_format_version,cv.source_object_key,cv.source_sha256,cv.source_bytes,cv.source_content_bytes,cv.implementing_session_id,cv.implementing_machine_id
+	rows, err := s.db.Query(ctx, `SELECT cv.organization_id,cv.id,cv.change_id,cv.number,cv.head_sha,cv.base_sha,cv.merge_base_sha,cv.repository,cv.policy_revision_id,cv.attempt_id,cv.actor_kind,cv.actor_principal_id,cv.external_provider,cv.external_id,cv.external_url,cv.created_at,cv.payload_object_key,cv.payload_sha256,cv.payload_bytes,cv.payload_content_bytes,cv.payload_format_version,cv.source_object_key,cv.source_sha256,cv.source_bytes,cv.source_content_bytes,cv.implementing_session_id,cv.implementing_machine_id
 FROM change_versions cv
 JOIN unnest($2::text[],$3::text[]) AS requested(change_id,version_id)
   ON cv.change_id=requested.change_id AND cv.id=requested.version_id
-WHERE cv.organization_id=$1`, s.organization, pq.Array(changeIDs), pq.Array(versionIDs))
+WHERE cv.organization_id=$1`, s.organization, changeIDs, versionIDs)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -282,8 +279,6 @@ WHERE cv.organization_id=$1`, s.organization, pq.Array(changeIDs), pq.Array(vers
 	if err := rows.Err(); err != nil {
 		return nil, mapError(ctx, err)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, mapError(ctx, err)
-	}
+	rows.Close()
 	return result, nil
 }

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
 )
 
 const advanceDuplicateSource = `-- name: AdvanceDuplicateSource :execrows
@@ -23,11 +22,11 @@ type AdvanceDuplicateSourceParams struct {
 }
 
 func (q *Queries) AdvanceDuplicateSource(ctx context.Context, arg AdvanceDuplicateSourceParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, advanceDuplicateSource, arg.OrganizationID, arg.ID)
+	result, err := q.db.Exec(ctx, advanceDuplicateSource, arg.OrganizationID, arg.ID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const duplicateDocumentIdentity = `-- name: DuplicateDocumentIdentity :one
@@ -45,7 +44,7 @@ type DuplicateDocumentIdentityRow struct {
 }
 
 func (q *Queries) DuplicateDocumentIdentity(ctx context.Context, arg DuplicateDocumentIdentityParams) (DuplicateDocumentIdentityRow, error) {
-	row := q.db.QueryRowContext(ctx, duplicateDocumentIdentity, arg.OrganizationID, arg.ID)
+	row := q.db.QueryRow(ctx, duplicateDocumentIdentity, arg.OrganizationID, arg.ID)
 	var i DuplicateDocumentIdentityRow
 	err := row.Scan(&i.ProjectID, &i.Kind)
 	return i, err
@@ -62,7 +61,7 @@ type DuplicateParentSourceParams struct {
 }
 
 func (q *Queries) DuplicateParentSource(ctx context.Context, arg DuplicateParentSourceParams) (SearchDocument, error) {
-	row := q.db.QueryRowContext(ctx, duplicateParentSource, arg.OrganizationID, arg.ProjectID, arg.SourceID)
+	row := q.db.QueryRow(ctx, duplicateParentSource, arg.OrganizationID, arg.ProjectID, arg.SourceID)
 	var i SearchDocument
 	err := row.Scan(
 		&i.OrganizationID,
@@ -87,8 +86,8 @@ func (q *Queries) DuplicateParentSource(ctx context.Context, arg DuplicateParent
 		&i.PayloadContentBytes,
 		&i.Vector,
 		&i.TokenCount,
-		pq.Array(&i.Terms),
-		pq.Array(&i.TermFrequencies),
+		&i.Terms,
+		&i.TermFrequencies,
 		&i.RefreshOrder,
 		&i.SourceVector,
 		&i.Generation,
@@ -118,7 +117,7 @@ type DuplicateProjectLockParams struct {
 }
 
 func (q *Queries) DuplicateProjectLock(ctx context.Context, arg DuplicateProjectLockParams) (tracker.ProjectID, error) {
-	row := q.db.QueryRowContext(ctx, duplicateProjectLock, arg.OrganizationID, arg.ID)
+	row := q.db.QueryRow(ctx, duplicateProjectLock, arg.OrganizationID, arg.ID)
 	var id tracker.ProjectID
 	err := row.Scan(&id)
 	return id, err
@@ -146,7 +145,7 @@ type DuplicateSourceStateRow struct {
 }
 
 func (q *Queries) DuplicateSourceState(ctx context.Context, arg DuplicateSourceStateParams) (DuplicateSourceStateRow, error) {
-	row := q.db.QueryRowContext(ctx, duplicateSourceState, arg.OrganizationID, arg.ProjectID)
+	row := q.db.QueryRow(ctx, duplicateSourceState, arg.OrganizationID, arg.ProjectID)
 	var i DuplicateSourceStateRow
 	err := row.Scan(&i.SourceSequence, &i.Ready)
 	return i, err
@@ -216,16 +215,16 @@ type DuplicateSourcesRow struct {
 }
 
 func (q *Queries) DuplicateSources(ctx context.Context, arg DuplicateSourcesParams) ([]DuplicateSourcesRow, error) {
-	rows, err := q.db.QueryContext(ctx, duplicateSources,
+	rows, err := q.db.Query(ctx, duplicateSources,
 		arg.OrganizationID,
 		arg.Expression,
 		arg.FingerprintExpression,
 		arg.ProjectID,
 		arg.Exact,
 		arg.LiteralExpression,
-		pq.Array(arg.TitleExpressions),
+		arg.TitleExpressions,
 		arg.TitleMinimum,
-		pq.Array(arg.BodyExpressions),
+		arg.BodyExpressions,
 		arg.BodyMinimum,
 		arg.Reporter,
 		arg.PrincipalID,
@@ -262,8 +261,8 @@ func (q *Queries) DuplicateSources(ctx context.Context, arg DuplicateSourcesPara
 			&i.SearchDocument.PayloadContentBytes,
 			&i.SearchDocument.Vector,
 			&i.SearchDocument.TokenCount,
-			pq.Array(&i.SearchDocument.Terms),
-			pq.Array(&i.SearchDocument.TermFrequencies),
+			&i.SearchDocument.Terms,
+			&i.SearchDocument.TermFrequencies,
 			&i.SearchDocument.RefreshOrder,
 			&i.SearchDocument.SourceVector,
 			&i.SearchDocument.Generation,
@@ -280,8 +279,8 @@ func (q *Queries) DuplicateSources(ctx context.Context, arg DuplicateSourcesPara
 			&i.SearchDocument.ProgressBytes,
 			&i.SearchDocument.ProgressContentBytes,
 			&i.SourceTokens,
-			pq.Array(&i.SourceTerms),
-			pq.Array(&i.SourceFrequencies),
+			&i.SourceTerms,
+			&i.SourceFrequencies,
 			&i.IssueRevision,
 			&i.IssueNumber,
 			&i.IssueState,
@@ -290,9 +289,6 @@ func (q *Queries) DuplicateSources(ctx context.Context, arg DuplicateSourcesPara
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

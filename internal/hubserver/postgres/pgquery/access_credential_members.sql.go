@@ -21,7 +21,7 @@ type AccessCredentialHasMemberParams struct {
 }
 
 func (q *Queries) AccessCredentialHasMember(ctx context.Context, arg AccessCredentialHasMemberParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, accessCredentialHasMember, arg.OrganizationID, arg.PrincipalID)
+	row := q.db.QueryRow(ctx, accessCredentialHasMember, arg.OrganizationID, arg.PrincipalID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err

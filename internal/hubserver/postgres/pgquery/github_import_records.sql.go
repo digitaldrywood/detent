@@ -32,7 +32,7 @@ type CreateGitHubImportRecordParams struct {
 }
 
 func (q *Queries) CreateGitHubImportRecord(ctx context.Context, arg CreateGitHubImportRecordParams) error {
-	_, err := q.db.ExecContext(ctx, createGitHubImportRecord,
+	_, err := q.db.Exec(ctx, createGitHubImportRecord,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ImportID,
@@ -62,7 +62,7 @@ type ListGitHubImportRecordsParams struct {
 }
 
 func (q *Queries) ListGitHubImportRecords(ctx context.Context, arg ListGitHubImportRecordsParams) ([]GithubImportRecord, error) {
-	rows, err := q.db.QueryContext(ctx, listGitHubImportRecords,
+	rows, err := q.db.Query(ctx, listGitHubImportRecords,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ImportID,
@@ -95,9 +95,6 @@ func (q *Queries) ListGitHubImportRecords(ctx context.Context, arg ListGitHubImp
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -116,7 +113,7 @@ type ReadGitHubImportEditSourceParams struct {
 }
 
 func (q *Queries) ReadGitHubImportEditSource(ctx context.Context, arg ReadGitHubImportEditSourceParams) (GithubImportRecord, error) {
-	row := q.db.QueryRowContext(ctx, readGitHubImportEditSource,
+	row := q.db.QueryRow(ctx, readGitHubImportEditSource,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ImportID,

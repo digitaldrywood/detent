@@ -2,10 +2,11 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -35,19 +36,19 @@ func (s *session) HeartbeatMachine(ctx context.Context, machine leasestore.Machi
 	if err := s.checkOrganization(machine.OrganizationID); err != nil {
 		return err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE machines SET display_name=$3,capacity=$4,version=$5,last_heartbeat_at=greatest(last_heartbeat_at,$6),updated_at=greatest(updated_at,$6),sprite_name=CASE WHEN $7<>'' THEN $7 ELSE sprite_name END WHERE organization_id=$1 AND id=$2`, machine.OrganizationID, machine.ID, machine.DisplayName, machine.Capacity, machine.Version, at, machine.SpriteName)
+	result, err := s.db.Exec(ctx, `UPDATE machines SET display_name=$3,capacity=$4,version=$5,last_heartbeat_at=greatest(last_heartbeat_at,$6),updated_at=greatest(updated_at,$6),sprite_name=CASE WHEN $7<>'' THEN $7 ELSE sprite_name END WHERE organization_id=$1 AND id=$2`, machine.OrganizationID, machine.ID, machine.DisplayName, machine.Capacity, machine.Version, at, machine.SpriteName)
 	return updateOwned(ctx, result, err)
 }
 
 func (s *session) Machine(ctx context.Context, id string) (leasestore.Machine, error) {
 	var machine leasestore.Machine
-	err := s.db.QueryRowContext(ctx, `SELECT organization_id,id,hostname,display_name,capacity,version,sprite_name FROM machines WHERE organization_id=$1 AND id=$2`, s.organization, id).Scan(&machine.OrganizationID, &machine.ID, &machine.Hostname, &machine.DisplayName, &machine.Capacity, &machine.Version, &machine.SpriteName)
+	err := s.db.QueryRow(ctx, `SELECT organization_id,id,hostname,display_name,capacity,version,sprite_name FROM machines WHERE organization_id=$1 AND id=$2`, s.organization, id).Scan(&machine.OrganizationID, &machine.ID, &machine.Hostname, &machine.DisplayName, &machine.Capacity, &machine.Version, &machine.SpriteName)
 	return machine, mapError(ctx, err)
 }
 
 func (s *session) LockMachine(ctx context.Context, id string) (leasestore.Machine, error) {
 	var machine leasestore.Machine
-	err := s.db.QueryRowContext(ctx, `SELECT organization_id,id,hostname,display_name,capacity,version,sprite_name FROM machines WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, id).Scan(&machine.OrganizationID, &machine.ID, &machine.Hostname, &machine.DisplayName, &machine.Capacity, &machine.Version, &machine.SpriteName)
+	err := s.db.QueryRow(ctx, `SELECT organization_id,id,hostname,display_name,capacity,version,sprite_name FROM machines WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, id).Scan(&machine.OrganizationID, &machine.ID, &machine.Hostname, &machine.DisplayName, &machine.Capacity, &machine.Version, &machine.SpriteName)
 	return machine, mapError(ctx, err)
 }
 
@@ -66,7 +67,7 @@ func (s *session) LeaseBySession(ctx context.Context, sessionID string) (leasest
 		statement += ` FOR UPDATE`
 	}
 	var row leasestore.Lease
-	err := s.db.QueryRowContext(ctx, statement, s.organization, sessionID).Scan(
+	err := s.db.QueryRow(ctx, statement, s.organization, sessionID).Scan(
 		&row.OrganizationID, &row.LeaseID, &row.FencingToken, &row.IssueID, &row.MachineID, &row.SessionID,
 		&row.WorkItemRevision, &row.LandingCapacity, &row.AcquiredAt, &row.RenewedAt, &row.ExpiresAt, &row.ReleasedAt, &row.ReleaseReason,
 	)
@@ -208,7 +209,7 @@ func (s *session) Claim(ctx context.Context, request leasestore.Claim) (leasesto
 		return leasestore.Lease{}, mapError(ctx, err)
 	}
 	current, err := s.queries.LockActiveLease(ctx, pgquery.LockActiveLeaseParams{OrganizationID: s.organization, IssueID: request.IssueID})
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return leasestore.Lease{}, mapError(ctx, err)
 	}
 	found := err == nil
@@ -252,7 +253,7 @@ func (s *session) lockFence(ctx context.Context, fence leasestore.Fence) (pgquer
 		return pgquery.Lease{}, time.Time{}, tracker.ErrInvalidLeaseRequest
 	}
 	row, err := s.queries.LockLease(ctx, pgquery.LockLeaseParams{OrganizationID: s.organization, LeaseID: fence.LeaseID})
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return row, time.Time{}, tracker.ErrLeaseNotFound
 	}
 	if err != nil {
@@ -270,7 +271,7 @@ func (s *session) LockLease(ctx context.Context, leaseID string) (leasestore.Lea
 		return leasestore.Lease{}, tracker.ErrLeaseNotFound
 	}
 	row, err := s.queries.LockLease(ctx, pgquery.LockLeaseParams{OrganizationID: s.organization, LeaseID: leaseID})
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return leasestore.Lease{}, tracker.ErrLeaseNotFound
 	}
 	return leasestore.Lease(row), mapError(ctx, err)
@@ -356,7 +357,7 @@ func (s *session) heartbeat(ctx context.Context, machine string, now time.Time) 
 }
 
 func leaseMutationError(ctx context.Context, err error) error {
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return tracker.ErrStaleFencingToken
 	}
 	return mapError(ctx, err)
@@ -388,7 +389,7 @@ func (s *session) UpdateRunnerHost(ctx context.Context, id string, change runner
 		return revision, corestore.ErrRevisionConflict
 	}
 	updated, err := s.queries.UpdateRunnerHostRouting(ctx, pgquery.UpdateRunnerHostRoutingParams{OrganizationID: s.organization, ID: id, ExpectedRevision: change.ExpectedRevision, DisplayName: change.DisplayName, Capacity: int64(change.Capacity)})
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return revision, corestore.ErrRevisionConflict
 	}
 	return updated, mapError(ctx, err)

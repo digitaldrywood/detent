@@ -20,7 +20,7 @@ func (s *session) CreateArtifactReadGrant(ctx context.Context, grant artifactsto
 	if !artifact.ValidHash(grant.TokenHash, 64) || grant.PrincipalID == "" || grant.ExpiresAt.IsZero() || now.IsZero() {
 		return corestore.ErrInvalidCursor
 	}
-	if _, err := s.db.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "artifact_grants|"+string(s.organization)+"|"+grant.PrincipalID); err != nil {
+	if _, err := s.db.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "artifact_grants|"+string(s.organization)+"|"+grant.PrincipalID); err != nil {
 		return mapError(ctx, err)
 	}
 	if err := s.queries.ArtifactReadGrantDeleteExpired(ctx, pgquery.ArtifactReadGrantDeleteExpiredParams{OrganizationID: s.organization, PrincipalID: grant.PrincipalID, Now: recordTime(now), BatchLimit: artifactstore.ReadGrantPruneBatch}); err != nil {

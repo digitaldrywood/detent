@@ -36,7 +36,7 @@ func (b *reportBatch) source() string {
 
 func (s *session) verifyReportBatch(ctx context.Context, b *reportBatch, query string, mismatch error) error {
 	var count int
-	if err := s.db.QueryRowContext(ctx, b.source()+query, b.args...).Scan(&count); err != nil {
+	if err := s.db.QueryRow(ctx, b.source()+query, b.args...).Scan(&count); err != nil {
 		return mapError(ctx, err)
 	}
 	if count != len(b.rows) {
@@ -46,7 +46,7 @@ func (s *session) verifyReportBatch(ctx context.Context, b *reportBatch, query s
 }
 
 func (s *session) mergeReportFacts(ctx context.Context, b *reportBatch, table, columns, keys string) error {
-	if _, err := s.db.ExecContext(ctx, b.source()+"INSERT INTO "+table+"(organization_id,"+columns+") SELECT DISTINCT $1,"+columns+" FROM source ORDER BY "+keys+" ON CONFLICT(organization_id,"+keys+") DO NOTHING", b.args...); err != nil {
+	if _, err := s.db.Exec(ctx, b.source()+"INSERT INTO "+table+"(organization_id,"+columns+") SELECT DISTINCT $1,"+columns+" FROM source ORDER BY "+keys+" ON CONFLICT(organization_id,"+keys+") DO NOTHING", b.args...); err != nil {
 		return mapError(ctx, err)
 	}
 	fields := strings.Split(columns, ",")
@@ -105,7 +105,7 @@ func (s *session) importReportEvents(ctx context.Context, records []ReportEventP
 		b.add(e.ID, e.ProjectID, e.WorkItemID, e.PayloadObjectKey, e.PayloadSHA256, legacyKey, legacySHA, p.RunSequence, p.RunStatus, p.Role, p.Model, p.Effort, p.Failed, p.FailureClass, p.FailureKind, p.LandingReceipt, p.Landed, p.LandingChangeID, p.ReworkClass, p.ReworkKind, p.DurationSeconds)
 	}
 	var count, legacy int
-	err := s.db.QueryRowContext(ctx, b.source()+`SELECT count(*),count(*) FILTER(WHERE (e.payload_object_key,e.payload_sha256) IS DISTINCT FROM (source.payload_object_key,source.payload_sha256)) FROM source JOIN collaboration_events e ON e.organization_id=$1 AND e.id=source.event_id AND e.project_id=source.project_id AND e.work_item_id=source.work_item_id WHERE (e.payload_object_key,e.payload_sha256)=(source.payload_object_key,source.payload_sha256) OR (source.legacy_sha<>'' AND (e.payload_object_key,e.payload_sha256)=(source.legacy_key,source.legacy_sha))`, b.args...).Scan(&count, &legacy)
+	err := s.db.QueryRow(ctx, b.source()+`SELECT count(*),count(*) FILTER(WHERE (e.payload_object_key,e.payload_sha256) IS DISTINCT FROM (source.payload_object_key,source.payload_sha256)) FROM source JOIN collaboration_events e ON e.organization_id=$1 AND e.id=source.event_id AND e.project_id=source.project_id AND e.work_item_id=source.work_item_id WHERE (e.payload_object_key,e.payload_sha256)=(source.payload_object_key,source.payload_sha256) OR (source.legacy_sha<>'' AND (e.payload_object_key,e.payload_sha256)=(source.legacy_key,source.legacy_sha))`, b.args...).Scan(&count, &legacy)
 	if err != nil {
 		return 0, mapError(ctx, err)
 	}
@@ -115,7 +115,7 @@ func (s *session) importReportEvents(ctx context.Context, records []ReportEventP
 	if err := s.mergeReportFacts(ctx, b, "report_event_facts", "event_id,run_sequence,run_status,role,model,effort,failed,failure_class,failure_kind,landing_receipt,landed,landing_change_id,rework_class,rework_kind,duration_seconds", "event_id"); err != nil {
 		return 0, err
 	}
-	_, err = s.db.ExecContext(ctx, b.source()+`, candidates AS (
+	_, err = s.db.Exec(ctx, b.source()+`, candidates AS (
  SELECT e.* FROM source JOIN collaboration_events e ON e.organization_id=$1 AND e.id=source.event_id JOIN native_attempts a ON a.organization_id=e.organization_id AND a.id=e.attempt_id
  ), incoming AS (
  SELECT organization_id,attempt_id,(array_agg(id ORDER BY sequence,id))[1] first_event_id,(array_agg(id ORDER BY sequence DESC,id))[1] latest_event_id,(array_agg(id ORDER BY recorded_at,sequence,id) FILTER(WHERE type='run.finished'))[1] outcome_event_id FROM candidates GROUP BY organization_id,attempt_id
@@ -141,7 +141,7 @@ func (s *session) importReportLandings(ctx context.Context, records []ReportLand
 		}
 		b.add(c.ID, c.Revision, c.ProjectID, c.WorkItemID, *c.LandedVersionID, recordTime(*c.LandedAt), *c.LandedHeadSHA, *c.LandedMergeSHA, *c.LandedBaseRef, p.AttemptID, p.PayloadObjectKey, p.PayloadSHA256)
 	}
-	rows, err := s.db.QueryContext(ctx, b.source()+`SELECT c.id FROM change_requests c JOIN source ON c.organization_id=$1 AND c.id=source.id ORDER BY c.id FOR UPDATE OF c`, b.args...)
+	rows, err := s.db.Query(ctx, b.source()+`SELECT c.id FROM change_requests c JOIN source ON c.organization_id=$1 AND c.id=source.id ORDER BY c.id FOR UPDATE OF c`, b.args...)
 	if err != nil {
 		return mapError(ctx, err)
 	}
@@ -156,15 +156,13 @@ func (s *session) importReportLandings(ctx context.Context, records []ReportLand
 		rows.Close()
 		return mapError(ctx, err)
 	}
-	if err := rows.Close(); err != nil {
-		return mapError(ctx, err)
-	}
+	rows.Close()
 	if err := s.verifyReportBatch(ctx, b, `SELECT count(*) FROM source JOIN change_requests c ON c.organization_id=$1 AND c.id=source.id AND c.revision=source.revision AND c.project_id=source.project_id AND c.work_item_id=source.work_item_id AND c.current_version_id=source.landed_version_id
  JOIN change_landing_receipts r ON r.organization_id=c.organization_id AND r.attempt_id=source.attempt_id AND r.version_id=source.landed_version_id AND r.payload_object_key=source.payload_object_key AND r.payload_sha256=source.payload_sha256 AND r.merge_sha=source.landed_merge_sha AND r.base_ref=source.landed_base_ref
  JOIN change_versions v ON v.organization_id=c.organization_id AND v.change_id=c.id AND v.id=source.landed_version_id AND v.head_sha=source.landed_head_sha
  WHERE (c.landed_version_id IS NULL AND c.landed_at IS NULL AND c.landed_head_sha IS NULL AND c.landed_merge_sha IS NULL AND c.landed_base_ref IS NULL) OR (c.landed_version_id,c.landed_at,c.landed_head_sha,c.landed_merge_sha,c.landed_base_ref)=(source.landed_version_id,source.landed_at,source.landed_head_sha,source.landed_merge_sha,source.landed_base_ref)`, corestore.ErrRevisionConflict); err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, b.source()+`UPDATE change_requests c SET landed_version_id=source.landed_version_id,landed_at=source.landed_at,landed_head_sha=source.landed_head_sha,landed_merge_sha=source.landed_merge_sha,landed_base_ref=source.landed_base_ref FROM source WHERE c.organization_id=$1 AND c.id=source.id AND c.landed_version_id IS NULL`, b.args...)
+	_, err = s.db.Exec(ctx, b.source()+`UPDATE change_requests c SET landed_version_id=source.landed_version_id,landed_at=source.landed_at,landed_head_sha=source.landed_head_sha,landed_merge_sha=source.landed_merge_sha,landed_base_ref=source.landed_base_ref FROM source WHERE c.organization_id=$1 AND c.id=source.id AND c.landed_version_id IS NULL`, b.args...)
 	return mapError(ctx, err)
 }

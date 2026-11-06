@@ -63,7 +63,7 @@ func TestPlatformAICreditsRESTAndMCP(t *testing.T) {
 			f.provider.users["user_billing"] = "billing@example.test"
 			f.provider.users["user_viewer"] = "viewer@example.test"
 			for _, role := range []string{"admin", "billing", "viewer"} {
-				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?,'test','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", role+"@example.test", role); err != nil {
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform.platform_members VALUES($1,$2,'test','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", role+"@example.test", role); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -203,7 +203,7 @@ func TestPlatformAICreditsRESTAndMCP(t *testing.T) {
 						if detailResponse.StatusCode != http.StatusOK || detail.CreditBalanceMicros == nil || *detail.CreditBalanceMicros != balance {
 							t.Fatalf("detail balance=%d %+v want=%d", detailResponse.StatusCode, detail, balance)
 						}
-						if _, err := f.service.registry.store.db.ExecContext(t.Context(), "DELETE FROM platform_members WHERE email=?", f.provider.users[test.user]); err != nil {
+						if _, err := f.service.registry.store.db.ExecContext(t.Context(), "DELETE FROM platform.platform_members WHERE email=$1", f.provider.users[test.user]); err != nil {
 							t.Fatal(err)
 						}
 						if response := send(path, body, sessionID); response.Code != http.StatusForbidden {

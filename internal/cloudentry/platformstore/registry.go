@@ -2,10 +2,11 @@ package platformstore
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"path/filepath"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -36,21 +37,21 @@ func (r *Repository) Register(ctx context.Context, o Organization) (bool, error)
 		return false, ErrInvalid
 	}
 	changed := false
-	err := r.transaction(ctx, corestore.Serving, false, func(tx *sql.Tx) error {
+	err := r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
 
 		now := r.now()
-		inserted, err := tx.ExecContext(ctx, `INSERT INTO platform.organizations(id,provider_id,name,state,endpoint,generation,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$7) ON CONFLICT DO NOTHING`, o.ID, o.ProviderID, o.Name, o.State, o.Endpoint, o.Generation, now)
+		inserted, err := tx.Exec(ctx, `INSERT INTO platform.organizations(id,provider_id,name,state,endpoint,generation,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$7) ON CONFLICT DO NOTHING`, o.ID, o.ProviderID, o.Name, o.State, o.Endpoint, o.Generation, now)
 		if err != nil {
 			return err
 		}
-		count, err := inserted.RowsAffected()
+		count := inserted.RowsAffected()
 		if err != nil {
 			return err
 		}
 		if count == 0 {
-			current, err := scanOrganization(tx.QueryRowContext(ctx, `SELECT `+organizationColumns+` FROM platform.organizations WHERE id=$1 FOR UPDATE`, o.ID))
+			current, err := scanOrganization(tx.QueryRow(ctx, `SELECT `+organizationColumns+` FROM platform.organizations WHERE id=$1 FOR UPDATE`, o.ID))
 			switch {
-			case errors.Is(err, sql.ErrNoRows):
+			case errors.Is(err, pgx.ErrNoRows):
 				return ErrOrganizationConflict
 			case err != nil:
 				return err
@@ -61,12 +62,12 @@ func (r *Repository) Register(ctx context.Context, o Organization) (bool, error)
 			case current.Generation == o.Generation && current.Endpoint != o.Endpoint:
 				return ErrOrganizationConflict
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE platform.organizations SET name=$1,state=$2,endpoint=$3,generation=$4,updated_at=$5 WHERE id=$6`, o.Name, o.State, o.Endpoint, o.Generation, now, o.ID); err != nil {
+			if _, err := tx.Exec(ctx, `UPDATE platform.organizations SET name=$1,state=$2,endpoint=$3,generation=$4,updated_at=$5 WHERE id=$6`, o.Name, o.State, o.Endpoint, o.Generation, now, o.ID); err != nil {
 				return err
 			}
 		}
 
-		_, err = tx.ExecContext(ctx, `INSERT INTO platform.organization_events(organization_id,event,generation,recorded_at) VALUES($1,$2,$3,$4)`, o.ID, "registered_"+o.State, o.Generation, now)
+		_, err = tx.Exec(ctx, `INSERT INTO platform.organization_events(organization_id,event,generation,recorded_at) VALUES($1,$2,$3,$4)`, o.ID, "registered_"+o.State, o.Generation, now)
 		changed = err == nil
 		return err
 	})
@@ -78,9 +79,9 @@ func (r *Repository) Register(ctx context.Context, o Organization) (bool, error)
 
 func (r *Repository) Organization(ctx context.Context, id tracker.OrganizationID) (Organization, error) {
 	var o Organization
-	err := r.transaction(ctx, corestore.Serving, true, func(tx *sql.Tx) error {
+	err := r.transaction(ctx, corestore.Serving, true, func(tx pgx.Tx) error {
 		var err error
-		o, err = scanOrganization(tx.QueryRowContext(ctx, `SELECT `+organizationColumns+` FROM platform.organizations WHERE id=$1`, id))
+		o, err = scanOrganization(tx.QueryRow(ctx, `SELECT `+organizationColumns+` FROM platform.organizations WHERE id=$1`, id))
 		return err
 	})
 	return o, err
@@ -91,9 +92,9 @@ func (r *Repository) ByProvider(ctx context.Context, provider string) (Organizat
 		return Organization{}, corestore.ErrNotFound
 	}
 	var o Organization
-	err := r.transaction(ctx, corestore.Serving, true, func(tx *sql.Tx) error {
+	err := r.transaction(ctx, corestore.Serving, true, func(tx pgx.Tx) error {
 		var err error
-		o, err = scanOrganization(tx.QueryRowContext(ctx, `SELECT `+organizationColumns+` FROM platform.organizations WHERE provider_id=$1 AND provider_id<>''`, provider))
+		o, err = scanOrganization(tx.QueryRow(ctx, `SELECT `+organizationColumns+` FROM platform.organizations WHERE provider_id=$1 AND provider_id<>''`, provider))
 		return err
 	})
 	return o, err
@@ -104,8 +105,8 @@ func (r *Repository) Organizations(ctx context.Context, after tracker.Organizati
 		return nil, ErrInvalid
 	}
 	result := []Organization{}
-	err := r.transaction(ctx, corestore.Serving, true, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT `+organizationColumns+` FROM platform.organizations WHERE id>$1 ORDER BY id LIMIT $2`, after, limit)
+	err := r.transaction(ctx, corestore.Serving, true, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT `+organizationColumns+` FROM platform.organizations WHERE id>$1 ORDER BY id LIMIT $2`, after, limit)
 		if err != nil {
 			return err
 		}
@@ -124,8 +125,8 @@ func (r *Repository) Organizations(ctx context.Context, after tracker.Organizati
 
 func (r *Repository) Member(ctx context.Context, email string) (Member, error) {
 	var m Member
-	err := r.transaction(ctx, corestore.Serving, true, func(tx *sql.Tx) error {
-		return tx.QueryRowContext(ctx, `SELECT email,role,added_by,added_at,updated_at FROM platform.platform_members WHERE email=$1`, strings.ToLower(strings.TrimSpace(email))).Scan(&m.Email, &m.Role, &m.AddedBy, &m.AddedAt, &m.UpdatedAt)
+	err := r.transaction(ctx, corestore.Serving, true, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT email,role,added_by,added_at,updated_at FROM platform.platform_members WHERE email=$1`, strings.ToLower(strings.TrimSpace(email))).Scan(&m.Email, &m.Role, &m.AddedBy, &m.AddedAt, &m.UpdatedAt)
 	})
 	return m, err
 }

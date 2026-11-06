@@ -2,8 +2,6 @@ package postgres_test
 
 import (
 	"context"
-	"database/sql"
-	"database/sql/driver"
 	"errors"
 	"fmt"
 	"slices"
@@ -11,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
@@ -435,7 +433,7 @@ func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 			}
 			return w.RegisterMachine(ctx, leasestore.Machine{OrganizationID: organization, ID: "machine_shared", Hostname: "example", DisplayName: "Example", Capacity: 1, Version: "example"})
 		}); err != nil {
-			var postgresError *pq.Error
+			var postgresError *pgconn.PgError
 			if errors.As(err, &postgresError) {
 				t.Fatalf("enroll runner: SQLSTATE %s: %s", postgresError.Code, postgresError.Message)
 			}
@@ -444,7 +442,7 @@ func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.CreateRunnerEnrollment(ctx, runnerstore.Enrollment{OrganizationID: organization, ID: "enrollment_shared", RunnerID: "runner_shared", MachineID: "machine_shared", TokenHash: apikey.HashToken("enrollment-token-" + string(organization)), Scope: "projects", Operations: []string{"read", "claim"}, ProjectIDs: []tracker.ProjectID{"project_shared"}, CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute), CreatedBy: "admin"})
 		}); err != nil {
-			var postgresError *pq.Error
+			var postgresError *pgconn.PgError
 			if errors.As(err, &postgresError) {
 				t.Fatalf("create redeemed identity: SQLSTATE %s: %s", postgresError.Code, postgresError.Message)
 			}
@@ -469,7 +467,7 @@ func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 			}
 			return nil
 		}); err != nil {
-			var postgresError *pq.Error
+			var postgresError *pgconn.PgError
 			if errors.As(err, &postgresError) {
 				t.Fatalf("redeem runner: SQLSTATE %s: %s", postgresError.Code, postgresError.Message)
 			}
@@ -477,21 +475,8 @@ func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 		}
 	}
 
-	conn, err := pool.Conn(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := conn.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	counter := &reportCountingConnector{}
-	if err := conn.Raw(func(raw any) error { counter.conn = raw.(driver.Conn); return nil }); err != nil {
-		t.Fatal(err)
-	}
-	countedPool := sql.OpenDB(counter)
-	countedPool.SetMaxOpenConns(1)
+	counter := &reportCountingTracer{}
+	countedPool := tracedFeaturePool(t, pool, counter)
 	counted, err := postgres.NewRepository(ctx, countedPool, smallPool())
 	if err != nil {
 		t.Fatal(err)
@@ -880,9 +865,9 @@ func TestRunnerProjectObservationIsTenantScopedAndRejectsStaleSnapshots(t *testi
 					return w.ReplaceRunnerProjectObservation(t.Context(), runnerstore.ProjectObservation{OrganizationID: organization, RunnerID: "runner_shared", ProjectID: "project_shared", ObservedAt: at, DiagnosticsAt: &at, RuntimeObservedAt: &at, SnapshotDigest: strings.Repeat("d", 64), Diagnostics: diagnostics}, []runnerstore.ProjectDiagnosticAttempt{{Position: 0, RecordKey: record.Key, IssueID: record.IssueID, LocalAttemptID: record.LocalAttemptID, Membership: record.Membership}})
 				})
 				if err != nil {
-					var pgError *pq.Error
+					var pgError *pgconn.PgError
 					if errors.As(err, &pgError) {
-						t.Errorf("replace optional arrays for %s: SQLSTATE=%s table=%s column=%s", organization, pgError.Code, pgError.Table, pgError.Column)
+						t.Errorf("replace optional arrays for %s: SQLSTATE=%s table=%s column=%s", organization, pgError.Code, pgError.TableName, pgError.ColumnName)
 					} else {
 						t.Errorf("replace optional arrays for %s: %v", organization, err)
 					}

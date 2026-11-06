@@ -7,11 +7,10 @@ package pgquery
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const billingAssignment = `-- name: BillingAssignment :one
@@ -19,7 +18,7 @@ SELECT organization_id, base_id, base_version, subscription_id, subscription_ver
 `
 
 func (q *Queries) BillingAssignment(ctx context.Context, organizationID tracker.OrganizationID) (HostedPlanAssignment, error) {
-	row := q.db.QueryRowContext(ctx, billingAssignment, organizationID)
+	row := q.db.QueryRow(ctx, billingAssignment, organizationID)
 	var i HostedPlanAssignment
 	err := row.Scan(
 		&i.OrganizationID,
@@ -58,7 +57,7 @@ type BillingEffectiveGrantsRow struct {
 }
 
 func (q *Queries) BillingEffectiveGrants(ctx context.Context, arg BillingEffectiveGrantsParams) ([]BillingEffectiveGrantsRow, error) {
-	rows, err := q.db.QueryContext(ctx, billingEffectiveGrants, arg.OrganizationID, arg.StartsAt)
+	rows, err := q.db.Query(ctx, billingEffectiveGrants, arg.OrganizationID, arg.StartsAt)
 	if err != nil {
 		return nil, err
 	}
@@ -79,9 +78,6 @@ func (q *Queries) BillingEffectiveGrants(ctx context.Context, arg BillingEffecti
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -116,11 +112,11 @@ type BillingFeatureEnabledParams struct {
 }
 
 func (q *Queries) BillingFeatureEnabled(ctx context.Context, arg BillingFeatureEnabledParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, billingFeatureEnabled,
+	row := q.db.QueryRow(ctx, billingFeatureEnabled,
 		arg.OrganizationID,
 		arg.Feature,
 		arg.SubscriptionExpiresAt,
-		pq.Array(arg.CapacityPlanRefs),
+		arg.CapacityPlanRefs,
 	)
 	var exists bool
 	err := row.Scan(&exists)
@@ -137,7 +133,7 @@ type BillingGrantParams struct {
 }
 
 func (q *Queries) BillingGrant(ctx context.Context, arg BillingGrantParams) (HostedComplimentaryGrant, error) {
-	row := q.db.QueryRowContext(ctx, billingGrant, arg.OrganizationID, arg.ID)
+	row := q.db.QueryRow(ctx, billingGrant, arg.OrganizationID, arg.ID)
 	var i HostedComplimentaryGrant
 	err := row.Scan(
 		&i.OrganizationID,
@@ -161,7 +157,7 @@ type BillingGrantScopesParams struct {
 }
 
 func (q *Queries) BillingGrantScopes(ctx context.Context, arg BillingGrantScopesParams) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, billingGrantScopes, arg.OrganizationID, arg.GrantID)
+	rows, err := q.db.Query(ctx, billingGrantScopes, arg.OrganizationID, arg.GrantID)
 	if err != nil {
 		return nil, err
 	}
@@ -173,9 +169,6 @@ func (q *Queries) BillingGrantScopes(ctx context.Context, arg BillingGrantScopes
 			return nil, err
 		}
 		items = append(items, scope)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -194,7 +187,7 @@ type BillingGrantsParams struct {
 }
 
 func (q *Queries) BillingGrants(ctx context.Context, arg BillingGrantsParams) ([]HostedComplimentaryGrant, error) {
-	rows, err := q.db.QueryContext(ctx, billingGrants, arg.OrganizationID, arg.AfterID, arg.PageSize)
+	rows, err := q.db.Query(ctx, billingGrants, arg.OrganizationID, arg.AfterID, arg.PageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -215,9 +208,6 @@ func (q *Queries) BillingGrants(ctx context.Context, arg BillingGrantsParams) ([
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -235,7 +225,7 @@ type BillingPlanParams struct {
 }
 
 func (q *Queries) BillingPlan(ctx context.Context, arg BillingPlanParams) (HostedPlan, error) {
-	row := q.db.QueryRowContext(ctx, billingPlan, arg.OrganizationID, arg.ID, arg.Version)
+	row := q.db.QueryRow(ctx, billingPlan, arg.OrganizationID, arg.ID, arg.Version)
 	var i HostedPlan
 	err := row.Scan(
 		&i.OrganizationID,
@@ -264,7 +254,7 @@ type BillingPlanAllowancesRow struct {
 }
 
 func (q *Queries) BillingPlanAllowances(ctx context.Context, arg BillingPlanAllowancesParams) ([]BillingPlanAllowancesRow, error) {
-	rows, err := q.db.QueryContext(ctx, billingPlanAllowances, arg.OrganizationID, arg.PlanID, arg.PlanVersion)
+	rows, err := q.db.Query(ctx, billingPlanAllowances, arg.OrganizationID, arg.PlanID, arg.PlanVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -276,9 +266,6 @@ func (q *Queries) BillingPlanAllowances(ctx context.Context, arg BillingPlanAllo
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -297,7 +284,7 @@ type BillingPlanFeaturesParams struct {
 }
 
 func (q *Queries) BillingPlanFeatures(ctx context.Context, arg BillingPlanFeaturesParams) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, billingPlanFeatures, arg.OrganizationID, arg.PlanID, arg.PlanVersion)
+	rows, err := q.db.Query(ctx, billingPlanFeatures, arg.OrganizationID, arg.PlanID, arg.PlanVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -309,9 +296,6 @@ func (q *Queries) BillingPlanFeatures(ctx context.Context, arg BillingPlanFeatur
 			return nil, err
 		}
 		items = append(items, feature)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -331,7 +315,7 @@ type BillingPlansParams struct {
 }
 
 func (q *Queries) BillingPlans(ctx context.Context, arg BillingPlansParams) ([]HostedPlan, error) {
-	rows, err := q.db.QueryContext(ctx, billingPlans,
+	rows, err := q.db.Query(ctx, billingPlans,
 		arg.OrganizationID,
 		arg.AfterID,
 		arg.AfterVersion,
@@ -356,9 +340,6 @@ func (q *Queries) BillingPlans(ctx context.Context, arg BillingPlansParams) ([]H
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -374,12 +355,12 @@ type CreateBillingAssignmentParams struct {
 	BaseID                string
 	BaseVersion           int64
 	SubscriptionID        *string
-	SubscriptionVersion   sql.NullInt64
+	SubscriptionVersion   pgtype.Int8
 	SubscriptionExpiresAt *time.Time
 }
 
 func (q *Queries) CreateBillingAssignment(ctx context.Context, arg CreateBillingAssignmentParams) error {
-	_, err := q.db.ExecContext(ctx, createBillingAssignment,
+	_, err := q.db.Exec(ctx, createBillingAssignment,
 		arg.OrganizationID,
 		arg.BaseID,
 		arg.BaseVersion,
@@ -405,7 +386,7 @@ type CreateBillingGrantParams struct {
 }
 
 func (q *Queries) CreateBillingGrant(ctx context.Context, arg CreateBillingGrantParams) error {
-	_, err := q.db.ExecContext(ctx, createBillingGrant,
+	_, err := q.db.Exec(ctx, createBillingGrant,
 		arg.OrganizationID,
 		arg.ID,
 		arg.PlanID,
@@ -428,7 +409,7 @@ type CreateBillingGrantScopeParams struct {
 }
 
 func (q *Queries) CreateBillingGrantScope(ctx context.Context, arg CreateBillingGrantScopeParams) error {
-	_, err := q.db.ExecContext(ctx, createBillingGrantScope, arg.OrganizationID, arg.GrantID, arg.Scope)
+	_, err := q.db.Exec(ctx, createBillingGrantScope, arg.OrganizationID, arg.GrantID, arg.Scope)
 	return err
 }
 
@@ -441,12 +422,12 @@ type CreateBillingPlanParams struct {
 	ID              string
 	Version         int64
 	Name            string
-	MonthlyUsdCents sql.NullInt64
+	MonthlyUsdCents pgtype.Int8
 	RuntimeID       string
 }
 
 func (q *Queries) CreateBillingPlan(ctx context.Context, arg CreateBillingPlanParams) error {
-	_, err := q.db.ExecContext(ctx, createBillingPlan,
+	_, err := q.db.Exec(ctx, createBillingPlan,
 		arg.OrganizationID,
 		arg.ID,
 		arg.Version,
@@ -470,7 +451,7 @@ type CreateBillingPlanAllowanceParams struct {
 }
 
 func (q *Queries) CreateBillingPlanAllowance(ctx context.Context, arg CreateBillingPlanAllowanceParams) error {
-	_, err := q.db.ExecContext(ctx, createBillingPlanAllowance,
+	_, err := q.db.Exec(ctx, createBillingPlanAllowance,
 		arg.OrganizationID,
 		arg.PlanID,
 		arg.PlanVersion,
@@ -492,7 +473,7 @@ type CreateBillingPlanFeatureParams struct {
 }
 
 func (q *Queries) CreateBillingPlanFeature(ctx context.Context, arg CreateBillingPlanFeatureParams) error {
-	_, err := q.db.ExecContext(ctx, createBillingPlanFeature,
+	_, err := q.db.Exec(ctx, createBillingPlanFeature,
 		arg.OrganizationID,
 		arg.PlanID,
 		arg.PlanVersion,
@@ -529,7 +510,7 @@ type MissingConfiguredBillingPlanRow struct {
 }
 
 func (q *Queries) MissingConfiguredBillingPlan(ctx context.Context, arg MissingConfiguredBillingPlanParams) (MissingConfiguredBillingPlanRow, error) {
-	row := q.db.QueryRowContext(ctx, missingConfiguredBillingPlan, arg.OrganizationID, pq.Array(arg.ConfiguredRefs), arg.AsOf)
+	row := q.db.QueryRow(ctx, missingConfiguredBillingPlan, arg.OrganizationID, arg.ConfiguredRefs, arg.AsOf)
 	var i MissingConfiguredBillingPlanRow
 	err := row.Scan(&i.ID, &i.Version)
 	return i, err
@@ -546,11 +527,11 @@ type RevokeBillingGrantParams struct {
 }
 
 func (q *Queries) RevokeBillingGrant(ctx context.Context, arg RevokeBillingGrantParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, revokeBillingGrant, arg.OrganizationID, arg.ID, arg.RevokedAt)
+	result, err := q.db.Exec(ctx, revokeBillingGrant, arg.OrganizationID, arg.ID, arg.RevokedAt)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const setBillingAssignment = `-- name: SetBillingAssignment :execrows
@@ -562,13 +543,13 @@ type SetBillingAssignmentParams struct {
 	BaseID                string
 	BaseVersion           int64
 	SubscriptionID        *string
-	SubscriptionVersion   sql.NullInt64
+	SubscriptionVersion   pgtype.Int8
 	SubscriptionExpiresAt *time.Time
 	ExpectedRevision      int64
 }
 
 func (q *Queries) SetBillingAssignment(ctx context.Context, arg SetBillingAssignmentParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, setBillingAssignment,
+	result, err := q.db.Exec(ctx, setBillingAssignment,
 		arg.OrganizationID,
 		arg.BaseID,
 		arg.BaseVersion,
@@ -580,5 +561,5 @@ func (q *Queries) SetBillingAssignment(ctx context.Context, arg SetBillingAssign
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }

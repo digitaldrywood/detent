@@ -5,10 +5,10 @@ import "context"
 func (s *session) AttachmentObjectExists(ctx context.Context, id, key string) (bool, error) {
 	var exists bool
 	if key == "" {
-		err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM attachments WHERE organization_id=$1 AND id=$2 AND object_deleted_at IS NULL)`, s.organization, id).Scan(&exists)
+		err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM attachments WHERE organization_id=$1 AND id=$2 AND object_deleted_at IS NULL)`, s.organization, id).Scan(&exists)
 		return exists, mapError(ctx, err)
 	}
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM ai_credit_reason_references WHERE organization_id=$1 AND object_key=$2) OR
+	err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM ai_credit_reason_references WHERE organization_id=$1 AND object_key=$2) OR
 EXISTS (SELECT 1 FROM archive_objects WHERE organization_id=$1 AND object_key=$2) OR
 EXISTS (SELECT 1 FROM attachments WHERE organization_id=$1 AND object_key=$2 AND object_deleted_at IS NULL) OR
 EXISTS (SELECT 1 FROM attempt_diff_body_references WHERE organization_id=$1 AND object_key=$2) OR

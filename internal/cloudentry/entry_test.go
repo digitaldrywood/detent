@@ -741,7 +741,7 @@ func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 				t.Fatalf("page content security = %q, want %q", policy, contentSecurity)
 			}
 			var hash string
-			if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT token_hash FROM sessions WHERE revoked_at IS NULL").Scan(&hash); err != nil {
+			if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT token_hash FROM platform.sessions WHERE revoked_at IS NULL").Scan(&hash); err != nil {
 				t.Fatal(err)
 			}
 			session, err := f.service.auth.session(t.Context(), hash)
@@ -753,7 +753,7 @@ func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tt.name == "expired local session" {
-				if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE sessions SET expires_at = ? WHERE token_hash = ?", formatTime(time.Now().Add(-time.Minute)), hash); err != nil {
+				if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE platform.sessions SET expires_at = $1 WHERE token_hash = $2", formatTime(time.Now().Add(-time.Minute)), hash); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := f.service.auth.session(t.Context(), hash); !errors.Is(err, errNoSession) {
@@ -797,7 +797,7 @@ func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 				t.Fatal("logout did not clear browser session")
 			}
 			var revoked bool
-			if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT revoked_at IS NOT NULL FROM sessions WHERE token_hash = ?", hash).Scan(&revoked); err != nil || !revoked {
+			if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT revoked_at IS NOT NULL FROM platform.sessions WHERE token_hash = $1", hash).Scan(&revoked); err != nil || !revoked {
 				t.Fatalf("local session not revoked: %v", err)
 			}
 			if _, err := f.service.auth.authorization(t.Context(), session, "org_alpha"); !errors.Is(err, errNoSession) {
@@ -1383,7 +1383,7 @@ func TestRegistryRegister(t *testing.T) {
 			}
 		})
 	}
-	if _, err := registry.store.db.ExecContext(t.Context(), "DELETE FROM organizations"); err == nil {
+	if _, err := registry.store.db.ExecContext(t.Context(), "DELETE FROM platform.organizations"); err == nil {
 		t.Fatal("registry deleted an organization record")
 	}
 }

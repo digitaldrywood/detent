@@ -12,7 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -62,19 +66,19 @@ func TestSearchRLSAndSourceRelationships(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var count int
 			if test.org == "" {
-				if err := f.pool.QueryRowContext(t.Context(), `SELECT count(*) FROM search_documents`).Scan(&count); err != nil {
+				if err := f.pool.QueryRow(pgtest.UnboundProbe(t.Context()), `SELECT count(*) FROM search_documents`).Scan(&count); err != nil {
 					t.Fatal(err)
 				}
 			} else {
-				tx, err := runtime.Begin(t.Context(), test.org, &sql.TxOptions{ReadOnly: true})
+				tx, err := runtime.Begin(t.Context(), test.org, pgtransport.Options{ReadOnly: true})
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer tx.Rollback()
-				if err := tx.QueryRowContext(t.Context(), `SELECT count(*) FROM search_documents WHERE $1::text='' OR organization_id=$1`, test.filter).Scan(&count); err != nil {
+				defer tx.Rollback(t.Context())
+				if err := tx.QueryRow(t.Context(), `SELECT count(*) FROM search_documents WHERE $1::text='' OR organization_id=$1`, test.filter).Scan(&count); err != nil {
 					t.Fatal(err)
 				}
-				if err := tx.Commit(); err != nil {
+				if err := tx.Commit(t.Context()); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -117,7 +121,7 @@ func TestSearchRLSAndSourceRelationships(t *testing.T) {
 	})
 
 	var count int
-	if err := f.pool.QueryRowContext(t.Context(), `SELECT count(*) FROM search_documents`).Scan(&count); err != nil || count != 0 {
+	if err := f.pool.QueryRow(pgtest.UnboundProbe(t.Context()), `SELECT count(*) FROM search_documents`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("pooled tenant leaked after error: count=%d err=%v", count, err)
 	}
 }
@@ -156,7 +160,7 @@ func TestSearchSourceWritesShareRequestTransaction(t *testing.T) {
 		if item.Title != "Example title" {
 			t.Fatalf("source title survived rollback: %s", item.Title)
 		}
-		if _, err := r.PendingSearch(t.Context()); !errors.Is(err, sql.ErrNoRows) {
+		if _, err := r.PendingSearch(t.Context()); !errors.Is(err, pgx.ErrNoRows) {
 			t.Fatalf("projection survived rollback: %v", err)
 		}
 		return nil
@@ -192,21 +196,21 @@ func TestSearchIndexHelperDeniesUnscopedAndForeignTokens(t *testing.T) {
 	}
 	expression := strings.Join(searchstore.Expressions("org_second", searchstore.Query{ProjectID: "prj_first", Text: "sentinel"}), " | ")
 	const query = `SELECT count(*) FROM public.search_index_candidates($1::tsquery,'prj_first',ARRAY[]::text[],false,'','work','','','all',false,'',$2::timestamptz,'',0,$3::text[],false) WHERE NOT scan_boundary`
-	terms := pq.Array(searchstore.CandidateTerms("org_second", searchstore.Query{Kind: "work", ProjectID: "prj_first", Text: "sentinel"}))
+	terms := searchstore.CandidateTerms("org_second", searchstore.Query{Kind: "work", ProjectID: "prj_first", Text: "sentinel"})
 	var count int
-	if err := f.pool.QueryRowContext(t.Context(), query, expression, historyAt(), terms).Scan(&count); err != nil || count != 0 {
+	if err := f.pool.QueryRow(pgtest.UnboundProbe(t.Context()), query, expression, historyAt(), terms).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("unscoped helper count=%d err=%v", count, err)
 	}
-	tx, err := runtime.Begin(t.Context(), "org_first", &sql.TxOptions{ReadOnly: true})
+	tx, err := runtime.Begin(t.Context(), "org_first", pgtransport.Options{ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback()
-	if err := tx.QueryRowContext(t.Context(), query, expression, historyAt(), terms).Scan(&count); err != nil || count != 0 {
+	defer tx.Rollback(t.Context())
+	if err := tx.QueryRow(t.Context(), query, expression, historyAt(), terms).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("foreign token helper count=%d err=%v", count, err)
 	}
 	own := searchstore.Query{Kind: "work", ProjectID: "prj_first", Text: "sentinel"}
-	if err := tx.QueryRowContext(t.Context(), query, strings.Join(searchstore.Expressions("org_first", own), " | "), historyAt(), pq.Array(searchstore.CandidateTerms("org_first", own))).Scan(&count); err != nil || count != 1 {
+	if err := tx.QueryRow(t.Context(), query, strings.Join(searchstore.Expressions("org_first", own), " | "), historyAt(), searchstore.CandidateTerms("org_first", own)).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("own token helper count=%d error=%v", count, err)
 	}
 
@@ -218,9 +222,9 @@ type searchPlanProbe struct {
 	args      []any
 }
 
-func (p *searchPlanProbe) QueryContext(ctx context.Context, statement string, args ...any) (*sql.Rows, error) {
+func (p *searchPlanProbe) Query(ctx context.Context, statement string, args ...any) (pgx.Rows, error) {
 	p.statement, p.args = statement, args
-	return p.DBTX.QueryContext(ctx, statement, args...)
+	return p.DBTX.Query(ctx, statement, args...)
 }
 
 func TestSearchIndexedQueryPlan(t *testing.T) {
@@ -267,16 +271,16 @@ func TestSearchIndexedQueryPlan(t *testing.T) {
 				}
 				expression := strings.Join(searchstore.Expressions("org_first", q), " | ")
 				terms := searchstore.CandidateTerms("org_first", q)
-				tx, err := runtime.Begin(t.Context(), "org_first", &sql.TxOptions{ReadOnly: true})
+				tx, err := runtime.Begin(t.Context(), "org_first", pgtransport.Options{ReadOnly: true})
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer tx.Rollback()
+				defer tx.Rollback(t.Context())
 				probe := &searchPlanProbe{DBTX: tx}
 				if _, err := pgquery.New(probe).SearchCandidates(t.Context(), pgquery.SearchCandidatesParams{OrganizationID: "org_first", Kind: kind, ProjectID: string(q.ProjectID), Expression: expression, SearchTerms: terms, Exact: q.Exact, ProjectIds: []string{}}); err != nil {
 					t.Fatal(err)
 				}
-				if err := tx.Commit(); err != nil {
+				if err := tx.Commit(t.Context()); err != nil {
 					t.Fatal(err)
 				}
 				planTx, err := f.admin.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
@@ -288,7 +292,7 @@ func TestSearchIndexedQueryPlan(t *testing.T) {
 					t.Fatal(err)
 				}
 				var raw []byte
-				if err := planTx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+body, expression, string(q.ProjectID), pq.Array([]string{}), false, "", kind, "", "", "", false, "", historyAt(), "", int64(0), pq.Array(terms), q.Exact, pq.Array([]string{}), pq.Array([]string{}), pq.Array([]float64{}), pq.Array([]string{}), pq.Array([]int64{}), pq.Array([]bool{})).Scan(&raw); err != nil {
+				if err := planTx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+body, expression, string(q.ProjectID), []string{}, false, "", kind, "", "", "", false, "", historyAt(), "", int64(0), terms, q.Exact, []string{}, []string{}, []float64{}, []string{}, []int64{}, []bool{}).Scan(&raw); err != nil {
 					t.Fatal(err)
 				}
 				var plan []struct{ Plan searchPlanNode }
@@ -385,11 +389,11 @@ func TestSearchExcludedHistoryDoesNotGrowCandidateWork(t *testing.T) {
 					for _, text := range []string{"commonterm", "common"} {
 						for _, kind := range []string{"thread", "work"} {
 							expression := strings.Join(searchstore.Expressions("org_first", searchstore.Query{ProjectID: "prj_first", Text: text}), " | ")
-							args := []any{expression, "prj_first", pq.Array([]string{}), false, "", kind, "", "", test.archived, test.reporter, "example-principal", historyAt(), cursor, int64(0)}
+							args := []any{expression, "prj_first", []string{}, false, "", kind, "", "", test.archived, test.reporter, "example-principal", historyAt(), cursor, int64(0)}
 							if strings.Contains(body, "$15") {
-								args = append(args, pq.Array(searchstore.CandidateTerms("org_first", searchstore.Query{Kind: kind, ProjectID: "prj_first", Text: text})), false)
+								args = append(args, searchstore.CandidateTerms("org_first", searchstore.Query{Kind: kind, ProjectID: "prj_first", Text: text}), false)
 							}
-							args = append(args, pq.Array([]string{}), pq.Array([]string{}), pq.Array([]float64{}), pq.Array([]string{}), pq.Array([]int64{}), pq.Array([]bool{}))
+							args = append(args, []string{}, []string{}, []float64{}, []string{}, []int64{}, []bool{})
 							var raw []byte
 							if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+body, args...).Scan(&raw); err != nil {
 								t.Fatal(err)
@@ -609,7 +613,7 @@ func seedSearchPlanHistory(t *testing.T, f searchFixture, d searchstore.Document
 		_, err := f.admin.ExecContext(t.Context(), `INSERT INTO search_documents(organization_id,id,project_id,work_item_id,kind,source_id,revision,indexed_revision,title,scope,status,updated_at,updated_at_submicrosecond,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,vector)
   SELECT 'org_first',id,'prj_first','wi_first_1','comment',id,1,1,'commonterm','issue','',at,nanos,key,hash,compressed,raw,$1::tsvector
   FROM unnest($2::text[],$3::text[],$4::text[],$5::bigint[],$6::bigint[],$7::timestamptz[],$8::bigint[]) row(id,key,hash,compressed,raw,at,nanos)`,
-			searchstore.Vector(searchstore.Document{OrganizationID: d.OrganizationID, ProjectID: d.ProjectID, Kind: "thread"}, searchstore.Text{Title: "commonterm"}), pq.Array(ids), pq.Array(keys), pq.Array(hashes), pq.Array(compressed), pq.Array(raw), pq.Array(times), pq.Array(nanos))
+			searchstore.Vector(searchstore.Document{OrganizationID: d.OrganizationID, ProjectID: d.ProjectID, Kind: "thread"}, searchstore.Text{Title: "commonterm"}), ids, keys, hashes, compressed, raw, times, nanos)
 		return err
 	}
 	var indexed bool
@@ -840,11 +844,11 @@ func TestSearchLiteralPublicationAvoidsUnchangedWrites(t *testing.T) {
 			queries := pgquery.New(tx)
 			terms := []string{searchstore.Prefix(org, "") + "g" + searchstore.LiteralHex("exa"), searchstore.Prefix(org, "prj_first") + "g" + searchstore.LiteralHex("exa")}
 			var scopes int64
-			if err := tx.QueryRowContext(t.Context(), `SELECT count(*) FROM search_postings WHERE organization_id=$1 AND document_id='issue/wi_first_1' AND term='~all'`, org).Scan(&scopes); err != nil {
+			if err := tx.QueryRow(t.Context(), `SELECT count(*) FROM search_postings WHERE organization_id=$1 AND document_id='issue/wi_first_1' AND term='~all'`, org).Scan(&scopes); err != nil {
 				t.Fatal(err)
 			}
 			var capturedScopes []string
-			if err := tx.QueryRowContext(t.Context(), `SELECT array_agg(scope) FROM search_postings WHERE organization_id=$1 AND document_id='issue/wi_first_1' AND term='~all'`, org).Scan(pq.Array(&capturedScopes)); err != nil {
+			if err := tx.QueryRow(t.Context(), `SELECT array_agg(scope) FROM search_postings WHERE organization_id=$1 AND document_id='issue/wi_first_1' AND term='~all'`, org).Scan(&capturedScopes); err != nil {
 				t.Fatal(err)
 			}
 			if scopes == 0 {
@@ -853,7 +857,7 @@ func TestSearchLiteralPublicationAvoidsUnchangedWrites(t *testing.T) {
 			counts := func() (int64, int64) {
 				t.Helper()
 				var inserts, updates int64
-				if err := tx.QueryRowContext(t.Context(), `SELECT n_tup_ins,n_tup_upd FROM pg_stat_xact_user_tables WHERE relname='search_postings'`).Scan(&inserts, &updates); err != nil {
+				if err := tx.QueryRow(t.Context(), `SELECT n_tup_ins,n_tup_upd FROM pg_stat_xact_user_tables WHERE relname='search_postings'`).Scan(&inserts, &updates); err != nil {
 					t.Fatal(err)
 				}
 				return inserts, updates
@@ -879,12 +883,12 @@ func TestSearchLiteralPublicationAvoidsUnchangedWrites(t *testing.T) {
 						t.Fatalf("posting writes: inserts=%d updates=%d, want inserts=%d updates=%d", afterInserts-beforeInserts, afterUpdates-beforeUpdates, test.inserts, test.updates)
 					}
 					if test.name == "unchanged" {
-						probe, err := runtime.Begin(t.Context(), org, nil)
+						probe, err := runtime.Begin(t.Context(), org, pgtransport.Options{})
 						if err != nil {
 							t.Fatal(err)
 						}
-						_, lockErr := probe.ExecContext(t.Context(), `SELECT 1 FROM search_postings WHERE organization_id=$1 AND document_id='issue/wi_first_1' AND term=ANY($2::text[]) FOR UPDATE NOWAIT`, org, pq.Array(test.terms))
-						rollbackErr := probe.Rollback()
+						_, lockErr := probe.Exec(t.Context(), `SELECT 1 FROM search_postings WHERE organization_id=$1 AND document_id='issue/wi_first_1' AND term=ANY($2::text[]) FOR UPDATE NOWAIT`, org, test.terms)
+						rollbackErr := probe.Rollback(t.Context())
 						if lockErr != nil {
 							t.Fatalf("unchanged literal publication locked postings: %v", lockErr)
 						}
@@ -894,7 +898,7 @@ func TestSearchLiteralPublicationAvoidsUnchangedWrites(t *testing.T) {
 					}
 					for index, term := range test.terms {
 						var matching int64
-						if err := tx.QueryRowContext(t.Context(), `SELECT count(*) FROM search_postings WHERE organization_id=$1 AND document_id='issue/wi_first_1' AND term=$2 AND literal_positions=$3::bigint[]`, org, term, test.positions[index]).Scan(&matching); err != nil {
+						if err := tx.QueryRow(t.Context(), `SELECT count(*) FROM search_postings WHERE organization_id=$1 AND document_id='issue/wi_first_1' AND term=$2 AND literal_positions=$3::bigint[]`, org, term, test.positions[index]).Scan(&matching); err != nil {
 							t.Fatal(err)
 						}
 						if matching != scopes {
@@ -954,7 +958,7 @@ func TestSearchPendingUpdatesAvoidBulkPostings(t *testing.T) {
 				counts := func() [3]int64 {
 					t.Helper()
 					var result [3]int64
-					if err := tx.QueryRowContext(t.Context(), `SELECT n_tup_ins,n_tup_upd,n_tup_del FROM pg_stat_xact_user_tables WHERE relname='search_postings'`).Scan(&result[0], &result[1], &result[2]); err != nil {
+					if err := tx.QueryRow(t.Context(), `SELECT n_tup_ins,n_tup_upd,n_tup_del FROM pg_stat_xact_user_tables WHERE relname='search_postings'`).Scan(&result[0], &result[1], &result[2]); err != nil {
 						t.Fatal(err)
 					}
 					return result
@@ -963,13 +967,13 @@ func TestSearchPendingUpdatesAvoidBulkPostings(t *testing.T) {
 					t.Helper()
 					before := counts()
 					var orderBefore, orderAfter int64
-					if err := tx.QueryRowContext(t.Context(), `SELECT refresh_order FROM search_documents WHERE organization_id=$1 AND id=$2`, org, document.ID).Scan(&orderBefore); err != nil {
+					if err := tx.QueryRow(t.Context(), `SELECT refresh_order FROM search_documents WHERE organization_id=$1 AND id=$2`, org, document.ID).Scan(&orderBefore); err != nil {
 						t.Fatal(err)
 					}
 					if err := queries.SearchAdvance(t.Context(), pgquery.SearchAdvanceParams{OrganizationID: org, ID: document.ID, Revision: 2}); err != nil {
 						t.Fatal(err)
 					}
-					if err := tx.QueryRowContext(t.Context(), `SELECT refresh_order FROM search_documents WHERE organization_id=$1 AND id=$2`, org, document.ID).Scan(&orderAfter); err != nil {
+					if err := tx.QueryRow(t.Context(), `SELECT refresh_order FROM search_documents WHERE organization_id=$1 AND id=$2`, org, document.ID).Scan(&orderAfter); err != nil {
 						t.Fatal(err)
 					}
 					if orderAfter <= orderBefore {
@@ -988,7 +992,7 @@ func TestSearchPendingUpdatesAvoidBulkPostings(t *testing.T) {
 					}
 				}
 				var published int
-				if err := tx.QueryRowContext(t.Context(), `SELECT count(*) FROM search_postings WHERE organization_id=$1 AND document_id=$2`, org, document.ID).Scan(&published); err != nil {
+				if err := tx.QueryRow(t.Context(), `SELECT count(*) FROM search_postings WHERE organization_id=$1 AND document_id=$2`, org, document.ID).Scan(&published); err != nil {
 					t.Fatal(err)
 				}
 				if published < 1000 {
@@ -1006,7 +1010,7 @@ func TestSearchPendingUpdatesAvoidBulkPostings(t *testing.T) {
 				}
 				t.Logf("source update posting writes=%d with published rows=%d marker cap=%d", writes, published, markerCap)
 				advance(false)
-				if _, err := tx.ExecContext(t.Context(), `UPDATE issues SET archived=true,actor_principal_id='example-current-reporter' WHERE organization_id=$1 AND project_id='prj_first' AND native_id=$2`, org, document.WorkItemID); err != nil {
+				if _, err := tx.Exec(t.Context(), `UPDATE issues SET archived=true,actor_principal_id='example-current-reporter' WHERE organization_id=$1 AND project_id='prj_first' AND native_id=$2`, org, document.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 				advance(true)
@@ -1016,13 +1020,13 @@ func TestSearchPendingUpdatesAvoidBulkPostings(t *testing.T) {
 					kind, item, oldReporter, newReporter = "thread", string(document.WorkItemID), "", ""
 				}
 				var markers, oldScope, newScope int
-				if err := tx.QueryRowContext(t.Context(), `SELECT count(*),count(*) FILTER(WHERE scope=public.search_scope_key('prj_first',$3,$4,'issue',$5,'false',$6)),count(*) FILTER(WHERE scope=public.search_scope_key('prj_first',$3,$4,'issue',$5,'true',$7)) FROM search_postings WHERE organization_id=$1 AND document_id=$2 AND term IN ('~all','~pending')`, org, document.ID, item, kind, document.Status, oldReporter, newReporter).Scan(&markers, &oldScope, &newScope); err != nil {
+				if err := tx.QueryRow(t.Context(), `SELECT count(*),count(*) FILTER(WHERE scope=public.search_scope_key('prj_first',$3,$4,'issue',$5,'false',$6)),count(*) FILTER(WHERE scope=public.search_scope_key('prj_first',$3,$4,'issue',$5,'true',$7)) FROM search_postings WHERE organization_id=$1 AND document_id=$2 AND term IN ('~all','~pending')`, org, document.ID, item, kind, document.Status, oldReporter, newReporter).Scan(&markers, &oldScope, &newScope); err != nil {
 					t.Fatal(err)
 				}
 				if markers != markerCap || oldScope != 0 || newScope != 2 {
 					t.Fatalf("visibility markers=%d old scope=%d new scope=%d", markers, oldScope, newScope)
 				}
-				if err := tx.Commit(); err != nil {
+				if err := tx.Commit(t.Context()); err != nil {
 					t.Fatal(err)
 				}
 				for _, state := range []string{"pending", "indexed"} {

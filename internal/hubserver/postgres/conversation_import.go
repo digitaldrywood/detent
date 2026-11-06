@@ -2,12 +2,13 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
@@ -123,14 +124,14 @@ func (r *Repository) ImportConversationBatch(ctx context.Context, batch Conversa
 
 func (s *session) importConversationRow(ctx context.Context, row ConversationImportRow) error {
 	var previousSnapshot, previousHash string
-	err := s.db.QueryRowContext(ctx, `SELECT snapshot_id,request_hash FROM conversation_history_import_rows WHERE organization_id=$1 AND source_table=$2 AND source_row_id=$3`, s.organization, row.Table, row.Receipt.SourceRow).Scan(&previousSnapshot, &previousHash)
+	err := s.db.QueryRow(ctx, `SELECT snapshot_id,request_hash FROM conversation_history_import_rows WHERE organization_id=$1 AND source_table=$2 AND source_row_id=$3`, s.organization, row.Table, row.Receipt.SourceRow).Scan(&previousSnapshot, &previousHash)
 	if err == nil {
 		if previousSnapshot != row.Receipt.SnapshotID || previousHash != row.Receipt.RequestHash {
 			return mutation.ErrConflict
 		}
 		return nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
 	columns := make([]string, len(row.Columns))
@@ -140,18 +141,15 @@ func (s *session) importConversationRow(ctx context.Context, row ConversationImp
 		placeholders[n] = fmt.Sprintf("$%d", n+1)
 	}
 	query := `INSERT INTO "` + row.Table + `" (` + strings.Join(columns, ",") + `) VALUES (` + strings.Join(placeholders, ",") + `) ON CONFLICT DO NOTHING`
-	result, err := s.db.ExecContext(ctx, query, row.Values...)
+	result, err := s.db.Exec(ctx, query, row.Values...)
 	if err != nil {
 		return mapError(ctx, err)
 	}
-	inserted, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
+	inserted := result.RowsAffected()
 	if inserted != 1 {
 		return mutation.ErrConflict
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO conversation_history_import_rows(organization_id,snapshot_id,source_table,source_row_id,request_hash,created_at) VALUES($1,$2,$3,$4,$5,$6)`, s.organization, row.Receipt.SnapshotID, row.Receipt.Table, row.Receipt.SourceRow, row.Receipt.RequestHash, row.Receipt.CreatedAt)
+	_, err = s.db.Exec(ctx, `INSERT INTO conversation_history_import_rows(organization_id,snapshot_id,source_table,source_row_id,request_hash,created_at) VALUES($1,$2,$3,$4,$5,$6)`, s.organization, row.Receipt.SnapshotID, row.Receipt.Table, row.Receipt.SourceRow, row.Receipt.RequestHash, row.Receipt.CreatedAt)
 	return mapError(ctx, err)
 }
 

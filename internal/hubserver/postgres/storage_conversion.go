@@ -2,8 +2,9 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -26,7 +27,7 @@ func (r *Repository) ConversionPage(ctx context.Context, scope storageconversion
 	err := r.transaction(ctx, scope.Organization, corestore.Background, true, func(s *session) error {
 		if cursor == (storageconversion.Cursor{}) {
 			bound, err := s.queries.ConversionBounds(ctx, pgquery.ConversionBoundsParams{Family: string(scope.Family), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: tracker.NativeWorkItemID(scope.AggregateID)})
-			if errors.Is(err, sql.ErrNoRows) {
+			if errors.Is(err, pgx.ErrNoRows) {
 				return nil
 			}
 			if err != nil {
@@ -71,7 +72,7 @@ func (r *Repository) ConversionProgress(ctx context.Context, scope storageconver
 	var progress storageconversion.Progress
 	err := r.transaction(ctx, scope.Organization, corestore.Background, true, func(s *session) error {
 		row, err := s.queries.ConversionProgress(ctx, pgquery.ConversionProgressParams{OrganizationID: scope.Organization, ProjectID: scope.Project, Family: string(scope.Family), AggregateID: scope.AggregateID})
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		progress = storageconversion.Progress{Rows: row.ConvertedRows, Bytes: row.ConvertedBytes}

@@ -2,8 +2,6 @@ package postgres_test
 
 import (
 	"context"
-	"database/sql"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +9,10 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/multitracer"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -22,32 +24,44 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type reportCountingConnector struct {
-	conn  driver.Conn
+type reportCountingTracer struct {
 	count atomic.Int64
 }
 
-func (c *reportCountingConnector) Connect(context.Context) (driver.Conn, error) {
-	return &reportCountingConn{Conn: c.conn, count: &c.count}, nil
+func (c *reportCountingTracer) record(query string) {
+	command := strings.ToUpper(strings.Fields(query)[0])
+	if command != "BEGIN" && command != "COMMIT" && command != "ROLLBACK" {
+		c.count.Add(1)
+	}
 }
-func (c *reportCountingConnector) Driver() driver.Driver { return nil }
+func (c *reportCountingTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	c.record(data.SQL)
+	return ctx
+}
+func (c *reportCountingTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+func (c *reportCountingTracer) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	return ctx
+}
+func (c *reportCountingTracer) TraceBatchQuery(_ context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
+	c.record(data.SQL)
+}
+func (c *reportCountingTracer) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
-type reportCountingConn struct {
-	driver.Conn
-	count *atomic.Int64
-}
-
-func (c *reportCountingConn) Close() error { return nil }
-func (c *reportCountingConn) BeginTx(ctx context.Context, o driver.TxOptions) (driver.Tx, error) {
-	return c.Conn.(driver.ConnBeginTx).BeginTx(ctx, o)
-}
-func (c *reportCountingConn) ExecContext(ctx context.Context, q string, args []driver.NamedValue) (driver.Result, error) {
-	c.count.Add(1)
-	return c.Conn.(driver.ExecerContext).ExecContext(ctx, q, args)
-}
-func (c *reportCountingConn) QueryContext(ctx context.Context, q string, args []driver.NamedValue) (driver.Rows, error) {
-	c.count.Add(1)
-	return c.Conn.(driver.QueryerContext).QueryContext(ctx, q, args)
+func tracedFeaturePool(t *testing.T, source *pgxpool.Pool, tracer pgx.QueryTracer) *pgxpool.Pool {
+	t.Helper()
+	config := source.Config()
+	config.MaxConns = int32(smallPool().MaxConnections)
+	if config.ConnConfig.Tracer == nil {
+		config.ConnConfig.Tracer = tracer
+	} else {
+		config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, tracer)
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
 }
 
 func TestReportBulkImportsPreserveTenantFactsAndBoundStatements(t *testing.T) {
@@ -176,21 +190,8 @@ func TestReportBulkImportsPreserveTenantFactsAndBoundStatements(t *testing.T) {
 		change.LandedBaseRef = &receipt.BaseRef
 		landings := []postgres.ReportLandingImport{{Change: change, Receipt: receipt}}
 
-		conn, err := pool.Conn(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := conn.Close(); err != nil && !errors.Is(err, sql.ErrConnDone) {
-				t.Error(err)
-			}
-		})
-		counter := &reportCountingConnector{}
-		if err := conn.Raw(func(raw any) error { counter.conn = raw.(driver.Conn); return nil }); err != nil {
-			t.Fatal(err)
-		}
-		countedPool := sql.OpenDB(counter)
-		countedPool.SetMaxOpenConns(1)
+		counter := &reportCountingTracer{}
+		countedPool := tracedFeaturePool(t, pool, counter)
 		counted, err := postgres.NewRepository(ctx, countedPool, smallPool())
 		if err != nil {
 			t.Fatal(err)
@@ -280,9 +281,6 @@ func TestReportBulkImportsPreserveTenantFactsAndBoundStatements(t *testing.T) {
 		}
 
 		if err := counted.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if err := conn.Close(); err != nil {
 			t.Fatal(err)
 		}
 		var rows int

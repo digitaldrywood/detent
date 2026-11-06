@@ -7,10 +7,9 @@ package pgquery
 
 import (
 	"context"
-	"database/sql"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const currentRuntime = `-- name: CurrentRuntime :one
@@ -21,7 +20,7 @@ WHERE h.organization_id=$1
 `
 
 func (q *Queries) CurrentRuntime(ctx context.Context, organizationID tracker.OrganizationID) (HostedRuntimeRevision, error) {
-	row := q.db.QueryRowContext(ctx, currentRuntime, organizationID)
+	row := q.db.QueryRow(ctx, currentRuntime, organizationID)
 	var i HostedRuntimeRevision
 	err := row.Scan(
 		&i.OrganizationID,
@@ -51,7 +50,7 @@ type EntryRuntimeRow struct {
 }
 
 func (q *Queries) EntryRuntime(ctx context.Context, issuer string) (EntryRuntimeRow, error) {
-	row := q.db.QueryRowContext(ctx, entryRuntime, issuer)
+	row := q.db.QueryRow(ctx, entryRuntime, issuer)
 	var i EntryRuntimeRow
 	err := row.Scan(&i.RevisionID, &i.ObjectKey)
 	return i, err
@@ -79,7 +78,7 @@ type InsertRuntimeRevisionParams struct {
 }
 
 func (q *Queries) InsertRuntimeRevision(ctx context.Context, arg InsertRuntimeRevisionParams) error {
-	_, err := q.db.ExecContext(ctx, insertRuntimeRevision,
+	_, err := q.db.Exec(ctx, insertRuntimeRevision,
 		arg.OrganizationID,
 		arg.ID,
 		arg.LocalPublished,
@@ -102,7 +101,7 @@ SELECT organization_id, active_id, prepared_id FROM public.hosted_runtime_heads 
 `
 
 func (q *Queries) LockRuntimeHead(ctx context.Context, organizationID tracker.OrganizationID) (HostedRuntimeHead, error) {
-	row := q.db.QueryRowContext(ctx, lockRuntimeHead, organizationID)
+	row := q.db.QueryRow(ctx, lockRuntimeHead, organizationID)
 	var i HostedRuntimeHead
 	err := row.Scan(&i.OrganizationID, &i.ActiveID, &i.PreparedID)
 	return i, err
@@ -118,7 +117,7 @@ type LockRuntimePublicationTargetsParams struct {
 }
 
 func (q *Queries) LockRuntimePublicationTargets(ctx context.Context, arg LockRuntimePublicationTargetsParams) ([]tracker.OrganizationID, error) {
-	rows, err := q.db.QueryContext(ctx, lockRuntimePublicationTargets, pq.Array(arg.Organizations), arg.Revision)
+	rows, err := q.db.Query(ctx, lockRuntimePublicationTargets, arg.Organizations, arg.Revision)
 	if err != nil {
 		return nil, err
 	}
@@ -131,9 +130,6 @@ func (q *Queries) LockRuntimePublicationTargets(ctx context.Context, arg LockRun
 		}
 		items = append(items, organization_id)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -145,7 +141,7 @@ INSERT INTO public.hosted_runtime_publications(id) VALUES($1)
 `
 
 func (q *Queries) PublishRuntime(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, publishRuntime, id)
+	_, err := q.db.Exec(ctx, publishRuntime, id)
 	return err
 }
 
@@ -158,9 +154,9 @@ type RuntimePublishedParams struct {
 	RevisionID     string
 }
 
-func (q *Queries) RuntimePublished(ctx context.Context, arg RuntimePublishedParams) (sql.NullBool, error) {
-	row := q.db.QueryRowContext(ctx, runtimePublished, arg.OrganizationID, arg.RevisionID)
-	var column_1 sql.NullBool
+func (q *Queries) RuntimePublished(ctx context.Context, arg RuntimePublishedParams) (pgtype.Bool, error) {
+	row := q.db.QueryRow(ctx, runtimePublished, arg.OrganizationID, arg.RevisionID)
+	var column_1 pgtype.Bool
 	err := row.Scan(&column_1)
 	return column_1, err
 }
@@ -177,7 +173,7 @@ type SetEntryRuntimeParams struct {
 }
 
 func (q *Queries) SetEntryRuntime(ctx context.Context, arg SetEntryRuntimeParams) error {
-	_, err := q.db.ExecContext(ctx, setEntryRuntime, arg.Issuer, arg.RevisionID, arg.ObjectKey)
+	_, err := q.db.Exec(ctx, setEntryRuntime, arg.Issuer, arg.RevisionID, arg.ObjectKey)
 	return err
 }
 
@@ -193,6 +189,6 @@ type SetRuntimeHeadParams struct {
 }
 
 func (q *Queries) SetRuntimeHead(ctx context.Context, arg SetRuntimeHeadParams) error {
-	_, err := q.db.ExecContext(ctx, setRuntimeHead, arg.OrganizationID, arg.ActiveID, arg.PreparedID)
+	_, err := q.db.Exec(ctx, setRuntimeHead, arg.OrganizationID, arg.ActiveID, arg.PreparedID)
 	return err
 }

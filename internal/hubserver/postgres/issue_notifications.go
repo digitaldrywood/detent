@@ -3,10 +3,11 @@ package postgres
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -78,7 +79,7 @@ func (r *Repository) QueueNotification(ctx context.Context, org tracker.Organiza
 		}
 		if notice.CommentID != "" {
 			author, err := s.queries.NotificationAuthor(ctx, pgquery.NotificationAuthorParams{OrganizationID: org, PrincipalID: event.ActorPrincipalID})
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				return mapError(ctx, err)
 			}
 			if author != "" {

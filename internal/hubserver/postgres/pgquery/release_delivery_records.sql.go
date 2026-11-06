@@ -7,10 +7,10 @@ package pgquery
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const putRuntimeReleaseDelivery = `-- name: PutRuntimeReleaseDelivery :execrows
@@ -40,7 +40,7 @@ type PutRuntimeReleaseDeliveryParams struct {
 	SourceIssueID  string
 	SourceChangeID string
 	SourceMergeSha string
-	RepositoryID   sql.NullInt64
+	RepositoryID   pgtype.Int8
 	Repository     string
 	PrNumber       int64
 	HeadRef        string
@@ -57,7 +57,7 @@ type PutRuntimeReleaseDeliveryParams struct {
 }
 
 func (q *Queries) PutRuntimeReleaseDelivery(ctx context.Context, arg PutRuntimeReleaseDeliveryParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, putRuntimeReleaseDelivery,
+	result, err := q.db.Exec(ctx, putRuntimeReleaseDelivery,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -82,7 +82,7 @@ func (q *Queries) PutRuntimeReleaseDelivery(ctx context.Context, arg PutRuntimeR
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const recordGetReleaseDelivery = `-- name: RecordGetReleaseDelivery :one
@@ -97,7 +97,7 @@ type RecordGetReleaseDeliveryParams struct {
 }
 
 func (q *Queries) RecordGetReleaseDelivery(ctx context.Context, arg RecordGetReleaseDeliveryParams) (ReleaseDelivery, error) {
-	row := q.db.QueryRowContext(ctx, recordGetReleaseDelivery, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
+	row := q.db.QueryRow(ctx, recordGetReleaseDelivery, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
 	var i ReleaseDelivery
 	err := row.Scan(
 		&i.OrganizationID,

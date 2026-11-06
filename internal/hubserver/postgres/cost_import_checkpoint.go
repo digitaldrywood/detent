@@ -28,7 +28,7 @@ type costImportCheckpoint struct {
 func (i *costImporter) start(ctx context.Context) (costImportCheckpoint, error) {
 	var checkpoint costImportCheckpoint
 	err := i.repository.transaction(ctx, i.organization, corestore.Background, false, func(s *session) error {
-		_, err := s.db.ExecContext(ctx, `INSERT INTO cost_imports (organization_id,source_schema,snapshot_id,catalog_digest) VALUES ($1,$2,$3,$4) ON CONFLICT (organization_id) DO NOTHING`, i.organization, i.source.Source.Schema, i.source.snapshotID, i.digest)
+		_, err := s.db.Exec(ctx, `INSERT INTO cost_imports (organization_id,source_schema,snapshot_id,catalog_digest) VALUES ($1,$2,$3,$4) ON CONFLICT (organization_id) DO NOTHING`, i.organization, i.source.Source.Schema, i.source.snapshotID, i.digest)
 		if err != nil {
 			return err
 		}
@@ -50,7 +50,7 @@ func readCostImportCheckpoint(ctx context.Context, db pgqueryDBTX, organization 
 		statement += " FOR UPDATE"
 	}
 	var row costImportCheckpoint
-	err := db.QueryRowContext(ctx, statement, organization).Scan(&row.sourceSchema, &row.snapshotID, &row.catalogDigest, &row.phase, &row.revision, &row.progress.SourceRows, &row.progress.CurrentSources, &row.progress.HistoryRows, &row.hasAfter, &row.after[0], &row.after[1], &row.after[2], &row.after[3], &row.after[4], &row.after[5], &row.after[6])
+	err := db.QueryRow(ctx, statement, organization).Scan(&row.sourceSchema, &row.snapshotID, &row.catalogDigest, &row.phase, &row.revision, &row.progress.SourceRows, &row.progress.CurrentSources, &row.progress.HistoryRows, &row.hasAfter, &row.after[0], &row.after[1], &row.after[2], &row.after[3], &row.after[4], &row.after[5], &row.after[6])
 	row.progress.Done = row.phase == 3
 	return row, err
 }
@@ -62,14 +62,11 @@ func advanceCostImportCheckpoint(ctx context.Context, s *session, before, next c
 	if next.phase == 3 && next.progress.HistoryRows != next.progress.SourceRows {
 		return ErrCostImport
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE cost_imports SET phase=$1,revision=revision+1,source_rows=$2,current_sources=$3,history_rows=$4,has_after=$5,after_key_1=$6,after_key_2=$7,after_key_3=$8,after_key_4=$9,after_key_5=$10,after_key_6=$11,after_key_7=$12 WHERE organization_id=$13 AND revision=$14`, next.phase, next.progress.SourceRows, next.progress.CurrentSources, next.progress.HistoryRows, next.hasAfter, next.after[0], next.after[1], next.after[2], next.after[3], next.after[4], next.after[5], next.after[6], s.organization, before.revision)
+	result, err := s.db.Exec(ctx, `UPDATE cost_imports SET phase=$1,revision=revision+1,source_rows=$2,current_sources=$3,history_rows=$4,has_after=$5,after_key_1=$6,after_key_2=$7,after_key_3=$8,after_key_4=$9,after_key_5=$10,after_key_6=$11,after_key_7=$12 WHERE organization_id=$13 AND revision=$14`, next.phase, next.progress.SourceRows, next.progress.CurrentSources, next.progress.HistoryRows, next.hasAfter, next.after[0], next.after[1], next.after[2], next.after[3], next.after[4], next.after[5], next.after[6], s.organization, before.revision)
 	if err != nil {
 		return err
 	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
+	count := result.RowsAffected()
 	if count != 1 {
 		return corestore.ErrRevisionConflict
 	}

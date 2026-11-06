@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lib/pq"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+
 	"github.com/spf13/cobra"
 )
 
-func newHubPostgresMigrationCommand(lookupEnv func(string) string, migrate func(context.Context, pq.Config) error) *cobra.Command {
+func newHubPostgresMigrationCommand(lookupEnv func(string) string, migrate func(context.Context, pgtransport.Connection) error) *cobra.Command {
 	var host, database, user, passwordEnv, sslMode string
 	var port int
 	cmd := &cobra.Command{
@@ -28,7 +29,7 @@ func newHubPostgresMigrationCommand(lookupEnv func(string) string, migrate func(
 			default:
 				return errors.New("postgres migration requires an explicit supported TLS mode")
 			}
-			connection := pq.Config{Host: host, Port: uint16(port), Database: database, User: user, Password: lookupEnv(passwordEnv), SSLMode: pq.SSLMode(sslMode)}
+			connection := pgtransport.Connection{Host: host, Port: uint16(port), Database: database, User: user, Password: lookupEnv(passwordEnv), SSLMode: sslMode}
 			if err := migrate(cmd.Context(), connection); err != nil {
 				return fmt.Errorf("migrate postgres schema: %w", err)
 			}

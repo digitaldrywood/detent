@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"math"
@@ -10,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
@@ -33,14 +32,14 @@ func (s *session) ReadReportUsage(ctx context.Context, query reportstore.Overvie
 	for i, a := range attempts {
 		ids[i] = a.AttemptID
 	}
-	rows, err := s.db.QueryContext(ctx, `WITH usage AS (
+	rows, err := s.db.Query(ctx, `WITH usage AS (
  SELECT u.organization_id,u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input,u.cached_input,u.output,u.cost_estimate,'USD' AS currency FROM report_usage_current u WHERE u.organization_id=$1 AND u.attempt_id=ANY($2::text[])
  UNION ALL
  SELECT u.organization_id,u.project_id,u.attempt_id,u.period,u.provider,u.model,u.input,u.cached_input,u.output,u.cost_estimate,u.currency FROM attempt_usage u WHERE u.organization_id=$1 AND u.attempt_id=ANY($2::text[]) AND NOT EXISTS(SELECT 1 FROM report_usage_current c WHERE c.organization_id=u.organization_id AND c.attempt_id=u.attempt_id)
  ) SELECT i.project_id,i.native_id,u.attempt_id,u.period,u.provider,u.model,u.input,u.cached_input,u.output,u.cost_estimate,u.currency,coalesce(r.runner_id,''),coalesce(r.display_name,'') FROM usage u
  JOIN native_attempts a ON a.organization_id=u.organization_id AND a.id=u.attempt_id JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id AND i.project_id=u.project_id
  LEFT JOIN runner_lease_assignments la ON la.organization_id=a.organization_id AND la.lease_id=a.lease_id LEFT JOIN runner_identities r ON r.organization_id=la.organization_id AND r.runner_id=la.runner_id
- WHERE u.period>=$3 AND u.period<$4 AND upper(u.currency)='USD' ORDER BY u.period,u.attempt_id,u.provider,u.model LIMIT $5`, s.organization, pq.Array(ids), query.From.UTC(), query.To.UTC(), query.Limit+1)
+ WHERE u.period>=$3 AND u.period<$4 AND upper(u.currency)='USD' ORDER BY u.period,u.attempt_id,u.provider,u.model LIMIT $5`, s.organization, ids, query.From.UTC(), query.To.UTC(), query.Limit+1)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -53,7 +52,7 @@ func (s *session) ReadReportUsage(ctx context.Context, query reportstore.Overvie
 		}
 		out = append(out, fact)
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, mapError(ctx, err)
 	}
 	if len(out) > query.Limit {
@@ -147,7 +146,7 @@ func (s *session) RefreshReportUsage(ctx context.Context, records []billingstore
 	if err := s.verifyReportBatch(ctx, b, `SELECT count(*) FROM source JOIN cost_sources c ON c.organization_id=$1 AND c.source_key=source.source_key WHERE c.revision>source.revision OR EXISTS(SELECT 1 FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE a.organization_id=$1 AND a.id=source.attempt_id AND i.project_id=source.project_id AND i.native_id=source.work_item_id)`, corestore.ErrTenantMismatch); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, b.source()+`INSERT INTO report_usage_current(organization_id,source_key,revision,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,complete)
+	_, err := s.db.Exec(ctx, b.source()+`INSERT INTO report_usage_current(organization_id,source_key,revision,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,complete)
  SELECT $1,s.source_key,s.revision,s.project_id,s.attempt_id,s.period,s.provider,s.model,s.input,s.cached_input,s.output,s.cost_estimate,s.complete FROM source s JOIN cost_sources c ON c.organization_id=$1 AND c.source_key=s.source_key AND c.revision=s.revision ORDER BY s.source_key
  ON CONFLICT(organization_id,source_key) DO UPDATE SET revision=EXCLUDED.revision,input=EXCLUDED.input,cached_input=EXCLUDED.cached_input,output=EXCLUDED.output,cost_estimate=EXCLUDED.cost_estimate,complete=EXCLUDED.complete WHERE report_usage_current.revision<=EXCLUDED.revision`, b.args...)
 	return mapError(ctx, err)
@@ -162,8 +161,8 @@ func (s *session) ReadReportUsageCoverage(ctx context.Context, query reportstore
 	for i, a := range attempts {
 		ids[i] = a.AttemptID
 	}
-	rows, err := s.db.QueryContext(ctx, `WITH sources AS MATERIALIZED(SELECT c.source_key,c.resource_id,c.revision FROM cost_sources c WHERE c.organization_id=$1 AND c.bucket='runner_api' AND c.resource_id=ANY($2::text[]) ORDER BY c.resource_id,c.source_key LIMIT 100001)
- SELECT c.resource_id,u.complete AND u.revision=c.revision FROM sources c LEFT JOIN report_usage_current u ON u.organization_id=$1 AND u.source_key=c.source_key`, s.organization, pq.Array(ids))
+	rows, err := s.db.Query(ctx, `WITH sources AS MATERIALIZED(SELECT c.source_key,c.resource_id,c.revision FROM cost_sources c WHERE c.organization_id=$1 AND c.bucket='runner_api' AND c.resource_id=ANY($2::text[]) ORDER BY c.resource_id,c.source_key LIMIT 100001)
+ SELECT c.resource_id,u.complete AND u.revision=c.revision FROM sources c LEFT JOIN report_usage_current u ON u.organization_id=$1 AND u.source_key=c.source_key`, s.organization, ids)
 	if err != nil {
 		return false, mapError(ctx, err)
 	}
@@ -172,7 +171,7 @@ func (s *session) ReadReportUsageCoverage(ctx context.Context, query reportstore
 	count := 0
 	for rows.Next() {
 		var id string
-		var known sql.NullBool
+		var known pgtype.Bool
 		if err := rows.Scan(&id, &known); err != nil {
 			rows.Close()
 			return false, mapError(ctx, err)
@@ -181,7 +180,7 @@ func (s *session) ReadReportUsageCoverage(ctx context.Context, query reportstore
 		complete = complete && known.Valid && known.Bool
 		count++
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+	if err := rows.Err(); err != nil {
 		return false, mapError(ctx, err)
 	}
 	if count > 100000 {
@@ -193,7 +192,7 @@ func (s *session) ReadReportUsageCoverage(ctx context.Context, query reportstore
 			missing = append(missing, id)
 		}
 	}
-	rows, err = s.db.QueryContext(ctx, `WITH facts AS MATERIALIZED(SELECT u.attempt_id FROM attempt_usage u WHERE u.organization_id=$1 AND u.attempt_id=ANY($2::text[]) ORDER BY u.attempt_id,u.period,u.provider,u.model LIMIT 100001) SELECT f.attempt_id,count(*),coalesce(c.row_count,0) FROM facts f LEFT JOIN report_usage_import_coverage c ON c.organization_id=$1 AND c.attempt_id=f.attempt_id GROUP BY f.attempt_id,c.row_count`, s.organization, pq.Array(missing))
+	rows, err = s.db.Query(ctx, `WITH facts AS MATERIALIZED(SELECT u.attempt_id FROM attempt_usage u WHERE u.organization_id=$1 AND u.attempt_id=ANY($2::text[]) ORDER BY u.attempt_id,u.period,u.provider,u.model LIMIT 100001) SELECT f.attempt_id,count(*),coalesce(c.row_count,0) FROM facts f LEFT JOIN report_usage_import_coverage c ON c.organization_id=$1 AND c.attempt_id=f.attempt_id GROUP BY f.attempt_id,c.row_count`, s.organization, missing)
 	if err != nil {
 		return false, mapError(ctx, err)
 	}
@@ -209,7 +208,7 @@ func (s *session) ReadReportUsageCoverage(ctx context.Context, query reportstore
 		count += actual
 		imported[id] = actual == expected && expected > 0
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+	if err := rows.Err(); err != nil {
 		return false, mapError(ctx, err)
 	}
 	if count > 100000 {
@@ -254,7 +253,7 @@ func (r *Repository) RefreshReportUsagePage(ctx context.Context, organization tr
 	}
 	page := []row{}
 	err := r.transaction(ctx, organization, corestore.Background, true, func(s *session) error {
-		rows, err := s.db.QueryContext(ctx, `SELECT c.source_key,c.project_id,c.revision,r.received_at,r.binding_id,r.customer_owned,r.object_key,r.sha256,r.compressed_bytes,r.content_bytes,r.codec,r.format_version,r.kind,r.retention FROM cost_sources c JOIN native_attempts a ON a.organization_id=c.organization_id AND a.id=c.resource_id JOIN cost_observation_revisions r ON r.organization_id=c.organization_id AND r.source_key=c.source_key AND r.revision=c.revision WHERE c.organization_id=$1 AND c.bucket='runner_api' AND c.source_key>$2 ORDER BY c.source_key LIMIT $3`, organization, after, limit)
+		rows, err := s.db.Query(ctx, `SELECT c.source_key,c.project_id,c.revision,r.received_at,r.binding_id,r.customer_owned,r.object_key,r.sha256,r.compressed_bytes,r.content_bytes,r.codec,r.format_version,r.kind,r.retention FROM cost_sources c JOIN native_attempts a ON a.organization_id=c.organization_id AND a.id=c.resource_id JOIN cost_observation_revisions r ON r.organization_id=c.organization_id AND r.source_key=c.source_key AND r.revision=c.revision WHERE c.organization_id=$1 AND c.bucket='runner_api' AND c.source_key>$2 ORDER BY c.source_key LIMIT $3`, organization, after, limit)
 		if err != nil {
 			return mapError(ctx, err)
 		}
@@ -274,7 +273,7 @@ func (r *Repository) RefreshReportUsagePage(ctx context.Context, organization tr
 			}
 			page = append(page, value)
 		}
-		return mapError(ctx, errors.Join(rows.Err(), rows.Close()))
+		return mapError(ctx, rows.Err())
 	})
 	if err != nil {
 		return after, 0, err

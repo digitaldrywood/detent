@@ -2,9 +2,8 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -12,7 +11,7 @@ import (
 )
 
 func (s *session) fleetProviderRecords(ctx context.Context, records []runnerstore.FleetRecord, runnerIndices map[string]int, ids []string) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT runner_id,backend,provider,account_alias,shared_account_alias,billing,max_concurrent,availability,observed_at,reset_at FROM runner_provider_reports WHERE organization_id=$1 AND runner_id=ANY($2) ORDER BY runner_id, backend`, s.organization, pq.Array(ids))
+	rows, err := s.db.Query(ctx, `SELECT runner_id,backend,provider,account_alias,shared_account_alias,billing,max_concurrent,availability,observed_at,reset_at FROM runner_provider_reports WHERE organization_id=$1 AND runner_id=ANY($2) ORDER BY runner_id, backend`, s.organization, ids)
 	if err != nil {
 		return mapError(ctx, err)
 	}
@@ -22,7 +21,7 @@ func (s *session) fleetProviderRecords(ctx context.Context, records []runnerstor
 	for rows.Next() {
 		var runnerID string
 		var report providercapacity.Report
-		var resetAt sql.NullTime
+		var resetAt pgtype.Timestamptz
 		if err := rows.Scan(&runnerID, &report.Backend, &report.Provider, &report.AccountAlias, &report.SharedAccountAlias, &report.Billing, &report.MaxConcurrent, &report.Availability, &report.ObservedAt, &resetAt); err != nil {
 			return mapError(ctx, err)
 		}
@@ -38,7 +37,7 @@ func (s *session) fleetProviderRecords(ctx context.Context, records []runnerstor
 	if err := mapError(ctx, rows.Err()); err != nil {
 		return err
 	}
-	rows, err = s.db.QueryContext(ctx, `SELECT runner_id,backend,model_id,has_detail,label,model_provider,is_default,default_reasoning_effort,legacy FROM runner_provider_report_models WHERE organization_id=$1 AND runner_id=ANY($2) ORDER BY runner_id, backend,position`, s.organization, pq.Array(ids))
+	rows, err = s.db.Query(ctx, `SELECT runner_id,backend,model_id,has_detail,label,model_provider,is_default,default_reasoning_effort,legacy FROM runner_provider_report_models WHERE organization_id=$1 AND runner_id=ANY($2) ORDER BY runner_id, backend,position`, s.organization, ids)
 	if err != nil {
 		return mapError(ctx, err)
 	}
@@ -63,7 +62,7 @@ func (s *session) fleetProviderRecords(ctx context.Context, records []runnerstor
 	if err := mapError(ctx, rows.Err()); err != nil {
 		return err
 	}
-	rows, err = s.db.QueryContext(ctx, `SELECT runner_id,backend,model_id,position,effort FROM runner_provider_model_efforts WHERE organization_id=$1 AND runner_id=ANY($2) ORDER BY runner_id, backend,model_id,position`, s.organization, pq.Array(ids))
+	rows, err = s.db.Query(ctx, `SELECT runner_id,backend,model_id,position,effort FROM runner_provider_model_efforts WHERE organization_id=$1 AND runner_id=ANY($2) ORDER BY runner_id, backend,model_id,position`, s.organization, ids)
 	if err != nil {
 		return mapError(ctx, err)
 	}
@@ -89,7 +88,7 @@ func (s *session) fleetProviderRecords(ctx context.Context, records []runnerstor
 	if err := mapError(ctx, rows.Err()); err != nil {
 		return err
 	}
-	rows, err = s.db.QueryContext(ctx, `SELECT runner_id,backend,kind,percent_used,reset_at,observed_at FROM runner_provider_usage_windows WHERE organization_id=$1 AND runner_id=ANY($2) ORDER BY runner_id, backend,position`, s.organization, pq.Array(ids))
+	rows, err = s.db.Query(ctx, `SELECT runner_id,backend,kind,percent_used,reset_at,observed_at FROM runner_provider_usage_windows WHERE organization_id=$1 AND runner_id=ANY($2) ORDER BY runner_id, backend,position`, s.organization, ids)
 	if err != nil {
 		return mapError(ctx, err)
 	}
@@ -97,8 +96,8 @@ func (s *session) fleetProviderRecords(ctx context.Context, records []runnerstor
 	for rows.Next() {
 		var runnerID string
 		var backend, kind string
-		var percent sql.NullFloat64
-		var resetAt, observedAt sql.NullTime
+		var percent pgtype.Float8
+		var resetAt, observedAt pgtype.Timestamptz
 		if err := rows.Scan(&runnerID, &backend, &kind, &percent, &resetAt, &observedAt); err != nil {
 			return mapError(ctx, err)
 		}

@@ -7,11 +7,10 @@ package pgquery
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const boundProjectRecord = `-- name: BoundProjectRecord :many
@@ -39,7 +38,7 @@ type BoundProjectRecordRow struct {
 }
 
 func (q *Queries) BoundProjectRecord(ctx context.Context, arg BoundProjectRecordParams) ([]BoundProjectRecordRow, error) {
-	rows, err := q.db.QueryContext(ctx, boundProjectRecord, arg.OrganizationID, arg.ID)
+	rows, err := q.db.Query(ctx, boundProjectRecord, arg.OrganizationID, arg.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -102,9 +101,6 @@ func (q *Queries) BoundProjectRecord(ctx context.Context, arg BoundProjectRecord
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -121,7 +117,7 @@ type CreateProjectSettingsParams struct {
 }
 
 func (q *Queries) CreateProjectSettings(ctx context.Context, arg CreateProjectSettingsParams) error {
-	_, err := q.db.ExecContext(ctx, createProjectSettings, arg.OrganizationID, arg.ProjectID)
+	_, err := q.db.Exec(ctx, createProjectSettings, arg.OrganizationID, arg.ProjectID)
 	return err
 }
 
@@ -140,7 +136,7 @@ type CreateProjectStateParams struct {
 }
 
 func (q *Queries) CreateProjectState(ctx context.Context, arg CreateProjectStateParams) error {
-	_, err := q.db.ExecContext(ctx, createProjectState,
+	_, err := q.db.Exec(ctx, createProjectState,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.Name,
@@ -165,7 +161,7 @@ type CreateProjectTransitionParams struct {
 }
 
 func (q *Queries) CreateProjectTransition(ctx context.Context, arg CreateProjectTransitionParams) error {
-	_, err := q.db.ExecContext(ctx, createProjectTransition,
+	_, err := q.db.Exec(ctx, createProjectTransition,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.SourceName,
@@ -186,7 +182,7 @@ type DeleteProjectStatesParams struct {
 }
 
 func (q *Queries) DeleteProjectStates(ctx context.Context, arg DeleteProjectStatesParams) error {
-	_, err := q.db.ExecContext(ctx, deleteProjectStates, arg.OrganizationID, arg.ProjectID, pq.Array(arg.Names))
+	_, err := q.db.Exec(ctx, deleteProjectStates, arg.OrganizationID, arg.ProjectID, arg.Names)
 	return err
 }
 
@@ -200,7 +196,7 @@ type DeleteProjectTransitionsParams struct {
 }
 
 func (q *Queries) DeleteProjectTransitions(ctx context.Context, arg DeleteProjectTransitionsParams) error {
-	_, err := q.db.ExecContext(ctx, deleteProjectTransitions, arg.OrganizationID, arg.ProjectID)
+	_, err := q.db.Exec(ctx, deleteProjectTransitions, arg.OrganizationID, arg.ProjectID)
 	return err
 }
 
@@ -214,7 +210,7 @@ type LockActiveProjectParams struct {
 }
 
 func (q *Queries) LockActiveProject(ctx context.Context, arg LockActiveProjectParams) (tracker.ProjectID, error) {
-	row := q.db.QueryRowContext(ctx, lockActiveProject, arg.OrganizationID, arg.ID)
+	row := q.db.QueryRow(ctx, lockActiveProject, arg.OrganizationID, arg.ID)
 	var id tracker.ProjectID
 	err := row.Scan(&id)
 	return id, err
@@ -231,9 +227,9 @@ type ProjectHasActiveWorkParams struct {
 	Now            time.Time
 }
 
-func (q *Queries) ProjectHasActiveWork(ctx context.Context, arg ProjectHasActiveWorkParams) (sql.NullBool, error) {
-	row := q.db.QueryRowContext(ctx, projectHasActiveWork, arg.OrganizationID, arg.ProjectID, arg.Now)
-	var column_1 sql.NullBool
+func (q *Queries) ProjectHasActiveWork(ctx context.Context, arg ProjectHasActiveWorkParams) (pgtype.Bool, error) {
+	row := q.db.QueryRow(ctx, projectHasActiveWork, arg.OrganizationID, arg.ProjectID, arg.Now)
+	var column_1 pgtype.Bool
 	err := row.Scan(&column_1)
 	return column_1, err
 }
@@ -249,7 +245,7 @@ type ProjectUsedRemovedStatesParams struct {
 }
 
 func (q *Queries) ProjectUsedRemovedStates(ctx context.Context, arg ProjectUsedRemovedStatesParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, projectUsedRemovedStates, arg.OrganizationID, arg.ProjectID, pq.Array(arg.Names))
+	row := q.db.QueryRow(ctx, projectUsedRemovedStates, arg.OrganizationID, arg.ProjectID, arg.Names)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -267,11 +263,11 @@ type ReserveProjectSlugParams struct {
 }
 
 func (q *Queries) ReserveProjectSlug(ctx context.Context, arg ReserveProjectSlugParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, reserveProjectSlug, arg.OrganizationID, arg.Slug, arg.ProjectID)
+	result, err := q.db.Exec(ctx, reserveProjectSlug, arg.OrganizationID, arg.Slug, arg.ProjectID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const resolveProjectSlug = `-- name: ResolveProjectSlug :one
@@ -284,7 +280,7 @@ type ResolveProjectSlugParams struct {
 }
 
 func (q *Queries) ResolveProjectSlug(ctx context.Context, arg ResolveProjectSlugParams) (tracker.ProjectID, error) {
-	row := q.db.QueryRowContext(ctx, resolveProjectSlug, arg.OrganizationID, arg.Slug)
+	row := q.db.QueryRow(ctx, resolveProjectSlug, arg.OrganizationID, arg.Slug)
 	var project_id tracker.ProjectID
 	err := row.Scan(&project_id)
 	return project_id, err
@@ -301,11 +297,11 @@ type RetireProjectParams struct {
 }
 
 func (q *Queries) RetireProject(ctx context.Context, arg RetireProjectParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, retireProject, arg.OrganizationID, arg.ID, arg.DeletedAt)
+	result, err := q.db.Exec(ctx, retireProject, arg.OrganizationID, arg.ID, arg.DeletedAt)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const setProjectSlug = `-- name: SetProjectSlug :execrows
@@ -319,11 +315,11 @@ type SetProjectSlugParams struct {
 }
 
 func (q *Queries) SetProjectSlug(ctx context.Context, arg SetProjectSlugParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, setProjectSlug, arg.OrganizationID, arg.ID, arg.Slug)
+	result, err := q.db.Exec(ctx, setProjectSlug, arg.OrganizationID, arg.ID, arg.Slug)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const setProjectVisualAttachments = `-- name: SetProjectVisualAttachments :exec
@@ -337,7 +333,7 @@ type SetProjectVisualAttachmentsParams struct {
 }
 
 func (q *Queries) SetProjectVisualAttachments(ctx context.Context, arg SetProjectVisualAttachmentsParams) error {
-	_, err := q.db.ExecContext(ctx, setProjectVisualAttachments, arg.OrganizationID, arg.ProjectID, arg.RequireVisualAttachments)
+	_, err := q.db.Exec(ctx, setProjectVisualAttachments, arg.OrganizationID, arg.ProjectID, arg.RequireVisualAttachments)
 	return err
 }
 
@@ -351,7 +347,7 @@ type ShareActiveProjectParams struct {
 }
 
 func (q *Queries) ShareActiveProject(ctx context.Context, arg ShareActiveProjectParams) (tracker.ProjectID, error) {
-	row := q.db.QueryRowContext(ctx, shareActiveProject, arg.OrganizationID, arg.ID)
+	row := q.db.QueryRow(ctx, shareActiveProject, arg.OrganizationID, arg.ID)
 	var id tracker.ProjectID
 	err := row.Scan(&id)
 	return id, err
@@ -368,11 +364,11 @@ type UpdateProjectContentParams struct {
 }
 
 func (q *Queries) UpdateProjectContent(ctx context.Context, arg UpdateProjectContentParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, updateProjectContent, arg.OrganizationID, arg.ID, arg.ContentSettingsRevision)
+	result, err := q.db.Exec(ctx, updateProjectContent, arg.OrganizationID, arg.ID, arg.ContentSettingsRevision)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const updateProjectMetadata = `-- name: UpdateProjectMetadata :execrows
@@ -392,7 +388,7 @@ type UpdateProjectMetadataParams struct {
 }
 
 func (q *Queries) UpdateProjectMetadata(ctx context.Context, arg UpdateProjectMetadataParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, updateProjectMetadata,
+	result, err := q.db.Exec(ctx, updateProjectMetadata,
 		arg.Name,
 		arg.Slug,
 		arg.RequireDependencies,
@@ -405,7 +401,7 @@ func (q *Queries) UpdateProjectMetadata(ctx context.Context, arg UpdateProjectMe
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const updateProjectModel = `-- name: UpdateProjectModel :execrows
@@ -424,7 +420,7 @@ type UpdateProjectModelParams struct {
 }
 
 func (q *Queries) UpdateProjectModel(ctx context.Context, arg UpdateProjectModelParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, updateProjectModel,
+	result, err := q.db.Exec(ctx, updateProjectModel,
 		arg.ModelKey,
 		arg.ModelSha256,
 		arg.ModelBytes,
@@ -436,7 +432,7 @@ func (q *Queries) UpdateProjectModel(ctx context.Context, arg UpdateProjectModel
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const updateProjectSettings = `-- name: UpdateProjectSettings :one
@@ -452,8 +448,8 @@ type UpdateProjectSettingsParams struct {
 	CheckoutRepository        string
 	AgingEnabled              bool
 	DuplicateChallenge        bool
-	ArchiveCompletedAfterDays sql.NullInt64
-	ArchiveCancelledAfterDays sql.NullInt64
+	ArchiveCompletedAfterDays pgtype.Int8
+	ArchiveCancelledAfterDays pgtype.Int8
 	WorkflowKey               string
 	WorkflowSha256            string
 	WorkflowBytes             int64
@@ -464,7 +460,7 @@ type UpdateProjectSettingsParams struct {
 }
 
 func (q *Queries) UpdateProjectSettings(ctx context.Context, arg UpdateProjectSettingsParams) (ProjectSetting, error) {
-	row := q.db.QueryRowContext(ctx, updateProjectSettings,
+	row := q.db.QueryRow(ctx, updateProjectSettings,
 		arg.Intake,
 		arg.Projection,
 		arg.RepositoryEnabled,

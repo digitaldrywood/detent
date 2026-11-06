@@ -27,7 +27,7 @@ type ReadScheduledDecisionParams struct {
 }
 
 func (q *Queries) ReadScheduledDecision(ctx context.Context, arg ReadScheduledDecisionParams) (ScheduledCiDecision, error) {
-	row := q.db.QueryRowContext(ctx, readScheduledDecision,
+	row := q.db.QueryRow(ctx, readScheduledDecision,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.Repository,
@@ -64,7 +64,7 @@ type ScheduledLandedWorkItemsParams struct {
 }
 
 func (q *Queries) ScheduledLandedWorkItems(ctx context.Context, arg ScheduledLandedWorkItemsParams) ([]tracker.NativeWorkItemID, error) {
-	rows, err := q.db.QueryContext(ctx, scheduledLandedWorkItems, arg.OrganizationID, arg.ProjectID, arg.LandedMergeSHA)
+	rows, err := q.db.Query(ctx, scheduledLandedWorkItems, arg.OrganizationID, arg.ProjectID, arg.LandedMergeSHA)
 	if err != nil {
 		return nil, err
 	}
@@ -76,9 +76,6 @@ func (q *Queries) ScheduledLandedWorkItems(ctx context.Context, arg ScheduledLan
 			return nil, err
 		}
 		items = append(items, work_item_id)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -106,7 +103,7 @@ type StoreScheduledDecisionParams struct {
 }
 
 func (q *Queries) StoreScheduledDecision(ctx context.Context, arg StoreScheduledDecisionParams) error {
-	_, err := q.db.ExecContext(ctx, storeScheduledDecision,
+	_, err := q.db.Exec(ctx, storeScheduledDecision,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.Repository,

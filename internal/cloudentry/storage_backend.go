@@ -2,12 +2,18 @@ package cloudentry
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"strconv"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 
 	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
@@ -17,7 +23,7 @@ import (
 type StorageConfig struct {
 	Backend      string
 	PostgresDSN  string
-	PostgresPool *sql.DB
+	PostgresPool *pgxpool.Pool
 	Pool         platformstore.PoolConfig
 }
 
@@ -54,47 +60,25 @@ type entryDatabase struct {
 	clock    func() time.Time
 }
 
-func (d *entryDatabase) statement(query string) string {
-	if d.auth {
-		query = strings.ReplaceAll(query, "platform_notifications", "auth_notifications")
-	}
-	var result strings.Builder
-	position := 0
-	quoted := false
-	for _, ch := range query {
-		if ch == '\'' {
-			quoted = !quoted
-		}
-		if ch == '?' && !quoted {
-			position++
-			result.WriteByte('$')
-			result.WriteString(strconv.Itoa(position))
-		} else {
-			result.WriteRune(ch)
-		}
-	}
-	return result.String()
-}
-
 type entryTransaction struct {
-	*sql.Tx
+	pgx.Tx
 	owner    *entryDatabase
 	postgres *platformstore.EntryTransaction
 }
 
-func (t *entryTransaction) cleanup(resultErr *error) {
-	if err := t.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+func (t *entryTransaction) cleanup(ctx context.Context, resultErr *error) {
+	if err := t.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
 		*resultErr = errors.Join(*resultErr, err)
 	}
 }
 
-func (d *entryDatabase) BeginTx(ctx context.Context, options *sql.TxOptions) (*entryTransaction, error) {
+func (d *entryDatabase) BeginTx(ctx context.Context, options *pgx.TxOptions) (*entryTransaction, error) {
 	var tx *platformstore.EntryTransaction
 	var err error
-	if health, _ := ctx.Value(entryHealthReadKey{}).(bool); health && options != nil && options.ReadOnly {
+	if health, ok := ctx.Value(entryHealthReadKey{}).(bool); ok && health && options != nil && options.AccessMode == pgx.ReadOnly {
 		tx, err = d.postgres.BeginHealthRead(ctx)
 	} else {
-		tx, err = d.postgres.BeginEntry(ctx, entryWorkload(ctx), options != nil && options.ReadOnly)
+		tx, err = d.postgres.BeginEntry(ctx, entryWorkload(ctx), options != nil && options.AccessMode == pgx.ReadOnly)
 	}
 	if err != nil {
 		return nil, err
@@ -102,105 +86,91 @@ func (d *entryDatabase) BeginTx(ctx context.Context, options *sql.TxOptions) (*e
 	return &entryTransaction{Tx: tx.Tx, owner: d, postgres: tx}, nil
 }
 
-func (t *entryTransaction) Commit() error {
-	return t.postgres.Commit()
+func (t *entryTransaction) Commit(ctx context.Context) error {
+	return t.postgres.Commit(ctx)
 }
 
-func (t *entryTransaction) Rollback() error {
-	return t.postgres.Rollback()
+func (t *entryTransaction) Rollback(ctx context.Context) error {
+	return t.postgres.Rollback(ctx)
 }
 
-func (t *entryTransaction) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	result, err := t.Tx.ExecContext(ctx, t.owner.statement(query), args...)
+func (t *entryTransaction) ExecContext(ctx context.Context, query string, args ...any) (entryResult, error) {
+	result, err := t.Exec(ctx, query, args...)
 	err = t.postgres.Classify(ctx, err)
-	return result, err
+	return entryCommandTag{result}, err
 }
 
 func (t *entryTransaction) QueryContext(ctx context.Context, query string, args ...any) (entryRows, error) {
-	rows, err := t.Tx.QueryContext(ctx, t.owner.statement(query), args...)
+	rows, err := t.Query(ctx, query, args...)
 	err = t.postgres.Classify(ctx, err)
-	return rows, err
+	if err != nil {
+		return nil, err
+	}
+	return nativeEntryRows{Rows: rows, classify: func(err error) error { return t.postgres.Classify(ctx, err) }}, nil
 }
 
 func (t *entryTransaction) QueryRowContext(ctx context.Context, query string, args ...any) entryRow {
-	row := t.Tx.QueryRowContext(ctx, t.owner.statement(query), args...)
-	return deferredEntryRow{scan: func(dest ...any) error { return t.postgres.Classify(ctx, row.Scan(dest...)) }}
+	rows, err := t.QueryContext(ctx, query, args...)
+	return entryScanRow(rows, err)
 }
 
-func (d *entryDatabase) ExecContext(ctx context.Context, query string, args ...any) (_ sql.Result, resultErr error) {
-	tx, err := d.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.cleanup(&resultErr)
-	result, err := tx.ExecContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	return result, tx.Commit()
+func (d *entryDatabase) ExecContext(ctx context.Context, query string, args ...any) (entryResult, error) {
+	tag, err := d.postgres.ExecEntry(ctx, entryWorkload(ctx), query, args...)
+	return entryCommandTag{tag}, err
 }
-
-type transactionRows struct {
-	*sql.Rows
-	close      func() error
-	cleanupErr error
-}
-
-func (r *transactionRows) Next() bool {
-	if r.Rows.Next() {
-		return true
-	}
-	r.cleanupErr = r.close()
-	return false
-}
-
-func (r *transactionRows) Close() error { return r.close() }
-func (r *transactionRows) Err() error   { return errors.Join(r.Rows.Err(), r.cleanupErr) }
-
 func (d *entryDatabase) QueryContext(ctx context.Context, query string, args ...any) (entryRows, error) {
-	tx, err := d.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	var rows pgx.Rows
+	var err error
+	if health, ok := ctx.Value(entryHealthReadKey{}).(bool); ok && health {
+		rows, err = d.postgres.QueryHealth(ctx, query, args...)
+	} else {
+		rows, err = d.postgres.QueryEntry(ctx, entryWorkload(ctx), query, args...)
+	}
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Tx.QueryContext(ctx, d.statement(query), args...)
-	err = tx.postgres.Classify(ctx, err)
-	if err != nil {
-		return nil, errors.Join(err, tx.Rollback())
-	}
-	closeRows := sync.OnceValue(func() error { return errors.Join(rows.Close(), tx.Rollback()) })
-	return &transactionRows{Rows: rows, close: closeRows}, nil
+	return nativeEntryRows{Rows: rows}, nil
 }
 
 type deferredEntryRow struct{ scan func(...any) error }
 
 func (r deferredEntryRow) Scan(dest ...any) error { return r.scan(dest...) }
-
 func (d *entryDatabase) QueryRowContext(ctx context.Context, query string, args ...any) entryRow {
-	return deferredEntryRow{scan: func(dest ...any) (resultErr error) {
-		tx, err := d.BeginTx(ctx, &sql.TxOptions{ReadOnly: strings.HasPrefix(strings.TrimSpace(strings.ToUpper(query)), "SELECT")})
-		if err != nil {
-			return err
-		}
-		defer tx.cleanup(&resultErr)
-		if err := tx.QueryRowContext(ctx, query, args...).Scan(dest...); err != nil {
-			return err
-		}
-		return tx.Commit()
-	}}
+	rows, err := d.QueryContext(ctx, query, args...)
+	return entryScanRow(rows, err)
 }
+
+type nativeEntryRows struct {
+	pgx.Rows
+	classify func(error) error
+}
+
+func (r nativeEntryRows) Close() error { r.Rows.Close(); return nil }
+
+type entryResult interface{ RowsAffected() (int64, error) }
+type entryCommandTag struct{ pgconn.CommandTag }
+
+func (r entryCommandTag) RowsAffected() (int64, error) { return r.CommandTag.RowsAffected(), nil }
 
 func openEntryStores(ctx context.Context, cfg Config, keys *hubsecrets.Keyring) (*Registry, *store, error) {
 	pool := cfg.Storage.PostgresPool
 	var err error
 	if pool == nil {
-		pool, err = sql.Open("postgres", cfg.Storage.PostgresDSN)
+		config, parseErr := pgtransport.ParsePoolConfig(cfg.Storage.PostgresDSN)
+		if parseErr != nil {
+			return nil, nil, fmt.Errorf("configure PostgreSQL entry pool: %w", parseErr)
+		}
+		pgtransport.Configure(config)
+		config.MaxConns = int32(cfg.Storage.Pool.MaxConnections)
+		pool, err = pgxpool.NewWithConfig(ctx, config)
 	}
 	if err != nil {
 		return nil, nil, errors.New("open PostgreSQL entry pool")
 	}
 	r, err := platformstore.New(ctx, pool, platformstore.Config{Pool: cfg.Storage.Pool, SigningKey: cfg.SigningKey, Keys: keys, Now: cfg.now})
 	if err != nil {
-		return nil, nil, errors.Join(err, pool.Close())
+		pool.Close()
+		return nil, nil, err
 	}
 	closePool := sync.OnceValue(r.Close)
 	registryDB := &entryDatabase{postgres: r, clock: cfg.now}
@@ -227,3 +197,59 @@ func entryBackground(ctx context.Context) context.Context {
 
 func (d *entryDatabase) entryNow() time.Time    { return d.clock() }
 func (t *entryTransaction) entryNow() time.Time { return t.owner.entryNow() }
+
+func entryScanRow(rows entryRows, queryErr error) entryRow {
+	return deferredEntryRow{scan: func(dest ...any) (resultErr error) {
+		if queryErr != nil {
+			return queryErr
+		}
+		defer closeEntryRows(rows, &resultErr)
+		if !rows.Next() {
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			return pgx.ErrNoRows
+		}
+		return rows.Scan(dest...)
+	}}
+}
+
+func (r nativeEntryRows) Scan(dest ...any) error {
+	fields := r.FieldDescriptions()
+	targets := append([]any(nil), dest...)
+	times := make(map[int]*time.Time)
+	for index, target := range dest {
+		if index >= len(fields) {
+			break
+		}
+		if fields[index].DataTypeOID != pgtype.TimestamptzOID {
+			continue
+		}
+		if _, ok := target.(*string); ok {
+			value := new(time.Time)
+			times[index] = value
+			targets[index] = value
+		}
+	}
+	if err := r.Rows.Scan(targets...); err != nil {
+		if r.classify != nil {
+			return r.classify(err)
+		}
+		return err
+	}
+	for index, value := range times {
+		target, ok := dest[index].(*string)
+		if !ok {
+			return errors.New("invalid PostgreSQL timestamp destination")
+		}
+		*target = value.UTC().Format(time.RFC3339Nano)
+	}
+	return nil
+}
+
+func (r nativeEntryRows) Err() error {
+	if r.classify != nil {
+		return r.classify(r.Rows.Err())
+	}
+	return r.Rows.Err()
+}

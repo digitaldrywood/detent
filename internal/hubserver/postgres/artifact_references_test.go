@@ -2,7 +2,6 @@ package postgres_test
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,7 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -159,28 +159,31 @@ func TestHostedArtifactUsageEnforcesTenantIsolation(t *testing.T) {
 	pool := rolePool(t, db, "detent_runtime_v2", "")
 	for index, org := range organizations {
 		t.Run(org, func(t *testing.T) {
-			tx, err := pool.BeginTx(t.Context(), nil)
+			tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() {
-				if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+				deadline, _ := t.Deadline()
+				cleanup, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
+				defer cancel()
+				if err := tx.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
 					t.Error(err)
 				}
 			})
-			if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, org); err != nil {
+			if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, org); err != nil {
 				t.Fatal(err)
 			}
 			var owner string
 			var count, retained int64
-			if err := tx.QueryRowContext(t.Context(), `SELECT count(*),min(organization_id),min(retained_bytes) FROM hosted_artifact_usage`).Scan(&count, &owner, &retained); err != nil {
+			if err := tx.QueryRow(t.Context(), `SELECT count(*),min(organization_id),min(retained_bytes) FROM hosted_artifact_usage`).Scan(&count, &owner, &retained); err != nil {
 				t.Fatal(err)
 			}
 			if count != 1 || owner != org || retained != 12 {
 				t.Fatalf("visible usage = %d/%s/%d", count, owner, retained)
 			}
-			_, err = tx.ExecContext(t.Context(), `INSERT INTO hosted_artifact_usage(organization_id,service_id,observed_at,retained_bytes,reserved_bytes) VALUES($1,'service_example',$2,12,34)`, organizations[1-index], historyAt())
-			var denied *pq.Error
+			_, err = tx.Exec(t.Context(), `INSERT INTO hosted_artifact_usage(organization_id,service_id,observed_at,retained_bytes,reserved_bytes) VALUES($1,'service_example',$2,12,34)`, organizations[1-index], historyAt())
+			var denied *pgconn.PgError
 			if !errors.As(err, &denied) || denied.Code != "42501" {
 				t.Fatalf("foreign usage write error = %v", err)
 			}
@@ -189,14 +192,14 @@ func TestHostedArtifactUsageEnforcesTenantIsolation(t *testing.T) {
 }
 
 type artifactPublisherQuery struct {
-	*sql.Tx
+	pgx.Tx
 	query string
 	args  []any
 }
 
-func (p *artifactPublisherQuery) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+func (p *artifactPublisherQuery) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
 	p.query, p.args = query, args
-	return p.Tx.QueryRowContext(ctx, query, args...)
+	return p.Tx.QueryRow(ctx, query, args...)
 }
 
 func TestHostedArtifactPublisherLookupBoundsBindingReads(t *testing.T) {
@@ -220,12 +223,12 @@ func TestHostedArtifactPublisherLookupBoundsBindingReads(t *testing.T) {
 	pool := rolePool(t, admin, "detent_runtime_v2", "")
 	for _, organization := range []string{"org_first", "org_second"} {
 		t.Run(organization, func(t *testing.T) {
-			tx, err := pool.BeginTx(t.Context(), nil)
+			tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer tx.Rollback()
-			if _, err := tx.ExecContext(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", organization); err != nil {
+			defer tx.Rollback(t.Context())
+			if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id', $1, true)", organization); err != nil {
 				t.Fatal(err)
 			}
 			probe := &artifactPublisherQuery{Tx: tx}
@@ -235,7 +238,7 @@ func TestHostedArtifactPublisherLookupBoundsBindingReads(t *testing.T) {
 					t.Fatalf("bound=%v error=%v", bound, err)
 				}
 				var raw []byte
-				if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.query, probe.args...).Scan(&raw); err != nil {
+				if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.query, probe.args...).Scan(&raw); err != nil {
 					t.Fatal(err)
 				}
 				t.Logf("%s: %s", service, raw)

@@ -2,15 +2,17 @@ package platformstore
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"sync"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 )
 
 type EntryTransaction struct {
-	*sql.Tx
+	pgx.Tx
 	release func()
 }
 
@@ -18,6 +20,54 @@ func (r *Repository) BeginEntry(ctx context.Context, workload corestore.Workload
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	release, err := r.acquireEntry(ctx, workload)
+	if err != nil {
+		return nil, err
+	}
+	return r.beginEntry(ctx, readOnly, release)
+}
+
+func (r *Repository) BeginHealthRead(ctx context.Context) (*EntryTransaction, error) {
+	return r.beginEntry(ctx, true, func() {})
+}
+
+func (r *Repository) beginEntry(ctx context.Context, readOnly bool, release func()) (*EntryTransaction, error) {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: entryAccessMode(readOnly)})
+	if err != nil {
+		release()
+		return nil, mapError(ctx, err)
+	}
+	return &EntryTransaction{Tx: tx, release: release}, nil
+}
+
+func (t *EntryTransaction) Commit(ctx context.Context) error {
+	defer t.release()
+	return t.Tx.Commit(ctx)
+}
+
+func (t *EntryTransaction) Rollback(ctx context.Context) error {
+	defer t.release()
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return t.Tx.Rollback(cleanup)
+}
+
+func (t *EntryTransaction) Classify(ctx context.Context, err error) error { return mapError(ctx, err) }
+
+func (t *EntryTransaction) cleanup(ctx context.Context, resultErr *error) {
+	if err := t.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+		*resultErr = errors.Join(*resultErr, err)
+	}
+}
+
+func entryAccessMode(readOnly bool) pgx.TxAccessMode {
+	if readOnly {
+		return pgx.ReadOnly
+	}
+	return pgx.ReadWrite
+}
+
+func (r *Repository) acquireEntry(ctx context.Context, workload corestore.Workload) (func(), error) {
 	slots := r.serving
 	switch workload {
 	case corestore.Serving:
@@ -32,41 +82,6 @@ func (r *Repository) BeginEntry(ctx context.Context, workload corestore.Workload
 		return nil, ctx.Err()
 	}
 	release := sync.OnceFunc(func() { <-slots })
-	return r.beginEntry(ctx, readOnly, release)
-}
 
-func (r *Repository) BeginHealthRead(ctx context.Context) (*EntryTransaction, error) {
-	return r.beginEntry(ctx, true, func() {})
-}
-
-func (r *Repository) beginEntry(ctx context.Context, readOnly bool, release func()) (*EntryTransaction, error) {
-	tx, err := r.pool.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: readOnly})
-	if err != nil {
-		release()
-		return nil, mapError(ctx, err)
-	}
-	if _, err := tx.ExecContext(ctx, "SET LOCAL search_path = platform, pg_catalog"); err != nil {
-		tx.Rollback()
-		release()
-		return nil, mapError(ctx, err)
-	}
-	return &EntryTransaction{Tx: tx, release: release}, nil
-}
-
-func (t *EntryTransaction) Commit() error {
-	defer t.release()
-	return t.Tx.Commit()
-}
-
-func (t *EntryTransaction) Rollback() error {
-	defer t.release()
-	return t.Tx.Rollback()
-}
-
-func (t *EntryTransaction) Classify(ctx context.Context, err error) error { return mapError(ctx, err) }
-
-func (t *EntryTransaction) cleanup(resultErr *error) {
-	if err := t.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-		*resultErr = errors.Join(*resultErr, err)
-	}
+	return release, nil
 }

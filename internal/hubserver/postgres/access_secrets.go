@@ -18,7 +18,7 @@ func (s *session) AccessSecret(ctx context.Context, project tracker.ProjectID, k
 		query = `SELECT organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at FROM project_secrets WHERE organization_id=$1 AND kind=$2 AND project_id=$3`
 		args = append(args, project)
 	}
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(&row.OrganizationSlug, &row.Envelope.Ciphertext, &row.Envelope.Nonce, &row.Envelope.WrappedKey, &row.Envelope.Version, &row.UpdatedAt)
+	err := s.db.QueryRow(ctx, query, args...).Scan(&row.OrganizationSlug, &row.Envelope.Ciphertext, &row.Envelope.Nonce, &row.Envelope.WrappedKey, &row.Envelope.Version, &row.UpdatedAt)
 	return row, mapError(ctx, err)
 }
 
@@ -26,7 +26,7 @@ func (s *session) AccessSecrets(ctx context.Context, afterProject tracker.Projec
 	if err := checkPage(limit); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT organization_id,project_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at FROM (
+	rows, err := s.db.Query(ctx, `SELECT organization_id,project_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at FROM (
  SELECT organization_id,project_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at FROM project_secrets WHERE organization_id=$1
  UNION ALL SELECT organization_id,'' AS project_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at FROM organization_secrets WHERE organization_id=$1
  ) secrets WHERE (project_id,kind)>($2,$3) ORDER BY project_id,kind LIMIT $4`, s.organization, afterProject, afterKind, limit)
@@ -54,10 +54,10 @@ func (s *session) StoreAccessSecret(ctx context.Context, row accessstore.Secret,
 	}
 	var err error
 	if row.ProjectID == "" {
-		_, err = s.db.ExecContext(ctx, `INSERT INTO organization_secrets(organization_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+		_, err = s.db.Exec(ctx, `INSERT INTO organization_secrets(organization_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
  ON CONFLICT(organization_id,kind) DO UPDATE SET organization_slug=excluded.organization_slug,ciphertext=excluded.ciphertext,nonce=excluded.nonce,wrapped_data_key=excluded.wrapped_data_key,master_key_version=excluded.master_key_version,updated_at=excluded.updated_at`, row.OrganizationID, row.Kind, row.OrganizationSlug, row.Envelope.Ciphertext, row.Envelope.Nonce, row.Envelope.WrappedKey, row.Envelope.Version, row.UpdatedAt)
 	} else {
-		_, err = s.db.ExecContext(ctx, `INSERT INTO project_secrets(organization_id,project_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		_, err = s.db.Exec(ctx, `INSERT INTO project_secrets(organization_id,project_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
  ON CONFLICT(organization_id,project_id,kind) DO UPDATE SET organization_slug=excluded.organization_slug,ciphertext=excluded.ciphertext,nonce=excluded.nonce,wrapped_data_key=excluded.wrapped_data_key,master_key_version=excluded.master_key_version,updated_at=excluded.updated_at`, row.OrganizationID, row.ProjectID, row.Kind, row.OrganizationSlug, row.Envelope.Ciphertext, row.Envelope.Nonce, row.Envelope.WrappedKey, row.Envelope.Version, row.UpdatedAt)
 	}
 	if err != nil {
@@ -75,9 +75,9 @@ func (s *session) DeleteAccessSecret(ctx context.Context, project tracker.Projec
 	}
 	var err error
 	if project == "" {
-		_, err = s.db.ExecContext(ctx, `DELETE FROM organization_secrets WHERE organization_id=$1 AND kind=$2`, s.organization, kind)
+		_, err = s.db.Exec(ctx, `DELETE FROM organization_secrets WHERE organization_id=$1 AND kind=$2`, s.organization, kind)
 	} else {
-		_, err = s.db.ExecContext(ctx, `DELETE FROM project_secrets WHERE organization_id=$1 AND project_id=$2 AND kind=$3`, s.organization, project, kind)
+		_, err = s.db.Exec(ctx, `DELETE FROM project_secrets WHERE organization_id=$1 AND project_id=$2 AND kind=$3`, s.organization, project, kind)
 	}
 	if err != nil {
 		return mapError(ctx, err)
@@ -91,9 +91,9 @@ func (s *session) RecordAccessSecretAudit(ctx context.Context, audit accessstore
 	}
 	var err error
 	if audit.ProjectID == "" {
-		_, err = s.db.ExecContext(ctx, `INSERT INTO organization_secret_audit(organization_id,actor,kind,key_version,event,recorded_at) VALUES($1,$2,$3,$4,$5,$6)`, s.organization, audit.Actor, audit.Kind, audit.KeyVersion, audit.Event, audit.RecordedAt)
+		_, err = s.db.Exec(ctx, `INSERT INTO organization_secret_audit(organization_id,actor,kind,key_version,event,recorded_at) VALUES($1,$2,$3,$4,$5,$6)`, s.organization, audit.Actor, audit.Kind, audit.KeyVersion, audit.Event, audit.RecordedAt)
 	} else {
-		_, err = s.db.ExecContext(ctx, `INSERT INTO project_secret_audit(organization_id,project_id,actor,kind,key_version,event,recorded_at) VALUES($1,$2,$3,$4,$5,$6,$7)`, s.organization, audit.ProjectID, audit.Actor, audit.Kind, audit.KeyVersion, audit.Event, audit.RecordedAt)
+		_, err = s.db.Exec(ctx, `INSERT INTO project_secret_audit(organization_id,project_id,actor,kind,key_version,event,recorded_at) VALUES($1,$2,$3,$4,$5,$6,$7)`, s.organization, audit.ProjectID, audit.Actor, audit.Kind, audit.KeyVersion, audit.Event, audit.RecordedAt)
 	}
 	if err != nil {
 		return fmt.Errorf("record secret audit: %w", mapError(ctx, err))
@@ -114,14 +114,11 @@ func (s *session) RewrapAccessSecret(ctx context.Context, prior accessstore.Secr
 		query = `UPDATE project_secrets SET wrapped_data_key=$3,master_key_version=$4 WHERE organization_id=$1 AND kind=$2 AND wrapped_data_key=$5 AND master_key_version=$6 AND ciphertext=$7 AND nonce=$8 AND updated_at=$9 AND project_id=$10`
 		args = append(args, prior.ProjectID)
 	}
-	result, err := s.db.ExecContext(ctx, query, args...)
+	result, err := s.db.Exec(ctx, query, args...)
 	if err != nil {
 		return mapError(ctx, err)
 	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
+	n := result.RowsAffected()
 	if n == 0 {
 		return corestore.ErrRevisionConflict
 	}

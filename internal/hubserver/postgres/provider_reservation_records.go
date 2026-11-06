@@ -2,8 +2,9 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -14,8 +15,8 @@ import (
 func (s *session) ProviderReservation(ctx context.Context, lease tracker.LeaseID) (claimstore.ProviderReservation, error) {
 	var row claimstore.ProviderReservation
 	var report providercapacity.Report
-	var resetAt sql.NullTime
-	err := s.db.QueryRowContext(ctx, `SELECT organization_id,lease_id,requirement_role,requirement_backend,requirement_model,provider,backend,account_alias,shared_account_alias,billing,max_concurrent,availability,observed_at,reset_at,reason
+	var resetAt pgtype.Timestamptz
+	err := s.db.QueryRow(ctx, `SELECT organization_id,lease_id,requirement_role,requirement_backend,requirement_model,provider,backend,account_alias,shared_account_alias,billing,max_concurrent,availability,observed_at,reset_at,reason
 		FROM provider_reservations WHERE organization_id=$1 AND lease_id=$2`, s.organization, lease).Scan(&row.OrganizationID, &row.LeaseID, &row.Reservation.Role, &row.Reservation.Backend, &row.Reservation.Model, &report.Provider, &report.Backend, &report.AccountAlias, &report.SharedAccountAlias, &report.Billing, &report.MaxConcurrent, &report.Availability, &report.ObservedAt, &resetAt, &row.Reservation.Reason)
 	if err != nil {
 		return claimstore.ProviderReservation{}, mapError(ctx, err)
@@ -26,7 +27,7 @@ func (s *session) ProviderReservation(ctx context.Context, lease tracker.LeaseID
 	report.Models = []string{}
 	report.ModelDetails = []providercapacity.ModelDetail{}
 	report.UsageWindows = []providercapacity.UsageWindow{}
-	rows, err := s.db.QueryContext(ctx, `SELECT position,model_id,has_detail,label,model_provider,is_default,default_reasoning_effort,legacy
+	rows, err := s.db.Query(ctx, `SELECT position,model_id,has_detail,label,model_provider,is_default,default_reasoning_effort,legacy
 		FROM provider_reservation_models WHERE organization_id=$1 AND lease_id=$2 ORDER BY position`, s.organization, lease)
 	if err != nil {
 		return claimstore.ProviderReservation{}, mapError(ctx, err)
@@ -56,10 +57,8 @@ func (s *session) ProviderReservation(ctx context.Context, lease tracker.LeaseID
 		rows.Close()
 		return claimstore.ProviderReservation{}, err
 	}
-	if err := rows.Close(); err != nil {
-		return claimstore.ProviderReservation{}, mapError(ctx, err)
-	}
-	rows, err = s.db.QueryContext(ctx, `SELECT model_id,position,effort FROM provider_reservation_model_efforts WHERE organization_id=$1 AND lease_id=$2 ORDER BY model_id,position`, s.organization, lease)
+	rows.Close()
+	rows, err = s.db.Query(ctx, `SELECT model_id,position,effort FROM provider_reservation_model_efforts WHERE organization_id=$1 AND lease_id=$2 ORDER BY model_id,position`, s.organization, lease)
 	if err != nil {
 		return claimstore.ProviderReservation{}, mapError(ctx, err)
 	}
@@ -82,10 +81,8 @@ func (s *session) ProviderReservation(ctx context.Context, lease tracker.LeaseID
 		rows.Close()
 		return claimstore.ProviderReservation{}, err
 	}
-	if err := rows.Close(); err != nil {
-		return claimstore.ProviderReservation{}, mapError(ctx, err)
-	}
-	rows, err = s.db.QueryContext(ctx, `SELECT position,kind,percent_used,reset_at,observed_at FROM provider_reservation_usage_windows WHERE organization_id=$1 AND lease_id=$2 ORDER BY position`, s.organization, lease)
+	rows.Close()
+	rows, err = s.db.Query(ctx, `SELECT position,kind,percent_used,reset_at,observed_at FROM provider_reservation_usage_windows WHERE organization_id=$1 AND lease_id=$2 ORDER BY position`, s.organization, lease)
 	if err != nil {
 		return claimstore.ProviderReservation{}, mapError(ctx, err)
 	}
@@ -93,8 +90,8 @@ func (s *session) ProviderReservation(ctx context.Context, lease tracker.LeaseID
 	for rows.Next() {
 		var position int
 		var window providercapacity.UsageWindow
-		var percent sql.NullFloat64
-		var reset, observed sql.NullTime
+		var percent pgtype.Float8
+		var reset, observed pgtype.Timestamptz
 		if err := rows.Scan(&position, &window.Kind, &percent, &reset, &observed); err != nil {
 			rows.Close()
 			return claimstore.ProviderReservation{}, mapError(ctx, err)
@@ -119,9 +116,7 @@ func (s *session) ProviderReservation(ctx context.Context, lease tracker.LeaseID
 		rows.Close()
 		return claimstore.ProviderReservation{}, err
 	}
-	if err := rows.Close(); err != nil {
-		return claimstore.ProviderReservation{}, mapError(ctx, err)
-	}
+	rows.Close()
 	if err := providercapacity.Validate([]providercapacity.Report{report}); err != nil || !report.Supports(row.Reservation.Requirement) {
 		return claimstore.ProviderReservation{}, corestore.ErrInvalidPage
 	}
@@ -134,7 +129,7 @@ func (s *session) ProviderReservationUsage(ctx context.Context, report providerc
 		return 0, claimstore.ErrInvalidCandidateFact
 	}
 	var used int
-	err := s.db.QueryRowContext(ctx, `SELECT count(*)
+	err := s.db.QueryRow(ctx, `SELECT count(*)
 		FROM provider_reservations p
 		JOIN leases l ON l.organization_id=p.organization_id AND l.lease_id=p.lease_id
 		JOIN runner_lease_assignments lr ON lr.organization_id=l.organization_id AND lr.lease_id=l.lease_id
@@ -155,7 +150,7 @@ func (s *session) CreateProviderReservation(ctx context.Context, row claimstore.
 	if !report.ResetAt.IsZero() {
 		resetAt = report.ResetAt
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO provider_reservations
+	_, err := s.db.Exec(ctx, `INSERT INTO provider_reservations
 		(organization_id,lease_id,requirement_role,requirement_backend,requirement_model,provider,backend,account_alias,shared_account_alias,billing,max_concurrent,availability,observed_at,reset_at,reason)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, s.organization, row.LeaseID, row.Reservation.Role, row.Reservation.Backend, row.Reservation.Model, report.Provider, report.Backend, report.AccountAlias, report.SharedAccountAlias, report.Billing, report.MaxConcurrent, report.Availability, report.ObservedAt, resetAt, row.Reservation.Reason)
 	if err != nil {
@@ -167,13 +162,13 @@ func (s *session) CreateProviderReservation(ctx context.Context, row claimstore.
 	}
 	for position, model := range report.Models {
 		detail, hasDetail := details[model]
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO provider_reservation_models
+		if _, err := s.db.Exec(ctx, `INSERT INTO provider_reservation_models
 			(organization_id,lease_id,position,model_id,has_detail,label,model_provider,is_default,default_reasoning_effort,legacy)
 			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, s.organization, row.LeaseID, position, model, hasDetail, detail.Label, detail.Provider, detail.Default, detail.DefaultReasoningEffort, detail.Legacy); err != nil {
 			return mapError(ctx, err)
 		}
 		for effortPosition, effort := range detail.ReasoningEfforts {
-			if _, err := s.db.ExecContext(ctx, `INSERT INTO provider_reservation_model_efforts
+			if _, err := s.db.Exec(ctx, `INSERT INTO provider_reservation_model_efforts
 				(organization_id,lease_id,model_id,position,effort) VALUES($1,$2,$3,$4,$5)`, s.organization, row.LeaseID, model, effortPosition, effort); err != nil {
 				return mapError(ctx, err)
 			}
@@ -190,7 +185,7 @@ func (s *session) CreateProviderReservation(ctx context.Context, row claimstore.
 		if !window.ObservedAt.IsZero() {
 			observed = window.ObservedAt
 		}
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO provider_reservation_usage_windows
+		if _, err := s.db.Exec(ctx, `INSERT INTO provider_reservation_usage_windows
 			(organization_id,lease_id,position,kind,percent_used,reset_at,observed_at) VALUES($1,$2,$3,$4,$5,$6,$7)`, s.organization, row.LeaseID, position, window.Kind, percent, reset, observed); err != nil {
 			return mapError(ctx, err)
 		}

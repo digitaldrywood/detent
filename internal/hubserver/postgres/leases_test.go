@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
@@ -88,7 +90,7 @@ func TestAttemptEventDoesNotDeadlockIssueTransition(t *testing.T) {
 	seedLeaseFamily(t, repository, "org_first")
 	lease := claimLease(t, repository, "org_first", leaseClaim(1))
 	var login string
-	if err := pool.QueryRowContext(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
+	if err := pool.QueryRow(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
 		t.Fatal(err)
 	}
 	locked, release := make(chan struct{}), make(chan struct{})
@@ -151,7 +153,7 @@ func TestAttemptEventDoesNotDeadlockUsageAccounting(t *testing.T) {
 		t.Fatal(err)
 	}
 	var login string
-	if err := pool.QueryRowContext(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
+	if err := pool.QueryRow(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
 		t.Fatal(err)
 	}
 	locked, release := make(chan struct{}), make(chan struct{})
@@ -214,7 +216,7 @@ func TestImportedWorkItemLocksProjectBeforeWriting(t *testing.T) {
 	repository, pool := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 5, ServingConnections: 2, BackgroundConnections: 2})
 	seedLeaseFamily(t, repository, "org_first")
 	var login string
-	if err := pool.QueryRowContext(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
+	if err := pool.QueryRow(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -263,7 +265,7 @@ func TestImportedWorkItemLocksProjectBeforeWriting(t *testing.T) {
 		}
 		var query string
 		err := admin.QueryRowContext(t.Context(), `SELECT query FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid))`, login, ownerPID).Scan(&query)
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return errors.New("import has not reached the project lock")
 		}
 		if err == nil && !strings.HasPrefix(query, "-- name: LockWorkItemProject :one") {
@@ -314,7 +316,7 @@ func TestImportedLeaseWaitsForIssueBeforeFencingAllocation(t *testing.T) {
 	repository, pool := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 5, ServingConnections: 1, BackgroundConnections: 3})
 	seedLeaseFamily(t, repository, "org_first")
 	var login string
-	if err := pool.QueryRowContext(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
+	if err := pool.QueryRow(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -354,7 +356,7 @@ func TestImportedLeaseWaitsForIssueBeforeFencingAllocation(t *testing.T) {
 	var importPID int
 	testenv.WaitUntil(t, t.Context(), func() error {
 		err := admin.QueryRowContext(t.Context(), `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)) AND (query LIKE '-- name: LockAttemptIssue :one%' OR query LIKE '-- name: LockAttemptProject :one%' OR query LIKE 'INSERT INTO leases%')`, login, transitionPID).Scan(&importPID)
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return errors.New("lease import has not reached the issue lock")
 		}
 		return err
@@ -524,7 +526,7 @@ func TestLeaseIssueReadsReturnActiveLeaseAndBoundedAttemptPages(t *testing.T) {
 		}
 	}
 	err := r.ReadTenant(t.Context(), "org_first", corestore.Serving, func(reader tenantstore.Reader) error {
-		if _, err := reader.ActiveLeaseForIssue(t.Context(), 1); !errors.Is(err, sql.ErrNoRows) {
+		if _, err := reader.ActiveLeaseForIssue(t.Context(), 1); !errors.Is(err, pgx.ErrNoRows) {
 			t.Errorf("active lease after release = %v, want no rows", err)
 		}
 		latest, err := reader.LatestAttempt(t.Context(), 1)

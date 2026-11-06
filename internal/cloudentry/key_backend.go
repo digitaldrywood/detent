@@ -21,7 +21,7 @@ func (r *Registry) postgresRegister(ctx context.Context, item Organization) (boo
 
 func (a *authStore) postgresKey(ctx context.Context, column, value string) (accessKey, error) {
 	if column == "id" {
-		if err := a.store.reader.QueryRowContext(ctx, "SELECT token_hash FROM access_keys WHERE id=?", value).Scan(&value); err != nil {
+		if err := a.store.reader.QueryRowContext(ctx, "SELECT token_hash FROM platform.access_keys WHERE id=$1", value).Scan(&value); err != nil {
 			return accessKey{}, err
 		}
 	} else if column != "token_hash" {
@@ -69,14 +69,14 @@ func (a *authStore) postgresCreateKey(ctx context.Context, key accessKey) error 
 
 func (s *Service) keyRestrictions(ctx context.Context, id, organization string) (_ bool, _ []string, resultErr error) {
 	var blocked bool
-	err := s.auth.store.reader.QueryRowContext(ctx, "SELECT blocked FROM access_key_organizations WHERE key_id=? AND organization_id=?", id, organization).Scan(&blocked)
+	err := s.auth.store.reader.QueryRowContext(ctx, "SELECT blocked FROM platform.access_key_organizations WHERE key_id=$1 AND organization_id=$2", id, organization).Scan(&blocked)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil, nil
 	}
 	if err != nil {
 		return false, nil, err
 	}
-	rows, err := s.auth.store.reader.QueryContext(ctx, "SELECT project_id FROM access_key_blocked_projects WHERE key_id=? AND organization_id=? ORDER BY project_id LIMIT 201", id, organization)
+	rows, err := s.auth.store.reader.QueryContext(ctx, "SELECT project_id FROM platform.access_key_blocked_projects WHERE key_id=$1 AND organization_id=$2 ORDER BY project_id LIMIT 201", id, organization)
 	if err != nil {
 		return false, nil, err
 	}

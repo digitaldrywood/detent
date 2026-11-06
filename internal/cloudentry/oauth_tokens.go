@@ -30,7 +30,7 @@ func (s *Service) exchangeOAuthToken(ctx context.Context, client string, form ur
 	var consumed sql.NullString
 	hash := apikey.HashToken(form.Get("code"))
 	if form.Get("grant_type") == "authorization_code" {
-		err := s.auth.store.reader.QueryRowContext(ctx, `SELECT grant_id,challenge,redirect_uri,resource,code_expires_at,consumed_at FROM oauth_requests WHERE code_hash=? AND client_id=?`, hash, client).Scan(&grant, &challenge, &redirect, &resource, &codeExpires, &consumed)
+		err := s.auth.store.reader.QueryRowContext(ctx, `SELECT grant_id,challenge,redirect_uri,resource,code_expires_at,consumed_at FROM platform.oauth_requests WHERE code_hash=$1 AND client_id=$2`, hash, client).Scan(&grant, &challenge, &redirect, &resource, &codeExpires, &consumed)
 		if err != nil {
 			return oauthTokenResponse{}, err
 		}
@@ -43,10 +43,10 @@ func (s *Service) exchangeOAuthToken(ctx context.Context, client string, form ur
 	} else {
 		hash = apikey.HashToken(form.Get("refresh_token"))
 		err := s.auth.store.reader.QueryRowContext(ctx, `SELECT t.grant_id,t.expires_at FROM (
-			SELECT grant_id,expires_at FROM oauth_refresh_tokens WHERE token_hash=?
+			SELECT grant_id,expires_at FROM platform.oauth_refresh_tokens WHERE token_hash=$1
 			UNION ALL
-			SELECT grant_id,expires_at FROM oauth_spent_refresh_tokens WHERE token_hash=?
-		) t JOIN oauth_grants g ON g.id=t.grant_id WHERE g.client_id=? AND g.resource=? AND g.revoked_at IS NULL`, hash, hash, client, form.Get("resource")).Scan(&grant, &codeExpires)
+			SELECT grant_id,expires_at FROM platform.oauth_spent_refresh_tokens WHERE token_hash=$2
+		) t JOIN platform.oauth_grants g ON g.id=t.grant_id WHERE g.client_id=$3 AND g.resource=$4 AND g.revoked_at IS NULL`, hash, hash, client, form.Get("resource")).Scan(&grant, &codeExpires)
 		if err != nil {
 			return oauthTokenResponse{}, err
 		}
@@ -98,9 +98,9 @@ func (s *Service) oauthKey(ctx context.Context, column, value string, requireAcc
 	var k accessKey
 	var organization, resource, created string
 	var expires, hash sql.NullString
-	query := `SELECT g.id,c.name,g.owner_subject,g.owner_email,g.organization_id,g.permission,g.resource,g.created_at,g.access_hash,g.access_expires_at FROM oauth_grants g JOIN oauth_clients c ON c.id=g.client_id WHERE g.` + column + `=? AND g.revoked_at IS NULL`
+	query := `SELECT g.id,c.name,g.owner_subject,g.owner_email,g.organization_id,g.permission,g.resource,g.created_at,g.access_hash,g.access_expires_at FROM platform.oauth_grants g JOIN platform.oauth_clients c ON c.id=g.client_id WHERE g.` + column + `=$1 AND g.revoked_at IS NULL`
 	args := []any{value}
-	query += ` AND (SELECT count(*) FROM oauth_grants duplicate WHERE duplicate.` + column + `=?)=1`
+	query += ` AND (SELECT count(*) FROM platform.oauth_grants duplicate WHERE duplicate.` + column + `=$2)=1`
 	args = append(args, value)
 	err := s.auth.store.reader.QueryRowContext(ctx, query, args...).Scan(&k.ID, &k.Name, &k.Owner, &k.OwnerEmail, &organization, &k.Permission, &resource, &created, &hash, &expires)
 	if err != nil {
@@ -150,7 +150,7 @@ func (s *Service) recordCredentialUse(ctx context.Context, key accessKey, organi
 	if !key.OAuth {
 		return s.recordKeyUse(ctx, key.ID, organization)
 	}
-	_, err := s.auth.store.db.ExecContext(ctx, "UPDATE oauth_grants SET last_used_at=? WHERE id=? AND revoked_at IS NULL", formatTime(s.config.now()), key.ID)
+	_, err := s.auth.store.db.ExecContext(ctx, "UPDATE platform.oauth_grants SET last_used_at=$1 WHERE id=$2 AND revoked_at IS NULL", formatTime(s.config.now()), key.ID)
 	return err
 }
 

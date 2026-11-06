@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
-	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -147,7 +146,7 @@ func (s *Service) keyClaims(ctx context.Context, k accessKey, organization Organ
 		}
 		if policy == "approval" {
 			var approved bool
-			err := s.auth.store.db.QueryRowContext(ctx, "SELECT approved_at IS NOT NULL FROM access_key_organizations WHERE key_id=? AND organization_id=?", k.ID, organization.ID).Scan(&approved)
+			err := s.auth.store.db.QueryRowContext(ctx, "SELECT approved_at IS NOT NULL FROM platform.access_key_organizations WHERE key_id=$1 AND organization_id=$2", k.ID, organization.ID).Scan(&approved)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return cloudassert.Claims{}, err
 			}
@@ -177,7 +176,7 @@ func (s *Service) keyClaims(ctx context.Context, k accessKey, organization Organ
 
 func (s *Service) recordKeyUse(ctx context.Context, key, organization string) error {
 	now := formatTime(s.config.now())
-	_, err := s.auth.store.db.ExecContext(ctx, `INSERT INTO access_key_organizations(key_id,organization_id,reached_at,last_used_at) VALUES(?,?,?,?) ON CONFLICT(key_id,organization_id) DO UPDATE SET reached_at=COALESCE(access_key_organizations.reached_at,excluded.reached_at),last_used_at=excluded.last_used_at`, key, organization, now, now)
+	_, err := s.auth.store.db.ExecContext(ctx, `INSERT INTO platform.access_key_organizations(key_id,organization_id,reached_at,last_used_at) VALUES($1,$2,$3,$4) ON CONFLICT(key_id,organization_id) DO UPDATE SET reached_at=COALESCE(platform.access_key_organizations.reached_at,excluded.reached_at),last_used_at=excluded.last_used_at`, key, organization, now, now)
 	return err
 }
 
@@ -309,7 +308,7 @@ func (s *Service) accountKeys(c echo.Context) error {
 	if err != nil {
 		return keyError(c, err)
 	}
-	keys, err := s.listAccessKeys(c.Request().Context(), "SELECT id FROM access_keys WHERE owner_subject=? AND kind='personal' ORDER BY created_at DESC,id LIMIT 200", session.Subject)
+	keys, err := s.listAccessKeys(c.Request().Context(), "SELECT id FROM platform.access_keys WHERE owner_subject=$1 AND kind='personal' ORDER BY created_at DESC,id LIMIT 200", session.Subject)
 	if err != nil {
 		return keyError(c, err)
 	}
@@ -373,7 +372,7 @@ func (s *Service) revokeAccountKey(c echo.Context) error {
 	if err != nil {
 		return keyError(c, err)
 	}
-	result, err := s.auth.store.db.ExecContext(c.Request().Context(), "UPDATE access_keys SET revoked_at=COALESCE(revoked_at,?) WHERE id=? AND owner_subject=? AND kind='personal'", formatTime(s.config.now()), c.Param("key"), session.Subject)
+	result, err := s.auth.store.db.ExecContext(c.Request().Context(), "UPDATE platform.access_keys SET revoked_at=COALESCE(revoked_at,$1) WHERE id=$2 AND owner_subject=$3 AND kind='personal'", formatTime(s.config.now()), c.Param("key"), session.Subject)
 	if err != nil {
 		return keyError(c, err)
 	}
@@ -420,7 +419,7 @@ func (s *Service) serviceKeys(c echo.Context) error {
 	if err != nil {
 		return keyError(c, err)
 	}
-	keys, err := s.listAccessKeys(c.Request().Context(), "SELECT id FROM access_keys WHERE kind='service' AND service_organization_id=? ORDER BY created_at DESC,id LIMIT 200", org.ID)
+	keys, err := s.listAccessKeys(c.Request().Context(), "SELECT id FROM platform.access_keys WHERE kind='service' AND service_organization_id=$1 ORDER BY created_at DESC,id LIMIT 200", org.ID)
 	if err != nil {
 		return keyError(c, err)
 	}
@@ -431,7 +430,7 @@ func (s *Service) serviceKeys(c echo.Context) error {
 	views := []serviceKeyView{}
 	for _, key := range keys {
 		var last sql.NullString
-		if err := s.auth.store.db.QueryRowContext(c.Request().Context(), "SELECT MAX(last_used_at) FROM access_key_organizations WHERE key_id=? AND organization_id=?", key.ID, org.ID).Scan(&last); err != nil {
+		if err := s.auth.store.db.QueryRowContext(c.Request().Context(), "SELECT MAX(last_used_at) FROM platform.access_key_organizations WHERE key_id=$1 AND organization_id=$2", key.ID, org.ID).Scan(&last); err != nil {
 			return keyError(c, err)
 		}
 		view := serviceKeyView{accessKey: key}
@@ -454,7 +453,7 @@ func (s *Service) revokeServiceKey(c echo.Context) error {
 	if err != nil {
 		return keyError(c, err)
 	}
-	result, err := s.auth.store.db.ExecContext(c.Request().Context(), "UPDATE access_keys SET revoked_at=COALESCE(revoked_at,?) WHERE id=? AND kind='service' AND service_organization_id=?", formatTime(s.config.now()), c.Param("key"), org.ID)
+	result, err := s.auth.store.db.ExecContext(c.Request().Context(), "UPDATE platform.access_keys SET revoked_at=COALESCE(revoked_at,$1) WHERE id=$2 AND kind='service' AND service_organization_id=$3", formatTime(s.config.now()), c.Param("key"), org.ID)
 	if err != nil {
 		return keyError(c, err)
 	}
@@ -498,7 +497,7 @@ func (s *Service) organizationKeyPolicy(c echo.Context) error {
 		if input.Policy != "allowed" && input.Policy != "approval" && input.Policy != "blocked" {
 			return c.NoContent(http.StatusUnprocessableEntity)
 		}
-		_, err = s.auth.store.db.ExecContext(c.Request().Context(), "INSERT INTO organization_key_policy(organization_id,personal_keys) VALUES(?,?) ON CONFLICT(organization_id) DO UPDATE SET personal_keys=excluded.personal_keys", org.ID, input.Policy)
+		_, err = s.auth.store.db.ExecContext(c.Request().Context(), "INSERT INTO platform.organization_key_policy(organization_id,personal_keys) VALUES($1,$2) ON CONFLICT(organization_id) DO UPDATE SET personal_keys=excluded.personal_keys", org.ID, input.Policy)
 		if err != nil {
 			return keyError(c, err)
 		}
@@ -533,7 +532,7 @@ func (s *Service) organizationKeys(c echo.Context) error {
 			owners = append(owners, member.UserID)
 		}
 	}
-	keys, err := s.listAccessKeys(ctx, `SELECT id FROM access_keys WHERE owner_subject = ANY(?) AND kind='personal' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?) AND id>? AND (access_context='global' OR EXISTS(SELECT 1 FROM access_key_organizations o WHERE o.key_id=access_keys.id AND o.organization_id=? AND o.selected)) ORDER BY id LIMIT 51`, pq.Array(owners), formatTime(s.config.now()), cursor, org.ID)
+	keys, err := s.listAccessKeys(ctx, `SELECT id FROM platform.access_keys WHERE owner_subject = ANY($1) AND kind='personal' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>$2) AND id>$3 AND (access_context='global' OR EXISTS(SELECT 1 FROM platform.access_key_organizations o WHERE o.key_id=platform.access_keys.id AND o.organization_id=$4 AND o.selected)) ORDER BY id LIMIT 51`, owners, formatTime(s.config.now()), cursor, org.ID)
 	if err != nil {
 		return keyError(c, err)
 	}
@@ -605,7 +604,7 @@ func (s *Service) keyNotifications(c echo.Context) (resultErr error) {
 	if err != nil {
 		return keyError(c, err)
 	}
-	rows, err := s.auth.store.db.QueryContext(c.Request().Context(), "SELECT key_id,organization_id,project_id,created_at FROM access_key_notifications WHERE owner_subject=? ORDER BY id DESC LIMIT 200", session.Subject)
+	rows, err := s.auth.store.db.QueryContext(c.Request().Context(), "SELECT key_id,organization_id,project_id,created_at FROM platform.access_key_notifications WHERE owner_subject=$1 ORDER BY id DESC LIMIT 200", session.Subject)
 	if err != nil {
 		return keyError(c, err)
 	}

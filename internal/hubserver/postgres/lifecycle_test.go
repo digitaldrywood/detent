@@ -12,8 +12,12 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+
 	"github.com/google/uuid"
-	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 )
@@ -99,7 +103,7 @@ func TestMigrateAppliesOlderPendingVersions(t *testing.T) {
 					partial[file] = &fstest.MapFile{Data: data}
 				}
 				err := Migrate(t.Context(), config, partial)
-				var pgerr *pq.Error
+				var pgerr *pgconn.PgError
 				if !errors.As(err, &pgerr) || pgerr.Code != "22012" {
 					t.Fatalf("partial migration error = %v, want division by zero", err)
 				}
@@ -196,9 +200,9 @@ func TestMigrateAppliesOlderPendingVersions(t *testing.T) {
 	}
 }
 
-func migrationTestLogin(t *testing.T, db *sql.DB, group string) pq.Config {
+func migrationTestLogin(t *testing.T, db *sql.DB, group string) pgtransport.Connection {
 	t.Helper()
-	var config pq.Config
+	var config pgtransport.Connection
 	if os.Getenv(pgtest.Environment) == "binary" {
 		var directory string
 		if err := db.QueryRowContext(t.Context(), "SELECT current_setting('data_directory'), current_setting('unix_socket_directories'), current_setting('port')::integer").Scan(&directory, &config.Host, &config.Port); err != nil {
@@ -209,7 +213,7 @@ func migrationTestLogin(t *testing.T, db *sql.DB, group string) pq.Config {
 		}
 	} else {
 		var err error
-		config, err = pq.NewConfig(os.Getenv(pgtest.Environment))
+		config, err = pgtransport.ParseConnection(os.Getenv(pgtest.Environment))
 		if err != nil {
 			t.Fatal("parse isolated PostgreSQL connection")
 		}
@@ -220,11 +224,11 @@ func migrationTestLogin(t *testing.T, db *sql.DB, group string) pq.Config {
 	if err := db.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&config.Database); err != nil {
 		t.Fatal(err)
 	}
-	quoted := pq.QuoteIdentifier(config.User)
-	if _, err := db.ExecContext(t.Context(), "ALTER DATABASE "+pq.QuoteIdentifier(config.Database)+" CONNECTION LIMIT 8"); err != nil {
+	quoted := pgx.Identifier{config.User}.Sanitize()
+	if _, err := db.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{config.Database}.Sanitize()+" CONNECTION LIMIT 8"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(config.Password)+" IN ROLE "+pq.QuoteIdentifier(group)); err != nil {
+	if _, err := db.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(config.Password)+" IN ROLE "+pgx.Identifier{group}.Sanitize()); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -239,4 +243,12 @@ func migrationTestLogin(t *testing.T, db *sql.DB, group string) pq.Config {
 		}
 	})
 	return config
+}
+
+func TestSchemaRequiresMigrationSourcesBeforeDatabase(t *testing.T) {
+	for _, source := range []fs.FS{nil, fstest.MapFS{}} {
+		if err := validateNativeSchema(t.Context(), nil, source); !errors.Is(err, ErrSchema) {
+			t.Fatalf("missing migration sources=%v", err)
+		}
+	}
 }

@@ -97,7 +97,7 @@ func TestTenantTransactionReadScope(t *testing.T) {
 	admin := template.Database(t)
 	r, pool := repositoryFor(t, admin, smallPool())
 	seedRepository(t, r, "org_first")
-	if _, err := pool.ExecContext(t.Context(), `SET default_transaction_isolation='serializable'`); err != nil {
+	if _, err := pool.Exec(t.Context(), `SET default_transaction_isolation='serializable'`); err != nil {
 		t.Fatal(err)
 	}
 	for _, mode := range []string{"read", "write"} {

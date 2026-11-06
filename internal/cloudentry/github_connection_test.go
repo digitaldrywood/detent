@@ -196,7 +196,7 @@ func TestGitHubRepositoryConnection(t *testing.T) {
 		}
 	}
 	var sealed string
-	if err := s.auth.store.reader.QueryRowContext(t.Context(), `SELECT access_token FROM github_user_connections WHERE owner_subject='user_alice'`).Scan(&sealed); err != nil || !strings.HasPrefix(sealed, "hk1.") || strings.Contains(sealed, "user-token") {
+	if err := s.auth.store.reader.QueryRowContext(t.Context(), `SELECT access_token FROM platform.github_user_connections WHERE owner_subject='user_alice'`).Scan(&sealed); err != nil || !strings.HasPrefix(sealed, "hk1.") || strings.Contains(sealed, "user-token") {
 		t.Fatalf("token storage not encrypted: %v", err)
 	}
 	other := newBrowser(t, s.Handler())

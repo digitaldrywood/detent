@@ -9,7 +9,6 @@ import (
 	"context"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
 )
 
 const deleteSavedWorkView = `-- name: DeleteSavedWorkView :execrows
@@ -23,11 +22,11 @@ type DeleteSavedWorkViewParams struct {
 }
 
 func (q *Queries) DeleteSavedWorkView(ctx context.Context, arg DeleteSavedWorkViewParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, deleteSavedWorkView, arg.OrganizationID, arg.ID, arg.OwnerID)
+	result, err := q.db.Exec(ctx, deleteSavedWorkView, arg.OrganizationID, arg.ID, arg.OwnerID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const deleteSavedWorkViewFavorite = `-- name: DeleteSavedWorkViewFavorite :exec
@@ -41,7 +40,7 @@ type DeleteSavedWorkViewFavoriteParams struct {
 }
 
 func (q *Queries) DeleteSavedWorkViewFavorite(ctx context.Context, arg DeleteSavedWorkViewFavoriteParams) error {
-	_, err := q.db.ExecContext(ctx, deleteSavedWorkViewFavorite, arg.OrganizationID, arg.ViewID, arg.UserID)
+	_, err := q.db.Exec(ctx, deleteSavedWorkViewFavorite, arg.OrganizationID, arg.ViewID, arg.UserID)
 	return err
 }
 
@@ -55,7 +54,7 @@ type DeleteSavedWorkViewProjectsParams struct {
 }
 
 func (q *Queries) DeleteSavedWorkViewProjects(ctx context.Context, arg DeleteSavedWorkViewProjectsParams) error {
-	_, err := q.db.ExecContext(ctx, deleteSavedWorkViewProjects, arg.OrganizationID, arg.ViewID)
+	_, err := q.db.Exec(ctx, deleteSavedWorkViewProjects, arg.OrganizationID, arg.ViewID)
 	return err
 }
 
@@ -69,7 +68,7 @@ type DeleteSavedWorkViewValuesParams struct {
 }
 
 func (q *Queries) DeleteSavedWorkViewValues(ctx context.Context, arg DeleteSavedWorkViewValuesParams) error {
-	_, err := q.db.ExecContext(ctx, deleteSavedWorkViewValues, arg.OrganizationID, arg.ViewID)
+	_, err := q.db.Exec(ctx, deleteSavedWorkViewValues, arg.OrganizationID, arg.ViewID)
 	return err
 }
 
@@ -84,7 +83,7 @@ type DeleteWorkViewPreferenceParams struct {
 }
 
 func (q *Queries) DeleteWorkViewPreference(ctx context.Context, arg DeleteWorkViewPreferenceParams) error {
-	_, err := q.db.ExecContext(ctx, deleteWorkViewPreference, arg.OrganizationID, arg.UserID, arg.Scope)
+	_, err := q.db.Exec(ctx, deleteWorkViewPreference, arg.OrganizationID, arg.UserID, arg.Scope)
 	return err
 }
 
@@ -98,7 +97,7 @@ type LockSavedWorkViewParams struct {
 }
 
 func (q *Queries) LockSavedWorkView(ctx context.Context, arg LockSavedWorkViewParams) (HostedWorkView, error) {
-	row := q.db.QueryRowContext(ctx, lockSavedWorkView, arg.OrganizationID, arg.ID)
+	row := q.db.QueryRow(ctx, lockSavedWorkView, arg.OrganizationID, arg.ID)
 	var i HostedWorkView
 	err := row.Scan(
 		&i.OrganizationID,
@@ -154,7 +153,7 @@ type PutSavedWorkViewParams struct {
 }
 
 func (q *Queries) PutSavedWorkView(ctx context.Context, arg PutSavedWorkViewParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, putSavedWorkView,
+	result, err := q.db.Exec(ctx, putSavedWorkView,
 		arg.OrganizationID,
 		arg.ID,
 		arg.OwnerID,
@@ -178,7 +177,7 @@ func (q *Queries) PutSavedWorkView(ctx context.Context, arg PutSavedWorkViewPara
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const putSavedWorkViewFavorite = `-- name: PutSavedWorkViewFavorite :exec
@@ -192,7 +191,7 @@ type PutSavedWorkViewFavoriteParams struct {
 }
 
 func (q *Queries) PutSavedWorkViewFavorite(ctx context.Context, arg PutSavedWorkViewFavoriteParams) error {
-	_, err := q.db.ExecContext(ctx, putSavedWorkViewFavorite, arg.OrganizationID, arg.ViewID, arg.UserID)
+	_, err := q.db.Exec(ctx, putSavedWorkViewFavorite, arg.OrganizationID, arg.ViewID, arg.UserID)
 	return err
 }
 
@@ -208,7 +207,7 @@ type PutSavedWorkViewProjectParams struct {
 }
 
 func (q *Queries) PutSavedWorkViewProject(ctx context.Context, arg PutSavedWorkViewProjectParams) error {
-	_, err := q.db.ExecContext(ctx, putSavedWorkViewProject,
+	_, err := q.db.Exec(ctx, putSavedWorkViewProject,
 		arg.OrganizationID,
 		arg.ViewID,
 		arg.ProjectID,
@@ -230,7 +229,7 @@ type PutSavedWorkViewValueParams struct {
 }
 
 func (q *Queries) PutSavedWorkViewValue(ctx context.Context, arg PutSavedWorkViewValueParams) error {
-	_, err := q.db.ExecContext(ctx, putSavedWorkViewValue,
+	_, err := q.db.Exec(ctx, putSavedWorkViewValue,
 		arg.OrganizationID,
 		arg.ViewID,
 		arg.Kind,
@@ -254,7 +253,7 @@ type PutWorkViewPreferenceParams struct {
 }
 
 func (q *Queries) PutWorkViewPreference(ctx context.Context, arg PutWorkViewPreferenceParams) error {
-	_, err := q.db.ExecContext(ctx, putWorkViewPreference,
+	_, err := q.db.Exec(ctx, putWorkViewPreference,
 		arg.OrganizationID,
 		arg.UserID,
 		arg.Scope,
@@ -319,7 +318,7 @@ type SavedWorkViewRow struct {
 }
 
 func (q *Queries) SavedWorkView(ctx context.Context, arg SavedWorkViewParams) (SavedWorkViewRow, error) {
-	row := q.db.QueryRowContext(ctx, savedWorkView,
+	row := q.db.QueryRow(ctx, savedWorkView,
 		arg.OrganizationID,
 		arg.ID,
 		arg.UserID,
@@ -346,14 +345,14 @@ func (q *Queries) SavedWorkView(ctx context.Context, arg SavedWorkViewParams) (S
 		&i.OwnerSlot,
 		&i.OrganizationSlot,
 		&i.Favorite,
-		pq.Array(&i.ProjectIds),
-		pq.Array(&i.StateValues),
-		pq.Array(&i.TypeValues),
-		pq.Array(&i.LabelValues),
-		pq.Array(&i.AssigneeValues),
-		pq.Array(&i.PriorityValues),
-		pq.Array(&i.LanesValues),
-		pq.Array(&i.CollapsedValues),
+		&i.ProjectIds,
+		&i.StateValues,
+		&i.TypeValues,
+		&i.LabelValues,
+		&i.AssigneeValues,
+		&i.PriorityValues,
+		&i.LanesValues,
+		&i.CollapsedValues,
 	)
 	return i, err
 }
@@ -376,7 +375,7 @@ type SavedWorkViewIDsParams struct {
 }
 
 func (q *Queries) SavedWorkViewIDs(ctx context.Context, arg SavedWorkViewIDsParams) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, savedWorkViewIDs,
+	rows, err := q.db.Query(ctx, savedWorkViewIDs,
 		arg.OrganizationID,
 		arg.Cursor,
 		arg.UserID,
@@ -395,9 +394,6 @@ func (q *Queries) SavedWorkViewIDs(ctx context.Context, arg SavedWorkViewIDsPara
 		}
 		items = append(items, id)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -411,7 +407,7 @@ ORDER BY slot LIMIT 1
 `
 
 func (q *Queries) SavedWorkViewOrganizationSlot(ctx context.Context, organizationID tracker.OrganizationID) (int32, error) {
-	row := q.db.QueryRowContext(ctx, savedWorkViewOrganizationSlot, organizationID)
+	row := q.db.QueryRow(ctx, savedWorkViewOrganizationSlot, organizationID)
 	var slot int32
 	err := row.Scan(&slot)
 	return slot, err
@@ -429,7 +425,7 @@ type SavedWorkViewOwnerSlotParams struct {
 }
 
 func (q *Queries) SavedWorkViewOwnerSlot(ctx context.Context, arg SavedWorkViewOwnerSlotParams) (int32, error) {
-	row := q.db.QueryRowContext(ctx, savedWorkViewOwnerSlot, arg.OrganizationID, arg.OwnerID)
+	row := q.db.QueryRow(ctx, savedWorkViewOwnerSlot, arg.OrganizationID, arg.OwnerID)
 	var slot int32
 	err := row.Scan(&slot)
 	return slot, err
@@ -447,7 +443,7 @@ type WorkViewPreferenceParams struct {
 }
 
 func (q *Queries) WorkViewPreference(ctx context.Context, arg WorkViewPreferenceParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, workViewPreference, arg.OrganizationID, arg.UserID, arg.Scope)
+	row := q.db.QueryRow(ctx, workViewPreference, arg.OrganizationID, arg.UserID, arg.Scope)
 	var view_query string
 	err := row.Scan(&view_query)
 	return view_query, err

@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
+
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/emailtemplate"
 )
@@ -72,9 +74,7 @@ func (s *Service) wakePlatformNotifications() {
 }
 
 func enqueuePlatformNotification(ctx context.Context, tx *entryTransaction, event, id, email, name, plan, at string) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO platform_notifications(event,entity_id,email,name,plan,occurred_at)
-VALUES(?,?,?,?,?,?) ON CONFLICT(event,entity_id) DO NOTHING`, event, id, email, name, plan, at)
-	return err
+	return tx.postgres.EnqueueNotification(ctx, tx.owner.auth, platformstore.Notification{Event: event, ID: id, Email: email, Name: name, Plan: plan, OccurredAt: at})
 }
 
 func (s *Service) recordSignIn(ctx context.Context, identity auth.Identity) (resultErr error) {
@@ -82,11 +82,11 @@ func (s *Service) recordSignIn(ctx context.Context, identity auth.Identity) (res
 	if err != nil {
 		return err
 	}
-	defer tx.cleanup(&resultErr)
+	defer tx.cleanup(ctx, &resultErr)
 	at := formatTime(s.config.now())
 	if s.notifications != nil && identity.Hosted.SupportActor == "" {
 		var earlier bool
-		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM audit WHERE subject=? AND event='session_started')", identity.Subject).Scan(&earlier); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM platform.audit WHERE subject=$1 AND event='session_started')", identity.Subject).Scan(&earlier); err != nil {
 			return err
 		}
 		if !earlier {
@@ -95,10 +95,10 @@ func (s *Service) recordSignIn(ctx context.Context, identity auth.Identity) (res
 			}
 		}
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO audit(subject,organization_id,event,recorded_at) VALUES (?,?,'session_started',?)", identity.Subject, "", at); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO platform.audit(subject,organization_id,event,recorded_at) VALUES ($1,$2,'session_started',$3)", identity.Subject, "", at); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	s.wakePlatformNotifications()
@@ -108,10 +108,8 @@ func (s *Service) recordSignIn(ctx context.Context, identity auth.Identity) (res
 func (s *Service) deliverPlatformNotifications(ctx context.Context) {
 	for _, source := range []*store{s.auth.store, s.registry.store} {
 		for ctx.Err() == nil {
-			var event, id, email, name, plan, at string
-			err := source.db.QueryRowContext(ctx, `UPDATE platform_notifications SET attempted_at=?
-WHERE attempted_at IS NULL AND (event,entity_id)=(SELECT event,entity_id FROM platform_notifications WHERE attempted_at IS NULL ORDER BY occurred_at LIMIT 1)
-RETURNING event,entity_id,email,name,plan,occurred_at`, formatTime(s.config.now())).Scan(&event, &id, &email, &name, &plan, &at)
+			value, err := source.db.postgres.ClaimNotification(ctx, entryWorkload(ctx), source.db.auth, formatTime(s.config.now()))
+			event, id, email, name, plan, at := value.Event, value.ID, value.Email, value.Name, value.Plan, value.OccurredAt
 			if errors.Is(err, sql.ErrNoRows) {
 				break
 			}
@@ -170,7 +168,7 @@ func (s *Service) platformNotificationMessage(event, id, email, name, plan, at s
 }
 
 func (s *Service) sendPlatformNotification(ctx context.Context, message auth.EmailMessage) (resultErr error) {
-	rows, err := s.registry.store.reader.QueryContext(ctx, "SELECT email FROM platform_members WHERE role='admin' ORDER BY email")
+	rows, err := s.registry.store.reader.QueryContext(ctx, "SELECT email FROM platform.platform_members WHERE role='admin' ORDER BY email")
 	if err != nil {
 		return err
 	}

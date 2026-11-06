@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
@@ -31,7 +31,7 @@ func metricImportSource(t *testing.T, db *sql.DB, schema string, organization tr
 		t.Fatal(err)
 	}
 	source := postgres.MetricsImportSource{DB: db, Catalog: catalog, Source: storagecatalog.Source{Schema: schema, Store: "metrics", CatalogVersion: catalog.Version, OrganizationID: string(organization)}, Schema: storagecatalog.Schema{}, SnapshotID: "example-frozen-snapshot", RetainAt: time.Date(2026, 11, 1, 12, 34, 0, 123456000, time.UTC)}
-	if _, err := db.ExecContext(t.Context(), "CREATE SCHEMA "+pq.QuoteIdentifier(schema)); err != nil {
+	if _, err := db.ExecContext(t.Context(), "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
 		t.Fatal(err)
 	}
 	for name, table := range catalog.Tables {
@@ -47,19 +47,19 @@ func metricImportSource(t *testing.T, db *sql.DB, schema string, organization tr
 			if column == "histogram" {
 				kind = "bytea"
 			}
-			columns = append(columns, pq.QuoteIdentifier(column)+" "+kind)
+			columns = append(columns, pgx.Identifier{column}.Sanitize()+" "+kind)
 		}
 		if table.Disposition != "target" {
 			continue
 		}
 		slices.Sort(columns)
 		keys := map[string]string{"tenant": "organization", "request_days": "day,route,caller_kind,status_class", "request_minutes": "minute,route,caller_kind,caller_id,status_class", "request_hours": "hour,route,status_class"}[name]
-		statement := "CREATE TABLE " + pq.QuoteIdentifier(schema) + "." + pq.QuoteIdentifier(name) + "(" + strings.Join(columns, ",") + ",PRIMARY KEY(" + keys + "))"
+		statement := "CREATE TABLE " + pgx.Identifier{schema}.Sanitize() + "." + pgx.Identifier{name}.Sanitize() + "(" + strings.Join(columns, ",") + ",PRIMARY KEY(" + keys + "))"
 		if _, err := db.ExecContext(t.Context(), statement); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO "+pq.QuoteIdentifier(schema)+".tenant VALUES($1)", organization); err != nil {
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO "+pgx.Identifier{schema}.Sanitize()+".tenant VALUES($1)", organization); err != nil {
 		t.Fatal(err)
 	}
 	return source
@@ -80,9 +80,9 @@ func insertImportMetric(t *testing.T, source postgres.MetricsImportSource, grain
 	slices.Sort(columns)
 	args, placeholders := make([]any, len(columns)), make([]string, len(columns))
 	for n, column := range columns {
-		args[n], placeholders[n], columns[n] = values[column], fmt.Sprintf("$%d", n+1), pq.QuoteIdentifier(column)
+		args[n], placeholders[n], columns[n] = values[column], fmt.Sprintf("$%d", n+1), pgx.Identifier{column}.Sanitize()
 	}
-	statement := "INSERT INTO " + pq.QuoteIdentifier(source.Source.Schema) + "." + pq.QuoteIdentifier(table) + "(" + strings.Join(columns, ",") + ") VALUES(" + strings.Join(placeholders, ",") + ")"
+	statement := "INSERT INTO " + pgx.Identifier{source.Source.Schema}.Sanitize() + "." + pgx.Identifier{table}.Sanitize() + "(" + strings.Join(columns, ",") + ") VALUES(" + strings.Join(placeholders, ",") + ")"
 	if _, err := source.DB.ExecContext(t.Context(), statement, args...); err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +364,7 @@ func TestRequestMetricImportRejectsMalformedPage(t *testing.T) {
 			if tc.column == "histogram" {
 				value = []byte(tc.value)
 			}
-			if _, err := db.ExecContext(t.Context(), "UPDATE raw_metrics.request_minutes SET "+pq.QuoteIdentifier(tc.column)+"=$1", value); err != nil {
+			if _, err := db.ExecContext(t.Context(), "UPDATE raw_metrics.request_minutes SET "+pgx.Identifier{tc.column}.Sanitize()+"=$1", value); err != nil {
 				t.Fatal(err)
 			}
 			importer, err := r.NewMetricsImporter(t.Context(), source)
@@ -400,25 +400,25 @@ func TestRequestMetricImportCheckpointIsolation(t *testing.T) {
 		t.Run(tc.organization, func(t *testing.T) {
 			tx := tenantTx(t, runtime, pool, tc.organization)
 			var count int
-			if err := tx.QueryRowContext(t.Context(), `SELECT count(*) FROM request_metric_imports`).Scan(&count); err != nil || count != tc.want {
+			if err := tx.QueryRow(t.Context(), `SELECT count(*) FROM request_metric_imports`).Scan(&count); err != nil || count != tc.want {
 				t.Fatalf("checkpoint scope=%d err=%v", count, err)
 			}
-			if err := tx.Rollback(); err != nil {
+			if err := tx.Rollback(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 		})
 	}
 	tx := tenantTx(t, runtime, pool, "org_first")
-	result, err := tx.ExecContext(t.Context(), `UPDATE request_metric_imports SET processed=99 WHERE organization_id='org_second'`)
+	result, err := tx.Exec(t.Context(), `UPDATE request_metric_imports SET processed=99 WHERE organization_id='org_second'`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := result.RowsAffected(); err != nil || changed != 0 {
+	if changed := result.RowsAffected(); changed != 0 {
 		t.Fatalf("foreign checkpoint changed=%d err=%v", changed, err)
 	}
-	_, err = tx.ExecContext(t.Context(), `UPDATE request_metric_imports SET organization_id='org_foreign'`)
+	_, err = tx.Exec(t.Context(), `UPDATE request_metric_imports SET organization_id='org_foreign'`)
 	requireSQLState(t, err, "42501")
-	if err := tx.Rollback(); err != nil {
+	if err := tx.Rollback(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -3,10 +3,14 @@ package platformstore
 import (
 	"context"
 	"crypto/ed25519"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -35,26 +39,27 @@ type PoolConfig struct {
 }
 
 type Repository struct {
-	pool       *sql.DB
+	pool       *pgxpool.Pool
 	serving    chan struct{}
 	background chan struct{}
 	secrets    *secretCipher
 	now        func() time.Time
 }
 
-func New(ctx context.Context, pool *sql.DB, config Config) (*Repository, error) {
+func New(ctx context.Context, pool *pgxpool.Pool, config Config) (*Repository, error) {
 	limits := config.Pool
-	if pool == nil || limits.MaxConnections < 3 || limits.ServingConnections < 1 || limits.BackgroundConnections < 1 || limits.ServingConnections >= limits.MaxConnections || limits.BackgroundConnections >= limits.MaxConnections-limits.ServingConnections || limits.BackgroundConnections > limits.MaxConnections-2 {
+	if pool == nil || limits.MaxConnections < 3 || limits.ServingConnections < 1 || limits.BackgroundConnections < 1 || limits.ServingConnections >= limits.MaxConnections || limits.BackgroundConnections >= limits.MaxConnections-limits.ServingConnections || limits.BackgroundConnections > limits.MaxConnections-2 || int(pool.Config().MaxConns) != limits.MaxConnections {
 		return nil, fmt.Errorf("%w: platform pool requires max_connections >= serving_connections + background_connections + 1 reserved health connection", ErrInvalid)
+	}
+	if err := pgtransport.ValidatePool(pool); err != nil {
+		return nil, fmt.Errorf("%w: native pool configuration", ErrInvalid)
 	}
 	secrets, err := newSecretCipher(config.SigningKey, config.Keys)
 	if err != nil {
 		return nil, err
 	}
-	pool.SetMaxOpenConns(limits.MaxConnections)
-	pool.SetMaxIdleConns(limits.MaxConnections)
 	var allowed bool
-	err = pool.QueryRowContext(ctx, `
+	err = pool.QueryRow(ctx, `
 		SELECT pg_has_role(current_user,$1::text,'USAGE')
 		AND NOT pg_has_role(session_user,$2::text,'MEMBER')
 		AND NOT pg_has_role(session_user,$3::text,'MEMBER')
@@ -82,13 +87,13 @@ func New(ctx context.Context, pool *sql.DB, config Config) (*Repository, error) 
 	return &Repository{pool: pool, serving: make(chan struct{}, limits.ServingConnections), background: make(chan struct{}, limits.BackgroundConnections), secrets: secrets, now: config.Now}, nil
 }
 
-func (r *Repository) Close() error { return r.pool.Close() }
+func (r *Repository) Close() error { r.pool.Close(); return nil }
 
-func (r *Repository) Ping(ctx context.Context) error { return mapError(ctx, r.pool.PingContext(ctx)) }
+func (r *Repository) Ping(ctx context.Context) error { return mapError(ctx, r.pool.Ping(ctx)) }
 
 func (r *Repository) SchemaVersion(ctx context.Context) (int64, error) {
 	var version int64
-	if err := r.pool.QueryRowContext(ctx, `SELECT COALESCE(MAX(version_id), 0) FROM (
+	if err := r.pool.QueryRow(ctx, `SELECT COALESCE(MAX(version_id), 0) FROM (
 		SELECT version_id, is_applied, ROW_NUMBER() OVER (PARTITION BY version_id ORDER BY id DESC) AS state_rank
 		FROM public.goose_db_version
 	) AS migration_state WHERE state_rank = 1 AND is_applied`).Scan(&version); err != nil {
@@ -98,7 +103,7 @@ func (r *Repository) SchemaVersion(ctx context.Context) (int64, error) {
 }
 
 func (r *Repository) SchemaFingerprint(ctx context.Context) (string, error) {
-	rows, err := r.pool.QueryContext(ctx, `SELECT version_id FROM (
+	rows, err := r.pool.Query(ctx, `SELECT version_id FROM (
 		SELECT version_id, is_applied, ROW_NUMBER() OVER (PARTITION BY version_id ORDER BY id DESC) AS state_rank
 		FROM public.goose_db_version WHERE version_id > 0
 	) AS migration_state WHERE state_rank = 1 AND is_applied ORDER BY version_id`)
@@ -120,26 +125,26 @@ func (r *Repository) SchemaFingerprint(ctx context.Context) (string, error) {
 	return schemafingerprint.Versions(versions), nil
 }
 
-func (r *Repository) transaction(ctx context.Context, workload corestore.Workload, readOnly bool, run func(*sql.Tx) error) (resultErr error) {
+func (r *Repository) transaction(ctx context.Context, workload corestore.Workload, readOnly bool, run func(pgx.Tx) error) (resultErr error) {
 	tx, err := r.BeginEntry(ctx, workload, readOnly)
 	if err != nil {
 		return err
 	}
-	defer tx.cleanup(&resultErr)
+	defer tx.cleanup(ctx, &resultErr)
 	if err := run(tx.Tx); err != nil {
 		return mapError(ctx, err)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return mapError(ctx, tx.Commit())
+	return mapError(ctx, tx.Commit(ctx))
 }
 
 func mapError(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
 	}
-	if ctx.Err() != nil && (errors.Is(err, sql.ErrTxDone) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+	if ctx.Err() != nil && (errors.Is(err, pgx.ErrTxClosed) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		return ctx.Err()
 	}
 	var state interface{ SQLState() string }
@@ -155,7 +160,7 @@ func mapError(ctx context.Context, err error) error {
 		}
 		return &storageError{cause: err, domain: domain, state: state.SQLState()}
 	}
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return &storageError{cause: err, domain: corestore.ErrNotFound}
 	}
 	return err

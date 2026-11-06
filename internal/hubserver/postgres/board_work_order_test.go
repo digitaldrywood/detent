@@ -2,14 +2,14 @@ package postgres_test
 
 import (
 	"context"
-	"database/sql"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -19,8 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type boardQueryConnector struct {
-	driver.Conn
+type boardQueryTracer struct {
 	queries  int
 	page     string
 	args     []any
@@ -28,33 +27,20 @@ type boardQueryConnector struct {
 	laneArgs []any
 }
 
-func (c *boardQueryConnector) Connect(context.Context) (driver.Conn, error) { return c, nil }
-func (c *boardQueryConnector) Driver() driver.Driver                        { return nil }
-func (c *boardQueryConnector) Close() error                                 { return nil }
-func (c *boardQueryConnector) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
-	return c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
-}
-func (c *boardQueryConnector) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	return c.Conn.(driver.ExecerContext).ExecContext(ctx, query, args)
-}
-func (c *boardQueryConnector) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+func (c *boardQueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	query := data.SQL
 	c.queries++
 	if strings.Contains(query, "GROUP BY b.state") || strings.Contains(query, "FROM native_board_counts c") {
 		c.lanes = query
-		c.laneArgs = nil
-		for _, arg := range args {
-			c.laneArgs = append(c.laneArgs, arg.Value)
-		}
+		c.laneArgs = append([]any(nil), data.Args...)
 	}
 	if strings.HasPrefix(query, "SELECT b.organization_id") {
 		c.page = query
-		c.args = nil
-		for _, arg := range args {
-			c.args = append(c.args, arg.Value)
-		}
+		c.args = append([]any(nil), data.Args...)
 	}
-	return c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
+	return ctx
 }
+func (c *boardQueryTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
 	admin := template.Database(t)
@@ -91,15 +77,8 @@ func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
 			if index != 1 && index != 512 {
 				continue
 			}
-			conn, err := pool.Conn(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			probe := &boardQueryConnector{}
-			if err := conn.Raw(func(raw any) error { probe.Conn = raw.(driver.Conn); return nil }); err != nil {
-				t.Fatal(err)
-			}
-			counted, err := postgres.NewRepository(ctx, sql.OpenDB(probe), smallPool())
+			probe := &boardQueryTracer{}
+			counted, err := postgres.NewRepository(ctx, tracedFeaturePool(t, pool, probe), smallPool())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -178,9 +157,6 @@ func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
 				}
 			}
 			if err := counted.Close(); err != nil {
-				t.Fatal(err)
-			}
-			if err := conn.Close(); err != nil {
 				t.Fatal(err)
 			}
 			if strings.Contains(probe.page, "JOIN issues") {

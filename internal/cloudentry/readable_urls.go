@@ -28,7 +28,7 @@ func (s *Service) readableProxy(c echo.Context) error {
 		}
 	}
 	var id string
-	if err := s.registry.store.db.QueryRowContext(c.Request().Context(), "SELECT organization_id FROM organization_slugs WHERE slug=?", parts[0]).Scan(&id); err != nil {
+	if err := s.registry.store.db.QueryRowContext(c.Request().Context(), "SELECT organization_id FROM platform.organization_slugs WHERE slug=$1", parts[0]).Scan(&id); err != nil {
 		return readableNotFound(c)
 	}
 	if len(parts) == 1 {
@@ -122,28 +122,28 @@ func (s *Service) organizationSlug(c echo.Context) (resultErr error) {
 	if err != nil {
 		return err
 	}
-	defer tx.cleanup(&resultErr)
+	defer tx.cleanup(ctx, &resultErr)
 	var current, owner string
-	if err := tx.QueryRowContext(ctx, "SELECT slug FROM organizations WHERE id=?", organization.ID).Scan(&current); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT slug FROM platform.organizations WHERE id=$1", organization.ID).Scan(&current); err != nil {
 		return err
 	}
 	if current != input.ExpectedSlug {
 		return c.JSON(http.StatusConflict, map[string]string{"code": "revision_conflict", "message": "The slug changed; reload and try again"})
 	}
-	err = tx.QueryRowContext(ctx, "SELECT organization_id FROM organization_slugs WHERE slug=?", input.Slug).Scan(&owner)
+	err = tx.QueryRowContext(ctx, "SELECT organization_id FROM platform.organization_slugs WHERE slug=$1", input.Slug).Scan(&owner)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	if owner != "" && owner != organization.ID {
 		return c.JSON(http.StatusConflict, map[string]string{"code": "slug_conflict", "message": "This slug is already reserved"})
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO organization_slugs(slug,organization_id) VALUES(?,?) ON CONFLICT DO NOTHING", input.Slug, organization.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO platform.organization_slugs(slug,organization_id) VALUES($1,$2) ON CONFLICT DO NOTHING", input.Slug, organization.ID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE organizations SET slug=?,updated_at=? WHERE id=?", input.Slug, formatTime(s.config.now()), organization.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE platform.organizations SET slug=$1,updated_at=$2 WHERE id=$3", input.Slug, formatTime(s.config.now()), organization.ID); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	return c.JSON(http.StatusOK, map[string]string{"slug": input.Slug})

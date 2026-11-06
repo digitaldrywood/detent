@@ -407,7 +407,7 @@ func (s *Service) proxy(c echo.Context) error {
 				if err := json.Unmarshal(raw, &rename); err != nil {
 					return err
 				}
-				if _, err := s.registry.store.db.ExecContext(c.Request().Context(), "UPDATE organizations SET name=?, updated_at=? WHERE id=?", strings.TrimSpace(rename.Name), formatTime(s.registry.now()), organization.ID); err != nil {
+				if _, err := s.registry.store.db.ExecContext(c.Request().Context(), "UPDATE platform.organizations SET name=$1, updated_at=$2 WHERE id=$3", strings.TrimSpace(rename.Name), formatTime(s.registry.now()), organization.ID); err != nil {
 					return err
 				}
 			}

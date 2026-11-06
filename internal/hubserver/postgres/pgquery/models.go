@@ -5,11 +5,11 @@
 package pgquery
 
 import (
-	"database/sql"
 	"encoding/json"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type AccessImport struct {
@@ -413,8 +413,8 @@ type ChangeVersion struct {
 	PayloadFormatVersion  int64
 	SourceObjectKey       *string
 	SourceSha256          *string
-	SourceBytes           sql.NullInt64
-	SourceContentBytes    sql.NullInt64
+	SourceBytes           pgtype.Int8
+	SourceContentBytes    pgtype.Int8
 	ImplementingSessionID int64
 	ImplementingMachineID string
 }
@@ -505,7 +505,7 @@ type Conversation struct {
 	QueryMetadataVersion   int32
 	ExecutionStatus        *string
 	ExecutionLeaseID       *string
-	ExecutionSettled       sql.NullBool
+	ExecutionSettled       pgtype.Bool
 	ReadAudience           string
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
@@ -615,9 +615,9 @@ type ConversationEvent struct {
 	SnapshotSubjectWorkItemID *string
 	SnapshotWorkItemID        *string
 	SnapshotLinkedAt          *time.Time
-	DeltaOffset               sql.NullInt64
-	DeltaBytes                sql.NullInt64
-	MessageRevision           sql.NullInt64
+	DeltaOffset               pgtype.Int8
+	DeltaBytes                pgtype.Int8
+	MessageRevision           pgtype.Int8
 }
 
 type ConversationHistoryImport struct {
@@ -660,8 +660,8 @@ type ConversationMessage struct {
 	Revision             int64
 	ActorKind            *string
 	ActorPrincipalID     *string
-	TextBytes            sql.NullInt64
-	StoredTextBytes      sql.NullInt64
+	TextBytes            pgtype.Int8
+	StoredTextBytes      pgtype.Int8
 	ConversionState      int16
 	QueryMetadataVersion int32
 	ToolName             *string
@@ -744,16 +744,16 @@ type ConversationUsage struct {
 	Output          int64
 	ReasoningOutput int64
 	Outcome         string
-	PriceID         sql.NullInt64
-	CostUsd         sql.NullFloat64
-	CacheSavingsUsd sql.NullFloat64
+	PriceID         pgtype.Int8
+	CostUsd         pgtype.Float8
+	CacheSavingsUsd pgtype.Float8
 }
 
 type CoreWorkEvent struct {
 	OrganizationID tracker.OrganizationID
 	SourceID       int64
 	IssueID        int64
-	FencingToken   sql.NullInt64
+	FencingToken   pgtype.Int8
 	MachineID      *string
 	SessionID      *string
 	RunID          *string
@@ -795,7 +795,7 @@ type CostImportRow struct {
 	Revision        int64
 	ProjectID       tracker.ProjectID
 	ReceivedAt      string
-	SourceVoided    sql.NullBool
+	SourceVoided    pgtype.Bool
 	BindingID       string
 	CustomerOwned   bool
 	ObjectKey       string
@@ -848,7 +848,7 @@ type CostSource struct {
 	Revision        int64
 	AttributionHash string
 	PayloadHash     string
-	AmountMicros    sql.NullInt64
+	AmountMicros    pgtype.Int8
 	Currency        string
 	Voided          bool
 }
@@ -977,7 +977,7 @@ type HealthDetectorTick struct {
 type HealthFinding struct {
 	OrganizationID       tracker.OrganizationID
 	ID                   string
-	Sequence             sql.NullInt64
+	Sequence             pgtype.Int8
 	Fingerprint          string
 	Signal               string
 	Class                string
@@ -1036,9 +1036,9 @@ type HostedAudit struct {
 	RecordedAtNs          int64
 	MutationObjectKey     *string
 	MutationSha256        *string
-	MutationBytes         sql.NullInt64
-	MutationContentBytes  sql.NullInt64
-	MutationFormatVersion sql.NullInt32
+	MutationBytes         pgtype.Int8
+	MutationContentBytes  pgtype.Int8
+	MutationFormatVersion pgtype.Int4
 	KeyID                 string
 	KeyKind               string
 	KeyOwner              string
@@ -1220,7 +1220,7 @@ type HostedPlan struct {
 	ID              string
 	Version         int64
 	Name            string
-	MonthlyUsdCents sql.NullInt64
+	MonthlyUsdCents pgtype.Int8
 	RuntimeID       string
 }
 
@@ -1237,7 +1237,7 @@ type HostedPlanAssignment struct {
 	BaseID                string
 	BaseVersion           int64
 	SubscriptionID        *string
-	SubscriptionVersion   sql.NullInt64
+	SubscriptionVersion   pgtype.Int8
 	SubscriptionExpiresAt *time.Time
 	Revision              int64
 }
@@ -1581,8 +1581,8 @@ type LinkedIssueSource struct {
 	BodyOwned            bool
 	SnapshotObjectKey    *string
 	SnapshotSha256       *string
-	SnapshotBytes        sql.NullInt64
-	SnapshotContentBytes sql.NullInt64
+	SnapshotBytes        pgtype.Int8
+	SnapshotContentBytes pgtype.Int8
 }
 
 type Machine struct {
@@ -1631,10 +1631,10 @@ type MonthlyBudgetPolicy struct {
 	Revision       int64
 	Enabled        bool
 	Mode           string
-	LunaMicros     sql.NullInt64
-	RunnerMicros   sql.NullInt64
-	SpriteMicros   sql.NullInt64
-	TotalMicros    sql.NullInt64
+	LunaMicros     pgtype.Int8
+	RunnerMicros   pgtype.Int8
+	SpriteMicros   pgtype.Int8
+	TotalMicros    pgtype.Int8
 	ActorID        string
 	UpdatedAt      time.Time
 }
@@ -1695,12 +1695,12 @@ type NativeBoardDelta struct {
 	WorkItemID           string
 	PreviousObjectKey    *string
 	PreviousSha256       *string
-	PreviousBytes        sql.NullInt64
-	PreviousContentBytes sql.NullInt64
+	PreviousBytes        pgtype.Int8
+	PreviousContentBytes pgtype.Int8
 	CurrentObjectKey     *string
 	CurrentSha256        *string
-	CurrentBytes         sql.NullInt64
-	CurrentContentBytes  sql.NullInt64
+	CurrentBytes         pgtype.Int8
+	CurrentContentBytes  pgtype.Int8
 }
 
 type NativeBoardDirty struct {
@@ -1740,14 +1740,14 @@ type NativeBoardItem struct {
 	ActorPrincipalID                string
 	IssueType                       string
 	VerificationState               string
-	Priority                        sql.NullInt32
+	Priority                        pgtype.Int4
 	CreatedAt                       time.Time
 	UpdatedAt                       time.Time
 	PayloadObjectKey                string
 	PayloadSHA256                   string
 	PayloadBytes                    int64
 	PayloadContentBytes             int64
-	IssueNumber                     sql.NullInt64
+	IssueNumber                     pgtype.Int8
 	WorkspaceCounted                bool
 	CardChangePrincipalID           *string
 	CardTitle                       *string
@@ -1758,14 +1758,14 @@ type NativeBoardItem struct {
 	CardReason                      *string
 	CardStatusLine                  *string
 	CardAttemptID                   *string
-	CardAttemptCount                sql.NullInt64
+	CardAttemptCount                pgtype.Int8
 	CardAttemptStatus               *string
 	CardAttemptRunnerID             *string
 	CardAttemptMachineID            *string
 	CardAttemptStartedAt            *time.Time
 	CardAttemptExpiresAt            *time.Time
 	CardExecutionID                 *string
-	CardExecutionRunning            sql.NullBool
+	CardExecutionRunning            pgtype.Bool
 	CardExecutionStage              *string
 	CardExecutionRunnerID           *string
 	CardExecutionStartedAt          *time.Time
@@ -1922,8 +1922,8 @@ type Organization struct {
 	ModelSelectionRevision     int64
 	ModelSelectionObjectKey    *string
 	ModelSelectionSha256       *string
-	ModelSelectionBytes        sql.NullInt64
-	ModelSelectionContentBytes sql.NullInt64
+	ModelSelectionBytes        pgtype.Int8
+	ModelSelectionContentBytes pgtype.Int8
 	SchedulingRevision         int64
 	LogoImageKey               string
 	LogoImageSha256            string
@@ -2049,7 +2049,7 @@ type PlatformArchiveStorageBinding struct {
 	Bucket              string
 	Prefix              string
 	CredentialReference string
-	Versioned           sql.NullBool
+	Versioned           pgtype.Bool
 }
 
 type PlatformAudit struct {
@@ -2059,10 +2059,10 @@ type PlatformAudit struct {
 	Event          string
 	EventObjectKey *string
 	RetryIdentity  *string
-	AmountUsd      sql.NullString
+	AmountUsd      pgtype.Numeric
 	Reason         *string
 	RecordedAt     time.Time
-	QueryLength    sql.NullInt64
+	QueryLength    pgtype.Int8
 }
 
 type PlatformAuthNotification struct {
@@ -2339,7 +2339,7 @@ type PolicyRevision struct {
 	PayloadSHA256         string
 	PayloadBytes          int64
 	PayloadContentBytes   int64
-	GateGithubPullRequest sql.NullBool
+	GateGithubPullRequest pgtype.Bool
 }
 
 type PolicyRevisionApproval struct {
@@ -2469,8 +2469,8 @@ type ProjectSetting struct {
 	CheckoutRepository        string
 	AgingEnabled              bool
 	DuplicateChallenge        bool
-	ArchiveCompletedAfterDays sql.NullInt64
-	ArchiveCancelledAfterDays sql.NullInt64
+	ArchiveCompletedAfterDays pgtype.Int8
+	ArchiveCancelledAfterDays pgtype.Int8
 	WorkflowKey               string
 	WorkflowSha256            string
 	WorkflowBytes             int64
@@ -2568,7 +2568,7 @@ type ProviderReservationUsageWindow struct {
 	LeaseID        string
 	Position       int32
 	Kind           string
-	PercentUsed    sql.NullFloat64
+	PercentUsed    pgtype.Float8
 	ResetAt        *time.Time
 	ObservedAt     *time.Time
 }
@@ -2580,7 +2580,7 @@ type QueueEntry struct {
 	Scope            string
 	State            string
 	Rank             string
-	PriorityOverride sql.NullInt32
+	PriorityOverride pgtype.Int4
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
@@ -2641,7 +2641,7 @@ type ReleaseDelivery struct {
 	SourceIssueID  string
 	SourceChangeID string
 	SourceMergeSha string
-	RepositoryID   sql.NullInt64
+	RepositoryID   pgtype.Int8
 	Repository     string
 	PrNumber       int64
 	HeadRef        string
@@ -2789,7 +2789,7 @@ type RunnerAttemptTokenUsage struct {
 	Model             string
 	ProjectID         tracker.ProjectID
 	IssueID           int64
-	UsageDay          time.Time
+	UsageDay          pgtype.Date
 	ObservedAt        time.Time
 	InputTokens       int64
 	CachedInputTokens int64
@@ -2923,10 +2923,10 @@ type RunnerIdentity struct {
 	AvailabilityTimezone       string
 	AvailabilityHardDeadline   string
 	CapacityConfigRevision     *string
-	CapacityConfigLocalLimit   sql.NullInt32
-	CapacityConfigClientLimit  sql.NullInt32
-	CapacityConfigRuntimeLimit sql.NullInt32
-	CapacityConfigManageable   sql.NullBool
+	CapacityConfigLocalLimit   pgtype.Int4
+	CapacityConfigClientLimit  pgtype.Int4
+	CapacityConfigRuntimeLimit pgtype.Int4
+	CapacityConfigManageable   pgtype.Bool
 	CapacityConfigConstraint   *string
 	CapacityConfigObservedAt   *time.Time
 	CapacityRequestRevision    string
@@ -2941,7 +2941,7 @@ type RunnerIdentityEvent struct {
 	ActorID        string
 	Kind           string
 	OccurredAt     time.Time
-	ImportSourceID sql.NullInt64
+	ImportSourceID pgtype.Int8
 }
 
 type RunnerIssueToken struct {
@@ -2971,7 +2971,7 @@ type RunnerLocalCheck struct {
 	CommitSigning        string
 	CheckoutMessage      string
 	CheckoutFix          string
-	RunnerSetupDeclared  sql.NullBool
+	RunnerSetupDeclared  pgtype.Bool
 	Setup                string
 	Checkout             string
 	ConfigurationMessage string
@@ -3040,7 +3040,7 @@ type RunnerProjectCapacityLimit struct {
 type RunnerProjectDailyToken struct {
 	OrganizationID    tracker.OrganizationID
 	ProjectID         tracker.ProjectID
-	UsageDay          time.Time
+	UsageDay          pgtype.Date
 	Model             string
 	InputTokens       int64
 	CachedInputTokens int64
@@ -3129,7 +3129,7 @@ type RunnerProjectObservation struct {
 	BuildSha256          *string
 	BuildOs              *string
 	BuildArchitecture    *string
-	BuildVerifiedRelease sql.NullBool
+	BuildVerifiedRelease pgtype.Bool
 	BuildObservedAt      *time.Time
 }
 
@@ -3198,7 +3198,7 @@ type RunnerProviderUsageWindow struct {
 	Backend        string
 	Position       int32
 	Kind           string
-	PercentUsed    sql.NullFloat64
+	PercentUsed    pgtype.Float8
 	ResetAt        *time.Time
 	ObservedAt     *time.Time
 }
@@ -3274,7 +3274,7 @@ type RunnerSession struct {
 
 type RunnerSessionHistory struct {
 	OrganizationID      tracker.OrganizationID
-	ID                  sql.NullInt64
+	ID                  pgtype.Int8
 	SessionID           int64
 	Revision            int64
 	MutationKey         string
@@ -3434,14 +3434,14 @@ type SearchDocument struct {
 	Placeholder             bool
 	AggregateObjectKey      *string
 	AggregateSha256         *string
-	AggregateBytes          sql.NullInt64
-	AggregateContentBytes   sql.NullInt64
-	ProgressGeneration      sql.NullInt64
+	AggregateBytes          pgtype.Int8
+	AggregateContentBytes   pgtype.Int8
+	ProgressGeneration      pgtype.Int8
 	ProgressAfterID         *string
 	ProgressObjectKey       *string
 	ProgressSha256          *string
-	ProgressBytes           sql.NullInt64
-	ProgressContentBytes    sql.NullInt64
+	ProgressBytes           pgtype.Int8
+	ProgressContentBytes    pgtype.Int8
 }
 
 type SearchPosting struct {
@@ -3580,7 +3580,7 @@ type TeamThreadUnreadSummary struct {
 	AfterThread            string
 	ThroughThread          string
 	PartialCount           int64
-	UnreadCount            sql.NullInt64
+	UnreadCount            pgtype.Int8
 	Turn                   int64
 }
 

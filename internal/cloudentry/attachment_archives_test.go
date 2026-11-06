@@ -81,9 +81,9 @@ func TestArchiveContentSecurityBounds(t *testing.T) {
 						t.Fatalf("same origin could not be reused: %v", err)
 					}
 				}
-				if _, err := f.service.registry.store.db.ExecContext(t.Context(), `INSERT INTO archive_storage_bindings
- SELECT organization_id,?,?,backend,upper(endpoint),region,bucket,prefix,credential_reference,versioned
- FROM archive_storage_bindings WHERE organization_id=? AND id=?`, "legacy_case", test.origins+3, organization, first.ID); err != nil {
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), `INSERT INTO platform.archive_storage_bindings
+ SELECT organization_id,$1,$2,backend,upper(endpoint),region,bucket,prefix,credential_reference,versioned
+ FROM platform.archive_storage_bindings WHERE organization_id=$3 AND id=$4`, "legacy_case", test.origins+3, organization, first.ID); err != nil {
 					t.Fatal(err)
 				}
 				anonymous := newBrowser(t, f.service.Handler())
@@ -118,8 +118,8 @@ func TestArchiveContentSecurityBounds(t *testing.T) {
 				if err != nil || !strings.HasPrefix(read.URL, first.Endpoint+"/") {
 					t.Fatalf("historical reference moved: %v", err)
 				}
-				if _, err := f.service.registry.store.db.ExecContext(t.Context(), `INSERT INTO archive_storage_bindings(organization_id,id,revision,backend,endpoint,region,bucket,prefix,credential_reference)
- VALUES(?,?,?,'s3',?,'region','private','','reference')`, organization, "legacy_overflow", test.origins+4, "https://overflow."+test.suffix); err != nil {
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), `INSERT INTO platform.archive_storage_bindings(organization_id,id,revision,backend,endpoint,region,bucket,prefix,credential_reference)
+ VALUES($1,$2,$3,'s3',$4,'region','private','','reference')`, organization, "legacy_overflow", test.origins+4, "https://overflow."+test.suffix); err != nil {
 					t.Fatal(err)
 				}
 				response = attachmentRequest(t, browser, http.MethodGet, "/organizations/"+organization+"/organization", nil, nil)
@@ -152,7 +152,7 @@ func TestArchiveBindingValidationIsolation(t *testing.T) {
 			alice := newBrowser(t, f.service.Handler())
 			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 			_, page := alice.get("/organizations/org_alpha/app/bootstrap")
-			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='deleting' WHERE id='org_beta'"); err != nil {
+			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET state='deleting' WHERE id='org_beta'"); err != nil {
 				t.Fatal(err)
 			}
 			checks := 0
@@ -166,7 +166,7 @@ func TestArchiveBindingValidationIsolation(t *testing.T) {
 				}
 				switch test.mutation {
 				case "deleting":
-					_, err := f.service.registry.store.db.ExecContext(r.Context(), "UPDATE organizations SET state='deleting' WHERE id='org_alpha'")
+					_, err := f.service.registry.store.db.ExecContext(r.Context(), "UPDATE platform.organizations SET state='deleting' WHERE id='org_alpha'")
 					return err
 				case "rebind":
 					_, err := f.service.saveArchiveBinding(r.Context(), attachment.StorageBinding{Organization: "org_alpha", Backend: "s3", Endpoint: "https://8.8.8.8", Region: "region", Bucket: "private", Prefix: "winner/", CredentialReference: "reference"}, 0)
@@ -184,7 +184,7 @@ func TestArchiveBindingValidationIsolation(t *testing.T) {
 				t.Fatalf("other organization deletion stalled: organization=%+v error=%v", organization, err)
 			}
 			var bindings int
-			if err := f.service.registry.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM archive_storage_bindings WHERE organization_id='org_alpha' AND backend='s3'").Scan(&bindings); err != nil || bindings != test.bindings {
+			if err := f.service.registry.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM platform.archive_storage_bindings WHERE organization_id='org_alpha' AND backend='s3'").Scan(&bindings); err != nil || bindings != test.bindings {
 				t.Fatalf("bindings=%d error=%v", bindings, err)
 			}
 			if test.mutation == "rebind" {
@@ -221,7 +221,7 @@ func TestArchiveDeletionIsolation(t *testing.T) {
 			key := "orgs/org_alpha/blobs/sha256/aa/object"
 			store.objects[key] = spacesObject{content: []byte("archive"), created: time.Now()}
 			if !test.ready {
-				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='deleting' WHERE id IN ('org_alpha','org_beta')"); err != nil {
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET state='deleting' WHERE id IN ('org_alpha','org_beta')"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -330,7 +330,7 @@ func TestArchiveUploadIsolation(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("upload did not reach storage")
 			}
-			if _, err := f.service.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state='deleting' WHERE id IN ('org_alpha','org_beta')"); err != nil {
+			if _, err := f.service.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state='deleting' WHERE id IN ('org_alpha','org_beta')"); err != nil {
 				t.Fatal(err)
 			}
 			alphaFinished, betaFinished := make(chan struct{}), make(chan struct{})
@@ -816,7 +816,7 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 	}
 	revoked = false
 	f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
-	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='deleting' WHERE id='org_alpha'"); err != nil {
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET state='deleting' WHERE id='org_alpha'"); err != nil {
 		t.Fatal(err)
 	}
 	revoked = true
@@ -828,7 +828,7 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 		t.Fatal("failed deletion lost pending state")
 	}
 	var pending int
-	if err := f.service.registry.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM archive_deletion_failures WHERE organization_id='org_alpha' AND error_code='credentials_or_endpoint_unavailable'").Scan(&pending); err != nil || pending != 2 {
+	if err := f.service.registry.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM platform.archive_deletion_failures WHERE organization_id='org_alpha' AND error_code='credentials_or_endpoint_unavailable'").Scan(&pending); err != nil || pending != 2 {
 		t.Fatalf("revoked receipts=%d error=%v", pending, err)
 	}
 	receipt := attachmentRequest(t, alice, http.MethodGet, "/api/cloud/organizations/org_alpha/archive-deletion", nil, nil)

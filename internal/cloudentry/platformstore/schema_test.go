@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/schemafingerprint"
@@ -65,7 +67,7 @@ func TestPlatformInventoryAndRoleSeparation(t *testing.T) {
 						t.Fatalf("table owner=%s", owner)
 					}
 					var count int
-					err := pool.QueryRowContext(t.Context(), `SELECT count(*) FROM platform.`+table).Scan(&count)
+					err := pool.QueryRow(t.Context(), `SELECT count(*) FROM platform.`+table).Scan(&count)
 					if group == postgres.RuntimeRoleName {
 						requireState(t, err, "42501")
 					} else if err != nil {
@@ -75,23 +77,23 @@ func TestPlatformInventoryAndRoleSeparation(t *testing.T) {
 						if strings.HasSuffix(statement, "SET ") {
 							continue
 						}
-						tx, err := pool.BeginTx(t.Context(), nil)
+						tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
 						if err != nil {
 							t.Fatal(err)
 						}
-						_, err = tx.ExecContext(t.Context(), statement)
-						tx.Rollback()
+						_, err = tx.Exec(t.Context(), statement)
+						tx.Rollback(t.Context())
 						if group == postgres.RuntimeRoleName {
 							requireState(t, err, "42501")
 						}
 					}
 					if group == postgres.PlatformRoleName {
-						tx, err := pool.BeginTx(t.Context(), nil)
+						tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
 						if err != nil {
 							t.Fatal(err)
 						}
-						_, err = tx.ExecContext(t.Context(), `ALTER TABLE platform.`+table+` ADD COLUMN example text`)
-						tx.Rollback()
+						_, err = tx.Exec(t.Context(), `ALTER TABLE platform.`+table+` ADD COLUMN example text`)
+						tx.Rollback(t.Context())
 						requireState(t, err, "42501")
 					}
 				})

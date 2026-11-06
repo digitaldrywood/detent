@@ -10,7 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -19,16 +20,27 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func repositoryFor(t *testing.T, admin *sql.DB, config postgres.PoolConfig) (*postgres.Repository, *sql.DB) {
+func repositoryFor(t *testing.T, admin *sql.DB, config postgres.PoolConfig) (*postgres.Repository, *pgxpool.Pool) {
 	t.Helper()
 	var database string
 	if err := admin.QueryRowContext(t.Context(), `SELECT current_database()`).Scan(&database); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pq.QuoteIdentifier(database)+fmt.Sprintf(" CONNECTION LIMIT %d", config.MaxConnections+1)); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{database}.Sanitize()+fmt.Sprintf(" CONNECTION LIMIT %d", config.MaxConnections+1)); err != nil {
 		t.Fatal(err)
 	}
 	pool := rolePool(t, admin, "detent_runtime_v2", "")
+	if int(pool.Config().MaxConns) != config.MaxConnections {
+		native := pool.Config()
+		pool.Close()
+		native.MaxConns = int32(config.MaxConnections)
+		var err error
+		pool, err = pgxpool.NewWithConfig(t.Context(), native)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(pool.Close)
+	}
 	repository, err := postgres.NewRepository(t.Context(), pool, config)
 	if err != nil {
 		t.Fatal(err)

@@ -94,7 +94,7 @@ func supportAuditEvent(event, reason string) string {
 
 func (a *authStore) consumeSupportTransaction(ctx context.Context, hash string) (loginTransaction, error) {
 	var id string
-	if err := a.store.reader.QueryRowContext(ctx, "SELECT transaction_id FROM transactions WHERE token_hash=? AND support_actor<>''", hash).Scan(&id); err != nil {
+	if err := a.store.reader.QueryRowContext(ctx, "SELECT transaction_id FROM platform.transactions WHERE token_hash=$1 AND support_actor<>''", hash).Scan(&id); err != nil {
 		return loginTransaction{}, errNoSession
 	}
 	return a.postgresConsumeLogin(ctx, hash, id)

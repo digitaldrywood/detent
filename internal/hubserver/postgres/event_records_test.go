@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -358,12 +358,12 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 	pool := rolePool(t, admin, "detent_runtime_v2", "")
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {
-			tx, err := pool.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+			tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{AccessMode: pgx.ReadOnly})
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer tx.Rollback()
-			if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, org); err != nil {
+			defer tx.Rollback(t.Context())
+			if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
 				t.Fatal(err)
 			}
 			probe := &searchPlanProbe{DBTX: tx}
@@ -389,7 +389,7 @@ func TestLatestRunEventsBatchBoundsHistoryVisits(t *testing.T) {
 				seen[row.AttemptID] = true
 			}
 			var raw []byte
-			if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
+			if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
 				t.Fatal(err)
 			}
 			var plan []struct{ Plan searchPlanNode }
@@ -553,12 +553,12 @@ func TestLandingReceiptIsImmutableAndTenantScoped(t *testing.T) {
 	runtime := runtimeFor(t, pool, pool)
 	for _, statement := range []string{"UPDATE change_landing_receipts SET merge_sha=merge_sha", "DELETE FROM change_landing_receipts"} {
 		tx := tenantTx(t, runtime, pool, "org_first")
-		if _, err := tx.ExecContext(t.Context(), statement); err == nil {
+		if _, err := tx.Exec(t.Context(), statement); err == nil {
 			t.Fatalf("immutable landing receipt accepted %q", statement)
 		} else {
 			requireSQLState(t, err, "23514")
 		}
-		if err := tx.Rollback(); err != nil {
+		if err := tx.Rollback(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -697,9 +697,9 @@ func TestEventChangeImmutableHistory(t *testing.T) {
 				if op == "update" {
 					statement = "UPDATE " + table + " SET payload_object_key=payload_object_key"
 				}
-				_, err := tx.ExecContext(t.Context(), statement)
+				_, err := tx.Exec(t.Context(), statement)
 				requireSQLState(t, err, "23514")
-				if err := tx.Rollback(); err != nil {
+				if err := tx.Rollback(t.Context()); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -1112,12 +1112,12 @@ func TestChangeSummaryVisitsCurrentActorsInsteadOfReviewHistory(t *testing.T) {
 				}
 				for _, actor := range []string{"", excluded} {
 					t.Run(fmt.Sprintf("%s/analyzed=%v/actors=%d/exclude=%s", org, analyzed, actors, actor), func(t *testing.T) {
-						tx, err := pool.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+						tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{AccessMode: pgx.ReadOnly})
 						if err != nil {
 							t.Fatal(err)
 						}
-						defer tx.Rollback()
-						if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, org); err != nil {
+						defer tx.Rollback(t.Context())
+						if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
 							t.Fatal(err)
 						}
 						probe := &searchPlanProbe{DBTX: tx}
@@ -1150,7 +1150,7 @@ func TestChangeSummaryVisitsCurrentActorsInsteadOfReviewHistory(t *testing.T) {
 							args []any
 						}{{headSQL, headArgs}, {probe.statement, append([]any(nil), probe.args...)}} {
 							var raw []byte
-							if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement.sql, statement.args...).Scan(&raw); err != nil {
+							if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement.sql, statement.args...).Scan(&raw); err != nil {
 								t.Fatal(err)
 							}
 							var plans []struct{ Plan searchPlanNode }
@@ -1227,12 +1227,12 @@ $6::timestamptz,$7,$8,1,1,$5,($5='security_audit' AND n>20000),true FROM generat
 				{through: 60001, want: []int64{30001, 60001}}, {through: 90001, want: []int64{30001, 60001, 80001}}, {through: 90001, missing: true},
 			} {
 				t.Run(fmt.Sprintf("%s/analyzed=%t/through=%d/missing=%t", org, analyzed, test.through, test.missing), func(t *testing.T) {
-					tx, err := pool.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+					tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{AccessMode: pgx.ReadOnly})
 					if err != nil {
 						t.Fatal(err)
 					}
-					defer tx.Rollback()
-					if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, org); err != nil {
+					defer tx.Rollback(t.Context())
+					if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
 						t.Fatal(err)
 					}
 					probe := &searchPlanProbe{DBTX: tx}
@@ -1245,7 +1245,7 @@ $6::timestamptz,$7,$8,1,1,$5,($5='security_audit' AND n>20000),true FROM generat
 						t.Fatalf("machine prefix=%v want=%v error=%v", got, test.want, err)
 					}
 					var raw []byte
-					if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
+					if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
 						t.Fatal(err)
 					}
 					var plans []struct{ Plan searchPlanNode }
@@ -1318,12 +1318,12 @@ func TestCurrentMachineWaitSupersedesAnAlreadyCertifiedPass(t *testing.T) {
 				}
 				assertHead := func(sequence int64, decision string) {
 					t.Helper()
-					tx, err := pool.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+					tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{AccessMode: pgx.ReadOnly})
 					if err != nil {
 						t.Fatal(err)
 					}
-					defer tx.Rollback()
-					if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, org); err != nil {
+					defer tx.Rollback(t.Context())
+					if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
 						t.Fatal(err)
 					}
 					sequences, err := pgquery.New(tx).RecordCurrentChangeReviewSequences(t.Context(), pgquery.RecordCurrentChangeReviewSequencesParams{OrganizationID: org, ChangeID: f.change.ID, VersionID: f.version.ID, ReviewingActor: "example-owner", Through: reviewNumber + 1})
@@ -1631,7 +1631,7 @@ func TestMachineReviewMigrationRejectsAnIndexThatIncludesLandingRows(t *testing.
 		t.Fatal(err)
 	}
 	_, err = provider.ApplyVersion(t.Context(), 20261104114549, true)
-	var refused *pq.Error
+	var refused *pgconn.PgError
 	if !errors.As(err, &refused) || refused.Code != "P0001" {
 		t.Fatalf("wrong machine review predicate was accepted: %v", err)
 	}
@@ -1672,7 +1672,7 @@ func TestCurrentReviewMigrationPreservesSourceIdentityOnRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = provider.ApplyVersion(t.Context(), 20261104090048, false)
-	var nullSemantics *pq.Error
+	var nullSemantics *pgconn.PgError
 	if !errors.As(err, &nullSemantics) || nullSemantics.Code != "P0001" {
 		t.Fatalf("NULLS NOT DISTINCT restore index was not refused: %v", err)
 	}
@@ -1687,7 +1687,7 @@ func TestCurrentReviewMigrationPreservesSourceIdentityOnRetry(t *testing.T) {
 		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 			_, err := admin.ExecContext(t.Context(), `INSERT INTO change_evidence(organization_id,change_id,sequence,version_id,kind,source_key,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
     SELECT organization_id,change_id,$3,version_id,kind,source_key,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND sequence=1`, org, "change_migration", int64(1000+phase*10))
-			var duplicate *pq.Error
+			var duplicate *pgconn.PgError
 			if !errors.As(err, &duplicate) || duplicate.Code != "23505" {
 				t.Fatalf("nonnull source identity phase=%d org=%s error=%v", phase, org, err)
 			}
@@ -1704,7 +1704,7 @@ func TestCurrentReviewMigrationPreservesSourceIdentityOnRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = provider.ApplyVersion(t.Context(), 20261104090048, true)
-	var refused *pq.Error
+	var refused *pgconn.PgError
 	if !errors.As(err, &refused) || refused.Code != "P0001" {
 		t.Fatalf("wrong identity index was not refused by catalog validation: %v", err)
 	}

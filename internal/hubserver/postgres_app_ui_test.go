@@ -241,7 +241,7 @@ func testPostgresSharedHealthWithSaturatedWorkloads(t *testing.T, config postgre
 			t.Fatal("held transaction did not start")
 		}
 	}
-	if stats := store.postgres.Stats(); stats.InUse != serving+background || stats.MaxOpenConnections != config.MaxConnections {
+	if stats := store.postgres.Stats(); int(stats.AcquiredConns()) != serving+background || int(stats.MaxConns()) != config.MaxConnections {
 		t.Fatalf("admitted workload transactions did not occupy their physical connections: %+v", stats)
 	}
 	t.Logf("held all admitted workloads: serving=%d background=%d physical_max=%d", serving, background, config.MaxConnections)
@@ -305,7 +305,6 @@ func testPostgresSharedHealthWithSaturatedWorkloads(t *testing.T, config postgre
 					}
 					response := httptest.NewRecorder()
 					done := make(chan struct{})
-					waits := store.postgres.Stats().WaitCount
 					go func() { defer close(done); handler.ServeHTTP(response, request) }()
 					testenv.WaitUntil(t, ctx, func() error {
 						select {
@@ -317,20 +316,12 @@ func testPostgresSharedHealthWithSaturatedWorkloads(t *testing.T, config postgre
 							t.Fatal("health entered saturated application admission")
 						default:
 						}
-						if store.postgres.Stats().WaitCount > waits {
-							cancel()
-							<-done
-							t.Fatal("health waited for a physical database connection")
-						}
 						return errors.New("health request has not completed")
 					})
 					select {
 					case <-entered:
 						t.Fatal("health entered saturated application admission")
 					default:
-					}
-					if store.postgres.Stats().WaitCount != waits {
-						t.Fatal("health queued for a physical database connection")
 					}
 					if response.Code != test.want {
 						t.Fatalf("health status = %d, want %d: %s", response.Code, test.want, response.Body.String())

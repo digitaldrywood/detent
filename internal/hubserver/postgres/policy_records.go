@@ -2,9 +2,11 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -26,7 +28,7 @@ func projectPolicyRevisionRecord(row pgquery.PolicyGetProjectRevisionRow) policy
 	return projectPolicyFields(row.OrganizationID, row.ProjectID, row.PolicyID, row.ApprovedBy, row.ApprovedAt, row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes, row.GateGithubPullRequest)
 }
 
-func projectPolicyFields(organization tracker.OrganizationID, project tracker.ProjectID, policyID, approvedBy string, approvedAt time.Time, objectKey, sha256 string, bytes, contentBytes int64, gate sql.NullBool) policystore.Revision {
+func projectPolicyFields(organization tracker.OrganizationID, project tracker.ProjectID, policyID, approvedBy string, approvedAt time.Time, objectKey, sha256 string, bytes, contentBytes int64, gate pgtype.Bool) policystore.Revision {
 	record := policystore.Revision{OrganizationID: organization, ProjectID: project, PolicyID: policyID, ApprovedBy: approvedBy, ApprovedAt: approvedAt, PayloadObjectKey: objectKey, PayloadSHA256: sha256, PayloadBytes: bytes, PayloadContentBytes: contentBytes}
 	if gate.Valid {
 		record.GitHubPullRequest = new(gate.Bool)
@@ -194,9 +196,9 @@ func (s *session) RecordProjectPolicyObservation(ctx context.Context, observatio
 	revision := observation.Revision
 	revision.ApprovedBy = "runner-report"
 	revision.ApprovedAt = recordTime(observation.ObservedAt)
-	gate := sql.NullBool{}
+	gate := pgtype.Bool{}
 	if revision.GitHubPullRequest != nil {
-		gate = sql.NullBool{Bool: *revision.GitHubPullRequest, Valid: true}
+		gate = pgtype.Bool{Bool: *revision.GitHubPullRequest, Valid: true}
 	}
 	inserted, err := s.queries.PolicyInsertProjectRevision(ctx, pgquery.PolicyInsertProjectRevisionParams{
 		OrganizationID:        revision.OrganizationID,
@@ -210,7 +212,7 @@ func (s *session) RecordProjectPolicyObservation(ctx context.Context, observatio
 		PayloadBytes:          revision.PayloadBytes,
 		PayloadContentBytes:   revision.PayloadContentBytes,
 	})
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		current, readErr := s.queries.PolicyGetProjectRevision(ctx, pgquery.PolicyGetProjectRevisionParams{OrganizationID: revision.OrganizationID, ProjectID: revision.ProjectID, PolicyID: revision.PolicyID})
 		if readErr != nil {
 			return false, mapError(ctx, readErr)
@@ -249,7 +251,7 @@ func (s *session) RecordProjectPolicyObservation(ctx context.Context, observatio
 
 func (s *session) LeasePolicy(ctx context.Context, lease tracker.LeaseID) (policystore.LeasePolicy, error) {
 	var row policystore.LeasePolicy
-	err := s.db.QueryRowContext(ctx, `SELECT organization_id,project_id,lease_id,policy_id,bound_at
+	err := s.db.QueryRow(ctx, `SELECT organization_id,project_id,lease_id,policy_id,bound_at
  FROM lease_policy_bindings WHERE organization_id=$1 AND lease_id=$2`, s.organization, lease).
 		Scan(&row.OrganizationID, &row.ProjectID, &row.LeaseID, &row.PolicyID, &row.BoundAt)
 	if err != nil {
@@ -266,7 +268,7 @@ func (s *session) BindLeasePolicy(ctx context.Context, row policystore.LeasePoli
 		return eventstore.ErrInvalidRecord
 	}
 	row.BoundAt = recordTime(row.BoundAt)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO lease_policy_bindings (organization_id,project_id,lease_id,policy_id,bound_at)
+	_, err := s.db.Exec(ctx, `INSERT INTO lease_policy_bindings (organization_id,project_id,lease_id,policy_id,bound_at)
  VALUES ($1,$2,$3,$4,$5) ON CONFLICT (organization_id,lease_id) DO NOTHING`,
 		row.OrganizationID, row.ProjectID, row.LeaseID, row.PolicyID, row.BoundAt)
 	if err != nil {
@@ -297,7 +299,7 @@ func (s *session) ApproveProjectPolicy(ctx context.Context, row policystore.Revi
 		OrganizationID:        row.OrganizationID,
 		ProjectID:             row.ProjectID,
 		PolicyID:              row.PolicyID,
-		GateGithubPullRequest: sql.NullBool{Bool: *row.GitHubPullRequest, Valid: true},
+		GateGithubPullRequest: pgtype.Bool{Bool: *row.GitHubPullRequest, Valid: true},
 		ApprovedBy:            row.ApprovedBy,
 		ApprovedAt:            recordTime(row.ApprovedAt),
 		PayloadObjectKey:      row.PayloadObjectKey,
@@ -305,7 +307,7 @@ func (s *session) ApproveProjectPolicy(ctx context.Context, row policystore.Revi
 		PayloadBytes:          row.PayloadBytes,
 		PayloadContentBytes:   row.PayloadContentBytes,
 	})
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		current, readErr := s.queries.PolicyGetProjectRevision(ctx, pgquery.PolicyGetProjectRevisionParams{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, PolicyID: row.PolicyID})
 		if readErr != nil {
 			return mapError(ctx, readErr)
@@ -356,7 +358,7 @@ func (s *session) ImportProjectPolicyRevision(ctx context.Context, row policysto
 		OrganizationID:        row.OrganizationID,
 		ProjectID:             row.ProjectID,
 		PolicyID:              row.PolicyID,
-		GateGithubPullRequest: sql.NullBool{Bool: *row.GitHubPullRequest, Valid: true},
+		GateGithubPullRequest: pgtype.Bool{Bool: *row.GitHubPullRequest, Valid: true},
 		ApprovedBy:            row.ApprovedBy,
 		ApprovedAt:            row.ApprovedAt,
 		PayloadObjectKey:      row.PayloadObjectKey,
@@ -364,7 +366,7 @@ func (s *session) ImportProjectPolicyRevision(ctx context.Context, row policysto
 		PayloadBytes:          row.PayloadBytes,
 		PayloadContentBytes:   row.PayloadContentBytes,
 	})
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		current, readErr := s.queries.PolicyGetProjectRevision(ctx, pgquery.PolicyGetProjectRevisionParams{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, PolicyID: row.PolicyID})
 		if readErr != nil {
 			return mapError(ctx, readErr)
@@ -374,7 +376,7 @@ func (s *session) ImportProjectPolicyRevision(ctx context.Context, row policysto
 		}
 		var approvedBy string
 		var approvedAt time.Time
-		if readErr := s.db.QueryRowContext(ctx, `SELECT approved_by,approved_at FROM policy_revisions WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3`, row.OrganizationID, row.ProjectID, row.PolicyID).Scan(&approvedBy, &approvedAt); readErr != nil {
+		if readErr := s.db.QueryRow(ctx, `SELECT approved_by,approved_at FROM policy_revisions WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3`, row.OrganizationID, row.ProjectID, row.PolicyID).Scan(&approvedBy, &approvedAt); readErr != nil {
 			return mapError(ctx, readErr)
 		}
 		if approvedBy != row.ApprovedBy || !approvedAt.Equal(row.ApprovedAt) {
@@ -387,9 +389,9 @@ func (s *session) ImportProjectPolicyRevision(ctx context.Context, row policysto
 	}
 	var approvedBy string
 	var approvedAt time.Time
-	err = s.db.QueryRowContext(ctx, `SELECT approved_by,approved_at FROM policy_revision_approvals WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3`, row.OrganizationID, row.ProjectID, row.PolicyID).Scan(&approvedBy, &approvedAt)
+	err = s.db.QueryRow(ctx, `SELECT approved_by,approved_at FROM policy_revision_approvals WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3`, row.OrganizationID, row.ProjectID, row.PolicyID).Scan(&approvedBy, &approvedAt)
 	if !approved {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
@@ -397,7 +399,7 @@ func (s *session) ImportProjectPolicyRevision(ctx context.Context, row policysto
 		}
 		return corestore.ErrUniqueViolation
 	}
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		if err := s.queries.PolicyInsertRevisionApproval(ctx, pgquery.PolicyInsertRevisionApprovalParams{
 			OrganizationID: row.OrganizationID,
 			ProjectID:      row.ProjectID,
@@ -424,13 +426,13 @@ func (s *session) ImportProjectPolicyCurrent(ctx context.Context, project tracke
 	if err := s.LockWorkItemProject(ctx, project); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO project_policies (organization_id,project_id,policy_id)
+	if _, err := s.db.Exec(ctx, `INSERT INTO project_policies (organization_id,project_id,policy_id)
 SELECT $1,$2,$3 WHERE EXISTS (SELECT 1 FROM policy_revisions WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3)
 ON CONFLICT (organization_id,project_id) DO NOTHING`, s.organization, project, policyID); err != nil {
 		return mapError(ctx, err)
 	}
 	var current string
-	if err := s.db.QueryRowContext(ctx, `SELECT policy_id FROM project_policies WHERE organization_id=$1 AND project_id=$2`, s.organization, project).Scan(&current); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT policy_id FROM project_policies WHERE organization_id=$1 AND project_id=$2`, s.organization, project).Scan(&current); err != nil {
 		return mapError(ctx, err)
 	}
 	if current != policyID {
@@ -490,7 +492,7 @@ func (s *session) SetReviewPolicy(ctx context.Context, row eventstore.ReviewPoli
 	if err == nil && !sameReviewPolicy(reviewPolicyRecord(inserted), row) {
 		return corestore.ErrUniqueViolation
 	}
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		current, readErr := s.queries.PolicyGetReviewRevision(ctx, pgquery.PolicyGetReviewRevisionParams{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ReviewPolicyID: row.ReviewPolicyID})
 		if readErr != nil {
 			return mapError(ctx, readErr)

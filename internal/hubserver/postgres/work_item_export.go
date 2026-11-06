@@ -2,7 +2,8 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
+
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -14,10 +15,10 @@ func (s *session) ExportWorkItems(ctx context.Context, selection corestore.WorkI
 	}
 	params := pgquery.CountExportWorkItemsParams{OrganizationID: s.organization, ProjectID: selection.ProjectID, States: append([]string{}, selection.States...), Labels: append([]string{}, selection.Labels...), Reporter: selection.Reporter, PrincipalID: selection.PrincipalID}
 	if selection.Archived != nil {
-		params.Archived = sql.NullBool{Bool: *selection.Archived, Valid: true}
+		params.Archived = pgtype.Bool{Bool: *selection.Archived, Valid: true}
 	}
 	if selection.Terminal != nil {
-		params.Terminal = sql.NullBool{Bool: *selection.Terminal, Valid: true}
+		params.Terminal = pgtype.Bool{Bool: *selection.Terminal, Valid: true}
 	}
 	var total int64
 	if selection.IncludeTotal {

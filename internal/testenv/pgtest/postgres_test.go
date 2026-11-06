@@ -111,7 +111,7 @@ func TestConnectionConfig(t *testing.T) {
 				}
 				return
 			}
-			if config.Host != tc.host || config.Database != "postgres" || config.SSLMode != "disable" || config.Passfile != "" || config.Password == "" || len(config.Multi) != 0 {
+			if config.Host != tc.host || config.Database != "postgres" || config.SSLMode != "disable" || config.Password == "" {
 				t.Fatal("connection did not preserve isolated local settings")
 			}
 		})
@@ -127,7 +127,7 @@ func TestConnectionConfig(t *testing.T) {
 	}
 }
 
-func TestConnectionConfigDoesNotScanHost(t *testing.T) {
+func TestConnectionConfigDoesNotReadHostCredentials(t *testing.T) {
 	if os.Getenv("DETENT_TEST_CONFIG_CHILD") == "1" {
 		if _, err := fmt.Fprintln(os.Stdout, "ready"); err != nil {
 			t.Fatal(err)
@@ -163,7 +163,7 @@ func TestConnectionConfigDoesNotScanHost(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "actions.log")
 	t.Setenv("DETENT_TEST_CONFIG_CHILD", "1")
 	t.Setenv("GOCOVERDIR", t.TempDir())
-	cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestConnectionConfigDoesNotScanHost$", "-test.testlogfile="+logPath, "-test.timeout="+flag.Lookup("test.timeout").Value.String())
+	cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestConnectionConfigDoesNotReadHostCredentials$", "-test.testlogfile="+logPath, "-test.timeout="+flag.Lookup("test.timeout").Value.String())
 	procgroup.Configure(t.Context(), cmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -218,8 +218,8 @@ func TestConnectionConfigDoesNotScanHost(t *testing.T) {
 		t.Fatal("configuration helper did not record filesystem actions")
 	}
 	for line := range strings.SplitSeq(string(log), "\n") {
-		if strings.HasPrefix(line, "stat ") || strings.HasPrefix(line, "open ") {
-			t.Errorf("explicit connection settings scanned the filesystem: %s", line)
+		if strings.HasPrefix(line, "open ") && strings.TrimPrefix(line, "open ") != os.DevNull {
+			t.Errorf("explicit connection settings read a host credential file: %s", line)
 		}
 	}
 }

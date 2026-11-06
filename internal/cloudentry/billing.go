@@ -74,7 +74,7 @@ func (s *Service) stripeWebhook(c echo.Context) error {
 		status = "ignored"
 	}
 	now := formatTime(s.config.now())
-	inserted, err := s.registry.store.db.ExecContext(c.Request().Context(), "INSERT INTO billing_events(event_id,mode,event_type,customer_id,charge_id,status,received_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(event_id) DO NOTHING",
+	inserted, err := s.registry.store.db.ExecContext(c.Request().Context(), "INSERT INTO platform.billing_events(event_id,mode,event_type,customer_id,charge_id,status,received_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(event_id) DO NOTHING",
 		event.ID, config.Mode, event.Type, event.Customer, event.Charge, status, now, now)
 	if err != nil {
 		return c.NoContent(http.StatusServiceUnavailable)
@@ -88,7 +88,7 @@ func (s *Service) stripeWebhook(c echo.Context) error {
 func (s *Service) billingOrganization(ctx context.Context, customer string) (Organization, error) {
 	config := s.config.Billing
 	var id string
-	err := s.registry.store.db.QueryRowContext(ctx, "SELECT organization_id FROM billing_customers WHERE mode = ? AND account_id = ? AND customer_id = ?", config.Mode, config.AccountID, customer).Scan(&id)
+	err := s.registry.store.db.QueryRowContext(ctx, "SELECT organization_id FROM platform.billing_customers WHERE mode = $1 AND account_id = $2 AND customer_id = $3", config.Mode, config.AccountID, customer).Scan(&id)
 	if err == nil {
 		return s.registry.Organization(ctx, id)
 	}
@@ -110,7 +110,7 @@ func (s *Service) billingOrganization(ctx context.Context, customer string) (Org
 	if !binding.Enabled || binding.CustomerID != customer || binding.AccountID != config.AccountID || binding.Mode != config.Mode {
 		return Organization{}, errQuarantine
 	}
-	if _, err := s.registry.store.db.ExecContext(ctx, "INSERT INTO billing_customers(mode,account_id,customer_id,organization_id,created_at) VALUES(?,?,?,?,?)", config.Mode, config.AccountID, customer, organization.ID, formatTime(s.config.now())); err != nil {
+	if _, err := s.registry.store.db.ExecContext(ctx, "INSERT INTO platform.billing_customers(mode,account_id,customer_id,organization_id,created_at) VALUES($1,$2,$3,$4,$5)", config.Mode, config.AccountID, customer, organization.ID, formatTime(s.config.now())); err != nil {
 		return Organization{}, errQuarantine
 	}
 	return organization, nil
@@ -123,7 +123,7 @@ func (s *Service) deliverBillingEvent(parent context.Context, id string) {
 	defer cancel()
 	var eventType, customer, charge string
 	var attempts int
-	if err := s.registry.store.db.QueryRowContext(ctx, "SELECT event_type,customer_id,charge_id,attempts FROM billing_events WHERE event_id = ? AND status = 'pending'", id).Scan(&eventType, &customer, &charge, &attempts); err != nil {
+	if err := s.registry.store.db.QueryRowContext(ctx, "SELECT event_type,customer_id,charge_id,attempts FROM platform.billing_events WHERE event_id = $1 AND status = 'pending'", id).Scan(&eventType, &customer, &charge, &attempts); err != nil {
 		return
 	}
 	status, organizationID := "pending", ""
@@ -132,7 +132,7 @@ func (s *Service) deliverBillingEvent(parent context.Context, id string) {
 	if customer == "" {
 		customer, err = s.config.Billing.Provider.ChargeCustomer(ctx, charge)
 		if err == nil {
-			_, err = s.registry.store.db.ExecContext(ctx, "UPDATE billing_events SET customer_id = ? WHERE event_id = ?", customer, id)
+			_, err = s.registry.store.db.ExecContext(ctx, "UPDATE platform.billing_events SET customer_id = $1 WHERE event_id = $2", customer, id)
 		}
 	}
 	if err == nil {
@@ -157,7 +157,7 @@ func (s *Service) deliverBillingEvent(parent context.Context, id string) {
 	if status == "quarantined" {
 		s.config.Logger.Warn("billing event quarantined", "event", id)
 	}
-	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE billing_events SET status = ?, organization_id = ?, attempts = attempts + 1, updated_at = ? WHERE event_id = ? AND status = 'pending'", status, organizationID, formatTime(s.config.now()), id); err != nil {
+	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE platform.billing_events SET status = $1, organization_id = $2, attempts = attempts + 1, updated_at = $3 WHERE event_id = $4 AND status = 'pending'", status, organizationID, formatTime(s.config.now()), id); err != nil {
 		s.config.Logger.Warn("billing event state could not be recorded", "event", id)
 	}
 }
@@ -176,7 +176,7 @@ func (s *Service) retryBillingEvents(ctx context.Context) {
 }
 
 func (s *Service) pendingBillingEvents(ctx context.Context) (_ []string, resultErr error) {
-	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT event_id FROM billing_events WHERE status = 'pending' ORDER BY received_at LIMIT 50")
+	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT event_id FROM platform.billing_events WHERE status = 'pending' ORDER BY received_at LIMIT 50")
 	if err != nil {
 		return nil, err
 	}

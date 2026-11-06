@@ -7,10 +7,10 @@ package pgquery
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const addBillingCreditBalance = `-- name: AddBillingCreditBalance :execrows
@@ -24,11 +24,11 @@ type AddBillingCreditBalanceParams struct {
 }
 
 func (q *Queries) AddBillingCreditBalance(ctx context.Context, arg AddBillingCreditBalanceParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, addBillingCreditBalance, arg.OrganizationID, arg.Mode, arg.BalanceMicros)
+	result, err := q.db.Exec(ctx, addBillingCreditBalance, arg.OrganizationID, arg.Mode, arg.BalanceMicros)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const addBillingUsage = `-- name: AddBillingUsage :exec
@@ -44,7 +44,7 @@ type AddBillingUsageParams struct {
 }
 
 func (q *Queries) AddBillingUsage(ctx context.Context, arg AddBillingUsageParams) error {
-	_, err := q.db.ExecContext(ctx, addBillingUsage,
+	_, err := q.db.Exec(ctx, addBillingUsage,
 		arg.OrganizationID,
 		arg.WindowStart,
 		arg.Metric,
@@ -63,7 +63,7 @@ type BillingCreditAccountParams struct {
 }
 
 func (q *Queries) BillingCreditAccount(ctx context.Context, arg BillingCreditAccountParams) (AiCreditAccount, error) {
-	row := q.db.QueryRowContext(ctx, billingCreditAccount, arg.OrganizationID, arg.Mode)
+	row := q.db.QueryRow(ctx, billingCreditAccount, arg.OrganizationID, arg.Mode)
 	var i AiCreditAccount
 	err := row.Scan(
 		&i.OrganizationID,
@@ -90,7 +90,7 @@ type BillingCreditPeriodParams struct {
 }
 
 func (q *Queries) BillingCreditPeriod(ctx context.Context, arg BillingCreditPeriodParams) (AiCreditPeriod, error) {
-	row := q.db.QueryRowContext(ctx, billingCreditPeriod,
+	row := q.db.QueryRow(ctx, billingCreditPeriod,
 		arg.OrganizationID,
 		arg.Mode,
 		arg.PeriodStart,
@@ -118,7 +118,7 @@ type BillingCreditPurchaseParams struct {
 }
 
 func (q *Queries) BillingCreditPurchase(ctx context.Context, arg BillingCreditPurchaseParams) (AiCreditPurchase, error) {
-	row := q.db.QueryRowContext(ctx, billingCreditPurchase, arg.OrganizationID, arg.PurchaseKey)
+	row := q.db.QueryRow(ctx, billingCreditPurchase, arg.OrganizationID, arg.PurchaseKey)
 	var i AiCreditPurchase
 	err := row.Scan(
 		&i.OrganizationID,
@@ -162,19 +162,19 @@ type BillingCreditTransactionBySourceRow struct {
 	Actor                string
 	RecordedAt           time.Time
 	BindingID            *string
-	CustomerOwned        sql.NullBool
+	CustomerOwned        pgtype.Bool
 	ObjectKey            *string
 	Sha256               *string
-	CompressedBytes      sql.NullInt64
-	ContentBytes         sql.NullInt64
+	CompressedBytes      pgtype.Int8
+	ContentBytes         pgtype.Int8
 	Codec                *string
-	FormatVersion        sql.NullInt32
+	FormatVersion        pgtype.Int4
 	ReferenceKind        *string
 	Retention            *string
 }
 
 func (q *Queries) BillingCreditTransactionBySource(ctx context.Context, arg BillingCreditTransactionBySourceParams) (BillingCreditTransactionBySourceRow, error) {
-	row := q.db.QueryRowContext(ctx, billingCreditTransactionBySource, arg.OrganizationID, arg.Mode, arg.Source)
+	row := q.db.QueryRow(ctx, billingCreditTransactionBySource, arg.OrganizationID, arg.Mode, arg.Source)
 	var i BillingCreditTransactionBySourceRow
 	err := row.Scan(
 		&i.OrganizationID,
@@ -225,19 +225,19 @@ type BillingCreditTransactionsRow struct {
 	Actor                string
 	RecordedAt           time.Time
 	BindingID            *string
-	CustomerOwned        sql.NullBool
+	CustomerOwned        pgtype.Bool
 	ObjectKey            *string
 	Sha256               *string
-	CompressedBytes      sql.NullInt64
-	ContentBytes         sql.NullInt64
+	CompressedBytes      pgtype.Int8
+	ContentBytes         pgtype.Int8
 	Codec                *string
-	FormatVersion        sql.NullInt32
+	FormatVersion        pgtype.Int4
 	ReferenceKind        *string
 	Retention            *string
 }
 
 func (q *Queries) BillingCreditTransactions(ctx context.Context, arg BillingCreditTransactionsParams) ([]BillingCreditTransactionsRow, error) {
-	rows, err := q.db.QueryContext(ctx, billingCreditTransactions,
+	rows, err := q.db.Query(ctx, billingCreditTransactions,
 		arg.OrganizationID,
 		arg.Mode,
 		arg.AfterID,
@@ -275,9 +275,6 @@ func (q *Queries) BillingCreditTransactions(ctx context.Context, arg BillingCred
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -294,7 +291,7 @@ type BillingMonthlyAdmissionParams struct {
 }
 
 func (q *Queries) BillingMonthlyAdmission(ctx context.Context, arg BillingMonthlyAdmissionParams) (MonthlyBudgetAdmission, error) {
-	row := q.db.QueryRowContext(ctx, billingMonthlyAdmission, arg.OrganizationID, arg.IssueID)
+	row := q.db.QueryRow(ctx, billingMonthlyAdmission, arg.OrganizationID, arg.IssueID)
 	var i MonthlyBudgetAdmission
 	err := row.Scan(&i.OrganizationID, &i.IssueID, &i.AdmittedAt)
 	return i, err
@@ -310,7 +307,7 @@ type BillingMonthlyLeaseParams struct {
 }
 
 func (q *Queries) BillingMonthlyLease(ctx context.Context, arg BillingMonthlyLeaseParams) (MonthlyBudgetLease, error) {
-	row := q.db.QueryRowContext(ctx, billingMonthlyLease, arg.OrganizationID, arg.LeaseID)
+	row := q.db.QueryRow(ctx, billingMonthlyLease, arg.OrganizationID, arg.LeaseID)
 	var i MonthlyBudgetLease
 	err := row.Scan(
 		&i.OrganizationID,
@@ -346,19 +343,19 @@ type BillingRecentCreditTransactionsRow struct {
 	Actor                string
 	RecordedAt           time.Time
 	BindingID            *string
-	CustomerOwned        sql.NullBool
+	CustomerOwned        pgtype.Bool
 	ObjectKey            *string
 	Sha256               *string
-	CompressedBytes      sql.NullInt64
-	ContentBytes         sql.NullInt64
+	CompressedBytes      pgtype.Int8
+	ContentBytes         pgtype.Int8
 	Codec                *string
-	FormatVersion        sql.NullInt32
+	FormatVersion        pgtype.Int4
 	ReferenceKind        *string
 	Retention            *string
 }
 
 func (q *Queries) BillingRecentCreditTransactions(ctx context.Context, arg BillingRecentCreditTransactionsParams) ([]BillingRecentCreditTransactionsRow, error) {
-	rows, err := q.db.QueryContext(ctx, billingRecentCreditTransactions, arg.OrganizationID, arg.Mode, arg.Limit)
+	rows, err := q.db.Query(ctx, billingRecentCreditTransactions, arg.OrganizationID, arg.Mode, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -391,9 +388,6 @@ func (q *Queries) BillingRecentCreditTransactions(ctx context.Context, arg Billi
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -411,7 +405,7 @@ type BillingUsageParams struct {
 }
 
 func (q *Queries) BillingUsage(ctx context.Context, arg BillingUsageParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, billingUsage, arg.OrganizationID, arg.WindowStart, arg.Metric)
+	row := q.db.QueryRow(ctx, billingUsage, arg.OrganizationID, arg.WindowStart, arg.Metric)
 	var amount int64
 	err := row.Scan(&amount)
 	return amount, err
@@ -434,7 +428,7 @@ type BillingUsageReceiptRow struct {
 }
 
 func (q *Queries) BillingUsageReceipt(ctx context.Context, arg BillingUsageReceiptParams) (BillingUsageReceiptRow, error) {
-	row := q.db.QueryRowContext(ctx, billingUsageReceipt, arg.OrganizationID, arg.ReceiptID)
+	row := q.db.QueryRow(ctx, billingUsageReceipt, arg.OrganizationID, arg.ReceiptID)
 	var i BillingUsageReceiptRow
 	err := row.Scan(
 		&i.ReceiptID,
@@ -456,7 +450,7 @@ type BillingUsagesParams struct {
 }
 
 func (q *Queries) BillingUsages(ctx context.Context, arg BillingUsagesParams) ([]HostedUsageWindow, error) {
-	rows, err := q.db.QueryContext(ctx, billingUsages, arg.OrganizationID, arg.WindowStart, arg.Limit)
+	rows, err := q.db.Query(ctx, billingUsages, arg.OrganizationID, arg.WindowStart, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -473,9 +467,6 @@ func (q *Queries) BillingUsages(ctx context.Context, arg BillingUsagesParams) ([
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -500,7 +491,7 @@ type CreateBillingCreditAccountParams struct {
 }
 
 func (q *Queries) CreateBillingCreditAccount(ctx context.Context, arg CreateBillingCreditAccountParams) error {
-	_, err := q.db.ExecContext(ctx, createBillingCreditAccount,
+	_, err := q.db.Exec(ctx, createBillingCreditAccount,
 		arg.OrganizationID,
 		arg.Mode,
 		arg.BalanceMicros,
@@ -535,7 +526,7 @@ type CreateBillingCreditPurchaseParams struct {
 }
 
 func (q *Queries) CreateBillingCreditPurchase(ctx context.Context, arg CreateBillingCreditPurchaseParams) error {
-	_, err := q.db.ExecContext(ctx, createBillingCreditPurchase,
+	_, err := q.db.Exec(ctx, createBillingCreditPurchase,
 		arg.OrganizationID,
 		arg.PurchaseKey,
 		arg.Mode,
@@ -575,7 +566,7 @@ type CreateBillingCreditReasonReferenceParams struct {
 }
 
 func (q *Queries) CreateBillingCreditReasonReference(ctx context.Context, arg CreateBillingCreditReasonReferenceParams) error {
-	_, err := q.db.ExecContext(ctx, createBillingCreditReasonReference,
+	_, err := q.db.Exec(ctx, createBillingCreditReasonReference,
 		arg.OrganizationID,
 		arg.Mode,
 		arg.Source,
@@ -610,7 +601,7 @@ type CreateBillingCreditTransactionParams struct {
 }
 
 func (q *Queries) CreateBillingCreditTransaction(ctx context.Context, arg CreateBillingCreditTransactionParams) error {
-	_, err := q.db.ExecContext(ctx, createBillingCreditTransaction,
+	_, err := q.db.Exec(ctx, createBillingCreditTransaction,
 		arg.OrganizationID,
 		arg.Mode,
 		arg.Source,
@@ -637,7 +628,7 @@ type CreateBillingUsageReceiptParams struct {
 }
 
 func (q *Queries) CreateBillingUsageReceipt(ctx context.Context, arg CreateBillingUsageReceiptParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, createBillingUsageReceipt,
+	result, err := q.db.Exec(ctx, createBillingUsageReceipt,
 		arg.OrganizationID,
 		arg.ReceiptID,
 		arg.WindowStart,
@@ -647,7 +638,7 @@ func (q *Queries) CreateBillingUsageReceipt(ctx context.Context, arg CreateBilli
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const ensureBillingCreditPeriod = `-- name: EnsureBillingCreditPeriod :exec
@@ -664,7 +655,7 @@ type EnsureBillingCreditPeriodParams struct {
 }
 
 func (q *Queries) EnsureBillingCreditPeriod(ctx context.Context, arg EnsureBillingCreditPeriodParams) error {
-	_, err := q.db.ExecContext(ctx, ensureBillingCreditPeriod,
+	_, err := q.db.Exec(ctx, ensureBillingCreditPeriod,
 		arg.OrganizationID,
 		arg.Mode,
 		arg.PeriodStart,
@@ -686,7 +677,7 @@ type EnsureBillingUsageWindowParams struct {
 }
 
 func (q *Queries) EnsureBillingUsageWindow(ctx context.Context, arg EnsureBillingUsageWindowParams) error {
-	_, err := q.db.ExecContext(ctx, ensureBillingUsageWindow, arg.OrganizationID, arg.WindowStart, arg.Metric)
+	_, err := q.db.Exec(ctx, ensureBillingUsageWindow, arg.OrganizationID, arg.WindowStart, arg.Metric)
 	return err
 }
 
@@ -700,7 +691,7 @@ type LockBillingCreditAccountParams struct {
 }
 
 func (q *Queries) LockBillingCreditAccount(ctx context.Context, arg LockBillingCreditAccountParams) (AiCreditAccount, error) {
-	row := q.db.QueryRowContext(ctx, lockBillingCreditAccount, arg.OrganizationID, arg.Mode)
+	row := q.db.QueryRow(ctx, lockBillingCreditAccount, arg.OrganizationID, arg.Mode)
 	var i AiCreditAccount
 	err := row.Scan(
 		&i.OrganizationID,
@@ -727,7 +718,7 @@ type LockBillingCreditPeriodParams struct {
 }
 
 func (q *Queries) LockBillingCreditPeriod(ctx context.Context, arg LockBillingCreditPeriodParams) (AiCreditPeriod, error) {
-	row := q.db.QueryRowContext(ctx, lockBillingCreditPeriod,
+	row := q.db.QueryRow(ctx, lockBillingCreditPeriod,
 		arg.OrganizationID,
 		arg.Mode,
 		arg.PeriodStart,
@@ -756,7 +747,7 @@ type LockBillingUsageWindowParams struct {
 }
 
 func (q *Queries) LockBillingUsageWindow(ctx context.Context, arg LockBillingUsageWindowParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, lockBillingUsageWindow, arg.OrganizationID, arg.WindowStart, arg.Metric)
+	row := q.db.QueryRow(ctx, lockBillingUsageWindow, arg.OrganizationID, arg.WindowStart, arg.Metric)
 	var amount int64
 	err := row.Scan(&amount)
 	return amount, err
@@ -773,11 +764,11 @@ type MarkBillingCreditPurchaseFailedParams struct {
 }
 
 func (q *Queries) MarkBillingCreditPurchaseFailed(ctx context.Context, arg MarkBillingCreditPurchaseFailedParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, markBillingCreditPurchaseFailed, arg.OrganizationID, arg.PurchaseKey)
+	result, err := q.db.Exec(ctx, markBillingCreditPurchaseFailed, arg.OrganizationID, arg.PurchaseKey)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const markBillingCreditPurchasePaid = `-- name: MarkBillingCreditPurchasePaid :execrows
@@ -792,11 +783,11 @@ type MarkBillingCreditPurchasePaidParams struct {
 }
 
 func (q *Queries) MarkBillingCreditPurchasePaid(ctx context.Context, arg MarkBillingCreditPurchasePaidParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, markBillingCreditPurchasePaid, arg.OrganizationID, arg.PurchaseKey, arg.PaymentID)
+	result, err := q.db.Exec(ctx, markBillingCreditPurchasePaid, arg.OrganizationID, arg.PurchaseKey, arg.PaymentID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const recordBillingMonthlyAdmission = `-- name: RecordBillingMonthlyAdmission :execrows
@@ -811,11 +802,11 @@ type RecordBillingMonthlyAdmissionParams struct {
 }
 
 func (q *Queries) RecordBillingMonthlyAdmission(ctx context.Context, arg RecordBillingMonthlyAdmissionParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, recordBillingMonthlyAdmission, arg.OrganizationID, arg.IssueID, arg.AdmittedAt)
+	result, err := q.db.Exec(ctx, recordBillingMonthlyAdmission, arg.OrganizationID, arg.IssueID, arg.AdmittedAt)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const recordBillingMonthlyLease = `-- name: RecordBillingMonthlyLease :execrows
@@ -832,7 +823,7 @@ type RecordBillingMonthlyLeaseParams struct {
 }
 
 func (q *Queries) RecordBillingMonthlyLease(ctx context.Context, arg RecordBillingMonthlyLeaseParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, recordBillingMonthlyLease,
+	result, err := q.db.Exec(ctx, recordBillingMonthlyLease,
 		arg.OrganizationID,
 		arg.LeaseID,
 		arg.LunaApi,
@@ -842,7 +833,7 @@ func (q *Queries) RecordBillingMonthlyLease(ctx context.Context, arg RecordBilli
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const setBillingCreditFunding = `-- name: SetBillingCreditFunding :execrows
@@ -860,7 +851,7 @@ type SetBillingCreditFundingParams struct {
 }
 
 func (q *Queries) SetBillingCreditFunding(ctx context.Context, arg SetBillingCreditFundingParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, setBillingCreditFunding,
+	result, err := q.db.Exec(ctx, setBillingCreditFunding,
 		arg.OrganizationID,
 		arg.Mode,
 		arg.AutoEnabled,
@@ -872,7 +863,7 @@ func (q *Queries) SetBillingCreditFunding(ctx context.Context, arg SetBillingCre
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const setBillingCreditPurchaseSession = `-- name: SetBillingCreditPurchaseSession :execrows
@@ -889,7 +880,7 @@ type SetBillingCreditPurchaseSessionParams struct {
 }
 
 func (q *Queries) SetBillingCreditPurchaseSession(ctx context.Context, arg SetBillingCreditPurchaseSessionParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, setBillingCreditPurchaseSession,
+	result, err := q.db.Exec(ctx, setBillingCreditPurchaseSession,
 		arg.OrganizationID,
 		arg.PurchaseKey,
 		arg.SessionID,
@@ -899,7 +890,7 @@ func (q *Queries) SetBillingCreditPurchaseSession(ctx context.Context, arg SetBi
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const spendBillingCreditPeriod = `-- name: SpendBillingCreditPeriod :exec
@@ -915,7 +906,7 @@ type SpendBillingCreditPeriodParams struct {
 }
 
 func (q *Queries) SpendBillingCreditPeriod(ctx context.Context, arg SpendBillingCreditPeriodParams) error {
-	_, err := q.db.ExecContext(ctx, spendBillingCreditPeriod,
+	_, err := q.db.Exec(ctx, spendBillingCreditPeriod,
 		arg.OrganizationID,
 		arg.Mode,
 		arg.PeriodStart,

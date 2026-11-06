@@ -35,11 +35,7 @@ func TestDeploymentRejectsUnsupportedRuntimeCapabilities(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			admin := template.Database(t)
 			pool := rolePool(t, admin, "detent_runtime_v2", "")
-			target := pool
 			statement := test.statement
-			if test.admin {
-				target = admin
-			}
 			if test.name == "database creation" {
 				var database string
 				if err := admin.QueryRowContext(t.Context(), `SELECT quote_ident(current_database())`).Scan(&database); err != nil {
@@ -47,15 +43,21 @@ func TestDeploymentRejectsUnsupportedRuntimeCapabilities(t *testing.T) {
 				}
 				statement = "GRANT CREATE ON DATABASE " + database + " TO detent_runtime_v2"
 			}
-			if _, err := target.ExecContext(t.Context(), statement); err != nil {
-				t.Fatal(err)
+			var setupErr error
+			if test.admin {
+				_, setupErr = admin.ExecContext(t.Context(), statement)
+			} else {
+				_, setupErr = pool.Exec(t.Context(), statement)
+			}
+			if setupErr != nil {
+				t.Fatal(setupErr)
 			}
 			runtime, err := postgres.NewRuntime(t.Context(), pool, pool)
 			if runtime != nil || !errors.Is(err, postgres.ErrRuntimeRole) {
 				t.Fatalf("unsupported deployment returned runtime=%v error=%v", runtime, err)
 			}
-			if stats := pool.Stats(); stats.InUse != 0 {
-				t.Fatalf("failed startup retained %d connections", stats.InUse)
+			if stats := pool.Stat(); stats.AcquiredConns() != 0 {
+				t.Fatalf("failed startup retained %d connections", stats.AcquiredConns())
 			}
 		})
 	}

@@ -125,11 +125,11 @@ func (r *Repository) importCoreProjects(ctx context.Context, source CoreProjectI
 				if _, err := s.CreateProjectRecord(ctx, record); err != nil {
 					return err
 				}
-				if _, err := s.db.ExecContext(ctx, `UPDATE projects SET created_at=$3,deleted_at=$4 WHERE organization_id=$1 AND id=$2`, source.OrganizationID, record.Core.ID, record.Core.CreatedAt, record.Core.DeletedAt); err != nil {
+				if _, err := s.db.Exec(ctx, `UPDATE projects SET created_at=$3,deleted_at=$4 WHERE organization_id=$1 AND id=$2`, source.OrganizationID, record.Core.ID, record.Core.CreatedAt, record.Core.DeletedAt); err != nil {
 					return err
 				}
 				v := record.Settings
-				if _, err := s.db.ExecContext(ctx, `UPDATE project_settings SET revision=$3,intake=$4,projection=$5,repository_enabled=$6,repository=$7,checkout_repository=$8,aging_enabled=$9,duplicate_challenge=$10,archive_completed_after_days=$11,archive_cancelled_after_days=$12,workflow_key=$13,workflow_sha256=$14,workflow_bytes=$15,workflow_content_bytes=$16,require_visual_attachments=$17,model_revision=$18,model_key=$19,model_sha256=$20,model_bytes=$21,model_content_bytes=$22 WHERE organization_id=$1 AND project_id=$2`, source.OrganizationID, record.Core.ID, v.Revision, v.Intake, v.Projection, v.RepositoryEnabled, v.Repository, v.CheckoutRepository, v.AgingEnabled, v.DuplicateChallenge, v.ArchiveCompletedAfterDays, v.ArchiveCancelledAfterDays, v.WorkflowKey, v.WorkflowSHA256, v.WorkflowBytes, v.WorkflowContentBytes, v.RequireVisualAttachments, v.ModelRevision, v.ModelKey, v.ModelSHA256, v.ModelBytes, v.ModelContentBytes); err != nil {
+				if _, err := s.db.Exec(ctx, `UPDATE project_settings SET revision=$3,intake=$4,projection=$5,repository_enabled=$6,repository=$7,checkout_repository=$8,aging_enabled=$9,duplicate_challenge=$10,archive_completed_after_days=$11,archive_cancelled_after_days=$12,workflow_key=$13,workflow_sha256=$14,workflow_bytes=$15,workflow_content_bytes=$16,require_visual_attachments=$17,model_revision=$18,model_key=$19,model_sha256=$20,model_bytes=$21,model_content_bytes=$22 WHERE organization_id=$1 AND project_id=$2`, source.OrganizationID, record.Core.ID, v.Revision, v.Intake, v.Projection, v.RepositoryEnabled, v.Repository, v.CheckoutRepository, v.AgingEnabled, v.DuplicateChallenge, v.ArchiveCompletedAfterDays, v.ArchiveCancelledAfterDays, v.WorkflowKey, v.WorkflowSHA256, v.WorkflowBytes, v.WorkflowContentBytes, v.RequireVisualAttachments, v.ModelRevision, v.ModelKey, v.ModelSHA256, v.ModelBytes, v.ModelContentBytes); err != nil {
 					return err
 				}
 				_, err = s.PutReceipt(ctx, receipt)

@@ -9,7 +9,6 @@ import (
 	"context"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
 )
 
 const attemptDiffBodyReferenceCheck = `-- name: AttemptDiffBodyReferenceCheck :one
@@ -38,7 +37,7 @@ type AttemptDiffBodyReferenceCheckRow struct {
 }
 
 func (q *Queries) AttemptDiffBodyReferenceCheck(ctx context.Context, arg AttemptDiffBodyReferenceCheckParams) (AttemptDiffBodyReferenceCheckRow, error) {
-	row := q.db.QueryRowContext(ctx, attemptDiffBodyReferenceCheck, arg.OrganizationID, arg.ObjectKey, arg.ProjectID)
+	row := q.db.QueryRow(ctx, attemptDiffBodyReferenceCheck, arg.OrganizationID, arg.ObjectKey, arg.ProjectID)
 	var i AttemptDiffBodyReferenceCheckRow
 	err := row.Scan(&i.Referenced, &i.Complete)
 	return i, err
@@ -56,11 +55,11 @@ type AttemptDiffBodyReferencesCompleteParams struct {
 }
 
 func (q *Queries) AttemptDiffBodyReferencesComplete(ctx context.Context, arg AttemptDiffBodyReferencesCompleteParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, attemptDiffBodyReferencesComplete, arg.OrganizationID, arg.ProjectID, arg.DiffID)
+	result, err := q.db.Exec(ctx, attemptDiffBodyReferencesComplete, arg.OrganizationID, arg.ProjectID, arg.DiffID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const attemptDiffBodyReferencesInsert = `-- name: AttemptDiffBodyReferencesInsert :exec
@@ -76,6 +75,6 @@ type AttemptDiffBodyReferencesInsertParams struct {
 }
 
 func (q *Queries) AttemptDiffBodyReferencesInsert(ctx context.Context, arg AttemptDiffBodyReferencesInsertParams) error {
-	_, err := q.db.ExecContext(ctx, attemptDiffBodyReferencesInsert, arg.OrganizationID, arg.DiffID, pq.Array(arg.ObjectKeys))
+	_, err := q.db.Exec(ctx, attemptDiffBodyReferencesInsert, arg.OrganizationID, arg.DiffID, arg.ObjectKeys)
 	return err
 }

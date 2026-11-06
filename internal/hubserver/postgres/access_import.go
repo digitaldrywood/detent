@@ -14,7 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -257,11 +258,11 @@ func (i *AccessImporter) Step(ctx context.Context, limit int) (AccessImportProgr
 				next.done = true
 			}
 		}
-		result, err := s.db.ExecContext(ctx, `UPDATE access_imports SET stage=$1,processed=$2,revision=revision+1,after_key_1=$3,after_key_2=$4,after_key_3=$5,has_after=$6,done=$7 WHERE organization_id=$8 AND revision=$9`, next.stage, next.processed, next.after[0], next.after[1], next.after[2], next.hasAfter, next.done, i.organization, checkpoint.revision)
+		result, err := s.db.Exec(ctx, `UPDATE access_imports SET stage=$1,processed=$2,revision=revision+1,after_key_1=$3,after_key_2=$4,after_key_3=$5,has_after=$6,done=$7 WHERE organization_id=$8 AND revision=$9`, next.stage, next.processed, next.after[0], next.after[1], next.after[2], next.hasAfter, next.done, i.organization, checkpoint.revision)
 		if err != nil {
 			return err
 		}
-		count, err := result.RowsAffected()
+		count := result.RowsAffected()
 		if err != nil || count != 1 {
 			return corestore.ErrRevisionConflict
 		}
@@ -277,7 +278,7 @@ func (i *AccessImporter) Step(ctx context.Context, limit int) (AccessImportProgr
 func (i *AccessImporter) start(ctx context.Context) (accessImportCheckpoint, error) {
 	var checkpoint accessImportCheckpoint
 	err := i.repository.transaction(ctx, i.organization, corestore.Background, false, func(s *session) error {
-		_, err := s.db.ExecContext(ctx, `INSERT INTO access_imports(organization_id,source_schema,snapshot_id,catalog_digest) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id) DO NOTHING`, i.organization, i.source.Source.Schema, i.source.SnapshotID, i.digest)
+		_, err := s.db.Exec(ctx, `INSERT INTO access_imports(organization_id,source_schema,snapshot_id,catalog_digest) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id) DO NOTHING`, i.organization, i.source.Source.Schema, i.source.SnapshotID, i.digest)
 		if err != nil {
 			return err
 		}
@@ -299,16 +300,16 @@ func readAccessCheckpoint(ctx context.Context, db pgqueryDBTX, organization trac
 		query += ` FOR UPDATE`
 	}
 	var c accessImportCheckpoint
-	err := db.QueryRowContext(ctx, query, organization).Scan(&c.sourceSchema, &c.snapshotID, &c.catalogDigest, &c.stage, &c.processed, &c.revision, &c.after[0], &c.after[1], &c.after[2], &c.hasAfter, &c.done)
-	if errors.Is(err, sql.ErrNoRows) {
+	err := db.QueryRow(ctx, query, organization).Scan(&c.sourceSchema, &c.snapshotID, &c.catalogDigest, &c.stage, &c.processed, &c.revision, &c.after[0], &c.after[1], &c.after[2], &c.hasAfter, &c.done)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return accessImportCheckpoint{}, ErrAccessImport
 	}
 	return c, err
 }
 
 type pgqueryDBTX interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
-	QueryRowContext(context.Context, string, ...any) *sql.Row
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
 func (i *AccessImporter) validateSource(ctx context.Context) error {
@@ -383,9 +384,9 @@ func accessSourceKeys(table storagecatalog.Table) ([]string, error) {
 
 func (i *AccessImporter) sourceTable(table string) string {
 	if i.source.copyTx != nil {
-		return pq.QuoteIdentifier(table)
+		return pgx.Identifier{table}.Sanitize()
 	}
-	return pq.QuoteIdentifier(i.source.Source.Schema) + "." + pq.QuoteIdentifier(table)
+	return pgx.Identifier{i.source.Source.Schema}.Sanitize() + "." + pgx.Identifier{table}.Sanitize()
 }
 
 func (i *AccessImporter) validateSourceTable(ctx context.Context, table string) error {
@@ -440,7 +441,7 @@ AND NOT EXISTS (SELECT 1 FROM unnest(i.indoption) option WHERE option<>0)
 AND ARRAY(SELECT a.attname::text FROM unnest(i.indkey) WITH ORDINALITY k(attnum,n)
 JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.attnum WHERE k.n<=i.indnkeyatts ORDER BY k.n)=$2::text[]
 AND NOT EXISTS (SELECT 1 FROM unnest(i.indcollation) WITH ORDINALITY k(coll,n)
-WHERE k.n<=i.indnkeyatts AND k.coll<>'"C"'::regcollation))`, i.sourceTable(table), pq.Array(keys)).Scan(&valid)
+WHERE k.n<=i.indnkeyatts AND k.coll<>'"C"'::regcollation))`, i.sourceTable(table), keys).Scan(&valid)
 	if err != nil {
 		return err
 	}
@@ -458,12 +459,12 @@ func (i *AccessImporter) readPage(ctx context.Context, table accessImportTable, 
 	slices.Sort(columns)
 	quoted := make([]string, len(columns))
 	for n, name := range columns {
-		quoted[n] = pq.QuoteIdentifier(name)
+		quoted[n] = pgx.Identifier{name}.Sanitize()
 	}
 	order := make([]string, len(table.keys))
 	args := make([]any, 0, len(table.keys)+1)
 	for n, key := range table.keys {
-		order[n] = pq.QuoteIdentifier(key) + " COLLATE " + i.sourceCollation()
+		order[n] = pgx.Identifier{key}.Sanitize() + " COLLATE " + i.sourceCollation()
 	}
 	queryParts := []string{"SELECT", strings.Join(quoted, ","), "FROM", i.sourceTable(table.name)}
 	if checkpoint.hasAfter {
@@ -570,8 +571,8 @@ func (i *AccessImporter) validateOrganization(ctx context.Context, s *session, r
 	var name, slug string
 	var local bool
 	var created time.Time
-	err := s.db.QueryRowContext(ctx, `SELECT name,slug,local,created_at FROM organizations WHERE organization_id=$1`, i.organization).Scan(&name, &slug, &local, &created)
-	if errors.Is(err, sql.ErrNoRows) {
+	err := s.db.QueryRow(ctx, `SELECT name,slug,local,created_at FROM organizations WHERE organization_id=$1`, i.organization).Scan(&name, &slug, &local, &created)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return s.createAccessOrganization(ctx, accessstore.Organization{OrganizationID: i.organization, Name: values["name"].Text, Slug: values["slug"].Text, Local: values["local"].Boolean, CreatedAt: recordTime(values["created_at"].Time)}, false)
 	}
 	if err != nil {
@@ -758,7 +759,7 @@ func decodeInvitationImportGrants(data []byte) ([]accessImportGrant, error) {
 
 func (i *AccessImporter) providerMatches(ctx context.Context, s *session, provider string) (bool, error) {
 	var stored string
-	err := s.db.QueryRowContext(ctx, `SELECT provider_id FROM hosted_tenant WHERE organization_id=$1`, i.organization).Scan(&stored)
+	err := s.db.QueryRow(ctx, `SELECT provider_id FROM hosted_tenant WHERE organization_id=$1`, i.organization).Scan(&stored)
 	if err != nil {
 		return false, err
 	}
@@ -774,8 +775,8 @@ func (i *AccessImporter) validateProjectReference(ctx context.Context, s *sessio
 		return nil
 	}
 	var existing string
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR KEY SHARE`, i.organization, project).Scan(&existing)
-	if errors.Is(err, sql.ErrNoRows) {
+	err := s.db.QueryRow(ctx, `SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR KEY SHARE`, i.organization, project).Scan(&existing)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrAccessImport
 	}
 	if err != nil {
@@ -792,11 +793,11 @@ func insertAccessRow(ctx context.Context, db pgqueryDBTX, table string, values m
 	slices.Sort(columns)
 	quoted, args, placeholders := make([]string, len(columns)), make([]any, len(columns)), make([]string, len(columns))
 	for n, name := range columns {
-		quoted[n] = pq.QuoteIdentifier(name)
+		quoted[n] = pgx.Identifier{name}.Sanitize()
 		args[n] = values[name]
 		placeholders[n] = fmt.Sprintf("$%d", n+1)
 	}
-	statement := "INSERT INTO " + pq.QuoteIdentifier(table) + " (" + strings.Join(quoted, ",") + ") VALUES (" + strings.Join(placeholders, ",") + ")"
-	_, err := db.ExecContext(ctx, statement, args...)
+	statement := "INSERT INTO " + pgx.Identifier{table}.Sanitize() + " (" + strings.Join(quoted, ",") + ") VALUES (" + strings.Join(placeholders, ",") + ")"
+	_, err := db.Exec(ctx, statement, args...)
 	return err
 }

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
 )
 
 const readSummaryUsage = `-- name: ReadSummaryUsage :many
@@ -56,13 +55,13 @@ type ReadSummaryUsageRow struct {
 }
 
 func (q *Queries) ReadSummaryUsage(ctx context.Context, arg ReadSummaryUsageParams) ([]ReadSummaryUsageRow, error) {
-	rows, err := q.db.QueryContext(ctx, readSummaryUsage,
+	rows, err := q.db.Query(ctx, readSummaryUsage,
 		arg.Principal,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.EndAt,
 		arg.StartAt,
-		pq.Array(arg.LifetimeIds),
+		arg.LifetimeIds,
 	)
 	if err != nil {
 		return nil, err
@@ -86,9 +85,6 @@ func (q *Queries) ReadSummaryUsage(ctx context.Context, arg ReadSummaryUsagePara
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

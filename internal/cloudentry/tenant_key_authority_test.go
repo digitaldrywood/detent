@@ -35,7 +35,7 @@ func TestTenantKeyAuthorityConcurrentClaims(t *testing.T) {
 		if _, err := registry.Register(t.Context(), org); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=true WHERE id=?", org.ID); err != nil {
+		if _, err := registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true WHERE id=$1", org.ID); err != nil {
 			t.Fatal(err)
 		}
 		provider.member("owner", org.ProviderID, "member")

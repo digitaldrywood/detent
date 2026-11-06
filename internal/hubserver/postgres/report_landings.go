@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"errors"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 )
@@ -12,7 +11,7 @@ func (s *session) ReadLandingFacts(ctx context.Context, query reportstore.Overvi
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT i.project_id,i.native_id,c.id,c.landed_at,coalesce(tries.n,0),coalesce(tries.complete,false),c.landed_version_id,c.landed_head_sha,c.landed_merge_sha,c.landed_base_ref,coalesce(tries.observed,0)
+	rows, err := s.db.Query(ctx, `SELECT i.project_id,i.native_id,c.id,c.landed_at,coalesce(tries.n,0),coalesce(tries.complete,false),c.landed_version_id,c.landed_head_sha,c.landed_merge_sha,c.landed_base_ref,coalesce(tries.observed,0)
 FROM change_requests c JOIN issues i ON i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id
 JOIN change_versions v ON v.organization_id=c.organization_id AND v.change_id=c.id AND v.id=c.landed_version_id
 LEFT JOIN LATERAL (
@@ -46,7 +45,7 @@ ORDER BY c.landed_at DESC,c.id LIMIT $11`, args...)
 		}
 		out = append(out, fact)
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, mapError(ctx, err)
 	}
 	if len(out) > query.Limit {

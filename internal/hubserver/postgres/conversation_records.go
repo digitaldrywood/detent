@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -10,7 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -25,27 +25,27 @@ var _ conversationstore.Reader = (*session)(nil)
 var _ conversationstore.Writer = (*session)(nil)
 
 func (s *session) Conversation(ctx context.Context, project tracker.ProjectID, id string) (conversationstore.Conversation, error) {
-	return scanPGConversation(s.db.QueryRowContext(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND project_id=$2 AND id=$3`, s.organization, project, id))
+	return scanPGConversation(s.db.QueryRow(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND project_id=$2 AND id=$3`, s.organization, project, id))
 }
 
 func (s *session) LockConversation(ctx context.Context, project tracker.ProjectID, id string) (conversationstore.Conversation, error) {
-	return scanPGConversation(s.db.QueryRowContext(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE OF c`, s.organization, project, id))
+	return scanPGConversation(s.db.QueryRow(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE OF c`, s.organization, project, id))
 }
 
 func (s *session) ConversationByID(ctx context.Context, id string) (conversationstore.Conversation, error) {
-	return scanPGConversation(s.db.QueryRowContext(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND id=$2`, s.organization, id))
+	return scanPGConversation(s.db.QueryRow(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND id=$2`, s.organization, id))
 }
 
 func (s *session) ConversationByExecutionLease(ctx context.Context, leaseID string) (conversationstore.Conversation, error) {
-	return scanPGConversation(s.db.QueryRowContext(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND execution_lease_id=$2`, s.organization, leaseID))
+	return scanPGConversation(s.db.QueryRow(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND execution_lease_id=$2`, s.organization, leaseID))
 }
 
 func (s *session) ConversationByWorkItem(ctx context.Context, project tracker.ProjectID, item string) (conversationstore.Conversation, error) {
-	return scanPGConversation(s.db.QueryRowContext(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND project_id=$2 AND work_item_id=$3`, s.organization, project, item))
+	return scanPGConversation(s.db.QueryRow(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND project_id=$2 AND work_item_id=$3`, s.organization, project, item))
 }
 
 func (s *session) ConversationByCreationKey(ctx context.Context, principal, key string) (conversationstore.Conversation, error) {
-	return scanPGConversation(s.db.QueryRowContext(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND owner_principal_id=$2 AND creation_key=$3`, s.organization, principal, key))
+	return scanPGConversation(s.db.QueryRow(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND owner_principal_id=$2 AND creation_key=$3`, s.organization, principal, key))
 }
 
 const conversationSelect = `SELECT c.organization_id,c.project_id,c.id,c.creation_key,c.creation_hash,c.owner_principal_id,c.owner_subject,c.origin,c.title,c.visibility,c.status,
@@ -56,7 +56,8 @@ FROM conversations c`
 
 func scanPGConversation(row interface{ Scan(...any) error }) (conversationstore.Conversation, error) {
 	var record conversationstore.Conversation
-	var subject, workItem, linked, lastMessage, settled sql.NullString
+	var subject, workItem pgtype.Text
+	var linked, lastMessage, settled pgtype.Timestamptz
 	var execution, preferences []byte
 	err := row.Scan(&record.OrganizationID, &record.ProjectID, &record.ID, &record.CreationKey, &record.CreationHash, &record.OwnerPrincipalID, &record.OwnerSubject, &record.Origin,
 		&record.Title, &record.Visibility, &record.Status, &subject, &workItem, &linked, &record.Revision,
@@ -92,15 +93,14 @@ func scanPGConversation(row interface{ Scan(...any) error }) (conversationstore.
 	return record, nil
 }
 
-func pgNullTime(value sql.NullString) (time.Time, bool, error) {
+func pgNullTime(value pgtype.Timestamptz) (time.Time, bool, error) {
 	if !value.Valid {
 		return time.Time{}, false, nil
 	}
-	parsed, err := time.Parse(time.RFC3339Nano, value.String)
-	if err != nil {
-		return time.Time{}, false, fmt.Errorf("decode conversation time: %w", err)
+	if value.InfinityModifier != pgtype.Finite {
+		return time.Time{}, false, errors.New("decode conversation time: infinite timestamp")
 	}
-	return parsed, true, nil
+	return value.Time, true, nil
 }
 
 func (s *session) Conversations(ctx context.Context, filter conversationstore.ConversationQuery) (conversationstore.ConversationPage, error) {
@@ -125,7 +125,7 @@ func (s *session) Conversations(ctx context.Context, filter conversationstore.Co
 		for i, id := range filter.ProjectIDs {
 			projects[i] = string(id)
 		}
-		add(fmt.Sprintf(" AND c.project_id=ANY($%d::text[])", len(args)+1), pq.Array(projects))
+		add(fmt.Sprintf(" AND c.project_id=ANY($%d::text[])", len(args)+1), projects)
 	}
 	if filter.Title != "" {
 		add(fmt.Sprintf(" AND lower(c.title) LIKE $%d ESCAPE '\\'", len(args)+1), pgConversationTitlePattern(filter.Title))
@@ -148,7 +148,7 @@ func (s *session) Conversations(ctx context.Context, filter conversationstore.Co
 		add(fmt.Sprintf(" AND (CASE WHEN c.status='settled' THEN 1 ELSE 0 END>$%d OR (CASE WHEN c.status='settled' THEN 1 ELSE 0 END=$%d AND (COALESCE(c.last_message_at,c.updated_at)<$%d OR (COALESCE(c.last_message_at,c.updated_at)=$%d AND c.id<$%d))))", len(args)+1, len(args)+2, len(args)+3, len(args)+4, len(args)+5), cursor.Settled, cursor.Settled, cursor.Activity, cursor.Activity, cursor.ID)
 	}
 	args = append(args, filter.Limit+1)
-	rows, err := s.db.QueryContext(ctx, conversationSelect+where+fmt.Sprintf(" ORDER BY CASE WHEN c.status='settled' THEN 1 ELSE 0 END,COALESCE(c.last_message_at,c.updated_at) DESC,c.id DESC LIMIT $%d", len(args)), args...)
+	rows, err := s.db.Query(ctx, conversationSelect+where+fmt.Sprintf(" ORDER BY CASE WHEN c.status='settled' THEN 1 ELSE 0 END,COALESCE(c.last_message_at,c.updated_at) DESC,c.id DESC LIMIT $%d", len(args)), args...)
 	if err != nil {
 		return conversationstore.ConversationPage{}, mapError(ctx, err)
 	}
@@ -209,7 +209,7 @@ func (s *session) LifecycleConversations(ctx context.Context, filter conversatio
 		where += fmt.Sprintf(" AND c.id>$%d", len(args))
 	}
 	args = append(args, filter.Limit+1)
-	rows, err := s.db.QueryContext(ctx, conversationSelect+where+fmt.Sprintf(" ORDER BY c.id LIMIT $%d", len(args)), args...)
+	rows, err := s.db.Query(ctx, conversationSelect+where+fmt.Sprintf(" ORDER BY c.id LIMIT $%d", len(args)), args...)
 	if err != nil {
 		return conversationstore.ConversationPage{}, mapError(ctx, err)
 	}
@@ -236,7 +236,7 @@ func (s *session) PendingConversations(ctx context.Context, afterID string, limi
 	if err := checkPage(limit); err != nil {
 		return conversationstore.PendingConversationPage{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT c.id,c.work_item_id IS NOT NULL FROM conversations c WHERE c.deleted_at IS NULL AND c.organization_id=$1 AND c.id>$2 AND EXISTS (SELECT 1 FROM conversation_messages m WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id AND m.role='user' AND m.delivery IN ('saved','queued')) ORDER BY c.id LIMIT $3`, s.organization, afterID, limit+1)
+	rows, err := s.db.Query(ctx, `SELECT c.id,c.work_item_id IS NOT NULL FROM conversations c WHERE c.deleted_at IS NULL AND c.organization_id=$1 AND c.id>$2 AND EXISTS (SELECT 1 FROM conversation_messages m WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id AND m.role='user' AND m.delivery IN ('saved','queued')) ORDER BY c.id LIMIT $3`, s.organization, afterID, limit+1)
 	if err != nil {
 		return conversationstore.PendingConversationPage{}, mapError(ctx, err)
 	}
@@ -289,12 +289,12 @@ func (s *session) Messages(ctx context.Context, id string, beforeSequence int64,
 	if err := checkPage(limit); err != nil {
 		return conversationstore.MessagePage{}, err
 	}
-	var rows *sql.Rows
+	var rows pgx.Rows
 	var err error
 	if beforeSequence > 0 {
-		rows, err = s.db.QueryContext(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND seq<$3 ORDER BY seq DESC LIMIT $4`, s.organization, id, beforeSequence, limit+1)
+		rows, err = s.db.Query(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND seq<$3 ORDER BY seq DESC LIMIT $4`, s.organization, id, beforeSequence, limit+1)
 	} else {
-		rows, err = s.db.QueryContext(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 ORDER BY seq DESC LIMIT $3`, s.organization, id, limit+1)
+		rows, err = s.db.Query(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 ORDER BY seq DESC LIMIT $3`, s.organization, id, limit+1)
 	}
 	if err != nil {
 		return conversationstore.MessagePage{}, mapError(ctx, err)
@@ -359,7 +359,11 @@ func (s *session) FilteredMessages(ctx context.Context, filter conversationstore
 		add("seq>$%d", filter.AfterSequence)
 	}
 	if len(filter.Deliveries) > 0 {
-		args = append(args, pq.Array(filter.Deliveries))
+		deliveries := make([]string, len(filter.Deliveries))
+		for i, delivery := range filter.Deliveries {
+			deliveries[i] = string(delivery)
+		}
+		args = append(args, deliveries)
 		conditions = append(conditions, fmt.Sprintf("delivery=ANY($%d)", len(args)))
 	}
 	args = append(args, filter.Limit+1)
@@ -368,7 +372,7 @@ func (s *session) FilteredMessages(ctx context.Context, filter conversationstore
 		order = "ASC"
 	}
 	query := `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result FROM conversation_messages WHERE ` + strings.Join(conditions, " AND ") + fmt.Sprintf(" ORDER BY seq %s LIMIT $%d", order, len(args))
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
 		return conversationstore.MessagePage{}, mapError(ctx, err)
 	}
@@ -397,7 +401,7 @@ func (s *session) FilteredMessages(ctx context.Context, filter conversationstore
 func scanPGMessage(row interface{ Scan(...any) error }) (conversationstore.Message, error) {
 	var m conversationstore.Message
 	var actor []byte
-	var toolName, toolID, toolStatus, actionID, actionAgent, actionResult sql.NullString
+	var toolName, toolID, toolStatus, actionID, actionAgent, actionResult pgtype.Text
 	err := row.Scan(&m.OrganizationID, &m.ConversationID, &m.ID, &m.Sequence, &m.Role, &m.Kind, &m.Text, &m.Data, &m.Delivery, &m.AttemptID, &m.ThreadID, &m.TurnID, &m.ProviderItemID, &actor, &m.CommandKey, &m.CreatedAt, &m.UpdatedAt, &m.ContentReference, &m.Revision, &m.TextBytes, &m.StoredTextBytes, &toolName, &toolID, &toolStatus, &actionID, &actionAgent, &actionResult)
 	if err != nil {
 		return m, err
@@ -414,7 +418,7 @@ func scanPGMessage(row interface{ Scan(...any) error }) (conversationstore.Messa
 	return m, nil
 }
 
-func pgStringPtr(value sql.NullString) *string {
+func pgStringPtr(value pgtype.Text) *string {
 	if !value.Valid {
 		return nil
 	}
@@ -423,14 +427,14 @@ func pgStringPtr(value sql.NullString) *string {
 }
 
 func (s *session) Message(ctx context.Context, conversationID, id string) (conversationstore.Message, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND id=$3`, s.organization, conversationID, id)
+	row := s.db.QueryRow(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND id=$3`, s.organization, conversationID, id)
 	return scanPGMessage(row)
 }
 
 func (s *session) MessageByCommandKey(ctx context.Context, conversationID, key string) (conversationstore.Message, bool, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND command_key=$3 ORDER BY seq LIMIT 1`, s.organization, conversationID, key)
+	row := s.db.QueryRow(ctx, `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND command_key=$3 ORDER BY seq LIMIT 1`, s.organization, conversationID, key)
 	message, err := scanPGMessage(row)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return conversationstore.Message{}, false, nil
 	}
 	return message, err == nil, mapError(ctx, err)
@@ -440,7 +444,7 @@ func (s *session) ConversationEvents(ctx context.Context, conversationID string,
 	if err := checkPage(limit); err != nil {
 		return conversationstore.EventPage{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT organization_id,conversation_id,seq,type,body_json,created_at,content_attachment_id FROM conversation_events WHERE organization_id=$1 AND conversation_id=$2 AND seq>$3 ORDER BY seq LIMIT $4`, s.organization, conversationID, after, limit+1)
+	rows, err := s.db.Query(ctx, `SELECT organization_id,conversation_id,seq,type,body_json,created_at,content_attachment_id FROM conversation_events WHERE organization_id=$1 AND conversation_id=$2 AND seq>$3 ORDER BY seq LIMIT $4`, s.organization, conversationID, after, limit+1)
 	if err != nil {
 		return conversationstore.EventPage{}, mapError(ctx, err)
 	}
@@ -464,7 +468,7 @@ func (s *session) ConversationEvents(ctx context.Context, conversationID string,
 }
 
 func (s *session) Question(ctx context.Context, conversationID, id string) (conversationstore.Question, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT organization_id,conversation_id,id,message_id,request_id,attempt_id,thread_id,turn_id,status,prompts_json,answers_json,answered_by,expires_at,created_at,updated_at,content_attachment_id FROM conversation_questions WHERE organization_id=$1 AND conversation_id=$2 AND id=$3`, s.organization, conversationID, id)
+	row := s.db.QueryRow(ctx, `SELECT organization_id,conversation_id,id,message_id,request_id,attempt_id,thread_id,turn_id,status,prompts_json,answers_json,answered_by,expires_at,created_at,updated_at,content_attachment_id FROM conversation_questions WHERE organization_id=$1 AND conversation_id=$2 AND id=$3`, s.organization, conversationID, id)
 	return scanPGQuestion(ctx, row)
 }
 
@@ -472,7 +476,7 @@ func (s *session) Questions(ctx context.Context, conversationID, attemptID strin
 	if err := checkPage(limit); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT organization_id,conversation_id,id,message_id,request_id,attempt_id,thread_id,turn_id,status,prompts_json,answers_json,answered_by,expires_at,created_at,updated_at,content_attachment_id FROM conversation_questions WHERE organization_id=$1 AND conversation_id=$2 AND ($3='' OR attempt_id=$3) ORDER BY created_at,id LIMIT $4`, s.organization, conversationID, attemptID, limit)
+	rows, err := s.db.Query(ctx, `SELECT organization_id,conversation_id,id,message_id,request_id,attempt_id,thread_id,turn_id,status,prompts_json,answers_json,answered_by,expires_at,created_at,updated_at,content_attachment_id FROM conversation_questions WHERE organization_id=$1 AND conversation_id=$2 AND ($3='' OR attempt_id=$3) ORDER BY created_at,id LIMIT $4`, s.organization, conversationID, attemptID, limit)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -492,7 +496,7 @@ func (s *session) OutstandingQuestions(ctx context.Context, conversationID, atte
 	if err := checkPage(limit); err != nil {
 		return conversationstore.QuestionPage{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT organization_id,conversation_id,id,message_id,request_id,attempt_id,thread_id,turn_id,status,prompts_json,answers_json,answered_by,expires_at,created_at,updated_at,content_attachment_id FROM conversation_questions WHERE organization_id=$1 AND conversation_id=$2 AND ($3='' OR attempt_id=$3) AND ($4='' OR turn_id=$4) AND id>$5 AND status IN ('pending','sending','sent') ORDER BY id LIMIT $6`, s.organization, conversationID, attemptID, turnID, afterID, limit+1)
+	rows, err := s.db.Query(ctx, `SELECT organization_id,conversation_id,id,message_id,request_id,attempt_id,thread_id,turn_id,status,prompts_json,answers_json,answered_by,expires_at,created_at,updated_at,content_attachment_id FROM conversation_questions WHERE organization_id=$1 AND conversation_id=$2 AND ($3='' OR attempt_id=$3) AND ($4='' OR turn_id=$4) AND id>$5 AND status IN ('pending','sending','sent') ORDER BY id LIMIT $6`, s.organization, conversationID, attemptID, turnID, afterID, limit+1)
 	if err != nil {
 		return conversationstore.QuestionPage{}, mapError(ctx, err)
 	}
@@ -519,7 +523,7 @@ func (s *session) RestartQuestions(ctx context.Context, conversationID, afterID 
 	if err := checkPage(limit); err != nil {
 		return conversationstore.QuestionPage{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT organization_id,conversation_id,id,message_id,request_id,attempt_id,thread_id,turn_id,status,prompts_json,answers_json,answered_by,expires_at,created_at,updated_at,content_attachment_id FROM conversation_questions WHERE organization_id=$1 AND conversation_id=$2 AND id>$3 AND status IN ('pending','sending') ORDER BY id LIMIT $4`, s.organization, conversationID, afterID, limit+1)
+	rows, err := s.db.Query(ctx, `SELECT organization_id,conversation_id,id,message_id,request_id,attempt_id,thread_id,turn_id,status,prompts_json,answers_json,answered_by,expires_at,created_at,updated_at,content_attachment_id FROM conversation_questions WHERE organization_id=$1 AND conversation_id=$2 AND id>$3 AND status IN ('pending','sending') ORDER BY id LIMIT $4`, s.organization, conversationID, afterID, limit+1)
 	if err != nil {
 		return conversationstore.QuestionPage{}, mapError(ctx, err)
 	}
@@ -545,7 +549,7 @@ func (s *session) RestartQuestions(ctx context.Context, conversationID, afterID 
 func scanPGQuestion(ctx context.Context, row interface{ Scan(...any) error }) (conversationstore.Question, error) {
 	var q conversationstore.Question
 	var prompts, answers []byte
-	var expires sql.NullTime
+	var expires pgtype.Timestamptz
 	err := row.Scan(&q.OrganizationID, &q.ConversationID, &q.ID, &q.MessageID, &q.RequestID, &q.Owner.AttemptID, &q.Owner.ThreadID, &q.Owner.TurnID, &q.Status, &prompts, &answers, &q.AnsweredBy, &expires, &q.CreatedAt, &q.UpdatedAt, &q.ContentReference)
 	if err != nil {
 		return q, mapError(ctx, err)
@@ -565,8 +569,8 @@ func scanPGQuestion(ctx context.Context, row interface{ Scan(...any) error }) (c
 func (s *session) Command(ctx context.Context, conversationID, key string) (conversationstore.Command, bool, error) {
 	var c conversationstore.Command
 	var receipt []byte
-	err := s.db.QueryRowContext(ctx, `SELECT organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id FROM conversation_commands WHERE organization_id=$1 AND conversation_id=$2 AND key=$3`, s.organization, conversationID, key).Scan(&c.OrganizationID, &c.ConversationID, &c.Key, &c.Kind, &c.RequestHash, &receipt, &c.CreatedAt, &c.UpdatedAt, &c.ContentReference)
-	if errors.Is(err, sql.ErrNoRows) {
+	err := s.db.QueryRow(ctx, `SELECT organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id FROM conversation_commands WHERE organization_id=$1 AND conversation_id=$2 AND key=$3`, s.organization, conversationID, key).Scan(&c.OrganizationID, &c.ConversationID, &c.Key, &c.Kind, &c.RequestHash, &receipt, &c.CreatedAt, &c.UpdatedAt, &c.ContentReference)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return c, false, nil
 	}
 	if err != nil {
@@ -582,7 +586,7 @@ func (s *session) PendingCommands(ctx context.Context, conversationID, afterKey 
 	if err := checkPage(limit); err != nil {
 		return conversationstore.CommandPage{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id FROM conversation_commands WHERE organization_id=$1 AND conversation_id=$2 AND key>$3 AND receipt_status=ANY($4) ORDER BY key LIMIT $5`, s.organization, conversationID, afterKey, pq.Array([]string{"sending", "sent", "responding"}), limit+1)
+	rows, err := s.db.Query(ctx, `SELECT organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id FROM conversation_commands WHERE organization_id=$1 AND conversation_id=$2 AND key>$3 AND receipt_status=ANY($4) ORDER BY key LIMIT $5`, s.organization, conversationID, afterKey, []string{"sending", "sent", "responding"}, limit+1)
 	if err != nil {
 		return conversationstore.CommandPage{}, mapError(ctx, err)
 	}
@@ -611,8 +615,8 @@ func (s *session) PendingCommands(ctx context.Context, conversationID, afterKey 
 
 func (s *session) TurnBatch(ctx context.Context, attemptID, batchKey string) (int64, bool, error) {
 	var sequence int64
-	err := s.db.QueryRowContext(ctx, `SELECT event_seq FROM conversation_turn_batches WHERE organization_id=$1 AND attempt_id=$2 AND batch_key=$3`, s.organization, attemptID, batchKey).Scan(&sequence)
-	if errors.Is(err, sql.ErrNoRows) {
+	err := s.db.QueryRow(ctx, `SELECT event_seq FROM conversation_turn_batches WHERE organization_id=$1 AND attempt_id=$2 AND batch_key=$3`, s.organization, attemptID, batchKey).Scan(&sequence)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}
 	if err != nil {
@@ -623,12 +627,12 @@ func (s *session) TurnBatch(ctx context.Context, attemptID, batchKey string) (in
 
 func (s *session) HasConversationStart(ctx context.Context, conversationID string) (bool, error) {
 	var exists bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM conversation_starts WHERE organization_id=$1 AND conversation_id=$2)`, s.organization, conversationID).Scan(&exists)
+	err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM conversation_starts WHERE organization_id=$1 AND conversation_id=$2)`, s.organization, conversationID).Scan(&exists)
 	return exists, mapError(ctx, err)
 }
 
 func (s *session) MessageReferences(ctx context.Context, conversationID, messageID string) ([]conversationstore.MessageReference, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT organization_id,conversation_id,message_id,position,target_kind,target_id,label,created_at FROM message_references WHERE organization_id=$1 AND conversation_id=$2 AND message_id=$3 ORDER BY position`, s.organization, conversationID, messageID)
+	rows, err := s.db.Query(ctx, `SELECT organization_id,conversation_id,message_id,position,target_kind,target_id,label,created_at FROM message_references WHERE organization_id=$1 AND conversation_id=$2 AND message_id=$3 ORDER BY position`, s.organization, conversationID, messageID)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -648,7 +652,7 @@ func (s *session) ToolRevisions(ctx context.Context, conversationID, messageID s
 	if err := checkPage(limit); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT organization_id,conversation_id,message_id,revision,text,tool,item_id,status,content_attachment_id FROM conversation_tool_revisions WHERE organization_id=$1 AND conversation_id=$2 AND message_id=$3 ORDER BY revision DESC LIMIT $4`, s.organization, conversationID, messageID, limit)
+	rows, err := s.db.Query(ctx, `SELECT organization_id,conversation_id,message_id,revision,text,tool,item_id,status,content_attachment_id FROM conversation_tool_revisions WHERE organization_id=$1 AND conversation_id=$2 AND message_id=$3 ORDER BY revision DESC LIMIT $4`, s.organization, conversationID, messageID, limit)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -666,14 +670,14 @@ func (s *session) ToolRevisions(ctx context.Context, conversationID, messageID s
 
 func (s *session) PendingUserMessages(ctx context.Context, conversationID string) (int, error) {
 	var pending int
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND role='user' AND delivery IN ('saved','queued','sending')`, s.organization, conversationID).Scan(&pending)
+	err := s.db.QueryRow(ctx, `SELECT count(*) FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2 AND role='user' AND delivery IN ('saved','queued','sending')`, s.organization, conversationID).Scan(&pending)
 	return pending, mapError(ctx, err)
 }
 
 func (s *session) ConversationContent(ctx context.Context, id string) (conversationstore.ContentObject, error) {
 	var object conversationstore.ContentObject
 	var ref attachment.ArchiveReference
-	err := s.db.QueryRowContext(ctx, `SELECT organization_id,id,archive_id,object_key,sha256,compressed_size,uncompressed_size,codec,schema_version,kind,retention,binding_id,customer_owned,created_at FROM conversation_content_objects WHERE organization_id=$1 AND id=$2`, s.organization, id).Scan(
+	err := s.db.QueryRow(ctx, `SELECT organization_id,id,archive_id,object_key,sha256,compressed_size,uncompressed_size,codec,schema_version,kind,retention,binding_id,customer_owned,created_at FROM conversation_content_objects WHERE organization_id=$1 AND id=$2`, s.organization, id).Scan(
 		&object.OrganizationID, &object.ID, &object.ArchiveID, &ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize, &ref.Codec, &ref.SchemaVersion, &ref.Kind, &ref.Retention, &ref.BindingID, &ref.CustomerOwned, &object.CreatedAt)
 	if err != nil {
 		return object, mapError(ctx, err)
@@ -698,7 +702,7 @@ func (s *session) PutConversationContent(ctx context.Context, object conversatio
 		return err
 	}
 	object.ArchiveID = archiveObject.ID
-	_, err = s.db.ExecContext(ctx, `INSERT INTO conversation_content_objects (organization_id,id,archive_id,object_key,sha256,compressed_size,uncompressed_size,codec,schema_version,kind,retention,binding_id,customer_owned,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT (organization_id,id) DO NOTHING`, object.OrganizationID, object.ID, object.ArchiveID, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize, ref.Codec, ref.SchemaVersion, ref.Kind, ref.Retention, ref.BindingID, ref.CustomerOwned, object.CreatedAt)
+	_, err = s.db.Exec(ctx, `INSERT INTO conversation_content_objects (organization_id,id,archive_id,object_key,sha256,compressed_size,uncompressed_size,codec,schema_version,kind,retention,binding_id,customer_owned,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT (organization_id,id) DO NOTHING`, object.OrganizationID, object.ID, object.ArchiveID, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize, ref.Codec, ref.SchemaVersion, ref.Kind, ref.Retention, ref.BindingID, ref.CustomerOwned, object.CreatedAt)
 	if err != nil {
 		return mapError(ctx, err)
 	}
@@ -734,7 +738,7 @@ func (s *session) CreateConversation(ctx context.Context, c conversationstore.Co
 	if err != nil {
 		return c, err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO conversations (organization_id,id,creation_key,creation_hash,project_id,owner_principal_id,owner_subject,origin,title,visibility,status,subject_work_item_id,work_item_id,linked_at,revision,provider_thread_id,provider_thread_runner_id,provider_thread_origin,execution_json,execution_status,execution_lease_id,execution_settled,event_seq,preferences_json,read_audience,created_at,updated_at,last_message_at,settled_at,archived,content_attachment_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,''),NULLIF($13,''),$14,$15,$16,$17,$18,$19,$20,NULLIF($21,''),$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)`, c.OrganizationID, c.ID, c.CreationKey, c.CreationHash, c.ProjectID, c.OwnerPrincipalID, c.OwnerSubject, c.Origin, c.Title, c.Visibility, c.Status, c.SubjectWorkItemID, c.WorkItemID, c.LinkedAt, c.Revision, c.ProviderThreadID, c.ProviderThreadRunnerID, c.ProviderThreadOrigin, string(execution), c.Execution.Status, c.Execution.Owner.LeaseID, c.Execution.Settled, c.EventSequence, string(preferences), c.ReadAudience, c.CreatedAt, c.UpdatedAt, c.LastMessageAt, c.SettledAt, c.Archived, c.ContentReference)
+	_, err = s.db.Exec(ctx, `INSERT INTO conversations (organization_id,id,creation_key,creation_hash,project_id,owner_principal_id,owner_subject,origin,title,visibility,status,subject_work_item_id,work_item_id,linked_at,revision,provider_thread_id,provider_thread_runner_id,provider_thread_origin,execution_json,execution_status,execution_lease_id,execution_settled,event_seq,preferences_json,read_audience,created_at,updated_at,last_message_at,settled_at,archived,content_attachment_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,''),NULLIF($13,''),$14,$15,$16,$17,$18,$19,$20,NULLIF($21,''),$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)`, c.OrganizationID, c.ID, c.CreationKey, c.CreationHash, c.ProjectID, c.OwnerPrincipalID, c.OwnerSubject, c.Origin, c.Title, c.Visibility, c.Status, c.SubjectWorkItemID, c.WorkItemID, c.LinkedAt, c.Revision, c.ProviderThreadID, c.ProviderThreadRunnerID, c.ProviderThreadOrigin, string(execution), c.Execution.Status, c.Execution.Owner.LeaseID, c.Execution.Settled, c.EventSequence, string(preferences), c.ReadAudience, c.CreatedAt, c.UpdatedAt, c.LastMessageAt, c.SettledAt, c.Archived, c.ContentReference)
 	if err != nil {
 		return c, mapError(ctx, err)
 	}
@@ -756,7 +760,7 @@ func (s *session) UpdateConversation(ctx context.Context, c conversationstore.Co
 	if err != nil {
 		return c, err
 	}
-	err = s.db.QueryRowContext(ctx, `UPDATE conversations SET owner_principal_id=$1,owner_subject=$2,title=$3,visibility=$4,status=$5,subject_work_item_id=NULLIF($6,''),work_item_id=NULLIF($7,''),linked_at=$8,revision=revision+1,provider_thread_id=$9,provider_thread_runner_id=$10,provider_thread_origin=$11,execution_json=$12,execution_status=$13,execution_lease_id=NULLIF($14,''),execution_settled=$15,event_seq=$16,preferences_json=$17,read_audience=$18,updated_at=$19,last_message_at=$20,settled_at=$21,archived=$22,content_attachment_id=$23 WHERE organization_id=$24 AND project_id=$25 AND id=$26 AND revision=$27 RETURNING revision`, c.OwnerPrincipalID, c.OwnerSubject, c.Title, c.Visibility, c.Status, c.SubjectWorkItemID, c.WorkItemID, c.LinkedAt, c.ProviderThreadID, c.ProviderThreadRunnerID, c.ProviderThreadOrigin, string(execution), c.Execution.Status, c.Execution.Owner.LeaseID, c.Execution.Settled, c.EventSequence, string(preferences), c.ReadAudience, c.UpdatedAt, c.LastMessageAt, c.SettledAt, c.Archived, c.ContentReference, c.OrganizationID, c.ProjectID, c.ID, expected).Scan(&c.Revision)
+	err = s.db.QueryRow(ctx, `UPDATE conversations SET owner_principal_id=$1,owner_subject=$2,title=$3,visibility=$4,status=$5,subject_work_item_id=NULLIF($6,''),work_item_id=NULLIF($7,''),linked_at=$8,revision=revision+1,provider_thread_id=$9,provider_thread_runner_id=$10,provider_thread_origin=$11,execution_json=$12,execution_status=$13,execution_lease_id=NULLIF($14,''),execution_settled=$15,event_seq=$16,preferences_json=$17,read_audience=$18,updated_at=$19,last_message_at=$20,settled_at=$21,archived=$22,content_attachment_id=$23 WHERE organization_id=$24 AND project_id=$25 AND id=$26 AND revision=$27 RETURNING revision`, c.OwnerPrincipalID, c.OwnerSubject, c.Title, c.Visibility, c.Status, c.SubjectWorkItemID, c.WorkItemID, c.LinkedAt, c.ProviderThreadID, c.ProviderThreadRunnerID, c.ProviderThreadOrigin, string(execution), c.Execution.Status, c.Execution.Owner.LeaseID, c.Execution.Settled, c.EventSequence, string(preferences), c.ReadAudience, c.UpdatedAt, c.LastMessageAt, c.SettledAt, c.Archived, c.ContentReference, c.OrganizationID, c.ProjectID, c.ID, expected).Scan(&c.Revision)
 	if err != nil {
 		return c, updated(ctx, err)
 	}
@@ -774,10 +778,10 @@ func (s *session) CreateMessage(ctx context.Context, m conversationstore.Message
 		return m, corestore.ErrInvalidPage
 	}
 	var lockedID string
-	if err := s.db.QueryRowContext(ctx, `SELECT id FROM conversations WHERE organization_id=$1 AND id=$2 FOR UPDATE`, m.OrganizationID, m.ConversationID).Scan(&lockedID); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT id FROM conversations WHERE organization_id=$1 AND id=$2 FOR UPDATE`, m.OrganizationID, m.ConversationID).Scan(&lockedID); err != nil {
 		return m, mapError(ctx, err)
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq),0)+1 FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2`, m.OrganizationID, m.ConversationID).Scan(&m.Sequence); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT COALESCE(MAX(seq),0)+1 FROM conversation_messages WHERE organization_id=$1 AND conversation_id=$2`, m.OrganizationID, m.ConversationID).Scan(&m.Sequence); err != nil {
 		return m, mapError(ctx, err)
 	}
 	actor, err := json.Marshal(m.Actor)
@@ -790,11 +794,11 @@ func (s *session) CreateMessage(ctx context.Context, m conversationstore.Message
 	if m.Revision == 0 {
 		m.Revision = 1
 	}
-	err = s.db.QueryRowContext(ctx, `INSERT INTO conversation_messages (organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,text_bytes,stored_text_bytes,tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27) RETURNING revision`, m.OrganizationID, m.ConversationID, m.ID, m.Sequence, m.Role, m.Kind, m.Text, string(m.Data), m.Delivery, m.AttemptID, m.ThreadID, m.TurnID, m.ProviderItemID, string(actor), m.CommandKey, m.CreatedAt, m.UpdatedAt, m.ContentReference, m.Revision, m.TextBytes, m.StoredTextBytes, m.ToolName, m.ToolItemID, m.ToolStatus, m.OperatorActionID, m.OperatorAgent, m.OperatorResult).Scan(&m.Revision)
+	err = s.db.QueryRow(ctx, `INSERT INTO conversation_messages (organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,text_bytes,stored_text_bytes,tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27) RETURNING revision`, m.OrganizationID, m.ConversationID, m.ID, m.Sequence, m.Role, m.Kind, m.Text, string(m.Data), m.Delivery, m.AttemptID, m.ThreadID, m.TurnID, m.ProviderItemID, string(actor), m.CommandKey, m.CreatedAt, m.UpdatedAt, m.ContentReference, m.Revision, m.TextBytes, m.StoredTextBytes, m.ToolName, m.ToolItemID, m.ToolStatus, m.OperatorActionID, m.OperatorAgent, m.OperatorResult).Scan(&m.Revision)
 	if err != nil {
 		return m, mapError(ctx, err)
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE conversations SET last_message_at=GREATEST(COALESCE(last_message_at,$1),$1) WHERE organization_id=$2 AND id=$3`, m.CreatedAt, m.OrganizationID, m.ConversationID)
+	_, err = s.db.Exec(ctx, `UPDATE conversations SET last_message_at=GREATEST(COALESCE(last_message_at,$1),$1) WHERE organization_id=$2 AND id=$3`, m.CreatedAt, m.OrganizationID, m.ConversationID)
 	return m, mapError(ctx, err)
 }
 
@@ -812,7 +816,7 @@ func (s *session) UpdateMessage(ctx context.Context, m conversationstore.Message
 	if len(m.Data) == 0 {
 		m.Data = json.RawMessage(`{}`)
 	}
-	err = s.db.QueryRowContext(ctx, `UPDATE conversation_messages SET role=$1,kind=$2,text=$3,data_json=$4,delivery=$5,attempt_id=$6,thread_id=$7,turn_id=$8,provider_item_id=$9,actor_json=$10,command_key=$11,updated_at=$12,content_attachment_id=$13,revision=revision+1,text_bytes=$14,stored_text_bytes=$15,tool_name=$16,tool_item_id=$17,tool_status=$18,operator_action_id=$19,operator_action_agent=$20,operator_action_result=$21 WHERE organization_id=$22 AND conversation_id=$23 AND id=$24 AND revision=$25 RETURNING revision`, m.Role, m.Kind, m.Text, string(m.Data), m.Delivery, m.AttemptID, m.ThreadID, m.TurnID, m.ProviderItemID, string(actor), m.CommandKey, m.UpdatedAt, m.ContentReference, m.TextBytes, m.StoredTextBytes, m.ToolName, m.ToolItemID, m.ToolStatus, m.OperatorActionID, m.OperatorAgent, m.OperatorResult, m.OrganizationID, m.ConversationID, m.ID, expected).Scan(&m.Revision)
+	err = s.db.QueryRow(ctx, `UPDATE conversation_messages SET role=$1,kind=$2,text=$3,data_json=$4,delivery=$5,attempt_id=$6,thread_id=$7,turn_id=$8,provider_item_id=$9,actor_json=$10,command_key=$11,updated_at=$12,content_attachment_id=$13,revision=revision+1,text_bytes=$14,stored_text_bytes=$15,tool_name=$16,tool_item_id=$17,tool_status=$18,operator_action_id=$19,operator_action_agent=$20,operator_action_result=$21 WHERE organization_id=$22 AND conversation_id=$23 AND id=$24 AND revision=$25 RETURNING revision`, m.Role, m.Kind, m.Text, string(m.Data), m.Delivery, m.AttemptID, m.ThreadID, m.TurnID, m.ProviderItemID, string(actor), m.CommandKey, m.UpdatedAt, m.ContentReference, m.TextBytes, m.StoredTextBytes, m.ToolName, m.ToolItemID, m.ToolStatus, m.OperatorActionID, m.OperatorAgent, m.OperatorResult, m.OrganizationID, m.ConversationID, m.ID, expected).Scan(&m.Revision)
 	if err != nil {
 		return m, updated(ctx, err)
 	}
@@ -834,7 +838,7 @@ func (s *session) UpsertQuestion(ctx context.Context, q conversationstore.Questi
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO conversation_questions (organization_id,conversation_id,id,message_id,request_id,attempt_id,thread_id,turn_id,status,prompts_json,answers_json,answered_by,expires_at,created_at,updated_at,content_attachment_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (organization_id,conversation_id,id) DO UPDATE SET message_id=excluded.message_id,request_id=excluded.request_id,attempt_id=excluded.attempt_id,thread_id=excluded.thread_id,turn_id=excluded.turn_id,status=excluded.status,prompts_json=excluded.prompts_json,answers_json=excluded.answers_json,answered_by=excluded.answered_by,expires_at=excluded.expires_at,updated_at=excluded.updated_at,content_attachment_id=excluded.content_attachment_id`, q.OrganizationID, q.ConversationID, q.ID, q.MessageID, q.RequestID, q.Owner.AttemptID, q.Owner.ThreadID, q.Owner.TurnID, q.Status, string(prompts), string(answers), q.AnsweredBy, q.ExpiresAt, q.CreatedAt, q.UpdatedAt, q.ContentReference)
+	_, err = s.db.Exec(ctx, `INSERT INTO conversation_questions (organization_id,conversation_id,id,message_id,request_id,attempt_id,thread_id,turn_id,status,prompts_json,answers_json,answered_by,expires_at,created_at,updated_at,content_attachment_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (organization_id,conversation_id,id) DO UPDATE SET message_id=excluded.message_id,request_id=excluded.request_id,attempt_id=excluded.attempt_id,thread_id=excluded.thread_id,turn_id=excluded.turn_id,status=excluded.status,prompts_json=excluded.prompts_json,answers_json=excluded.answers_json,answered_by=excluded.answered_by,expires_at=excluded.expires_at,updated_at=excluded.updated_at,content_attachment_id=excluded.content_attachment_id`, q.OrganizationID, q.ConversationID, q.ID, q.MessageID, q.RequestID, q.Owner.AttemptID, q.Owner.ThreadID, q.Owner.TurnID, q.Status, string(prompts), string(answers), q.AnsweredBy, q.ExpiresAt, q.CreatedAt, q.UpdatedAt, q.ContentReference)
 	return mapError(ctx, err)
 }
 
@@ -849,14 +853,11 @@ func (s *session) ReserveCommand(ctx context.Context, c conversationstore.Comman
 	if err != nil {
 		return c, false, err
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO conversation_commands (organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id,receipt_status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (organization_id,conversation_id,key) DO NOTHING`, c.OrganizationID, c.ConversationID, c.Key, c.Kind, c.RequestHash, string(receipt), c.CreatedAt, c.UpdatedAt, c.ContentReference, c.Receipt.Status)
+	result, err := s.db.Exec(ctx, `INSERT INTO conversation_commands (organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id,receipt_status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (organization_id,conversation_id,key) DO NOTHING`, c.OrganizationID, c.ConversationID, c.Key, c.Kind, c.RequestHash, string(receipt), c.CreatedAt, c.UpdatedAt, c.ContentReference, c.Receipt.Status)
 	if err != nil {
 		return c, false, mapError(ctx, err)
 	}
-	inserted, err := result.RowsAffected()
-	if err != nil {
-		return c, false, err
-	}
+	inserted := result.RowsAffected()
 	stored, ok, readErr := s.Command(ctx, c.ConversationID, c.Key)
 	if readErr != nil {
 		return c, false, readErr
@@ -878,14 +879,11 @@ func (s *session) UpdateCommand(ctx context.Context, c conversationstore.Command
 	if err != nil {
 		return err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE conversation_commands SET receipt_json=$1,receipt_status=$2,updated_at=$3,content_attachment_id=$4 WHERE organization_id=$5 AND conversation_id=$6 AND key=$7`, string(receipt), c.Receipt.Status, c.UpdatedAt, c.ContentReference, c.OrganizationID, c.ConversationID, c.Key)
+	result, err := s.db.Exec(ctx, `UPDATE conversation_commands SET receipt_json=$1,receipt_status=$2,updated_at=$3,content_attachment_id=$4 WHERE organization_id=$5 AND conversation_id=$6 AND key=$7`, string(receipt), c.Receipt.Status, c.UpdatedAt, c.ContentReference, c.OrganizationID, c.ConversationID, c.Key)
 	if err != nil {
 		return mapError(ctx, err)
 	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
+	count := result.RowsAffected()
 	if count == 0 {
 		return corestore.ErrNotFound
 	}
@@ -902,11 +900,11 @@ func (s *session) AppendConversationEvent(ctx context.Context, e conversationsto
 	if !e.Type.Valid() || !json.Valid(e.Data) {
 		return e, corestore.ErrInvalidPage
 	}
-	err := s.db.QueryRowContext(ctx, `UPDATE conversations SET event_seq=event_seq+1 WHERE organization_id=$1 AND id=$2 RETURNING event_seq`, e.OrganizationID, e.ConversationID).Scan(&e.Seq)
+	err := s.db.QueryRow(ctx, `UPDATE conversations SET event_seq=event_seq+1 WHERE organization_id=$1 AND id=$2 RETURNING event_seq`, e.OrganizationID, e.ConversationID).Scan(&e.Seq)
 	if err != nil {
 		return e, updated(ctx, err)
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO conversation_events (organization_id,conversation_id,seq,type,body_json,created_at,content_attachment_id) VALUES ($1,$2,$3,$4,$5,$6,$7)`, e.OrganizationID, e.ConversationID, e.Seq, e.Type, string(e.Data), e.CreatedAt, e.ContentReference)
+	_, err = s.db.Exec(ctx, `INSERT INTO conversation_events (organization_id,conversation_id,seq,type,body_json,created_at,content_attachment_id) VALUES ($1,$2,$3,$4,$5,$6,$7)`, e.OrganizationID, e.ConversationID, e.Seq, e.Type, string(e.Data), e.CreatedAt, e.ContentReference)
 	return e, mapError(ctx, err)
 }
 
@@ -914,7 +912,7 @@ func (s *session) RecordStart(ctx context.Context, attemptID, conversationID str
 	if attemptID == "" || conversationID == "" {
 		return corestore.ErrInvalidPage
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO conversation_starts (organization_id,attempt_id,conversation_id,created_at) VALUES ($1,$2,$3,$4)`, s.organization, attemptID, conversationID, at)
+	_, err := s.db.Exec(ctx, `INSERT INTO conversation_starts (organization_id,attempt_id,conversation_id,created_at) VALUES ($1,$2,$3,$4)`, s.organization, attemptID, conversationID, at)
 	return mapError(ctx, err)
 }
 
@@ -922,7 +920,7 @@ func (s *session) RecordAudience(ctx context.Context, conversationID, actor stri
 	if conversationID == "" || actor == "" || !from.Valid() || !to.Valid() || from == to {
 		return corestore.ErrInvalidPage
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO conversation_audience_events (organization_id,id,conversation_id,actor_principal_id,from_visibility,to_visibility,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`, s.organization, conversation.NewMessageID(), conversationID, actor, from, to, at)
+	_, err := s.db.Exec(ctx, `INSERT INTO conversation_audience_events (organization_id,id,conversation_id,actor_principal_id,from_visibility,to_visibility,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`, s.organization, conversation.NewMessageID(), conversationID, actor, from, to, at)
 	return mapError(ctx, err)
 }
 
@@ -930,7 +928,7 @@ func (s *session) RecordTurnBatch(ctx context.Context, attemptID, batchKey strin
 	if attemptID == "" || batchKey == "" || len(batchKey) > 128 || eventSequence < 0 {
 		return corestore.ErrInvalidPage
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO conversation_turn_batches (organization_id,attempt_id,batch_key,event_seq,created_at) VALUES ($1,$2,$3,$4,$5)`, s.organization, attemptID, batchKey, eventSequence, at)
+	_, err := s.db.Exec(ctx, `INSERT INTO conversation_turn_batches (organization_id,attempt_id,batch_key,event_seq,created_at) VALUES ($1,$2,$3,$4,$5)`, s.organization, attemptID, batchKey, eventSequence, at)
 	return mapError(ctx, err)
 }
 
@@ -938,7 +936,7 @@ func (s *session) ReplaceMessageReferences(ctx context.Context, conversationID, 
 	if len(references) > conversation.MaxReferences {
 		return corestore.ErrInvalidPage
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM message_references WHERE organization_id=$1 AND conversation_id=$2 AND message_id=$3`, s.organization, conversationID, messageID); err != nil {
+	if _, err := s.db.Exec(ctx, `DELETE FROM message_references WHERE organization_id=$1 AND conversation_id=$2 AND message_id=$3`, s.organization, conversationID, messageID); err != nil {
 		return mapError(ctx, err)
 	}
 	for position, r := range references {
@@ -949,7 +947,7 @@ func (s *session) ReplaceMessageReferences(ctx context.Context, conversationID, 
 			return corestore.ErrInvalidPage
 		}
 		r.Position = int64(position)
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO message_references (organization_id,conversation_id,message_id,position,target_kind,target_id,label,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, r.OrganizationID, r.ConversationID, r.MessageID, r.Position, r.Kind, r.TargetID, r.Label, at); err != nil {
+		if _, err := s.db.Exec(ctx, `INSERT INTO message_references (organization_id,conversation_id,message_id,position,target_kind,target_id,label,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, r.OrganizationID, r.ConversationID, r.MessageID, r.Position, r.Kind, r.TargetID, r.Label, at); err != nil {
 			return mapError(ctx, err)
 		}
 	}
@@ -960,7 +958,7 @@ func (s *session) PutToolRevision(ctx context.Context, r conversationstore.ToolR
 	if err := s.checkOrganization(r.OrganizationID); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO conversation_tool_revisions (organization_id,conversation_id,message_id,revision,text,tool,item_id,status,content_attachment_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (organization_id,conversation_id,message_id,revision) DO UPDATE SET text=excluded.text,tool=excluded.tool,item_id=excluded.item_id,status=excluded.status,content_attachment_id=excluded.content_attachment_id`, r.OrganizationID, r.ConversationID, r.MessageID, r.Revision, r.Text, r.Tool, r.ItemID, r.Status, r.ContentReference)
+	_, err := s.db.Exec(ctx, `INSERT INTO conversation_tool_revisions (organization_id,conversation_id,message_id,revision,text,tool,item_id,status,content_attachment_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (organization_id,conversation_id,message_id,revision) DO UPDATE SET text=excluded.text,tool=excluded.tool,item_id=excluded.item_id,status=excluded.status,content_attachment_id=excluded.content_attachment_id`, r.OrganizationID, r.ConversationID, r.MessageID, r.Revision, r.Text, r.Tool, r.ItemID, r.Status, r.ContentReference)
 	return mapError(ctx, err)
 }
 

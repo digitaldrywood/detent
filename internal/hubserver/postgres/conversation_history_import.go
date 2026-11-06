@@ -135,11 +135,11 @@ func (r *Repository) beginConversationHistoryImport(ctx context.Context, organiz
 	var completed bool
 	var importedRows int64
 	err := r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO conversation_history_imports(organization_id,source_schema,snapshot_id,catalog_digest) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id) DO NOTHING`, organization, sourceSchema, snapshotID, catalogDigest); err != nil {
+		if _, err := s.db.Exec(ctx, `INSERT INTO conversation_history_imports(organization_id,source_schema,snapshot_id,catalog_digest) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id) DO NOTHING`, organization, sourceSchema, snapshotID, catalogDigest); err != nil {
 			return mapError(ctx, err)
 		}
 		var storedSchema, storedSnapshot, storedCatalog string
-		if err := s.db.QueryRowContext(ctx, `SELECT source_schema,snapshot_id,catalog_digest,completed,rows FROM conversation_history_imports WHERE organization_id=$1`, organization).Scan(&storedSchema, &storedSnapshot, &storedCatalog, &completed, &importedRows); err != nil {
+		if err := s.db.QueryRow(ctx, `SELECT source_schema,snapshot_id,catalog_digest,completed,rows FROM conversation_history_imports WHERE organization_id=$1`, organization).Scan(&storedSchema, &storedSnapshot, &storedCatalog, &completed, &importedRows); err != nil {
 			return mapError(ctx, err)
 		}
 		if storedSchema != sourceSchema || storedSnapshot != snapshotID || storedCatalog != catalogDigest {
@@ -152,14 +152,11 @@ func (r *Repository) beginConversationHistoryImport(ctx context.Context, organiz
 
 func (r *Repository) completeConversationHistoryImport(ctx context.Context, organization tracker.OrganizationID, sourceSchema, snapshotID, catalogDigest string, rows int64) error {
 	return r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
-		result, err := s.db.ExecContext(ctx, `UPDATE conversation_history_imports SET completed=true,rows=$5 WHERE organization_id=$1 AND source_schema=$2 AND snapshot_id=$3 AND catalog_digest=$4 AND (NOT completed OR rows=$5)`, organization, sourceSchema, snapshotID, catalogDigest, rows)
+		result, err := s.db.Exec(ctx, `UPDATE conversation_history_imports SET completed=true,rows=$5 WHERE organization_id=$1 AND source_schema=$2 AND snapshot_id=$3 AND catalog_digest=$4 AND (NOT completed OR rows=$5)`, organization, sourceSchema, snapshotID, catalogDigest, rows)
 		if err != nil {
 			return mapError(ctx, err)
 		}
-		count, err := result.RowsAffected()
-		if err != nil {
-			return mapError(ctx, err)
-		}
+		count := result.RowsAffected()
 		if count != 1 {
 			return mutation.ErrConflict
 		}

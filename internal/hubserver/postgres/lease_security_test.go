@@ -33,9 +33,9 @@ func TestLeaseFamilyRowSecurity(t *testing.T) {
 			for _, org := range []string{"", "org_unknown", "org_first", "org_second"} {
 				t.Run("scope_"+org, func(t *testing.T) {
 					tx := tenantTx(t, runtime, pool, org)
-					defer tx.Rollback()
+					defer tx.Rollback(t.Context())
 					var count int
-					if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM "+tc.table).Scan(&count); err != nil {
+					if err := tx.QueryRow(t.Context(), "SELECT count(*) FROM "+tc.table).Scan(&count); err != nil {
 						t.Fatal(err)
 					}
 					want := 0
@@ -45,11 +45,11 @@ func TestLeaseFamilyRowSecurity(t *testing.T) {
 					if count != want {
 						t.Fatalf("unfiltered rows=%d, want %d", count, want)
 					}
-					result, err := tx.ExecContext(t.Context(), "DELETE FROM "+tc.table+" WHERE organization_id='org_foreign'")
+					result, err := tx.Exec(t.Context(), "DELETE FROM "+tc.table+" WHERE organization_id='org_foreign'")
 					if err != nil {
 						t.Fatal(err)
 					}
-					if n, err := result.RowsAffected(); err != nil || n != 0 {
+					if n := result.RowsAffected(); n != 0 {
 						t.Fatalf("foreign delete=%d error=%v", n, err)
 					}
 				})
@@ -57,12 +57,12 @@ func TestLeaseFamilyRowSecurity(t *testing.T) {
 			for _, operation := range []string{"insert", "move"} {
 				t.Run(operation, func(t *testing.T) {
 					tx := tenantTx(t, runtime, pool, "org_first")
-					defer tx.Rollback()
+					defer tx.Rollback(t.Context())
 					query := "UPDATE " + tc.table + " SET organization_id='org_foreign'"
 					if operation == "insert" {
 						query = fmt.Sprintf("INSERT INTO %s(organization_id,%s) SELECT 'org_foreign',%s FROM %s LIMIT 1", tc.table, tc.columns, tc.columns, tc.table)
 					}
-					_, err := tx.ExecContext(t.Context(), query)
+					_, err := tx.Exec(t.Context(), query)
 					requireSQLState(t, err, "42501")
 				})
 			}
@@ -144,8 +144,8 @@ func TestLeaseFamilyConstraints(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tx := tenantTx(t, runtime, pool, "org_first")
-			defer tx.Rollback()
-			_, err := tx.ExecContext(t.Context(), tc.query)
+			defer tx.Rollback(t.Context())
+			_, err := tx.Exec(t.Context(), tc.query)
 			requireSQLState(t, err, tc.state)
 		})
 	}

@@ -54,9 +54,9 @@ func TestOAuthClientMigrationAndBackfill(t *testing.T) {
 			query string
 			args  []any
 		}{
-			{"INSERT INTO oauth_clients(id,name,auth_method,secret_hash,created_at) VALUES(?,?,?,?,?)", []any{id, registration.Name, registration.AuthMethod, registration.SecretHash, created}},
-			{"INSERT INTO oauth_grants(id,client_id,owner_subject,owner_email,organization_id,permission,resource,created_at,access_hash,access_expires_at) VALUES(?,?,?,?,?,?,?,?,?,?)", []any{"grant_" + id, id, "user_owner", "owner@example.test", "org_example", "write", testPublicURL + "/mcp", created, apikey.HashToken("access_" + id), "2026-11-01T00:00:00Z"}},
-			{"INSERT INTO oauth_refresh_tokens(organization_id,token_hash,grant_id,expires_at) VALUES('org_example',?,?,?)", []any{apikey.HashToken("refresh_" + id), "grant_" + id, "2026-11-01T00:00:00Z"}},
+			{"INSERT INTO platform.oauth_clients(id,name,auth_method,secret_hash,created_at) VALUES($1,$2,$3,$4,$5)", []any{id, registration.Name, registration.AuthMethod, registration.SecretHash, created}},
+			{"INSERT INTO platform.oauth_grants(id,client_id,owner_subject,owner_email,organization_id,permission,resource,created_at,access_hash,access_expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", []any{"grant_" + id, id, "user_owner", "owner@example.test", "org_example", "write", testPublicURL + "/mcp", created, apikey.HashToken("access_" + id), "2026-11-01T00:00:00Z"}},
+			{"INSERT INTO platform.oauth_refresh_tokens(organization_id,token_hash,grant_id,expires_at) VALUES('org_example',$1,$2,$3)", []any{apikey.HashToken("refresh_" + id), "grant_" + id, "2026-11-01T00:00:00Z"}},
 		} {
 			if _, err := db.ExecContext(ctx, statement.query, statement.args...); err != nil {
 				t.Fatal(err)
@@ -65,7 +65,7 @@ func TestOAuthClientMigrationAndBackfill(t *testing.T) {
 	}
 	for _, id := range append(slices.Clone(ids), broken) {
 		var accessHash, refreshHash string
-		if err := storage.reader.QueryRowContext(ctx, `SELECT g.access_hash,t.token_hash FROM oauth_grants g JOIN oauth_refresh_tokens t ON t.grant_id=g.id WHERE g.client_id=? AND g.revoked_at IS NULL`, id).Scan(&accessHash, &refreshHash); err != nil || accessHash != apikey.HashToken("access_"+id) || refreshHash != apikey.HashToken("refresh_"+id) {
+		if err := storage.reader.QueryRowContext(ctx, `SELECT g.access_hash,t.token_hash FROM platform.oauth_grants g JOIN platform.oauth_refresh_tokens t ON t.grant_id=g.id WHERE g.client_id=$1 AND g.revoked_at IS NULL`, id).Scan(&accessHash, &refreshHash); err != nil || accessHash != apikey.HashToken("access_"+id) || refreshHash != apikey.HashToken("refresh_"+id) {
 			t.Fatalf("live grant changed by migration: %v", err)
 		}
 	}
@@ -81,7 +81,7 @@ func TestOAuthClientMigrationAndBackfill(t *testing.T) {
 			want = 2
 		}
 		var count int
-		if err := storage.reader.QueryRowContext(ctx, "SELECT count(*) FROM oauth_client_redirect_uris WHERE client_id=?", id).Scan(&count); err != nil || count != want {
+		if err := storage.reader.QueryRowContext(ctx, "SELECT count(*) FROM platform.oauth_client_redirect_uris WHERE client_id=$1", id).Scan(&count); err != nil || count != want {
 			t.Fatalf("client %d committed redirects=%d want=%d err=%v", i, count, want, err)
 		}
 	}
@@ -117,7 +117,7 @@ func TestOAuthClientMigrationAndBackfill(t *testing.T) {
 		t.Fatal("cancelled backfill continued")
 	}
 	var missing int
-	if err := storage.reader.QueryRowContext(ctx, `SELECT count(*) FROM oauth_clients c WHERE NOT EXISTS(SELECT 1 FROM oauth_client_redirect_uris u WHERE u.client_id=c.id)`).Scan(&missing); err != nil || missing != 1 {
+	if err := storage.reader.QueryRowContext(ctx, `SELECT count(*) FROM platform.oauth_clients c WHERE NOT EXISTS(SELECT 1 FROM platform.oauth_client_redirect_uris u WHERE u.client_id=c.id)`).Scan(&missing); err != nil || missing != 1 {
 		t.Fatalf("missing redirects=%d err=%v", missing, err)
 	}
 	if _, err := s.oauthRegistration(ctx, broken); err == nil {

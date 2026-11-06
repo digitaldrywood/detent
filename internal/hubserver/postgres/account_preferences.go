@@ -2,9 +2,10 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
@@ -21,8 +22,8 @@ func (r *Repository) ReleasePreference(ctx context.Context, organization tracker
 		if _, err := s.authorizeAccountPreference(ctx, user, membership, principal); err != nil {
 			return err
 		}
-		err := s.db.QueryRowContext(ctx, `SELECT version,build_time FROM hosted_release_preferences WHERE organization_id=$1 AND user_id=$2`, organization, user).Scan(&preference.Version, &preference.BuildTime)
-		if errors.Is(err, sql.ErrNoRows) {
+		err := s.db.QueryRow(ctx, `SELECT version,build_time FROM hosted_release_preferences WHERE organization_id=$1 AND user_id=$2`, organization, user).Scan(&preference.Version, &preference.BuildTime)
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
@@ -32,7 +33,7 @@ func (r *Repository) ReleasePreference(ctx context.Context, organization tracker
 		return nil
 	})
 	if err == nil && !found {
-		return accountstore.ReleasePreference{}, sql.ErrNoRows
+		return accountstore.ReleasePreference{}, pgx.ErrNoRows
 	}
 	return preference, err
 }
@@ -42,7 +43,7 @@ func (r *Repository) SetReleasePreference(ctx context.Context, organization trac
 		if _, err := s.authorizeAccountPreference(ctx, user, membership, principal); err != nil {
 			return err
 		}
-		_, err := s.db.ExecContext(ctx, `INSERT INTO hosted_release_preferences (organization_id,user_id,version,build_time) VALUES ($1,$2,$3,$4) ON CONFLICT (organization_id,user_id) DO UPDATE SET version=excluded.version,build_time=excluded.build_time WHERE excluded.build_time>=hosted_release_preferences.build_time`, organization, user, preference.Version, preference.BuildTime)
+		_, err := s.db.Exec(ctx, `INSERT INTO hosted_release_preferences (organization_id,user_id,version,build_time) VALUES ($1,$2,$3,$4) ON CONFLICT (organization_id,user_id) DO UPDATE SET version=excluded.version,build_time=excluded.build_time WHERE excluded.build_time>=hosted_release_preferences.build_time`, organization, user, preference.Version, preference.BuildTime)
 		return mapError(ctx, err)
 	})
 }
@@ -56,8 +57,8 @@ func (r *Repository) DailySummaryPreference(ctx context.Context, organization tr
 		}
 		preference.Recipient = member.Email
 		var windowEnd time.Time
-		err = s.db.QueryRowContext(ctx, `SELECT enabled,send_minute,time_zone,weekdays,window_end,token FROM daily_summary_preferences WHERE organization_id=$1 AND user_id=$2`, organization, user).Scan(&preference.Enabled, &preference.SendMinute, &preference.TimeZone, &preference.Weekdays, &windowEnd, &preference.Token)
-		if errors.Is(err, sql.ErrNoRows) {
+		err = s.db.QueryRow(ctx, `SELECT enabled,send_minute,time_zone,weekdays,window_end,token FROM daily_summary_preferences WHERE organization_id=$1 AND user_id=$2`, organization, user).Scan(&preference.Enabled, &preference.SendMinute, &preference.TimeZone, &preference.Weekdays, &windowEnd, &preference.Token)
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
@@ -75,7 +76,7 @@ func (r *Repository) SetDailySummaryPreference(ctx context.Context, organization
 		if _, err := s.authorizeAccountPreference(ctx, user, membership, principal); err != nil {
 			return err
 		}
-		_, err := s.db.ExecContext(ctx, `INSERT INTO daily_summary_preferences (organization_id,user_id,enabled,send_minute,time_zone,weekdays,token,window_end,due_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (user_id,organization_id) DO UPDATE SET enabled=excluded.enabled,send_minute=excluded.send_minute,time_zone=excluded.time_zone,weekdays=excluded.weekdays,window_end=excluded.window_end,due_at=excluded.due_at`, organization, user, preference.Enabled, preference.SendMinute, preference.TimeZone, preference.Weekdays, token, time.Unix(preference.WindowEnd, 0).UTC(), time.Unix(dueAt, 0).UTC())
+		_, err := s.db.Exec(ctx, `INSERT INTO daily_summary_preferences (organization_id,user_id,enabled,send_minute,time_zone,weekdays,token,window_end,due_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (user_id,organization_id) DO UPDATE SET enabled=excluded.enabled,send_minute=excluded.send_minute,time_zone=excluded.time_zone,weekdays=excluded.weekdays,window_end=excluded.window_end,due_at=excluded.due_at`, organization, user, preference.Enabled, preference.SendMinute, preference.TimeZone, preference.Weekdays, token, time.Unix(preference.WindowEnd, 0).UTC(), time.Unix(dueAt, 0).UTC())
 		return mapError(ctx, err)
 	})
 }
@@ -106,14 +107,11 @@ func (s *session) authorizeAccountPreference(ctx context.Context, user, membersh
 
 func (r *Repository) UnsubscribeDailySummary(ctx context.Context, organization tracker.OrganizationID, token string) error {
 	return r.transaction(ctx, organization, corestore.Serving, false, func(s *session) error {
-		result, err := s.db.ExecContext(ctx, `UPDATE daily_summary_preferences SET enabled=false WHERE organization_id=$1 AND token=$2`, organization, token)
+		result, err := s.db.Exec(ctx, `UPDATE daily_summary_preferences SET enabled=false WHERE organization_id=$1 AND token=$2`, organization, token)
 		if err != nil {
 			return mapError(ctx, err)
 		}
-		count, err := result.RowsAffected()
-		if err != nil {
-			return mapError(ctx, err)
-		}
+		count := result.RowsAffected()
 		if count == 0 {
 			return corestore.ErrNotFound
 		}

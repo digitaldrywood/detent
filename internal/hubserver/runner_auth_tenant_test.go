@@ -15,8 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/labstack/echo/v4"
-	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -74,9 +75,9 @@ func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing
 		}
 		return nil
 	}); err != nil {
-		var postgresError *pq.Error
+		var postgresError *pgconn.PgError
 		if errors.As(err, &postgresError) {
-			t.Fatalf("seed runner records failed on constraint %q: %s", postgresError.Constraint, postgresError.Message)
+			t.Fatalf("seed runner records failed on constraint %q: %s", postgresError.ConstraintName, postgresError.Message)
 		}
 		t.Fatal(err)
 	}
@@ -331,9 +332,9 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 		}
 		return w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: "runner_example_two", MachineID: "machine_example_two", TokenID: "credential_example_two", EnrollmentID: "enrollment_example_two", Scope: "organization", Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, DisplayName: "Example runner two", CapacityLimit: 4, ReportedCapacity: 1, OS: "darwin", Architecture: "arm64", CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now})
 	}); err != nil {
-		var postgresError *pq.Error
+		var postgresError *pgconn.PgError
 		if errors.As(err, &postgresError) {
-			t.Fatalf("seed runner records failed on constraint %q: %s", postgresError.Constraint, postgresError.Message)
+			t.Fatalf("seed runner records failed on constraint %q: %s", postgresError.ConstraintName, postgresError.Message)
 		}
 		t.Fatal(err)
 	}

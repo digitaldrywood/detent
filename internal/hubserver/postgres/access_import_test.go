@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -45,7 +45,7 @@ func accessImportSourceFor(t *testing.T, db *sql.DB, schema string, organization
 			source.Schema[name][column] = definition.Source
 		}
 	}
-	if _, err := db.ExecContext(t.Context(), "CREATE SCHEMA "+pq.QuoteIdentifier(schema)); err != nil {
+	if _, err := db.ExecContext(t.Context(), "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
 		t.Fatal(err)
 	}
 	keys := make(map[string][]string, len(accessFixtureTables))
@@ -65,7 +65,7 @@ func accessImportSourceFor(t *testing.T, db *sql.DB, schema string, organization
 			if sourceType == "BLOB" {
 				typeName = "bytea"
 			}
-			columns = append(columns, pq.QuoteIdentifier(column)+" "+typeName)
+			columns = append(columns, pgx.Identifier{column}.Sanitize()+" "+typeName)
 			var row []json.RawMessage
 			if err := json.Unmarshal([]byte(sourceDefinition.Source), &row); err != nil || len(row) < 6 {
 				t.Fatalf("decode source key metadata for %s.%s: %v", name, column, err)
@@ -89,9 +89,9 @@ func accessImportSourceFor(t *testing.T, db *sql.DB, schema string, organization
 		}
 		quotedKeys := make([]string, len(keys[name]))
 		for n, key := range keys[name] {
-			quotedKeys[n] = pq.QuoteIdentifier(key)
+			quotedKeys[n] = pgx.Identifier{key}.Sanitize()
 		}
-		statement := "CREATE TABLE " + pq.QuoteIdentifier(schema) + "." + pq.QuoteIdentifier(name) + " (" + strings.Join(columns, ",") + ", PRIMARY KEY (" + strings.Join(quotedKeys, ",") + "))"
+		statement := "CREATE TABLE " + pgx.Identifier{schema}.Sanitize() + "." + pgx.Identifier{name}.Sanitize() + " (" + strings.Join(columns, ",") + ", PRIMARY KEY (" + strings.Join(quotedKeys, ",") + "))"
 		if _, err := db.ExecContext(t.Context(), statement); err != nil {
 			t.Fatal(err)
 		}
@@ -142,9 +142,9 @@ func insertAccessSourceRow(t *testing.T, db *sql.DB, schema, table string, schem
 	slices.Sort(columns)
 	quoted, placeholders, args := make([]string, len(columns)), make([]string, len(columns)), make([]any, len(columns))
 	for n, name := range columns {
-		quoted[n], placeholders[n], args[n] = pq.QuoteIdentifier(name), fmt.Sprintf("$%d", n+1), values[name]
+		quoted[n], placeholders[n], args[n] = pgx.Identifier{name}.Sanitize(), fmt.Sprintf("$%d", n+1), values[name]
 	}
-	statement := "INSERT INTO " + pq.QuoteIdentifier(schema) + "." + pq.QuoteIdentifier(table) + " (" + strings.Join(quoted, ",") + ") VALUES (" + strings.Join(placeholders, ",") + ")"
+	statement := "INSERT INTO " + pgx.Identifier{schema}.Sanitize() + "." + pgx.Identifier{table}.Sanitize() + " (" + strings.Join(quoted, ",") + ") VALUES (" + strings.Join(placeholders, ",") + ")"
 	if _, err := db.ExecContext(t.Context(), statement, args...); err != nil {
 		t.Fatalf("insert raw source row for %s: %v", table, err)
 	}
@@ -326,7 +326,7 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 	}
 	for _, table := range []string{"api_tokens", "hosted_members", "hosted_project_grants", "token_grants", "hosted_sessions", "hosted_transactions", "hosted_invitations", "hosted_member_reservations", "hosted_binding_migrations", "organization_secrets", "organization_secret_audit", "project_secrets", "project_secret_audit", "hosted_audit", "hosted_audit_times"} {
 		var count int
-		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM "+pq.QuoteIdentifier(table)).Scan(&count); err != nil || count != 2 {
+		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM "+pgx.Identifier{table}.Sanitize()).Scan(&count); err != nil || count != 2 {
 			t.Errorf("shared %s rows=%d, err=%v", table, count, err)
 		}
 	}

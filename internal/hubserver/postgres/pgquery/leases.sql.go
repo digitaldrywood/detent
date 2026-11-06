@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
 )
 
 const advanceLeaseAttempt = `-- name: AdvanceLeaseAttempt :one
@@ -44,7 +43,7 @@ type AdvanceLeaseAttemptParams struct {
 }
 
 func (q *Queries) AdvanceLeaseAttempt(ctx context.Context, arg AdvanceLeaseAttemptParams) (NativeAttempt, error) {
-	row := q.db.QueryRowContext(ctx, advanceLeaseAttempt,
+	row := q.db.QueryRow(ctx, advanceLeaseAttempt,
 		arg.NextSequence,
 		arg.UsageCorrection,
 		arg.Status,
@@ -93,7 +92,7 @@ type BindAttemptRunParams struct {
 }
 
 func (q *Queries) BindAttemptRun(ctx context.Context, arg BindAttemptRunParams) error {
-	_, err := q.db.ExecContext(ctx, bindAttemptRun, arg.OrganizationID, arg.RunID, arg.IssueID)
+	_, err := q.db.Exec(ctx, bindAttemptRun, arg.OrganizationID, arg.RunID, arg.IssueID)
 	return err
 }
 
@@ -110,7 +109,7 @@ type CancelLeaseAttemptParams struct {
 }
 
 func (q *Queries) CancelLeaseAttempt(ctx context.Context, arg CancelLeaseAttemptParams) error {
-	_, err := q.db.ExecContext(ctx, cancelLeaseAttempt,
+	_, err := q.db.Exec(ctx, cancelLeaseAttempt,
 		arg.OrganizationID,
 		arg.LeaseID,
 		arg.FencingToken,
@@ -134,7 +133,7 @@ type ExpireLeaseParams struct {
 }
 
 func (q *Queries) ExpireLease(ctx context.Context, arg ExpireLeaseParams) (Lease, error) {
-	row := q.db.QueryRowContext(ctx, expireLease,
+	row := q.db.QueryRow(ctx, expireLease,
 		arg.Now,
 		arg.OrganizationID,
 		arg.LeaseID,
@@ -170,7 +169,7 @@ type GetActiveIssueLeaseParams struct {
 }
 
 func (q *Queries) GetActiveIssueLease(ctx context.Context, arg GetActiveIssueLeaseParams) (Lease, error) {
-	row := q.db.QueryRowContext(ctx, getActiveIssueLease, arg.OrganizationID, arg.IssueID)
+	row := q.db.QueryRow(ctx, getActiveIssueLease, arg.OrganizationID, arg.IssueID)
 	var i Lease
 	err := row.Scan(
 		&i.OrganizationID,
@@ -201,7 +200,7 @@ type GetAttemptReceiptParams struct {
 }
 
 func (q *Queries) GetAttemptReceipt(ctx context.Context, arg GetAttemptReceiptParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, getAttemptReceipt, arg.OrganizationID, arg.AttemptID, arg.Sequence)
+	row := q.db.QueryRow(ctx, getAttemptReceipt, arg.OrganizationID, arg.AttemptID, arg.Sequence)
 	var request_hash string
 	err := row.Scan(&request_hash)
 	return request_hash, err
@@ -217,7 +216,7 @@ type GetLatestIssueAttemptParams struct {
 }
 
 func (q *Queries) GetLatestIssueAttempt(ctx context.Context, arg GetLatestIssueAttemptParams) (NativeAttempt, error) {
-	row := q.db.QueryRowContext(ctx, getLatestIssueAttempt, arg.OrganizationID, arg.IssueID)
+	row := q.db.QueryRow(ctx, getLatestIssueAttempt, arg.OrganizationID, arg.IssueID)
 	var i NativeAttempt
 	err := row.Scan(
 		&i.OrganizationID,
@@ -258,7 +257,7 @@ type GetLatestIssueAttemptsByIssuesParams struct {
 }
 
 func (q *Queries) GetLatestIssueAttemptsByIssues(ctx context.Context, arg GetLatestIssueAttemptsByIssuesParams) ([]NativeAttempt, error) {
-	rows, err := q.db.QueryContext(ctx, getLatestIssueAttemptsByIssues, pq.Array(arg.IssueIds), arg.OrganizationID)
+	rows, err := q.db.Query(ctx, getLatestIssueAttemptsByIssues, arg.IssueIds, arg.OrganizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -289,9 +288,6 @@ func (q *Queries) GetLatestIssueAttemptsByIssues(ctx context.Context, arg GetLat
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -308,7 +304,7 @@ type GetLeaseParams struct {
 }
 
 func (q *Queries) GetLease(ctx context.Context, arg GetLeaseParams) (Lease, error) {
-	row := q.db.QueryRowContext(ctx, getLease, arg.OrganizationID, arg.LeaseID)
+	row := q.db.QueryRow(ctx, getLease, arg.OrganizationID, arg.LeaseID)
 	var i Lease
 	err := row.Scan(
 		&i.OrganizationID,
@@ -338,7 +334,7 @@ type GetLeaseAttemptParams struct {
 }
 
 func (q *Queries) GetLeaseAttempt(ctx context.Context, arg GetLeaseAttemptParams) (NativeAttempt, error) {
-	row := q.db.QueryRowContext(ctx, getLeaseAttempt, arg.OrganizationID, arg.ID)
+	row := q.db.QueryRow(ctx, getLeaseAttempt, arg.OrganizationID, arg.ID)
 	var i NativeAttempt
 	err := row.Scan(
 		&i.OrganizationID,
@@ -373,7 +369,7 @@ type HeartbeatLeaseMachineParams struct {
 }
 
 func (q *Queries) HeartbeatLeaseMachine(ctx context.Context, arg HeartbeatLeaseMachineParams) error {
-	_, err := q.db.ExecContext(ctx, heartbeatLeaseMachine, arg.OrganizationID, arg.ID, arg.LastHeartbeatAt)
+	_, err := q.db.Exec(ctx, heartbeatLeaseMachine, arg.OrganizationID, arg.ID, arg.LastHeartbeatAt)
 	return err
 }
 
@@ -389,7 +385,7 @@ type InsertAttemptReceiptParams struct {
 }
 
 func (q *Queries) InsertAttemptReceipt(ctx context.Context, arg InsertAttemptReceiptParams) error {
-	_, err := q.db.ExecContext(ctx, insertAttemptReceipt,
+	_, err := q.db.Exec(ctx, insertAttemptReceipt,
 		arg.OrganizationID,
 		arg.AttemptID,
 		arg.Sequence,
@@ -416,7 +412,7 @@ type InsertLeaseParams struct {
 }
 
 func (q *Queries) InsertLease(ctx context.Context, arg InsertLeaseParams) (Lease, error) {
-	row := q.db.QueryRowContext(ctx, insertLease,
+	row := q.db.QueryRow(ctx, insertLease,
 		arg.OrganizationID,
 		arg.LeaseID,
 		arg.IssueID,
@@ -470,7 +466,7 @@ type InsertLeaseAttemptParams struct {
 }
 
 func (q *Queries) InsertLeaseAttempt(ctx context.Context, arg InsertLeaseAttemptParams) (NativeAttempt, error) {
-	row := q.db.QueryRowContext(ctx, insertLeaseAttempt,
+	row := q.db.QueryRow(ctx, insertLeaseAttempt,
 		arg.OrganizationID,
 		arg.ID,
 		arg.IssueID,
@@ -515,7 +511,7 @@ SELECT clock_timestamp()::timestamptz AS now
 `
 
 func (q *Queries) LeaseTime(ctx context.Context) (time.Time, error) {
-	row := q.db.QueryRowContext(ctx, leaseTime)
+	row := q.db.QueryRow(ctx, leaseTime)
 	var now time.Time
 	err := row.Scan(&now)
 	return now, err
@@ -532,7 +528,7 @@ type LeaseUsageParams struct {
 }
 
 func (q *Queries) LeaseUsage(ctx context.Context, arg LeaseUsageParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, leaseUsage, arg.OrganizationID, arg.MachineID, arg.Now)
+	row := q.db.QueryRow(ctx, leaseUsage, arg.OrganizationID, arg.MachineID, arg.Now)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -548,7 +544,7 @@ type LockActiveLeaseParams struct {
 }
 
 func (q *Queries) LockActiveLease(ctx context.Context, arg LockActiveLeaseParams) (Lease, error) {
-	row := q.db.QueryRowContext(ctx, lockActiveLease, arg.OrganizationID, arg.IssueID)
+	row := q.db.QueryRow(ctx, lockActiveLease, arg.OrganizationID, arg.IssueID)
 	var i Lease
 	err := row.Scan(
 		&i.OrganizationID,
@@ -578,7 +574,7 @@ type LockAttemptIssueParams struct {
 }
 
 func (q *Queries) LockAttemptIssue(ctx context.Context, arg LockAttemptIssueParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, lockAttemptIssue, arg.OrganizationID, arg.ID)
+	row := q.db.QueryRow(ctx, lockAttemptIssue, arg.OrganizationID, arg.ID)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
@@ -594,7 +590,7 @@ type LockAttemptProjectParams struct {
 }
 
 func (q *Queries) LockAttemptProject(ctx context.Context, arg LockAttemptProjectParams) (tracker.ProjectID, error) {
-	row := q.db.QueryRowContext(ctx, lockAttemptProject, arg.OrganizationID, arg.ID)
+	row := q.db.QueryRow(ctx, lockAttemptProject, arg.OrganizationID, arg.ID)
 	var id tracker.ProjectID
 	err := row.Scan(&id)
 	return id, err
@@ -615,7 +611,7 @@ type LockClaimIssueRow struct {
 }
 
 func (q *Queries) LockClaimIssue(ctx context.Context, arg LockClaimIssueParams) (LockClaimIssueRow, error) {
-	row := q.db.QueryRowContext(ctx, lockClaimIssue, arg.OrganizationID, arg.ID)
+	row := q.db.QueryRow(ctx, lockClaimIssue, arg.OrganizationID, arg.ID)
 	var i LockClaimIssueRow
 	err := row.Scan(&i.Revision, &i.Archived)
 	return i, err
@@ -631,7 +627,7 @@ type LockLeaseParams struct {
 }
 
 func (q *Queries) LockLease(ctx context.Context, arg LockLeaseParams) (Lease, error) {
-	row := q.db.QueryRowContext(ctx, lockLease, arg.OrganizationID, arg.LeaseID)
+	row := q.db.QueryRow(ctx, lockLease, arg.OrganizationID, arg.LeaseID)
 	var i Lease
 	err := row.Scan(
 		&i.OrganizationID,
@@ -661,7 +657,7 @@ type LockRunnerHostRevisionParams struct {
 }
 
 func (q *Queries) LockRunnerHostRevision(ctx context.Context, arg LockRunnerHostRevisionParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, lockRunnerHostRevision, arg.OrganizationID, arg.ID)
+	row := q.db.QueryRow(ctx, lockRunnerHostRevision, arg.OrganizationID, arg.ID)
 	var routing_revision int64
 	err := row.Scan(&routing_revision)
 	return routing_revision, err
@@ -682,7 +678,7 @@ type PageIssueAttemptsParams struct {
 }
 
 func (q *Queries) PageIssueAttempts(ctx context.Context, arg PageIssueAttemptsParams) ([]NativeAttempt, error) {
-	rows, err := q.db.QueryContext(ctx, pageIssueAttempts,
+	rows, err := q.db.Query(ctx, pageIssueAttempts,
 		arg.OrganizationID,
 		arg.IssueID,
 		arg.BeforeFence,
@@ -718,9 +714,6 @@ func (q *Queries) PageIssueAttempts(ctx context.Context, arg PageIssueAttemptsPa
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -742,7 +735,7 @@ type PageIssueAttemptsOldestParams struct {
 }
 
 func (q *Queries) PageIssueAttemptsOldest(ctx context.Context, arg PageIssueAttemptsOldestParams) ([]NativeAttempt, error) {
-	rows, err := q.db.QueryContext(ctx, pageIssueAttemptsOldest,
+	rows, err := q.db.Query(ctx, pageIssueAttemptsOldest,
 		arg.OrganizationID,
 		arg.IssueID,
 		arg.AfterFence,
@@ -778,9 +771,6 @@ func (q *Queries) PageIssueAttemptsOldest(ctx context.Context, arg PageIssueAtte
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -803,7 +793,7 @@ type PageIssueCheckpointAttemptsParams struct {
 }
 
 func (q *Queries) PageIssueCheckpointAttempts(ctx context.Context, arg PageIssueCheckpointAttemptsParams) ([]NativeAttempt, error) {
-	rows, err := q.db.QueryContext(ctx, pageIssueCheckpointAttempts,
+	rows, err := q.db.Query(ctx, pageIssueCheckpointAttempts,
 		arg.OrganizationID,
 		arg.IssueID,
 		arg.BeforeFence,
@@ -839,9 +829,6 @@ func (q *Queries) PageIssueCheckpointAttempts(ctx context.Context, arg PageIssue
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -865,7 +852,7 @@ type RegisterLeaseMachineParams struct {
 }
 
 func (q *Queries) RegisterLeaseMachine(ctx context.Context, arg RegisterLeaseMachineParams) error {
-	_, err := q.db.ExecContext(ctx, registerLeaseMachine,
+	_, err := q.db.Exec(ctx, registerLeaseMachine,
 		arg.OrganizationID,
 		arg.ID,
 		arg.Hostname,
@@ -895,7 +882,7 @@ type RegisterOwnedMachineParams struct {
 }
 
 func (q *Queries) RegisterOwnedMachine(ctx context.Context, arg RegisterOwnedMachineParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, registerOwnedMachine,
+	result, err := q.db.Exec(ctx, registerOwnedMachine,
 		arg.OrganizationID,
 		arg.ID,
 		arg.Hostname,
@@ -907,7 +894,7 @@ func (q *Queries) RegisterOwnedMachine(ctx context.Context, arg RegisterOwnedMac
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const releaseLease = `-- name: ReleaseLease :one
@@ -926,7 +913,7 @@ type ReleaseLeaseParams struct {
 }
 
 func (q *Queries) ReleaseLease(ctx context.Context, arg ReleaseLeaseParams) (Lease, error) {
-	row := q.db.QueryRowContext(ctx, releaseLease,
+	row := q.db.QueryRow(ctx, releaseLease,
 		arg.Now,
 		arg.Reason,
 		arg.OrganizationID,
@@ -970,7 +957,7 @@ type RenewLeaseParams struct {
 }
 
 func (q *Queries) RenewLease(ctx context.Context, arg RenewLeaseParams) (Lease, error) {
-	row := q.db.QueryRowContext(ctx, renewLease,
+	row := q.db.QueryRow(ctx, renewLease,
 		arg.Now,
 		arg.ExpiresAt,
 		arg.LandingCapacity,
@@ -1012,7 +999,7 @@ type UpdateLeaseLandingCapacityParams struct {
 }
 
 func (q *Queries) UpdateLeaseLandingCapacity(ctx context.Context, arg UpdateLeaseLandingCapacityParams) (Lease, error) {
-	row := q.db.QueryRowContext(ctx, updateLeaseLandingCapacity,
+	row := q.db.QueryRow(ctx, updateLeaseLandingCapacity,
 		arg.LandingCapacity,
 		arg.OrganizationID,
 		arg.LeaseID,
@@ -1052,7 +1039,7 @@ type UpdateRunnerHostRoutingParams struct {
 }
 
 func (q *Queries) UpdateRunnerHostRouting(ctx context.Context, arg UpdateRunnerHostRoutingParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, updateRunnerHostRouting,
+	row := q.db.QueryRow(ctx, updateRunnerHostRouting,
 		arg.DisplayName,
 		arg.Capacity,
 		arg.OrganizationID,

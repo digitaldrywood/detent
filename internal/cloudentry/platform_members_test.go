@@ -40,7 +40,7 @@ func TestPlatformMemberSeeding(t *testing.T) {
 			t.Parallel()
 			registry := openTestRegistry(t)
 			for email, role := range test.existing {
-				if _, err := registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?, 'existing',?,?)", email, role, time.Now(), time.Now()); err != nil {
+				if _, err := registry.store.db.ExecContext(t.Context(), "INSERT INTO platform.platform_members VALUES($1,$2, 'existing',$3,$4)", email, role, time.Now(), time.Now()); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -64,7 +64,7 @@ func TestPlatformMemberSeeding(t *testing.T) {
 				}
 			}
 			var seeded int
-			if err := registry.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM platform_member_changes WHERE action='seeded' AND actor_email='bootstrap' AND reason!=''").Scan(&seeded); err != nil || int64(seeded) != listing.Revision {
+			if err := registry.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM platform.platform_member_changes WHERE action='seeded' AND actor_email='bootstrap' AND reason!=''").Scan(&seeded); err != nil || int64(seeded) != listing.Revision {
 				t.Fatalf("seeded = %d, revision = %d, %v", seeded, listing.Revision, err)
 			}
 			if err := registry.seedPlatformMembers(t.Context(), test.config); err != nil {
@@ -75,7 +75,7 @@ func TestPlatformMemberSeeding(t *testing.T) {
 				t.Fatalf("startup replay = %+v, %v", again, err)
 			}
 			if listing.Revision > 0 {
-				for _, statement := range []string{"DELETE FROM platform_member_changes", "UPDATE platform_member_changes SET role='viewer'"} {
+				for _, statement := range []string{"DELETE FROM platform.platform_member_changes", "UPDATE platform.platform_member_changes SET role='viewer'"} {
 					if _, err := registry.store.db.ExecContext(t.Context(), statement); err == nil {
 						t.Fatalf("audit mutation allowed: %s", statement)
 					}
@@ -128,7 +128,7 @@ func testPlatformMembersAPI(t *testing.T, configureStorage func(*Config)) {
 	t.Parallel()
 	f := newEntryFixture(t, configureStorage)
 	for email, role := range map[string]string{"admin@example.test": "admin", "supporter@example.test": "support", "billing@example.test": "billing", "viewer@example.test": "viewer"} {
-		if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?, 'fixture',?,?)", email, role, formatTime(f.service.config.now()), formatTime(f.service.config.now())); err != nil {
+		if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform.platform_members VALUES($1,$2, 'fixture',$3,$4)", email, role, formatTime(f.service.config.now()), formatTime(f.service.config.now())); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -144,7 +144,7 @@ func testPlatformMembersAPI(t *testing.T, configureStorage func(*Config)) {
 					t.Fatal(err)
 				}
 				session.Identity.SupportActor = "admin@example.test"
-				if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE sessions SET support_actor=? WHERE token_hash=?", session.Identity.SupportActor, session.Hash); err != nil {
+				if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE platform.sessions SET support_actor=$1 WHERE token_hash=$2", session.Identity.SupportActor, session.Hash); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -276,7 +276,7 @@ func testPlatformMembersAPI(t *testing.T, configureStorage func(*Config)) {
 		})
 	}
 	var changes int
-	if err := f.service.registry.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM platform_member_changes WHERE actor_subject='user_admin' AND actor_email='admin@example.test' AND reason!='' AND action IN ('added','role_changed','removed')").Scan(&changes); err != nil || changes != 3 {
+	if err := f.service.registry.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM platform.platform_member_changes WHERE actor_subject='user_admin' AND actor_email='admin@example.test' AND reason!='' AND action IN ('added','role_changed','removed')").Scan(&changes); err != nil || changes != 3 {
 		t.Fatalf("changes = %d %v", changes, err)
 	}
 	for _, event := range []string{platformMemberList, platformMemberAdd, platformMemberChange, platformMemberRemove} {
@@ -284,7 +284,7 @@ func testPlatformMembersAPI(t *testing.T, configureStorage func(*Config)) {
 			t.Fatalf("missing audit %s", event)
 		}
 	}
-	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "DELETE FROM platform_members WHERE email='bootstrap@example.test'"); err != nil {
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "DELETE FROM platform.platform_members WHERE email='bootstrap@example.test'"); err != nil {
 		t.Fatal(err)
 	}
 	for _, method := range []string{http.MethodPatch, http.MethodDelete} {

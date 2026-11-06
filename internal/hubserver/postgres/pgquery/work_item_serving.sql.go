@@ -24,7 +24,7 @@ type CommentBySourceParams struct {
 }
 
 func (q *Queries) CommentBySource(ctx context.Context, arg CommentBySourceParams) (NativeComment, error) {
-	row := q.db.QueryRowContext(ctx, commentBySource,
+	row := q.db.QueryRow(ctx, commentBySource,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -65,7 +65,7 @@ type LockWorkItemParams struct {
 }
 
 func (q *Queries) LockWorkItem(ctx context.Context, arg LockWorkItemParams) (Issue, error) {
-	row := q.db.QueryRowContext(ctx, lockWorkItem, arg.OrganizationID, arg.ProjectID, arg.NativeID)
+	row := q.db.QueryRow(ctx, lockWorkItem, arg.OrganizationID, arg.ProjectID, arg.NativeID)
 	var i Issue
 	err := row.Scan(
 		&i.OrganizationID,
@@ -111,7 +111,7 @@ type LockWorkItemProjectParams struct {
 }
 
 func (q *Queries) LockWorkItemProject(ctx context.Context, arg LockWorkItemProjectParams) (tracker.ProjectID, error) {
-	row := q.db.QueryRowContext(ctx, lockWorkItemProject, arg.OrganizationID, arg.ProjectID)
+	row := q.db.QueryRow(ctx, lockWorkItemProject, arg.OrganizationID, arg.ProjectID)
 	var id tracker.ProjectID
 	err := row.Scan(&id)
 	return id, err
@@ -127,7 +127,7 @@ type NextWorkItemNumberParams struct {
 }
 
 func (q *Queries) NextWorkItemNumber(ctx context.Context, arg NextWorkItemNumberParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, nextWorkItemNumber, arg.OrganizationID, arg.ProjectID)
+	row := q.db.QueryRow(ctx, nextWorkItemNumber, arg.OrganizationID, arg.ProjectID)
 	var number int64
 	err := row.Scan(&number)
 	return number, err
@@ -147,7 +147,7 @@ type SelectCommentsNewestParams struct {
 }
 
 func (q *Queries) SelectCommentsNewest(ctx context.Context, arg SelectCommentsNewestParams) ([]NativeComment, error) {
-	rows, err := q.db.QueryContext(ctx, selectCommentsNewest,
+	rows, err := q.db.Query(ctx, selectCommentsNewest,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -184,9 +184,6 @@ func (q *Queries) SelectCommentsNewest(ctx context.Context, arg SelectCommentsNe
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -208,7 +205,7 @@ type SelectCommentsOldestParams struct {
 }
 
 func (q *Queries) SelectCommentsOldest(ctx context.Context, arg SelectCommentsOldestParams) ([]NativeComment, error) {
-	rows, err := q.db.QueryContext(ctx, selectCommentsOldest,
+	rows, err := q.db.Query(ctx, selectCommentsOldest,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -246,9 +243,6 @@ func (q *Queries) SelectCommentsOldest(ctx context.Context, arg SelectCommentsOl
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -266,7 +260,7 @@ type WorkItemBySourceParams struct {
 }
 
 func (q *Queries) WorkItemBySource(ctx context.Context, arg WorkItemBySourceParams) (Issue, error) {
-	row := q.db.QueryRowContext(ctx, workItemBySource, arg.OrganizationID, arg.ProjectID, arg.SourceKey)
+	row := q.db.QueryRow(ctx, workItemBySource, arg.OrganizationID, arg.ProjectID, arg.SourceKey)
 	var i Issue
 	err := row.Scan(
 		&i.OrganizationID,
@@ -314,7 +308,7 @@ type WorkItemHasActiveLeaseParams struct {
 }
 
 func (q *Queries) WorkItemHasActiveLease(ctx context.Context, arg WorkItemHasActiveLeaseParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, workItemHasActiveLease,
+	row := q.db.QueryRow(ctx, workItemHasActiveLease,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.NativeID,

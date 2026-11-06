@@ -62,7 +62,7 @@ type CreateProjectParams struct {
 }
 
 func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (Project, error) {
-	row := q.db.QueryRowContext(ctx, createProject,
+	row := q.db.QueryRow(ctx, createProject,
 		arg.OrganizationID,
 		arg.ID,
 		arg.Name,
@@ -111,11 +111,11 @@ type DeleteProjectParams struct {
 }
 
 func (q *Queries) DeleteProject(ctx context.Context, arg DeleteProjectParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, deleteProject, arg.OrganizationID, arg.ID)
+	result, err := q.db.Exec(ctx, deleteProject, arg.OrganizationID, arg.ID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const getProject = `-- name: GetProject :one
@@ -130,7 +130,7 @@ type GetProjectParams struct {
 }
 
 func (q *Queries) GetProject(ctx context.Context, arg GetProjectParams) (Project, error) {
-	row := q.db.QueryRowContext(ctx, getProject, arg.OrganizationID, arg.ID)
+	row := q.db.QueryRow(ctx, getProject, arg.OrganizationID, arg.ID)
 	var i Project
 	err := row.Scan(
 		&i.OrganizationID,
@@ -167,7 +167,7 @@ type ListProjectsParams struct {
 }
 
 func (q *Queries) ListProjects(ctx context.Context, arg ListProjectsParams) ([]Project, error) {
-	rows, err := q.db.QueryContext(ctx, listProjects, arg.OrganizationID, arg.After, arg.PageLimit)
+	rows, err := q.db.Query(ctx, listProjects, arg.OrganizationID, arg.After, arg.PageLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -196,9 +196,6 @@ func (q *Queries) ListProjects(ctx context.Context, arg ListProjectsParams) ([]P
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -241,7 +238,7 @@ type UpdateProjectParams struct {
 }
 
 func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (Project, error) {
-	row := q.db.QueryRowContext(ctx, updateProject,
+	row := q.db.QueryRow(ctx, updateProject,
 		arg.Name,
 		arg.Slug,
 		arg.Profile,

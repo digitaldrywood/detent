@@ -253,7 +253,7 @@ func (s *Service) oauthBrowserRequest(c echo.Context) (oauthRequest, error) {
 		return r, err
 	}
 	var approved bool
-	err = s.auth.store.reader.QueryRowContext(c.Request().Context(), "SELECT EXISTS(SELECT 1 FROM oauth_requests WHERE id=?)", r.ID).Scan(&approved)
+	err = s.auth.store.reader.QueryRowContext(c.Request().Context(), "SELECT EXISTS(SELECT 1 FROM platform.oauth_requests WHERE id=$1)", r.ID).Scan(&approved)
 	if err != nil {
 		return r, err
 	}
@@ -347,19 +347,19 @@ func (s *Service) oauthApprove(c echo.Context) (resultErr error) {
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
-	defer tx.cleanup(&resultErr)
-	_, err = tx.ExecContext(ctx, "INSERT INTO oauth_clients(id,name,auth_method,secret_hash,created_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO NOTHING", r.Client, r.Registration.Name, r.Registration.AuthMethod, r.Registration.SecretHash, formatTime(s.config.now()))
+	defer tx.cleanup(ctx, &resultErr)
+	_, err = tx.ExecContext(ctx, "INSERT INTO platform.oauth_clients(id,name,auth_method,secret_hash,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING", r.Client, r.Registration.Name, r.Registration.AuthMethod, r.Registration.SecretHash, formatTime(s.config.now()))
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
 	if err := insertOAuthRedirectURIs(ctx, tx, r.Client, r.Registration.RedirectURIs); err != nil {
 		return oauthError(c, 503, "server_error")
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO oauth_grants(id,client_id,owner_subject,owner_email,organization_id,permission,resource,created_at) VALUES(?,?,?,?,?,?,?,?)`, id, r.Client, session.Subject, session.Email, org.ID, permission, r.Resource, formatTime(s.config.now()))
+	_, err = tx.ExecContext(ctx, `INSERT INTO platform.oauth_grants(id,client_id,owner_subject,owner_email,organization_id,permission,resource,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, id, r.Client, session.Subject, session.Email, org.ID, permission, r.Resource, formatTime(s.config.now()))
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO oauth_requests(id,client_id,redirect_uri,challenge,resource,code_hash,code_expires_at,grant_id,organization_id) SELECT ?,?,?,?,?,?,?,?,? WHERE ?::timestamptz>?::timestamptz ON CONFLICT(id) DO NOTHING`, r.ID, r.Client, r.Redirect, r.Challenge, r.Resource, apikey.HashToken(code), formatTime(s.config.now().Add(5*time.Minute)), id, org.ID, formatTime(r.ExpiresAt), formatTime(s.config.now()))
+	result, err := tx.ExecContext(ctx, `INSERT INTO platform.oauth_requests(id,client_id,redirect_uri,challenge,resource,code_hash,code_expires_at,grant_id,organization_id) SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9 WHERE $10::timestamptz>$11::timestamptz ON CONFLICT(id) DO NOTHING`, r.ID, r.Client, r.Redirect, r.Challenge, r.Resource, apikey.HashToken(code), formatTime(s.config.now().Add(5*time.Minute)), id, org.ID, formatTime(r.ExpiresAt), formatTime(s.config.now()))
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
@@ -367,7 +367,7 @@ func (s *Service) oauthApprove(c echo.Context) (resultErr error) {
 	if err != nil || count != 1 {
 		return oauthError(c, 400, "invalid_request")
 	}
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return oauthError(c, 503, "server_error")
 	}
 	s.setCookie(c, "oauth", "", time.Unix(1, 0))

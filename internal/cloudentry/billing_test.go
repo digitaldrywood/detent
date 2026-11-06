@@ -222,7 +222,7 @@ func testSharedBillingJourney(t *testing.T, configureStorage func(*Config)) {
 	customer := "cus_" + strings.TrimPrefix(id, "org_")
 	status := func(eventID string) string {
 		var value string
-		_ = f.service.registry.store.db.QueryRowContext(t.Context(), "SELECT status FROM billing_events WHERE event_id = ?", eventID).Scan(&value)
+		_ = f.service.registry.store.db.QueryRowContext(t.Context(), "SELECT status FROM platform.billing_events WHERE event_id = $1", eventID).Scan(&value)
 		return value
 	}
 	post := func(mode, body, signature string) int {
@@ -261,7 +261,7 @@ func testSharedBillingJourney(t *testing.T, configureStorage func(*Config)) {
 		t.Fatalf("bad signature = %d", code)
 	}
 	var mapped string
-	if err := f.service.registry.store.db.QueryRowContext(t.Context(), "SELECT organization_id FROM billing_customers WHERE customer_id = ?", customer).Scan(&mapped); err != nil || mapped != id {
+	if err := f.service.registry.store.db.QueryRowContext(t.Context(), "SELECT organization_id FROM platform.billing_customers WHERE customer_id = $1", customer).Scan(&mapped); err != nil || mapped != id {
 		t.Fatalf("customer mapping = %q %v", mapped, err)
 	}
 	response, page = member.get("/organizations/new")

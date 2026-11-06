@@ -3,8 +3,6 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"database/sql"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,9 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+
 	"github.com/labstack/echo/v4"
-	"github.com/lib/pq"
-	"github.com/lib/pq/pqerror"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -249,16 +251,24 @@ func TestInternalAPIErrorPostgresDiagnostics(t *testing.T) {
 		{name: "non ASCII", state: "23502", schema: "public", table: "issués", column: "títle", wantSchema: "public"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			raw := &pq.Error{Code: pqerror.Code(test.state), Schema: test.schema, Table: test.table, Column: test.column,
-				Message: "private message", Detail: "private detail", Where: "private where", Hint: "private hint", Constraint: "private constraint", InternalQuery: "private query"}
-			pool := sql.OpenDB(apiErrorConnector{err: fmt.Errorf("connect: %w", raw)})
+			raw := &pgconn.PgError{Code: test.state, SchemaName: test.schema, TableName: test.table, ColumnName: test.column,
+				Message: "private message", Detail: "private detail", Where: "private where", Hint: "private hint", ConstraintName: "private constraint", InternalQuery: "private query"}
+			native, err := pgxpool.ParseConfig("postgres://example:fixture@127.0.0.1:1/example?sslmode=disable")
+			if err != nil {
+				t.Fatal(err)
+			}
+			pgtransport.Configure(native)
+			native.MaxConns = 3
+			native.BeforeConnect = func(context.Context, *pgx.ConnConfig) error { return fmt.Errorf("connect: %w", raw) }
+			pool, err := pgxpool.NewWithConfig(t.Context(), native)
+			if err != nil {
+				t.Fatal(err)
+			}
 			t.Cleanup(func() {
-				if err := pool.Close(); err != nil {
-					t.Error(err)
-				}
+				pool.Close()
 			})
 			_, ownerErr := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1})
-			var retained *pq.Error
+			var retained *pgconn.PgError
 			if !errors.As(ownerErr, &retained) || retained != raw || !errors.Is(ownerErr, raw) {
 				t.Fatalf("owner lost PostgreSQL cause: %v", ownerErr)
 			}
@@ -309,8 +319,3 @@ func TestInternalAPIErrorPostgresDiagnostics(t *testing.T) {
 		})
 	}
 }
-
-type apiErrorConnector struct{ err error }
-
-func (c apiErrorConnector) Connect(context.Context) (driver.Conn, error) { return nil, c.err }
-func (c apiErrorConnector) Driver() driver.Driver                        { return &pq.Driver{} }

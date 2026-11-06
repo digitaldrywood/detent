@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lib/pq"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 )
 
 func TestPostgresMigrationUsesOnlyExplicitConnection(t *testing.T) {
@@ -34,9 +34,9 @@ func TestPostgresMigrationUsesOnlyExplicitConnection(t *testing.T) {
 					t.Fatalf("unexpected environment lookup %q", name)
 				}
 				return "example-secret"
-			}, func(ctx context.Context, connection pq.Config) error {
+			}, func(ctx context.Context, connection pgtransport.Connection) error {
 				called = true
-				if ctx != t.Context() || connection.Host != "example.invalid" || connection.Port != 5432 || connection.Database != "example" || connection.User != "example_migration" || connection.Password != "example-secret" || connection.SSLMode != "verify-full" || connection.Passfile != "" || connection.Service != "" || connection.Options != "" || len(connection.Runtime) != 0 {
+				if ctx != t.Context() || connection.Host != "example.invalid" || connection.Port != 5432 || connection.Database != "example" || connection.User != "example_migration" || connection.Password != "example-secret" || connection.SSLMode != "verify-full" {
 					t.Fatal("migration did not receive the explicit connection and caller context")
 				}
 				if test.fail {

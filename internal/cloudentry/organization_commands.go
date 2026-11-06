@@ -74,7 +74,7 @@ func (s *Service) deleteOrganizationFor(ctx context.Context, session accountSess
 	if billingBlocksDeletion(state, s.config.now()) {
 		return errNoSession
 	}
-	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state='deleting',updated_at=? WHERE id=? AND state='ready'", formatTime(s.config.now()), organization.ID); err != nil {
+	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state='deleting',updated_at=$1 WHERE id=$2 AND state='ready'", formatTime(s.config.now()), organization.ID); err != nil {
 		return err
 	}
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)

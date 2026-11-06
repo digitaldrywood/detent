@@ -2,9 +2,10 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"math"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -23,7 +24,7 @@ func (s *session) ProjectAccessPage(ctx context.Context, filter accessstore.Proj
 	for i, project := range filter.BlockedProjects {
 		blocked[i] = string(project)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT p.id,
+	rows, err := s.db.Query(ctx, `SELECT p.id,
 CASE WHEN $4='service' THEN true ELSE COALESCE(g.can_write,false) END,
 CASE WHEN $4='service' THEN true ELSE COALESCE(g.manage_runner,false) END
 FROM projects p
@@ -65,8 +66,8 @@ ORDER BY p.id LIMIT $9`, s.organization, filter.UserID, filter.PrincipalID, filt
 
 func (s *session) lockHostedOrganization(ctx context.Context) error {
 	var organization string
-	err := s.db.QueryRowContext(ctx, `SELECT organization_id FROM organizations WHERE organization_id=$1 FOR NO KEY UPDATE`, s.organization).Scan(&organization)
-	if errors.Is(err, sql.ErrNoRows) {
+	err := s.db.QueryRow(ctx, `SELECT organization_id FROM organizations WHERE organization_id=$1 FOR NO KEY UPDATE`, s.organization).Scan(&organization)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
 	return mapError(ctx, err)
@@ -76,14 +77,14 @@ func (s *session) SyncHostedAdministratorProjectAccess(ctx context.Context, user
 	if err := s.lockHostedOrganization(ctx); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO hosted_project_grants(organization_id,user_id,project_id,can_write,manage_runner)
+	if _, err := s.db.Exec(ctx, `INSERT INTO hosted_project_grants(organization_id,user_id,project_id,can_write,manage_runner)
 SELECT m.organization_id,m.user_id,p.id,true,true
 FROM hosted_members m JOIN projects p ON p.organization_id=m.organization_id AND p.deleted_at IS NULL
 WHERE m.organization_id=$1 AND m.user_id=$2 AND m.active AND m.role IN ('owner','admin')
 ON CONFLICT(organization_id,user_id,project_id) DO UPDATE SET can_write=true,manage_runner=true`, s.organization, user); err != nil {
 		return mapError(ctx, err)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO token_grants(organization_id,token_id,project_id)
+	_, err := s.db.Exec(ctx, `INSERT INTO token_grants(organization_id,token_id,project_id)
 SELECT m.organization_id,$3,p.id
 FROM hosted_members m JOIN projects p ON p.organization_id=m.organization_id AND p.deleted_at IS NULL
 WHERE m.organization_id=$1 AND m.user_id=$2 AND m.principal_id=$3 AND m.active AND m.role IN ('owner','admin')
@@ -95,10 +96,10 @@ func (s *session) DeleteAccessProjectGrants(ctx context.Context, project tracker
 	if err := s.lockHostedOrganization(ctx); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM hosted_project_grants WHERE organization_id=$1 AND project_id=$2`, s.organization, project); err != nil {
+	if _, err := s.db.Exec(ctx, `DELETE FROM hosted_project_grants WHERE organization_id=$1 AND project_id=$2`, s.organization, project); err != nil {
 		return mapError(ctx, err)
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM token_grants WHERE organization_id=$1 AND project_id=$2`, s.organization, project)
+	_, err := s.db.Exec(ctx, `DELETE FROM token_grants WHERE organization_id=$1 AND project_id=$2`, s.organization, project)
 	return mapError(ctx, err)
 }
 
@@ -107,7 +108,7 @@ func (s *session) ProjectAllowanceUsage(ctx context.Context, limit int64) (int64
 		return 0, corestore.ErrInvalidPage
 	}
 	var count int64
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT 1 FROM projects WHERE organization_id=$1 AND deleted_at IS NULL LIMIT $2) p`, s.organization, limit+1).Scan(&count)
+	err := s.db.QueryRow(ctx, `SELECT count(*) FROM (SELECT 1 FROM projects WHERE organization_id=$1 AND deleted_at IS NULL LIMIT $2) p`, s.organization, limit+1).Scan(&count)
 	return count, mapError(ctx, err)
 }
 
@@ -121,15 +122,15 @@ func (s *session) InitializeProjectAccess(ctx context.Context, project tracker.P
 	if _, err := s.AccessCredential(ctx, credential); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO token_grants(organization_id,token_id,project_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, s.organization, credential, project); err != nil {
+	if _, err := s.db.Exec(ctx, `INSERT INTO token_grants(organization_id,token_id,project_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, s.organization, credential, project); err != nil {
 		return mapError(ctx, err)
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO hosted_project_grants(organization_id,user_id,project_id,can_write,manage_runner)
+	if _, err := s.db.Exec(ctx, `INSERT INTO hosted_project_grants(organization_id,user_id,project_id,can_write,manage_runner)
 SELECT organization_id,user_id,$2,true,true FROM hosted_members WHERE organization_id=$1 AND active AND role IN ('owner','admin')
 ON CONFLICT(organization_id,user_id,project_id) DO UPDATE SET can_write=true,manage_runner=true`, s.organization, project); err != nil {
 		return mapError(ctx, err)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO token_grants(organization_id,token_id,project_id)
+	_, err := s.db.Exec(ctx, `INSERT INTO token_grants(organization_id,token_id,project_id)
 SELECT organization_id,principal_id,$2 FROM hosted_members WHERE organization_id=$1 AND active AND role IN ('owner','admin')
 ON CONFLICT DO NOTHING`, s.organization, project)
 	return mapError(ctx, err)

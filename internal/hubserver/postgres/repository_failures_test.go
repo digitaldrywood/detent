@@ -6,8 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -15,6 +20,21 @@ import (
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type featureAcquireTracer struct {
+	reportCountingTracer
+	armed   atomic.Bool
+	waiting chan struct{}
+}
+
+func (p *featureAcquireTracer) TraceAcquireStart(ctx context.Context, _ *pgxpool.Pool, _ pgxpool.TraceAcquireStartData) context.Context {
+	if p.armed.CompareAndSwap(true, false) {
+		close(p.waiting)
+	}
+	return ctx
+}
+func (*featureAcquireTracer) TraceAcquireEnd(context.Context, *pgxpool.Pool, pgxpool.TraceAcquireEndData) {
+}
 
 func TestRepositorySerializationFailure(t *testing.T) {
 	admin := template.Database(t)
@@ -58,7 +78,7 @@ func TestRepositoryDeadlockFailure(t *testing.T) {
 	repository, pool := repositoryFor(t, admin, smallPool())
 	seedRepository(t, repository, "org_first")
 	var login string
-	if err := pool.QueryRowContext(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
+	if err := pool.QueryRow(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
 		t.Fatal(err)
 	}
 	firstLocked, secondLocked, finishSecond := make(chan struct{}), make(chan struct{}), make(chan struct{})
@@ -154,33 +174,42 @@ func TestRepositoryCancellation(t *testing.T) {
 			}
 			var task *repositoryTask
 			if mode == "waiting for pool" {
-				var held []*sql.Conn
-				for range smallPool().MaxConnections {
-					conn, err := pool.Conn(t.Context())
+				acquisition := &featureAcquireTracer{waiting: make(chan struct{})}
+				observedPool := tracedFeaturePool(t, pool, acquisition)
+				if err := repository.Close(); err != nil {
+					t.Fatal(err)
+				}
+				pool = observedPool
+				var err error
+				repository, err = postgres.NewRepository(t.Context(), pool, smallPool())
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := repository.Close(); err != nil {
+						t.Error(err)
+					}
+				})
+				var held []*pgxpool.Conn
+				for range pool.Config().MaxConns {
+					conn, err := pool.Acquire(t.Context())
 					if err != nil {
 						t.Fatal(err)
 					}
 					held = append(held, conn)
-					t.Cleanup(func() { conn.Close() })
+					t.Cleanup(conn.Release)
 				}
-				waits := pool.Stats().WaitCount
+				acquisition.armed.Store(true)
 				task = startRepositoryTask(t, func(taskCtx context.Context) error {
 					return repository.Read(taskCtx, "org_first", corestore.Serving, func(corestore.Reader) error { return errors.New("canceled pool wait invoked callback") })
 				})
-				testenv.WaitUntil(t, t.Context(), func() error {
-					if pool.Stats().WaitCount <= waits {
-						return errors.New("request has not reached the shared pool")
-					}
-					return nil
-				})
+				waitRepositorySignal(t, acquisition.waiting)
 				task.cancel()
 				if err := task.wait(t); !errors.Is(err, want) {
 					t.Fatalf("pool cancellation error = %v", err)
 				}
 				for _, conn := range held {
-					if err := conn.Close(); err != nil {
-						t.Fatal(err)
-					}
+					conn.Release()
 				}
 			} else {
 				admin.SetMaxOpenConns(2)

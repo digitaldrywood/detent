@@ -25,7 +25,7 @@ type AdvanceNotificationCursorParams struct {
 }
 
 func (q *Queries) AdvanceNotificationCursor(ctx context.Context, arg AdvanceNotificationCursorParams) error {
-	_, err := q.db.ExecContext(ctx, advanceNotificationCursor,
+	_, err := q.db.Exec(ctx, advanceNotificationCursor,
 		arg.OrganizationID,
 		arg.WorkItemID,
 		arg.Sequence,
@@ -46,7 +46,7 @@ type AdvanceNotificationProjectParams struct {
 }
 
 func (q *Queries) AdvanceNotificationProject(ctx context.Context, arg AdvanceNotificationProjectParams) error {
-	_, err := q.db.ExecContext(ctx, advanceNotificationProject, arg.OrganizationID, arg.ProjectID, arg.NotificationSequence)
+	_, err := q.db.Exec(ctx, advanceNotificationProject, arg.OrganizationID, arg.ProjectID, arg.NotificationSequence)
 	return err
 }
 
@@ -72,7 +72,7 @@ type AppendIssueNotificationParams struct {
 }
 
 func (q *Queries) AppendIssueNotification(ctx context.Context, arg AppendIssueNotificationParams) error {
-	_, err := q.db.ExecContext(ctx, appendIssueNotification,
+	_, err := q.db.Exec(ctx, appendIssueNotification,
 		arg.OrganizationID,
 		arg.WorkItemID,
 		arg.UserID,
@@ -101,7 +101,7 @@ type EnsureIssueSubscriptionParams struct {
 }
 
 func (q *Queries) EnsureIssueSubscription(ctx context.Context, arg EnsureIssueSubscriptionParams) error {
-	_, err := q.db.ExecContext(ctx, ensureIssueSubscription,
+	_, err := q.db.Exec(ctx, ensureIssueSubscription,
 		arg.OrganizationID,
 		arg.WorkItemID,
 		arg.UserID,
@@ -120,7 +120,7 @@ type EnsureNotificationCursorParams struct {
 }
 
 func (q *Queries) EnsureNotificationCursor(ctx context.Context, arg EnsureNotificationCursorParams) error {
-	_, err := q.db.ExecContext(ctx, ensureNotificationCursor, arg.OrganizationID, arg.WorkItemID)
+	_, err := q.db.Exec(ctx, ensureNotificationCursor, arg.OrganizationID, arg.WorkItemID)
 	return err
 }
 
@@ -135,7 +135,7 @@ type LockDueNotificationParams struct {
 }
 
 func (q *Queries) LockDueNotification(ctx context.Context, arg LockDueNotificationParams) (IssueSubscription, error) {
-	row := q.db.QueryRowContext(ctx, lockDueNotification, arg.OrganizationID, arg.DueAt)
+	row := q.db.QueryRow(ctx, lockDueNotification, arg.OrganizationID, arg.DueAt)
 	var i IssueSubscription
 	err := row.Scan(
 		&i.OrganizationID,
@@ -157,7 +157,7 @@ type LockNotificationCursorParams struct {
 }
 
 func (q *Queries) LockNotificationCursor(ctx context.Context, arg LockNotificationCursorParams) (IssueNotificationCursor, error) {
-	row := q.db.QueryRowContext(ctx, lockNotificationCursor, arg.OrganizationID, arg.WorkItemID)
+	row := q.db.QueryRow(ctx, lockNotificationCursor, arg.OrganizationID, arg.WorkItemID)
 	var i IssueNotificationCursor
 	err := row.Scan(
 		&i.OrganizationID,
@@ -186,7 +186,7 @@ type LockNotificationProjectRow struct {
 }
 
 func (q *Queries) LockNotificationProject(ctx context.Context, organizationID tracker.OrganizationID) ([]LockNotificationProjectRow, error) {
-	rows, err := q.db.QueryContext(ctx, lockNotificationProject, organizationID)
+	rows, err := q.db.Query(ctx, lockNotificationProject, organizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -206,9 +206,6 @@ func (q *Queries) LockNotificationProject(ctx context.Context, organizationID tr
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -225,7 +222,7 @@ type NotificationAuthorParams struct {
 }
 
 func (q *Queries) NotificationAuthor(ctx context.Context, arg NotificationAuthorParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, notificationAuthor, arg.OrganizationID, arg.PrincipalID)
+	row := q.db.QueryRow(ctx, notificationAuthor, arg.OrganizationID, arg.PrincipalID)
 	var email string
 	err := row.Scan(&email)
 	return email, err
@@ -250,7 +247,7 @@ type NotificationEventsRow struct {
 }
 
 func (q *Queries) NotificationEvents(ctx context.Context, arg NotificationEventsParams) ([]NotificationEventsRow, error) {
-	rows, err := q.db.QueryContext(ctx, notificationEvents, arg.OrganizationID, arg.ProjectID, arg.ProjectSequence)
+	rows, err := q.db.Query(ctx, notificationEvents, arg.OrganizationID, arg.ProjectID, arg.ProjectSequence)
 	if err != nil {
 		return nil, err
 	}
@@ -299,9 +296,6 @@ func (q *Queries) NotificationEvents(ctx context.Context, arg NotificationEvents
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -338,7 +332,7 @@ type NotificationRecipientRow struct {
 }
 
 func (q *Queries) NotificationRecipient(ctx context.Context, arg NotificationRecipientParams) (NotificationRecipientRow, error) {
-	row := q.db.QueryRowContext(ctx, notificationRecipient,
+	row := q.db.QueryRow(ctx, notificationRecipient,
 		arg.OrganizationID,
 		arg.WorkItemID,
 		arg.UserID,
@@ -384,7 +378,7 @@ type NotificationRecipientsRow struct {
 }
 
 func (q *Queries) NotificationRecipients(ctx context.Context, arg NotificationRecipientsParams) ([]NotificationRecipientsRow, error) {
-	rows, err := q.db.QueryContext(ctx, notificationRecipients,
+	rows, err := q.db.Query(ctx, notificationRecipients,
 		arg.NowAt,
 		arg.WorkItemID,
 		arg.OrganizationID,
@@ -410,9 +404,6 @@ func (q *Queries) NotificationRecipients(ctx context.Context, arg NotificationRe
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -430,7 +421,7 @@ type TakeIssueNoticesParams struct {
 }
 
 func (q *Queries) TakeIssueNotices(ctx context.Context, arg TakeIssueNoticesParams) ([]IssueNotificationNotice, error) {
-	rows, err := q.db.QueryContext(ctx, takeIssueNotices, arg.OrganizationID, arg.WorkItemID, arg.UserID)
+	rows, err := q.db.Query(ctx, takeIssueNotices, arg.OrganizationID, arg.WorkItemID, arg.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -456,9 +447,6 @@ func (q *Queries) TakeIssueNotices(ctx context.Context, arg TakeIssueNoticesPara
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -475,9 +463,9 @@ type UnsubscribeIssueNotificationParams struct {
 }
 
 func (q *Queries) UnsubscribeIssueNotification(ctx context.Context, arg UnsubscribeIssueNotificationParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, unsubscribeIssueNotification, arg.OrganizationID, arg.Token)
+	result, err := q.db.Exec(ctx, unsubscribeIssueNotification, arg.OrganizationID, arg.Token)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }

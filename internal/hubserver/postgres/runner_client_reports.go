@@ -6,8 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -19,7 +17,7 @@ func (s *session) RunnerProjectSkills(ctx context.Context, project tracker.Proje
 	if project == "" || now.IsZero() || limit < 1 || limit > runnerstore.MaxProjectSkills {
 		return nil, corestore.ErrInvalidPage
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT s.runner_id,s.position,s.name,s.description,s.path,s.scope,s.enabled,s.user_invocable,s.invocation,s.reported_at
+	rows, err := s.db.Query(ctx, `SELECT s.runner_id,s.position,s.name,s.description,s.path,s.scope,s.enabled,s.user_invocable,s.invocation,s.reported_at
 		FROM runner_project_skills s
 		JOIN runner_identities r ON r.organization_id=s.organization_id AND r.runner_id=s.runner_id
 		JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=r.token_id
@@ -55,7 +53,7 @@ func (s *session) RunnerCheckoutVerified(ctx context.Context, project tracker.Pr
 		return false, runnerstore.ErrInvalidRecord
 	}
 	var verified bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (
+	err := s.db.QueryRow(ctx, `SELECT EXISTS (
 		SELECT 1 FROM runner_checkout_repositories cr
 		JOIN runner_identities r ON r.organization_id=cr.organization_id AND r.runner_id=cr.runner_id
 		JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=r.token_id
@@ -90,7 +88,7 @@ func (s *session) ReplaceRunnerProjectSkills(ctx context.Context, runnerID strin
 	if equal {
 		return nil
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM runner_project_skills WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, s.organization, runnerID, project); err != nil {
+	if _, err := s.db.Exec(ctx, `DELETE FROM runner_project_skills WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, s.organization, runnerID, project); err != nil {
 		return mapError(ctx, err)
 	}
 	return s.insertRunnerCurrentRows(ctx, table.name, table.columns, rows)
@@ -104,10 +102,10 @@ func (s *session) ReplaceRunnerCheckoutReport(ctx context.Context, report runner
 		return err
 	}
 	if report.Repository == "" {
-		_, err := s.db.ExecContext(ctx, `DELETE FROM runner_checkout_repositories WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, s.organization, report.RunnerID, report.ProjectID)
+		_, err := s.db.Exec(ctx, `DELETE FROM runner_checkout_repositories WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, s.organization, report.RunnerID, report.ProjectID)
 		return mapError(ctx, err)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO runner_checkout_repositories (organization_id,runner_id,project_id,repository,reported_at)
+	_, err := s.db.Exec(ctx, `INSERT INTO runner_checkout_repositories (organization_id,runner_id,project_id,repository,reported_at)
 		VALUES ($1,$2,$3,$4,$5)
 		ON CONFLICT (organization_id,runner_id,project_id) DO UPDATE SET repository=EXCLUDED.repository,reported_at=EXCLUDED.reported_at`,
 		s.organization, report.RunnerID, report.ProjectID, report.Repository, report.ReportedAt)
@@ -184,24 +182,23 @@ func (s *session) runnerReportRowsMatch(ctx context.Context, runnerID string, pr
 		incoming := make([]string, len(names))
 		columns := make([]string, len(names))
 		for i, name := range names {
-			values := make([]any, len(table.rows))
+			values := make([]*string, len(table.rows))
 			for j, row := range table.rows {
 				value := row[i]
 				if at, ok := value.(time.Time); ok {
 					value = at.Format(time.RFC3339Nano)
 				}
 				if value != nil {
-					value = fmt.Sprint(value)
+					values[j] = new(fmt.Sprint(value))
 				}
-				values[j] = value
 			}
-			args = append(args, pq.Array(values))
+			args = append(args, values)
 			incoming[i] = fmt.Sprintf("$%d::text[]", len(args))
 			columns[i] = name + "::" + types[i]
 		}
 		query := `SELECT sha256(convert_to(ARRAY(SELECT ROW(stored.*)::text FROM (SELECT ` + table.columns + ` FROM ` + table.name + ` WHERE ` + predicate + `) stored ORDER BY ROW(stored.*)::text)::text,'UTF8')) = sha256(convert_to(ARRAY(SELECT ROW(incoming.*)::text FROM (SELECT ` + strings.Join(columns, ",") + ` FROM unnest(` + strings.Join(incoming, ",") + `) AS input(` + table.columns + `)) incoming ORDER BY ROW(incoming.*)::text)::text,'UTF8'))`
 		var equal bool
-		if err := s.db.QueryRowContext(ctx, query, args...).Scan(&equal); err != nil {
+		if err := s.db.QueryRow(ctx, query, args...).Scan(&equal); err != nil {
 			return false, mapError(ctx, err)
 		}
 		if !equal {

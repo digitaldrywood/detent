@@ -35,13 +35,42 @@ func entryAuthorization(item platformstore.Authorization) authorization {
 	return authorization{Binding: item.Binding, Organization: string(item.OrganizationID), Identity: item.Identity, Support: item.Support, EffectiveEmail: item.EffectiveEmail}
 }
 
-func postgresAuthorizations(ctx context.Context, query queryer, where string, args ...any) (_ []authorization, resultErr error) {
+type authorizationLookupKind uint8
+
+const (
+	lookupBinding authorizationLookupKind = iota
+	lookupSessionOrganization
+	lookupSession
+	lookupOrganization
+)
+
+type authorizationSelector struct {
+	Binding, SessionHash, Organization string
+	Kind                               authorizationLookupKind
+}
+
+func postgresAuthorizations(ctx context.Context, query queryer, selector authorizationSelector) (_ []authorization, resultErr error) {
 	clock, ok := query.(interface{ entryNow() time.Time })
 	if !ok {
 		return nil, platformstore.ErrInvalid
 	}
-	args = append(args, clock.entryNow())
-	rows, err := query.QueryContext(ctx, `SELECT binding,organization_id,identity_subject,provider_organization_id,provider_session_id,identity_created_at,identity_expires_at,support_actor,support_reason,support,effective_email,access_token,refresh_token FROM authorizations WHERE `+where+` AND EXISTS(SELECT 1 FROM sessions s WHERE s.token_hash=authorizations.session_hash AND s.revoked_at IS NULL AND s.expires_at>?)`, args...)
+	predicate := `binding=$1 AND revoked_at IS NULL`
+	expires := `$2`
+	args := []any{selector.Binding, clock.entryNow()}
+	switch selector.Kind {
+	case lookupSessionOrganization:
+		predicate = `session_hash=$1 AND organization_id=$2 AND revoked_at IS NULL`
+		expires = `$3`
+		args = []any{selector.SessionHash, selector.Organization, clock.entryNow()}
+	case lookupSession:
+		predicate = `session_hash=$1 AND revoked_at IS NULL`
+		args = []any{selector.SessionHash, clock.entryNow()}
+	case lookupOrganization:
+		predicate = `organization_id=$1 AND revoked_at IS NULL`
+		args = []any{selector.Organization, clock.entryNow()}
+	}
+	statement := `SELECT binding,organization_id,identity_subject,provider_organization_id,provider_session_id,identity_created_at,identity_expires_at,support_actor,support_reason,support,effective_email,access_token,refresh_token FROM platform.authorizations WHERE ` + predicate + ` AND EXISTS(SELECT 1 FROM platform.sessions s WHERE s.token_hash=platform.authorizations.session_hash AND s.revoked_at IS NULL AND s.expires_at>` + expires + `)`
+	rows, err := query.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +104,7 @@ func (a *authStore) postgresConsumeLogin(ctx context.Context, hash, id string) (
 }
 
 func (a *authStore) postgresRevokeSession(ctx context.Context, hash string) ([]authorization, error) {
-	items, err := activeAuthorizations(ctx, a.store.db, "session_hash=? AND revoked_at IS NULL", hash)
+	items, err := postgresAuthorizations(ctx, a.store.db, authorizationSelector{Kind: lookupSession, SessionHash: hash})
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +113,7 @@ func (a *authStore) postgresRevokeSession(ctx context.Context, hash string) ([]a
 
 func (a *authStore) postgresStoreTokens(ctx context.Context, binding string, tokens auth.HostedTokens, expected ...auth.HostedTokens) error {
 	var hash, organization string
-	err := a.store.reader.QueryRowContext(ctx, "SELECT session_hash,organization_id FROM authorizations WHERE binding=? AND revoked_at IS NULL", binding).Scan(&hash, &organization)
+	err := a.store.reader.QueryRowContext(ctx, "SELECT session_hash,organization_id FROM platform.authorizations WHERE binding=$1 AND revoked_at IS NULL", binding).Scan(&hash, &organization)
 	if err != nil {
 		return errNoSession
 	}

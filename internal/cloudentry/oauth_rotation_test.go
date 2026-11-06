@@ -29,7 +29,7 @@ func TestOAuthSigningKeyRotation(t *testing.T) {
 		client := registerTestOAuth(t, b, format+" assistant", "client_secret_post")
 		token := exchangeTestOAuth(t, b, approveTestOAuth(t, b, client, "org_alpha"))
 		var grant, stored string
-		if err := s.auth.store.reader.QueryRowContext(t.Context(), "SELECT grant_id,token_hash FROM oauth_refresh_tokens WHERE token_hash=?", apikey.HashToken(token.RefreshToken)).Scan(&grant, &stored); err != nil {
+		if err := s.auth.store.reader.QueryRowContext(t.Context(), "SELECT grant_id,token_hash FROM platform.oauth_refresh_tokens WHERE token_hash=$1", apikey.HashToken(token.RefreshToken)).Scan(&grant, &stored); err != nil {
 			t.Fatal(err)
 		}
 		if stored == token.RefreshToken || !strings.HasPrefix(token.RefreshToken, "oauth_refresh_") || strings.ContainsAny(strings.TrimPrefix(token.RefreshToken, "oauth_refresh_"), ".+/=") {
@@ -43,14 +43,14 @@ func TestOAuthSigningKeyRotation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := s.auth.store.db.ExecContext(t.Context(), "UPDATE oauth_refresh_tokens SET token_hash=? WHERE grant_id=?", apikey.HashToken(legacy), grant); err != nil {
+			if _, err := s.auth.store.db.ExecContext(t.Context(), "UPDATE platform.oauth_refresh_tokens SET token_hash=$1 WHERE grant_id=$2", apikey.HashToken(legacy), grant); err != nil {
 				t.Fatal(err)
 			}
 			token.RefreshToken = legacy
 		}
 		clients = append(clients, issued{client: client, token: token, code: approveTestOAuth(t, b, client, "org_beta")})
 		if format == "legacy" {
-			if _, err := s.auth.store.db.ExecContext(t.Context(), "DELETE FROM oauth_client_redirect_uris WHERE client_id=?", client.ID); err != nil {
+			if _, err := s.auth.store.db.ExecContext(t.Context(), "DELETE FROM platform.oauth_client_redirect_uris WHERE client_id=$1", client.ID); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -66,7 +66,7 @@ func TestOAuthSigningKeyRotation(t *testing.T) {
 	<-underA.oauthBackfillDone
 	for _, item := range clients {
 		var count int
-		if err := underA.auth.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM oauth_client_redirect_uris WHERE client_id=?", item.client.ID).Scan(&count); err != nil || count != len(item.client.RedirectURIs) {
+		if err := underA.auth.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM platform.oauth_client_redirect_uris WHERE client_id=$1", item.client.ID).Scan(&count); err != nil || count != len(item.client.RedirectURIs) {
 			t.Fatalf("redirects=%d err=%v", count, err)
 		}
 	}
@@ -104,7 +104,7 @@ func TestOAuthSigningKeyRotation(t *testing.T) {
 			refresh.Set("refresh_token", rotated.RefreshToken)
 			clients[i].rotated = exchangeTestOAuth(t, b, refresh)
 			var spentHash string
-			if err := underB.auth.store.reader.QueryRowContext(t.Context(), "SELECT token_hash FROM oauth_spent_refresh_tokens WHERE token_hash=?", apikey.HashToken(item.token.RefreshToken)).Scan(&spentHash); err != nil || spentHash != apikey.HashToken(item.token.RefreshToken) {
+			if err := underB.auth.store.reader.QueryRowContext(t.Context(), "SELECT token_hash FROM platform.oauth_spent_refresh_tokens WHERE token_hash=$1", apikey.HashToken(item.token.RefreshToken)).Scan(&spentHash); err != nil || spentHash != apikey.HashToken(item.token.RefreshToken) {
 				t.Fatalf("spent refresh hash not retained: %v", err)
 			}
 			exchangeTestOAuth(t, b, item.code)

@@ -2,8 +2,9 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -125,10 +126,10 @@ func (s *ConversionStorage) candidate(ctx context.Context, cursor storageconvers
 			default:
 				return storageconversion.ErrInvalid
 			}
-			if positioned && errors.Is(err, sql.ErrNoRows) {
+			if positioned && errors.Is(err, pgx.ErrNoRows) {
 				continue
 			}
-			if errors.Is(err, sql.ErrNoRows) {
+			if errors.Is(err, pgx.ErrNoRows) {
 				candidate = storageconversion.Candidate{}
 				return nil
 			}

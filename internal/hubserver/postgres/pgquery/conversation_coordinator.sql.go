@@ -9,7 +9,6 @@ import (
 	"context"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
 )
 
 const listCoordinatorAttentionItems = `-- name: ListCoordinatorAttentionItems :many
@@ -35,7 +34,7 @@ type ListCoordinatorAttentionItemsRow struct {
 }
 
 func (q *Queries) ListCoordinatorAttentionItems(ctx context.Context, arg ListCoordinatorAttentionItemsParams) ([]ListCoordinatorAttentionItemsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listCoordinatorAttentionItems, arg.OrganizationID, pq.Array(arg.ProjectIds), arg.PageLimit)
+	rows, err := q.db.Query(ctx, listCoordinatorAttentionItems, arg.OrganizationID, arg.ProjectIds, arg.PageLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -47,9 +46,6 @@ func (q *Queries) ListCoordinatorAttentionItems(ctx context.Context, arg ListCoo
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

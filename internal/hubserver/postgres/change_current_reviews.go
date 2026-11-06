@@ -2,10 +2,11 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"reflect"
 	"slices"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -21,7 +22,7 @@ func (s *session) putCurrentChangeReview(ctx context.Context, row eventstore.Evi
 		return eventstore.ErrInvalidRecord
 	}
 	put := func(kind, actor string) error {
-		_, err := s.db.ExecContext(ctx, `INSERT INTO current_change_reviews(organization_id,change_id,version_id,review_kind,actor_key,decision,evidence_sequence)
+		_, err := s.db.Exec(ctx, `INSERT INTO current_change_reviews(organization_id,change_id,version_id,review_kind,actor_key,decision,evidence_sequence)
 VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(organization_id,change_id,version_id,review_kind,actor_key)
 DO UPDATE SET decision=excluded.decision,evidence_sequence=excluded.evidence_sequence
 WHERE current_change_reviews.evidence_sequence<excluded.evidence_sequence`, s.organization, row.ChangeID, *row.VersionID, kind, actor, row.Decision, row.Sequence)
@@ -64,7 +65,7 @@ func (r *Repository) BackfillCurrentChangeReviewsAfter(ctx context.Context, orga
 	var rows []eventstore.Evidence
 	err := r.transaction(ctx, organization, corestore.Background, true, func(s *session) error {
 		pending, err := s.queries.RecordPendingChangeReviewSummary(ctx, pgquery.RecordPendingChangeReviewSummaryParams{OrganizationID: organization, AfterID: after})
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
@@ -126,7 +127,7 @@ func (r *Repository) BackfillCurrentChangeReviewsAfter(ctx context.Context, orga
 				return err
 			}
 		}
-		_, err = s.db.ExecContext(ctx, `UPDATE change_requests SET review_summary_sequence=$3 WHERE organization_id=$1 AND id=$2`, organization, source.ID, rows[len(rows)-1].Sequence)
+		_, err = s.db.Exec(ctx, `UPDATE change_requests SET review_summary_sequence=$3 WHERE organization_id=$1 AND id=$2`, organization, source.ID, rows[len(rows)-1].Sequence)
 		return mapError(ctx, err)
 	})
 	if err != nil {
@@ -139,7 +140,7 @@ func (s *session) invalidateCurrentChangeReviews(ctx context.Context, row events
 	if row.Sequence > previousThrough {
 		return nil
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE change_requests SET review_evidence_revision=review_evidence_revision+1,
+	_, err := s.db.Exec(ctx, `UPDATE change_requests SET review_evidence_revision=review_evidence_revision+1,
 review_summary_sequence=least(review_summary_sequence,$3-1)
 WHERE organization_id=$1 AND id=$2`, s.organization, row.ChangeID, row.Sequence)
 	return mapError(ctx, err)

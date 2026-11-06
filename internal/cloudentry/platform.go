@@ -89,7 +89,7 @@ type platformOrganization struct {
 var platformUnavailable = []string{"plan", "grants", "member_count", "runner_count"}
 
 func (s *Service) platformOrganizations(ctx context.Context) (_ []platformOrganization, resultErr error) {
-	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT id,name,state,step,attempts,error_code,error_detail,managed,creator_email,created_at,updated_at FROM organizations WHERE state != 'deleted' ORDER BY created_at, id")
+	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT id,name,state,step,attempts,error_code,error_detail,managed,creator_email,created_at,updated_at FROM platform.organizations WHERE state != 'deleted' ORDER BY created_at, id")
 	if err != nil {
 		return nil, err
 	}

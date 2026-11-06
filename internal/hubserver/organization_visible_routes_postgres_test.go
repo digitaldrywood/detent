@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -764,7 +764,7 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 					t.Fatal(rollbackErr)
 				}
 				if probeErr != nil {
-					var conflict *pq.Error
+					var conflict *pgconn.PgError
 					if errors.As(probeErr, &conflict) && conflict.Code == "55P03" {
 						t.Fatal("waiting mutator holds conflicting member SHARE before organization lock")
 					}

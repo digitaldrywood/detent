@@ -7,11 +7,10 @@ package pgquery
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const searchAdvance = `-- name: SearchAdvance :exec
@@ -26,7 +25,7 @@ type SearchAdvanceParams struct {
 }
 
 func (q *Queries) SearchAdvance(ctx context.Context, arg SearchAdvanceParams) error {
-	_, err := q.db.ExecContext(ctx, searchAdvance, arg.OrganizationID, arg.ID, arg.Revision)
+	_, err := q.db.Exec(ctx, searchAdvance, arg.OrganizationID, arg.ID, arg.Revision)
 	return err
 }
 
@@ -167,14 +166,14 @@ type SearchCandidatesRow struct {
 }
 
 func (q *Queries) SearchCandidates(ctx context.Context, arg SearchCandidatesParams) ([]SearchCandidatesRow, error) {
-	rows, err := q.db.QueryContext(ctx, searchCandidates,
+	rows, err := q.db.Query(ctx, searchCandidates,
 		arg.OrganizationID,
 		arg.BeforeID,
 		arg.BeforeUpdatedAt,
 		arg.BeforeSubmicrosecond,
 		arg.ProjectID,
 		arg.RestrictProjects,
-		pq.Array(arg.ProjectIds),
+		arg.ProjectIds,
 		arg.WorkItemID,
 		arg.Kind,
 		arg.Scope,
@@ -183,14 +182,14 @@ func (q *Queries) SearchCandidates(ctx context.Context, arg SearchCandidatesPara
 		arg.Reporter,
 		arg.PrincipalID,
 		arg.Expression,
-		pq.Array(arg.SearchTerms),
+		arg.SearchTerms,
 		arg.Exact,
-		pq.Array(arg.StreamKeys),
-		pq.Array(arg.StreamIds),
-		pq.Array(arg.StreamImpacts),
-		pq.Array(arg.StreamTimes),
-		pq.Array(arg.StreamSubmicroseconds),
-		pq.Array(arg.StreamDone),
+		arg.StreamKeys,
+		arg.StreamIds,
+		arg.StreamImpacts,
+		arg.StreamTimes,
+		arg.StreamSubmicroseconds,
+		arg.StreamDone,
 		arg.EmptyQuery,
 		arg.Number,
 		arg.NumberProject,
@@ -227,17 +226,14 @@ func (q *Queries) SearchCandidates(ctx context.Context, arg SearchCandidatesPara
 			&i.StreamExhausted,
 			&i.IndexedRevision,
 			&i.TokenCount,
-			pq.Array(&i.Terms),
-			pq.Array(&i.TermFrequencies),
+			&i.Terms,
+			&i.TermFrequencies,
 			&i.Number,
 			&i.ProjectName,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -256,11 +252,11 @@ type SearchDeleteParams struct {
 }
 
 func (q *Queries) SearchDelete(ctx context.Context, arg SearchDeleteParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, searchDelete, arg.OrganizationID, arg.ID, arg.Revision)
+	result, err := q.db.Exec(ctx, searchDelete, arg.OrganizationID, arg.ID, arg.Revision)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const searchPending = `-- name: SearchPending :one
@@ -283,7 +279,7 @@ SELECT d.organization_id, d.id, d.project_id, d.work_item_id, d.kind, d.source_i
 `
 
 func (q *Queries) SearchPending(ctx context.Context, organizationID tracker.OrganizationID) (SearchDocument, error) {
-	row := q.db.QueryRowContext(ctx, searchPending, organizationID)
+	row := q.db.QueryRow(ctx, searchPending, organizationID)
 	var i SearchDocument
 	err := row.Scan(
 		&i.OrganizationID,
@@ -308,8 +304,8 @@ func (q *Queries) SearchPending(ctx context.Context, organizationID tracker.Orga
 		&i.PayloadContentBytes,
 		&i.Vector,
 		&i.TokenCount,
-		pq.Array(&i.Terms),
-		pq.Array(&i.TermFrequencies),
+		&i.Terms,
+		&i.TermFrequencies,
 		&i.RefreshOrder,
 		&i.SourceVector,
 		&i.Generation,
@@ -414,7 +410,7 @@ type SearchPreparePublicationPostingsRow struct {
 }
 
 func (q *Queries) SearchPreparePublicationPostings(ctx context.Context, arg SearchPreparePublicationPostingsParams) (SearchPreparePublicationPostingsRow, error) {
-	row := q.db.QueryRowContext(ctx, searchPreparePublicationPostings,
+	row := q.db.QueryRow(ctx, searchPreparePublicationPostings,
 		arg.OrganizationID,
 		arg.ID,
 		arg.Revision,
@@ -422,10 +418,10 @@ func (q *Queries) SearchPreparePublicationPostings(ctx context.Context, arg Sear
 		arg.PayloadSHA256,
 		arg.Generation,
 		arg.TokenCount,
-		pq.Array(arg.Terms),
-		pq.Array(arg.TermFrequencies),
+		arg.Terms,
+		arg.TermFrequencies,
 		arg.Vector,
-		pq.Array(arg.Literals),
+		arg.Literals,
 	)
 	var i SearchPreparePublicationPostingsRow
 	err := row.Scan(
@@ -435,7 +431,7 @@ func (q *Queries) SearchPreparePublicationPostings(ctx context.Context, arg Sear
 		&i.ProjectName,
 		&i.ParentNumber,
 		&i.ParentProject,
-		pq.Array(&i.VisibilityScopes),
+		&i.VisibilityScopes,
 	)
 	return i, err
 }
@@ -471,7 +467,7 @@ type SearchPublicationVisibilityRow struct {
 }
 
 func (q *Queries) SearchPublicationVisibility(ctx context.Context, arg SearchPublicationVisibilityParams) (SearchPublicationVisibilityRow, error) {
-	row := q.db.QueryRowContext(ctx, searchPublicationVisibility, arg.OrganizationID, arg.ID)
+	row := q.db.QueryRow(ctx, searchPublicationVisibility, arg.OrganizationID, arg.ID)
 	var i SearchPublicationVisibilityRow
 	err := row.Scan(
 		&i.ProjectHidden,
@@ -496,8 +492,8 @@ type SearchPublishParams struct {
 	Vector                string
 	AggregateObjectKey    *string
 	AggregateSha256       *string
-	AggregateBytes        sql.NullInt64
-	AggregateContentBytes sql.NullInt64
+	AggregateBytes        pgtype.Int8
+	AggregateContentBytes pgtype.Int8
 	TokenCount            int64
 	Terms                 []string
 	TermFrequencies       []int64
@@ -510,15 +506,15 @@ type SearchPublishParams struct {
 }
 
 func (q *Queries) SearchPublish(ctx context.Context, arg SearchPublishParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, searchPublish,
+	result, err := q.db.Exec(ctx, searchPublish,
 		arg.Vector,
 		arg.AggregateObjectKey,
 		arg.AggregateSha256,
 		arg.AggregateBytes,
 		arg.AggregateContentBytes,
 		arg.TokenCount,
-		pq.Array(arg.Terms),
-		pq.Array(arg.TermFrequencies),
+		arg.Terms,
+		arg.TermFrequencies,
 		arg.OrganizationID,
 		arg.ID,
 		arg.Revision,
@@ -529,7 +525,7 @@ func (q *Queries) SearchPublish(ctx context.Context, arg SearchPublishParams) (i
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const searchPublishLiterals = `-- name: SearchPublishLiterals :exec
@@ -564,13 +560,13 @@ type SearchPublishLiteralsParams struct {
 }
 
 func (q *Queries) SearchPublishLiterals(ctx context.Context, arg SearchPublishLiteralsParams) error {
-	_, err := q.db.ExecContext(ctx, searchPublishLiterals,
-		pq.Array(arg.Scopes),
+	_, err := q.db.Exec(ctx, searchPublishLiterals,
+		arg.Scopes,
 		arg.OrganizationID,
 		arg.ID,
 		arg.Revision,
-		pq.Array(arg.Literals),
-		pq.Array(arg.Positions),
+		arg.Literals,
+		arg.Positions,
 	)
 	return err
 }
@@ -620,7 +616,7 @@ type SearchPutParams struct {
 }
 
 func (q *Queries) SearchPut(ctx context.Context, arg SearchPutParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, searchPut,
+	result, err := q.db.Exec(ctx, searchPut,
 		arg.OrganizationID,
 		arg.ID,
 		arg.ProjectID,
@@ -639,14 +635,14 @@ func (q *Queries) SearchPut(ctx context.Context, arg SearchPutParams) (int64, er
 		arg.PayloadContentBytes,
 		arg.SourceVector,
 		arg.TokenCount,
-		pq.Array(arg.Terms),
-		pq.Array(arg.TermFrequencies),
+		arg.Terms,
+		arg.TermFrequencies,
 		arg.ExpectedRevision,
 	)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const searchRemovePlaceholder = `-- name: SearchRemovePlaceholder :exec
@@ -661,7 +657,7 @@ type SearchRemovePlaceholderParams struct {
 }
 
 func (q *Queries) SearchRemovePlaceholder(ctx context.Context, arg SearchRemovePlaceholderParams) error {
-	_, err := q.db.ExecContext(ctx, searchRemovePlaceholder,
+	_, err := q.db.Exec(ctx, searchRemovePlaceholder,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.SourceID,
@@ -687,7 +683,7 @@ type SearchSourcesParams struct {
 }
 
 func (q *Queries) SearchSources(ctx context.Context, arg SearchSourcesParams) ([]SearchDocument, error) {
-	rows, err := q.db.QueryContext(ctx, searchSources,
+	rows, err := q.db.Query(ctx, searchSources,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -724,8 +720,8 @@ func (q *Queries) SearchSources(ctx context.Context, arg SearchSourcesParams) ([
 			&i.PayloadContentBytes,
 			&i.Vector,
 			&i.TokenCount,
-			pq.Array(&i.Terms),
-			pq.Array(&i.TermFrequencies),
+			&i.Terms,
+			&i.TermFrequencies,
 			&i.RefreshOrder,
 			&i.SourceVector,
 			&i.Generation,
@@ -745,9 +741,6 @@ func (q *Queries) SearchSources(ctx context.Context, arg SearchSourcesParams) ([
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -792,12 +785,12 @@ type SearchUpdateParams struct {
 }
 
 func (q *Queries) SearchUpdate(ctx context.Context, arg SearchUpdateParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, searchUpdate,
+	result, err := q.db.Exec(ctx, searchUpdate,
 		arg.Revision,
 		arg.SourceVector,
 		arg.TokenCount,
-		pq.Array(arg.Terms),
-		pq.Array(arg.TermFrequencies),
+		arg.Terms,
+		arg.TermFrequencies,
 		arg.Title,
 		arg.Status,
 		arg.UpdatedAt,
@@ -818,5 +811,5 @@ func (q *Queries) SearchUpdate(ctx context.Context, arg SearchUpdateParams) (int
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }

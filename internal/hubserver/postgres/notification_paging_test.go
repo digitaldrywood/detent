@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -96,16 +98,16 @@ func TestNotificationRelatedRecipientPagingResumesWithoutDuplicates(t *testing.T
 			t.Fatalf("completed event rediscovered: %+v", events)
 		}
 	}
-	tx, err := pool.BeginTx(t.Context(), nil)
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", org); err != nil {
+	defer tx.Rollback(t.Context())
+	if _, err := tx.Exec(t.Context(), "SELECT set_config('detent.organization_id', $1, true)", string(org)); err != nil {
 		t.Fatal(err)
 	}
 	var notices int
-	if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM issue_notification_notices WHERE organization_id=$1", org).Scan(&notices); err != nil || notices != 258 {
+	if err := tx.QueryRow(t.Context(), "SELECT count(*) FROM issue_notification_notices WHERE organization_id=$1", org).Scan(&notices); err != nil || notices != 258 {
 		t.Fatalf("notices=%d error=%v", notices, err)
 	}
 }

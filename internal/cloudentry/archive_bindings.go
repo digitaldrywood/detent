@@ -19,18 +19,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
 
-const archiveBindingSelect = `SELECT organization_id,id,revision,backend,endpoint,region,bucket,prefix,credential_reference,versioned FROM archive_storage_bindings`
+const archiveBindingSelect = `SELECT organization_id,id,revision,backend,endpoint,region,bucket,prefix,credential_reference,versioned FROM platform.archive_storage_bindings`
 
 const maxArchiveOrigins = 16
 const maxArchiveOriginBytes = 4096
 
 func archiveBindingOrigins(ctx context.Context, q queryer, organization, candidate string) (_ []string, resultErr error) {
 	query := `WITH RECURSIVE origins(endpoint,ordinal) AS (
- SELECT (SELECT min(lower(endpoint)) FROM archive_storage_bindings WHERE organization_id=?),1
+ SELECT (SELECT min(lower(endpoint)) FROM platform.archive_storage_bindings WHERE organization_id=$1),1
  UNION ALL
- SELECT (SELECT min(lower(endpoint)) FROM archive_storage_bindings WHERE organization_id=? AND lower(endpoint)>origins.endpoint),ordinal+1
- FROM origins WHERE endpoint IS NOT NULL AND ordinal<?
- ) SELECT substr(endpoint,1,?) FROM origins WHERE endpoint IS NOT NULL`
+ SELECT (SELECT min(lower(endpoint)) FROM platform.archive_storage_bindings WHERE organization_id=$2 AND lower(endpoint)>origins.endpoint),ordinal+1
+ FROM origins WHERE endpoint IS NOT NULL AND ordinal<$3
+ ) SELECT substr(endpoint,1,$4) FROM origins WHERE endpoint IS NOT NULL`
 	rows, err := q.QueryContext(ctx, query, organization, organization, maxArchiveOrigins+1, maxArchiveOriginBytes+1)
 	if err != nil {
 		return nil, err
@@ -101,7 +101,7 @@ func (s *Service) ensureLegacyArchiveBinding(ctx context.Context, organization s
 		return nil
 	}
 	var exists bool
-	if err := s.registry.store.reader.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM archive_storage_bindings WHERE organization_id=? AND id='')`, organization).Scan(&exists); err != nil {
+	if err := s.registry.store.reader.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM platform.archive_storage_bindings WHERE organization_id=$1 AND id='')`, organization).Scan(&exists); err != nil {
 		return err
 	}
 	if exists {
@@ -117,24 +117,24 @@ func (s *Service) ensureLegacyArchiveBinding(ctx context.Context, organization s
 	if err != nil {
 		return err
 	}
-	defer tx.cleanup(&resultErr)
+	defer tx.cleanup(ctx, &resultErr)
 	if _, err := archiveBindingOrigins(ctx, tx, organization, b.Endpoint); err != nil {
 		return err
 	}
 
-	_, err = tx.ExecContext(ctx, `INSERT INTO archive_storage_bindings(organization_id,id,revision,backend,endpoint,region,bucket,prefix,credential_reference,versioned)
- SELECT ?,?,0,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM organizations WHERE id=? AND state IN ('ready','deleting')) ON CONFLICT(organization_id,id) DO NOTHING`, organization, "", b.Backend, b.Endpoint, b.Region, b.Bucket, b.Prefix, b.CredentialReference, b.Versioned, organization)
+	_, err = tx.ExecContext(ctx, `INSERT INTO platform.archive_storage_bindings(organization_id,id,revision,backend,endpoint,region,bucket,prefix,credential_reference,versioned)
+ SELECT $1,$2,0,$3,$4,$5,$6,$7,$8,$9 WHERE EXISTS(SELECT 1 FROM platform.organizations WHERE id=$10 AND state IN ('ready','deleting')) ON CONFLICT(organization_id,id) DO NOTHING`, organization, "", b.Backend, b.Endpoint, b.Region, b.Bucket, b.Prefix, b.CredentialReference, b.Versioned, organization)
 	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	return tx.Commit(ctx)
 }
 
 func (s *Service) currentArchiveBinding(ctx context.Context, organization string) (attachment.StorageBinding, error) {
 	if err := s.ensureLegacyArchiveBinding(ctx, organization); err != nil {
 		return attachment.StorageBinding{}, err
 	}
-	b, err := scanArchiveBinding(s.registry.store.reader.QueryRowContext(ctx, archiveBindingSelect+` WHERE organization_id=? ORDER BY revision DESC LIMIT 1`, organization))
+	b, err := scanArchiveBinding(s.registry.store.reader.QueryRowContext(ctx, archiveBindingSelect+` WHERE organization_id=$1 ORDER BY revision DESC LIMIT 1`, organization))
 	if errors.Is(err, sql.ErrNoRows) {
 		return attachment.StorageBinding{}, nil
 	}
@@ -149,9 +149,9 @@ func (s *Service) saveArchiveBinding(ctx context.Context, b attachment.StorageBi
 	if err != nil {
 		return b, err
 	}
-	defer tx.cleanup(&resultErr)
+	defer tx.cleanup(ctx, &resultErr)
 	var current int64
-	if err := tx.QueryRowContext(ctx, `SELECT coalesce(max(revision),0) FROM archive_storage_bindings WHERE organization_id=?`, b.Organization).Scan(&current); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT coalesce(max(revision),0) FROM platform.archive_storage_bindings WHERE organization_id=$1`, b.Organization).Scan(&current); err != nil {
 		return b, err
 	}
 	if current != expected {
@@ -165,8 +165,8 @@ func (s *Service) saveArchiveBinding(ctx context.Context, b attachment.StorageBi
 	b.Revision = current + 1
 	digest := sha256.Sum256([]byte(b.Organization + "\n" + strconv.FormatInt(b.Revision, 10)))
 	b.ID = "asb_" + hex.EncodeToString(digest[:16])
-	result, err := tx.ExecContext(ctx, `INSERT INTO archive_storage_bindings(organization_id,id,revision,backend,endpoint,region,bucket,prefix,credential_reference,versioned)
-SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM organizations WHERE id=? AND state='ready')`, b.Organization, b.ID, b.Revision, b.Backend, b.Endpoint, b.Region, b.Bucket, b.Prefix, b.CredentialReference, b.Versioned, b.Organization)
+	result, err := tx.ExecContext(ctx, `INSERT INTO platform.archive_storage_bindings(organization_id,id,revision,backend,endpoint,region,bucket,prefix,credential_reference,versioned)
+SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10 WHERE EXISTS(SELECT 1 FROM platform.organizations WHERE id=$11 AND state='ready')`, b.Organization, b.ID, b.Revision, b.Backend, b.Endpoint, b.Region, b.Bucket, b.Prefix, b.CredentialReference, b.Versioned, b.Organization)
 	if err != nil {
 		return b, err
 	}
@@ -177,7 +177,7 @@ SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM organizations WHERE id=? A
 	if count != 1 {
 		return b, ErrOrganizationNotFound
 	}
-	return b, tx.Commit()
+	return b, tx.Commit(ctx)
 }
 
 func (s *Service) bindingStorage(ctx context.Context, b attachment.StorageBinding) (attachment.ArchiveStorage, error) {
@@ -219,7 +219,7 @@ func (s *Service) archiveStorageForReference(ctx context.Context, organization s
 			return nil, artifact.ErrStorage
 		}
 	}
-	b, err := scanArchiveBinding(s.registry.store.reader.QueryRowContext(ctx, archiveBindingSelect+` WHERE organization_id=? AND id=?`, organization, ref.BindingID))
+	b, err := scanArchiveBinding(s.registry.store.reader.QueryRowContext(ctx, archiveBindingSelect+` WHERE organization_id=$1 AND id=$2`, organization, ref.BindingID))
 	if errors.Is(err, sql.ErrNoRows) && ref.BindingID == "" {
 		return s.bindingStorage(ctx, attachment.StorageBinding{})
 	}

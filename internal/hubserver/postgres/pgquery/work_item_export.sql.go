@@ -7,10 +7,9 @@ package pgquery
 
 import (
 	"context"
-	"database/sql"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const countExportWorkItems = `-- name: CountExportWorkItems :one
@@ -29,8 +28,8 @@ AND NOT EXISTS(SELECT 1 FROM issue_labels l WHERE l.organization_id=i.organizati
 type CountExportWorkItemsParams struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
-	Archived       sql.NullBool
-	Terminal       sql.NullBool
+	Archived       pgtype.Bool
+	Terminal       pgtype.Bool
 	Reporter       bool
 	PrincipalID    string
 	States         []string
@@ -38,15 +37,15 @@ type CountExportWorkItemsParams struct {
 }
 
 func (q *Queries) CountExportWorkItems(ctx context.Context, arg CountExportWorkItemsParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countExportWorkItems,
+	row := q.db.QueryRow(ctx, countExportWorkItems,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.Archived,
 		arg.Terminal,
 		arg.Reporter,
 		arg.PrincipalID,
-		pq.Array(arg.States),
-		pq.Array(arg.Labels),
+		arg.States,
+		arg.Labels,
 	)
 	var count int64
 	err := row.Scan(&count)
@@ -71,8 +70,8 @@ ORDER BY i.number LIMIT $10::integer
 type ExportWorkItemsParams struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
-	Archived       sql.NullBool
-	Terminal       sql.NullBool
+	Archived       pgtype.Bool
+	Terminal       pgtype.Bool
 	Reporter       bool
 	PrincipalID    string
 	States         []string
@@ -82,15 +81,15 @@ type ExportWorkItemsParams struct {
 }
 
 func (q *Queries) ExportWorkItems(ctx context.Context, arg ExportWorkItemsParams) ([]Issue, error) {
-	rows, err := q.db.QueryContext(ctx, exportWorkItems,
+	rows, err := q.db.Query(ctx, exportWorkItems,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.Archived,
 		arg.Terminal,
 		arg.Reporter,
 		arg.PrincipalID,
-		pq.Array(arg.States),
-		pq.Array(arg.Labels),
+		arg.States,
+		arg.Labels,
 		arg.AfterNumber,
 		arg.PageLimit,
 	)
@@ -135,9 +134,6 @@ func (q *Queries) ExportWorkItems(ctx context.Context, arg ExportWorkItemsParams
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

@@ -2,7 +2,8 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
+
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -36,18 +37,18 @@ func linkedIssueSourceRecord(row pgquery.LinkedIssueSource) eventstore.LinkedSou
 	return result
 }
 
-func linkedIssueSourcePayload(record eventstore.LinkedSource) (*string, *string, sql.NullInt64, sql.NullInt64, error) {
+func linkedIssueSourcePayload(record eventstore.LinkedSource) (*string, *string, pgtype.Int8, pgtype.Int8, error) {
 	if record.SnapshotObjectKey == "" && record.SnapshotSHA256 == "" && record.SnapshotBytes == 0 && record.SnapshotContentBytes == 0 {
-		return nil, nil, sql.NullInt64{}, sql.NullInt64{}, nil
+		return nil, nil, pgtype.Int8{}, pgtype.Int8{}, nil
 	}
 	if !artifact.ValidHash(record.SnapshotSHA256, 64) || record.SnapshotBytes <= 0 || record.SnapshotContentBytes <= 0 {
-		return nil, nil, sql.NullInt64{}, sql.NullInt64{}, eventstore.ErrInvalidRecord
+		return nil, nil, pgtype.Int8{}, pgtype.Int8{}, eventstore.ErrInvalidRecord
 	}
 	ref := eventstore.Reference(record.SnapshotObjectKey, record.SnapshotSHA256, record.SnapshotBytes, record.SnapshotContentBytes)
 	if ref.Validate(string(record.OrganizationID)) != nil {
-		return nil, nil, sql.NullInt64{}, sql.NullInt64{}, eventstore.ErrInvalidRecord
+		return nil, nil, pgtype.Int8{}, pgtype.Int8{}, eventstore.ErrInvalidRecord
 	}
-	return new(record.SnapshotObjectKey), new(record.SnapshotSHA256), sql.NullInt64{Int64: record.SnapshotBytes, Valid: true}, sql.NullInt64{Int64: record.SnapshotContentBytes, Valid: true}, nil
+	return new(record.SnapshotObjectKey), new(record.SnapshotSHA256), pgtype.Int8{Int64: record.SnapshotBytes, Valid: true}, pgtype.Int8{Int64: record.SnapshotContentBytes, Valid: true}, nil
 }
 
 func (s *session) LinkedSource(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (eventstore.LinkedSource, error) {

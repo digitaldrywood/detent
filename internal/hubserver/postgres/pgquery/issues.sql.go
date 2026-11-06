@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
 )
 
 const compareAndSwapSourceRecovery = `-- name: CompareAndSwapSourceRecovery :execrows
@@ -31,7 +30,7 @@ type CompareAndSwapSourceRecoveryParams struct {
 }
 
 func (q *Queries) CompareAndSwapSourceRecovery(ctx context.Context, arg CompareAndSwapSourceRecoveryParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, compareAndSwapSourceRecovery,
+	result, err := q.db.Exec(ctx, compareAndSwapSourceRecovery,
 		arg.RunnerID,
 		arg.VersionID,
 		arg.OrganizationID,
@@ -43,7 +42,7 @@ func (q *Queries) CompareAndSwapSourceRecovery(ctx context.Context, arg CompareA
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const createWorkItem = `-- name: CreateWorkItem :one
@@ -132,7 +131,7 @@ type CreateWorkItemParams struct {
 }
 
 func (q *Queries) CreateWorkItem(ctx context.Context, arg CreateWorkItemParams) (Issue, error) {
-	row := q.db.QueryRowContext(ctx, createWorkItem,
+	row := q.db.QueryRow(ctx, createWorkItem,
 		arg.LastActivityAt,
 		arg.ImportedID,
 		arg.CreatedAt,
@@ -208,11 +207,11 @@ type DeleteWorkItemParams struct {
 }
 
 func (q *Queries) DeleteWorkItem(ctx context.Context, arg DeleteWorkItemParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, deleteWorkItem, arg.OrganizationID, arg.ProjectID, arg.NativeID)
+	result, err := q.db.Exec(ctx, deleteWorkItem, arg.OrganizationID, arg.ProjectID, arg.NativeID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const getNativeWorkItemsByIDs = `-- name: GetNativeWorkItemsByIDs :many
@@ -229,7 +228,7 @@ type GetNativeWorkItemsByIDsParams struct {
 }
 
 func (q *Queries) GetNativeWorkItemsByIDs(ctx context.Context, arg GetNativeWorkItemsByIDsParams) ([]Issue, error) {
-	rows, err := q.db.QueryContext(ctx, getNativeWorkItemsByIDs, arg.OrganizationID, arg.ProjectID, pq.Array(arg.NativeIds))
+	rows, err := q.db.Query(ctx, getNativeWorkItemsByIDs, arg.OrganizationID, arg.ProjectID, arg.NativeIds)
 	if err != nil {
 		return nil, err
 	}
@@ -272,9 +271,6 @@ func (q *Queries) GetNativeWorkItemsByIDs(ctx context.Context, arg GetNativeWork
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -295,7 +291,7 @@ type GetWorkItemParams struct {
 }
 
 func (q *Queries) GetWorkItem(ctx context.Context, arg GetWorkItemParams) (Issue, error) {
-	row := q.db.QueryRowContext(ctx, getWorkItem, arg.OrganizationID, arg.ProjectID, arg.NativeID)
+	row := q.db.QueryRow(ctx, getWorkItem, arg.OrganizationID, arg.ProjectID, arg.NativeID)
 	var i Issue
 	err := row.Scan(
 		&i.OrganizationID,
@@ -345,7 +341,7 @@ type GetWorkItemByIDParams struct {
 }
 
 func (q *Queries) GetWorkItemByID(ctx context.Context, arg GetWorkItemByIDParams) (Issue, error) {
-	row := q.db.QueryRowContext(ctx, getWorkItemByID, arg.OrganizationID, arg.ProjectID, arg.ID)
+	row := q.db.QueryRow(ctx, getWorkItemByID, arg.OrganizationID, arg.ProjectID, arg.ID)
 	var i Issue
 	err := row.Scan(
 		&i.OrganizationID,
@@ -393,7 +389,7 @@ type GetWorkItemByNativeIDParams struct {
 }
 
 func (q *Queries) GetWorkItemByNativeID(ctx context.Context, arg GetWorkItemByNativeIDParams) (Issue, error) {
-	row := q.db.QueryRowContext(ctx, getWorkItemByNativeID, arg.OrganizationID, arg.NativeID)
+	row := q.db.QueryRow(ctx, getWorkItemByNativeID, arg.OrganizationID, arg.NativeID)
 	var i Issue
 	err := row.Scan(
 		&i.OrganizationID,
@@ -443,7 +439,7 @@ type GetWorkItemByNumberParams struct {
 }
 
 func (q *Queries) GetWorkItemByNumber(ctx context.Context, arg GetWorkItemByNumberParams) (Issue, error) {
-	row := q.db.QueryRowContext(ctx, getWorkItemByNumber, arg.OrganizationID, arg.ProjectID, arg.Number)
+	row := q.db.QueryRow(ctx, getWorkItemByNumber, arg.OrganizationID, arg.ProjectID, arg.Number)
 	var i Issue
 	err := row.Scan(
 		&i.OrganizationID,
@@ -498,7 +494,7 @@ type GetWorkItemCursorRow struct {
 }
 
 func (q *Queries) GetWorkItemCursor(ctx context.Context, arg GetWorkItemCursorParams) (GetWorkItemCursorRow, error) {
-	row := q.db.QueryRowContext(ctx, getWorkItemCursor, arg.OrganizationID, arg.ProjectID, arg.ID)
+	row := q.db.QueryRow(ctx, getWorkItemCursor, arg.OrganizationID, arg.ProjectID, arg.ID)
 	var i GetWorkItemCursorRow
 	err := row.Scan(&i.CreatedAt, &i.ID)
 	return i, err
@@ -518,7 +514,7 @@ type GetWorkItemsByIDsParams struct {
 }
 
 func (q *Queries) GetWorkItemsByIDs(ctx context.Context, arg GetWorkItemsByIDsParams) ([]Issue, error) {
-	rows, err := q.db.QueryContext(ctx, getWorkItemsByIDs, arg.OrganizationID, arg.ProjectID, pq.Array(arg.Ids))
+	rows, err := q.db.Query(ctx, getWorkItemsByIDs, arg.OrganizationID, arg.ProjectID, arg.Ids)
 	if err != nil {
 		return nil, err
 	}
@@ -561,9 +557,6 @@ func (q *Queries) GetWorkItemsByIDs(ctx context.Context, arg GetWorkItemsByIDsPa
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -586,7 +579,7 @@ type ListLegacyWorkItemsParams struct {
 }
 
 func (q *Queries) ListLegacyWorkItems(ctx context.Context, arg ListLegacyWorkItemsParams) ([]Issue, error) {
-	rows, err := q.db.QueryContext(ctx, listLegacyWorkItems,
+	rows, err := q.db.Query(ctx, listLegacyWorkItems,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.After,
@@ -634,9 +627,6 @@ func (q *Queries) ListLegacyWorkItems(ctx context.Context, arg ListLegacyWorkIte
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -660,7 +650,7 @@ type PageWorkItemsParams struct {
 }
 
 func (q *Queries) PageWorkItems(ctx context.Context, arg PageWorkItemsParams) ([]Issue, error) {
-	rows, err := q.db.QueryContext(ctx, pageWorkItems,
+	rows, err := q.db.Query(ctx, pageWorkItems,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.AfterCreatedAt,
@@ -709,9 +699,6 @@ func (q *Queries) PageWorkItems(ctx context.Context, arg PageWorkItemsParams) ([
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -735,7 +722,7 @@ type ScanWorkItemsParams struct {
 }
 
 func (q *Queries) ScanWorkItems(ctx context.Context, arg ScanWorkItemsParams) ([]Issue, error) {
-	rows, err := q.db.QueryContext(ctx, scanWorkItems,
+	rows, err := q.db.Query(ctx, scanWorkItems,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.AfterID,
@@ -783,9 +770,6 @@ func (q *Queries) ScanWorkItems(ctx context.Context, arg ScanWorkItemsParams) ([
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -841,7 +825,7 @@ type UpdateWorkItemParams struct {
 }
 
 func (q *Queries) UpdateWorkItem(ctx context.Context, arg UpdateWorkItemParams) (Issue, error) {
-	row := q.db.QueryRowContext(ctx, updateWorkItem,
+	row := q.db.QueryRow(ctx, updateWorkItem,
 		arg.LastActivityAt,
 		arg.Number,
 		arg.EventSequence,
@@ -911,7 +895,7 @@ type WorkItemScanThroughParams struct {
 }
 
 func (q *Queries) WorkItemScanThrough(ctx context.Context, arg WorkItemScanThroughParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, workItemScanThrough, arg.OrganizationID, arg.ProjectID)
+	row := q.db.QueryRow(ctx, workItemScanThrough, arg.OrganizationID, arg.ProjectID)
 	var id int64
 	err := row.Scan(&id)
 	return id, err

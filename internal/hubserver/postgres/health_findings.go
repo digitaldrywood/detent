@@ -2,9 +2,11 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -56,7 +58,7 @@ func (s *session) HealthFindings(ctx context.Context, project tracker.ProjectID,
 	if project == "" || limit < 1 || limit > 101 || after < 0 || (state != "all" && state != "open" && state != "resolved") {
 		return page, corestore.ErrInvalidPage
 	}
-	rows, err := s.queries.HealthFindings(ctx, pgquery.HealthFindingsParams{OrganizationID: s.organization, ProjectID: project, State: state, Since: since, AfterSequence: sql.NullInt64{Int64: after, Valid: true}, Reporter: reporter, PageLimit: int32(limit)})
+	rows, err := s.queries.HealthFindings(ctx, pgquery.HealthFindingsParams{OrganizationID: s.organization, ProjectID: project, State: state, Since: since, AfterSequence: pgtype.Int8{Int64: after, Valid: true}, Reporter: reporter, PageLimit: int32(limit)})
 	if err != nil {
 		return page, mapError(ctx, err)
 	}
@@ -82,7 +84,7 @@ func (s *session) HealthFindings(ctx context.Context, project tracker.ProjectID,
 		page.Findings[i].Issues = append(page.Findings[i].Issues, healthstore.Issue{ProjectID: link.ProjectID, WorkItemID: tracker.NativeWorkItemID(link.WorkItemID)})
 	}
 	tick, err := s.queries.HealthLastTick(ctx, s.organization)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return page, nil
 	}
 	if err != nil {

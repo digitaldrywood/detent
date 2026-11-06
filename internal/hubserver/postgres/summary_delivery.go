@@ -2,9 +2,10 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -34,7 +35,7 @@ func (r *Repository) SummaryStatus(ctx context.Context, org tracker.Organization
 	err := r.transaction(ctx, org, corestore.Background, true, func(s *session) error {
 		var err error
 		status, err = s.queries.SummaryStatus(ctx, pgquery.SummaryStatusParams{OrganizationID: org, UserID: user, WindowEnd: end})
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		return mapError(ctx, err)

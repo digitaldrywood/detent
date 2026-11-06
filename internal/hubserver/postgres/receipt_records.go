@@ -2,9 +2,10 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -18,7 +19,7 @@ import (
 var _ receiptstore.Writer = (*session)(nil)
 
 func (s *session) ReceiptMember(ctx context.Context, actor string) (accessstore.Member, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT organization_id,user_id,email,membership_id,role,active,principal_id,notify_issues,created_at,updated_at FROM hosted_members WHERE organization_id=$1 AND principal_id=$2 LIMIT 2`+s.accessLock(), s.organization, actor)
+	rows, err := s.db.Query(ctx, `SELECT organization_id,user_id,email,membership_id,role,active,principal_id,notify_issues,created_at,updated_at FROM hosted_members WHERE organization_id=$1 AND principal_id=$2 LIMIT 2`+s.accessLock(), s.organization, actor)
 	if err != nil {
 		return accessstore.Member{}, mapError(ctx, err)
 	}
@@ -56,14 +57,11 @@ func (s *session) insertReceipt(ctx context.Context, record receiptstore.Record)
 		return receiptstore.Record{}, false, err
 	}
 	record.CreatedAt = recordTime(record.CreatedAt)
-	result, err := s.db.ExecContext(ctx, `INSERT INTO native_command_states (organization_id,actor_id,operation,command_key,request_hash,created_at,response_claimed,response_pending,response_request_id,response_expired,response_replay_until_ns,response_reconciliation_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING`, s.organization, record.ActorID, record.Operation, record.CommandKey, record.RequestHash, record.CreatedAt, record.ResponseClaimed, record.ResponsePending, record.ResponseRequestID, record.ResponseExpired, record.ResponseReplayUntilNs, record.ResponseReconciliationHash)
+	result, err := s.db.Exec(ctx, `INSERT INTO native_command_states (organization_id,actor_id,operation,command_key,request_hash,created_at,response_claimed,response_pending,response_request_id,response_expired,response_replay_until_ns,response_reconciliation_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING`, s.organization, record.ActorID, record.Operation, record.CommandKey, record.RequestHash, record.CreatedAt, record.ResponseClaimed, record.ResponsePending, record.ResponseRequestID, record.ResponseExpired, record.ResponseReplayUntilNs, record.ResponseReconciliationHash)
 	if err != nil {
 		return receiptstore.Record{}, false, mapError(ctx, err)
 	}
-	inserted, err := result.RowsAffected()
-	if err != nil {
-		return receiptstore.Record{}, false, err
-	}
+	inserted := result.RowsAffected()
 	if inserted == 0 {
 		stored, err := s.Receipt(ctx, record.ActorID, record.Operation, record.CommandKey)
 		if err == nil && stored.RequestHash != record.RequestHash {
@@ -102,7 +100,7 @@ func (s *session) insertReceiptBody(ctx context.Context, record receiptstore.Rec
 		RequestHash: record.RequestHash, CreatedAt: record.CreatedAt, PayloadObjectKey: record.PayloadObjectKey,
 		PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes,
 	})
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return corestore.ErrRevisionConflict
 	}
 	if err != nil {
@@ -170,7 +168,7 @@ func (s *session) CompleteReceipt(ctx context.Context, record receiptstore.Recor
 	if err := s.insertReceiptBody(ctx, record); err != nil {
 		return receiptstore.Record{}, err
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE native_command_states SET created_at=$5,response_claimed=false,response_pending=$6,response_request_id=$7,response_replay_until_ns=$8,response_reconciliation_hash=$9 WHERE organization_id=$1 AND actor_id=$2 AND operation=$3 AND command_key=$4`, s.organization, record.ActorID, record.Operation, record.CommandKey, record.CreatedAt, record.ResponsePending, record.ResponseRequestID, record.ResponseReplayUntilNs, record.ResponseReconciliationHash)
+	_, err = s.db.Exec(ctx, `UPDATE native_command_states SET created_at=$5,response_claimed=false,response_pending=$6,response_request_id=$7,response_replay_until_ns=$8,response_reconciliation_hash=$9 WHERE organization_id=$1 AND actor_id=$2 AND operation=$3 AND command_key=$4`, s.organization, record.ActorID, record.Operation, record.CommandKey, record.CreatedAt, record.ResponsePending, record.ResponseRequestID, record.ResponseReplayUntilNs, record.ResponseReconciliationHash)
 	if err != nil {
 		return receiptstore.Record{}, mapError(ctx, err)
 	}
@@ -191,14 +189,14 @@ func (s *session) AbandonReceipt(ctx context.Context, actor, operation, key, has
 	if !previous.ResponseClaimed {
 		return nil
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM native_command_states WHERE organization_id=$1 AND actor_id=$2 AND operation=$3 AND command_key=$4`, s.organization, actor, operation, key); err != nil {
+	if _, err := s.db.Exec(ctx, `DELETE FROM native_command_states WHERE organization_id=$1 AND actor_id=$2 AND operation=$3 AND command_key=$4`, s.organization, actor, operation, key); err != nil {
 		return mapError(ctx, err)
 	}
 	return nil
 }
 
 func (s *session) lockReceipt(ctx context.Context, actor, operation, key string) (receiptstore.Record, error) {
-	if _, err := s.db.ExecContext(ctx, `SELECT 1 FROM native_command_states WHERE organization_id=$1 AND actor_id=$2 AND operation=$3 AND command_key=$4 FOR UPDATE`, s.organization, actor, operation, key); err != nil {
+	if _, err := s.db.Exec(ctx, `SELECT 1 FROM native_command_states WHERE organization_id=$1 AND actor_id=$2 AND operation=$3 AND command_key=$4 FOR UPDATE`, s.organization, actor, operation, key); err != nil {
 		return receiptstore.Record{}, mapError(ctx, err)
 	}
 	return s.Receipt(ctx, actor, operation, key)
@@ -206,7 +204,7 @@ func (s *session) lockReceipt(ctx context.Context, actor, operation, key string)
 
 func (s *session) receiptRecord(ctx context.Context, actor, operation, key string) (receiptstore.Record, error) {
 	var record receiptstore.Record
-	err := s.db.QueryRowContext(ctx, `SELECT requested.organization_id,requested.actor_id,requested.operation,requested.command_key,COALESCE(c.request_hash,state.request_hash),COALESCE(c.created_at,state.created_at),COALESCE(c.payload_object_key,''),COALESCE(c.payload_sha256,''),COALESCE(c.payload_bytes,0),COALESCE(c.payload_content_bytes,0),COALESCE(state.response_claimed,false),COALESCE(state.response_pending,false),COALESCE(state.response_request_id,''),COALESCE(state.response_expired,false),COALESCE(state.response_replay_until_ns,0),COALESCE(state.response_reconciliation_hash,'')
+	err := s.db.QueryRow(ctx, `SELECT requested.organization_id,requested.actor_id,requested.operation,requested.command_key,COALESCE(c.request_hash,state.request_hash),COALESCE(c.created_at,state.created_at),COALESCE(c.payload_object_key,''),COALESCE(c.payload_sha256,''),COALESCE(c.payload_bytes,0),COALESCE(c.payload_content_bytes,0),COALESCE(state.response_claimed,false),COALESCE(state.response_pending,false),COALESCE(state.response_request_id,''),COALESCE(state.response_expired,false),COALESCE(state.response_replay_until_ns,0),COALESCE(state.response_reconciliation_hash,'')
 FROM (SELECT $1::text organization_id,$2::text actor_id,$3::text operation,$4::text command_key) requested
 LEFT JOIN native_commands c USING(organization_id,actor_id,operation,command_key)
 LEFT JOIN native_command_states state USING(organization_id,actor_id,operation,command_key)

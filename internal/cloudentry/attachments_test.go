@@ -426,7 +426,7 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 	}
 	store.mu.Unlock()
 	var audits int
-	if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM audit WHERE event IN ('attachment_uploaded','attachment_read') AND organization_id='org_alpha'").Scan(&audits); err != nil {
+	if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM platform.audit WHERE event IN ('attachment_uploaded','attachment_read') AND organization_id='org_alpha'").Scan(&audits); err != nil {
 		t.Fatal(err)
 	}
 	if audits != 3 {
@@ -514,7 +514,7 @@ func TestAttachmentOrphanSweepAndDeprovision(t *testing.T) {
 	}
 	f.service.attachments = storage
 	f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
-	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='deleting' WHERE id='org_alpha'"); err != nil {
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET state='deleting' WHERE id='org_alpha'"); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.service.finishDeletion(t.Context(), "org_alpha"); err != nil {

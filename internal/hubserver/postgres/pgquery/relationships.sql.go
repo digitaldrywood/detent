@@ -7,11 +7,10 @@ package pgquery
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const deleteDependency = `-- name: DeleteDependency :execrows
@@ -28,7 +27,7 @@ type DeleteDependencyParams struct {
 }
 
 func (q *Queries) DeleteDependency(ctx context.Context, arg DeleteDependencyParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, deleteDependency,
+	result, err := q.db.Exec(ctx, deleteDependency,
 		arg.OrganizationID,
 		arg.DependentProjectID,
 		arg.DependentIssueID,
@@ -38,7 +37,7 @@ func (q *Queries) DeleteDependency(ctx context.Context, arg DeleteDependencyPara
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const deleteRelated = `-- name: DeleteRelated :execrows
@@ -55,7 +54,7 @@ type DeleteRelatedParams struct {
 }
 
 func (q *Queries) DeleteRelated(ctx context.Context, arg DeleteRelatedParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, deleteRelated,
+	result, err := q.db.Exec(ctx, deleteRelated,
 		arg.OrganizationID,
 		arg.FirstProjectID,
 		arg.FirstIssueID,
@@ -65,7 +64,7 @@ func (q *Queries) DeleteRelated(ctx context.Context, arg DeleteRelatedParams) (i
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const deleteWorkItemLabels = `-- name: DeleteWorkItemLabels :exec
@@ -79,7 +78,7 @@ type DeleteWorkItemLabelsParams struct {
 }
 
 func (q *Queries) DeleteWorkItemLabels(ctx context.Context, arg DeleteWorkItemLabelsParams) error {
-	_, err := q.db.ExecContext(ctx, deleteWorkItemLabels, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
+	_, err := q.db.Exec(ctx, deleteWorkItemLabels, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
 	return err
 }
 
@@ -104,7 +103,7 @@ type GetDependencyRow struct {
 }
 
 func (q *Queries) GetDependency(ctx context.Context, arg GetDependencyParams) (GetDependencyRow, error) {
-	row := q.db.QueryRowContext(ctx, getDependency,
+	row := q.db.QueryRow(ctx, getDependency,
 		arg.OrganizationID,
 		arg.DependentProjectID,
 		arg.DependentIssueID,
@@ -140,7 +139,7 @@ type ImportDependencyParams struct {
 }
 
 func (q *Queries) ImportDependency(ctx context.Context, arg ImportDependencyParams) error {
-	_, err := q.db.ExecContext(ctx, importDependency,
+	_, err := q.db.Exec(ctx, importDependency,
 		arg.OrganizationID,
 		arg.DependentProjectID,
 		arg.DependentIssueID,
@@ -172,7 +171,7 @@ type InsertDependencyParams struct {
 }
 
 func (q *Queries) InsertDependency(ctx context.Context, arg InsertDependencyParams) error {
-	_, err := q.db.ExecContext(ctx, insertDependency,
+	_, err := q.db.Exec(ctx, insertDependency,
 		arg.OrganizationID,
 		arg.DependentProjectID,
 		arg.DependentIssueID,
@@ -201,7 +200,7 @@ type InsertRelatedParams struct {
 }
 
 func (q *Queries) InsertRelated(ctx context.Context, arg InsertRelatedParams) error {
-	_, err := q.db.ExecContext(ctx, insertRelated,
+	_, err := q.db.Exec(ctx, insertRelated,
 		arg.OrganizationID,
 		arg.FirstProjectID,
 		arg.FirstIssueID,
@@ -225,7 +224,7 @@ type InsertWorkItemLabelParams struct {
 }
 
 func (q *Queries) InsertWorkItemLabel(ctx context.Context, arg InsertWorkItemLabelParams) error {
-	_, err := q.db.ExecContext(ctx, insertWorkItemLabel,
+	_, err := q.db.Exec(ctx, insertWorkItemLabel,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -256,7 +255,7 @@ type LabelCatalogRow struct {
 }
 
 func (q *Queries) LabelCatalog(ctx context.Context, arg LabelCatalogParams) ([]LabelCatalogRow, error) {
-	rows, err := q.db.QueryContext(ctx, labelCatalog,
+	rows, err := q.db.Query(ctx, labelCatalog,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.Reporter,
@@ -273,9 +272,6 @@ func (q *Queries) LabelCatalog(ctx context.Context, arg LabelCatalogParams) ([]L
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -297,7 +293,7 @@ type LabelNamePageParams struct {
 }
 
 func (q *Queries) LabelNamePage(ctx context.Context, arg LabelNamePageParams) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, labelNamePage,
+	rows, err := q.db.Query(ctx, labelNamePage,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.AfterLabel,
@@ -315,9 +311,6 @@ func (q *Queries) LabelNamePage(ctx context.Context, arg LabelNamePageParams) ([
 		}
 		items = append(items, label)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -331,7 +324,7 @@ FOR NO KEY UPDATE
 `
 
 func (q *Queries) LockRelationshipGraph(ctx context.Context, organizationID tracker.OrganizationID) (tracker.OrganizationID, error) {
-	row := q.db.QueryRowContext(ctx, lockRelationshipGraph, organizationID)
+	row := q.db.QueryRow(ctx, lockRelationshipGraph, organizationID)
 	var organization_id tracker.OrganizationID
 	err := row.Scan(&organization_id)
 	return organization_id, err
@@ -352,7 +345,7 @@ type LockWorkItemBatchParams struct {
 }
 
 func (q *Queries) LockWorkItemBatch(ctx context.Context, arg LockWorkItemBatchParams) ([]Issue, error) {
-	rows, err := q.db.QueryContext(ctx, lockWorkItemBatch, arg.OrganizationID, pq.Array(arg.ProjectIds), pq.Array(arg.NativeIds))
+	rows, err := q.db.Query(ctx, lockWorkItemBatch, arg.OrganizationID, arg.ProjectIds, arg.NativeIds)
 	if err != nil {
 		return nil, err
 	}
@@ -394,9 +387,6 @@ func (q *Queries) LockWorkItemBatch(ctx context.Context, arg LockWorkItemBatchPa
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -474,11 +464,11 @@ type RelationshipBatchRow struct {
 	ProjectSlug           string
 	ClosedAt              time.Time
 	StartedAt             time.Time
-	RelatedProjectVisible sql.NullBool
+	RelatedProjectVisible pgtype.Bool
 }
 
 func (q *Queries) RelationshipBatch(ctx context.Context, arg RelationshipBatchParams) ([]RelationshipBatchRow, error) {
-	rows, err := q.db.QueryContext(ctx, relationshipBatch, arg.OrganizationID, pq.Array(arg.WorkItemIds), arg.ProjectID)
+	rows, err := q.db.Query(ctx, relationshipBatch, arg.OrganizationID, arg.WorkItemIds, arg.ProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -508,9 +498,6 @@ func (q *Queries) RelationshipBatch(ctx context.Context, arg RelationshipBatchPa
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -592,7 +579,7 @@ type RelationshipPageRow struct {
 }
 
 func (q *Queries) RelationshipPage(ctx context.Context, arg RelationshipPageParams) ([]RelationshipPageRow, error) {
-	rows, err := q.db.QueryContext(ctx, relationshipPage,
+	rows, err := q.db.Query(ctx, relationshipPage,
 		arg.OrganizationID,
 		arg.AfterType,
 		arg.AfterDirection,
@@ -629,9 +616,6 @@ func (q *Queries) RelationshipPage(ctx context.Context, arg RelationshipPagePara
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -672,7 +656,7 @@ type WorkItemBlockersRow struct {
 }
 
 func (q *Queries) WorkItemBlockers(ctx context.Context, arg WorkItemBlockersParams) ([]WorkItemBlockersRow, error) {
-	rows, err := q.db.QueryContext(ctx, workItemBlockers,
+	rows, err := q.db.Query(ctx, workItemBlockers,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.NativeID,
@@ -697,9 +681,6 @@ func (q *Queries) WorkItemBlockers(ctx context.Context, arg WorkItemBlockersPara
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -721,7 +702,7 @@ type WorkItemLabelPageParams struct {
 }
 
 func (q *Queries) WorkItemLabelPage(ctx context.Context, arg WorkItemLabelPageParams) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, workItemLabelPage,
+	rows, err := q.db.Query(ctx, workItemLabelPage,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
@@ -739,9 +720,6 @@ func (q *Queries) WorkItemLabelPage(ctx context.Context, arg WorkItemLabelPagePa
 			return nil, err
 		}
 		items = append(items, label)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

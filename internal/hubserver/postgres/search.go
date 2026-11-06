@@ -2,11 +2,13 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -126,8 +128,8 @@ func (s *session) PublishSearch(ctx context.Context, value searchstore.Prepared)
 		}
 		params.AggregateObjectKey = new(value.Payload.Key)
 		params.AggregateSha256 = new(value.Payload.SHA256)
-		params.AggregateBytes = sql.NullInt64{Int64: value.Payload.CompressedSize, Valid: true}
-		params.AggregateContentBytes = sql.NullInt64{Int64: value.Payload.UncompressedSize, Valid: true}
+		params.AggregateBytes = pgtype.Int8{Int64: value.Payload.CompressedSize, Valid: true}
+		params.AggregateContentBytes = pgtype.Int8{Int64: value.Payload.UncompressedSize, Valid: true}
 	}
 	terms := make([]string, len(value.Literals))
 	positions := make([]string, len(value.Literals))
@@ -135,20 +137,20 @@ func (s *session) PublishSearch(ctx context.Context, value searchstore.Prepared)
 		terms[index] = posting.Term
 		positions[index] = literalPositionsArray(posting.Positions)
 	}
-	if _, err := s.db.ExecContext(ctx, "SAVEPOINT search_publication"); err != nil {
+	if _, err := s.db.Exec(ctx, "SAVEPOINT search_publication"); err != nil {
 		return false, mapError(ctx, err)
 	}
 	discard := func() (bool, error) {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		if _, err := s.db.ExecContext(cleanup, "ROLLBACK TO SAVEPOINT search_publication"); err != nil {
+		if _, err := s.db.Exec(cleanup, "ROLLBACK TO SAVEPOINT search_publication"); err != nil {
 			return false, mapError(cleanup, err)
 		}
-		_, err := s.db.ExecContext(cleanup, "RELEASE SAVEPOINT search_publication")
+		_, err := s.db.Exec(cleanup, "RELEASE SAVEPOINT search_publication")
 		return false, mapError(cleanup, err)
 	}
 	captured, err := s.queries.SearchPreparePublicationPostings(ctx, pgquery.SearchPreparePublicationPostingsParams{OrganizationID: s.organization, ID: d.ID, Revision: d.Revision, PayloadObjectKey: d.Payload.Key, PayloadSHA256: d.Payload.SHA256, Generation: d.Generation, Vector: value.Vector, TokenCount: value.Statistics.Tokens, Terms: value.Statistics.Terms, TermFrequencies: value.Statistics.Frequencies, Literals: terms})
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return discard()
 	}
 	if err != nil {
@@ -160,7 +162,7 @@ func (s *session) PublishSearch(ctx context.Context, value searchstore.Prepared)
 		}
 	}
 	current, err := s.queries.SearchPublicationVisibility(ctx, pgquery.SearchPublicationVisibilityParams{OrganizationID: s.organization, ID: d.ID})
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return discard()
 	}
 	if err != nil {
@@ -176,7 +178,7 @@ func (s *session) PublishSearch(ctx context.Context, value searchstore.Prepared)
 	if count == 0 {
 		return discard()
 	}
-	_, err = s.db.ExecContext(ctx, "RELEASE SAVEPOINT search_publication")
+	_, err = s.db.Exec(ctx, "RELEASE SAVEPOINT search_publication")
 	return true, mapError(ctx, err)
 }
 
@@ -265,8 +267,8 @@ func (s *session) SearchProgress(ctx context.Context, d searchstore.Document) (s
 	}
 	var progress searchstore.Progress
 	ref := &progress.Payload
-	err := s.db.QueryRowContext(ctx, `SELECT progress_after_id,progress_object_key,progress_sha256,progress_bytes,progress_content_bytes FROM search_documents WHERE organization_id=$1 AND id=$2 AND generation=$3 AND progress_generation=$3 AND revision=$4 AND payload_object_key=$5 AND payload_sha256=$6`, s.organization, d.ID, d.Generation, d.Revision, d.Payload.Key, d.Payload.SHA256).Scan(&progress.AfterID, &ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize)
-	if err == sql.ErrNoRows {
+	err := s.db.QueryRow(ctx, `SELECT progress_after_id,progress_object_key,progress_sha256,progress_bytes,progress_content_bytes FROM search_documents WHERE organization_id=$1 AND id=$2 AND generation=$3 AND progress_generation=$3 AND revision=$4 AND payload_object_key=$5 AND payload_sha256=$6`, s.organization, d.ID, d.Generation, d.Revision, d.Payload.Key, d.Payload.SHA256).Scan(&progress.AfterID, &ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return searchstore.Progress{}, nil
 	}
 	if err != nil {
@@ -284,10 +286,10 @@ func (s *session) SaveSearchProgress(ctx context.Context, d searchstore.Document
 		return false, searchstore.ErrInvalid
 	}
 	ref := progress.Payload
-	result, err := s.db.ExecContext(ctx, `UPDATE search_documents SET progress_generation=$3,progress_after_id=$7,progress_object_key=$8,progress_sha256=$9,progress_bytes=$10,progress_content_bytes=$11 WHERE organization_id=$1 AND id=$2 AND generation=$3 AND revision=$4 AND payload_object_key=$5 AND payload_sha256=$6 AND (progress_generation IS DISTINCT FROM $3 OR progress_after_id COLLATE "C"<$7 COLLATE "C")`, s.organization, d.ID, d.Generation, d.Revision, d.Payload.Key, d.Payload.SHA256, progress.AfterID, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize)
+	result, err := s.db.Exec(ctx, `UPDATE search_documents SET progress_generation=$3,progress_after_id=$7,progress_object_key=$8,progress_sha256=$9,progress_bytes=$10,progress_content_bytes=$11 WHERE organization_id=$1 AND id=$2 AND generation=$3 AND revision=$4 AND payload_object_key=$5 AND payload_sha256=$6 AND (progress_generation IS DISTINCT FROM $3 OR progress_after_id COLLATE "C"<$7 COLLATE "C")`, s.organization, d.ID, d.Generation, d.Revision, d.Payload.Key, d.Payload.SHA256, progress.AfterID, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize)
 	if err != nil {
 		return false, mapError(ctx, err)
 	}
-	count, err := result.RowsAffected()
+	count := result.RowsAffected()
 	return count == 1, mapError(ctx, err)
 }

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -52,9 +52,9 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
-		var pgErr *pq.Error
+		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {
-			t.Fatalf("write report fixture failed with SQLSTATE %s on constraint %s: %v", pgErr.Code, pgErr.Constraint, err)
+			t.Fatalf("write report fixture failed with SQLSTATE %s on constraint %s: %v", pgErr.Code, pgErr.ConstraintName, err)
 		}
 		t.Fatal(err)
 	}
@@ -436,7 +436,7 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 		}
 		assertCoverage(true)
 		probe := reportObjectReadProbe{DetailStore: objects, check: func() {
-			if repository.Stats().InUse != 0 {
+			if repository.Stats().AcquiredConns() != 0 {
 				t.Fatal("object read held target transaction")
 			}
 		}}

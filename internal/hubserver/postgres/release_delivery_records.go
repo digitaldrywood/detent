@@ -2,7 +2,8 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
+
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 
@@ -34,9 +35,9 @@ func (s *session) PutReleaseDelivery(ctx context.Context, record eventstore.Rele
 	if record.ProjectID == "" || record.WorkItemID == "" || d.SourceIssueID == "" || d.SourceChangeID == "" || d.SourceMergeSHA == "" || d.Repository == "" || d.PRNumber < 1 || d.HeadRef == "" || d.HeadSHA == "" || d.BaseRef == "" || d.BaseSHA == "" || d.FrozenSHA == "" || d.ChangeID == "" || d.Actor.PrincipalID == "" || d.Actor.Kind == "" || d.AssociatedAt.IsZero() {
 		return eventstore.ErrInvalidRecord
 	}
-	var repositoryID sql.NullInt64
+	var repositoryID pgtype.Int8
 	if record.RepositoryID != nil {
-		repositoryID = sql.NullInt64{Int64: *record.RepositoryID, Valid: true}
+		repositoryID = pgtype.Int8{Int64: *record.RepositoryID, Valid: true}
 	}
 	var versionID *string
 	if d.VersionID != "" {

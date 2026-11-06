@@ -99,7 +99,7 @@ func TestPlatformNotifications(t *testing.T) {
 				{"admin-a@example.test", "admin"}, {"admin-b@example.test", "admin"},
 				{"support@example.test", "support"}, {"viewer@example.test", "viewer"}, {"billing@example.test", "billing"},
 			} {
-				if _, err := s.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?,'fixture','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z') ON CONFLICT(email) DO UPDATE SET role=excluded.role", member.email, member.role); err != nil {
+				if _, err := s.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform.platform_members VALUES($1,$2,'fixture','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z') ON CONFLICT(email) DO UPDATE SET role=excluded.role", member.email, member.role); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -287,7 +287,7 @@ func TestPlatformNotificationRecipientsAtSendTime(t *testing.T) {
 		}
 	}
 	for _, member := range []struct{ email, role string }{{"new-admin@example.test", "admin"}, {"former-admin@example.test", "viewer"}} {
-		if _, err := s.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?,'fixture','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z') ON CONFLICT(email) DO UPDATE SET role=excluded.role", member.email, member.role); err != nil {
+		if _, err := s.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform.platform_members VALUES($1,$2,'fixture','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z') ON CONFLICT(email) DO UPDATE SET role=excluded.role", member.email, member.role); err != nil {
 			t.Fatal(err)
 		}
 	}

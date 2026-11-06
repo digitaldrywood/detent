@@ -129,14 +129,11 @@ WHERE r.organization_id=v.organization_id AND r.id=v.id AND NOT r.push_known AND
 	}
 	err := r.transaction(ctx, batch.organization, corestore.Background, false, func(s *session) error {
 		for _, update := range updates {
-			result, err := s.db.ExecContext(ctx, update.query, update.args...)
+			result, err := s.db.Exec(ctx, update.query, update.args...)
 			if err != nil {
 				return err
 			}
-			changed, err := result.RowsAffected()
-			if err != nil {
-				return err
-			}
+			changed := result.RowsAffected()
 			if changed != int64(update.expected) {
 				return corestore.ErrRevisionConflict
 			}

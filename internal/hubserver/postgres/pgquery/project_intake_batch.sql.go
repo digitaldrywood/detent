@@ -21,7 +21,7 @@ type ProjectIntakeBatchParams struct {
 }
 
 func (q *Queries) ProjectIntakeBatch(ctx context.Context, arg ProjectIntakeBatchParams) (OnboardingIssueIntake, error) {
-	row := q.db.QueryRowContext(ctx, projectIntakeBatch, arg.OrganizationID, arg.ProjectID)
+	row := q.db.QueryRow(ctx, projectIntakeBatch, arg.OrganizationID, arg.ProjectID)
 	var i OnboardingIssueIntake
 	err := row.Scan(
 		&i.OrganizationID,
@@ -61,7 +61,7 @@ type SaveProjectIntakeBatchParams struct {
 }
 
 func (q *Queries) SaveProjectIntakeBatch(ctx context.Context, arg SaveProjectIntakeBatchParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, saveProjectIntakeBatch,
+	result, err := q.db.Exec(ctx, saveProjectIntakeBatch,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ID,
@@ -77,5 +77,5 @@ func (q *Queries) SaveProjectIntakeBatch(ctx context.Context, arg SaveProjectInt
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }

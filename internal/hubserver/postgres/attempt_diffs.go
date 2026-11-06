@@ -24,26 +24,26 @@ func (s *session) AttemptDiff(ctx context.Context, project tracker.ProjectID, at
 	if project == "" || attemptID == "" || generation.Seq < 1 || generation.Source == "" {
 		return leasestore.AttemptDiff{}, corestore.ErrInvalidPage
 	}
-	return scanAttemptDiff(ctx, s.db.QueryRowContext(ctx, `SELECT `+attemptDiffColumns+` FROM attempt_diffs WHERE organization_id=$1 AND project_id=$2 AND attempt_id=$3 AND source=$4 AND source_id=$5 AND sequence=$6`, s.organization, project, attemptID, generation.Source, generation.ID, generation.Seq))
+	return scanAttemptDiff(ctx, s.db.QueryRow(ctx, `SELECT `+attemptDiffColumns+` FROM attempt_diffs WHERE organization_id=$1 AND project_id=$2 AND attempt_id=$3 AND source=$4 AND source_id=$5 AND sequence=$6`, s.organization, project, attemptID, generation.Source, generation.ID, generation.Seq))
 }
 
 func (s *session) LatestAttemptDiff(ctx context.Context, project tracker.ProjectID, attemptID, source string) (leasestore.AttemptDiff, error) {
 	if project == "" || attemptID == "" || source == "" {
 		return leasestore.AttemptDiff{}, corestore.ErrInvalidPage
 	}
-	return scanAttemptDiff(ctx, s.db.QueryRowContext(ctx, `SELECT `+attemptDiffColumns+` FROM attempt_diffs WHERE organization_id=$1 AND project_id=$2 AND attempt_id=$3 AND source=$4 ORDER BY sequence DESC,created_at DESC,id DESC LIMIT 1`, s.organization, project, attemptID, source))
+	return scanAttemptDiff(ctx, s.db.QueryRow(ctx, `SELECT `+attemptDiffColumns+` FROM attempt_diffs WHERE organization_id=$1 AND project_id=$2 AND attempt_id=$3 AND source=$4 ORDER BY sequence DESC,created_at DESC,id DESC LIMIT 1`, s.organization, project, attemptID, source))
 }
 
 func (s *session) LatestWorkItemAttemptDiff(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, source string) (leasestore.AttemptDiff, error) {
 	if project == "" || item == "" || source == "" {
 		return leasestore.AttemptDiff{}, corestore.ErrInvalidPage
 	}
-	return scanAttemptDiff(ctx, s.db.QueryRowContext(ctx, `SELECT `+attemptDiffColumns+` FROM attempt_diffs WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND source=$4 ORDER BY created_at DESC,id DESC LIMIT 1`, s.organization, project, item, source))
+	return scanAttemptDiff(ctx, s.db.QueryRow(ctx, `SELECT `+attemptDiffColumns+` FROM attempt_diffs WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND source=$4 ORDER BY created_at DESC,id DESC LIMIT 1`, s.organization, project, item, source))
 }
 
 func (s *session) LatestAttemptDiffSequence(ctx context.Context, attemptID, source, sourceID string) (int64, error) {
 	var sequence int64
-	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(max(sequence),0) FROM attempt_diffs WHERE organization_id=$1 AND attempt_id=$2 AND source=$3 AND source_id=$4`, s.organization, attemptID, source, sourceID).Scan(&sequence)
+	err := s.db.QueryRow(ctx, `SELECT COALESCE(max(sequence),0) FROM attempt_diffs WHERE organization_id=$1 AND attempt_id=$2 AND source=$3 AND source_id=$4`, s.organization, attemptID, source, sourceID).Scan(&sequence)
 	return sequence, mapError(ctx, err)
 }
 
@@ -52,7 +52,7 @@ func (s *session) LockAttemptDiffGeneration(ctx context.Context, attemptID, leas
 		return 0, corestore.ErrInvalidPage
 	}
 	var locked string
-	if err := s.db.QueryRowContext(ctx, `SELECT a.id FROM native_attempts a JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id JOIN runner_lease_assignments rla ON rla.organization_id=l.organization_id AND rla.lease_id=l.lease_id JOIN runner_identities ri ON ri.organization_id=rla.organization_id AND ri.runner_id=rla.runner_id JOIN api_tokens t ON t.organization_id=ri.organization_id AND t.id=ri.token_id WHERE a.organization_id=$1 AND a.id=$2 AND l.lease_id=$3 AND t.id=$4 FOR UPDATE OF a,l,rla,ri,t`, s.organization, attemptID, leaseID, credentialID).Scan(&locked); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT a.id FROM native_attempts a JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id JOIN runner_lease_assignments rla ON rla.organization_id=l.organization_id AND rla.lease_id=l.lease_id JOIN runner_identities ri ON ri.organization_id=rla.organization_id AND ri.runner_id=rla.runner_id JOIN api_tokens t ON t.organization_id=ri.organization_id AND t.id=ri.token_id WHERE a.organization_id=$1 AND a.id=$2 AND l.lease_id=$3 AND t.id=$4 FOR UPDATE OF a,l,rla,ri,t`, s.organization, attemptID, leaseID, credentialID).Scan(&locked); err != nil {
 		return 0, mapError(ctx, err)
 	}
 	return s.LatestAttemptDiffSequence(ctx, attemptID, source, sourceID)
@@ -65,7 +65,7 @@ func (s *session) CreateAttemptDiff(ctx context.Context, diff leasestore.Attempt
 	if diff.ID == "" || diff.AttemptID == "" || diff.IssueID <= 0 || diff.ProjectID == "" || diff.WorkItemID == "" || diff.Generation.Seq < 1 || diff.ArchiveID == "" || diff.CreatedAt.IsZero() {
 		return corestore.ErrInvalidPage
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO attempt_diffs (`+attemptDiffColumns+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`, diff.OrganizationID, diff.ID, diff.AttemptID, diff.IssueID, diff.ProjectID, diff.WorkItemID, diff.Generation.Source, diff.Generation.ID, diff.Generation.Seq, diff.BaseSHA, diff.HeadSHA, diff.Producer.Kind, diff.Producer.ID, diff.Producer.RunnerID, diff.Producer.LeaseID, diff.Producer.FencingToken, diff.FileCount, diff.PatchBytes, diff.PostedBytes, diff.Truncated, diff.ManifestExpired, diff.ArchiveID, diff.CreatedAt)
+	_, err := s.db.Exec(ctx, `INSERT INTO attempt_diffs (`+attemptDiffColumns+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`, diff.OrganizationID, diff.ID, diff.AttemptID, diff.IssueID, diff.ProjectID, diff.WorkItemID, diff.Generation.Source, diff.Generation.ID, diff.Generation.Seq, diff.BaseSHA, diff.HeadSHA, diff.Producer.Kind, diff.Producer.ID, diff.Producer.RunnerID, diff.Producer.LeaseID, diff.Producer.FencingToken, diff.FileCount, diff.PatchBytes, diff.PostedBytes, diff.Truncated, diff.ManifestExpired, diff.ArchiveID, diff.CreatedAt)
 	if err != nil {
 		return mapError(ctx, fmt.Errorf("insert attempt diff: %w", err))
 	}

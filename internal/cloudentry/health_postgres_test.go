@@ -38,11 +38,11 @@ func TestEntryPostgresHealthPreservesReadinessAndReadScope(t *testing.T) {
 		{name: "database unavailable", closeDatabase: true, want: http.StatusServiceUnavailable},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state=? WHERE id=?", "ready", "org_beta"); err != nil {
+			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET state=$1 WHERE id=$2", "ready", "org_beta"); err != nil {
 				t.Fatal(err)
 			}
 			if test.state != "" {
-				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state=? WHERE id=?", test.state, "org_beta"); err != nil {
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET state=$1 WHERE id=$2", test.state, "org_beta"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -82,9 +82,7 @@ func TestEntryPostgresHealthPreservesReadinessAndReadScope(t *testing.T) {
 				}), nil
 			}
 			if test.closeDatabase {
-				if err := pool.Close(); err != nil {
-					t.Fatal(err)
-				}
+				pool.Close()
 			}
 			response := httptest.NewRecorder()
 			f.service.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil).WithContext(t.Context()))

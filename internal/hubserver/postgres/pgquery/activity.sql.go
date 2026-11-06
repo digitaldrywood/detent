@@ -9,7 +9,6 @@ import (
 	"context"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
 )
 
 const activityIssueLinks = `-- name: ActivityIssueLinks :many
@@ -39,7 +38,7 @@ type ActivityIssueLinksRow struct {
 }
 
 func (q *Queries) ActivityIssueLinks(ctx context.Context, arg ActivityIssueLinksParams) ([]ActivityIssueLinksRow, error) {
-	rows, err := q.db.QueryContext(ctx, activityIssueLinks, arg.OrganizationID, pq.Array(arg.IssueIds))
+	rows, err := q.db.Query(ctx, activityIssueLinks, arg.OrganizationID, arg.IssueIds)
 	if err != nil {
 		return nil, err
 	}
@@ -56,9 +55,6 @@ func (q *Queries) ActivityIssueLinks(ctx context.Context, arg ActivityIssueLinks
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -83,7 +79,7 @@ type ActivityLatestRunEventsParams struct {
 }
 
 func (q *Queries) ActivityLatestRunEvents(ctx context.Context, arg ActivityLatestRunEventsParams) ([]CollaborationEvent, error) {
-	rows, err := q.db.QueryContext(ctx, activityLatestRunEvents, arg.OrganizationID, pq.Array(arg.AttemptIds))
+	rows, err := q.db.Query(ctx, activityLatestRunEvents, arg.OrganizationID, arg.AttemptIds)
 	if err != nil {
 		return nil, err
 	}
@@ -130,9 +126,6 @@ func (q *Queries) ActivityLatestRunEvents(ctx context.Context, arg ActivityLates
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

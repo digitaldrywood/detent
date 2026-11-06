@@ -28,7 +28,7 @@ type CreateGoTestReceiptAttestationParams struct {
 }
 
 func (q *Queries) CreateGoTestReceiptAttestation(ctx context.Context, arg CreateGoTestReceiptAttestationParams) error {
-	_, err := q.db.ExecContext(ctx, createGoTestReceiptAttestation,
+	_, err := q.db.Exec(ctx, createGoTestReceiptAttestation,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ID,
@@ -58,7 +58,7 @@ type EvictGoTestReceiptsParams struct {
 }
 
 func (q *Queries) EvictGoTestReceipts(ctx context.Context, arg EvictGoTestReceiptsParams) error {
-	_, err := q.db.ExecContext(ctx, evictGoTestReceipts,
+	_, err := q.db.Exec(ctx, evictGoTestReceipts,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.BinaryKey,
@@ -82,7 +82,7 @@ type GoTestReceiptAttestationParams struct {
 }
 
 func (q *Queries) GoTestReceiptAttestation(ctx context.Context, arg GoTestReceiptAttestationParams) (GoTestReceiptAttestation, error) {
-	row := q.db.QueryRowContext(ctx, goTestReceiptAttestation,
+	row := q.db.QueryRow(ctx, goTestReceiptAttestation,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ID,
@@ -122,7 +122,7 @@ type GoTestReceiptsRow struct {
 }
 
 func (q *Queries) GoTestReceipts(ctx context.Context, arg GoTestReceiptsParams) ([]GoTestReceiptsRow, error) {
-	rows, err := q.db.QueryContext(ctx, goTestReceipts,
+	rows, err := q.db.Query(ctx, goTestReceipts,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.BinaryKey,
@@ -141,9 +141,6 @@ func (q *Queries) GoTestReceipts(ctx context.Context, arg GoTestReceiptsParams) 
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -155,7 +152,7 @@ SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 `
 
 func (q *Queries) LockGoTestReceiptKey(ctx context.Context, lockKey string) error {
-	_, err := q.db.ExecContext(ctx, lockGoTestReceiptKey, lockKey)
+	_, err := q.db.Exec(ctx, lockGoTestReceiptKey, lockKey)
 	return err
 }
 
@@ -176,11 +173,11 @@ type PruneGoTestReceiptAttestationsParams struct {
 }
 
 func (q *Queries) PruneGoTestReceiptAttestations(ctx context.Context, arg PruneGoTestReceiptAttestationsParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, pruneGoTestReceiptAttestations, arg.OrganizationID, arg.AttestationCutoff, arg.BatchLimit)
+	result, err := q.db.Exec(ctx, pruneGoTestReceiptAttestations, arg.OrganizationID, arg.AttestationCutoff, arg.BatchLimit)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const pruneGoTestReceipts = `-- name: PruneGoTestReceipts :execrows
@@ -202,11 +199,11 @@ type PruneGoTestReceiptsParams struct {
 }
 
 func (q *Queries) PruneGoTestReceipts(ctx context.Context, arg PruneGoTestReceiptsParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, pruneGoTestReceipts, arg.OrganizationID, arg.ReceiptCutoff, arg.BatchLimit)
+	result, err := q.db.Exec(ctx, pruneGoTestReceipts, arg.OrganizationID, arg.ReceiptCutoff, arg.BatchLimit)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const putGoTestReceipt = `-- name: PutGoTestReceipt :exec
@@ -230,7 +227,7 @@ type PutGoTestReceiptParams struct {
 }
 
 func (q *Queries) PutGoTestReceipt(ctx context.Context, arg PutGoTestReceiptParams) error {
-	_, err := q.db.ExecContext(ctx, putGoTestReceipt,
+	_, err := q.db.Exec(ctx, putGoTestReceipt,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.BinaryKey,

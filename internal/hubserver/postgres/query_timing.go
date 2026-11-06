@@ -2,8 +2,10 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 )
@@ -16,21 +18,21 @@ func observeStatement(ctx context.Context, started time.Time, query string) {
 
 type timedQueries struct{ pgquery.DBTX }
 
-func (q timedQueries) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+func (q timedQueries) Exec(ctx context.Context, query string, args ...any) (pgconn.CommandTag, error) {
 	started := time.Now()
 	defer observeStatement(ctx, started, query)
-	return q.DBTX.ExecContext(ctx, query, args...)
+	return q.DBTX.Exec(ctx, query, args...)
 }
 
-func (q timedQueries) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+func (q timedQueries) Query(ctx context.Context, query string, args ...any) (pgx.Rows, error) {
 	started := time.Now()
-	rows, err := q.DBTX.QueryContext(ctx, query, args...)
+	rows, err := q.DBTX.Query(ctx, query, args...)
 	observeStatement(ctx, started, query)
 	return rows, err
 }
 
-func (q timedQueries) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+func (q timedQueries) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
 	started := time.Now()
 	defer observeStatement(ctx, started, query)
-	return q.DBTX.QueryRowContext(ctx, query, args...)
+	return q.DBTX.QueryRow(ctx, query, args...)
 }

@@ -7,11 +7,10 @@ package pgquery
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const healthBaselines = `-- name: HealthBaselines :many
@@ -24,7 +23,7 @@ type HealthBaselinesParams struct {
 }
 
 func (q *Queries) HealthBaselines(ctx context.Context, arg HealthBaselinesParams) ([]HealthBaselineUnavailable, error) {
-	rows, err := q.db.QueryContext(ctx, healthBaselines, arg.OrganizationID, arg.ProjectID)
+	rows, err := q.db.Query(ctx, healthBaselines, arg.OrganizationID, arg.ProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -41,9 +40,6 @@ func (q *Queries) HealthBaselines(ctx context.Context, arg HealthBaselinesParams
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -73,10 +69,10 @@ type HealthFindingIssuesRow struct {
 }
 
 func (q *Queries) HealthFindingIssues(ctx context.Context, arg HealthFindingIssuesParams) ([]HealthFindingIssuesRow, error) {
-	rows, err := q.db.QueryContext(ctx, healthFindingIssues,
+	rows, err := q.db.Query(ctx, healthFindingIssues,
 		arg.OrganizationID,
 		arg.ProjectID,
-		pq.Array(arg.FindingIds),
+		arg.FindingIds,
 		arg.Reporter,
 	)
 	if err != nil {
@@ -90,9 +86,6 @@ func (q *Queries) HealthFindingIssues(ctx context.Context, arg HealthFindingIssu
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -116,7 +109,7 @@ type HealthFindingProjectsRow struct {
 }
 
 func (q *Queries) HealthFindingProjects(ctx context.Context, arg HealthFindingProjectsParams) ([]HealthFindingProjectsRow, error) {
-	rows, err := q.db.QueryContext(ctx, healthFindingProjects, arg.OrganizationID, pq.Array(arg.FindingIds))
+	rows, err := q.db.Query(ctx, healthFindingProjects, arg.OrganizationID, arg.FindingIds)
 	if err != nil {
 		return nil, err
 	}
@@ -128,9 +121,6 @@ func (q *Queries) HealthFindingProjects(ctx context.Context, arg HealthFindingPr
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -154,13 +144,13 @@ type HealthFindingsParams struct {
 	ProjectID      tracker.ProjectID
 	State          string
 	Since          *time.Time
-	AfterSequence  sql.NullInt64
+	AfterSequence  pgtype.Int8
 	Reporter       string
 	PageLimit      int32
 }
 
 func (q *Queries) HealthFindings(ctx context.Context, arg HealthFindingsParams) ([]HealthFinding, error) {
-	rows, err := q.db.QueryContext(ctx, healthFindings,
+	rows, err := q.db.Query(ctx, healthFindings,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.State,
@@ -203,9 +193,6 @@ func (q *Queries) HealthFindings(ctx context.Context, arg HealthFindingsParams) 
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -217,7 +204,7 @@ SELECT last_tick_at FROM health_detector_ticks WHERE organization_id=$1
 `
 
 func (q *Queries) HealthLastTick(ctx context.Context, organizationID tracker.OrganizationID) (time.Time, error) {
-	row := q.db.QueryRowContext(ctx, healthLastTick, organizationID)
+	row := q.db.QueryRow(ctx, healthLastTick, organizationID)
 	var last_tick_at time.Time
 	err := row.Scan(&last_tick_at)
 	return last_tick_at, err
@@ -234,7 +221,7 @@ type HealthSummaryFindingsParams struct {
 }
 
 func (q *Queries) HealthSummaryFindings(ctx context.Context, arg HealthSummaryFindingsParams) ([]HealthFinding, error) {
-	rows, err := q.db.QueryContext(ctx, healthSummaryFindings, arg.OrganizationID, arg.Limit)
+	rows, err := q.db.Query(ctx, healthSummaryFindings, arg.OrganizationID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -268,9 +255,6 @@ func (q *Queries) HealthSummaryFindings(ctx context.Context, arg HealthSummaryFi
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

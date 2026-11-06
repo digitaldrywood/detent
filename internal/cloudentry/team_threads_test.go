@@ -68,7 +68,7 @@ func TestAccessKeyThreadsMCP(t *testing.T) {
 			if len(page.Threads) != 1 || page.Threads[0].ID != thread.ID || page.Threads[0].Unread != 1 {
 				t.Fatalf("list=%s", raw)
 			}
-			if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE access_keys SET permission='read' WHERE id=?", key.ID); err != nil {
+			if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE platform.access_keys SET permission='read' WHERE id=$1", key.ID); err != nil {
 				t.Fatal(err)
 			}
 			for _, want := range []int{1, 0} {

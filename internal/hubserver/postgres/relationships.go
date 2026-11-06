@@ -6,8 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -139,7 +137,7 @@ func (s *session) SetRelationship(ctx context.Context, relationship corestore.Re
 		dependent, blocker := workItem, related
 		if operation == "add" {
 			var cycle bool
-			err := s.db.QueryRowContext(ctx, `WITH RECURSIVE reachable(id) AS (
+			err := s.db.QueryRow(ctx, `WITH RECURSIVE reachable(id) AS (
 SELECT dependent_issue_id FROM issue_dependencies WHERE organization_id=$1 AND blocker_issue_id=$2
 UNION
 SELECT d.dependent_issue_id FROM issue_dependencies d JOIN reachable r ON d.blocker_issue_id=r.id WHERE d.organization_id=$1
@@ -322,7 +320,7 @@ func (s *session) RemoveOwnedDependencies(ctx context.Context, project tracker.P
 	for i, ref := range refs {
 		projects[i], items[i], ids[i] = string(ref.ProjectID), string(ref.WorkItemID), byReference[ref]
 	}
-	_, err = s.db.ExecContext(ctx, removeOwnedDependencies, s.organization, project, anchor, prefix, pq.Array(projects), pq.Array(items), pq.Array(ids))
+	_, err = s.db.Exec(ctx, removeOwnedDependencies, s.organization, project, anchor, prefix, projects, items, ids)
 	return mapError(ctx, err)
 }
 

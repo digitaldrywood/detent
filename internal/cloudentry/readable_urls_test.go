@@ -170,7 +170,7 @@ func TestSharedEntryReadableIssueURLs(t *testing.T) {
 	}
 	for _, state := range []string{"requested", "allocating", "failed", "disabled", "deleting", "deleted"} {
 		t.Run(state, func(t *testing.T) {
-			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state=?,managed=true WHERE id=?", state, "org_alpha"); err != nil {
+			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET state=$1,managed=true WHERE id=$2", state, "org_alpha"); err != nil {
 				t.Fatal(err)
 			}
 			for _, method := range []string{http.MethodGet, http.MethodHead} {

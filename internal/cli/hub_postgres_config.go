@@ -4,7 +4,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/lib/pq"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
@@ -29,7 +29,7 @@ func (c *hubPostgresFileConfig) runtime(lookupEnv func(string) string) (*postgre
 		return nil, errors.New("postgres runtime configuration is incomplete or invalid")
 	}
 	return &postgres.Config{
-		Connection: pq.Config{Host: c.Host, Port: uint16(c.Port), Database: c.Database, User: c.User, Password: lookupEnv(c.PasswordEnv), SSLMode: pq.SSLMode(c.SSLMode)},
+		Connection: pgtransport.Connection{Host: c.Host, Port: uint16(c.Port), Database: c.Database, User: c.User, Password: lookupEnv(c.PasswordEnv), SSLMode: c.SSLMode},
 		Pool:       postgres.PoolConfig{MaxConnections: c.MaxConnections, ServingConnections: c.ServingConnections, BackgroundConnections: c.BackgroundConnections},
 	}, nil
 }

@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -720,7 +720,7 @@ func TestErrorClass(t *testing.T) {
 		{"plain", errors.New("tenant text"), "*errors.errorString"},
 		{"deadline", fmt.Errorf("query: %w", context.DeadlineExceeded), "deadline_exceeded"},
 		{"canceled", fmt.Errorf("query: %w", context.Canceled), "canceled"},
-		{"postgres error", fmt.Errorf("insert: %w", &pq.Error{Code: "23505", Message: "tenant text"}), "*pq.Error"},
+		{"postgres error", fmt.Errorf("insert: %w", &pgconn.PgError{Code: "23505", Message: "tenant text"}), "*pgconn.PgError"},
 		{"multi wrap reaches the cause", fmt.Errorf("%w: %w", sentinel, &json.SyntaxError{}), "*json.SyntaxError"},
 	} {
 		if got := ErrorClass(tt.err); got != tt.want {

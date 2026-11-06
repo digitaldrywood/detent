@@ -94,11 +94,11 @@ func (r *Repository) importConversationBillingCopy(ctx context.Context, source C
 	}
 	organization := tracker.OrganizationID(source.Source.OrganizationID)
 	if err := r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO conversation_billing_imports(organization_id,source_schema,snapshot_id,catalog_digest) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id) DO NOTHING`, organization, source.Source.Schema, source.snapshotID, catalogDigest); err != nil {
+		if _, err := s.db.Exec(ctx, `INSERT INTO conversation_billing_imports(organization_id,source_schema,snapshot_id,catalog_digest) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id) DO NOTHING`, organization, source.Source.Schema, source.snapshotID, catalogDigest); err != nil {
 			return err
 		}
 		var sourceSchema, snapshot, catalog string
-		if err := s.db.QueryRowContext(ctx, `SELECT source_schema,snapshot_id,catalog_digest FROM conversation_billing_imports WHERE organization_id=$1`, organization).Scan(&sourceSchema, &snapshot, &catalog); err != nil {
+		if err := s.db.QueryRow(ctx, `SELECT source_schema,snapshot_id,catalog_digest FROM conversation_billing_imports WHERE organization_id=$1`, organization).Scan(&sourceSchema, &snapshot, &catalog); err != nil {
 			return err
 		}
 		if sourceSchema != source.Source.Schema || snapshot != source.snapshotID || catalog != catalogDigest {
@@ -154,14 +154,11 @@ func (r *Repository) importConversationBillingCopy(ctx context.Context, source C
 		}
 	}
 	err = r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
-		written, err := s.db.ExecContext(ctx, `UPDATE conversation_billing_imports SET completed=true,price_rows=$5,usage_rows=$6 WHERE organization_id=$1 AND source_schema=$2 AND snapshot_id=$3 AND catalog_digest=$4 AND (NOT completed OR (price_rows=$5 AND usage_rows=$6))`, organization, source.Source.Schema, source.snapshotID, catalogDigest, result.Prices, result.Usage)
+		written, err := s.db.Exec(ctx, `UPDATE conversation_billing_imports SET completed=true,price_rows=$5,usage_rows=$6 WHERE organization_id=$1 AND source_schema=$2 AND snapshot_id=$3 AND catalog_digest=$4 AND (NOT completed OR (price_rows=$5 AND usage_rows=$6))`, organization, source.Source.Schema, source.snapshotID, catalogDigest, result.Prices, result.Usage)
 		if err != nil {
 			return err
 		}
-		count, err := written.RowsAffected()
-		if err != nil {
-			return err
-		}
+		count := written.RowsAffected()
 		if count != 1 {
 			return mutation.ErrConflict
 		}

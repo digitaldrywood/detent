@@ -7,11 +7,10 @@ package pgquery
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const policyCurrentProjectObservation = `-- name: PolicyCurrentProjectObservation :one
@@ -39,7 +38,7 @@ type PolicyCurrentProjectObservationParams struct {
 }
 
 func (q *Queries) PolicyCurrentProjectObservation(ctx context.Context, arg PolicyCurrentProjectObservationParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, policyCurrentProjectObservation,
+	row := q.db.QueryRow(ctx, policyCurrentProjectObservation,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.PolicyID,
@@ -75,11 +74,11 @@ type PolicyGetProjectCurrentRow struct {
 	PayloadSHA256         string
 	PayloadBytes          int64
 	PayloadContentBytes   int64
-	GateGithubPullRequest sql.NullBool
+	GateGithubPullRequest pgtype.Bool
 }
 
 func (q *Queries) PolicyGetProjectCurrent(ctx context.Context, arg PolicyGetProjectCurrentParams) (PolicyGetProjectCurrentRow, error) {
-	row := q.db.QueryRowContext(ctx, policyGetProjectCurrent, arg.OrganizationID, arg.ProjectID)
+	row := q.db.QueryRow(ctx, policyGetProjectCurrent, arg.OrganizationID, arg.ProjectID)
 	var i PolicyGetProjectCurrentRow
 	err := row.Scan(
 		&i.OrganizationID,
@@ -121,11 +120,11 @@ type PolicyGetProjectRevisionRow struct {
 	PayloadSHA256         string
 	PayloadBytes          int64
 	PayloadContentBytes   int64
-	GateGithubPullRequest sql.NullBool
+	GateGithubPullRequest pgtype.Bool
 }
 
 func (q *Queries) PolicyGetProjectRevision(ctx context.Context, arg PolicyGetProjectRevisionParams) (PolicyGetProjectRevisionRow, error) {
-	row := q.db.QueryRowContext(ctx, policyGetProjectRevision, arg.OrganizationID, arg.ProjectID, arg.PolicyID)
+	row := q.db.QueryRow(ctx, policyGetProjectRevision, arg.OrganizationID, arg.ProjectID, arg.PolicyID)
 	var i PolicyGetProjectRevisionRow
 	err := row.Scan(
 		&i.OrganizationID,
@@ -168,11 +167,11 @@ type PolicyGetProjectRevisionsRow struct {
 	PayloadSHA256         string
 	PayloadBytes          int64
 	PayloadContentBytes   int64
-	GateGithubPullRequest sql.NullBool
+	GateGithubPullRequest pgtype.Bool
 }
 
 func (q *Queries) PolicyGetProjectRevisions(ctx context.Context, arg PolicyGetProjectRevisionsParams) ([]PolicyGetProjectRevisionsRow, error) {
-	rows, err := q.db.QueryContext(ctx, policyGetProjectRevisions, arg.OrganizationID, arg.ProjectID, pq.Array(arg.PolicyIds))
+	rows, err := q.db.Query(ctx, policyGetProjectRevisions, arg.OrganizationID, arg.ProjectID, arg.PolicyIds)
 	if err != nil {
 		return nil, err
 	}
@@ -196,9 +195,6 @@ func (q *Queries) PolicyGetProjectRevisions(ctx context.Context, arg PolicyGetPr
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -217,7 +213,7 @@ type PolicyGetReviewCurrentParams struct {
 }
 
 func (q *Queries) PolicyGetReviewCurrent(ctx context.Context, arg PolicyGetReviewCurrentParams) (ChangeReviewPolicyRevision, error) {
-	row := q.db.QueryRowContext(ctx, policyGetReviewCurrent, arg.OrganizationID, arg.ProjectID)
+	row := q.db.QueryRow(ctx, policyGetReviewCurrent, arg.OrganizationID, arg.ProjectID)
 	var i ChangeReviewPolicyRevision
 	err := row.Scan(
 		&i.OrganizationID,
@@ -246,7 +242,7 @@ type PolicyGetReviewRevisionParams struct {
 }
 
 func (q *Queries) PolicyGetReviewRevision(ctx context.Context, arg PolicyGetReviewRevisionParams) (ChangeReviewPolicyRevision, error) {
-	row := q.db.QueryRowContext(ctx, policyGetReviewRevision, arg.OrganizationID, arg.ProjectID, arg.ReviewPolicyID)
+	row := q.db.QueryRow(ctx, policyGetReviewRevision, arg.OrganizationID, arg.ProjectID, arg.ReviewPolicyID)
 	var i ChangeReviewPolicyRevision
 	err := row.Scan(
 		&i.OrganizationID,
@@ -274,7 +270,7 @@ type PolicyInsertProjectRevisionParams struct {
 	OrganizationID        tracker.OrganizationID
 	ProjectID             tracker.ProjectID
 	PolicyID              string
-	GateGithubPullRequest sql.NullBool
+	GateGithubPullRequest pgtype.Bool
 	ApprovedBy            string
 	ApprovedAt            time.Time
 	PayloadObjectKey      string
@@ -284,7 +280,7 @@ type PolicyInsertProjectRevisionParams struct {
 }
 
 func (q *Queries) PolicyInsertProjectRevision(ctx context.Context, arg PolicyInsertProjectRevisionParams) (PolicyRevision, error) {
-	row := q.db.QueryRowContext(ctx, policyInsertProjectRevision,
+	row := q.db.QueryRow(ctx, policyInsertProjectRevision,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.PolicyID,
@@ -333,7 +329,7 @@ type PolicyInsertReviewRevisionParams struct {
 }
 
 func (q *Queries) PolicyInsertReviewRevision(ctx context.Context, arg PolicyInsertReviewRevisionParams) (ChangeReviewPolicyRevision, error) {
-	row := q.db.QueryRowContext(ctx, policyInsertReviewRevision,
+	row := q.db.QueryRow(ctx, policyInsertReviewRevision,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ReviewPolicyID,
@@ -378,7 +374,7 @@ type PolicyInsertRevisionApprovalParams struct {
 }
 
 func (q *Queries) PolicyInsertRevisionApproval(ctx context.Context, arg PolicyInsertRevisionApprovalParams) error {
-	_, err := q.db.ExecContext(ctx, policyInsertRevisionApproval,
+	_, err := q.db.Exec(ctx, policyInsertRevisionApproval,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.PolicyID,
@@ -418,7 +414,7 @@ type PolicyInsertWorkflowApplyParams struct {
 }
 
 func (q *Queries) PolicyInsertWorkflowApply(ctx context.Context, arg PolicyInsertWorkflowApplyParams) (ProjectWorkflowApply, error) {
-	row := q.db.QueryRowContext(ctx, policyInsertWorkflowApply,
+	row := q.db.QueryRow(ctx, policyInsertWorkflowApply,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.PolicyID,
@@ -520,7 +516,7 @@ type PolicyProjectPolicyObservationsRow struct {
 	PayloadSHA256                string
 	PayloadBytes                 int64
 	PayloadContentBytes          int64
-	GateGithubPullRequest        sql.NullBool
+	GateGithubPullRequest        pgtype.Bool
 	PreviouslyApproved           bool
 	RunnerCount                  int64
 	DistinctPolicyCount          int64
@@ -529,7 +525,7 @@ type PolicyProjectPolicyObservationsRow struct {
 }
 
 func (q *Queries) PolicyProjectPolicyObservations(ctx context.Context, arg PolicyProjectPolicyObservationsParams) ([]PolicyProjectPolicyObservationsRow, error) {
-	rows, err := q.db.QueryContext(ctx, policyProjectPolicyObservations,
+	rows, err := q.db.Query(ctx, policyProjectPolicyObservations,
 		arg.ApprovedPolicyID,
 		arg.PageSize,
 		arg.OrganizationID,
@@ -572,9 +568,6 @@ func (q *Queries) PolicyProjectPolicyObservations(ctx context.Context, arg Polic
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -599,7 +592,7 @@ type PolicyProjectWorkflowAppliesParams struct {
 }
 
 func (q *Queries) PolicyProjectWorkflowApplies(ctx context.Context, arg PolicyProjectWorkflowAppliesParams) ([]ProjectWorkflowApply, error) {
-	rows, err := q.db.QueryContext(ctx, policyProjectWorkflowApplies,
+	rows, err := q.db.Query(ctx, policyProjectWorkflowApplies,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.BeforeID,
@@ -631,9 +624,6 @@ func (q *Queries) PolicyProjectWorkflowApplies(ctx context.Context, arg PolicyPr
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -687,7 +677,7 @@ type PolicyRecordProjectObservationParams struct {
 }
 
 func (q *Queries) PolicyRecordProjectObservation(ctx context.Context, arg PolicyRecordProjectObservationParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, policyRecordProjectObservation,
+	result, err := q.db.Exec(ctx, policyRecordProjectObservation,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.RunnerID,
@@ -703,7 +693,7 @@ func (q *Queries) PolicyRecordProjectObservation(ctx context.Context, arg Policy
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const policySetProjectCurrent = `-- name: PolicySetProjectCurrent :execrows
@@ -726,7 +716,7 @@ type PolicySetProjectCurrentParams struct {
 }
 
 func (q *Queries) PolicySetProjectCurrent(ctx context.Context, arg PolicySetProjectCurrentParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, policySetProjectCurrent,
+	result, err := q.db.Exec(ctx, policySetProjectCurrent,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.PolicyID,
@@ -735,7 +725,7 @@ func (q *Queries) PolicySetProjectCurrent(ctx context.Context, arg PolicySetProj
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const policySetReviewCurrent = `-- name: PolicySetReviewCurrent :execrows
@@ -760,7 +750,7 @@ type PolicySetReviewCurrentParams struct {
 }
 
 func (q *Queries) PolicySetReviewCurrent(ctx context.Context, arg PolicySetReviewCurrentParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, policySetReviewCurrent,
+	result, err := q.db.Exec(ctx, policySetReviewCurrent,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ReviewPolicyID,
@@ -771,5 +761,5 @@ func (q *Queries) PolicySetReviewCurrent(ctx context.Context, arg PolicySetRevie
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }

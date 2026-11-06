@@ -74,7 +74,7 @@ func TestAccessKeyActive(t *testing.T) {
 func TestAccessKeyCrossOrganizationMCP(t *testing.T) {
 	f := newEntryFixture(t)
 	for id, tenant := range f.fixtures {
-		if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=true WHERE id=?", id); err != nil {
+		if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true WHERE id=$1", id); err != nil {
 			t.Fatal(err)
 		}
 		organization, err := f.service.registry.Organization(t.Context(), id)
@@ -556,13 +556,13 @@ func TestKeyTenantCallAssertionLifetimeAfterUsage(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			now := start
 			sent := 0
-			if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE access_key_organizations SET last_used_at=NULL WHERE key_id=? AND organization_id=?", key.ID, organization.ID); err != nil {
+			if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE platform.access_key_organizations SET last_used_at=NULL WHERE key_id=$1 AND organization_id=$2", key.ID, organization.ID); err != nil {
 				t.Fatal(err)
 			}
 			service := &Service{config: f.service.config, auth: f.service.auth}
 			service.config.now = func() time.Time {
 				var used sql.NullString
-				if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT last_used_at FROM access_key_organizations WHERE key_id=? AND organization_id=?", key.ID, organization.ID).Scan(&used); err != nil && !errors.Is(err, sql.ErrNoRows) {
+				if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT last_used_at FROM platform.access_key_organizations WHERE key_id=$1 AND organization_id=$2", key.ID, organization.ID).Scan(&used); err != nil && !errors.Is(err, sql.ErrNoRows) {
 					t.Fatal(err)
 				}
 				if used.Valid {
@@ -623,7 +623,7 @@ func TestAccessKeyMembershipAndPolicyMatrix(t *testing.T) {
 							if member {
 								f.provider.member(owner, "porg_alpha", role)
 							}
-							if _, err := f.service.auth.store.db.ExecContext(t.Context(), "INSERT INTO organization_key_policy(organization_id,personal_keys) VALUES('org_alpha',CASE WHEN ? THEN 'allowed' ELSE 'blocked' END) ON CONFLICT(organization_id) DO UPDATE SET personal_keys=excluded.personal_keys", allowed); err != nil {
+							if _, err := f.service.auth.store.db.ExecContext(t.Context(), "INSERT INTO platform.organization_key_policy(organization_id,personal_keys) VALUES('org_alpha',CASE WHEN $1 THEN 'allowed' ELSE 'blocked' END) ON CONFLICT(organization_id) DO UPDATE SET personal_keys=excluded.personal_keys", allowed); err != nil {
 								t.Fatal(err)
 							}
 							k := accessKey{ID: owner, Owner: owner, Name: "matrix", Kind: kind, Permission: apikey.ScopeWrite, AccessContext: access}
@@ -680,7 +680,7 @@ func testAccessKeyLifecycleAndREST(t *testing.T, configureStorage func(*Config))
 	owner := newBrowser(t, f.service.Handler())
 	owner.login("/organizations", "user_alice:")
 	key := createTestAccessKey(t, owner, "global", nil, "")
-	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=true WHERE id='org_alpha'"); err != nil {
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true WHERE id='org_alpha'"); err != nil {
 		t.Fatal(err)
 	}
 	allocation, err := f.service.registry.Organization(t.Context(), "org_alpha")
@@ -774,7 +774,7 @@ func testAccessKeyLifecycleAndREST(t *testing.T, configureStorage func(*Config))
 	}
 	expiring := createTestAccessKey(t, owner, "global", nil, "")
 	expiredOrigin := originFor(expiring)
-	if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE access_keys SET expires_at=? WHERE id=?", formatTime(time.Now().Add(-time.Second)), expiring.ID); err != nil {
+	if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE platform.access_keys SET expires_at=$1 WHERE id=$2", formatTime(time.Now().Add(-time.Second)), expiring.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.service.resolveTenantKey(t.Context(), allocation, expiredOrigin); err == nil {
@@ -823,7 +823,7 @@ func TestAccessKeyMemberSettingsIsolation(t *testing.T) {
 func TestAccessKeyMCPPreservesMoveItemRequestErrors(t *testing.T) {
 	f := newEntryFixture(t)
 	const org = "org_alpha"
-	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=true WHERE id=?", org); err != nil {
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true WHERE id=$1", org); err != nil {
 		t.Fatal(err)
 	}
 	organization, err := f.service.registry.Organization(t.Context(), org)
@@ -914,7 +914,7 @@ func TestAccessKeyMutationAuditResponses(t *testing.T) {
 			t.Run(transport+"/"+failure, func(t *testing.T) {
 				f := newEntryFixture(t)
 				const org = "org_alpha"
-				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=true WHERE id=?", org); err != nil {
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true WHERE id=$1", org); err != nil {
 					t.Fatal(err)
 				}
 				organization, err := f.service.registry.Organization(t.Context(), org)

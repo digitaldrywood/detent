@@ -58,7 +58,7 @@ type ReadSummaryAttentionRow struct {
 }
 
 func (q *Queries) ReadSummaryAttention(ctx context.Context, arg ReadSummaryAttentionParams) ([]ReadSummaryAttentionRow, error) {
-	rows, err := q.db.QueryContext(ctx, readSummaryAttention,
+	rows, err := q.db.Query(ctx, readSummaryAttention,
 		arg.WindowTo,
 		arg.WindowFrom,
 		arg.OrganizationID,
@@ -83,9 +83,6 @@ func (q *Queries) ReadSummaryAttention(ctx context.Context, arg ReadSummaryAtten
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

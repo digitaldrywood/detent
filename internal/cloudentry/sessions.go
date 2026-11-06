@@ -154,7 +154,7 @@ func (a *authStore) storeTokens(ctx context.Context, binding string, tokens auth
 }
 
 func (a *authStore) authorizationByBinding(ctx context.Context, binding string) (authorization, error) {
-	items, err := activeAuthorizations(ctx, a.store.db, "binding = ? AND revoked_at IS NULL", binding)
+	items, err := postgresAuthorizations(ctx, a.store.db, authorizationSelector{Binding: binding, Kind: lookupBinding})
 	if err != nil || len(items) != 1 {
 		return authorization{}, errNoSession
 	}
@@ -222,12 +222,8 @@ type queryer interface {
 	QueryContext(context.Context, string, ...any) (entryRows, error)
 }
 
-func activeAuthorizations(ctx context.Context, query queryer, where string, args ...any) (_ []authorization, resultErr error) {
-	return postgresAuthorizations(ctx, query, where, args...)
-}
-
 func (a *authStore) authorization(ctx context.Context, session accountSession, organization string) (authorization, error) {
-	items, err := activeAuthorizations(ctx, a.store.db, "session_hash = ? AND organization_id = ? AND revoked_at IS NULL", session.Hash, organization)
+	items, err := postgresAuthorizations(ctx, a.store.db, authorizationSelector{Kind: lookupSessionOrganization, SessionHash: session.Hash, Organization: organization})
 	if err != nil || len(items) != 1 || !items[0].Identity.ExpiresAt.After(a.now()) {
 		return authorization{}, errNoSession
 	}
@@ -239,7 +235,7 @@ func (a *authStore) authorization(ctx context.Context, session accountSession, o
 }
 
 func (a *authStore) revokeAuthorization(ctx context.Context, binding string) error {
-	_, err := a.store.db.ExecContext(ctx, "UPDATE authorizations SET revoked_at = ? WHERE binding = ? AND revoked_at IS NULL", formatTime(a.now()), binding)
+	_, err := a.store.db.ExecContext(ctx, "UPDATE platform.authorizations SET revoked_at = $1 WHERE binding = $2 AND revoked_at IS NULL", formatTime(a.now()), binding)
 	return err
 }
 
@@ -272,6 +268,6 @@ func (a *authStore) audit(ctx context.Context, subject, organization, event stri
 	if event == "attachment_read" || event == "platform_opened" || event == "platform_users_searched" || strings.HasPrefix(event, "platform_") && strings.HasSuffix(event, "_viewed") {
 		return nil
 	}
-	_, err := a.store.db.ExecContext(ctx, "INSERT INTO audit(subject,organization_id,event,recorded_at) VALUES (?,?,?,?)", subject, organization, event, formatTime(a.now()))
+	_, err := a.store.db.ExecContext(ctx, "INSERT INTO platform.audit(subject,organization_id,event,recorded_at) VALUES ($1,$2,$3,$4)", subject, organization, event, formatTime(a.now()))
 	return err
 }

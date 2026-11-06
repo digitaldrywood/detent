@@ -13,6 +13,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -27,7 +29,7 @@ type searchFixture struct {
 	content    *searchstore.Content
 	objects    *historyObjects
 	admin      *sql.DB
-	pool       *sql.DB
+	pool       *pgxpool.Pool
 }
 
 func newSearchFixture(t *testing.T) searchFixture {

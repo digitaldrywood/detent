@@ -430,12 +430,12 @@ func (s *Service) logWriterWaits() {
 	}
 
 	stats := s.database.postgres.Stats()
-	waits, waited := stats.WaitCount-s.writerWaits.Swap(stats.WaitCount), stats.WaitDuration-time.Duration(s.writerWaited.Swap(int64(stats.WaitDuration)))
+	waits, waited := stats.EmptyAcquireCount()-s.writerWaits.Swap(stats.EmptyAcquireCount()), stats.EmptyAcquireWaitTime()-time.Duration(s.writerWaited.Swap(int64(stats.EmptyAcquireWaitTime())))
 	if last == 0 {
 		return
 	}
 	serving, background := s.database.postgres.WorkloadCapacities()
-	s.config.Logger.Info("hub PostgreSQL pool waits", "waits", waits, "wait_ms", waited.Milliseconds(), "in_use", stats.InUse, "max_open", stats.MaxOpenConnections, "serving_capacity", serving, "background_capacity", background, "interval_s", (now-last)/int64(time.Second))
+	s.config.Logger.Info("hub PostgreSQL pool waits", "waits", waits, "wait_ms", waited.Milliseconds(), "in_use", stats.AcquiredConns(), "max_open", stats.MaxConns(), "serving_capacity", serving, "background_capacity", background, "interval_s", (now-last)/int64(time.Second))
 }
 
 func (c *timedConn) notifyCommit() {

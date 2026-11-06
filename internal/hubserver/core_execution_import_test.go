@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	_ "modernc.org/sqlite"
 
@@ -64,9 +64,9 @@ func TestCoreExecutionImportPreservesHistoricalFenceAndRevisionZero(t *testing.T
 				}
 				return nil
 			}); err != nil {
-				var postgresErr *pq.Error
+				var postgresErr *pgconn.PgError
 				if errors.As(err, &postgresErr) {
-					t.Fatalf("initialize import fixture: constraint %s: %s", postgresErr.Constraint, postgresErr.Message)
+					t.Fatalf("initialize import fixture: constraint %s: %s", postgresErr.ConstraintName, postgresErr.Message)
 				}
 				t.Fatal(err)
 			}

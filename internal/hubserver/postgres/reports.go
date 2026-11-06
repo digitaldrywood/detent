@@ -2,13 +2,12 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -30,7 +29,7 @@ func (s *session) ReadOpenFacts(ctx context.Context, query reportstore.OpenQuery
 		}
 		projects[i] = string(project)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT i.project_id,i.native_id,i.title,state.name,coalesce(ws.terminal,false),
+	rows, err := s.db.Query(ctx, `SELECT i.project_id,i.native_id,i.title,state.name,coalesce(ws.terminal,false),
 	(SELECT e.recorded_at FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' AND e.to_state=state.name AND e.recorded_at <= $3 ORDER BY e.recorded_at DESC,e.sequence DESC LIMIT 1),
 	CASE WHEN EXISTS (SELECT 1 FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='issue.created' AND e.recorded_at <= $3) THEN i.created_at END,
 	(SELECT min(e.recorded_at) FROM collaboration_events e JOIN project_workflow_states started ON started.organization_id=e.organization_id AND started.project_id=e.project_id AND started.name=e.to_state WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' AND e.recorded_at <= $3 AND started.dispatchable AND NOT started.terminal AND e.to_state NOT IN ('Backlog','Triage','Blocked','Human Review'))
@@ -45,7 +44,7 @@ WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[]) AND NOT i.archived A
   AND (coalesce(cardinality($7::text[]),0)=0 OR i.actor_principal_id=ANY($7::text[]))
   AND (coalesce(cardinality($8::text[]),0)=0 OR EXISTS (SELECT 1 FROM issue_labels l WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id AND l.label=ANY($8::text[])))
   AND (coalesce(cardinality($9::text[]),0)=0 OR EXISTS (SELECT 1 FROM native_attempts a JOIN runner_lease_assignments la ON la.organization_id=a.organization_id AND la.lease_id=a.lease_id WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.started_at <= $3 AND la.runner_id=ANY($9::text[])))
-ORDER BY i.project_id,i.native_id LIMIT $10`, s.organization, pq.Array(projects), query.At.UTC(), query.Principal, pq.Array(query.Filter.Types), pq.Array(query.Filter.Priorities), pq.Array(query.Filter.FiledBy), pq.Array(query.Filter.Labels), pq.Array(query.Filter.Runners), query.Limit+1)
+ORDER BY i.project_id,i.native_id LIMIT $10`, s.organization, projects, query.At.UTC(), query.Principal, query.Filter.Types, query.Filter.Priorities, query.Filter.FiledBy, query.Filter.Labels, query.Filter.Runners, query.Limit+1)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -54,7 +53,7 @@ ORDER BY i.project_id,i.native_id LIMIT $10`, s.organization, pq.Array(projects)
 	for rows.Next() {
 		var fact reportstore.OpenFact
 		var project, workItem string
-		var entered, created, firstWorked sql.NullTime
+		var entered, created, firstWorked pgtype.Timestamptz
 		if err := rows.Scan(&project, &workItem, &fact.Title, &fact.State, &fact.Terminal, &entered, &created, &firstWorked); err != nil {
 			return nil, mapError(ctx, err)
 		}
@@ -72,7 +71,7 @@ ORDER BY i.project_id,i.native_id LIMIT $10`, s.organization, pq.Array(projects)
 		}
 		facts = append(facts, fact)
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, mapError(ctx, err)
 	}
 	if len(facts) > query.Limit {
@@ -154,7 +153,7 @@ LEFT JOIN LATERAL (
  ORDER BY e.recorded_at DESC,e.sequence DESC LIMIT 1
 ) previous_completion ON previous_completion.terminal
 ORDER BY i.created_at,i.project_id,i.native_id`
-	rows, err := s.db.QueryContext(ctx, statement, s.organization, pq.Array(projects), query.Principal, query.From.UTC(), query.To.UTC(), query.Split.UTC(), pq.Array(query.Filter.Types), pq.Array(query.Filter.Priorities), pq.Array(query.Filter.FiledBy), pq.Array(query.Filter.Labels), pq.Array(query.Filter.Runners), query.Limit+1, pq.Array(query.Filter.Models), pq.Array(query.Filter.Stages))
+	rows, err := s.db.Query(ctx, statement, s.organization, projects, query.Principal, query.From.UTC(), query.To.UTC(), query.Split.UTC(), query.Filter.Types, query.Filter.Priorities, query.Filter.FiledBy, query.Filter.Labels, query.Filter.Runners, query.Limit+1, query.Filter.Models, query.Filter.Stages)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -162,7 +161,7 @@ ORDER BY i.created_at,i.project_id,i.native_id`
 	facts := make([]reportstore.OverviewFact, 0, min(query.Limit, 128))
 	for rows.Next() {
 		var fact reportstore.OverviewFact
-		var closedAt, previousClosedAt sql.NullTime
+		var closedAt, previousClosedAt pgtype.Timestamptz
 		var project, workItem string
 		if err := rows.Scan(&project, &workItem, &fact.Title, &fact.CreatedAt, &fact.State, &fact.FilerKind, &fact.FilerID, &closedAt, &fact.CompletedState, &fact.CompletedKind, &fact.CompletedID, &previousClosedAt, &fact.PreviousCompletedState, &fact.PreviousCompletedKind, &fact.PreviousCompletedID, &fact.Worked, &fact.PreviousWorked, &fact.Reworked, &fact.PreviousReworked, &fact.ActivityObserved, &fact.ChangesLanded, &fact.PreviousChangesLanded); err != nil {
 			return nil, mapError(ctx, err)
@@ -186,7 +185,7 @@ ORDER BY i.created_at,i.project_id,i.native_id`
 		}
 		facts = append(facts, fact)
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, mapError(ctx, err)
 	}
 	if len(facts) > query.Limit {
@@ -202,7 +201,11 @@ func (s *session) ReadFacets(ctx context.Context, projects []tracker.ProjectID, 
 	out := reportstore.Facets{Labels: []string{}, FiledBy: []reportstore.Facet{}, Runners: []reportstore.Facet{}, Models: []string{}, Stages: []string{}, Unavailable: []string{}}
 	ids := []int64{}
 	filers := map[string]string{}
-	rows, err := s.db.QueryContext(ctx, `SELECT i.id,coalesce(i.actor_principal_id,''),coalesce(nullif(t.name,''),i.actor_principal_id,'') FROM issues i LEFT JOIN api_tokens t ON t.organization_id=i.organization_id AND t.id=i.actor_principal_id WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[]) AND ($3='' OR i.actor_principal_id=$3) ORDER BY i.id LIMIT 5001`, s.organization, pq.Array(projects), principal)
+	projectIDs := make([]string, len(projects))
+	for i, project := range projects {
+		projectIDs[i] = string(project)
+	}
+	rows, err := s.db.Query(ctx, `SELECT i.id,coalesce(i.actor_principal_id,''),coalesce(nullif(t.name,''),i.actor_principal_id,'') FROM issues i LEFT JOIN api_tokens t ON t.organization_id=i.organization_id AND t.id=i.actor_principal_id WHERE i.organization_id=$1 AND i.project_id=ANY($2::text[]) AND ($3='' OR i.actor_principal_id=$3) ORDER BY i.id LIMIT 5001`, s.organization, projectIDs, principal)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
@@ -218,14 +221,14 @@ func (s *session) ReadFacets(ctx context.Context, projects []tracker.ProjectID, 
 			filers[actor] = name
 		}
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+	if err := rows.Err(); err != nil {
 		return out, mapError(ctx, err)
 	}
 	if len(ids) > 5000 {
 		return out, reportstore.ErrPopulationExceeded
 	}
 	labels := map[string]bool{}
-	rows, err = s.db.QueryContext(ctx, `SELECT l.label FROM issues i JOIN issue_labels l ON l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id WHERE i.organization_id=$1 AND i.id=ANY($2::bigint[]) ORDER BY i.id,l.label LIMIT 100001`, s.organization, pq.Array(ids))
+	rows, err = s.db.Query(ctx, `SELECT l.label FROM issues i JOIN issue_labels l ON l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id WHERE i.organization_id=$1 AND i.id=ANY($2::bigint[]) ORDER BY i.id,l.label LIMIT 100001`, s.organization, ids)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
@@ -239,7 +242,7 @@ func (s *session) ReadFacets(ctx context.Context, projects []tracker.ProjectID, 
 		count++
 		labels[label] = true
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+	if err := rows.Err(); err != nil {
 		return out, mapError(ctx, err)
 	}
 	if count > 100000 {
@@ -299,7 +302,7 @@ func (s *session) ReadAttemptFacts(ctx context.Context, query reportstore.Attemp
 		}
 		projects[i] = string(project)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT i.project_id,i.native_id,a.id,coalesce(r.runner_id,''),coalesce(r.display_name,''),coalesce(nullif(f.run_status,''),'running'),a.started_at,coalesce(f.recorded_at,a.started_at),coalesce(f.role,''),coalesce(f.model,''),coalesce(f.effort,''),f.event_id IS NOT NULL,coalesce(f.failed,false),coalesce(f.failure_class,''),coalesce(f.failure_kind,''),coalesce(f.landing_receipt,false),coalesce(f.landed,false),coalesce(f.landing_change_id,''),coalesce(f.duration_seconds,0)
+	rows, err := s.db.Query(ctx, `SELECT i.project_id,i.native_id,a.id,coalesce(r.runner_id,''),coalesce(r.display_name,''),coalesce(nullif(f.run_status,''),'running'),a.started_at,coalesce(f.recorded_at,a.started_at),coalesce(f.role,''),coalesce(f.model,''),coalesce(f.effort,''),f.event_id IS NOT NULL,coalesce(f.failed,false),coalesce(f.failure_class,''),coalesce(f.failure_kind,''),coalesce(f.landing_receipt,false),coalesce(f.landed,false),coalesce(f.landing_change_id,''),coalesce(f.duration_seconds,0)
 FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
 LEFT JOIN report_attempt_facts af ON af.organization_id=a.organization_id AND af.attempt_id=a.id
 LEFT JOIN collaboration_events outcome ON outcome.organization_id=af.organization_id AND outcome.id=af.outcome_event_id
@@ -318,7 +321,7 @@ WHERE a.organization_id=$1 AND i.project_id=ANY($2::text[]) AND ($3='' OR i.acto
   AND (coalesce(cardinality($10::text[]),0)=0 OR r.runner_id=ANY($10::text[]))
 AND (coalesce(cardinality($12::text[]),0)=0 OR f.model=ANY($12::text[]))
 AND (coalesce(cardinality($13::text[]),0)=0 OR f.role=ANY($13::text[]))
-ORDER BY a.updated_at,a.id LIMIT $11`, s.organization, pq.Array(projects), query.Principal, query.From.UTC(), query.To.UTC(), pq.Array(query.Filter.Types), pq.Array(query.Filter.Priorities), pq.Array(query.Filter.FiledBy), pq.Array(query.Filter.Labels), pq.Array(query.Filter.Runners), query.Limit+1, pq.Array(query.Filter.Models), pq.Array(query.Filter.Stages))
+ORDER BY a.updated_at,a.id LIMIT $11`, s.organization, projects, query.Principal, query.From.UTC(), query.To.UTC(), query.Filter.Types, query.Filter.Priorities, query.Filter.FiledBy, query.Filter.Labels, query.Filter.Runners, query.Limit+1, query.Filter.Models, query.Filter.Stages)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -334,7 +337,7 @@ ORDER BY a.updated_at,a.id LIMIT $11`, s.organization, pq.Array(projects), query
 		fact.ProjectID, fact.WorkItemID = tracker.ProjectID(project), tracker.NativeWorkItemID(workItem)
 		attempts = append(attempts, fact)
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, mapError(ctx, err)
 	}
 	if len(attempts) > query.Limit {
@@ -352,6 +355,6 @@ func (s *session) HasPriorData(ctx context.Context, projects []tracker.ProjectID
 		projectIDs[i] = string(project)
 	}
 	var recorded bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM issues WHERE organization_id=$1 AND project_id=ANY($2::text[]) AND ($3='' OR actor_principal_id=$3) AND created_at<$4)`, s.organization, pq.Array(projectIDs), principal, before.UTC()).Scan(&recorded)
+	err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM issues WHERE organization_id=$1 AND project_id=ANY($2::text[]) AND ($3='' OR actor_principal_id=$3) AND created_at<$4)`, s.organization, projectIDs, principal, before.UTC()).Scan(&recorded)
 	return recorded, mapError(ctx, err)
 }

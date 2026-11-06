@@ -2,11 +2,12 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"slices"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -23,12 +24,12 @@ type runnerTokenDelta struct {
 
 func (s *session) recordRunnerTokenUsage(ctx context.Context, attempt leasestore.Attempt, usage []tracker.NativeUsage) error {
 	var project tracker.ProjectID
-	if err := s.db.QueryRowContext(ctx, `SELECT project_id FROM issues WHERE organization_id=$1 AND id=$2`, s.organization, attempt.IssueID).Scan(&project); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT project_id FROM issues WHERE organization_id=$1 AND id=$2`, s.organization, attempt.IssueID).Scan(&project); err != nil {
 		return mapError(ctx, err)
 	}
 	if len(usage) > 0 {
 		lockKey := fmt.Sprintf("runner-token-models:%d:%s:%d:%s", len(s.organization), s.organization, len(project), project)
-		if _, err := s.db.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, lockKey); err != nil {
+		if _, err := s.db.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, lockKey); err != nil {
 			return mapError(ctx, err)
 		}
 	}
@@ -58,9 +59,9 @@ func (s *session) recordRunnerTokenUsage(ctx context.Context, attempt leasestore
 		}
 		day := at.UTC().Format(time.DateOnly)
 		var old tracker.NativeUsage
-		err := s.db.QueryRowContext(ctx, `SELECT input_tokens,cached_input_tokens,output_tokens FROM runner_attempt_token_usage WHERE organization_id=$1 AND attempt_id=$2 AND model=$3 FOR UPDATE`, s.organization, attempt.ID, name).Scan(&old.Input, &old.CachedInput, &old.Output)
+		err := s.db.QueryRow(ctx, `SELECT input_tokens,cached_input_tokens,output_tokens FROM runner_attempt_token_usage WHERE organization_id=$1 AND attempt_id=$2 AND model=$3 FOR UPDATE`, s.organization, attempt.ID, name).Scan(&old.Input, &old.CachedInput, &old.Output)
 		added := int64(0)
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			added = 1
 		} else if err != nil {
 			return mapError(ctx, err)
@@ -71,14 +72,14 @@ func (s *session) recordRunnerTokenUsage(ctx context.Context, attempt leasestore
 		}
 		issues = append(issues, delta)
 		daily = append(daily, delta)
-		_, err = s.db.ExecContext(ctx, `INSERT INTO runner_attempt_token_usage(organization_id,attempt_id,model,project_id,issue_id,usage_day,observed_at,input_tokens,cached_input_tokens,output_tokens) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(organization_id,attempt_id,model) DO UPDATE SET usage_day=excluded.usage_day,observed_at=excluded.observed_at,input_tokens=excluded.input_tokens,cached_input_tokens=excluded.cached_input_tokens,output_tokens=excluded.output_tokens`, s.organization, attempt.ID, name, project, attempt.IssueID, day, at, entry.Input, entry.CachedInput, entry.Output)
+		_, err = s.db.Exec(ctx, `INSERT INTO runner_attempt_token_usage(organization_id,attempt_id,model,project_id,issue_id,usage_day,observed_at,input_tokens,cached_input_tokens,output_tokens) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(organization_id,attempt_id,model) DO UPDATE SET usage_day=excluded.usage_day,observed_at=excluded.observed_at,input_tokens=excluded.input_tokens,cached_input_tokens=excluded.cached_input_tokens,output_tokens=excluded.output_tokens`, s.organization, attempt.ID, name, project, attempt.IssueID, day, at, entry.Input, entry.CachedInput, entry.Output)
 		if err != nil {
 			return mapError(ctx, err)
 		}
 	}
 	if len(names) > 0 {
 		var overflow bool
-		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runner_attempt_token_usage WHERE organization_id=$1 AND attempt_id=$2 OFFSET 200)`, s.organization, attempt.ID).Scan(&overflow); err != nil {
+		if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM runner_attempt_token_usage WHERE organization_id=$1 AND attempt_id=$2 OFFSET 200)`, s.organization, attempt.ID).Scan(&overflow); err != nil {
 			return mapError(ctx, err)
 		}
 		if overflow {
@@ -101,18 +102,18 @@ func (s *session) recordRunnerTokenUsage(ctx context.Context, attempt leasestore
 		return 0
 	})
 	for _, delta := range daily {
-		_, err := s.db.ExecContext(ctx, `INSERT INTO runner_project_daily_tokens(organization_id,project_id,usage_day,model,input_tokens,cached_input_tokens,output_tokens,sessions) SELECT $1,$2,$3::date,CASE WHEN EXISTS(SELECT 1 FROM runner_project_daily_tokens WHERE organization_id=$1 AND project_id=$2 AND usage_day=$3::date AND model=$4) OR NOT EXISTS(SELECT 1 FROM runner_project_daily_tokens WHERE organization_id=$1 AND project_id=$2 AND usage_day=$3::date AND model<>'' OFFSET 199) THEN $4::text ELSE '' END,$5::bigint,$6::bigint,$7::bigint,$8::bigint ON CONFLICT(organization_id,project_id,usage_day,model) DO UPDATE SET input_tokens=runner_project_daily_tokens.input_tokens+excluded.input_tokens,cached_input_tokens=runner_project_daily_tokens.cached_input_tokens+excluded.cached_input_tokens,output_tokens=runner_project_daily_tokens.output_tokens+excluded.output_tokens,sessions=runner_project_daily_tokens.sessions+excluded.sessions`, s.organization, project, delta.day, delta.model, delta.input, delta.cached, delta.output, delta.sessions)
+		_, err := s.db.Exec(ctx, `INSERT INTO runner_project_daily_tokens(organization_id,project_id,usage_day,model,input_tokens,cached_input_tokens,output_tokens,sessions) SELECT $1,$2,$3::date,CASE WHEN EXISTS(SELECT 1 FROM runner_project_daily_tokens WHERE organization_id=$1 AND project_id=$2 AND usage_day=$3::date AND model=$4) OR NOT EXISTS(SELECT 1 FROM runner_project_daily_tokens WHERE organization_id=$1 AND project_id=$2 AND usage_day=$3::date AND model<>'' OFFSET 199) THEN $4::text ELSE '' END,$5::bigint,$6::bigint,$7::bigint,$8::bigint ON CONFLICT(organization_id,project_id,usage_day,model) DO UPDATE SET input_tokens=runner_project_daily_tokens.input_tokens+excluded.input_tokens,cached_input_tokens=runner_project_daily_tokens.cached_input_tokens+excluded.cached_input_tokens,output_tokens=runner_project_daily_tokens.output_tokens+excluded.output_tokens,sessions=runner_project_daily_tokens.sessions+excluded.sessions`, s.organization, project, delta.day, delta.model, delta.input, delta.cached, delta.output, delta.sessions)
 		if err != nil {
 			return mapError(ctx, err)
 		}
 	}
 	for _, delta := range issues {
-		_, err := s.db.ExecContext(ctx, `INSERT INTO runner_issue_tokens(organization_id,project_id,issue_id,model,input_tokens,cached_input_tokens,output_tokens,sessions) SELECT $1,$2,$3::bigint,CASE WHEN EXISTS(SELECT 1 FROM runner_issue_tokens WHERE organization_id=$1 AND project_id=$2 AND issue_id=$3::bigint AND model=$4) OR NOT EXISTS(SELECT 1 FROM runner_issue_tokens WHERE organization_id=$1 AND project_id=$2 AND issue_id=$3::bigint AND model<>'' OFFSET 199) THEN $4::text ELSE '' END,$5::bigint,$6::bigint,$7::bigint,$8::bigint ON CONFLICT(organization_id,project_id,issue_id,model) DO UPDATE SET input_tokens=runner_issue_tokens.input_tokens+excluded.input_tokens,cached_input_tokens=runner_issue_tokens.cached_input_tokens+excluded.cached_input_tokens,output_tokens=runner_issue_tokens.output_tokens+excluded.output_tokens,sessions=runner_issue_tokens.sessions+excluded.sessions`, s.organization, project, attempt.IssueID, delta.model, delta.input, delta.cached, delta.output, delta.sessions)
+		_, err := s.db.Exec(ctx, `INSERT INTO runner_issue_tokens(organization_id,project_id,issue_id,model,input_tokens,cached_input_tokens,output_tokens,sessions) SELECT $1,$2,$3::bigint,CASE WHEN EXISTS(SELECT 1 FROM runner_issue_tokens WHERE organization_id=$1 AND project_id=$2 AND issue_id=$3::bigint AND model=$4) OR NOT EXISTS(SELECT 1 FROM runner_issue_tokens WHERE organization_id=$1 AND project_id=$2 AND issue_id=$3::bigint AND model<>'' OFFSET 199) THEN $4::text ELSE '' END,$5::bigint,$6::bigint,$7::bigint,$8::bigint ON CONFLICT(organization_id,project_id,issue_id,model) DO UPDATE SET input_tokens=runner_issue_tokens.input_tokens+excluded.input_tokens,cached_input_tokens=runner_issue_tokens.cached_input_tokens+excluded.cached_input_tokens,output_tokens=runner_issue_tokens.output_tokens+excluded.output_tokens,sessions=runner_issue_tokens.sessions+excluded.sessions`, s.organization, project, attempt.IssueID, delta.model, delta.input, delta.cached, delta.output, delta.sessions)
 		if err != nil {
 			return mapError(ctx, err)
 		}
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE native_attempts SET runner_tokens_recorded=true WHERE organization_id=$1 AND id=$2`, s.organization, attempt.ID)
+	_, err := s.db.Exec(ctx, `UPDATE native_attempts SET runner_tokens_recorded=true WHERE organization_id=$1 AND id=$2`, s.organization, attempt.ID)
 	return mapError(ctx, err)
 }
 
@@ -122,19 +123,19 @@ func (s *session) RunnerTokenSpend(ctx context.Context, project tracker.ProjectI
 		return result, accessstore.ErrDenied
 	}
 	var unaccounted bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE a.organization_id=$1 AND i.project_id=$2 AND ($3='' OR i.native_id=$3) AND ($4::text IS NULL OR ($4<>'' AND i.actor_principal_id=$4)) AND NOT a.runner_tokens_recorded)`, s.organization, project, issue, reporter).Scan(&unaccounted); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE a.organization_id=$1 AND i.project_id=$2 AND ($3='' OR i.native_id=$3) AND ($4::text IS NULL OR ($4<>'' AND i.actor_principal_id=$4)) AND NOT a.runner_tokens_recorded)`, s.organization, project, issue, reporter).Scan(&unaccounted); err != nil {
 		return result, mapError(ctx, err)
 	}
 	if unaccounted {
 		return result, leasestore.ErrUnaccountedUsage
 	}
-	var rows *sql.Rows
+	var rows pgx.Rows
 	var err error
 	if day != nil {
 		result.Date = day.UTC().Format(time.DateOnly)
-		rows, err = s.db.QueryContext(ctx, `SELECT model,input_tokens,cached_input_tokens,output_tokens,sessions FROM runner_project_daily_tokens WHERE organization_id=$1 AND project_id=$2 AND usage_day=$3 ORDER BY model LIMIT 202`, s.organization, project, result.Date)
+		rows, err = s.db.Query(ctx, `SELECT model,input_tokens,cached_input_tokens,output_tokens,sessions FROM runner_project_daily_tokens WHERE organization_id=$1 AND project_id=$2 AND usage_day=$3 ORDER BY model LIMIT 202`, s.organization, project, result.Date)
 	} else {
-		rows, err = s.db.QueryContext(ctx, `SELECT u.model,u.input_tokens,u.cached_input_tokens,u.output_tokens,u.sessions FROM runner_issue_tokens u JOIN issues i ON i.organization_id=u.organization_id AND i.id=u.issue_id WHERE u.organization_id=$1 AND u.project_id=$2 AND i.native_id=$3 AND ($4::text IS NULL OR ($4<>'' AND i.actor_principal_id=$4)) ORDER BY u.model LIMIT 202`, s.organization, project, issue, reporter)
+		rows, err = s.db.Query(ctx, `SELECT u.model,u.input_tokens,u.cached_input_tokens,u.output_tokens,u.sessions FROM runner_issue_tokens u JOIN issues i ON i.organization_id=u.organization_id AND i.id=u.issue_id WHERE u.organization_id=$1 AND u.project_id=$2 AND i.native_id=$3 AND ($4::text IS NULL OR ($4<>'' AND i.actor_principal_id=$4)) ORDER BY u.model LIMIT 202`, s.organization, project, issue, reporter)
 	}
 	if err != nil {
 		return result, mapError(ctx, err)
@@ -171,7 +172,7 @@ func (s *session) AccountRunnerTokenUsage(ctx context.Context, expected leasesto
 	var issueID int64
 	var key string
 	var recorded bool
-	if err := s.db.QueryRowContext(ctx, `SELECT issue_id,sequence,payload_object_key,runner_tokens_recorded FROM native_attempts WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, expected.ID).Scan(&issueID, &sequence, &key, &recorded); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT issue_id,sequence,payload_object_key,runner_tokens_recorded FROM native_attempts WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, expected.ID).Scan(&issueID, &sequence, &key, &recorded); err != nil {
 		return mapError(ctx, err)
 	}
 	if issueID != expected.IssueID || sequence != expected.Sequence || key != expected.PayloadObjectKey {
@@ -191,7 +192,7 @@ func (s *session) RunnerModelTokenQuantiles(ctx context.Context, project tracker
 	if query.Limit < 1 || query.Limit > 200 || query.Model == "" {
 		return result, corestore.ErrInvalidPage
 	}
-	err := s.db.QueryRowContext(ctx, `WITH recent AS (
+	err := s.db.QueryRow(ctx, `WITH recent AS (
 SELECT input_tokens,cached_input_tokens,output_tokens FROM runner_attempt_token_usage
 WHERE organization_id=$1 AND project_id=$2 AND model=$3 ORDER BY observed_at DESC,attempt_id LIMIT $4)
 SELECT count(*),coalesce(percentile_disc(0.5) WITHIN GROUP(ORDER BY input_tokens),0),coalesce(percentile_disc(0.9) WITHIN GROUP(ORDER BY input_tokens),0),

@@ -202,7 +202,7 @@ func (r *Repository) ImportCoreDependency(ctx context.Context, record CoreDepend
 			return corestore.ErrNotFound
 		}
 		var cycle bool
-		err = s.db.QueryRowContext(ctx, `WITH RECURSIVE reachable(id) AS (
+		err = s.db.QueryRow(ctx, `WITH RECURSIVE reachable(id) AS (
 SELECT dependent_issue_id FROM issue_dependencies WHERE organization_id=$1 AND blocker_issue_id=$2
 UNION
 SELECT d.dependent_issue_id FROM issue_dependencies d JOIN reachable r ON d.blocker_issue_id=r.id WHERE d.organization_id=$1

@@ -2,11 +2,15 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -21,7 +25,7 @@ type PoolConfig struct {
 }
 
 type Repository struct {
-	pool       *sql.DB
+	pool       *pgxpool.Pool
 	runtime    *Runtime
 	serving    chan struct{}
 	background chan struct{}
@@ -32,13 +36,11 @@ var ErrWorkload = errors.New("unknown PostgreSQL workload")
 
 var _ corestore.Repository = (*Repository)(nil)
 
-func NewRepository(ctx context.Context, pool *sql.DB, config PoolConfig) (*Repository, error) {
-	if pool == nil || config.MaxConnections < 3 || config.ServingConnections < 1 || config.BackgroundConnections < 1 || config.ServingConnections >= config.MaxConnections || config.BackgroundConnections > config.MaxConnections-config.ServingConnections || config.BackgroundConnections > config.MaxConnections-2 {
+func NewRepository(ctx context.Context, pool *pgxpool.Pool, config PoolConfig) (*Repository, error) {
+	if pool == nil || config.MaxConnections < 3 || config.ServingConnections < 1 || config.BackgroundConnections < 1 || config.ServingConnections >= config.MaxConnections || config.BackgroundConnections > config.MaxConnections-config.ServingConnections || config.BackgroundConnections > config.MaxConnections-2 || int(pool.Config().MaxConns) != config.MaxConnections {
 		return nil, ErrPoolConfig
 	}
 	serving := min(config.ServingConnections, config.MaxConnections-config.BackgroundConnections-1)
-	pool.SetMaxOpenConns(config.MaxConnections)
-	pool.SetMaxIdleConns(config.MaxConnections)
 	runtime, err := NewRuntime(ctx, pool, pool)
 	if err != nil {
 		return nil, mapError(ctx, err)
@@ -47,15 +49,16 @@ func NewRepository(ctx context.Context, pool *sql.DB, config PoolConfig) (*Repos
 }
 
 func (r *Repository) Close() error {
-	return r.pool.Close()
+	r.pool.Close()
+	return nil
 }
 
 func (r *Repository) Ping(ctx context.Context) error {
-	return r.pool.PingContext(ctx)
+	return r.pool.Ping(ctx)
 }
 
-func (r *Repository) Stats() sql.DBStats {
-	return r.pool.Stats()
+func (r *Repository) Stats() *pgxpool.Stat {
+	return r.pool.Stat()
 }
 
 func (r *Repository) WorkloadCapacities() (serving, background int) {
@@ -71,7 +74,7 @@ func (r *Repository) Write(ctx context.Context, organization tracker.Organizatio
 }
 
 func (r *Repository) transaction(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, readOnly bool, run func(*session) error) error {
-	return r.transactionIsolation(ctx, organization, workload, readOnly, sql.LevelReadCommitted, run)
+	return r.transactionIsolation(ctx, organization, workload, readOnly, pgx.ReadCommitted, run)
 }
 
 type transactionTimingKey struct{}
@@ -99,7 +102,7 @@ func transactionSpan(ctx context.Context, name string) func() {
 	return func() { observe(name, started) }
 }
 
-func (r *Repository) transactionIsolation(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, readOnly bool, isolation sql.IsolationLevel, run func(*session) error) error {
+func (r *Repository) transactionIsolation(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, readOnly bool, isolation pgx.TxIsoLevel, run func(*session) error) (resultErr error) {
 	if request, ok := ctx.Value(readRequestKey{}).(*readRequest); ok {
 		if request.repository != r || request.session.organization != organization || workload != corestore.Serving || !readOnly {
 			return corestore.ErrTenantMismatch
@@ -114,12 +117,16 @@ func (r *Repository) transactionIsolation(ctx context.Context, organization trac
 	}
 	defer release()
 	finishBegin := transactionSpan(ctx, "pg_begin")
-	tx, err := r.runtime.Begin(ctx, organization, &sql.TxOptions{Isolation: isolation, ReadOnly: readOnly})
+	tx, err := r.runtime.Begin(ctx, organization, pgtransport.Options{Isolation: isolation, ReadOnly: readOnly})
 	finishBegin()
 	if err != nil {
 		return mapError(ctx, err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if cleanupErr := tx.Rollback(ctx); cleanupErr != nil {
+			resultErr = errors.Join(resultErr, mapError(ctx, cleanupErr))
+		}
+	}()
 	finishCallback := transactionSpan(ctx, "pg_callback")
 	err = func() error {
 		defer finishCallback()
@@ -134,7 +141,7 @@ func (r *Repository) transactionIsolation(ctx context.Context, organization trac
 	}
 	finishCommit := transactionSpan(ctx, "pg_commit")
 	started := time.Now()
-	err = tx.Commit()
+	err = tx.Commit(ctx)
 	observeStatement(ctx, started, "COMMIT")
 	finishCommit()
 	return mapError(ctx, err)
@@ -204,7 +211,7 @@ func affected(ctx context.Context, rows int64, err error) error {
 }
 
 func updated(ctx context.Context, err error) error {
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return corestore.ErrRevisionConflict
 	}
 	return mapError(ctx, err)
@@ -214,7 +221,7 @@ func mapError(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
 	}
-	if ctx.Err() != nil && (errors.Is(err, sql.ErrTxDone) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+	if ctx.Err() != nil && (errors.Is(err, pgx.ErrTxClosed) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		return fmt.Errorf("PostgreSQL operation: %w", ctx.Err())
 	}
 	var state interface{ SQLState() string }
@@ -233,7 +240,7 @@ func mapError(ctx context.Context, err error) error {
 		}
 		return &storageError{cause: err, domain: domain, state: state.SQLState()}
 	}
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return &storageError{cause: err, domain: corestore.ErrNotFound}
 	}
 	return err

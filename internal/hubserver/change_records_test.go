@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -991,7 +991,7 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 	var probeID string
 	probeErr := probe.QueryRowContext(t.Context(), "SELECT id FROM change_requests WHERE organization_id=$1 AND id=$2 FOR UPDATE NOWAIT", orgID, change.ID).Scan(&probeID)
 	_ = probe.Rollback()
-	var pgErr *pq.Error
+	var pgErr *pgconn.PgError
 	if !errors.As(probeErr, &pgErr) || pgErr.Code != "55P03" {
 		t.Fatalf("Change row was not locked during concurrent evidence append: %v", probeErr)
 	}

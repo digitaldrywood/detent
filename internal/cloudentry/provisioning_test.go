@@ -390,7 +390,7 @@ func testProvisioningSelfServiceJourney(t *testing.T, configureStorage func(*Con
 	if err := f.launcher.databases[id].QueryRowContext(t.Context(), "SELECT count(*) FROM public.organizations WHERE organization_id=$1", id).Scan(&retained); err != nil || retained != 1 {
 		t.Fatalf("deletion retained tenant data = %d, %v", retained, err)
 	}
-	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state = 'ready' WHERE id = ?", id); err == nil {
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET state = 'ready' WHERE id = $1", id); err == nil {
 		t.Fatal("a deleted organization was resurrected")
 	}
 }
@@ -744,7 +744,7 @@ func TestProvisioningResumesInterruptedDeletionAndMemoryFloor(t *testing.T) {
 	member.login("/auth/oidc/start", "user_member:")
 	id := organizationFromLocation(t, f.create(t, member, "Delta").Header.Get("Location"))
 	f.waitState(t, id, "ready")
-	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state = 'deleting' WHERE id = ?", id); err != nil {
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET state = 'deleting' WHERE id = $1", id); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.service.Close(); err != nil {
@@ -942,13 +942,13 @@ func TestOwnerFreeAllowance(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.deleted {
-				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='deleted' WHERE id='org_alpha'"); err != nil {
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET state='deleted' WHERE id='org_alpha'"); err != nil {
 					t.Fatal(err)
 				}
 			}
 			email := f.provider.users[test.subject]
 			if test.role != "" {
-				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members(email,role,added_by,added_at,updated_at) VALUES(?,?,'test',?,?)", email, test.role, formatTime(time.Now()), formatTime(time.Now())); err != nil {
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform.platform_members(email,role,added_by,added_at,updated_at) VALUES($1,$2,'test',$3,$4)", email, test.role, formatTime(time.Now()), formatTime(time.Now())); err != nil {
 					t.Fatal(err)
 				}
 			}

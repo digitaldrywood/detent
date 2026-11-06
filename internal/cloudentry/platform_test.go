@@ -61,7 +61,7 @@ func platformAuditCount(t *testing.T, s *Service, subject, event string) int {
 	t.Helper()
 	var count int
 	if strings.HasPrefix(event, "support_requested:") {
-		rows, err := s.auth.store.reader.QueryContext(t.Context(), "SELECT event_object_key FROM audit WHERE subject = ? AND event = 'support_requested'", subject)
+		rows, err := s.auth.store.reader.QueryContext(t.Context(), "SELECT event_object_key FROM platform.audit WHERE subject = $1 AND event = 'support_requested'", subject)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -87,7 +87,7 @@ func platformAuditCount(t *testing.T, s *Service, subject, event string) int {
 		}
 		return count
 	}
-	if err := s.auth.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM audit WHERE subject = ? AND event = ?", subject, event).Scan(&count); err != nil {
+	if err := s.auth.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM platform.audit WHERE subject = $1 AND event = $2", subject, event).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	return count
@@ -213,7 +213,7 @@ func TestPlatformOrganizationsAndHealth(t *testing.T) {
 		}
 	}
 	root := t.TempDir()
-	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed = true WHERE id = 'org_alpha'"); err != nil {
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed = true WHERE id = 'org_alpha'"); err != nil {
 		t.Fatal(err)
 	}
 	now := f.service.config.now()
@@ -659,12 +659,12 @@ func TestPlatformAuditTimeline(t *testing.T) {
 		auth  bool
 		query string
 	}{
-		{false, "UPDATE organizations SET state='deleted' WHERE id='org_beta'"},
-		{true, `INSERT INTO audit(subject,organization_id,event,reason,recorded_at) VALUES ('user_staff','','operator_administration','private-replay private-token','2026-10-01T12:00:01Z')`},
-		{true, "INSERT INTO audit(subject,organization_id,event,recorded_at) VALUES ('user_staff','org_alpha','support_requested:troubleshooting','2026-10-01T12:00:00.1Z'),('user_staff','org_alpha','support_started:troubleshooting','2026-10-01T12:00:00Z'),('missing_subject','org_beta','organization_deleted','2026-09-30T23:59:59.999999Z'),('user_staff','','platform_opened','2026-10-01T12:00:00.000001Z')"},
-		{false, "INSERT INTO entitlement_changes(organization_id,idempotency_key,action,grant_id,plan_id,plan_version,expires_at,reason,staff_email,staff_subject,recorded_at) VALUES ('org_alpha','grant_key','grant','comp_a','growth',1,'2026-12-31T23:59:59Z','pilot','staff@example.test','user_staff','2026-10-01T12:00:00.100000000Z'),('org_beta','revoke_key','revoke','comp_b','team',2,NULL,'ended','billing@example.test','user_billing','2026-09-29T12:00:00Z')"},
-		{false, "INSERT INTO organization_events(organization_id,event,generation,recorded_at) VALUES ('org_alpha','ready',1,'2026-10-01T12:00:00.1Z')"},
-		{false, "INSERT INTO platform_member_changes(email,action,previous_role,role,actor_email,actor_subject,reason,recorded_at) VALUES ('new@example.test','added','','support','staff@example.test','user_staff','new hire','2026-10-01T12:00:00.1Z'),('new@example.test','role_changed','support','viewer','staff@example.test','user_staff','read only','2026-09-28T12:00:00Z'),('old@example.test','removed','viewer','','staff@example.test','user_staff','left','2026-09-27T12:00:00Z'),('seed@example.test','seeded','','admin','bootstrap','','bootstrap','2026-09-26T12:00:00Z')"},
+		{false, "UPDATE platform.organizations SET state='deleted' WHERE id='org_beta'"},
+		{true, `INSERT INTO platform.audit(subject,organization_id,event,reason,recorded_at) VALUES ('user_staff','','operator_administration','private-replay private-token','2026-10-01T12:00:01Z')`},
+		{true, "INSERT INTO platform.audit(subject,organization_id,event,recorded_at) VALUES ('user_staff','org_alpha','support_requested:troubleshooting','2026-10-01T12:00:00.1Z'),('user_staff','org_alpha','support_started:troubleshooting','2026-10-01T12:00:00Z'),('missing_subject','org_beta','organization_deleted','2026-09-30T23:59:59.999999Z'),('user_staff','','platform_opened','2026-10-01T12:00:00.000001Z')"},
+		{false, "INSERT INTO platform.entitlement_changes(organization_id,idempotency_key,action,grant_id,plan_id,plan_version,expires_at,reason,staff_email,staff_subject,recorded_at) VALUES ('org_alpha','grant_key','grant','comp_a','growth',1,'2026-12-31T23:59:59Z','pilot','staff@example.test','user_staff','2026-10-01T12:00:00.100000000Z'),('org_beta','revoke_key','revoke','comp_b','team',2,NULL,'ended','billing@example.test','user_billing','2026-09-29T12:00:00Z')"},
+		{false, "INSERT INTO platform.organization_events(organization_id,event,generation,recorded_at) VALUES ('org_alpha','ready',1,'2026-10-01T12:00:00.1Z')"},
+		{false, "INSERT INTO platform.platform_member_changes(email,action,previous_role,role,actor_email,actor_subject,reason,recorded_at) VALUES ('new@example.test','added','','support','staff@example.test','user_staff','new hire','2026-10-01T12:00:00.1Z'),('new@example.test','role_changed','support','viewer','staff@example.test','user_staff','read only','2026-09-28T12:00:00Z'),('old@example.test','removed','viewer','','staff@example.test','user_staff','left','2026-09-27T12:00:00Z'),('seed@example.test','seeded','','admin','bootstrap','','bootstrap','2026-09-26T12:00:00Z')"},
 	} {
 		db := f.service.registry.store.db
 		if statement.auth {
@@ -814,7 +814,7 @@ func TestPlatformAuditTimeline(t *testing.T) {
 	}
 	for _, role := range []string{"admin", "billing", "support", "viewer"} {
 		t.Run(role, func(t *testing.T) {
-			if _, err := f.service.registry.store.db.ExecContext(ctx, "UPDATE platform_members SET role=? WHERE email='staff@example.test'", role); err != nil {
+			if _, err := f.service.registry.store.db.ExecContext(ctx, "UPDATE platform.platform_members SET role=$1 WHERE email='staff@example.test'", role); err != nil {
 				t.Fatal(err)
 			}
 			page := read("event=support_requested")
@@ -864,7 +864,7 @@ func TestPlatformUsersSearch(t *testing.T) {
 		if err := f.service.auth.createSession(t.Context(), item.hash, "csrf", identity); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE sessions SET created_at=?,revoked_at=? WHERE token_hash=?", formatTime(item.at), formatTime(now), item.hash); err != nil {
+		if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE platform.sessions SET created_at=$1,revoked_at=$2 WHERE token_hash=$3", formatTime(item.at), formatTime(now), item.hash); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -917,7 +917,7 @@ func TestPlatformUsersSearch(t *testing.T) {
 	}
 	for _, role := range []string{"admin", "billing", "support", "viewer"} {
 		t.Run(role, func(t *testing.T) {
-			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform_members SET role=? WHERE email='staff@example.test'", role); err != nil {
+			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.platform_members SET role=$1 WHERE email='staff@example.test'", role); err != nil {
 				t.Fatal(err)
 			}
 			response, body := staff.get("/api/cloud/platform/users?q=staff")
@@ -934,7 +934,7 @@ func TestPlatformUsersSearch(t *testing.T) {
 		if err := f.service.auth.createSession(t.Context(), email, "csrf", identity); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE sessions SET created_at=? WHERE token_hash=?", formatTime(now.Add(time.Duration(i+1)*time.Hour)), email); err != nil {
+		if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE platform.sessions SET created_at=$1 WHERE token_hash=$2", formatTime(now.Add(time.Duration(i+1)*time.Hour)), email); err != nil {
 			t.Fatal(err)
 		}
 	}

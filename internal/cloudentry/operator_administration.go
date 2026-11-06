@@ -122,7 +122,7 @@ func (a entryAdministration) Authorize(ctx context.Context, name string, in oper
 		}
 		if resource != "" {
 			var owner string
-			err = s.registry.store.db.QueryRowContext(ctx, "SELECT creator_subject FROM organizations WHERE id=?", resource).Scan(&owner)
+			err = s.registry.store.db.QueryRowContext(ctx, "SELECT creator_subject FROM platform.organizations WHERE id=$1", resource).Scan(&owner)
 			if err != nil || owner != session.Subject {
 				return operatortool.ErrAccessDenied
 			}

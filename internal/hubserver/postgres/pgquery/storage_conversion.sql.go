@@ -9,7 +9,6 @@ import (
 	"context"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
 )
 
 const conversionAdvanceCursor = `-- name: ConversionAdvanceCursor :exec
@@ -29,7 +28,7 @@ type ConversionAdvanceCursorParams struct {
 }
 
 func (q *Queries) ConversionAdvanceCursor(ctx context.Context, arg ConversionAdvanceCursorParams) error {
-	_, err := q.db.ExecContext(ctx, conversionAdvanceCursor,
+	_, err := q.db.Exec(ctx, conversionAdvanceCursor,
 		arg.Positioned,
 		arg.Key1,
 		arg.Key2,
@@ -80,7 +79,7 @@ type ConversionBoundsRow struct {
 }
 
 func (q *Queries) ConversionBounds(ctx context.Context, arg ConversionBoundsParams) (ConversionBoundsRow, error) {
-	row := q.db.QueryRowContext(ctx, conversionBounds,
+	row := q.db.QueryRow(ctx, conversionBounds,
 		arg.Family,
 		arg.OrganizationID,
 		arg.ProjectID,
@@ -121,7 +120,7 @@ type ConversionCommitParams struct {
 }
 
 func (q *Queries) ConversionCommit(ctx context.Context, arg ConversionCommitParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, conversionCommit,
+	row := q.db.QueryRow(ctx, conversionCommit,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.Family,
@@ -150,7 +149,7 @@ ON CONFLICT DO NOTHING
 `
 
 func (q *Queries) ConversionInitializeCursors(ctx context.Context, organizationID string) error {
-	_, err := q.db.ExecContext(ctx, conversionInitializeCursors, organizationID)
+	_, err := q.db.Exec(ctx, conversionInitializeCursors, organizationID)
 	return err
 }
 
@@ -178,7 +177,7 @@ type ConversionNextCursorRow struct {
 }
 
 func (q *Queries) ConversionNextCursor(ctx context.Context, arg ConversionNextCursorParams) (ConversionNextCursorRow, error) {
-	row := q.db.QueryRowContext(ctx, conversionNextCursor, arg.OrganizationID, pq.Array(arg.Families))
+	row := q.db.QueryRow(ctx, conversionNextCursor, arg.OrganizationID, arg.Families)
 	var i ConversionNextCursorRow
 	err := row.Scan(
 		&i.Family,
@@ -224,7 +223,7 @@ type ConversionNextEvidenceRow struct {
 }
 
 func (q *Queries) ConversionNextEvidence(ctx context.Context, arg ConversionNextEvidenceParams) (ConversionNextEvidenceRow, error) {
-	row := q.db.QueryRowContext(ctx, conversionNextEvidence, arg.OrganizationID, arg.AggregateID, arg.Sequence)
+	row := q.db.QueryRow(ctx, conversionNextEvidence, arg.OrganizationID, arg.AggregateID, arg.Sequence)
 	var i ConversionNextEvidenceRow
 	err := row.Scan(
 		&i.ProjectID,
@@ -271,7 +270,7 @@ type ConversionNextRunRow struct {
 }
 
 func (q *Queries) ConversionNextRun(ctx context.Context, arg ConversionNextRunParams) (ConversionNextRunRow, error) {
-	row := q.db.QueryRowContext(ctx, conversionNextRun,
+	row := q.db.QueryRow(ctx, conversionNextRun,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.AggregateID,
@@ -325,7 +324,7 @@ type ConversionNextVersionRow struct {
 }
 
 func (q *Queries) ConversionNextVersion(ctx context.Context, arg ConversionNextVersionParams) (ConversionNextVersionRow, error) {
-	row := q.db.QueryRowContext(ctx, conversionNextVersion,
+	row := q.db.QueryRow(ctx, conversionNextVersion,
 		arg.OrganizationID,
 		arg.AggregateID,
 		arg.RecordID,
@@ -401,7 +400,7 @@ type ConversionPageRow struct {
 }
 
 func (q *Queries) ConversionPage(ctx context.Context, arg ConversionPageParams) ([]ConversionPageRow, error) {
-	rows, err := q.db.QueryContext(ctx, conversionPage,
+	rows, err := q.db.Query(ctx, conversionPage,
 		arg.Family,
 		arg.OrganizationID,
 		arg.ProjectID,
@@ -432,9 +431,6 @@ func (q *Queries) ConversionPage(ctx context.Context, arg ConversionPageParams) 
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -460,7 +456,7 @@ type ConversionProgressRow struct {
 }
 
 func (q *Queries) ConversionProgress(ctx context.Context, arg ConversionProgressParams) (ConversionProgressRow, error) {
-	row := q.db.QueryRowContext(ctx, conversionProgress,
+	row := q.db.QueryRow(ctx, conversionProgress,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.Family,
@@ -486,7 +482,7 @@ type ConversionRecordUsageParams struct {
 }
 
 func (q *Queries) ConversionRecordUsage(ctx context.Context, arg ConversionRecordUsageParams) error {
-	_, err := q.db.ExecContext(ctx, conversionRecordUsage,
+	_, err := q.db.Exec(ctx, conversionRecordUsage,
 		arg.Rows,
 		arg.Bytes,
 		arg.Oversized,
@@ -507,7 +503,7 @@ type ConversionReserveCursorParams struct {
 }
 
 func (q *Queries) ConversionReserveCursor(ctx context.Context, arg ConversionReserveCursorParams) error {
-	_, err := q.db.ExecContext(ctx, conversionReserveCursor, arg.OrganizationID, arg.Family)
+	_, err := q.db.Exec(ctx, conversionReserveCursor, arg.OrganizationID, arg.Family)
 	return err
 }
 
@@ -523,6 +519,6 @@ type ConversionRestoreCursorParams struct {
 }
 
 func (q *Queries) ConversionRestoreCursor(ctx context.Context, arg ConversionRestoreCursorParams) error {
-	_, err := q.db.ExecContext(ctx, conversionRestoreCursor, arg.Turn, arg.OrganizationID, arg.Family)
+	_, err := q.db.Exec(ctx, conversionRestoreCursor, arg.Turn, arg.OrganizationID, arg.Family)
 	return err
 }

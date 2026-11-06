@@ -29,7 +29,7 @@ type AdvanceReleaseAuditHeadParams struct {
 }
 
 func (q *Queries) AdvanceReleaseAuditHead(ctx context.Context, arg AdvanceReleaseAuditHeadParams) error {
-	_, err := q.db.ExecContext(ctx, advanceReleaseAuditHead,
+	_, err := q.db.Exec(ctx, advanceReleaseAuditHead,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.RunID,
@@ -74,7 +74,7 @@ type CreateReleaseAuditParams struct {
 }
 
 func (q *Queries) CreateReleaseAudit(ctx context.Context, arg CreateReleaseAuditParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, createReleaseAudit,
+	result, err := q.db.Exec(ctx, createReleaseAudit,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ID,
@@ -104,7 +104,7 @@ func (q *Queries) CreateReleaseAudit(ctx context.Context, arg CreateReleaseAudit
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const createReleaseAuditPart = `-- name: CreateReleaseAuditPart :exec
@@ -123,7 +123,7 @@ type CreateReleaseAuditPartParams struct {
 }
 
 func (q *Queries) CreateReleaseAuditPart(ctx context.Context, arg CreateReleaseAuditPartParams) error {
-	_, err := q.db.ExecContext(ctx, createReleaseAuditPart,
+	_, err := q.db.Exec(ctx, createReleaseAuditPart,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.CheckpointID,
@@ -156,7 +156,7 @@ type LockReleaseAuditAttachmentRow struct {
 }
 
 func (q *Queries) LockReleaseAuditAttachment(ctx context.Context, arg LockReleaseAuditAttachmentParams) (LockReleaseAuditAttachmentRow, error) {
-	row := q.db.QueryRowContext(ctx, lockReleaseAuditAttachment, arg.OrganizationID, arg.ProjectID, arg.ID)
+	row := q.db.QueryRow(ctx, lockReleaseAuditAttachment, arg.OrganizationID, arg.ProjectID, arg.ID)
 	var i LockReleaseAuditAttachmentRow
 	err := row.Scan(
 		&i.Size,
@@ -179,7 +179,7 @@ type ReleaseAuditParams struct {
 }
 
 func (q *Queries) ReleaseAudit(ctx context.Context, arg ReleaseAuditParams) (ReleaseAuditCheckpoint, error) {
-	row := q.db.QueryRowContext(ctx, releaseAudit, arg.OrganizationID, arg.ProjectID, arg.ID)
+	row := q.db.QueryRow(ctx, releaseAudit, arg.OrganizationID, arg.ProjectID, arg.ID)
 	var i ReleaseAuditCheckpoint
 	err := row.Scan(
 		&i.OrganizationID,
@@ -222,7 +222,7 @@ type ReleaseAuditPartsParams struct {
 }
 
 func (q *Queries) ReleaseAuditParts(ctx context.Context, arg ReleaseAuditPartsParams) ([]ReleaseAuditPart, error) {
-	rows, err := q.db.QueryContext(ctx, releaseAuditParts, arg.OrganizationID, arg.ProjectID, arg.CheckpointID)
+	rows, err := q.db.Query(ctx, releaseAuditParts, arg.OrganizationID, arg.ProjectID, arg.CheckpointID)
 	if err != nil {
 		return nil, err
 	}
@@ -244,9 +244,6 @@ func (q *Queries) ReleaseAuditParts(ctx context.Context, arg ReleaseAuditPartsPa
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -267,7 +264,7 @@ type ReleaseAuditsParams struct {
 }
 
 func (q *Queries) ReleaseAudits(ctx context.Context, arg ReleaseAuditsParams) ([]ReleaseAuditCheckpoint, error) {
-	rows, err := q.db.QueryContext(ctx, releaseAudits, arg.OrganizationID, arg.ProjectID, arg.AfterID)
+	rows, err := q.db.Query(ctx, releaseAudits, arg.OrganizationID, arg.ProjectID, arg.AfterID)
 	if err != nil {
 		return nil, err
 	}
@@ -306,9 +303,6 @@ func (q *Queries) ReleaseAudits(ctx context.Context, arg ReleaseAuditsParams) ([
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -327,6 +321,6 @@ type RetainReleaseAuditAttachmentParams struct {
 }
 
 func (q *Queries) RetainReleaseAuditAttachment(ctx context.Context, arg RetainReleaseAuditAttachmentParams) error {
-	_, err := q.db.ExecContext(ctx, retainReleaseAuditAttachment, arg.OrganizationID, arg.ProjectID, arg.ID)
+	_, err := q.db.Exec(ctx, retainReleaseAuditAttachment, arg.OrganizationID, arg.ProjectID, arg.ID)
 	return err
 }

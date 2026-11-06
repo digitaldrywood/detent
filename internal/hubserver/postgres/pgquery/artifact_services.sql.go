@@ -30,7 +30,7 @@ type ArtifactServiceBindParams struct {
 }
 
 func (q *Queries) ArtifactServiceBind(ctx context.Context, arg ArtifactServiceBindParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, artifactServiceBind,
+	result, err := q.db.Exec(ctx, artifactServiceBind,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ID,
@@ -42,7 +42,7 @@ func (q *Queries) ArtifactServiceBind(ctx context.Context, arg ArtifactServiceBi
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const artifactServiceGet = `-- name: ArtifactServiceGet :one
@@ -56,7 +56,7 @@ type ArtifactServiceGetParams struct {
 }
 
 func (q *Queries) ArtifactServiceGet(ctx context.Context, arg ArtifactServiceGetParams) (ArtifactService, error) {
-	row := q.db.QueryRowContext(ctx, artifactServiceGet, arg.OrganizationID, arg.ProjectID, arg.ID)
+	row := q.db.QueryRow(ctx, artifactServiceGet, arg.OrganizationID, arg.ProjectID, arg.ID)
 	var i ArtifactService
 	err := row.Scan(
 		&i.OrganizationID,
@@ -80,7 +80,7 @@ type ArtifactServiceListParams struct {
 }
 
 func (q *Queries) ArtifactServiceList(ctx context.Context, arg ArtifactServiceListParams) ([]ArtifactService, error) {
-	rows, err := q.db.QueryContext(ctx, artifactServiceList, arg.OrganizationID, arg.ProjectID)
+	rows, err := q.db.Query(ctx, artifactServiceList, arg.OrganizationID, arg.ProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -100,9 +100,6 @@ func (q *Queries) ArtifactServiceList(ctx context.Context, arg ArtifactServiceLi
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

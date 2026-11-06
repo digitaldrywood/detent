@@ -31,8 +31,8 @@ type oauthGrantPage struct {
 }
 
 func (s *Service) oauthGrants(ctx context.Context, owner, cursor string) (_ oauthGrantPage, resultErr error) {
-	rows, err := s.auth.store.reader.QueryContext(ctx, `SELECT g.id,g.client_id,c.name,g.organization_id,g.created_at,g.last_used_at,g.revoked_at FROM oauth_grants g JOIN oauth_clients c ON c.id=g.client_id WHERE g.owner_subject=? AND g.id>?
-UNION ALL SELECT id,'github-app','Detent Cloud GitHub App','',created_at,NULL,revoked_at FROM github_user_connections WHERE owner_subject=? AND id>? ORDER BY id LIMIT 201`, owner, cursor, owner, cursor)
+	rows, err := s.auth.store.reader.QueryContext(ctx, `SELECT g.id,g.client_id,c.name,g.organization_id,g.created_at,g.last_used_at,g.revoked_at FROM platform.oauth_grants g JOIN platform.oauth_clients c ON c.id=g.client_id WHERE g.owner_subject=$1 AND g.id>$2
+UNION ALL SELECT id,'github-app','Detent Cloud GitHub App','',created_at,NULL,revoked_at FROM platform.github_user_connections WHERE owner_subject=$3 AND id>$4 ORDER BY id LIMIT 201`, owner, cursor, owner, cursor)
 	if err != nil {
 		return oauthGrantPage{}, err
 	}
@@ -58,7 +58,7 @@ UNION ALL SELECT id,'github-app','Detent Cloud GitHub App','',created_at,NULL,re
 
 func (s *Service) revokeOAuthGrant(ctx context.Context, owner, id string) error {
 	if strings.HasPrefix(id, "github_") {
-		result, err := s.auth.store.db.ExecContext(ctx, `UPDATE github_user_connections SET revoked_at=COALESCE(revoked_at,?),access_token='' WHERE id=? AND owner_subject=?`, formatTime(s.config.now()), id, owner)
+		result, err := s.auth.store.db.ExecContext(ctx, `UPDATE platform.github_user_connections SET revoked_at=COALESCE(revoked_at,$1),access_token='' WHERE id=$2 AND owner_subject=$3`, formatTime(s.config.now()), id, owner)
 		if err != nil {
 			return err
 		}
@@ -71,7 +71,7 @@ func (s *Service) revokeOAuthGrant(ctx context.Context, owner, id string) error 
 		}
 		return nil
 	}
-	rows, err := s.auth.store.reader.QueryContext(ctx, "SELECT organization_id FROM oauth_grants WHERE id=? AND owner_subject=? LIMIT 2", id, owner)
+	rows, err := s.auth.store.reader.QueryContext(ctx, "SELECT organization_id FROM platform.oauth_grants WHERE id=$1 AND owner_subject=$2 LIMIT 2", id, owner)
 	if err != nil {
 		return err
 	}

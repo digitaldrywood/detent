@@ -32,7 +32,7 @@ type ArtifactReferencePublishedParams struct {
 }
 
 func (q *Queries) ArtifactReferencePublished(ctx context.Context, arg ArtifactReferencePublishedParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, artifactReferencePublished,
+	row := q.db.QueryRow(ctx, artifactReferencePublished,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ArtifactID,
@@ -70,7 +70,7 @@ type ArtifactUploadAuthorizationConsumeParams struct {
 }
 
 func (q *Queries) ArtifactUploadAuthorizationConsume(ctx context.Context, arg ArtifactUploadAuthorizationConsumeParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, artifactUploadAuthorizationConsume,
+	result, err := q.db.Exec(ctx, artifactUploadAuthorizationConsume,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ServiceID,
@@ -84,7 +84,7 @@ func (q *Queries) ArtifactUploadAuthorizationConsume(ctx context.Context, arg Ar
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const artifactUploadAuthorizationInsert = `-- name: ArtifactUploadAuthorizationInsert :execrows
@@ -108,7 +108,7 @@ type ArtifactUploadAuthorizationInsertParams struct {
 }
 
 func (q *Queries) ArtifactUploadAuthorizationInsert(ctx context.Context, arg ArtifactUploadAuthorizationInsertParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, artifactUploadAuthorizationInsert,
+	result, err := q.db.Exec(ctx, artifactUploadAuthorizationInsert,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.ServiceID,
@@ -124,7 +124,7 @@ func (q *Queries) ArtifactUploadAuthorizationInsert(ctx context.Context, arg Art
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const artifactUploadAuthorizationLiveCount = `-- name: ArtifactUploadAuthorizationLiveCount :one
@@ -142,7 +142,7 @@ type ArtifactUploadAuthorizationLiveCountParams struct {
 }
 
 func (q *Queries) ArtifactUploadAuthorizationLiveCount(ctx context.Context, arg ArtifactUploadAuthorizationLiveCountParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, artifactUploadAuthorizationLiveCount,
+	row := q.db.QueryRow(ctx, artifactUploadAuthorizationLiveCount,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.AttemptID,
@@ -169,7 +169,7 @@ type ArtifactUploadAuthorizationPruneAttemptParams struct {
 }
 
 func (q *Queries) ArtifactUploadAuthorizationPruneAttempt(ctx context.Context, arg ArtifactUploadAuthorizationPruneAttemptParams) error {
-	_, err := q.db.ExecContext(ctx, artifactUploadAuthorizationPruneAttempt,
+	_, err := q.db.Exec(ctx, artifactUploadAuthorizationPruneAttempt,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.AttemptID,
@@ -199,7 +199,7 @@ type ArtifactUploadAuthorizationRefreshParams struct {
 }
 
 func (q *Queries) ArtifactUploadAuthorizationRefresh(ctx context.Context, arg ArtifactUploadAuthorizationRefreshParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, artifactUploadAuthorizationRefresh,
+	result, err := q.db.Exec(ctx, artifactUploadAuthorizationRefresh,
 		arg.ExpiresAt,
 		arg.OrganizationID,
 		arg.ProjectID,
@@ -214,5 +214,5 @@ func (q *Queries) ArtifactUploadAuthorizationRefresh(ctx context.Context, arg Ar
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }

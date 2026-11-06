@@ -21,8 +21,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+
 	"github.com/google/uuid"
-	"github.com/lib/pq"
+
 	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -68,9 +72,9 @@ func startupMigrationProvider(pool *sql.DB) (*goose.Provider, error) {
 		goose.WithDisableGlobalRegistry(true), goose.WithSlog(discardLogger()))
 }
 
-func startupConnection(t *testing.T, admin *sql.DB, group, attributes string) pq.Config {
+func startupConnection(t *testing.T, admin *sql.DB, group, attributes string) pgtransport.Connection {
 	t.Helper()
-	connection := pq.Config{Host: "127.0.0.1", SSLMode: pq.SSLModeDisable,
+	connection := pgtransport.Connection{Host: "127.0.0.1", SSLMode: "disable",
 		User: "example_" + strings.ReplaceAll(uuid.NewString(), "-", ""), Password: uuid.NewString()}
 	var externalPort uint16
 	externalHost := ""
@@ -107,11 +111,11 @@ func startupConnection(t *testing.T, admin *sql.DB, group, attributes string) pq
 	} else {
 		connection.Host = serverAddress
 	}
-	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pq.QuoteIdentifier(connection.Database)+" CONNECTION LIMIT 6"); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{connection.Database}.Sanitize()+" CONNECTION LIMIT 6"); err != nil {
 		t.Fatal(err)
 	}
-	name := pq.QuoteIdentifier(connection.User)
-	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+name+" LOGIN PASSWORD "+pq.QuoteLiteral(connection.Password)+" "+attributes); err != nil {
+	name := pgx.Identifier{connection.User}.Sanitize()
+	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+name+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(connection.Password)+" "+attributes); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -130,14 +134,14 @@ func startupConnection(t *testing.T, admin *sql.DB, group, attributes string) pq
 		}
 	})
 	if group != "" {
-		if _, err := admin.ExecContext(t.Context(), "GRANT "+pq.QuoteIdentifier(group)+" TO "+name); err != nil {
+		if _, err := admin.ExecContext(t.Context(), "GRANT "+pgx.Identifier{group}.Sanitize()+" TO "+name); err != nil {
 			t.Fatal(err)
 		}
 	}
 	return connection
 }
 
-func startupConfig(connection pq.Config) Config {
+func startupConfig(connection pgtransport.Connection) Config {
 	return Config{DatabaseBackend: DatabasePostgres, Postgres: &postgres.Config{
 		Connection: connection,
 		Pool:       postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1},
@@ -179,7 +183,7 @@ func seedStartupOrganization(t *testing.T, repository tenantstore.Repository, or
 	}
 }
 
-func assertStartupDisconnected(t *testing.T, admin *sql.DB, connection pq.Config) {
+func assertStartupDisconnected(t *testing.T, admin *sql.DB, connection pgtransport.Connection) {
 	t.Helper()
 	testenv.WaitUntil(t, t.Context(), func() error {
 		var count int
@@ -224,22 +228,16 @@ func TestDatabaseBackendRejectsAmbiguousConfiguration(t *testing.T) {
 }
 
 func TestPostgresStartupRejectsImplicitConnectionSettings(t *testing.T) {
-	base := pq.Config{Host: "127.0.0.1", Port: 1, Database: "example", User: "example", SSLMode: pq.SSLModeDisable}
+	base := pgtransport.Connection{Host: "127.0.0.1", Port: 1, Database: "example", User: "example", SSLMode: "disable"}
 	for _, test := range []struct {
 		name   string
-		change func(*pq.Config)
+		change func(*pgtransport.Connection)
 	}{
-		{"host", func(c *pq.Config) { c.Host = "" }},
-		{"port", func(c *pq.Config) { c.Port = 0 }},
-		{"database", func(c *pq.Config) { c.Database = "" }},
-		{"user", func(c *pq.Config) { c.User = "" }},
-		{"TLS", func(c *pq.Config) { c.SSLMode = "" }},
-		{"passfile", func(c *pq.Config) { c.Passfile = "example" }},
-		{"service", func(c *pq.Config) { c.Service = "example" }},
-		{"service file", func(c *pq.Config) { c.ServiceFile = "example" }},
-		{"options", func(c *pq.Config) { c.Options = "-c role=detent_migration_v2" }},
-		{"tenant setting", func(c *pq.Config) { c.Runtime = map[string]string{"detent.organization_id": "example"} }},
-		{"role setting", func(c *pq.Config) { c.Runtime = map[string]string{"role": "detent_platform_v2"} }},
+		{"host", func(c *pgtransport.Connection) { c.Host = "" }},
+		{"port", func(c *pgtransport.Connection) { c.Port = 0 }},
+		{"database", func(c *pgtransport.Connection) { c.Database = "" }},
+		{"user", func(c *pgtransport.Connection) { c.User = "" }},
+		{"TLS", func(c *pgtransport.Connection) { c.SSLMode = "" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			connection := base.Clone()
@@ -835,7 +833,7 @@ func TestPostgresStartupRejectsSessionDefaults(t *testing.T) {
 		t.Run(setting, func(t *testing.T) {
 			admin := postgresStartupTemplate.Database(t)
 			connection := startupConnection(t, admin, "detent_runtime_v2", "")
-			if _, err := admin.ExecContext(t.Context(), "ALTER ROLE "+pq.QuoteIdentifier(connection.User)+" SET "+setting); err != nil {
+			if _, err := admin.ExecContext(t.Context(), "ALTER ROLE "+pgx.Identifier{connection.User}.Sanitize()+" SET "+setting); err != nil {
 				t.Fatal(err)
 			}
 			service, err := Open(t.Context(), startupConfig(connection))
@@ -852,7 +850,7 @@ func TestDatabaseStartupCancellation(t *testing.T) {
 	cancel()
 	for _, cfg := range []Config{
 		{DatabasePath: filepath.Join(t.TempDir(), "unopened", "hub.db")},
-		startupConfig(pq.Config{}),
+		startupConfig(pgtransport.Connection{}),
 	} {
 		store, err := openDatabase(ctx, cfg.normalized())
 		if store != nil || !errors.Is(err, context.Canceled) {
@@ -892,13 +890,13 @@ func TestPostgresMigrationAuthorityIsSeparate(t *testing.T) {
 	if err := MigratePostgres(t.Context(), runtime); err == nil {
 		t.Fatal("runtime migrated schema")
 	}
-	if _, err := admin.ExecContext(t.Context(), "GRANT detent_runtime_v2 TO "+pq.QuoteIdentifier(migration.User)); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "GRANT detent_runtime_v2 TO "+pgx.Identifier{migration.User}.Sanitize()); err != nil {
 		t.Fatal(err)
 	}
 	if err := MigratePostgres(t.Context(), migration); !errors.Is(err, postgres.ErrMigrationRole) {
 		t.Fatalf("combined migration authority = %v", err)
 	}
-	if _, err := admin.ExecContext(t.Context(), "REVOKE detent_runtime_v2 FROM "+pq.QuoteIdentifier(migration.User)); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "REVOKE detent_runtime_v2 FROM "+pgx.Identifier{migration.User}.Sanitize()); err != nil {
 		t.Fatal(err)
 	}
 	if err := MigratePostgres(t.Context(), migration); err != nil {

@@ -25,7 +25,7 @@ func (r *Repository) ImportTeamThread(ctx context.Context, organization tracker.
 		source.Posts[i] = prepared
 	}
 	if err := r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
-		_, err := s.db.ExecContext(ctx, `INSERT INTO team_threads(organization_id,id,scope,project_id,work_item_id,title,status,creator_principal,creator_name,creator_client,request_key,input_hash,post_count,created_at,updated_at) VALUES($1,$2,$3,nullif($4,''),nullif($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT(organization_id,id) DO NOTHING`, organization, t.ID, t.Scope, t.ProjectID, t.IssueID, t.Title, t.Status, t.Creator, t.CreatorName, t.CreatorClient, t.RequestKey, t.InputHash, t.PostCount, t.CreatedAt, t.UpdatedAt)
+		_, err := s.db.Exec(ctx, `INSERT INTO team_threads(organization_id,id,scope,project_id,work_item_id,title,status,creator_principal,creator_name,creator_client,request_key,input_hash,post_count,created_at,updated_at) VALUES($1,$2,$3,nullif($4,''),nullif($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT(organization_id,id) DO NOTHING`, organization, t.ID, t.Scope, t.ProjectID, t.IssueID, t.Title, t.Status, t.Creator, t.CreatorName, t.CreatorClient, t.RequestKey, t.InputHash, t.PostCount, t.CreatedAt, t.UpdatedAt)
 		if err != nil {
 			return mapError(ctx, err)
 		}
@@ -57,7 +57,7 @@ func (r *Repository) ImportTeamThread(ctx context.Context, organization tracker.
 				return err
 			}
 			p.BodyArchiveID = archive.ID
-			_, err = s.db.ExecContext(ctx, `INSERT INTO team_thread_posts(organization_id,thread_id,seq,author_principal,author_name,acting_for,client_name,kind,request_key,input_hash,created_at,body_archive_id,body_object_key,body_sha256,body_bytes,body_content_bytes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT(organization_id,thread_id,seq) DO NOTHING`, organization, t.ID, p.Sequence, p.Author, p.Name, p.ActingFor, p.Client, p.Kind, p.RequestKey, p.InputHash, p.CreatedAt, p.BodyArchiveID, p.BodyReference.Key, p.BodyReference.SHA256, p.BodyReference.CompressedSize, p.BodyReference.UncompressedSize)
+			_, err = s.db.Exec(ctx, `INSERT INTO team_thread_posts(organization_id,thread_id,seq,author_principal,author_name,acting_for,client_name,kind,request_key,input_hash,created_at,body_archive_id,body_object_key,body_sha256,body_bytes,body_content_bytes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT(organization_id,thread_id,seq) DO NOTHING`, organization, t.ID, p.Sequence, p.Author, p.Name, p.ActingFor, p.Client, p.Kind, p.RequestKey, p.InputHash, p.CreatedAt, p.BodyArchiveID, p.BodyReference.Key, p.BodyReference.SHA256, p.BodyReference.CompressedSize, p.BodyReference.UncompressedSize)
 			if err != nil {
 				return mapError(ctx, err)
 			}
@@ -81,12 +81,12 @@ func (r *Repository) ImportTeamThread(ctx context.Context, organization tracker.
 	}
 	for _, participant := range t.Participants {
 		if err := r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
-			_, err := s.db.ExecContext(ctx, `INSERT INTO team_thread_participants(organization_id,thread_id,principal_id,client_name,display_name) VALUES($1,$2,$3,$4,$5) ON CONFLICT(organization_id,thread_id,principal_id,client_name) DO NOTHING`, organization, t.ID, participant.PrincipalID, participant.Client, participant.Name)
+			_, err := s.db.Exec(ctx, `INSERT INTO team_thread_participants(organization_id,thread_id,principal_id,client_name,display_name) VALUES($1,$2,$3,$4,$5) ON CONFLICT(organization_id,thread_id,principal_id,client_name) DO NOTHING`, organization, t.ID, participant.PrincipalID, participant.Client, participant.Name)
 			if err != nil {
 				return mapError(ctx, err)
 			}
 			var name string
-			err = s.db.QueryRowContext(ctx, `SELECT display_name FROM team_thread_participants WHERE organization_id=$1 AND thread_id=$2 AND principal_id=$3 AND client_name=$4`, organization, t.ID, participant.PrincipalID, participant.Client).Scan(&name)
+			err = s.db.QueryRow(ctx, `SELECT display_name FROM team_thread_participants WHERE organization_id=$1 AND thread_id=$2 AND principal_id=$3 AND client_name=$4`, organization, t.ID, participant.PrincipalID, participant.Client).Scan(&name)
 			if err != nil {
 				return mapError(ctx, err)
 			}
@@ -103,7 +103,7 @@ func (r *Repository) ImportTeamThread(ctx context.Context, organization tracker.
 			return corestore.ErrInvalidPage
 		}
 		if err := r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
-			_, err := s.db.ExecContext(ctx, `INSERT INTO team_thread_reads(organization_id,thread_id,principal_id,last_seq) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id,thread_id,principal_id) DO NOTHING`, organization, t.ID, read.Principal, read.LastSequence)
+			_, err := s.db.Exec(ctx, `INSERT INTO team_thread_reads(organization_id,thread_id,principal_id,last_seq) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id,thread_id,principal_id) DO NOTHING`, organization, t.ID, read.Principal, read.LastSequence)
 			if err != nil {
 				return mapError(ctx, err)
 			}
@@ -123,12 +123,12 @@ func (r *Repository) ImportTeamThread(ctx context.Context, organization tracker.
 }
 func (s *session) importThreadReferences(ctx context.Context, id string, seq int64, refs []threadstore.Reference) error {
 	for _, ref := range refs {
-		_, err := s.db.ExecContext(ctx, `INSERT INTO team_thread_references(organization_id,thread_id,post_seq,kind,target_id,project_id) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(organization_id,thread_id,post_seq,kind,target_id) DO NOTHING`, s.organization, id, seq, ref.Kind, ref.ID, ref.ProjectID)
+		_, err := s.db.Exec(ctx, `INSERT INTO team_thread_references(organization_id,thread_id,post_seq,kind,target_id,project_id) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(organization_id,thread_id,post_seq,kind,target_id) DO NOTHING`, s.organization, id, seq, ref.Kind, ref.ID, ref.ProjectID)
 		if err != nil {
 			return mapError(ctx, err)
 		}
 		var project string
-		err = s.db.QueryRowContext(ctx, `SELECT project_id FROM team_thread_references WHERE organization_id=$1 AND thread_id=$2 AND post_seq=$3 AND kind=$4 AND target_id=$5`, s.organization, id, seq, ref.Kind, ref.ID).Scan(&project)
+		err = s.db.QueryRow(ctx, `SELECT project_id FROM team_thread_references WHERE organization_id=$1 AND thread_id=$2 AND post_seq=$3 AND kind=$4 AND target_id=$5`, s.organization, id, seq, ref.Kind, ref.ID).Scan(&project)
 		if err != nil {
 			return mapError(ctx, err)
 		}

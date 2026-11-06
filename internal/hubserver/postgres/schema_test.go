@@ -15,7 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -405,7 +406,7 @@ func TestCoreForeignKeysDenyOtherTenants(t *testing.T) {
 
 func requireSQLState(t *testing.T, err error, state string) {
 	t.Helper()
-	var pgerr *pq.Error
+	var pgerr *pgconn.PgError
 	if !errors.As(err, &pgerr) || string(pgerr.Code) != state {
 		t.Fatalf("expected PostgreSQL SQLSTATE %s, got %v", state, err)
 	}

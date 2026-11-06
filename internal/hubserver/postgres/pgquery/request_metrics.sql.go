@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
 )
 
 const expireRequestDays = `-- name: ExpireRequestDays :execrows
@@ -26,11 +25,11 @@ type ExpireRequestDaysParams struct {
 }
 
 func (q *Queries) ExpireRequestDays(ctx context.Context, arg ExpireRequestDaysParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, expireRequestDays, arg.OrganizationID, arg.Cutoff)
+	result, err := q.db.Exec(ctx, expireRequestDays, arg.OrganizationID, arg.Cutoff)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const expireRequestHours = `-- name: ExpireRequestHours :execrows
@@ -46,11 +45,11 @@ type ExpireRequestHoursParams struct {
 }
 
 func (q *Queries) ExpireRequestHours(ctx context.Context, arg ExpireRequestHoursParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, expireRequestHours, arg.OrganizationID, arg.Cutoff)
+	result, err := q.db.Exec(ctx, expireRequestHours, arg.OrganizationID, arg.Cutoff)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const expireRequestMetricWindows = `-- name: ExpireRequestMetricWindows :execrows
@@ -67,11 +66,11 @@ type ExpireRequestMetricWindowsParams struct {
 }
 
 func (q *Queries) ExpireRequestMetricWindows(ctx context.Context, arg ExpireRequestMetricWindowsParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, expireRequestMetricWindows, arg.OrganizationID, arg.Cutoff)
+	result, err := q.db.Exec(ctx, expireRequestMetricWindows, arg.OrganizationID, arg.Cutoff)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const insertRequestMetricCaller = `-- name: InsertRequestMetricCaller :exec
@@ -87,7 +86,7 @@ type InsertRequestMetricCallerParams struct {
 }
 
 func (q *Queries) InsertRequestMetricCaller(ctx context.Context, arg InsertRequestMetricCallerParams) error {
-	_, err := q.db.ExecContext(ctx, insertRequestMetricCaller,
+	_, err := q.db.Exec(ctx, insertRequestMetricCaller,
 		arg.OrganizationID,
 		arg.Minute,
 		arg.CallerKind,
@@ -115,7 +114,7 @@ type ListRequestDaysParams struct {
 }
 
 func (q *Queries) ListRequestDays(ctx context.Context, arg ListRequestDaysParams) ([]RequestDay, error) {
-	rows, err := q.db.QueryContext(ctx, listRequestDays,
+	rows, err := q.db.Query(ctx, listRequestDays,
 		arg.OrganizationID,
 		arg.FromTime,
 		arg.ToTime,
@@ -146,9 +145,6 @@ func (q *Queries) ListRequestDays(ctx context.Context, arg ListRequestDaysParams
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -173,7 +169,7 @@ type ListRequestHoursParams struct {
 }
 
 func (q *Queries) ListRequestHours(ctx context.Context, arg ListRequestHoursParams) ([]RequestHour, error) {
-	rows, err := q.db.QueryContext(ctx, listRequestHours,
+	rows, err := q.db.Query(ctx, listRequestHours,
 		arg.OrganizationID,
 		arg.FromTime,
 		arg.ToTime,
@@ -197,14 +193,11 @@ func (q *Queries) ListRequestHours(ctx context.Context, arg ListRequestHoursPara
 			&i.Count,
 			&i.SumMs,
 			&i.MaxMs,
-			pq.Array(&i.Histogram),
+			&i.Histogram,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -232,7 +225,7 @@ type ListRequestMinutesParams struct {
 }
 
 func (q *Queries) ListRequestMinutes(ctx context.Context, arg ListRequestMinutesParams) ([]RequestMinute, error) {
-	rows, err := q.db.QueryContext(ctx, listRequestMinutes,
+	rows, err := q.db.Query(ctx, listRequestMinutes,
 		arg.OrganizationID,
 		arg.FromTime,
 		arg.ToTime,
@@ -260,14 +253,11 @@ func (q *Queries) ListRequestMinutes(ctx context.Context, arg ListRequestMinutes
 			&i.Count,
 			&i.SumMs,
 			&i.MaxMs,
-			pq.Array(&i.Histogram),
+			&i.Histogram,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -286,7 +276,7 @@ type LockRequestMetricWindowParams struct {
 }
 
 func (q *Queries) LockRequestMetricWindow(ctx context.Context, arg LockRequestMetricWindowParams) error {
-	_, err := q.db.ExecContext(ctx, lockRequestMetricWindow, arg.OrganizationID, arg.Minute)
+	_, err := q.db.Exec(ctx, lockRequestMetricWindow, arg.OrganizationID, arg.Minute)
 	return err
 }
 
@@ -311,7 +301,7 @@ type MergeRequestDayParams struct {
 }
 
 func (q *Queries) MergeRequestDay(ctx context.Context, arg MergeRequestDayParams) error {
-	_, err := q.db.ExecContext(ctx, mergeRequestDay,
+	_, err := q.db.Exec(ctx, mergeRequestDay,
 		arg.OrganizationID,
 		arg.Day,
 		arg.Route,
@@ -346,7 +336,7 @@ type MergeRequestHourParams struct {
 }
 
 func (q *Queries) MergeRequestHour(ctx context.Context, arg MergeRequestHourParams) error {
-	_, err := q.db.ExecContext(ctx, mergeRequestHour,
+	_, err := q.db.Exec(ctx, mergeRequestHour,
 		arg.OrganizationID,
 		arg.Hour,
 		arg.Route,
@@ -354,7 +344,7 @@ func (q *Queries) MergeRequestHour(ctx context.Context, arg MergeRequestHourPara
 		arg.Count,
 		arg.SumMs,
 		arg.MaxMs,
-		pq.Array(arg.Histogram),
+		arg.Histogram,
 	)
 	return err
 }
@@ -383,7 +373,7 @@ type MergeRequestMinuteParams struct {
 }
 
 func (q *Queries) MergeRequestMinute(ctx context.Context, arg MergeRequestMinuteParams) error {
-	_, err := q.db.ExecContext(ctx, mergeRequestMinute,
+	_, err := q.db.Exec(ctx, mergeRequestMinute,
 		arg.OrganizationID,
 		arg.Minute,
 		arg.Route,
@@ -393,7 +383,7 @@ func (q *Queries) MergeRequestMinute(ctx context.Context, arg MergeRequestMinute
 		arg.Count,
 		arg.SumMs,
 		arg.MaxMs,
-		pq.Array(arg.Histogram),
+		arg.Histogram,
 	)
 	return err
 }
@@ -410,7 +400,7 @@ type RequestMetricCallerExistsParams struct {
 }
 
 func (q *Queries) RequestMetricCallerExists(ctx context.Context, arg RequestMetricCallerExistsParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, requestMetricCallerExists,
+	row := q.db.QueryRow(ctx, requestMetricCallerExists,
 		arg.OrganizationID,
 		arg.Minute,
 		arg.CallerKind,
@@ -452,7 +442,7 @@ type RequestMetricRouteHistoryRow struct {
 }
 
 func (q *Queries) RequestMetricRouteHistory(ctx context.Context, arg RequestMetricRouteHistoryParams) ([]RequestMetricRouteHistoryRow, error) {
-	rows, err := q.db.QueryContext(ctx, requestMetricRouteHistory,
+	rows, err := q.db.Query(ctx, requestMetricRouteHistory,
 		arg.BucketSeconds,
 		arg.FromTime,
 		arg.OrganizationID,
@@ -472,14 +462,11 @@ func (q *Queries) RequestMetricRouteHistory(ctx context.Context, arg RequestMetr
 			&i.Count,
 			&i.SumMs,
 			&i.MaxMs,
-			pq.Array(&i.Histogram),
+			&i.Histogram,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -520,7 +507,7 @@ type RequestMetricTotalsRow struct {
 }
 
 func (q *Queries) RequestMetricTotals(ctx context.Context, arg RequestMetricTotalsParams) ([]RequestMetricTotalsRow, error) {
-	rows, err := q.db.QueryContext(ctx, requestMetricTotals, arg.OrganizationID, arg.FromTime, arg.ToTime)
+	rows, err := q.db.Query(ctx, requestMetricTotals, arg.OrganizationID, arg.FromTime, arg.ToTime)
 	if err != nil {
 		return nil, err
 	}
@@ -536,14 +523,11 @@ func (q *Queries) RequestMetricTotals(ctx context.Context, arg RequestMetricTota
 			&i.Count,
 			&i.SumMs,
 			&i.MaxMs,
-			pq.Array(&i.Histogram),
+			&i.Histogram,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -562,11 +546,11 @@ type ReserveRequestMetricCallerParams struct {
 }
 
 func (q *Queries) ReserveRequestMetricCaller(ctx context.Context, arg ReserveRequestMetricCallerParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, reserveRequestMetricCaller, arg.OrganizationID, arg.Minute)
+	result, err := q.db.Exec(ctx, reserveRequestMetricCaller, arg.OrganizationID, arg.Minute)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const takeExpiredRequestMinute = `-- name: TakeExpiredRequestMinute :one
@@ -584,7 +568,7 @@ type TakeExpiredRequestMinuteParams struct {
 }
 
 func (q *Queries) TakeExpiredRequestMinute(ctx context.Context, arg TakeExpiredRequestMinuteParams) (RequestMinute, error) {
-	row := q.db.QueryRowContext(ctx, takeExpiredRequestMinute, arg.OrganizationID, arg.Cutoff)
+	row := q.db.QueryRow(ctx, takeExpiredRequestMinute, arg.OrganizationID, arg.Cutoff)
 	var i RequestMinute
 	err := row.Scan(
 		&i.OrganizationID,
@@ -596,7 +580,7 @@ func (q *Queries) TakeExpiredRequestMinute(ctx context.Context, arg TakeExpiredR
 		&i.Count,
 		&i.SumMs,
 		&i.MaxMs,
-		pq.Array(&i.Histogram),
+		&i.Histogram,
 	)
 	return i, err
 }

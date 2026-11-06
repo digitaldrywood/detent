@@ -3,10 +3,11 @@ package postgres
 import (
 	"cmp"
 	"context"
-	"database/sql"
 	"errors"
 	"slices"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
@@ -225,7 +226,7 @@ func (r *Repository) RetainRequestMetrics(ctx context.Context, organization trac
 				OrganizationID: organization,
 				Cutoff:         minuteCutoff,
 			})
-			if errors.Is(err, sql.ErrNoRows) {
+			if errors.Is(err, pgx.ErrNoRows) {
 				return nil
 			}
 			if err != nil {

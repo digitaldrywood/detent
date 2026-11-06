@@ -6,8 +6,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/lib/pq"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/activitystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -24,7 +22,7 @@ func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Fil
 	for i, id := range filter.Projects {
 		projects[i] = string(id)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT w.project_id,w.name,w.terminal,w.dispatchable,w.operator_only,coalesce(c.sequence,0) FROM project_workflow_states w LEFT JOIN project_event_cursors c ON c.organization_id=w.organization_id AND c.project_id=w.project_id WHERE w.organization_id=$1 AND w.project_id=ANY($2) ORDER BY w.project_id,w.board_rank`, s.organization, pq.Array(projects))
+	rows, err := s.db.Query(ctx, `SELECT w.project_id,w.name,w.terminal,w.dispatchable,w.operator_only,coalesce(c.sequence,0) FROM project_workflow_states w LEFT JOIN project_event_cursors c ON c.organization_id=w.organization_id AND c.project_id=w.project_id WHERE w.organization_id=$1 AND w.project_id=ANY($2) ORDER BY w.project_id,w.board_rank`, s.organization, projects)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
@@ -57,14 +55,14 @@ func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Fil
 		}
 	}
 	var population int
-	err = s.db.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT id FROM issues WHERE organization_id=$1 AND native_updated_at>=$2 ORDER BY native_updated_at DESC,id DESC LIMIT $3) candidates`, s.organization, filter.From, activitystore.PopulationLimit+1).Scan(&population)
+	err = s.db.QueryRow(ctx, `SELECT count(*) FROM (SELECT id FROM issues WHERE organization_id=$1 AND native_updated_at>=$2 ORDER BY native_updated_at DESC,id DESC LIMIT $3) candidates`, s.organization, filter.From, activitystore.PopulationLimit+1).Scan(&population)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
 	out.Partial = out.Partial || population > activitystore.PopulationLimit
-	rows, err = s.db.QueryContext(ctx, `WITH recent AS MATERIALIZED(SELECT * FROM issues WHERE organization_id=$1 AND native_updated_at>=$3 ORDER BY native_updated_at DESC,id DESC LIMIT $4)
+	rows, err = s.db.Query(ctx, `WITH recent AS MATERIALIZED(SELECT * FROM issues WHERE organization_id=$1 AND native_updated_at>=$3 ORDER BY native_updated_at DESC,id DESC LIMIT $4)
  SELECT i.id,i.project_id,i.native_id,i.number,i.title,p.name,coalesce(i.workflow_state_name,''),i.native_created_at FROM recent i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id JOIN project_workflow_states w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.name=i.workflow_state_name
- WHERE i.project_id=ANY($2) AND NOT i.archived AND p.deleted_at IS NULL AND w.terminal AND ($5='' OR i.actor_principal_id=$5) ORDER BY i.native_updated_at DESC,i.id DESC LIMIT $6`, s.organization, pq.Array(projects), filter.From, activitystore.PopulationLimit, filter.Principal, filter.Limit+1)
+ WHERE i.project_id=ANY($2) AND NOT i.archived AND p.deleted_at IS NULL AND w.terminal AND ($5='' OR i.actor_principal_id=$5) ORDER BY i.native_updated_at DESC,i.id DESC LIMIT $6`, s.organization, projects, filter.From, activitystore.PopulationLimit, filter.Principal, filter.Limit+1)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
@@ -95,7 +93,7 @@ func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Fil
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err = s.db.QueryContext(ctx, `SELECT id,project_id,native_id,coalesce(workflow_state_name,''),native_created_at FROM issues WHERE organization_id=$1 AND id=ANY($2)`, s.organization, pq.Array(ids))
+	rows, err = s.db.Query(ctx, `SELECT id,project_id,native_id,coalesce(workflow_state_name,''),native_created_at FROM issues WHERE organization_id=$1 AND id=ANY($2)`, s.organization, ids)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
@@ -119,7 +117,7 @@ func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Fil
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
-	rows, err = s.db.QueryContext(ctx, `SELECT i.id,e.sequence,e.type,e.from_state,e.to_state,e.recorded_at FROM issues i CROSS JOIN LATERAL(SELECT sequence,type,from_state,to_state,recorded_at FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type IN('issue.created','workflow.transitioned') AND e.recorded_at<=$3 ORDER BY e.sequence DESC LIMIT $4)e WHERE i.organization_id=$1 AND i.id=ANY($2) ORDER BY i.id,e.sequence DESC`, s.organization, pq.Array(ids), filter.Now, activitystore.HistoryLimit+1)
+	rows, err = s.db.Query(ctx, `SELECT i.id,e.sequence,e.type,e.from_state,e.to_state,e.recorded_at FROM issues i CROSS JOIN LATERAL(SELECT sequence,type,from_state,to_state,recorded_at FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type IN('issue.created','workflow.transitioned') AND e.recorded_at<=$3 ORDER BY e.sequence DESC LIMIT $4)e WHERE i.organization_id=$1 AND i.id=ANY($2) ORDER BY i.id,e.sequence DESC`, s.organization, ids, filter.Now, activitystore.HistoryLimit+1)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
@@ -154,8 +152,8 @@ func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Fil
 	for i, a := range out.Attempts {
 		known[a.ID] = i
 	}
-	rows, err = s.db.QueryContext(ctx, `SELECT a.id,a.issue_id,i.project_id,i.native_id,i.number,i.title,p.name,coalesce(r.runner_id,''),l.session_id,coalesce(pr.requirement_role,''),a.status,a.started_at,CASE WHEN a.status='running' THEN least(coalesce(l.released_at,l.expires_at),l.expires_at) ELSE a.updated_at END,a.status='running' AND l.released_at IS NULL AND l.renewed_at<=$3 AND l.expires_at>$3
- FROM issues i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id CROSS JOIN LATERAL(SELECT * FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id ORDER BY a.fencing_token DESC LIMIT $4)a JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id LEFT JOIN runner_lease_assignments r ON r.organization_id=a.organization_id AND r.lease_id=a.lease_id LEFT JOIN provider_reservations pr ON pr.organization_id=a.organization_id AND pr.lease_id=a.lease_id WHERE i.organization_id=$1 AND i.id=ANY($2) ORDER BY i.id,a.fencing_token DESC`, s.organization, pq.Array(ids), filter.Now, activitystore.HistoryLimit+1)
+	rows, err = s.db.Query(ctx, `SELECT a.id,a.issue_id,i.project_id,i.native_id,i.number,i.title,p.name,coalesce(r.runner_id,''),l.session_id,coalesce(pr.requirement_role,''),a.status,a.started_at,CASE WHEN a.status='running' THEN least(coalesce(l.released_at,l.expires_at),l.expires_at) ELSE a.updated_at END,a.status='running' AND l.released_at IS NULL AND l.renewed_at<=$3 AND l.expires_at>$3
+ FROM issues i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id CROSS JOIN LATERAL(SELECT * FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id ORDER BY a.fencing_token DESC LIMIT $4)a JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id LEFT JOIN runner_lease_assignments r ON r.organization_id=a.organization_id AND r.lease_id=a.lease_id LEFT JOIN provider_reservations pr ON pr.organization_id=a.organization_id AND pr.lease_id=a.lease_id WHERE i.organization_id=$1 AND i.id=ANY($2) ORDER BY i.id,a.fencing_token DESC`, s.organization, ids, filter.Now, activitystore.HistoryLimit+1)
 	if err != nil {
 		return out, mapError(ctx, err)
 	}
@@ -249,7 +247,7 @@ func scanActivityAttempt(row activityRowScanner) (activitystore.Attempt, error) 
 func (s *session) activityCandidates(ctx context.Context, f activitystore.Filter, projects []string, running bool) ([]activitystore.Attempt, bool, error) {
 	condition := `status='running'`
 	order := `id`
-	args := []any{s.organization, pq.Array(projects), f.From, f.To, f.Now, activitystore.PopulationLimit, f.Principal, f.RunnerID, f.Limit + 1}
+	args := []any{s.organization, projects, f.From, f.To, f.Now, activitystore.PopulationLimit, f.Principal, f.RunnerID, f.Limit + 1}
 	if !running {
 		condition = `status<>'running' AND updated_at>=$3 AND updated_at<$4`
 		order = `updated_at DESC,id DESC`
@@ -261,7 +259,7 @@ func (s *session) activityCandidates(ctx context.Context, f activitystore.Filter
 		countArgs = []any{s.organization, f.From, f.To, activitystore.PopulationLimit + 1}
 	}
 	var count int
-	err := s.db.QueryRowContext(ctx, countSQL, countArgs...).Scan(&count)
+	err := s.db.QueryRow(ctx, countSQL, countArgs...).Scan(&count)
 	if err != nil {
 		return nil, false, mapError(ctx, err)
 	}
@@ -273,7 +271,7 @@ func (s *session) activityCandidates(ctx context.Context, f activitystore.Filter
 	if !running {
 		liveFilter = `NOT(a.status='running' AND l.released_at IS NULL AND l.renewed_at<=$5 AND l.expires_at>$5)`
 	}
-	rows, err := s.db.QueryContext(ctx, `WITH selected AS MATERIALIZED(SELECT * FROM native_attempts WHERE organization_id=$1 AND `+condition+` ORDER BY `+order+` LIMIT $6)
+	rows, err := s.db.Query(ctx, `WITH selected AS MATERIALIZED(SELECT * FROM native_attempts WHERE organization_id=$1 AND `+condition+` ORDER BY `+order+` LIMIT $6)
  SELECT a.id,a.issue_id,i.project_id,i.native_id,i.number,i.title,p.name,coalesce(r.runner_id,''),l.session_id,coalesce(pr.requirement_role,''),a.status,a.started_at,`+finish+`,a.status='running' AND l.released_at IS NULL AND l.renewed_at<=$5 AND l.expires_at>$5
  FROM selected a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id LEFT JOIN runner_lease_assignments r ON r.organization_id=a.organization_id AND r.lease_id=a.lease_id LEFT JOIN provider_reservations pr ON pr.organization_id=a.organization_id AND pr.lease_id=a.lease_id WHERE i.project_id=ANY($2) AND NOT i.archived AND p.deleted_at IS NULL AND ($7='' OR i.actor_principal_id=$7) AND ($8='' OR r.runner_id=$8) AND `+liveFilter+` ORDER BY `+finish+` DESC,a.id DESC LIMIT $9`, args...)
 	if err != nil {

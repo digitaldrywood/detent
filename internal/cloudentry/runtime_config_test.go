@@ -186,7 +186,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 	f.service.config.ConfigureRuntime = func(update hubserver.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error) {
 		return func(TenantSpec) ([]byte, error) { return json.Marshal(update) }
 	}
-	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=true"); err != nil {
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true"); err != nil {
 		t.Fatal(err)
 	}
 	type reading struct {
@@ -477,7 +477,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			before := readRuntime("org_beta")
-			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='allocating', step=? WHERE id='org_beta'", scenario.step); err != nil {
+			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET state='allocating', step=$1 WHERE id='org_beta'", scenario.step); err != nil {
 				t.Fatal(err)
 			}
 			organization, err := f.service.registry.Organization(t.Context(), "org_beta")
@@ -719,7 +719,7 @@ func TestPlatformEntitlementsRESTAndMCPWithoutRestart(t *testing.T) {
 				}
 			}
 			var audits int
-			if err := f.service.registry.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM entitlement_changes WHERE reason='capacity adjustment' AND staff_email='entitlement-administrator'").Scan(&audits); err != nil || audits != 5 {
+			if err := f.service.registry.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM platform.entitlement_changes WHERE reason='capacity adjustment' AND staff_email='entitlement-administrator'").Scan(&audits); err != nil || audits != 5 {
 				t.Fatalf("entry audit=%d %v", audits, err)
 			}
 		})

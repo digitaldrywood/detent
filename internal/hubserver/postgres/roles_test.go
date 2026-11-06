@@ -4,7 +4,11 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/lib/pq"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
@@ -13,14 +17,14 @@ func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
 	db := template.Database(t)
 	var versionedRoles, legacyRoles int
 	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM pg_roles
-		WHERE rolname = ANY($1)`, pq.Array([]string{postgres.MigrationRoleName, postgres.RuntimeRoleName, postgres.PlatformRoleName})).Scan(&versionedRoles); err != nil {
+		WHERE rolname = ANY($1)`, []string{postgres.MigrationRoleName, postgres.RuntimeRoleName, postgres.PlatformRoleName}).Scan(&versionedRoles); err != nil {
 		t.Fatal(err)
 	}
 	if versionedRoles != 3 {
 		t.Fatalf("versioned role count = %d, want 3", versionedRoles)
 	}
 	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM pg_roles
-		WHERE rolname = ANY($1)`, pq.Array([]string{"detent_migration", "detent_runtime", "detent_platform"})).Scan(&legacyRoles); err != nil {
+		WHERE rolname = ANY($1)`, []string{"detent_migration", "detent_runtime", "detent_platform"}).Scan(&legacyRoles); err != nil {
 		t.Fatal(err)
 	}
 	if legacyRoles != 0 {
@@ -42,7 +46,7 @@ func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
 			for _, table := range []string{"projects", "issues", "native_comments"} {
 				t.Run(table, func(t *testing.T) {
 					var count int
-					if err := pool.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&count); err != nil {
+					if err := pool.QueryRow(pgtest.UnboundProbe(t.Context()), "SELECT count(*) FROM "+table).Scan(&count); err != nil {
 						t.Fatal(err)
 					}
 					want := 0
@@ -67,12 +71,12 @@ func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
 					continue
 				}
 				t.Run("cannot assume "+target, func(t *testing.T) {
-					tx, err := pool.BeginTx(t.Context(), nil)
+					tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
 					if err != nil {
 						t.Fatal(err)
 					}
-					defer tx.Rollback()
-					_, err = tx.ExecContext(t.Context(), "SET LOCAL ROLE "+target)
+					defer tx.Rollback(t.Context())
+					_, err = tx.Exec(t.Context(), "SET LOCAL ROLE "+target)
 					requireSQLState(t, err, "42501")
 				})
 			}
@@ -83,12 +87,12 @@ func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
 				`SELECT setval('public.native_comments_record_id_seq', 100)`,
 			} {
 				t.Run(statement, func(t *testing.T) {
-					tx, err := pool.BeginTx(t.Context(), nil)
+					tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
 					if err != nil {
 						t.Fatal(err)
 					}
-					defer tx.Rollback()
-					_, err = tx.ExecContext(t.Context(), statement)
+					defer tx.Rollback(t.Context())
+					_, err = tx.Exec(pgtest.UnboundProbe(t.Context()), statement)
 					if group == "detent_migration_v2" {
 						if err != nil {
 							t.Fatal(err)
@@ -99,7 +103,7 @@ func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
 				})
 			}
 			t.Run("allocator refuses other relations", func(t *testing.T) {
-				_, err := pool.ExecContext(t.Context(), `SELECT public.allocate_core_record_id('public.projects'::regclass, 100)`)
+				_, err := pool.Exec(t.Context(), `SELECT public.allocate_core_record_id('public.projects'::regclass, 100)`)
 				requireSQLState(t, err, "42501")
 			})
 			if group == "detent_runtime_v2" {
@@ -109,7 +113,7 @@ func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
 					`ALTER ROLE detent_runtime_v2 BYPASSRLS`,
 				} {
 					t.Run(statement, func(t *testing.T) {
-						_, err := pool.ExecContext(t.Context(), statement)
+						_, err := pool.Exec(t.Context(), statement)
 						requireSQLState(t, err, "42501")
 					})
 				}
@@ -124,7 +128,7 @@ func TestRuntimeRejectsCombinedAuthority(t *testing.T) {
 			admin := template.Database(t)
 			pool := rolePool(t, admin, "detent_runtime_v2", "")
 			var login string
-			if err := pool.QueryRowContext(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
+			if err := pool.QueryRow(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := admin.ExecContext(t.Context(), "GRANT "+group+" TO "+login+" WITH INHERIT FALSE"); err != nil {
@@ -142,22 +146,22 @@ func TestTenantBindingFailureReleasesConnection(t *testing.T) {
 	seedCore(t, admin)
 	pool := rolePool(t, admin, "detent_runtime_v2", "")
 	runtime := runtimeFor(t, pool, pool)
-	tx, err := runtime.Begin(t.Context(), "org_\x00invalid", nil)
+	tx, err := runtime.Begin(t.Context(), "org_\x00invalid", pgtransport.Options{})
 	if tx != nil || err == nil {
 		if tx != nil {
-			tx.Rollback()
+			tx.Rollback(t.Context())
 		}
 		t.Fatalf("invalid tenant binding returned transaction=%v error=%v", tx, err)
 	}
-	if stats := pool.Stats(); stats.InUse != 0 {
-		t.Fatalf("failed binding retained %d connections", stats.InUse)
+	if stats := pool.Stat(); stats.AcquiredConns() != 0 {
+		t.Fatalf("failed binding retained %d connections", stats.AcquiredConns())
 	}
 	valid := tenantTx(t, runtime, pool, "org_second")
 	var count int
-	if err := valid.QueryRowContext(t.Context(), `SELECT count(*) FROM issues`).Scan(&count); err != nil || count != 2 {
+	if err := valid.QueryRow(t.Context(), `SELECT count(*) FROM issues`).Scan(&count); err != nil || count != 2 {
 		t.Fatalf("usable transaction after failed binding returned %d rows: %v", count, err)
 	}
-	if err := valid.Commit(); err != nil {
+	if err := valid.Commit(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 }

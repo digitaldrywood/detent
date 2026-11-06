@@ -98,7 +98,7 @@ func TestRecordBillingCostsSerializesOppositeOrderBatches(t *testing.T) {
 			repository, pool := repositoryFor(t, admin, poolConfig)
 			admin.SetMaxOpenConns(4)
 			var login string
-			if err := pool.QueryRowContext(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
+			if err := pool.QueryRow(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
 				t.Fatal(err)
 			}
 			const organization tracker.OrganizationID = "org_cost_batch"

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"net"
@@ -17,8 +18,14 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+
 	"github.com/google/uuid"
-	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 )
@@ -41,7 +48,7 @@ type Template struct {
 }
 
 type server struct {
-	config *pq.Config
+	config *pgtransport.Connection
 	admin  *sql.DB
 	stop   func() error
 	mu     sync.Mutex
@@ -109,7 +116,7 @@ func (p *Template) OpenRole(t *testing.T, fixture *sql.DB, role, password string
 	}
 	config := p.server.config.Clone()
 	config.Database, config.User, config.Password = name, role, password
-	connector, err := pq.NewConnectorConfig(config)
+	connector, err := fixtureConnector(config)
 	if err != nil {
 		t.Fatal("configure PostgreSQL fixture role connector")
 	}
@@ -122,7 +129,7 @@ func (p *Template) OpenRole(t *testing.T, fixture *sql.DB, role, password string
 		}
 	})
 	if err := db.PingContext(ctx); err != nil {
-		var pgerr *pq.Error
+		var pgerr *pgconn.PgError
 		if errors.As(err, &pgerr) {
 			t.Fatalf("connect PostgreSQL fixture role: SQLSTATE %s", pgerr.Code)
 		}
@@ -287,7 +294,7 @@ func (p *Template) Close(ctx context.Context) error {
 func (s *server) database(name string) (*sql.DB, error) {
 	config := s.config.Clone()
 	config.Database = name
-	connector, err := pq.NewConnectorConfig(config)
+	connector, err := fixtureConnector(config)
 	if err != nil {
 		return nil, fmt.Errorf("configure PostgreSQL fixture connector: %w", err)
 	}
@@ -299,7 +306,7 @@ func (s *server) database(name string) (*sql.DB, error) {
 
 func identifier(name string) string {
 	var quoted bytes.Buffer
-	pq.BufferQuoteIdentifier(name, &quoted)
+	quoted.WriteString(pgx.Identifier{name}.Sanitize())
 	return quoted.String()
 }
 
@@ -310,7 +317,7 @@ func (s *server) create(ctx context.Context, template string) (string, error) {
 	s.mu.Unlock()
 	_, err := s.admin.ExecContext(ctx, "CREATE DATABASE "+identifier(name)+" TEMPLATE "+identifier(template)+fmt.Sprintf(" CONNECTION LIMIT %d", connectionLimit))
 	if err != nil {
-		var pgErr *pq.Error
+		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {
 			s.mu.Lock()
 			delete(s.owned, name)
@@ -340,7 +347,7 @@ func (s *server) drop(ctx context.Context, name string) error {
 	return err
 }
 
-func connectionConfig(selection string) (*pq.Config, error) {
+func connectionConfig(selection string) (*pgtransport.Connection, error) {
 	u, err := url.Parse(selection)
 	if err != nil || u == nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.User == nil || u.User.Username() == "" || u.Fragment != "" {
 		return nil, errors.New("PostgreSQL fixture requires a local postgres://user:password@127.0.0.1:port/postgres URL")
@@ -380,18 +387,13 @@ func connectionConfig(selection string) (*pq.Config, error) {
 	if socket != "" {
 		host = socket
 	}
-	return &pq.Config{
-		Host:               host,
-		Port:               uint16(port),
-		Database:           "postgres",
-		User:               u.User.Username(),
-		Password:           password,
-		SSLMode:            pq.SSLModeDisable,
-		ApplicationName:    "detent_test",
-		ClientEncoding:     "UTF8",
-		Datestyle:          "ISO, MDY",
-		MinProtocolVersion: "3.0",
-		MaxProtocolVersion: "3.0",
+	return &pgtransport.Connection{
+		Host:     host,
+		Port:     uint16(port),
+		Database: "postgres",
+		User:     u.User.Username(),
+		Password: password,
+		SSLMode:  "disable",
 	}, nil
 }
 
@@ -493,4 +495,12 @@ func startBinary(ctx context.Context) (_ string, _ func() error, resultErr error
 	case <-ctx.Done():
 		return "", nil, errors.Join(ctx.Err(), stop())
 	}
+}
+
+func fixtureConnector(connection pgtransport.Connection) (driver.Connector, error) {
+	config, err := connection.PoolConfig()
+	if err != nil {
+		return nil, err
+	}
+	return stdlib.GetConnector(*config.ConnConfig), nil
 }

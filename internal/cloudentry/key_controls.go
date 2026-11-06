@@ -39,7 +39,7 @@ type keyView struct {
 
 func (s *Service) personalKeyPolicy(ctx context.Context, organization string) (string, error) {
 	var policy string
-	err := s.auth.store.db.QueryRowContext(ctx, "SELECT personal_keys FROM organization_key_policy WHERE organization_id=?", organization).Scan(&policy)
+	err := s.auth.store.db.QueryRowContext(ctx, "SELECT personal_keys FROM platform.organization_key_policy WHERE organization_id=$1", organization).Scan(&policy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "allowed", nil
 	}
@@ -114,7 +114,7 @@ type keyReachOwner struct {
 func (s *Service) describeKeyWithReachCache(ctx context.Context, key accessKey, organizations []Organization, cache map[keyReachOwner]keyReach) (keyView, error) {
 	view := keyView{accessKey: key, EffectiveReach: []keyReach{}}
 	var last sql.NullString
-	if err := s.auth.store.db.QueryRowContext(ctx, "SELECT MAX(last_used_at) FROM access_key_organizations WHERE key_id=?", key.ID).Scan(&last); err != nil {
+	if err := s.auth.store.db.QueryRowContext(ctx, "SELECT MAX(last_used_at) FROM platform.access_key_organizations WHERE key_id=$1", key.ID).Scan(&last); err != nil {
 		return view, err
 	}
 	if last.Valid {
@@ -146,7 +146,7 @@ func (s *Service) describeKeyWithReachCache(ctx context.Context, key accessKey, 
 		var used sql.NullString
 		blocked, exclusions, err := s.keyRestrictions(ctx, key.ID, org.ID)
 		if err == nil {
-			err = s.auth.store.reader.QueryRowContext(ctx, "SELECT approved_at IS NOT NULL,last_used_at FROM access_key_organizations WHERE key_id=? AND organization_id=?", key.ID, org.ID).Scan(&approved, &used)
+			err = s.auth.store.reader.QueryRowContext(ctx, "SELECT approved_at IS NOT NULL,last_used_at FROM platform.access_key_organizations WHERE key_id=$1 AND organization_id=$2", key.ID, org.ID).Scan(&approved, &used)
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return view, err
@@ -197,7 +197,7 @@ func (s *Service) rotateAccountKey(c echo.Context) error {
 	if err != nil {
 		return keyError(c, err)
 	}
-	result, err := s.auth.store.db.ExecContext(c.Request().Context(), "UPDATE access_keys SET token_hash=? WHERE id=? AND token_hash=? AND revoked_at IS NULL", apikey.HashToken(key.Token), key.ID, key.Hash)
+	result, err := s.auth.store.db.ExecContext(c.Request().Context(), "UPDATE platform.access_keys SET token_hash=$1 WHERE id=$2 AND token_hash=$3 AND revoked_at IS NULL", apikey.HashToken(key.Token), key.ID, key.Hash)
 	if err != nil {
 		return keyError(c, err)
 	}
@@ -230,7 +230,7 @@ func (s *Service) approveOrganizationKey(c echo.Context) error {
 	if _, err := s.ownerKeyReach(c.Request().Context(), key.Owner, key.OwnerEmail, org); err != nil {
 		return keyError(c, err)
 	}
-	result, err := s.auth.store.db.ExecContext(c.Request().Context(), "INSERT INTO access_key_organizations(key_id,organization_id,approved_at) VALUES(?,?,?) ON CONFLICT(key_id,organization_id) DO UPDATE SET approved_at=excluded.approved_at WHERE access_key_organizations.blocked = false", key.ID, org.ID, formatTime(s.config.now()))
+	result, err := s.auth.store.db.ExecContext(c.Request().Context(), "INSERT INTO platform.access_key_organizations(key_id,organization_id,approved_at) VALUES($1,$2,$3) ON CONFLICT(key_id,organization_id) DO UPDATE SET approved_at=excluded.approved_at WHERE platform.access_key_organizations.blocked = false", key.ID, org.ID, formatTime(s.config.now()))
 	if err != nil {
 		return keyError(c, err)
 	}

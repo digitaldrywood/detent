@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -119,12 +121,12 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 		if _, err := admin.ExecContext(t.Context(), `ANALYZE collaboration_events`); err != nil {
 			t.Fatal(err)
 		}
-		tx, err := pool.BeginTx(t.Context(), nil)
+		tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer tx.Rollback()
-		if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, org); err != nil {
+		defer tx.Rollback(t.Context())
+		if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
 			t.Fatal(err)
 		}
 		probe := &searchPlanProbe{DBTX: tx}
@@ -132,7 +134,7 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 			t.Fatal(err)
 		}
 		var raw []byte
-		if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
+		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
 			t.Fatal(err)
 		}
 		var plan []struct{ Plan searchPlanNode }
@@ -155,7 +157,7 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 		if examined > 256 {
 			t.Errorf("discovery examined %.0f history rows; budget 256", examined)
 		}
-		if err := tx.Rollback(); err != nil {
+		if err := tx.Rollback(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		previous := int64(4)
@@ -176,12 +178,12 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 		if previous != 30004 {
 			t.Fatalf("retained seek=%d", previous)
 		}
-		tx, err = pool.BeginTx(t.Context(), nil)
+		tx, err = pool.BeginTx(t.Context(), pgx.TxOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer tx.Rollback()
-		if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, org); err != nil {
+		defer tx.Rollback(t.Context())
+		if _, err := tx.Exec(t.Context(), `SELECT set_config('detent.organization_id', $1, true)`, string(org)); err != nil {
 			t.Fatal(err)
 		}
 		probe = &searchPlanProbe{DBTX: tx}
@@ -189,7 +191,7 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 		if err != nil || len(projects) != 0 {
 			t.Fatalf("idle projects=%d error=%v", len(projects), err)
 		}
-		if err := tx.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
+		if err := tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+probe.statement, probe.args...).Scan(&raw); err != nil {
 			t.Fatal(err)
 		}
 		if err := json.Unmarshal(raw, &plan); err != nil || len(plan) != 1 {
@@ -199,7 +201,7 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 			t.Fatalf("idle history rows=%.0f", examined)
 		}
 		t.Log("idle discovery examined 0 history rows")
-		if err := tx.Rollback(); err != nil {
+		if err := tx.Rollback(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		value := tracker.CollaborationEvent{ID: "event_after_seek", OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_2", Type: "workflow.transitioned", SchemaVersion: 1, Actor: tracker.Actor{Kind: "machine", PrincipalID: "worker"}, RecordedAt: now.Add(time.Hour), Data: tracker.CollaborationData{FromState: "In Progress", ToState: "Done"}}

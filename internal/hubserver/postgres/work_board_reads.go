@@ -2,12 +2,12 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -28,7 +28,7 @@ func scanBoard(row interface{ Scan(...any) error }, extra ...any) (viewstore.Boa
 	var size, content int64
 	targets := []any{&b.OrganizationID, &b.ProjectID, &b.WorkItemID, &b.SourceRevision, &b.SourceEventSequence, &b.SourceProjectRevision,
 		&b.Position.State, &b.Archived, &b.Terminal, &b.Running, &b.Dispatchable, &b.Position.Lane, &b.Position.Priority, &b.Position.ActivityMissing, &b.Position.Activity, &b.Position.Identifier, &b.ClosedAt, &b.ExpiresAt, &b.ExecutionFence,
-		&b.ActorPrincipalID, &b.IssueType, &b.VerificationState, &b.Priority, &b.CreatedAt, &b.UpdatedAt, &key, &digest, &size, &content, pq.Array(&b.Labels), pq.Array(&b.Assignees)}
+		&b.ActorPrincipalID, &b.IssueType, &b.VerificationState, &b.Priority, &b.CreatedAt, &b.UpdatedAt, &key, &digest, &size, &content, &b.Labels, &b.Assignees}
 	display, finish := boardDisplayTargets(&b.Display)
 	targets = append(targets, display...)
 	targets = append(targets, extra...)
@@ -44,7 +44,7 @@ func (s *session) NextBoardCandidate(ctx context.Context, after tracker.NativeWo
 		skipped[index] = string(id)
 	}
 	var candidate viewstore.BoardCandidate
-	err := s.db.QueryRowContext(ctx, `SELECT coalesce(stale.project_id,candidates.project_id),candidates.work_item_id FROM (
+	err := s.db.QueryRow(ctx, `SELECT coalesce(stale.project_id,candidates.project_id),candidates.work_item_id FROM (
  (SELECT project_id,work_item_id,0 AS priority FROM native_board_dirty WHERE organization_id=$1 AND work_item_id>$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
  UNION ALL (SELECT project_id,work_item_id,1 AS priority FROM native_board_dirty WHERE organization_id=$1 AND work_item_id<=$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
  UNION ALL (SELECT project_id,work_item_id,2 AS priority FROM native_board_items WHERE organization_id=$1 AND NOT card_display_ready AND work_item_id>$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
@@ -57,12 +57,12 @@ func (s *session) NextBoardCandidate(ctx context.Context, after tracker.NativeWo
  LEFT JOIN native_board_items stale ON stale.organization_id=$1 AND stale.work_item_id=candidates.work_item_id
   AND stale.project_id<>candidates.project_id
   AND EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=$1 AND i.project_id=candidates.project_id AND i.native_id=candidates.work_item_id)
- ORDER BY candidates.priority,candidates.work_item_id LIMIT 1`, s.organization, after, pq.Array(skipped)).Scan(&candidate.ProjectID, &candidate.WorkItemID)
+ ORDER BY candidates.priority,candidates.work_item_id LIMIT 1`, s.organization, after, skipped).Scan(&candidate.ProjectID, &candidate.WorkItemID)
 	return candidate, mapError(ctx, err)
 }
 
 func (s *session) BoardItem(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (viewstore.BoardRecord, error) {
-	row, err := scanBoard(s.db.QueryRowContext(ctx, "SELECT "+boardColumns+" FROM native_board_items b WHERE b.organization_id=$1 AND b.project_id=$2 AND b.work_item_id=$3", s.organization, project, item))
+	row, err := scanBoard(s.db.QueryRow(ctx, "SELECT "+boardColumns+" FROM native_board_items b WHERE b.organization_id=$1 AND b.project_id=$2 AND b.work_item_id=$3", s.organization, project, item))
 	return row, mapError(ctx, err)
 }
 
@@ -72,7 +72,7 @@ func (s *session) boardSelectionWhere(ctx context.Context, selection viewstore.B
 		return where, args, err
 	}
 	var pending bool
-	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(
+	err = s.db.QueryRow(ctx, `SELECT EXISTS(
  SELECT 1 FROM issues i LEFT JOIN search_documents d ON d.organization_id=i.organization_id AND d.project_id=i.project_id AND d.work_item_id=i.native_id AND d.kind='issue'
  WHERE i.organization_id=$1 AND i.project_id=$2 AND ($3::boolean IS NULL OR i.archived=$3) AND (NOT $4 OR i.actor_principal_id=$5) AND (d.id IS NULL OR d.placeholder OR d.indexed_revision<>d.revision)
  UNION ALL
@@ -101,7 +101,7 @@ func boardWhere(org tracker.OrganizationID, f viewstore.BoardSelection) (string,
 		}
 		number, name := searchstore.Number(f.SearchText)
 		queryTerms := searchstore.LiteralQueryTerms(org, f.ProjectID, f.SearchText)
-		args = append(args, strings.Join(searchstore.Expressions(org, query), " | "), searchstore.LiteralHex(f.SearchText), number, searchstore.LiteralHex(name), pq.Array(queryTerms), len([]rune(f.SearchText)) <= 2)
+		args = append(args, strings.Join(searchstore.Expressions(org, query), " | "), searchstore.LiteralHex(f.SearchText), number, searchstore.LiteralHex(name), queryTerms, len([]rune(f.SearchText)) <= 2)
 		clauses = append(clauses, `EXISTS(SELECT 1 FROM search_documents d JOIN issues i ON i.organization_id=d.organization_id AND i.project_id=d.project_id AND i.native_id=d.work_item_id JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id WHERE d.organization_id=b.organization_id AND d.project_id=b.project_id AND d.work_item_id=b.work_item_id AND d.kind='issue' AND d.indexed_revision=d.revision AND NOT d.placeholder AND (
 d.vector @@ $3::tsquery
 OR ($5::bigint>0 AND i.number=$5 AND ($6='' OR $6 IN (encode(convert_to(translate(p.id,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'UTF8'),'hex'),encode(convert_to(translate(p.name,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'UTF8'),'hex'))))
@@ -124,7 +124,7 @@ OR position(decode($4,'hex') IN convert_to(translate(p.name||'#'||i.number::text
 			}
 			ids[index] = string(id)
 		}
-		args = append(args, pq.Array(ids))
+		args = append(args, ids)
 		clauses = append(clauses, fmt.Sprintf("b.work_item_id=ANY($%d::text[])", len(args)))
 	}
 	if f.Reporter {
@@ -155,7 +155,7 @@ OR position(decode($4,'hex') IN convert_to(translate(p.name||'#'||i.number::text
 	}
 	if f.Fingerprint != "" {
 		marker := "\nfingerprint: " + f.Fingerprint + "\n"
-		args = append(args, pq.Array(searchstore.LiteralQueryTerms(org, f.ProjectID, marker)))
+		args = append(args, searchstore.LiteralQueryTerms(org, f.ProjectID, marker))
 		terms := fmt.Sprintf("$%d", len(args))
 		clauses = append(clauses, `EXISTS(SELECT 1 FROM search_documents d WHERE d.organization_id=b.organization_id AND d.project_id=b.project_id AND d.work_item_id=b.work_item_id AND d.kind='issue' AND d.indexed_revision=d.revision AND NOT d.placeholder AND `+literalPostingMatch("d", terms, "false")+`)`)
 	}
@@ -172,7 +172,7 @@ OR position(decode($4,'hex') IN convert_to(translate(p.name||'#'||i.number::text
 		if len(field.values) == 1 {
 			add(field.column, "=", field.values[0])
 		} else if len(field.values) > 1 {
-			args = append(args, pq.Array(field.values))
+			args = append(args, field.values)
 			clauses = append(clauses, fmt.Sprintf("%s=ANY($%d::text[])", field.column, len(args)))
 		}
 	}
@@ -180,7 +180,7 @@ OR position(decode($4,'hex') IN convert_to(translate(p.name||'#'||i.number::text
 		return "", nil, corestore.ErrInvalidPage
 	}
 	if len(f.Priorities) > 0 {
-		args = append(args, pq.Array(f.Priorities))
+		args = append(args, f.Priorities)
 		clauses = append(clauses, fmt.Sprintf("b.priority=ANY($%d::integer[])", len(args)))
 	}
 	for _, field := range []struct {
@@ -191,7 +191,7 @@ OR position(decode($4,'hex') IN convert_to(translate(p.name||'#'||i.number::text
 			return "", nil, corestore.ErrInvalidPage
 		}
 		if len(field.values) > 0 {
-			args = append(args, field.kind, pq.Array(field.values))
+			args = append(args, field.kind, field.values)
 			clauses = append(clauses, fmt.Sprintf("EXISTS(SELECT 1 FROM native_board_filter_values f WHERE f.organization_id=b.organization_id AND f.project_id=b.project_id AND f.work_item_id=b.work_item_id AND f.kind=$%d AND f.value=ANY($%d::text[]))", len(args)-1, len(args)))
 		}
 	}
@@ -261,7 +261,7 @@ func (s *session) BoardPage(ctx context.Context, f viewstore.BoardSelection) ([]
 	projectedWorkOrder := false
 	if f.WorkOrder && !searchRanked {
 		var pending bool
-		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND issue_number IS NULL)`, s.organization, f.ProjectID).Scan(&pending); err != nil {
+		if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND issue_number IS NULL)`, s.organization, f.ProjectID).Scan(&pending); err != nil {
 			return nil, mapError(ctx, err)
 		}
 		projectedWorkOrder = !pending
@@ -312,7 +312,7 @@ func (s *session) BoardPage(ctx context.Context, f viewstore.BoardSelection) ([]
 	} else if f.WorkOrder && !projectedWorkOrder {
 		from += " JOIN issues i ON i.organization_id=b.organization_id AND i.project_id=b.project_id AND i.native_id=b.work_item_id"
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT "+projection+from+" WHERE "+where+" ORDER BY "+order+fmt.Sprintf(" LIMIT $%d", len(args)), args...)
+	rows, err := s.db.Query(ctx, "SELECT "+projection+from+" WHERE "+where+" ORDER BY "+order+fmt.Sprintf(" LIMIT $%d", len(args)), args...)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -349,7 +349,7 @@ func (s *session) BoardLanes(ctx context.Context, f viewstore.BoardSelection, no
 	statement := "SELECT b.state,count(*),count(*) FILTER (WHERE " + current + ") FROM native_board_items b WHERE " + where + " GROUP BY b.state ORDER BY b.state LIMIT 201"
 	filtered := f.SearchText != "" || f.WorkItemIDs != nil || f.Reporter || f.ActorPrincipalID != "" || f.Fingerprint != "" || len(f.Types)+len(f.Verification)+len(f.Labels)+len(f.Assignees)+len(f.Priorities) > 0 || f.CreatedAfter != nil || f.CreatedBefore != nil || f.UpdatedAfter != nil || f.NativeCreatedAfter != nil || f.NativeCreatedBefore != nil || f.NativeUpdatedAfter != nil || f.CompletedFrom != nil || f.CompletedTo != nil
 	if !filtered && f.ExcludeWorkspace {
-		if err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT workspace_counted)", s.organization, f.ProjectID).Scan(&filtered); err != nil {
+		if err := s.db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT workspace_counted)", s.organization, f.ProjectID).Scan(&filtered); err != nil {
 			return nil, mapError(ctx, err)
 		}
 	}
@@ -365,7 +365,7 @@ func (s *session) BoardLanes(ctx context.Context, f viewstore.BoardSelection, no
 		}
 		statement = "SELECT c.state,sum(" + total + ")::bigint,sum((SELECT count(*) FROM native_board_items b WHERE b.organization_id=c.organization_id AND b.project_id=c.project_id AND b.archived=c.archived AND b.state=c.state AND " + current + "))::bigint FROM native_board_counts c WHERE " + counterWhere + " GROUP BY c.state ORDER BY c.state LIMIT 201"
 	}
-	rows, err := s.db.QueryContext(ctx, statement, args...)
+	rows, err := s.db.Query(ctx, statement, args...)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -386,8 +386,8 @@ func (s *session) BoardLanes(ctx context.Context, f viewstore.BoardSelection, no
 
 func (s *session) BoardSequence(ctx context.Context, project tracker.ProjectID) (viewstore.BoardSequence, error) {
 	var result viewstore.BoardSequence
-	err := s.db.QueryRowContext(ctx, "SELECT sequence,replay_floor FROM native_board_sequences WHERE organization_id=$1 AND project_id=$2", s.organization, project).Scan(&result.Sequence, &result.ReplayFloor)
-	if err == sql.ErrNoRows {
+	err := s.db.QueryRow(ctx, "SELECT sequence,replay_floor FROM native_board_sequences WHERE organization_id=$1 AND project_id=$2", s.organization, project).Scan(&result.Sequence, &result.ReplayFloor)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return result, nil
 	}
 	return result, mapError(ctx, err)
@@ -397,7 +397,7 @@ func (s *session) BoardDeltas(ctx context.Context, project tracker.ProjectID, af
 	if err := checkPage(limit); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT sequence,work_item_id,previous_object_key,previous_sha256,previous_bytes,previous_content_bytes,current_object_key,current_sha256,current_bytes,current_content_bytes FROM native_board_deltas WHERE organization_id=$1 AND project_id=$2 AND sequence>$3 ORDER BY sequence LIMIT $4`, s.organization, project, after, limit)
+	rows, err := s.db.Query(ctx, `SELECT sequence,work_item_id,previous_object_key,previous_sha256,previous_bytes,previous_content_bytes,current_object_key,current_sha256,current_bytes,current_content_bytes FROM native_board_deltas WHERE organization_id=$1 AND project_id=$2 AND sequence>$3 ORDER BY sequence LIMIT $4`, s.organization, project, after, limit)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -456,7 +456,7 @@ func (s *session) BoardClosedWindows(ctx context.Context, selection viewstore.Bo
 		args = append(args, start)
 		aggregates = append(aggregates, fmt.Sprintf("count(*) FILTER (WHERE b.closed_at >= $%d)", len(args)))
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT b.state,"+strings.Join(aggregates, ",")+" FROM native_board_items b WHERE "+where+" GROUP BY b.state ORDER BY b.state LIMIT 201", args...)
+	rows, err := s.db.Query(ctx, "SELECT b.state,"+strings.Join(aggregates, ",")+" FROM native_board_items b WHERE "+where+" GROUP BY b.state ORDER BY b.state LIMIT 201", args...)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -486,7 +486,7 @@ func (s *session) BoardClosedWindows(ctx context.Context, selection viewstore.Bo
 
 func (s *session) BoardAccessRevisions(ctx context.Context, credential, user string) ([3]int64, error) {
 	var revisions [3]int64
-	err := s.db.QueryRowContext(ctx, `SELECT
+	err := s.db.QueryRow(ctx, `SELECT
  coalesce((SELECT revision FROM native_board_access_revisions WHERE organization_id=$1 AND subject_kind='organization' AND subject_id=$1),0),
  coalesce((SELECT revision FROM native_board_access_revisions WHERE organization_id=$1 AND subject_kind='token' AND subject_id=$2),0),
  coalesce((SELECT revision FROM native_board_access_revisions WHERE organization_id=$1 AND subject_kind='member' AND subject_id=$3),0)`, s.organization, credential, user).Scan(&revisions[0], &revisions[1], &revisions[2])
@@ -495,6 +495,6 @@ func (s *session) BoardAccessRevisions(ctx context.Context, credential, user str
 
 func (s *session) BoardAttemptCount(ctx context.Context, issueID int64) (int64, error) {
 	var count int64
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM native_attempts WHERE organization_id=$1 AND issue_id=$2`, s.organization, issueID).Scan(&count)
+	err := s.db.QueryRow(ctx, `SELECT count(*) FROM native_attempts WHERE organization_id=$1 AND issue_id=$2`, s.organization, issueID).Scan(&count)
 	return count, mapError(ctx, err)
 }

@@ -34,7 +34,7 @@ type ListSummaryProjectsRow struct {
 }
 
 func (q *Queries) ListSummaryProjects(ctx context.Context, arg ListSummaryProjectsParams) ([]ListSummaryProjectsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listSummaryProjects, arg.OrganizationID, arg.UserID, arg.PageLimit)
+	rows, err := q.db.Query(ctx, listSummaryProjects, arg.OrganizationID, arg.UserID, arg.PageLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -46,9 +46,6 @@ func (q *Queries) ListSummaryProjects(ctx context.Context, arg ListSummaryProjec
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

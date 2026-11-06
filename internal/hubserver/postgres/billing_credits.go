@@ -2,9 +2,11 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -58,7 +60,7 @@ func (s *session) PostBillingCredit(ctx context.Context, row billingstore.Credit
 		}
 		return false, nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return false, mapError(ctx, err)
 	}
 	err = s.queries.CreateBillingCreditTransaction(ctx, pgquery.CreateBillingCreditTransactionParams{OrganizationID: s.organization, Mode: row.Mode, Source: row.Source, AmountMicros: row.AmountMicros, IncludedAmountMicros: row.IncludedAmountMicros, Kind: row.Kind, Actor: row.Actor, RecordedAt: row.RecordedAt})
@@ -105,7 +107,7 @@ func (s *session) PostBillingUsageCredit(ctx context.Context, period billingstor
 		}
 		return false, nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, corestore.ErrNotFound) {
+	if !errors.Is(err, pgx.ErrNoRows) && !errors.Is(err, corestore.ErrNotFound) {
 		return false, err
 	}
 	if period.AllowanceMicros > 0 {
@@ -125,13 +127,13 @@ func (s *session) BillingCreditTransactionBySource(ctx context.Context, mode, so
 	return creditTransaction(row.OrganizationID, row.ID, row.Mode, row.Source, row.AmountMicros, row.IncludedAmountMicros, row.Kind, row.Actor, row.RecordedAt, row.BindingID, row.CustomerOwned, row.ObjectKey, row.Sha256, row.CompressedBytes, row.ContentBytes, row.Codec, row.FormatVersion, row.ReferenceKind, row.Retention), nil
 }
 
-func creditTransaction(organization tracker.OrganizationID, id int64, mode, source string, amount, included int64, kind, actor string, recordedAt time.Time, bindingID *string, customerOwned sql.NullBool, key, digest *string, compressed, content sql.NullInt64, codec *string, version sql.NullInt32, referenceKind, retention *string) billingstore.CreditTransaction {
+func creditTransaction(organization tracker.OrganizationID, id int64, mode, source string, amount, included int64, kind, actor string, recordedAt time.Time, bindingID *string, customerOwned pgtype.Bool, key, digest *string, compressed, content pgtype.Int8, codec *string, version pgtype.Int4, referenceKind, retention *string) billingstore.CreditTransaction {
 	result := billingstore.CreditTransaction{OrganizationID: organization, ID: id, Mode: mode, Source: source, AmountMicros: amount, IncludedAmountMicros: included, Kind: kind, Actor: actor, RecordedAt: recordedAt}
 	result.ReasonReference = creditReference(bindingID, customerOwned, key, digest, compressed, content, codec, version, referenceKind, retention)
 	return result
 }
 
-func creditReference(bindingID *string, customerOwned sql.NullBool, key, digest *string, compressed, content sql.NullInt64, codec *string, version sql.NullInt32, referenceKind, retention *string) billingstore.AuditReference {
+func creditReference(bindingID *string, customerOwned pgtype.Bool, key, digest *string, compressed, content pgtype.Int8, codec *string, version pgtype.Int4, referenceKind, retention *string) billingstore.AuditReference {
 	if key == nil {
 		return billingstore.AuditReference{}
 	}
@@ -147,7 +149,7 @@ func stringValue(value *string) string {
 
 func (s *session) BillingCreditUsage(ctx context.Context, mode string, start, end time.Time) (int64, error) {
 	var amount int64
-	err := s.db.QueryRowContext(ctx, `SELECT coalesce(-sum(amount_micros),0) FROM ai_credit_transactions WHERE organization_id=$1 AND mode=$2 AND kind='usage' AND recorded_at >= $3 AND recorded_at < $4`, s.organization, mode, start, end).Scan(&amount)
+	err := s.db.QueryRow(ctx, `SELECT coalesce(-sum(amount_micros),0) FROM ai_credit_transactions WHERE organization_id=$1 AND mode=$2 AND kind='usage' AND recorded_at >= $3 AND recorded_at < $4`, s.organization, mode, start, end).Scan(&amount)
 	return amount, mapError(ctx, err)
 }
 
@@ -186,12 +188,12 @@ func (s *session) BillingCreditHistory(ctx context.Context, mode string, snapsho
 		return snapshot, 0, nil, err
 	}
 	if snapshot == 0 {
-		if err := s.db.QueryRowContext(ctx, `SELECT coalesce(max(id),0) FROM ai_credit_transactions WHERE organization_id=$1 AND mode=$2`, s.organization, mode).Scan(&snapshot); err != nil {
+		if err := s.db.QueryRow(ctx, `SELECT coalesce(max(id),0) FROM ai_credit_transactions WHERE organization_id=$1 AND mode=$2`, s.organization, mode).Scan(&snapshot); err != nil {
 			return 0, 0, nil, mapError(ctx, err)
 		}
 	}
 	var total int64
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM (
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM (
  SELECT CASE WHEN kind='usage' THEN date_trunc('day',recorded_at AT TIME ZONE 'UTC')::text ELSE 'id:'||id::text END AS group_key,kind
  FROM ai_credit_transactions WHERE organization_id=$1 AND mode=$2 AND id<=$3 AND recorded_at >= to_timestamp($4::double precision/1000000) AND recorded_at < to_timestamp($5::double precision/1000000)
  GROUP BY group_key,kind
@@ -208,7 +210,7 @@ func (s *session) BillingCreditHistory(ctx context.Context, mode string, snapsho
 	LEFT JOIN ai_credit_reason_references r ON r.organization_id=$1 AND r.mode=$2 AND r.source=g.source
 	WHERE g.recorded_at < to_timestamp($6::double precision/1000000) OR (g.recorded_at = to_timestamp($6::double precision/1000000) AND g.row_id < $7)
 	ORDER BY g.recorded_at DESC,g.row_id DESC LIMIT $8`
-	rows, err := s.db.QueryContext(ctx, query, s.organization, mode, snapshot, from, to, beforeAt, beforeID, limit)
+	rows, err := s.db.Query(ctx, query, s.organization, mode, snapshot, from, to, beforeAt, beforeID, limit)
 	if err != nil {
 		return snapshot, total, nil, mapError(ctx, err)
 	}
@@ -216,10 +218,10 @@ func (s *session) BillingCreditHistory(ctx context.Context, mode string, snapsho
 	result := make([]billingstore.CreditHistoryEntry, 0, limit)
 	for rows.Next() {
 		var row billingstore.CreditHistoryEntry
-		var bindingID, objectKey, digest, codec, referenceKind, retention sql.NullString
-		var customerOwned sql.NullBool
-		var compressed, content sql.NullInt64
-		var version sql.NullInt32
+		var bindingID, objectKey, digest, codec, referenceKind, retention pgtype.Text
+		var customerOwned pgtype.Bool
+		var compressed, content pgtype.Int8
+		var version pgtype.Int4
 		if err := rows.Scan(&row.ID, &row.AmountMicros, &row.IncludedAmountMicros, &row.Kind, &row.Actor, &bindingID, &customerOwned, &objectKey, &digest, &compressed, &content, &codec, &version, &referenceKind, &retention, &row.RecordedAt, &row.Turns); err != nil {
 			return snapshot, total, nil, mapError(ctx, err)
 		}
@@ -277,11 +279,11 @@ func (s *session) BillingCreditExport(ctx context.Context, mode string, snapshot
 		return snapshot, nil, err
 	}
 	if snapshot == 0 {
-		if err := s.db.QueryRowContext(ctx, `SELECT coalesce(max(id),0) FROM ai_credit_transactions WHERE organization_id=$1 AND mode=$2`, s.organization, mode).Scan(&snapshot); err != nil {
+		if err := s.db.QueryRow(ctx, `SELECT coalesce(max(id),0) FROM ai_credit_transactions WHERE organization_id=$1 AND mode=$2`, s.organization, mode).Scan(&snapshot); err != nil {
 			return 0, nil, mapError(ctx, err)
 		}
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT t.id,t.recorded_at,t.kind,
+	rows, err := s.db.Query(ctx, `SELECT t.id,t.recorded_at,t.kind,
  CASE WHEN t.kind='usage' THEN substr(t.source,7) ELSE '' END,
  CASE WHEN t.kind='usage' THEN u.input+u.output ELSE NULL END,t.amount_micros,t.included_amount_micros
  FROM ai_credit_transactions t LEFT JOIN conversation_usage u ON t.kind='usage' AND left(t.source,6)='usage:' AND u.organization_id=t.organization_id AND u.turn_id=substr(t.source,7)

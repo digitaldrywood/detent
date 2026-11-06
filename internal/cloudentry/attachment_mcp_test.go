@@ -103,7 +103,7 @@ func entryMCPClient(t *testing.T, browser *browser, token, protocol, path string
 func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spacesFixture, browser, anonymous *browser, project, otherProject, writeToken, readToken, foreignToken string, record attachment.Metadata, content string) {
 	t.Helper()
 	personal := createTestAccessKey(t, browser, "project", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{project}}}}, "")
-	if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE access_keys SET permission='read' WHERE id=?", personal.ID); err != nil {
+	if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE platform.access_keys SET permission='read' WHERE id=$1", personal.ID); err != nil {
 		t.Fatal(err)
 	}
 	selector := map[string]any{"project_id": project, "attachment_id": record.ID}
@@ -403,7 +403,7 @@ func TestAttachmentEntryKeyUploads(t *testing.T) {
 		otherPersonal := createTestAccessKey(t, owner, "project", otherOrganizations, "")
 		otherService := createTestAccessKey(t, owner, "selected", otherOrganizations, "org_alpha")
 		readOnly := createTestAccessKey(t, owner, "project", organizations, "")
-		if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE access_keys SET permission='read' WHERE id IN (?,?)", readOnly.ID, readOnlyService.ID); err != nil {
+		if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE platform.access_keys SET permission='read' WHERE id IN ($1,$2)", readOnly.ID, readOnlyService.ID); err != nil {
 			t.Fatal(err)
 		}
 		for _, credential := range []struct {

@@ -15,8 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/labstack/echo/v4"
-	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -46,8 +47,8 @@ func TestOperatorAuthorizationFailures(t *testing.T) {
 		{"deadline", fmt.Errorf("read: %w", context.DeadlineExceeded), 503, "service_unavailable"},
 		{"nested authorization", &operatortool.AuthorizationError{Stage: "check", Cause: context.DeadlineExceeded}, 503, "service_unavailable"},
 		{"serialization", corestore.ErrSerializationFailure, 503, "service_unavailable"},
-		{"pool", &pq.Error{Code: "53300", Message: "customer-secret"}, 503, "service_unavailable"},
-		{"connection", &pq.Error{Code: "08006", Message: "customer-secret"}, 503, "service_unavailable"},
+		{"pool", &pgconn.PgError{Code: "53300", Message: "customer-secret"}, 503, "service_unavailable"},
+		{"connection", &pgconn.PgError{Code: "08006", Message: "customer-secret"}, 503, "service_unavailable"},
 		{"closed connection", sql.ErrConnDone, 503, "service_unavailable"},
 		{"bad connection", driver.ErrBadConn, 503, "service_unavailable"},
 		{"unknown", errors.New("customer-secret"), 503, "service_unavailable"},

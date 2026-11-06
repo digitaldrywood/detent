@@ -65,7 +65,7 @@ func (r *Registry) Register(ctx context.Context, organization Organization) (boo
 	return r.postgresRegister(ctx, organization)
 }
 
-const organizationSelect = "SELECT slug,id,provider_id,name,state,endpoint,generation,managed,creator_subject,creator_email,step,attempts,next_attempt_at,error_code,error_detail,checkout_price,updated_at FROM organizations"
+const organizationSelect = "SELECT slug,id,provider_id,name,state,endpoint,generation,managed,creator_subject,creator_email,step,attempts,next_attempt_at,error_code,error_detail,checkout_price,updated_at FROM platform.organizations"
 
 type rowScanner interface {
 	Scan(...any) error
@@ -90,14 +90,14 @@ func (r *Registry) Organization(ctx context.Context, id string) (Organization, e
 	if !ValidOrganizationID(id) {
 		return Organization{}, ErrOrganizationNotFound
 	}
-	return scanOrganization(r.store.db.QueryRowContext(ctx, organizationSelect+" WHERE id = ?", id))
+	return scanOrganization(r.store.db.QueryRowContext(ctx, organizationSelect+" WHERE id = $1", id))
 }
 
 func (r *Registry) ByProvider(ctx context.Context, providerID string) (Organization, error) {
 	if !safeID(providerID) {
 		return Organization{}, ErrOrganizationNotFound
 	}
-	return scanOrganization(r.store.db.QueryRowContext(ctx, organizationSelect+" WHERE provider_id = ?", providerID))
+	return scanOrganization(r.store.db.QueryRowContext(ctx, organizationSelect+" WHERE provider_id = $1", providerID))
 }
 
 func (r *Registry) List(ctx context.Context) (_ []Organization, resultErr error) {

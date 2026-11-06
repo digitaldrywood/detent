@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -119,7 +119,7 @@ CREATE TRIGGER count_search_publication_writes AFTER INSERT OR UPDATE OR DELETE 
 						t.Fatal("changed punctuation is not searchable")
 					}
 					var stale int64
-					if err := f.admin.QueryRowContext(t.Context(), `SELECT count(*) FROM search_postings WHERE organization_id=$1 AND document_id=$2 AND term=ANY($3::text[]) AND cardinality(literal_positions)>0`, org, d.ID, pq.Array(staleLiterals)).Scan(&stale); err != nil {
+					if err := f.admin.QueryRowContext(t.Context(), `SELECT count(*) FROM search_postings WHERE organization_id=$1 AND document_id=$2 AND term=ANY($3::text[]) AND cardinality(literal_positions)>0`, org, d.ID, staleLiterals).Scan(&stale); err != nil {
 						t.Fatal(err)
 					}
 					if len(staleLiterals) == 0 || stale != 0 {
@@ -141,7 +141,7 @@ func TestSearchPublicationAllowsCurrentWritesDuringPostingIO(t *testing.T) {
 				if err := f.admin.QueryRowContext(t.Context(), `SELECT current_database()`).Scan(&database); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.admin.ExecContext(t.Context(), "ALTER DATABASE "+pq.QuoteIdentifier(database)+" CONNECTION LIMIT 5"); err != nil {
+				if _, err := f.admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{database}.Sanitize()+" CONNECTION LIMIT 5"); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := f.admin.ExecContext(t.Context(), `UPDATE issues SET archived=false,actor_principal_id='reporter_a' WHERE organization_id=$1 AND native_id='wi_first_1'`, org); err != nil {

@@ -42,19 +42,19 @@ func TestRequestMetricsRowSecurity(t *testing.T) {
 				t.Run("scope_"+scope.org, func(t *testing.T) {
 					tx := tenantTx(t, runtime, pool, scope.org)
 					var count int
-					if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM "+tc.table).Scan(&count); err != nil {
+					if err := tx.QueryRow(t.Context(), "SELECT count(*) FROM "+tc.table).Scan(&count); err != nil {
 						t.Fatal(err)
 					}
 					if count != scope.want {
 						t.Fatalf("unfiltered count = %d, want %d", count, scope.want)
 					}
-					if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM "+tc.table+" WHERE organization_id='org_foreign'").Scan(&count); err != nil {
+					if err := tx.QueryRow(t.Context(), "SELECT count(*) FROM "+tc.table+" WHERE organization_id='org_foreign'").Scan(&count); err != nil {
 						t.Fatal(err)
 					}
 					if count != 0 {
 						t.Fatal("foreign predicate escaped RLS")
 					}
-					if err := tx.Rollback(); err != nil {
+					if err := tx.Rollback(t.Context()); err != nil {
 						t.Fatal(err)
 					}
 				})
@@ -64,25 +64,22 @@ func TestRequestMetricsRowSecurity(t *testing.T) {
 					tx := tenantTx(t, runtime, pool, "org_first")
 					switch op {
 					case "insert":
-						_, err := tx.ExecContext(t.Context(), fmt.Sprintf("INSERT INTO %s(organization_id,%s) SELECT 'org_foreign',%s FROM %s LIMIT 1", tc.table, tc.columns, tc.columns, tc.table))
+						_, err := tx.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s(organization_id,%s) SELECT 'org_foreign',%s FROM %s LIMIT 1", tc.table, tc.columns, tc.columns, tc.table))
 						requireSQLState(t, err, "42501")
 					case "update":
-						_, err := tx.ExecContext(t.Context(), "UPDATE "+tc.table+" SET organization_id='org_foreign'")
+						_, err := tx.Exec(t.Context(), "UPDATE "+tc.table+" SET organization_id='org_foreign'")
 						requireSQLState(t, err, "42501")
 					case "delete":
-						result, err := tx.ExecContext(t.Context(), "DELETE FROM "+tc.table+" WHERE organization_id='org_second'")
+						result, err := tx.Exec(t.Context(), "DELETE FROM "+tc.table+" WHERE organization_id='org_second'")
 						if err != nil {
 							t.Fatal(err)
 						}
-						count, err := result.RowsAffected()
-						if err != nil {
-							t.Fatal(err)
-						}
+						count := result.RowsAffected()
 						if count != 0 {
 							t.Errorf("deleted %d foreign rows", count)
 						}
 					}
-					if err := tx.Rollback(); err != nil {
+					if err := tx.Rollback(t.Context()); err != nil {
 						t.Fatal(err)
 					}
 				})
@@ -113,9 +110,9 @@ func TestRequestMetricsTypedConstraints(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tx := tenantTx(t, runtime, pool, "org_first")
-			_, err := tx.ExecContext(t.Context(), tc.query)
+			_, err := tx.Exec(t.Context(), tc.query)
 			requireSQLState(t, err, tc.state)
-			if err := tx.Rollback(); err != nil {
+			if err := tx.Rollback(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -129,10 +126,10 @@ func TestRequestMetricsMergeRollsBackHourFailure(t *testing.T) {
 	seedMetric(t, pool, "org_first", metricsstore.Hour, m)
 	runtime := runtimeFor(t, pool, pool)
 	tx := tenantTx(t, runtime, pool, "org_first")
-	if _, err := tx.ExecContext(t.Context(), `UPDATE request_hours SET count=9223372036854775807`); err != nil {
+	if _, err := tx.Exec(t.Context(), `UPDATE request_hours SET count=9223372036854775807`); err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	err := r.MergeRequestMetrics(t.Context(), "org_first", now, []metricsstore.Metric{metricSample(now, "GET /first", "first_caller"), m})
@@ -144,13 +141,13 @@ func TestRequestMetricsMergeRollsBackHourFailure(t *testing.T) {
 	for _, table := range []string{"request_metric_windows", "request_metric_callers"} {
 		tx := tenantTx(t, runtime, pool, "org_first")
 		var count int
-		if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&count); err != nil {
+		if err := tx.QueryRow(t.Context(), "SELECT count(*) FROM "+table).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count != 0 {
 			t.Errorf("%s writes survived failure", table)
 		}
-		if err := tx.Rollback(); err != nil {
+		if err := tx.Rollback(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 	}

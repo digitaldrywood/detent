@@ -3,12 +3,13 @@ package postgres
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
@@ -78,7 +79,7 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 		attempt, err := s.Attempt(ctx, event.ID)
 		return attempt, err == nil, err
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return leasestore.Attempt{}, false, mapError(ctx, err)
 	}
 	now, err := s.queries.LeaseTime(ctx)
@@ -117,7 +118,7 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 			UsageCorrection: event.UsageCorrection, Now: now,
 		})
 	}
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
 	}
 	if err != nil {

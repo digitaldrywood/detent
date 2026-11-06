@@ -14,7 +14,7 @@ func (s *session) IsWorkspaceWorkItem(ctx context.Context, project tracker.Proje
 		return false, claimstore.ErrInvalidWorkspaceItem
 	}
 	var found bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
+	err := s.db.QueryRow(ctx, `SELECT EXISTS(
 		SELECT 1 FROM workspace_items
 		WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3
 	)`, s.organization, project, item).Scan(&found)
@@ -28,22 +28,19 @@ func (s *session) PutWorkspaceItem(ctx context.Context, item claimstore.Workspac
 	if item.ProjectID == "" || item.WorkItemID == "" || item.WorkspaceID == "" || item.CreatedAt.IsZero() || item.ClosedAt != nil && item.ClosedAt.Before(item.CreatedAt) {
 		return claimstore.ErrInvalidWorkspaceItem
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO workspace_items
+	result, err := s.db.Exec(ctx, `INSERT INTO workspace_items
 		(organization_id,project_id,work_item_id,workspace_id,created_at,closed_at)
 		VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(organization_id,work_item_id) DO NOTHING`,
 		s.organization, item.ProjectID, item.WorkItemID, item.WorkspaceID, item.CreatedAt.UTC(), item.ClosedAt)
 	if err != nil {
 		return mapError(ctx, err)
 	}
-	inserted, err := result.RowsAffected()
-	if err != nil {
-		return mapError(ctx, err)
-	}
+	inserted := result.RowsAffected()
 	if inserted != 0 {
 		return nil
 	}
 	var current claimstore.WorkspaceItem
-	err = s.db.QueryRowContext(ctx, `SELECT organization_id,project_id,work_item_id,workspace_id,created_at,closed_at
+	err = s.db.QueryRow(ctx, `SELECT organization_id,project_id,work_item_id,workspace_id,created_at,closed_at
 		FROM workspace_items WHERE organization_id=$1 AND work_item_id=$2`, s.organization, item.WorkItemID).
 		Scan(&current.OrganizationID, &current.ProjectID, &current.WorkItemID, &current.WorkspaceID, &current.CreatedAt, &current.ClosedAt)
 	if err != nil {
@@ -59,15 +56,12 @@ func (s *session) CloseWorkspaceItem(ctx context.Context, project tracker.Projec
 	if project == "" || item == "" || at.IsZero() {
 		return claimstore.ErrInvalidWorkspaceItem
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE workspace_items SET closed_at=COALESCE(closed_at,$4)
+	result, err := s.db.Exec(ctx, `UPDATE workspace_items SET closed_at=COALESCE(closed_at,$4)
 		WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3`, s.organization, project, item, at.UTC())
 	if err != nil {
 		return mapError(ctx, err)
 	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return mapError(ctx, err)
-	}
+	changed := result.RowsAffected()
 	if changed == 0 {
 		return corestore.ErrNotFound
 	}

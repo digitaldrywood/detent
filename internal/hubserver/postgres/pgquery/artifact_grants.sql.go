@@ -26,7 +26,7 @@ type ArtifactReadGrantDeleteExpiredParams struct {
 }
 
 func (q *Queries) ArtifactReadGrantDeleteExpired(ctx context.Context, arg ArtifactReadGrantDeleteExpiredParams) error {
-	_, err := q.db.ExecContext(ctx, artifactReadGrantDeleteExpired,
+	_, err := q.db.Exec(ctx, artifactReadGrantDeleteExpired,
 		arg.OrganizationID,
 		arg.PrincipalID,
 		arg.Now,
@@ -62,7 +62,7 @@ type ArtifactReadGrantGetRow struct {
 }
 
 func (q *Queries) ArtifactReadGrantGet(ctx context.Context, arg ArtifactReadGrantGetParams) (ArtifactReadGrantGetRow, error) {
-	row := q.db.QueryRowContext(ctx, artifactReadGrantGet, arg.OrganizationID, arg.ProjectID, arg.TokenHash)
+	row := q.db.QueryRow(ctx, artifactReadGrantGet, arg.OrganizationID, arg.ProjectID, arg.TokenHash)
 	var i ArtifactReadGrantGetRow
 	err := row.Scan(
 		&i.OrganizationID,
@@ -97,7 +97,7 @@ type ArtifactReadGrantInsertParams struct {
 }
 
 func (q *Queries) ArtifactReadGrantInsert(ctx context.Context, arg ArtifactReadGrantInsertParams) error {
-	_, err := q.db.ExecContext(ctx, artifactReadGrantInsert,
+	_, err := q.db.Exec(ctx, artifactReadGrantInsert,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.TokenHash,
@@ -123,7 +123,7 @@ type ArtifactReadGrantLiveCountParams struct {
 }
 
 func (q *Queries) ArtifactReadGrantLiveCount(ctx context.Context, arg ArtifactReadGrantLiveCountParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, artifactReadGrantLiveCount,
+	row := q.db.QueryRow(ctx, artifactReadGrantLiveCount,
 		arg.OrganizationID,
 		arg.PrincipalID,
 		arg.ExpiresAt,
@@ -147,9 +147,9 @@ type ArtifactReadGrantPruneExpiredParams struct {
 }
 
 func (q *Queries) ArtifactReadGrantPruneExpired(ctx context.Context, arg ArtifactReadGrantPruneExpiredParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, artifactReadGrantPruneExpired, arg.OrganizationID, arg.Now, arg.BatchLimit)
+	result, err := q.db.Exec(ctx, artifactReadGrantPruneExpired, arg.OrganizationID, arg.Now, arg.BatchLimit)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }

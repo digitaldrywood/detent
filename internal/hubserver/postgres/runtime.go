@@ -2,30 +2,35 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
-	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-var ErrTenantRequired = errors.New("authenticated organization is required")
+var ErrTenantRequired = pgtransport.ErrTenantRequired
 var ErrRuntimeRole = errors.New("PostgreSQL runtime role is not tenant restricted")
 
 type Runtime struct {
-	reader *sql.DB
-	writer *sql.DB
+	reader *pgxpool.Pool
+	writer *pgxpool.Pool
+	pools  *pgtransport.Pools
 }
 
-func NewRuntime(ctx context.Context, reader, writer *sql.DB) (*Runtime, error) {
-	for _, pool := range []*sql.DB{reader, writer} {
+func NewRuntime(ctx context.Context, reader, writer *pgxpool.Pool) (*Runtime, error) {
+	for _, pool := range []*pgxpool.Pool{reader, writer} {
 		if pool == nil {
 			return nil, ErrRuntimeRole
 		}
+		if err := pgtransport.ValidatePool(pool); err != nil {
+			return nil, err
+		}
 		var allowed bool
-		err := pool.QueryRowContext(ctx, `
+		err := pool.QueryRow(ctx, `
 			SELECT current_setting('server_version_num')::integer / 10000 IN (17, 18)
 			AND current_setting('row_security') = 'on'
 			AND COALESCE(current_setting('detent.organization_id', true), '') = ''
@@ -103,33 +108,13 @@ func NewRuntime(ctx context.Context, reader, writer *sql.DB) (*Runtime, error) {
 			return nil, ErrRuntimeRole
 		}
 	}
-	return &Runtime{reader: reader, writer: writer}, nil
+	pools, err := pgtransport.Adopt(reader, writer)
+	if err != nil {
+		return nil, err
+	}
+	return &Runtime{reader: reader, writer: writer, pools: pools}, nil
 }
 
-func (r *Runtime) Begin(ctx context.Context, organization tracker.OrganizationID, options *sql.TxOptions) (*sql.Tx, error) {
-	if strings.TrimSpace(string(organization)) == "" {
-		return nil, ErrTenantRequired
-	}
-	pool := r.writer
-	if options != nil && options.ReadOnly {
-		pool = r.reader
-	}
-	started := time.Now()
-	tx, err := pool.BeginTx(ctx, options)
-	begin := "BEGIN"
-	if options != nil && options.ReadOnly {
-		begin = "BEGIN READ ONLY"
-	}
-	observeStatement(ctx, started, begin)
-	if err != nil {
-		return nil, fmt.Errorf("begin PostgreSQL tenant transaction: %w", err)
-	}
-	if _, err := (timedQueries{DBTX: tx}).ExecContext(ctx, `SELECT set_config('search_path', 'public, pg_catalog', true), set_config('detent.organization_id', $1, true)`, organization); err != nil {
-		rollbackErr := tx.Rollback()
-		if errors.Is(rollbackErr, sql.ErrTxDone) {
-			rollbackErr = nil
-		}
-		return nil, errors.Join(fmt.Errorf("bind PostgreSQL tenant: %w", err), rollbackErr)
-	}
-	return tx, nil
+func (r *Runtime) Begin(ctx context.Context, organization tracker.OrganizationID, options pgtransport.Options) (*pgtransport.Transaction, error) {
+	return r.pools.Begin(ctx, pgtransport.Scope{Organization: organization}, options)
 }

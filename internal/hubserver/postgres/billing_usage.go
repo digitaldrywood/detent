@@ -2,10 +2,11 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"math"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 
@@ -35,7 +36,7 @@ func (s *session) ApplyBillingUsage(ctx context.Context, receipt billingstore.Us
 		}
 		return billingstore.UsageResult{Allowed: true, Used: used}, nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return billingstore.UsageResult{}, mapError(ctx, err)
 	}
 	if used > limit || receipt.Amount > limit-used {
@@ -65,7 +66,7 @@ func (s *session) ApplyBillingUsage(ctx context.Context, receipt billingstore.Us
 
 func (s *session) CollaborationBytes(ctx context.Context) (int64, error) {
 	var used int64
-	err := s.db.QueryRowContext(ctx, `SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes'`, s.organization).Scan(&used)
+	err := s.db.QueryRow(ctx, `SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes'`, s.organization).Scan(&used)
 	if err != nil {
 		return 0, mapError(ctx, err)
 	}
@@ -80,7 +81,7 @@ func (s *session) AdjustCollaborationBytes(ctx context.Context, delta, limit int
 		return billingstore.UsageResult{}, billingstore.ErrInvalidCollaborationBytes
 	}
 	var before int64
-	err := s.db.QueryRowContext(ctx, `SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes' FOR UPDATE`, s.organization).Scan(&before)
+	err := s.db.QueryRow(ctx, `SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes' FOR UPDATE`, s.organization).Scan(&before)
 	if err != nil {
 		return billingstore.UsageResult{}, mapError(ctx, err)
 	}
@@ -94,14 +95,11 @@ func (s *session) AdjustCollaborationBytes(ctx context.Context, delta, limit int
 	if delta == 0 {
 		return billingstore.UsageResult{Allowed: true, Used: before}, nil
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE hosted_usage_counters SET value=$2 WHERE organization_id=$1 AND name='collaboration_bytes'`, s.organization, after)
+	result, err := s.db.Exec(ctx, `UPDATE hosted_usage_counters SET value=$2 WHERE organization_id=$1 AND name='collaboration_bytes'`, s.organization, after)
 	if err != nil {
 		return billingstore.UsageResult{}, mapError(ctx, err)
 	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return billingstore.UsageResult{}, mapError(ctx, err)
-	}
+	rows := result.RowsAffected()
 	if rows != 1 {
 		return billingstore.UsageResult{}, corestore.ErrNotFound
 	}
@@ -112,9 +110,9 @@ func (s *session) PruneRequestBillingUsage(ctx context.Context, cutoff time.Time
 	if cutoff.IsZero() || limit < 1 || limit > 128 {
 		return corestore.ErrInvalidPage
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM hosted_usage_receipts WHERE organization_id=$1 AND receipt_id IN (SELECT receipt_id FROM hosted_usage_receipts WHERE organization_id=$1 AND window_start <= $2 AND metric IN ('http_requests','http_duration_microseconds','http_response_bytes','http_request_bytes','http_request_bytes_known','api_mutations','heartbeats','ingested_events') ORDER BY window_start,receipt_id LIMIT $3)`, s.organization, cutoff, limit); err != nil {
+	if _, err := s.db.Exec(ctx, `DELETE FROM hosted_usage_receipts WHERE organization_id=$1 AND receipt_id IN (SELECT receipt_id FROM hosted_usage_receipts WHERE organization_id=$1 AND window_start <= $2 AND metric IN ('http_requests','http_duration_microseconds','http_response_bytes','http_request_bytes','http_request_bytes_known','api_mutations','heartbeats','ingested_events') ORDER BY window_start,receipt_id LIMIT $3)`, s.organization, cutoff, limit); err != nil {
 		return mapError(ctx, err)
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM hosted_usage_windows WHERE organization_id=$1 AND (window_start,metric) IN (SELECT window_start,metric FROM hosted_usage_windows WHERE organization_id=$1 AND window_start <= $2 AND metric IN ('http_requests','http_duration_microseconds','http_response_bytes','http_request_bytes','http_request_bytes_known','api_mutations','heartbeats','ingested_events') ORDER BY window_start,metric LIMIT $3)`, s.organization, cutoff, limit)
+	_, err := s.db.Exec(ctx, `DELETE FROM hosted_usage_windows WHERE organization_id=$1 AND (window_start,metric) IN (SELECT window_start,metric FROM hosted_usage_windows WHERE organization_id=$1 AND window_start <= $2 AND metric IN ('http_requests','http_duration_microseconds','http_response_bytes','http_request_bytes','http_request_bytes_known','api_mutations','heartbeats','ingested_events') ORDER BY window_start,metric LIMIT $3)`, s.organization, cutoff, limit)
 	return mapError(ctx, err)
 }

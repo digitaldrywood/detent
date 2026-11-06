@@ -80,7 +80,7 @@ func TestBrowserFailure(t *testing.T) {
 				t.Fatalf("body = %q, want %q", recorder.Body.String(), test.body)
 			}
 			var transactions int
-			if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM transactions").Scan(&transactions); err != nil {
+			if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM platform.transactions").Scan(&transactions); err != nil {
 				t.Fatal(err)
 			}
 			if transactions != 0 {

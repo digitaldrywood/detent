@@ -13,7 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+
 	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -37,29 +43,29 @@ type providerBatchProbe struct {
 	failTable  string
 }
 
-func (p *providerBatchProbe) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+func (p *providerBatchProbe) Exec(ctx context.Context, query string, args ...any) (pgconn.CommandTag, error) {
 	p.statements++
 	if strings.HasPrefix(query, "INSERT INTO runner_provider_") {
 		p.inserts++
 		if p.failTable != "" && strings.HasPrefix(query, "INSERT INTO "+p.failTable+" ") {
-			return p.DBTX.ExecContext(ctx, "SELECT 1/0")
+			return p.DBTX.Exec(ctx, "SELECT 1/0")
 		}
 	}
-	result, err := p.DBTX.ExecContext(ctx, query, args...)
+	result, err := p.DBTX.Exec(ctx, query, args...)
 	if err == nil && (strings.HasPrefix(query, "INSERT INTO runner_") || strings.HasPrefix(query, "DELETE FROM runner_")) {
-		n, _ := result.RowsAffected()
+		n := result.RowsAffected()
 		p.mutations += n
 	}
 	return result, err
 }
 
-func (p *providerBatchProbe) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+func (p *providerBatchProbe) Query(ctx context.Context, query string, args ...any) (pgx.Rows, error) {
 	p.statements++
-	return p.DBTX.QueryContext(ctx, query, args...)
+	return p.DBTX.Query(ctx, query, args...)
 }
-func (p *providerBatchProbe) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+func (p *providerBatchProbe) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
 	p.statements++
-	return p.DBTX.QueryRowContext(ctx, query, args...)
+	return p.DBTX.QueryRow(ctx, query, args...)
 }
 
 func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
@@ -92,8 +98,8 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 	})
 	admin := fixture.Database(t)
 	name, password := "example_"+strings.ToLower(rand.Text()), rand.Text()
-	quoted := pq.QuoteIdentifier(name)
-	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(password)); err != nil {
+	quoted := pgx.Identifier{name}.Sanitize()
+	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(password)); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -110,7 +116,13 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), "GRANT detent_runtime_v2 TO "+quoted); err != nil {
 		t.Fatal(err)
 	}
-	pool := fixture.OpenRole(t, admin, name, password)
+	native := fixture.NativeConfig(t, admin, name, password)
+	native.MaxConns = 3
+	pool, err := pgxpool.NewWithConfig(t.Context(), native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
 	repository, err := NewRepository(t.Context(), pool, PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +172,7 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 			return nil
 		})
 		if failTable != "" {
-			var pgError *pq.Error
+			var pgError *pgconn.PgError
 			if !errors.As(err, &pgError) || pgError.Code != "22012" {
 				t.Fatalf("injected PostgreSQL division error: %v", err)
 			}

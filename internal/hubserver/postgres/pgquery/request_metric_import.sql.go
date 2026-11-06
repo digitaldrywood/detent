@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/lib/pq"
 )
 
 const advanceRequestMetricImport = `-- name: AdvanceRequestMetricImport :exec
@@ -32,7 +31,7 @@ type AdvanceRequestMetricImportParams struct {
 }
 
 func (q *Queries) AdvanceRequestMetricImport(ctx context.Context, arg AdvanceRequestMetricImportParams) error {
-	_, err := q.db.ExecContext(ctx, advanceRequestMetricImport,
+	_, err := q.db.Exec(ctx, advanceRequestMetricImport,
 		arg.Stage,
 		arg.AfterTime,
 		arg.AfterRoute,
@@ -56,7 +55,7 @@ type CountImportedRequestMetricCallerParams struct {
 }
 
 func (q *Queries) CountImportedRequestMetricCaller(ctx context.Context, arg CountImportedRequestMetricCallerParams) error {
-	_, err := q.db.ExecContext(ctx, countImportedRequestMetricCaller, arg.OrganizationID, arg.Minute)
+	_, err := q.db.Exec(ctx, countImportedRequestMetricCaller, arg.OrganizationID, arg.Minute)
 	return err
 }
 
@@ -77,7 +76,7 @@ type ImportRequestDayParams struct {
 }
 
 func (q *Queries) ImportRequestDay(ctx context.Context, arg ImportRequestDayParams) error {
-	_, err := q.db.ExecContext(ctx, importRequestDay,
+	_, err := q.db.Exec(ctx, importRequestDay,
 		arg.OrganizationID,
 		arg.Day,
 		arg.Route,
@@ -107,7 +106,7 @@ type ImportRequestHourParams struct {
 }
 
 func (q *Queries) ImportRequestHour(ctx context.Context, arg ImportRequestHourParams) error {
-	_, err := q.db.ExecContext(ctx, importRequestHour,
+	_, err := q.db.Exec(ctx, importRequestHour,
 		arg.OrganizationID,
 		arg.Hour,
 		arg.Route,
@@ -115,7 +114,7 @@ func (q *Queries) ImportRequestHour(ctx context.Context, arg ImportRequestHourPa
 		arg.Count,
 		arg.SumMs,
 		arg.MaxMs,
-		pq.Array(arg.Histogram),
+		arg.Histogram,
 	)
 	return err
 }
@@ -134,7 +133,7 @@ type ImportRequestMetricCallerParams struct {
 }
 
 func (q *Queries) ImportRequestMetricCaller(ctx context.Context, arg ImportRequestMetricCallerParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, importRequestMetricCaller,
+	result, err := q.db.Exec(ctx, importRequestMetricCaller,
 		arg.OrganizationID,
 		arg.Minute,
 		arg.CallerKind,
@@ -143,7 +142,7 @@ func (q *Queries) ImportRequestMetricCaller(ctx context.Context, arg ImportReque
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const importRequestMinute = `-- name: ImportRequestMinute :exec
@@ -165,7 +164,7 @@ type ImportRequestMinuteParams struct {
 }
 
 func (q *Queries) ImportRequestMinute(ctx context.Context, arg ImportRequestMinuteParams) error {
-	_, err := q.db.ExecContext(ctx, importRequestMinute,
+	_, err := q.db.Exec(ctx, importRequestMinute,
 		arg.OrganizationID,
 		arg.Minute,
 		arg.Route,
@@ -175,7 +174,7 @@ func (q *Queries) ImportRequestMinute(ctx context.Context, arg ImportRequestMinu
 		arg.Count,
 		arg.SumMs,
 		arg.MaxMs,
-		pq.Array(arg.Histogram),
+		arg.Histogram,
 	)
 	return err
 }
@@ -185,7 +184,7 @@ SELECT organization_id, source_schema, snapshot_id, catalog_digest, retain_at, s
 `
 
 func (q *Queries) LockRequestMetricImport(ctx context.Context, organizationID tracker.OrganizationID) (RequestMetricImport, error) {
-	row := q.db.QueryRowContext(ctx, lockRequestMetricImport, organizationID)
+	row := q.db.QueryRow(ctx, lockRequestMetricImport, organizationID)
 	var i RequestMetricImport
 	err := row.Scan(
 		&i.OrganizationID,
@@ -210,7 +209,7 @@ SELECT organization_id, source_schema, snapshot_id, catalog_digest, retain_at, s
 `
 
 func (q *Queries) ReadRequestMetricImport(ctx context.Context, organizationID tracker.OrganizationID) (RequestMetricImport, error) {
-	row := q.db.QueryRowContext(ctx, readRequestMetricImport, organizationID)
+	row := q.db.QueryRow(ctx, readRequestMetricImport, organizationID)
 	var i RequestMetricImport
 	err := row.Scan(
 		&i.OrganizationID,
@@ -249,7 +248,7 @@ type StartRequestMetricImportParams struct {
 }
 
 func (q *Queries) StartRequestMetricImport(ctx context.Context, arg StartRequestMetricImportParams) error {
-	_, err := q.db.ExecContext(ctx, startRequestMetricImport,
+	_, err := q.db.Exec(ctx, startRequestMetricImport,
 		arg.OrganizationID,
 		arg.SourceSchema,
 		arg.SnapshotID,

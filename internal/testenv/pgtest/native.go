@@ -2,9 +2,6 @@ package pgtest
 
 import (
 	"database/sql"
-	"net"
-	"net/url"
-	"strconv"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -27,14 +24,15 @@ func (p *Template) NativeConfig(t *testing.T, fixture *sql.DB, role, password st
 	if !owned || name == p.name {
 		t.Fatal("PostgreSQL role connection requires an owned fixture")
 	}
-	source := p.server.config
-	u := &url.URL{Scheme: "postgres", User: url.UserPassword(role, password), Host: net.JoinHostPort("127.0.0.1", strconv.Itoa(int(source.Port))), Path: "/" + name}
-	q := url.Values{"sslmode": {"disable"}}
-	if source.Host[0] == '/' {
-		q.Set("host", source.Host)
+	source := p.server.config.Clone()
+	if role == "" {
+		role = source.User
 	}
-	u.RawQuery = q.Encode()
-	config, err := pgxpool.ParseConfig(u.String())
+	if password == "" {
+		password = source.Password
+	}
+	source.Database, source.User, source.Password = name, role, password
+	config, err := source.PoolConfig()
 	if err != nil {
 		t.Fatal("configure native PostgreSQL fixture")
 	}
@@ -60,6 +58,8 @@ func (p *Template) NativeConfig(t *testing.T, fixture *sql.DB, role, password st
 		t.Fatal(err)
 	}
 	config.ConnConfig.Tracer = NewTenantGuard(names, func(message string) { t.Error(message) })
+	fixture.SetMaxIdleConns(0)
+	fixture.SetMaxOpenConns(1)
 	return config
 }
 
@@ -75,4 +75,10 @@ func (p *Template) OpenNativeRole(t *testing.T, fixture *sql.DB, role, password 
 		t.Fatal("connect native PostgreSQL fixture")
 	}
 	return pool
+}
+
+func (p *Template) Connection(t *testing.T, fixture *sql.DB, role, password string) pgtransport.Connection {
+	t.Helper()
+	config := p.NativeConfig(t, fixture, role, password).ConnConfig
+	return pgtransport.Connection{Host: config.Host, Port: config.Port, Database: config.Database, User: config.User, Password: config.Password, SSLMode: "disable"}
 }
