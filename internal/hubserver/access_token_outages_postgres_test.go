@@ -3,12 +3,13 @@ package hubserver
 import (
 	"context"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 )
 
 type accessCommandSessionProvider struct {

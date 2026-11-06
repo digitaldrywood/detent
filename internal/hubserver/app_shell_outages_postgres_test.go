@@ -2,12 +2,13 @@ package hubserver
 
 import (
 	"errors"
-	"github.com/digitaldrywood/detent/internal/cloudassert"
-	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
-	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 )
 
 func TestPostgresAppShellAuthorityOutages(t *testing.T) {
@@ -28,9 +29,10 @@ func TestPostgresAppShellAuthorityOutages(t *testing.T) {
 					defer func() { service.config.TenantRepository = tenantRepository }()
 				}
 				path := "/projects/missing"
-				if stage == "slug" {
+				switch stage {
+				case "slug":
 					path = "/work"
-				} else if stage == "readable member" {
+				case "readable member":
 					path = "/example"
 				}
 				response := f.request(t, org, "/organizations/"+org+path, "", func(c *cloudassert.Claims) {
