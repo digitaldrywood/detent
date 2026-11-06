@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +31,130 @@ import (
 )
 
 type attemptSnapshotContextKey struct{}
+
+func TestNativeAttemptIdentityMismatchDiagnostics(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, field string
+		change      func(*tenantAttemptSnapshot, *tracker.NativeRunData)
+		expected    int64
+		actual      int64
+	}{
+		{name: "matching"},
+		{name: "cancelled", change: func(s *tenantAttemptSnapshot, _ *tracker.NativeRunData) { s.attempt.Sequence++ }},
+		{name: "attempt", field: "attempt_id", change: func(_ *tenantAttemptSnapshot, r *tracker.NativeRunData) { r.AttemptID = "private-attempt" }},
+		{name: "run", field: "run_id", change: func(_ *tenantAttemptSnapshot, r *tracker.NativeRunData) { r.RunID = "private-run" }},
+		{name: "lease", field: "lease_id", change: func(_ *tenantAttemptSnapshot, r *tracker.NativeRunData) { r.LeaseID = "private-lease" }},
+		{name: "fence", field: "fencing_token", expected: 7, actual: 8, change: func(_ *tenantAttemptSnapshot, r *tracker.NativeRunData) { r.FencingToken++ }},
+		{name: "sequence", field: "sequence", expected: 4, actual: 2, change: func(s *tenantAttemptSnapshot, _ *tracker.NativeRunData) { s.attempt.Sequence += 2 }},
+		{name: "release timestamp absent", field: "released_at", change: func(s *tenantAttemptSnapshot, _ *tracker.NativeRunData) {
+			s.attempt.Sequence++
+			s.lease.ReleasedAt = nil
+		}},
+		{name: "timestamp microsecond", field: "updated_at", change: func(s *tenantAttemptSnapshot, _ *tracker.NativeRunData) {
+			s.attempt.Sequence++
+			s.attempt.UpdatedAt = s.attempt.UpdatedAt.Add(time.Microsecond)
+		}},
+		{name: "timestamp nanosecond", field: "updated_at", change: func(s *tenantAttemptSnapshot, _ *tracker.NativeRunData) {
+			s.attempt.Sequence++
+			s.attempt.UpdatedAt = s.attempt.UpdatedAt.Add(time.Nanosecond)
+		}},
+		{name: "status", field: "sequence", expected: 3, actual: 2, change: func(s *tenantAttemptSnapshot, _ *tracker.NativeRunData) {
+			s.attempt.Sequence++
+			s.attempt.Status = "running"
+		}},
+		{name: "outcome", field: "sequence", expected: 3, actual: 2, change: func(s *tenantAttemptSnapshot, r *tracker.NativeRunData) {
+			s.attempt.Sequence++
+			r.Outcome = "private-outcome"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, hosted := range []bool{false, true} {
+				t.Run(fmt.Sprintf("hosted=%t", hosted), func(t *testing.T) {
+					now := time.Date(2026, time.November, 6, 12, 0, 0, 123456000, time.UTC)
+					snapshot := tenantAttemptSnapshot{
+						attempt: leasestore.Attempt{ID: "attempt_example", OrganizationID: "org_example", RunID: "run_example", Sequence: 2, Status: "cancelled", UpdatedAt: now},
+						lease:   leasestore.Lease{LeaseID: "lease_example", FencingToken: 7, ReleasedAt: &now},
+						event:   eventstore.Event{WorkItemID: "wi_example"},
+					}
+					run := tracker.NativeRunData{AttemptID: "attempt_example", RunID: "run_example", LeaseID: "lease_example", FencingToken: 7, Sequence: 2, CompletionBody: "private-content"}
+					if test.change != nil {
+						test.change(&snapshot, &run)
+					}
+					raw, err := json.Marshal(run)
+					if err != nil {
+						t.Fatal(err)
+					}
+					details := &verifiedAttemptDetails{}
+					ref, err := details.StoreDetail(t.Context(), "org_example", raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					snapshot.payload = &ref
+					var logs bytes.Buffer
+					var handler slog.Handler = slog.NewJSONHandler(&logs, nil)
+					if hosted {
+						handler = hostedLogHandler{output: handler}
+					}
+					service := &Service{config: Config{RunDetails: details, Logger: slog.New(handler)}}
+					_, err = service.hydrateNativeAttemptTenant(t.Context(), snapshot, now)
+					if test.field == "" {
+						if err != nil || !nativeAttemptRunMatches(snapshot, run) {
+							t.Fatalf("valid identity rejected: %v", err)
+						}
+						return
+					}
+					if !errors.Is(err, artifact.ErrIntegrity) || nativeAttemptRunMatches(snapshot, run) {
+						t.Fatalf("identity integrity rejection = %v", err)
+					}
+					var mismatch *nativeAttemptIdentityMismatch
+					if !errors.As(err, &mismatch) || mismatch.Field != test.field || mismatch.AttemptID != "attempt_example" {
+						t.Fatalf("typed identity mismatch = %v", err)
+					}
+					if logs.Len() != 0 {
+						t.Fatalf("logged before handling edge: %s", &logs)
+					}
+					response := httptest.NewRecorder()
+					c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), response)
+					if err := service.nativeAPIError(c, fmt.Errorf("read attempt: %w", err)); err != nil {
+						t.Fatal(err)
+					}
+					failure := requireNativeCode(t, response, http.StatusInternalServerError, "native_operation_failed")
+					if failure.Message != "Native operation could not be completed" || strings.Contains(response.Body.String(), test.field) {
+						t.Fatalf("internal diagnostics exposed: %s", response.Body)
+					}
+					var entry map[string]any
+					decoder := json.NewDecoder(&logs)
+					decoder.UseNumber()
+					if err := decoder.Decode(&entry); err != nil {
+						t.Fatal(err)
+					}
+					if entry["identity_field"] != test.field || entry["attempt_id"] != "attempt_example" || entry["work_item_id"] != "wi_example" || entry["error"] == nil {
+						t.Fatalf("missing identity diagnostics: %+v", entry)
+					}
+					if test.field == "updated_at" {
+						if entry["expected_value"] != json.Number(strconv.FormatInt(snapshot.attempt.UpdatedAt.UnixMicro(), 10)) || entry["actual_value"] != json.Number(strconv.FormatInt(now.UnixMicro(), 10)) || entry["timestamp_unit"] != "microseconds" {
+							t.Fatalf("microsecond timestamp diagnostics: %+v", entry)
+						}
+					} else if test.field == "sequence" || test.field == "fencing_token" {
+						if entry["expected_value"] != json.Number(strconv.FormatInt(test.expected, 10)) || entry["actual_value"] != json.Number(strconv.FormatInt(test.actual, 10)) {
+							t.Fatalf("numeric diagnostic values: %+v", entry)
+						}
+					} else if entry["expected_value"] != nil || entry["actual_value"] != nil {
+						t.Fatalf("non-numeric identity values logged: %+v", entry)
+					}
+					encoded, err := json.Marshal(entry)
+					if err != nil || strings.Contains(string(encoded), "private-") {
+						t.Fatalf("content in diagnostic: %s: %v", encoded, err)
+					}
+					if err := decoder.Decode(&entry); !errors.Is(err, io.EOF) {
+						t.Fatalf("expected exactly one log: %v", err)
+					}
+				})
+			}
+		})
+	}
+}
 
 type attemptSnapshotRepository struct {
 	tenantstore.Repository

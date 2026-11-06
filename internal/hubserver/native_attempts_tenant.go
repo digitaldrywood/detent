@@ -255,8 +255,8 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 	}
 	attempt := snapshot.attempt
 	lease := snapshot.lease
-	if !nativeAttemptRunMatches(snapshot, run) {
-		return tracker.NativeAttempt{}, fmt.Errorf("hydrate attempt identity: %w", artifact.ErrIntegrity)
+	if err := nativeAttemptRunMismatch(snapshot, run); err != nil {
+		return tracker.NativeAttempt{}, fmt.Errorf("hydrate attempt identity: %w", err)
 	}
 	result := tracker.NativeAttempt{NativeRunData: run, Status: attempt.Status, StartedAt: attempt.StartedAt, UpdatedAt: attempt.UpdatedAt,
 		WorkItemRevision: tracker.Revision(attempt.WorkItemRevision), DispatchGeneration: attempt.DispatchGeneration,
@@ -313,9 +313,52 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 }
 
 func nativeAttemptRunMatches(snapshot tenantAttemptSnapshot, run tracker.NativeRunData) bool {
+	return nativeAttemptRunMismatch(snapshot, run) == nil
+}
+
+type nativeAttemptIdentityValues struct {
+	Expected int64
+	Actual   int64
+}
+
+type nativeAttemptIdentityMismatch struct {
+	AttemptID  string
+	WorkItemID tracker.NativeWorkItemID
+	Field      string
+	Values     *nativeAttemptIdentityValues
+}
+
+func (e *nativeAttemptIdentityMismatch) Error() string {
+	return artifact.ErrIntegrity.Error() + ": " + e.Field
+}
+
+func (*nativeAttemptIdentityMismatch) Unwrap() error { return artifact.ErrIntegrity }
+
+func nativeAttemptRunMismatch(snapshot tenantAttemptSnapshot, run tracker.NativeRunData) *nativeAttemptIdentityMismatch {
 	attempt, lease := snapshot.attempt, snapshot.lease
-	sequenceMatches := run.Sequence == attempt.Sequence || attempt.Status == "cancelled" && lease.ReleasedAt != nil && attempt.Sequence == run.Sequence+1 && attempt.UpdatedAt.Equal(*lease.ReleasedAt) && run.Outcome == ""
-	return run.AttemptID == attempt.ID && run.RunID == attempt.RunID && run.LeaseID == tracker.LeaseID(lease.LeaseID) && run.FencingToken == tracker.FencingToken(lease.FencingToken) && sequenceMatches
+	mismatch := func(field string, values *nativeAttemptIdentityValues) *nativeAttemptIdentityMismatch {
+		return &nativeAttemptIdentityMismatch{AttemptID: attempt.ID, WorkItemID: snapshot.event.WorkItemID, Field: field, Values: values}
+	}
+	switch {
+	case run.AttemptID != attempt.ID:
+		return mismatch("attempt_id", nil)
+	case run.RunID != attempt.RunID:
+		return mismatch("run_id", nil)
+	case run.LeaseID != tracker.LeaseID(lease.LeaseID):
+		return mismatch("lease_id", nil)
+	case run.FencingToken != tracker.FencingToken(lease.FencingToken):
+		return mismatch("fencing_token", &nativeAttemptIdentityValues{Expected: lease.FencingToken, Actual: int64(run.FencingToken)})
+	case run.Sequence == attempt.Sequence:
+		return nil
+	case attempt.Status != "cancelled" || attempt.Sequence != run.Sequence+1 || run.Outcome != "":
+		return mismatch("sequence", &nativeAttemptIdentityValues{Expected: attempt.Sequence, Actual: run.Sequence})
+	case lease.ReleasedAt == nil:
+		return mismatch("released_at", nil)
+	case !attempt.UpdatedAt.Equal(*lease.ReleasedAt):
+		return mismatch("updated_at", &nativeAttemptIdentityValues{Expected: attempt.UpdatedAt.UnixMicro(), Actual: lease.ReleasedAt.UnixMicro()})
+	default:
+		return nil
+	}
 }
 
 func readTenantAttemptEvidence(ctx context.Context, r tenantstore.Reader, snapshot *tenantAttemptSnapshot) error {

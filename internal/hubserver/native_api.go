@@ -249,6 +249,18 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 	if errors.As(err, &request) {
 		return s.refusedAPIError(c, http.StatusUnprocessableEntity, request.Code, request.Message, request)
 	}
+	var mismatch *nativeAttemptIdentityMismatch
+	if errors.As(err, &mismatch) {
+		attrs := []any{"error", err, "attempt_id", mismatch.AttemptID, "work_item_id", mismatch.WorkItemID, "identity_field", mismatch.Field}
+		if mismatch.Values != nil {
+			attrs = append(attrs, "expected_value", mismatch.Values.Expected, "actual_value", mismatch.Values.Actual)
+		}
+		if mismatch.Field == "updated_at" {
+			attrs = append(attrs, "timestamp_unit", "microseconds")
+		}
+		s.config.Logger.Error("Native operation could not be completed", attrs...)
+		return c.JSON(http.StatusInternalServerError, apiErrorResponse{Code: "native_operation_failed", Message: "Native operation could not be completed"})
+	}
 	return s.internalAPIError(c, "native_operation_failed", "Native operation could not be completed", err)
 }
 
