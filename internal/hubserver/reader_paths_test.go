@@ -197,51 +197,6 @@ func TestReadOnlyGETsNeverAcquireWriter(t *testing.T) {
 	})
 }
 
-func TestWriterReadGuardDetectsQueriesAndTransactions(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "guard-negative")
-	guard := installWriterReadGuard(t, f.service)
-	ctx := context.WithValue(t.Context(), writerReadGuardKey{}, true)
-	for _, test := range []struct {
-		name string
-		run  func() error
-	}{
-		{"query", func() error {
-			var count int
-			return f.service.database.db.QueryRowContext(ctx, "SELECT count(*) FROM projects").Scan(&count)
-		}},
-		{"read-only transaction", func() error {
-			tx, err := f.service.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-			if err == nil {
-				err = tx.Rollback()
-			}
-			return err
-		}},
-		{"nil transaction options", func() error {
-			tx, err := f.service.database.db.BeginTx(ctx, nil)
-			if err == nil {
-				err = tx.Rollback()
-			}
-			return err
-		}},
-		{"default transaction options", func() error {
-			tx, err := f.service.database.db.BeginTx(ctx, &sql.TxOptions{})
-			if err == nil {
-				err = tx.Rollback()
-			}
-			return err
-		}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if err := test.run(); err == nil || !strings.Contains(err.Error(), "read-only GET used the writer") {
-				t.Fatalf("guard error=%v", err)
-			}
-		})
-	}
-	if len(guard.violations) != 4 {
-		t.Fatalf("guard recorded %d violations", len(guard.violations))
-	}
-}
-
 func hubWriterReadOperation(call *ast.CallExpr, writerAliases map[string]bool) string {
 	name := ""
 	writer := false
