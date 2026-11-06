@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -753,93 +752,7 @@ func (s *Service) hostedReadableProjects(ctx context.Context, credential apiCred
 	if s.config.Hosted == nil {
 		return s.localAppProjects(ctx, credential)
 	}
-	if s.config.TenantRepository != nil {
-		return s.hostedReadableProjectsPostgres(ctx, credential)
-	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	projects := []appBootstrapProject{}
-	rows, err := querySQL(ctx, s.database.reader, `SELECT p.id, p.name, p.slug, p.profile, p.states_json, g.can_write, g.manage_runner
-FROM projects p JOIN hosted_project_grants g ON g.project_id = p.id
-WHERE p.deleted_at IS NULL AND g.user_id = ? AND p.organization_id = ? ORDER BY p.name, p.id`, credential.Hosted.Subject, s.config.Hosted.OrganizationID)
-	if credential.EntryKey != nil {
-		if rows != nil {
-			_ = rows.Close()
-		}
-		projects, encodeErr := sqlList(credential.EntryKey.Projects)
-		if encodeErr != nil {
-			return nil, encodeErr
-		}
-		blocked, encodeErr := sqlList(credential.EntryKey.BlockedProjects)
-		if encodeErr != nil {
-			return nil, encodeErr
-		}
-		kind, owner := credential.EntryKey.Kind, credential.Hosted.Subject
-		rows, err = querySQL(ctx, s.database.reader, `SELECT p.id,p.name,p.slug,p.profile,p.states_json,
-CASE WHEN ?='service' THEN 1 ELSE COALESCE((SELECT g.can_write FROM hosted_project_grants g WHERE g.user_id=? AND g.project_id=p.id),0) END,
-CASE WHEN ?='service' THEN 1 ELSE COALESCE((SELECT g.manage_runner FROM hosted_project_grants g WHERE g.user_id=? AND g.project_id=p.id),0) END
-FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=?
-AND (?='service' OR EXISTS (SELECT 1 FROM hosted_project_grants g JOIN hosted_members m ON m.user_id=g.user_id JOIN api_tokens t ON t.id=m.principal_id WHERE g.user_id=? AND g.organization_id=p.organization_id AND g.project_id=p.id AND m.active=1 AND t.revoked_at IS NULL))
-AND (?='all' OR p.id IN (SELECT value FROM sql_rows(?)))
-AND p.id NOT IN (SELECT value FROM sql_rows(?))
-ORDER BY p.name,p.id`, kind, owner, kind, owner, s.config.Hosted.OrganizationID, kind, owner, credential.EntryKey.Access, projects, blocked)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("list project grants: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var project appBootstrapProject
-		var states string
-		if err := rows.Scan(&project.ID, &project.Name, &project.Slug, &project.Profile, &states, &project.CanWrite, &project.CanManageRunners); err != nil {
-			return nil, fmt.Errorf("scan project grant: %w", err)
-		}
-		if err := json.Unmarshal([]byte(states), &project.States); err != nil {
-			return nil, fmt.Errorf("decode project states: %w", err)
-		}
-		// Viewers never write or manage runners regardless of the grant flag
-		// (requireHostedProject, requireHostedAdministration).
-		viewer := credential.HostedRole == "viewer"
-		if credential.EntryKey != nil {
-			project.CanWrite = project.CanWrite && hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeWrite)
-			project.CanManageRunners = project.CanManageRunners && hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeAdmin)
-		}
-
-		icon, err := readProjectIcon(ctx, s.database.reader, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project.ID)})
-		if err != nil {
-			return nil, err
-		}
-		project.Icon = projectIconOverride(icon)
-		project.CanWrite = project.CanWrite && !viewer
-		project.CanManageRunners = project.CanManageRunners && !viewer
-		projects = append(projects, project)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, fmt.Errorf("list project grants: %w", err)
-	}
-	if credential.HostedKeyScope != "" {
-		filtered := projects[:0]
-		for _, project := range projects {
-			scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project.ID), credential: credential}
-			if err := s.database.authorizeNativeProject(ctx, scope); err != nil {
-				var native *nativeError
-				if errors.As(err, &native) && native.Code == "not_found" {
-					continue
-				}
-				return nil, err
-			}
-			filtered = append(filtered, project)
-		}
-		projects = filtered
-	}
-	for index := range projects {
-		project := &projects[index]
-		project.Capabilities, err = s.hostedWorkspaceCapabilities(ctx, credential, *project)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return projects, nil
+	return s.hostedReadableProjectsPostgres(ctx, credential)
 }
 
 func (s *Service) hostedReadableProjectsPostgres(ctx context.Context, credential apiCredential) ([]appBootstrapProject, error) {
@@ -852,7 +765,7 @@ func (s *Service) hostedReadableProjectsPostgres(ctx context.Context, credential
 		filter := projectAccessFilter(credential, "", after, pageSize)
 		var rows []accessstore.ProjectAccess
 		var records []projectstore.Record
-		err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
+		err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.appOrganizationID()), corestore.Serving, func(reader tenantstore.Reader) error {
 			pageReader, ok := reader.(accessstore.ProjectAccessPageReader)
 			if !ok {
 				return ErrProjectParticipants

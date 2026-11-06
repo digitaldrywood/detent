@@ -201,7 +201,7 @@ func (s *Service) postgresAppProjects(ctx context.Context, credential apiCredent
 	}
 	projects := make([]appBootstrapProject, 0, len(rows))
 	for index, record := range records {
-		project := appBootstrapProject{ID: string(record.Core.ID), Name: record.Core.Name, Slug: record.Core.Slug, Profile: record.Core.Profile, States: record.States, CanWrite: rows[index].CanWrite, CanManageRunners: rows[index].ManageRunner}
+		project := appBootstrapProject{Icon: projectIntegrationRecord(record).Icon, ID: string(record.Core.ID), Name: record.Core.Name, Slug: record.Core.Slug, Profile: record.Core.Profile, States: record.States, CanWrite: rows[index].CanWrite, CanManageRunners: rows[index].ManageRunner}
 		viewer := credential.HostedRole == "viewer"
 		if credential.EntryKey != nil {
 			project.CanWrite = project.CanWrite && hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeWrite)

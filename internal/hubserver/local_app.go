@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -168,33 +167,7 @@ func appSubject(credential apiCredential) string {
 }
 
 func (s *Service) localAppProjects(ctx context.Context, credential apiCredential) ([]appBootstrapProject, error) {
-	projects := []appBootstrapProject{}
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT id,name,slug,profile,states_json FROM projects WHERE organization_id=? AND deleted_at IS NULL ORDER BY name,id", s.localOrganization)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var project appBootstrapProject
-		var states string
-		if err := rows.Scan(&project.ID, &project.Name, &project.Slug, &project.Profile, &states); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal([]byte(states), &project.States); err != nil {
-			return nil, err
-		}
-		if err := s.database.authorizeNativeProject(ctx, nativeScope{organization: tracker.OrganizationID(s.localOrganization), project: tracker.ProjectID(project.ID), credential: credential}); err != nil {
-			return nil, err
-		}
-		icon, err := readProjectIcon(ctx, s.database.reader, nativeScope{organization: tracker.OrganizationID(s.localOrganization), project: tracker.ProjectID(project.ID)})
-		if err != nil {
-			return nil, err
-		}
-		project.Icon = projectIconOverride(icon)
-		project.CanWrite, project.CanManageRunners = true, true
-		projects = append(projects, project)
-	}
-	return projects, errors.Join(rows.Err(), rows.Close())
+	return s.hostedReadableProjectsPostgres(ctx, credential)
 }
 
 func (s *Service) localAppOnly(next echo.HandlerFunc) echo.HandlerFunc {

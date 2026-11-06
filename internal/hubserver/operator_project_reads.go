@@ -70,7 +70,7 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 			value, err = boundedProjectBatch(view, r)
 		}
 	case "get_project_integration":
-		value, err = s.projectIntegration(ctx, s.database.reader, scope)
+		value, err = s.projectIntegration(ctx, scope)
 	case "get_cutover_receipt":
 		value, err = s.readCutoverReceipt(ctx, scope)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -584,9 +584,13 @@ func (s *Service) readProjectImportRecords(ctx context.Context, scope nativeScop
 	return result, rows.Err()
 }
 func (s *Service) projectRepositoryFreshness(ctx context.Context, scope nativeScope) (repositoryFreshnessResponse, error) {
-	integration, err := readProjectIntegration(ctx, s.database.reader, scope)
+	record, err := s.readProjectRecord(ctx, scope)
+	integration := projectIntegrationRecord(record)
 	if err != nil {
 		return repositoryFreshnessResponse{}, err
+	}
+	if integration.RepositoryID == 0 {
+		return repositoryFreshnessResponse{Repositories: []RepositoryFreshness{}}, nil
 	}
 	result, err := s.database.repositoryFreshness(ctx, s.config.now(), s.config.ReconcileInterval)
 	if err != nil {

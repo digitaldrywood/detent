@@ -35,6 +35,13 @@ func TestPostgresProjectIconReplay(t *testing.T) {
 	if err := png.Encode(&imageBytes, image.NewNRGBA(image.Rect(0, 0, 64, 64))); err != nil {
 		t.Fatal(err)
 	}
+	service.echo.GET(nativeBase+"/local-projects", func(c echo.Context) error {
+		projects, err := service.localAppProjects(c.Request().Context(), nativeRequestScope(c).credential)
+		if err != nil {
+			return service.nativeAPIError(c, err)
+		}
+		return c.JSON(http.StatusOK, projects)
+	}, service.requireNativeScope(apiScopeOperator, apiScopeAdmin))
 	service.registerNativeRoutes(service.echo)
 	service.registerOperatorTools(service.echo)
 	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))
@@ -56,6 +63,7 @@ func TestPostgresProjectIconReplay(t *testing.T) {
 	for _, org := range []string{"org_first", "org_second"} {
 		t.Run(org, func(t *testing.T) {
 			base := "/api/v2/organizations/" + org + "/projects/project_" + org
+			service.localOrganization = org
 			for i, icon := range []projecticon.Icon{{Kind: "emoji", Emoji: "🚀"}, {Kind: "automatic"}, {Kind: "image"}, {Kind: "automatic"}} {
 				request := map[string]any{"idempotency_key": fmt.Sprintf("icon-%d", i), "expected_revision": fmt.Sprint(i + 1), "icon": icon}
 				if icon.Kind == "image" {
@@ -76,6 +84,50 @@ func TestPostgresProjectIconReplay(t *testing.T) {
 				decodeHubResponse(t, read, &current)
 				if current.Revision != saved.Revision || !reflect.DeepEqual(current.Icon, saved.Icon) {
 					t.Fatalf("persisted=%+v saved=%+v", current, saved)
+				}
+				call := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "get_project_integration", "arguments": map[string]any{"project_id": "project_" + org}, "_meta": json.RawMessage(fleetProtocolMeta)}}
+				mcp := performHubWorkCall(t, service, "/api/v2/organizations/"+org+"/mcp", org, "get_project_integration", call)
+				requireNativeStatus(t, mcp, http.StatusOK)
+				var envelope struct {
+					Result struct {
+						IsError bool `json:"isError"`
+						Data    struct {
+							Integration ProjectIntegration `json:"data"`
+						} `json:"structuredContent"`
+					} `json:"result"`
+				}
+				decodeHubResponse(t, mcp, &envelope)
+				if envelope.Result.IsError || envelope.Result.Data.Integration.Revision != saved.Revision || !reflect.DeepEqual(envelope.Result.Data.Integration.Icon, saved.Icon) {
+					t.Fatalf("MCP integration=%s", mcp.Body.String())
+				}
+				local := performHubAPIRequest(t, service, http.MethodGet, base+"/local-projects", org, nil)
+				requireNativeStatus(t, local, http.StatusOK)
+				var projects []appBootstrapProject
+				decodeHubResponse(t, local, &projects)
+				if len(projects) != 1 || projects[0].ID != "project_"+org || !reflect.DeepEqual(projects[0].Icon, saved.Icon) {
+					t.Fatalf("local projects=%+v", projects)
+				}
+				foreignReader := "org_first"
+				if org == foreignReader {
+					foreignReader = "org_second"
+				}
+				requireNativeStatus(t, performHubWorkCall(t, service, "/api/v2/organizations/"+org+"/mcp", foreignReader, "get_project_integration", call), http.StatusUnauthorized)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, base+"/local-projects", foreignReader, nil), http.StatusUnauthorized)
+				freshnessCall := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "repository_freshness", "arguments": map[string]any{"project_id": "project_" + org}, "_meta": json.RawMessage(fleetProtocolMeta)}}
+				freshness := performHubWorkCall(t, service, "/api/v2/organizations/"+org+"/mcp", org, "repository_freshness", freshnessCall)
+				requireNativeStatus(t, freshness, http.StatusOK)
+				var health struct {
+					Result struct {
+						IsError bool `json:"isError"`
+						Data    struct {
+							Organization string                      `json:"organization_id"`
+							Health       repositoryFreshnessResponse `json:"data"`
+						} `json:"structuredContent"`
+					} `json:"result"`
+				}
+				decodeHubResponse(t, freshness, &health)
+				if health.Result.IsError || health.Result.Data.Organization != org || health.Result.Data.Health.Repositories == nil || len(health.Result.Data.Health.Repositories) != 0 {
+					t.Fatalf("freshness=%s", freshness.Body.String())
 				}
 				replay := performHubAPIRequest(t, service, http.MethodPut, base+"/icon", org, request)
 				requireNativeStatus(t, replay, http.StatusOK)

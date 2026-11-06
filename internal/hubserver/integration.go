@@ -119,13 +119,18 @@ func (s *Service) getCutoverReceipt(c echo.Context) error {
 	return c.JSON(http.StatusOK, result)
 }
 
-func (s *Service) projectIntegration(ctx context.Context, query nativeQueryer, scope nativeScope) (ProjectIntegration, error) {
-	result, err := readProjectIntegration(ctx, query, scope)
+func (s *Service) projectIntegration(ctx context.Context, scope nativeScope) (ProjectIntegration, error) {
+	record, err := s.readProjectRecord(ctx, scope)
+	if err != nil {
+		return ProjectIntegration{}, err
+	}
+	result := projectIntegrationRecord(record)
+	result.WorkflowMarkdown, err = s.projectRecordWorkflow(ctx, record)
 	if err != nil {
 		return result, err
 	}
 	if result.CheckoutRepository != "" {
-		result.CheckoutVerified, err = s.verifiedProjectCheckout(ctx, query, scope, result.CheckoutRepository, time.Now().UTC())
+		result.CheckoutVerified, err = s.verifiedProjectCheckout(ctx, nil, scope, result.CheckoutRepository, s.config.now())
 		if err != nil {
 			return result, err
 		}
