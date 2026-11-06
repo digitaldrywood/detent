@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -38,7 +37,6 @@ type startupHealth struct {
 	config   Config
 	service  atomic.Pointer[Service]
 	auth     atomic.Pointer[Service]
-	database atomic.Pointer[sql.DB]
 	running  atomic.Bool
 }
 

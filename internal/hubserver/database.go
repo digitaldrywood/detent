@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -54,14 +53,9 @@ type database struct {
 	analyticsRetryMu       sync.Mutex
 	analyticsRetryCursor   string
 	linkedSourceBase       string
-	db                     *sql.DB
 	postgres               *postgres.Repository
 	billingRepository      tenantstore.Repository
 	billingAuditStore      attachment.DetailStore
-	reader                 *sql.DB
-	authReader             *sql.DB
-	claimReader            *sql.DB
-	analytics              analyticsStatements
 	lock                   *instancelock.Lock
 	path                   string
 	schemaVersion          int64
@@ -394,14 +388,6 @@ func (d *database) openReader(ctx context.Context, busyTimeout time.Duration) er
 		return fmt.Errorf("open hub claim reader: %w", err)
 	}
 	return nil
-}
-
-// auth returns the pool reserved for credential and scope lookups.
-func (d *database) auth() *sql.DB {
-	if d.authReader != nil {
-		return d.authReader
-	}
-	return d.reader
 }
 
 func isWindowsDrivePath(path string) bool {

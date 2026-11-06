@@ -109,7 +109,6 @@ type runnerRequestWindow struct {
 type tenantRequestMetrics struct {
 	usage          *database
 	billingPending *hostedRequestBillingBatch
-	db             *sql.DB
 	repository     metricsstore.Repository
 	organization   tracker.OrganizationID
 	mu             sync.Mutex
