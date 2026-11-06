@@ -35,7 +35,25 @@ type BoardDisplay struct {
 	Change            *tracker.NativeBoardChange
 }
 
+type BoardReporterRelations struct {
+	ReporterStatus  string
+	Dependencies    []tracker.NativeWorkItemID
+	Blockers        []tracker.NativeDependency
+	Dependents      []tracker.NativeDependency
+	Related         []tracker.NativeDependency
+	DependencyReady bool
+	BlockedReason   tracker.DependencyReason
+	UnblocksReason  tracker.DependencyReason
+}
+
 type BoardRecord struct {
+	ListIssue             *tracker.NativeIssue
+	ListBytes             int
+	WindowMask            int
+	RefreshAfter          *time.Time
+	ReporterRelations     *BoardReporterRelations
+	PageIssue             *tracker.NativeIssue
+	ProjectedAt           time.Time
 	Display               BoardDisplay
 	OrganizationID        tracker.OrganizationID
 	ProjectID             tracker.ProjectID
@@ -63,11 +81,13 @@ type BoardRecord struct {
 }
 
 type BoardCandidate struct {
+	QueuedAt   *time.Time
 	ProjectID  tracker.ProjectID
 	WorkItemID tracker.NativeWorkItemID
 }
 
 type BoardSelection struct {
+	Compact             bool
 	SearchText          string
 	SearchRanked        bool
 	Fingerprint         string
