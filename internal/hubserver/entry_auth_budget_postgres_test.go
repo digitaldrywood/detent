@@ -126,11 +126,12 @@ func TestPostgresEntryAuthBudgetIndependentOfTenantSize(t *testing.T) {
 			for _, route := range []struct {
 				path, body string
 				want       int
+				budget     [2]int64
 			}{
-				{"/internal/v1/keys/admin", `{}`, http.StatusOK},
-				{"/internal/v1/keys/context", `{}`, http.StatusOK},
-				{"/internal/v1/owner/bootstrap", `{"organization_name":"Example"}`, http.StatusConflict},
-				{"/internal/v1/invitations/accept", ``, http.StatusNoContent},
+				{"/internal/v1/keys/admin", `{}`, http.StatusOK, [2]int64{8, 7}},
+				{"/internal/v1/keys/context", `{}`, http.StatusOK, [2]int64{12, 10}},
+				{"/internal/v1/owner/bootstrap", `{"organization_name":"Example"}`, http.StatusConflict, [2]int64{9, 7}},
+				{"/internal/v1/invitations/accept", ``, http.StatusNoContent, [2]int64{21, 19}},
 			} {
 				body := route.body
 				subject, email := org+"_owner", org+"_owner@example.test"
@@ -151,7 +152,7 @@ func TestPostgresEntryAuthBudgetIndependentOfTenantSize(t *testing.T) {
 				response := f.request(t, org, route.path, body, func(c *cloudassert.Claims) { c.Subject, c.Email = subject, email })
 				requireEntryAuthResponse(t, response.Code, response.Body.String(), route.want)
 				counts := [2]int64{trace.statements.Load(), exchanges.Load()}
-				if counts[0] == 0 || counts[0] > 50 || counts[1] == 0 || counts[1] > 40 {
+				if counts[0] == 0 || counts[0] > route.budget[0] || counts[1] == 0 || counts[1] > route.budget[1] {
 					t.Fatalf("%s size=%d statements/exchanges=%v", route.path, size, counts)
 				}
 				if size == 2 {
