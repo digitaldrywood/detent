@@ -590,9 +590,17 @@ func (s *Service) readAppBootstrap(ctx context.Context, credential apiCredential
 		payload.Actor.LastName = session.Identity.LastName
 		payload.Actor.ProfilePictureURL = session.Identity.ProfilePictureURL
 	}
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT name,slug FROM organizations WHERE id = ?", organization).Scan(&payload.Organization.Name, &payload.Organization.Slug); err != nil {
+	if err := s.accessRead(ctx, tracker.OrganizationID(organization), func(r tenantstore.Reader) error {
+		row, err := r.AccessOrganization(ctx)
+		if err != nil {
+			return err
+		}
+		payload.Organization.Name, payload.Organization.Slug = row.Name, row.Slug
+		return nil
+	}); err != nil {
 		return appBootstrap{}, fmt.Errorf("read organization name: %w", err)
 	}
+
 	logo, err := s.readOrganizationLogoRecord(ctx, tracker.OrganizationID(organization))
 	if err != nil {
 		return appBootstrap{}, err
