@@ -8,13 +8,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/skills"
@@ -104,7 +111,7 @@ func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCa
 		return failure, nil
 	}
 	if !coordinatorScreenRead(call.Name) {
-		record, readErr := t.coordinator.readConversation(ctx, t.coordinator.service.store.reader, t.state.conversationID)
+		record, readErr := t.coordinator.readConversation(ctx, nil, t.state.conversationID)
 		if readErr != nil {
 			return coordinatorToolError(readErr), nil
 		}
@@ -152,7 +159,7 @@ func coordinatorToolError(err error) runner.AgentToolResult {
 }
 
 func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolCall) (any, error) {
-	record, err := t.coordinator.readConversation(ctx, t.coordinator.service.store.reader, t.state.conversationID)
+	record, err := t.coordinator.readConversation(ctx, nil, t.state.conversationID)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +171,7 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 		if authErr != nil {
 			return nil, authErr
 		}
-		if err := t.coordinator.service.authorizeRead(actorCtx, t.coordinator.service.store.reader, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, record); err != nil {
+		if err := t.coordinator.authorizeRecord(actorCtx, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, record, false); err != nil {
 			return nil, err
 		}
 		record.OwnerPrincipalID = credential.ID
@@ -290,62 +297,73 @@ func decodeCoordinatorArgumentsWithLimit(raw json.RawMessage, target any, limit 
 // The conversation's own project is not assumed: a grant withdrawn after the
 // conversation started is honored on the next tool call.
 func (t *coordinatorToolset) readableProjects(ctx context.Context, record conversationRecord) ([]tracker.ProjectID, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	db := t.coordinator.service.store.reader
-	query := `SELECT g.project_id FROM hosted_project_grants g JOIN hosted_members m ON m.user_id = g.user_id
-WHERE m.user_id = ? AND m.active = 1 AND g.organization_id = ?`
-	args := []any{record.OwnerSubject, record.OrganizationID}
-	if record.OwnerSubject == "" {
-		var scope, createdAt string
-		var nativeOnly bool
-		var revokedAt, expiresAt sql.NullString
-		err := queryRowSQL(ctx, db, "SELECT scope, native_only, revoked_at, expires_at, created_at FROM api_tokens WHERE id = ?", record.OwnerPrincipalID).
-			Scan(&scope, &nativeOnly, &revokedAt, &expiresAt, &createdAt)
-		if errors.Is(err, sql.ErrNoRows) {
-			return []tracker.ProjectID{}, nil
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read conversation owner: %w", err)
-		}
-		if revokedAt.Valid {
-			return []tracker.ProjectID{}, nil
-		}
-		if expiresAt.Valid {
-			now, err := t.coordinator.service.server.database.currentTime()
-			if err != nil {
-				return nil, err
-			}
-			if !runnerTimeValid(now, createdAt, expiresAt.String) {
-				return []tracker.ProjectID{}, nil
-			}
-		}
-		query = "SELECT project_id FROM token_grants WHERE token_id = ? AND organization_id = ?"
-		args = []any{record.OwnerPrincipalID, record.OrganizationID}
-		if apiScope(scope) == apiScopeAdmin && !nativeOnly {
-			query = "SELECT id FROM projects WHERE deleted_at IS NULL AND organization_id = ?"
-			args = []any{record.OrganizationID}
-		}
-	}
-	rows, err := querySQL(ctx, db, query, args...)
+	actorCtx, err := t.actionContext(ctx, record)
 	if err != nil {
-		return nil, fmt.Errorf("list readable projects: %w", err)
+		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	credential, err := currentHubOperator(actorCtx)
+	if err != nil {
+		return nil, err
+	}
 	projects := []tracker.ProjectID{}
-	for rows.Next() {
-		var project tracker.ProjectID
-		if err := rows.Scan(&project); err != nil {
-			return nil, fmt.Errorf("list readable projects: %w", err)
+	err = t.coordinator.service.server.config.TenantRepository.ReadTenant(actorCtx, record.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := t.coordinator.service.server.authorizeAccessScope(actorCtx, r, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, false); err != nil {
+			return err
 		}
-		if !slices.Contains(projects, project) {
-			projects = append(projects, project)
+		var after tracker.ProjectID
+		for {
+			var ids []tracker.ProjectID
+			if credential.Hosted != nil {
+				grants, err := r.AccessProjectGrants(ctx, credential.Hosted.Subject, after, 100)
+				if err != nil {
+					return err
+				}
+				for _, grant := range grants {
+					ids = append(ids, grant.ProjectID)
+				}
+			} else if credential.Scope == apiScopeAdmin && !credential.NativeOnly {
+				rows, err := r.Projects(ctx, after, 100)
+				if err != nil {
+					return err
+				}
+				for _, project := range rows {
+					if project.DeletedAt == nil {
+						ids = append(ids, project.ID)
+					}
+				}
+				if len(rows) > 0 {
+					after = rows[len(rows)-1].ID
+				}
+				allowed, err := t.coordinator.service.server.coordinatorAllowedProjects(actorCtx, r, nativeScope{organization: record.OrganizationID, credential: credential}, ids)
+				if err != nil {
+					return err
+				}
+				projects = append(projects, allowed...)
+				if len(rows) < 100 {
+					return nil
+				}
+				continue
+			} else {
+				grants, err := r.AccessTokenGrants(ctx, credential.ID, after, 100)
+				if err != nil {
+					return err
+				}
+				for _, grant := range grants {
+					ids = append(ids, grant.ProjectID)
+				}
+			}
+			allowed, err := t.coordinator.service.server.coordinatorAllowedProjects(actorCtx, r, nativeScope{organization: record.OrganizationID, credential: credential}, ids)
+			if err != nil {
+				return err
+			}
+			projects = append(projects, allowed...)
+			if len(ids) < 100 {
+				return nil
+			}
+			after = ids[len(ids)-1]
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list readable projects: %w", err)
-	}
-	return projects, nil
+	})
+	return projects, err
 }
 
 func projectList(projects []tracker.ProjectID) (sqlParameterRows, error) {
@@ -378,13 +396,10 @@ type coordinatorAttention struct {
 // order: a pending question, a live lease, no workflow state (unavailable),
 // a non-terminal dependency or blocked state, a review state.
 func (t *coordinatorToolset) listAttention(ctx context.Context, record conversationRecord, readable []tracker.ProjectID, scope string, limit int) (any, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	switch scope {
-	case "", "project":
+	if scope == "" {
 		scope = "project"
-	case "all_projects":
-	default:
+	}
+	if scope != "project" && scope != "all_projects" {
 		return nil, fmt.Errorf("%w: scope must be project or all_projects", errCoordinatorToolArguments)
 	}
 	if limit <= 0 {
@@ -397,90 +412,101 @@ func (t *coordinatorToolset) listAttention(ctx context.Context, record conversat
 	if scope == "all_projects" {
 		projects = readable
 	}
-	projectJSON, err := projectList(projects)
-	if err != nil {
-		return nil, err
-	}
-	// Blockers are named only when the owner can read them: a dependency in
-	// another project must not reveal that project's issues.
-	readableJSON, err := projectList(readable)
-	if err != nil {
-		return nil, err
-	}
-	db := t.coordinator.service.store.reader
-	now, err := t.coordinator.service.server.database.currentTime()
-	if err != nil {
-		return nil, err
-	}
-	running, err := runningAttempts(ctx, db, record.OrganizationID, projectJSON, now)
-	if err != nil {
-		return nil, err
-	}
-	waiting, err := waitingQuestions(ctx, db, record.OrganizationID, projectJSON)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := querySQL(ctx, db, `SELECT i.native_id, i.project_id, COALESCE(i.number, 0), i.title, COALESCE(ws.detent_state, ''), i.workflow_state_id IS NULL, i.native_updated_at,
- COALESCE((SELECT group_concat(b.native_id, ' ') FROM issue_dependencies d JOIN issues b ON b.id = d.blocker_issue_id LEFT JOIN workflow_states bs ON bs.id = b.workflow_state_id
-   WHERE d.dependent_issue_id = i.id AND COALESCE(bs.terminal, 0) = 0
-    AND b.organization_id = i.organization_id AND b.project_id IN (SELECT value FROM sql_rows(?))), ''),o.slug,p.slug
-FROM issues i JOIN organizations o ON o.id=i.organization_id JOIN projects p ON p.id=i.project_id LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
-WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM sql_rows(?)) AND COALESCE(ws.terminal, 0) = 0
-ORDER BY i.native_updated_at DESC, i.native_id LIMIT ?`, readableJSON, record.OrganizationID, projectJSON, coordinatorAttentionScan+1)
-	if err != nil {
-		return nil, fmt.Errorf("list issues: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
 	result := coordinatorAttention{Scope: scope, Projects: projects, Blocked: []coordinatorAttentionItem{}, WaitingForInput: []coordinatorAttentionItem{}, Running: []coordinatorAttentionItem{}, Review: []coordinatorAttentionItem{}, Unavailable: []coordinatorAttentionItem{}}
-	scanned := 0
-	for rows.Next() {
-		var item coordinatorAttentionItem
-		var unmapped bool
-		var blockers, orgSlug, projectSlug string
-		if err := rows.Scan(&item.WorkItemID, &item.ProjectID, &item.Number, &item.Title, &item.State, &unmapped, &item.UpdatedAt, &blockers, &orgSlug, &projectSlug); err != nil {
-			return nil, fmt.Errorf("list issues: %w", err)
+	s := t.coordinator.service.server
+	err := s.config.TenantRepository.ReadTenant(ctx, record.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		owner, ok := r.(conversationstore.AttentionReader)
+		if !ok {
+			return conversationContentUnavailable()
 		}
-		scanned++
-		if scanned > coordinatorAttentionScan {
+		rows, err := owner.CoordinatorAttentionItems(ctx, projects, coordinatorAttentionScan+1)
+		if err != nil {
+			return err
+		}
+		if len(rows) > coordinatorAttentionScan {
 			result.Truncated = true
-			break
+			rows = rows[:coordinatorAttentionScan]
 		}
-		item.URL = issueBrowserPath(orgSlug, projectSlug, int(item.Number))
-		item.Title = boundRunes(item.Title, coordinatorToolSummaryRunes)
-		state := strings.ToLower(item.State)
-		var group *[]coordinatorAttentionItem
-		switch {
-		case waiting[item.WorkItemID]:
-			item.Reason = "a runner question is waiting for an answer"
-			group = &result.WaitingForInput
-		case running[item.WorkItemID] != "":
-			item.Reason = "attempt " + running[item.WorkItemID] + " holds a live lease"
-			group = &result.Running
-		case unmapped:
-			item.Reason = "no workflow state mapping"
-			group = &result.Unavailable
-		case blockers != "":
-			item.Reason = "blocked by " + strings.Join(strings.Fields(blockers), ", ")
-			group = &result.Blocked
-		case strings.Contains(state, "block"):
-			item.Reason = "workflow state " + item.State
-			group = &result.Blocked
-		case strings.Contains(state, "review"):
-			item.Reason = "workflow state " + item.State
-			group = &result.Review
-		default:
-			continue
+		org, err := r.AccessOrganization(ctx)
+		if err != nil {
+			return err
 		}
-		if len(*group) >= limit {
-			result.Truncated = true
-			continue
+		for _, candidate := range rows {
+			row, err := r.WorkItem(ctx, candidate.ProjectID, candidate.WorkItemID)
+			if err != nil {
+				return err
+			}
+			project, err := r.Project(ctx, row.ProjectID)
+			if err != nil {
+				return err
+			}
+			item := coordinatorAttentionItem{WorkItemID: string(row.NativeID), ProjectID: row.ProjectID, Number: row.Number, Title: boundRunes(row.Title, coordinatorToolSummaryRunes), State: stringValue(row.WorkflowStateName), UpdatedAt: formatHubTime(row.NativeUpdatedAt), URL: issueBrowserPath(org.Slug, project.Slug, int(row.Number))}
+			waiting := false
+			linked, err := r.ConversationByWorkItem(ctx, row.ProjectID, string(row.NativeID))
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			if err == nil {
+				questions, err := r.OutstandingQuestions(ctx, linked.ID, "", "", "", 1)
+				if err != nil {
+					return err
+				}
+				waiting = len(questions.Items) > 0
+			}
+			lease, err := r.ActiveLeaseForIssue(ctx, row.ID)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			running := err == nil && lease.ReleasedAt == nil && s.config.now().Before(lease.ExpiresAt)
+			var blockers []string
+			relationships, err := r.Relationships(ctx, row.ProjectID, row.NativeID, corestore.RelationshipCursor{}, corestore.MaxPageSize)
+			if err != nil {
+				return err
+			}
+			if relationships.Next != (corestore.RelationshipCursor{}) {
+				result.Truncated = true
+			}
+			for _, relationship := range relationships.Items {
+				if relationship.Type == "dependency" && relationship.Direction == "blocked_by" && !relationship.Terminal && slices.Contains(readable, relationship.RelatedProjectID) {
+					blockers = append(blockers, string(relationship.RelatedWorkItemID))
+				}
+			}
+			var group *[]coordinatorAttentionItem
+			switch {
+			case waiting:
+				item.Reason = "a runner question is waiting for an answer"
+				group = &result.WaitingForInput
+			case running:
+				attempt, err := r.LatestAttempt(ctx, row.ID)
+				if err != nil {
+					return err
+				}
+				item.Reason = "attempt " + attempt.ID + " holds a live lease"
+				group = &result.Running
+			case row.WorkflowStateName == nil:
+				item.Reason = "no workflow state mapping"
+				group = &result.Unavailable
+			case len(blockers) > 0:
+				item.Reason = "blocked by " + strings.Join(blockers, ", ")
+				group = &result.Blocked
+			case strings.Contains(strings.ToLower(item.State), "block"):
+				item.Reason = "workflow state " + item.State
+				group = &result.Blocked
+			case strings.Contains(strings.ToLower(item.State), "review"):
+				item.Reason = "workflow state " + item.State
+				group = &result.Review
+			default:
+				continue
+			}
+			if len(*group) >= limit {
+				result.Truncated = true
+				continue
+			}
+			*group = append(*group, item)
 		}
-		*group = append(*group, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list issues: %w", err)
-	}
-	return result, nil
+		return nil
+	})
+	return result, err
 }
 
 // runningAttempts maps work items to the attempt whose lease is unreleased
@@ -570,7 +596,7 @@ func (t *coordinatorToolset) resolveIssueReference(ctx context.Context, record c
 		return reference, nil
 	}
 	s := t.coordinator.service.server
-	issue, err := s.resolveOperatorNativeItem(ctx, s.database.reader, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, reference)
+	issue, err := s.resolveOperatorNativeItem(ctx, nil, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, reference)
 	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, explain.ErrNotFound) {
 		return "", fmt.Errorf("no issue %s in this project", "#"+strings.TrimPrefix(reference, "#"))
 	}
@@ -589,91 +615,89 @@ func (t *coordinatorToolset) explainIssue(ctx context.Context, record conversati
 	if workItemID == "" {
 		return nil, fmt.Errorf("%w: work_item_id is required", errCoordinatorToolArguments)
 	}
-	projectJSON, err := projectList(readable)
+	actorCtx, err := t.actionContext(ctx, record)
 	if err != nil {
 		return nil, err
 	}
-	db := t.coordinator.service.store.reader
-	issue := coordinatorIssue{Comments: []coordinatorComment{}}
-	err = queryRowSQL(ctx, db, `SELECT i.native_id, i.project_id, COALESCE(i.number, 0), i.title, i.body, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), i.native_updated_at
-FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
-WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM sql_rows(?)) AND i.native_id = ?`, record.OrganizationID, projectJSON, workItemID).Scan(
-		&issue.WorkItemID, &issue.ProjectID, &issue.Number, &issue.Title, &issue.Body, &issue.State, &issue.Terminal, &issue.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("work item %s is not readable in this conversation", workItemID)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read issue: %w", err)
-	}
-	issue.Body = boundRunes(issue.Body, coordinatorIssueBodyRunes)
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancelRead()
-	issue.URL, err = readIssueBrowserPath(readCtx, t.coordinator.service.server.database.reader, issue.WorkItemID)
+	credential, err := currentHubOperator(actorCtx)
 	if err != nil {
 		return nil, err
 	}
-	now, err := t.coordinator.service.server.database.currentTime()
-	if err != nil {
-		return nil, err
-	}
-	var attempt coordinatorAttempt
-	var data, expires string
-	var released sql.NullString
-	err = queryRowSQL(ctx, db, `SELECT a.id, a.status, COALESCE(NULLIF(a.payload_object_key,''),a.data_json), a.started_at, a.updated_at, l.expires_at, l.released_at
-FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
-WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? ORDER BY a.fencing_token DESC LIMIT 1`, record.OrganizationID, issue.ProjectID, issue.WorkItemID).Scan(
-		&attempt.AttemptID, &attempt.Status, &data, &attempt.StartedAt, &attempt.UpdatedAt, &expires, &released)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-	case err != nil:
-		return nil, fmt.Errorf("read latest attempt: %w", err)
-	default:
-		var run tracker.NativeRunData
-		if err := decodeStorageJSON(ctx, []byte(data), &run); err != nil {
-			return nil, fmt.Errorf("decode attempt: %w", err)
-		}
-		attempt.Outcome = run.Outcome
-		expiry, err := parseTimeValue(expires)
+	s := t.coordinator.service.server
+	scope := nativeScope{organization: record.OrganizationID, credential: credential}
+	result := coordinatorIssue{Comments: []coordinatorComment{}}
+	var attemptID string
+	err = s.config.TenantRepository.ReadTenant(actorCtx, record.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		row, err := r.WorkItemByNativeID(ctx, tracker.NativeWorkItemID(workItemID))
 		if err != nil {
-			return nil, fmt.Errorf("decode lease expiry: %w", err)
+			return err
 		}
-		if attempt.Status == "running" && (released.Valid || !now.Before(expiry)) {
-			attempt.Status = "interrupted"
+		if !slices.Contains(readable, row.ProjectID) {
+			return nativeNotFound()
 		}
-		issue.LatestAttempt = &attempt
-	}
-	rows, err := querySQL(ctx, db, "SELECT actor_json, body, created_at FROM native_comments WHERE organization_id = ? AND project_id = ? AND work_item_id = ? ORDER BY sequence DESC LIMIT ?", record.OrganizationID, issue.ProjectID, issue.WorkItemID, coordinatorCommentCount)
+		scope.project = row.ProjectID
+		project, err := r.ProjectRecord(ctx, row.ProjectID)
+		if err != nil {
+			return err
+		}
+		org, err := r.AccessOrganization(ctx)
+		if err != nil {
+			return err
+		}
+		result.URL = issueBrowserPath(org.Slug, project.Core.Slug, int(row.Number))
+		result.WorkItemID, result.ProjectID, result.Number, result.Title, result.State = string(row.NativeID), row.ProjectID, row.Number, row.Title, stringValue(row.WorkflowStateName)
+		result.UpdatedAt = formatHubTime(row.NativeUpdatedAt)
+		for _, state := range project.States {
+			if state.Name == result.State {
+				result.Terminal = state.Terminal
+			}
+		}
+		latest, err := r.LatestAttempt(ctx, row.ID)
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		attemptID = latest.ID
+		linked, err := r.ConversationByWorkItem(ctx, row.ProjectID, string(row.NativeID))
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if err == nil {
+			result.ConversationID = &linked.ID
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("list comments: %w", err)
+		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var actorJSON string
-		var comment coordinatorComment
-		if err := rows.Scan(&actorJSON, &comment.Body, &comment.CreatedAt); err != nil {
-			return nil, fmt.Errorf("list comments: %w", err)
+	row, version, err := s.readWorkItemRecord(actorCtx, scope, workItemID)
+	if err != nil {
+		return nil, err
+	}
+	issue, err := s.hydrateWorkItemRecord(actorCtx, row, version)
+	if err != nil {
+		return nil, err
+	}
+	result.Body = boundRunes(issue.Body, coordinatorIssueBodyRunes)
+	if attemptID != "" {
+		attempt, err := s.readNativeAttemptTenant(actorCtx, scope, workItemID, attemptID)
+		if err != nil {
+			return nil, err
 		}
-		var actor tracker.Actor
-		if err := decodeStorageJSON(ctx, []byte(actorJSON), &actor); err == nil {
-			comment.Author = strings.TrimSpace(actor.Kind + " " + actor.PrincipalID)
+		status := attempt.Status
+		if status == "running" && (attempt.ClaimReleasedAt != nil || !s.config.now().Before(attempt.LeaseExpiresAt)) {
+			status = "interrupted"
 		}
-		comment.Body = boundRunes(comment.Body, coordinatorCommentRunes)
-		issue.Comments = append(issue.Comments, comment)
+		result.LatestAttempt = &coordinatorAttempt{AttemptID: attemptID, Status: status, Outcome: attempt.Outcome, StartedAt: formatHubTime(attempt.StartedAt), UpdatedAt: formatHubTime(attempt.UpdatedAt)}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list comments: %w", err)
+	comments, err := s.readCommentRecords(actorCtx, scope, workItemID, url.Values{"limit": []string{strconv.Itoa(coordinatorCommentCount)}, "direction": []string{"newest"}})
+	if err != nil {
+		return nil, err
 	}
-	slices.Reverse(issue.Comments)
-	var linked string
-	err = queryRowSQL(ctx, db, "SELECT id FROM conversations WHERE organization_id = ? AND project_id = ? AND work_item_id = ?", record.OrganizationID, issue.ProjectID, issue.WorkItemID).Scan(&linked)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-	case err != nil:
-		return nil, fmt.Errorf("read linked conversation: %w", err)
-	default:
-		issue.ConversationID = &linked
+	for _, comment := range comments.Items {
+		result.Comments = append(result.Comments, coordinatorComment{Author: strings.TrimSpace(comment.Actor.Kind + " " + comment.Actor.PrincipalID), Body: boundRunes(comment.Body, coordinatorCommentRunes), CreatedAt: formatHubTime(comment.CreatedAt)})
 	}
-	return issue, nil
+	slices.Reverse(result.Comments)
+	return result, nil
 }
 
 type coordinatorProposal struct {
@@ -722,4 +746,19 @@ func (t *coordinatorToolset) proposeIssue(ctx context.Context, record conversati
 		return nil, fmt.Errorf("record proposal: %w", err)
 	}
 	return map[string]any{"proposal": proposal}, nil
+}
+
+func (s *Service) coordinatorAllowedProjects(ctx context.Context, r tenantstore.Reader, scope nativeScope, ids []tracker.ProjectID) ([]tracker.ProjectID, error) {
+	allowed := make([]tracker.ProjectID, 0, len(ids))
+	for _, id := range ids {
+		scope.project = id
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) {
+				continue
+			}
+			return nil, err
+		}
+		allowed = append(allowed, id)
+	}
+	return allowed, nil
 }
