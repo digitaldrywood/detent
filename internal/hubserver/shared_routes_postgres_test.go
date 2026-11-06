@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -298,6 +299,45 @@ func TestPostgresSharedMCPRoutes(t *testing.T) {
 			if denied.Code != http.StatusUnauthorized && denied.Code != http.StatusForbidden {
 				t.Fatalf("%s refused=%d %s", org, denied.Code, denied.Body)
 			}
+		}
+	}
+}
+
+func TestPostgresSharedSessionLifecycleRoutes(t *testing.T) {
+	f := newSharedRouteFixture(t)
+	for org, service := range f.services {
+		id, subject := "invitation_"+org, "invitee_"+org
+		email := subject + "@example.test"
+		provider := &browserHostedProvider{members: map[string]auth.Membership{}, invitations: map[string]auth.Invitation{id: {ID: id, Email: email, OrganizationID: "provider_" + org, State: "pending", ExpiresAt: time.Now().Add(time.Hour)}}, inviteRoles: map[string]string{id: "member"}}
+		service.config.Hosted.Provider = provider
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateAccessInvitation(t.Context(), accessstore.Invitation{OrganizationID: tracker.OrganizationID(org), ID: id, Email: email, Role: "member", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for _, route := range []struct{ path, body string }{
+			{"/internal/v1/invitations/accept", `{"token":"` + id + `"}`},
+			{"/internal/v1/sessions/revoke", `{"bindings":["` + strings.Repeat("d", 64) + `"]}`},
+		} {
+			for _, change := range []func(*cloudassert.Claims){sharedRouteBrowserClaims, func(c *cloudassert.Claims) { c.Audience = "org_foreign" }} {
+				response := f.request(t, org, route.path, route.body, change)
+				if response.Code != http.StatusNotFound && response.Code != http.StatusUnauthorized {
+					t.Fatalf("%s refused=%d %s", org, response.Code, response.Body)
+				}
+			}
+			response := f.request(t, org, route.path, route.body, func(c *cloudassert.Claims) { c.Subject, c.Email = subject, email })
+			if response.Code != http.StatusNoContent {
+				t.Fatalf("%s allowed=%d %s", org, response.Code, response.Body)
+			}
+		}
+		if err := service.config.TenantRepository.ReadTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
+			invite, err := r.AccessInvitation(t.Context(), id)
+			if err == nil && invite.AcceptedUserID != subject {
+				t.Fatalf("invitation not accepted: %+v", invite)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
 		}
 	}
 }
