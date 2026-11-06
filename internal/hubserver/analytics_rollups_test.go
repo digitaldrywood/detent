@@ -27,37 +27,6 @@ func rebuildTestAnalyticsRollups(t testing.TB, s *Service, scope nativeScope) {
 	}
 }
 
-func readTestRollupRows(t *testing.T, q nativeQueryer, scope nativeScope) []string {
-	t.Helper()
-	rows, err := q.QueryContext(t.Context(), `SELECT json_array(hour,metric,dimension,value,json(data_json)) FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? ORDER BY metric,hour,dimension`, scope.organization, scope.project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var result []string
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			t.Fatal(err)
-		}
-		result = append(result, raw)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return result
-}
-
-func analyticsRollupsServed(t *testing.T, s *Service, scope nativeScope) bool {
-	t.Helper()
-	q, err := analyticsProjectReader(t.Context(), analyticsRollupReader{s.database.reader}, scope)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, served := q.(analyticsRollupReader)
-	return served
-}
-
 func commitTestAnalytics(t *testing.T, s *Service, write func(*sql.Tx)) {
 	t.Helper()
 	tx, err := s.database.db.BeginTx(t.Context(), nil)
@@ -100,15 +69,6 @@ func projectTestAnalytics(t *testing.T, s *Service, tx *sql.Tx) {
 			return
 		}
 	}
-}
-
-func countTestAnalyticsDirty(t *testing.T, s *Service) int {
-	t.Helper()
-	var count int
-	if err := s.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_rollup_dirty").Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	return count
 }
 
 func assertAnalyticsJSONEqual(t *testing.T, want, got any) {

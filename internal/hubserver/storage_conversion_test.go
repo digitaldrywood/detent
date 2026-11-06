@@ -10,16 +10,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 )
 
-type convertedConversationContent struct{ service *Service }
-
-func (c convertedConversationContent) PublishContent(ctx context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
-	return prepareChangeContent(c.service.contentContext(ctx), organization, data)
-}
-
-func (c convertedConversationContent) ReadContent(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
-	return readChangeContent(c.service.contentContext(ctx), organization, ref)
-}
-
 func TestStorageConversionHistoricalJSONScope(t *testing.T) {
 	service := &Service{}
 	scope := nativeScope{organization: "org_example", project: "prj_example"}

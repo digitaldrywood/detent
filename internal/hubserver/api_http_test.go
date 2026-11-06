@@ -17,6 +17,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/lib/pq"
+	"github.com/lib/pq/pqerror"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -248,7 +249,7 @@ func TestInternalAPIErrorPostgresDiagnostics(t *testing.T) {
 		{name: "non ASCII", state: "23502", schema: "public", table: "issués", column: "títle", wantSchema: "public"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			raw := &pq.Error{Code: pq.ErrorCode(test.state), Schema: test.schema, Table: test.table, Column: test.column,
+			raw := &pq.Error{Code: pqerror.Code(test.state), Schema: test.schema, Table: test.table, Column: test.column,
 				Message: "private message", Detail: "private detail", Where: "private where", Hint: "private hint", Constraint: "private constraint", InternalQuery: "private query"}
 			pool := sql.OpenDB(apiErrorConnector{err: fmt.Errorf("connect: %w", raw)})
 			t.Cleanup(func() {

@@ -967,46 +967,6 @@ func (f conversationFixture) insertLegacyMessage(t *testing.T, ctx context.Conte
 	return err
 }
 
-func (f conversationFixture) insertLegacyEvent(t *testing.T, ctx context.Context, tx *sql.Tx, id string, kind conversation.EventType, body any, now time.Time) (int64, error) {
-	t.Helper()
-	raw, err := marshalNative(compactConversationEvent(body))
-	if err != nil {
-		return 0, err
-	}
-	var seq int64
-	if err := tx.QueryRowContext(ctx, "UPDATE conversations SET event_seq=event_seq+1 WHERE id=? RETURNING event_seq", id).Scan(&seq); err != nil {
-		return 0, err
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO conversation_events(conversation_id,seq,type,body_json,created_at) VALUES(?,?,?,?,?)", id, seq, kind, raw, conversationTime(now)); err != nil {
-		return 0, err
-	}
-	metadata, err := eventQueryMetadata([]byte(raw))
-	if err != nil {
-		return 0, err
-	}
-	return seq, metadata.write(ctx, tx, "conversation_events", "conversation_id=? AND seq=?", id, seq)
-}
-
-func (f conversationFixture) updateLegacyToolMessage(t *testing.T, ctx context.Context, tx *sql.Tx, message conversationMessageRecord, now time.Time) error {
-	t.Helper()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_tool_revisions(conversation_id,message_id,revision,text,tool,item_id,status) SELECT conversation_id,id,revision,text,coalesce(tool_name,''),coalesce(tool_item_id,''),coalesce(tool_status,'') FROM conversation_messages WHERE id=?`, message.ID); err != nil {
-		return err
-	}
-	if err := tx.QueryRowContext(ctx, "UPDATE conversation_messages SET text=?,data_json=?,updated_at=?,revision=revision+1 WHERE id=? RETURNING revision", message.Text, string(message.Data), conversationTime(now), message.ID).Scan(&message.Revision); err != nil {
-		return err
-	}
-	message.UpdatedAt = now
-	metadata, err := messageQueryMetadata(message.Data, message.Actor.Kind)
-	if err != nil {
-		return err
-	}
-	if err := metadata.write(ctx, tx, "conversation_messages", "id=?", message.ID); err != nil {
-		return err
-	}
-	_, err = f.insertLegacyEvent(t, ctx, tx, message.ConversationID, conversation.EventMessageUpdated, projectMessage(message), now)
-	return err
-}
-
 func (f conversationFixture) createLegacyConversation(t *testing.T, record conversationRecord) conversationRecord {
 	t.Helper()
 	if err := validateConversationRecord(&record); err != nil {
