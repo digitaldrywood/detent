@@ -238,6 +238,51 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		}
 	}
 	configure("org_startup")
+	t.Run("concurrent board reads with one serving slot", func(t *testing.T) {
+		limited := cfg
+		limited.Postgres.Pool = postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}
+		target, err := Open(t.Context(), limited)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := target.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		target.config.Hosted.SharedEntry.verifier.Now = cfg.now
+		if err := target.maintainBoardRecords(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		results := make(chan *httptest.ResponseRecorder, 5)
+		var workers sync.WaitGroup
+		for range 5 {
+			workers.Go(func() {
+				<-start
+				results <- requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": "project_example", "limit": 50}, "connection_id": "parallel_board"})
+			})
+		}
+		close(start)
+		workers.Wait()
+		close(results)
+		if len(results) != 5 {
+			t.Fatalf("completed reads = %d, want 5", len(results))
+		}
+		for response := range results {
+			if response.Code != http.StatusOK {
+				t.Errorf("concurrent board status=%d body=%s", response.Code, response.Body.String())
+				continue
+			}
+			var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Data.Items) == 0 {
+				t.Error("authorized board returned no items")
+			}
+		}
+	})
 	t.Run("board request scale", func(t *testing.T) {
 		otherConfig := cfg
 		hosted := *cfg.Hosted
