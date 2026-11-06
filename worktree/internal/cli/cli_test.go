@@ -1,0 +1,1434 @@
+package cli_test
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/cli"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/store"
+)
+
+func TestRootCommandHelpListsAdminCommands(t *testing.T) {
+	t.Parallel()
+
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--help"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	output := stdout.String()
+	if !strings.HasPrefix(output, "Examples:\n") {
+		t.Fatalf("help output does not lead with examples:\n%s", output)
+	}
+	for _, want := range []string{"detent", "agent orchestrator", "doctor", "dev-runtime", "hub", "cloud", "artifact", "pause", "unpause", "promote"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("help output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestCommandHelpLeadsWithExample(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name    string
+		args    []string
+		example string
+		flags   []string
+	}{
+		{name: "pause", args: []string{"pause"}, example: "detent pause api", flags: []string{"--config", "--reason"}},
+		{name: "migration Hub", args: []string{"hub", "serve"}, example: "detent hub serve", flags: []string{"--database", "--listen", "--github-disabled"}},
+		{name: "migration backup", args: []string{"hub", "backup"}, example: "detent hub backup", flags: []string{"--database", "--output"}},
+		{name: "migration verification", args: []string{"hub", "verify"}, example: "detent hub verify", flags: []string{"--database"}},
+		{name: "migration registration", args: []string{"hub", "runner", "register"}, example: "detent hub runner register", flags: []string{"--url", "--organization", "--name", "--capacity", "--config", "--workspace-root"}},
+		{name: "migration foreground runner", example: "detent", flags: []string{"--config", "--headless"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+			var stdout bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(append(test.args, "--help"))
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+
+			output := stdout.String()
+			if !strings.HasPrefix(output, "Examples:\n"+test.example) {
+				t.Fatalf("help does not lead with its runnable example:\n%s", output)
+			}
+			if strings.Count(output, "Examples:") != 1 {
+				t.Fatalf("help examples count = %d, want 1:\n%s", strings.Count(output, "Examples:"), output)
+			}
+			for _, flag := range test.flags {
+				if !strings.Contains(output, flag+" ") && !strings.Contains(output, flag+"\n") {
+					t.Errorf("help missing documented flag %s:\n%s", flag, output)
+				}
+			}
+		})
+	}
+}
+
+func TestRootCommandSuggestsMistypedCommandsAndFlags(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		args       []string
+		want       []string
+		dontWant   []string
+		wantCount  map[string]int
+		wantNoBoot bool
+	}{
+		{
+			name:       "command typo",
+			args:       []string{"paues"},
+			want:       []string{`unknown command "paues"`, "Did you mean this?", "\tpause"},
+			wantNoBoot: true,
+		},
+		{
+			name:     "no close command match",
+			args:     []string{"definitely-not-close"},
+			want:     []string{`unknown command "definitely-not-close"`},
+			dontWant: []string{"Did you mean this?"},
+		},
+		{
+			name:       "semantic command suggestion",
+			args:       []string{"stop", "detent"},
+			want:       []string{`unknown command "stop"`, "Did you mean this?", "\tpause"},
+			wantNoBoot: true,
+		},
+		{
+			name:       "semantic command suggestion before intended local flags",
+			args:       []string{"stop", "--reason", "maintenance"},
+			want:       []string{`unknown command "stop"`, "Did you mean this?", "\tpause"},
+			dontWant:   []string{"unknown flag"},
+			wantCount:  map[string]int{"\tpause": 1},
+			wantNoBoot: true,
+		},
+		{
+			name:       "persistent flag typo",
+			args:       []string{"--hedless"},
+			want:       []string{"unknown flag: --hedless", "Did you mean this?", "\t--headless"},
+			wantNoBoot: true,
+		},
+		{
+			name:       "local flag typo",
+			args:       []string{"pause", "--reasn", "x"},
+			want:       []string{"unknown flag: --reasn", "Did you mean this?", "\t--reason"},
+			wantNoBoot: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			booted := false
+			cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(context.Context, cli.BootConfig) error {
+				booted = true
+				return nil
+			}))
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(tt.args)
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("Execute() error = nil, want error")
+			}
+			output := err.Error()
+			for _, want := range tt.want {
+				if !strings.Contains(output, want) {
+					t.Fatalf("Execute() error missing %q:\n%s", want, output)
+				}
+			}
+			for _, unwanted := range tt.dontWant {
+				if strings.Contains(output, unwanted) {
+					t.Fatalf("Execute() error contains %q:\n%s", unwanted, output)
+				}
+			}
+			for value, count := range tt.wantCount {
+				if got := strings.Count(output, value); got != count {
+					t.Fatalf("Execute() error contains %q %d times, want %d:\n%s", value, got, count, output)
+				}
+			}
+			if tt.wantNoBoot && booted {
+				t.Fatal("boot executed for invalid command")
+			}
+		})
+	}
+}
+
+func TestRootCommandBootsFromGlobalConfig(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	writeGlobalConfig(t, path, nil)
+
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+		booted <- cfg
+		return nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", path})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	got := <-booted
+	if got.Mode != cli.BootModeRunning {
+		t.Fatalf("boot mode = %q, want %q", got.Mode, cli.BootModeRunning)
+	}
+	if got.Global.Path != path {
+		t.Fatalf("booted config path = %q, want %q", got.Global.Path, path)
+	}
+	if got.ConfigPathRule != globalconfig.PathRuleFlag {
+		t.Fatalf("config path rule = %q, want %q", got.ConfigPathRule, globalconfig.PathRuleFlag)
+	}
+}
+
+func TestDevRuntimeCommandBuildsIsolatedBootConfig(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+		booted <- cfg
+		return nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--host", "127.0.0.2",
+		"--port", "0",
+		"dev-runtime",
+		"--home", home,
+		"--db", "fixture.db",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	got := <-booted
+	if got.Isolated == nil {
+		t.Fatal("Isolated = nil, want isolated runtime metadata")
+	}
+	if got.Runner == nil {
+		t.Fatal("Runner = nil, want fake runner override")
+	}
+	if got.ConnectorFactory == nil {
+		t.Fatal("ConnectorFactory = nil, want stateful memory connector factory")
+	}
+	if got.Host != "127.0.0.2" {
+		t.Fatalf("Host = %q, want 127.0.0.2", got.Host)
+	}
+	if got.Port == nil || *got.Port != 0 {
+		t.Fatalf("Port = %v, want 0", got.Port)
+	}
+	if got.RuntimeDBPath != filepath.Join(home, "fixture.db") {
+		t.Fatalf("RuntimeDBPath = %q, want fixture DB under home", got.RuntimeDBPath)
+	}
+	if got.Isolated.DBMode != "file" || got.Isolated.TrackerMode != "hub_native" {
+		t.Fatalf("isolated metadata = %#v, want file DB and memory tracker", got.Isolated)
+	}
+}
+
+func TestDevRuntimeCommandBuildsKanbanDemoBootConfig(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+		booted <- cfg
+		return nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--port", "0",
+		"dev-runtime",
+		"--home", home,
+		"--demo", "kanban",
+		"--demo-project", "demo-project",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	got := <-booted
+	if got.Isolated == nil {
+		t.Fatal("Isolated = nil, want isolated runtime metadata")
+	}
+	if got.Isolated.Demo != "kanban" {
+		t.Fatalf("Isolated.Demo = %q, want kanban", got.Isolated.Demo)
+	}
+	if len(got.Global.Projects) < 4 {
+		t.Fatalf("Global projects = %d, want at least 4 Kanban demo projects", len(got.Global.Projects))
+	}
+	if got.Global.Projects[0].ID != "demo-project" {
+		t.Fatalf("Global project ID = %q, want demo-project", got.Global.Projects[0].ID)
+	}
+	if got.Global.Projects[0].Color != "#1192e8" {
+		t.Fatalf("Global project color = %q, want #1192e8", got.Global.Projects[0].Color)
+	}
+	if got.Host != "0.0.0.0" {
+		t.Fatalf("Host = %q, want demo wildcard host", got.Host)
+	}
+	if got.Isolated.FixturePath != "" {
+		t.Fatalf("FixturePath = %q, want no external fixture for built-in demo", got.Isolated.FixturePath)
+	}
+	workflow, err := workflowconfig.LoadWorkflow(got.WorkflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow() error = %v", err)
+	}
+	if workflow.Config.Server.Kanban.Mode != workflowconfig.KanbanModeIntegration {
+		t.Fatalf("Kanban mode = %q, want integration", workflow.Config.Server.Kanban.Mode)
+	}
+	if !workflow.Config.KanbanTransitionAllowed("Backlog", "Todo") {
+		t.Fatal("KanbanTransitionAllowed(Backlog, Todo) = false, want demo override")
+	}
+}
+
+func TestDevRuntimeCommandKeepsExplicitHostForDemo(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+		booted <- cfg
+		return nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--host", "127.0.0.1",
+		"--port", "0",
+		"dev-runtime",
+		"--home", home,
+		"--demo", "kanban",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	got := <-booted
+	if got.Host != "127.0.0.1" {
+		t.Fatalf("Host = %q, want explicit demo host", got.Host)
+	}
+}
+
+func TestDevRuntimeCommandDefaultsNonDemoHostToLoopback(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+		booted <- cfg
+		return nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--port", "0",
+		"dev-runtime",
+		"--home", home,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	got := <-booted
+	if got.Host != "127.0.0.1" {
+		t.Fatalf("Host = %q, want non-demo loopback host", got.Host)
+	}
+}
+
+func TestDevRuntimeCommandBuildsScreenshotsDemoBootConfig(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+		booted <- cfg
+		return nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--port", "0",
+		"dev-runtime",
+		"--home", home,
+		"--demo", "screenshots",
+		"--demo-clock", "play",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	got := <-booted
+	if got.Isolated == nil {
+		t.Fatal("Isolated = nil, want isolated runtime metadata")
+	}
+	if got.Isolated.Demo != "screenshots" || got.Isolated.DemoClock != "play" {
+		t.Fatalf("isolated demo metadata = %#v, want screenshots play", got.Isolated)
+	}
+	if got.Host != "0.0.0.0" {
+		t.Fatalf("Host = %q, want demo wildcard host", got.Host)
+	}
+	if got.Isolated.ManifestPath != "/api/v1/demo/scenarios" {
+		t.Fatalf("ManifestPath = %q, want demo scenario endpoint", got.Isolated.ManifestPath)
+	}
+	if len(got.Global.Projects) < 8 {
+		t.Fatalf("Global projects = %d, want screenshot fleet config", len(got.Global.Projects))
+	}
+}
+
+func TestOutputFormatPrecedence(t *testing.T) {
+	tests := []struct {
+		name      string
+		env       string
+		stdoutTTY bool
+		args      []string
+		wantJSON  bool
+	}{
+		{
+			name:     "non tty defaults to json",
+			wantJSON: true,
+		},
+		{
+			name:      "tty defaults to pretty",
+			stdoutTTY: true,
+		},
+		{
+			name: "env pretty overrides non tty",
+			env:  "pretty",
+		},
+		{
+			name:      "env json overrides tty",
+			env:       "json",
+			stdoutTTY: true,
+			wantJSON:  true,
+		},
+		{
+			name:     "flag json overrides env pretty",
+			env:      "pretty",
+			args:     []string{"--format", "json"},
+			wantJSON: true,
+		},
+		{
+			name:      "flag pretty overrides env json",
+			env:       "json",
+			stdoutTTY: false,
+			args:      []string{"--format", "pretty"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "global.yaml")
+			cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return tt.stdoutTTY }))
+			if tt.env != "" {
+				t.Setenv("DETENT_FORMAT", tt.env)
+			}
+			var stdout bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&bytes.Buffer{})
+			args := append([]string{}, tt.args...)
+			args = append(args, "--config", path, "config", "path")
+			cmd.SetArgs(args)
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			if tt.wantJSON {
+				var got struct {
+					Path string `json:"path"`
+					Rule string `json:"rule"`
+				}
+				if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+					t.Fatalf("Unmarshal() error = %v\n%s", err, stdout.String())
+				}
+				if got.Path != path || got.Rule != string(globalconfig.PathRuleFlag) {
+					t.Fatalf("json output = %#v, want path %q rule %q", got, path, globalconfig.PathRuleFlag)
+				}
+				return
+			}
+			for _, want := range []string{"path: " + path, "rule: " + string(globalconfig.PathRuleFlag)} {
+				if !strings.Contains(stdout.String(), want) {
+					t.Fatalf("pretty output missing %q:\n%s", want, stdout.String())
+				}
+			}
+		})
+	}
+}
+
+func TestResolveOutputFormatFromArgsPrecedence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		args      []string
+		env       string
+		stdoutTTY bool
+		want      cli.OutputFormat
+	}{
+		{
+			name:      "flag before unknown command beats tty",
+			args:      []string{"--format", "json", "paues"},
+			stdoutTTY: true,
+			want:      cli.OutputFormatJSON,
+		},
+		{
+			name:      "flag after unknown command beats tty",
+			args:      []string{"paues", "--format", "json"},
+			stdoutTTY: true,
+			want:      cli.OutputFormatJSON,
+		},
+		{
+			name:      "equals form beats tty",
+			args:      []string{"paues", "--format=json"},
+			stdoutTTY: true,
+			want:      cli.OutputFormatJSON,
+		},
+		{
+			name: "flag beats env and non tty",
+			args: []string{"paues", "--format", "pretty"},
+			env:  "json",
+			want: cli.OutputFormatPretty,
+		},
+		{
+			name:      "env beats tty",
+			args:      []string{"paues"},
+			env:       "json",
+			stdoutTTY: true,
+			want:      cli.OutputFormatJSON,
+		},
+		{
+			name:      "tty defaults pretty",
+			args:      []string{"paues"},
+			stdoutTTY: true,
+			want:      cli.OutputFormatPretty,
+		},
+		{
+			name:      "terminator stops flag scan",
+			args:      []string{"paues", "--", "--format", "json"},
+			stdoutTTY: true,
+			want:      cli.OutputFormatPretty,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := cli.ResolveOutputFormatFromArgs(tt.args, func(string) string {
+				return tt.env
+			}, tt.stdoutTTY)
+			if err != nil {
+				t.Fatalf("ResolveOutputFormatFromArgs() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("ResolveOutputFormatFromArgs() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRootCommandPassesVersionToBoot(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	writeGlobalConfig(t, path, nil)
+
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(),
+		cli.WithVersion("v7.6.5"),
+		cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+			booted <- cfg
+			return nil
+		}),
+	)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", path})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	if got := <-booted; got.Version != "v7.6.5" {
+		t.Fatalf("boot version = %q, want v7.6.5", got.Version)
+	}
+}
+
+func TestRootCommandCapturesHeadlessFlagAndTerminalState(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	writeGlobalConfig(t, path, nil)
+
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(
+		context.Background(),
+		cli.WithStdoutTTY(func() bool { return true }),
+		cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+			booted <- cfg
+			return nil
+		}),
+	)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", path, "--headless"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	got := <-booted
+	if !got.Headless {
+		t.Fatal("Headless = false, want true")
+	}
+	if !got.StdoutTTY {
+		t.Fatal("StdoutTTY = false, want true")
+	}
+}
+
+func TestRootCommandPrintsBootBanner(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CONFIG_HOME", filepath.Join(root, ".detent"))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cmd := cli.NewRootCommand(ctx, cli.WithVersion("v1.2.3"))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", filepath.Join(root, ".detent", "global.yaml"), "--host", "127.0.0.1", "--port", "0"})
+
+	if err := cmd.Execute(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execute() error = %v, want %v", err, context.Canceled)
+	}
+
+	output := stdout.String()
+	for _, want := range []string{
+		"Detent v1.2.3",
+		"Project: https://github.com/digitaldrywood/detent",
+		"Dashboard: http://localhost:",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("boot banner missing %q:\n%s", want, output)
+		}
+	}
+	for _, unwanted := range []string{"http://0.0.0.0", "http://127.0.0.1", "http://localhost:0"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("boot banner contains non-localhost URL %q:\n%s", unwanted, output)
+		}
+	}
+}
+
+func TestRootCommandCLIAddressOverridesWorkflowServerAddress(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CONFIG_HOME", filepath.Join(root, ".detent"))
+	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), workflowContentWithServer("0.0.0.0", 4103))
+	t.Chdir(root)
+
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+		booted <- cfg
+		return nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--host", "127.0.0.3", "--port", "0"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	assertBootServer(t, <-booted, "127.0.0.3", 0)
+}
+
+func TestRootCommandUsesOnboardingModeWithoutValidWorkflow(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{name: "missing workflow"},
+		{name: "invalid workflow", content: "not frontmatter\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("CONFIG_HOME", filepath.Join(root, ".detent"))
+			if tt.content != "" {
+				writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), tt.content)
+			}
+			t.Chdir(root)
+
+			booted := make(chan cli.BootConfig, 1)
+			cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+				booted <- cfg
+				return nil
+			}))
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{})
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+
+			got := <-booted
+			if got.Mode != cli.BootModeOnboarding {
+				t.Fatalf("boot mode = %q, want %q", got.Mode, cli.BootModeOnboarding)
+			}
+			if len(got.Global.Projects) != 0 {
+				t.Fatalf("projects = %#v, want none in onboarding mode", got.Global.Projects)
+			}
+		})
+	}
+}
+
+func TestCLIValidationErrorsCarryHints(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "global.yaml")
+	writeGlobalConfig(t, configPath, nil)
+
+	tests := []struct {
+		name         string
+		args         []string
+		wantMessage  string
+		wantHint     string
+		wantCommands []string
+	}{
+		{
+			name:         "root port",
+			args:         []string{"--config", configPath, "--port", "-1"},
+			wantMessage:  "--port must be greater than or equal to 0",
+			wantHint:     "e.g. detent --port 0",
+			wantCommands: []string{"detent --port 0"},
+		},
+		{
+			name:         "invalid promote priority",
+			args:         []string{"--config", configPath, "promote", "api", "--priority", "0"},
+			wantMessage:  "--priority must be positive",
+			wantHint:     "e.g. detent promote api --priority 10",
+			wantCommands: []string{"detent promote api --priority 10"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var stderr bytes.Buffer
+			cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(context.Context, cli.BootConfig) error {
+				t.Fatal("boot should not run")
+				return nil
+			}))
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&stderr)
+			cmd.SetArgs(tt.args)
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("Execute() error = nil, want error")
+			}
+			if !errors.Is(err, cli.ErrValidation) {
+				t.Fatalf("Execute() error = %v, want %v", err, cli.ErrValidation)
+			}
+			assertHintedError(t, err, nil, tt.wantMessage, tt.wantHint, tt.wantCommands)
+			if !strings.Contains(stderr.String(), "Hint: "+tt.wantHint) {
+				t.Fatalf("stderr missing hint %q:\n%s", tt.wantHint, stderr.String())
+			}
+		})
+	}
+}
+
+func TestRootCommandClassifiesMistypedCommandSuggestion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "near miss", args: []string{"paues"}, want: "pause"},
+		{name: "semantic alias", args: []string{"stop", "api"}, want: "pause"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := cli.NewRootCommand(context.Background())
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(tt.args)
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("Execute() error = nil, want unknown command")
+			}
+			problem := cli.ProblemForCommandError(cmd, err)
+			if len(problem.DidYouMean) != 1 || problem.DidYouMean[0] != tt.want {
+				t.Fatalf("did_you_mean = %#v, want %s", problem.DidYouMean, tt.want)
+			}
+			if !strings.Contains(problem.SuggestedFix, "detent "+tt.want) {
+				t.Fatalf("suggested_fix = %q, want detent %s", problem.SuggestedFix, tt.want)
+			}
+		})
+	}
+}
+
+func TestProblemForErrorBuildsStableEnvelope(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		err       error
+		wantCode  string
+		wantTitle string
+		wantExit  int
+	}{
+		{name: "general", err: errors.New("disk is full"), wantCode: "general", wantTitle: "Command failed", wantExit: cli.ExitGeneral},
+		{name: "validation", err: cli.NewValidationError("--id is required", "Run detent pause --help.", nil), wantCode: "validation", wantTitle: "Validation failed", wantExit: cli.ExitValidation},
+		{name: "unknown command", err: errors.New(`unknown command "paues" for "detent"`), wantCode: "unknown_command", wantTitle: "Unknown command", wantExit: cli.ExitValidation},
+		{name: "unknown flag", err: errors.New("unknown flag: --hedless"), wantCode: "unknown_flag", wantTitle: "Unknown flag", wantExit: cli.ExitValidation},
+		{name: "auth", err: fmt.Errorf("wrapped: %w", cli.ErrGitHubAuth), wantCode: "github_auth", wantTitle: "GitHub authentication required", wantExit: cli.ExitAuth},
+		{name: "config exists", err: fmt.Errorf("%w: /tmp/global.yaml", cli.ErrConfigExists), wantCode: "config_exists", wantTitle: "Global config already exists", wantExit: cli.ExitNotFoundOrConfig},
+		{name: "project exists", err: fmt.Errorf("%w: api", cli.ErrProjectExists), wantCode: "project_exists", wantTitle: "Project already exists", wantExit: cli.ExitNotFoundOrConfig},
+		{name: "project not found", err: fmt.Errorf("%w: api", cli.ErrProjectNotFound), wantCode: "project_not_found", wantTitle: "Project not found", wantExit: cli.ExitNotFoundOrConfig},
+		{name: "doctor failed", err: cli.ErrDoctorFailed, wantCode: "doctor_failed", wantTitle: "Doctor checks failed", wantExit: cli.ExitGeneral},
+		{name: "shutdown forced", err: cli.ErrShutdownForced, wantCode: "shutdown_forced", wantTitle: "Shutdown forced", wantExit: cli.ExitGeneral},
+		{name: "shutdown timeout", err: cli.ErrShutdownTimeout, wantCode: "shutdown_timeout", wantTitle: "Shutdown timed out", wantExit: cli.ExitGeneral},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := cli.ProblemForError(tt.err)
+			if got.Code != tt.wantCode {
+				t.Fatalf("ProblemForError().Code = %q, want %q", got.Code, tt.wantCode)
+			}
+			if got.Type != "https://detent.dev/errors/"+tt.wantCode {
+				t.Fatalf("ProblemForError().Type = %q, want slug %q", got.Type, tt.wantCode)
+			}
+			if got.Title != tt.wantTitle {
+				t.Fatalf("ProblemForError().Title = %q, want %q", got.Title, tt.wantTitle)
+			}
+			if got.ExitCode != tt.wantExit {
+				t.Fatalf("ProblemForError().ExitCode = %d, want %d", got.ExitCode, tt.wantExit)
+			}
+			wantDocs := "https://detent.dev/docs/cli#" + strings.ReplaceAll(tt.wantCode, "_", "-")
+			if got.DocsURL != wantDocs {
+				t.Fatalf("ProblemForError().DocsURL = %q, want %q", got.DocsURL, wantDocs)
+			}
+			if strings.TrimSpace(got.Detail) == "" {
+				t.Fatal("ProblemForError().Detail is empty")
+			}
+		})
+	}
+}
+
+func TestProblemForErrorExtractsInlineDidYouMeanFromHint(t *testing.T) {
+	t.Parallel()
+
+	err := &cli.HintedError{
+		Err:     cli.ErrProjectNotFound,
+		Message: `project "ap" not found`,
+		Hint: "available: api, web, infra\n" +
+			"did you mean \"api\"? see `detent config path`, then retry",
+		Commands: []string{"detent config path"},
+	}
+
+	got := cli.ProblemForError(err)
+	if !reflect.DeepEqual(got.DidYouMean, []string{"api"}) {
+		t.Fatalf("ProblemForError().DidYouMean = %#v, want api", got.DidYouMean)
+	}
+	if got.SuggestedFix != err.Hint {
+		t.Fatalf("ProblemForError().SuggestedFix = %q, want %q", got.SuggestedFix, err.Hint)
+	}
+}
+
+func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
+	t.Parallel()
+
+	paths := createProjectFiles(t)
+	configPath := filepath.Join(paths.root, "global.yaml")
+	writeGlobalConfig(t, configPath, []globalconfig.Project{
+		{
+			ID:       "detent",
+			Workflow: paths.workflowPath,
+			Workdir:  paths.workdirPath,
+			Weight:   2,
+			Priority: 4,
+		},
+		{ID: "docs", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
+	})
+
+	signals := make(chan cli.Signal, 5)
+	runCommand := func(args ...string) {
+		t.Helper()
+
+		allArgs := append([]string{"--config", configPath}, args...)
+		cmd := cli.NewRootCommand(
+			context.Background(),
+			cli.WithStdoutTTY(func() bool { return true }),
+			cli.WithSignalFunc(func(_ context.Context, signal cli.Signal) error {
+				signals <- signal
+				return nil
+			}),
+		)
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs(allArgs)
+
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("Execute(%v) error = %v", args, err)
+		}
+	}
+
+	runCommand("pause", "detent", "--reason", "release hold", "--until-issue", "example-org/example-project#1499")
+	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
+		if !project.Paused {
+			t.Fatal("Paused = false, want true")
+		}
+		if project.PausedReason != "release hold" || project.PausedUntilIssue != "example-org/example-project#1499" || project.PausedAt == "" {
+			t.Fatalf("pause metadata = %#v", project)
+		}
+	})
+	assertSignal(t, signals, cli.OperationPauseProject, "detent")
+
+	runCommand("unpause", "detent")
+	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
+		if project.Paused {
+			t.Fatal("Paused = true, want false")
+		}
+		if project.PausedReason != "" || project.PausedUntilIssue != "" || project.PausedUntil != "" || project.PausedAt != "" {
+			t.Fatalf("pause metadata not cleared: %#v", project)
+		}
+	})
+	assertSignal(t, signals, cli.OperationUnpauseProject, "detent")
+
+	resumeStarted := time.Now().UTC()
+	runCommand("resume", "detent", "--for", "2h")
+	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
+		until, err := time.Parse(time.RFC3339, project.ActiveHoursOverrideUntil)
+		if err != nil {
+			t.Fatalf("ActiveHoursOverrideUntil = %q: %v", project.ActiveHoursOverrideUntil, err)
+		}
+		if until.Before(resumeStarted.Add(119*time.Minute)) || until.After(time.Now().UTC().Add(121*time.Minute)) {
+			t.Fatalf("ActiveHoursOverrideUntil = %v, want about two hours from now", until)
+		}
+	})
+	assertSignal(t, signals, cli.OperationResumeProject, "detent")
+
+	runCommand("promote", "docs", "--priority", "1")
+	assertProject(t, configPath, "docs", func(project globalconfig.Project) {
+		if project.Priority != 0 {
+			t.Fatalf("Priority = %d, want 0", project.Priority)
+		}
+	})
+	assertSignal(t, signals, cli.OperationPromoteProject, "docs")
+	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
+		if project.Priority != 1 {
+			t.Fatalf("detent rank = %d, want 1", project.Priority)
+		}
+	})
+
+}
+
+func TestPauseCommandExitConditionFlags(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		args          []string
+		wantIssue     string
+		wantTimestamp string
+	}{
+		{
+			name:      "issue exit condition",
+			args:      []string{"--until-issue", "example-org/example-project#1499"},
+			wantIssue: "example-org/example-project#1499",
+		},
+		{
+			name:          "timestamp exit condition",
+			args:          []string{"--until", "2026-08-01T12:00:00-05:00"},
+			wantTimestamp: "2026-08-01T12:00:00-05:00",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			paths := createProjectFiles(t)
+			configPath := filepath.Join(paths.root, "global.yaml")
+			writeGlobalConfig(t, configPath, []globalconfig.Project{{
+				ID:       "detent",
+				Workflow: paths.workflowPath,
+				Workdir:  paths.workdirPath,
+				Weight:   1,
+			}})
+
+			cmd := cli.NewRootCommand(context.Background())
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			args := []string{"--config", configPath, "pause", "detent", "--reason", "release hold"}
+			cmd.SetArgs(append(args, tt.args...))
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+
+			assertProject(t, configPath, "detent", func(project globalconfig.Project) {
+				if !project.Paused {
+					t.Fatal("Paused = false, want true")
+				}
+				if project.PausedReason != "release hold" {
+					t.Fatalf("PausedReason = %q, want release hold", project.PausedReason)
+				}
+				if project.PausedUntilIssue != tt.wantIssue {
+					t.Fatalf("PausedUntilIssue = %q, want %q", project.PausedUntilIssue, tt.wantIssue)
+				}
+				if project.PausedUntil != tt.wantTimestamp {
+					t.Fatalf("PausedUntil = %q, want %q", project.PausedUntil, tt.wantTimestamp)
+				}
+			})
+		})
+	}
+}
+
+func TestPauseCommandValidatesIssueReference(t *testing.T) {
+	t.Parallel()
+
+	nativeWorkflow := `---
+tracker:
+  kind: hub_native
+  repository: example-org/example-project
+---
+Prompt
+`
+	githubWorkflow := `---
+tracker:
+  kind: github
+  repository: example-org/video-project
+---
+Prompt
+`
+	tests := []struct {
+		name       string
+		reference  string
+		withGitHub bool
+		wantError  string
+		wantPaused bool
+	}{
+		{
+			name:      "rejects cross repository issue without resolver",
+			reference: "example-org/video-project#155",
+			wantError: "no configured project tracker can resolve GitHub pause exit issue example-org/video-project#155",
+		},
+		{
+			name:       "accepts cross repository issue with configured resolver",
+			reference:  "example-org/video-project#155",
+			withGitHub: true,
+			wantPaused: true,
+		},
+		{
+			name:       "accepts native project number",
+			reference:  "prj_example#42",
+			wantPaused: true,
+		},
+		{
+			name:       "accepts native number",
+			reference:  "#42",
+			wantPaused: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			native := createProjectFilesWithWorkflow(t, nativeWorkflow)
+			projects := []globalconfig.Project{{
+				ID:       "prj_example",
+				Workflow: native.workflowPath,
+				Workdir:  native.workdirPath,
+				Weight:   1,
+			}}
+			if tt.withGitHub {
+				github := createProjectFilesWithWorkflow(t, githubWorkflow)
+				projects = append(projects, globalconfig.Project{
+					ID:       "video-studio",
+					Workflow: github.workflowPath,
+					Workdir:  github.workdirPath,
+					Weight:   1,
+				})
+			}
+			configPath := filepath.Join(native.root, "global.yaml")
+			writeGlobalConfig(t, configPath, projects)
+
+			cmd := cli.NewRootCommand(context.Background())
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{
+				"--config", configPath,
+				"pause", "prj_example",
+				"--reason", "release hold",
+				"--until-issue", tt.reference,
+			})
+			err := cmd.Execute()
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("Execute() error = %v, want containing %q", err, tt.wantError)
+				}
+			} else if err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+
+			assertProject(t, configPath, "prj_example", func(project globalconfig.Project) {
+				if project.Paused != tt.wantPaused {
+					t.Fatalf("Paused = %t, want %t", project.Paused, tt.wantPaused)
+				}
+			})
+		})
+	}
+}
+
+func TestPauseCommandRejectsInvalidFlags(t *testing.T) {
+	t.Parallel()
+
+	paths := createProjectFiles(t)
+	configPath := filepath.Join(paths.root, "global.yaml")
+	writeGlobalConfig(t, configPath, []globalconfig.Project{{
+		ID:       "detent",
+		Workflow: paths.workflowPath,
+		Workdir:  paths.workdirPath,
+		Weight:   1,
+	}})
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "missing reason",
+			args: []string{"pause", "detent"},
+			want: "--reason is required",
+		},
+		{
+			name: "mutually exclusive exits",
+			args: []string{"pause", "detent", "--reason", "hold", "--until-issue", "example-org/example-project#1499", "--until", "2026-08-01T12:00:00Z"},
+			want: "--until-issue and --until are mutually exclusive",
+		},
+		{
+			name: "invalid timestamp",
+			args: []string{"pause", "detent", "--reason", "hold", "--until", "tomorrow"},
+			want: "--until must be an RFC 3339 timestamp",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := cli.NewRootCommand(context.Background())
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(append([]string{"--config", configPath}, tt.args...))
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Execute() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestResumeCommandRejectsInvalidFlagsAndManualPause(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		args   []string
+		paused bool
+		want   string
+	}{
+		{name: "missing expiry", args: []string{"resume", "detent"}, want: "one of --for or --until is required"},
+		{name: "mutually exclusive expiry", args: []string{"resume", "detent", "--for", "2h", "--until", "2099-01-01T00:00:00Z"}, want: "--for and --until are mutually exclusive"},
+		{name: "invalid duration", args: []string{"resume", "detent", "--for", "tomorrow"}, want: "--for must be a positive Go duration"},
+		{name: "negative duration", args: []string{"resume", "detent", "--for", "-1h"}, want: "--for must be a positive Go duration"},
+		{name: "invalid timestamp", args: []string{"resume", "detent", "--until", "tomorrow"}, want: "--until must be an RFC 3339 timestamp"},
+		{name: "past timestamp", args: []string{"resume", "detent", "--until", "2000-01-01T00:00:00Z"}, want: "--until must be in the future"},
+		{name: "manual pause", args: []string{"resume", "detent", "--for", "2h"}, paused: true, want: "project is manually paused"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			paths := createProjectFiles(t)
+			configPath := filepath.Join(paths.root, "global.yaml")
+			writeGlobalConfig(t, configPath, []globalconfig.Project{{
+				ID:       "detent",
+				Workflow: paths.workflowPath,
+				Workdir:  paths.workdirPath,
+				Weight:   1,
+				Paused:   test.paused,
+			}})
+			cmd := cli.NewRootCommand(context.Background())
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(append([]string{"--config", configPath}, test.args...))
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Execute() error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestProjectAdminCommandsRejectMissingProject(t *testing.T) {
+	t.Parallel()
+
+	paths := createProjectFiles(t)
+	configPath := filepath.Join(paths.root, "global.yaml")
+	writeGlobalConfig(t, configPath, []globalconfig.Project{
+		{ID: "api", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
+		{ID: "web", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
+		{ID: "infra", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
+	})
+
+	var stderr bytes.Buffer
+	cmd := cli.NewRootCommand(context.Background(), cli.WithSignalFunc(func(context.Context, cli.Signal) error {
+		t.Fatal("signal should not be emitted")
+		return nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--config", configPath, "pause", "ap", "--reason", "maintenance"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want error")
+	}
+	if !errors.Is(err, cli.ErrProjectNotFound) {
+		t.Fatalf("Execute() error = %v, want %v", err, cli.ErrProjectNotFound)
+	}
+	assertHintedError(t, err, cli.ErrProjectNotFound, `project "ap" not found`, "available: api, web, infra\n"+
+		"did you mean \"api\"? see `detent config path`, then retry", []string{"detent config path"})
+	for _, want := range []string{"Hint: available: api, web, infra", "did you mean \"api\"? see `detent config path`, then retry"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("stderr missing %q:\n%s", want, stderr.String())
+		}
+	}
+}
+
+type projectPaths struct {
+	root         string
+	workflowPath string
+	workdirPath  string
+}
+
+func createProjectFiles(t *testing.T) projectPaths {
+	t.Helper()
+
+	return createProjectFilesWithWorkflow(t, validWorkflowContent())
+}
+
+func createProjectFilesWithWorkflow(t *testing.T, content string) projectPaths {
+	t.Helper()
+
+	root := t.TempDir()
+	workdir := filepath.Join(root, "project")
+	workflow := filepath.Join(workdir, "WORKFLOW.md")
+
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	writeWorkflow(t, workflow, content)
+
+	return projectPaths{
+		root:         root,
+		workflowPath: workflow,
+		workdirPath:  workdir,
+	}
+}
+
+func writeWorkflow(t *testing.T, path string, content string) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+}
+
+func validWorkflowContent() string {
+	return `---
+tracker:
+  kind: github
+  api_key: fixture-token
+  repository: example-org/example-project
+---
+Test workflow prompt.
+`
+}
+
+func workflowContentWithServer(host string, port int) string {
+	return fmt.Sprintf(`---
+tracker:
+  kind: github
+  api_key: fixture-token
+  repository: example-org/example-project
+server:
+  host: %s
+  port: %d
+---
+Test workflow prompt.
+`, host, port)
+}
+
+func assertBootServer(t *testing.T, cfg cli.BootConfig, host string, port int) {
+	t.Helper()
+
+	if cfg.Host != host {
+		t.Fatalf("boot host = %q, want %q", cfg.Host, host)
+	}
+	if cfg.Port == nil {
+		t.Fatalf("boot port = nil, want %d", port)
+	}
+	if *cfg.Port != port {
+		t.Fatalf("boot port = %d, want %d", *cfg.Port, port)
+	}
+}
+
+func writeGlobalConfig(t *testing.T, path string, projects []globalconfig.Project) {
+	t.Helper()
+
+	cfg := globalconfig.Config{
+		Path:       path,
+		APIVersion: globalconfig.APIVersion,
+		Kind:       globalconfig.Kind,
+		Global: globalconfig.Settings{
+			MaxConcurrentAgents: 8,
+			Scheduling:          globalconfig.SchedulingWeighted,
+			FairShare:           map[string]any{"half_life": "1h"},
+			Startup:             map[string]any{"jitter_seconds": 0, "max_spawn_per_second": 1},
+		},
+		Projects: projects,
+	}
+	if cfg.Projects == nil {
+		cfg.Projects = []globalconfig.Project{}
+	}
+	if err := globalconfig.Write(path, cfg); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	backend, err := store.Open(context.Background(), store.Config{Path: filepath.Join(filepath.Dir(path), "detent.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	if _, err := backend.InitializeLocalConfiguration(context.Background(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertProject(t *testing.T, configPath string, id string, assert func(globalconfig.Project)) {
+	t.Helper()
+
+	cfg, err := readStoredCLIConfiguration(t, configPath)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	for _, project := range cfg.Projects {
+		if project.ID == id {
+			assert(project)
+			return
+		}
+	}
+	t.Fatalf("project %q not found in %#v", id, cfg.Projects)
+}
+
+func assertSignal(t *testing.T, signals <-chan cli.Signal, operation cli.Operation, projectID string) {
+	t.Helper()
+
+	signal := <-signals
+	if signal.Operation != operation || signal.ProjectID != projectID {
+		t.Fatalf("signal = %#v, want %s %s", signal, operation, projectID)
+	}
+}
+
+func assertHintedError(t *testing.T, err error, wantErr error, wantMessage string, wantHint string, wantCommands []string) {
+	t.Helper()
+
+	if wantErr != nil && !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want %v", err, wantErr)
+	}
+	if err.Error() != wantMessage {
+		t.Fatalf("error message = %q, want %q", err.Error(), wantMessage)
+	}
+	gotHint, gotCommands, ok := cli.HintFor(err)
+	if !ok {
+		t.Fatalf("HintFor(%v) ok = false, want true", err)
+	}
+	if gotHint != wantHint {
+		t.Fatalf("hint = %q, want %q", gotHint, wantHint)
+	}
+	if !reflect.DeepEqual(gotCommands, wantCommands) {
+		t.Fatalf("commands = %#v, want %#v", gotCommands, wantCommands)
+	}
+}
+
+func readStoredCLIConfiguration(t *testing.T, path string) (globalconfig.Config, error) {
+	t.Helper()
+	cfg, err := globalconfig.Read(path, globalconfig.WithoutProjectConfiguration(), globalconfig.WithProjectPathLiterals())
+	if err != nil {
+		return cfg, err
+	}
+	dbPath := filepath.Join(filepath.Dir(path), "detent.db")
+	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
+		return globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
+	}
+	db, err := store.Open(context.Background(), store.Config{Path: dbPath})
+	if err != nil {
+		return cfg, err
+	}
+	defer db.Close()
+	cfg, err = db.LocalConfiguration(context.Background(), cfg)
+	if errors.Is(err, sql.ErrNoRows) {
+		return globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
+	}
+	return cfg, err
+}

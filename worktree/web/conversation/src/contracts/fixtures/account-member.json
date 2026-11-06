@@ -1,0 +1,9 @@
+{
+  "id": "mem_admin",
+  "user_id": "user_member",
+  "email": "member@example.com",
+  "never_signed_in": false,
+  "role": "member",
+  "status": "active",
+  "grants": [{ "project_id": "proj_example_project", "write": true, "runner": true }]
+}
