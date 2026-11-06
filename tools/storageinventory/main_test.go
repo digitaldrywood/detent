@@ -166,7 +166,7 @@ func routingFixture(t *testing.T) (fstest.MapFS, routingManifest) {
 		"cmd": {Mode: fs.ModeDir}, "db": {Mode: fs.ModeDir}, "internal/hubserver/postgres/migrations": {Mode: fs.ModeDir},
 		"internal/hubserver/fixture.go": {Data: []byte("package fixture; func read() { db.QueryContext(ctx, `SELECT id FROM projects`) }")},
 	}
-	for _, name := range []string{"internal/hubserver/testdata/hub", "internal/hubserver/testdata/metrics", "internal/cloudentry/testdata/registry", "internal/cloudentry/testdata/auth"} {
+	for _, name := range []string{"internal/hubserver/testdata/hub", "internal/hubserver/testdata/metrics", "tools/storageinventory/sources/v1/registry", "tools/storageinventory/sources/v1/auth"} {
 		files[name+"_classification.json"] = &fstest.MapFile{Data: []byte(`{}`)}
 	}
 	files["internal/hubserver/testdata/hub_classification.json"].Data = []byte(`{"projects":{}}`)

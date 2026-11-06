@@ -35,8 +35,8 @@ func scanRepository(files fs.FS) (sourceInventory, error) {
 	for _, source := range []struct{ name, file string }{
 		{"hub", "internal/hubserver/testdata/hub_classification.json"},
 		{"metrics", "internal/hubserver/testdata/metrics_classification.json"},
-		{"registry", "internal/cloudentry/testdata/registry_classification.json"},
-		{"auth", "internal/cloudentry/testdata/auth_classification.json"},
+		{"registry", "tools/storageinventory/sources/v1/registry_classification.json"},
+		{"auth", "tools/storageinventory/sources/v1/auth_classification.json"},
 	} {
 		data, err := fs.ReadFile(files, source.file)
 		if err != nil {
