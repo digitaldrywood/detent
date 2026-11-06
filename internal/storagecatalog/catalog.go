@@ -218,8 +218,13 @@ func (c Catalog) ValidateInventory(files fs.FS) error {
 			return ErrUnmapped
 		}
 	}
-	for _, source := range []struct{ store, directory string }{{"hub", "hubserver"}, {"metrics", "hubserver"}, {"registry", "cloudentry"}, {"auth", "cloudentry"}} {
-		data, err := fs.ReadFile(files, "internal/"+source.directory+"/testdata/"+source.store+"_schema.json")
+	for _, source := range []struct{ store, path string }{
+		{"hub", "internal/hubserver/testdata/hub_schema.json"},
+		{"metrics", "internal/hubserver/testdata/metrics_schema.json"},
+		{"registry", "tools/storageinventory/sources/v1/registry_schema.json"},
+		{"auth", "tools/storageinventory/sources/v1/auth_schema.json"},
+	} {
+		data, err := fs.ReadFile(files, source.path)
 		if err != nil {
 			return fmt.Errorf("read source schema: %w", err)
 		}

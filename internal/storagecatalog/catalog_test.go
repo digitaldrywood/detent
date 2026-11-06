@@ -42,6 +42,12 @@ func TestCatalogRejectsInventoryDrift(t *testing.T) {
 		want   error
 	}{
 		{"current inventory", func(*Catalog) {}, nil},
+		{"missing historical auth column", func(c *Catalog) { delete(c.Tables["auth/sessions"].Columns, "revoked_at") }, ErrUnmapped},
+		{"changed historical registry type", func(c *Catalog) {
+			col := c.Tables["registry/organizations"].Columns["state"]
+			col.Source = "invalid"
+			c.Tables["registry/organizations"].Columns["state"] = col
+		}, ErrUnmapped},
 		{"missing column", func(c *Catalog) { delete(c.Tables["hub/issues"].Columns, "revision") }, ErrUnmapped},
 		{"unmapped column", func(c *Catalog) {
 			c.Tables["hub/issues"].Columns["unknown"] = c.Tables["hub/issues"].Columns["revision"]

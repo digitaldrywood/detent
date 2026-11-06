@@ -18,7 +18,7 @@ func TestUnmappedSourceColumnFailsCommand(t *testing.T) {
 	files["tools/storageinventory/routing.json"] = &fstest.MapFile{Data: data}
 	files["internal/storagecatalog/targets/v1.json"] = &fstest.MapFile{Data: []byte(`{"version":"1","legacy_migrations":{},"migrations":[],"tables":{}}`)}
 	files["tools/storageinventory/mappings/v1.json"] = &fstest.MapFile{Data: []byte(`{"version":"1","tables":{"hub/projects":{"family":"core","disposition":"target","contract":"Preserve project identity","organization":"binding","columns":{"id":{"source":"[0,\"id\",\"TEXT\",1,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"public.projects","column":"id","type":"text"}]}}}}}`)}
-	for _, name := range []string{"internal/hubserver/testdata/hub", "internal/hubserver/testdata/metrics", "internal/cloudentry/testdata/registry", "internal/cloudentry/testdata/auth"} {
+	for _, name := range []string{"internal/hubserver/testdata/hub", "internal/hubserver/testdata/metrics", "tools/storageinventory/sources/v1/registry", "tools/storageinventory/sources/v1/auth"} {
 		files[name+"_schema.json"] = &fstest.MapFile{Data: []byte(`{}`)}
 	}
 	files["internal/hubserver/testdata/hub_schema.json"].Data = []byte(`{"column/projects/id":"[0,\"id\",\"TEXT\",1,null,1,0]"}`)
