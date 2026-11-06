@@ -11,9 +11,63 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestSecretRewrapStepIsBoundedAndTenantScoped(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	prior := secretTestKeys(t, "1", "1")
+	service := &Service{config: Config{AccessRepository: repository, SecretKeys: secretTestKeys(t, "2", "1", "2"), now: func() time.Time { return now }}}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: now}); err != nil {
+				return err
+			}
+			for _, kind := range []string{"first", "second"} {
+				envelope, err := prior.Seal([]byte("example"), accessstore.SecretAAD(org, "", kind))
+				if err != nil {
+					return err
+				}
+				if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: org, Kind: kind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: org, Kind: kind, Actor: "example", Event: "set", KeyVersion: 1, RecordedAt: now}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		next, processed, err := service.MaintainSecret(t.Context(), org, SecretCursor{})
+		if err != nil || !processed || next.Kind != "first" {
+			t.Fatalf("one-item rewrap: next=%+v processed=%t err=%v", next, processed, err)
+		}
+		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			secrets, err := r.AccessSecrets(t.Context(), "", "", 3)
+			if err != nil {
+				return err
+			}
+			if len(secrets) != 2 || secrets[0].Envelope.Version != 2 || secrets[1].Envelope.Version != 1 {
+				return fmt.Errorf("rewrap exceeded one candidate: %+v", next)
+			}
+			for _, secret := range secrets {
+				value, err := service.config.SecretKeys.Open(secret.Envelope, accessstore.SecretAAD(org, "", secret.Kind))
+				if err != nil || string(value) != "example" {
+					return fmt.Errorf("rewrap changed secret value: %w", err)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 func secretRewrapFixture(t *testing.T) (nativeFixture, []projectSecretRow) {
 	t.Helper()
