@@ -335,7 +335,6 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"teamThreadOperation":                       "Updates one thread's status after rechecking the caller's mutation authority.",
 		"createTeamThread":                          "Creates one thread and its request-supplied references after rechecking mutation authority.",
 		"postTeamThread":                            "Appends one post and its request-supplied references, and updates only its thread and author's participant row atomically.",
-		"writeConversationQueryMetadata":            "Backfills one source row per transaction, conditional on its unchanged payload, under the existing retention owner.",
 		"recordSpriteWakeFacts":                     "The Sprite lifecycle owner atomically updates the candidate machine's wake result and matching typed facts.",
 		"populateRunnerFact":                        "Retention verifies one unchanged source row and writes that row's typed facts per transaction.",
 		"convertIssuePageFact":                      "Writes one source-checked issue, event, board or version projection after decoding on the reader pool in the existing storage maintenance owner.",

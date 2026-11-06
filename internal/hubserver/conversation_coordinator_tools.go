@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -366,10 +365,6 @@ func (t *coordinatorToolset) readableProjects(ctx context.Context, record conver
 	return projects, err
 }
 
-func projectList(projects []tracker.ProjectID) (sqlParameterRows, error) {
-	return sqlList(projects)
-}
-
 type coordinatorAttentionItem struct {
 	WorkItemID string            `json:"work_item_id"`
 	Number     int64             `json:"number"`
@@ -507,58 +502,6 @@ func (t *coordinatorToolset) listAttention(ctx context.Context, record conversat
 		return nil
 	})
 	return result, err
-}
-
-// runningAttempts maps work items to the attempt whose lease is unreleased
-// and unexpired.
-func runningAttempts(ctx context.Context, db *sql.DB, organization tracker.OrganizationID, projectJSON sqlParameterRows, now time.Time) (map[string]string, error) {
-	rows, err := querySQL(ctx, db, `SELECT a.work_item_id, a.id, l.expires_at FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
-WHERE a.organization_id = ? AND a.project_id IN (SELECT value FROM sql_rows(?)) AND a.status = 'running' AND l.released_at IS NULL`, organization, projectJSON)
-	if err != nil {
-		return nil, fmt.Errorf("list running attempts: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	running := map[string]string{}
-	for rows.Next() {
-		var workItem, attempt, expires string
-		if err := rows.Scan(&workItem, &attempt, &expires); err != nil {
-			return nil, fmt.Errorf("list running attempts: %w", err)
-		}
-		expiry, err := parseTimeValue(expires)
-		if err != nil {
-			return nil, fmt.Errorf("decode lease expiry: %w", err)
-		}
-		if now.Before(expiry) {
-			running[workItem] = attempt
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list running attempts: %w", err)
-	}
-	return running, nil
-}
-
-// waitingQuestions reports the work items whose linked conversation has a
-// question that still awaits an answer.
-func waitingQuestions(ctx context.Context, db *sql.DB, organization tracker.OrganizationID, projectJSON sqlParameterRows) (map[string]bool, error) {
-	rows, err := querySQL(ctx, db, `SELECT DISTINCT c.work_item_id FROM conversation_questions q JOIN conversations c ON c.id = q.conversation_id
-WHERE c.organization_id = ? AND c.project_id IN (SELECT value FROM sql_rows(?)) AND c.work_item_id IS NOT NULL AND q.status IN ('pending', 'sending', 'sent')`, organization, projectJSON)
-	if err != nil {
-		return nil, fmt.Errorf("list pending questions: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	waiting := map[string]bool{}
-	for rows.Next() {
-		var workItem string
-		if err := rows.Scan(&workItem); err != nil {
-			return nil, fmt.Errorf("list pending questions: %w", err)
-		}
-		waiting[workItem] = true
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list pending questions: %w", err)
-	}
-	return waiting, nil
 }
 
 type coordinatorAttempt struct {

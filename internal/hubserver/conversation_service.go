@@ -157,7 +157,7 @@ func newConversationService(server *Service, cfg ConversationConfig) *conversati
 	ticker := time.NewTicker(conversationSettleInterval)
 	service := &conversationService{
 		server:           server,
-		store:            newConversationStore(server.database.db),
+		store:            newConversationStore(nil),
 		broker:           server.notifications,
 		config:           cfg,
 		logger:           server.config.Logger.With("component", "conversation"),
@@ -165,7 +165,6 @@ func newConversationService(server *Service, cfg ConversationConfig) *conversati
 		settleTicks:      ticker.C,
 		stopSettleTicker: ticker.Stop,
 	}
-	service.store.reader = server.database.reader
 	service.store.database = server.database
 	service.store.contents = cfg.ArchiveContents
 	if server.config.Hosted != nil && server.config.Hosted.SharedEntry != nil {
@@ -200,39 +199,22 @@ func (c *conversationService) committed(record conversationRecord) {
 }
 
 func (c *conversationService) start(ctx context.Context) error {
-	if c.server.conversationRecordsSelected() {
-		organization, err := c.lifecycleOrganization()
-		if err != nil {
-			return err
-		}
-		now := c.server.config.now()
-		summary, err := c.normalizeAfterRestartPG(ctx, organization, now)
-		if err != nil {
-			return err
-		}
-		c.logger.Info("conversation.restart_normalized",
-			"conversations", summary.Conversations, "messages", summary.Messages,
-			"questions", summary.Questions, "receipts", summary.Receipts)
-		if err := c.reconcileExecutionsPG(ctx, organization); err != nil {
-			return err
-		}
-		return c.wakePendingPG(ctx, organization)
-	}
-	now, err := c.server.database.currentTime()
+	organization, err := c.lifecycleOrganization()
 	if err != nil {
 		return err
 	}
-	summary, err := c.store.normalizeAfterRestart(ctx, now)
+	now := c.server.config.now()
+	summary, err := c.normalizeAfterRestartPG(ctx, organization, now)
 	if err != nil {
 		return err
 	}
 	c.logger.Info("conversation.restart_normalized",
 		"conversations", summary.Conversations, "messages", summary.Messages,
 		"questions", summary.Questions, "receipts", summary.Receipts)
-	if err := c.reconcileExecutions(ctx); err != nil {
+	if err := c.reconcileExecutionsPG(ctx, organization); err != nil {
 		return err
 	}
-	return c.wakePending(ctx)
+	return c.wakePendingPG(ctx, organization)
 }
 
 // settleLoop settles conversations that have been finished and idle for the
@@ -251,42 +233,16 @@ func (c *conversationService) settleLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-c.settleTicks:
-			if c.server.conversationRecordsSelected() {
-				organization, err := c.lifecycleOrganization()
-				if err != nil {
-					c.logger.Warn("conversation.settle_sweep_failed", "error", err)
-					continue
-				}
-				now := c.server.config.now()
-				if err := c.wakePendingPG(ctx, organization); err != nil {
-					c.logger.Warn("conversation.pending_wake_failed", "error", err)
-				}
-				settled, err := c.settleIdleConversationsPG(ctx, organization, now)
-				if err != nil {
-					c.logger.Warn("conversation.settle_sweep_failed", "error", err)
-					continue
-				}
-				if settled > 0 {
-					c.logger.Info("conversation.settle_sweep", "settled", settled)
-				}
-				if _, err := c.sweepAttachments(ctx); err != nil {
-					c.logger.Warn("conversation.attachment_sweep_failed", "error", err)
-				}
-				continue
-			}
-			now, err := c.server.database.currentTime()
+			organization, err := c.lifecycleOrganization()
 			if err != nil {
 				c.logger.Warn("conversation.settle_sweep_failed", "error", err)
 				continue
 			}
-			period := now.UTC().Format("2006-01")
-			if c.monthlyBudgetPeriod != period {
-				c.monthlyBudgetPeriod = period
-				if err := c.wakePending(ctx); err != nil {
-					c.logger.Warn("conversation.budget_rollover", "error", err)
-				}
+			now := c.server.config.now()
+			if err := c.wakePendingPG(ctx, organization); err != nil {
+				c.logger.Warn("conversation.pending_wake_failed", "error", err)
 			}
-			settled, err := c.settleIdleConversations(ctx, now)
+			settled, err := c.settleIdleConversationsPG(ctx, organization, now)
 			if err != nil {
 				c.logger.Warn("conversation.settle_sweep_failed", "error", err)
 				continue
@@ -294,15 +250,8 @@ func (c *conversationService) settleLoop(ctx context.Context) {
 			if settled > 0 {
 				c.logger.Info("conversation.settle_sweep", "settled", settled)
 			}
-			// Abandoned uploads go with the same tick: nobody sent them and
-			// their bytes are the expensive part.
-			swept, err := c.sweepAttachments(ctx)
-			if err != nil {
+			if _, err := c.sweepAttachments(ctx); err != nil {
 				c.logger.Warn("conversation.attachment_sweep_failed", "error", err)
-				continue
-			}
-			if swept > 0 {
-				c.logger.Info("conversation.attachment_sweep", "swept", swept)
 			}
 		}
 	}
@@ -313,50 +262,11 @@ func (c *conversationService) settleLoop(ctx context.Context) {
 // linked conversations with queued controls to the control router. Nothing
 // is replayed; the components re-read durable state.
 func (c *conversationService) wakePending(ctx context.Context) error {
-	if c.server.conversationRecordsSelected() {
-		organization, err := c.lifecycleOrganization()
-		if err != nil {
-			return err
-		}
-		return c.wakePendingPG(ctx, organization)
-	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	rows, err := c.store.reader.QueryContext(ctx, `SELECT DISTINCT m.conversation_id, c.work_item_id IS NOT NULL FROM conversation_messages m
-JOIN conversations c ON c.id = m.conversation_id
-WHERE m.role = 'user' AND m.delivery IN ('saved', 'queued')`)
+	organization, err := c.lifecycleOrganization()
 	if err != nil {
-		return fmt.Errorf("list pending conversations: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var linkedIDs, unlinkedIDs []string
-	for rows.Next() {
-		var id string
-		var linked bool
-		if err := rows.Scan(&id, &linked); err != nil {
-			return fmt.Errorf("scan pending conversation: %w", err)
-		}
-		if linked {
-			linkedIDs = append(linkedIDs, id)
-			continue
-		}
-		unlinkedIDs = append(unlinkedIDs, id)
-	}
-	if err := rows.Err(); err != nil {
 		return err
 	}
-	coordinator := 0
-	if c.coordinator.Available() {
-		coordinator = len(unlinkedIDs)
-		for _, id := range unlinkedIDs {
-			c.coordinator.Wake(id)
-		}
-	}
-	for _, id := range linkedIDs {
-		c.controls.Wake(id)
-	}
-	c.logger.Info("conversation.wake_pending", "coordinator", coordinator, "controls", len(linkedIDs))
-	return nil
+	return c.wakePendingPG(ctx, organization)
 }
 
 func (c *conversationService) stop() {

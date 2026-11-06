@@ -32,20 +32,15 @@ func (f conversationWorkerAuthorityFunc) VerifyConversationWorker(ctx context.Co
 }
 
 func TestConversationPostgresWorkerHandlersUseFencedTenantState(t *testing.T) {
-	f := newConversationAPIFixture(t, nil)
+	repository := projectRecordPostgres(t)
+	f := newConversationTenantFixture(t, repository, time.Now().UTC())
 	var logs bytes.Buffer
 	f.service.config.Logger = slog.New(slog.NewTextHandler(&logs, nil))
-	repository := projectRecordPostgres(t)
-	f.worker(t, "pg-conversation-worker")
-	var ownerCredential accessstore.Credential
-	if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT id,name,token_hash,token_fingerprint,scope,native_only FROM api_tokens WHERE id=?`, f.ownerID).Scan(&ownerCredential.ID, &ownerCredential.Name, &ownerCredential.Hash, &ownerCredential.Fingerprint, &ownerCredential.Scope, &ownerCredential.NativeOnly); err != nil {
-		t.Fatal(err)
-	}
-	ownerCredential.OrganizationID = f.project.OrganizationID
-	ownerCredential.ProjectAccess = "all"
-	ownerCredential.Kind = "personal"
-	ownerCredential.CreatedAt, ownerCredential.UpdatedAt = time.Now().UTC(), time.Now().UTC()
+	ownerCredential := conversationLifecyclePostgresOwner(t, f, time.Now().UTC())
 	if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: f.project.OrganizationID, Name: "Example organization", CreatedAt: time.Now().UTC()}); err != nil {
+			return err
+		}
 		if err := w.CreateAccessCredential(t.Context(), ownerCredential); err != nil {
 			return err
 		}
@@ -59,16 +54,8 @@ func TestConversationPostgresWorkerHandlersUseFencedTenantState(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.service.config.TenantRepository = repository
-	workerID := ""
-	var workerCredential accessstore.Credential
-	if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT id,name,token_hash,token_fingerprint,scope,native_only FROM api_tokens WHERE name=?`, "pg-conversation-worker").Scan(&workerCredential.ID, &workerCredential.Name, &workerCredential.Hash, &workerCredential.Fingerprint, &workerCredential.Scope, &workerCredential.NativeOnly); err != nil {
-		t.Fatal(err)
-	}
-	workerID = workerCredential.ID
-	workerCredential.OrganizationID = f.project.OrganizationID
-	workerCredential.ProjectAccess = "all"
-	workerCredential.Kind = "service"
-	workerCredential.CreatedAt, workerCredential.UpdatedAt = time.Now().UTC(), time.Now().UTC()
+	workerID := "worker_conversation"
+	workerCredential := accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: workerID, Name: "Example worker", Hash: "example-worker-hash", Scope: "worker", NativeOnly: true, ProjectAccess: "all", Kind: "service", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	binding := runnerauth.NewBinding()
 	workerIdentity := runnerauth.Identity{Binding: binding, Scope: "projects", OrganizationID: f.project.OrganizationID, ProjectIDs: []tracker.ProjectID{f.project.ID}, Operations: []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim}, ExpiresAt: time.Now().UTC().Add(time.Hour)}
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: workerID, Hash: workerCredential.Hash, Scope: apiScopeWorker, NativeOnly: true, Runner: workerIdentity}}
@@ -105,6 +92,7 @@ func TestConversationPostgresWorkerHandlersUseFencedTenantState(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		f.service.config.now = func() time.Time { return lease.RenewedAt }
 		_, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "attempt-pg-worker", Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: "run-pg-worker", Sequence: 1, Status: "running", DispatchGeneration: 1, PayloadObjectKey: "example/payload"})
 		if err != nil {
 			return err
@@ -138,8 +126,9 @@ func TestConversationPostgresWorkerHandlersUseFencedTenantState(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	pendingCommand := f.command(t, f.token, linked.ID, conversation.Command{Key: "pg-bind-control", Kind: conversation.CommandMessage, Text: "Example pending instruction"})
-	requireNativeStatus(t, pendingCommand, http.StatusOK)
+	if _, err := f.service.commandPostConversation(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: apiScopeOperator}}, linked.ID, conversation.Command{Key: "pg-bind-control", Kind: conversation.CommandMessage, Text: "Example pending instruction"}); err != nil {
+		t.Fatal(err)
+	}
 	identity := conversationWorkerIdentity{LeaseID: "lease-pg-worker", FencingToken: 1, AttemptID: "attempt-pg-worker"}
 	router := f.service.conversations.controls.(*conversationWorkerRouter)
 	var currentLease leasestore.Lease
@@ -257,8 +246,9 @@ func TestConversationPostgresWorkerHandlersUseFencedTenantState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	operatorMessage := f.command(t, f.token, linked.ID, conversation.Command{Key: "pg-control", Kind: conversation.CommandMessage, Text: "Example instruction"})
-	requireNativeStatus(t, operatorMessage, http.StatusOK)
+	if _, err := f.service.commandPostConversation(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: apiScopeOperator}}, linked.ID, conversation.Command{Key: "pg-control", Kind: conversation.CommandMessage, Text: "Example instruction"}); err != nil {
+		t.Fatal(err)
+	}
 	controls := callConversationWorkerRoute(t, router.controls, scope, http.MethodGet, "/controls?after=0&wait=0", "", linked.ID, nil, identity)
 	if controls.Code != http.StatusOK {
 		t.Fatalf("controls status = %d, body = %s", controls.Code, controls.Body.String())
@@ -385,6 +375,7 @@ func TestConversationPostgresWorkerHandlersUseFencedTenantState(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	f.service.config.now = func() time.Time { return nextLease.RenewedAt }
 	nextIdentity := conversationWorkerIdentity{LeaseID: tracker.LeaseID(nextLease.LeaseID), FencingToken: tracker.FencingToken(nextLease.FencingToken), AttemptID: "attempt-pg-worker-next"}
 	nextBindBody := map[string]any{"lease_id": nextIdentity.LeaseID, "fencing_token": nextIdentity.FencingToken, "attempt_id": nextIdentity.AttemptID, "run_id": "run-pg-worker-next", "capabilities": map[string]bool{"steer": true, "interrupt": true, "answer": true, "continue": true}}
 	takeover := callConversationWorkerRoute(t, router.bind, scope, http.MethodPost, "/bind", string(issue.NativeID), "", nextBindBody, nextIdentity)
@@ -462,6 +453,35 @@ func TestConversationPostgresWorkerHandlersUseFencedTenantState(t *testing.T) {
 		},
 		sourceActor: &tracker.Actor{Kind: "human", PrincipalID: f.ownerID},
 	}
+	referenceAt := time.Now().UTC()
+	referenceTargetID := tracker.NativeWorkItemID("wi_reference_target")
+	if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, NativeID: referenceTargetID, Number: 2, Title: "Example reference target", ActorKind: new("human"), ActorPrincipalID: new(f.ownerID), WorkflowStateName: new("Todo"), CreatedAt: referenceAt}); err != nil {
+			return err
+		}
+		message, err := w.CreateMessage(t.Context(), conversationstore.Message{OrganizationID: f.project.OrganizationID, ConversationID: linked.ID, ID: conversation.NewMessageID(), Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "Example reference excerpt", Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.ownerID}, CreatedAt: referenceAt, UpdatedAt: referenceAt})
+		if err != nil {
+			return err
+		}
+		return w.ReplaceMessageReferences(t.Context(), linked.ID, message.ID, []conversationstore.MessageReference{{OrganizationID: f.project.OrganizationID, ConversationID: linked.ID, MessageID: message.ID, Kind: conversation.ReferenceIssue, TargetID: string(referenceTargetID), Label: "Example"}}, referenceAt)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertReferenceCount := func(want int) {
+		t.Helper()
+		raw, err := f.service.readWorkItemReferences(t.Context(), reporterScope, string(referenceTargetID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var page conversationWorkItemReferencePage
+		if err := json.Unmarshal(raw, &page); err != nil {
+			t.Fatal(err)
+		}
+		if len(page.References) != want {
+			t.Fatalf("visible conversation references = %d, want %d", len(page.References), want)
+		}
+	}
+	assertReferenceCount(1)
 	if _, err := f.service.readPGConversation(t.Context(), reporterScope, linked.ID); err != nil {
 		t.Fatalf("reporter could not read their linked conversation: %v", err)
 	}
@@ -475,6 +495,10 @@ func TestConversationPostgresWorkerHandlersUseFencedTenantState(t *testing.T) {
 		return err
 	}); err != nil {
 		t.Fatal(err)
+	}
+	assertReferenceCount(0)
+	if _, err := f.service.readWorkItemReferences(t.Context(), reporterScope, string(issue.NativeID)); err == nil {
+		t.Fatal("reporter read references to another reporter's item")
 	}
 	if _, err := f.service.readPGConversation(t.Context(), reporterScope, linked.ID); err == nil {
 		t.Fatal("reporter read a conversation after its linked item was reassigned")

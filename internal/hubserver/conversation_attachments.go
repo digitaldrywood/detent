@@ -359,27 +359,7 @@ func (c *conversationService) bindMessageAttachments(ctx context.Context, tx *sq
 // sweepAttachments deletes abandoned uploads and their bytes, and reports how
 // many it removed.
 func (c *conversationService) sweepAttachments(ctx context.Context) (int, error) {
-	if c.server.conversationRecordsSelected() {
-		return c.sweepAttachmentsPG(ctx)
-	}
-	swept := 0
-	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		expired, err := c.store.listExpiredAttachments(ctx, tx, now, conversationAttachmentSweepBatch)
-		if err != nil {
-			return err
-		}
-		for _, attachment := range expired {
-			if err := c.store.deleteAttachment(ctx, tx, attachment.ID, now); err != nil {
-				return err
-			}
-			swept++
-		}
-		return nil
-	})
-	if err != nil {
-		return 0, err
-	}
-	return swept, nil
+	return c.sweepAttachmentsPG(ctx)
 }
 
 // HTTP.

@@ -179,33 +179,6 @@ func (s *Service) authorizeConversationOrganization(ctx context.Context, scope n
 // requireActorAuthority re-validates the credential inside the mutation
 // transaction: live hosted membership and session for sessions, token
 // revocation and expiry for API tokens.
-func (c *conversationService) transact(ctx context.Context, fn func(tx *sql.Tx, now time.Time) error) (resultErr error) {
-	now, err := c.server.database.currentTime()
-	if err != nil {
-		return err
-	}
-	now = conversationWriteTime(ctx, now)
-	tx, err := c.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin conversation transaction: %w", err)
-	}
-	defer func() {
-		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-			resultErr = errors.Join(resultErr, err)
-		}
-	}()
-	if err := validateConversationPublication(ctx, tx); err != nil {
-		return err
-	}
-	if err := fn(tx, now); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit conversation transaction: %w", err)
-	}
-	return nil
-}
-
 func (c *conversationService) requireActorAuthority(ctx context.Context, tx *sql.Tx, scope nativeScope, _ time.Time) error {
 	if scope.credential.Hosted != nil {
 		return c.server.recheckHostedMutation(ctx, tx, &scope)

@@ -72,17 +72,7 @@ func (r *conversationWorkerRouter) reconcileLoop() {
 		case <-r.stop:
 			return
 		case <-ticker.C:
-			var err error
-			if r.service.server.conversationRecordsSelected() {
-				var organization tracker.OrganizationID
-				organization, err = r.service.lifecycleOrganization()
-				if err == nil {
-					err = r.service.reconcileExecutionsPG(context.Background(), organization)
-				}
-			} else {
-				err = r.service.reconcileExecutions(context.Background())
-			}
-			if err != nil {
+			if err := r.service.reconcileExecutions(context.Background()); err != nil {
 				r.service.logger.Warn("conversation execution reconcile failed", "error", err)
 			}
 		}
@@ -734,7 +724,7 @@ func (c *conversationService) updateQuestion(ctx context.Context, tx *sql.Tx, qu
 // Handlers.
 
 func (r *conversationWorkerRouter) bind(e echo.Context) error {
-	c, s := r.service, r.service.server
+	s := r.service.server
 	var request conversationBindRequest
 	if err := decodeAPIJSON(e, &request); err != nil {
 		return s.invalidAPIRequest(e, err)
@@ -745,134 +735,12 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 	if strings.TrimSpace(request.RunID) == "" {
 		return s.nativeAPIError(e, nativePublicInvalid("run_id is required"))
 	}
-	if s.conversationRecordsSelected() {
-		return r.bindPostgres(e, request)
-	}
-	ctx := e.Request().Context()
-	scope := nativeRequestScope(e)
-	item := e.Param("item")
-	plan, err := c.prepareWorkerBind(ctx, scope, item, request)
-	if err != nil {
-		return s.nativeAPIError(e, err)
-	}
-	ctx = plan.context(ctx)
-	legacyContinuation, err := c.prepareLegacyContinuation(ctx, scope, item)
-	if err != nil {
-		return s.nativeAPIError(e, err)
-	}
-	var record conversationRecord
-	var response conversationBindResponse
-	err = c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
-			return err
-		}
-		lease, err := c.requireWorkerOwner(ctx, tx, scope, item, request.conversationWorkerIdentity, request.RunID, false, now)
-		if err != nil {
-			return err
-		}
-		record, err = c.ensureWorkerConversation(ctx, tx, scope, item, now)
-		if err != nil {
-			return err
-		}
-		if err := c.store.recordStart(ctx, tx, request.AttemptID, record.ID, now); err != nil {
-			var started *errConversationStarted
-			if errors.As(err, &started) {
-				return conversationStale("The attempt already started a conversation turn")
-			}
-			return err
-		}
-		if legacyContinuation.id != "" && (record.ID != legacyContinuation.id || record.EventSeq != legacyContinuation.head) {
-			return conversationStale("The conversation changed before the turn was bound")
-		}
-		previous := record.Execution
-		operation := nativeOperation(scope, "POST", "/conversations/"+record.ID+"/link")
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
-SELECT 1 FROM native_commands WHERE organization_id = ? AND (operation = ? OR substr(operation, 1, length(?) + 1) = ? || ' ')
-) OR EXISTS (
-SELECT 1 FROM conversation_messages WHERE conversation_id = ? AND role = 'user' AND kind = 'continue'
-AND delivery IN ('saved', 'queued', 'sending')
-) OR (
-max(COALESCE((SELECT MAX(seq) FROM conversation_events WHERE conversation_id=? AND type='message.updated' AND message_role='user' AND message_kind='continue' AND attempt_id<>''),0),?)
->max(COALESCE((SELECT MAX(seq) FROM conversation_events WHERE conversation_id=? AND type='execution.updated' AND execution_status='completed'),0),?)
-)`, scope.organization, operation, operation, operation, record.ID, record.ID, legacyContinuation.continued, record.ID, legacyContinuation.completed).Scan(&response.Continuation); err != nil {
-			return err
-		}
-		if !previous.Status.Terminal() && previous.Owner.AttemptID != "" && previous.Owner.AttemptID != request.AttemptID {
-			if previous.Owner.LeaseID == string(request.LeaseID) {
-				return conversationStale("The lease is already bound to another attempt")
-			}
-			// The earlier owner lost its lease without unbinding; the new
-			// claim proves that. Settle it before the new attempt takes over.
-			if err := c.finishExecution(ctx, tx, &record, conversation.ExecutionInterrupted, conversationLeaseLostError, false, now); err != nil {
-				return err
-			}
-		}
-		thread := strings.TrimSpace(request.ThreadID)
-		named := thread != ""
-		if thread == "" {
-			thread = record.ProviderThreadID
-		} else {
-			// The runner named the thread, so the thread is its own and this
-			// bind's kind of turn is its origin.
-			record.ProviderThreadID = thread
-			record.ProviderThreadRunnerID = scope.credential.Runner.RunnerID
-			record.ProviderThreadOrigin = conversation.ThreadOriginWorker
-		}
-		execution := conversation.Execution{
-			Status: conversation.ExecutionStarting,
-			Owner: conversation.Owner{
-				AttemptID: request.AttemptID, RunID: request.RunID, LeaseID: string(request.LeaseID), FencingToken: int64(request.FencingToken),
-				RunnerID: scope.credential.Runner.RunnerID, MachineID: string(lease.session.Machine.ID), ThreadID: thread,
-			},
-			Capabilities: request.Capabilities,
-		}
-		// The owner tuple is taken in memory first so the hand-off and the
-		// transcript see the new generation; the execution is persisted once,
-		// with the resume it ends up reporting.
-		record.Execution = execution
-		pending, _, err := c.handOffControls(ctx, tx, &record, 0, now)
-		if err != nil {
-			return err
-		}
-		resume, err := c.resumeFor(ctx, tx, record, scope, thread, named, false, pending)
-		if err != nil {
-			return err
-		}
-		execution.Resume = conversationResumeKind(resume)
-		if err := c.updateExecution(ctx, tx, &record, execution, now); err != nil {
-			return err
-		}
-		if execution.Resume == conversation.ResumeTranscript {
-			// Transcript recovery is visible in the history rather than only
-			// in the runner's prompt.
-			notice := conversationMessageRecord{
-				Role: conversation.RoleSystem, Kind: conversation.MessageStatus,
-				Text:      conversationTranscriptNotice(len(resume.Transcript)),
-				Delivery:  conversation.DeliverySaved,
-				AttemptID: execution.Owner.AttemptID, ThreadID: execution.Owner.ThreadID,
-				Actor: conversationActorFor(scope),
-			}
-			if err := c.appendMessage(ctx, tx, &record, &notice, now); err != nil {
-				return err
-			}
-		}
-		response.ConversationID, response.Resume, response.Pending = record.ID, resume, pending
-		response.Preferences = record.Preferences.Normalized()
-		if len(pending) > 0 {
-			response.Cursor = pending[len(pending)-1].Cursor
-		}
-		return nil
-	})
-	if err != nil {
-		err = conversationStaleExecutionError("bind", record.ID, err)
-		return s.nativeAPIError(e, err)
-	}
-	c.committed(record)
-	return e.JSON(http.StatusOK, response)
+
+	return r.bindPostgres(e, request)
 }
 
 func (r *conversationWorkerRouter) unbind(e echo.Context) error {
-	c, s := r.service, r.service.server
+	s := r.service.server
 	var request conversationUnbindRequest
 	if err := decodeAPIJSON(e, &request); err != nil {
 		return s.invalidAPIRequest(e, err)
@@ -887,98 +755,12 @@ func (r *conversationWorkerRouter) unbind(e echo.Context) error {
 	if !ok {
 		return s.nativeAPIError(e, nativePublicInvalid("outcome must be succeeded, failed, cancelled or interrupted"))
 	}
-	if s.conversationRecordsSelected() {
-		return r.unbindPostgres(e, request, status)
-	}
-	ctx := e.Request().Context()
-	scope := nativeRequestScope(e)
-	item := e.Param("item")
-	if c.store.contents != nil {
-		linked, err := c.readLinkedConversation(ctx, c.store.reader, scope, item)
-		if err != nil {
-			return s.nativeAPIError(e, err)
-		}
-		if err := c.authorizeWorkerContent(ctx, scope, linked.ID, item, request.conversationWorkerIdentity, true); err != nil {
-			return s.nativeAPIError(e, err)
-		}
-		prepared, err := c.prepareTurnContents(ctx, string(scope.organization), linked.ID, nil, true)
-		if err != nil {
-			return s.nativeAPIError(e, err)
-		}
-		ctx = prepared
-	}
-	linked, err := c.readLinkedConversation(ctx, c.store.reader, scope, item)
-	if err != nil {
-		return s.nativeAPIError(e, err)
-	}
-	plan, err := c.newPublicationPlan(ctx, linked.ID)
-	if err != nil {
-		return s.nativeAPIError(e, err)
-	}
-	plan.record = linked
-	if !plan.record.Execution.Settled {
-		if plan.record.Execution.Status == conversation.ExecutionInterrupted && plan.record.Execution.Error == conversationLeaseLostError {
-			execution := plan.record.Execution
-			execution.Status, execution.Error, execution.Settled = status, strings.TrimSpace(request.Error), true
-			err = plan.updateExecution(ctx, execution)
-		} else {
-			err = plan.finishExecution(ctx, status, strings.TrimSpace(request.Error), true)
-		}
-		if err != nil {
-			return s.nativeAPIError(e, err)
-		}
-	}
-	ctx = plan.context(ctx)
-	var record conversationRecord
-	changed := false
-	err = c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
-			return err
-		}
-		if _, err := c.requireWorkerOwner(ctx, tx, scope, item, request.conversationWorkerIdentity, "", true, now); err != nil {
-			return err
-		}
-		var err error
-		record, err = c.readLinkedConversation(ctx, tx, scope, item)
-		if err != nil {
-			return err
-		}
-		if err := requireConversationRecordOwner(record, request.conversationWorkerIdentity, true); err != nil {
-			return err
-		}
-		changed = true
-		if record.Execution.Settled {
-			// This attempt already unbound; a repeated call changes nothing.
-			changed = false
-			return nil
-		}
-		if record.Execution.Status == conversation.ExecutionInterrupted && record.Execution.Error == conversationLeaseLostError {
-			// The lease was released before the unbind arrived and lease
-			// loss already settled the controls; the worker's own outcome
-			// is the accurate verdict for the execution.
-			execution := record.Execution
-			execution.Status = status
-			execution.Error = strings.TrimSpace(request.Error)
-			execution.Settled = true
-			return c.updateExecution(ctx, tx, &record, execution, now)
-		}
-		// A turn that reported interrupted or failed already made the
-		// execution terminal; the unbind outcome still wins and the
-		// controls still settle.
-		return c.finishExecution(ctx, tx, &record, status, strings.TrimSpace(request.Error), true, now)
-	})
-	if err != nil {
-		err = conversationStaleExecutionError("unbind", record.ID, err)
-		return s.nativeAPIError(e, err)
-	}
-	if changed {
-		c.committed(record)
-	}
-	return e.JSON(http.StatusOK, conversationUnbindResponse{ConversationID: record.ID, Execution: projectExecution(record.Execution)})
+
+	return r.unbindPostgres(e, request, status)
 }
 
 func (r *conversationWorkerRouter) controls(e echo.Context) error {
-	c, s := r.service, r.service.server
+	s := r.service.server
 	identity, err := conversationIdentityFromHeaders(e)
 	if err != nil {
 		return s.nativeAPIError(e, err)
@@ -987,50 +769,9 @@ func (r *conversationWorkerRouter) controls(e echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(e, err)
 	}
-	ctx := e.Request().Context()
-	scope := nativeRequestScope(e)
 	id := e.Param("conversation")
-	if s.conversationRecordsSelected() {
-		return r.controlsPostgres(e, id, identity, after, wait)
-	}
-	subscription, cancel := c.broker.subscribe(id)
-	defer cancel()
-	var deadline <-chan time.Time
-	if wait > 0 {
-		timer := time.NewTimer(wait)
-		defer timer.Stop()
-		deadline = timer.C
-	}
-	for {
-		page, err := c.pollControls(ctx, scope, id, identity, after)
-		if isNativeConflict(err) {
-			select {
-			case <-subscription.closed:
-			case <-r.stop:
-			case <-deadline:
-			case <-ctx.Done():
-			default:
-				continue
-			}
-			return e.JSON(http.StatusOK, page)
-		}
-		if err != nil {
-			err = conversationStaleExecutionError("controls", id, err)
-			return s.nativeAPIError(e, err)
-		}
-		if len(page.Controls) > 0 || wait == 0 {
-			return e.JSON(http.StatusOK, page)
-		}
-		select {
-		case <-subscription.wake:
-			continue
-		case <-subscription.closed:
-		case <-r.stop:
-		case <-deadline:
-		case <-ctx.Done():
-		}
-		return e.JSON(http.StatusOK, page)
-	}
+
+	return r.controlsPostgres(e, id, identity, after, wait)
 }
 
 func conversationControlQuery(e echo.Context) (after int64, wait time.Duration, err error) {
@@ -1053,93 +794,6 @@ func conversationControlQuery(e echo.Context) (after int64, wait time.Duration, 
 // pollControls acknowledges controls up to the cursor and hands off the next
 // queued controls in one transaction. Nothing is committed when the poll
 // changed nothing, so an idle worker never produces events.
-func (c *conversationService) pollControls(ctx context.Context, scope nativeScope, id string, identity conversationWorkerIdentity, after int64) (conversationControlsResponse, error) {
-	page := conversationControlsResponse{Controls: []conversationControl{}, Cursor: after}
-	if err := c.authorizeControlPublication(ctx, scope, id, identity); err != nil {
-		return page, err
-	}
-	plan, err := c.newPublicationPlan(ctx, id)
-	if err != nil {
-		return page, err
-	}
-	acknowledged, err := c.queryMessages(ctx, c.store.reader, conversationMessageQuery+"conversation_id = ? AND role = 'user' AND delivery = 'sending' AND attempt_id = ? AND seq <= ? ORDER BY seq", id, identity.AttemptID, after)
-	if err != nil {
-		return page, err
-	}
-	for _, message := range acknowledged {
-		if err := plan.setControlDelivery(ctx, message, conversation.DeliverySent, nil); err != nil {
-			return page, err
-		}
-	}
-	if err := plan.handOffControls(ctx, after); err != nil {
-		return page, err
-	}
-	ctx = plan.context(ctx)
-	var record conversationRecord
-	changed := false
-	err = c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		var item string
-		var err error
-		record, item, err = c.loadWorkerConversation(ctx, tx, scope, id)
-		if err != nil {
-			return err
-		}
-		if err := requireConversationRecordOwner(record, identity, false); err != nil {
-			return err
-		}
-		if _, err := c.requireWorkerOwner(ctx, tx, scope, item, identity, "", false, now); err != nil {
-			return err
-		}
-		acknowledged, err := c.queryMessages(ctx, tx, conversationMessageQuery+"conversation_id = ? AND role = 'user' AND delivery = 'sending' AND attempt_id = ? AND seq <= ? ORDER BY seq", record.ID, identity.AttemptID, after)
-		if err != nil {
-			return err
-		}
-		for i := range acknowledged {
-			if err := c.setControlDelivery(ctx, tx, &acknowledged[i], conversation.DeliverySent, nil, now); err != nil {
-				return err
-			}
-			changed = true
-		}
-		controls, handed, err := c.handOffControls(ctx, tx, &record, after, now)
-		if err != nil {
-			return err
-		}
-		changed = changed || handed
-		page.Controls = controls
-		if len(controls) > 0 {
-			page.Cursor = controls[len(controls)-1].Cursor
-		}
-		return nil
-	})
-	if err != nil {
-		return page, err
-	}
-	if changed {
-		c.committed(record)
-	}
-	return page, nil
-}
-
-func (c *conversationService) authorizeControlPublication(ctx context.Context, scope nativeScope, id string, identity conversationWorkerIdentity) error {
-	tx, err := c.store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	record, item, err := c.loadWorkerConversation(ctx, tx, scope, id)
-	if err != nil {
-		return err
-	}
-	if err := requireConversationRecordOwner(record, identity, false); err != nil {
-		return err
-	}
-	now, err := c.server.database.currentTime()
-	if err != nil {
-		return err
-	}
-	_, err = c.requireWorkerOwner(ctx, tx, scope, item, identity, "", false, now)
-	return err
-}
 
 // conversationTurn carries the state of one turn-event batch while it is
 // applied inside a transaction.
@@ -1228,24 +882,8 @@ func (c *conversationService) validateTurnEvent(ctx context.Context, q nativeQue
 	return nil
 }
 
-func (c *conversationService) validateTurnEvents(ctx context.Context, record conversationRecord, events []conversationTurnEvent) error {
-	execution := record.Execution
-	for _, event := range events {
-		if err := c.validateTurnEvent(ctx, c.store.reader, record, execution, event); err != nil {
-			return err
-		}
-		switch event.Type {
-		case "turn_started":
-			execution.Owner.TurnID = strings.TrimSpace(event.TurnID)
-		case "turn_completed":
-			execution.Owner.TurnID = ""
-		}
-	}
-	return nil
-}
-
 func (r *conversationWorkerRouter) turnEvents(e echo.Context) error {
-	c, s := r.service, r.service.server
+	s := r.service.server
 	var request conversationTurnEventsRequest
 	if err := decodeAPIJSON(e, &request); err != nil {
 		return s.invalidAPIRequest(e, err)
@@ -1260,105 +898,9 @@ func (r *conversationWorkerRouter) turnEvents(e echo.Context) error {
 	if len(request.BatchKey) > conversation.MaxCommandKeyBytes {
 		return s.nativeAPIError(e, nativePublicInvalid(fmt.Sprintf("batch_key must be at most %d bytes", conversation.MaxCommandKeyBytes)))
 	}
-	ctx := e.Request().Context()
-	scope := nativeRequestScope(e)
 	id := e.Param("conversation")
-	if s.conversationRecordsSelected() {
-		return r.turnEventsPostgres(e, id, request)
-	}
-	if err := c.authorizeWorkerContent(ctx, scope, id, "", request.conversationWorkerIdentity, false); err != nil {
-		return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
-	}
-	if request.BatchKey != "" {
-		var stored int64
-		err := c.store.reader.QueryRowContext(ctx, "SELECT event_seq FROM conversation_turn_batches WHERE attempt_id = ? AND batch_key = ?", request.AttemptID, request.BatchKey).Scan(&stored)
-		if err == nil {
-			return e.JSON(http.StatusAccepted, conversationTurnEventsResponse{EventSeq: stored})
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return s.nativeAPIError(e, fmt.Errorf("read turn batch: %w", err))
-		}
-	}
-	plan, err := c.newPublicationPlan(ctx, id)
-	if err != nil {
-		return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
-	}
-	if err := c.validateTurnEvents(plan.context(ctx), plan.record, request.Events); err != nil {
-		return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
-	}
-	if c.store.contents != nil {
-		prepared, err := c.prepareTurnContents(ctx, string(scope.organization), id, request.Events, false)
-		if err != nil {
-			return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
-		}
-		ctx = prepared
-	}
-	if err := plan.turnEvents(ctx, scope, request.Events); err != nil {
-		return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
-	}
-	ctx = plan.context(ctx)
-	var record conversationRecord
-	var response conversationTurnEventsResponse
-	replayed := false
-	err = c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
-			return err
-		}
-		var item string
-		var err error
-		record, item, err = c.loadWorkerConversation(ctx, tx, scope, id)
-		if err != nil {
-			return err
-		}
-		if err := requireConversationRecordOwner(record, request.conversationWorkerIdentity, false); err != nil {
-			return err
-		}
-		if _, err := c.requireWorkerOwner(ctx, tx, scope, item, request.conversationWorkerIdentity, "", false, now); err != nil {
-			return err
-		}
-		if request.BatchKey != "" {
-			var stored int64
-			err := tx.QueryRowContext(ctx, "SELECT event_seq FROM conversation_turn_batches WHERE attempt_id = ? AND batch_key = ?", request.AttemptID, request.BatchKey).Scan(&stored)
-			switch {
-			case err == nil:
-				// The batch already committed; nothing is applied again.
-				response.EventSeq, replayed = stored, true
-				return nil
-			case !errors.Is(err, sql.ErrNoRows):
-				return fmt.Errorf("read turn batch: %w", err)
-			}
-		}
-		turn := &conversationTurn{scope: scope, record: &record, execution: record.Execution, now: now}
-		for _, event := range request.Events {
-			if err := c.applyTurnEvent(ctx, tx, turn, event); err != nil {
-				return err
-			}
-		}
-		if turn.changed {
-			if err := c.updateExecution(ctx, tx, &record, turn.execution, now); err != nil {
-				return err
-			}
-		}
-		if err := tx.QueryRowContext(ctx, "SELECT event_seq FROM conversations WHERE id = ?", record.ID).Scan(&response.EventSeq); err != nil {
-			return fmt.Errorf("read event sequence: %w", err)
-		}
-		record.EventSeq = response.EventSeq
-		if request.BatchKey != "" {
-			if _, err := tx.ExecContext(ctx, "INSERT INTO conversation_turn_batches (attempt_id, batch_key, event_seq, created_at) VALUES (?, ?, ?, ?)",
-				request.AttemptID, request.BatchKey, response.EventSeq, conversationTime(now)); err != nil {
-				return fmt.Errorf("record turn batch: %w", err)
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		err = conversationStaleExecutionError("turn_events", id, err)
-		return s.nativeAPIError(e, err)
-	}
-	if !replayed {
-		c.committed(record)
-	}
-	return e.JSON(http.StatusAccepted, response)
+
+	return r.turnEventsPostgres(e, id, request)
 }
 
 func (c *conversationService) applyTurnEvent(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
@@ -1652,192 +1194,22 @@ func (c *conversationService) applyTurnCompleted(ctx context.Context, tx *sql.Tx
 // lease's release committed. Failures are logged: the release itself has
 // already succeeded and the reconcile loop retries.
 func (c *conversationService) leaseReleased(ctx context.Context, leaseID tracker.LeaseID) {
-	if c.server.conversationRecordsSelected() {
-		organization, err := c.lifecycleOrganization()
-		if err == nil {
-			err = c.reconcileExecutionsPG(ctx, organization)
-		}
-		if err != nil {
-			c.logger.Warn("conversation lease release reconcile failed", "lease", leaseID, "error", err)
-		}
-		return
+	organization, err := c.lifecycleOrganization()
+	if err == nil {
+		err = c.reconcileExecutionsPG(ctx, organization)
 	}
-	candidates, err := c.inFlightExecutions(ctx, conversationInFlightQuery+"AND (query_metadata_version=0 OR execution_lease_id = ?)", leaseID)
 	if err != nil {
-		c.logger.Warn("conversation lease release lookup failed", "lease", leaseID, "error", err)
-		return
+		c.logger.Warn("conversation lease release reconcile failed", "lease", leaseID, "error", err)
 	}
-	for _, candidate := range candidates {
-		if err := c.settleLostExecution(ctx, candidate); err != nil {
-			c.logger.Warn("conversation lease release settlement failed", "conversation", candidate.id, "error", err)
-		}
-	}
+	return
 }
 
 func (c *conversationService) reconcileExecutions(ctx context.Context) error {
-	if c.server.conversationRecordsSelected() {
-		organization, err := c.lifecycleOrganization()
-		if err != nil {
-			return err
-		}
-		return c.reconcileExecutionsPG(ctx, organization)
-	}
-	candidates, err := c.inFlightExecutions(ctx, conversationInFlightQuery)
+	organization, err := c.lifecycleOrganization()
 	if err != nil {
 		return err
 	}
-	var errs []error
-	for _, candidate := range candidates {
-		if err := c.settleLostExecution(ctx, candidate); err != nil {
-			errs = append(errs, fmt.Errorf("conversation %s: %w", candidate.id, err))
-		}
-	}
-	return errors.Join(errs...)
-}
-
-type conversationExecutionRef struct {
-	id           string
-	organization tracker.OrganizationID
-	project      tracker.ProjectID
-}
-
-// inFlightExecutions lists conversations whose execution is live, or ended by
-// a turn report but never settled by an unbind. It runs outside any
-// transaction; settlement re-reads the state under one.
-const conversationInFlightQuery = `SELECT id,organization_id,project_id,execution_status,execution_lease_id,execution_settled,CASE WHEN query_metadata_version=0 THEN execution_json ELSE '' END FROM conversations WHERE (query_metadata_version=0 OR execution_status IN ('starting','running','waiting_input','interrupting') OR (execution_status IN ('completed','interrupted','failed','unknown') AND execution_settled=0 AND execution_lease_id<>'')) `
-
-func (c *conversationService) inFlightExecutions(ctx context.Context, query string, args ...any) ([]conversationExecutionRef, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	rows, err := c.server.database.reader.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list in-flight conversations: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var refs []conversationExecutionRef
-	for rows.Next() {
-		var ref conversationExecutionRef
-		var raw string
-		var status, lease sql.NullString
-		var settled sql.NullBool
-		if err := rows.Scan(&ref.id, &ref.organization, &ref.project, &status, &lease, &settled, &raw); err != nil {
-			return nil, fmt.Errorf("scan in-flight conversation: %w", err)
-		}
-		execution := conversation.Execution{Status: conversation.ExecutionStatus(status.String), Settled: settled.Bool, Owner: conversation.Owner{LeaseID: lease.String}}
-		if raw != "" {
-			if err := json.Unmarshal([]byte(raw), &execution); err != nil {
-				return nil, err
-			}
-		}
-		live := execution.Status == conversation.ExecutionStarting || execution.Status == conversation.ExecutionRunning || execution.Status == conversation.ExecutionWaitingInput || execution.Status == conversation.ExecutionInterrupting
-		if !live && (!execution.Status.Terminal() || execution.Settled || execution.Owner.LeaseID == "") {
-			continue
-		}
-		if len(args) > 0 && execution.Owner.LeaseID != fmt.Sprint(args[0]) {
-			continue
-		}
-		refs = append(refs, ref)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list in-flight conversations: %w", err)
-	}
-	return refs, nil
-}
-
-func (c *conversationService) settleLostExecution(ctx context.Context, ref conversationExecutionRef) error {
-	prepared, err := c.prepareTurnContents(ctx, string(ref.organization), ref.id, nil, true)
-	if err != nil {
-		return err
-	}
-	ctx = prepared
-	plan, err := c.newPublicationPlan(ctx, ref.id)
-	if err != nil {
-		return err
-	}
-	execution := plan.record.Execution
-	if execution.Status.Terminal() {
-		err = plan.finishExecution(ctx, execution.Status, execution.Error, true)
-	} else {
-		err = plan.finishExecution(ctx, conversation.ExecutionInterrupted, conversationLeaseLostError, false)
-	}
-	if err != nil {
-		return err
-	}
-	ctx = plan.context(ctx)
-	var record conversationRecord
-	changed := false
-	err = c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		var err error
-		record, err = c.store.readConversation(ctx, tx, ref.organization, ref.project, ref.id)
-		if err != nil {
-			return err
-		}
-		execution := record.Execution
-		if (execution.Status.Terminal() && execution.Settled) || execution.Status == conversation.ExecutionIdle || execution.Status == conversation.ExecutionWaitingForRunner {
-			return nil
-		}
-		if execution.Owner.LeaseID == "" && execution.Owner.AttemptID == "" {
-			// A hub-side coordinator turn runs in this process and holds no
-			// lease and no attempt. Reconciliation is about workers that
-			// stopped reporting; it must not interrupt a live in-process turn.
-			return nil
-		}
-		identity := conversationWorkerIdentity{LeaseID: tracker.LeaseID(execution.Owner.LeaseID), FencingToken: tracker.FencingToken(execution.Owner.FencingToken), AttemptID: execution.Owner.AttemptID}
-		scope, err := readConversationOwnerScope(ctx, tx, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, identity.LeaseID)
-		if err == nil {
-			_, err = c.requireExecutionOwner(ctx, tx, scope, record.WorkItemID, identity, execution.Owner.RunID, false, true, now)
-		}
-		if err == nil {
-			return nil
-		}
-		var failure *nativeError
-		lostOwner := errors.Is(err, sql.ErrNoRows) || (errors.As(err, &failure) && failure.status >= http.StatusBadRequest && failure.status < http.StatusInternalServerError)
-		if !lostOwner {
-			return err
-		}
-		changed = true
-		if execution.Status.Terminal() {
-			// The turn already reported how it ended; only the unbind that
-			// would have settled its controls is missing, and the lost lease
-			// means it will never arrive.
-			return c.finishExecution(ctx, tx, &record, execution.Status, execution.Error, true, now)
-		}
-		return c.finishExecution(ctx, tx, &record, conversation.ExecutionInterrupted, conversationLeaseLostError, false, now)
-	})
-	if err != nil {
-		return err
-	}
-	if changed {
-		c.committed(record)
-	}
-	return nil
-}
-
-func (c *conversationService) authorizeWorkerContent(ctx context.Context, scope nativeScope, id, item string, identity conversationWorkerIdentity, terminal bool) error {
-	tx, err := c.store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	record, err := c.store.readConversation(ctx, tx, scope.organization, scope.project, id)
-	if err != nil {
-		return err
-	}
-	if err := c.authorizeRead(ctx, tx, scope, record); err != nil {
-		return err
-	}
-	if err := requireConversationRecordOwner(record, identity, terminal); err != nil {
-		return err
-	}
-	if item == "" {
-		item = record.WorkItemID
-	}
-	now, err := c.server.database.currentTime()
-	if err != nil {
-		return err
-	}
-	_, err = c.requireWorkerOwner(ctx, tx, scope, item, identity, "", terminal, now)
-	return err
+	return c.reconcileExecutionsPG(ctx, organization)
 }
 
 func (c *conversationService) pendingControlMessages(ctx context.Context, q nativeQueryer, id string, after int64) ([]conversationMessageRecord, error) {

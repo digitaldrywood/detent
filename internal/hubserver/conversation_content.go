@@ -237,111 +237,15 @@ func (s *conversationStore) resolveMessageContents(ctx context.Context, query na
 	return nil
 }
 
-func (c *conversationService) prepareTurnContents(ctx context.Context, organization, id string, events []conversationTurnEvent, finishing bool) (context.Context, error) {
-	if c.store.contents == nil {
-		return ctx, nil
-	}
-	var candidates []conversationMessageRecord
-	for _, event := range events {
-		if event.Type == "turn_completed" {
-			finishing = true
-		}
-		if event.Type == "item" {
-			data, err := conversationItemData(event.Data)
-			if err != nil {
-				return ctx, err
-			}
-			candidates = append(candidates, conversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageKind(event.Kind), Text: conversationTruncate(event.Summary, conversationMaxSummaryBytes), Data: data, Delivery: conversation.DeliveryCompleted})
-		}
-	}
-	if finishing {
-		messages, err := c.queryMessages(ctx, c.store.reader, conversationMessageQuery+"conversation_id=? AND delivery='responding' ORDER BY seq", id)
-		if err != nil {
-			return ctx, err
-		}
-		byItem, byID := map[string]*conversationMessageRecord{}, map[string]*conversationMessageRecord{}
-		tracked := make([]*conversationMessageRecord, 0, len(messages))
-		for index := range messages {
-			message := &messages[index]
-			byItem[message.ProviderItemID] = message
-			byID[message.ID] = message
-			tracked = append(tracked, message)
-		}
-		turnID := ""
-		for _, event := range events {
-			switch event.Type {
-			case "turn_started":
-				turnID = event.TurnID
-			case "delta":
-				message := byItem[event.ProviderItemID]
-				if event.MessageID != "" {
-					message = byID[event.MessageID]
-				}
-				if message == nil {
-					message = &conversationMessageRecord{Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, TurnID: turnID}
-					byItem[event.ProviderItemID] = message
-					tracked = append(tracked, message)
-				}
-				message.Text += event.Text
-			case "turn_completed":
-				for _, message := range tracked {
-					if message.TurnID == event.TurnID && message.Delivery == conversation.DeliveryResponding {
-						message.Delivery = conversation.DeliveryCompleted
-						candidates = append(candidates, *message)
-					}
-				}
-			}
-		}
-		for _, message := range tracked {
-			if message.Delivery == conversation.DeliveryResponding {
-				message.Delivery = conversation.DeliveryCompleted
-				candidates = append(candidates, *message)
-			}
-		}
-
-	}
-
-	var project, uploader string
-	if err := c.store.reader.QueryRowContext(ctx, "SELECT project_id,owner_principal_id FROM conversations WHERE id=?", id).Scan(&project, &uploader); err != nil {
-		return ctx, err
-	}
-	return c.prepareContents(ctx, organization, project, uploader, candidates...)
-}
-
-func (c *conversationService) prepareCommandContents(ctx context.Context, organization, project, uploader, id string, command conversation.Command) (context.Context, error) {
-	if c.store.contents == nil {
-		return ctx, nil
-	}
-	message := conversationMessageRecord{Role: conversation.RoleUser, Text: command.Text, Delivery: conversation.DeliverySaved}
-	switch command.Kind {
-	case conversation.CommandMessage:
-		message.Data = coordinatorConnectionData(ctx)
-	case conversation.CommandContinue:
-	case conversation.CommandAnswer:
-		question, err := c.store.readQuestion(ctx, c.store.reader, id, command.QuestionID)
-		if err != nil {
-			return ctx, err
-		}
-		data, err := json.Marshal(command.Answers)
-		if err != nil {
-			return ctx, err
-		}
-		message.Text, message.Data = renderAnswer(question.Question, command.Answers), data
-	default:
-		return ctx, nil
-	}
-	return c.prepareContents(ctx, organization, project, uploader, message)
-}
-
 func (c *conversationService) prepareConversationContents(ctx context.Context, id string, messages ...conversationMessageRecord) (context.Context, error) {
 	if c.store.contents == nil {
 		return ctx, nil
 	}
-	var organization, project, uploader string
-	if err := c.store.reader.QueryRowContext(ctx, "SELECT organization_id,project_id,owner_principal_id FROM conversations WHERE id=?", id).Scan(&organization, &project, &uploader); err != nil {
+	record, err := c.readPublicationConversation(ctx, id)
+	if err != nil {
 		return ctx, err
 	}
-	return c.prepareContents(ctx, organization, project, uploader, messages...)
+	return c.prepareContents(ctx, string(record.OrganizationID), string(record.ProjectID), record.OwnerPrincipalID, messages...)
 }
 
 func contentArchiveID(organization string, ref attachment.ArchiveReference) string {
@@ -552,18 +456,6 @@ func (b *conversationReadBatch) captureMessageDeltaSuffix(ctx context.Context, q
 	return nil
 }
 
-func (b *conversationReadBatch) captureLegacyMessageDeltas(ctx context.Context, store *conversationStore, message conversationMessageRecord) error {
-	tx, err := store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := b.captureMessageDeltaSuffix(ctx, tx, message, int64(len(message.Text))); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 func (b *conversationReadBatch) read(ctx context.Context, store *conversationStore, contentID string) ([]byte, error) {
 	ref, ok := b.archives[contentID]
 	if !ok {
@@ -619,11 +511,6 @@ func (b *conversationReadBatch) hydrateMessages(ctx context.Context, store *conv
 		}
 		if message.Role != conversation.RoleAssistant || message.TextBytes <= int64(len(message.Text)) {
 			continue
-		}
-		if message.ContentID != "" && !message.StoredTextBytes.Valid {
-			if err := b.captureLegacyMessageDeltas(ctx, store, *message); err != nil {
-				return err
-			}
 		}
 		deltas := b.deltas[message.ID]
 		for j := range deltas {

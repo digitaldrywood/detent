@@ -133,7 +133,6 @@ func TestNativeRetentionCompletedBackfillsAvoidWriter(t *testing.T) {
 		name string
 		run  func(context.Context) error
 	}{
-		{"conversation metadata", s.convertConversationQueryMetadata},
 		{"claim facts", s.database.populateClaimFacts},
 		{"runner facts", s.database.populateRunnerFacts},
 		{"time indexes", s.database.populateTimeIndexes},

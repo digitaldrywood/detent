@@ -27,8 +27,8 @@ type conversationStore struct {
 	database *database
 }
 
-func newConversationStore(db *sql.DB) *conversationStore {
-	return &conversationStore{db: db}
+func newConversationStore(_ *sql.DB) *conversationStore {
+	return &conversationStore{}
 }
 
 // errConversationRevision reports a compare-and-set failure on a conversation.
@@ -736,11 +736,6 @@ func (s *conversationStore) updateMessage(ctx context.Context, tx *sql.Tx, messa
 	if contentID != "" {
 		actor = "{}"
 	}
-	if message.Kind == conversation.MessageTool && message.Actor.Kind == conversation.ActorCoordinator {
-		if err := s.preserveLegacyToolRevision(ctx, tx, message); err != nil {
-			return err
-		}
-	}
 	result, err := tx.ExecContext(ctx, `UPDATE conversation_messages SET text = ?, data_json = ?, delivery = ?, attempt_id = ?, thread_id = ?, turn_id = ?, provider_item_id = ?, actor_json = ?, updated_at = ?, content_attachment_id = ?, revision = revision+1
 WHERE id = ? AND conversation_id = ?`,
 		storedText, storedData, message.Delivery, message.AttemptID, message.ThreadID, message.TurnID, message.ProviderItemID, actor, conversationTime(message.UpdatedAt), contentID,
@@ -1197,39 +1192,6 @@ type conversationNormalizeSummary struct {
 	Messages      int64
 	Questions     int64
 	Receipts      int64
-}
-
-func (s *conversationStore) normalizeAfterRestart(ctx context.Context, now time.Time) (conversationNormalizeSummary, error) {
-	var summary conversationNormalizeSummary
-	materialized, err := s.materializeRestartedMessages(ctx, now)
-	if err != nil {
-		return summary, err
-	}
-	summary.Messages = materialized
-	summary.Conversations, summary.Receipts, err = s.normalizeRestartedRecords(ctx, now)
-	if err != nil {
-		return summary, err
-	}
-	for _, statement := range []struct {
-		query string
-		args  []any
-		count *int64
-	}{
-		{"UPDATE conversation_messages SET delivery=?,updated_at=? WHERE delivery IN (?,?,?)", []any{conversation.DeliveryUnknown, conversationTime(now), conversation.DeliverySending, conversation.DeliverySent, conversation.DeliveryResponding}, &summary.Messages},
-		{"UPDATE conversation_questions SET status=?,updated_at=? WHERE status=?", []any{conversation.QuestionExpired, conversationTime(now), conversation.QuestionPending}, &summary.Questions},
-		{"UPDATE conversation_questions SET status=?,updated_at=? WHERE status=?", []any{conversation.QuestionUnknown, conversationTime(now), conversation.QuestionSending}, &summary.Questions},
-	} {
-		result, err := s.db.ExecContext(ctx, statement.query+" AND conversation_id IN (SELECT id FROM conversations WHERE work_item_id IS NULL)", statement.args...)
-		if err != nil {
-			return summary, err
-		}
-		count, err := result.RowsAffected()
-		if err != nil {
-			return summary, err
-		}
-		*statement.count += count
-	}
-	return summary, nil
 }
 
 // Message references.
