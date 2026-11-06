@@ -11,7 +11,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -50,21 +49,17 @@ func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitie
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	var serverID string
-	if s.database.postgres != nil {
-		organization := s.database.hostedOrganization
-		if organization == "" || s.config.AccessRepository == nil {
-			return nativeCapabilitiesResponse{}, ErrHostedDatabaseBinding
+	organization := s.database.hostedOrganization
+	if organization == "" || s.config.AccessRepository == nil {
+		return nativeCapabilitiesResponse{}, ErrHostedDatabaseBinding
+	}
+	if err := s.config.AccessRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		identity, err := reader.HubIdentity(ctx)
+		if err == nil {
+			serverID = identity.ID
 		}
-		if err := s.config.AccessRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
-			identity, err := reader.HubIdentity(ctx)
-			if err == nil {
-				serverID = identity.ID
-			}
-			return err
-		}); err != nil {
-			return nativeCapabilitiesResponse{}, err
-		}
-	} else if err := s.database.reader.QueryRowContext(ctx, "SELECT id FROM hub_identity").Scan(&serverID); err != nil {
+		return err
+	}); err != nil {
 		return nativeCapabilitiesResponse{}, err
 	}
 	features := []string{progresscheck.InvestigationCapability, progresscheck.RetrievedEvidenceCapability, "native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", "scoped_runner_identity", "repository_policy", "change_requests", tracker.NativeExecutionCapability, tracker.NativeRuntimeEvidenceCapability, tracker.NativePreProviderFailureCapability, tracker.NativeAdmissionEvidenceCapability, tracker.NativeAdmissionObservationCapability, tracker.NativeProviderCapacityCapability, tracker.NativeCheckoutRepositoryCapability, tracker.NativeRunnerSkillsCapability, tracker.NativeLocalChecksCapability, tracker.NativeRunnerCapacityCapability, tracker.NativeProjectConfigurationCapability, tracker.NativeProjectDiagnosticsCapability, tracker.NativeRunnerUpdateCapability}
@@ -83,23 +78,20 @@ func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitie
 func (s *Service) nativeOrganizations(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT id, name, slug, local,coalesce(logo_image_key,''),coalesce(logo_image_sha256,''),logo_revision FROM organizations ORDER BY id")
-	if err != nil {
-		return s.nativeAPIError(c, err)
+	organization := s.database.hostedOrganization
+	if organization == "" || s.config.AccessRepository == nil {
+		return s.nativeAPIError(c, ErrHostedDatabaseBinding)
 	}
-	defer rows.Close()
 	result := tracker.Page[nativeOrganization]{Items: []nativeOrganization{}}
-	for rows.Next() {
-		var organization nativeOrganization
-		if err := rows.Scan(&organization.ID, &organization.Name, &organization.Slug, &organization.Local, &organization.Logo.ImageKey, &organization.Logo.ImageSHA256, &organization.Logo.Revision); err != nil {
-			return s.nativeAPIError(c, err)
+	err := s.config.AccessRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		record, err := reader.AccessOrganization(ctx)
+		if err != nil {
+			return err
 		}
-		if organization.Logo.ImageKey != "" {
-			organization.Logo.URL = "/organizations/" + string(organization.ID) + "/api/v2/attachments/" + organization.Logo.ImageKey
-		}
-		result.Items = append(result.Items, organization)
-	}
-	if err := rows.Err(); err != nil {
+		result.Items = append(result.Items, nativeOrganization{ID: record.OrganizationID, Name: record.Name, Slug: record.Slug, Local: record.Local})
+		return nil
+	})
+	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, result)
@@ -251,23 +243,7 @@ func readNativeProject(ctx context.Context, query nativeQueryer, scope nativeSco
 }
 
 func (s *Service) getNativeProject(c echo.Context) error {
-	if s.config.TenantRepository != nil {
-		return s.getProjectRecord(c)
-	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
-	project, err := readNativeProject(ctx, s.database.reader, nativeRequestScope(c))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	templates, err := nativeReporterContracts(ctx, s.database.reader, nativeRequestScope(c))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, struct {
-		tracker.NativeProject
-		ReporterTemplates config.ReporterContracts `json:"reporter_templates"`
-	}{project, templates})
+	return s.getProjectRecord(c)
 }
 
 func updateNativeProjectStates(ctx context.Context, tx *sql.Tx, scope nativeScope, states []tracker.NativeState, now time.Time) error {
