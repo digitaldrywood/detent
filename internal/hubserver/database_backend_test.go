@@ -862,16 +862,29 @@ func TestDatabaseStartupCancellation(t *testing.T) {
 }
 
 func TestPostgresMigrationAuthorityIsSeparate(t *testing.T) {
-	admin := postgresStartupTemplate.Database(t)
+	unmigrated := pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
+		roles, err := os.ReadFile("postgres/roles.sql")
+		if err != nil {
+			return err
+		}
+		_, err = db.ExecContext(ctx, string(roles))
+		return err
+	})
+	t.Cleanup(func() {
+		deadline, ok := t.Deadline()
+		if !ok {
+			t.Error("missing test deadline")
+			return
+		}
+		ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
+		defer cancel()
+		if err := unmigrated.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	admin := unmigrated.Database(t)
 	runtime := startupConnection(t, admin, "detent_runtime_v2", "")
 	migration := startupConnection(t, admin, "detent_migration_v2", "")
-	provider, err := startupMigrationProvider(admin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.DownTo(t.Context(), 0); err != nil {
-		t.Fatal(err)
-	}
 	store, err := openDatabase(t.Context(), startupConfig(runtime))
 	if store != nil || err == nil {
 		t.Fatalf("unmigrated runtime = %v, %v", store, err)
