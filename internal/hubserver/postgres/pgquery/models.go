@@ -1853,6 +1853,41 @@ type NativeComment struct {
 	RecordID             int64
 }
 
+type NativeCommentPage struct {
+	OrganizationID              tracker.OrganizationID
+	ProjectID                   tracker.ProjectID
+	WorkItemID                  string
+	CommentID                   string
+	Revision                    pgtype.Int8
+	Sequence                    pgtype.Int8
+	Body                        *string
+	Deleted                     pgtype.Bool
+	CreatedAt                   *time.Time
+	UpdatedAt                   *time.Time
+	ActorKind                   *string
+	ActorPrincipalID            *string
+	ActorViaKey                 *string
+	ActorDisplayName            *string
+	ActorAgent                  *string
+	EditorKind                  *string
+	EditorPrincipalID           *string
+	EditorViaKey                *string
+	EditorDisplayName           *string
+	EditorAgent                 *string
+	ProvenanceProvider          *string
+	ProvenanceExternalID        *string
+	ProvenanceAuthorID          *string
+	ProvenanceAuthorDisplayName *string
+	ProvenanceCreatedAt         *time.Time
+	ProvenanceUpdatedAt         *time.Time
+	ProvenanceObservedAt        *time.Time
+	HasEditedby                 bool
+	HasProvenance               bool
+	SourceGeneration            int64
+	SourceAt                    time.Time
+	ProjectedAt                 time.Time
+}
+
 type NativeDuplicateChallenge struct {
 	OrganizationID     tracker.OrganizationID
 	ProjectID          tracker.ProjectID
@@ -1883,6 +1918,155 @@ type NativePrPublication struct {
 	Provider          string
 	ExternalID        string
 	ExternalURL       string
+}
+
+type NativeRelationshipPage struct {
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	WorkItemID        string
+	Generation        int64
+	RelationshipType  string
+	Direction         string
+	RelatedProjectID  string
+	RelatedWorkItemID string
+	Number            int64
+	Title             string
+	State             string
+	Terminal          bool
+	Dispatchable      bool
+	ActorPrincipalID  *string
+	WebUrl            string
+	Identifier        string
+	ClosedAt          *time.Time
+	StartedAt         *time.Time
+}
+
+type NativeRelationshipPageHead struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+	Generation     int64
+	SourceAt       time.Time
+	ProjectedAt    time.Time
+}
+
+type NativeWorkItemPage struct {
+	OrganizationID                  tracker.OrganizationID
+	ProjectID                       tracker.ProjectID
+	WorkItemID                      string
+	Number                          pgtype.Int8
+	Revision                        pgtype.Int8
+	Profile                         *string
+	WebUrl                          *string
+	IssueType                       *string
+	Title                           *string
+	Body                            *string
+	State                           *string
+	ReporterStatus                  *string
+	Archived                        pgtype.Bool
+	Terminal                        pgtype.Bool
+	SchedulingEligible              pgtype.Bool
+	Priority                        pgtype.Int4
+	Labels                          []string
+	Assignees                       []string
+	CreatedAt                       *time.Time
+	UpdatedAt                       *time.Time
+	ClosedAt                        *time.Time
+	LastActivityAt                  *time.Time
+	IgnoreDependencies              pgtype.Bool
+	ActorKind                       *string
+	ActorPrincipalID                *string
+	ActorViaKey                     *string
+	ActorDisplayName                *string
+	ActorAgent                      *string
+	ProvenanceProvider              *string
+	ProvenanceExternalID            *string
+	ProvenanceAuthorID              *string
+	ProvenanceAuthorDisplayName     *string
+	ProvenanceCreatedAt             *time.Time
+	ProvenanceUpdatedAt             *time.Time
+	ProvenanceObservedAt            *time.Time
+	ReportUrl                       *string
+	ReportAppBuild                  *string
+	ReportBrowser                   *string
+	ReportOs                        *string
+	ReportViewport                  *string
+	ReportCapturedAt                *string
+	VerificationState               *string
+	VerificationAt                  *time.Time
+	VerifierKind                    *string
+	VerifierPrincipalID             *string
+	VerifierViaKey                  *string
+	VerifierDisplayName             *string
+	VerifierAgent                   *string
+	ContractExempt                  pgtype.Bool
+	ContractHumanAction             *string
+	ContractReturnState             *string
+	ContractRecordedAt              *time.Time
+	ContractReleasePolicy           *string
+	ContractReleaseBody             *string
+	ReleaseSourceIssueID            *string
+	ReleaseSourceChangeID           *string
+	ReleaseSourceMergeSha           *string
+	ReleaseRepository               *string
+	ReleasePrNumber                 pgtype.Int8
+	ReleaseHeadRef                  *string
+	ReleaseHeadSha                  *string
+	ReleaseBaseRef                  *string
+	ReleaseBaseSha                  *string
+	ReleaseFrozenSha                *string
+	ReleaseChangeID                 *string
+	ReleaseVersionID                *string
+	ReleaseAssociatedAt             *time.Time
+	ReleaseActorKind                *string
+	ReleaseActorPrincipalID         *string
+	ReleaseActorViaKey              *string
+	ReleaseActorDisplayName         *string
+	ReleaseActorAgent               *string
+	SourceUrl                       *string
+	SourceStatus                    *string
+	HasProvenance                   bool
+	HasReportcontext                bool
+	HasVerification                 bool
+	HasVerificationVerifiedby       bool
+	HasIssuecontract                bool
+	HasIssuecontractReleasedelivery bool
+	HasReleasedelivery              bool
+	HasLinkedsource                 bool
+	SourceGeneration                int64
+	SourceAt                        time.Time
+	ProjectedAt                     time.Time
+	ContractSectionNames            []string
+	ContractSectionValues           []string
+	ReferenceProviders              []string
+	ReferenceKinds                  []string
+	ReferenceIds                    []string
+	ReferenceUrls                   []string
+	ReferenceRepositories           []string
+	ReferenceNumbers                []int64
+}
+
+type NativeWorkItemPageDirty struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+	RecordID       string
+	Kind           string
+	Generation     pgtype.Int8
+	SourceAt       time.Time
+	AfterType      string
+	AfterDirection string
+	AfterProject   string
+	AfterItem      string
+	Propagate      bool
+	Cleaning       bool
+}
+
+type NativeWorkItemPageProgress struct {
+	OrganizationID      tracker.OrganizationID
+	CursorGeneration    int64
+	ExaminedAt          time.Time
+	PublicationRevision int64
 }
 
 type OnboardingIssueIntake struct {
