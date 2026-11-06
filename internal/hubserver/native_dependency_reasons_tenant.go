@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -182,6 +183,23 @@ func (s *Service) authorizeDependencyReasonLease(ctx context.Context, w tenantst
 	if err != nil {
 		return err
 	}
+	var lease leasestore.Lease
+	var assigned runnerstore.Identity
+	if command.LeaseID != "" {
+		assigned, err = w.RunnerForLease(ctx, string(command.LeaseID))
+		if err != nil {
+			return err
+		}
+		locker, ok := w.(leasestore.FencedLeaseLocker)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		lease, err = locker.LockLease(ctx, string(command.LeaseID))
+		if err != nil {
+			return err
+		}
+		now = s.config.now().UTC()
+	}
 	if scope.credential.EntryKey != nil || identity.OrganizationID != scope.organization || identity.RunnerID != scope.credential.Runner.RunnerID || identity.RemovedAt != nil || !identity.ExpiresAt.After(now) || identity.State == "disabled" || credential.Scope != "worker" || credential.Kind != "service" || !credential.Valid(scope.credential.Hash, now) {
 		return runnerUnauthorized()
 	}
@@ -201,18 +219,6 @@ func (s *Service) authorizeDependencyReasonLease(ctx context.Context, w tenantst
 			return err
 		}
 		return tracker.ErrStaleFencingToken
-	}
-	locker, ok := w.(leasestore.FencedLeaseLocker)
-	if !ok {
-		return workItemStorageUnavailable()
-	}
-	assigned, err := w.RunnerForLease(ctx, string(command.LeaseID))
-	if err != nil {
-		return err
-	}
-	lease, err := locker.LockLease(ctx, string(command.LeaseID))
-	if err != nil {
-		return err
 	}
 	if lease.OrganizationID != scope.organization || lease.IssueID != anchor.ID || lease.FencingToken != int64(command.FencingToken) || lease.ReleasedAt != nil || lease.RenewedAt.After(now) || !lease.ExpiresAt.After(now) {
 		return tracker.ErrStaleFencingToken
