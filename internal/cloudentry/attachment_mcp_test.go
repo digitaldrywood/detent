@@ -11,7 +11,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"testing/synctest"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -385,7 +384,7 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 
 func TestAttachmentEntryKeyUploads(t *testing.T) {
 	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
+	t.Run("postgres", func(t *testing.T) {
 		f := newEntryFixture(t)
 		store := newSpacesFixture(t, false)
 		storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
