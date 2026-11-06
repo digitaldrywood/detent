@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -29,6 +32,12 @@ func newSharedRouteFixture(t *testing.T, configure ...func(*Config)) sharedRoute
 	t.Helper()
 	admin := postgresStartupTemplate.Database(t)
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
+	organizations := []tracker.OrganizationID{"org_startup", "org_other"}
+	poolCount := 1 + 2*len(organizations)
+	connectionLimit := poolCount*cfg.Postgres.Pool.MaxConnections + 1
+	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{cfg.Postgres.Connection.Database}.Sanitize()+" CONNECTION LIMIT "+strconv.Itoa(connectionLimit)); err != nil {
+		t.Fatal(err)
+	}
 	key := hostedSharedKey(49)
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	cfg.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
@@ -42,7 +51,7 @@ func newSharedRouteFixture(t *testing.T, configure ...func(*Config)) sharedRoute
 		}
 	})
 	result := sharedRouteFixture{services: map[string]*Service{}, key: key}
-	for _, org := range []tracker.OrganizationID{"org_startup", "org_other"} {
+	for _, org := range organizations {
 		seedStartupOrganization(t, store.postgres, org)
 		now := time.Now()
 		if err := store.postgres.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
