@@ -233,7 +233,7 @@ func (s *Service) platformAuditJSON(c echo.Context) error {
 	}
 	filter, err := parseAuditFilter(c.QueryParams())
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"code": "invalid_request", "message": "Choose valid dates, a page size from 1 to 200, and a valid platform.audit cursor"})
+		return c.JSON(http.StatusBadRequest, map[string]string{"code": "invalid_request", "message": "Choose valid dates, a page size from 1 to 200, and a valid audit cursor"})
 	}
 	result, err := s.readPlatformAudit(c.Request().Context(), filter)
 	if err != nil {
