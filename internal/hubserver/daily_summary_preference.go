@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -13,6 +12,9 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type dailySummaryPreference struct {
@@ -73,6 +75,10 @@ func (s *Service) dailySummaryPreference(c echo.Context) error {
 	if credential.Hosted == nil || credential.Hosted.SupportActor != "" {
 		return s.hostedJSONError(c, http.StatusForbidden, "Use your own account to change notification preferences")
 	}
+	repository, ok := s.config.AccessRepository.(accountstore.Repository)
+	if !ok {
+		return s.nativeAPIError(c, errors.New("account repository unavailable"))
+	}
 	user, org := credential.Hosted.Subject, s.config.Hosted.OrganizationID
 	value := dailySummaryPreference{SendTime: "06:00", TimeZone: "UTC", Days: "every_day"}
 	if c.Request().Method == http.MethodPut {
@@ -89,19 +95,12 @@ func (s *Service) dailySummaryPreference(c echo.Context) error {
 			return s.nativeAPIError(c, nativePublicInvalid("An enabled preference is required"))
 		}
 		value = dailySummaryPreference{Enabled: *request.Enabled, SendTime: request.SendTime, TimeZone: request.TimeZone, Days: request.Days}
-		var saveErr error
-		if repository, ok := s.config.AccessRepository.(accountstore.Repository); ok && credential.Hosted != nil {
-			var minute int
-			var zone *time.Location
-			minute, zone, saveErr = value.validate()
-			if saveErr == nil {
-				next := summarySchedule(s.config.now(), minute, zone, value.Days == "weekdays", 1)
-				saveErr = repository.SetDailySummaryPreference(ctx, s.accessOrganization(), user, credential.HostedMembership, credential.ID, accountstore.DailySummaryPreference{
-					Enabled: value.Enabled, SendMinute: minute, TimeZone: value.TimeZone, Weekdays: value.Days == "weekdays", WindowEnd: next.Unix(),
-				}, newNativeID("unsub"), next.Add(summaryJitter(user, org, next)).Unix())
-			}
-		} else {
-			saveErr = s.database.saveDailySummaryPreference(ctx, user, org, value, s.config.now())
+		minute, zone, saveErr := value.validate()
+		if saveErr == nil {
+			next := summarySchedule(s.config.now(), minute, zone, value.Days == "weekdays", 1)
+			saveErr = repository.SetDailySummaryPreference(ctx, s.accessOrganization(), user, credential.HostedMembership, credential.ID, accountstore.DailySummaryPreference{
+				Enabled: value.Enabled, SendMinute: minute, TimeZone: value.TimeZone, Weekdays: value.Days == "weekdays", WindowEnd: next.Unix(),
+			}, newNativeID("unsub"), next.Add(summaryJitter(user, org, next)).Unix())
 		}
 		if saveErr != nil {
 			return s.nativeAPIError(c, saveErr)
@@ -109,48 +108,24 @@ func (s *Service) dailySummaryPreference(c echo.Context) error {
 	}
 	readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	if repository, ok := s.config.AccessRepository.(accountstore.Repository); ok && credential.Hosted != nil {
-		preference, err := repository.DailySummaryPreference(readCtx, s.accessOrganization(), user, credential.HostedMembership, credential.ID)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		value.Recipient = preference.Recipient
-		if preference.Configured {
-			value.Configured = true
-			value.Enabled = preference.Enabled
-			value.SendTime = fmt.Sprintf("%02d:%02d", preference.SendMinute/60, preference.SendMinute%60)
-			value.TimeZone = preference.TimeZone
-			value.Days = "every_day"
-			if preference.Weekdays {
-				value.Days = "weekdays"
-			}
-			if value.Enabled {
-				next := time.Unix(preference.WindowEnd, 0).UTC()
-				value.NextSend = &next
-			}
-		}
-		return c.JSON(http.StatusOK, value)
+	preference, err := repository.DailySummaryPreference(readCtx, s.accessOrganization(), user, credential.HostedMembership, credential.ID)
+	if err != nil {
+		return s.nativeAPIError(c, err)
 	}
-	var minute int
-	var weekdays bool
-	var end int64
-	err = s.database.reader.QueryRowContext(readCtx, `SELECT p.enabled,p.send_minute,p.time_zone,p.weekdays,p.window_end,m.email FROM hosted_members m LEFT JOIN daily_summary_preferences p ON p.user_id=m.user_id AND p.organization_id=? WHERE m.user_id=? AND p.user_id IS NOT NULL`, org, user).Scan(&value.Enabled, &minute, &value.TimeZone, &weekdays, &end, &value.Recipient)
-	if errors.Is(err, sql.ErrNoRows) {
-		err = s.database.reader.QueryRowContext(readCtx, "SELECT email FROM hosted_members WHERE user_id=?", user).Scan(&value.Recipient)
-	} else if err == nil {
+	value.Recipient = preference.Recipient
+	if preference.Configured {
 		value.Configured = true
-		value.SendTime = fmt.Sprintf("%02d:%02d", minute/60, minute%60)
+		value.Enabled = preference.Enabled
+		value.SendTime = fmt.Sprintf("%02d:%02d", preference.SendMinute/60, preference.SendMinute%60)
+		value.TimeZone = preference.TimeZone
 		value.Days = "every_day"
-		if weekdays {
+		if preference.Weekdays {
 			value.Days = "weekdays"
 		}
 		if value.Enabled {
-			next := time.Unix(end, 0).UTC()
+			next := time.Unix(preference.WindowEnd, 0).UTC()
 			value.NextSend = &next
 		}
-	}
-	if err != nil {
-		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, value)
 }
@@ -171,22 +146,12 @@ func (s *Service) unsubscribeDailySummary(c echo.Context) error {
 	if !validNativeID(token, "unsub") {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	if repository, ok := s.config.AccessRepository.(accountstore.Repository); ok {
-		if err := repository.UnsubscribeDailySummary(c.Request().Context(), s.accessOrganization(), token); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-	} else {
-		result, err := s.database.db.ExecContext(c.Request().Context(), `UPDATE daily_summary_preferences SET enabled=0 WHERE token=? AND organization_id=?`, token, s.config.Hosted.OrganizationID)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		count, err := result.RowsAffected()
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		if count == 0 {
-			return s.nativeAPIError(c, nativeNotFound())
-		}
+	repository, ok := s.config.AccessRepository.(accountstore.Repository)
+	if !ok {
+		return s.nativeAPIError(c, errors.New("account repository unavailable"))
+	}
+	if err := repository.UnsubscribeDailySummary(c.Request().Context(), s.accessOrganization(), token); err != nil {
+		return s.nativeAPIError(c, err)
 	}
 	if c.Request().Method == http.MethodPost {
 		return c.NoContent(http.StatusNoContent)
@@ -200,10 +165,17 @@ func (d *database) saveDailySummaryPreference(ctx context.Context, user, org str
 		return err
 	}
 	next := summarySchedule(now, minute, zone, value.Days == "weekdays", 1)
-	_, err = d.db.ExecContext(ctx, `INSERT INTO daily_summary_preferences(user_id,organization_id,enabled,send_minute,time_zone,weekdays,token,window_end,due_at) VALUES (?,?,?,?,?,?,?,?,?)
-ON CONFLICT(user_id,organization_id) DO UPDATE SET enabled=excluded.enabled,send_minute=excluded.send_minute,time_zone=excluded.time_zone,weekdays=excluded.weekdays,window_end=excluded.window_end,due_at=excluded.due_at`, user, org, value.Enabled, minute, value.TimeZone, value.Days == "weekdays", newNativeID("unsub"), next.Unix(), next.Add(summaryJitter(user, org, next)).Unix())
-	if err != nil {
-		return fmt.Errorf("save daily summary preference: %w", err)
+	if d.postgres == nil {
+		return errors.New("account repository unavailable")
 	}
-	return nil
+	var membership, principal string
+	err = d.postgres.ReadTenant(ctx, tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error {
+		member, err := r.AccessMember(ctx, user)
+		membership, principal = member.MembershipID, member.PrincipalID
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	return d.postgres.SetDailySummaryPreference(ctx, tracker.OrganizationID(org), user, membership, principal, accountstore.DailySummaryPreference{Enabled: value.Enabled, SendMinute: minute, TimeZone: value.TimeZone, Weekdays: value.Days == "weekdays", WindowEnd: next.Unix()}, newNativeID("unsub"), next.Add(summaryJitter(user, org, next)).Unix())
 }

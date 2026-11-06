@@ -1,9 +1,7 @@
 package hubserver
 
 import (
-	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -13,7 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestPostgresIssueNotificationPreferenceReadWrite(t *testing.T) {
@@ -34,6 +31,12 @@ func TestPostgresIssueNotificationPreferenceReadWrite(t *testing.T) {
 	user := f.user(t, "preference", "member", "preference@example.test", "", "")
 	other := f.user(t, "other_preference", "member", "other-preference@example.test", "", "")
 	disableLegacyPostgresTestHandles(t, f.service, repository)
+	if err := f.service.collectIssueEmails(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := f.service.claimIssueEmail(t.Context(), now); err != nil || found {
+		t.Fatalf("empty delivery found=%v error=%v", found, err)
+	}
 	path := "/api/v2/organizations/org_security/issue-notification-preference"
 	var preference issueNotificationPreference
 	for _, member := range []hostedSecurityUser{user, other} {
@@ -69,24 +72,6 @@ func TestPostgresIssueNotificationPreferenceReadWrite(t *testing.T) {
 		}
 	}
 
-	legacyRepository := &issuePreferenceLegacyFallbackRepository{Repository: repository, service: f.service}
-	previousRepository := f.service.config.AccessRepository
-	f.service.config.AccessRepository = legacyRepository
-	request := httptest.NewRequest(http.MethodGet, path, nil)
-	request.AddCookie(&http.Cookie{Name: hostedCookie, Value: other.token})
-	context := f.service.echo.NewContext(request, httptest.NewRecorder())
-	context.SetParamNames("organization")
-	context.SetParamValues("org_security")
-	var legacyHandlerPanicked bool
-	func() {
-		defer func() { legacyHandlerPanicked = recover() != nil }()
-		_ = f.service.issueNotificationPreference(context)
-	}()
-	f.service.config.AccessRepository = previousRepository
-	if !legacyHandlerPanicked || legacyRepository.reads != 2 {
-		t.Fatalf("original SQLite preference read did not fail at the nil-reader boundary: panicked=%t access_reads=%d", legacyHandlerPanicked, legacyRepository.reads)
-	}
-
 	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 		return w.RevokeAccessMember(t.Context(), user.identity.Subject, now.Add(time.Second))
 	}); err != nil {
@@ -118,21 +103,4 @@ func disableLegacyPostgresTestHandles(t *testing.T, service *Service, repository
 		service.echo = previousEcho
 		database.db, database.reader, database.authReader, database.claimReader, database.postgres = db, reader, authReader, claimReader, previousRepository
 	})
-}
-
-type issuePreferenceLegacyFallbackRepository struct {
-	tenantstore.Repository
-	service *Service
-	reads   int
-}
-
-func (r *issuePreferenceLegacyFallbackRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
-	err := r.Repository.ReadTenant(ctx, organization, workload, read)
-	if err == nil {
-		r.reads++
-		if r.reads == 2 {
-			r.service.config.AccessRepository = nil
-		}
-	}
-	return err
 }
