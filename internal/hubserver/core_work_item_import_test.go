@@ -270,89 +270,93 @@ func TestCoreWorkItemImportRejectsChangedCopyWhenAllIssuesWereDeleted(t *testing
 }
 
 func TestCoreIssueDependencyImportWaitsForCrossProjectIssuesAndReplays(t *testing.T) {
-	repository, admin := projectRecordPostgresWithAdmin(t, 2)
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	objects := &memoryRunDetails{}
-	org := tracker.OrganizationID("org_import_dependency")
-	dependentProject := tracker.ProjectID("prj_import_dependency_a")
-	blockerProject := tracker.ProjectID("prj_import_dependency_b")
-	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example organization", Slug: "example-dependency", CreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)}); err != nil {
-			return fmt.Errorf("create access organization: %w", err)
-		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "provider_" + string(org)}); err != nil {
-			return fmt.Errorf("create access tenant: %w", err)
-		}
-		for index, project := range []tracker.ProjectID{dependentProject, blockerProject} {
-			slug := "example-dependent"
-			if index == 1 {
-				slug = "example-blocker"
+	for _, org := range []tracker.OrganizationID{"org_import_dependency", "org_import_dependency_other"} {
+		t.Run(string(org), func(t *testing.T) {
+			dependentProject := tracker.ProjectID("prj_import_dependency_a")
+			blockerProject := tracker.ProjectID("prj_import_dependency_b")
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example organization", Slug: string(org), CreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)}); err != nil {
+					return fmt.Errorf("create access organization: %w", err)
+				}
+				if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "provider_" + string(org)}); err != nil {
+					return fmt.Errorf("create access tenant: %w", err)
+				}
+				for index, project := range []tracker.ProjectID{dependentProject, blockerProject} {
+					slug := "example-dependent"
+					if index == 1 {
+						slug = "example-blocker"
+					}
+					_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{
+						Core:     corestore.Project{OrganizationID: org, ID: project, Name: "Example project " + string(project), Slug: slug, Profile: "native", RequireDependencies: true},
+						Settings: projectstore.Settings{OrganizationID: org, ProjectID: project},
+						States:   nativeFixtureStates(),
+					})
+					if err != nil {
+						return fmt.Errorf("create project %s: %w", project, err)
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
 			}
-			_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{
-				Core:     corestore.Project{OrganizationID: org, ID: project, Name: "Example project " + string(project), Slug: slug, Profile: "native", RequireDependencies: true},
-				Settings: projectstore.Settings{OrganizationID: org, ProjectID: project},
-				States:   nativeFixtureStates(),
-			})
+			copyPath := coreDependencySourceCopy(t, org, dependentProject, blockerProject)
+			if count, err := ImportCoreWorkItems(t.Context(), repository, CoreWorkItemImportSource{CopyPath: copyPath, OrganizationID: org, ProjectID: dependentProject, Objects: objects}); err != nil || count != 1 {
+				t.Fatalf("dependent issue import count=%d error=%v", count, err)
+			}
+			dependencySource := CoreDependencyImportSource{CopyPath: copyPath, OrganizationID: org, Objects: objects}
+			if _, err := ImportCoreIssueDependencies(t.Context(), repository, dependencySource); !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("dependency import before blocker exists error=%v", err)
+			}
+			if count, err := ImportCoreWorkItems(t.Context(), repository, CoreWorkItemImportSource{CopyPath: copyPath, OrganizationID: org, ProjectID: blockerProject, Objects: objects}); err != nil || count != 1 {
+				t.Fatalf("blocker issue import count=%d error=%v", count, err)
+			}
+			for range 2 {
+				if count, err := ImportCoreIssueDependencies(t.Context(), repository, dependencySource); err != nil || count != 1 {
+					t.Fatalf("dependency import count=%d error=%v", count, err)
+				}
+			}
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				page, err := r.Relationships(t.Context(), dependentProject, "wi_core_import", corestore.RelationshipCursor{}, 10)
+				if err != nil {
+					return err
+				}
+				if len(page.Items) != 1 || page.Items[0].Type != "dependency" || page.Items[0].Direction != "blocked_by" || page.Items[0].RelatedProjectID != blockerProject || page.Items[0].RelatedWorkItemID != "wi_core_blocker" || !page.Items[0].CreatedAt.Equal(parseTestTime(t, "2026-10-02T03:04:05.123456Z")) {
+					return errors.New("cross-project dependency did not preserve its typed relationship and creation time")
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var provenance string
+			var sourceVersion sql.NullString
+			var createdAt, updatedAt time.Time
+			err := admin.QueryRowContext(t.Context(), `SELECT provenance,source_version,created_at,updated_at FROM issue_dependencies WHERE organization_id=$1 AND dependent_project_id=$2 AND dependent_issue_id=41 AND blocker_project_id=$3 AND blocker_issue_id=42`, org, dependentProject, blockerProject).Scan(&provenance, &sourceVersion, &createdAt, &updatedAt)
+			if err != nil || provenance != "github" || !sourceVersion.Valid || sourceVersion.String != "source-v17" || !createdAt.Equal(parseTestTime(t, "2026-10-02T03:04:05.123456Z")) || !updatedAt.Equal(parseTestTime(t, "2026-10-03T04:05:06.987654Z")) {
+				t.Fatalf("dependency metadata provenance=%q source_version=%v created=%s updated=%s error=%v", provenance, sourceVersion, createdAt, updatedAt, err)
+			}
+			var receipt eventstore.Receipt
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				receipt, err = r.Receipt(t.Context(), "production-import", "core-dependency", "41:42")
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			request, err := eventstore.NewContent(objects).Receipt(t.Context(), receipt)
 			if err != nil {
-				return fmt.Errorf("create project %s: %w", project, err)
+				t.Fatal(err)
 			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	copyPath := coreDependencySourceCopy(t, org, dependentProject, blockerProject)
-	if count, err := ImportCoreWorkItems(t.Context(), repository, CoreWorkItemImportSource{CopyPath: copyPath, OrganizationID: org, ProjectID: dependentProject, Objects: objects}); err != nil || count != 1 {
-		t.Fatalf("dependent issue import count=%d error=%v", count, err)
-	}
-	dependencySource := CoreDependencyImportSource{CopyPath: copyPath, OrganizationID: org, Objects: objects}
-	if _, err := ImportCoreIssueDependencies(t.Context(), repository, dependencySource); !errors.Is(err, corestore.ErrNotFound) {
-		t.Fatalf("dependency import before blocker exists error=%v", err)
-	}
-	if count, err := ImportCoreWorkItems(t.Context(), repository, CoreWorkItemImportSource{CopyPath: copyPath, OrganizationID: org, ProjectID: blockerProject, Objects: objects}); err != nil || count != 1 {
-		t.Fatalf("blocker issue import count=%d error=%v", count, err)
-	}
-	for range 2 {
-		if count, err := ImportCoreIssueDependencies(t.Context(), repository, dependencySource); err != nil || count != 1 {
-			t.Fatalf("dependency import count=%d error=%v", count, err)
-		}
-	}
-	if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-		page, err := r.Relationships(t.Context(), dependentProject, "wi_core_import", corestore.RelationshipCursor{}, 10)
-		if err != nil {
-			return err
-		}
-		if len(page.Items) != 1 || page.Items[0].Type != "dependency" || page.Items[0].Direction != "blocked_by" || page.Items[0].RelatedProjectID != blockerProject || page.Items[0].RelatedWorkItemID != "wi_core_blocker" || !page.Items[0].CreatedAt.Equal(parseTestTime(t, "2026-10-02T03:04:05.123456Z")) {
-			return errors.New("cross-project dependency did not preserve its typed relationship and creation time")
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	var provenance string
-	var sourceVersion sql.NullString
-	var createdAt, updatedAt time.Time
-	err := admin.QueryRowContext(t.Context(), `SELECT provenance,source_version,created_at,updated_at FROM issue_dependencies WHERE organization_id=$1 AND dependent_project_id=$2 AND dependent_issue_id=41 AND blocker_project_id=$3 AND blocker_issue_id=42`, org, dependentProject, blockerProject).Scan(&provenance, &sourceVersion, &createdAt, &updatedAt)
-	if err != nil || provenance != "github" || !sourceVersion.Valid || sourceVersion.String != "source-v17" || !createdAt.Equal(parseTestTime(t, "2026-10-02T03:04:05.123456Z")) || !updatedAt.Equal(parseTestTime(t, "2026-10-03T04:05:06.987654Z")) {
-		t.Fatalf("dependency metadata provenance=%q source_version=%v created=%s updated=%s error=%v", provenance, sourceVersion, createdAt, updatedAt, err)
-	}
-	var receipt eventstore.Receipt
-	if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-		var err error
-		receipt, err = r.Receipt(t.Context(), "production-import", "core-dependency", "41:42")
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	request, err := eventstore.NewContent(objects).Receipt(t.Context(), receipt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sourceTimes struct {
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
-	}
-	if err := json.Unmarshal(request, &sourceTimes); err != nil || sourceTimes.CreatedAt != "2026-10-02T03:04:05.123456789Z" || sourceTimes.UpdatedAt != "2026-10-03T04:05:06.987654321Z" {
-		t.Fatalf("dependency receipt did not retain source timestamps: %+v error=%v", sourceTimes, err)
+			var sourceTimes struct {
+				CreatedAt string `json:"created_at"`
+				UpdatedAt string `json:"updated_at"`
+			}
+			if err := json.Unmarshal(request, &sourceTimes); err != nil || sourceTimes.CreatedAt != "2026-10-02T03:04:05.123456789Z" || sourceTimes.UpdatedAt != "2026-10-03T04:05:06.987654321Z" {
+				t.Fatalf("dependency receipt did not retain source timestamps: %+v error=%v", sourceTimes, err)
+			}
+
+		})
 	}
 }
 

@@ -25,127 +25,131 @@ import (
 )
 
 func TestCoreExecutionImportPreservesHistoricalFenceAndRevisionZero(t *testing.T) {
-	repository, admin := projectRecordPostgresWithAdmin(t, 2)
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	objects := &memoryRunDetails{}
-	organization := tracker.OrganizationID("org_execution_import")
-	project := tracker.ProjectID("prj_execution_import")
-	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: "example-organization", CreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)}); err != nil {
-			return fmt.Errorf("create import test organization: %w", err)
-		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "provider_execution_import"}); err != nil {
-			return fmt.Errorf("create import test tenant: %w", err)
-		}
-		for _, credential := range []accessstore.Credential{
-			{OrganizationID: organization, ID: "owner_token_execution_import", Name: "owner token", Hash: coreExecutionHash('1'), Fingerprint: "owner", Scope: "admin", ProjectAccess: "selected", CreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), Kind: "service"},
-			{OrganizationID: organization, ID: "runner_token_execution_import", Name: "runner token", Hash: coreExecutionHash('2'), Fingerprint: "runner", Scope: "worker", ProjectAccess: "selected", NativeOnly: true, CreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), ExpiresAt: coreExecutionTimePointer(time.Date(2027, 10, 1, 0, 0, 0, 0, time.UTC)), Kind: "service"},
-		} {
-			if err := w.CreateAccessCredential(t.Context(), credential); err != nil {
-				return fmt.Errorf("create import test credential %s: %w", credential.ID, err)
+	for _, organization := range []tracker.OrganizationID{"org_execution_import", "org_execution_import_other"} {
+		t.Run(string(organization), func(t *testing.T) {
+			project := tracker.ProjectID("prj_execution_import")
+			if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: string(organization), CreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)}); err != nil {
+					return fmt.Errorf("create import test organization: %w", err)
+				}
+				if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "provider_execution_import"}); err != nil {
+					return fmt.Errorf("create import test tenant: %w", err)
+				}
+				for _, credential := range []accessstore.Credential{
+					{OrganizationID: organization, ID: "owner_token_execution_import", Name: "owner token", Hash: coreExecutionHash('1'), Fingerprint: "owner", Scope: "admin", ProjectAccess: "selected", CreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), Kind: "service"},
+					{OrganizationID: organization, ID: "runner_token_execution_import", Name: "runner token", Hash: coreExecutionHash('2'), Fingerprint: "runner", Scope: "worker", ProjectAccess: "selected", NativeOnly: true, CreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), ExpiresAt: coreExecutionTimePointer(time.Date(2027, 10, 1, 0, 0, 0, 0, time.UTC)), Kind: "service"},
+				} {
+					if err := w.CreateAccessCredential(t.Context(), credential); err != nil {
+						return fmt.Errorf("create import test credential %s: %w", credential.ID, err)
+					}
+				}
+				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{
+					Core:     corestore.Project{OrganizationID: organization, ID: project, Name: "Example project", Slug: "example-project", Profile: "native"},
+					Settings: projectstore.Settings{OrganizationID: organization, ProjectID: project},
+					States:   nativeFixtureStates(),
+				}); err != nil {
+					return fmt.Errorf("create import test project: %w", err)
+				}
+				_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{
+					OrganizationID: organization, ID: 41, NativeID: "wi_execution_import", ProjectID: project, Number: 1,
+					Revision: 1, EventSequence: 1, Title: "Example issue", ActorKind: coreExecutionStringPointer("human"), ActorPrincipalID: coreExecutionStringPointer("example-owner"),
+					CreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+					NativeCreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), NativeUpdatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+					LastActivityAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), WorkflowStateName: coreExecutionStringPointer("Todo"),
+				})
+				if err != nil {
+					return fmt.Errorf("create import test work item: %w", err)
+				}
+				return nil
+			}); err != nil {
+				var postgresErr *pq.Error
+				if errors.As(err, &postgresErr) {
+					t.Fatalf("initialize import fixture: constraint %s: %s", postgresErr.Constraint, postgresErr.Message)
+				}
+				t.Fatal(err)
 			}
-		}
-		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{
-			Core:     corestore.Project{OrganizationID: organization, ID: project, Name: "Example project", Slug: "example-project", Profile: "native"},
-			Settings: projectstore.Settings{OrganizationID: organization, ProjectID: project},
-			States:   nativeFixtureStates(),
-		}); err != nil {
-			return fmt.Errorf("create import test project: %w", err)
-		}
-		_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{
-			OrganizationID: organization, ID: 41, NativeID: "wi_execution_import", ProjectID: project, Number: 1,
-			Revision: 1, EventSequence: 1, Title: "Example issue", ActorKind: coreExecutionStringPointer("human"), ActorPrincipalID: coreExecutionStringPointer("example-owner"),
-			CreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
-			NativeCreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), NativeUpdatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
-			LastActivityAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), WorkflowStateName: coreExecutionStringPointer("Todo"),
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO policy_revisions (organization_id,project_id,policy_id,approved_by,approved_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) VALUES ($1,$2,'policy_example','owner_token_execution_import',$3,$4,$5,1,1)`, organization, project, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), "orgs/"+string(organization)+"/blobs/sha256/aa/"+coreExecutionHash('a'), coreExecutionHash('a')); err != nil {
+				t.Fatalf("seed import test policy: %v", err)
+			}
+			copyPath := coreExecutionSourceCopy(t, organization)
+			source := CoreExecutionImportSource{CopyPath: copyPath, OrganizationID: organization, SourceObjects: objects, Objects: objects}
+			for range 2 {
+				count, err := ImportCoreExecution(t.Context(), repository, source)
+				if err != nil || count != 7 {
+					t.Fatalf("execution import count=%d error=%v", count, err)
+				}
+			}
+			if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+				lease, err := r.Lease(t.Context(), "lease_execution_import")
+				if err != nil {
+					return err
+				}
+				if lease.FencingToken != 40 || lease.WorkItemRevision != 0 || lease.ReleasedAt == nil {
+					return errors.New("historical lease fencing or zero revision was not preserved")
+				}
+				attempt, err := r.Attempt(t.Context(), "attempt_execution_import")
+				if err != nil {
+					return err
+				}
+				if attempt.FencingToken != lease.FencingToken || attempt.WorkItemRevision != 0 || attempt.Status != "failed" || attempt.PayloadObjectKey == "" {
+					return errors.New("historical attempt identity or zero revision was not preserved")
+				}
+				enrollment, err := r.RunnerEnrollment(t.Context(), "enrollment_execution_import")
+				if err != nil {
+					return err
+				}
+				if enrollment.RedeemedAt == nil || enrollment.RevokedAt != nil || enrollment.RunnerID != "runner_execution_import" || enrollment.ProjectIDs[0] != project {
+					return errors.New("runner enrollment state or project scope was not preserved")
+				}
+				identity, err := r.RunnerIdentityByCredential(t.Context(), "runner_token_execution_import")
+				if err != nil {
+					return err
+				}
+				if identity.RunnerID != "runner_execution_import" || identity.TokenID != "runner_token_execution_import" || identity.Scope != "projects" || identity.State != "active" {
+					return errors.New("runner identity binding was not preserved")
+				}
+				assigned, err := r.RunnerForLease(t.Context(), "lease_execution_import")
+				if err != nil {
+					return err
+				}
+				if assigned.RunnerID != "runner_execution_import" {
+					return errors.New("lease runner assignment was not preserved")
+				}
+				pinned, err := r.LeasePolicy(t.Context(), "lease_execution_import")
+				if err != nil {
+					return err
+				}
+				if pinned.ProjectID != project || pinned.PolicyID != "policy_example" || !pinned.BoundAt.Equal(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)) {
+					return errors.New("lease policy binding was not preserved")
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var sourceID, issueID int64
+			var fencingToken sql.NullInt64
+			var machineID, kind, payload string
+			if err := admin.QueryRowContext(t.Context(), `SELECT source_id,issue_id,fencing_token,machine_id,kind,payload_json FROM core_work_events WHERE organization_id=$1`, organization).Scan(&sourceID, &issueID, &fencingToken, &machineID, &kind, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if sourceID != 7 || issueID != 41 || !fencingToken.Valid || fencingToken.Int64 != 40 || machineID != "machine_execution_import" || kind != "progress" || payload != `{"step":"compile"}` {
+				t.Fatalf("imported work event source=%d issue=%d fence=%v machine=%s kind=%s payload=%s", sourceID, issueID, fencingToken, machineID, kind, payload)
+			}
+			var claimed leasestore.Lease
+			if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+				var err error
+				claimed, err = w.Claim(t.Context(), leasestore.Claim{IssueID: 41, ExpectedRevision: 1, MachineID: "machine_execution_import", SessionID: "session_after_import", LeaseID: "lease_after_import", TTL: time.Hour})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if claimed.FencingToken <= 40 {
+				t.Fatalf("new lease fencing token %d did not advance beyond imported token 40", claimed.FencingToken)
+			}
+
 		})
-		if err != nil {
-			return fmt.Errorf("create import test work item: %w", err)
-		}
-		return nil
-	}); err != nil {
-		var postgresErr *pq.Error
-		if errors.As(err, &postgresErr) {
-			t.Fatalf("initialize import fixture: constraint %s: %s", postgresErr.Constraint, postgresErr.Message)
-		}
-		t.Fatal(err)
-	}
-	if _, err := admin.ExecContext(t.Context(), `INSERT INTO policy_revisions (organization_id,project_id,policy_id,approved_by,approved_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) VALUES ($1,$2,'policy_example','owner_token_execution_import',$3,$4,$5,1,1)`, organization, project, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), "orgs/"+string(organization)+"/blobs/sha256/aa/"+coreExecutionHash('a'), coreExecutionHash('a')); err != nil {
-		t.Fatalf("seed import test policy: %v", err)
-	}
-	copyPath := coreExecutionSourceCopy(t, organization)
-	source := CoreExecutionImportSource{CopyPath: copyPath, OrganizationID: organization, SourceObjects: objects, Objects: objects}
-	for range 2 {
-		count, err := ImportCoreExecution(t.Context(), repository, source)
-		if err != nil || count != 7 {
-			t.Fatalf("execution import count=%d error=%v", count, err)
-		}
-	}
-	if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
-		lease, err := r.Lease(t.Context(), "lease_execution_import")
-		if err != nil {
-			return err
-		}
-		if lease.FencingToken != 40 || lease.WorkItemRevision != 0 || lease.ReleasedAt == nil {
-			return errors.New("historical lease fencing or zero revision was not preserved")
-		}
-		attempt, err := r.Attempt(t.Context(), "attempt_execution_import")
-		if err != nil {
-			return err
-		}
-		if attempt.FencingToken != lease.FencingToken || attempt.WorkItemRevision != 0 || attempt.Status != "failed" || attempt.PayloadObjectKey == "" {
-			return errors.New("historical attempt identity or zero revision was not preserved")
-		}
-		enrollment, err := r.RunnerEnrollment(t.Context(), "enrollment_execution_import")
-		if err != nil {
-			return err
-		}
-		if enrollment.RedeemedAt == nil || enrollment.RevokedAt != nil || enrollment.RunnerID != "runner_execution_import" || enrollment.ProjectIDs[0] != project {
-			return errors.New("runner enrollment state or project scope was not preserved")
-		}
-		identity, err := r.RunnerIdentityByCredential(t.Context(), "runner_token_execution_import")
-		if err != nil {
-			return err
-		}
-		if identity.RunnerID != "runner_execution_import" || identity.TokenID != "runner_token_execution_import" || identity.Scope != "projects" || identity.State != "active" {
-			return errors.New("runner identity binding was not preserved")
-		}
-		assigned, err := r.RunnerForLease(t.Context(), "lease_execution_import")
-		if err != nil {
-			return err
-		}
-		if assigned.RunnerID != "runner_execution_import" {
-			return errors.New("lease runner assignment was not preserved")
-		}
-		pinned, err := r.LeasePolicy(t.Context(), "lease_execution_import")
-		if err != nil {
-			return err
-		}
-		if pinned.ProjectID != project || pinned.PolicyID != "policy_example" || !pinned.BoundAt.Equal(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)) {
-			return errors.New("lease policy binding was not preserved")
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	var sourceID, issueID int64
-	var fencingToken sql.NullInt64
-	var machineID, kind, payload string
-	if err := admin.QueryRowContext(t.Context(), `SELECT source_id,issue_id,fencing_token,machine_id,kind,payload_json FROM core_work_events WHERE organization_id=$1`, organization).Scan(&sourceID, &issueID, &fencingToken, &machineID, &kind, &payload); err != nil {
-		t.Fatal(err)
-	}
-	if sourceID != 7 || issueID != 41 || !fencingToken.Valid || fencingToken.Int64 != 40 || machineID != "machine_execution_import" || kind != "progress" || payload != `{"step":"compile"}` {
-		t.Fatalf("imported work event source=%d issue=%d fence=%v machine=%s kind=%s payload=%s", sourceID, issueID, fencingToken, machineID, kind, payload)
-	}
-	var claimed leasestore.Lease
-	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		var err error
-		claimed, err = w.Claim(t.Context(), leasestore.Claim{IssueID: 41, ExpectedRevision: 1, MachineID: "machine_execution_import", SessionID: "session_after_import", LeaseID: "lease_after_import", TTL: time.Hour})
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if claimed.FencingToken <= 40 {
-		t.Fatalf("new lease fencing token %d did not advance beyond imported token 40", claimed.FencingToken)
 	}
 }
 
