@@ -65,6 +65,7 @@ import { hubPath } from "../../../runtime/basePath.ts";
  * there. `conflict` is the one distinction the board acts on.
  */
 export class WorkApiError extends Error {
+  authorizationConfirmed = false;
   readonly status: number;
   readonly code: string;
   readonly currentRevision: string | null;
@@ -487,6 +488,22 @@ function actionFields(input: {
 
 export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   const doFetch: FetchLike = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+  let authorizationCheck: Promise<{ denied: boolean; notified: boolean }> | undefined;
+  const confirmDenial = () => {
+    authorizationCheck ??= (async () => {
+      try {
+        const request = (path: string) => doFetch(`${options.origin}${hubPath(path)}`, {
+          credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" },
+        });
+        let response = await request("/app/bootstrap");
+        if (response.status === 404) response = await request("/chat/bootstrap");
+        return { denied: [401, 403].includes(response.status), notified: false };
+      } catch {
+        return { denied: false, notified: false };
+      }
+    })().finally(() => { authorizationCheck = undefined; });
+    return authorizationCheck;
+  };
   const projectBase = (projectId: string) =>
     `${options.apiBase}/projects/${encodeURIComponent(projectId)}`;
   const viewPreferenceUrl = (projectId: string | null) =>
@@ -547,9 +564,18 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
       }
     }
     if (!response.ok) {
-      if (!signal?.aborted) invalidateArchiveAccess(target, response.status);
-      if (!signal?.aborted && [401, 403].includes(response.status)) options.onAuthorizationRejected?.();
       const failure = errorFromBody(response.status, parsed);
+      if (!signal?.aborted && [401, 403].includes(response.status)) {
+        const confirmation = await confirmDenial();
+        failure.authorizationConfirmed = confirmation.denied;
+        if (failure.authorizationConfirmed && !signal?.aborted) {
+          invalidateArchiveAccess(target, response.status);
+          if (!confirmation.notified) {
+            confirmation.notified = true;
+            options.onAuthorizationRejected?.();
+          }
+        }
+      } else if (!signal?.aborted) invalidateArchiveAccess(target, response.status);
       if (failure.code === "archive_unavailable") throw new ArchiveUnavailable("missing section");
       throw failure;
     }

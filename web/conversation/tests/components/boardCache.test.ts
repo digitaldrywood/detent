@@ -27,6 +27,81 @@ async function fixture() {
 }
 
 describe("the Work snapshot ordering", () => {
+  it.each([false, true])("shares denial confirmation and ignores canceled reads (aborted %s)", async (aborted) => {
+    const source = workPaginationFixture();
+    const probe = deferred<Response>();
+    const controller = new AbortController();
+    const rejected = vi.fn();
+    let probes = 0;
+    const fetch: FetchLike = async (input) => {
+      if (input.endsWith("/app/bootstrap")) { probes++; return probe.promise; }
+      return Response.json({ code: "access_denied" }, { status: 403 });
+    };
+    const http = makeWorkHttp({ ...source.client.http, fetch, onAuthorizationRejected: rejected });
+    const pending = Promise.allSettled([http.getProject("proj_alpha", controller.signal), http.getProject("proj_beta", controller.signal)]);
+    try {
+      await expect.poll(() => probes).toBe(1);
+      expect(rejected).not.toHaveBeenCalled();
+      if (aborted) controller.abort();
+      probe.resolve(Response.json({}, { status: 401 }));
+      expect((await pending).every((result) => result.status === "rejected")).toBe(true);
+      expect(probes).toBe(1);
+      expect(rejected).toHaveBeenCalledTimes(aborted ? 0 : 1);
+    } finally {
+      controller.abort();
+      probe.resolve(Response.json({}, { status: 503 }));
+      await pending;
+    }
+  });
+
+  it.each([200, 503, 401, 403])("confirms a refused read before clearing the board (bootstrap %s)", async (status) => {
+    const source = workPaginationFixture();
+    await source.control();
+    const probe = deferred<Response>();
+    const rejected = vi.fn();
+    let refuse = false;
+    let probes = 0;
+    const fetch: FetchLike = async (input, init) => {
+      if (input.endsWith("/app/bootstrap")) { probes++; return probe.promise; }
+      if (refuse && input.includes("/work-items")) {
+        refuse = false;
+        return Response.json({ code: "access_denied", message: "Access is no longer available" }, { status: 403 });
+      }
+      return source.fetch(input, init);
+    };
+    const http = makeWorkHttp({ ...source.client.http, fetch, onAuthorizationRejected: rejected });
+    const read = getBoardRead(source.client, http, "proj_alpha", DEFAULT_VIEW_STATE);
+    try {
+      read.start();
+      await expect.poll(() => read.snapshot().resolved).toBe(true);
+      const items = read.snapshot().items;
+      expect(items.length).toBeGreaterThan(0);
+      refuse = true;
+      read.reload();
+      await expect.poll(() => probes).toBe(1);
+      expect(rejected).not.toHaveBeenCalled();
+      expect(read.snapshot().items).toBe(items);
+      expect(source.requests.some((request) => request.signal?.aborted)).toBe(false);
+      probe.resolve(Response.json({}, { status }));
+      await expect.poll(() => read.snapshot().refreshing).toBe(false);
+      expect(probes).toBe(1);
+      if ([401, 403].includes(status)) {
+        expect(rejected).toHaveBeenCalledTimes(1);
+        expect(read.snapshot().items).toHaveLength(0);
+      } else {
+        expect(rejected).not.toHaveBeenCalled();
+        expect(read.snapshot().items).toBe(items);
+        refuse = false;
+        read.reload();
+        await expect.poll(() => read.snapshot().error ?? read.snapshot().refreshing).toBe(false);
+        expect(read.snapshot().items.length).toBeGreaterThan(0);
+      }
+    } finally {
+      probe.resolve(Response.json({}, { status: 503 }));
+      read.dispose();
+    }
+  });
+
   it("keeps summary windows in the cache identity, page requests and stream", async () => {
     const source = workPaginationFixture();
     await source.control();

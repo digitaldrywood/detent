@@ -54,7 +54,7 @@ async function pooled<A, B>(inputs: readonly A[], work: (input: A) => Promise<B>
 }
 
 function unauthorized(cause: unknown): boolean {
-  return typeof cause === "object" && cause !== null && "status" in cause && [401, 403].includes(Number(cause.status));
+  return typeof cause === "object" && cause !== null && "authorizationConfirmed" in cause && cause.authorizationConfirmed === true;
 }
 
 function newer(a: string | null, b: string | null): boolean {
