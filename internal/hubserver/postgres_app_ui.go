@@ -29,6 +29,10 @@ func (s *Service) registerPostgresAppRoutes(e *echo.Echo) {
 		s.registerWorkViewRoutes(e)
 		e.GET(hostedOrganizationBase+"/projects", s.listHostedProjects, s.hostedSessionOnly)
 		s.registerOrganizationSettingsRecordRoutes(e)
+		e.GET(hostedOrganizationBase+"/logo", s.getOrganizationLogo, s.hostedSessionOnly)
+		e.PUT(hostedOrganizationBase+"/logo", s.setOrganizationLogo, s.hostedAdministrationSession)
+		e.GET(hostedOrganizationBase+"/attachment-metadata/:attachment", s.getOrganizationLogoAttachment, s.hostedSessionOnly)
+		e.GET(hostedOrganizationBase+"/logo-metadata", s.getCurrentOrganizationLogoAttachment, s.hostedSessionOnly)
 		s.registerOrganizationVisibleRoutes(e)
 		s.registerHostedAccountPreferenceRoutes(e)
 		s.registerHostedMemberAndSecretRoutes(e)
@@ -129,6 +133,14 @@ func (s *Service) readPostgresAppBootstrap(ctx context.Context, credential apiCr
 		if err != nil {
 			return err
 		}
+		logo, err := r.OrganizationLogo(ctx)
+		if err != nil {
+			return err
+		}
+		if logo.ImageKey != "" {
+			logo.URL = "/organizations/" + string(organizationID) + "/api/v2/attachments/" + logo.ImageKey
+		}
+		payload.Organization.Logo = &logo
 		payload.Organization.Name = organization.Name
 		payload.Organization.Slug = organization.Slug
 		return nil

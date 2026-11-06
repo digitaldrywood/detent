@@ -149,7 +149,8 @@ func TestProjectIconAttachmentLifecycle(t *testing.T) {
 			if got := attachmentRequest(t, alice, http.MethodGet, foreign, nil, nil); got.Code != 404 {
 				t.Fatalf("foreign read=%d", got.Code)
 			}
-			if got := attachmentRequest(t, alice, http.MethodDelete, first.Icon.URL, nil, map[string]string{"X-CSRF-Token": csrf}); got.Code != 404 {
+			deleteURL := "/api/v2/organizations/org_alpha/projects/" + project + "/attachments/" + first.Icon.ImageKey
+			if got := attachmentRequest(t, alice, http.MethodDelete, deleteURL, nil, map[string]string{"X-CSRF-Token": csrf}); got.Code != 404 {
 				t.Fatalf("active icon delete=%d %s", got.Code, got.Body.String())
 			}
 			db := f.fixtures["org_alpha"].database
