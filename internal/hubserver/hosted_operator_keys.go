@@ -193,67 +193,8 @@ func (s *Service) hostedAPIKeys(c echo.Context) error {
 }
 
 func (s *Service) hostedAPIKeysFor(ctx context.Context, credential apiCredential) ([]hostedAPIKey, error) {
-	if s.config.AccessRepository != nil {
-		return s.accessHostedKeys(ctx, credential)
-	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	credential, err := s.hostedKeyCredentialFor(ctx, credential)
-	if err != nil {
-		return nil, err
-	}
-	keys := []hostedAPIKey{}
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT id,name,operator_key_scope,expires_at,token_fingerprint,revoked_at,operator_project_access,created_at,key_kind FROM api_tokens WHERE hosted_user_id=? AND hosted_organization_id=? ORDER BY created_at DESC,id`, credential.Hosted.Subject, s.config.Hosted.OrganizationID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var key hostedAPIKey
-		var expiry, revoked sql.NullString
-		if err := rows.Scan(&key.ID, &key.Name, &key.Scope, &expiry, &key.Fingerprint, &revoked, &key.ProjectAccess, &key.CreatedAt, &key.Kind); err != nil {
-			return nil, err
-		}
-		if expiry.Valid {
-			key.Expiry = &expiry.String
-		}
-		key.Revoked = revoked.Valid
-		if revoked.Valid {
-			key.RevokedAt = &revoked.String
-		}
-		keys = append(keys, key)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return nil, err
-	}
-	for i := range keys {
-		keys[i].Projects = []string{}
-		if keys[i].ProjectAccess == hostedProjectsAll {
-			continue
-		}
-		err := func() error {
-			grants, err := s.database.reader.QueryContext(ctx, "SELECT project_id FROM token_grants WHERE token_id=? AND organization_id=? ORDER BY project_id", keys[i].ID, s.config.Hosted.OrganizationID)
-			if err != nil {
-				return err
-			}
-			defer grants.Close()
-			keys[i].Projects = []string{}
-			for grants.Next() {
-				var project string
-				if err := grants.Scan(&project); err != nil {
-					return err
-				}
-				keys[i].Projects = append(keys[i].Projects, project)
-			}
-			return grants.Err()
-		}()
-		if err != nil {
-			return nil, err
-		}
-	}
-	return keys, nil
+
+	return s.accessHostedKeys(ctx, credential)
 }
 
 type hostedKeyRequest struct {

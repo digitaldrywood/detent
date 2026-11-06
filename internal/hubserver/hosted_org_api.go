@@ -261,83 +261,18 @@ func (s *Service) listHostedMembers(c echo.Context) error {
 }
 
 func (s *Service) hostedMemberEmails(ctx context.Context) (map[string]string, error) {
-	if s.config.AccessRepository != nil {
-		return s.accessMemberEmails(ctx)
-	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	emails := map[string]string{}
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT user_id, email FROM hosted_members WHERE active = 1")
-	if err != nil {
-		return nil, fmt.Errorf("read hosted members: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var user, email string
-		if err := rows.Scan(&user, &email); err != nil {
-			return nil, fmt.Errorf("scan hosted member: %w", err)
-		}
-		emails[user] = email
-	}
-	return emails, errors.Join(rows.Err(), rows.Close())
+
+	return s.accessMemberEmails(ctx)
 }
 
 func (s *Service) hostedMemberGrants(ctx context.Context) (map[string][]hostedMemberGrant, error) {
-	if s.config.AccessRepository != nil {
-		return s.accessMemberGrants(ctx)
-	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	grants := map[string][]hostedMemberGrant{}
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT user_id, project_id, can_write, manage_runner FROM hosted_project_grants WHERE organization_id = ? ORDER BY user_id, project_id", s.config.Hosted.OrganizationID)
-	if err != nil {
-		return nil, fmt.Errorf("read hosted project grants: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var user string
-		var grant hostedMemberGrant
-		if err := rows.Scan(&user, &grant.ProjectID, &grant.Write, &grant.Runner); err != nil {
-			return nil, fmt.Errorf("scan hosted project grant: %w", err)
-		}
-		grants[user] = append(grants[user], grant)
-	}
-	return grants, errors.Join(rows.Err(), rows.Close())
+
+	return s.accessMemberGrants(ctx)
 }
 
 func (s *Service) hostedPendingInvitations(ctx context.Context) ([]hostedInvitationView, error) {
-	if s.config.AccessRepository != nil {
-		return s.accessPendingInvitations(ctx)
-	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	invitations := []hostedInvitationView{}
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT id, email, role, created_at, expires_at, grants_json
-FROM hosted_invitations
-WHERE organization_id = ? AND accepted_user_id = '' ORDER BY rowid DESC`, s.config.Hosted.OrganizationID)
-	if err != nil {
-		return nil, fmt.Errorf("read hosted invitations: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var view hostedInvitationView
-		var grants string
-		if err := rows.Scan(&view.ID, &view.Email, &view.Role, &view.CreatedAt, &view.ExpiresAt, &grants); err != nil {
-			return nil, fmt.Errorf("scan hosted invitation: %w", err)
-		}
-		if err := json.Unmarshal([]byte(grants), &view.Grants); err != nil {
-			return nil, err
-		}
-		if view.ExpiresAt == "" {
-			invitation, err := auth.LookupInvitationID(ctx, s.config.Hosted.Provider, view.ID)
-			if err != nil {
-				return nil, fmt.Errorf("read hosted invitation expiry: %w", err)
-			}
-			view.ExpiresAt = formatHubTime(invitation.ExpiresAt)
-		}
-		invitations = append(invitations, view)
-	}
-	return invitations, errors.Join(rows.Err(), rows.Close())
+
+	return s.accessPendingInvitations(ctx)
 }
 
 // hostedMemberResponse reads one membership back so a role or grant change
@@ -645,34 +580,14 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 			return s.nativeAPIError(c, err)
 		}
 	}
-	if s.config.TenantRepository != nil {
-		states := request.States
-		if states == nil {
-			states = HostedProjectStates()
-		}
-		command := createNativeProjectRequest{Mutation: tracker.Mutation{IdempotencyKey: request.IdempotencyKey}, Name: name, States: states}
-		c.Set("native_scope", nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true})
-		return s.nativeMutationStatus(c, http.StatusCreated, command.Mutation, command, s.createNativeProjectOperation(command))
+
+	states := request.States
+	if states == nil {
+		states = HostedProjectStates()
 	}
-	project, err := s.createHostedProjectRecord(c.Request().Context(), credential, name, request.States)
-	if err != nil {
-		var application *nativeError
-		if errors.As(err, &application) {
-			return s.nativeAPIError(c, err)
-		}
-		var limit *hostedLimitError
-		if errors.As(err, &limit) {
-			return s.hostedJSONError(c, http.StatusTooManyRequests, limit.Error())
-		}
-		return s.hostedJSONError(c, http.StatusConflict, "The project could not be created; check that its name is unique")
-	}
-	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project), credential: credential}
-	// Read the project just created by this request on the writer.
-	record, err := readNativeProject(c.Request().Context(), s.database.db, scope)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusCreated, record)
+	command := createNativeProjectRequest{Mutation: tracker.Mutation{IdempotencyKey: request.IdempotencyKey}, Name: name, States: states}
+	c.Set("native_scope", nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true})
+	return s.nativeMutationStatus(c, http.StatusCreated, command.Mutation, command, s.createNativeProjectOperation(command))
 }
 
 // hostedJSONError answers a hosted API failure with the native error shape.

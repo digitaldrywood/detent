@@ -280,42 +280,8 @@ func (s *Service) revokeHostedMember(c echo.Context) error {
 }
 
 func (s *Service) revokeHostedMemberLocally(ctx context.Context, user string) (resultErr error) {
-	if s.config.AccessRepository != nil {
-		return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return w.RevokeAccessMember(ctx, user, s.config.now()) })
-	}
-	legacy, err := legacyHostedSessions(ctx, s.database.reader, user)
-	if err != nil {
-		return err
-	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-			resultErr = errors.Join(resultErr, err)
-		}
-	}()
-	statements := []struct {
-		query string
-		args  []any
-	}{
-		{"UPDATE hosted_members SET active = 0,updated_at = ? WHERE user_id = ?", []any{formatHubTime(s.config.now()), user}},
-		{"DELETE FROM token_grants WHERE token_id = (SELECT principal_id FROM hosted_members WHERE user_id = ?)", []any{user}},
-		{"DELETE FROM hosted_project_grants WHERE user_id = ?", []any{user}},
-		{"UPDATE hosted_sessions SET revoked_at = ? WHERE identity_subject = ? AND revoked_at IS NULL", []any{formatHubTime(s.config.now()), user}},
-	}
-	for _, statement := range statements {
-		if _, err := tx.ExecContext(ctx, statement.query, statement.args...); err != nil {
-			return err
-		}
-	}
-	for _, session := range legacy {
-		if _, err := tx.ExecContext(ctx, `UPDATE hosted_sessions SET revoked_at=? WHERE token_hash=? AND identity_subject IS NULL AND identity_json=? AND revoked_at IS NULL`, formatHubTime(s.config.now()), session.hash, session.raw); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+
+	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return w.RevokeAccessMember(ctx, user, s.config.now()) })
 }
 
 func (s *Service) changeHostedRole(c echo.Context) error {
@@ -348,50 +314,8 @@ func (s *Service) changeHostedGrant(c echo.Context) error {
 }
 
 func (s *Service) hostedGrant(ctx context.Context, credential apiCredential, user, project string, write, runner, revoke bool) (resultErr error) {
-	if s.config.AccessRepository != nil {
-		return s.changeAccessGrant(ctx, credential, user, project, write, runner, revoke)
-	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-			resultErr = errors.Join(resultErr, err)
-		}
-	}()
-	if err := s.recheckHostedMutation(ctx, tx, &nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential}); err != nil {
-		return err
-	}
-	grants := []hostedMemberGrant{{ProjectID: project, Write: write, Runner: runner}}
-	if revoke {
-		grants[0].Write, grants[0].Runner = false, false
-	}
-	if err := s.validateHostedGrants(ctx, tx, credential, grants); err != nil {
-		return err
-	}
-	var principal string
-	err = tx.QueryRowContext(ctx, "SELECT principal_id FROM hosted_members WHERE user_id = ? AND active = 1", user).Scan(&principal)
-	if err != nil {
-		return err
-	}
-	if revoke {
-		if _, err := tx.ExecContext(ctx, "DELETE FROM hosted_project_grants WHERE user_id = ? AND project_id = ?", user, project); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, "DELETE FROM token_grants WHERE token_id = ? AND project_id = ?", principal, project); err != nil {
-			return err
-		}
-	} else {
-		_, err = tx.ExecContext(ctx, `INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES (?,?,?,?,?) ON CONFLICT(user_id,project_id) DO UPDATE SET can_write=excluded.can_write,manage_runner=excluded.manage_runner`, user, s.config.Hosted.OrganizationID, project, write, runner)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES (?,?,?) ON CONFLICT DO NOTHING", principal, s.config.Hosted.OrganizationID, project); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+
+	return s.changeAccessGrant(ctx, credential, user, project, write, runner, revoke)
 }
 
 func (s *Service) createHostedProject(c echo.Context) error {
@@ -415,23 +339,8 @@ func (s *Service) createHostedProject(c echo.Context) error {
 }
 
 func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiCredential, name string, states []tracker.NativeState) (project string, resultErr error) {
-	if s.config.TenantRepository != nil {
-		return s.createHostedTenantProject(ctx, credential, name, states)
-	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-			resultErr = errors.Join(resultErr, err)
-		}
-	}()
-	project, err = s.createHostedProjectInTx(ctx, tx, credential, name, states)
-	if err != nil {
-		return "", err
-	}
-	return project, tx.Commit()
+
+	return s.createHostedTenantProject(ctx, credential, name, states)
 }
 func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, credential apiCredential, name string, states []tracker.NativeState) (project string, resultErr error) {
 	if err := s.recheckHostedMutation(ctx, tx, &nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}); err != nil {

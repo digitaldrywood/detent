@@ -122,18 +122,12 @@ func hostedEmailListed(emails []string, value string) bool {
 }
 
 func (s *Service) hostedProviderOrganization(ctx context.Context) (string, error) {
-	if s.config.AccessRepository != nil {
-		var id string
-		err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
-			tenant, err := r.AccessTenant(ctx)
-			id = tenant.ProviderID
-			return err
-		})
-		return id, err
-	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
+
 	var id string
-	err := s.database.auth().QueryRowContext(ctx, "SELECT provider_id FROM hosted_tenant WHERE singleton = 1").Scan(&id)
+	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+		tenant, err := r.AccessTenant(ctx)
+		id = tenant.ProviderID
+		return err
+	})
 	return id, err
 }

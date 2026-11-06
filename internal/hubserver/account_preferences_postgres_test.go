@@ -10,18 +10,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestPostgresAccountPreferencesUseCurrentMember(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	f := newHostedSecurityFixture(t, func(cfg *Config) {
-		cfg.AccessRepository = repository
-		cfg.TenantRepository = repository
-	})
+	f := accountPreferencesPostgresFixture(t, repository)
 	now := time.Now().UTC()
 	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_security", Name: "Example organization", CreatedAt: now}); err != nil {
@@ -33,7 +35,6 @@ func TestPostgresAccountPreferencesUseCurrentMember(t *testing.T) {
 	}
 	user := f.user(t, "preferences", "member", "preferences@example.test", "", "")
 	other := f.user(t, "other_preferences", "member", "other-preferences@example.test", "", "")
-	disableLegacyPostgresTestHandles(t, f.service, repository)
 	f.service.config.Hosted.Provider = accountWidgetProvider{f.provider}
 	requireNativeStatus(t, f.request(t, user, http.MethodPost, "/api/v2/organizations/org_security/widget-token", map[string]any{}), http.StatusOK)
 	dailyPath := "/api/v2/organizations/org_security/daily-summary-preference"
@@ -129,10 +130,7 @@ func (accountWidgetProvider) WidgetToken(context.Context, string) (string, error
 
 func TestPostgresHostedCurrentSessionReadSurfacesStoreFailure(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	f := newHostedSecurityFixture(t, func(cfg *Config) {
-		cfg.AccessRepository = repository
-		cfg.TenantRepository = repository
-	})
+	f := accountPreferencesPostgresFixture(t, repository)
 	now := time.Now().UTC()
 	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_security", Name: "Example organization", CreatedAt: now}); err != nil {
@@ -143,7 +141,6 @@ func TestPostgresHostedCurrentSessionReadSurfacesStoreFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	user := f.user(t, "read_failure", "member", "read-failure@example.test", "", "")
-	disableLegacyPostgresTestHandles(t, f.service, repository)
 	f.service.config.AccessRepository = &hostedSessionReadFailureRepository{Repository: repository, err: errors.New("temporary tenant read failure")}
 	for _, path := range []string{
 		"/api/v2/organizations/org_security/widget-token",
@@ -173,4 +170,17 @@ type hostedSessionReadFailureRepository struct {
 
 func (r *hostedSessionReadFailureRepository) ReadTenant(context.Context, tracker.OrganizationID, corestore.Workload, func(tenantstore.Reader) error) error {
 	return r.err
+}
+
+func accountPreferencesPostgresFixture(t *testing.T, repository *postgres.Repository) hostedSecurityFixture {
+	t.Helper()
+	provider := newHostedSecurityProvider()
+	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, hostedOrganization: "org_security", now: time.Now, logger: discardLogger()}, config: Config{Logger: discardLogger(), now: time.Now, newLeaseID: func() string { return newNativeID("lease") }, generateToken: apikey.GenerateToken, AccessRepository: repository, TenantRepository: repository, RunDetails: &memoryRunDetails{}, Hosted: &HostedConfig{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", PublicURL: "http://example.test", Provider: provider}}}
+	sessions, err := auth.NewSessionService(auth.SessionConfig{SessionTTL: 24 * time.Hour, PublicURL: service.config.Hosted.PublicURL}, service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.hostedSessions = sessions
+	service.registerRoutes(service.echo)
+	return hostedSecurityFixture{service: service, provider: provider}
 }

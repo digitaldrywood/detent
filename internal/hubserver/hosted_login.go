@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -58,13 +57,11 @@ func (s *Service) newHostedTransaction(c echo.Context, organization, actor, sess
 		verifier = ""
 	}
 	expires := s.config.now().Add(10 * time.Minute)
-	if s.config.AccessRepository != nil {
-		err = s.accessWrite(c.Request().Context(), s.accessOrganization(), func(w tenantstore.Writer) error {
-			return w.CreateAccessLoginTransaction(c.Request().Context(), accessstore.LoginTransaction{OrganizationID: s.accessOrganization(), Hash: apikey.HashToken(token), State: state, Verifier: verifier, ProviderOrganizationID: organization, SupportActor: actor, SupportSession: session, ExpiresAt: expires})
-		})
-	} else {
-		_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_transactions(token_hash,state,verifier,organization_id,support_actor,support_session,expires_at) VALUES (?,?,?,?,?,?,?)`, apikey.HashToken(token), state, verifier, organization, actor, session, formatHubTime(expires))
-	}
+
+	err = s.accessWrite(c.Request().Context(), s.accessOrganization(), func(w tenantstore.Writer) error {
+		return w.CreateAccessLoginTransaction(c.Request().Context(), accessstore.LoginTransaction{OrganizationID: s.accessOrganization(), Hash: apikey.HashToken(token), State: state, Verifier: verifier, ProviderOrganizationID: organization, SupportActor: actor, SupportSession: session, ExpiresAt: expires})
+	})
+
 	if err != nil {
 		return hostedTransaction{}, err
 	}
@@ -106,18 +103,13 @@ func (s *Service) consumeHostedTransaction(c echo.Context) (hostedTransaction, e
 		return hostedTransaction{}, auth.ErrHostedIdentity
 	}
 
-	if s.config.AccessRepository != nil {
-		var transaction accessstore.LoginTransaction
-		err := s.accessWrite(c.Request().Context(), s.accessOrganization(), func(w tenantstore.Writer) error {
-			var err error
-			transaction, err = w.ConsumeAccessTransaction(c.Request().Context(), apikey.HashToken(cookie.Value), c.QueryParam("state"), s.config.now())
-			return err
-		})
-		return hostedTransaction{State: transaction.State, Verifier: transaction.Verifier, Organization: transaction.ProviderOrganizationID, SupportActor: transaction.SupportActor, SupportSession: transaction.SupportSession, InvitationToken: transaction.InvitationToken, TokenHash: transaction.Hash, ExpiresAt: transaction.ExpiresAt}, err
-	}
-	var transaction hostedTransaction
-	err = s.database.db.QueryRowContext(c.Request().Context(), `UPDATE hosted_transactions SET consumed_at = ? WHERE token_hash = ? AND consumed_at IS NULL AND julianday(expires_at) > julianday(?) RETURNING state,verifier,organization_id,support_actor,support_session,invitation_token`, formatHubTime(s.config.now()), apikey.HashToken(cookie.Value), formatHubTime(s.config.now())).Scan(&transaction.State, &transaction.Verifier, &transaction.Organization, &transaction.SupportActor, &transaction.SupportSession, &transaction.InvitationToken)
-	return transaction, err
+	var transaction accessstore.LoginTransaction
+	err = s.accessWrite(c.Request().Context(), s.accessOrganization(), func(w tenantstore.Writer) error {
+		var err error
+		transaction, err = w.ConsumeAccessTransaction(c.Request().Context(), apikey.HashToken(cookie.Value), c.QueryParam("state"), s.config.now())
+		return err
+	})
+	return hostedTransaction{State: transaction.State, Verifier: transaction.Verifier, Organization: transaction.ProviderOrganizationID, SupportActor: transaction.SupportActor, SupportSession: transaction.SupportSession, InvitationToken: transaction.InvitationToken, TokenHash: transaction.Hash, ExpiresAt: transaction.ExpiresAt}, err
 }
 
 func (s *Service) completeHostedLogin(c echo.Context) error {
@@ -385,93 +377,8 @@ func (s *Service) acceptHostedInvitationIDFor(ctx context.Context, identity auth
 	return s.acceptHostedInvitationReference(ctx, identity, id, true)
 }
 func (s *Service) acceptHostedInvitationReference(ctx context.Context, identity auth.Identity, token string, byID bool) (resultErr error) {
-	if s.config.AccessRepository != nil {
-		return s.acceptAccessInvitation(ctx, identity, token, byID)
-	}
-	if identity.Hosted == nil || token == "" || len(token) > 512 {
-		return auth.ErrHostedIdentity
-	}
-	var invitation auth.Invitation
-	var err error
-	if byID {
-		invitation, err = auth.LookupInvitationID(ctx, s.config.Hosted.Provider, token)
-	} else {
-		invitation, err = s.config.Hosted.Provider.Invitation(ctx, token)
-	}
-	providerID, providerErr := s.hostedProviderOrganization(ctx)
-	if err != nil || providerErr != nil || invitation.OrganizationID != providerID || !strings.EqualFold(invitation.Email, identity.Email) || !invitation.ExpiresAt.After(s.config.now()) || !identity.EmailVerified {
-		return auth.ErrHostedIdentity
-	}
-	var role string
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancelRead()
-	err = s.database.reader.QueryRowContext(readCtx, "SELECT role FROM hosted_invitations WHERE id = ? AND email = ? AND organization_id = ? AND accepted_user_id = ''", invitation.ID, strings.ToLower(identity.Email), s.config.Hosted.OrganizationID).Scan(&role)
-	if err != nil || !auth.ValidOrganizationRole(role) {
-		return auth.ErrHostedIdentity
-	}
-	if invitation.State == "pending" {
-		var acceptErr error
-		if byID {
-			acceptErr = auth.AcceptInvitationID(ctx, s.config.Hosted.Provider, token, identity.Subject)
-		} else {
-			acceptErr = s.config.Hosted.Provider.AcceptInvitation(ctx, token, identity.Subject)
-		}
-		if acceptErr != nil {
-			return auth.ErrHostedIdentity
-		}
-	} else if invitation.State != "accepted" || invitation.AcceptedUserID != identity.Subject {
-		return auth.ErrHostedIdentity
-	}
-	memberIdentity := *identity.Hosted
-	memberIdentity.OrganizationID = providerID
-	membership, err := s.hostedMembership(ctx, &memberIdentity)
-	if err != nil || membership.Role.Slug != role {
-		return auth.ErrHostedIdentity
-	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-			resultErr = errors.Join(resultErr, err)
-		}
-	}()
-	var encoded string
-	err = tx.QueryRowContext(ctx, "SELECT grants_json FROM hosted_invitations WHERE id=? AND email=? AND organization_id=? AND role=? AND accepted_user_id=''", invitation.ID, strings.ToLower(identity.Email), s.config.Hosted.OrganizationID, role).Scan(&encoded)
-	if err != nil {
-		return auth.ErrHostedIdentity
-	}
-	var grants []hostedMemberGrant
-	if err := json.Unmarshal([]byte(encoded), &grants); err != nil {
-		return err
-	}
-	if err := s.storeHostedMemberTx(ctx, tx, identity, membership, ""); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM hosted_project_grants WHERE user_id=?", identity.Subject); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM token_grants WHERE token_id=(SELECT principal_id FROM hosted_members WHERE user_id=?)", identity.Subject); err != nil {
-		return err
-	}
-	for _, grant := range grants {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES (?,?,?,?,?)
-ON CONFLICT(user_id,project_id) DO UPDATE SET can_write=excluded.can_write,manage_runner=excluded.manage_runner`, identity.Subject, s.config.Hosted.OrganizationID, grant.ProjectID, grant.Write, grant.Runner); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO token_grants(token_id,organization_id,project_id) SELECT principal_id,?,? FROM hosted_members WHERE user_id=? ON CONFLICT DO NOTHING", s.config.Hosted.OrganizationID, grant.ProjectID, identity.Subject); err != nil {
-			return err
-		}
-	}
-	result, err := tx.ExecContext(ctx, "UPDATE hosted_invitations SET accepted_user_id = ? WHERE id = ? AND accepted_user_id = ''", identity.Subject, invitation.ID)
-	if err != nil {
-		return err
-	}
-	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
-		return auth.ErrHostedIdentity
-	}
-	return tx.Commit()
+
+	return s.acceptAccessInvitation(ctx, identity, token, byID)
 }
 
 func (s *Service) hostedInvitationDenied(c echo.Context, message string, denial auth.HostedDenial) error {
@@ -504,18 +411,16 @@ func (s *Service) startHostedInvitation(c echo.Context) error {
 	var accepted string
 	readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancelRead()
-	if s.config.AccessRepository != nil {
-		err = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
-			row, err := r.AccessInvitation(readCtx, invitation.ID)
-			if err != nil || !strings.EqualFold(row.Email, invitation.Email) || !row.ExpiresAt.After(s.config.now()) {
-				return auth.ErrHostedIdentity
-			}
-			accepted = row.AcceptedUserID
-			return nil
-		})
-	} else {
-		err = s.database.reader.QueryRowContext(readCtx, "SELECT accepted_user_id FROM hosted_invitations WHERE id = ? AND organization_id = ? AND email = ?", invitation.ID, s.config.Hosted.OrganizationID, strings.ToLower(invitation.Email)).Scan(&accepted)
-	}
+
+	err = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
+		row, err := r.AccessInvitation(readCtx, invitation.ID)
+		if err != nil || !strings.EqualFold(row.Email, invitation.Email) || !row.ExpiresAt.After(s.config.now()) {
+			return auth.ErrHostedIdentity
+		}
+		accepted = row.AcceptedUserID
+		return nil
+	})
+
 	if err != nil {
 		return s.hostedInvitationDenied(c, auth.InvitationUnavailable, denial)
 	}
@@ -526,13 +431,11 @@ func (s *Service) startHostedInvitation(c echo.Context) error {
 	if err != nil {
 		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", auth.HostedDenial{Flow: "invitation_start", Reason: "transaction_failed"})
 	}
-	if s.config.AccessRepository != nil {
-		err = s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
-			return w.SetAccessTransactionInvitation(ctx, transaction.TokenHash, token)
-		})
-	} else {
-		_, err = s.database.db.ExecContext(ctx, "UPDATE hosted_transactions SET invitation_token = ? WHERE token_hash = ?", token, transaction.TokenHash)
-	}
+
+	err = s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
+		return w.SetAccessTransactionInvitation(ctx, transaction.TokenHash, token)
+	})
+
 	if err != nil {
 		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", auth.HostedDenial{Flow: "invitation_start", Reason: "transaction_failed"})
 	}
@@ -553,21 +456,6 @@ func (s *Service) hostedSupportPage(c echo.Context) error {
 
 // logoutHostedFor retains the browser's current-session revocation semantics.
 func (s *Service) logoutHostedFor(ctx context.Context, hash string, identity *auth.HostedIdentity) (operatortool.SignOutResult, error) {
-	if s.config.AccessRepository != nil {
-		return s.logoutAccessSession(ctx, hash, identity)
-	}
-	if _, err := s.database.db.ExecContext(ctx, "UPDATE hosted_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE token_hash = ?", formatHubTime(s.config.now()), hash); err != nil {
-		return operatortool.SignOutResult{}, err
-	}
-	outcome := operatortool.SignOutResult{SignedOut: true, ProviderConfirmed: true, AuditRecorded: true}
-	if identity != nil {
-		revocation, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-		defer cancel()
-		outcome.AuditRecorded = s.hostedAudit(revocation, identity, "session_ended", "/logout", "", http.StatusOK) == nil
-		outcome.ProviderConfirmed = s.config.Hosted.Provider.RevokeSession(revocation, identity.SessionID) == nil
-		if !outcome.ProviderConfirmed || !outcome.AuditRecorded {
-			s.config.Logger.WarnContext(revocation, "session sign-out incomplete", "provider_confirmed", outcome.ProviderConfirmed, "audit_recorded", outcome.AuditRecorded)
-		}
-	}
-	return outcome, nil
+
+	return s.logoutAccessSession(ctx, hash, identity)
 }
