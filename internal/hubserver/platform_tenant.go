@@ -1,9 +1,15 @@
 package hubserver
 
 import (
+	"cmp"
 	"context"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 
 	"github.com/labstack/echo/v4"
 
@@ -66,38 +72,23 @@ func (s *Service) platformTenantMembers(c echo.Context) error {
 func (s *Service) platformTenantRunners(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
-	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT id FROM runner_identities WHERE organization_id = ? AND removed_at IS NULL ORDER BY display_name, id", organization)
-	if err != nil {
-		return s.internalAPIError(c, "runners_unavailable", "Runners are unavailable", err)
-	}
-	defer rows.Close()
-	ids := []string{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return s.internalAPIError(c, "runners_unavailable", "Runners are unavailable", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return s.internalAPIError(c, "runners_unavailable", "Runners are unavailable", err)
-	}
-	if err := rows.Close(); err != nil {
-		return s.internalAPIError(c, "runners_unavailable", "Runners are unavailable", err)
-	}
 	type runner struct {
 		ID     string `json:"id"`
 		Name   string `json:"name"`
 		Health string `json:"health"`
 	}
-	runners := make([]runner, 0, len(ids))
-	for _, id := range ids {
-		item, err := readRunnerWithClock(ctx, s.database.reader, organization, id, s.config.now)
+	runners := []runner{}
+	for offset := 0; ; offset += 200 {
+		rows, err := s.listRunnerRoutingData(ctx, s.accessOrganization(), 200, offset)
 		if err != nil {
 			return s.internalAPIError(c, "runners_unavailable", "Runners are unavailable", err)
 		}
-		runners = append(runners, runner{ID: id, Name: item.DisplayName, Health: item.Status(s.config.now())})
+		for _, row := range rows {
+			runners = append(runners, runner{ID: row.RunnerID, Name: row.DisplayName, Health: row.Status(s.config.now())})
+		}
+		if len(rows) < 200 {
+			break
+		}
 	}
 	return c.JSON(http.StatusOK, runners)
 }
@@ -105,25 +96,32 @@ func (s *Service) platformTenantRunners(c echo.Context) error {
 func (s *Service) platformTenantProjects(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT id,name FROM projects WHERE deleted_at IS NULL AND organization_id = ? ORDER BY name, id", s.config.Hosted.OrganizationID)
-	if err != nil {
-		return s.internalAPIError(c, "projects_unavailable", "Projects are unavailable", err)
-	}
-	defer rows.Close()
 	type project struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	}
 	projects := []project{}
-	for rows.Next() {
-		var item project
-		if err := rows.Scan(&item.ID, &item.Name); err != nil {
+	after := tracker.ProjectID("")
+	for {
+		var rows []corestore.Project
+		err := s.config.TenantRepository.ReadTenant(ctx, s.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			rows, err = r.Projects(ctx, after, corestore.MaxPageSize)
+			return err
+		})
+		if err != nil {
 			return s.internalAPIError(c, "projects_unavailable", "Projects are unavailable", err)
 		}
-		projects = append(projects, item)
+		for _, row := range rows {
+			if row.DeletedAt == nil {
+				projects = append(projects, project{ID: string(row.ID), Name: row.Name})
+			}
+			after = row.ID
+		}
+		if len(rows) < corestore.MaxPageSize {
+			break
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return s.internalAPIError(c, "projects_unavailable", "Projects are unavailable", err)
-	}
+	slices.SortFunc(projects, func(a, b project) int { return cmp.Or(strings.Compare(a.Name, b.Name), strings.Compare(a.ID, b.ID)) })
 	return c.JSON(http.StatusOK, projects)
 }

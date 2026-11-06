@@ -181,6 +181,11 @@ func TestReportCurrentUsageIngestionPreservesCoverage(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
+			service := &Service{config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(organization)}}}
+			usage, err := service.usageRows(ctx, usageWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour)}, []string{string(project)})
+			if err != nil || len(usage) != 1 || usage[0].Cost != float64(amount)/1e6 {
+				t.Fatalf("usage rows=%+v err=%v", usage, err)
+			}
 			if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 				window := operatortool.AnalyticsWindow{From: now.Truncate(time.Hour), To: now.Truncate(time.Hour).Add(time.Hour), Bucket: time.Hour}
 				prior := operatortool.AnalyticsWindow{From: window.From.Add(-time.Hour), To: window.From, Bucket: time.Hour}

@@ -15,6 +15,9 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -77,37 +80,15 @@ func (s *Service) usageCredentialError(c echo.Context, err error) error {
 // usageReadableProjects lists the projects the hosted member holds a grant
 // for, which is what the report is filtered to.
 func (s *Service) usageReadableProjects(ctx context.Context, credential apiCredential) ([]string, error) {
-	if s.database.postgres != nil {
-		projects, err := s.hostedReadableProjectsPostgres(ctx, credential)
-		if err != nil {
-			return nil, err
-		}
-		ids := make([]string, len(projects))
-		for i, project := range projects {
-			ids[i] = project.ID
-		}
-		return ids, nil
-	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.id FROM projects p JOIN hosted_project_grants g ON g.project_id = p.id
-WHERE g.user_id = ? AND p.organization_id = ? ORDER BY p.id`, credential.Hosted.Subject, s.config.Hosted.OrganizationID)
+	projects, err := s.hostedReadableProjectsPostgres(ctx, credential)
 	if err != nil {
-		return nil, fmt.Errorf("list project grants: %w", err)
+		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
-	projects := []string{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan project grant: %w", err)
-		}
-		projects = append(projects, id)
+	ids := make([]string, len(projects))
+	for i, project := range projects {
+		ids[i] = project.ID
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, fmt.Errorf("list project grants: %w", err)
-	}
-	return projects, nil
+	return ids, nil
 }
 
 type usageWindow struct {
@@ -300,7 +281,60 @@ func usageRangeWindow(value string, now time.Time) (usageWindow, error) {
 func (s *Service) usageRows(ctx context.Context, window usageWindow, projects []string) ([]usageRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	return readUsageRows(ctx, s.database.reader, s.config.Hosted.OrganizationID, window, projects, int(^uint(0)>>1))
+	if len(projects) == 0 {
+		return nil, nil
+	}
+	query := reportstore.OverviewQuery{From: window.From, Split: window.From, To: window.To, Limit: 100000}
+	for _, project := range projects {
+		query.Projects = append(query.Projects, tracker.ProjectID(project))
+	}
+	if scope, ok := reportsScopeFrom(ctx); ok {
+		if scope.issues != "" {
+			return nil, errors.New("typed usage requires resolved report filters")
+		}
+		query.Principal = scope.reporterPrincipal
+		query.Filter = reportstore.Filter{Runners: scope.attempts.Runners, Models: scope.attempts.Models, Stages: scope.attempts.Stages}
+	}
+	var facts []reportstore.UsageFact
+	var attempts []reportstore.AttemptFact
+	err := s.config.TenantRepository.ReadTenant(ctx, s.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+		usage, ok := r.(reportstore.UsageReader)
+		if !ok {
+			return errors.New("typed usage reader unavailable")
+		}
+		attempt, ok := r.(reportstore.AttemptReader)
+		if !ok {
+			return errors.New("typed attempt reader unavailable")
+		}
+		var err error
+		facts, err = usage.ReadReportUsage(ctx, query)
+		if err != nil {
+			return err
+		}
+		attempts, err = attempt.ReadAttemptFacts(ctx, reportstore.AttemptQuery{Projects: query.Projects, Principal: query.Principal, From: query.From, To: query.To, Filter: query.Filter, Limit: 50000})
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	grouped, err := postgresReportUsageRows(facts)
+	if err != nil {
+		return nil, err
+	}
+	rows := []usageRow{}
+	for _, attempt := range attempts {
+		usage := grouped[attempt.AttemptID]
+		if len(usage) == 0 {
+			continue
+		}
+		usage[0].BusySeconds = usageBusySeconds(formatHubTime(attempt.StartedAt), formatHubTime(attempt.UpdatedAt), window)
+		rows = append(rows, usage...)
+		delete(grouped, attempt.AttemptID)
+	}
+	if len(grouped) != 0 {
+		return nil, errors.New("typed usage has no scoped attempt")
+	}
+	return rows, nil
 }
 
 func readUsageRows(ctx context.Context, database nativeQueryer, organization string, window usageWindow, projects []string, limit int) ([]usageRow, error) {
@@ -433,31 +467,18 @@ func (s *Service) usageRunnerCapacity(ctx context.Context) (map[string]runnerCap
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	capacity := map[string]runnerCapacity{}
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT id FROM runner_identities WHERE organization_id = ? AND removed_at IS NULL ORDER BY display_name, id",
-		tracker.OrganizationID(s.config.Hosted.OrganizationID))
-	if err != nil {
-		return nil, fmt.Errorf("list runners: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	ids := []string{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan runner: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, fmt.Errorf("list runners: %w", err)
-	}
-	for _, id := range ids {
-		runner, err := readRunnerWithClock(ctx, s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID), id, s.config.now)
+	for offset := 0; ; offset += 200 {
+		rows, err := s.listRunnerRoutingData(ctx, s.accessOrganization(), 200, offset)
 		if err != nil {
-			return nil, fmt.Errorf("read runner %s: %w", id, err)
+			return nil, err
 		}
-		capacity[id] = runnerCapacity{DisplayName: runner.DisplayName, Limit: runner.CapacityLimit}
+		for _, row := range rows {
+			capacity[row.RunnerID] = runnerCapacity{DisplayName: row.DisplayName, Limit: row.CapacityLimit}
+		}
+		if len(rows) < 200 {
+			return capacity, nil
+		}
 	}
-	return capacity, nil
 }
 
 type runnerCapacity struct {
