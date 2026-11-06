@@ -59,7 +59,6 @@ type Service struct {
 	operatorChat            *chat.Service
 	administration          *operatoradmin.Executor
 	billing                 *hostedBillingWorker
-	healthDetector          *healthDetector
 	issueMailer             *issueMailer
 	hostedMutationMu        sync.Mutex
 	sourceVerification      chan struct{}
@@ -332,9 +331,6 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		service.outbox.start(ctx)
 	}
 	service.startHostedBilling()
-	if database.postgres == nil {
-		service.startHealthDetector()
-	}
 	service.startIssueMailer()
 	service.dashboard = newDashboardDelivery(service)
 	service.dashboard.start()
@@ -562,7 +558,6 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 	s.stopSpriteRunners()
 	s.stopHostedBilling()
-	s.stopHealthDetector()
 	return errors.Join(mcpErr, httpErr, s.stopGitHubWebhookMaintenance(), s.stopGitHubReconciliation())
 }
 
@@ -599,7 +594,6 @@ func (s *Service) CloseContext(ctx context.Context) error {
 		webhookErr := s.stopGitHubWebhookMaintenance()
 		reconcileErr := s.stopGitHubReconciliation()
 		s.stopHostedBilling()
-		s.stopHealthDetector()
 		s.stopIssueMailer()
 		if s.outbox != nil {
 			s.outbox.stop()

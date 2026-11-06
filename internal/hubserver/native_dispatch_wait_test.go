@@ -108,7 +108,6 @@ func measureDispatchQueries(t *testing.T, s *Service) *dispatchQueryProbe {
 	if err := s.stopGitHubReconciliation(); err != nil {
 		t.Fatal(err)
 	}
-	s.stopHealthDetector()
 	if s.outbox != nil {
 		s.outbox.stop()
 	}

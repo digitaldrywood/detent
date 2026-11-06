@@ -951,7 +951,6 @@ func TestWorkItemRecordBodyEditClearsReturnedIssueAction(t *testing.T) {
 		t.Fatal(err)
 	}
 	service.stopHostedBilling()
-	service.stopHealthDetector()
 	service.stopIssueMailer()
 	if service.outbox != nil {
 		service.outbox.stop()

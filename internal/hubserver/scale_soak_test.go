@@ -476,7 +476,6 @@ func scaleSoakMaintenance(ctx context.Context, seed scaleSoakSeed, metrics *scal
 		name string
 		run  func() error
 	}{
-		{"health_detector", func() error { return seed.service.evaluateTenantHealth(ctx) }},
 		{"board_refresh", func() error {
 			before := seed.boardErrors.Load()
 			seed.service.maintainNativeBoard(ctx)

@@ -499,7 +499,6 @@ func newChangePolicyPostgresFixtureWithAdmin(t *testing.T, maxConnections int) (
 		cfg.TenantRepository = repository
 		cfg.RunDetails = details
 	})
-	f.service.stopHealthDetector()
 	owner := f.user(t, "review_admin", "owner", "review-admin@example.test", "", "")
 	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 		member, err := w.AccessMember(t.Context(), owner.identity.Subject)

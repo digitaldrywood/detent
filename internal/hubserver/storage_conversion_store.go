@@ -27,7 +27,6 @@ func (s sqliteConversionStorage) projections() []storageProjection {
 		{"projection-activity", s.service.convertActivityProjections},
 		{"projection-attempts", s.service.convertAttemptHotProjections},
 		{"projection-leases", s.service.convertAttemptLeases},
-		{"projection-health", s.service.convertHealthProjections},
 	}
 }
 

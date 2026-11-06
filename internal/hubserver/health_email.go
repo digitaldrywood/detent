@@ -4,19 +4,15 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"text/template"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/emailtemplate"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 var healthEmailTemplate = template.Must(template.New("health").Parse(`Finding {{.State}}: {{.Signal}}
@@ -45,164 +41,6 @@ func healthEmailText(value string) string {
 		}
 		return "[redacted]"
 	}), maxFailureExampleLength)
-}
-
-func (s *Service) commitHealthEvaluation(ctx context.Context, organization tracker.OrganizationID, now time.Time, findings []healthFinding, unavailable []healthBaselineUnavailable) error {
-	cancellations, err := readHealthCancellations(ctx, s.database.reader, organization)
-	if err != nil {
-		return err
-	}
-	if unavailable == nil {
-		unavailable = []healthBaselineUnavailable{}
-	}
-	raw, err := json.Marshal(unavailable)
-	if err != nil {
-		return err
-	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO health_detector_ticks(organization_id,last_tick_at,baseline_unavailable_json) VALUES(?,?,?)
- ON CONFLICT(organization_id) DO UPDATE SET baseline_unavailable_json=excluded.baseline_unavailable_json`, organization, formatHubTime(now), string(raw)); err != nil {
-		return err
-	}
-	transitions, err := writeHealthEvaluation(ctx, tx, organization, now, findings)
-	if err != nil {
-		return err
-	}
-	issues, err := reportHealthFindings(ctx, tx, organization, now, cancellations)
-	if err != nil {
-		return err
-	}
-	notifications, err := s.claimHealthEmails(ctx, tx, organization, transitions)
-	if err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	if s.outbox != nil {
-		s.outbox.signal()
-	}
-	for _, issue := range issues {
-		raw, err := json.Marshal(issue)
-		if err != nil {
-			return err
-		}
-		s.wakeSpriteRunnersAfter(healthIssueScope(organization, issue.ProjectID), raw)
-	}
-	if len(notifications) == 0 {
-		return nil
-	}
-	return s.sendHealthEmails(ctx, organization, notifications)
-}
-
-func (s *Service) claimHealthEmails(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, transitions []string) ([]healthFinding, error) {
-	if len(transitions) == 0 {
-		return nil, nil
-	}
-	raw, err := sqlList(transitions)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := querySQL(ctx, tx, `SELECT id,signal,subject_json,opened_at,resolved_at,summary,next_action,evidence_json FROM health_findings
-WHERE id IN (SELECT value FROM sql_rows(?)) AND organization_id=? AND severity='attention' AND
-((resolved_at IS NULL AND email_open_attempted=0) OR (resolved_at IS NOT NULL AND email_resolve_attempted=0))
-ORDER BY rowid LIMIT ?`, raw, organization, healthReadLimit+1)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	findings := []healthFinding{}
-	for rows.Next() {
-		var f healthFinding
-		var subject, opened, evidence string
-		var resolved sql.NullString
-		if err := rows.Scan(&f.ID, &f.Signal, &subject, &opened, &resolved, &f.Summary, &f.NextAction, &evidence); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal([]byte(subject), &f.Subject); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal([]byte(evidence), &f.Evidence); err != nil {
-			return nil, err
-		}
-		if f.OpenedAt, err = parseTimeValue(opened); err != nil {
-			return nil, err
-		}
-		if resolved.Valid {
-			at, err := parseTimeValue(resolved.String)
-			if err != nil {
-				return nil, err
-			}
-			f.ResolvedAt = &at
-		}
-		findings = append(findings, f)
-		if len(findings) > healthReadLimit {
-			return nil, errHealthReadLimit
-		}
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, err
-	}
-	unavailable := s.config.Hosted == nil || s.config.Hosted.EmailSender == nil
-	for _, f := range findings {
-		query := `UPDATE health_findings SET email_open_attempted=1,email_unavailable=MAX(email_unavailable,?) WHERE organization_id=? AND id=?`
-		if f.ResolvedAt != nil {
-			query = `UPDATE health_findings SET email_resolve_attempted=1,email_unavailable=MAX(email_unavailable,?) WHERE organization_id=? AND id=?`
-		}
-		if _, err := execSQL(ctx, tx, query, unavailable, organization, f.ID); err != nil {
-			return nil, err
-		}
-	}
-	if unavailable {
-		return nil, nil
-	}
-	return findings, nil
-}
-
-func (s *Service) sendHealthEmails(ctx context.Context, organization tracker.OrganizationID, findings []healthFinding) error {
-	if string(organization) != s.config.Hosted.OrganizationID {
-		return auth.ErrHostedIdentity
-	}
-	providerID, err := s.hostedProviderOrganization(ctx)
-	if err != nil {
-		return err
-	}
-	members, err := s.config.Hosted.Provider.Memberships(ctx, "", providerID)
-	if err != nil {
-		return err
-	}
-	recipients := []string{}
-	for _, member := range members {
-		if member.OrganizationID != providerID || member.Status != "active" || member.Role.Slug != "owner" {
-			continue
-		}
-		user, err := auth.LookupHostedUser(ctx, s.config.Hosted.Provider, member.UserID)
-		if err != nil {
-			return err
-		}
-		recipients = append(recipients, strings.ToLower(strings.TrimSpace(user.Email)))
-	}
-	slices.Sort(recipients)
-	recipients = slices.Compact(recipients)
-	var failures error
-	for _, f := range findings {
-		message, err := s.renderHealthEmail(ctx, f)
-		if err != nil {
-			failures = errors.Join(failures, err)
-			continue
-		}
-		for _, recipient := range recipients {
-			message.To = recipient
-			if err := s.config.Hosted.EmailSender.SendEmail(ctx, message); err != nil {
-				failures = errors.Join(failures, fmt.Errorf("send health finding %s email: %w", f.ID, err))
-			}
-		}
-	}
-	return failures
 }
 
 func (s *Service) renderHealthEmail(ctx context.Context, f healthFinding) (auth.EmailMessage, error) {

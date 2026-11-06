@@ -133,7 +133,6 @@ func TestAttemptPayloadObjectsAndTypedReads(t *testing.T) {
 			if err := f.service.stopGitHubReconciliation(); err != nil {
 				t.Fatal(err)
 			}
-			f.service.stopHealthDetector()
 			f.service.outbox.stop()
 			f.start(t)
 			path := f.base + "/work-items/" + string(f.issue.WorkItemID)

@@ -2,10 +2,7 @@ package hubserver
 
 import (
 	"bytes"
-	"context"
-	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -17,7 +14,6 @@ const slackTestWebhook = "https://hooks.slack.com/services/T123/B456/SLACK_SECRE
 
 func configureTestSlack(t *testing.T, f nativeFixture, now *time.Time, configured bool) {
 	t.Helper()
-	f.service.stopHealthDetector()
 	f.service.outbox.stop()
 	f.service.config.now = func() time.Time { return *now }
 	f.service.config.Hosted = &HostedConfig{PublicURL: "https://cloud.detent.test"}
@@ -34,198 +30,6 @@ func configureTestSlack(t *testing.T, f nativeFixture, now *time.Time, configure
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO slack_integrations(organization_id,channel_name) VALUES(?,'#operations')`, f.project.OrganizationID); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestSlackFindingDelivery(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name             string
-		watch, unset     bool
-		locked           bool
-		issue            bool
-		failure          int
-		timeout, recover bool
-	}{
-		{name: "open and resolve once"}, {name: "work item uses current slugs", issue: true}, {name: "watch never posts", watch: true}, {name: "unset never calls HTTP", unset: true},
-		{name: "locked keys retain pending delivery", locked: true},
-		{name: "4xx retries once", failure: 403}, {name: "5xx retries once", failure: 503}, {name: "redirect is not followed", failure: 302}, {name: "timeout retries once", timeout: true}, {name: "retry recovers", failure: 503, recover: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			f := newNativeFixture(t, nil, "", "slack")
-			kind, subject := "runner", "runner_test"
-			if test.issue {
-				kind, subject = "work_item", string(f.create(t, "Affected issue").WorkItemID)
-			}
-			now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
-			configureTestSlack(t, f, &now, !test.unset)
-			finding := newHealthFinding("runner_heartbeat_gap", "instance", kind, subject, "Runner heartbeat is behind.", "Check the runner connection.", []string{string(f.project.ID)}, healthEvidence{})
-			finding.ConditionSince = now.Add(-48 * time.Hour)
-			setSlugs := func(organization, project string) {
-				t.Helper()
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE organizations SET slug=? WHERE id=?", organization, f.project.OrganizationID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET slug=? WHERE id=?", project, f.project.ID); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if test.watch {
-				finding.Severity = "watch"
-			}
-			calls := []string{}
-			f.service.config.SlackHTTPClient = &http.Client{Transport: spritesTestTransport(func(r *http.Request) (*http.Response, error) {
-				if r.URL.String() != slackTestWebhook || r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/json" {
-					t.Fatal("wrong Slack request")
-				}
-				raw, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var payload struct {
-					Text string `json:"text"`
-				}
-				if err := json.Unmarshal(raw, &payload); err != nil {
-					t.Fatal(err)
-				}
-				if strings.Contains(string(raw), "SLACK_SECRET_SENTINEL") {
-					t.Fatal("webhook leaked into message")
-				}
-				calls = append(calls, payload.Text)
-				if test.timeout {
-					return nil, errors.New(slackTestWebhook)
-				}
-				if test.failure != 0 && (!test.recover || len(calls) == 1) {
-					response := spritesTestResponse(slackTestWebhook, test.failure)
-					response.Header.Set("Location", "https://outside.detent.test/secret")
-					return response, nil
-				}
-				return spritesTestResponse("ok", 200), nil
-			})}
-			process := func() bool {
-				t.Helper()
-				processed, err := f.service.processSlackDelivery(t.Context())
-				if err != nil {
-					t.Fatal(err)
-				}
-				return processed
-			}
-			applyTestHealth(t, f, now, []healthFinding{finding})
-			if len(calls) != 0 {
-				t.Fatal("detector called HTTP inline")
-			}
-			if test.issue {
-				setSlugs("example-org", "example-project")
-			}
-			if test.locked {
-				keys := f.service.config.SecretKeys
-				f.service.config.SecretKeys = nil
-				ctx, cancel := context.WithCancel(t.Context())
-				cancel()
-				processed, err := f.service.processSlackDelivery(ctx)
-				f.service.config.SecretKeys = keys
-				if err != nil || processed || len(calls) != 0 {
-					t.Fatalf("locked delivery touched storage or HTTP: processed=%t calls=%d error=%v", processed, len(calls), err)
-				}
-			}
-			process()
-			enabled := !test.watch && !test.unset
-			want := 0
-			if enabled {
-				want = 1
-			}
-			if len(calls) != want {
-				t.Fatalf("open calls=%d want %d", len(calls), want)
-			}
-			if test.issue && !strings.Contains(calls[0], "<https://cloud.detent.test/example-org/example-project/issues/1?tab=diagnostics|") {
-				t.Fatalf("opened notification uses the wrong issue URL: %s", calls[0])
-			}
-			applyTestHealth(t, f, now, []healthFinding{finding})
-			if process() {
-				t.Fatal("repeated evaluation delivered again")
-			}
-			if test.failure != 0 || test.timeout {
-				now = now.Add(59 * time.Second)
-				if process() {
-					t.Fatal("retry before 60 seconds")
-				}
-				now = now.Add(time.Second)
-				if !process() || len(calls) != 2 {
-					t.Fatalf("retry calls=%d", len(calls))
-				}
-				now = now.Add(time.Minute)
-				if process() {
-					t.Fatal("retried more than once")
-				}
-				page, err := f.service.readHealthFindings(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}, "open", "", "", 100)
-				if err != nil {
-					t.Fatal(err)
-				}
-				raw, err := json.Marshal(page)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if strings.Contains(string(raw), "SLACK_SECRET_SENTINEL") {
-					t.Fatal("finding read leaked webhook")
-				}
-				failure := page.Items[0].SlackUnavailable
-				if test.recover {
-					if failure != nil {
-						t.Fatalf("recovered finding=%+v", failure)
-					}
-				} else if failure == nil || failure.Code != "slack_unavailable" || failure.StatusCode != test.failure {
-					t.Fatalf("failure=%+v", failure)
-				}
-				status, err := readSlackIntegration(t.Context(), f.service.database.db, f.project.OrganizationID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if status.LastDeliveryFailed == test.recover || status.LastFailureAt == nil {
-					t.Fatalf("status=%+v", status)
-				}
-				return
-			}
-			now = now.Add(2 * time.Minute)
-			applyTestHealth(t, f, now, nil)
-			if test.issue {
-				setSlugs("renamed-org", "renamed-project")
-			}
-			process()
-			if enabled {
-				want++
-			}
-			if len(calls) != want {
-				t.Fatalf("resolve calls=%d want %d", len(calls), want)
-			}
-			if test.issue && !strings.Contains(calls[1], "<https://cloud.detent.test/renamed-org/renamed-project/issues/1?tab=diagnostics|") {
-				t.Fatalf("resolved notification uses stale issue slugs: %s", calls[1])
-			}
-			applyTestHealth(t, f, now, nil)
-			if process() {
-				t.Fatal("repeated resolve delivered again")
-			}
-			now = now.Add(time.Minute)
-			applyTestHealth(t, f, now, []healthFinding{finding})
-			if process() {
-				t.Fatal("reopen window posted again")
-			}
-			applyTestHealth(t, f, now, nil)
-			if process() {
-				t.Fatal("second resolve in reopen window posted again")
-			}
-			now = now.Add(healthReopenWindow + time.Second)
-			applyTestHealth(t, f, now, []healthFinding{finding})
-			process()
-			if enabled {
-				want++
-			}
-			if len(calls) != want {
-				t.Fatalf("later occurrence calls=%d want %d", len(calls), want)
-			}
-			if enabled && (!strings.Contains(calls[0], "Opened") || !strings.Contains(calls[0], "Age: 48h0m0s") || !strings.Contains(calls[1], "Resolved") || !strings.Contains(calls[1], "Duration: 48h2m0s")) {
-				t.Fatalf("messages=%v", calls)
-			}
-		})
 	}
 }
 
@@ -273,7 +77,6 @@ func TestSlackSettingsPrivacyAndAccess(t *testing.T) {
 		cfg.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 	})
 	calls := 0
-	f.service.stopHealthDetector()
 	f.service.outbox.stop()
 	f.service.config.SlackHTTPClient = &http.Client{Transport: spritesTestTransport(func(r *http.Request) (*http.Response, error) { calls++; return nil, errors.New(slackTestWebhook) })}
 	base := browserHostedOrganizationBase + "/integrations/slack"

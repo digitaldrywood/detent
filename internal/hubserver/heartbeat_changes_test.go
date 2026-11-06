@@ -20,7 +20,6 @@ func TestRunnerHeartbeatChanges(t *testing.T) {
 	if err := f.service.stopGitHubReconciliation(); err != nil {
 		t.Fatal(err)
 	}
-	f.service.stopHealthDetector()
 	f.service.outbox.stop()
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	r.enroll(t)

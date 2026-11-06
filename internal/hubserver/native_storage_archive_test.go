@@ -613,7 +613,6 @@ func TestNativeStorageArchiveRunTimeline(t *testing.T) {
 	if err := a.service.stopGitHubReconciliation(); err != nil {
 		t.Fatal(err)
 	}
-	a.service.stopHealthDetector()
 	a.service.outbox.stop()
 	checkingConnections := false
 	archiveReads := 0

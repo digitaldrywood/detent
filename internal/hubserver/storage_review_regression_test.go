@@ -285,7 +285,6 @@ func TestReportObjectDownloadsReleaseReaders(t *testing.T) {
 	f.service.dashboard.stop()
 	f.service.outbox.stop()
 	f.service.stopHostedBilling()
-	f.service.stopHealthDetector()
 	f.service.stopIssueMailer()
 	owner := f.user(t, "owner", "owner", "owner@example.test", "", "")
 	f.grant(t, owner, false, false)

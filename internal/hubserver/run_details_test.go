@@ -134,7 +134,6 @@ func TestNativeRunDetailReferences(t *testing.T) {
 	if err := f.service.stopGitHubReconciliation(); err != nil {
 		t.Fatal(err)
 	}
-	f.service.stopHealthDetector()
 	f.service.outbox.stop()
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "work")
@@ -716,7 +715,6 @@ func TestNativeRunDetailIsolation(t *testing.T) {
 	if err := f.service.stopGitHubReconciliation(); err != nil {
 		t.Fatal(err)
 	}
-	f.service.stopHealthDetector()
 	f.service.outbox.stop()
 	response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations", testHubAdminToken, map[string]any{"name": "Other organization"})
 	requireNativeStatus(t, response, http.StatusCreated)
@@ -952,7 +950,6 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 				}
 				f.service.dashboard.stop()
 				f.service.outbox.stop()
-				f.service.stopHealthDetector()
 				f.service.stopHostedBilling()
 				f.service.stopIssueMailer()
 				issue := f.create(t, "checkpoint history")

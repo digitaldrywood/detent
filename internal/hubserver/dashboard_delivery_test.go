@@ -35,7 +35,6 @@ func controlledHostedDelivery(t *testing.T, cfg dashboardDeliveryConfig, configu
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
-	f.service.stopHealthDetector()
 	f.service.stopIssueMailer()
 	if f.service.outbox != nil {
 		f.service.outbox.stop()

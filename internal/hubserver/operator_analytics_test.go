@@ -284,7 +284,6 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 		if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 			t.Fatal(err)
 		}
-		f.service.stopHealthDetector()
 		f.service.outbox.stop()
 		request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(t.Context())
 		request.AddCookie(&http.Cookie{Name: hostedCookie, Value: owner.token})

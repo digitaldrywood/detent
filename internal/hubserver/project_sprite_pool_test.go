@@ -1785,7 +1785,6 @@ func TestSpriteLifecycleReadsArchivedRunDetails(t *testing.T) {
 	if err := f.service.stopGitHubReconciliation(); err != nil {
 		t.Fatal(err)
 	}
-	f.service.stopHealthDetector()
 	f.service.outbox.stop()
 	keys, hosted := f.service.config.SecretKeys, f.service.config.Hosted
 	f.service.config.SecretKeys, f.service.config.Hosted = nil, nil

@@ -88,7 +88,6 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 	if err := f.service.stopGitHubReconciliation(); err != nil {
 		t.Fatal(err)
 	}
-	f.service.stopHealthDetector()
 	f.service.outbox.stop()
 	rowBytes := collaborationInlineBytesQuery(t, f.service.database.reader)
 	for _, kind := range []string{"run.started", "run.checkpointed", "run.observed", "run.finished", "scheduler.decision"} {

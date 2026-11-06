@@ -36,7 +36,6 @@ func (q *healthContractQueries) QueryRowContext(ctx context.Context, query strin
 func TestHealthContractsReuseRevisions(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "health-contracts")
-	f.service.stopHealthDetector()
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-health-contracts")
 	first, second := f.create(t, "first"), other.create(t, "second")
 	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
@@ -142,7 +141,6 @@ func TestHealthContractsReuseRevisions(t *testing.T) {
 func TestHealthContractsBoundedRetention(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "bounded-health-contracts")
-	f.service.stopHealthDetector()
 	issue := f.create(t, "candidate")
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
 	key := healthContractKey{organization: scope.organization, project: scope.project, item: string(issue.WorkItemID)}
@@ -179,7 +177,6 @@ func TestHealthContractsLiveInputs(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "health-live")
-			f.service.stopHealthDetector()
 			issue := f.create(t, "candidate")
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
 			exec := func(query string, args ...any) {

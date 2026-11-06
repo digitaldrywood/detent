@@ -462,7 +462,6 @@ func TestTeamThreadPaginationAndReferences(t *testing.T) {
 	ref := operatortool.ThreadReference{Kind: "issue", ID: string(issue.WorkItemID)}
 	r = performHubAPIRequest(t, f.service, http.MethodPost, threadBase(f)+"/"+first.ID+"/posts", f.token, teamThreadInput{Kind: "finding", Body: "Linked finding", References: []operatortool.ThreadReference{ref}})
 	requireNativeStatus(t, r, 201)
-	f.service.stopHealthDetector()
 	f.service.outbox.stop()
 	for _, tc := range []struct {
 		name  string
