@@ -1,5 +1,7 @@
 {
   "tables": {
+    "native_relationship_pages": {"class": "derived_with_retention", "retention": "current published relationship generation; bounded cleanup retires previous generations"},
+    "native_relationship_page_heads": {"class": "hot_state"},
     "native_work_item_pages": {"class": "page_read_model", "retention": "current work item lifetime; replay from immutable source versions"},
     "native_comment_pages": {"class": "page_read_model", "retention": "current comment lifetime; replay from immutable source versions"},
     "native_work_item_page_dirty": {"class": "index"},
