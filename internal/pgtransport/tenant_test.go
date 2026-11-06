@@ -67,7 +67,7 @@ func TestTenantBinding(t *testing.T) {
 		}
 	}
 	var count int
-	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM protected`).Scan(&count); err != nil || count != 0 {
+	if err := pool.QueryRow(pgtest.UnboundProbe(t.Context()), `SELECT count(*) FROM protected`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("unbound rows=%d err=%v", count, err)
 	}
 	if _, err := pools.Begin(t.Context(), pgtransport.Scope{}, pgx.TxOptions{}); !errors.Is(err, pgtransport.ErrTenantRequired) {
@@ -76,5 +76,36 @@ func TestTenantBinding(t *testing.T) {
 	tx := new(pgtransport.Transaction)
 	if _, err := tx.Query(t.Context(), `SELECT * FROM protected`); !errors.Is(err, pgtransport.ErrUnbound) {
 		t.Fatalf("guard: %v", err)
+	}
+}
+
+func TestGuardDetectsBypass(t *testing.T) {
+	admin := template.Database(t)
+	var role string
+	if err := admin.QueryRowContext(t.Context(), `SELECT current_user`).Scan(&role); err != nil {
+		t.Fatal(err)
+	}
+	config := template.NativeConfig(t, admin, role, "fixture-only")
+	violations := 0
+	config.ConnConfig.Tracer = pgtest.NewTenantGuard([]string{"protected"}, func(string) { violations++ })
+	conn, err := pgx.ConnectConfig(t.Context(), config.ConnConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(t.Context())
+	var count int
+	if err := conn.QueryRow(t.Context(), `SELECT count(*) FROM protected`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if violations != 1 {
+		t.Fatalf("violations=%d", violations)
+	}
+	batch := &pgx.Batch{}
+	batch.Queue(`SELECT * FROM protected`)
+	if err := conn.SendBatch(t.Context(), batch).Close(); err != nil {
+		t.Fatal(err)
+	}
+	if violations != 2 {
+		t.Fatalf("batch violations=%d", violations)
 	}
 }

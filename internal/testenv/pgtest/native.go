@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func (p *Template) OpenNativeRole(t *testing.T, fixture *sql.DB, role, password string) *pgxpool.Pool {
+func (p *Template) NativeConfig(t *testing.T, fixture *sql.DB, role, password string) *pgxpool.Config {
 	t.Helper()
 	var name string
 	if err := fixture.QueryRowContext(t.Context(), `SELECT current_database()`).Scan(&name); err != nil {
@@ -39,6 +39,31 @@ func (p *Template) OpenNativeRole(t *testing.T, fixture *sql.DB, role, password 
 	}
 	pgtransport.Configure(config)
 	config.MaxConns = 1
+	var names []string
+	rows, err := fixture.QueryContext(t.Context(), `SELECT n.nspname||'.'||c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relrowsecurity`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	config.ConnConfig.Tracer = NewTenantGuard(names, func(message string) { t.Error(message) })
+	return config
+}
+
+func (p *Template) OpenNativeRole(t *testing.T, fixture *sql.DB, role, password string) *pgxpool.Pool {
+	t.Helper()
+	config := p.NativeConfig(t, fixture, role, password)
 	pool, err := pgxpool.NewWithConfig(t.Context(), config)
 	if err != nil {
 		t.Fatal("open native PostgreSQL fixture")
