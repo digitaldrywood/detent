@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -141,13 +142,19 @@ func (s *Service) runnerSessionFence(ctx context.Context, r tenantstore.Reader, 
 	if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 		return leasestore.Attempt{}, policystore.Revision{}, err
 	}
-	lease, err := r.Lease(ctx, string(request.LeaseID))
+	owner, err := r.RunnerForLease(ctx, string(request.LeaseID))
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		return leasestore.Attempt{}, policystore.Revision{}, err
+	}
+	var lease leasestore.Lease
 	if lock {
 		locker, ok := r.(leasestore.FencedLeaseLocker)
 		if !ok {
 			return leasestore.Attempt{}, policystore.Revision{}, nativeRunEventStorageUnavailable()
 		}
 		lease, err = locker.LockLease(ctx, string(request.LeaseID))
+	} else {
+		lease, err = r.Lease(ctx, string(request.LeaseID))
 	}
 	if err != nil {
 		return leasestore.Attempt{}, policystore.Revision{}, err
@@ -167,8 +174,7 @@ func (s *Service) runnerSessionFence(ctx context.Context, r tenantstore.Reader, 
 	if lease.IssueID != item.ID || lease.FencingToken != int64(request.FencingToken) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || scope.credential.Runner.RunnerID == "" || lease.MachineID != string(scope.credential.Runner.MachineID) {
 		return leasestore.Attempt{}, policystore.Revision{}, tracker.ErrStaleFencingToken
 	}
-	owner, err := r.RunnerForLease(ctx, lease.LeaseID)
-	if err != nil || owner.RunnerID != scope.credential.Runner.RunnerID {
+	if owner.RunnerID != scope.credential.Runner.RunnerID {
 		return leasestore.Attempt{}, policystore.Revision{}, tracker.ErrStaleFencingToken
 	}
 	attempt, err := r.LatestAttempt(ctx, item.ID)
