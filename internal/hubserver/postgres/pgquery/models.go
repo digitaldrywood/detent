@@ -918,6 +918,14 @@ type GoTestReceiptAttestation struct {
 	ExpiresAt      time.Time
 }
 
+type HostedArtifactUsage struct {
+	OrganizationID tracker.OrganizationID
+	ServiceID      string
+	ObservedAt     time.Time
+	RetainedBytes  int64
+	ReservedBytes  int64
+}
+
 type HostedAudit struct {
 	OrganizationID        tracker.OrganizationID
 	ID                    int64

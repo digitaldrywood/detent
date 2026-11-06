@@ -1,11 +1,14 @@
 package postgres_test
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -137,5 +140,46 @@ func TestViewedFilesUseTypedTenantRecords(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestHostedArtifactUsageEnforcesTenantIsolation(t *testing.T) {
+	db := template.Database(t)
+	seedCore(t, db)
+	organizations := []string{"org_first", "org_second"}
+	for _, org := range organizations {
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO hosted_artifact_usage(organization_id,service_id,observed_at,retained_bytes,reserved_bytes) VALUES($1,'service_example',$2,12,34)`, org, historyAt()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pool := rolePool(t, db, "detent_runtime_v2", "")
+	for index, org := range organizations {
+		t.Run(org, func(t *testing.T) {
+			tx, err := pool.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+					t.Error(err)
+				}
+			})
+			if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, org); err != nil {
+				t.Fatal(err)
+			}
+			var owner string
+			var count, retained int64
+			if err := tx.QueryRowContext(t.Context(), `SELECT count(*),min(organization_id),min(retained_bytes) FROM hosted_artifact_usage`).Scan(&count, &owner, &retained); err != nil {
+				t.Fatal(err)
+			}
+			if count != 1 || owner != org || retained != 12 {
+				t.Fatalf("visible usage = %d/%s/%d", count, owner, retained)
+			}
+			_, err = tx.ExecContext(t.Context(), `INSERT INTO hosted_artifact_usage(organization_id,service_id,observed_at,retained_bytes,reserved_bytes) VALUES($1,'service_example',$2,12,34)`, organizations[1-index], historyAt())
+			var denied *pq.Error
+			if !errors.As(err, &denied) || denied.Code != "42501" {
+				t.Fatalf("foreign usage write error = %v", err)
+			}
+		})
 	}
 }
