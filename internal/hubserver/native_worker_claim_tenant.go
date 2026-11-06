@@ -39,6 +39,7 @@ type nativeClaimPlan struct {
 	linkedRecord         *eventstore.LinkedSource
 	change               tracker.NativeChangeReference
 	changeReady          bool
+	changeFacts          *tenantstore.BoardChangeRows
 	changeRecord         eventstore.Change
 	changePolicy         currentChangePolicyRows
 	changeVersion        eventstore.Version
@@ -133,7 +134,11 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope nativeScope,
 
 func (s *Service) readNativeClaimCandidates(ctx context.Context, scope nativeScope, request tracker.NativeClaim, now time.Time) (nativeClaimCandidateScan, error) {
 	var scan nativeClaimCandidateScan
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return scan, nativeRunEventStorageUnavailable()
+	}
+	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
@@ -242,7 +247,7 @@ func (s *Service) readNativeClaimCandidates(ctx context.Context, scope nativeSco
 			scan.plans = append(scan.plans, plan)
 		}
 
-		return nil
+		return readNativeClaimChangeFacts(ctx, r, scope, scan.plans)
 	})
 	return scan, err
 }
@@ -796,13 +801,22 @@ func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope nativeScope
 				return err
 			}
 		}
+		plans := []nativeClaimPlan{plan}
+		if err := readNativeClaimChangeFacts(ctx, r, scope, plans); err != nil {
+			return err
+		}
+		plan = plans[0]
 		return nil
 	}
 	var err error
 	if reader != nil {
 		err = readRows(reader)
 	} else {
-		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, readRows)
+		repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+		if !ok {
+			return nativeClaimPlan{}, nativeRunEventStorageUnavailable()
+		}
+		err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, readRows)
 	}
 	if err != nil {
 		return nativeClaimPlan{}, err

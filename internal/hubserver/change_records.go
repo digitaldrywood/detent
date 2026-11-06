@@ -971,7 +971,7 @@ func (s *Service) nativeClaimCurrentChangeDetail(ctx context.Context, scope nati
 	if plan.changeRecord.ID == "" || plan.changeRecord.CurrentVersionID == nil || *plan.changeRecord.CurrentVersionID != plan.changeVersion.ID || plan.changeVersion.ChangeID != plan.changeRecord.ID {
 		return tracker.ChangeDetail{}, corestore.ErrRevisionConflict
 	}
-	return s.hydrateCurrentChangeDetail(ctx, scope, plan.candidate.WorkItemID, plan.changeRecord, &plan.changeVersion, plan.changePolicy, now)
+	return s.hydrateCurrentChangeDetailWithFacts(ctx, scope, plan.candidate.WorkItemID, plan.changeRecord, &plan.changeVersion, plan.changePolicy, now, plan.changeFacts, nil, corestore.Serving)
 }
 
 func (s *Service) selectedCurrentChangeSummary(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, id string, now time.Time) (tracker.ChangeSummary, error) {
@@ -1121,7 +1121,7 @@ func (s *Service) hydrateCurrentChangeDetailWithFacts(ctx context.Context, scope
 		return tracker.ChangeDetail{}, projectRecordError(err)
 	}
 	policyID, reviewPolicyID := changerequest.CurrentPolicyIdentities(&detail.Versions[0], currentApproval.Policy, currentApproval.ReviewPolicy)
-	detail.Summary, err = s.summarizeChangeWithAuditDispositionsFor(ctx, scope, detail, policyID, reviewPolicyID, now, priorApproval, workload)
+	detail.Summary, err = s.summarizeChangeWithAuditDispositionsFor(ctx, scope, detail, policyID, reviewPolicyID, now, priorApproval, workload, facts)
 	return detail, err
 }
 

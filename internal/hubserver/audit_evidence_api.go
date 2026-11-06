@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/changerequest"
 	"net/http"
 	"reflect"
 	"strconv"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/changerequest"
 
 	"github.com/labstack/echo/v4"
 
@@ -171,46 +172,70 @@ func (s *Service) readAuditDisposition(ctx context.Context, scope nativeScope, r
 	return value, nil
 }
 
-func (s *Service) prepareValidatorAuditDispositions(ctx context.Context, scope nativeScope, changeID string, run securityaudit.Run) ([]securityaudit.Disposition, []eventstore.AuditDisposition, error) {
-	return s.prepareValidatorAuditDispositionsFor(ctx, scope, changeID, run, corestore.Serving)
+func (s *Service) prepareValidatorAuditDispositions(ctx context.Context, scope nativeScope, changeID string, run securityaudit.Run, facts ...*tenantstore.BoardChangeRows) ([]securityaudit.Disposition, []eventstore.AuditDisposition, error) {
+	return s.prepareValidatorAuditDispositionsFor(ctx, scope, changeID, run, corestore.Serving, facts...)
 }
 
-func (s *Service) prepareValidatorAuditDispositionsFor(ctx context.Context, scope nativeScope, changeID string, run securityaudit.Run, workload corestore.Workload) ([]securityaudit.Disposition, []eventstore.AuditDisposition, error) {
+func (s *Service) prepareValidatorAuditDispositionsFor(ctx context.Context, scope nativeScope, changeID string, run securityaudit.Run, workload corestore.Workload, facts ...*tenantstore.BoardChangeRows) ([]securityaudit.Disposition, []eventstore.AuditDisposition, error) {
 	var rows []eventstore.AuditDisposition
 	var sources []eventstore.Evidence
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, workload, func(r tenantstore.Reader) error {
-		if workload != corestore.Background {
-			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
-				return err
-			}
-		}
-		reader, ok := r.(eventstore.AuditDispositionReader)
-		if !ok {
-			return nativeRunEventStorageUnavailable()
-		}
-		var err error
-		rows, err = reader.AuditDispositions(ctx, scope.project, run.ID)
-		if err != nil {
-			return err
+	var err error
+	if len(facts) > 0 && facts[0] != nil && facts[0].AuditDispositions != nil {
+		rows = facts[0].AuditDispositions[run.ID]
+		if len(rows) > 200 {
+			return nil, nil, corestore.ErrInvalidPage
 		}
 		for _, row := range rows {
-			if row.ChangeID != changeID {
-				return corestore.ErrRevisionConflict
+			if row.Organization != scope.organization || row.Project != scope.project || row.ChangeID != changeID {
+				return nil, nil, corestore.ErrRevisionConflict
 			}
-			if err := s.authorizeAuditChange(ctx, r, scope, row.ChangeID); err != nil {
-				return err
+			found := false
+			for _, source := range facts[0].Evidence {
+				if source.Sequence == row.ReviewSequence && source.Kind == "review" {
+					sources = append(sources, source)
+					found = true
+					break
+				}
 			}
-			evidence, err := r.Evidence(ctx, row.ChangeID, row.ReviewSequence-1, 1)
+			if !found {
+				return nil, nil, corestore.ErrRevisionConflict
+			}
+		}
+	} else {
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, workload, func(r tenantstore.Reader) error {
+			if workload != corestore.Background {
+				if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+					return err
+				}
+			}
+			reader, ok := r.(eventstore.AuditDispositionReader)
+			if !ok {
+				return nativeRunEventStorageUnavailable()
+			}
+			var err error
+			rows, err = reader.AuditDispositions(ctx, scope.project, run.ID)
 			if err != nil {
 				return err
 			}
-			if len(evidence) != 1 || evidence[0].Sequence != row.ReviewSequence || evidence[0].Kind != "review" {
-				return corestore.ErrRevisionConflict
+			for _, row := range rows {
+				if row.ChangeID != changeID {
+					return corestore.ErrRevisionConflict
+				}
+				if err := s.authorizeAuditChange(ctx, r, scope, row.ChangeID); err != nil {
+					return err
+				}
+				evidence, err := r.Evidence(ctx, row.ChangeID, row.ReviewSequence-1, 1)
+				if err != nil {
+					return err
+				}
+				if len(evidence) != 1 || evidence[0].Sequence != row.ReviewSequence || evidence[0].Kind != "review" {
+					return corestore.ErrRevisionConflict
+				}
+				sources = append(sources, evidence[0])
 			}
-			sources = append(sources, evidence[0])
-		}
-		return nil
-	})
+			return nil
+		})
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -255,11 +280,11 @@ func lockValidatorAuditDispositions(ctx context.Context, r tenantstore.Reader, s
 	return nil
 }
 
-func (s *Service) summarizeChangeWithAuditDispositions(ctx context.Context, scope nativeScope, detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool) (tracker.ChangeSummary, error) {
-	return s.summarizeChangeWithAuditDispositionsFor(ctx, scope, detail, policyID, reviewPolicyID, now, priorApproval, corestore.Serving)
+func (s *Service) summarizeChangeWithAuditDispositions(ctx context.Context, scope nativeScope, detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool, facts ...*tenantstore.BoardChangeRows) (tracker.ChangeSummary, error) {
+	return s.summarizeChangeWithAuditDispositionsFor(ctx, scope, detail, policyID, reviewPolicyID, now, priorApproval, corestore.Serving, facts...)
 }
 
-func (s *Service) summarizeChangeWithAuditDispositionsFor(ctx context.Context, scope nativeScope, detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool, workload corestore.Workload) (tracker.ChangeSummary, error) {
+func (s *Service) summarizeChangeWithAuditDispositionsFor(ctx context.Context, scope nativeScope, detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool, workload corestore.Workload, facts ...*tenantstore.BoardChangeRows) (tracker.ChangeSummary, error) {
 	dispositions := make(map[int64][]securityaudit.Disposition)
 	for _, review := range detail.Reviews {
 		if review.VersionID != detail.Change.CurrentVersion || review.SecurityAudit == nil {
@@ -269,7 +294,7 @@ func (s *Service) summarizeChangeWithAuditDispositionsFor(ctx context.Context, s
 		if _, exists := dispositions[run.ID]; exists {
 			continue
 		}
-		values, _, err := s.prepareValidatorAuditDispositionsFor(ctx, scope, detail.Change.ID, run, workload)
+		values, _, err := s.prepareValidatorAuditDispositionsFor(ctx, scope, detail.Change.ID, run, workload, facts...)
 		if err != nil {
 			return tracker.ChangeSummary{}, err
 		}

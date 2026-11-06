@@ -53,6 +53,13 @@ func (r nativePreviewCountingRepository) ReadTenant(ctx context.Context, organiz
 	})
 }
 
+func (r nativePreviewCountingRepository) ReadTenantSnapshot(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	r.counts.readTenant++
+	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, org, workload, func(reader tenantstore.Reader) error {
+		return read(nativePreviewCountingReader{Reader: reader, counts: r.counts, staleFirst: r.staleFirst})
+	})
+}
+
 type nativePreviewCountingReader struct {
 	tenantstore.Reader
 	counts     *nativePreviewReadCounts
@@ -81,6 +88,10 @@ func (r nativePreviewCountingReader) CandidatePage(ctx context.Context, query cl
 func (r nativePreviewCountingReader) LandingCapacityUsage(ctx context.Context, project tracker.ProjectID, now time.Time) (claimstore.LandingCapacityUsage, error) {
 	r.counts.landingCapacityRead++
 	return r.Reader.LandingCapacityUsage(ctx, project, now)
+}
+
+func (r nativePreviewCountingReader) ClaimChangeRows(ctx context.Context, project tracker.ProjectID, ids []string) (map[string]tenantstore.BoardChangeRows, error) {
+	return r.Reader.(tenantstore.ClaimChangeRowsReader).ClaimChangeRows(ctx, project, ids)
 }
 
 func (r nativePreviewCountingReader) ClaimPreviewPlanRows(ctx context.Context, project tracker.ProjectID, candidates []claimstore.Candidate) ([]tenantstore.ClaimPreviewPlanRow, error) {
