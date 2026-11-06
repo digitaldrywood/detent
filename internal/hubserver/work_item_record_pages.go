@@ -13,7 +13,6 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -21,6 +20,25 @@ import (
 )
 
 func (s *Service) readCommentRecords(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.NativeComment], error) {
+	var page tracker.Page[tracker.NativeComment]
+	err := s.readWorkItemPageSnapshot(ctx, scope, func(ctx context.Context) error {
+		var err error
+		page, err = s.readCommentPageModel(ctx, scope, item, params)
+		return err
+	})
+	return page, err
+}
+
+func (s *Service) readWorkItemPageSnapshot(ctx context.Context, scope nativeScope, run func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	if repository, ok := s.config.TenantRepository.(tenantstore.RequestReader); ok {
+		return repository.ReadRequest(ctx, scope.organization, run)
+	}
+	return run(ctx)
+}
+
+func (s *Service) readCommentPageModel(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.NativeComment], error) {
 	page := tracker.Page[tracker.NativeComment]{Items: []tracker.NativeComment{}}
 	if err := validateNativeQuery(params, "direction"); err != nil {
 		return page, err
@@ -47,57 +65,25 @@ func (s *Service) readCommentRecords(ctx context.Context, scope nativeScope, ite
 			return page, nativePublicInvalid("Cursor is invalid")
 		}
 	}
-	var rows []corestore.Comment
-	var versions []eventstore.CollaborationVersion
-	more := false
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		var err error
-		rows, err = r.SelectComments(ctx, scope.project, tracker.NativeWorkItemID(item), after, newest, limit)
-		if err != nil {
-			return err
-		}
-		if len(rows) == limit {
-			boundary, err := r.SelectComments(ctx, scope.project, tracker.NativeWorkItemID(item), rows[len(rows)-1].Sequence, newest, 1)
-			if err != nil {
-				return err
-			}
-			more = len(boundary) > 0
-		}
 
-		batch, ok := r.(eventstore.CollaborationVersionsReader)
+	var records []viewstore.CommentPageRecord
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		reader, ok := r.(viewstore.WorkItemPageReader)
 		if !ok {
 			return workItemStorageUnavailable()
 		}
-		keys := make([]eventstore.CollaborationVersionKey, len(rows))
-		for i, row := range rows {
-			keys[i] = eventstore.CollaborationVersionKey{RecordID: row.ID, Revision: row.Revision}
-		}
-		found, err := batch.CollaborationVersions(ctx, keys)
-		if err != nil {
-			return err
-		}
-		byKey := make(map[eventstore.CollaborationVersionKey]eventstore.CollaborationVersion, len(found))
-		for _, version := range found {
-			byKey[eventstore.CollaborationVersionKey{RecordID: version.RecordID, Revision: version.Revision}] = version
-		}
-		for _, key := range keys {
-			version, ok := byKey[key]
-			if !ok {
-				return corestore.ErrNotFound
-			}
-			versions = append(versions, version)
-		}
-		return nil
+		var err error
+		records, err = reader.CommentPageRecords(ctx, scope.project, tracker.NativeWorkItemID(item), after, newest, limit)
+		return err
 	})
 	if err != nil {
 		return page, projectRecordError(err)
 	}
+	more := len(records) > limit
+
 	size := 8192
-	for i, row := range rows[:min(limit, len(rows))] {
-		comment, err := s.hydrateCommentRecord(ctx, row, versions[i])
-		if err != nil {
-			return page, err
-		}
+	for _, record := range records[:min(limit, len(records))] {
+		comment := record.Value
 		raw, err := json.Marshal(comment)
 		if err != nil {
 			return page, err
@@ -111,7 +97,7 @@ func (s *Service) readCommentRecords(ctx context.Context, scope nativeScope, ite
 		}
 		size += len(raw) + 1
 		page.Items = append(page.Items, comment)
-		cursor.After = strconv.FormatInt(row.Sequence, 10)
+		cursor.After = strconv.FormatInt(comment.Sequence, 10)
 	}
 	if more {
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
@@ -156,15 +142,6 @@ func (s *Service) workItemResource(ctx context.Context, scope nativeScope, id st
 		return err
 	})
 	return issue, err
-}
-
-func (s *Service) readWorkItemPageSnapshot(ctx context.Context, scope nativeScope, run func(context.Context) error) error {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	if repository, ok := s.config.TenantRepository.(tenantstore.RequestReader); ok {
-		return repository.ReadRequest(ctx, scope.organization, run)
-	}
-	return run(ctx)
 }
 
 func (s *Service) readWorkItemPageModel(ctx context.Context, scope nativeScope, id string) (tracker.NativeIssue, error) {
