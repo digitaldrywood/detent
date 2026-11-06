@@ -132,4 +132,18 @@ func TestHydrateWorkItemRelationshipFactsPagePreservesReporterRedaction(t *testi
 	if len(second.Dependencies) != 1 || second.Dependencies[0] != "wi_visible_two" || second.BlockedReason.CurrentBasis != "" || second.BlockedReason.Text != "" {
 		t.Fatalf("second entity relationship facts=%+v", second)
 	}
+	t.Run("single detail uses relationship batch", func(t *testing.T) {
+		tenantReads.reads, tenantReads.batches, accessReads.reads = 0, 0, 0
+		issue := newIssue("wi_source_one")
+		if err := fixture.service.hydrateWorkItemRelationshipFacts(t.Context(), scope, issue); err != nil {
+			t.Fatal(err)
+		}
+		if tenantReads.reads != 1 || tenantReads.batches != 1 || accessReads.reads != 1 {
+			t.Fatalf("detail reads=%d batches=%d access=%d, want 1 each", tenantReads.reads, tenantReads.batches, accessReads.reads)
+		}
+		if len(issue.Blockers) != 1 || issue.Blockers[0].ID != "wi_visible_one" || issue.BlockedReason.CurrentBasis != "" || issue.BlockedReason.Text != "" {
+			t.Fatalf("detail redaction: %+v", issue)
+		}
+	})
+
 }

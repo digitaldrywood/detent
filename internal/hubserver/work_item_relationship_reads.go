@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -39,41 +40,37 @@ func (s *Service) hydrateWorkItemRelationshipFacts(ctx context.Context, scope na
 	issue.DependencyReady = true
 	edges := dependencyEdges{}
 	projectVisible := map[tracker.ProjectID]bool{scope.project: true}
-	projectChecked := map[tracker.ProjectID]bool{scope.project: true}
+
 	var relations []corestore.Relationship
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := loadDependencyReasonRecords(ctx, r, scope.project, []*tracker.NativeIssue{issue}); err != nil {
 			return err
 		}
-		cursor := corestore.RelationshipCursor{}
-		for {
-			page, err := r.Relationships(ctx, scope.project, issue.WorkItemID, cursor, corestore.MaxPageSize)
-			if err != nil {
-				return err
+		batch, ok := r.(tenantstore.WorkItemRelationshipBatchReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		facts, err := batch.WorkItemRelationshipFacts(ctx, scope.project, []tracker.NativeWorkItemID{issue.WorkItemID})
+		if err != nil {
+			return err
+		}
+		for _, fact := range facts {
+			relations = append(relations, fact.Relationship)
+			if fact.Relationship.RelatedProjectID != scope.project {
+				projectVisible[fact.Relationship.RelatedProjectID] = fact.RelatedProjectVisible
 			}
-			for _, relation := range page.Items {
-				relations = append(relations, relation)
-				if !projectChecked[relation.RelatedProjectID] {
-					targetProject, err := r.ProjectRecord(ctx, relation.RelatedProjectID)
-					if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-						return err
-					}
-					projectChecked[relation.RelatedProjectID] = true
-					projectVisible[relation.RelatedProjectID] = err == nil && targetProject.Core.DeletedAt == nil && targetProject.Core.Profile == "native"
-				}
-			}
-			if page.Next.RelatedWorkItemID == "" {
-				break
-			}
-			cursor = page.Next
 		}
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	authorizedProjects := map[tracker.ProjectID]bool{scope.project: true}
-	authorizationChecked := map[tracker.ProjectID]bool{scope.project: true}
+
+	authorizedProjects, err := s.relationshipProjectAccess(ctx, scope, projectVisible)
+	if err != nil {
+		return err
+	}
+
 	for _, relation := range relations {
 		if relation.Type == "dependency" {
 			switch relation.Direction {
@@ -85,24 +82,7 @@ func (s *Service) hydrateWorkItemRelationshipFacts(ctx context.Context, scope na
 				edges.privateUnblocks = edges.privateUnblocks || relation.RelatedProjectID != scope.project
 			}
 		}
-		visible, checked := authorizedProjects[relation.RelatedProjectID]
-		if !checked && !authorizationChecked[relation.RelatedProjectID] {
-			visible = projectVisible[relation.RelatedProjectID]
-			if visible {
-				targetScope := scope
-				targetScope.project = relation.RelatedProjectID
-				err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
-					return s.authorizeAccessScope(ctx, r, targetScope, false)
-				})
-				if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, operatortool.ErrAccessDenied) || isNativeNotFound(err) {
-					visible = false
-				} else if err != nil {
-					return err
-				}
-			}
-			authorizationChecked[relation.RelatedProjectID] = true
-			authorizedProjects[relation.RelatedProjectID] = visible
-		}
+		visible := authorizedProjects[relation.RelatedProjectID]
 		visible = visible && scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(relation.ActorPrincipalID)})
 		if !visible {
 			if relation.Type == "dependency" {
@@ -205,6 +185,14 @@ func (s *Service) readWorkItemRelationshipPage(ctx context.Context, scope native
 	if err != nil {
 		return page, projectRecordError(err)
 	}
+	projectVisible := map[tracker.ProjectID]bool{}
+	for _, relation := range relations.Items {
+		projectVisible[relation.RelatedProjectID] = true
+	}
+	authorizedProjects, err := s.relationshipProjectAccess(ctx, scope, projectVisible)
+	if err != nil {
+		return page, err
+	}
 	for _, relation := range relations.Items {
 		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(relation.ActorPrincipalID)}) {
 			continue
@@ -212,16 +200,8 @@ func (s *Service) readWorkItemRelationshipPage(ctx context.Context, scope native
 		if scope.credential.EntryKey != nil && !scope.credential.EntryKey.Allows(string(relation.RelatedProjectID)) {
 			continue
 		}
-		targetScope := scope
-		targetScope.project = relation.RelatedProjectID
-		err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
-			return s.authorizeAccessScope(ctx, r, targetScope, false)
-		})
-		if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, operatortool.ErrAccessDenied) || isNativeNotFound(err) {
+		if !authorizedProjects[relation.RelatedProjectID] {
 			continue
-		}
-		if err != nil {
-			return page, err
 		}
 		browserURL := ""
 		if relation.OrganizationSlug != "" && relation.ProjectSlug != "" && s.config.Hosted != nil {
@@ -245,7 +225,6 @@ func (s *Service) readWorkItemRelationshipPage(ctx context.Context, scope native
 			switch relation.Direction {
 			case "blocked_by":
 				page.Dependencies = append(page.Dependencies, relation.RelatedWorkItemID)
-			case "blocks":
 				page.Blockers = append(page.Blockers, link)
 			}
 		case "related":
@@ -265,4 +244,53 @@ func (s *Service) readWorkItemRelationshipPage(ctx context.Context, scope native
 		}
 	}
 	return page, nil
+}
+
+type relationshipProjectReader interface {
+	RelationshipProjects(context.Context, accessstore.Authority, []tracker.ProjectID, time.Time) (map[tracker.ProjectID]bool, error)
+}
+
+func (s *Service) relationshipProjectAccess(ctx context.Context, scope nativeScope, visible map[tracker.ProjectID]bool) (map[tracker.ProjectID]bool, error) {
+	allowed := map[tracker.ProjectID]bool{scope.project: true}
+	projects := []tracker.ProjectID{}
+	for project, active := range visible {
+		if project != scope.project && active && (scope.credential.EntryKey == nil || scope.credential.EntryKey.Allows(string(project))) {
+			projects = append(projects, project)
+		}
+	}
+	if len(projects) == 0 {
+		return allowed, nil
+	}
+	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+		if batch, ok := r.(relationshipProjectReader); ok {
+			if s.config.Hosted != nil && scope.organization != s.accessOrganization() {
+				return auth.ErrHostedIdentity
+			}
+			if scope.credential.EntryKey != nil && (!hostedKeyAllows(scope.credential.HostedKeyScope, apikey.ScopeRead) || !hostedRoleAllows(scope.credential.HostedRole, apikey.ScopeRead, scope.action)) {
+				return auth.ErrHostedIdentity
+			}
+			found, err := batch.RelationshipProjects(ctx, s.accessAuthority(scope, false), projects, s.config.now())
+			if err != nil {
+				return err
+			}
+			for project, visible := range found {
+				allowed[project] = visible
+			}
+			return nil
+		}
+		for _, project := range projects {
+			target := scope
+			target.project = project
+			err := s.authorizeAccessScope(ctx, r, target, false)
+			if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, operatortool.ErrAccessDenied) || isNativeNotFound(err) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			allowed[project] = true
+		}
+		return nil
+	})
+	return allowed, err
 }
