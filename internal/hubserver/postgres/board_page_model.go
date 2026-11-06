@@ -120,3 +120,12 @@ func boardPageVector[T, U any](values []T, field func(T) U) []U {
 	return result
 }
 
+func boardPageTargets(b *viewstore.BoardRecord) ([]any, func()) {
+	m := newBoardPageModel(nil, nil)
+	return m.targets(), func() {
+		m.restore()
+		b.ProjectedAt = m.projectedAt
+		b.PageIssue = m.issue
+		b.ReporterRelations = m.reporter
+	}
+}
