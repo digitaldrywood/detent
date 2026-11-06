@@ -64,6 +64,17 @@ func TestRelationshipReadModelHasFixedPageCost(t *testing.T) {
 					for _, relation := range source.Items {
 						records = append(records, viewstore.RelationshipPageRecord{Relationship: relation, Identifier: string(relation.RelatedProjectID) + "#" + fmt.Sprint(relation.Number), WebURL: "https://example.test/issue"})
 					}
+
+					if len(records) > 1 {
+						first := records[0].Relationship
+						next := corestore.RelationshipCursor{Type: first.Type, Direction: first.Direction, RelatedProjectID: first.RelatedProjectID, RelatedWorkItemID: first.RelatedWorkItemID}
+						if err := w.(viewstore.RelationshipPageWriter).PublishRelationshipPage(t.Context(), candidate, records[:1], next); err != nil {
+							return err
+						}
+						if _, err := w.(viewstore.RelationshipPageReader).RelationshipPageRecords(t.Context(), candidate.ProjectID, candidate.WorkItemID, corestore.RelationshipCursor{}, 1); !errors.Is(err, viewstore.ErrPagePending) {
+							t.Fatalf("incomplete generation returned success: %v", err)
+						}
+					}
 					projected = true
 					return w.(viewstore.RelationshipPageWriter).PublishRelationshipPage(t.Context(), candidate, records, source.Next)
 				}); err != nil {

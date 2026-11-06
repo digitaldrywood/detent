@@ -123,7 +123,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 
 			scope := nativeScope{organization: org.ID, project: project.ID}
 			if size == 2 {
-				if _, err := service.workItemResource(t.Context(), scope, string(issue.WorkItemID), url.Values{}); err != nil {
+				if got, err := service.workItemResource(t.Context(), scope, string(issue.WorkItemID), url.Values{}); err != nil || got.Body != workItemRecordBody {
 					t.Fatalf("cold detail: %v", err)
 				}
 				response := performHubAPIRequest(t, service, http.MethodGet, strings.TrimSuffix(path, "/comments"), testHubAdminToken, nil)
@@ -140,6 +140,8 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 				for _, part := range []string{"/relationships", "/references"} {
 					response := performHubAPIRequest(t, service, http.MethodGet, strings.TrimSuffix(path, "/comments")+part, testHubAdminToken, nil)
 					requireNativeStatus(t, response, http.StatusServiceUnavailable)
+					response = performHubAPIRequest(t, service, http.MethodGet, strings.TrimSuffix(strings.TrimSuffix(path, "/comments"), string(issue.WorkItemID))+"missing"+part, testHubAdminToken, nil)
+					requireNativeStatus(t, response, http.StatusNotFound)
 				}
 			}
 			seeded = size

@@ -2,7 +2,11 @@ package postgres_test
 
 import (
 	"context"
+	"github.com/pressly/goose/v3"
+	"log/slog"
+	"os"
 	"testing"
+	"testing/fstest"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -72,6 +76,33 @@ func TestPageBackfillResumesWithoutSourceWriteLocks(t *testing.T) {
 				t.Fatal("backfill did not finish")
 			}
 		}
+	}
+	data, err := os.ReadFile("migrations/20261106233256_work_item_page_backfill.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := goose.NewProvider(goose.DialectPostgres, admin, fstest.MapFS{"20261106233256_work_item_page_backfill.sql": &fstest.MapFile{Data: data}}, goose.WithDisableGlobalRegistry(true), goose.WithDisableVersioning(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := provider.Up(t.Context()); err != nil {
+			t.Fatalf("rerun concurrent installation: %v", err)
+		}
+	}
+	var complete int
+	if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM native_work_item_page_progress WHERE backfill_phase=2`).Scan(&complete); err != nil {
+		t.Fatal(err)
+	}
+	if complete != 2 {
+		t.Fatalf("rerun reset tenant checkpoints: %d", complete)
+	}
+	var valid bool
+	if err := admin.QueryRowContext(t.Context(), `SELECT indisvalid FROM pg_index WHERE indexrelid='native_work_item_page_dirty_pending'::regclass`).Scan(&valid); err != nil {
+		t.Fatal(err)
+	}
+	if !valid {
+		t.Fatal("concurrent installation left invalid index")
 	}
 }
 
