@@ -105,8 +105,8 @@ explicit fixed connection budgets and the existing immutable attachment storage:
 storage:
   backend: postgres
   postgres_dsn_env: DETENT_PLATFORM_DSN
-  max_connections: 4
-  serving_connections: 3
+  max_connections: 10
+  serving_connections: 8
   background_connections: 1
 ```
 
@@ -147,3 +147,9 @@ The entry journeys use disposable PostgreSQL platform and tenant databases:
 login and tenant routing, revoked keys, OAuth exchange and refresh replay,
 provisioning/deletion, billing, notification identity, receipt replay, secret
 diagnostics and keyring-compatible restart.
+
+Platform pools reserve one connection for health reads in addition to the serving
+and background budgets. Startup rejects overcommitted budgets. Omitted Cloud
+pool budgets default to 10 total, 8 serving and 1 background. These small
+client pools work with PgBouncer transaction pooling; size the server pool for
+the fleet separately rather than reserving server connections per tenant.

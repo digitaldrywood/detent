@@ -15,6 +15,8 @@ const BootstrapEnvironment = "DETENT_INTERNAL_ENTRY_AUTHORITY"
 const BootstrapVersion = "v1:3:5"
 const contentTimeout = 15 * time.Second
 
+var ErrUnavailable = errors.New("entry authority unavailable")
+
 type Binding struct {
 	Issuer       string
 	Organization string
@@ -106,7 +108,12 @@ func (s *authorityServer) Resolve(request Request, result *cloudassert.Claims) e
 	}
 	claims, err := s.resolve(request)
 	if err != nil {
-		return cloudassert.ErrInvalid
+		for _, kind := range []error{cloudassert.ErrInvalid, context.DeadlineExceeded, context.Canceled} {
+			if errors.Is(err, kind) {
+				return kind
+			}
+		}
+		return ErrUnavailable
 	}
 	*result = claims
 	return nil
@@ -255,6 +262,14 @@ func callAuthority[T any](ctx context.Context, c *Client, method string, args an
 		return zero, ctx.Err()
 	case result := <-done:
 		if result.Error != nil {
+			var remote rpc.ServerError
+			if errors.As(result.Error, &remote) {
+				for _, kind := range []error{cloudassert.ErrInvalid, context.DeadlineExceeded, context.Canceled, ErrUnavailable} {
+					if string(remote) == kind.Error() {
+						return zero, kind
+					}
+				}
+			}
 			return zero, result.Error
 		}
 		return *reply, nil

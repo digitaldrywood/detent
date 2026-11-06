@@ -1428,7 +1428,7 @@ func TestConfigRequiresLoopbackListener(t *testing.T) {
 		listen string
 		ok     bool
 	}{{"127.0.0.1:8017", true}, {"[::1]:8017", true}, {"localhost:8017", true}, {"0.0.0.0:8017", false}, {":8017", false}, {"10.0.0.5:8017", false}} {
-		config := Config{Attachments: &attachments, Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: "https://hub.example.test", ListenAddress: test.listen, Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: newFakeProvider(), StateDir: "/state", Storage: StorageConfig{Backend: "postgres", PostgresDSN: "postgres://example.invalid/example", Pool: platformstore.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1}}}
+		config := Config{Attachments: &attachments, Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: "https://hub.example.test", ListenAddress: test.listen, Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: newFakeProvider(), StateDir: "/state", Storage: StorageConfig{Backend: "postgres", PostgresDSN: "postgres://example.invalid/example", Pool: platformstore.PoolConfig{MaxConnections: 5, ServingConnections: 3, BackgroundConnections: 1}}}
 		if err := config.validate(); (err == nil) != test.ok {
 			t.Errorf("listen %q error = %v, want ok %v", test.listen, err, test.ok)
 		}

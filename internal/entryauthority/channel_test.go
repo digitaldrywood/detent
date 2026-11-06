@@ -446,3 +446,36 @@ func (s *channelDetailStore) ReadDetail(_ context.Context, organization string, 
 	}
 	return bytes.Clone(s.data), nil
 }
+
+func TestResolvePreservesErrorClass(t *testing.T) {
+	for _, cause := range []error{cloudassert.ErrInvalid, context.DeadlineExceeded, context.Canceled, errors.New("database unavailable")} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			binding := Binding{Issuer: "entry", Organization: "org_example", Generation: 1}
+			parent, err := Start(t.Context(), binding, time.Second, func(context.Context, Origin) (cloudassert.Claims, error) { return cloudassert.Claims{}, cause })
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := parent.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
+			client := &Client{client: rpc.NewClient(channel{reader: parent.Files[0], writer: parent.Files[1], budget: time.Second}), budget: time.Second}
+			defer func() {
+				if err := client.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
+			claims, err := client.Resolve(t.Context(), Origin{Issuer: binding.Issuer, Generation: binding.Generation})
+			if claims.Subject != "" || err == nil {
+				t.Fatalf("unexpected authority: %+v %v", claims, err)
+			}
+			if errors.Is(cause, cloudassert.ErrInvalid) != errors.Is(err, cloudassert.ErrInvalid) {
+				t.Fatalf("denial class lost: %v", err)
+			}
+			if (errors.Is(cause, context.DeadlineExceeded) || errors.Is(cause, context.Canceled)) && !errors.Is(err, cause) {
+				t.Fatalf("context class lost: %v", err)
+			}
+		})
+	}
+}

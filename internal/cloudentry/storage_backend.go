@@ -24,7 +24,7 @@ type StorageConfig struct {
 func (c StorageConfig) validate() error {
 	switch c.Backend {
 	case "postgres":
-		if (strings.TrimSpace(c.PostgresDSN) == "") == (c.PostgresPool == nil) || c.Pool.MaxConnections < 3 || c.Pool.ServingConnections < 1 || c.Pool.BackgroundConnections < 1 || c.Pool.ServingConnections >= c.Pool.MaxConnections || c.Pool.BackgroundConnections > c.Pool.MaxConnections-c.Pool.ServingConnections || c.Pool.BackgroundConnections > c.Pool.MaxConnections-2 {
+		if (strings.TrimSpace(c.PostgresDSN) == "") == (c.PostgresPool == nil) || c.Pool.MaxConnections < 3 || c.Pool.ServingConnections < 1 || c.Pool.BackgroundConnections < 1 || c.Pool.ServingConnections >= c.Pool.MaxConnections || c.Pool.BackgroundConnections >= c.Pool.MaxConnections-c.Pool.ServingConnections || c.Pool.BackgroundConnections > c.Pool.MaxConnections-2 {
 			return errors.New("PostgreSQL entry storage requires a DSN and positive workload budgets with room for a reserved health connection")
 		}
 	default:

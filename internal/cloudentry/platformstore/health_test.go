@@ -2,7 +2,6 @@ package platformstore
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"testing"
@@ -20,8 +19,8 @@ func TestHealthReservePreservesWorkloadBudgets(t *testing.T) {
 		serving int
 	}{
 		{name: "minimum", pool: PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}, serving: 1},
-		{name: "full serving", pool: PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1}, serving: 2},
-		{name: "preserve background", pool: PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 2}, serving: 1},
+		{name: "full serving", pool: PoolConfig{MaxConnections: 5, ServingConnections: 3, BackgroundConnections: 1}, serving: 3},
+		{name: "preserve background", pool: PoolConfig{MaxConnections: 5, ServingConnections: 2, BackgroundConnections: 2}, serving: 2},
 		{name: "existing spare capacity", pool: PoolConfig{MaxConnections: 6, ServingConnections: 2, BackgroundConnections: 1}, serving: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -133,6 +132,8 @@ func TestHealthReservePreservesWorkloadBudgets(t *testing.T) {
 func TestHealthReserveRejectsUnusableBudgets(t *testing.T) {
 	for _, pool := range []PoolConfig{
 		{MaxConnections: 2, ServingConnections: 1, BackgroundConnections: 1},
+		{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1},
+		{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 2},
 		{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 2},
 		{MaxConnections: 4, ServingConnections: 0, BackgroundConnections: 1},
 		{MaxConnections: 4, ServingConnections: 1, BackgroundConnections: 0},
@@ -141,7 +142,7 @@ func TestHealthReserveRejectsUnusableBudgets(t *testing.T) {
 		t.Run(fmt.Sprintf("%d/%d/%d", pool.MaxConnections, pool.ServingConnections, pool.BackgroundConnections), func(t *testing.T) {
 			config := testConfig(t)
 			config.Pool = pool
-			if _, err := New(t.Context(), &sql.DB{}, config); !errors.Is(err, ErrInvalid) {
+			if _, err := New(t.Context(), template.Database(t), config); !errors.Is(err, ErrInvalid) {
 				t.Fatalf("invalid pool = %v", err)
 			}
 		})

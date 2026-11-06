@@ -108,7 +108,7 @@ func entryPostgresStorageConfig(t *testing.T, restart bool, databases ...*sql.DB
 	})
 	objects := newSpacesFixture(t, false)
 	return func(cfg *Config) {
-		cfg.Storage = StorageConfig{Backend: "postgres", Pool: platformstore.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1}}
+		cfg.Storage = StorageConfig{Backend: "postgres", Pool: platformstore.PoolConfig{MaxConnections: 5, ServingConnections: 3, BackgroundConnections: 1}}
 		if restart {
 			connection, err := pq.NewConfig(os.Getenv(pgtest.Environment))
 			if err != nil {

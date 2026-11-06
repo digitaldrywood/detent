@@ -286,6 +286,11 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 			config.Allocation.Billing.Mode = billing.ModeTest
 		}
 	}
+	if config.Storage.MaxConnections == 0 && config.Storage.ServingConnections == 0 && config.Storage.BackgroundConnections == 0 {
+		config.Storage.MaxConnections = 10
+		config.Storage.ServingConnections = 8
+		config.Storage.BackgroundConnections = 1
+	}
 	if config.Storage.PostgresDSNEnv != "" && !validEnvName(config.Storage.PostgresDSNEnv) {
 		return cloudentry.Config{}, errors.New("entry PostgreSQL DSN environment variable name is invalid")
 	}
