@@ -557,6 +557,28 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 					}
 				})
 			}
+			if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET sequence=$1 WHERE organization_id=$2 AND id=$3", sequence, organization.ID, start.Data.AttemptID); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+				_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, "cancelled")
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, reader := range readers {
+				t.Run("lease_cancelled_"+reader.name, func(t *testing.T) {
+					value, err := reader.read()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if value.Status != "cancelled" || value.Current || value.Sequence != sequence || value.AttemptID != start.Data.AttemptID {
+						t.Fatalf("cancelled attempt = %+v", value)
+					}
+				})
+			}
+			response := performHubAPIRequest(t, service, http.MethodGet, itemPath+"/"+string(issue.WorkItemID)+"/attempts?view=recorded_blockers", testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
 		})
 	}
 }

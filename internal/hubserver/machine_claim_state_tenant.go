@@ -125,7 +125,7 @@ func (s *Service) readRegistrationClaimStateTenant(ctx context.Context, scope na
 }
 
 func registrationCleanupRequired(candidate tenantAttemptSnapshot, run tracker.NativeRunData, runner string) (bool, error) {
-	if run.AttemptID != candidate.attempt.ID || (run.Sequence != candidate.attempt.Sequence && !(candidate.attempt.Status == "cancelled" && candidate.lease.ReleasedAt != nil && candidate.attempt.Sequence == run.Sequence+1 && candidate.attempt.UpdatedAt.Equal(*candidate.lease.ReleasedAt) && run.Outcome == "")) || run.RunID != candidate.attempt.RunID || run.LeaseID != tracker.LeaseID(candidate.lease.LeaseID) || run.FencingToken != tracker.FencingToken(candidate.lease.FencingToken) || run.RunnerID != runner {
+	if !nativeAttemptRunMatches(candidate, run) || run.RunnerID != runner {
 		return false, artifact.ErrIntegrity
 	}
 

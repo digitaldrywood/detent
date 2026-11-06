@@ -255,7 +255,7 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 	}
 	attempt := snapshot.attempt
 	lease := snapshot.lease
-	if run.AttemptID != attempt.ID || run.RunID != attempt.RunID || run.LeaseID != tracker.LeaseID(lease.LeaseID) || run.FencingToken != tracker.FencingToken(lease.FencingToken) || run.Sequence != attempt.Sequence {
+	if !nativeAttemptRunMatches(snapshot, run) {
 		return tracker.NativeAttempt{}, fmt.Errorf("hydrate attempt identity: %w", artifact.ErrIntegrity)
 	}
 	result := tracker.NativeAttempt{NativeRunData: run, Status: attempt.Status, StartedAt: attempt.StartedAt, UpdatedAt: attempt.UpdatedAt,
@@ -310,6 +310,12 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 		result.Status = "interrupted"
 	}
 	return result, nil
+}
+
+func nativeAttemptRunMatches(snapshot tenantAttemptSnapshot, run tracker.NativeRunData) bool {
+	attempt, lease := snapshot.attempt, snapshot.lease
+	sequenceMatches := run.Sequence == attempt.Sequence || attempt.Status == "cancelled" && lease.ReleasedAt != nil && attempt.Sequence == run.Sequence+1 && attempt.UpdatedAt.Equal(*lease.ReleasedAt) && run.Outcome == ""
+	return run.AttemptID == attempt.ID && run.RunID == attempt.RunID && run.LeaseID == tracker.LeaseID(lease.LeaseID) && run.FencingToken == tracker.FencingToken(lease.FencingToken) && sequenceMatches
 }
 
 func readTenantAttemptEvidence(ctx context.Context, r tenantstore.Reader, snapshot *tenantAttemptSnapshot) error {
