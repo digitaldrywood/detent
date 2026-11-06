@@ -15,6 +15,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type boardRefreshError struct {
+	item  tracker.NativeWorkItemID
+	step  string
+	cause error
+}
+
+func (e *boardRefreshError) Error() string { return e.cause.Error() }
+func (e *boardRefreshError) Unwrap() error { return e.cause }
+
 type boardProjectionSnapshot struct {
 	changePrincipalID string
 	project           projectstore.Record
@@ -32,7 +41,7 @@ func (s *Service) maintainBoardRecords(ctx context.Context) error {
 	if organization == "" {
 		return corestore.ErrTenantMismatch
 	}
-	var failures error
+	var failures []error
 	attempted := make([]tracker.NativeWorkItemID, 0, 32)
 	for range 32 {
 		var candidate viewstore.BoardCandidate
@@ -43,37 +52,44 @@ func (s *Service) maintainBoardRecords(ctx context.Context) error {
 		})
 		if errors.Is(err, corestore.ErrNotFound) {
 			s.boardRefreshCursor = ""
-			return failures
+			return errors.Join(failures...)
 		}
 		if err != nil {
-			return errors.Join(failures, err)
+			return errors.Join(append(failures, err)...)
 		}
 		attempted = append(attempted, candidate.WorkItemID)
 		s.boardRefreshCursor = string(candidate.WorkItemID)
 		if err := s.refreshBoardRecord(ctx, organization, candidate, s.config.now()); err != nil && !errors.Is(err, corestore.ErrRevisionConflict) {
-			failures = errors.Join(failures, err)
+			failures = append(failures, err)
 		}
 		if err := ctx.Err(); err != nil {
-			return errors.Join(failures, err)
+			return errors.Join(append(failures, err)...)
 		}
 	}
-	return failures
+	return errors.Join(failures...)
 }
 
-func (s *Service) boardProjectionSnapshot(ctx context.Context, organization tracker.OrganizationID, candidate viewstore.BoardCandidate, now time.Time) (boardProjectionSnapshot, error) {
-	var snapshot boardProjectionSnapshot
-	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
+func (s *Service) boardProjectionSnapshot(ctx context.Context, organization tracker.OrganizationID, candidate viewstore.BoardCandidate, now time.Time) (snapshot boardProjectionSnapshot, err error) {
+	step := "project"
+	defer func() {
+		if err != nil {
+			err = &boardRefreshError{item: candidate.WorkItemID, step: step, cause: err}
+		}
+	}()
+	err = s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		var err error
 		snapshot.project.Core, err = r.Project(ctx, candidate.ProjectID)
 		if err != nil {
 			return err
 		}
 		if snapshot.project.Core.DeletedAt == nil && snapshot.project.Core.Profile == "native" {
+			step = "project_record"
 			snapshot.project, err = r.ProjectRecord(ctx, candidate.ProjectID)
 			if err != nil {
 				return err
 			}
 		}
+		step = "work_item"
 		snapshot.item, err = r.WorkItem(ctx, candidate.ProjectID, candidate.WorkItemID)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
@@ -84,24 +100,29 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 		if snapshot.project.Core.DeletedAt != nil || snapshot.project.Core.Profile != "native" {
 			return nil
 		}
+		step = "collaboration_version"
 		snapshot.version, err = r.CollaborationVersion(ctx, string(candidate.WorkItemID), snapshot.item.Revision)
 		if err != nil {
 			return err
 		}
+		step = "latest_attempt"
 		attempt, err := r.LatestAttempt(ctx, snapshot.item.ID)
 		if err == nil {
 			value := tenantAttemptSnapshot{attempt: attempt}
+			step = "attempt_lease"
 			value.lease, err = r.Lease(ctx, attempt.LeaseID)
 			if err != nil {
 				return err
 			}
 			if boardAttemptCurrent(value, now) {
+				step = "run_event"
 				value.event, err = r.LatestRunEvent(ctx, candidate.ProjectID, attempt.ID)
 				if err != nil {
 					return err
 				}
 			}
 			snapshot.attempt = &value
+			step = "attempt_count"
 			snapshot.attemptCount, err = r.BoardAttemptCount(ctx, snapshot.item.ID)
 			if err != nil {
 				return err
@@ -109,15 +130,18 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 		} else if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
+		step = "active_lease"
 		lease, err := r.ActiveLeaseForIssue(ctx, snapshot.item.ID)
 		if err == nil {
 			snapshot.lease = &lease
 		} else if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
+		step = "latest_change"
 		change, err := r.LatestChange(ctx, candidate.ProjectID, candidate.WorkItemID)
 		if err == nil {
 			snapshot.change = &change
+			step = "change_item"
 			primary, err := r.WorkItemByNativeID(ctx, change.WorkItemID)
 			if err != nil {
 				return err
@@ -127,6 +151,7 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 			}
 
 			if change.CurrentVersionID != nil {
+				step = "change_version"
 				version, err := r.Version(ctx, change.ID, *change.CurrentVersionID)
 				if err != nil {
 					return err
@@ -141,13 +166,21 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 	return snapshot, err
 }
 
-func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.OrganizationID, candidate viewstore.BoardCandidate, now time.Time) error {
+func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.OrganizationID, candidate viewstore.BoardCandidate, now time.Time) (err error) {
+	step := "snapshot"
+	defer func() {
+		var failure *boardRefreshError
+		if err != nil && !errors.As(err, &failure) {
+			err = &boardRefreshError{item: candidate.WorkItemID, step: step, cause: err}
+		}
+	}()
 	snapshot, err := s.boardProjectionSnapshot(ctx, organization, candidate, now)
 	if err != nil {
 		return err
 	}
 	update := viewstore.BoardUpdate{ProjectID: candidate.ProjectID, WorkItemID: candidate.WorkItemID, ExpectedRevision: snapshot.item.Revision, ExpectedEventSequence: snapshot.item.EventSequence, ExpectedProjectRevision: snapshot.project.Core.ContentSettingsRevision}
 	if snapshot.item.ID != 0 && snapshot.project.Core.DeletedAt == nil && snapshot.project.Core.Profile == "native" {
+		step = "issue_payload"
 		issue, err := s.hydrateWorkItemRecord(ctx, snapshot.item, snapshot.version)
 		if err != nil {
 			return err
@@ -155,6 +188,7 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 		card := tracker.NativeBoardCard{Issue: issue}
 		var latest *tracker.NativeAttempt
 		if historical := snapshot.attempt; historical != nil {
+			step = "attempt_payload"
 			attempt, err := s.boardAttemptDetails(ctx, *historical, now)
 			if err != nil {
 				return err
@@ -191,10 +225,12 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 		}
 		if card.Change != nil {
 			scope := nativeScope{organization: organization, project: candidate.ProjectID}
+			step = "change_rows"
 			changes, supported := s.prepareBoardChangeRowsFor(ctx, scope, []tracker.NativeBoardCard{card}, corestore.Background)
 			if !supported {
 				return corestore.ErrNotFound
 			}
+			step = "change_summary"
 			summary, err := changes.summary(ctx, s, scope, candidate.WorkItemID, card.Change.ID, now)
 			if err != nil {
 				return err
@@ -202,6 +238,7 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 			card.Change.Status = summary.Status
 		}
 		card.StatusLine = nativeBoardStatusLine(card)
+		step = "board_payload"
 		payload, err := viewstore.NewContent(s.runDetailStore()).PrepareBoard(ctx, card)
 		if err != nil {
 			return err
@@ -210,6 +247,7 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 		record.Payload = payload
 		update.Current = &record
 	}
+	step = "replace_board_item"
 	return s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error { return w.ReplaceBoardItem(ctx, update) })
 }
 

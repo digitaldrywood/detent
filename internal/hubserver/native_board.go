@@ -23,8 +23,22 @@ func (s *Service) maintainNativeBoard(ctx context.Context) {
 	if err := s.maintainTeamUnread(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.ErrorContext(ctx, "refresh team unread summary", "error", err)
 	}
-	if err := s.maintainBoardRecords(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		s.config.Logger.ErrorContext(ctx, "refresh native board card", "error", err)
+	if err := s.maintainBoardRecords(ctx); err != nil {
+		failures := []error{err}
+		if batch, ok := err.(interface{ Unwrap() []error }); ok {
+			failures = batch.Unwrap()
+		}
+		for _, failure := range failures {
+			if errors.Is(failure, context.Canceled) {
+				continue
+			}
+			attributes := []any{"error", failure}
+			var card *boardRefreshError
+			if errors.As(failure, &card) {
+				attributes = append(attributes, "work_item_id", card.item, "step", card.step)
+			}
+			s.config.Logger.ErrorContext(ctx, "refresh native board card", attributes...)
+		}
 	}
 }
 

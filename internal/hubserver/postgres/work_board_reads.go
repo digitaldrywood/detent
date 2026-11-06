@@ -44,7 +44,7 @@ func (s *session) NextBoardCandidate(ctx context.Context, after tracker.NativeWo
 		skipped[index] = string(id)
 	}
 	var candidate viewstore.BoardCandidate
-	err := s.db.QueryRowContext(ctx, `SELECT project_id,work_item_id FROM (
+	err := s.db.QueryRowContext(ctx, `SELECT coalesce(stale.project_id,candidates.project_id),candidates.work_item_id FROM (
  (SELECT project_id,work_item_id,0 AS priority FROM native_board_dirty WHERE organization_id=$1 AND work_item_id>$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
  UNION ALL (SELECT project_id,work_item_id,1 AS priority FROM native_board_dirty WHERE organization_id=$1 AND work_item_id<=$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
  UNION ALL (SELECT project_id,work_item_id,2 AS priority FROM native_board_items WHERE organization_id=$1 AND NOT card_display_ready AND work_item_id>$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
@@ -53,7 +53,11 @@ func (s *session) NextBoardCandidate(ctx context.Context, after tracker.NativeWo
  UNION ALL (SELECT project_id,work_item_id,4 AS priority FROM native_board_items WHERE organization_id=$1 AND work_item_id>$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
  UNION ALL (SELECT project_id,native_id AS work_item_id,5 AS priority FROM issues WHERE organization_id=$1 AND native_id<=$2 AND native_id<>ALL($3::text[]) ORDER BY native_id LIMIT 1)
  UNION ALL (SELECT project_id,work_item_id,5 AS priority FROM native_board_items WHERE organization_id=$1 AND work_item_id<=$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
- ) candidates ORDER BY priority,work_item_id LIMIT 1`, s.organization, after, pq.Array(skipped)).Scan(&candidate.ProjectID, &candidate.WorkItemID)
+ ) candidates
+ LEFT JOIN native_board_items stale ON stale.organization_id=$1 AND stale.work_item_id=candidates.work_item_id
+  AND stale.project_id<>candidates.project_id
+  AND EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=$1 AND i.project_id=candidates.project_id AND i.native_id=candidates.work_item_id)
+ ORDER BY candidates.priority,candidates.work_item_id LIMIT 1`, s.organization, after, pq.Array(skipped)).Scan(&candidate.ProjectID, &candidate.WorkItemID)
 	return candidate, mapError(ctx, err)
 }
 
