@@ -3,6 +3,7 @@ package cloudentry
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -19,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -107,7 +109,7 @@ func (k accessKey) credentialBinding() string {
 func (s *Service) keyMembership(ctx context.Context, owner string, organization Organization) (auth.Membership, error) {
 	items, err := s.config.Provider.Memberships(ctx, owner, organization.ProviderID)
 	if err != nil {
-		return auth.Membership{}, fmt.Errorf("read current key owner membership: %w", err)
+		return auth.Membership{}, fmt.Errorf("read current key owner membership: %w", errors.Join(tenantauth.ErrUnavailable, err))
 	}
 	for _, item := range items {
 		if item.UserID == owner && item.OrganizationID == organization.ProviderID && item.Status == "active" && auth.ValidOrganizationRole(item.Role.Slug) {
@@ -117,17 +119,13 @@ func (s *Service) keyMembership(ctx context.Context, owner string, organization 
 	return auth.Membership{}, &apikey.Refusal{Code: "membership_denied", Message: "The key owner is not a current organization member"}
 }
 
-func (s *Service) keyClaims(ctx context.Context, k accessKey, organization Organization, method, path string, body []byte) (result cloudassert.Claims, resultErr error) {
-	defer func() {
-		var refusal *apikey.Refusal
-		if errors.As(resultErr, &refusal) {
-			if err := s.keyAudit(ctx, organization, k.ID, k.Owner, refusal.Code); err != nil {
-				resultErr = err
-			}
-		}
-	}()
-	projects, reaches := k.projectContext(organization.ID)
-	if !reaches {
+func (s *Service) keyClaims(ctx context.Context, k accessKey, organization Organization, method, path string, body []byte) (cloudassert.Claims, error) {
+	return s.prepareKeyClaims(ctx, k, organization, method, path, body, false)
+}
+
+func (s *Service) prepareKeyClaims(ctx context.Context, k accessKey, organization Organization, method, path string, body []byte, recordUse bool) (result cloudassert.Claims, resultErr error) {
+	defer s.auditKeyRefusal(ctx, organization, k.ID, k.Owner, &resultErr)
+	if _, reaches := k.projectContext(organization.ID); !reaches {
 		return cloudassert.Claims{}, &apikey.Refusal{Code: "key_organization_denied", Message: "The organization is outside this key's access context"}
 	}
 	role, subject := "admin", "service:"+k.ID
@@ -137,41 +135,47 @@ func (s *Service) keyClaims(ctx context.Context, k accessKey, organization Organ
 			return cloudassert.Claims{}, err
 		}
 		role, subject = member.Role.Slug, k.Owner
-		policy, err := s.personalKeyPolicy(ctx, organization.ID)
-		if err != nil {
-			return cloudassert.Claims{}, err
-		}
-		if policy == "blocked" {
-			return cloudassert.Claims{}, &apikey.Refusal{Code: "organization_key_policy_denied", Message: "This organization blocks personal keys"}
-		}
-		if policy == "approval" {
-			var approved bool
-			err := s.auth.store.db.QueryRowContext(ctx, "SELECT approved_at IS NOT NULL FROM platform.access_key_organizations WHERE key_id=$1 AND organization_id=$2", k.ID, organization.ID).Scan(&approved)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return cloudassert.Claims{}, err
-			}
-			if !approved {
-				return cloudassert.Claims{}, &apikey.Refusal{Code: "organization_key_policy_denied", Message: "This personal key requires organization approval"}
-			}
-		}
 	}
-	blocked, excluded, err := s.keyRestrictions(ctx, k.ID, organization.ID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	snapshot, err := s.auth.store.db.postgres.PlatformKey(ctx, tenantauth.PlatformKeyRequest{Organization: tracker.OrganizationID(organization.ID), KeyID: k.ID, OAuthExchange: k.OAuth && k.ExpiresAt == nil})
+	if err != nil {
 		return cloudassert.Claims{}, err
 	}
-	if blocked {
-		return cloudassert.Claims{}, &apikey.Refusal{Code: "organization_key_blocked", Message: "An organization administrator blocked this key"}
+	if snapshot.Generation != organization.Generation || snapshot.ProviderID != organization.ProviderID || snapshot.Endpoint != organization.Endpoint || snapshot.OwnerSubject != k.Owner || snapshot.Authority.Kind != k.Kind || subtle.ConstantTimeCompare([]byte(snapshot.Authority.CredentialBinding), []byte(k.credentialBinding())) != 1 || k.OAuth && snapshot.Resource != s.config.PublicURL+"/mcp" {
+		return cloudassert.Claims{}, errors.Join(tenantauth.ErrDenied, &apikey.Refusal{Code: "access_denied", Message: "The key authority changed"})
 	}
-	key := &apikey.KeyAuthority{ID: k.ID, CredentialBinding: k.credentialBinding(), Kind: k.Kind, Permission: k.Permission, ProjectContext: projects, BlockedProjects: excluded}
+	if recordUse {
+		if err := s.recordCredentialUse(ctx, k, organization.ID); err != nil {
+			return cloudassert.Claims{}, err
+		}
+	}
 	claims, err := s.claims(organization, cloudassert.KindKey, method, path, body)
 	if err != nil {
 		return claims, err
 	}
-	claims.Key, claims.Subject, claims.Email, claims.ProviderOrganization, claims.Role = key, subject, k.OwnerEmail, organization.ProviderID, role
-	if k.ExpiresAt != nil && k.ExpiresAt.Before(claims.ExpiresAt) {
-		claims.ExpiresAt = *k.ExpiresAt
+	claims.Key, claims.Subject, claims.Email, claims.ProviderOrganization, claims.Role = &snapshot.Authority, subject, snapshot.OwnerEmail, snapshot.ProviderID, role
+	if snapshot.ExpiresAt != nil && snapshot.ExpiresAt.Before(claims.ExpiresAt) {
+		claims.ExpiresAt = *snapshot.ExpiresAt
 	}
 	return claims, nil
+}
+
+func (s *Service) auditKeyRefusal(ctx context.Context, organization Organization, key, owner string, resultErr *error) {
+	var refusal *apikey.Refusal
+	event := "access_denied"
+	if errors.As(*resultErr, &refusal) {
+		event = refusal.Code
+	} else if !errors.Is(*resultErr, cloudassert.ErrInvalid) && !errors.Is(*resultErr, tenantauth.ErrDenied) {
+		return
+	}
+	if !safeID(key) {
+		key = ""
+	}
+	if owner == "" || len(owner) > 256 {
+		owner = "unknown"
+	}
+	if err := s.keyAudit(ctx, organization, key, owner, event); err != nil {
+		*resultErr = fmt.Errorf("audit key refusal: %w", errors.Join(tenantauth.ErrUnavailable, err))
+	}
 }
 
 func (s *Service) recordKeyUse(ctx context.Context, key, organization string) error {
@@ -193,12 +197,18 @@ func keyBearer(c echo.Context) (string, error) {
 }
 
 func keyError(c echo.Context, err error) error {
+	if errors.Is(err, tenantauth.ErrUnavailable) {
+		return c.JSON(http.StatusServiceUnavailable, apikey.Refusal{Code: "key_authority_unavailable", Message: "Key authorization is temporarily unavailable"})
+	}
 	var refusal *apikey.Refusal
 	if errors.As(err, &refusal) {
 		return c.JSON(http.StatusForbidden, refusal)
 	}
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, errNoSession) {
 		return c.JSON(http.StatusUnauthorized, apikey.Refusal{Code: "key_required", Message: "A valid key is required"})
+	}
+	if errors.Is(err, tenantauth.ErrDenied) || errors.Is(err, cloudassert.ErrInvalid) {
+		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "access_denied", Message: "Key access is denied"})
 	}
 	return c.JSON(http.StatusServiceUnavailable, apikey.Refusal{Code: "key_authority_unavailable", Message: "Key authorization is temporarily unavailable"})
 }

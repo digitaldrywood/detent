@@ -13,13 +13,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) resolveTenantKey(ctx context.Context, allocation Organization, origin entryauthority.Origin) (cloudassert.Claims, error) {
+func (s *Service) resolveTenantKey(ctx context.Context, allocation Organization, origin entryauthority.Origin) (result cloudassert.Claims, resultErr error) {
+	defer s.auditKeyRefusal(ctx, allocation, origin.KeyID, origin.Subject, &resultErr)
 	if origin.Issuer != s.config.Issuer || origin.Generation != allocation.Generation || !safeID(origin.KeyID) || (origin.Subject == "" || len(origin.Subject) > 256) || len(origin.CredentialBinding) != 64 {
 		return cloudassert.Claims{}, cloudassert.ErrInvalid
 	}
 	snapshot, err := s.auth.store.db.postgres.TenantKey(ctx, origin.KeyID, tracker.OrganizationID(allocation.ID))
 	if errors.Is(err, platformstore.ErrNoSession) {
-		return cloudassert.Claims{}, cloudassert.ErrInvalid
+		return cloudassert.Claims{}, errors.Join(cloudassert.ErrInvalid, err)
 	}
 	if err != nil {
 		return cloudassert.Claims{}, err
@@ -34,7 +35,7 @@ func (s *Service) resolveTenantKey(ctx context.Context, allocation Organization,
 		if err != nil {
 			var refusal *apikey.Refusal
 			if errors.As(err, &refusal) {
-				return cloudassert.Claims{}, cloudassert.ErrInvalid
+				return cloudassert.Claims{}, errors.Join(cloudassert.ErrInvalid, err)
 			}
 			return cloudassert.Claims{}, err
 		}

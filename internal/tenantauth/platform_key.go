@@ -82,7 +82,7 @@ func ReadPlatformKey(ctx context.Context, reader pgtransport.Reader, input Platf
 	if revoked != nil || result.ExpiresAt != nil && !result.ExpiresAt.After(now) {
 		return PlatformKey{}, platformDenied("key_inactive", "The key is expired or revoked")
 	}
-	if !oauth && !(result.Authority.Kind == "personal" && accessContext == "global") && !selected || result.Authority.Kind == "service" && (serviceOrganization == nil || *serviceOrganization != input.Organization || selections != 1) {
+	if !oauth && (result.Authority.Kind != "personal" || accessContext != "global") && !selected || result.Authority.Kind == "service" && (serviceOrganization == nil || *serviceOrganization != input.Organization || selections != 1) {
 		return PlatformKey{}, platformDenied("key_organization_denied", "The organization is outside this key's access context")
 	}
 	validContext := accessContext == "global" && result.Authority.Kind == "personal" || accessContext == "selected" && (oauth || selections > 0 && selections <= 200) || accessContext == "project" && selections == 1 && result.Authority.Access == "project"

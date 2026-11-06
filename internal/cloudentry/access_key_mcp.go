@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 )
 
 type accessKeyConnection struct{ hash string }
@@ -115,21 +116,16 @@ func (s *Service) keyTenantCall(ctx context.Context, key accessKey, org Organiza
 	if err != nil {
 		return nil, err
 	}
-	claims, err := s.keyClaims(ctx, key, org, http.MethodPost, path, body)
+	claims, err := s.prepareKeyClaims(ctx, key, org, http.MethodPost, path, body, true)
 	if err != nil {
 		return nil, err
-	}
-	if err := s.recordCredentialUse(ctx, key, org.ID); err != nil {
-		return nil, err
-	}
-	claims.IssuedAt = s.config.now()
-	claims.ExpiresAt = claims.IssuedAt.Add(assertionLifetime)
-	if key.ExpiresAt != nil && key.ExpiresAt.Before(claims.ExpiresAt) {
-		claims.ExpiresAt = *key.ExpiresAt
 	}
 	status, raw, err := s.signedCall(ctx, org, claims, body, "")
 	if err != nil {
 		return nil, err
+	}
+	if status >= http.StatusInternalServerError {
+		return nil, tenantauth.ErrUnavailable
 	}
 	if status == http.StatusUnprocessableEntity {
 		var request operatortool.RequestError
@@ -243,7 +239,10 @@ func (e accessKeyExecutor) Execute(ctx context.Context, call operatortool.Call) 
 	}
 	org, err := e.service.readyOrganization(ctx, organization)
 	if err != nil {
-		return operatortool.Result{}, &apikey.Refusal{Code: "key_organization_denied", Message: "The target organization is unavailable to this key"}
+		if errors.Is(err, ErrOrganizationNotFound) {
+			return operatortool.Result{}, &apikey.Refusal{Code: "key_organization_denied", Message: "The target organization is unavailable to this key"}
+		}
+		return operatortool.Result{}, errors.Join(tenantauth.ErrUnavailable, err)
 	}
 	definition, found := operatortool.Lookup(call.Name)
 	if !found {

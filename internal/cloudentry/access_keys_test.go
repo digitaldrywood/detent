@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -532,29 +533,44 @@ func TestAccessKeyScopeAndServiceLifetime(t *testing.T) {
 
 func TestKeyTenantCallAssertionLifetimeAfterUsage(t *testing.T) {
 	t.Parallel()
-	f := newEntryFixture(t)
+	start := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	var clock atomic.Int64
+	f := newEntryFixture(t, func(cfg *Config) {
+		cfg.now = func() time.Time {
+			if stamp := clock.Load(); stamp != 0 {
+				return time.Unix(0, stamp).UTC()
+			}
+			return time.Now()
+		}
+	})
 	owner := newBrowser(t, f.service.Handler())
 	owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 	key := createTestAccessKey(t, owner, "selected", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "all"}}}, "org_alpha")
+	key, err := f.service.activeAccessKey(t.Context(), apikey.HashToken(key.Token))
+	if err != nil {
+		t.Fatal(err)
+	}
 	organization, err := f.service.registry.Organization(t.Context(), "org_alpha")
 	if err != nil {
 		t.Fatal(err)
 	}
-	start := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
-		name       string
-		delay      time.Duration
-		expires    time.Duration
-		wantExpiry time.Duration
-		wantError  bool
+		name          string
+		delay         time.Duration
+		expires       time.Duration
+		storedExpires time.Duration
+		wantExpiry    time.Duration
+		wantError     bool
 	}{
 		{name: "immediate delivery", wantExpiry: 20 * time.Second},
 		{name: "usage recording outlasts assertion", delay: 21 * time.Second, wantExpiry: 41 * time.Second},
 		{name: "key expiry caps assertion", delay: 21 * time.Second, expires: 30 * time.Second, wantExpiry: 30 * time.Second},
+		{name: "current expiry caps stale key", expires: time.Hour, storedExpires: 10 * time.Second, wantExpiry: 10 * time.Second},
 		{name: "key expires during usage recording", delay: 21 * time.Second, expires: 20 * time.Second, wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := start
+			clock.Store(start.UnixNano())
 			sent := 0
 			if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE platform.access_key_organizations SET last_used_at=NULL WHERE key_id=$1 AND organization_id=$2", key.ID, organization.ID); err != nil {
 				t.Fatal(err)
@@ -567,6 +583,7 @@ func TestKeyTenantCallAssertionLifetimeAfterUsage(t *testing.T) {
 				}
 				if used.Valid {
 					now = start.Add(test.delay)
+					clock.Store(now.UnixNano())
 				}
 				return now
 			}
@@ -575,6 +592,14 @@ func TestKeyTenantCallAssertionLifetimeAfterUsage(t *testing.T) {
 			if test.expires != 0 {
 				expires := start.Add(test.expires)
 				credential.ExpiresAt = &expires
+			}
+			storedExpiry := credential.ExpiresAt
+			if test.storedExpires != 0 {
+				expires := start.Add(test.storedExpires)
+				storedExpiry = &expires
+			}
+			if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE platform.access_keys SET expires_at=$1 WHERE id=$2", storedExpiry, key.ID); err != nil {
+				t.Fatal(err)
 			}
 			service.config.transport = func(Organization) (http.RoundTripper, error) {
 				return runtimeTransport(func(request *http.Request) (*http.Response, error) {
@@ -636,6 +661,10 @@ func TestAccessKeyMembershipAndPolicyMatrix(t *testing.T) {
 							if kind == "service" {
 								k.ServiceOrganization, k.AccessContext = "org_alpha", "selected"
 								k.Organizations = []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "all"}}}
+							}
+							k.Hash = apikey.HashToken(owner)
+							if err := f.service.auth.postgresCreateKey(t.Context(), k); err != nil {
+								t.Fatal(err)
 							}
 							claims, err := f.service.keyClaims(t.Context(), k, org, http.MethodGet, "/api/v2/organizations/org_alpha/projects", nil)
 							want := ""
