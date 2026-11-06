@@ -58,10 +58,27 @@ func (s *Service) readCommentRecords(ctx context.Context, scope nativeScope, ite
 			}
 			more = len(boundary) > 0
 		}
-		for _, row := range rows {
-			version, err := r.CollaborationVersion(ctx, row.ID, row.Revision)
-			if err != nil {
-				return err
+
+		batch, ok := r.(eventstore.CollaborationVersionsReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		keys := make([]eventstore.CollaborationVersionKey, len(rows))
+		for i, row := range rows {
+			keys[i] = eventstore.CollaborationVersionKey{RecordID: row.ID, Revision: row.Revision}
+		}
+		found, err := batch.CollaborationVersions(ctx, keys)
+		if err != nil {
+			return err
+		}
+		byKey := make(map[eventstore.CollaborationVersionKey]eventstore.CollaborationVersion, len(found))
+		for _, version := range found {
+			byKey[eventstore.CollaborationVersionKey{RecordID: version.RecordID, Revision: version.Revision}] = version
+		}
+		for _, key := range keys {
+			version, ok := byKey[key]
+			if !ok {
+				return corestore.ErrNotFound
 			}
 			versions = append(versions, version)
 		}
