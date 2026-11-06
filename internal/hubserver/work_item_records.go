@@ -593,7 +593,7 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 		if err != nil {
 			return plan, err
 		}
-		if len(references) > 0 && !(plan.comment.ID != "" && plan.create) {
+		if len(references) > 0 && !plan.create {
 			return plan, workItemStorageUnavailable()
 		}
 	}
@@ -829,7 +829,7 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 				}
 			}
 		}
-		attachmentIDs, err := s.prepareCommentAttachmentReferences(ctx, scope, plan)
+		attachmentIDs, err := s.prepareWorkItemAttachmentReferences(ctx, scope, plan)
 		if err != nil {
 			return nil, err
 		}
@@ -1217,8 +1217,12 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 						return err
 					}
 				}
+				attachmentItem := plan.comment.WorkItemID
+				if plan.comment.ID == "" {
+					attachmentItem = plan.issue.WorkItemID
+				}
 				for _, id := range attachmentIDs {
-					if err := w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.project, AttachmentID: id, WorkItemID: plan.comment.WorkItemID, CommentID: plan.comment.ID}); err != nil {
+					if err := w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.project, AttachmentID: id, WorkItemID: attachmentItem, CommentID: plan.comment.ID}); err != nil {
 						return err
 					}
 				}

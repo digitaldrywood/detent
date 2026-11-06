@@ -528,11 +528,15 @@ func (s *Service) readAttachmentRecordWith(ctx context.Context, r tenantstore.Re
 	return nil
 }
 
-func (s *Service) prepareCommentAttachmentReferences(ctx context.Context, scope nativeScope, plan workItemRecordPlan) ([]string, error) {
-	if plan.comment.ID == "" || !plan.create {
+func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope nativeScope, plan workItemRecordPlan) ([]string, error) {
+	if !plan.create {
 		return nil, nil
 	}
-	references, err := cloudContentAttachmentReferences(plan.comment.Body, scope)
+	body := plan.comment.Body
+	if plan.comment.ID == "" {
+		body = plan.issue.Title + "\n" + plan.issue.Body
+	}
+	references, err := cloudContentAttachmentReferences(body, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -543,7 +547,7 @@ func (s *Service) prepareCommentAttachmentReferences(ctx context.Context, scope 
 	slices.Sort(ids)
 	ids = slices.Compact(ids)
 	if len(ids) > 200 {
-		return nil, nativePublicInvalid("Comment attachment references exceed the write bound")
+		return nil, nativePublicInvalid("Work item attachment references exceed the write bound")
 	}
 	for _, id := range ids {
 		if _, err := s.readAttachmentRecordTenant(ctx, scope, id); err != nil {
