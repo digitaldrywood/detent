@@ -591,6 +591,10 @@ func (b *pilotBrowser) login(target, code string) pilotResponse {
 
 func (b *pilotBrowser) csrf(path string) string {
 	b.t.Helper()
+	if strings.HasPrefix(path, "/organizations/") {
+		parts := strings.SplitN(strings.TrimPrefix(path, "/organizations/"), "/", 2)
+		path = "/organizations/" + parts[0] + "/app/bootstrap"
+	}
 	response := b.get(path)
 	if response.status != http.StatusOK {
 		b.t.Fatalf("GET %s = %d", path, response.status)
@@ -650,7 +654,7 @@ type pilotOrganization struct {
 	ownerCSRF                string
 }
 
-func (o pilotOrganization) page() string { return "/organizations/" + o.id + "/organization" }
+func (o pilotOrganization) page() string { return "/organizations/" + o.id + "/app/bootstrap" }
 func (o pilotOrganization) api() string  { return "/api/v2/organizations/" + o.id }
 func (o pilotOrganization) projectAPI() string {
 	return o.api() + "/projects/" + o.project
@@ -812,7 +816,7 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		pilotStatus(t, "eve organization sign-in", eve.login("/organizations/"+beta.id+"/organization", "user_eve:porg_"+beta.id), http.StatusSeeOther)
 		alpha.owner, beta.owner = member, eve
 		for _, o := range []*pilotOrganization{&alpha, &beta} {
-			page := o.owner.get(o.page())
+			page := o.owner.get("/organizations/" + o.id + "/app/bootstrap")
 			pilotStatus(t, "owner page", page, http.StatusOK)
 			o.ownerCSRF = csrfFrom(t, page.body)
 		}
@@ -852,12 +856,12 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 				t.Fatalf("absent daemon service advertised: %s", listed.body)
 			}
 		}
-		for _, name := range []string{"board_state", "explain_item"} {
+		for _, name := range []string{"work_list", "work_item"} {
 			if !strings.Contains(listed.body, `"name":"`+name+`"`) {
 				t.Fatalf("native work read %s was not advertised", name)
 			}
 		}
-		call := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"explain_item","arguments":{"project_id":"foreign","reference":"wi_foreign"}}}`
+		call := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"work_item","arguments":{"project_id":"foreign","reference":"wi_foreign"}}}`
 		denied := alpha.owner.request(http.MethodPost, path, strings.NewReader(call), headers)
 		pilotStatus(t, "MCP foreign project", denied, http.StatusOK)
 		if !strings.Contains(denied.body, `"isError":true`) {
@@ -900,7 +904,7 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		second := alpha.owner.form("/organizations/"+alpha.id+"/projects", url.Values{"name": {"Alpha second project"}, "grant_access": {"true"}, "csrf": {alpha.ownerCSRF}})
 		pilotStatus(t, "free plan second project", second, http.StatusTooManyRequests)
 		var before hubserver.HostedEntitlement
-		report := alpha.owner.get("/organizations/" + alpha.id + "/api/cloud/billing")
+		report := alpha.owner.get(alpha.api() + "/billing")
 		pilotStatus(t, "alpha entitlement", report, http.StatusOK)
 		var usage struct {
 			Entitlement hubserver.HostedEntitlement `json:"entitlement"`
@@ -920,14 +924,14 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 			o      pilotOrganization
 			grants int
 		}{{alpha, 1}, {beta, 0}} {
-			response := test.o.owner.get("/organizations/" + test.o.id + "/api/cloud/billing")
+			response := test.o.owner.get(test.o.api() + "/billing")
 			pilotStatus(t, "entitlement report", response, http.StatusOK)
 			pilotDecode(t, response, &usage)
 			if usage.Entitlement.OrganizationID != test.o.id || len(usage.Entitlement.Grants) != test.grants {
 				t.Fatalf("%s entitlement = %+v", test.o.id, usage.Entitlement)
 			}
 		}
-		foreign := beta.owner.get("/organizations/" + alpha.id + "/api/cloud/billing")
+		foreign := beta.owner.get(alpha.api() + "/billing")
 		if foreign.status == http.StatusOK || strings.Contains(foreign.body, "comp_alpha") {
 			t.Fatalf("beta owner read alpha billing: %d", foreign.status)
 		}
@@ -1033,13 +1037,23 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, test := range []struct{ self, other pilotOrganization }{{alpha, beta}, {beta, alpha}} {
-			list := fay.get(test.self.projectAPI() + "/work-items")
-			pilotStatus(t, "issue list", list, http.StatusOK)
 			var result struct {
 				Items []tracker.NativeIssue `json:"items"`
 			}
-			if err := json.Unmarshal([]byte(list.body), &result); err != nil {
-				t.Fatal(err)
+			var list pilotResponse
+			deadline := time.Now().Add(10 * time.Second)
+			ticker := time.NewTicker(20 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				list = fay.get(test.self.projectAPI() + "/work-items")
+				pilotStatus(t, "issue list", list, http.StatusOK)
+				if err := json.Unmarshal([]byte(list.body), &result); err != nil {
+					t.Fatal(err)
+				}
+				if len(result.Items) == 8 || time.Now().After(deadline) {
+					break
+				}
+				<-ticker.C
 			}
 			if len(result.Items) != 8 {
 				t.Fatalf("%s issue count=%d want=8", test.self.id, len(result.Items))
@@ -1070,7 +1084,7 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 			want             int
 		}{
 			{"other organization token", alpha.projectAPI() + "/work-items", fayCSRF[beta.id], http.StatusForbidden},
-			{"project under other organization", "/api/v2/organizations/" + beta.id + "/projects/" + alpha.project + "/work-items", fayCSRF[beta.id], http.StatusNotFound},
+			{"project under other organization", "/api/v2/organizations/" + beta.id + "/projects/" + alpha.project + "/work-items", fayCSRF[beta.id], http.StatusForbidden},
 			{"missing token", alpha.projectAPI() + "/work-items", "", http.StatusForbidden},
 		} {
 			response := fay.json(http.MethodPost, test.path, test.csrf, issue)
@@ -1126,6 +1140,8 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: alphaIssue.WorkItemID, MachineID: alphaRunner.MachineID, SessionID: "shared-origin", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 		pilotStatus(t, "claim with foreign runner", p.machine(t, http.MethodPost, alpha.projectAPI()+"/claims", betaRunner.credential, claim), http.StatusUnauthorized)
 		pilotStatus(t, "claim under foreign organization", p.machine(t, http.MethodPost, "/api/v2/organizations/"+beta.id+"/projects/"+alpha.project+"/claims", alphaRunner.credential, claim), http.StatusUnauthorized)
+		heartbeat := map[string]any{"display_name": "Example runner", "capacity": 1, "version": "test", "protocol_major": 2, "backend_isolation": isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, ObservedAt: time.Now()}}
+		pilotStatus(t, "capacity heartbeat", p.machine(t, http.MethodPost, alpha.projectAPI()+"/machines/"+string(alphaRunner.MachineID)+"/heartbeat", alphaRunner.credential, heartbeat), http.StatusOK)
 		response := p.machine(t, http.MethodPost, alpha.projectAPI()+"/claims", alphaRunner.credential, claim)
 		pilotStatus(t, "claim", response, http.StatusOK)
 		var lease tracker.NativeLease
@@ -1160,7 +1176,7 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 			{"member lists alpha artifacts", func() pilotResponse { return fay.get(item + "/artifacts") }, http.StatusOK},
 			{"alpha item under beta", func() pilotResponse {
 				return fay.get("/api/v2/organizations/" + beta.id + "/projects/" + alpha.project + "/work-items/" + string(alphaIssue.WorkItemID) + "/artifacts")
-			}, http.StatusNotFound},
+			}, http.StatusForbidden},
 			{"read grant with beta token", func() pilotResponse {
 				return fay.json(http.MethodPost, item+"/artifacts/artifact_missing/access", fayCSRF[beta.id], map[string]int64{"revision": 1})
 			}, http.StatusForbidden},

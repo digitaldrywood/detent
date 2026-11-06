@@ -14,20 +14,22 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 type hostedBillingReport struct {
-	ChargedAIMicros int64                          `json:"charged_ai_micros"`
-	AICredits       *aiCreditView                  `json:"ai_credits,omitempty"`
-	ChatUsage       chatUsageSummary               `json:"chat_usage"`
-	OrganizationID  string                         `json:"organization_id"`
-	State           hostedBillingState             `json:"state"`
-	Entitlement     HostedEntitlement              `json:"entitlement"`
-	ReconciledAt    string                         `json:"reconciled_at"`
-	PendingEvents   int64                          `json:"pending_events"`
-	Audit           []templates.HostedBillingAudit `json:"recent_audit"`
+	UnavailableUsage []string                       `json:"unavailable_usage,omitempty"`
+	ChargedAIMicros  int64                          `json:"charged_ai_micros"`
+	AICredits        *aiCreditView                  `json:"ai_credits,omitempty"`
+	ChatUsage        chatUsageSummary               `json:"chat_usage"`
+	OrganizationID   string                         `json:"organization_id"`
+	State            hostedBillingState             `json:"state"`
+	Entitlement      HostedEntitlement              `json:"entitlement"`
+	ReconciledAt     string                         `json:"reconciled_at"`
+	PendingEvents    int64                          `json:"pending_events"`
+	Audit            []templates.HostedBillingAudit `json:"recent_audit"`
 }
 
 func (s *Service) hostedBillingReport(ctx context.Context, pages ...creditPageRequest) (hostedBillingReport, error) {
@@ -39,7 +41,20 @@ func (s *Service) hostedBillingReport(ctx context.Context, pages ...creditPageRe
 	if err != nil {
 		return report, err
 	}
-	report.Entitlement, err = s.database.hostedPlanUsage(ctx, s.config.now())
+	if s.database.postgres != nil {
+		report.Entitlement, err = s.database.hostedEntitlement(ctx, nil, s.config.now())
+		if err == nil {
+			var usage hostedFleetUsage
+			usage, err = s.hostedFleetUsageTenant(ctx)
+			report.UnavailableUsage = usage.Unavailable
+			report.Entitlement.Usage = make(map[string]int64, len(usage.Allowances))
+			for metric, value := range usage.Allowances {
+				report.Entitlement.Usage[metric] = value.Used
+			}
+		}
+	} else {
+		report.Entitlement, err = s.database.hostedPlanUsage(ctx, s.config.now())
+	}
 	if err != nil {
 		return report, err
 	}
@@ -77,7 +92,7 @@ func (s *Service) hostedBillingReport(ctx context.Context, pages ...creditPageRe
 	err = s.database.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
 		var err error
 		account, err = reader.BillingAccount(ctx)
-		if err != nil {
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
 		pending, err = reader.BillingEvents(ctx, 0, int64(^uint64(0)>>1), 1)
@@ -427,6 +442,9 @@ func (s *Service) readBillingView(ctx context.Context, pages ...creditPageReques
 			if err := s.database.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
 				var err error
 				account, err = reader.BillingAccount(ctx)
+				if errors.Is(err, corestore.ErrNotFound) {
+					return nil
+				}
 				return err
 			}); err != nil {
 				return hostedBillingView{}, err

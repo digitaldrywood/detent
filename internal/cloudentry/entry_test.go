@@ -23,6 +23,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
@@ -878,9 +879,10 @@ func TestSharedEntryBoundaries(t *testing.T) {
 			}
 		})
 	}
-	metadata := stranger.do(http.MethodGet, "/organizations/org_alpha/api/cloud/metadata", nil, map[string]string{"Authorization": "Bearer " + testAdminKey})
+	key := createTestAccessKey(t, alice, "selected", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "all"}}}, "", "read")
+	metadata := stranger.do(http.MethodGet, "/organizations/org_alpha/api/v2/organizations/org_alpha/projects", nil, map[string]string{"Authorization": "Bearer " + key.Token})
 	if metadata.StatusCode != http.StatusOK {
-		t.Fatalf("machine metadata status = %d", metadata.StatusCode)
+		t.Fatalf("machine projects status = %d", metadata.StatusCode)
 	}
 	transport, stop := entryTenantTransport(t, f.tenants[testSocketEndpoint("alpha.sock")])
 	for _, failure := range []struct {
@@ -914,7 +916,7 @@ func TestSharedEntryBoundaries(t *testing.T) {
 				{name: "JSON accept list", method: http.MethodGet, path: "/organizations/org_alpha", accept: "application/json, text/html"},
 				{name: "no accept", method: http.MethodGet, path: "/organizations/org_alpha"},
 				{name: "HTML excluded", method: http.MethodGet, path: "/organizations/org_alpha", accept: "text/html;q=0"},
-				{name: "API path", method: http.MethodGet, path: "/organizations/org_alpha/api/cloud/metadata", accept: "text/html"},
+				{name: "API path", method: http.MethodGet, path: "/organizations/org_alpha/api/v2/organizations/org_alpha/projects", accept: "text/html"},
 				{name: "machine caller", method: http.MethodGet, path: "/organizations/org_alpha", accept: "text/html", bearer: true},
 				{name: "mutation", method: http.MethodPost, path: "/organizations/org_alpha/projects", accept: "text/html"},
 			} {

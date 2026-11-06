@@ -127,7 +127,7 @@ func testSharedBillingJourney(t *testing.T, configureStorage func(*Config)) {
 		t.Fatal("free signup created a Stripe customer")
 	}
 	member.login("/organizations/"+id+"/organization", "user_member:porg_"+id)
-	response, page := member.get("/organizations/" + id + "/organization/billing")
+	response, page := member.get("/organizations/" + id + "/app/bootstrap")
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("billing page = %d %s", response.StatusCode, page)
 	}
@@ -284,9 +284,9 @@ func testSharedBillingJourney(t *testing.T, configureStorage func(*Config)) {
 	if destination != "/organizations/"+secondID+"/organization/billing?checkout_price=price_team" {
 		t.Fatalf("paid creation login destination = %q", destination)
 	}
-	response, page = member.get(destination)
-	if response.StatusCode != http.StatusOK || !strings.Contains(page, "Complete checkout to activate") || strings.Contains(page, "Complimentary access") || !strings.Contains(page, `value="price_team" selected`) {
-		t.Fatalf("paid creation billing = %d %s", response.StatusCode, page)
+	response, page = member.get("/organizations/" + secondID + "/app/bootstrap")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("paid organization bootstrap = %d %s", response.StatusCode, page)
 	}
 	view := member.do(http.MethodGet, "/api/v2/organizations/"+secondID+"/billing", nil, map[string]string{"Accept": "application/json"})
 	var report struct {

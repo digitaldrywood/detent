@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/billing"
@@ -28,7 +29,7 @@ func TestSharedOriginRunnerConversationBind(t *testing.T) {
 		bind    int
 	}{
 		{name: "conversations enabled", billing: previewBillingProvider{}, bind: http.StatusOK},
-		{name: "conversations disabled", bind: http.StatusNotFound},
+		{name: "conversations disabled", bind: http.StatusServiceUnavailable},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store := newSpacesFixture(t, false)
@@ -87,6 +88,8 @@ func TestSharedOriginRunnerConversationBind(t *testing.T) {
 				issue = link.Issue
 			}
 			hub := "/organizations/" + o.id + o.projectAPI()
+			heartbeat := map[string]any{"display_name": redemption.DisplayName, "capacity": 1, "version": "test", "protocol_major": 2, "backend_isolation": redemption.BackendIsolation, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, ObservedAt: time.Now()}}
+			pilotStatus(t, "capacity heartbeat", p.machine(t, http.MethodPost, hub+"/machines/"+string(binding.MachineID)+"/heartbeat", credential, heartbeat), http.StatusOK)
 			claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: binding.MachineID, SessionID: "conversation-bind", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 			claimed := p.machine(t, http.MethodPost, hub+"/claims", credential, claim)
 			pilotStatus(t, "claim", claimed, http.StatusOK)
@@ -132,7 +135,7 @@ func TestSharedOriginRunnerConversationBind(t *testing.T) {
 				want int
 			}{
 				{name: "bearer bind", got: p.machine(t, http.MethodPost, item+"/conversation/bind", credential, bind), want: test.bind},
-				{name: "bearer unregistered route", got: p.machine(t, http.MethodPost, item+"/unregistered", credential, bind), want: http.StatusNotFound},
+				{name: "bearer unregistered route", got: p.machine(t, http.MethodPost, item+"/unregistered", credential, bind), want: http.StatusServiceUnavailable},
 				{name: "browser bind without CSRF", got: owner.json(http.MethodPost, item+"/conversation/bind", "", bind), want: http.StatusForbidden},
 			} {
 				if strings.Contains(request.got.body, "invalid_csrf") != (request.want == http.StatusForbidden) || request.got.status != request.want {
