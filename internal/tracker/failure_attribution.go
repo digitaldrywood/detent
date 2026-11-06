@@ -50,7 +50,7 @@ func (f NativeTerminalFailure) InfrastructureDecision() *FailureAttribution {
 	switch f.ErrorClass {
 	case "provider_refusal":
 		return &FailureAttribution{Outcome: "instance", Reason: "provider account refused turn"}
-	case "backend_startup", "workspace_hook":
+	case "tool_error", "backend_startup", "workspace_hook":
 		return &FailureAttribution{Outcome: "instance", Reason: "typed instance infrastructure failure"}
 	case "protocol":
 		if f.RPCCode == nil {

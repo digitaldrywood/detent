@@ -43,6 +43,7 @@ func TestFailureAttributionPublicRecord(t *testing.T) {
 		name, outcome string
 		failure       NativeTerminalFailure
 	}{
+		{"tool failure", "instance", NativeTerminalFailure{Provider: "codex", Operation: "item/tool/call", ErrorClass: "tool_error"}},
 		{"provider refusal", "instance", NativeTerminalFailure{Provider: "codex", ErrorClass: "provider_refusal", Error: "private-prompt", ProviderCode: "usage_limit_exceeded"}},
 		{"workspace_hook", "instance", NativeTerminalFailure{ErrorClass: "workspace_hook"}},
 		{"validation", "", NativeTerminalFailure{ErrorClass: "validation"}},
