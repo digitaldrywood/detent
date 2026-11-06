@@ -2,7 +2,7 @@ package hubserver
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -15,11 +15,11 @@ func (s *Service) readSummaryCostsTenant(ctx context.Context, scope nativeScope,
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		factsReader, ok := r.(reportstore.Reader)
 		if !ok {
-			return fmt.Errorf("daily summary report owner is unavailable")
+			return errors.New("daily summary report owner is unavailable")
 		}
 		usageReader, ok := r.(reportstore.SummaryUsageReader)
 		if !ok {
-			return fmt.Errorf("daily summary usage owner is unavailable")
+			return errors.New("daily summary usage owner is unavailable")
 		}
 		query := reportstore.OverviewQuery{Projects: []tracker.ProjectID{scope.project}, Principal: principal, From: window.From, Split: window.From, To: window.To, Limit: 5000}
 		facts, err := factsReader.ReadOverviewFacts(ctx, query)

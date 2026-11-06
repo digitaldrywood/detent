@@ -43,9 +43,6 @@ func (r *Repository) NotificationEvents(ctx context.Context, org tracker.Organiz
 		if len(result) == 0 && len(rows) < 256 {
 			after = project.Sequence
 		}
-		if after == project.NotificationSequence {
-			return nil
-		}
 		return mapError(ctx, s.queries.AdvanceNotificationProject(ctx, pgquery.AdvanceNotificationProjectParams{OrganizationID: org, ProjectID: project.ProjectID, NotificationSequence: after}))
 	})
 	return result, err

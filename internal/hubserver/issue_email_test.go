@@ -1,9 +1,10 @@
 package hubserver
 
 import (
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestRenderIssueEmail(t *testing.T) {

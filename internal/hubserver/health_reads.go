@@ -52,12 +52,13 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 	if limit < 1 || limit > 100 {
 		return page, nativePublicInvalid("limit must be between 1 and 100")
 	}
+	var sinceAt *time.Time
 	if since != "" {
 		at, err := time.Parse(time.RFC3339Nano, since)
 		if err != nil {
 			return page, nativePublicInvalid("since must be an RFC3339 timestamp")
 		}
-		since = formatHubTime(at)
+		sinceAt = &at
 	}
 	after := int64(0)
 	if cursor != "" {
@@ -72,11 +73,6 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 	}
 	if s.config.TenantRepository == nil {
 		return page, workItemStorageUnavailable()
-	}
-	var sinceAt *time.Time
-	if since != "" {
-		at, _ := time.Parse(time.RFC3339Nano, since)
-		sinceAt = &at
 	}
 	reporter := ""
 	if scope.credential.HostedRole == "reporter" {

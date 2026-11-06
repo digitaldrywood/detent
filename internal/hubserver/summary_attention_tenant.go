@@ -37,7 +37,7 @@ func (s *Service) readSummaryAttentionTenant(ctx context.Context, r summaryRecip
 	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(r.organization), corestore.Serving, func(reader tenantstore.Reader) error {
 		candidateReader, ok := reader.(reportstore.SummaryAttentionReader)
 		if !ok {
-			return fmt.Errorf("daily summary attention owner is unavailable")
+			return errors.New("daily summary attention owner is unavailable")
 		}
 		candidates, err := candidateReader.ReadSummaryAttention(ctx, query)
 		if err != nil {
@@ -51,7 +51,7 @@ func (s *Service) readSummaryAttentionTenant(ctx context.Context, r summaryRecip
 		if cost {
 			usageReader, ok := reader.(reportstore.SummaryUsageReader)
 			if !ok {
-				return fmt.Errorf("daily summary usage owner is unavailable")
+				return errors.New("daily summary usage owner is unavailable")
 			}
 			usage, err := usageReader.ReadSummaryUsage(ctx, query.Project, principal, r.end, r.end, ids)
 			if err != nil {
@@ -68,7 +68,7 @@ func (s *Service) readSummaryAttentionTenant(ctx context.Context, r summaryRecip
 			WorkItemsByNativeIDs(context.Context, tracker.ProjectID, []tracker.NativeWorkItemID) ([]corestore.WorkItem, error)
 		})
 		if !ok {
-			return fmt.Errorf("daily summary work item owner is unavailable")
+			return errors.New("daily summary work item owner is unavailable")
 		}
 		items := map[tracker.NativeWorkItemID]corestore.WorkItem{}
 		for offset := 0; offset < len(ids); offset += corestore.MaxPageSize {
@@ -90,7 +90,7 @@ func (s *Service) readSummaryAttentionTenant(ctx context.Context, r summaryRecip
 			}
 			record := summaryAttentionRecord{item: item, at: candidate.At, attempts: int(candidate.Attempts), reworks: int(candidate.Reworks), spent: spend[item.NativeID]}
 			state := stringValue(item.WorkflowStateName)
-			if state != "Blocked" && state != "Human Review" && state != "In Progress" && !(state == "Done" && stringValue(item.ActorPrincipalID) == r.principal) && record.reworks < 2 {
+			if state != "Blocked" && state != "Human Review" && state != "In Progress" && (state != "Done" || stringValue(item.ActorPrincipalID) != r.principal) && record.reworks < 2 {
 				continue
 			}
 			if state == "Done" {

@@ -61,7 +61,7 @@ func (s *Service) buildDailySummary(ctx context.Context, recipient summaryRecipi
 		out.Organization, slug = organization.Name, organization.Slug
 		owner, ok := r.(accountstore.SummaryProjectReader)
 		if !ok {
-			return fmt.Errorf("daily summary project owner is unavailable")
+			return errors.New("daily summary project owner is unavailable")
 		}
 		granted, err := owner.SummaryProjects(ctx, recipient.user, 101)
 		if err != nil {

@@ -3,9 +3,9 @@ package postgres
 import (
 	"context"
 	"errors"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *session) SummaryProjects(ctx context.Context, user string, limit int) ([]accountstore.SummaryProject, error) {
@@ -18,7 +18,7 @@ func (s *session) SummaryProjects(ctx context.Context, user string, limit int) (
 	}
 	result := make([]accountstore.SummaryProject, len(rows))
 	for i, row := range rows {
-		result[i] = accountstore.SummaryProject{ID: tracker.ProjectID(row.ID), Name: row.Name, Slug: row.Slug}
+		result[i] = accountstore.SummaryProject{ID: row.ID, Name: row.Name, Slug: row.Slug}
 	}
 	return result, nil
 }

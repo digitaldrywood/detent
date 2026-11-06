@@ -228,3 +228,40 @@ func TestNotificationDeliveryPreservesTenantAndRecipientScope(t *testing.T) {
 		}
 	}
 }
+
+func TestReviewNotificationCrossProjectStarvation(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	delivery := any(repository).(accountstore.NotificationRepository)
+	content := eventstore.NewContent(newHistoryObjects())
+	org := tracker.OrganizationID("org_first")
+	seedNotificationMembers(t, repository, org)
+	appendEvent := func(id string, project tracker.ProjectID, item tracker.NativeWorkItemID, offset int) {
+		value := tracker.CollaborationEvent{ID: id, OrganizationID: org, ProjectID: project, AggregateType: "issue", AggregateID: item, Type: "workflow.transitioned", SchemaVersion: 1, Actor: tracker.Actor{Kind: "machine", PrincipalID: "worker"}, RecordedAt: historyAt().Add(time.Duration(offset) * time.Second), Data: tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}}
+		row, err := content.PrepareEvent(t.Context(), org, historyJSON(t, value))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error { _, err := w.AppendEvent(t.Context(), row); return err }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendEvent("event_second", "prj_second", "wi_second_1", 0)
+	for tick := range 20 {
+		appendEvent(fmt.Sprintf("event_first_%d", tick), "prj_first", "wi_first_1", tick+1)
+		events, err := delivery.NotificationEvents(t.Context(), org)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range events {
+			if event.ProjectID == "prj_second" {
+				t.Logf("prj_second discovered at tick %d", tick)
+				return
+			}
+			if _, _, err := delivery.QueueNotification(t.Context(), org, event, accountstore.IssueNotice{}, "", false, 256); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Fatal("prj_second event never discovered across 20 ticks while prj_first stays active")
+}

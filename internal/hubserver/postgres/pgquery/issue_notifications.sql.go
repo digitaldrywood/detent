@@ -36,7 +36,7 @@ func (q *Queries) AdvanceNotificationCursor(ctx context.Context, arg AdvanceNoti
 }
 
 const advanceNotificationProject = `-- name: AdvanceNotificationProject :exec
-UPDATE project_event_cursors SET notification_sequence=$3 WHERE organization_id=$1 AND project_id=$2
+UPDATE project_event_cursors SET notification_sequence=$3,notification_checked_at=clock_timestamp() WHERE organization_id=$1 AND project_id=$2
 `
 
 type AdvanceNotificationProjectParams struct {
@@ -170,18 +170,19 @@ func (q *Queries) LockNotificationCursor(ctx context.Context, arg LockNotificati
 }
 
 const lockNotificationProject = `-- name: LockNotificationProject :many
-SELECT c.organization_id, c.project_id, c.sequence, c.notification_sequence, (SELECT p.profile='native' FROM projects p WHERE p.organization_id=c.organization_id AND p.id=c.project_id)::boolean AS native
+SELECT c.organization_id, c.project_id, c.sequence, c.notification_sequence, c.notification_checked_at, (SELECT p.profile='native' FROM projects p WHERE p.organization_id=c.organization_id AND p.id=c.project_id)::boolean AS native
 FROM project_event_cursors c
 WHERE c.organization_id=$1 AND c.notification_sequence<c.sequence
-ORDER BY c.project_id LIMIT 1 FOR UPDATE OF c
+ORDER BY c.notification_checked_at,c.project_id LIMIT 1 FOR UPDATE OF c
 `
 
 type LockNotificationProjectRow struct {
-	OrganizationID       tracker.OrganizationID
-	ProjectID            tracker.ProjectID
-	Sequence             int64
-	NotificationSequence int64
-	Native               bool
+	OrganizationID        tracker.OrganizationID
+	ProjectID             tracker.ProjectID
+	Sequence              int64
+	NotificationSequence  int64
+	NotificationCheckedAt time.Time
+	Native                bool
 }
 
 func (q *Queries) LockNotificationProject(ctx context.Context, organizationID tracker.OrganizationID) ([]LockNotificationProjectRow, error) {
@@ -198,6 +199,7 @@ func (q *Queries) LockNotificationProject(ctx context.Context, organizationID tr
 			&i.ProjectID,
 			&i.Sequence,
 			&i.NotificationSequence,
+			&i.NotificationCheckedAt,
 			&i.Native,
 		); err != nil {
 			return nil, err

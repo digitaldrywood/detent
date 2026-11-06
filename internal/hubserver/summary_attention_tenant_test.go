@@ -2,10 +2,11 @@ package hubserver
 
 import (
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 )
 
 func TestSummaryAttentionKeepsHumanActionsAndWatchLimitsIndependent(t *testing.T) {

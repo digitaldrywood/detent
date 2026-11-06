@@ -2,7 +2,7 @@ package hubserver
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"slices"
 
 	"github.com/digitaldrywood/detent/internal/emailtemplate"
@@ -17,7 +17,7 @@ func (s *Service) readSummaryHealthTenant(ctx context.Context, recipient summary
 	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(recipient.organization), corestore.Serving, func(r tenantstore.Reader) error {
 		reader, ok := r.(healthstore.Reader)
 		if !ok {
-			return fmt.Errorf("daily summary health owner is unavailable")
+			return errors.New("daily summary health owner is unavailable")
 		}
 		allProjects, err := r.Projects(ctx, "", 101)
 		if err != nil {

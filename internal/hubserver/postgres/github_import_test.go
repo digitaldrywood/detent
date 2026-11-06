@@ -48,7 +48,7 @@ func TestGitHubImportJobsKeepProjectAndTenantScope(t *testing.T) {
 				if _, err := owner.UpdateGitHubImport(t.Context(), stale); !errors.Is(err, corestore.ErrRevisionConflict) {
 					t.Fatalf("stale update=%v", err)
 				}
-				if err == nil && job.Revision != 2 {
+				if job.Revision != 2 {
 					t.Fatalf("updated revision=%d", job.Revision)
 				}
 				return err

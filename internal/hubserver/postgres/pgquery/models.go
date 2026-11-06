@@ -2266,10 +2266,11 @@ type ProjectAction struct {
 }
 
 type ProjectEventCursor struct {
-	OrganizationID       tracker.OrganizationID
-	ProjectID            tracker.ProjectID
-	Sequence             int64
-	NotificationSequence int64
+	OrganizationID        tracker.OrganizationID
+	ProjectID             tracker.ProjectID
+	Sequence              int64
+	NotificationSequence  int64
+	NotificationCheckedAt time.Time
 }
 
 type ProjectOnboarding struct {
