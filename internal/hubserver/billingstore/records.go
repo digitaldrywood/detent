@@ -303,7 +303,7 @@ type Reader interface {
 	BillingGrants(context.Context, string, int) ([]Grant, error)
 	BillingGrant(context.Context, string) (Grant, error)
 	BillingEffectiveGrants(context.Context, time.Time) ([]Grant, error)
-	BillingFeatureEnabled(context.Context, string, time.Time, []string, []string) (bool, error)
+	BillingFeatureEnabled(context.Context, string, time.Time, []string) (bool, error)
 	BillingAccount(context.Context) (Account, error)
 	BillingPrice(context.Context, string) (Price, error)
 	CreditPack(context.Context, string, string) (CreditPack, error)

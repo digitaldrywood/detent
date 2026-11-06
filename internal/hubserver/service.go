@@ -167,9 +167,6 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		}
 	}
 	ctx = database.policyContext(ctx)
-	if database.postgres == nil {
-		database.configureRuntimePublication(cfg)
-	}
 	var secretKeysErr error
 	if cfg.AccessRepository != nil {
 		if cfg.Hosted == nil {

@@ -197,6 +197,12 @@ func TestBillingFeatureGateUsesCurrentAssignmentsAndGrantScope(t *testing.T) {
 				return err
 			}
 		}
+		for _, id := range []string{"grant", "starter"} {
+			if err := w.StageRuntime(t.Context(), billingstore.RuntimeRevision{ID: id, Published: true}); err != nil {
+				return err
+			}
+		}
+
 		if err := w.SetBillingAssignment(t.Context(), assignment, 0); err != nil {
 			return err
 		}
@@ -213,12 +219,13 @@ func TestBillingFeatureGateUsesCurrentAssignmentsAndGrantScope(t *testing.T) {
 		feature string
 		want    bool
 	}{
+		{feature: "collaboration", want: false},
 		{feature: "github_integration", want: true},
 		{feature: "hosted_artifacts", want: false},
 		{feature: "native_execution", want: true},
 	} {
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-			got, err := r.BillingFeatureEnabled(t.Context(), test.feature, now, []string{"", "grant", "starter"}, []string{"starter:1"})
+			got, err := r.BillingFeatureEnabled(t.Context(), test.feature, now, []string{"starter:1"})
 			if err != nil {
 				return err
 			}
@@ -230,8 +237,14 @@ func TestBillingFeatureGateUsesCurrentAssignmentsAndGrantScope(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.StageRuntime(t.Context(), billingstore.RuntimeRevision{ID: "base", Published: true})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-		enabled, err := r.BillingFeatureEnabled(t.Context(), "collaboration", now, []string{"", "base", "subscription", "grant", "starter"}, []string{"starter:1"})
+		enabled, err := r.BillingFeatureEnabled(t.Context(), "collaboration", now, []string{"starter:1"})
 		if err != nil {
 			return err
 		}
@@ -252,7 +265,7 @@ func TestBillingFeatureGateUsesCurrentAssignmentsAndGrantScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-		enabled, err := r.BillingFeatureEnabled(t.Context(), "collaboration", now, []string{"", "base", "subscription", "grant", "starter"}, []string{"starter:1"})
+		enabled, err := r.BillingFeatureEnabled(t.Context(), "collaboration", now, []string{"starter:1"})
 		if err != nil {
 			return err
 		}

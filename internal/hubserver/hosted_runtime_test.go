@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"maps"
 	"net/http"
-	"os"
-	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -73,7 +71,8 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f, _ := newHostedBillingFixture(t)
+			service, admin := newRuntimePostgresService(t, pilotHostedPlans(), true)
+			f := &browserHostedFixture{service: service}
 			before := f.service.database.hostedRuntime.Load()
 			plans := *f.service.config.Hosted.Plans
 			plan := plans.Plans[1]
@@ -92,7 +91,6 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 			update := HostedRuntimeUpdate{Plans: &plans, Prices: prices, Reason: "SIGHUP regression", ValidateOnly: test.validate}
 			if test.prepare {
 				f.service.config.Hosted.SharedEntry = &HostedSharedEntry{}
-				f.service.database.configureRuntimePublication(f.service.config)
 				update.StageID = "00000000-0000-4000-8000-000000000001"
 			}
 			path := "/api/v2/organizations/org_browser_preview/entitlements/runtime"
@@ -116,9 +114,11 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 				t.Fatalf("invalid reload accepted: %d", response.Code)
 			}
 			var stored, audits int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM hosted_plans WHERE id=? AND version=?), (SELECT count(*) FROM hosted_plan_audit WHERE action='reload')", plan.ID, plan.Version).Scan(&stored, &audits); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_plans WHERE organization_id=$1 AND id=$2 AND version=$3", f.service.config.Hosted.OrganizationID, plan.ID, plan.Version).Scan(&stored); err != nil {
 				t.Fatal(err)
 			}
+			audits = runtimeAuditCount(t, f.service, "reload", "")
+
 			if !applied {
 				if f.service.database.hostedRuntime.Load() != before || stored != 0 || audits != 0 || len(f.service.hostedBillingConfig().Prices) != 1 {
 					t.Fatal("failed or validation-only reload changed persisted or runtime state")
@@ -132,20 +132,18 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 				if _, err := f.service.database.readHostedPlan(t.Context(), f.service.database.db, plan.PlanReference); err == nil {
 					t.Fatal("preparation exposed a plan version")
 				}
-				publication := HostedRuntimePublication{Published: []string{update.StageID}, Update: update, Tenants: map[string]HostedRuntimeUpdate{"org_browser_preview": update}}
-				raw, err := json.Marshal(publication)
-				if err != nil {
+				if _, err := admin.ExecContext(t.Context(), "INSERT INTO hosted_runtime_publications(id) VALUES($1)", update.StageID); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(filepath.Dir(f.service.database.path), HostedRuntimeFilename), raw, 0o600); err != nil {
+				if err := f.service.database.refreshRuntime(t.Context()); err != nil {
 					t.Fatal(err)
 				}
+
 				if _, err := f.service.database.readHostedPlan(t.Context(), f.service.database.db, plan.PlanReference); err != nil {
 					t.Fatal(err)
 				}
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_plan_audit WHERE action='prepare_reload' AND actor_id='test-operator' AND reason=?", update.Reason).Scan(&audits); err != nil {
-					t.Fatal(err)
-				}
+				audits = runtimeAuditCount(t, f.service, "prepare_reload", update.Reason)
+
 			}
 			if stored != 1 || audits != 1 || f.service.database.plans().WindowSeconds != 120 || !slices.ContainsFunc(f.service.hostedBillingConfig().Prices, func(price HostedBillingPrice) bool { return price.PriceID == "price_runtime" }) {
 				t.Fatal("valid reload did not publish plan and prices")
@@ -171,9 +169,10 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 			if err != nil || entitlement.Base != plan.PlanReference || entitlement.Allowances["collaboration_bytes"] != 1<<34 {
 				t.Fatalf("rollback changed an independently assigned immutable version: %+v %v", entitlement, err)
 			}
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_plan_audit WHERE action='reload' AND actor_id='test-operator' AND reason=?", previous.Reason).Scan(&audits); err != nil || audits != 1 {
-				t.Fatalf("rollback audit=%d %v", audits, err)
+			if audits = runtimeAuditCount(t, f.service, "reload", previous.Reason); audits != 1 {
+				t.Fatalf("rollback audit=%d", audits)
 			}
+
 		})
 	}
 }
@@ -197,18 +196,13 @@ func TestHostedRuntimeReloadCatalogTransitions(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				f := newHostedSecurityFixture(t)
-				cfg := f.service.config
-				hosted := *cfg.Hosted
-				hosted.Plans = &cloud
-				cfg.Hosted = &hosted
-				cfg.DatabasePath = filepath.Join(t.TempDir(), "runtime.db")
-				s := openTestService(t, cfg)
+				s, admin := newRuntimePostgresService(t, cloud, false)
+				hosted := s.config.Hosted
+
 				before := s.database.plans()
 				update := HostedRuntimeUpdate{Plans: test.plans, Reason: "catalog transition"}
 				if prepare {
 					s.config.Hosted.SharedEntry = &HostedSharedEntry{}
-					s.database.configureRuntimePublication(s.config)
 					update.StageID = "00000000-0000-4000-8000-000000000002"
 				}
 				err := s.applyHostedRuntime(t.Context(), &update)
@@ -225,39 +219,32 @@ func TestHostedRuntimeReloadCatalogTransitions(t *testing.T) {
 					if s.database.plans() != before {
 						t.Fatal("preparation changed active plans")
 					}
-					publication := HostedRuntimePublication{Published: []string{update.StageID}, Tenants: map[string]HostedRuntimeUpdate{hosted.OrganizationID: update}}
-					raw, err := json.Marshal(publication)
-					if err != nil {
+					if _, err := admin.ExecContext(t.Context(), "INSERT INTO hosted_runtime_publications(id) VALUES($1)", update.StageID); err != nil {
 						t.Fatal(err)
 					}
-					if err := os.WriteFile(s.database.runtimeFile, raw, 0o600); err != nil {
+					if err := s.database.refreshRuntime(t.Context()); err != nil {
 						t.Fatal(err)
 					}
+
 				}
 				if s.database.plans() != nil {
 					t.Fatal("catalog removal retained plan restrictions")
 				}
-				tx, err := s.database.db.BeginTx(t.Context(), nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer tx.Rollback()
-				if err := s.database.checkHostedClaim(t.Context(), tx, time.Now()); err != nil {
+
+				if err := s.database.checkHostedClaim(t.Context(), nil, time.Now()); err != nil {
 					t.Fatalf("disabled catalog restricted execution: %v", err)
 				}
-				if err := s.database.checkHostedGrowth(t.Context(), tx, nil, time.Now(), false); err != nil {
+				if err := s.database.checkHostedGrowth(t.Context(), nil, nil, time.Now(), false); err != nil {
 					t.Fatalf("disabled catalog restricted growth: %v", err)
 				}
-				if err := s.database.requireHostedFeature(t.Context(), tx, "hosted_artifacts", time.Now()); err != nil {
+				if err := s.database.requireHostedFeature(t.Context(), nil, "hosted_artifacts", time.Now()); err != nil {
 					t.Fatalf("disabled catalog restricted features: %v", err)
 				}
 				var base string
-				if err := tx.QueryRowContext(t.Context(), "SELECT base_id FROM hosted_plan_assignments WHERE organization_id=?", hosted.OrganizationID).Scan(&base); err != nil || base != "free" {
-					t.Fatalf("catalog removal changed stored assignment: %q %v", base, err)
+				if err := admin.QueryRowContext(t.Context(), "SELECT base_id FROM hosted_plan_assignments WHERE organization_id=$1", hosted.OrganizationID).Scan(&base); err != nil || base != "free" {
+					t.Fatalf("catalog removal changed assignment=%q %v", base, err)
 				}
-				if err := tx.Rollback(); err != nil {
-					t.Fatal(err)
-				}
+
 				restore := HostedRuntimeUpdate{Plans: &cloud, Reason: "restore catalog"}
 				if err := s.applyHostedRuntime(t.Context(), &restore); err != nil {
 					t.Fatal(err)

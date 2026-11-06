@@ -95,7 +95,7 @@ SELECT EXISTS(
     FROM hosted_plan_assignments a
     JOIN hosted_plans p ON p.organization_id=a.organization_id AND p.id=CASE WHEN a.subscription_id IS NOT NULL AND a.subscription_expires_at>$3 THEN a.subscription_id ELSE a.base_id END AND p.version=CASE WHEN a.subscription_id IS NOT NULL AND a.subscription_expires_at>$3 THEN a.subscription_version ELSE a.base_version END
     JOIN hosted_plan_features f ON f.organization_id=p.organization_id AND f.plan_id=p.id AND f.plan_version=p.version
-    WHERE a.organization_id=$1 AND f.feature=$2 AND p.runtime_id=ANY($4::text[])
+    WHERE a.organization_id=$1 AND f.feature=$2 AND (p.runtime_id='' OR EXISTS(SELECT 1 FROM hosted_runtime_revisions r WHERE r.organization_id=p.organization_id AND r.id=p.runtime_id AND (r.local_published OR EXISTS(SELECT 1 FROM hosted_runtime_publications pub WHERE pub.id=r.id))))
     UNION ALL
     SELECT 1
     FROM hosted_complimentary_grants g
@@ -103,8 +103,8 @@ SELECT EXISTS(
     JOIN hosted_complimentary_grant_scopes s ON s.organization_id=g.organization_id AND s.grant_id=g.id
     LEFT JOIN hosted_plan_features f ON f.organization_id=p.organization_id AND f.plan_id=p.id AND f.plan_version=p.version AND f.feature=s.scope
     WHERE g.organization_id=$1 AND g.revoked_at IS NULL AND g.starts_at<=$3 AND (g.expires_at IS NULL OR g.expires_at>$3)
-      AND p.runtime_id=ANY($4::text[])
-      AND ((s.scope=$2 AND (f.feature IS NOT NULL OR s.scope='model_choice')) OR ($2='native_execution' AND p.id||':'||p.version::text=ANY($5::text[])))
+      AND (p.runtime_id='' OR EXISTS(SELECT 1 FROM hosted_runtime_revisions r WHERE r.organization_id=p.organization_id AND r.id=p.runtime_id AND (r.local_published OR EXISTS(SELECT 1 FROM hosted_runtime_publications pub WHERE pub.id=r.id))))
+      AND ((s.scope=$2 AND (f.feature IS NOT NULL OR s.scope='model_choice')) OR ($2='native_execution' AND p.id||':'||p.version::text=ANY($4::text[])))
 )
 `
 
@@ -112,7 +112,6 @@ type BillingFeatureEnabledParams struct {
 	OrganizationID        tracker.OrganizationID
 	Feature               string
 	SubscriptionExpiresAt *time.Time
-	RuntimeIds            []string
 	CapacityPlanRefs      []string
 }
 
@@ -121,7 +120,6 @@ func (q *Queries) BillingFeatureEnabled(ctx context.Context, arg BillingFeatureE
 		arg.OrganizationID,
 		arg.Feature,
 		arg.SubscriptionExpiresAt,
-		pq.Array(arg.RuntimeIds),
 		pq.Array(arg.CapacityPlanRefs),
 	)
 	var exists bool

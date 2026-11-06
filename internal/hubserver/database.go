@@ -69,7 +69,6 @@ type database struct {
 	hostedOrganization     tracker.OrganizationID
 	hostedRuntime          atomic.Pointer[hostedRuntimeConfig]
 	runtimeReadMu          sync.Mutex
-	runtimeFile            string
 	runtimeBilling         *HostedBillingConfig
 	logger                 *slog.Logger
 	hostedBilling          bool

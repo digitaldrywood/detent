@@ -12,7 +12,7 @@ import (
 )
 
 func TestPostgresRuntimeValidationDoesNotPublish(t *testing.T) {
-	repo := projectRecordPostgres(t)
+	repo, admin := projectRecordPostgresWithAdmin(t, 4)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repo.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: time.Now()})
@@ -39,8 +39,23 @@ func TestPostgresRuntimeValidationDoesNotPublish(t *testing.T) {
 			t.Fatal(err)
 		}
 		update.ValidateOnly = false
+		if org == "org_second" {
+			s.config.Hosted.SharedEntry = &HostedSharedEntry{}
+			update.StageID = "00000000-0000-4000-8000-000000000003"
+		}
 		if err := s.applyHostedRuntime(t.Context(), &update); err != nil {
 			t.Fatal(err)
+		}
+		if update.StageID != "" {
+			if d.plans() != nil {
+				t.Fatal("first preparation was visible before publication")
+			}
+			if _, err := admin.ExecContext(t.Context(), "INSERT INTO hosted_runtime_publications(id) VALUES($1)", update.StageID); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.refreshRuntime(t.Context()); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if d.plans() == nil {
 			t.Fatal("runtime not published")

@@ -15,6 +15,13 @@ import (
 func (d *database) readHostedPlanRecord(ctx context.Context, r billingstore.Reader, ref PlanReference) (HostedPlan, error) {
 	return d.loadHostedPlan(ctx, ref, func(ctx context.Context, ref PlanReference) (HostedPlan, string, error) {
 		row, err := r.BillingPlan(ctx, billingstore.PlanReference{ID: ref.ID, Version: ref.Version})
+		if err == nil {
+			var visible bool
+			visible, err = r.RuntimePublished(ctx, row.RuntimeID)
+			if err == nil && !visible {
+				err = corestore.ErrNotFound
+			}
+		}
 		if errors.Is(err, corestore.ErrNotFound) {
 			err = sql.ErrNoRows
 		}

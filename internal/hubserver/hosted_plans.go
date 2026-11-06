@@ -17,8 +17,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/google/uuid"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -301,6 +299,12 @@ func (d *database) configureHostedPlans(ctx context.Context, cfg *HostedConfig) 
 	if cfg == nil {
 		return nil
 	}
+	if err := d.refreshRuntime(ctx); err != nil {
+		return err
+	}
+	if state := d.hostedRuntime.Load(); state != nil && state.Revision != "" {
+		return nil
+	}
 	config := defaultHostedPlans(cfg)
 	if !cfg.Plans.IsZero() {
 		config = *cfg.Plans
@@ -331,7 +335,15 @@ func (d *database) configureHostedPlans(ctx context.Context, cfg *HostedConfig) 
 		digest := sha256.Sum256(raw)
 		audits[ref] = billingstore.PlanAudit{OrganizationID: d.hostedOrganization, CommandID: command.ID, RequestHash: hex.EncodeToString(digest[:]), ActorID: "configuration", Action: command.Action, RecordedAt: d.now().UTC(), Reference: billingstore.AuditReferenceFromArchive(archive)}
 	}
-	err := d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+	var prices []HostedBillingPrice
+	if cfg.Billing != nil {
+		prices = cfg.Billing.Prices
+	}
+	revision, err := d.archiveRuntime(ctx, config, prices, "", true)
+	if err != nil {
+		return err
+	}
+	err = d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
 		for _, configured := range config.Plans {
 			configured = normalizeHostedPlan(configured)
 			record := billingstore.Plan{OrganizationID: d.hostedOrganization, PlanReference: billingstore.PlanReference{ID: configured.ID, Version: configured.Version}, Name: configured.Name, MonthlyUSDCents: configured.MonthlyUSDCents, RuntimeID: "", Allowances: configured.Allowances, Features: configured.Features}
@@ -350,12 +362,10 @@ func (d *database) configureHostedPlans(ctx context.Context, cfg *HostedConfig) 
 				if !reflect.DeepEqual(normalizeHostedPlan(storedPlan), configured) {
 					d.logger.WarnContext(ctx, "hosted plan seed differs from immutable stored version; keeping stored version", "plan", configured.ID, "version", configured.Version, "actor", "configuration", "reason", "startup seed")
 				}
-				if !d.runtimeVisible(stored.RuntimeID) {
-					if err := writer.SetBillingPlanRuntime(ctx, record.PlanReference, ""); err != nil {
-						return err
-					}
-				}
 			}
+		}
+		if err := writer.StageRuntime(ctx, revision); err != nil {
+			return err
 		}
 		assignment := billingstore.Assignment{OrganizationID: d.hostedOrganization, Base: billingstore.PlanReference{ID: config.Base.ID, Version: config.Base.Version}}
 		if _, err := writer.BillingAssignment(ctx); errors.Is(err, corestore.ErrNotFound) {
@@ -367,8 +377,7 @@ func (d *database) configureHostedPlans(ctx context.Context, cfg *HostedConfig) 
 	if err != nil {
 		return err
 	}
-	d.hostedRuntime.Store(&hostedRuntimeConfig{Plans: config})
-	return nil
+	return d.refreshRuntime(ctx)
 }
 
 func normalizeHostedPlan(plan HostedPlan) HostedPlan {
@@ -396,40 +405,6 @@ func validateHostedPlan(plan HostedPlan) error {
 	return config.validate()
 }
 
-func (d *database) seedHostedPlans(ctx context.Context, tx *sql.Tx, config HostedPlansConfig, actor, reason, runtimeID string) error {
-	for _, plan := range config.Plans {
-		plan = normalizeHostedPlan(plan)
-		encoded, err := json.Marshal(plan)
-		if err != nil {
-			return err
-		}
-		var existing, staged string
-		err = tx.QueryRowContext(ctx, "SELECT record_json,runtime_id FROM hosted_plans WHERE id = ? AND version = ?", plan.ID, plan.Version).Scan(&existing, &staged)
-		if err == nil {
-			if existing != string(encoded) {
-				d.logger.WarnContext(ctx, "hosted plan seed differs from immutable stored version; keeping stored version", "plan", plan.ID, "version", plan.Version, "actor", actor, "reason", reason)
-			}
-			if !d.runtimeVisible(staged) {
-				if _, err := tx.ExecContext(ctx, "UPDATE hosted_plans SET runtime_id=? WHERE id=? AND version=?", runtimeID, plan.ID, plan.Version); err != nil {
-					return err
-				}
-			}
-			continue
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_plans(id,version,record_json,runtime_id,collaboration_bytes) VALUES(?,?,?,?,?)", plan.ID, plan.Version, string(encoded), runtimeID, plan.Allowances["collaboration_bytes"]); err != nil {
-			return err
-		}
-		command := hostedPlanCommand{ID: "seed_" + uuid.NewString(), Action: "create_plan", Plan: plan.PlanReference, Definition: &plan, Reason: reason}
-		if err := d.auditHostedPlanCommand(ctx, tx, actor, command, d.now()); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (d *database) readHostedPlans(ctx context.Context, query nativeQueryer) ([]HostedPlan, error) {
 
 	var plans []HostedPlan
@@ -442,6 +417,9 @@ func (d *database) readHostedPlans(ctx context.Context, query nativeQueryer) ([]
 			}
 			for _, record := range records {
 				plan, err := d.readHostedPlanRecord(ctx, reader, PlanReference{ID: record.ID, Version: record.Version})
+				if errors.Is(err, sql.ErrNoRows) {
+					continue
+				}
 				if err != nil {
 					return err
 				}
@@ -469,12 +447,9 @@ func (d *database) readHostedPlan(ctx context.Context, query nativeQueryer, ref 
 }
 
 func (d *database) loadHostedPlan(ctx context.Context, ref PlanReference, read func(context.Context, PlanReference) (HostedPlan, string, error)) (HostedPlan, error) {
-	plan, runtimeID, err := read(ctx, ref)
+	plan, _, err := read(ctx, ref)
 	if err != nil {
 		return plan, err
-	}
-	if !d.runtimeVisible(runtimeID) {
-		return plan, sql.ErrNoRows
 	}
 	if plan.Allowances == nil {
 		plan.Allowances = make(map[string]int64)
@@ -486,11 +461,11 @@ func (d *database) loadHostedPlan(ctx context.Context, ref PlanReference, read f
 		return tier.apply(plan), nil
 	}
 	if ref.Version == 1 && slices.Contains([]string{"pilot_free", "comp_team"}, ref.ID) {
-		_, capacityRuntime, err := read(ctx, PlanReference{ID: "starter", Version: 1})
+		_, _, err := read(ctx, PlanReference{ID: "starter", Version: 1})
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return plan, err
 		}
-		if err == nil && d.runtimeVisible(capacityRuntime) {
+		if err == nil {
 			plan.Allowances["unarchived_issues"] = max(plan.Allowances["unarchived_issues"], hostedOpenIssueGuard)
 			plan.Allowances["history_records"] = max(plan.Allowances["history_records"], 2000000)
 			for _, resource := range []string{"members", "projects", "repositories", "registered_runners", "connected_runners", "concurrent_work"} {
@@ -589,17 +564,13 @@ func (d *database) requireHostedFeatureRecord(ctx context.Context, reader billin
 	if d.plans() == nil {
 		return nil
 	}
-	runtimeIDs := []string{""}
-	if state := d.runtimeState(); state != nil {
-		runtimeIDs = append(runtimeIDs, state.Published...)
-	}
 	capacityPlanRefs := make([]string, 0, len(hostedTiers()))
 	for _, tier := range hostedTiers() {
 		if hostedCapacityPlan(tier.PlanReference) {
 			capacityPlanRefs = append(capacityPlanRefs, fmt.Sprintf("%s:%d", tier.ID, tier.Version))
 		}
 	}
-	enabled, err := reader.BillingFeatureEnabled(ctx, feature, now, runtimeIDs, capacityPlanRefs)
+	enabled, err := reader.BillingFeatureEnabled(ctx, feature, now, capacityPlanRefs)
 	if err != nil {
 		return err
 	}

@@ -42,8 +42,12 @@ func (d *database) applyRuntimeRecords(ctx context.Context, plans HostedPlansCon
 		digest := sha256.Sum256(raw)
 		audits[i] = billingstore.PlanAudit{OrganizationID: d.hostedOrganization, CommandID: command.ID, RequestHash: hex.EncodeToString(digest[:]), ActorID: actor, Action: command.Action, RecordedAt: d.now().UTC(), Reference: billingstore.AuditReferenceFromArchive(ref)}
 	}
+	revision, err := d.archiveRuntime(ctx, plans, prices, stage, stage == "")
+	if err != nil {
+		return err
+	}
 	rollback := errors.New("runtime validation rollback")
-	err := d.writeBillingTenant(ctx, func(w tenantstore.Writer) error {
+	err = d.writeBillingTenant(ctx, func(w tenantstore.Writer) error {
 		for i, command := range commands[:len(commands)-1] {
 			plan := *command.Definition
 			ref := billingstore.PlanReference{ID: plan.ID, Version: plan.Version}
@@ -62,7 +66,11 @@ func (d *database) applyRuntimeRecords(ctx context.Context, plans HostedPlansCon
 				if !reflect.DeepEqual(existing, plan) {
 					d.logger.WarnContext(ctx, "hosted plan seed differs from immutable stored version; keeping stored version", "plan", plan.ID, "version", plan.Version, "actor", actor, "reason", reason)
 				}
-				if !d.runtimeVisible(stored.RuntimeID) {
+				visible, err := w.RuntimePublished(ctx, stored.RuntimeID)
+				if err != nil {
+					return err
+				}
+				if !visible {
 					if err := w.SetBillingPlanRuntime(ctx, ref, stage); err != nil {
 						return err
 					}
@@ -86,8 +94,10 @@ func (d *database) applyRuntimeRecords(ctx context.Context, plans HostedPlansCon
 		if validate {
 			return rollback
 		}
-		_, err := w.CreateBillingPlanAudit(ctx, audits[len(audits)-1])
-		return err
+		if _, err := w.CreateBillingPlanAudit(ctx, audits[len(audits)-1]); err != nil {
+			return err
+		}
+		return w.StageRuntime(ctx, revision)
 	})
 	if errors.Is(err, rollback) {
 		return nil

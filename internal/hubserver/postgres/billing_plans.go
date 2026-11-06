@@ -165,9 +165,9 @@ func (s *session) BillingEffectiveGrants(ctx context.Context, now time.Time) ([]
 	return result, nil
 }
 
-func (s *session) BillingFeatureEnabled(ctx context.Context, feature string, now time.Time, runtimeIDs, capacityPlanRefs []string) (bool, error) {
+func (s *session) BillingFeatureEnabled(ctx context.Context, feature string, now time.Time, capacityPlanRefs []string) (bool, error) {
 	asOf := now.UTC()
-	enabled, err := s.queries.BillingFeatureEnabled(ctx, pgquery.BillingFeatureEnabledParams{OrganizationID: s.organization, Feature: feature, SubscriptionExpiresAt: &asOf, RuntimeIds: runtimeIDs, CapacityPlanRefs: capacityPlanRefs})
+	enabled, err := s.queries.BillingFeatureEnabled(ctx, pgquery.BillingFeatureEnabledParams{OrganizationID: s.organization, Feature: feature, SubscriptionExpiresAt: &asOf, CapacityPlanRefs: capacityPlanRefs})
 	return enabled, mapError(ctx, err)
 }
 

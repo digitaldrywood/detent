@@ -66,6 +66,9 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	s := w.service
+	if err := s.database.refreshRuntime(ctx); err != nil {
+		return err
+	}
 	var through int64
 	var unprocessedEventIDs []string
 	type pendingEvent struct{ id, kind string }
