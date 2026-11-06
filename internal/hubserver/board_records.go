@@ -104,6 +104,9 @@ func boardRecordCursor(row viewstore.BoardRecord, closed bool, sequence int64) *
 }
 
 func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
+	if err := validateNativeIssueQuery(params); err != nil {
+		return tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}}, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if repository, ok := s.config.TenantRepository.(tenantstore.RequestReader); ok {
@@ -125,9 +128,6 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 	ctx = s.withRequestDetails(ctx)
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
 		return page, workItemStorageUnavailable()
-	}
-	if err := validateNativeIssueQuery(params); err != nil {
-		return page, err
 	}
 	if _, err := nativeIssuePickerRequested(params); err != nil {
 		return page, err
