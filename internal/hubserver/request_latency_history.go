@@ -1,14 +1,12 @@
 package hubserver
 
 import (
-	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -85,43 +83,8 @@ func (m *tenantRequestMetrics) history(ctx context.Context, from, to time.Time, 
 	start := from.UTC().Truncate(time.Hour)
 	bucket = max(time.Hour, bucket.Truncate(time.Hour), (to.Sub(start)/routeLatencyBucketLimit + time.Hour - 1).Truncate(time.Hour))
 	out := routeLatencyHistory{From: start, To: to.UTC(), Bucket: bucket.String(), Buckets: []routeLatencyBucket{}}
-	if m.repository != nil {
-		return m.repositoryHistory(ctx, out, bucket)
-	}
-	rows, err := m.db.QueryContext(ctx, `WITH top AS (SELECT route FROM request_hours WHERE hour>=:from AND hour<:to GROUP BY route ORDER BY sum(count) DESC, route LIMIT :limit)
-SELECT h.hour,h.route,h.status_class,h.count,h.sum_ms,h.max_ms,h.histogram FROM request_hours h JOIN top ON top.route=h.route WHERE h.hour>=:from AND h.hour<:to`,
-		sql.Named("from", start.Unix()), sql.Named("to", to.Unix()), sql.Named("limit", routeLatencyRouteLimit))
-	if err != nil {
-		return out, fmt.Errorf("query request hours: %w", err)
-	}
-	defer rows.Close()
-	buckets := make(map[requestHourKey]requestLatency)
-	for rows.Next() {
-		var key requestHourKey
-		var histogram string
-		var l requestLatency
-		if err := rows.Scan(&key.Hour, &key.Route, &key.Status, &l.Count, &l.Sum, &l.Max, &histogram); err != nil {
-			return out, fmt.Errorf("scan request hour: %w", err)
-		}
-		if err := json.Unmarshal([]byte(histogram), &l.Histogram); err != nil {
-			return out, fmt.Errorf("decode request hour: %w", err)
-		}
-		key.Hour = start.Add((time.Unix(key.Hour, 0).Sub(start) / bucket) * bucket).Unix()
-		current := buckets[key]
-		current.merge(l)
-		buckets[key] = current
-	}
-	if err := rows.Err(); err != nil {
-		return out, fmt.Errorf("read request hours: %w", err)
-	}
-	for key, l := range buckets {
-		l.percentiles()
-		out.Buckets = append(out.Buckets, routeLatencyBucket{From: time.Unix(key.Hour, 0).UTC(), Route: key.Route, StatusClass: fmt.Sprintf("%dxx", key.Status), requestLatency: l})
-	}
-	slices.SortFunc(out.Buckets, func(a, b routeLatencyBucket) int {
-		return cmp.Or(a.From.Compare(b.From), cmp.Compare(a.Route, b.Route), cmp.Compare(a.StatusClass, b.StatusClass))
-	})
-	return out, nil
+
+	return m.repositoryHistory(ctx, out, bucket)
 }
 
 func (s *Service) adminRouteLatency(ctx context.Context, from, to time.Time, bucket time.Duration) (routeLatencyHistory, bool, error) {

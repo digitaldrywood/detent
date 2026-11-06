@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -35,7 +34,7 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 			}
 			f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 			f.service.database.hostedOrganization = f.project.OrganizationID
-			metrics, err := openRequestMetrics(t.Context(), filepath.Join(t.TempDir(), "requests.sqlite"), f.project.OrganizationID)
+			metrics, err := newPostgresTestMetrics(t, f.project.OrganizationID)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,7 +44,7 @@ func TestNativeEventWriterBudget(t *testing.T) {
 			f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 			f.service.database.hostedOrganization = f.project.OrganizationID
 			hostedTestPlans(t, f.service, map[string]int64{"concurrent_work": 100, "registered_runners": 100, "connected_runners": 100})
-			metrics, err := openRequestMetrics(t.Context(), filepath.Join(t.TempDir(), "requests.sqlite"), f.project.OrganizationID)
+			metrics, err := newPostgresTestMetrics(t, f.project.OrganizationID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -199,7 +198,7 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 	f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 	f.service.database.hostedOrganization = f.project.OrganizationID
 	hostedTestPlans(t, f.service, map[string]int64{"concurrent_work": 100, "registered_runners": 100, "connected_runners": 100})
-	metrics, err := openRequestMetrics(t.Context(), filepath.Join(t.TempDir(), "requests.sqlite"), f.project.OrganizationID)
+	metrics, err := newPostgresTestMetrics(t, f.project.OrganizationID)
 	if err != nil {
 		t.Fatal(err)
 	}

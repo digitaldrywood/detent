@@ -22,9 +22,6 @@ func (d *database) openRequestMetrics(ctx context.Context, organization tracker.
 }
 
 func (m *tenantRequestMetrics) close() error {
-	if m.db != nil {
-		return m.db.Close()
-	}
 	return nil
 }
 

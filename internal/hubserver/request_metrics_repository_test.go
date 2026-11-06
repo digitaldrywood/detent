@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -34,12 +33,6 @@ func TestRequestMetricsPostgres(t *testing.T) {
 			for tenant, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 				t.Run(string(org), func(t *testing.T) {
 					owner := store
-					if owner == nil {
-						owner = &database{path: filepath.Join(t.TempDir(), "hub.sqlite")}
-					}
-					if owner.postgres != nil {
-						owner.path = filepath.Join(t.TempDir(), "hub.sqlite")
-					}
 					m, err := owner.openRequestMetrics(t.Context(), org)
 					if err != nil {
 						t.Fatal(err)
@@ -49,7 +42,7 @@ func TestRequestMetricsPostgres(t *testing.T) {
 							t.Error(err)
 						}
 					})
-					if backend == DatabasePostgres && (m.db != nil || m.repository == nil) {
+					if backend == DatabasePostgres && (m.repository == nil) {
 						t.Fatal("PostgreSQL collector opened SQLite")
 					}
 					m.usage = &database{}

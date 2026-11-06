@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math/bits"
@@ -121,35 +120,6 @@ type tenantRequestMetrics struct {
 	ingested       atomic.Int64
 }
 
-func openRequestMetrics(ctx context.Context, path string, organization tracker.OrganizationID) (*tenantRequestMetrics, error) {
-	if err := createPrivateDatabaseFile(path); err != nil {
-		return nil, err
-	}
-	db, err := sql.Open("sqlite", sqliteDSN(path, time.Second))
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	if _, err := db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
-		return nil, errors.Join(err, db.Close())
-	}
-	if err := migrateRequestMetrics(ctx, db); err != nil {
-		return nil, errors.Join(err, db.Close())
-	}
-	if _, err := db.ExecContext(ctx, "INSERT INTO tenant(organization) SELECT ? WHERE NOT EXISTS(SELECT 1 FROM tenant)", organization); err != nil {
-		return nil, errors.Join(err, db.Close())
-	}
-	var bound string
-	if err := db.QueryRowContext(ctx, "SELECT organization FROM tenant").Scan(&bound); err != nil {
-		return nil, errors.Join(err, db.Close())
-	}
-	if bound != string(organization) {
-		return nil, errors.Join(ErrHostedDatabaseBinding, db.Close())
-	}
-	return &tenantRequestMetrics{db: db, organization: organization, pending: make(map[requestMetricKey]requestLatency), runners: make(map[string]*runnerRequestWindow)}, nil
-}
-
 func (m *tenantRequestMetrics) record(now time.Time, route, kind, caller string, status int, elapsed time.Duration) {
 	key := requestMetricKey{now.Unix() / 60 * 60, route, kind, caller, status / 100}
 	m.mu.Lock()
@@ -209,105 +179,13 @@ func (m *tenantRequestMetrics) flush(ctx context.Context, now time.Time) error {
 }
 
 func (m *tenantRequestMetrics) write(ctx context.Context, now time.Time, pending map[requestMetricKey]requestLatency) error {
-	if m.repository != nil {
-		return m.writeRepository(ctx, now, pending)
-	}
-	tx, err := m.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	cutoff := now.Add(-requestMinuteRetention).Unix() / 60 * 60
-	for key, l := range pending {
-		if key.Minute < cutoff {
-			continue
-		}
-		var previous requestLatency
-		var histogram string
-		err := tx.QueryRowContext(ctx, "SELECT count,sum_ms,max_ms,histogram FROM request_minutes WHERE minute=? AND route=? AND caller_kind=? AND caller_id=? AND status_class=?", key.Minute, key.Route, key.Kind, key.Caller, key.Status).Scan(&previous.Count, &previous.Sum, &previous.Max, &histogram)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if err == nil {
-			if err := json.Unmarshal([]byte(histogram), &previous.Histogram); err != nil {
-				return err
-			}
-			l.merge(previous)
-		}
-		l.percentiles()
-		raw, err := json.Marshal(l.Histogram)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO request_minutes VALUES(?,?,?,?,?,?,?,?,?,?,?)`, key.Minute, key.Route, key.Kind, key.Caller, key.Status, l.Count, l.Sum, l.P50, l.P95, l.Max, string(raw)); err != nil {
-			return err
-		}
-	}
-	if err := writeRequestHours(ctx, tx, now, pending); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	m.ingested.Add(int64(len(pending)))
-	return nil
+
+	return m.writeRepository(ctx, now, pending)
 }
 
 func (m *tenantRequestMetrics) report(ctx context.Context, now time.Time) (requestMetricsReport, error) {
-	if m.repository != nil {
-		return m.repositoryReport(ctx, now)
-	}
-	to := now.UTC().Truncate(time.Minute)
-	out := requestMetricsReport{From: to.Add(-time.Hour), To: to, Callers: []requestMetricTop{}, Routes: []requestMetricTop{}}
-	callers := make(map[[2]string]requestLatency)
-	routes := make(map[string]requestLatency)
-	rows, err := m.db.QueryContext(ctx, "SELECT route,caller_kind,caller_id,count,sum_ms,max_ms,histogram FROM request_minutes WHERE minute>=? AND minute<?", out.From.Unix(), out.To.Unix())
-	if err != nil {
-		return out, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var route, kind, caller, histogram string
-		var l requestLatency
-		if err := rows.Scan(&route, &kind, &caller, &l.Count, &l.Sum, &l.Max, &histogram); err != nil {
-			return out, err
-		}
-		if err := json.Unmarshal([]byte(histogram), &l.Histogram); err != nil {
-			return out, err
-		}
-		key := [2]string{kind, caller}
-		a := callers[key]
-		a.merge(l)
-		callers[key] = a
-		b := routes[route]
-		b.merge(l)
-		routes[route] = b
-	}
-	if err := rows.Err(); err != nil {
-		return out, err
-	}
-	for key, l := range callers {
-		l.percentiles()
-		out.Callers = append(out.Callers, requestMetricTop{Kind: key[0], Caller: key[1], requestLatency: l})
-	}
-	for route, l := range routes {
-		l.percentiles()
-		out.Routes = append(out.Routes, requestMetricTop{Route: route, requestLatency: l})
-	}
-	for _, top := range [][]requestMetricTop{out.Callers, out.Routes} {
-		slices.SortFunc(top, func(a, b requestMetricTop) int {
-			if a.Count > b.Count {
-				return -1
-			}
-			if a.Count < b.Count {
-				return 1
-			}
-			return strings.Compare(a.Kind+a.Caller+a.Route, b.Kind+b.Caller+b.Route)
-		})
-	}
-	out.Callers = out.Callers[:min(20, len(out.Callers))]
-	out.Routes = out.Routes[:min(20, len(out.Routes))]
-	return out, nil
+
+	return m.repositoryReport(ctx, now)
 }
 
 func runnerRequestExempt(method, route string) bool {
@@ -328,30 +206,28 @@ func (s *Service) admitRunnerRequest(c echo.Context, credential apiCredential) e
 		return nil
 	}
 	var capacity int
-	if s.database.postgres != nil {
-		if s.config.TenantRepository == nil || m.organization == "" {
-			return s.nativeAPIError(c, ErrHostedDatabaseBinding)
-		}
-		var runnerCapacity int64
-		err := s.config.TenantRepository.ReadTenant(ctx, m.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-			identity, err := reader.RunnerIdentity(ctx, credential.Runner.RunnerID)
-			if err != nil {
-				return err
-			}
-			machine, err := reader.Machine(ctx, string(identity.MachineID))
-			if err != nil {
-				return err
-			}
-			runnerCapacity = min(identity.CapacityLimit, machine.Capacity)
-			return nil
-		})
+
+	if s.config.TenantRepository == nil || m.organization == "" {
+		return s.nativeAPIError(c, ErrHostedDatabaseBinding)
+	}
+	var runnerCapacity int64
+	err := s.config.TenantRepository.ReadTenant(ctx, m.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		identity, err := reader.RunnerIdentity(ctx, credential.Runner.RunnerID)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return err
 		}
-		capacity = int(runnerCapacity)
-	} else if err := s.database.reader.QueryRowContext(ctx, "SELECT min(r.capacity_limit,m.capacity) FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.id=? AND r.organization_id=?", credential.Runner.RunnerID, m.organization).Scan(&capacity); err != nil {
+		machine, err := reader.Machine(ctx, string(identity.MachineID))
+		if err != nil {
+			return err
+		}
+		runnerCapacity = min(identity.CapacityLimit, machine.Capacity)
+		return nil
+	})
+	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	capacity = int(runnerCapacity)
+
 	projects := make([]string, 0, len(credential.Runner.ProjectIDs))
 	for _, id := range credential.Runner.ProjectIDs {
 		projects = append(projects, string(id))

@@ -42,9 +42,6 @@ func (m *tenantRequestMetrics) flushHostedBillingBatch(ctx context.Context, now 
 }
 
 func (m *tenantRequestMetrics) writeHostedRequestUsage(ctx context.Context, owner *database, now time.Time, pending map[requestMetricKey]requestLatency) error {
-	if owner.billingRepository == nil {
-		return writeHostedRequestUsage(ctx, owner, now, pending)
-	}
 	plans := owner.plans()
 	if plans == nil {
 		clear(pending)

@@ -1,126 +1,35 @@
 package hubserver
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"maps"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/labstack/echo/v4"
 )
 
 func testRequestMetrics(t *testing.T, path string, organization tracker.OrganizationID) *tenantRequestMetrics {
 	t.Helper()
-	m, err := openRequestMetrics(t.Context(), path, organization)
+	m, err := newPostgresTestMetrics(t, organization)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := m.db.Close(); err != nil {
+		if err := m.close(); err != nil {
 			t.Error(err)
 		}
 	})
 	return m
-}
-
-func TestRequestMetricsPersistence(t *testing.T) {
-	t.Parallel()
-	now := time.Now().UTC().Truncate(time.Minute)
-	dir := t.TempDir()
-	m := testRequestMetrics(t, filepath.Join(dir, "one.metrics.sqlite"), "org_one")
-	other := testRequestMetrics(t, filepath.Join(dir, "two.metrics.sqlite"), "org_two")
-	m.record(now.Add(-15*24*time.Hour), "GET /expired", "browser", "old", 200, time.Second)
-	if err := m.flush(t.Context(), now.Add(-15*24*time.Hour+time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-	for i := range 20 {
-		m.record(now.Add(-time.Minute), "GET /items/:item", "runner", "runner_one", 200, time.Duration(i+1)*time.Millisecond)
-	}
-	canceled, cancel := context.WithCancel(t.Context())
-	cancel()
-	if err := m.flush(canceled, now); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled flush=%v", err)
-	}
-	if err := m.flush(t.Context(), now); err != nil {
-		t.Fatal(err)
-	}
-	m.record(now.Add(-time.Minute), "GET /items/:item", "runner", "runner_one", 429, 20*time.Millisecond)
-	if err := m.flush(t.Context(), now); err != nil {
-		t.Fatal(err)
-	}
-	if err := (&Service{requestMetrics: m}).expireRequestMetrics(t.Context(), now); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	m = testRequestMetrics(t, filepath.Join(dir, "one.metrics.sqlite"), "org_one")
-	report, err := m.report(t.Context(), now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(report.Callers) != 1 || len(report.Routes) != 1 {
-		t.Fatalf("report=%+v", report)
-	}
-	caller := report.Callers[0]
-	if caller.Caller != "runner_one" || caller.Count != 21 || caller.Sum != 230 || caller.P50 != 16.384 || caller.P95 != 20 || caller.Max != 20 {
-		t.Fatalf("caller=%+v", caller)
-	}
-	var count, classes int
-	if err := m.db.QueryRowContext(t.Context(), "SELECT count(*),count(DISTINCT status_class) FROM request_minutes").Scan(&count, &classes); err != nil {
-		t.Fatal(err)
-	}
-	if count != 2 || classes != 2 {
-		t.Fatalf("minute/status rows=%d classes=%d", count, classes)
-	}
-	for _, test := range []struct {
-		name   string
-		from   time.Time
-		bucket time.Duration
-		want   []string
-	}{
-		{"recent hour by status class", now.Add(-2 * time.Hour), time.Minute, []string{"GET /items/:item 2xx count=20 p95=20 max=20", "GET /items/:item 4xx count=1 p95=20 max=20"}},
-		{"hours outlive minutes", now.Add(-16 * 24 * time.Hour), 30 * 24 * time.Hour, []string{"GET /expired 2xx count=1 p95=1000 max=1000", "GET /items/:item 2xx count=20 p95=20 max=20", "GET /items/:item 4xx count=1 p95=20 max=20"}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			history, err := m.history(t.Context(), test.from, now, test.bucket)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got := make([]string, 0, len(history.Buckets))
-			for _, bucket := range history.Buckets {
-				got = append(got, fmt.Sprintf("%s %s count=%d p95=%g max=%g", bucket.Route, bucket.StatusClass, bucket.Count, bucket.P95, bucket.Max))
-			}
-			slices.Sort(got)
-			if !slices.Equal(got, test.want) {
-				t.Fatalf("history=%v want %v", got, test.want)
-			}
-		})
-	}
-	if got, err := other.report(t.Context(), now); err != nil || len(got.Callers) != 0 {
-		t.Fatalf("other tenant=%+v err=%v", got, err)
-	}
-	if foreign, err := openRequestMetrics(t.Context(), filepath.Join(dir, "one.metrics.sqlite"), "org_two"); !errors.Is(err, ErrHostedDatabaseBinding) {
-		if foreign != nil {
-			foreign.db.Close()
-		}
-		t.Fatalf("foreign binding accepted: %v", err)
-	}
-	info, err := os.Stat(filepath.Join(dir, "one.metrics.sqlite"))
-	if err != nil || info.Mode().Perm() != 0600 {
-		t.Fatalf("metrics file permissions: %v %v", info, err)
-	}
 }
 
 func TestMetricRouteBoundsKeys(t *testing.T) {
@@ -173,150 +82,6 @@ func TestRequestHistoryKeepsBusiestRoutes(t *testing.T) {
 	}
 }
 
-func TestRequestMetricsFlushDoesNotUseTenantWriter(t *testing.T) {
-	t.Parallel()
-	f := newHostedSecurityFixture(t)
-	f.service.stopHealthDetector()
-	m := f.service.requestMetrics
-	if m == nil {
-		t.Fatal("tenant Hub did not open metrics")
-	}
-	now := time.Now().UTC().Truncate(time.Minute)
-	m.record(now.Add(-15*24*time.Hour), "GET /expired", "runner", "old-runner", 200, time.Millisecond)
-	if err := m.flush(t.Context(), now.Add(-15*24*time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	m.record(now.Add(-time.Minute), "GET /items/:item", "runner", "runner", 200, time.Millisecond)
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(t.Context(), "INSERT INTO hosted_billing_events(event_id,event_type,received_at) VALUES('example-metrics-event','example',?)", formatHubTime(now.Add(-500*24*time.Hour))); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.ExecContext(t.Context(), "INSERT INTO hosted_usage_counters(name,value) VALUES('example_metrics_usage',37)"); err != nil {
-		t.Fatal(err)
-	}
-	ctx := testenv.WaitContext(t, t.Context())
-	if err := m.flush(ctx, now); err != nil {
-		t.Fatalf("metrics flush waited for tenant writer: %v", err)
-	}
-	if err := f.service.expireRequestMetrics(ctx, now); err != nil {
-		t.Fatalf("metrics retention waited for tenant writer: %v", err)
-	}
-	var billing, usage int
-	if err := tx.QueryRowContext(t.Context(), `SELECT
-(SELECT count(*) FROM hosted_billing_events WHERE event_id='example-metrics-event'),
-(SELECT value FROM hosted_usage_counters WHERE name='example_metrics_usage')`).Scan(&billing, &usage); err != nil || billing != 1 || usage != 37 {
-		t.Fatalf("metrics changed billing or usage: billing=%d usage=%d err=%v", billing, usage, err)
-	}
-	var count int
-	if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM sqlite_master WHERE name='request_minutes'").Scan(&count); err != nil || count != 0 {
-		t.Fatalf("metrics touched tenant schema: %d %v", count, err)
-	}
-	if _, err := m.report(ctx, now); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestHeartbeatTelemetryFlushPreservesCounters(t *testing.T) {
-	now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
-	f.service.stopHealthDetector()
-	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
-	runner.enroll(t)
-	path := f.base + "/machines/" + string(runner.binding.MachineID) + "/heartbeat"
-	body := map[string]any{"capacity": 2, "version": "test", "backend_isolation": runner.redemption.BackendIsolation}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.redemption.Credential, body), http.StatusOK)
-	f.service.tokenUseWork.Wait()
-	f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
-	f.service.database.hostedOrganization = f.project.OrganizationID
-	hostedTestPlans(t, f.service, nil)
-	m, err := openRequestMetrics(t.Context(), filepath.Join(t.TempDir(), "requests.sqlite"), f.project.OrganizationID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.service.requestMetrics = m
-	f.service.echo.Use(f.service.hostedBoundary)
-	request := newHubAPIRequest(t, http.MethodPost, path, runner.redemption.Credential, body)
-	response := httptest.NewRecorder()
-	f.service.Handler().ServeHTTP(response, request)
-	requireNativeStatus(t, response, http.StatusOK)
-	usage := func() map[string]int64 {
-		t.Helper()
-		values := make(map[string]int64)
-		rows, err := f.service.database.reader.QueryContext(t.Context(), "SELECT metric,sum(amount) FROM hosted_usage_windows WHERE metric IN ('http_requests','http_duration_microseconds','http_response_bytes','http_request_bytes','http_request_bytes_known') GROUP BY metric")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var metric string
-			var amount int64
-			if err := rows.Scan(&metric, &amount); err != nil {
-				t.Fatal(err)
-			}
-			values[metric] = amount
-		}
-		if err := rows.Err(); err != nil {
-			t.Fatal(err)
-		}
-		return values
-	}
-	if got := usage(); len(got) != 0 {
-		t.Fatalf("request wrote HTTP telemetry before background flush: %v", got)
-	}
-	held, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	completed := false
-	t.Cleanup(func() {
-		cancel()
-		_ = held.Rollback()
-		if !completed {
-			<-done
-		}
-	})
-	waits := f.service.database.db.Stats().WaitCount
-	go func() { done <- m.flush(ctx, now) }()
-	testenv.WaitUntil(t, t.Context(), func() error {
-		if f.service.database.db.Stats().WaitCount > waits {
-			return nil
-		}
-		return errors.New("telemetry flush has not reached the tenant writer")
-	})
-	cancel()
-	err = <-done
-	completed = true
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled telemetry flush=%v", err)
-	}
-	if err := held.Rollback(); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.flush(t.Context(), now); err != nil {
-		t.Fatal(err)
-	}
-	got := usage()
-	if got["http_requests"] != 1 || got["http_duration_microseconds"] <= 0 || got["http_response_bytes"] != int64(response.Body.Len()) || got["http_request_bytes"] != request.ContentLength || got["http_request_bytes_known"] != 1 {
-		t.Fatalf("flushed HTTP counters=%v, request bytes=%d response bytes=%d", got, request.ContentLength, response.Body.Len())
-	}
-	if err := m.flush(t.Context(), now); err != nil {
-		t.Fatal(err)
-	}
-	if repeated := usage(); !maps.Equal(got, repeated) {
-		t.Fatalf("telemetry flush counted twice: %v -> %v", got, repeated)
-	}
-	var recorded int64
-	if err := m.db.QueryRowContext(t.Context(), "SELECT sum(count) FROM request_minutes").Scan(&recorded); err != nil || recorded != 1 {
-		t.Fatalf("request latency counted after sink retry=%d, error=%v", recorded, err)
-	}
-}
-
 func TestHostedRequestUsageSaturatesOversizedLengths(t *testing.T) {
 	now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
@@ -329,24 +94,36 @@ func TestHostedRequestUsageSaturatesOversizedLengths(t *testing.T) {
 		{"ordinary lengths", []int64{3, 4}, 7},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
-			f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
-			f.service.database.hostedOrganization = f.project.OrganizationID
-			hostedTestPlans(t, f.service, nil)
+			repo := projectRecordPostgres(t)
+			org := tracker.OrganizationID("org_example")
+			owner := &database{billingRepository: repo, hostedOrganization: org}
+			plans := pilotHostedPlans()
+			owner.hostedRuntime.Store(&hostedRuntimeConfig{Plans: plans})
+			if err := repo.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: now})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			e := echo.New()
 			pending := make(map[requestMetricKey]requestLatency)
 			for i, length := range test.lengths {
 				request := httptest.NewRequest(http.MethodGet, "/health", nil)
 				request.ContentLength = length
-				c := f.service.echo.NewContext(request, httptest.NewRecorder())
+				c := e.NewContext(request, httptest.NewRecorder())
 				key := requestMetricKey{Minute: now.Unix() / 60 * 60, Route: fmt.Sprintf("/health/%d", i), Kind: "anonymous", Status: 2}
 				pending[key] = requestLatency{http: hostedRequestUsageFor(c, time.Duration(0))}
 			}
-			if err := writeHostedRequestUsage(t.Context(), f.service.database, now, pending); err != nil {
+			if err := (&tenantRequestMetrics{}).writeHostedRequestUsage(t.Context(), owner, now, pending); err != nil {
 				t.Fatalf("oversized request lengths blocked usage flush: %v", err)
 			}
 			var amount int64
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT amount FROM hosted_usage_windows WHERE metric='http_request_bytes'").Scan(&amount); err != nil || amount != test.want {
-				t.Fatalf("http_request_bytes=%d, want %d, err=%v", amount, test.want, err)
+			err := repo.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				amount, err = r.BillingUsage(t.Context(), time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0), "http_request_bytes")
+				return err
+			})
+			if err != nil || amount != test.want {
+				t.Fatalf("amount=%d want=%d err=%v", amount, test.want, err)
 			}
 			if len(pending) != 0 {
 				t.Fatalf("flushed usage stayed pending: %d", len(pending))
@@ -411,7 +188,7 @@ func TestRunnerRequestBudgetHTTP(t *testing.T) {
 	f.service.config.Hosted = nil
 	now := time.Now().UTC().Truncate(time.Minute).Add(20 * time.Second)
 	f.service.config.now = func() time.Time { return now }
-	m, err := openRequestMetrics(t.Context(), f.service.database.path+".metrics.sqlite", f.project.OrganizationID)
+	m, err := newPostgresTestMetrics(t, f.project.OrganizationID)
 	if err != nil {
 		t.Fatal(err)
 	}

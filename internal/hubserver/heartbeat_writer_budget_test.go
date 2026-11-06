@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -142,7 +141,7 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 				f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 				f.service.database.hostedOrganization = f.project.OrganizationID
 				hostedTestPlans(t, f.service, nil)
-				metrics, err := openRequestMetrics(t.Context(), filepath.Join(t.TempDir(), "requests.sqlite"), f.project.OrganizationID)
+				metrics, err := newPostgresTestMetrics(t, f.project.OrganizationID)
 				if err != nil {
 					t.Fatal(err)
 				}

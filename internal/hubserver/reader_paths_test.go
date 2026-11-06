@@ -453,7 +453,6 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"appendEvent":                               "Writes the worker event and resulting work state.",
 		"applyObservedDefaultBranchPolicy":          "Persists the observed default-branch policy and approval.",
 		"tenantRequestMetrics.write":                "Persists request metrics in their independent database.",
-		"tenantRequestMetrics.compactRequestMinute": "Compacts one bounded batch of expired request metrics in their independent database.",
 		"Service.beginProjectRecordAuthority":       "Opens one project record mutation transaction after rechecking the caller's project, hosted and runner authority.",
 		"database.retireLegacyNativeSearch":         "Deletes one bounded batch of legacy full-text rows, or drops the empty legacy table, under the existing background search owner.",
 		"advanceGitHubBatch":                        "The import loop applies its next batch and reads back the update.",
