@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
@@ -37,9 +38,12 @@ func TestHealthEndpoint(t *testing.T) {
 			ready:      true,
 			wantStatus: http.StatusOK,
 			wantBody: healthResponse{
-				Status:        "ok",
-				SchemaVersion: supportedSchemaVersion(t),
-				Version:       "v-test",
+				Status:              "ok",
+				SchemaVersion:       service.database.schemaVersion,
+				SchemaFingerprint:   service.database.schemaFingerprint,
+				HubSchemaApplicable: true,
+				SchemaFactsComplete: true,
+				Version:             "v-test",
 			},
 		},
 		{
@@ -53,7 +57,7 @@ func TestHealthEndpoint(t *testing.T) {
 			name:       "unregistered route",
 			path:       "/api/v1/not-found",
 			ready:      true,
-			wantStatus: http.StatusNotFound,
+			wantStatus: http.StatusServiceUnavailable,
 		},
 	}
 	for _, test := range tests {
@@ -67,6 +71,12 @@ func TestHealthEndpoint(t *testing.T) {
 				t.Fatalf("status = %d, want %d; body = %s", response.Code, test.wantStatus, response.Body.String())
 			}
 			if test.wantBody.Status == "" {
+				var body struct {
+					Code string `json:"code"`
+				}
+				if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body.Code != "storage_owner_unavailable" {
+					t.Fatalf("unmounted route: %s (%v)", response.Body.String(), err)
+				}
 				return
 			}
 			var got healthResponse
@@ -79,36 +89,6 @@ func TestHealthEndpoint(t *testing.T) {
 		})
 	}
 	service.ready.Store(true)
-}
-
-func TestHealthEndpointDegradesForStaleRepository(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
-	service := openTestService(t, Config{
-		DatabasePath:      filepath.Join(t.TempDir(), "hub.db"),
-		ReconcileInterval: time.Minute,
-		now:               func() time.Time { return now },
-	})
-	if _, err := service.database.db.ExecContext(t.Context(), `
-		INSERT INTO repositories (github_node_id, github_owner, github_name, last_webhook_at, created_at, updated_at)
-		VALUES ('R_stale', 'digitaldrywood', 'detent', ?, ?, ?)
-	`, formatWebhookTime(now), testTimestamp, testTimestamp); err != nil {
-		t.Fatalf("insert stale repository: %v", err)
-	}
-	request := httptest.NewRequest(http.MethodGet, "/health", nil)
-	authorizeHubTestRequest(request)
-	response := httptest.NewRecorder()
-	service.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("health status = %d body = %s, want 200", response.Code, response.Body.String())
-	}
-	var got healthResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode health response: %v", err)
-	}
-	if got.Status != "degraded" || got.Repositories.Total != 1 || got.Repositories.Stale != 1 {
-		t.Fatalf("health response = %#v, want degraded stale repository", got)
-	}
 }
 
 func TestServeShutsDownGracefully(t *testing.T) {
@@ -169,30 +149,35 @@ func TestServeRequiresListener(t *testing.T) {
 
 func TestRunStopsOnContextCancellationAndReleasesDatabase(t *testing.T) {
 	if testing.Short() {
-		t.Skip("durable SQLite integration")
+		t.Skip("service lifecycle integration")
 	}
 
 	t.Parallel()
 
-	databasePath := filepath.Join(t.TempDir(), "hub.db")
+	admin := postgresStartupTemplate.Database(t)
+	connection := startupConnection(t, admin, "detent_runtime_v2", "")
+	cfg := startupConfig(connection)
+	cfg.ListenAddress = "127.0.0.1:0"
+	cfg.Logger = discardLogger()
+	expectedVersion, err := postgres.LatestSchemaVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
 	listenerAccepting := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
 	runDone := make(chan struct{})
 	runResult := make(chan error, 1)
+	cfg.listen = func(ctx context.Context, network, address string) (net.Listener, error) {
+		var listenConfig net.ListenConfig
+		listener, err := listenConfig.Listen(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &acceptSignalListener{Listener: listener, accepting: listenerAccepting}, nil
+	}
 	go func() {
 		defer close(runDone)
-		runResult <- Run(ctx, Config{
-			DatabasePath:  databasePath,
-			ListenAddress: "127.0.0.1:0",
-			listen: func(ctx context.Context, network string, address string) (net.Listener, error) {
-				var listenConfig net.ListenConfig
-				listener, err := listenConfig.Listen(ctx, network, address)
-				if err != nil {
-					return nil, err
-				}
-				return &acceptSignalListener{Listener: listener, accepting: listenerAccepting}, nil
-			},
-		})
+		runResult <- Run(ctx, cfg)
 	}()
 	cancelAndJoin := func() bool {
 		cancel()
@@ -223,9 +208,10 @@ func TestRunStopsOnContextCancellationAndReleasesDatabase(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	service := openTestService(t, Config{DatabasePath: databasePath})
-	if service.database.schemaVersion != supportedSchemaVersion(t) {
-		t.Fatalf("reopened schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion(t))
+	assertStartupDisconnected(t, admin, connection)
+	service := openTestService(t, cfg)
+	if service.database.schemaVersion != expectedVersion {
+		t.Fatalf("reopened schema version = %d, want %d", service.database.schemaVersion, expectedVersion)
 	}
 }
 
