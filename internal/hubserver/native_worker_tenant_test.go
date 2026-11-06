@@ -13,9 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"

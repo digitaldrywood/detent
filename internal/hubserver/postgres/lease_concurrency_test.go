@@ -9,11 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestLeaseCompetingLifecycleTransactions(t *testing.T) {
