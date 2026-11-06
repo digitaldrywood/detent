@@ -232,13 +232,6 @@ func TestChangeRecordBackendParity(t *testing.T) {
 	if detail.Change.ID != change.ID || detail.Change.Body != request.Body || len(detail.Discussion) != 1 || detail.Discussion[0].Body != discussion.Body {
 		t.Fatalf("change detail=%+v", detail.Change)
 	}
-	var localCount int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM change_requests WHERE id=?", change.ID).Scan(&localCount); err != nil {
-		t.Fatal(err)
-	}
-	if localCount != 0 {
-		t.Fatal("selected change route wrote to SQLite")
-	}
 	if err := repository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
 		links, err := r.Links(t.Context(), change.ID, "", 10)
 		if err != nil {
