@@ -51,9 +51,11 @@ func TestMachineCallRefusesOversizedTenantAnswers(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			seed := make([]byte, ed25519.SeedSize)
-			service, err := Open(t.Context(), Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: newFakeProvider(),
+			cfg := Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: newFakeProvider(),
 				StateDir: t.TempDir(), Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{},
-				transport: func(Organization) (http.RoundTripper, error) { return sizedTransport{size: test.size}, nil }})
+				transport: func(Organization) (http.RoundTripper, error) { return sizedTransport{size: test.size}, nil }}
+			entryPostgresConfig(t)(&cfg)
+			service, err := Open(t.Context(), cfg)
 			if err != nil {
 				t.Fatal(err)
 			}

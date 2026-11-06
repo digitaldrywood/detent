@@ -184,7 +184,7 @@ func TestArchiveBindingValidationIsolation(t *testing.T) {
 				t.Fatalf("other organization deletion stalled: organization=%+v error=%v", organization, err)
 			}
 			var bindings int
-			if err := f.service.registry.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM archive_storage_bindings WHERE organization_id='org_alpha'").Scan(&bindings); err != nil || bindings != test.bindings {
+			if err := f.service.registry.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM archive_storage_bindings WHERE organization_id='org_alpha' AND backend='s3'").Scan(&bindings); err != nil || bindings != test.bindings {
 				t.Fatalf("bindings=%d error=%v", bindings, err)
 			}
 			if test.mutation == "rebind" {

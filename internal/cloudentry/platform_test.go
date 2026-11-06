@@ -481,6 +481,11 @@ type fanOutTransport struct {
 }
 
 func (f *fanOutTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if strings.HasPrefix(request.URL.Path, "/internal/v1/attachments/") {
+		recorder := httptest.NewRecorder()
+		recorder.WriteHeader(http.StatusServiceUnavailable)
+		return recorder.Result(), nil
+	}
 	f.mu.Lock()
 	f.active++
 	f.requests++
@@ -530,9 +535,11 @@ func TestPlatformTenantFanOutIsBounded(t *testing.T) {
 			seed := make([]byte, ed25519.SeedSize)
 			provider := newFakeProvider()
 			provider.users["user_support"] = "support@example.test"
-			service, err := Open(t.Context(), Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: provider,
+			cfg := Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: provider,
 				StaffEmails: []string{"support@example.test"}, StateDir: t.TempDir(), Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{},
-				transport: func(Organization) (http.RoundTripper, error) { return transport, nil }, platformDeadline: test.deadline})
+				transport: func(Organization) (http.RoundTripper, error) { return transport, nil }, platformDeadline: test.deadline}
+			entryPostgresConfig(t)(&cfg)
+			service, err := Open(t.Context(), cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -613,9 +620,11 @@ func TestStaffSessionsReverifyEveryRead(t *testing.T) {
 			if test.staff {
 				staff = append(staff, test.email)
 			}
-			service, err := Open(t.Context(), Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: provider,
+			cfg := Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: provider,
 				StaffEmails: staff, StateDir: t.TempDir(), Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{},
-				transport: func(Organization) (http.RoundTripper, error) { return &fanOutTransport{}, nil }})
+				transport: func(Organization) (http.RoundTripper, error) { return &fanOutTransport{}, nil }}
+			entryPostgresConfig(t)(&cfg)
+			service, err := Open(t.Context(), cfg)
 			if err != nil {
 				t.Fatal(err)
 			}

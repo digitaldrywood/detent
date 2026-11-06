@@ -73,7 +73,7 @@ func TestSharedEntryGitHubStartupReplay(t *testing.T) {
 			t.Parallel()
 			done := make(chan slog.Record, 1)
 			var receiptIDs []string
-			service, err := Open(t.Context(), Config{
+			cfg := Config{
 				Platform:  PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"},
 				PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry",
 				SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), Provider: newFakeProvider(),
@@ -82,6 +82,10 @@ func TestSharedEntryGitHubStartupReplay(t *testing.T) {
 				GitHubWebhookSecret: []byte("secret"), now: func() time.Time { return before },
 				transport: func(organization Organization) (http.RoundTripper, error) {
 					return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if strings.HasPrefix(r.URL.Path, "/internal/v1/attachments/") {
+							w.WriteHeader(http.StatusServiceUnavailable)
+							return
+						}
 						if r.URL.Path != "/internal/v1/github/receipt" {
 							t.Errorf("unexpected tenant request %s", r.URL.Path)
 							w.WriteHeader(http.StatusNotFound)
@@ -108,7 +112,9 @@ func TestSharedEntryGitHubStartupReplay(t *testing.T) {
 						}
 					})}, nil
 				},
-			})
+			}
+			entryPostgresConfig(t)(&cfg)
+			service, err := Open(t.Context(), cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
