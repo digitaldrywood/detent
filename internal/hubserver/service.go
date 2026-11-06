@@ -25,7 +25,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -69,7 +68,6 @@ type Service struct {
 	hostedSessions          *auth.Service
 	echo                    *echo.Echo
 	database                *database
-	searchRefresh           searchstore.Refresh
 	tracker                 tracker.Tracker
 	config                  Config
 	outbox                  *outboxWorker
@@ -215,7 +213,6 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		notifications:      newNotificationBroker(),
 		hostedAuthLogger:   hostedAuthLogger,
 		database:           database,
-		searchRefresh:      database.backfillNativeSearch,
 		sourceVerification: make(chan struct{}, 1),
 		tracker:            workTracker,
 		config:             cfg,

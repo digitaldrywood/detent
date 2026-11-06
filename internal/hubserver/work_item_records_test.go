@@ -1298,10 +1298,6 @@ func TestWorkItemRecordRollback(t *testing.T) {
 		t.Fatalf("committed number=%d", issue.Number)
 	}
 	service.config.Hosted = &HostedConfig{OrganizationID: string(org.ID)}
-	service.searchRefresh = func(context.Context) (bool, error) {
-		t.Fatal("PostgreSQL search maintenance called SQLite")
-		return false, nil
-	}
 	for _, indexed := range []bool{false, true} {
 		if indexed {
 			service.maintainNativeSearch(t.Context())

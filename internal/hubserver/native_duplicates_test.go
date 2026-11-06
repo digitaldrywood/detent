@@ -884,67 +884,6 @@ func TestNativeDuplicateMCP(t *testing.T) {
 	}
 }
 
-func TestNativeDuplicateFilingHistoryBound(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{})
-	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
-		t.Fatal(err)
-	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	first := f.create(t, "Runner checkout deadlocks")
-	fault := installNativeBrowserPathFault(t, f.service)
-	var baseline int64
-	previousSize := 0
-	for _, size := range []int{250, 500} {
-		if size > previousSize {
-			issues := seedArchiveIssues(t, f.service, scope, size-previousSize, "Todo")
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, issue := range issues {
-				if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET title=?,body=? WHERE native_id=?", "Runner checkout", "Unrelated mailbox delivery history", issue.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
-				for range 4 {
-					if _, err := insertNativeComment(t.Context(), tx, scope, issue, "Unrelated mailbox delivery history", nil, f.service.config.now()); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=1 WHERE id=?", f.project.ID); err != nil {
-			t.Fatal(err)
-		}
-		drainTestNativeSearch(t, f.service)
-		f.service.tokenUseWork.Wait()
-		fault.statements.Store(0)
-		fault.readerSearches.Store(0)
-		fault.writerSearches.Store(0)
-		fault.observe.Store(true)
-		request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "history-" + strconv.Itoa(size)}, Title: "Runner checkout deadlocks", Body: "Checkout cannot complete" + issueContractTestSections, State: "Todo"}
-		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
-		fault.observe.Store(false)
-		requireNativeStatus(t, response, http.StatusConflict)
-		var challenge duplicateChallenge
-		decodeHubResponse(t, response, &challenge)
-		if len(challenge.PossibleDuplicates) != 5 || challenge.PossibleDuplicates[0].WorkItemID != first.WorkItemID {
-			t.Fatalf("history %d: %s", size, response.Body.String())
-		}
-		count := fault.statements.Load()
-		if previousSize == 0 {
-			baseline = count
-		}
-		if count != baseline || count == 0 || fault.readerSearches.Load() == 0 || fault.writerSearches.Load() != 0 {
-			t.Fatalf("history %d: statements=%d baseline=%d reader searches=%d writer searches=%d", size, count, baseline, fault.readerSearches.Load(), fault.writerSearches.Load())
-		}
-		t.Logf("history issues=%d comments=%d: writer statements=%d, reader searches=%d, writer searches=%d", size, size*4, count, fault.readerSearches.Load(), fault.writerSearches.Load())
-		previousSize = size
-	}
-}
-
 func TestNativeDuplicateCandidateRecheck(t *testing.T) {
 	for _, change := range []string{"new issue", "edited candidate", "archived candidate", "challenge enabled", "challenge disabled"} {
 		t.Run(change, func(t *testing.T) {

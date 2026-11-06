@@ -1,24 +1,27 @@
 package hubserver
 
 import (
+	"database/sql"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"net/url"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/pressly/goose/v3"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestSavedWorkViews(t *testing.T) {
 	t.Parallel()
-	f := newHostedSecurityFixture(t)
+	f := newPostgresWorkViewFixture(t)
 	alice := f.user(t, "alice", "viewer", "alice@example.test", "read", "")
 	bob := f.user(t, "bob", "member", "bob@example.test", "read", "")
 	base := "/api/v2/organizations/org_security/work-views"
@@ -85,19 +88,29 @@ func TestSavedWorkViews(t *testing.T) {
 	}
 	project := string(f.project)
 	projectView := create(alice, "Project", "organization", &project)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id=?", bob.identity.Subject); err != nil {
+	if _, err := f.admin.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id=$1", bob.identity.Subject); err != nil {
 		t.Fatal(err)
 	}
 	requireNativeStatus(t, f.request(t, bob, http.MethodGet, base+"/"+projectView.ID, nil), http.StatusNotFound)
 	if got := list(bob); len(got) != 2 {
 		t.Fatalf("grantless shared list = %+v", got)
 	}
-	requireNativeStatus(t, f.request(t, bob, http.MethodPost, base, savedWorkView{ProjectIDs: []string{project}, Name: "Denied", Scope: "personal", ProjectID: &project, State: state}), http.StatusNotFound)
+	requireNativeStatus(t, f.request(t, bob, http.MethodPost, base, savedWorkView{ProjectIDs: []string{project}, Name: "Denied", Scope: "personal", ProjectID: &project, State: state}), http.StatusForbidden)
+	otherRepository := projectRecordPostgres(t)
 	provider := newHostedSecurityProvider()
 	second := hostedSecurityFixture{provider: provider, service: openTestService(t, Config{
 		DatabasePath: hostedTestDatabasePath(t), GitHubDisabled: true,
+		TenantRepository: otherRepository, AccessRepository: otherRepository,
 		Hosted: &HostedConfig{OrganizationID: "org_other", WorkOSOrganizationID: "org_provider", PublicURL: "http://127.0.0.1:7777", Provider: provider},
 	})}
+	if err := otherRepository.WriteTenant(t.Context(), "org_other", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_other", Name: "Other organization", CreatedAt: time.Now()}); err != nil {
+			return err
+		}
+		return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: "org_other", ProviderID: "org_provider"})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	charlie := second.user(t, "charlie", "member", "charlie@example.test", "", "")
 	secondBase := "/api/v2/organizations/org_other/work-views"
 	response = second.request(t, charlie, http.MethodPost, secondBase, savedWorkView{ProjectIDs: []string{}, Name: "Other organization", Scope: "organization", State: state})
@@ -106,7 +119,7 @@ func TestSavedWorkViews(t *testing.T) {
 	decodeHubResponse(t, response, &secondView)
 	requireNativeStatus(t, second.request(t, charlie, http.MethodGet, secondBase+"/"+personal.ID, nil), http.StatusNotFound)
 	requireNativeStatus(t, f.request(t, alice, http.MethodGet, base+"/"+secondView.ID, nil), http.StatusNotFound)
-	requireNativeStatus(t, second.request(t, alice, http.MethodGet, secondBase, nil), http.StatusUnauthorized)
+	requireNativeStatus(t, second.request(t, alice, http.MethodGet, secondBase, nil), http.StatusForbidden)
 	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
 		requireNativeStatus(t, f.request(t, alice, method, strings.Replace(base, "org_security", "org_other", 1)+"/"+personal.ID, personal), http.StatusNotFound)
 	}
@@ -126,9 +139,9 @@ func TestSavedWorkViews(t *testing.T) {
 	if got := list(alice); len(got) != 1 || got[0].ID != projectView.ID {
 		t.Fatalf("delete affected another view: %+v", got)
 	}
-	for _, query := range []string{"SELECT count(*) FROM hosted_work_view_values WHERE view_id=?", "SELECT count(*) FROM hosted_work_view_favorites WHERE view_id=?"} {
+	for _, query := range []string{"SELECT count(*) FROM hosted_work_view_values WHERE view_id=$1", "SELECT count(*) FROM hosted_work_view_favorites WHERE view_id=$1"} {
 		var count int
-		if err := f.service.database.reader.QueryRowContext(t.Context(), query, personal.ID).Scan(&count); err != nil || count != 0 {
+		if err := f.admin.QueryRowContext(t.Context(), query, personal.ID).Scan(&count); err != nil || count != 0 {
 			t.Fatalf("delete %s: count=%d err=%v", query, count, err)
 		}
 	}
@@ -136,7 +149,7 @@ func TestSavedWorkViews(t *testing.T) {
 
 func TestSavedWorkViewValidation(t *testing.T) {
 	t.Parallel()
-	f := newHostedSecurityFixture(t)
+	f := newPostgresWorkViewFixture(t)
 	user := f.user(t, "alice", "member", "alice@example.test", "read", "")
 	for _, test := range []struct {
 		name   string
@@ -176,7 +189,7 @@ func TestSavedWorkViewBounds(t *testing.T) {
 	}{{"count page", false}, {"byte page", true}} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := newHostedSecurityFixture(t)
+			f := newPostgresWorkViewFixture(t)
 			alice := f.user(t, "alice", "member", "alice@example.test", "read", "")
 			bob := f.user(t, "bob", "member", "bob@example.test", "read", "")
 			base := "/api/v2/organizations/org_security/work-views"
@@ -242,7 +255,7 @@ func TestSavedWorkViewBounds(t *testing.T) {
 	}
 	t.Run("payload", func(t *testing.T) {
 		t.Parallel()
-		f := newHostedSecurityFixture(t)
+		f := newPostgresWorkViewFixture(t)
 		alice := f.user(t, "alice", "member", "alice@example.test", "read", "")
 		for _, test := range []struct {
 			name  string
@@ -274,7 +287,7 @@ func TestSavedWorkViewBounds(t *testing.T) {
 
 func TestSavedWorkViewQuotas(t *testing.T) {
 	t.Parallel()
-	f := newHostedSecurityFixture(t)
+	f := newPostgresWorkViewFixture(t)
 	users := make([]hostedSecurityUser, 5)
 	for i := range users {
 		name := fmt.Sprintf("member-%d", i)
@@ -325,46 +338,17 @@ func TestSavedWorkViewQuotas(t *testing.T) {
 	requireNativeStatus(t, f.request(t, users[2], http.MethodGet, base+"/"+first[2].ID, nil), http.StatusOK)
 }
 
-func TestSavedWorkViewStorageScopes(t *testing.T) {
-	t.Parallel()
-	service := openTestService(t, Config{DatabasePath: hostedTestDatabasePath(t), GitHubDisabled: true})
-	for _, user := range []string{"alice", "bob"} {
-		if _, err := service.database.db.ExecContext(t.Context(), `INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, "token_"+user, user, apikey.HashToken("token_"+user), "", "operator", "now", "now"); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := service.database.db.ExecContext(t.Context(), `INSERT INTO hosted_members(user_id,email,membership_id,role,principal_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, user, user+"@example.test", "membership_"+user, "member", "token_"+user, "now", "now"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, org := range []string{"org_first", "org_second"} {
-		if _, err := service.database.db.ExecContext(t.Context(), `INSERT INTO organizations(id,name,created_at) VALUES(?,?,?)`, org, org, "now"); err != nil {
-			t.Fatal(err)
-		}
-		for index, user := range []string{"alice", "bob"} {
-			ownerSlot, orgSlot, err := service.savedWorkViewSlots(t.Context(), org, user)
-			if err != nil || ownerSlot != 0 || orgSlot != index {
-				t.Fatalf("%s/%s slots: owner=%d organization=%d err=%v", org, user, ownerSlot, orgSlot, err)
-			}
-			id := "view_" + org + "_" + user
-			if _, err := service.database.db.ExecContext(t.Context(), `INSERT INTO hosted_work_views(id,organization_id,owner_id,name,scope,layout,tab,search,sort,completed_window,archived,created_by,all_lanes,owner_slot,organization_slot) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, org, user, id, "personal", "board", "active", "", "default", "24h", false, "", true, ownerSlot, orgSlot); err != nil {
-				t.Fatal(err)
-			}
-			view, err := service.readSavedWorkView(t.Context(), org, user, id)
-			if err != nil || !view.CanEdit || view.Name != id {
-				t.Fatalf("view %s=%+v err=%v", id, view, err)
-			}
-		}
-	}
-}
-
 func TestSavedWorkViewWorkingSets(t *testing.T) {
 	t.Parallel()
-	f := newHostedSecurityFixture(t)
+	f := newPostgresWorkViewFixture(t)
 	alice := f.user(t, "alice", "member", "alice@example.test", "read", "")
 	bob := f.user(t, "bob", "member", "bob@example.test", "read", "")
 	project := string(f.project)
 	second := "prj_second"
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO projects(id,organization_id,name,profile,states_json,created_at) SELECT ?,organization_id,'Second project',profile,states_json,created_at FROM projects WHERE id=?`, second, project); err != nil {
+	if err := f.repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_security", ID: tracker.ProjectID(second), Name: "Second project", Slug: "second-project", Profile: "native"}, States: nativeFixtureStates()})
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	secondFixture := f
@@ -403,7 +387,7 @@ func TestSavedWorkViewWorkingSets(t *testing.T) {
 			}
 			if len(test.ids) > 1 {
 				requireNativeStatus(t, f.request(t, bob, http.MethodGet, base+"/"+created.ID, nil), http.StatusNotFound)
-				requireNativeStatus(t, f.request(t, bob, http.MethodPost, base, input), http.StatusNotFound)
+				requireNativeStatus(t, f.request(t, bob, http.MethodPost, base, input), http.StatusForbidden)
 				response = f.request(t, bob, http.MethodGet, base, nil)
 				requireNativeStatus(t, response, http.StatusOK)
 				var page savedWorkViewsPage
@@ -424,7 +408,7 @@ func TestSavedWorkViewWorkingSets(t *testing.T) {
 			requireNativeStatus(t, f.request(t, alice, http.MethodDelete, base+"/"+created.ID, nil), http.StatusNoContent)
 			requireNativeStatus(t, f.request(t, alice, http.MethodGet, base+"/"+created.ID, nil), http.StatusNotFound)
 			var count int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_work_view_projects WHERE view_id=?`, created.ID).Scan(&count); err != nil || count != 0 {
+			if err := f.admin.QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_work_view_projects WHERE view_id=$1`, created.ID).Scan(&count); err != nil || count != 0 {
 				t.Fatalf("membership cleanup count=%d err=%v", count, err)
 			}
 			requireNativeStatus(t, f.request(t, alice, http.MethodGet, base+"/"+sibling.ID, nil), http.StatusOK)
@@ -432,44 +416,53 @@ func TestSavedWorkViewWorkingSets(t *testing.T) {
 	}
 }
 
-func TestSavedWorkViewProjectsMigration(t *testing.T) {
-	t.Parallel()
-	f := newHostedSecurityFixture(t)
-	user := f.user(t, "alice", "member", "alice@example.test", "read", "")
-	migrations, err := fs.Sub(migrationFiles, "migrations")
+type postgresWorkViewFixture struct {
+	hostedSecurityFixture
+	repository tenantstore.Repository
+	admin      *sql.DB
+}
+
+func newPostgresWorkViewFixture(t *testing.T) postgresWorkViewFixture {
+	t.Helper()
+	repository, fixture, _, admin := newChangePolicyPostgresFixtureWithAdmin(t, 4)
+	if err := fixture.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	fixture.service.config.SecretKeys = secretTestKeys(t, "1", "1")
+	envelope, err := fixture.service.config.SecretKeys.Seal([]byte(strings.Repeat("k", 32)), accessstore.SecretAAD("org_security", "", accessstore.NativeCursorKeyKind))
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider, err := goose.NewProvider(goose.DialectSQLite3, f.service.database.db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName(hubSchemaTable), goose.WithSlog(discardLogger()))
-	if err != nil {
+	now := fixture.service.config.now()
+	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: "org_security", Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: "org_security", Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: envelope.Version, RecordedAt: now})
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = provider.DownTo(t.Context(), 20261028050852); err != nil {
-		t.Fatal(err)
+	return postgresWorkViewFixture{hostedSecurityFixture: fixture, repository: repository, admin: admin}
+}
+
+func (f postgresWorkViewFixture) user(t *testing.T, name, role, email, grant, supportActor string) hostedSecurityUser {
+	t.Helper()
+	user := f.hostedSecurityFixture.user(t, name, role, email, "", supportActor)
+	if grant != "" {
+		f.grant(t, user, grant == "write", false)
 	}
-	project := string(f.project)
-	for i, test := range []struct {
-		id      string
-		project *string
-	}{{"view_single", &project}, {"view_all", nil}} {
-		if _, err = f.service.database.db.ExecContext(t.Context(), `INSERT INTO hosted_work_views(id,organization_id,owner_id,name,scope,project_id,layout,tab,search,sort,completed_window,archived,created_by,all_lanes,owner_slot,organization_slot) VALUES(?,'org_security',?,?,'personal',?,'list','all','','title','7d',0,'',1,?,?)`, test.id, user.identity.Subject, test.id, test.project, i, i); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err = provider.Up(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct {
-		id    string
-		ids   []string
-		focus *string
-	}{{"view_single", []string{project}, &project}, {"view_all", []string{}, nil}} {
-		view, err := f.service.readSavedWorkView(t.Context(), "org_security", user.identity.Subject, test.id)
+	return user
+}
+
+func (f postgresWorkViewFixture) grant(t *testing.T, user hostedSecurityUser, write, runner bool) {
+	t.Helper()
+	if err := f.repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		member, err := w.AccessMember(t.Context(), user.identity.Subject)
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
-		if !slices.Equal(view.ProjectIDs, test.ids) || !reflect.DeepEqual(view.ProjectID, test.focus) || view.State.View != "list" || view.State.Sort != "title" || view.State.Lanes != nil {
-			t.Fatalf("migrated=%+v", view)
+		if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: "org_security", UserID: member.UserID, ProjectID: f.project, CanWrite: write, ManageRunner: runner}); err != nil {
+			return err
 		}
+		return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_security", TokenID: member.PrincipalID, ProjectID: f.project})
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

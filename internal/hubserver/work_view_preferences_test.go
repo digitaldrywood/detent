@@ -4,11 +4,15 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 func TestWorkViewPreferences(t *testing.T) {
 	t.Parallel()
-	f := newHostedSecurityFixture(t)
+	f := newPostgresWorkViewFixture(t)
 	alice := f.user(t, "alice", "viewer", "alice@example.test", "read", "")
 	bob := f.user(t, "bob", "member", "bob@example.test", "read", "")
 	fresh := alice
@@ -17,7 +21,10 @@ func TestWorkViewPreferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	fresh.token = token
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO projects (id, organization_id, name, profile, created_at) VALUES ('prj_other', 'org_security', 'other', 'native', 'now')`); err != nil {
+	if err := f.repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_security", ID: "prj_other", Name: "Other project", Slug: "other-project", Profile: "native"}, States: nativeFixtureStates()})
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	other := f
@@ -75,12 +82,12 @@ func TestWorkViewPreferenceAccess(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := newHostedSecurityFixture(t)
+			f := newPostgresWorkViewFixture(t)
 			user := f.user(t, "member", "member", "member@example.test", "read", "")
 			path := f.base + "/work-view-preference"
 			switch test.revoke {
 			case "grant":
-				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id = ?", user.identity.Subject); err != nil {
+				if _, err := f.admin.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id = $1", user.identity.Subject); err != nil {
 					t.Fatal(err)
 				}
 			case "member":
@@ -106,7 +113,7 @@ func TestWorkViewPreferenceAccess(t *testing.T) {
 
 func TestWorkViewPreferenceValidation(t *testing.T) {
 	t.Parallel()
-	f := newHostedSecurityFixture(t)
+	f := newPostgresWorkViewFixture(t)
 	user := f.user(t, "member", "member", "member@example.test", "read", "")
 	for _, test := range []struct {
 		name string
