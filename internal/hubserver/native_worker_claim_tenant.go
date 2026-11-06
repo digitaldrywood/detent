@@ -291,7 +291,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 		}
 	}
 	var lease leasestore.Lease
-	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err := s.writeNativeClaimCommand(ctx, scope, func(ctx context.Context, w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
@@ -559,8 +559,17 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 	return lease, err
 }
 
+func (s *Service) writeNativeClaimCommand(ctx context.Context, scope nativeScope, write func(context.Context, tenantstore.Writer) error) error {
+	if command, ok := s.config.TenantRepository.(interface {
+		WriteRunnerCommand(context.Context, tracker.OrganizationID, string, string, func(context.Context, tenantstore.Writer) error) error
+	}); ok {
+		return command.WriteRunnerCommand(ctx, scope.organization, scope.credential.ID, scope.credential.Runner.RunnerID, write)
+	}
+	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return write(ctx, w) })
+}
+
 func (s *Service) persistNativeClaimCursor(ctx context.Context, scope nativeScope, cursor claimstore.SelectionCursor) error {
-	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	return s.writeNativeClaimCommand(ctx, scope, func(ctx context.Context, w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}

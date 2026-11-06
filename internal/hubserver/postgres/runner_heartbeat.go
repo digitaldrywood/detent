@@ -24,6 +24,7 @@ type runnerHeartbeatIdentity struct {
 }
 type runnerHeartbeatSession struct {
 	*session
+	preloaded                             bool
 	identity                              runnerstore.Identity
 	problems                              []runnerauth.Problem
 	problemsChanged                       bool
@@ -31,7 +32,15 @@ type runnerHeartbeatSession struct {
 	hasRepositories, hasUpdate, hasUrgent bool
 }
 
-func (r *Repository) WriteRunnerHeartbeat(ctx context.Context, organization tracker.OrganizationID, credentialID, runnerID string, write func(context.Context, tenantstore.Writer) error) (resultErr error) {
+func (r *Repository) WriteRunnerHeartbeat(ctx context.Context, organization tracker.OrganizationID, credentialID, runnerID string, write func(context.Context, tenantstore.Writer) error) error {
+	return r.writeRunnerCommand(ctx, organization, credentialID, runnerID, true, write)
+}
+
+func (r *Repository) WriteRunnerCommand(ctx context.Context, organization tracker.OrganizationID, credentialID, runnerID string, write func(context.Context, tenantstore.Writer) error) error {
+	return r.writeRunnerCommand(ctx, organization, credentialID, runnerID, false, write)
+}
+
+func (r *Repository) writeRunnerCommand(ctx context.Context, organization tracker.OrganizationID, credentialID, runnerID string, preload bool, write func(context.Context, tenantstore.Writer) error) (resultErr error) {
 	if _, ok := ctx.Value(readRequestKey{}).(*readRequest); ok {
 		return corestore.ErrTenantMismatch
 	}
@@ -42,13 +51,15 @@ func (r *Repository) WriteRunnerHeartbeat(ctx context.Context, organization trac
 	defer release()
 	initial := new(pgx.Batch)
 	initial.Queue(runnerIdentitySelect+`token_id=$2 FOR UPDATE`, organization, credentialID)
-	initial.Queue(`SELECT ARRAY[COALESCE(r.request_id,''),COALESCE(r.reason,'')],ARRAY[r.runner_id IS NOT NULL,COALESCE(r.pending,false),
+	if preload {
+		initial.Queue(`SELECT ARRAY[COALESCE(r.request_id,''),COALESCE(r.reason,'')],ARRAY[r.runner_id IS NOT NULL,COALESCE(r.pending,false),
  EXISTS(SELECT 1 FROM runner_update_desired WHERE organization_id=$1 AND runner_id=$2) OR EXISTS(SELECT 1 FROM runner_update_observations WHERE organization_id=$1 AND runner_id=$2),
  EXISTS(SELECT 1 FROM runner_urgent_updates WHERE organization_id=$1)],ARRAY[r.listed_at]
  FROM (SELECT 1) seed LEFT JOIN runner_repository_lists r ON r.organization_id=$1 AND r.runner_id=$2
  UNION ALL
  SELECT ARRAY[code,project_id,subject,check_name,error_output,fix_command,message,fix_hint],ARRAY[]::boolean[],ARRAY[reported_at,first_seen]
  FROM (SELECT * FROM runner_problem_reports WHERE organization_id=$1 AND runner_id=$2 ORDER BY code,project_id,subject,check_name LIMIT 129) problems`, organization, runnerID)
+	}
 	tx, results, err := r.runtime.pools.BeginBatch(ctx, pgtransport.Scope{Organization: organization}, pgtransport.Options{}, initial)
 	if err != nil {
 		return mapError(ctx, err)
@@ -65,31 +76,13 @@ func (r *Repository) WriteRunnerHeartbeat(ctx context.Context, organization trac
 		return errors.Join(accessstore.ErrDenied, results.Close())
 	}
 	db := timedQueries{DBTX: tx}
-	h := &runnerHeartbeatSession{session: &session{organization: organization, db: db, queries: pgquery.New(db)}, identity: identity}
-	rows, err := results.Query()
-	if err != nil {
-		return errors.Join(mapError(ctx, err), results.Close())
-	}
-	for rows.Next() {
-		var values []string
-		var flags []bool
-		var times []*time.Time
-		if err := rows.Scan(&values, &flags, &times); err != nil {
-			rows.Close()
-			return errors.Join(mapError(ctx, err), results.Close())
-		}
-		if len(flags) > 0 {
-			h.hasRepositories, h.hasUpdate, h.hasUrgent = flags[0], flags[2], flags[3]
-			h.repositories = runnerstore.RepositoryList{OrganizationID: organization, RunnerID: identity.RunnerID, RequestID: values[0], Reason: values[1], Pending: flags[1], ListedAt: times[0]}
-		} else {
-			if len(h.problems) == maxRunnerProblemRows {
-				rows.Close()
-				return errors.Join(corestore.ErrInvalidPage, results.Close())
-			}
-			h.problems = append(h.problems, runnerauth.Problem{Code: values[0], ProjectID: values[1], Subject: values[2], Check: values[3], ErrorOutput: values[4], FixCommand: values[5], Message: values[6], FixHint: values[7], ReportedAt: *times[0], FirstSeen: *times[1]})
+	h := &runnerHeartbeatSession{session: &session{organization: organization, db: db, queries: pgquery.New(db)}, identity: identity, preloaded: preload}
+	if preload {
+		if err := h.readHeartbeatRows(ctx, results); err != nil {
+			return errors.Join(err, results.Close())
 		}
 	}
-	if err := errors.Join(rows.Err(), results.Close()); err != nil {
+	if err := results.Close(); err != nil {
 		return mapError(ctx, err)
 	}
 	h.credentials = make(map[string]accessstore.Credential)
@@ -113,6 +106,34 @@ func (r *Repository) WriteRunnerHeartbeat(ctx context.Context, organization trac
 	return mapError(ctx, tx.Commit(ctx))
 }
 
+func (h *runnerHeartbeatSession) readHeartbeatRows(ctx context.Context, results pgx.BatchResults) error {
+	rows, err := results.Query()
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var values []string
+		var flags []bool
+		var times []*time.Time
+		if err := rows.Scan(&values, &flags, &times); err != nil {
+			rows.Close()
+			return mapError(ctx, err)
+		}
+		if len(flags) > 0 {
+			h.hasRepositories, h.hasUpdate, h.hasUrgent = flags[0], flags[2], flags[3]
+			h.repositories = runnerstore.RepositoryList{OrganizationID: h.organization, RunnerID: h.identity.RunnerID, RequestID: values[0], Reason: values[1], Pending: flags[1], ListedAt: times[0]}
+		} else {
+			if len(h.problems) == maxRunnerProblemRows {
+				rows.Close()
+				return corestore.ErrInvalidPage
+			}
+			h.problems = append(h.problems, runnerauth.Problem{Code: values[0], ProjectID: values[1], Subject: values[2], Check: values[3], ErrorOutput: values[4], FixCommand: values[5], Message: values[6], FixHint: values[7], ReportedAt: *times[0], FirstSeen: *times[1]})
+		}
+	}
+	return mapError(ctx, rows.Err())
+}
+
 func (h *runnerHeartbeatSession) RunnerProjects(_ context.Context, id string, limit int) ([]tracker.ProjectID, error) {
 	if id != h.identity.RunnerID {
 		return nil, corestore.ErrNotFound
@@ -126,6 +147,9 @@ func (h *runnerHeartbeatSession) RunnerProjects(_ context.Context, id string, li
 	return append([]tracker.ProjectID{}, h.identity.ProjectIDs...), nil
 }
 func (h *runnerHeartbeatSession) RunnerProblems(ctx context.Context, id string) ([]runnerauth.Problem, error) {
+	if !h.preloaded {
+		return h.session.RunnerProblems(ctx, id)
+	}
 	if id != h.identity.RunnerID {
 		return nil, corestore.ErrNotFound
 	}
@@ -134,20 +158,23 @@ func (h *runnerHeartbeatSession) RunnerProblems(ctx context.Context, id string) 
 	}
 	return append([]runnerauth.Problem{}, h.problems...), nil
 }
-func (h *runnerHeartbeatSession) RunnerRepositoryList(_ context.Context, id string) (runnerstore.RepositoryList, error) {
+func (h *runnerHeartbeatSession) RunnerRepositoryList(ctx context.Context, id string) (runnerstore.RepositoryList, error) {
+	if !h.preloaded {
+		return h.session.RunnerRepositoryList(ctx, id)
+	}
 	if id != h.identity.RunnerID || !h.hasRepositories {
 		return runnerstore.RepositoryList{}, corestore.ErrNotFound
 	}
 	return h.repositories, nil
 }
 func (h *runnerHeartbeatSession) RunnerUpdateState(ctx context.Context, id string) (runnerstore.UpdateState, error) {
-	if id == h.identity.RunnerID && !h.hasUpdate {
+	if h.preloaded && id == h.identity.RunnerID && !h.hasUpdate {
 		return runnerstore.UpdateState{OrganizationID: h.organization, RunnerID: id}, nil
 	}
 	return h.session.RunnerUpdateState(ctx, id)
 }
 func (h *runnerHeartbeatSession) RunnerUrgentUpdate(ctx context.Context) (runnerstore.UrgentUpdate, error) {
-	if !h.hasUrgent {
+	if h.preloaded && !h.hasUrgent {
 		return runnerstore.UrgentUpdate{OrganizationID: h.organization}, nil
 	}
 	return h.session.RunnerUrgentUpdate(ctx)

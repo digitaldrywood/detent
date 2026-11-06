@@ -106,7 +106,7 @@ func TestRunnerHeartbeatCommandBoundsAndRollback(t *testing.T) {
 	}
 	for _, size := range []int{2, 50} {
 		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-			if _, err := admin.ExecContext(t.Context(), `INSERT INTO projects(organization_id,id,name,profile) SELECT $1,'project_'||i,'Example','native' FROM generate_series(1,$2) i ON CONFLICT DO NOTHING`, org, size); err != nil {
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO projects(organization_id,id,name,profile) SELECT $1,'project_'||i,'Example '||i,'native' FROM generate_series(1,$2) i ON CONFLICT (organization_id,id) DO NOTHING`, org, size); err != nil {
 				t.Fatal(err)
 			}
 			for _, rollback := range []bool{false, true} {
