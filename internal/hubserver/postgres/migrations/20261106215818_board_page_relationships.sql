@@ -112,10 +112,8 @@ ADD COLUMN page_reporter_unblocks_reason_basis text NOT NULL DEFAULT '',
 ADD COLUMN page_reporter_unblocks_reason_current_basis text NOT NULL DEFAULT '',
 ADD COLUMN page_reporter_unblocks_reason_revision bigint NOT NULL DEFAULT 0;
 
-CREATE INDEX native_board_page_pending_idx ON native_board_items (organization_id,project_id,work_item_id) WHERE NOT page_ready;
 
 -- +goose Down
-DROP INDEX native_board_page_pending_idx;
 ALTER TABLE native_board_items
 DROP COLUMN page_reporter_unblocks_reason_revision,
 DROP COLUMN page_reporter_unblocks_reason_current_basis,

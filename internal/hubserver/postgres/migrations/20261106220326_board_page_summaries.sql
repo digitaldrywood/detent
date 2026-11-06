@@ -1,7 +1,6 @@
 -- +goose Up
 ALTER TABLE native_board_items ADD COLUMN page_window_mask integer NOT NULL DEFAULT 0;
 ALTER TABLE native_board_items ADD COLUMN page_refresh_after timestamptz;
-CREATE INDEX native_board_page_refresh_due ON native_board_items (organization_id,page_refresh_after,work_item_id) WHERE page_refresh_after IS NOT NULL;
 CREATE TABLE native_board_page_summaries (
  organization_id text NOT NULL,
  project_id text NOT NULL,
@@ -32,6 +31,5 @@ CREATE POLICY tenant_isolation ON native_board_page_summaries TO detent_runtime_
 
 -- +goose Down
 DROP TABLE native_board_page_summaries;
-DROP INDEX native_board_page_refresh_due;
 ALTER TABLE native_board_items DROP COLUMN page_refresh_after;
 ALTER TABLE native_board_items DROP COLUMN page_window_mask;
