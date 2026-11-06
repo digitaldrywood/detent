@@ -16,6 +16,10 @@ import (
 )
 
 func (d *database) applyRuntimeRecords(ctx context.Context, plans HostedPlansConfig, prices []HostedBillingPrice, actor, reason, stage string, validate bool) error {
+	return d.applyRuntimeRecordsAtRevision(ctx, plans, prices, actor, reason, stage, validate, nil)
+}
+
+func (d *database) applyRuntimeRecordsAtRevision(ctx context.Context, plans HostedPlansConfig, prices []HostedBillingPrice, actor, reason, stage string, validate bool, expected *string) error {
 	if d.billingAuditStore == nil {
 		return errors.New("hosted billing audit storage is unavailable")
 	}
@@ -48,6 +52,18 @@ func (d *database) applyRuntimeRecords(ctx context.Context, plans HostedPlansCon
 	}
 	rollback := errors.New("runtime validation rollback")
 	err = d.writeBillingTenant(ctx, func(w tenantstore.Writer) error {
+		if expected != nil {
+			current, err := w.CurrentRuntime(ctx)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			if current.ID == stage {
+				return nil
+			}
+			if current.ID != *expected {
+				return corestore.ErrRevisionConflict
+			}
+		}
 		if err := d.validateConfiguredPlanReferences(ctx, w, plans); err != nil {
 			return err
 		}
@@ -96,7 +112,14 @@ func (d *database) applyRuntimeRecords(ctx context.Context, plans HostedPlansCon
 		if _, err := w.CreateBillingPlanAudit(ctx, audits[len(audits)-1]); err != nil {
 			return err
 		}
-		return w.StageRuntime(ctx, revision)
+		if err := w.StageRuntime(ctx, revision); err != nil {
+			return err
+		}
+		published, err := w.RuntimePublished(ctx, revision.ID)
+		if err != nil || !published {
+			return err
+		}
+		return d.replacePublishedPlans(ctx, w, revision, plans)
 	})
 	if errors.Is(err, rollback) {
 		return nil

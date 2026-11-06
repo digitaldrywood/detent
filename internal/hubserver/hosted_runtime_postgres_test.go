@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -15,6 +17,36 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestPostgresRuntimeAdoptionCommitsPlansWithHead(t *testing.T) {
+	repo, admin := projectRecordPostgresWithAdmin(t, 4)
+	plans := pilotHostedPlans()
+	services := configuredPlanPostgresServices(t, plans, repo)
+	revision := uuid.NewString()
+	if _, err := admin.ExecContext(t.Context(), "INSERT INTO hosted_runtime_publications(id) VALUES($1)", revision); err != nil {
+		t.Fatal(err)
+	}
+	plans.Plans[0].Allowances["concurrent_work"] = 17
+	for _, s := range services {
+		d := s.database
+		if err := d.applyRuntimeRecords(t.Context(), plans, nil, "configuration", "published adoption", revision, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.ReadTenant(t.Context(), d.hostedOrganization, corestore.Serving, func(r tenantstore.Reader) error {
+			head, err := r.CurrentRuntime(t.Context())
+			if err != nil {
+				return err
+			}
+			plan, err := r.BillingPlan(t.Context(), billingstore.PlanReference{ID: plans.Plans[0].ID, Version: plans.Plans[0].Version})
+			if err == nil && (head.ID != revision || plan.Allowances["concurrent_work"] != 17) {
+				t.Errorf("%s head=%s allowance=%d; want published head and allowance together", d.hostedOrganization, head.ID, plan.Allowances["concurrent_work"])
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 	for _, mode := range []string{"startup", "reload", "publication", "audit refusal"} {
@@ -102,6 +134,14 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 			if mode == "audit refusal" {
 				if _, err := admin.ExecContext(t.Context(), "ALTER TABLE hosted_plan_audit DROP CONSTRAINT refuse_update"); err != nil {
 					t.Fatal(err)
+				}
+			}
+			if mode == "audit refusal" {
+				for _, s := range services {
+					update := HostedRuntimeUpdate{Plans: &plans, Reason: "retry configuration edit"}
+					if err := s.applyHostedRuntime(t.Context(), &update); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 			if mode == "publication" {

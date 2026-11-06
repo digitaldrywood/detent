@@ -99,33 +99,37 @@ func (d *database) applyPublishedPlans(ctx context.Context, revision billingstor
 		if err := d.validateConfiguredPlanReferences(ctx, w, plans); err != nil {
 			return err
 		}
-		for _, configured := range plans.Plans {
-			configured = normalizeHostedPlan(configured)
-			ref := billingstore.PlanReference{ID: configured.ID, Version: configured.Version}
-			stored, err := w.BillingPlan(ctx, ref)
-			if err != nil {
-				return err
-			}
-			existing := normalizeHostedPlan(HostedPlan{PlanReference: configured.PlanReference, Name: stored.Name, MonthlyUSDCents: stored.MonthlyUSDCents, Features: stored.Features, Allowances: stored.Allowances})
-			if reflect.DeepEqual(existing, configured) {
-				if stored.RuntimeID == "" {
-					if err := w.SetBillingPlanRuntime(ctx, ref, revision.ID); err != nil {
-						return err
-					}
-				}
-				continue
-			}
-			stored.Name, stored.MonthlyUSDCents = configured.Name, configured.MonthlyUSDCents
-			stored.Features, stored.Allowances = configured.Features, configured.Allowances
-			stored.RuntimeID = revision.ID
-			if err := w.ReplaceBillingPlan(ctx, stored); err != nil {
-				return err
-			}
-			audit := billingstore.PlanAudit{OrganizationID: d.hostedOrganization, CommandID: fmt.Sprintf("configuration_%s_%s_%d", revision.ID, ref.ID, ref.Version), RequestHash: revision.Reference.SHA256, ActorID: "configuration", Action: "update_plan", RecordedAt: d.now().UTC(), Reference: revision.Reference}
-			if _, err := w.CreateBillingPlanAudit(ctx, audit); err != nil {
-				return err
-			}
-		}
-		return nil
+		return d.replacePublishedPlans(ctx, w, revision, plans)
 	})
+}
+
+func (d *database) replacePublishedPlans(ctx context.Context, w tenantstore.Writer, revision billingstore.RuntimeRevision, plans HostedPlansConfig) error {
+	for _, configured := range plans.Plans {
+		configured = normalizeHostedPlan(configured)
+		ref := billingstore.PlanReference{ID: configured.ID, Version: configured.Version}
+		stored, err := w.BillingPlan(ctx, ref)
+		if err != nil {
+			return err
+		}
+		existing := normalizeHostedPlan(HostedPlan{PlanReference: configured.PlanReference, Name: stored.Name, MonthlyUSDCents: stored.MonthlyUSDCents, Features: stored.Features, Allowances: stored.Allowances})
+		if reflect.DeepEqual(existing, configured) {
+			if stored.RuntimeID == "" {
+				if err := w.SetBillingPlanRuntime(ctx, ref, revision.ID); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		stored.Name, stored.MonthlyUSDCents = configured.Name, configured.MonthlyUSDCents
+		stored.Features, stored.Allowances = configured.Features, configured.Allowances
+		stored.RuntimeID = revision.ID
+		if err := w.ReplaceBillingPlan(ctx, stored); err != nil {
+			return err
+		}
+		audit := billingstore.PlanAudit{OrganizationID: d.hostedOrganization, CommandID: fmt.Sprintf("configuration_%s_%s_%d", revision.ID, ref.ID, ref.Version), RequestHash: revision.Reference.SHA256, ActorID: "configuration", Action: "update_plan", RecordedAt: d.now().UTC(), Reference: revision.Reference}
+		if _, err := w.CreateBillingPlanAudit(ctx, audit); err != nil {
+			return err
+		}
+	}
+	return nil
 }
