@@ -38,6 +38,7 @@ type Repository interface {
 }
 
 type Reader interface {
+	ExportWorkItems(context.Context, WorkItemExportSelection, int64, int) ([]WorkItem, int64, error)
 	WorkItemHasActiveLease(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, time.Time) (bool, error)
 	NextWorkItemNumber(context.Context, tracker.ProjectID) (int64, error)
 	WorkItemBySource(context.Context, tracker.ProjectID, string) (WorkItem, error)
