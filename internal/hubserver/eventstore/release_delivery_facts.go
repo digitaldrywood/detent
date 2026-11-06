@@ -2,6 +2,7 @@ package eventstore
 
 import (
 	"context"
+
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 

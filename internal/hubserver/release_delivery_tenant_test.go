@@ -6,8 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestReleaseDeliveryStatusPostgresMissingItem(t *testing.T) {

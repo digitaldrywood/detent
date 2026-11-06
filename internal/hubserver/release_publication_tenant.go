@@ -5,11 +5,12 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 func (s *Service) recordReleasePublication(c echo.Context, request tracker.PublishReleasePick, result tracker.ReleasePickPublication) error {
