@@ -301,7 +301,7 @@ func (s *Service) validateCoordinatorMoveAnswer(ctx context.Context, scope nativ
 	}
 	var attemptID string
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		item, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(issue.WorkItemID))
+		item, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
 		if err != nil {
 			return err
 		}

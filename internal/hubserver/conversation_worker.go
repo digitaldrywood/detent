@@ -1201,7 +1201,6 @@ func (c *conversationService) leaseReleased(ctx context.Context, leaseID tracker
 	if err != nil {
 		c.logger.Warn("conversation lease release reconcile failed", "lease", leaseID, "error", err)
 	}
-	return
 }
 
 func (c *conversationService) reconcileExecutions(ctx context.Context) error {

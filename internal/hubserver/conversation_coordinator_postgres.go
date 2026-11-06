@@ -132,7 +132,10 @@ func (c *conversationTurnCoordinator) authorizeRecord(ctx context.Context, scope
 }
 
 func (c *conversationTurnCoordinator) appendMessage(ctx context.Context, w tenantstore.Writer, record *conversationRecord, message *conversationMessageRecord, now time.Time) error {
-	p := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan)
+	p, err := coordinatorPublicationPlan(ctx)
+	if err != nil {
+		return err
+	}
 	prepared, ok := p.messages[message.ID]
 	if ok {
 		*message = prepared
@@ -161,7 +164,10 @@ func (c *conversationTurnCoordinator) appendMessage(ctx context.Context, w tenan
 }
 
 func (c *conversationTurnCoordinator) updateMessage(ctx context.Context, w tenantstore.Writer, message conversationMessageRecord, now time.Time) error {
-	p := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan)
+	p, err := coordinatorPublicationPlan(ctx)
+	if err != nil {
+		return err
+	}
 	if prepared, ok := p.messages[message.ID]; ok {
 		message = prepared
 	}
@@ -194,7 +200,10 @@ func (c *conversationTurnCoordinator) saveConversation(ctx context.Context, w te
 		return err
 	}
 	record.EventSeq = stored.EventSequence
-	plan := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan)
+	plan, err := coordinatorPublicationPlan(ctx)
+	if err != nil {
+		return err
+	}
 	raw, err := recordPayload(*record)
 	if err != nil {
 		return err
@@ -227,7 +236,10 @@ func (c *conversationTurnCoordinator) updateExecution(ctx context.Context, w ten
 
 func (c *conversationTurnCoordinator) appendDelta(ctx context.Context, w tenantstore.Writer, message *conversationMessageRecord, text string, now time.Time) error {
 	offset := len(message.Text)
-	plan := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan)
+	plan, err := coordinatorPublicationPlan(ctx)
+	if err != nil {
+		return err
+	}
 	prepared, ok := plan.messages[message.ID]
 	if !ok {
 		return errors.New("coordinator delta content was not prepared")
@@ -344,7 +356,10 @@ func (c *conversationTurnCoordinator) modelChoices(ctx context.Context, r tenant
 }
 
 func appendCoordinatorEvent(ctx context.Context, w tenantstore.Writer, organization tracker.OrganizationID, id string, kind conversation.EventType, _ any, now time.Time) error {
-	plan := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan)
+	plan, err := coordinatorPublicationPlan(ctx)
+	if err != nil {
+		return err
+	}
 	if plan.eventCursor >= len(plan.events) {
 		return errors.New("coordinator event was not prepared")
 	}
@@ -414,4 +429,12 @@ func coordinatorMonthlyBudget(ctx context.Context, reader billingstore.Reader, p
 		return budget.MonthlyDecision{}, err
 	}
 	return billingstore.EvaluateMonthlyBudget(input)
+}
+
+func coordinatorPublicationPlan(ctx context.Context) (*conversationPublicationPlan, error) {
+	plan, ok := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan)
+	if !ok || plan == nil {
+		return nil, errors.New("coordinator publication plan was not prepared")
+	}
+	return plan, nil
 }

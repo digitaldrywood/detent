@@ -22,7 +22,7 @@ func (s *session) CoordinatorAttentionItems(ctx context.Context, projects []trac
 	}
 	result := make([]corestore.WorkItemReference, 0, len(rows))
 	for _, row := range rows {
-		result = append(result, corestore.WorkItemReference{ProjectID: tracker.ProjectID(row.ProjectID), WorkItemID: row.NativeID})
+		result = append(result, corestore.WorkItemReference{ProjectID: row.ProjectID, WorkItemID: row.NativeID})
 	}
 	return result, nil
 }
