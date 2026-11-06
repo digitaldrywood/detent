@@ -6,6 +6,7 @@
     "native_comment_pages": {"class": "page_read_model", "retention": "current comment lifetime; replay from immutable source versions"},
     "native_work_item_page_dirty": {"class": "index"},
     "native_work_item_page_progress": {"class": "hot_state"},
+    "native_board_page_summaries": {"class": "index"},
     "issue_notification_notices": {"class": "hot_state"},
     "runner_attempt_token_usage": {"class": "hot_state"},
     "runner_project_daily_tokens": {"class": "hot_state"},
