@@ -127,3 +127,35 @@ func TestPostgresSharedKeyManagementRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestPostgresSharedPlatformReadRoutes(t *testing.T) {
+	f := newSharedRouteFixture(t)
+	for org := range f.services {
+		for _, resource := range []string{"members", "runners", "projects", "usage", "users"} {
+			t.Run(org+"/"+resource, func(t *testing.T) {
+				path := "/internal/v1/platform/" + resource
+				response := f.request(t, org, path, `{}`, nil)
+				if response.Code != http.StatusOK {
+					t.Fatalf("allowed=%d %s", response.Code, response.Body)
+				}
+				if resource == "users" && !strings.Contains(response.Body.String(), org+"_owner@example.test") {
+					t.Fatalf("missing tenant owner: %s", response.Body)
+				}
+				for other := range f.services {
+					if other != org && strings.Contains(response.Body.String(), other+"_owner@example.test") {
+						t.Fatalf("foreign tenant owner: %s", response.Body)
+					}
+				}
+				for _, mutate := range []func(*cloudassert.Claims){
+					func(c *cloudassert.Claims) { c.Kind = cloudassert.KindBrowser },
+					func(c *cloudassert.Claims) { c.Audience = "org_foreign" },
+				} {
+					response = f.request(t, org, path, `{}`, mutate)
+					if response.Code != http.StatusNotFound && response.Code != http.StatusUnauthorized {
+						t.Fatalf("refused=%d %s", response.Code, response.Body)
+					}
+				}
+			})
+		}
+	}
+}
