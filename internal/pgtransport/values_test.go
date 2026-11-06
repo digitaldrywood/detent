@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/pgtransport"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestNativeValues(t *testing.T) {
@@ -113,5 +114,24 @@ func TestErrorClassification(t *testing.T) {
 	mixed := errors.Join(context.Canceled, &pgconn.PgError{Code: string(pgtransport.Unique)})
 	if pgtransport.Classify(mixed) != pgtransport.Unique {
 		t.Fatal("lost primary server SQLSTATE")
+	}
+}
+
+func TestNativeUTCAndIDArrayBindings(t *testing.T) {
+	_, config := fixture(t)
+	pools := openPools(t, config, nil)
+	tx := begin(t, pools, pgtransport.Options{ReadOnly: true})
+	at := time.Date(2026, 11, 1, 12, 0, 0, 123456000, time.FixedZone("example", -6*60*60))
+	var ids []string
+	var times []time.Time
+	var single time.Time
+	if err := tx.QueryRow(t.Context(), `SELECT $1::text[],$2::timestamptz[],$3::timestamptz`, []tracker.ProjectID{"first", "second"}, []time.Time{at, at.Add(time.Microsecond)}, at).Scan(&ids, &times, &single); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(ids, []string{"first", "second"}) {
+		t.Fatalf("IDs=%v", ids)
+	}
+	if len(times) != 2 || !times[0].Equal(at) || !times[1].Equal(at.Add(time.Microsecond)) || times[0].Location() != time.UTC || times[1].Location() != time.UTC || single.Location() != time.UTC {
+		t.Fatalf("timestamp locations or values changed: %v %v", times, single)
 	}
 }

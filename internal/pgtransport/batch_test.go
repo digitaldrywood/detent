@@ -129,6 +129,7 @@ func TestInitialWorkOneExchange(t *testing.T) {
 }
 func TestCancellationDuringProtectedRead(t *testing.T) {
 	admin, config := fixture(t)
+	admin.SetMaxOpenConns(2)
 	pools := openPools(t, config, nil)
 	tx := begin(t, pools, pgtransport.Options{ReadOnly: true})
 	var pid int
