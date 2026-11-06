@@ -1004,7 +1004,9 @@ func TestOpenTestServiceUsesPostgres(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "hub.db")
 			cfg := Config{DatabasePath: path, InitialAdminToken: []byte("example_fixture_admin_token")}
 			if hosted {
+				plans := pilotHostedPlans()
 				cfg.Hosted = &HostedConfig{
+					Plans:                &plans,
 					OrganizationID:       "org_example",
 					WorkOSOrganizationID: "provider_example",
 					PublicURL:            "https://hub.example.test",
@@ -1040,6 +1042,9 @@ func openTestService(t *testing.T, cfg Config) *Service {
 			t.Cleanup(func() { testChangeObjects.Delete(cfg.DatabasePath) })
 		}
 		cfg.Content = value.(*changeObjectFixture).call
+	}
+	if cfg.RunDetails == nil && (cfg.Hosted == nil || cfg.Hosted.SharedEntry == nil || cfg.Hosted.SharedEntry.RunDetails == nil) {
+		cfg.RunDetails = &memoryRunDetails{}
 	}
 	if cfg.RunnerReleaseClient == nil {
 		cfg.RunnerReleaseClient = &runnerReleaseFixture{}
