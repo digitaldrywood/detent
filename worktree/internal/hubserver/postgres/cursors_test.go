@@ -1,0 +1,492 @@
+package postgres_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+type recordIdentity struct {
+	ID        int64
+	Name      string
+	CreatedAt time.Time
+	Revision  int64
+	Sequence  int64
+}
+
+func TestRecordPagesAndScansRevisitLateCommits(t *testing.T) {
+	for _, family := range recordFamilies() {
+		t.Run(family.name, func(t *testing.T) {
+			repository, _ := repositoryFor(t, template.Database(t), postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+			prepareRecords(t, repository, "org_first", family.name == "comments")
+			created := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+			create := func(name string, sequence int64) recordIdentity {
+				t.Helper()
+				var record recordIdentity
+				if err := repository.Write(t.Context(), "org_first", corestore.Serving, func(w corestore.Writer) error {
+					var err error
+					record, err = family.create(t.Context(), w, "org_first", recordIdentity{ID: sequence, Name: name, Sequence: sequence, CreatedAt: created})
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return record
+			}
+			first := create("first", 1)
+			high := create("committed", 3)
+			if high.ID <= first.ID+1 {
+				t.Fatalf("import has no reserved gap: first=%d high=%d", first.ID, high.ID)
+			}
+			scan := func(cursor corestore.ScanCursor) ([]recordIdentity, corestore.ScanCursor) {
+				t.Helper()
+				var rows []recordIdentity
+				var next corestore.ScanCursor
+				if err := repository.Read(t.Context(), "org_first", corestore.Background, func(r corestore.Reader) error {
+					var err error
+					rows, next, err = family.scan(t.Context(), r, cursor, 1)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return rows, next
+			}
+			rows, cursor := scan(corestore.ScanCursor{})
+			if len(rows) != 1 || rows[0].Name != "first" || cursor.Through != high.ID {
+				t.Fatalf("first scan = %+v, next = %+v", rows, cursor)
+			}
+			var userCursor corestore.Cursor
+			if err := repository.Read(t.Context(), "org_first", corestore.Serving, func(r corestore.Reader) error {
+				var err error
+				rows, userCursor, err = family.page(t.Context(), r, corestore.Cursor{}, 1)
+				if err == nil && (len(rows) != 1 || rows[0].Name != "first") {
+					t.Fatalf("first user page = %+v", rows)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.Write(t.Context(), "org_first", corestore.Serving, func(w corestore.Writer) error {
+				if family.name == "comments" {
+					return w.DeleteComment(t.Context(), "prj_records", "wi_parent", "first")
+				}
+				return w.DeleteWorkItem(t.Context(), "prj_records", "first")
+			}); err != nil {
+				t.Fatal(err)
+			}
+			create("appended", 4)
+			rows, cursor = scan(cursor)
+			if len(rows) != 1 || rows[0].Name != "committed" || cursor != (corestore.ScanCursor{}) {
+				t.Fatalf("bounded sweep = %+v, next = %+v", rows, cursor)
+			}
+			create("late", 2)
+			var names []string
+			for range 5 {
+				rows, cursor = scan(cursor)
+				for _, row := range rows {
+					names = append(names, row.Name)
+				}
+				if cursor == (corestore.ScanCursor{}) {
+					break
+				}
+			}
+			if !reflect.DeepEqual(names, []string{"late", "committed", "appended"}) {
+				t.Fatalf("next sweep skipped a commit: %v", names)
+			}
+			if err := repository.Read(t.Context(), "org_first", corestore.Serving, func(r corestore.Reader) error {
+				rows, _, err := family.page(t.Context(), r, userCursor, 4)
+				var names []string
+				for _, row := range rows {
+					names = append(names, row.Name)
+				}
+				if err == nil && !reflect.DeepEqual(names, []string{"late", "committed", "appended"}) {
+					t.Fatalf("user continuation skipped concurrent inserts after deleted anchor: %v", names)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+type recordFamily struct {
+	name   string
+	create func(context.Context, corestore.Writer, tracker.OrganizationID, recordIdentity) (recordIdentity, error)
+	page   func(context.Context, corestore.Reader, corestore.Cursor, int) ([]recordIdentity, corestore.Cursor, error)
+	scan   func(context.Context, corestore.Reader, corestore.ScanCursor, int) ([]recordIdentity, corestore.ScanCursor, error)
+}
+
+func recordFamilies() []recordFamily {
+	return []recordFamily{
+		{"work items", func(ctx context.Context, w corestore.Writer, org tracker.OrganizationID, record recordIdentity) (recordIdentity, error) {
+			row, err := w.CreateWorkItem(ctx, corestore.WorkItem{OrganizationID: org, ProjectID: "prj_records", NativeID: tracker.NativeWorkItemID(record.Name), ID: record.ID, Number: record.Sequence, Revision: record.Revision, EventSequence: record.Sequence, Title: record.Name, CreatedAt: record.CreatedAt})
+			return recordIdentity{row.ID, string(row.NativeID), row.CreatedAt, row.Revision, row.EventSequence}, err
+		}, func(ctx context.Context, r corestore.Reader, cursor corestore.Cursor, limit int) ([]recordIdentity, corestore.Cursor, error) {
+			page, err := r.WorkItemPage(ctx, "prj_records", cursor, limit)
+			rows := make([]recordIdentity, len(page.Items))
+			for i, row := range page.Items {
+				rows[i] = recordIdentity{row.ID, string(row.NativeID), row.CreatedAt, row.Revision, row.EventSequence}
+			}
+			return rows, page.Next, err
+		}, func(ctx context.Context, r corestore.Reader, cursor corestore.ScanCursor, limit int) ([]recordIdentity, corestore.ScanCursor, error) {
+			page, err := r.ScanWorkItems(ctx, "prj_records", cursor, limit)
+			rows := make([]recordIdentity, len(page.Items))
+			for i, row := range page.Items {
+				rows[i] = recordIdentity{row.ID, string(row.NativeID), row.CreatedAt, row.Revision, row.EventSequence}
+			}
+			return rows, page.Next, err
+		}},
+		{"comments", func(ctx context.Context, w corestore.Writer, org tracker.OrganizationID, record recordIdentity) (recordIdentity, error) {
+			row, err := w.CreateComment(ctx, corestore.Comment{OrganizationID: org, ProjectID: "prj_records", WorkItemID: "wi_parent", ID: record.Name, RecordID: record.ID, Sequence: record.Sequence, Revision: record.Revision, BodyObjectKey: "example/body", ActorKind: "human", ActorPrincipalID: "example", CreatedAt: record.CreatedAt})
+			return recordIdentity{row.RecordID, row.ID, row.CreatedAt, row.Revision, row.Sequence}, err
+		}, func(ctx context.Context, r corestore.Reader, cursor corestore.Cursor, limit int) ([]recordIdentity, corestore.Cursor, error) {
+			page, err := r.CommentPage(ctx, "prj_records", "wi_parent", cursor, limit)
+			rows := make([]recordIdentity, len(page.Items))
+			for i, row := range page.Items {
+				rows[i] = recordIdentity{row.RecordID, row.ID, row.CreatedAt, row.Revision, row.Sequence}
+			}
+			return rows, page.Next, err
+		}, func(ctx context.Context, r corestore.Reader, cursor corestore.ScanCursor, limit int) ([]recordIdentity, corestore.ScanCursor, error) {
+			page, err := r.ScanComments(ctx, "prj_records", "wi_parent", cursor, limit)
+			rows := make([]recordIdentity, len(page.Items))
+			for i, row := range page.Items {
+				rows[i] = recordIdentity{row.RecordID, row.ID, row.CreatedAt, row.Revision, row.Sequence}
+			}
+			return rows, page.Next, err
+		}},
+	}
+}
+
+func prepareRecords(t *testing.T, repository corestore.Repository, org tracker.OrganizationID, comments bool) {
+	t.Helper()
+	if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
+		if err := seedCoreOrganization(t.Context(), w, org); err != nil {
+			return err
+		}
+		if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: org, ID: "prj_records", Name: "Records", Profile: "native"}); err != nil {
+			return err
+		}
+		if comments {
+			_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "prj_records", NativeID: "wi_parent", Number: 1, Title: "Parent"})
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRecordPagesPreserveImportsAndCursorOrdering(t *testing.T) {
+	created := time.Date(2020, 1, 2, 3, 4, 5, 123456000, time.UTC)
+	for _, family := range recordFamilies() {
+		t.Run(family.name, func(t *testing.T) {
+			repository, _ := repositoryFor(t, template.Database(t), smallPool())
+			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+				prepareRecords(t, repository, org, family.name == "comments")
+				if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
+					for _, want := range []recordIdentity{{103, "third", created.Add(24 * time.Hour), 7, 1}, {102, "second", created.Add(-24 * time.Hour), 8, 2}, {101, "first", created, 9, 3}, {104, "fourth", created.Add(-24 * time.Hour), 10, 4}} {
+						got, err := family.create(t.Context(), w, org, want)
+						if err != nil {
+							return err
+						}
+						if got.ID != want.ID || got.Name != want.Name || !got.CreatedAt.Equal(want.CreatedAt) || got.Revision != want.Revision || got.Sequence != want.Sequence {
+							t.Errorf("import = %+v, want %+v", got, want)
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
+					_, err := family.create(t.Context(), w, org, recordIdentity{ID: 101, Name: "duplicate", Sequence: 5})
+					return err
+				})
+				if !errors.Is(err, corestore.ErrUniqueViolation) {
+					t.Fatalf("duplicate numeric identity error = %v", err)
+				}
+			}
+			var cursor corestore.Cursor
+			if err := repository.Read(t.Context(), "org_first", corestore.Serving, func(r corestore.Reader) error {
+				rows, next, err := family.page(t.Context(), r, corestore.Cursor{}, 1)
+				if err == nil && (len(rows) != 1 || rows[0].Name != "second" || next.Version != 2) {
+					t.Fatalf("first page = %+v, next = %+v", rows, next)
+				}
+				cursor = next
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, tc := range []struct {
+				version int
+				want    []string
+			}{
+				{1, []string{"second", "third", "fourth"}},
+				{2, []string{"fourth", "first", "third"}},
+			} {
+				t.Run(fmt.Sprintf("version %d", tc.version), func(t *testing.T) {
+					after := cursor
+					after.Version = tc.version
+					if tc.version == 1 {
+						after.ID = 101
+						after.CreatedAt = time.Time{}
+					}
+					if err := repository.Read(t.Context(), "org_first", corestore.Serving, func(r corestore.Reader) error {
+						for _, want := range tc.want[:2] {
+							rows, next, err := family.page(t.Context(), r, after, 1)
+							if err != nil {
+								return err
+							}
+							if len(rows) != 1 || rows[0].Name != want || next.Version != tc.version || next.ID != rows[0].ID || next.OrganizationID != after.OrganizationID || next.ProjectID != after.ProjectID || next.WorkItemID != after.WorkItemID || next.CreatedAt.IsZero() != (tc.version == 1) {
+								t.Fatalf("continued page after %+v = %+v, next = %+v, want %s", after, rows, next, want)
+							}
+							after = next
+						}
+						rows, next, err := family.page(t.Context(), r, after, 2)
+						if err == nil && (len(rows) != 1 || rows[0].Name != tc.want[2] || next != (corestore.Cursor{})) {
+							t.Fatalf("last page = %+v, next = %+v, want %s", rows, next, tc.want[2])
+						}
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
+			for _, tc := range []struct {
+				name   string
+				change func(*corestore.Cursor)
+			}{
+				{"tenant", func(c *corestore.Cursor) { c.OrganizationID = "org_second" }},
+				{"project", func(c *corestore.Cursor) { c.ProjectID = "prj_other" }},
+				{"work item", func(c *corestore.Cursor) { c.WorkItemID = "wi_other" }},
+				{"version", func(c *corestore.Cursor) { c.Version = 99 }},
+				{"missing timestamp", func(c *corestore.Cursor) { c.CreatedAt = time.Time{} }},
+				{"missing legacy anchor", func(c *corestore.Cursor) { c.Version = 1; c.CreatedAt = time.Time{}; c.ID = 999 }},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					after := cursor
+					tc.change(&after)
+					err := repository.Read(t.Context(), "org_first", corestore.Serving, func(r corestore.Reader) error {
+						_, _, err := family.page(t.Context(), r, after, 1)
+						return err
+					})
+					if !errors.Is(err, corestore.ErrInvalidCursor) {
+						t.Fatalf("invalid cursor error = %v", err)
+					}
+				})
+			}
+			for _, limit := range []int{0, corestore.MaxPageSize + 1} {
+				t.Run(fmt.Sprintf("limit %d", limit), func(t *testing.T) {
+					if err := repository.Read(t.Context(), "org_first", corestore.Serving, func(r corestore.Reader) error {
+						_, _, pageErr := family.page(t.Context(), r, corestore.Cursor{}, limit)
+						_, _, scanErr := family.scan(t.Context(), r, corestore.ScanCursor{}, limit)
+						if !errors.Is(pageErr, corestore.ErrInvalidPage) || !errors.Is(scanErr, corestore.ErrInvalidPage) {
+							t.Fatalf("invalid limit returned page=%v scan=%v", pageErr, scanErr)
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestImportedIDsDoNotCollideWithAutomaticInserts(t *testing.T) {
+	for _, family := range recordFamilies() {
+		t.Run(family.name, func(t *testing.T) {
+			for _, imports := range [][]int64{{1}, {100, 2}} {
+				t.Run(fmt.Sprint(imports), func(t *testing.T) {
+					repository, _ := repositoryFor(t, template.Database(t), smallPool())
+					prepareRecords(t, repository, "org_first", family.name == "comments")
+					var maximum int64
+					for i, id := range imports {
+						maximum = max(maximum, id)
+						if err := repository.Write(t.Context(), "org_first", corestore.Serving, func(w corestore.Writer) error {
+							got, err := family.create(t.Context(), w, "org_first", recordIdentity{ID: id, Name: fmt.Sprintf("import_%d", i), Sequence: int64(i + 1)})
+							if err == nil && got.ID != id {
+								t.Errorf("imported ID = %d, want %d", got.ID, id)
+							}
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					for i := range 2 {
+						if err := repository.Write(t.Context(), "org_first", corestore.Serving, func(w corestore.Writer) error {
+							got, err := family.create(t.Context(), w, "org_first", recordIdentity{Name: fmt.Sprintf("automatic_%d", i), Sequence: int64(len(imports) + i + 1)})
+							if err == nil && got.ID <= maximum {
+								t.Errorf("automatic ID = %d, want greater than %d", got.ID, maximum)
+							}
+							maximum = got.ID
+							return err
+						}); err != nil {
+							t.Fatalf("automatic insert after import: %v", err)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestLegacyPagesKeepNumberOrdering(t *testing.T) {
+	created := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, family := range recordFamilies() {
+		t.Run(family.name, func(t *testing.T) {
+			repository, _ := repositoryFor(t, template.Database(t), smallPool())
+			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+				prepareRecords(t, repository, org, family.name == "comments")
+				if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
+					for sequence := int64(1); sequence <= 3; sequence++ {
+						_, err := family.create(t.Context(), w, org, recordIdentity{Name: fmt.Sprintf("record_%d", sequence), Sequence: sequence, CreatedAt: created.Add(-time.Duration(sequence) * time.Hour)})
+						if err != nil {
+							return err
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, tc := range []struct {
+				after        int64
+				deleteAnchor bool
+			}{{0, false}, {1, false}, {2, false}, {3, false}, {1, true}} {
+				after := tc.after
+				if tc.deleteAnchor {
+					if err := repository.Write(t.Context(), "org_first", corestore.Serving, func(w corestore.Writer) error {
+						if family.name == "work items" {
+							return w.DeleteWorkItem(t.Context(), "prj_records", "record_1")
+						}
+						return w.DeleteComment(t.Context(), "prj_records", "wi_parent", "record_1")
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := repository.Read(t.Context(), "org_first", corestore.Serving, func(r corestore.Reader) error {
+					var names []string
+					if family.name == "work items" {
+						rows, err := r.WorkItems(t.Context(), "prj_records", after, 1)
+						if err != nil {
+							return err
+						}
+						for _, row := range rows {
+							names = append(names, string(row.NativeID))
+						}
+					} else {
+						rows, err := r.Comments(t.Context(), "prj_records", "wi_parent", after, 1)
+						if err != nil {
+							return err
+						}
+						for _, row := range rows {
+							names = append(names, row.ID)
+						}
+					}
+					var want []string
+					if after < 3 {
+						want = []string{fmt.Sprintf("record_%d", after+1)}
+					}
+					if !reflect.DeepEqual(names, want) {
+						t.Errorf("after %d = %v, want %v", after, names, want)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestImportedIDsWaitForConcurrentAllocations(t *testing.T) {
+	for _, family := range recordFamilies() {
+		t.Run(family.name, func(t *testing.T) {
+			admin := template.Database(t)
+			repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+			prepareRecords(t, repository, "org_first", family.name == "comments")
+			ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
+			release := make(chan struct{})
+			releaseAllocation := sync.OnceFunc(func() { close(release) })
+			ready := make(chan recordIdentity, 1)
+			allocated := make(chan struct{})
+			imported := make(chan struct{})
+			var allocationErr, importErr error
+			go func() {
+				defer close(allocated)
+				allocationErr = repository.Write(ctx, "org_first", corestore.Serving, func(w corestore.Writer) error {
+					row, err := family.create(ctx, w, "org_first", recordIdentity{Name: "automatic_first", Sequence: 1})
+					if err != nil {
+						return err
+					}
+					ready <- row
+					select {
+					case <-release:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				})
+			}()
+			t.Cleanup(func() { cancel(); releaseAllocation(); <-allocated })
+			select {
+			case row := <-ready:
+				if row.ID <= 0 {
+					t.Fatal("automatic allocation is missing")
+				}
+			case <-allocated:
+				t.Fatalf("automatic allocation: %v", allocationErr)
+			}
+			go func() {
+				defer close(imported)
+				importErr = repository.Write(ctx, "org_first", corestore.Serving, func(w corestore.Writer) error {
+					_, err := family.create(ctx, w, "org_first", recordIdentity{ID: 100, Name: "imported", Sequence: 2})
+					return err
+				})
+			}()
+			t.Cleanup(func() { cancel(); <-imported })
+			testenv.WaitUntil(t, ctx, func() error {
+				select {
+				case <-imported:
+					t.Fatalf("import completed before concurrent allocation committed: %v", importErr)
+				default:
+				}
+				var waiting bool
+				if err := admin.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE NOT granted AND pid IN (SELECT pid FROM pg_stat_activity WHERE datname=current_database()))`).Scan(&waiting); err != nil {
+					return err
+				}
+				if !waiting {
+					return errors.New("import has not reached concurrent allocation")
+				}
+				return nil
+			})
+			releaseAllocation()
+			<-allocated
+			if allocationErr != nil {
+				t.Fatal(allocationErr)
+			}
+			<-imported
+			if importErr != nil {
+				t.Fatal(importErr)
+			}
+			if err := repository.Write(t.Context(), "org_first", corestore.Serving, func(w corestore.Writer) error {
+				row, err := family.create(t.Context(), w, "org_first", recordIdentity{Name: "automatic_next", Sequence: 3})
+				if err == nil && row.ID <= 100 {
+					t.Errorf("automatic ID = %d, want greater than imported 100", row.ID)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

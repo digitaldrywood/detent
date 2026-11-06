@@ -1,0 +1,909 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/activehours"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
+)
+
+func TestGlobalConfigReloaderApply(t *testing.T) {
+	t.Parallel()
+
+	reloadErr := errors.New("invalid global config")
+	buildErr := globalconfig.ValidationError{
+		Path:     "global.yaml",
+		Problems: []string{"projects[0].workflow: expand path: home directory is not available"},
+	}
+	reconcileErr := errors.New("reconcile failed")
+	current := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+	current.Global.LocalIntakeEnabled = new(false)
+	next := reloadTestConfig("global.yaml", 4, []globalconfig.Project{
+		{ID: "alpha", Weight: 1},
+		{ID: "bravo", Weight: 2},
+	})
+
+	tests := []struct {
+		name        string
+		update      configwatcher.FileUpdate[globalconfig.Config]
+		managerErr  error
+		wantCurrent globalconfig.Config
+		wantCalls   int
+		wantErr     error
+		wantErrText string
+	}{
+		{
+			name:        "valid update reconciles and retains next config",
+			update:      configwatcher.FileUpdate[globalconfig.Config]{Path: next.Path, Value: next},
+			wantCurrent: next,
+			wantCalls:   1,
+		},
+		{
+			name:        "invalid update keeps current config",
+			update:      configwatcher.FileUpdate[globalconfig.Config]{Path: current.Path, Err: reloadErr},
+			wantCurrent: current,
+			wantErr:     reloadErr,
+		},
+		{
+			name:        "build error keeps current config",
+			update:      configwatcher.FileUpdate[globalconfig.Config]{Path: current.Path, Err: buildErr},
+			wantCurrent: current,
+			wantErrText: buildErr.Error(),
+		},
+		{
+			name:        "reconcile error keeps current config",
+			update:      configwatcher.FileUpdate[globalconfig.Config]{Path: next.Path, Value: next},
+			managerErr:  reconcileErr,
+			wantCurrent: current,
+			wantCalls:   1,
+			wantErr:     reconcileErr,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			manager := &globalReloadManager{err: tt.managerErr}
+			reloader := &globalConfigReloader{
+				current: current,
+				manager: manager,
+			}
+
+			_, err := reloader.apply(context.Background(), tt.update)
+			if tt.wantErrText != "" {
+				if err == nil || err.Error() != tt.wantErrText {
+					t.Fatalf("apply() error = %v, want %v", err, tt.wantErrText)
+				}
+			} else if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("apply() error = %v, want %v", err, tt.wantErr)
+			}
+			if manager.calls != tt.wantCalls {
+				t.Fatalf("manager calls = %d, want %d", manager.calls, tt.wantCalls)
+			}
+			if manager.calls > 0 {
+				wantConfig := project.ManagerConfigFromGlobal(tt.update.Value)
+				if !reflect.DeepEqual(manager.config, wantConfig) {
+					t.Fatalf("manager config = %#v, want %#v", manager.config, wantConfig)
+				}
+			}
+			if !reflect.DeepEqual(reloader.current, tt.wantCurrent) {
+				t.Fatalf("current = %#v, want %#v", reloader.current, tt.wantCurrent)
+			}
+		})
+	}
+}
+
+func TestGlobalConfigReloaderUsesLatestFileSnapshot(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	alpha := createBootProjectFiles(t)
+	current := reloadTestConfig(path, 2, []globalconfig.Project{{
+		ID:       "alpha",
+		Workflow: alpha.workflowPath,
+		Workdir:  alpha.workdirPath,
+		Weight:   1,
+	}})
+	if err := globalconfig.Write(path, current); err != nil {
+		t.Fatalf("Write(current) error = %v", err)
+	}
+	current, err := globalconfig.Read(path)
+	if err != nil {
+		t.Fatalf("Read(current) error = %v", err)
+	}
+	stale := current
+	stale.Global.MaxConcurrentAgents = 4
+	latest := current
+	latest.Global.MaxConcurrentAgents = 6
+	if err := globalconfig.Write(path, latest); err != nil {
+		t.Fatalf("Write(latest) error = %v", err)
+	}
+	latest, err = globalconfig.Read(path)
+	if err != nil {
+		t.Fatalf("Read(latest) error = %v", err)
+	}
+
+	manager := &globalReloadManager{}
+	reloaded := []globalconfig.Config{}
+	reloader := &globalConfigReloader{
+		current: current,
+		manager: manager,
+		onReload: func(cfg globalconfig.Config) {
+			reloaded = append(reloaded, cfg)
+		},
+	}
+	reloader.handle(context.Background(), configwatcher.FileUpdate[globalconfig.Config]{
+		Path:  path,
+		Value: stale,
+	})
+
+	if manager.calls != 1 {
+		t.Fatalf("manager calls = %d, want 1", manager.calls)
+	}
+	if want := project.ManagerConfigFromGlobal(latest); !reflect.DeepEqual(manager.config, want) {
+		t.Fatalf("manager config = %#v, want latest %#v", manager.config, want)
+	}
+	if !reflect.DeepEqual(reloader.current, latest) {
+		t.Fatalf("current = %#v, want latest %#v", reloader.current, latest)
+	}
+	if !reflect.DeepEqual(reloaded, []globalconfig.Config{latest}) {
+		t.Fatalf("reload callbacks = %#v, want latest only", reloaded)
+	}
+}
+
+func TestSyncLatestGlobalConfigReconcilesMissedWatchEvent(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	alpha := createBootProjectFiles(t)
+	current := reloadTestConfig(path, 2, []globalconfig.Project{{
+		ID:       "alpha",
+		Workflow: alpha.workflowPath,
+		Workdir:  alpha.workdirPath,
+		Weight:   1,
+	}})
+	if err := globalconfig.Write(path, current); err != nil {
+		t.Fatalf("Write(current) error = %v", err)
+	}
+	current, err := globalconfig.Read(path)
+	if err != nil {
+		t.Fatalf("Read(current) error = %v", err)
+	}
+	latest := current
+	latest.Global.MaxConcurrentAgents = 6
+	if err := globalconfig.Write(path, latest); err != nil {
+		t.Fatalf("Write(latest) error = %v", err)
+	}
+	latest, err = globalconfig.Read(path)
+	if err != nil {
+		t.Fatalf("Read(latest) error = %v", err)
+	}
+
+	manager := &globalReloadManager{}
+	reloader := &globalConfigReloader{current: current, manager: manager}
+	syncLatestGlobalConfig(context.Background(), path, reloader)
+
+	if manager.calls != 1 {
+		t.Fatalf("manager calls = %d, want 1", manager.calls)
+	}
+	if !reflect.DeepEqual(reloader.current, latest) {
+		t.Fatalf("current = %#v, want latest %#v", reloader.current, latest)
+	}
+}
+
+func TestGlobalConfigReloaderConvergesWhenFileChangesDuringReconciliation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("disk configuration reconciliation with wall-clock deadlines")
+	}
+
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	alpha := createBootProjectFiles(t)
+	current := reloadTestConfig(path, 2, []globalconfig.Project{{
+		ID:       "alpha",
+		Workflow: alpha.workflowPath,
+		Workdir:  alpha.workdirPath,
+		Weight:   1,
+	}})
+	if err := globalconfig.Write(path, current); err != nil {
+		t.Fatalf("Write(current) error = %v", err)
+	}
+	settings, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "settings.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = settings.Close() })
+	if _, err := settings.InitializeLocalConfiguration(t.Context(), current, nil); err != nil {
+		t.Fatal(err)
+	}
+	current, err = readRuntimeConfiguration(t.Context(), settings, path)
+	if err != nil {
+		t.Fatalf("Read(current) error = %v", err)
+	}
+	first := current
+	first.Global.MaxConcurrentAgents = 4
+	if err := globalconfig.Write(path, first); err != nil {
+		t.Fatalf("Write(first) error = %v", err)
+	}
+	first, err = readRuntimeConfiguration(t.Context(), settings, path)
+	if err != nil {
+		t.Fatalf("Read(first) error = %v", err)
+	}
+
+	manager := newBlockingGlobalReloadManager()
+	manager.results = []project.ReconcileResult{
+		{DrainedSessions: []project.ReconcileSession{{ProjectID: "alpha", Identifier: "alpha#1"}}},
+		{DrainedSessions: []project.ReconcileSession{{ProjectID: "alpha", Identifier: "alpha#2"}}},
+	}
+	reloaded := []globalconfig.Config{}
+	applied := []int{}
+	var logs bytes.Buffer
+	reloader := &globalConfigReloader{
+		current:  current,
+		manager:  manager,
+		settings: settings,
+		applyRuntime: func(cfg globalconfig.Config) error {
+			applied = append(applied, cfg.Global.MaxConcurrentAgents)
+			return nil
+		},
+		onReload: func(cfg globalconfig.Config) {
+			reloaded = append(reloaded, cfg)
+		},
+		logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reloader.handle(t.Context(), configwatcher.FileUpdate[globalconfig.Config]{
+			Path:  path,
+			Value: first,
+		})
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-manager.release:
+		default:
+			close(manager.release)
+		}
+		<-done
+	})
+
+	select {
+	case <-manager.started:
+	case <-done:
+		t.Fatal("reload finished before first reconciliation")
+	}
+	latest := current
+	latest.Global.MaxConcurrentAgents = 6
+	if err := globalconfig.Write(path, latest); err != nil {
+		t.Fatalf("Write(latest) error = %v", err)
+	}
+	latest, err = readRuntimeConfiguration(t.Context(), settings, path)
+	if err != nil {
+		t.Fatalf("Read(latest) error = %v", err)
+	}
+	close(manager.release)
+	<-done
+
+	if len(manager.configs) != 2 || manager.configs[0].Projects[0].ID != "alpha" || manager.configs[1].Projects[0].ID != "alpha" {
+		t.Fatalf("manager configs = %#v, want two alpha reconciliations", manager.configs)
+	}
+	if !reflect.DeepEqual(applied, []int{4, 6}) {
+		t.Fatalf("applied runtime capacities = %v, want [4 6]", applied)
+	}
+	if !reflect.DeepEqual(reloader.current, latest) {
+		t.Fatalf("current = %#v, want latest %#v", reloader.current, latest)
+	}
+	if !reflect.DeepEqual(reloaded, []globalconfig.Config{latest}) {
+		t.Fatalf("reload callbacks = %#v, want latest only", reloaded)
+	}
+	for _, identifier := range []string{"alpha#1", "alpha#2"} {
+		if !strings.Contains(logs.String(), identifier) {
+			t.Fatalf("completion logs missing drained session %q:\n%s", identifier, logs.String())
+		}
+	}
+}
+
+func TestGlobalConfigReloaderLogsReconciliationLifecycleAndDrainedSessions(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	alpha := createBootProjectFiles(t)
+	current := reloadTestConfig(path, 2, []globalconfig.Project{{
+		ID:       "alpha",
+		Workflow: alpha.workflowPath,
+		Workdir:  alpha.workdirPath,
+		Weight:   1,
+	}})
+	if err := globalconfig.Write(path, current); err != nil {
+		t.Fatalf("Write(current) error = %v", err)
+	}
+	current, err := globalconfig.Read(path)
+	if err != nil {
+		t.Fatalf("Read(current) error = %v", err)
+	}
+	next := current
+	next.Global.CPU.PressureSomeAvg10Threshold = 95
+	if err := globalconfig.Write(path, next); err != nil {
+		t.Fatalf("Write(next) error = %v", err)
+	}
+	next, err = globalconfig.Read(path)
+	if err != nil {
+		t.Fatalf("Read(next) error = %v", err)
+	}
+
+	var logs bytes.Buffer
+	reloader := &globalConfigReloader{
+		current: current,
+		manager: &globalReloadManager{result: project.ReconcileResult{
+			Changed: []project.ID{"alpha"},
+			DrainedSessions: []project.ReconcileSession{{
+				ProjectID:         "alpha",
+				IssueID:           "2058",
+				Identifier:        "digitaldrywood/pyroapex#2058",
+				WorkAttemptID:     7755,
+				DetentSessionID:   9900,
+				ProviderSessionID: "thread-2058-turn-1",
+			}},
+		}},
+		logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	reloader.handle(context.Background(), configwatcher.FileUpdate[globalconfig.Config]{Path: path, Value: next})
+
+	for _, want := range []string{
+		"global config reconciliation started",
+		"global config reconciliation completed",
+		"global.cpu.pressure_some_avg10_threshold",
+		"drained_sessions",
+		"digitaldrywood/pyroapex#2058",
+		"9900",
+		"thread-2058-turn-1",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("reconciliation logs missing %q:\n%s", want, logs.String())
+		}
+	}
+}
+
+func TestGlobalConfigReloaderUpdatesRuntimeGitHubToken(t *testing.T) {
+	t.Parallel()
+
+	current := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+	next := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+	next.GitHubToken = "next-token"
+	token := newRuntimeGitHubTokenState("current-token")
+	manager := &globalReloadManager{}
+	reloader := &globalConfigReloader{
+		current:     current,
+		manager:     manager,
+		githubToken: token,
+		resolveGitHubToken: func(_ context.Context, cfg globalconfig.Config) (string, error) {
+			return cfg.GitHubToken, nil
+		},
+	}
+
+	_, err := reloader.apply(context.Background(), configwatcher.FileUpdate[globalconfig.Config]{
+		Path:  next.Path,
+		Value: next,
+	})
+	if err != nil {
+		t.Fatalf("apply() error = %v", err)
+	}
+	if got := token.get(); got != "next-token" {
+		t.Fatalf("runtime GitHub token = %q, want next-token", got)
+	}
+	if got, want := manager.config.RuntimeCredentialVersion, runtimeGitHubTokenVersion("next-token"); got != want {
+		t.Fatalf("RuntimeCredentialVersion = %q, want %q", got, want)
+	}
+}
+
+func TestStartupManagerConfigMatchesFirstReload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs a fake gh command")
+	}
+
+	tests := []struct {
+		name        string
+		githubToken string
+	}{
+		{name: "configured token", githubToken: "literal-token"},
+		{name: "gh sentinel", githubToken: "gh"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeGHDir := t.TempDir()
+			writeFakeGHAuthToken(t, fakeGHDir)
+			t.Setenv("PATH", fakeGHDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("GITHUB_TOKEN", "")
+
+			cfg := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+			cfg.GitHubToken = tt.githubToken
+			unloaded := func(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+				return context.WithTimeout(ctx, 2*time.Minute)
+			}
+			token := newRuntimeGitHubTokenState("")
+			startup, err := startupManagerConfig(t.Context(), cfg, token, runtimeGitHubTokenRefresherWithCommandContext(newGlobalConfigState(cfg), token, unloaded), 2*time.Minute)
+			if err != nil {
+				t.Fatalf("startupManagerConfig() error = %v", err)
+			}
+
+			manager := &globalReloadManager{}
+			reloader := &globalConfigReloader{current: cfg, manager: manager, githubToken: token, resolveGitHubToken: func(ctx context.Context, cfg globalconfig.Config) (string, error) {
+				return resolveGlobalRuntimeGitHubTokenWithCommandContext(ctx, cfg, unloaded)
+			}}
+			if _, err := reloader.apply(t.Context(), configwatcher.FileUpdate[globalconfig.Config]{Path: cfg.Path, Value: cfg}); err != nil {
+				t.Fatalf("apply() error = %v", err)
+			}
+			if startup.RuntimeCredentialVersion == "" || !reflect.DeepEqual(startup, manager.config) {
+				t.Fatalf("startup manager config = %+v, first reload = %+v", startup, manager.config)
+			}
+		})
+	}
+}
+
+func TestGlobalConfigReloaderRestoresRuntimeGitHubTokenOnError(t *testing.T) {
+	t.Parallel()
+
+	reconcileErr := errors.New("reconcile failed")
+	current := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+	next := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+	next.GitHubToken = "next-token"
+	token := newRuntimeGitHubTokenState("current-token")
+	reloader := &globalConfigReloader{
+		current:     current,
+		manager:     &globalReloadManager{err: reconcileErr},
+		githubToken: token,
+		resolveGitHubToken: func(_ context.Context, cfg globalconfig.Config) (string, error) {
+			return cfg.GitHubToken, nil
+		},
+	}
+
+	_, err := reloader.apply(context.Background(), configwatcher.FileUpdate[globalconfig.Config]{
+		Path:  next.Path,
+		Value: next,
+	})
+	if !errors.Is(err, reconcileErr) {
+		t.Fatalf("apply() error = %v, want %v", err, reconcileErr)
+	}
+	if got := token.get(); got != "current-token" {
+		t.Fatalf("runtime GitHub token = %q, want current-token", got)
+	}
+}
+
+func TestGlobalConfigReloaderRestoresRuntimeConfigOnReconcileError(t *testing.T) {
+	t.Parallel()
+
+	reconcileErr := errors.New("reconcile failed")
+	current := reloadTestConfig("global.yaml", 2, nil)
+	next := reloadTestConfig("global.yaml", 4, nil)
+	applied := []int{}
+	reloader := &globalConfigReloader{
+		current: current,
+		manager: &globalReloadManager{err: reconcileErr},
+		applyRuntime: func(cfg globalconfig.Config) error {
+			applied = append(applied, cfg.Global.MaxConcurrentAgents)
+			return nil
+		},
+	}
+
+	_, err := reloader.apply(context.Background(), configwatcher.FileUpdate[globalconfig.Config]{
+		Path:  next.Path,
+		Value: next,
+	})
+	if !errors.Is(err, reconcileErr) {
+		t.Fatalf("apply() error = %v, want %v", err, reconcileErr)
+	}
+	if want := []int{4, 2}; !reflect.DeepEqual(applied, want) {
+		t.Fatalf("runtime capacities = %v, want %v", applied, want)
+	}
+}
+
+func TestGlobalConfigReloaderAppliesIdentityReload(t *testing.T) {
+	t.Parallel()
+
+	current := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+	current.Global.Identity = globalconfig.Identity{Name: "old-worker", GitHubLogin: "old-bot"}
+	next := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+	next.Global.Identity = globalconfig.Identity{Name: "new-worker", GitHubLogin: "new-bot"}
+	manager := &globalReloadManager{}
+	reloader := &globalConfigReloader{
+		current: current,
+		manager: manager,
+	}
+
+	_, err := reloader.apply(context.Background(), configwatcher.FileUpdate[globalconfig.Config]{
+		Path:  next.Path,
+		Value: next,
+	})
+	if err != nil {
+		t.Fatalf("apply() error = %v", err)
+	}
+	if manager.config.Identity.Name != "new-worker" {
+		t.Fatalf("manager identity name = %q, want new-worker", manager.config.Identity.Name)
+	}
+	if len(manager.config.Projects) != 1 || manager.config.Projects[0].Identity.Name != "new-worker" {
+		t.Fatalf("manager project identity = %#v, want new-worker", manager.config.Projects)
+	}
+}
+
+func TestChangedGlobalConfigFieldsReloadClassification(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		field           string
+		requiresRestart bool
+		mutate          func(*globalconfig.Config)
+	}{
+		{name: "local intake", field: "global.local_intake_enabled", mutate: func(cfg *globalconfig.Config) { cfg.Global.LocalIntakeEnabled = new(false) }},
+		{name: "environment", field: "env", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { cfg.Env = "dev" }},
+		{name: "log level", field: "log_level", mutate: func(cfg *globalconfig.Config) { cfg.LogLevel = "debug" }},
+		{name: "profiling", field: "profiling", mutate: func(cfg *globalconfig.Config) { cfg.Profiling.ListenAddr = "127.0.0.1:0" }},
+		{name: "log max size", field: "log_max_size_bytes", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { value := 2048; cfg.LogMaxSizeBytes = &value }},
+		{name: "log backups", field: "log_max_backups", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { value := 2; cfg.LogMaxBackups = &value }},
+		{name: "GitHub token", field: "github_token", mutate: func(cfg *globalconfig.Config) { cfg.GitHubToken = "gh" }},
+		{name: "loopback peer read trust", field: "trust_loopback_peer_read", mutate: func(cfg *globalconfig.Config) { cfg.TrustLoopbackPeerRead = true }},
+		{name: "dashboard access mode", field: "dashboard_access.mode", mutate: func(cfg *globalconfig.Config) {
+			cfg.DashboardAccess.Mode = globalconfig.DashboardAccessModePrivateToken
+		}},
+		{name: "dashboard write access", field: "dashboard_access.allow_write", mutate: func(cfg *globalconfig.Config) { cfg.DashboardAccess.AllowWrite = true }},
+		{name: "port", field: "port", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { value := 4101; cfg.Port = &value }},
+		{name: "instance name", field: "instance_name", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { cfg.InstanceName = "buildbox" }},
+		{name: "notifications", field: "notifications", requiresRestart: true, mutate: func(cfg *globalconfig.Config) {
+			cfg.Notifications.Health.Webhook.URL = "https://alerts.example.test/detent"
+		}},
+		{name: "tmux window status", field: "ops.tmux_window_status", requiresRestart: true, mutate: func(cfg *globalconfig.Config) {
+			enabled := false
+			cfg.Ops.TmuxWindowStatus = &enabled
+		}},
+		{name: "projects", field: "projects", mutate: func(cfg *globalconfig.Config) { cfg.Projects = []globalconfig.Project{{ID: "bravo", Weight: 2}} }},
+		{name: "project pool", field: "projects", mutate: func(cfg *globalconfig.Config) { cfg.Projects[0].Pool = "video" }},
+		{name: "maximum concurrent agents", field: "global.max_concurrent_agents", mutate: func(cfg *globalconfig.Config) { cfg.Global.MaxConcurrentAgents = 4 }},
+		{name: "scheduling", field: "global.scheduling", mutate: func(cfg *globalconfig.Config) { cfg.Global.Scheduling = globalconfig.SchedulingRoundRobin }},
+		{name: "agent pools", field: "global.agent_pools", mutate: func(cfg *globalconfig.Config) {
+			cfg.Global.AgentPools = []globalconfig.AgentPool{{Name: "video", MaxConcurrentAgents: 4}}
+		}},
+		{name: "active hours", field: "global.active_hours", mutate: func(cfg *globalconfig.Config) {
+			cfg.Global.ActiveHours = &activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Sun 22:00-06:00"}}
+		}},
+		{name: "identity", field: "global.identity", requiresRestart: true, mutate: func(cfg *globalconfig.Config) {
+			cfg.Global.Identity = globalconfig.Identity{Name: "new-worker", GitHubLogin: "new-bot"}
+		}},
+		{name: "fair share", field: "global.fair_share", mutate: func(cfg *globalconfig.Config) { cfg.Global.FairShare = map[string]any{"half_life": "2h"} }},
+		{name: "startup", field: "global.startup", mutate: func(cfg *globalconfig.Config) { cfg.Global.Startup = map[string]any{"jitter_seconds": 1} }},
+		{name: "memory pressure", field: "global.memory.pressure_some_avg60_threshold", mutate: func(cfg *globalconfig.Config) { cfg.Global.Memory.PressureSomeAvg60Threshold = 12 }},
+		{name: "IO pressure", field: "global.io.pressure_full_avg10_threshold", mutate: func(cfg *globalconfig.Config) { cfg.Global.IO.PressureFullAvg10Threshold = 7 }},
+		{name: "CPU pressure", field: "global.cpu.pressure_some_avg10_threshold", mutate: func(cfg *globalconfig.Config) { cfg.Global.CPU.PressureSomeAvg10Threshold = 95 }},
+		{name: "Go build budget", field: "global.cpu.go_build_budget", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { cfg.Global.CPU.GoBuildBudget = 6 }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			base := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+			next := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+			tt.mutate(&next)
+
+			got := changedGlobalConfigFields(base, next)
+			if len(got) != 1 {
+				t.Fatalf("changedGlobalConfigFields() = %#v, want one change", got)
+			}
+			if got[0].Field != tt.field || got[0].RequiresRestart != tt.requiresRestart {
+				t.Fatalf("changedGlobalConfigFields() = %#v, want field %q restart %t", got[0], tt.field, tt.requiresRestart)
+			}
+		})
+	}
+}
+
+func TestGlobalConfigReloaderHotAppliesSchedulerCapacityWithoutInterruptingWorkers(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	alpha := scheduler.ProjectCandidate{ID: "alpha", Rank: 3}
+	bravo := scheduler.ProjectCandidate{ID: "bravo", Rank: 2}
+	charlie := scheduler.ProjectCandidate{ID: "charlie", Rank: 0}
+	initial := reloadTestConfig("global.yaml", 2, []globalconfig.Project{
+		{ID: alpha.ID},
+		{ID: bravo.ID},
+		{ID: charlie.ID},
+	})
+	initial.Global.Scheduling = globalconfig.SchedulingStrict
+	gate, err := buildGlobalDispatchPools(initial)
+	if err != nil {
+		t.Fatalf("buildGlobalDispatchPools() error = %v", err)
+	}
+	gate.MarkIdle(bravo)
+	gate.MarkIdle(charlie)
+	alphaSlot, ok, err := gate.TryAcquire(ctx, alpha, scheduler.SlotRequest{State: "Todo"}, time.Time{})
+	if err != nil || !ok {
+		t.Fatalf("alpha TryAcquire() = ok %t error %v, want granted", ok, err)
+	}
+	bravoSlot, ok, err := gate.TryAcquire(ctx, bravo, scheduler.SlotRequest{State: "Todo"}, time.Time{})
+	if err != nil || !ok {
+		t.Fatalf("bravo TryAcquire() = ok %t error %v, want granted", ok, err)
+	}
+
+	next := reloadTestConfig("global.yaml", 1, nil)
+	next.Global.Scheduling = globalconfig.SchedulingStrict
+	if err := applyGlobalRuntimeConfig(gate, nil, next); err != nil {
+		t.Fatalf("applyGlobalRuntimeConfig() error = %v", err)
+	}
+	if _, ok, decision, err := gate.TryAcquireWithDecision(ctx, charlie, scheduler.SlotRequest{State: "Merging"}, time.Time{}); err != nil {
+		t.Fatalf("charlie TryAcquireWithDecision() error = %v", err)
+	} else if ok {
+		t.Fatal("charlie TryAcquireWithDecision() ok = true above lowered capacity")
+	} else if decision.GlobalCapacity != 1 || decision.GlobalUsed != 2 {
+		t.Fatalf("capacity decision = %#v, want capacity 1 used 2", decision)
+	}
+	if err := gate.Release(alphaSlot); err != nil {
+		t.Fatalf("Release(alpha) error = %v", err)
+	}
+	if _, ok, _, err := gate.TryAcquireWithDecision(ctx, charlie, scheduler.SlotRequest{State: "Merging"}, time.Time{}); err != nil {
+		t.Fatalf("charlie second TryAcquireWithDecision() error = %v", err)
+	} else if ok {
+		t.Fatal("charlie second TryAcquireWithDecision() ok = true before usage fell below the lowered capacity")
+	}
+	if err := gate.Release(bravoSlot); err != nil {
+		t.Fatalf("Release(bravo) error = %v", err)
+	}
+	charlieSlot, ok, err := gate.TryAcquire(ctx, charlie, scheduler.SlotRequest{State: "Merging"}, time.Time{})
+	if err != nil || !ok {
+		t.Fatalf("charlie TryAcquire() after attrition = ok %t error %v, want granted", ok, err)
+	}
+	next.Global.MaxConcurrentAgents = 2
+	if err := applyGlobalRuntimeConfig(gate, nil, next); err != nil {
+		t.Fatalf("raise applyGlobalRuntimeConfig() error = %v", err)
+	}
+	delta := scheduler.ProjectCandidate{ID: "delta", Rank: 0}
+	deltaSlot, ok, err := gate.TryAcquire(ctx, delta, scheduler.SlotRequest{State: "Todo"}, time.Time{})
+	if err != nil || !ok {
+		t.Fatalf("delta TryAcquire() after raise = ok %t error %v, want granted", ok, err)
+	}
+	if err := gate.Release(charlieSlot); err != nil {
+		t.Fatalf("Release(charlie) error = %v", err)
+	}
+	if err := gate.Release(deltaSlot); err != nil {
+		t.Fatalf("Release(delta) error = %v", err)
+	}
+}
+
+func TestGlobalConfigReloaderHotReconfiguresAgentPools(t *testing.T) {
+	t.Parallel()
+
+	initial := reloadTestConfig("global.yaml", 1, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+	initial.Global.Scheduling = globalconfig.SchedulingStrict
+	gate, err := buildGlobalDispatchPools(initial)
+	if err != nil {
+		t.Fatalf("buildGlobalDispatchPools() error = %v", err)
+	}
+
+	added := initial
+	added.Global.AgentPools = []globalconfig.AgentPool{{
+		Name:                "video",
+		MaxConcurrentAgents: 2,
+		BurstTo:             4,
+		Scheduling:          globalconfig.SchedulingRoundRobin,
+	}}
+	added.Projects = []globalconfig.Project{{ID: "alpha", Pool: "video", Weight: 1}}
+	if err := applyGlobalRuntimeConfig(gate, nil, added); err != nil {
+		t.Fatalf("add applyGlobalRuntimeConfig() error = %v", err)
+	}
+	if snapshot := gate.PoolSnapshotFor("alpha"); snapshot.Name != "video" ||
+		snapshot.Capacity != 4 || snapshot.Guaranteed != 2 ||
+		snapshot.BurstTo != 4 || snapshot.Mode != scheduler.ModeStrictPriority {
+		t.Fatalf("PoolSnapshotFor(alpha) after add = %#v", snapshot)
+	}
+
+	changed := added
+	changed.Global.AgentPools = []globalconfig.AgentPool{{
+		Name:                "video",
+		MaxConcurrentAgents: 3,
+		BurstTo:             5,
+		Scheduling:          globalconfig.SchedulingStrict,
+	}}
+	if err := applyGlobalRuntimeConfig(gate, nil, changed); err != nil {
+		t.Fatalf("change applyGlobalRuntimeConfig() error = %v", err)
+	}
+	if snapshot := gate.PoolSnapshotFor("alpha"); snapshot.Capacity != 5 ||
+		snapshot.Guaranteed != 3 || snapshot.BurstTo != 5 ||
+		snapshot.Mode != scheduler.ModeStrictPriority {
+		t.Fatalf("PoolSnapshotFor(alpha) after change = %#v", snapshot)
+	}
+
+	removed := initial
+	if err := applyGlobalRuntimeConfig(gate, nil, removed); err != nil {
+		t.Fatalf("remove applyGlobalRuntimeConfig() error = %v", err)
+	}
+	if snapshot := gate.PoolSnapshotFor("alpha"); snapshot.Name != scheduler.DefaultPoolName || snapshot.Capacity != 1 {
+		t.Fatalf("PoolSnapshotFor(alpha) after removal = %#v", snapshot)
+	}
+	if snapshots := gate.PoolSnapshots(); len(snapshots) != 1 {
+		t.Fatalf("PoolSnapshots() after removal = %#v, want default only", snapshots)
+	}
+}
+
+func TestGlobalConfigReloaderHotAppliesLogLevel(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	level := &slog.LevelVar{}
+	level.Set(slog.LevelInfo)
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: level}))
+	logger.Debug("before reload")
+
+	next := reloadTestConfig("global.yaml", 2, nil)
+	gate, err := buildGlobalDispatchPools(next)
+	if err != nil {
+		t.Fatalf("buildGlobalDispatchPools() error = %v", err)
+	}
+	next.LogLevel = "debug"
+	if err := applyGlobalRuntimeConfig(gate, level, next); err != nil {
+		t.Fatalf("applyGlobalRuntimeConfig() error = %v", err)
+	}
+	logger.Debug("after reload")
+
+	if strings.Contains(logs.String(), "before reload") || !strings.Contains(logs.String(), "after reload") {
+		t.Fatalf("captured logs = %q, want only post-reload debug record", logs.String())
+	}
+}
+
+func TestLogGlobalConfigChangesIncludesOldAndNewValues(t *testing.T) {
+	t.Parallel()
+
+	previous := reloadTestConfig("global.yaml", 2, nil)
+	next := reloadTestConfig("global.yaml", 1, nil)
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+
+	logGlobalConfigChanges(logger, previous, next)
+
+	for _, want := range []string{"global config setting reloaded", "field=global.max_concurrent_agents", "old=2", "new=1"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("reload log missing %q: %s", want, logs.String())
+		}
+	}
+}
+
+func TestLogGlobalConfigChangesPreservesRestartWarning(t *testing.T) {
+	t.Parallel()
+
+	previous := reloadTestConfig("global.yaml", 2, nil)
+	next := reloadTestConfig("global.yaml", 2, nil)
+	next.Env = "production"
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+
+	logGlobalConfigChanges(logger, previous, next)
+
+	for _, want := range []string{"level=WARN", `msg="global config setting change requires restart"`, "field=env"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("restart warning missing %q: %s", want, logs.String())
+		}
+	}
+}
+
+func TestLogGlobalConfigChangesRedactsDashboardToken(t *testing.T) {
+	t.Parallel()
+
+	previous := reloadTestConfig("global.yaml", 2, nil)
+	previous.DashboardAccess.Token = "private-old-token"
+	next := reloadTestConfig("global.yaml", 2, nil)
+	next.DashboardAccess.Token = "private-new-token"
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+
+	logGlobalConfigChanges(logger, previous, next)
+
+	if !strings.Contains(logs.String(), "field=dashboard_access.token") || !strings.Contains(logs.String(), "<redacted>") {
+		t.Fatalf("reload log missing redacted dashboard token change: %s", logs.String())
+	}
+	for _, token := range []string{previous.DashboardAccess.Token, next.DashboardAccess.Token} {
+		if strings.Contains(logs.String(), token) {
+			t.Fatalf("reload log leaked dashboard token %q: %s", token, logs.String())
+		}
+	}
+}
+
+type globalReloadManager struct {
+	calls  int
+	config project.ManagerConfig
+	result project.ReconcileResult
+	err    error
+}
+
+type blockingGlobalReloadManager struct {
+	started chan struct{}
+	release chan struct{}
+	configs []project.ManagerConfig
+	results []project.ReconcileResult
+}
+
+func newBlockingGlobalReloadManager() *blockingGlobalReloadManager {
+	return &blockingGlobalReloadManager{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (m *globalReloadManager) Reconcile(
+	_ context.Context,
+	cfg project.ManagerConfig,
+) (project.ReconcileResult, error) {
+	m.calls++
+	m.config = cfg
+	return m.result, m.err
+}
+
+func (m *blockingGlobalReloadManager) Reconcile(
+	ctx context.Context,
+	cfg project.ManagerConfig,
+) (project.ReconcileResult, error) {
+	m.configs = append(m.configs, cfg)
+	call := len(m.configs)
+	result := project.ReconcileResult{}
+	if call <= len(m.results) {
+		result = m.results[call-1]
+	}
+	if call != 1 {
+		return result, nil
+	}
+	close(m.started)
+	select {
+	case <-ctx.Done():
+		return project.ReconcileResult{}, ctx.Err()
+	case <-m.release:
+		return result, nil
+	}
+}
+
+func reloadTestConfig(path string, maxConcurrentAgents int, projects []globalconfig.Project) globalconfig.Config {
+	return globalconfig.Config{
+		Path:       path,
+		APIVersion: globalconfig.APIVersion,
+		Kind:       globalconfig.Kind,
+		Global: globalconfig.Settings{
+			MaxConcurrentAgents: maxConcurrentAgents,
+			Scheduling:          globalconfig.SchedulingWeighted,
+			FairShare:           map[string]any{"half_life": "1h"},
+			Startup:             map[string]any{"jitter_seconds": 0, "max_spawn_per_second": 1},
+		},
+		Projects: projects,
+	}
+}
+
+func TestStartupManagerConfigBoundsTokenRefresh(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	token := newRuntimeGitHubTokenState("")
+	hanging := func(context.Context) (string, error) {
+		<-release
+		return "", nil
+	}
+	started := time.Now()
+	config, err := startupManagerConfig(t.Context(), globalconfig.Config{}, token, hanging, 50*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("startupManagerConfig() error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("startupManagerConfig() blocked for %s", elapsed)
+	}
+	if config.RuntimeCredentialVersion != runtimeGitHubTokenVersion("") {
+		t.Fatalf("RuntimeCredentialVersion = %q, want the unresolved token version", config.RuntimeCredentialVersion)
+	}
+}

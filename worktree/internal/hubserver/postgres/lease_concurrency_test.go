@@ -1,0 +1,183 @@
+package postgres_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func TestLeaseCompetingLifecycleTransactions(t *testing.T) {
+	for _, tc := range []struct {
+		name, first, second string
+		expired             bool
+		want                error
+		status              string
+		usage               int64
+	}{
+		{"renew before claim", "renew", "claim", false, tracker.ErrLeaseConflict, "running", 1},
+		{"renew before expiry", "renew", "expire", false, tracker.ErrStaleFencingToken, "running", 1},
+		{"renew before completion", "renew", "finish", false, nil, "succeeded", 1},
+		{"completion before renewal", "finish", "renew", false, nil, "succeeded", 1},
+		{"release before renewal", "release", "renew", false, tracker.ErrStaleFencingToken, "cancelled", 0},
+		{"release before completion", "release", "finish", false, tracker.ErrStaleFencingToken, "cancelled", 0},
+		{"expiry before completion", "expire", "finish", true, tracker.ErrStaleFencingToken, "cancelled", 0},
+		{"expiry before claim", "expire", "claim", true, nil, "cancelled", 1},
+		{"takeover before renewal", "claim", "renew", true, tracker.ErrStaleFencingToken, "cancelled", 1},
+		{"takeover before completion", "claim", "finish", true, tracker.ErrStaleFencingToken, "cancelled", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			admin := template.Database(t)
+			r, _ := repositoryFor(t, admin, smallPool())
+			seedLeaseFamily(t, r, "org_first")
+			lease := claimLease(t, r, "org_first", leaseClaim(1))
+			event := attemptEvent(lease)
+			recordLeaseAttempt(t, r, "org_first", event)
+			if tc.expired {
+				expireLeaseFixture(t, admin, "org_first", lease.LeaseID)
+			}
+			operate := func(ctx context.Context, w leasestore.Writer, operation string) error {
+				switch operation {
+				case "claim":
+					request := leaseClaim(1)
+					request.LeaseID, request.SessionID = "replacement", "replacement"
+					got, err := w.Claim(ctx, request)
+					if err == nil && got.FencingToken <= lease.FencingToken {
+						t.Error("takeover did not advance the fence")
+					}
+					return err
+				case "renew":
+					_, err := w.Renew(ctx, leaseFence(lease), time.Hour)
+					return err
+				case "expire":
+					_, err := w.Expire(ctx, leaseFence(lease))
+					return err
+				case "release":
+					_, err := w.Release(ctx, leaseFence(lease), "cancelled")
+					return err
+				default:
+					finish := event
+					finish.Sequence, finish.Status = 2, "succeeded"
+					_, err := w.RecordAttempt(ctx, finish)
+					return err
+				}
+			}
+			var second *repositoryTask
+			err := r.WriteLeases(t.Context(), "org_first", corestore.Serving, func(w leasestore.Writer) error {
+				if err := operate(t.Context(), w, tc.first); err != nil {
+					return err
+				}
+				second = startRepositoryTask(t, func(ctx context.Context) error {
+					return r.WriteLeases(ctx, "org_first", corestore.Background, func(other leasestore.Writer) error {
+						return operate(ctx, other, tc.second)
+					})
+				})
+				waitLeaseLock(t, admin, 1, second)
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := second.wait(t); !errors.Is(err, tc.want) {
+				t.Fatalf("competing %s error = %v, want %v", tc.second, err, tc.want)
+			}
+			if err := r.ReadLeases(t.Context(), "org_first", corestore.Serving, func(reader leasestore.Reader) error {
+				got, err := reader.Attempt(t.Context(), event.ID)
+				if err == nil && got.Status != tc.status {
+					t.Errorf("attempt status = %s, want %s", got.Status, tc.status)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			requireLeaseUsage(t, r, "org_first", lease.MachineID, tc.usage)
+		})
+	}
+}
+
+func TestLeaseUnrelatedClaimsDoNotShareWriterLock(t *testing.T) {
+	for _, sameTenant := range []bool{false, true} {
+		t.Run(map[bool]string{false: "other tenant", true: "same tenant other item"}[sameTenant], func(t *testing.T) {
+			r, _ := repositoryFor(t, template.Database(t), smallPool())
+			seedLeaseFamily(t, r, "org_first")
+			otherOrg, otherID := tracker.OrganizationID("org_second"), int64(1)
+			if sameTenant {
+				otherOrg, otherID = "org_first", 2
+			} else {
+				seedLeaseFamily(t, r, otherOrg)
+			}
+			err := r.WriteLeases(t.Context(), "org_first", corestore.Serving, func(w leasestore.Writer) error {
+				if _, err := w.Claim(t.Context(), leaseClaim(1)); err != nil {
+					return err
+				}
+				other := startRepositoryTask(t, func(ctx context.Context) error {
+					return r.WriteLeases(ctx, otherOrg, corestore.Background, func(w leasestore.Writer) error {
+						_, err := w.Claim(ctx, leaseClaim(otherID))
+						return err
+					})
+				})
+				return other.wait(t)
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestLeaseHeartbeatDoesNotRegressWhileWaiting(t *testing.T) {
+	for _, operation := range []string{"claim", "renew", "release"} {
+		t.Run(operation, func(t *testing.T) {
+			admin := template.Database(t)
+			r, _ := repositoryFor(t, admin, smallPool())
+			seedLeaseFamily(t, r, "org_first")
+			var fence leasestore.Fence
+			if operation != "claim" {
+				fence = leaseFence(claimLease(t, r, "org_first", leaseClaim(1)))
+			}
+			admin.SetMaxOpenConns(2)
+			blocker, err := admin.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer blocker.Rollback()
+			var newer time.Time
+			if err := blocker.QueryRowContext(t.Context(), `UPDATE machines SET last_heartbeat_at=clock_timestamp()+interval '1 hour' WHERE organization_id='org_first' AND id='machine_1' RETURNING last_heartbeat_at`).Scan(&newer); err != nil {
+				t.Fatal(err)
+			}
+			task := startRepositoryTask(t, func(ctx context.Context) error {
+				return r.WriteLeases(ctx, "org_first", corestore.Serving, func(w leasestore.Writer) error {
+					switch operation {
+					case "claim":
+						_, err := w.Claim(ctx, leaseClaim(1))
+						return err
+					case "renew":
+						_, err := w.Renew(ctx, fence, time.Hour)
+						return err
+					default:
+						_, err := w.Release(ctx, fence, "finished")
+						return err
+					}
+				})
+			})
+			waitLeaseLock(t, admin, 1, task)
+			if err := blocker.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if err := task.wait(t); err != nil {
+				t.Fatal(err)
+			}
+			var got time.Time
+			if err := admin.QueryRowContext(t.Context(), `SELECT last_heartbeat_at FROM machines WHERE organization_id='org_first' AND id='machine_1'`).Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			if !got.Equal(newer) {
+				t.Fatalf("waiting %s regressed heartbeat: got %v, want %v", operation, got, newer)
+			}
+		})
+	}
+}

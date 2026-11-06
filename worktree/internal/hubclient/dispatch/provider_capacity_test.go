@@ -1,0 +1,1057 @@
+package dispatch
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/codex"
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubclient/provider"
+	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
+)
+
+var hubDatabasePath = testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
+	return hubserver.Open(ctx, hubserver.Config{DatabasePath: path, GitHubDisabled: true, Logger: slog.New(slog.DiscardHandler)})
+})
+
+func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"empty", "candidate", "paused during admission", "empty paused during admission", "stale draining receipt", "operator drain", "drain pending preview", "drain pending readiness", "drain pending second page", "drain during claim"} {
+		t.Run(mode, func(t *testing.T) {
+			issueID := "wi_test"
+			if mode == "empty" || mode == "empty paused during admission" {
+				issueID = ""
+			}
+			discoveryCtx, cancelDiscovery := context.WithCancel(t.Context())
+			defer cancelDiscovery()
+			previews := 0
+			claims := 0
+			observations := 0
+			requirement := providercapacity.Requirement{Role: runner.RoleCode, Backend: "codex", Model: "sol"}
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/api/v2/capabilities":
+					_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeDispatchWaitCapability}})
+				case "/api/v2/organizations/org_test/projects/prj_test/claims/preview":
+					previews++
+					if mode == "drain pending preview" || mode == "drain pending second page" && previews == 2 {
+						cancelDiscovery()
+						<-r.Context().Done()
+						return
+					}
+					if mode == "drain pending second page" {
+						_, _ = w.Write([]byte(`{"items":[{"work_item_id":"wi_test","state":"Todo","title":"test"}],"next":1}`))
+						return
+					}
+					if issueID == "" {
+						_, _ = w.Write([]byte(`{"items":[]}`))
+					} else {
+						_, _ = w.Write([]byte(`{"items":[{"work_item_id":"wi_test","state":"Todo","title":"test"}]}`))
+					}
+				case "/api/v2/organizations/org_test/projects/prj_test/claims":
+					claims++
+					if mode == "drain pending second page" || mode == "drain during claim" {
+						if mode == "drain during claim" {
+							cancelDiscovery()
+						}
+						if r.Context().Err() != nil {
+							t.Error("discovery cancellation reached the claim context")
+						}
+						_ = json.NewEncoder(w).Encode(tracker.NativeLease{ID: "lease-test", WorkItemID: "wi_test", FencingToken: 7})
+						return
+					}
+					w.WriteHeader(http.StatusConflict)
+					if issueID == "" {
+						_, _ = w.Write([]byte(`{"code":"no_claimable_work","message":"No work"}`))
+					} else {
+						_, _ = w.Write([]byte(`{"code":"provider_capacity","message":"private customer prompt token=secret"}`))
+					}
+				default:
+					t.Errorf("unexpected request: %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			})
+			client, err := newTestClient(t, Config{URL: "https://hub.test", TokenSource: func() string { return "test-token" }, HTTPClient: providerHandlerClient(handler)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_test", "prj_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			scheduler := &Scheduler{
+				client: client, now: func() time.Time { return now }, sessionID: func() (string, error) { return "test-session", nil },
+				heartbeatInterval: time.Minute, nativeHeartbeats: map[tracker.ProjectID]time.Time{"prj_test": now},
+				providerReports: func() ([]providercapacity.Report, error) { return nil, nil },
+			}
+			if mode == "stale draining receipt" || mode == "operator drain" {
+				scheduler.machine.Update = &runnerauth.UpdateObservation{Receipt: &runnerauth.UpdateReceipt{Status: "draining", DrainReason: "execution worker protocol is incompatible with the controller"}}
+				if mode == "operator drain" {
+					control, err := newTestClient(t, Config{URL: "https://hub.test", TokenSource: func() string { return "fixture" }, Enrollment: fixtureEnrollment(true, "")})
+					if err != nil {
+						t.Fatal(err)
+					}
+					control.Enrollment().ApplyRouting(runnerauth.RoutingSnapshot{Routing: runnerauth.Routing{State: "draining"}})
+					scheduler.client = control
+					scheduler.SetClaimAdmission(func() (func(), bool) { return func() {}, true })
+				}
+			}
+			if mode == "drain pending second page" || mode == "drain during claim" {
+				scheduler.providerReports = nil
+			}
+			request := orchestrator.SchedulingRequest{BeginDiscovery: func(context.Context) (context.Context, context.CancelFunc) { return discoveryCtx, func() {} }, CandidateReady: func(ctx context.Context, _ connector.Issue) bool {
+				if mode == "drain pending readiness" {
+					cancelDiscovery()
+					<-ctx.Done()
+					return false
+				}
+				return true
+			}, ProviderRequirement: func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
+				if issueID == "" {
+					t.Error("empty preview should not resolve a model")
+				}
+				return requirement, nil
+			}, CandidateClaimObserved: func(_ context.Context, candidate connector.Issue, allowed bool, predicate string, required *providercapacity.Requirement) {
+				observations++
+				if mode == "drain pending second page" || mode == "drain during claim" {
+					return
+				}
+				if candidate.ID != issueID || allowed || predicate != "hub_claim.provider_capacity" || required == nil || *required != requirement {
+					t.Fatalf("claim observation: issue=%s allowed=%t predicate=%s requirement=%+v", candidate.ID, allowed, predicate, required)
+				}
+			}}
+			if mode == "paused during admission" || mode == "empty paused during admission" {
+				request.CandidateAdmission = func(connector.Issue) (func(), bool) {
+					scheduler.SetClaimAdmission(func() (func(), bool) { return nil, false })
+					return func() {}, true
+				}
+				native.ApplyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "fixture", Claimable: true})
+				source, _ := NewNativeConnector(native)
+				issues, err := scheduler.fetchNativeCandidate(t.Context(), request, source)
+				if err != nil || len(issues) != 0 || claims != 0 || observations != 0 {
+					t.Fatalf("paused candidate claimed: claims=%d observations=%d issues=%+v err=%v", claims, observations, issues, err)
+				}
+				if !native.ClaimHint() {
+					t.Fatal("local drain cleared the Hub claim hint")
+				}
+				scheduler.SetClaimAdmission(nil)
+				request.CandidateAdmission = nil
+				issues, err = scheduler.fetchNativeCandidate(t.Context(), request, source)
+				if err != nil || len(issues) != 0 || claims != 1 {
+					t.Fatalf("released drain did not resume claims: claims=%d issues=%+v err=%v", claims, issues, err)
+				}
+				if got, want := native.ClaimHint(), issueID != ""; got != want {
+					t.Fatalf("Hub exhaustion hint=%t want=%t", got, want)
+				}
+				return
+			}
+			limit := 1
+			if mode == "drain pending second page" {
+				limit = 2
+			}
+			leases, err := scheduler.claimPreviewCandidates(t.Context(), request, fixtureConnector(native), tracker.NativeClaim{}, limit)
+			if strings.HasPrefix(mode, "drain pending") || mode == "drain during claim" {
+				wantClaims := 0
+				if mode == "drain pending second page" || mode == "drain during claim" {
+					wantClaims = 1
+				}
+				if err != nil || claims != wantClaims || len(leases) != wantClaims {
+					t.Fatalf("draining preview: claims=%d leases=%+v error=%v", claims, leases, err)
+				}
+				if wantClaims == 1 && (leases[0].ID != "lease-test" || leases[0].WorkItemID != "wi_test" || leases[0].FencingToken != 7) {
+					t.Fatalf("drain lost claim identity: %+v", leases)
+				}
+				return
+			}
+			if mode == "operator drain" {
+				if claims != 0 || observations != 0 || err != nil {
+					t.Fatalf("paused candidate claimed: claims=%d observations=%d err=%v", claims, observations, err)
+				}
+				return
+			}
+
+			if claims != 1 || issueID == "" && (!errors.Is(err, ErrNoClaimableWork) || observations != 0) || issueID != "" && (hubErrorCode(err) != "provider_capacity" || observations != 1) {
+				t.Fatalf("preview: claims=%d observations=%d error=%v", claims, observations, err)
+			}
+		})
+	}
+}
+
+// Dispatch must not call any workspace operation before acquiring a claim.
+type providerPreviewWorkspace struct{ workspace.Backend }
+
+func TestProviderSchedulerEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	t.Parallel()
+	for _, unavailable := range []string{"env-equivalent projects", "empty reports", "catalog failure", "intake off during admission", "fallback", "fail", "local wait", "bounded", "plain", "known waits", "six slots", "provider slots", "mixed providers", "provider hydration", "stage slots", "exhausted subscription", "revoked lease after quota reset"} {
+		t.Run(unavailable, func(t *testing.T) { t.Parallel(); testProviderSchedulerEndToEnd(t, unavailable) })
+	}
+}
+
+func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
+	t.Helper()
+	batch := unavailable == "six slots" || unavailable == "provider slots" || unavailable == "mixed providers" || unavailable == "provider hydration" || unavailable == "stage slots" || unavailable == "exhausted subscription"
+	service, err := hubserver.Open(t.Context(), hubserver.Config{Content: newHubContentStore(), RunDetails: &archivedRunDetails{}, DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte("provider-test-admin")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	httpClient := providerHandlerClient(service.Handler())
+	const hubURL = "https://hub.test"
+	admin, err := newTestClient(t, Config{URL: hubURL, TokenSource: func() string { return "provider-test-admin" }, HTTPClient: httpClient})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var organizations tracker.Page[struct {
+		ID tracker.OrganizationID `json:"organization_id"`
+	}]
+	if err := admin.Request(t.Context(), http.MethodGet, "/api/v2/organizations", nil, &organizations); err != nil {
+		t.Fatal(err)
+	}
+	organization := organizations.Items[0].ID
+	var project tracker.NativeProject
+	if err := admin.Request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", map[string]any{"name": "capacity", "idempotency_key": "capacity", "states": []tracker.NativeState{{Name: "Todo", Dispatchable: true}, {Name: "Rework", Dispatchable: true}}}, &project); err != nil {
+		t.Fatal(err)
+	}
+	var otherProject tracker.NativeProject
+	if err := admin.Request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", map[string]any{"name": "other project", "idempotency_key": "other-project", "states": []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}, &otherProject); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "private", "identity.json")
+	file, err := runnerauth.Initialize(path, hubURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := admin.CreateRunnerEnrollment(t.Context(), organization, runnerauth.EnrollmentRequest{Binding: file.Identity.Binding, ProjectIDs: []tracker.ProjectID{project.ID, otherProject.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine := Machine{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, ID: file.Identity.MachineID, Hostname: "customer", DisplayName: "Runner", Capacity: 2, Version: "test"}
+	if batch {
+		machine.Capacity = 6
+	}
+	var enrolledIdentity runnerauth.Identity
+	redemption := runnerauth.Redemption{BackendIsolation: machine.BackendIsolation, Binding: file.Identity.Binding, Credential: file.Credential, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version}
+	if err := fixtureRunnerRequest(t, admin, enrollment.Token, http.MethodPost, "/api/v2/organizations/"+string(organization)+"/runner-enrollments/redeem", redemption, &enrolledIdentity); err != nil {
+		t.Fatal(err)
+	}
+	file.Identity = enrolledIdentity
+	if err := runnerauth.Save(path, file); err != nil {
+		t.Fatal(err)
+	}
+	routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: machine.Capacity, ProjectIDs: []tracker.ProjectID{project.ID, otherProject.ID}}}
+	if unavailable == "plain" {
+		routing.ProjectIDs = []tracker.ProjectID{project.ID}
+	}
+	if err := admin.Request(t.Context(), http.MethodPut, "/api/v2/organizations/"+string(organization)+"/runners/"+file.Identity.RunnerID+"/routing", routing, nil); err != nil {
+		t.Fatal(err)
+	}
+	client, err := newTestClient(t, Config{URL: hubURL, IdentityFile: path, HTTPClient: httpClient})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := admin.Native(organization, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor := clientTestPolicy()
+	if _, err := native.ApproveProjectPolicy(t.Context(), policy.Change{Policy: descriptor}); err != nil {
+		t.Fatal(err)
+	}
+	other, err := admin.Native(organization, otherProject.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.ApproveProjectPolicy(t.Context(), policy.Change{Policy: descriptor}); err != nil {
+		t.Fatal(err)
+	}
+	if unavailable == "env-equivalent projects" {
+		createIndependentNativeIssue(t, other, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "other-compatible"}, Title: "other project work", Body: issueContractTestSections, State: "Todo"})
+	} else if _, err := other.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "other-unsupported"}, Title: "higher priority unsupported project", Body: "```detent-agent\nschema: 1\nmodel: astra\n```" + issueContractTestSections, State: "Todo", Priority: new(1)}); err != nil {
+		t.Fatal(err)
+	}
+	if unavailable == "known waits" {
+		for i := range 12 {
+			createIndependentNativeIssue(t, native, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("waiting-%d", i)}, Title: "Known waiting work", State: "Rework"})
+		}
+	}
+	titles := []string{"unsupported model", "compatible model"}
+	if unavailable == "env-equivalent projects" {
+		titles = []string{"compatible model"}
+	}
+	if batch {
+		titles = []string{"rework-0", "rework-1", "rework-2", "independent-0", "independent-1", "independent-2", "independent-3", "independent-4"}
+	}
+	for _, title := range titles {
+		model := "sol"
+		state := "Todo"
+		if title == "unsupported model" {
+			state = "Rework"
+			if unavailable != "local wait" && unavailable != "plain" {
+				model = "astra"
+			}
+		}
+		if strings.HasPrefix(title, "rework-") {
+			state = "Rework"
+		}
+		body := "```detent-agent\nschema: 1\nmodel: " + model + "\n```" + issueContractTestSections
+		createIndependentNativeIssue(t, native, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: title}, Title: title, Body: body, State: state})
+	}
+	report := providercapacity.Report{Provider: "openai", Backend: "codex", AccountAlias: "work", SharedAccountAlias: "team", Models: []string{"sol"}, MaxConcurrent: 1, Availability: "available", ObservedAt: time.Now()}
+	if batch {
+		report.MaxConcurrent = 6
+	}
+	if unavailable == "provider slots" {
+		report.MaxConcurrent = 2
+	}
+	if unavailable == "mixed providers" {
+		report.MaxConcurrent = 1
+	}
+	if unavailable == "exhausted subscription" {
+		report.Availability = "exhausted"
+		report.ResetAt = report.ObservedAt.Add(time.Hour)
+	}
+	providerReports := func() ([]providercapacity.Report, error) {
+		if unavailable == "empty reports" {
+			return nil, nil
+		}
+		if unavailable == "catalog failure" {
+			return nil, errors.New("catalog unavailable")
+		}
+		reports := []providercapacity.Report{report}
+		if unavailable == "mixed providers" {
+			reports = append(reports, providercapacity.Report{Provider: "anthropic", Backend: "claude", AccountAlias: "other", Models: []string{"sonnet"}, MaxConcurrent: 2, Availability: "available", ObservedAt: report.ObservedAt})
+		}
+		return reports, nil
+	}
+	if unavailable == "plain" {
+		providerReports = nil
+	}
+	nativeProjects := map[string]tracker.ProjectID{"native": project.ID}
+	if unavailable == "env-equivalent projects" {
+		nativeProjects["other"] = otherProject.ID
+	}
+	scheduler, err := newTestScheduler(client, SchedulerConfig{OrganizationID: organization, NativeProjects: nativeProjects, Machine: machine, HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second, ProviderReports: providerReports})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, launches := providerWorkspaceWrapper(t)
+	cfg := config.Default()
+	cfg.Agents.ModelSelection.Preset = new("sol_first")
+	modelUnavailable := "fallback"
+	if unavailable == "fail" {
+		modelUnavailable = "fail"
+	}
+	cfg.Agents.ModelSelection.Unavailable = &modelUnavailable
+	localRunner, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: &providerPreviewWorkspace{}, AgentBackend: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := orchestrator.SchedulingRequest{ProjectID: "native", Policy: descriptor,
+		WorkflowStates: []string{"Rework", "Todo"}, DispatchPriorityByState: []string{"Rework", "Todo"}, CandidateLimit: 2,
+		CandidateKnownWait: func(issue connector.Issue) bool { return unavailable == "known waits" && issue.State == "Rework" },
+		CandidateReady: func(_ context.Context, issue connector.Issue) bool {
+			if unavailable == "known waits" && issue.State == "Rework" {
+				t.Fatal("known wait consumed readiness evaluation")
+			}
+			return (unavailable != "local wait" && unavailable != "plain") || issue.State != "Rework"
+		},
+		ProviderRequirement: func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
+			if (unavailable == "local wait" || unavailable == "plain") && issue.State == "Rework" {
+				t.Fatal("unready head reached model selection")
+			}
+			return localRunner.DispatchCapacity(ctx, runner.RunRequest{Issue: issue, ProviderReports: reports})
+		}}
+	if unavailable == "env-equivalent projects" {
+		commands := []string{"codex app-server", "/usr/bin/env GOFLAGS=-p=6 GOMAXPROCS=6 codex --config shell_environment_policy.inherit=all app-server"}
+		canonical := config.Default()
+		canonical.Codex.Command = commands[0]
+		report.LocalBackendIdentity = config.ProviderIdentity(canonical.AgentBackendConfigs()[0])
+		for i, selected := range []struct {
+			name   string
+			client *NativeClient
+		}{{"native", native}, {"other", other}} {
+			cfg := config.Default()
+			cfg.Codex.Command = commands[i]
+			cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Backend: "codex", Model: "sol", Default: true}}
+			provider := backend
+			workspaces, err := workspace.NewFilesystem(workspace.FilesystemOptions{ProcessSource: emptyProcessSource, Root: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			local, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: workspaces, AgentBackend: provider})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := orchestrator.SchedulingRequest{ProjectID: selected.name, Policy: descriptor, WorkflowStates: []string{"Todo"}, ProviderRequirement: func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
+				return local.DispatchCapacity(ctx, runner.RunRequest{Issue: issue, ProviderReports: reports})
+			}}
+			candidates, err := scheduler.FetchCandidateIssues(t.Context(), request)
+			if err != nil || len(candidates) != 1 {
+				t.Fatalf("project %s claim: candidates=%v err=%v", selected.name, candidates, err)
+			}
+			issue := candidates[0]
+			if _, err := scheduler.AdoptClaim(t.Context(), issue, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			execution := scheduler.RunExecution(issue.ID)
+			if execution == nil {
+				t.Fatal("claim has no execution")
+			}
+			identity := tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "sol"}
+			if err := execution.Start(t.Context(), identity); err != nil {
+				t.Fatalf("project %s start: %v", selected.name, err)
+			}
+			root := t.TempDir()
+			turn, err := provider.RunTurn(t.Context(), runner.AgentTurnRequest{Workspace: root, Model: "sol", Prompt: "Complete example work", Environment: procgroup.Environment{Variables: workspace.EnvironmentVariables(workspace.Info{Path: root}, workspace.Issue{ID: issue.ID, Identifier: issue.Identifier})}}, nil)
+			if err != nil || turn.ThreadID != "thread-example" || turn.TurnID != "turn-example" {
+				t.Fatalf("project %s turn=%+v error=%v", selected.name, turn, err)
+			}
+			attempt, err := selected.client.NativeAttempt(t.Context(), tracker.NativeWorkItemID(issue.ID), execution.(interface {
+				DiagnosticAttempt(runnerauth.DiagnosticAttempt) runnerauth.DiagnosticAttempt
+			}).DiagnosticAttempt(runnerauth.DiagnosticAttempt{}).NativeAttemptID)
+			if err != nil || attempt.Identity == nil || attempt.Identity.Backend != "codex" || attempt.Identity.Model != "sol" {
+				t.Fatalf("project %s durable start=%+v err=%v", selected.name, attempt, err)
+			}
+			if err := execution.Finish(t.Context(), "succeeded"); err != nil {
+				t.Fatal(err)
+			}
+			if err := scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+				t.Fatal(err)
+			}
+			current, err := selected.client.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := selected.client.SetArchived(t.Context(), current.WorkItemID, current.Revision, true, nativeMutationKey()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if *launches != 2 {
+			t.Fatalf("provider turns=%d, want 2", *launches)
+		}
+		return
+	}
+	if unavailable == "empty reports" || unavailable == "catalog failure" {
+		transport := fixtureClient(client).requests.Load()
+		published := false
+		fixtureClient(client).requests.Store(executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+			if r.Method == http.MethodPost && (strings.HasSuffix(r.URL.Path, "/heartbeat") || strings.HasSuffix(r.URL.Path, "/machines/register")) {
+				raw, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = r.Body.Close()
+				r.Body = io.NopCloser(strings.NewReader(string(raw)))
+				var payload map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &payload); err != nil {
+					t.Fatal(err)
+				}
+				value, present := payload["provider_reports"]
+				if !present || string(value) != "[]" {
+					t.Fatalf("empty provider report omitted: %s", raw)
+				}
+				published = true
+			}
+			return transport.RoundTrip(r)
+		}))
+		issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
+		if len(issues) != 0 || len(scheduler.nativeClaims) != 0 || *launches != 0 || !published {
+			t.Fatalf("empty reporter: issues=%v claims=%d launches=%d published=%t err=%v", issues, len(scheduler.nativeClaims), *launches, published, err)
+		}
+		if unavailable == "catalog failure" && !errors.Is(err, orchestrator.ErrSchedulingUnavailable) {
+			t.Fatalf("catalog error=%v", err)
+		}
+		return
+	}
+	if unavailable == "intake off during admission" {
+		request.CandidateAdmission = func(connector.Issue) (func(), bool) { return nil, false }
+		issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
+		if err != nil || len(issues) != 0 || len(scheduler.nativeClaims) != 0 {
+			t.Fatalf("intake-off preview claimed work: %v, %v", issues, err)
+		}
+		return
+	}
+	if batch {
+		request.AdmissionLimit, request.CandidateLimit = 6, 14
+		admittedRework := 0
+		if unavailable == "stage slots" {
+			request.CandidateAdmitted = func(issue connector.Issue) {
+				if issue.State == "Rework" {
+					admittedRework++
+				}
+			}
+			request.CandidateReady = func(_ context.Context, issue connector.Issue) bool {
+				return issue.State != "Rework" || admittedRework == 0
+			}
+		}
+		ready := request.CandidateReady
+		evaluations := 0
+		request.CandidateReady = func(ctx context.Context, issue connector.Issue) bool {
+			evaluations++
+			return ready(ctx, issue)
+		}
+		request.ProviderRequirement = func(_ context.Context, issue connector.Issue, _ []providercapacity.Report) (providercapacity.Requirement, error) {
+			if unavailable == "mixed providers" && issue.State == "Todo" {
+				return providercapacity.Requirement{Role: runner.RoleCode, Backend: "claude", Model: "sonnet"}, nil
+			}
+			return providercapacity.Requirement{Role: runner.RoleCode, Backend: "codex", Model: "sol"}, nil
+		}
+		transport := fixtureClient(client).requests.Load()
+		if unavailable == "provider hydration" {
+			var acquired []tracker.NativeLease
+			var recoveryIDs []string
+			released := make(map[tracker.LeaseID]int)
+			fixtureClient(client).requests.Store(executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				if r.Method == http.MethodGet && r.URL.Query().Get("view") == "recovery" {
+					parts := strings.Split(r.URL.Path, "/")
+					recoveryIDs = append(recoveryIDs, parts[len(parts)-1])
+					if len(recoveryIDs) == 2 {
+						return nil, errors.New("injected hydration failure")
+					}
+				}
+				response, err := transport.RoundTrip(r)
+				if err == nil && response.StatusCode == http.StatusOK && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claims") {
+					payload, readErr := io.ReadAll(response.Body)
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					if err := response.Body.Close(); err != nil {
+						t.Fatal(err)
+					}
+					response.Body = io.NopCloser(strings.NewReader(string(payload)))
+					var lease tracker.NativeLease
+					if err := json.Unmarshal(payload, &lease); err != nil {
+						t.Fatal(err)
+					}
+					acquired = append(acquired, lease)
+				}
+				if err == nil && response.StatusCode < 300 && strings.HasSuffix(r.URL.Path, "/release") {
+					parts := strings.Split(r.URL.Path, "/")
+					released[tracker.LeaseID(parts[len(parts)-2])]++
+				}
+				return response, err
+			}))
+			issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
+			if err != nil || len(issues) != 1 || len(acquired) != 6 || len(recoveryIDs) != 2 {
+				t.Fatalf("provider hydration = %d issues, %d leases, %d recoveries, %v", len(issues), len(acquired), len(recoveryIDs), err)
+			}
+			if issues[0].ID != string(acquired[0].WorkItemID) || issues[0].ID != recoveryIDs[0] || recoveryIDs[1] != string(acquired[1].WorkItemID) || recoveryIDs[0] == recoveryIDs[1] {
+				t.Fatal("partial batch did not retain only the successfully hydrated lease")
+			}
+			if len(scheduler.nativeClaims) != 1 || len(scheduler.claims) != 1 || len(scheduler.claimPolicies) != 1 || len(released) != 5 {
+				t.Fatal("partial batch retained claims outside the hydrated prefix")
+			}
+			for i, lease := range acquired {
+				wantReleased := 1
+				if i == 0 {
+					wantReleased = 0
+				}
+				if lease.ProviderReservation == nil || released[lease.ID] != wantReleased {
+					t.Fatalf("lease %s: reservation=%v releases=%d, want %d", lease.ID, lease.ProviderReservation, released[lease.ID], wantReleased)
+				}
+				_, cached := fixtureLeaseCached(t, client, native.Scope(), lease.WorkItemID)
+				if cached != (i == 0) {
+					t.Fatalf("lease %s cache retained=%t", lease.ID, cached)
+				}
+			}
+			retained := scheduler.nativeClaims[issues[0].ID]
+			if !reflect.DeepEqual(retained.lease.ProviderReservation, acquired[0].ProviderReservation) || retained.lease.PolicyID != descriptor.ID {
+				t.Fatal("retained lease lost its provider reservation or immutable policy")
+			}
+			fixtureClient(client).requests.Store(transport)
+			if err := scheduler.ReleaseClaim(t.Context(), issues[0].ID, "dispatch_deferred"); err != nil {
+				t.Fatal(err)
+			}
+			evaluations = 0
+		}
+		issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
+		want := 6
+		if unavailable == "provider slots" {
+			want = 2
+		}
+		if unavailable == "mixed providers" {
+			want = 3
+		}
+		if err != nil || len(issues) != want || issues[0].State != "Rework" || evaluations > request.CandidateLimit {
+			t.Fatalf("provider batch = %d, %v, want %d with Rework first", len(issues), err, want)
+		}
+		if unavailable == "stage slots" && admittedRework != 1 {
+			t.Fatalf("overcommitted Rework slots: %d", admittedRework)
+		}
+		if unavailable == "provider slots" {
+			for range 4 {
+				evaluations = 0
+				if full, err := scheduler.FetchCandidateIssues(t.Context(), request); err != nil || len(full) != 0 || evaluations > request.CandidateLimit {
+					t.Fatalf("full provider refresh = %d, %v, evaluations=%d", len(full), err, evaluations)
+				}
+			}
+			high := createIndependentNativeIssue(t, native, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "urgent after release", Body: "```detent-agent\nschema: 1\nmodel: sol\n```", State: "Rework", Priority: new(tracker.QueuePriorityUrgent)})
+			if err := scheduler.ReleaseClaim(t.Context(), issues[0].ID, "dispatch_deferred"); err != nil {
+				t.Fatal(err)
+			}
+			evaluations = 0
+			next, err := scheduler.FetchCandidateIssues(t.Context(), request)
+			if err != nil || len(next) != 1 || next[0].ID != string(high.WorkItemID) || len(scheduler.nativeClaims) != 2 {
+				t.Fatalf("freed provider slot did not admit urgent work: %v, %v, retained=%d", next, err, len(scheduler.nativeClaims))
+			}
+			issues[0] = next[0]
+		}
+		used := make(map[string]int)
+		for _, issue := range issues {
+			execution := scheduler.RunExecution(issue.ID)
+			if execution == nil {
+				t.Fatal("claimed issue has no native execution")
+			}
+			reservation := execution.(runner.ProviderCapacityExecution).ProviderCapacity()
+			if reservation == nil || scheduler.nativeClaims[issue.ID].lease.PolicyID != descriptor.ID {
+				t.Fatal("batch lost provider reservation or immutable policy")
+			}
+			used[reservation.Backend]++
+			if unavailable == "mixed providers" && issue.State == "Todo" && reservation.Backend != "claude" {
+				t.Fatal("independent provider work was not admitted")
+			}
+			if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: reservation.Role, Backend: reservation.Backend, Model: reservation.Model}); err != nil {
+				t.Fatal(err)
+			}
+			if err := scheduler.ReleaseClaim(t.Context(), issue.ID, "dispatch_deferred"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if unavailable == "mixed providers" && (used["codex"] != 1 || used["claude"] != 2) {
+			t.Fatalf("overcommitted providers: %v", used)
+		}
+		admittedRework = 0
+		evaluations = 0
+		if again, err := scheduler.FetchCandidateIssues(t.Context(), request); err != nil || len(again) != want {
+			t.Fatalf("released provider reservations retained slots: %d, %v", len(again), err)
+		}
+		return
+	}
+	if unavailable == "bounded" {
+		request.CandidateLimit = 1
+		candidates, err := scheduler.FetchCandidateIssues(t.Context(), request)
+		if err != nil && !errors.Is(err, orchestrator.ErrSchedulingUnavailable) || len(candidates) != 0 {
+			t.Fatalf("bounded unavailable head = %+v, %v", candidates, err)
+		}
+		request.CandidateLimit = 2
+	}
+	candidates, err := scheduler.FetchCandidateIssues(t.Context(), request)
+	if err != nil || len(candidates) != 1 || candidates[0].Title != "compatible model" {
+		t.Fatalf("selection = %+v, %v", candidates, err)
+	}
+	if *launches != 0 {
+		t.Fatalf("provider scheduling launched wrapper %d times before workspace existed", *launches)
+	}
+	issue := candidates[0]
+	if unavailable == "local wait" || unavailable == "bounded" || unavailable == "plain" || unavailable == "known waits" {
+		if unavailable == "plain" && scheduler.nativeClaims[issue.ID].lease.ProviderReservation != nil {
+			t.Fatal("plain claim acquired a provider reservation")
+		}
+		if err := scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if _, err := scheduler.AdoptClaim(t.Context(), issue, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	execution := scheduler.RunExecution(issue.ID)
+	if execution == nil {
+		t.Fatal("native claim has no execution lifecycle")
+	}
+	if unavailable == "revoked lease after quota reset" {
+		held := scheduler.nativeClaims[issue.ID].lease
+		if held.ID == "" || held.FencingToken == 0 {
+			t.Fatalf("missing valid lease: %#v", held)
+		}
+		if err := execution.Validate(t.Context()); err != nil {
+			t.Fatalf("acquired lease invalid: %v", err)
+		}
+		identity := tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "sol"}
+		report.Availability = "exhausted"
+		report.ResetAt = report.ObservedAt.Add(7 * 24 * time.Hour)
+		if err := provider.ValidateStart(execution.(runner.ProviderCapacityExecution).ProviderCapacity(), identity, scheduler.providerReports, func(err error) error { return errors.Join(runner.ErrExecutionAuthorityUnavailable, err) }); err != nil {
+			t.Fatalf("subscription exhaustion refused the admitted provider: %v", err)
+		}
+		if err := scheduler.nativeClaims[issue.ID].source.NativeClient().Release(t.Context(), held, "released"); err != nil {
+			t.Fatalf("revoke acquired lease: %v", err)
+		}
+		report.Availability = "available"
+		report.ResetAt = time.Time{}
+		report.ObservedAt = time.Now()
+		if err := provider.ValidateStart(execution.(runner.ProviderCapacityExecution).ProviderCapacity(), identity, scheduler.providerReports, func(err error) error { return errors.Join(runner.ErrExecutionAuthorityUnavailable, err) }); err != nil {
+			t.Fatalf("quota did not recover: %v", err)
+		}
+		if err := execution.Start(t.Context(), identity); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+			t.Fatalf("restored quota released revoked lease: %v", err)
+		}
+		if *launches != 0 {
+			t.Fatalf("revoked execution started a provider process: %d", *launches)
+		}
+		return
+	}
+	attemptWorkspace := t.TempDir()
+	process := runner.AgentProcessRequest{Workspace: attemptWorkspace, Environment: procgroup.Environment{Variables: workspace.EnvironmentVariables(workspace.Info{Path: attemptWorkspace}, workspace.Issue{ID: issue.ID, Identifier: issue.Identifier})}}
+	models, err := backend.ListModels(t.Context(), process)
+	if err != nil || len(models) != 1 || models[0].Model != "sol" || *launches != 1 {
+		t.Fatalf("workspace wrapper catalog = %+v, %v; launches=%d", models, err, *launches)
+	}
+	report.Models = []string{"other-model"}
+	if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "sol"}); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+		t.Fatalf("incompatible local model start = %v", err)
+	}
+	if err := scheduler.ReleaseClaim(t.Context(), issue.ID, "failed"); err != nil {
+		t.Fatal(err)
+	}
+	report.Models = []string{"sol"}
+	candidates, err = scheduler.FetchCandidateIssues(t.Context(), request)
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("released start did not free capacity: %v", err)
+	}
+	execution = scheduler.RunExecution(candidates[0].ID)
+	if execution == nil {
+		t.Fatal("reclaimed issue has no execution lifecycle")
+	}
+	identity := tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "sol"}
+	transport := &executionTransport{next: fixtureClient(client).requests.Load()}
+	fixtureClient(client).requests.Store(transport)
+	t.Cleanup(func() { fixtureClient(client).requests.Store(transport.next) })
+	transport.drop.Store(true)
+	if err := execution.Start(t.Context(), identity); !errors.Is(err, ErrUnavailable) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+		t.Fatalf("lost start acknowledgment must retain transient transport identity: %v", err)
+	}
+	pending := fixtureCompletion(t, execution).Pending
+	if pending == nil || pending.Type != "run.started" || pending.Data.Sequence != 1 || pending.Data.Identity == nil || *pending.Data.Identity != identity {
+		t.Fatalf("lost start acknowledgment lost pending execution identity: %#v", pending)
+	}
+	report.Models = []string{"other-model"}
+	if err := execution.Start(t.Context(), identity); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+		t.Fatalf("unacknowledged start skipped local model revalidation: %v", err)
+	}
+	report.Models = []string{"sol"}
+	if err := execution.Start(t.Context(), identity); err != nil {
+		t.Fatal(err)
+	}
+	report.Availability = "exhausted"
+	if err := execution.Start(t.Context(), identity); err != nil {
+		t.Fatalf("active identity changed: %v", err)
+	}
+	recovery, err := native.Recovery(t.Context(), tracker.NativeWorkItemID(candidates[0].ID))
+	if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Sequence != 1 {
+		t.Fatalf("start retries duplicated or lost the durable attempt: attempts=%#v error=%v", recovery.Attempts, err)
+	}
+	// This attempt already occupies the provider's only slot. An ordinary
+	// empty claim result keeps admission idle without inventing an outage.
+	next, err := scheduler.FetchCandidateIssues(t.Context(), request)
+	if err != nil || len(next) != 0 {
+		t.Fatalf("exhausted occupied capacity admitted another attempt: candidates=%#v error=%v", next, err)
+	}
+	if err := scheduler.ReleaseClaim(t.Context(), candidates[0].ID, "completed"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func providerWorkspaceWrapper(t *testing.T) (*codex.AgentBackend, *int) {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	launches := new(int)
+	factory, err := codex.NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		(*launches)++
+		cmd := exec.CommandContext(ctx, executable, "-test.run=^TestProviderWorkspaceWrapperProcess$")
+		cmd.Env = append(os.Environ(), "DETENT_TEST_PROVIDER_WRAPPER=1", "GOCOVERDIR="+t.TempDir())
+		return cmd
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := codex.NewAppServer(factory, codex.WithReadTimeout(5*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := codex.NewAgentBackend(server, codex.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return backend, launches
+}
+
+func TestProviderWorkspaceWrapperProcess(t *testing.T) {
+	if os.Getenv("DETENT_TEST_PROVIDER_WRAPPER") != "1" {
+		return
+	}
+	cwd, err := os.Getwd()
+	expected := os.Getenv("DETENT_WORKSPACE")
+	// This models a wrapper that acquires its work item using PWD/workspace.
+	actualInfo, statErr := os.Stat(cwd)
+	expectedInfo, expectedErr := os.Stat(expected)
+	if err != nil || statErr != nil || expectedErr != nil || !os.SameFile(actualInfo, expectedInfo) || os.Getenv("PWD") != expected || os.Getenv("DETENT_ISSUE_ID") == "" || os.Getenv("DETENT_ISSUE_IDENTIFIER") == "" {
+		os.Exit(12)
+	}
+	scanner := bufio.NewScanner(os.Stdin)
+	encoder := json.NewEncoder(os.Stdout)
+	for scanner.Scan() {
+		var request struct {
+			ID     *int   `json:"id"`
+			Method string `json:"method"`
+			Params struct {
+				Model string `json:"model"`
+				Cwd   string `json:"cwd"`
+			} `json:"params"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &request) != nil {
+			os.Exit(13)
+		}
+		if request.ID == nil {
+			continue
+		}
+		var result json.RawMessage
+		switch request.Method {
+		case "initialize":
+			result = json.RawMessage(`{"userAgent":"workspace-wrapper"}`)
+		case "thread/start":
+			if request.Params.Model != "sol" || request.Params.Cwd != expected {
+				os.Exit(17)
+			}
+			result = json.RawMessage(`{"thread":{"id":"thread-example"},"model":"sol","modelProvider":"openai"}`)
+		case "turn/start":
+			result = json.RawMessage(`{"turn":{"id":"turn-example"}}`)
+		case "model/list":
+			result = json.RawMessage(`{"data":[{"id":"sol","model":"sol","supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}]}`)
+		default:
+			os.Exit(14)
+		}
+		if encoder.Encode(struct {
+			ID     int             `json:"id"`
+			Result json.RawMessage `json:"result"`
+		}{*request.ID, result}) != nil {
+			os.Exit(15)
+		}
+		if request.Method == "turn/start" {
+			if encoder.Encode(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "thread-example", "turn": map[string]any{"id": "turn-example", "status": "completed"}}}) != nil {
+				os.Exit(16)
+			}
+		}
+	}
+	os.Exit(0)
+}
+
+func providerHandlerClient(handler http.Handler) *http.Client {
+	return &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		recorder := httptest.NewRecorder()
+		incoming := request.Clone(request.Context())
+		incoming.RequestURI = incoming.URL.RequestURI()
+		handler.ServeHTTP(recorder, incoming)
+		return recorder.Result(), nil
+	})}
+}
+
+func TestExecutionClaimHandoff(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		projectCapacity int
+		landing         bool
+		failRecovery    bool
+		rounds          int
+	}{
+		{name: "project one machine three", projectCapacity: 1, rounds: 1},
+		{name: "hydration failure releases exact fence", projectCapacity: 1, failRecovery: true, rounds: 1},
+		{name: "successive handoffs fill capacity", projectCapacity: 3, rounds: 3},
+		{name: "landing batch exceeds execution capacity", projectCapacity: 5, landing: true, rounds: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Now()
+			state := "Rework"
+			if test.landing {
+				state = "Merging"
+			}
+			count := 93
+			if test.landing {
+				count = 5
+			}
+			items := make([]tracker.NativeIssue, count)
+			for i := range items {
+				items[i] = tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_test", ProjectID: "prj_test", WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_item%d", i)), Revision: 1}, State: state}
+			}
+			held := make(map[tracker.NativeWorkItemID]tracker.NativeLease)
+			claims, recoveries, releases := 0, 0, 0
+			var scheduler *Scheduler
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.URL.Path == "/api/v2/capabilities":
+					_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeDispatchWaitCapability}})
+				case strings.HasSuffix(r.URL.Path, "/claims/preview"):
+					available := make([]tracker.NativeIssue, 0, len(items))
+					for _, item := range items {
+						if _, ok := held[item.WorkItemID]; !ok {
+							available = append(available, item)
+						}
+					}
+					_ = json.NewEncoder(w).Encode(tracker.NativeCapacityPage{Items: available})
+				case strings.HasSuffix(r.URL.Path, "/claims"):
+					claims++
+					var request tracker.NativeClaim
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+						t.Error(err)
+						return
+					}
+					if len(held) >= test.projectCapacity {
+						w.WriteHeader(http.StatusConflict)
+						_, _ = w.Write([]byte(`{"code":"no_claimable_work"}`))
+						return
+					}
+					if strings.HasPrefix(request.SessionID, "landing/") != test.landing {
+						t.Error("incorrect landing claim classification")
+					}
+					lease := tracker.NativeLease{ID: tracker.LeaseID(fmt.Sprintf("lease-%d", claims)), WorkItemID: request.WorkItemID, FencingToken: tracker.FencingToken(89555 + claims), ExpiresAt: now.Add(time.Minute)}
+					held[request.WorkItemID] = lease
+					_ = json.NewEncoder(w).Encode(lease)
+				case r.URL.Query().Get("view") == "recovery":
+					recoveries++
+					if test.failRecovery {
+						w.WriteHeader(http.StatusForbidden)
+						_, _ = w.Write([]byte(`{"code":"forbidden"}`))
+						return
+					}
+					for _, item := range items {
+						if strings.HasSuffix(r.URL.Path, "/"+string(item.WorkItemID)) {
+							_ = json.NewEncoder(w).Encode(tracker.NativeRecovery{Issue: item})
+							return
+						}
+					}
+					t.Error("unknown recovery item")
+				case strings.HasSuffix(r.URL.Path, "/release"):
+					releases++
+					var mutation tracker.NativeLeaseMutation
+					if err := json.NewDecoder(r.Body).Decode(&mutation); err != nil {
+						t.Error(err)
+						return
+					}
+					for id, lease := range held {
+						if strings.HasSuffix(r.URL.Path, "/"+string(lease.ID)+"/release") {
+							if mutation.FencingToken != lease.FencingToken || mutation.Reason != "work_item_hydration_failed" {
+								t.Errorf("incorrect release: %+v", mutation)
+							}
+							delete(held, id)
+							w.WriteHeader(http.StatusNoContent)
+							return
+						}
+					}
+					t.Error("release did not identify the held lease")
+				default:
+					t.Errorf("unexpected request: %s", r.URL)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			})
+			client, err := newTestClient(t, Config{URL: "https://hub.test", TokenSource: func() string { return "fixture" }, HTTPClient: providerHandlerClient(handler)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_test", "prj_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			source, err := NewNativeConnector(native)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scheduler = &Scheduler{client: client, machine: Machine{ID: "machine-test", Capacity: 3}, now: func() time.Time { return now }, sessionID: func() (string, error) { return fmt.Sprintf("session-%d", claims), nil }, leaseTTL: time.Minute, heartbeatInterval: time.Minute, nativeHeartbeats: map[tracker.ProjectID]time.Time{"prj_test": now}, claims: make(map[string]tracker.Lease), nativeClaims: make(map[string]nativeClaim), claimPolicies: make(map[string]claimPolicy)}
+			for round := range test.rounds {
+				laterReady := make(chan struct{}, 1)
+				unblock := make(chan struct{})
+				request := orchestrator.SchedulingRequest{ProjectID: "local", AdmissionLimit: 3, CandidateLimit: 100, NativeLandingBatch: true, WorkflowStates: []string{state}, CandidateReady: func(ctx context.Context, issue connector.Issue) bool {
+					if !test.landing && len(held) > len(scheduler.nativeClaims) {
+						select {
+						case laterReady <- struct{}{}:
+						default:
+						}
+						<-unblock
+						return false
+					}
+					return true
+				}}
+				type result struct {
+					issues []connector.Issue
+					err    error
+				}
+				done := make(chan result, 1)
+				go func() {
+					issues, err := scheduler.fetchNativeCandidate(t.Context(), request, source)
+					done <- result{issues, err}
+				}()
+				var got result
+				select {
+				case got = <-done:
+					close(unblock)
+				case <-laterReady:
+					close(unblock)
+					got = <-done
+					t.Error("next CandidateReady reached before acquired execution claim was hydrated and registered")
+				}
+				want := 1
+				if test.landing {
+					want = len(items)
+				}
+				if test.failRecovery {
+					if got.err == nil || len(got.issues) != 0 || len(held) != 0 || releases != 1 || recoveries != 1 || claims != 1 {
+						t.Fatalf("failed hydration: issues=%d held=%d releases=%d recoveries=%d claims=%d err=%v", len(got.issues), len(held), releases, recoveries, claims, got.err)
+					}
+					if len(scheduler.nativeClaims) != 0 {
+						t.Fatal("failed claim was registered")
+					}
+					continue
+				}
+				if got.err != nil || len(got.issues) != want {
+					t.Fatalf("handoff returned %d issues, %v; want %d", len(got.issues), got.err, want)
+				}
+				if claims != (round+1)*want || recoveries != claims || len(held) != claims || len(scheduler.nativeClaims) != claims {
+					t.Fatalf("handoff accounting: claims=%d recoveries=%d held=%d registered=%d", claims, recoveries, len(held), len(scheduler.nativeClaims))
+				}
+				for _, issue := range got.issues {
+					registered := scheduler.nativeClaims[issue.ID]
+					if registered.recovery.Issue.WorkItemID != tracker.NativeWorkItemID(issue.ID) || registered.lease.FencingToken != held[tracker.NativeWorkItemID(issue.ID)].FencingToken {
+						t.Fatal("claim was not hydrated and registered with its fence")
+					}
+				}
+			}
+		})
+	}
+}

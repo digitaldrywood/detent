@@ -1,0 +1,40 @@
+{
+  "dbs": [
+    {
+      "dir": "/var/lib/detent-hub/tenants",
+      "truncate-page-n": 121359,
+      "pattern": "hub.db",
+      "recursive": true,
+      "watch": true,
+      "replica": {
+        "type": "s3",
+        "bucket": "drywood-detent-litestream",
+        "path": "production/tenants",
+        "endpoint": "https://nyc3.digitaloceanspaces.com",
+        "region": "nyc3"
+      }
+    },
+    {
+      "path": "/var/lib/detent-hub/cloud/registry.db",
+      "truncate-page-n": 121359,
+      "replica": {
+        "type": "s3",
+        "bucket": "drywood-detent-litestream",
+        "path": "production/cloud/registry.db",
+        "endpoint": "https://nyc3.digitaloceanspaces.com",
+        "region": "nyc3"
+      }
+    },
+    {
+      "path": "/var/lib/detent-hub/cloud/auth.db",
+      "truncate-page-n": 121359,
+      "replica": {
+        "type": "s3",
+        "bucket": "drywood-detent-litestream",
+        "path": "production/cloud/auth.db",
+        "endpoint": "https://nyc3.digitaloceanspaces.com",
+        "region": "nyc3"
+      }
+    }
+  ]
+}

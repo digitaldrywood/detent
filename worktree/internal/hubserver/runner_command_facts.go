@@ -1,0 +1,140 @@
+package hubserver
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func insertNativeCommandReceipt(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, actor, operation, key, hash, raw, at string) (sql.Result, error) {
+	pending, request, err := commandResponseFacts(raw)
+	if err != nil {
+		return nil, err
+	}
+	object, err := storedMeteredPayloadKey(ctx, string(organization), []byte(raw), !strings.HasPrefix(operation, "attachment."))
+	if err != nil {
+		return nil, err
+	}
+	reconciliation, err := commandReconciliationHash(operation, raw)
+	if err != nil {
+		return nil, err
+	}
+	created, err := time.Parse(time.RFC3339Nano, at)
+	if err != nil {
+		return nil, err
+	}
+	return tx.ExecContext(ctx, `INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,response_object_key,created_at,response_pending,response_request_id,response_reconciliation_hash,response_replay_until_ns) VALUES(?,?,?,?,?,'{}',?,?,?,?,?,?)`, organization, actor, operation, key, hash, object, at, pending, request, reconciliation, created.Add(commandReceiptRetention).UnixNano())
+}
+
+func commandReconciliationHash(operation, raw string) (string, error) {
+	if operation != "urgent_runner_update" {
+		return "", nil
+	}
+	var response urgentRunnerUpdate
+	if err := json.Unmarshal([]byte(raw), &response); err != nil {
+		return "", err
+	}
+	if response.Request == nil {
+		return "", nil
+	}
+	return nativeCommandHash(*response.Request)
+}
+
+func readUrgentCommandReceipt(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, request string) (string, error) {
+	var known string
+	err := q.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(response_object_key,''),response_json) FROM native_commands WHERE organization_id=? AND operation='urgent_runner_update' AND response_request_id=? AND response_pending IS NOT NULL AND response_expired=0 LIMIT 1`, organization, request).Scan(&known)
+	if err == nil {
+		raw, err := resolveStorageJSON(ctx, []byte(known))
+		return string(raw), err
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	rows, err := q.QueryContext(ctx, `SELECT COALESCE(NULLIF(response_object_key,''),response_json) FROM native_commands WHERE organization_id=? AND operation='urgent_runner_update' AND response_pending IS NULL AND response_expired=0 ORDER BY rowid LIMIT ?`, organization, runnerFactsRowsPerTick+1)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var responses []string
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return "", err
+		}
+		responses = append(responses, raw)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return "", err
+	}
+	for i, raw := range responses {
+		if i >= runnerFactsRowsPerTick {
+			return "", errProjectServiceUnavailable
+		}
+		resolved, err := resolveStorageJSON(ctx, []byte(raw))
+		if err != nil {
+			return "", err
+		}
+		_, identity, err := commandResponseFacts(string(resolved))
+		if err != nil {
+			return "", err
+		}
+		if identity == request {
+			return string(resolved), nil
+		}
+	}
+	return "", sql.ErrNoRows
+}
+
+func readCompletedConfigurationReceipt(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, operations []string) (string, string, error) {
+	queries := make([]string, 0, len(operations))
+	var args []any
+	for _, operation := range operations {
+		queries = append(queries, `SELECT * FROM (SELECT COALESCE(NULLIF(response_object_key,''),response_json) AS response_json,operation,response_pending,created_at,rowid AS receipt_rowid FROM native_commands WHERE organization_id=? AND operation=? AND response_expired=0 AND (response_pending=0 OR response_pending IS NULL) ORDER BY created_at DESC,rowid DESC LIMIT ?)`)
+		args = append(args, organization, operation, runnerFactsRowsPerTick+1)
+	}
+	args = append(args, runnerFactsRowsPerTick+1)
+	rows, err := q.QueryContext(ctx, `SELECT response_json,operation,response_pending FROM (`+strings.Join(queries, ` UNION ALL `)+`) ORDER BY created_at DESC,receipt_rowid DESC LIMIT ?`, args...)
+	if err != nil {
+		return "", "", err
+	}
+	defer rows.Close()
+	type receipt struct {
+		raw, operation string
+		pending        sql.NullBool
+	}
+	var receipts []receipt
+	for rows.Next() {
+		var item receipt
+		if err := rows.Scan(&item.raw, &item.operation, &item.pending); err != nil {
+			return "", "", err
+		}
+		receipts = append(receipts, item)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return "", "", err
+	}
+	for i, item := range receipts {
+		if i >= runnerFactsRowsPerTick {
+			return "", "", errProjectServiceUnavailable
+		}
+		resolved, err := resolveStorageJSON(ctx, []byte(item.raw))
+		if err != nil {
+			return "", "", err
+		}
+		if !item.pending.Valid {
+			item.pending.Bool, _, err = commandResponseFacts(string(resolved))
+			if err != nil {
+				return "", "", err
+			}
+		}
+		if !item.pending.Bool {
+			return string(resolved), item.operation, nil
+		}
+	}
+	return "", "", sql.ErrNoRows
+}

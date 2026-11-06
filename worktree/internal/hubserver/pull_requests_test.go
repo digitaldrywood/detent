@@ -1,0 +1,303 @@
+package hubserver
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+const pullRequestTestURL = "https://github.com/example/repo/pull/1"
+
+// pullRequestFixture is a work item with one change request, optionally joined
+// to the GitHub connector's projection of a pull request.
+type pullRequestFixture struct {
+	changeFixture
+	path         string
+	now          time.Time
+	repositoryID int64
+}
+
+func newPullRequestFixture(t *testing.T, connected bool) *pullRequestFixture {
+	t.Helper()
+	fixture := &pullRequestFixture{now: time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)}
+	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return fixture.now }}
+	service := openTestService(t, config)
+	fixture.changeFixture = newChangeFixture(t, service)
+	fixture.path = fixture.base + "/work-items/" + string(fixture.issue.WorkItemID) + "/pull-requests"
+	if !connected {
+		return fixture
+	}
+	repositoryID, _ := seedProjection(t, service.database.db)
+	fixture.repositoryID = repositoryID
+	for _, statement := range []struct {
+		query string
+		args  []any
+	}{
+		{"UPDATE projects SET repository_id = NULL WHERE repository_id = ?", []any{repositoryID}},
+		{"UPDATE projects SET repository_id = ?, github_repository_enabled = 1 WHERE id = ?", []any{repositoryID, fixture.project.ID}},
+		{"UPDATE issues SET repository_id = ? WHERE native_id = ?", []any{repositoryID, fixture.issue.WorkItemID}},
+		{`UPDATE pull_requests SET issue_id = (SELECT id FROM issues WHERE native_id = ?), url = ?, title = 'Connector title',
+head_sha = ?, head_ref = 'feature', base_ref = 'main', draft = 0, mergeable_state = 'clean',
+checks_summary_json = '{"status":"completed","conclusion":"success","total":1,"passed":1}',
+reviews_summary_json = '{"decision":"approved","approvals":1}'`,
+			[]any{fixture.issue.WorkItemID, pullRequestTestURL, strings.Repeat("b", 40)}},
+	} {
+		if _, err := service.database.db.ExecContext(t.Context(), statement.query, statement.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return fixture
+}
+
+// publishExternal publishes a change version that names the pull request.
+func (f *pullRequestFixture) publishExternal(t *testing.T, key string) tracker.ChangeVersion {
+	t.Helper()
+	return f.publishReference(t, key, tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: pullRequestTestURL})
+}
+
+// publishReference publishes a change version that names reference.
+func (f *pullRequestFixture) publishReference(t *testing.T, key string, reference tracker.ChangeExternalReference) tracker.ChangeVersion {
+	t.Helper()
+	input := changeTestInput()
+	input.External = &reference
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.changeFixture.path+"/versions", f.token,
+		tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: key}, ChangeVersionInput: input})
+	requireNativeStatus(t, response, http.StatusOK)
+	var version tracker.ChangeVersion
+	decodeHubResponse(t, response, &version)
+	return version
+}
+
+func (f *pullRequestFixture) list(t *testing.T, query string) []pullRequestView {
+	t.Helper()
+	response := performHubAPIRequest(t, f.service, http.MethodGet, f.path+query, f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var views []pullRequestView
+	decodeHubResponse(t, response, &views)
+	return views
+}
+
+func TestWorkItemPullRequestProjection(t *testing.T) {
+	t.Parallel()
+	f := newPullRequestFixture(t, false)
+	var current string
+	var want *tracker.NativePullRequest
+	for _, test := range []struct {
+		name     string
+		external *tracker.ChangeExternalReference
+		terminal bool
+	}{
+		{name: "native version without PR"},
+		{name: "linked PR", external: &tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: pullRequestTestURL}},
+		{name: "new version retains PR"},
+		{name: "latest PR", external: &tracker.ChangeExternalReference{Provider: "github", ID: "42", URL: "https://github.com/example/repo/pull/42"}},
+		{name: "completion retains PR", terminal: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := changeTestInput()
+			input.External = test.external
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.changeFixture.path+"/versions", f.token,
+				tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: test.name}, ExpectedVersionID: current, ChangeVersionInput: input})
+			requireNativeStatus(t, response, http.StatusOK)
+			var version tracker.ChangeVersion
+			decodeHubResponse(t, response, &version)
+			current = version.ID
+			if test.external != nil {
+				number, err := strconv.Atoi(test.external.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want = &tracker.NativePullRequest{Number: number, URL: test.external.URL}
+			}
+			if test.terminal {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = 'Done') WHERE native_id = ?", f.project.ID, f.issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, compact := range []bool{false, true} {
+				issue, _, err := readNativeIssueProjection(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID), compact)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if (want == nil && issue.PullRequest != nil) || (want != nil && (issue.PullRequest == nil || *issue.PullRequest != *want)) || issue.Terminal != test.terminal {
+					t.Fatalf("compact=%v PR=%#v terminal=%v, want PR=%#v terminal=%v", compact, issue.PullRequest, issue.Terminal, want, test.terminal)
+				}
+			}
+		})
+	}
+}
+
+func TestPullRequestMergeableJSON(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		state string
+		want  string
+	}{
+		{name: "clean", state: "clean", want: "true"},
+		{name: "blocked is still mergeable as far as the projection knows", state: "blocked", want: "true"},
+		{name: "dirty", state: "dirty", want: "false"},
+		{name: "empty", state: "", want: `"unknown"`},
+		{name: "unknown", state: "UNKNOWN", want: `"unknown"`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			encoded, err := json.Marshal(mergeableFromState(test.state))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(encoded) != test.want {
+				t.Fatalf("mergeable = %s, want %s", encoded, test.want)
+			}
+			var back pullRequestMergeable
+			if err := json.Unmarshal(encoded, &back); err != nil {
+				t.Fatalf("decode %s: %v", encoded, err)
+			}
+			if back != mergeableFromState(test.state) {
+				t.Fatalf("round trip = %#v", back)
+			}
+			if err := json.Unmarshal([]byte(`"maybe"`), &back); err == nil {
+				t.Fatal("an unknown string must be refused")
+			}
+		})
+	}
+}
+
+func TestExternalPullRequestNumber(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		reference tracker.ChangeExternalReference
+		want      int
+	}{
+		{name: "github number", reference: tracker.ChangeExternalReference{Provider: "github", ID: "42"}, want: 42},
+		{name: "padded provider and id", reference: tracker.ChangeExternalReference{Provider: " GitHub ", ID: " 7 "}, want: 7},
+		{name: "node id", reference: tracker.ChangeExternalReference{Provider: "github", ID: "PR_kwDO"}},
+		{name: "zero", reference: tracker.ChangeExternalReference{Provider: "github", ID: "0"}},
+		{name: "negative", reference: tracker.ChangeExternalReference{Provider: "github", ID: "-3"}},
+		{name: "other provider", reference: tracker.ChangeExternalReference{Provider: "gitlab", ID: "42"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := externalPullRequestNumber(test.reference); got != test.want {
+				t.Fatalf("externalPullRequestNumber(%#v) = %d, want %d", test.reference, got, test.want)
+			}
+		})
+	}
+}
+
+// The assembled view is served from memory for sixty seconds, so a client that
+// polls the panel does not re-run the join on every tick.
+func TestPullRequestViewCache(t *testing.T) {
+	cache := newPullRequestCache()
+	now := time.Now()
+	views := []pullRequestView{{ID: "change", State: "open"}}
+	cache.set("issue", views, now)
+	views[0].State = "closed"
+	cached, ok := cache.get("issue", now)
+	if !ok || len(cached) != 1 || cached[0].State != "open" {
+		t.Fatalf("cache changed: %+v", cached)
+	}
+	if _, ok := cache.get("issue", now.Add(pullRequestViewTTL)); ok {
+		t.Fatal("expired view retained")
+	}
+}
+
+func TestPullRequestViewGoldenShape(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile(filepath.Join("testdata", "pull-requests.json"))
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	var views []pullRequestView
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&views); err != nil {
+		t.Fatalf("the golden must decode into the served shape: %v", err)
+	}
+	if len(views) != 2 {
+		t.Fatalf("golden views = %d, want 2", len(views))
+	}
+	if views[0].Connector == nil || views[0].Number != 4211 || !views[0].Mergeable.Known || !views[0].Mergeable.Value {
+		t.Fatalf("connected row = %#v", views[0])
+	}
+	if views[1].Connector != nil || views[1].Mergeable.Known {
+		t.Fatalf("unavailable row = %#v", views[1])
+	}
+	encoded, err := json.Marshal(views)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want, got any
+	if err := json.Unmarshal(raw, &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatal(err)
+	}
+	comparePullRequestShape(t, "", want, got)
+}
+
+// comparePullRequestShape asserts that the Go payload carries exactly the
+// golden's key set at every level and agrees on whether a value is null.
+// Values themselves are not compared: the golden is an example, the shape is
+// the contract.
+func comparePullRequestShape(t *testing.T, path string, want, got any) {
+	t.Helper()
+	label := path
+	if label == "" {
+		label = "(root)"
+	}
+	if (want == nil) != (got == nil) {
+		t.Errorf("%s: golden null = %t, Go null = %t", label, want == nil, got == nil)
+		return
+	}
+	switch wanted := want.(type) {
+	case nil:
+	case map[string]any:
+		gotten, ok := got.(map[string]any)
+		if !ok {
+			t.Errorf("%s: golden is an object, Go value is %T", label, got)
+			return
+		}
+		for key, value := range wanted {
+			other, present := gotten[key]
+			if !present {
+				t.Errorf("%s: Go value is missing key %q", label, key)
+				continue
+			}
+			comparePullRequestShape(t, strings.TrimPrefix(path+"."+key, "."), value, other)
+		}
+		for key := range gotten {
+			if _, present := wanted[key]; !present {
+				t.Errorf("%s: Go value has extra key %q", label, key)
+			}
+		}
+	case []any:
+		gotten, ok := got.([]any)
+		if !ok {
+			t.Errorf("%s: golden is an array, Go value is %T", label, got)
+			return
+		}
+		if len(wanted) != len(gotten) {
+			t.Errorf("%s: golden has %d elements, Go value has %d", label, len(wanted), len(gotten))
+			return
+		}
+		for i := range wanted {
+			comparePullRequestShape(t, path+"[]", wanted[i], gotten[i])
+		}
+	default:
+		if fmt.Sprintf("%T", want) != fmt.Sprintf("%T", got) {
+			t.Errorf("%s: golden is %T, Go value is %T", label, want, got)
+		}
+	}
+}

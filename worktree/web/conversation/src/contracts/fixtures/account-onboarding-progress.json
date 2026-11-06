@@ -1,0 +1,8 @@
+{
+  "revision": "4",
+  "repository": "existing",
+  "doctor": true,
+  "provider": true,
+  "artifacts": "local",
+  "updated_at": "2026-09-10T12:00:01Z"
+}

@@ -1,0 +1,873 @@
+package templates
+
+import (
+	"github.com/digitaldrywood/detent/internal/web/ui/components/dialog"
+	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
+	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
+)
+
+// AppShell is the redesigned application frame: a 208px sidebar collapsible
+// to a 52px icon rail, and a 48px topbar with page title, optional scope
+// control, live indicator, and density toggle. Page content renders via
+// children and owns the #snapshot live region. The scope component renders
+// in the topbar next to the title; pass nil when the page has no scope.
+templ AppShell(data DashboardShellData, scope templ.Component) {
+	if data.Hosted != nil {
+		@hostedAppShell(*data.Hosted) {
+			{ children... }
+		}
+	} else {
+		@instanceAppShell(data, scope) {
+			{ children... }
+		}
+	}
+}
+
+templ instanceAppShell(data DashboardShellData, scope templ.Component) {
+	<!DOCTYPE html>
+	<html { appShellHTMLAttributes(data)... } data-detent-served-version={ appShellVersionLabel(data) }>
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="application-name" content={ applicationName(data.ApplicationName) }/>
+			<title>{ pageTitle(data) }</title>
+			@helpScript()
+			<link rel="icon" type="image/svg+xml" href={ faviconPath(data.Assets) }/>
+			<link rel="preload" href="/static/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin/>
+			<link rel="preload" href="/static/fonts/GeistMono-Variable.woff2" as="font" type="font/woff2" crossorigin/>
+			<link rel="stylesheet" href={ stylesheetPath(data.Assets) }/>
+			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+			<script src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"></script>
+			<script src="https://cdn.jsdelivr.net/npm/idiomorph@0.7.3/dist/idiomorph-ext.min.js"></script>
+			@localTimeScript()
+			@dashboardSSEMetricsScript()
+			if data.IncludeDashboardCharts {
+				<script src={ chartJSPath(data.Assets) } defer></script>
+				<script src={ dashboardChartsScriptPath(data.Assets) } defer></script>
+			}
+			@dialog.Script()
+			@appShellScript()
+			@liveBehaviorScript()
+		</head>
+		<body class="h-screen overflow-hidden bg-page font-sans text-text antialiased" hx-ext="sse, morph">
+			@aiDebugScript()
+			@helpTooltipHost()
+			@boardAlertsOverlayHost()
+			@kanbanDialogHost()
+			<div id="kanban-feedback" role="status" aria-live="polite" hidden></div>
+			@DetailSheetHost()
+			@ChatPanelHost()
+			<div id="detent-build-update" class="fixed bottom-20 right-4 z-50 hidden items-center gap-3 rounded-card border border-line bg-surface px-4 py-3 text-sm text-text shadow-lg" role="status" aria-live="polite" data-detent-build-update hidden>
+				<span data-detent-build-update-message></span>
+				<button type="button" class="font-medium text-accent hover:underline" data-detent-build-reload>Reload</button>
+			</div>
+			<div id="detent-connection-notice" class="fixed left-1/2 top-16 z-50 hidden max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-3 rounded-card border border-warn/50 bg-surface px-4 py-3 text-sm text-text shadow-lg" role="alert" aria-live="assertive" data-detent-connection-notice hidden>
+				<span>Connection lost. Board moves are disabled until Detent reconnects.</span>
+				<button type="button" class="font-medium text-accent hover:underline" data-detent-connection-reload>Reload</button>
+			</div>
+			<div id="detent-action-notice" class="fixed right-4 top-16 z-50 hidden max-w-md items-center gap-3 rounded-card border border-accent/40 bg-surface px-4 py-3 text-sm text-text shadow-lg" role="status" aria-live="polite" data-detent-action-notice hidden>
+				<span data-detent-action-notice-message></span>
+				<button type="button" class="font-medium text-accent hover:underline" data-detent-action-notice-dismiss>Dismiss</button>
+			</div>
+			<div
+				class="flex h-full"
+				data-detent-dashboard-stream
+				sse-connect={ eventsPath(data) }
+			>
+				<button
+					type="button"
+					class="invisible fixed inset-0 z-40 bg-text/35 opacity-0 transition-opacity duration-200 data-[mobile-open=true]:visible data-[mobile-open=true]:opacity-100 md:hidden"
+					data-mobile-sidebar-scrim
+					data-mobile-open="false"
+					aria-label="Close navigation"
+				></button>
+				@appSidebar(data)
+				<div class="flex min-w-0 flex-1 flex-col">
+					@appTopbar(data, scope)
+					{ children... }
+				</div>
+			</div>
+		</body>
+	</html>
+}
+
+templ appSidebar(data DashboardShellData) {
+	<aside
+		id="app-sidebar"
+		class="group/rail invisible fixed inset-y-0 left-0 z-50 flex h-full w-52 -translate-x-full flex-none flex-col gap-0.5 overflow-y-auto border-r border-line bg-page px-2.5 py-3.5 shadow-lg transition-[transform,visibility] duration-200 data-[mobile-open=true]:visible data-[mobile-open=true]:translate-x-0 data-[rail=true]:w-13 data-[rail=true]:items-center data-[rail=true]:px-1.5 md:visible md:static md:z-auto md:translate-x-0 md:shadow-none md:transition-none"
+		data-rail={ appShellRailValue(data) }
+		data-mobile-open="false"
+	>
+		<a href="/" class="flex items-center gap-2 rounded-card px-2.5 pb-4 pt-1 group-data-[rail=true]/rail:justify-center group-data-[rail=true]/rail:px-0" aria-label="Detent board">
+			<span class="grid size-5 flex-none place-items-center rounded-card bg-accent font-mono text-2xs font-semibold text-page">D</span>
+			<span class="text-sm font-semibold group-data-[rail=true]/rail:hidden">Detent</span>
+		</a>
+		<div id="app-sidebar-content" class="contents" sse-swap="sidebar-v2" hx-swap="morph:innerHTML">
+			@AppSidebarContent(data)
+		</div>
+		<div class="flex-1"></div>
+		<div class="flex items-center px-2.5 group-data-[rail=true]/rail:px-0">
+			@LiveBuildVersion(data.Version)
+			<span class="flex-1 group-data-[rail=true]/rail:hidden"></span>
+			<button
+				type="button"
+				class="hidden rounded-chip p-1 text-dim hover:bg-elev hover:text-sec md:inline-block"
+				data-sidebar-toggle
+				aria-label="Toggle sidebar"
+				aria-controls="app-sidebar"
+			>
+				@icon.PanelLeft(icon.Props{Class: "size-3.5"})
+			</button>
+		</div>
+	</aside>
+}
+
+templ LiveBuildVersion(version string) {
+	<span
+		id="detent-build-version"
+		class="min-w-0 truncate text-2xs text-dim group-data-[rail=true]/rail:hidden"
+		title={ appShellVersionLabel(DashboardShellData{Version: version}) }
+		sse-swap="build"
+		hx-swap="outerHTML"
+		data-detent-build-version={ appShellVersionLabel(DashboardShellData{Version: version}) }
+	>{ appShellVersionLabel(DashboardShellData{Version: version}) }</span>
+}
+
+// AppSidebarContent is the live part of the sidebar (nav health dot and
+// project rows), streamed as the sidebar-v2 SSE event and morphed in place.
+templ AppSidebarContent(data DashboardShellData) {
+	{{ projects := appShellProjects(data) }}
+	for _, group := range appShellNavGroups(data) {
+		if group.Label != "" {
+			@appSidebarSectionLabel(group.ID, group.Label)
+		}
+		for _, item := range group.Items {
+			@appSidebarNavItem(data, item)
+		}
+		if group.ID == "primary" && len(projects) > 1 {
+			@appSidebarSectionLabel("projects", "Projects")
+			for _, project := range projects {
+				<a
+					href={ templ.SafeURL(project.Href) }
+					class={ appProjectLinkClass(project) }
+					data-sidebar-project={ project.ID }
+					data-help-trigger
+					data-help-scope={ appProjectHelpScope(project) }
+					data-help-term={ appProjectHelpTerm(project) }
+					data-help-title={ appProjectHelpTitle(project) }
+					data-help-description={ appProjectHelpDescription(project) }
+					data-sidebar-project-status={ appProjectStatus(project) }
+					aria-label={ appProjectAriaLabel(project) }
+					{ sidebarAriaCurrent(project.Selected)... }
+				>
+					<span class="group-data-[rail=true]/rail:absolute group-data-[rail=true]/rail:right-0 group-data-[rail=true]/rail:top-0 group-data-[rail=true]/rail:z-10 group-data-[rail=true]/rail:grid group-data-[rail=true]/rail:size-2.5 group-data-[rail=true]/rail:place-items-center group-data-[rail=true]/rail:rounded-full group-data-[rail=true]/rail:bg-page" data-sidebar-project-activity={ boardBoolAttr(project.Live) }>
+						@primitives.StatusDot(appProjectDotKind(project), project.Live)
+					</span>
+					<span class="hidden size-7 place-items-center rounded-card border border-line bg-elev font-mono text-2xs font-semibold text-text group-data-[rail=true]/rail:grid" aria-hidden="true" data-sidebar-project-identity>{ project.Initials }</span>
+					<span class="min-w-0 flex-1 truncate group-data-[rail=true]/rail:hidden" data-sidebar-project-label>{ project.Name }</span>
+					if project.ActiveHoursVisible {
+						<span class="inline-flex h-5 max-w-24 flex-none items-center gap-0.5 rounded-chip bg-elev px-1 font-mono text-[10px] font-medium text-sec group-data-[rail=true]/rail:hidden" data-sidebar-project-active-hours aria-label={ project.ActiveHoursCozyLabel }>
+							@icon.ClockCheck(icon.Props{Class: "size-3 shrink-0"})
+							<span class="truncate" data-active-hours-label="cozy">{ project.ActiveHoursCozyLabel }</span>
+							<span data-active-hours-label="compact">{ project.ActiveHoursCompactLabel }</span>
+						</span>
+					} else if project.Count != "" {
+						<span class={ appProjectCountClass(project) } data-sidebar-project-badge data-sidebar-project-blocked={ boardBoolAttr(project.Blocked > 0) } aria-label={ appProjectBadgeLabel(project) }>{ project.Count }</span>
+					}
+				</a>
+			}
+		}
+	}
+}
+
+templ appSidebarSectionLabel(id string, label string) {
+	<p class="px-2.5 pb-1.5 pt-4.5 text-2xs font-semibold uppercase tracking-[0.06em] text-dim group-data-[rail=true]/rail:hidden" data-sidebar-section={ id }>{ label }</p>
+	<div class="hidden pb-1 pt-4.5 group-data-[rail=true]/rail:block" data-sidebar-divider={ id } aria-hidden="true">
+		<span class="mx-auto block h-px w-4 bg-line"></span>
+	</div>
+}
+
+templ appSidebarNavItem(data DashboardShellData, item appNavItem) {
+	<a
+		href={ templ.SafeURL(item.Href) }
+		class={ appNavLinkClass(item) }
+		aria-label={ item.Label }
+		data-sidebar-nav-item={ item.ID }
+		data-help-trigger
+		data-help-scope="sidebar-nav"
+		data-help-term={ "sidebar-nav-" + item.ID }
+		data-help-title={ item.Label }
+		{ sidebarAriaCurrent(item.Active)... }
+	>
+		<span class="inline-flex size-4 shrink-0 items-center justify-center" aria-hidden="true" data-sidebar-nav-icon={ item.Icon }>
+			@appNavIcon(item)
+		</span>
+		<span class="flex-1 group-data-[rail=true]/rail:hidden" data-sidebar-nav-label>{ item.Label }</span>
+		if item.HealthDot {
+			<span class="group-data-[rail=true]/rail:absolute group-data-[rail=true]/rail:right-0.5 group-data-[rail=true]/rail:top-0.5">
+				@primitives.StatusDot(appShellHealthKind(data), false)
+			</span>
+		}
+	</a>
+}
+
+templ appTopbar(data DashboardShellData, scope templ.Component) {
+	<header class="relative flex h-12 flex-none items-center gap-1 border-b border-line px-1 md:gap-4 md:px-5">
+		<button
+			type="button"
+			class="grid size-11 flex-none place-items-center rounded-card text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent md:hidden"
+			data-mobile-sidebar-toggle
+			aria-label="Open navigation"
+			aria-controls="app-sidebar"
+			aria-expanded="false"
+		>
+			@icon.Menu(icon.Props{Class: "size-5"})
+		</button>
+		<h1 class="min-w-0 flex-1 truncate text-sm font-semibold md:flex-none md:text-base">{ appShellTopbarTitle(data) }</h1>
+		<button
+			type="button"
+			class="grid size-11 flex-none place-items-center rounded-card text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent md:hidden"
+			data-mobile-topbar-toggle
+			aria-label="More topbar controls"
+			aria-controls="mobile-topbar-controls"
+			aria-expanded="false"
+		>
+			@icon.Ellipsis(icon.Props{Class: "size-5"})
+		</button>
+		<div
+			id="mobile-topbar-controls"
+			class="invisible absolute right-1 top-11 z-30 flex w-56 flex-col gap-3 rounded-card border border-line bg-page p-3 opacity-0 shadow-lg transition-[opacity,visibility] duration-150 data-[mobile-open=true]:visible data-[mobile-open=true]:opacity-100 md:visible md:static md:flex md:w-auto md:flex-1 md:flex-row md:items-center md:gap-4 md:border-0 md:bg-transparent md:p-0 md:opacity-100 md:shadow-none md:transition-none"
+			data-mobile-topbar-controls
+			data-mobile-open="false"
+		>
+			if scope != nil {
+				<div class="min-w-0 flex-none">
+					@scope
+				</div>
+			}
+			<div class="hidden flex-1 md:block"></div>
+			@LiveStatus(data)
+			<div class="flex w-fit overflow-hidden rounded-card border border-line" role="group" aria-label="Density">
+				<button type="button" class={ appDensityButtonClass(data, "compact") } data-density-choice="compact" aria-pressed={ appDensityPressed(data, "compact") }>Compact</button>
+				<button type="button" class={ appDensityButtonClass(data, "cozy") } data-density-choice="cozy" aria-pressed={ appDensityPressed(data, "cozy") }>Cozy</button>
+				<button type="button" class={ appDensityButtonClass(data, "comfy") } data-density-choice="comfy" aria-pressed={ appDensityPressed(data, "comfy") }>Comfy</button>
+			</div>
+			<button
+				type="button"
+				class="inline-flex min-h-9 items-center gap-2 rounded-card border border-line px-3 text-xs font-medium text-sec hover:border-accent hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+				data-chat-toggle
+				hx-get="/api/v1/chat"
+				hx-target="#chat-panel-body"
+				hx-swap="innerHTML"
+				aria-controls="chat-panel"
+				aria-expanded="false"
+			>
+				@icon.MessageCircle(icon.Props{Class: "size-4"})
+				Chat
+			</button>
+		</div>
+	</header>
+}
+
+templ LiveStatus(data DashboardShellData) {
+	<div
+		id="live-indicator"
+		class={ "flex flex-none items-center gap-2 text-xs " + appLiveStatusTextClass(data) }
+		data-live-indicator
+		data-detent-live-version={ appShellVersionLabel(data) }
+		data-freshness-kind={ string(appLiveStatusKind(data)) }
+		data-freshness-label={ appLiveStatusLabel(data) }
+		sse-swap="live-status"
+		hx-swap="morph:outerHTML"
+	>
+		@primitives.StatusDot(appLiveStatusKind(data), false)
+		<span data-live-label>{ appLiveStatusLabel(data) } ·</span>
+		<span id="live-clock" class="font-mono tabular-nums">@LocalTime(appLiveStatusAt(data), LocalTimeOptions{Relative: true, Fallback: "--:--:--"})</span>
+	</div>
+}
+
+// liveBehaviorScript implements the cross-cutting SSE behavior rules from
+// redesign issue 08. It lives outside #snapshot and works by delegation,
+// so idiomorph swaps can never tear it down:
+//   - disconnect degrade: the Live indicator becomes "Reconnecting… data
+//     as of HH:MM" (warn dot) and #snapshot dims; reconnecting restores it
+//   - tick highlight: after each morph, identified nodes whose text
+//     changed get a one-shot data-changed tint (disabled under
+//     prefers-reduced-motion via CSS)
+//   - scroll accumulation: a scrolled lane/log that gains rows shows an
+//     "N new ↑" chip instead of scroll-jacking
+templ liveBehaviorScript() {
+	<script>
+		(function () {
+			var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+			var servedVersion = document.documentElement.getAttribute("data-detent-served-version") || "";
+			var buildConfirmed = false;
+			var connectedOnce = false;
+			var eventSources = new Map();
+			var createEventSource = window.htmx && window.htmx.createEventSource;
+			if (typeof createEventSource === "function") {
+				window.htmx.createEventSource = function (url) {
+					var existing = eventSources.get(url);
+					if (existing && existing.readyState !== EventSource.CLOSED) return existing;
+					var source = createEventSource(url);
+					eventSources.set(url, source);
+					return source;
+				};
+			}
+
+			function isDashboardStreamEvent(event) {
+				var target = event.target instanceof Element ? event.target : null;
+				var owner = target && target.closest("[sse-connect], [data-sse-connect]");
+				return owner && owner.hasAttribute("data-detent-dashboard-stream");
+			}
+
+			function connectionNotice(visible) {
+				var notice = document.querySelector("[data-detent-connection-notice]");
+				if (!notice) return;
+				notice.hidden = !visible;
+				notice.classList.toggle("hidden", !visible);
+				notice.classList.toggle("flex", visible);
+			}
+
+			function setBoardMovesDisabled(disabled) {
+				document.querySelectorAll("[data-kanban-card]").forEach(function (card) {
+					if (!(card instanceof HTMLElement)) return;
+					if (disabled) {
+						if (card.dataset.kanbanAction === "move") {
+							card.dataset.kanbanConnectionAction = "move";
+							delete card.dataset.kanbanAction;
+						}
+						if (card.dataset.kanbanConnectionAction === "move") {
+							card.dataset.kanbanConnectionDisabled = "true";
+						}
+						return;
+					}
+					if (card.dataset.kanbanConnectionAction !== "move") return;
+					card.dataset.kanbanAction = "move";
+					delete card.dataset.kanbanConnectionAction;
+					delete card.dataset.kanbanConnectionDisabled;
+				});
+			}
+
+			function setConnectionState(state) {
+				document.documentElement.setAttribute("data-detent-connection", state);
+				var connected = state === "connected";
+				setBoardMovesDisabled(!connected);
+				connectionNotice(!connected && connectedOnce && state !== "reload-required");
+				document.dispatchEvent(new CustomEvent("detent:connectionChange", { detail: { state: state } }));
+			}
+
+			function applyBuildVersion(event) {
+				if (!isDashboardStreamEvent(event)) return;
+				var target = event.target instanceof Element ? event.target : null;
+				if (!target) return;
+				var detail = event.detail || {};
+				var markup = typeof detail.data === "string" ? detail.data : "";
+				if (!markup) return;
+				var template = document.createElement("template");
+				template.innerHTML = markup;
+				var incoming = target.id === "detent-build-version"
+					? template.content.querySelector("[data-detent-build-version]")
+					: template.content.querySelector("[data-detent-live-version]");
+				if (!incoming) return;
+				var liveVersion = incoming.getAttribute("data-detent-build-version") || incoming.getAttribute("data-detent-live-version") || "";
+				var footer = target.id === "detent-build-version" ? target : null;
+				if (footer) {
+					footer.textContent = liveVersion;
+					footer.setAttribute("title", liveVersion);
+					footer.setAttribute("data-detent-build-version", liveVersion);
+				}
+				if (!servedVersion || !liveVersion) return;
+				if (servedVersion === liveVersion) {
+					buildConfirmed = true;
+					return;
+				}
+				buildConfirmed = false;
+				setConnectionState("reload-required");
+				var notice = document.querySelector("[data-detent-build-update]");
+				if (!notice) return;
+				var message = notice.querySelector("[data-detent-build-update-message]");
+				if (message) message.textContent = "Detent updated to " + liveVersion + " —";
+				notice.hidden = false;
+				notice.classList.remove("hidden");
+				notice.classList.add("flex");
+			}
+			document.addEventListener("htmx:sseBeforeMessage", applyBuildVersion);
+			document.addEventListener("click", function (event) {
+				var reload = event.target instanceof Element ? event.target.closest("[data-detent-build-reload]") : null;
+				var connectionReload = event.target instanceof Element ? event.target.closest("[data-detent-connection-reload]") : null;
+				if (reload || connectionReload) window.location.reload();
+			});
+
+			function liveParts() {
+				var indicator = document.querySelector("[data-live-indicator]");
+				if (!indicator) return null;
+				return {
+					indicator: indicator,
+					dot: indicator.querySelector("span[aria-hidden]"),
+					label: indicator.querySelector("[data-live-label]"),
+					clock: document.getElementById("live-clock"),
+				};
+			}
+			function setDisconnected(event) {
+				if (!isDashboardStreamEvent(event)) return;
+				buildConfirmed = false;
+				setConnectionState("disconnected");
+				var parts = liveParts();
+				if (!parts || document.documentElement.getAttribute("data-live") === "stale") return;
+				document.documentElement.setAttribute("data-live", "stale");
+				if (parts.label) parts.label.textContent = "Reconnecting… data as of";
+				if (parts.dot) {
+					parts.dot.classList.remove("bg-ok", "bg-warn", "bg-err", "bg-info", "bg-dim");
+					parts.dot.classList.add("bg-warn");
+				}
+				parts.indicator.classList.remove("text-sec");
+				parts.indicator.classList.add("text-warn");
+				var snapshot = document.getElementById("snapshot");
+				if (snapshot) snapshot.style.opacity = "0.85";
+			}
+			function restoreFreshness(parts) {
+				var kind = parts.indicator.getAttribute("data-freshness-kind") || "neutral";
+				var label = parts.indicator.getAttribute("data-freshness-label") || "Live";
+				if (parts.label) parts.label.textContent = label + " ·";
+				if (parts.dot) {
+					parts.dot.classList.remove("bg-ok", "bg-warn", "bg-err", "bg-info", "bg-dim");
+					parts.dot.classList.add(kind === "ok" ? "bg-ok" : kind === "warn" ? "bg-warn" : kind === "err" ? "bg-err" : kind === "info" ? "bg-info" : "bg-dim");
+				}
+				parts.indicator.classList.remove("text-warn", "text-err", "text-info", "text-sec");
+				parts.indicator.classList.add(kind === "warn" ? "text-warn" : kind === "err" ? "text-err" : kind === "info" ? "text-info" : "text-sec");
+			}
+			function setConnecting(event) {
+				if (!isDashboardStreamEvent(event)) return;
+				if (document.documentElement.getAttribute("data-detent-connection") === "reload-required") return;
+				buildConfirmed = false;
+				setConnectionState("connecting");
+			}
+			function setConnected(event) {
+				if (!isDashboardStreamEvent(event)) return;
+				if (!buildConfirmed || document.documentElement.getAttribute("data-detent-connection") === "reload-required") return;
+				var parts = liveParts();
+				if (!parts) return;
+				connectedOnce = true;
+				setConnectionState("connected");
+				document.documentElement.removeAttribute("data-live");
+				restoreFreshness(parts);
+				var snapshot = document.getElementById("snapshot");
+				if (snapshot) snapshot.style.opacity = "";
+			}
+			document.addEventListener("htmx:sseError", setDisconnected);
+			document.addEventListener("htmx:sseClose", setDisconnected);
+			document.addEventListener("htmx:sseOpen", setConnecting);
+			document.addEventListener("htmx:sseBeforeMessage", setConnected);
+			document.addEventListener("htmx:afterSettle", function () {
+				setBoardMovesDisabled(document.documentElement.getAttribute("data-detent-connection") !== "connected");
+			});
+			document.addEventListener("DOMContentLoaded", function () {
+				setBoardMovesDisabled(document.documentElement.getAttribute("data-detent-connection") !== "connected");
+			});
+
+			var previousText = new Map();
+			var previousCounts = new Map();
+			function snapshotState() {
+				var snapshot = document.getElementById("snapshot");
+				if (!snapshot) return;
+				previousText = new Map();
+				snapshot.querySelectorAll("[id]").forEach(function (node) {
+					previousText.set(node.id, node.textContent);
+				});
+				previousCounts = new Map();
+				snapshot.querySelectorAll("[data-preserve-scroll]").forEach(function (container) {
+					previousCounts.set(container.getAttribute("data-preserve-scroll"), {
+						count: container.childElementCount,
+						scrolled: container.scrollTop > 24,
+					});
+				});
+			}
+			function highlightChanges() {
+				if (reduceMotion) return;
+				var snapshot = document.getElementById("snapshot");
+				if (!snapshot || previousText.size === 0) return;
+				snapshot.querySelectorAll("[id]").forEach(function (node) {
+					var before = previousText.get(node.id);
+					if (before === undefined || before === node.textContent) return;
+					node.removeAttribute("data-changed");
+					void node.offsetWidth;
+					node.setAttribute("data-changed", "true");
+					setTimeout(function () {
+						node.removeAttribute("data-changed");
+					}, 1100);
+				});
+			}
+			function accumulateNew() {
+				var snapshot = document.getElementById("snapshot");
+				if (!snapshot) return;
+				snapshot.querySelectorAll("[data-preserve-scroll]").forEach(function (container) {
+					var key = container.getAttribute("data-preserve-scroll");
+					var before = previousCounts.get(key);
+					if (!before || !before.scrolled) return;
+					var added = container.childElementCount - before.count;
+					if (added <= 0) return;
+					var chip = container.querySelector("[data-new-chip]");
+					var count = added;
+					if (chip) {
+						count += parseInt(chip.getAttribute("data-new-count") || "0", 10);
+					} else {
+						chip = document.createElement("button");
+						chip.type = "button";
+						chip.setAttribute("data-new-chip", "");
+						chip.className = "sticky top-0 z-10 mx-auto flex-none rounded-chip border border-line bg-elev px-2.5 py-1 text-2xs font-medium text-accent";
+						chip.addEventListener("click", function () {
+							container.scrollTo({ top: 0 });
+							chip.remove();
+						});
+						container.prepend(chip);
+					}
+					chip.setAttribute("data-new-count", String(count));
+					chip.textContent = count + " new ↑";
+				});
+			}
+			document.addEventListener("htmx:beforeSwap", function (event) {
+				var target = event.detail && event.detail.target;
+				if (target instanceof Element && (target.id === "snapshot" || target.closest("#snapshot"))) {
+					snapshotState();
+				}
+			});
+			document.addEventListener("htmx:afterSettle", function (event) {
+				var target = event.detail && event.detail.target;
+				if (target instanceof Element && (target.id === "snapshot" || target.closest("#snapshot"))) {
+					highlightChanges();
+					accumulateNew();
+				}
+			});
+		})();
+	</script>
+}
+
+templ appShellScript() {
+	<script>
+		(function () {
+			var detailSheetRefreshing = false;
+			function setChatPanel(open) {
+				var panel = document.querySelector("[data-chat-panel]");
+				var scrim = document.querySelector("[data-chat-scrim]");
+				var toggle = document.querySelector("[data-chat-toggle]");
+				if (!panel || !scrim || !toggle) return;
+				var wasOpen = panel.getAttribute("data-chat-open") === "true";
+				var value = open ? "true" : "false";
+				panel.setAttribute("data-chat-open", value);
+				panel.setAttribute("aria-hidden", open ? "false" : "true");
+				scrim.setAttribute("data-chat-open", value);
+				toggle.setAttribute("aria-expanded", value);
+				if (open) {
+					var input = panel.querySelector("textarea");
+					if (input) input.focus();
+				} else if (wasOpen) {
+					toggle.focus();
+				}
+			}
+			function setMobileTopbar(open) {
+				var controls = document.querySelector("[data-mobile-topbar-controls]");
+				var toggle = document.querySelector("[data-mobile-topbar-toggle]");
+				if (!controls || !toggle) return;
+				var value = open ? "true" : "false";
+				controls.setAttribute("data-mobile-open", value);
+				toggle.setAttribute("aria-expanded", value);
+			}
+			function setMobileSidebar(open, restoreFocus) {
+				var sidebar = document.getElementById("app-sidebar");
+				var scrim = document.querySelector("[data-mobile-sidebar-scrim]");
+				var toggle = document.querySelector("[data-mobile-sidebar-toggle]");
+				if (!sidebar || !scrim || !toggle) return;
+				var wasOpen = sidebar.getAttribute("data-mobile-open") === "true";
+				var value = open ? "true" : "false";
+				if (open && sidebar.dataset.desktopRail === undefined) {
+					sidebar.dataset.desktopRail = sidebar.getAttribute("data-rail") || "false";
+					sidebar.setAttribute("data-rail", "false");
+				} else if (!open && sidebar.dataset.desktopRail !== undefined) {
+					sidebar.setAttribute("data-rail", sidebar.dataset.desktopRail);
+					delete sidebar.dataset.desktopRail;
+				}
+				sidebar.setAttribute("data-mobile-open", value);
+				scrim.setAttribute("data-mobile-open", value);
+				toggle.setAttribute("aria-expanded", value);
+				if (open) {
+					var firstLink = sidebar.querySelector("a");
+					if (firstLink) firstLink.focus();
+				} else if (restoreFocus && wasOpen) {
+					toggle.focus();
+				}
+			}
+			function applyDetailSheetTab(host) {
+				if (!host) return;
+				var selected = host.dataset.detailSheetTab || "activity";
+				host.querySelectorAll("[data-sheet-tab]").forEach(function (button) {
+					var active = button.getAttribute("data-sheet-tab") === selected;
+					button.setAttribute("aria-selected", active ? "true" : "false");
+					button.classList.toggle("border-accent", active);
+					button.classList.toggle("border-transparent", !active);
+					button.classList.toggle("text-text", active);
+					button.classList.toggle("text-sec", !active);
+				});
+				host.querySelectorAll("[data-sheet-panel]").forEach(function (panel) {
+					panel.classList.toggle("hidden", panel.getAttribute("data-sheet-panel") !== selected);
+				});
+			}
+			function abortDetailSheetRequest(host) {
+				if (!host || !host.dataset.detailSheetTrigger || !window.htmx) return;
+				var trigger = document.getElementById(host.dataset.detailSheetTrigger);
+				if (trigger) window.htmx.trigger(trigger, "htmx:abort");
+			}
+			function removeDetailSheetChildren(host) {
+				if (!host) return;
+				Array.from(host.children).forEach(function (child) {
+					if (window.htmx) window.htmx.swap(child, "", { swapStyle: "delete" });
+					else child.remove();
+				});
+			}
+			function mountImmediateDetailSheet(trigger, path) {
+				var host = document.getElementById("detail-sheet-host");
+				var template = document.getElementById("detail-sheet-immediate-template");
+				if (!host || !(template instanceof HTMLTemplateElement)) return;
+				detailSheetRefreshing = false;
+				if (host.dataset.detailSheetTrigger && host.dataset.detailSheetTrigger !== trigger.id) {
+					abortDetailSheetRequest(host);
+				}
+				removeDetailSheetChildren(host);
+				host.appendChild(template.content.cloneNode(true));
+				var sheet = host.querySelector("[data-detail-sheet]");
+				var title = trigger.querySelector("[data-board-card-title]");
+				var state = trigger.querySelector("[data-board-card-state]");
+				var referenceText = trigger.dataset.detailSheetReference || "";
+				var values = [
+					["[data-immediate-project]", trigger.dataset.detailSheetProject || ""],
+					["[data-immediate-reference]", referenceText],
+					["[data-immediate-title]", title ? title.textContent.trim() : ""],
+					["[data-immediate-state]", state ? state.textContent.trim() : ""],
+					["[data-immediate-identity]", referenceText]
+				];
+				values.forEach(function (entry) {
+					var target = host.querySelector(entry[0]);
+					if (target) target.textContent = entry[1];
+				});
+				if (sheet) sheet.dataset.detailSheetKey = trigger.id;
+				var dialog = host.querySelector('[role="dialog"]');
+				if (dialog && referenceText) dialog.setAttribute("aria-label", "Details for " + referenceText);
+				host.dataset.detailSheetTrigger = trigger.id;
+				host.dataset.detailSheetURL = path || trigger.getAttribute("hx-get") || "";
+				delete host.dataset.detailSheetTab;
+				document.dispatchEvent(new CustomEvent("detent:closeHelpTooltip"));
+				applyDetailSheetTab(host);
+			}
+			function closeDetailSheet() {
+				document.dispatchEvent(new CustomEvent("detent:closeHelpTooltip"));
+				detailSheetRefreshing = false;
+				var host = document.getElementById("detail-sheet-host");
+				if (host) {
+					abortDetailSheetRequest(host);
+					removeDetailSheetChildren(host);
+					delete host.dataset.detailSheetURL;
+					delete host.dataset.detailSheetTab;
+					delete host.dataset.detailSheetTrigger;
+				}
+			}
+			document.addEventListener("htmx:beforeRequest", function (event) {
+				var trigger = event.detail && event.detail.elt;
+				var target = event.detail && event.detail.target;
+				if (target instanceof Element && target.matches("[data-detail-enrichment]")) {
+					target.setAttribute("aria-busy", "true");
+				}
+				if (!(trigger instanceof Element) || !trigger.matches("[data-detail-sheet-trigger]")) return;
+				var requestConfig = event.detail && event.detail.requestConfig;
+				mountImmediateDetailSheet(trigger, requestConfig && requestConfig.path);
+			});
+			document.addEventListener("htmx:beforeSwap", function (event) {
+				var host = document.getElementById("detail-sheet-host");
+				var target = event.detail && event.detail.target;
+				var requestConfig = event.detail && event.detail.requestConfig;
+				var trigger = requestConfig && requestConfig.elt;
+				if (!host || target !== host || !(trigger instanceof Element) || !trigger.matches("[data-detail-sheet-trigger]")) return;
+				if (host.dataset.detailSheetTrigger !== trigger.id) event.detail.shouldSwap = false;
+			});
+			document.addEventListener("htmx:afterRequest", function (event) {
+				var host = document.getElementById("detail-sheet-host");
+				var target = event.detail && event.detail.target;
+				if (target instanceof Element && target.matches("[data-detail-enrichment]")) {
+					target.setAttribute("aria-busy", "false");
+				}
+				if (target instanceof Element && target.matches("[data-detail-sheet-core]")) {
+					detailSheetRefreshing = false;
+				}
+				if (!host || target !== host) return;
+				var requestConfig = event.detail && event.detail.requestConfig;
+				var trigger = requestConfig && requestConfig.elt;
+				if (trigger instanceof Element && trigger.matches("[data-detail-sheet-trigger]") && host.dataset.detailSheetTrigger !== trigger.id) return;
+				document.dispatchEvent(new CustomEvent("detent:closeHelpTooltip"));
+				var path = requestConfig && requestConfig.path;
+				if (path) host.dataset.detailSheetURL = path;
+				applyDetailSheetTab(host);
+			});
+			document.addEventListener("htmx:afterSettle", function (event) {
+				var target = event.detail && event.detail.target;
+				var host = document.getElementById("detail-sheet-host");
+				applyDetailSheetTab(host);
+				if (!(target instanceof Element) || (target.id !== "snapshot" && !target.closest("#snapshot"))) return;
+				if (!host || !host.querySelector("[data-detail-sheet]") || detailSheetRefreshing) return;
+				var core = host.querySelector("[data-detail-sheet-core][hx-get]");
+				if (!core) return;
+				detailSheetRefreshing = true;
+				htmx.trigger(core, "detailSheetRefresh");
+			});
+			function showActionNotice(message) {
+				var notice = document.querySelector("[data-detent-action-notice]");
+				var content = notice && notice.querySelector("[data-detent-action-notice-message]");
+				if (!notice || !content || !message) return;
+				content.textContent = message;
+				notice.hidden = false;
+				notice.classList.remove("hidden");
+				notice.classList.add("flex");
+			}
+			function hideActionNotice() {
+				var notice = document.querySelector("[data-detent-action-notice]");
+				if (!notice) return;
+				notice.hidden = true;
+				notice.classList.add("hidden");
+				notice.classList.remove("flex");
+			}
+			document.addEventListener("kanbanActionSucceeded", function (event) {
+				if (window.tui && window.tui.dialog) {
+					window.tui.dialog.close("kanban-action-dialog");
+				}
+				var content = document.getElementById("kanban-dialog-content");
+				if (content) content.replaceChildren();
+				closeDetailSheet();
+				showActionNotice(event.detail && event.detail.message);
+			});
+			document.addEventListener("keydown", function (event) {
+				if (event.key === "Escape") {
+					setMobileTopbar(false);
+					setMobileSidebar(false, true);
+					setChatPanel(false);
+					closeDetailSheet();
+					return;
+				}
+				if (event.key !== "Enter" && event.key !== " ") return;
+				var target = event.target;
+				if (target instanceof Element && target.matches('[role="button"][hx-get]')) {
+					event.preventDefault();
+					target.click();
+				}
+			});
+			document.addEventListener("click", function (event) {
+				if (event.target.closest("[data-detent-action-notice-dismiss]")) {
+					hideActionNotice();
+					return;
+				}
+				if (event.target.closest("[data-chat-toggle]")) {
+					setMobileTopbar(false);
+					setChatPanel(true);
+					return;
+				}
+				if (event.target.closest("[data-chat-close], [data-chat-scrim]")) {
+					setChatPanel(false);
+					return;
+				}
+				var sheetTab = event.target.closest("[data-sheet-tab]");
+				if (sheetTab) {
+					var sheetHost = document.getElementById("detail-sheet-host");
+					if (sheetHost) {
+						var selectedTab = sheetTab.getAttribute("data-sheet-tab") || "activity";
+						sheetHost.dataset.detailSheetTab = selectedTab;
+						applyDetailSheetTab(sheetHost);
+						if (selectedTab !== "session") {
+							var liveSession = sheetHost.querySelector("[data-board-live-session]");
+							removeDetailSheetChildren(liveSession);
+						}
+					}
+					return;
+				}
+				var resume = event.target.closest("[data-live-session-resume]");
+				if (resume) {
+					var log = resume.closest("[data-live-session-attach]").querySelector("[data-live-session-log]");
+					if (log) {
+						delete log.dataset.autoscrollPaused;
+						log.scrollLeft = 0;
+						log.scrollTop = log.scrollHeight;
+						resume.classList.add("hidden");
+					}
+					return;
+				}
+				if (event.target.closest("[data-sheet-close]")) {
+					closeDetailSheet();
+					return;
+				}
+				var mobileToggle = event.target.closest("[data-mobile-sidebar-toggle]");
+				if (mobileToggle) {
+					setMobileTopbar(false);
+					setMobileSidebar(true, false);
+					return;
+				}
+				if (event.target.closest("[data-mobile-sidebar-scrim]")) {
+					setMobileSidebar(false, true);
+					return;
+				}
+				if (event.target.closest("#app-sidebar a") && window.matchMedia("(max-width: 767px)").matches) {
+					setMobileSidebar(false, false);
+					return;
+				}
+				var topbarToggle = event.target.closest("[data-mobile-topbar-toggle]");
+				if (topbarToggle) {
+					var controls = document.querySelector("[data-mobile-topbar-controls]");
+					setMobileSidebar(false, false);
+					setMobileTopbar(controls && controls.getAttribute("data-mobile-open") !== "true");
+					return;
+				}
+				var topbarControls = event.target.closest("[data-mobile-topbar-controls]");
+				if (!topbarControls) setMobileTopbar(false);
+				var toggle = event.target.closest("[data-sidebar-toggle]");
+				if (toggle) {
+					var sidebar = document.getElementById("app-sidebar");
+					if (!sidebar) return;
+					var rail = sidebar.getAttribute("data-rail") !== "true";
+					sidebar.setAttribute("data-rail", rail ? "true" : "false");
+					document.cookie = "sidebar_state=" + (rail ? "false" : "true") + "; path=/; max-age=31536000; samesite=lax";
+					return;
+				}
+				var density = event.target.closest("[data-density-choice]");
+				if (density) {
+					var choice = density.getAttribute("data-density-choice");
+					document.documentElement.setAttribute("data-density", choice);
+					document.cookie = "density=" + choice + "; path=/; max-age=31536000; samesite=lax";
+					document.querySelectorAll("[data-density-choice]").forEach(function (button) {
+						var active = button === density;
+						button.setAttribute("aria-pressed", active ? "true" : "false");
+						button.classList.toggle("bg-elev", active);
+						button.classList.toggle("text-text", active);
+						button.classList.toggle("font-medium", active);
+						button.classList.toggle("text-sec", !active);
+					});
+				}
+			});
+			document.addEventListener("scroll", function (event) {
+				var log = event.target;
+				if (!(log instanceof Element) || !log.matches("[data-live-session-log]")) return;
+				var paused = log.scrollHeight - log.scrollTop - log.clientHeight > 32;
+				if (paused) log.dataset.autoscrollPaused = "true";
+				else delete log.dataset.autoscrollPaused;
+				var resume = log.closest("[data-live-session-attach]").querySelector("[data-live-session-resume]");
+				if (resume) resume.classList.toggle("hidden", !paused);
+			}, true);
+			document.addEventListener("htmx:afterSwap", function (event) {
+				var target = event.detail && event.detail.target;
+				if (!(target instanceof Element)) return;
+				var log = target.matches("[data-live-session-log], [data-session-history-log]")
+					? target
+					: target.closest("[data-live-session-log], [data-session-history-log]");
+				if (!log) return;
+				log.scrollLeft = 0;
+				if (!log.matches("[data-live-session-log]")) return;
+				while (log.children.length > 200) log.firstElementChild.remove();
+				if (log.dataset.autoscrollPaused !== "true") log.scrollTop = log.scrollHeight;
+			});
+		})();
+	</script>
+}
