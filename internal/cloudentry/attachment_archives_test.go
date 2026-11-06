@@ -562,6 +562,7 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 			}
 			owner := tenantDetailStore{service: f.service, allocation: allocation}
 			stored, err := owner.StoreDetail(t.Context(), org, []byte(content))
+			puts++
 			if err != nil || stored != ref {
 				t.Fatalf("tenant detail owner upload: %v", err)
 			}
@@ -936,6 +937,7 @@ func TestTenantContentStorage(t *testing.T) {
 	spaces := newSpacesFixture(t, false)
 	cfg := spaces.config()
 	cfg.Endpoint = "https://10.136.255.254"
+	f.service.config.attachmentTransport = nil
 	f.service.config.Attachments = &cfg
 	storage, err := attachment.NewStorage(t.Context(), cfg, spaces.transport)
 	if err != nil {
@@ -1031,6 +1033,7 @@ func TestHostedArchiveBindingStorage(t *testing.T) {
 			store := newSpacesFixture(t, false)
 			cfg := store.config()
 			cfg.Endpoint = "https://10.136.255.254"
+			f.service.config.attachmentTransport = nil
 			f.service.config.Attachments = &cfg
 			storage, err := attachment.NewStorage(t.Context(), cfg, store.transport)
 			if err != nil {
