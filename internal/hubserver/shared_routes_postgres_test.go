@@ -222,3 +222,53 @@ func sharedRouteBrowserClaims(c *cloudassert.Claims) {
 	c.Binding, c.CSRF = strings.Repeat("a", 64), strings.Repeat("b", 64)
 	c.SessionCreatedAt, c.SessionExpiresAt, c.AccessExpiresAt = c.IssuedAt, c.ExpiresAt, c.ExpiresAt
 }
+
+func TestPostgresSharedBillingRoutes(t *testing.T) {
+	f := newSharedRouteFixture(t, sharedRouteBillingConfig)
+	for org := range f.services {
+		t.Run(org, func(t *testing.T) {
+			path := "/internal/v1/billing/binding"
+			response := f.request(t, org, path, `{}`, nil)
+			var binding struct {
+				CustomerID string `json:"customer_id"`
+				Enabled    bool   `json:"enabled"`
+			}
+			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &binding) != nil || !binding.Enabled || binding.CustomerID != "cus_"+org {
+				t.Fatalf("binding=%d %s", response.Code, response.Body)
+			}
+			for _, target := range []string{path, "/internal/v1/billing/events"} {
+				response = f.request(t, org, target, `{}`, sharedRouteBrowserClaims)
+				if response.Code != http.StatusNotFound {
+					t.Fatalf("browser=%d %s", response.Code, response.Body)
+				}
+				response = f.request(t, org, target, `{}`, func(c *cloudassert.Claims) { c.Audience = "org_foreign" })
+				if response.Code != http.StatusUnauthorized {
+					t.Fatalf("foreign=%d %s", response.Code, response.Body)
+				}
+			}
+			for _, customer := range []string{"cus_foreign", "cus_" + org} {
+				body, err := json.Marshal(hostedSharedBillingEventRequest{EventID: "evt_example", EventType: "invoice.paid", CustomerID: customer})
+				if err != nil {
+					t.Fatal(err)
+				}
+				response = f.request(t, org, "/internal/v1/billing/events", string(body), nil)
+				want := http.StatusNoContent
+				if customer == "cus_foreign" {
+					want = http.StatusConflict
+				}
+				if response.Code != want {
+					t.Fatalf("event=%d %s want=%d", response.Code, response.Body, want)
+				}
+			}
+			if err := f.services[org].database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+				event, err := r.BillingEvent(t.Context(), "evt_example")
+				if err == nil && (string(event.OrganizationID) != org || event.Type != "invoice.paid") {
+					t.Fatalf("event=%+v", event)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
