@@ -4,16 +4,19 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -30,6 +33,56 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestConversationStreamBoundsEventRevalidation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"valid", nil},
+		{"revoked", operatortool.ErrAccessDenied},
+		{"unavailable", operatortool.ErrServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				response := httptest.NewRecorder()
+				stream := newConversationStream(echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), response))
+				checks := 0
+				stream.authorize = func() error {
+					checks++
+					if checks > 1 {
+						return tc.err
+					}
+					return nil
+				}
+				event := conversation.Event{Seq: 1, Type: conversation.EventConversationUpdated, Data: json.RawMessage(`{}`)}
+				for range 2 {
+					if err := stream.event(event); err != nil {
+						t.Fatal(err)
+					}
+				}
+				time.Sleep(conversationStreamAuthorize - time.Nanosecond)
+				if err := stream.event(event); err != nil {
+					t.Fatal(err)
+				}
+				if checks != 1 {
+					t.Fatalf("authorization checks before interval = %d, want 1", checks)
+				}
+				time.Sleep(time.Nanosecond)
+				before := response.Body.Len()
+				if err := stream.event(event); !errors.Is(err, tc.err) || checks != 2 {
+					t.Fatalf("authorization at interval: checks=%d error=%v, want 2 and %v", checks, err, tc.err)
+				}
+				if tc.err != nil {
+					time.Sleep(conversationStreamAuthorize)
+					if err := stream.event(event); !errors.Is(err, tc.err) || checks != 2 || response.Body.Len() != before {
+						t.Fatalf("failed authorization allowed delivery or revalidation: checks=%d error=%v body=%s", checks, err, response.Body.String())
+					}
+				}
+			})
+		})
+	}
+}
 
 func TestConversationPostgresStreamReauthorizesAgainstTenantProject(t *testing.T) {
 	repository := projectRecordPostgres(t)
@@ -168,18 +221,23 @@ func TestConversationStreamRefreshesEntryKeyAuthorityPostgres(t *testing.T) {
 		name   string
 		want   string
 		replay bool
+		events int
 	}{
-		{"revoked", conversationClosedAccessRevoked, false},
-		{"narrowed", conversationClosedAccessRevoked, false},
-		{"unavailable", conversationClosedServerError, false},
-		{"valid", "", false},
-		{"replay_revoked", conversationClosedAccessRevoked, true},
-		{"replay_narrowed", conversationClosedAccessRevoked, true},
+		{"revoked", conversationClosedAccessRevoked, false, 1},
+		{"narrowed", conversationClosedAccessRevoked, false, 1},
+		{"unavailable", conversationClosedServerError, false, 1},
+		{"valid", "", false, 1},
+		{"replay_2", "", false, 2},
+		{"replay_500", "", false, 500},
+		{"replay_revoked", conversationClosedAccessRevoked, true, 1},
+		{"replay_narrowed", conversationClosedAccessRevoked, true, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var services []*Service
 			var streams []*sseStream
 			var failed atomic.Bool
+			var elapsed atomic.Int64
+			var resolutions []*atomic.Int64
 			release := make(chan struct{})
 			releaseReplay := sync.OnceFunc(func() { close(release) })
 			t.Cleanup(releaseReplay)
@@ -188,8 +246,11 @@ func TestConversationStreamRefreshesEntryKeyAuthorityPostgres(t *testing.T) {
 			for _, organization := range organizations {
 				f := newConversationTenantFixture(t, repository, now)
 				s := f.service
+				s.config.now = func() time.Time { return now.Add(time.Duration(elapsed.Load())) }
+				resolved := new(atomic.Int64)
+				resolutions = append(resolutions, resolved)
 				s.config.Hosted = &HostedConfig{OrganizationID: string(organization), SharedEntry: &HostedSharedEntry{Issuer: "entry", Generation: 1}}
-				claims := cloudassert.Claims{Issuer: "entry", Generation: 1, Audience: string(organization), ProviderOrganization: "provider_" + string(organization), Subject: "owner", Role: "owner", Kind: cloudassert.KindKey, IssuedAt: now, ExpiresAt: now.Add(20 * time.Second), Key: &apikey.KeyAuthority{ID: "key_example", CredentialBinding: strings.Repeat("a", 64), Kind: "personal", Permission: apikey.ScopeRead, ProjectContext: apikey.ProjectContext{Access: "selected", Projects: []string{"project_removed", "project_retained"}}}}
+				claims := cloudassert.Claims{Issuer: "entry", Generation: 1, Audience: string(organization), ProviderOrganization: "provider_" + string(organization), Subject: "owner", Role: "owner", Kind: cloudassert.KindKey, IssuedAt: now, ExpiresAt: now.Add(time.Hour), Key: &apikey.KeyAuthority{ID: "key_example", CredentialBinding: strings.Repeat("a", 64), Kind: "personal", Permission: apikey.ScopeRead, ProjectContext: apikey.ProjectContext{Access: "selected", Projects: []string{"project_removed", "project_retained"}}}}
 				if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 					if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example", CreatedAt: now}); err != nil {
 						return fmt.Errorf("create organization: %w", err)
@@ -223,8 +284,10 @@ func TestConversationStreamRefreshesEntryKeyAuthorityPostgres(t *testing.T) {
 						if _, err := w.CreateConversation(t.Context(), conversationstore.Conversation{OrganizationID: organization, ProjectID: project, ID: id, OwnerPrincipalID: "principal_owner", Origin: conversationOriginUser, Title: "Example", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Revision: 1, Preferences: conversation.DefaultPreferences(), CreatedAt: now, UpdatedAt: now}); err != nil {
 							return fmt.Errorf("create conversation: %w", err)
 						}
-						if _, err := w.AppendConversationEvent(t.Context(), conversationstore.Event{OrganizationID: organization, ConversationID: id, Event: conversation.Event{Type: conversation.EventConversationUpdated, Data: json.RawMessage(`{"ready":true}`), CreatedAt: now}}); err != nil {
-							return fmt.Errorf("append ready event: %w", err)
+						for range tc.events {
+							if _, err := w.AppendConversationEvent(t.Context(), conversationstore.Event{OrganizationID: organization, ConversationID: id, Event: conversation.Event{Type: conversation.EventConversationUpdated, Data: json.RawMessage(`{"ready":true}`), CreatedAt: now}}); err != nil {
+								return fmt.Errorf("append ready event: %w", err)
+							}
 						}
 						if tc.replay && organization == organizations[0] && project == "project_removed" {
 							if _, err := w.AppendConversationEvent(t.Context(), conversationstore.Event{OrganizationID: organization, ConversationID: id, Event: conversation.Event{Type: conversation.EventConversationUpdated, Data: json.RawMessage(`{"protected":true}`), CreatedAt: now}}); err != nil {
@@ -237,6 +300,7 @@ func TestConversationStreamRefreshesEntryKeyAuthorityPostgres(t *testing.T) {
 					t.Fatal(err)
 				}
 				s.config.Hosted.SharedEntry.ResolveKey = func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
+					resolved.Add(1)
 					if failed.Load() && organization == organizations[0] {
 						return cloudassert.Claims{}, operatortool.ErrServiceUnavailable
 					}
@@ -293,14 +357,23 @@ func TestConversationStreamRefreshesEntryKeyAuthorityPostgres(t *testing.T) {
 					if response.StatusCode != http.StatusOK {
 						t.Fatalf("open stream: %s", response.Status)
 					}
-					frame := stream.nextEvent(t)
-					var initial struct{ Ready bool }
-					if err := json.Unmarshal([]byte(frame.Data), &initial); err != nil || frame.ID != "1" || !initial.Ready {
-						t.Fatalf("initial replay = %+v", frame)
+					for sequence := 1; sequence <= tc.events; sequence++ {
+						frame := stream.nextEvent(t)
+						var initial struct{ Ready bool }
+						if err := json.Unmarshal([]byte(frame.Data), &initial); err != nil || frame.ID != strconv.Itoa(sequence) || !initial.Ready {
+							t.Fatalf("initial replay = %+v, want sequence %d", frame, sequence)
+						}
 					}
 					streams = append(streams, stream)
 				}
 				services = append(services, s)
+			}
+			if tc.events > 1 {
+				for tenant, resolved := range resolutions {
+					if got := resolved.Load(); got != 2 {
+						t.Errorf("tenant %d: %d-event replay resolved keys %d times, want 2 (one replay check per stream)", tenant, tc.events, got)
+					}
+				}
 			}
 			if err := repository.WriteTenant(t.Context(), organizations[0], corestore.Serving, func(w tenantstore.Writer) error {
 				switch tc.name {
@@ -315,6 +388,7 @@ func TestConversationStreamRefreshesEntryKeyAuthorityPostgres(t *testing.T) {
 				t.Fatal(err)
 			}
 			failed.Store(tc.name == "unavailable")
+			elapsed.Store(int64(conversationStreamAuthorize))
 			releaseReplay()
 			for tenant, organization := range organizations {
 				for index, project := range []string{"project_removed", "project_retained"} {
@@ -335,7 +409,7 @@ func TestConversationStreamRefreshesEntryKeyAuthorityPostgres(t *testing.T) {
 						}
 					} else {
 						var delivered struct{ Protected bool }
-						if err := json.Unmarshal([]byte(frame.Data), &delivered); err != nil || frame.ID != "2" || !delivered.Protected {
+						if err := json.Unmarshal([]byte(frame.Data), &delivered); err != nil || frame.ID != strconv.Itoa(tc.events+1) || !delivered.Protected {
 							t.Fatalf("valid stream tenant=%d project=%s: %+v", tenant, project, frame)
 						}
 					}
