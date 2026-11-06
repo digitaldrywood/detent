@@ -11,19 +11,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func (s *Service) nativeIssueResponse(issue tracker.NativeIssue) tracker.NativeIssue {
@@ -45,7 +44,7 @@ func (s *Service) nativeIssueJSON(ctx context.Context, scope nativeScope, body j
 		if scope.credential.HostedRole == "reporter" {
 			visible := []possibleDuplicate{}
 			for _, match := range challenge.PossibleDuplicates {
-				if err := requireReporterItem(ctx, s.database.reader, scope, string(match.WorkItemID)); errors.Is(err, sql.ErrNoRows) || isNativeNotFound(err) {
+				if err := s.requireReporterWorkItemRecord(ctx, scope, string(match.WorkItemID)); errors.Is(err, sql.ErrNoRows) || isNativeNotFound(err) {
 					continue
 				} else if err != nil {
 					return nil, err
@@ -56,7 +55,7 @@ func (s *Service) nativeIssueJSON(ctx context.Context, scope nativeScope, body j
 		}
 		for i := range challenge.PossibleDuplicates {
 			match := &challenge.PossibleDuplicates[i]
-			path, err := readIssueBrowserPath(ctx, s.database.reader, string(match.WorkItemID))
+			path, err := s.nativeIssueRecordBrowserPath(ctx, scope, string(match.WorkItemID))
 			if err != nil {
 				return nil, err
 			}
@@ -72,7 +71,7 @@ func (s *Service) nativeIssueJSON(ctx context.Context, scope nativeScope, body j
 	if !scope.reporterOwns(issue.Actor) {
 		return nil, nativeNotFound()
 	}
-	path, err := readIssueBrowserPath(ctx, s.database.reader, string(issue.WorkItemID))
+	path, err := s.nativeIssueRecordBrowserPath(ctx, scope, string(issue.WorkItemID))
 	if err != nil {
 		issue.WebURL = ""
 		issue.OmittedFields = append(issue.OmittedFields, "web_url")
@@ -316,92 +315,18 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ? AND (`+visi
 }
 
 func (s *Service) getNativeIssue(c echo.Context) error {
-	if s.config.TenantRepository != nil {
-		params, err := nativeReadQuery(c)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		if params.Get("view") == "recovery" {
-			return s.getNativeRecoveryTenant(c, params)
-		}
-		issue, err := s.workItemResource(c.Request().Context(), nativeRequestScope(c), c.Param("item"), params)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return c.JSON(http.StatusOK, issue)
-	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
-	scope := nativeRequestScope(c)
-	if view := c.QueryParam("view"); view != "" {
-		params, err := nativeReadQuery(c)
-		if err != nil || view != "recovery" || validateNativeQuery(params, "view", "projection", "detail") != nil {
-			return s.nativeAPIError(c, nativePublicInvalid("view supports recovery"))
-		}
-		if params.Get("detail") != "" && params.Get("detail") != "full" && params.Get("detail") != "summary" {
-			return s.nativeAPIError(c, nativePublicInvalid("detail supports full or summary"))
-		}
-		if params.Get("detail") == "summary" || params.Get("detail") == "" && c.Request().Header.Get("X-Detent-Recovery-Detail") == "summary" {
-			ctx = context.WithValue(ctx, attemptSummaryContextKey{}, true)
-		}
-		if params.Has("projection") || c.Request().Header.Get("X-Detent-Recovery-Projection") != "" {
-			if params.Get("projection") != "bounded" && c.Request().Header.Get("X-Detent-Recovery-Projection") != "bounded" || params.Has("limit") || params.Has("cursor") {
-				return s.nativeAPIError(c, nativePublicInvalid("Recovery projection supports bounded"))
-			}
-			result, err := s.readNativeRecovery(ctx, scope, c.Param("item"), true)
-			if err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			result.Issue = s.nativeIssueResponse(result.Issue)
-			if err := s.fitNativeRecovery(ctx, scope, c.Request().URL.EscapedPath(), &result, c.Request().Header.Get("X-Detent-Recovery-Body") == "fragments"); err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			return c.JSON(http.StatusOK, result)
-		}
-		if params.Has("limit") || params.Has("cursor") {
-			result, err := s.readNativeRecoveryPage(ctx, scope, c.Param("item"), c.Request().URL.EscapedPath(), params)
-			if err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			return c.JSON(http.StatusOK, result)
-		}
-		result, err := s.readNativeRecovery(ctx, scope, c.Param("item"))
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		result.Issue = s.nativeIssueResponse(result.Issue)
-		return c.JSON(http.StatusOK, result)
-	}
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	params, err := nativeReadQuery(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	defer tx.Rollback()
-	watermark, _, err := readDashboardWatermark(ctx, tx, scope)
+	if params.Get("view") == "recovery" {
+		return s.getNativeRecoveryTenant(c, params)
+	}
+	issue, err := s.workItemResource(c.Request().Context(), nativeRequestScope(c), c.Param("item"), params)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	issue, _, err := readNativeIssue(ctx, tx, scope, c.Param("item"))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	// The change review surface is absent unless the caller asked for it, so
-	// the default resource is byte-for-byte what it was and only a caller
-	// that needs it pays for the extra reads.
-	included, err := nativeIssueChangeIncluded(c.QueryParam("include"))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if included {
-		if issue.Change, err = s.readNativeIssueChange(ctx, tx, scope, string(issue.WorkItemID)); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		if issue.Change.Number > 0 && issue.Change.URL != "" {
-			issue.PullRequest = &tracker.NativePullRequest{Number: issue.Change.Number, URL: issue.Change.URL}
-		}
-	}
-	issue.ChangeSequence = watermark
-	return c.JSON(http.StatusOK, s.nativeIssueResponse(issue))
+	return c.JSON(http.StatusOK, issue)
 }
 
 // nativeIssueChangeIncluded reads the work item resource's include query. The
@@ -1084,164 +1009,10 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 }
 
 func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scope nativeScope, item string, request tracker.Transition, conversationID string) (json.RawMessage, error) {
-	if s.config.TenantRepository != nil {
-		if conversationID != "" {
-			return nil, workItemStorageUnavailable()
-		}
-		return s.transitionNativeIssueTenant(ctx, scope, item, request)
-	}
 	if conversationID != "" {
-		issue, _, err := readNativeIssue(ctx, s.database.reader, scope, item)
-		if err != nil {
-			return nil, err
-		}
-		if err := s.validateCoordinatorMoveAnswer(ctx, scope, issue, request.State, request.ReasonDetail); err != nil {
-			return nil, err
-		}
+		return nil, workItemStorageUnavailable()
 	}
-	scope.action = operatortool.MoveItem
-	scope.actionItem, scope.actionTarget = item, request.State
-	recordedRecovery := request.Reason == "dependency_ready" && request.BlockerAttemptID != ""
-	var recovery nativeRecordedRecovery
-	var recoveryErr error
-	if recordedRecovery {
-		recovery, recoveryErr = s.prepareNativeRecordedRecovery(ctx, scope, item, request)
-	}
-	signal, contractHold := workpad.SignalFromComment(request.ReasonDetail, "", "")
-	contractHold = contractHold && signal != nil && signal.Invalid == nil && signal.Fields["issue_contract_return_state"] != ""
-	contractRecovery := strings.ReplaceAll(request.ReasonDetail, " ", "_") == "recorded_blocker_recovery" && !recordedRecovery
-	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+item+"/workflow"), Item: item, RequireLease: !recordedRecovery && !contractHold && !contractRecovery, Feature: "collaboration"}
-	var heldLease tracker.LeaseID
-	payload := struct {
-		tracker.Transition
-		ConversationID string `json:"conversation_id,omitempty"`
-	}{request, conversationID}
-
-	result, err := s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, payload, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		heldLease = ""
-		issue, internalID, err := readNativeIssue(ctx, tx, scope, item)
-		if err != nil {
-			return nil, err
-		}
-		if err := requireNativeEdit(issue, request.ExpectedRevision); err != nil {
-			return nil, err
-		}
-		if scope.actor().Kind == "human" && strings.EqualFold(request.State, "Blocked") && !strings.EqualFold(issue.State, "Blocked") {
-			lease, found, err := readUnreleasedLease(ctx, tx, internalID)
-			if err != nil {
-				return nil, err
-			}
-			if found && lease.session.ExpiresAt.After(now) {
-				if err := releaseLeaseRow(ctx, tx, lease, "cancelled", now); err != nil {
-					return nil, err
-				}
-				heldLease = lease.session.ID
-			}
-		}
-		if contractHold || contractRecovery {
-			contract, err := nativeIssueContract(ctx, tx, scope)
-			if err != nil {
-				return nil, err
-			}
-			evaluation := contract.Evaluate(nativeContractIssue(issue))
-			if contractRecovery {
-				if issue.IssueContract.ReturnState != request.State || issue.IssueContract.HumanAction != "" || !evaluation.Satisfied() {
-					return nil, nativePublicInvalid("Human confirmation is required to clear the issue contract hold")
-				}
-			} else {
-				if issue.IssueContract.Exempt || evaluation.Satisfied() || signal.Status != workpad.StatusBlocked || signal.HumanAction == "" {
-					return nil, nativePublicInvalid("Issue contract hold does not match the issue")
-				}
-				cfg, err := nativeIssueContractConfig(ctx, tx, scope)
-				if err != nil {
-					return nil, err
-				}
-				returnState := signal.Fields["issue_contract_return_state"]
-				admissionTarget := cfg.BacklogAdmission.TargetState
-				if admissionTarget == "" {
-					admissionTarget = "Todo"
-				}
-				if returnState != admissionTarget || issue.State != admissionTarget && !slices.Contains(cfg.BacklogAdmission.Sources.States, issue.State) {
-					return nil, nativePublicInvalid("Issue contract hold must return to the configured admission lane")
-				}
-				lease, found, err := readUnreleasedLease(ctx, tx, internalID)
-				if err != nil {
-					return nil, err
-				}
-				if found && lease.session.ExpiresAt.After(now) {
-					return nil, tracker.ErrLeaseConflict
-				}
-				if request.State != cfg.Agent.StopRun.TargetState {
-					return nil, nativePublicInvalid("Issue contract failure destination does not match the workflow")
-				}
-			}
-		}
-		if recordedRecovery {
-			if recoveryErr != nil {
-				return nil, recoveryErr
-			}
-			if err := validateNativeRecordedRecovery(ctx, tx, scope, issue, request, recovery, now); err != nil {
-				return nil, err
-			}
-		}
-		if !slices.Contains([]string{"user_requested", "worker_progress", "dependency_ready", string(gate.ReasonValidatorRework)}, request.Reason) {
-			return nil, nativePublicInvalid("Transition reason is invalid")
-		}
-		if len(request.ReasonDetail) > workpad.MaxFinalSummaryBytes || !utf8.ValidString(request.ReasonDetail) {
-			return nil, nativePublicInvalid("Transition reason detail must be bounded UTF-8 text")
-		}
-		project, err := readNativeProject(ctx, tx, scope)
-		if err != nil {
-			return nil, err
-		}
-		if err := validateNativeWorkflowTransition(project.States, issue.State, request.State, scope.credential.Scope); err != nil {
-			return nil, err
-		}
-		from := issue.State
-		if signal, ok := workpad.SignalFromComment(request.ReasonDetail, "", ""); ok && signal != nil && signal.Invalid == nil && signal.Fields["issue_contract_return_state"] != "" {
-			if signal.Status != workpad.StatusBlocked || signal.HumanAction == "" {
-				return nil, nativePublicInvalid("Issue contract hold requires a human action")
-			}
-			issue.IssueContract.HumanAction = signal.HumanAction
-			issue.IssueContract.ReturnState = signal.Fields["issue_contract_return_state"]
-			issue.IssueContract.RecordedAt = payloadTimestamp(ctx, now)
-		}
-		if issue.IssueContract.ReturnState == request.State && issue.IssueContract.HumanAction == "" {
-			issue.IssueContract.ReturnState = ""
-		}
-		issue.State = request.State
-		if conversationID != "" && strings.TrimSpace(request.ReasonDetail) != "" {
-			actor := scope.actor()
-			provenance := &tracker.Provenance{Provider: "chat", ExternalID: conversationID + ":" + request.IdempotencyKey, AuthorID: actor.PrincipalID}
-			if _, err := insertNativeComment(ctx, tx, scope, issue, strings.TrimSpace(request.ReasonDetail), provenance, now); err != nil {
-				return nil, err
-			}
-		}
-		data := tracker.CollaborationData{BlockerAttemptID: request.BlockerAttemptID, FromState: from, ToState: issue.State, Reason: request.Reason, ReasonDetail: strings.TrimSpace(request.ReasonDetail)}
-		previousRevision := issue.Revision
-		issue, err = persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", data, now)
-		if err != nil {
-			return nil, err
-		}
-		if issue.Revision == previousRevision && issue.State == "Blocked" && request.Reason == "user_requested" && scope.credential.Scope != apiScopeWorker {
-			data.Revision = issue.Revision
-			if err := appendNativeHistory(ctx, tx, scope, item, "workflow.transitioned", data, now); err != nil {
-				return nil, err
-			}
-			issue, _, err = readNativeIssue(ctx, tx, scope, item)
-			if err != nil {
-				return nil, err
-			}
-		}
-		return issue, nil
-	})
-	if err == nil {
-		s.wakeSpriteRunnersAfter(scope, result)
-		if heldLease != "" && s.conversations != nil {
-			s.conversations.leaseReleased(ctx, heldLease)
-		}
-	}
-	return result, err
+	return s.transitionNativeIssueTenant(ctx, scope, item, request)
 }
 
 func validateNativeWorkflowTransition(states []tracker.NativeState, current, target string, scope apiScope) error {
@@ -1287,4 +1058,39 @@ func returnScheduledFailureToWorkflow(ctx context.Context, tx *sql.Tx, scope nat
 	issue.State = "Rework"
 	_, err = persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: issue.State, Reason: string(gate.ReasonValidatorRework)}, now)
 	return err
+}
+
+func (s *Service) requireReporterWorkItemRecord(ctx context.Context, scope nativeScope, item string) error {
+	row, _, err := s.readWorkItemRecord(ctx, scope, item)
+	if err != nil {
+		return err
+	}
+	if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
+		return nativeNotFound()
+	}
+	return nil
+}
+
+func (s *Service) nativeIssueRecordBrowserPath(ctx context.Context, scope nativeScope, id string) (string, error) {
+	var path string
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		item, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(id))
+		if err != nil {
+			return err
+		}
+		project, err := r.Project(ctx, item.ProjectID)
+		if err != nil {
+			return err
+		}
+		if project.DeletedAt != nil {
+			return corestore.ErrNotFound
+		}
+		organization, err := r.AccessOrganization(ctx)
+		if err != nil {
+			return err
+		}
+		path = issueBrowserPath(organization.Slug, project.Slug, int(item.Number))
+		return nil
+	})
+	return path, projectRecordError(err)
 }

@@ -19,125 +19,13 @@ import (
 const nativeBoardReplayLimit = 2048
 const nativeBoardTrimLimit = 32
 
-const nativeBoardCandidateQuery = `SELECT work_item_id,1 FROM (SELECT work_item_id FROM native_board_dirty
-WHERE work_item_id>? ORDER BY work_item_id LIMIT 1)
-UNION ALL SELECT work_item_id,(running=1 AND execution_fence=0) OR (expires_at<>'' AND expires_at<=?) FROM (SELECT work_item_id,expires_at,running,execution_fence FROM native_board_items
-WHERE work_item_id>? ORDER BY work_item_id LIMIT 1)`
-
 func (s *Service) maintainNativeBoard(ctx context.Context) {
-	if s.config.TenantRepository != nil {
-		if err := s.maintainTeamUnread(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			s.config.Logger.ErrorContext(ctx, "refresh team unread summary", "error", err)
-		}
-		if err := s.maintainBoardRecords(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			s.config.Logger.ErrorContext(ctx, "refresh native board card", "error", err)
-		}
-		return
-	}
-	ctx = s.runDetailContext(ctx)
 	if err := s.maintainTeamUnread(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.ErrorContext(ctx, "refresh team unread summary", "error", err)
 	}
-	if err := s.trimNextDashboardProject(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		s.config.Logger.ErrorContext(ctx, "trim dashboard changes", "error", err)
+	if err := s.maintainBoardRecords(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		s.config.Logger.ErrorContext(ctx, "refresh native board card", "error", err)
 	}
-	deadline := s.config.now().Add(analyticsBackfillBudget)
-	for ctx.Err() == nil {
-		now := s.config.now()
-		if !now.Before(deadline) {
-			return
-		}
-		more, id, err := s.database.drainNativeBoardDirtyAfter(ctx, now, s.boardRefreshCursor)
-		if id != "" {
-			s.boardRefreshCursor = id
-		}
-		if err != nil && !errors.Is(err, context.Canceled) {
-			s.config.Logger.ErrorContext(ctx, "refresh native board card", "work_item_id", id, "error", err)
-		}
-		if err != nil && id != "" && ctx.Err() == nil {
-			continue
-		}
-		if err == nil && !more {
-			s.boardRefreshCursor = ""
-		}
-		if err != nil || !more {
-			return
-		}
-	}
-}
-
-func (d *database) drainNativeBoardDirtyAfter(ctx context.Context, now time.Time, cursor string) (bool, string, error) {
-	id, refresh, err := d.nextNativeBoardCandidate(ctx, now, cursor)
-	if err != nil || id == "" {
-		return false, "", err
-	}
-	if !refresh {
-		return true, id, nil
-	}
-	snapshot, err := d.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return false, id, err
-	}
-	defer snapshot.Rollback()
-	var revision int64
-	if err := snapshot.QueryRowContext(ctx, `SELECT coalesce((SELECT board_revision FROM derived_refresh_revisions WHERE work_item_id=?),0)`, id).Scan(&revision); err != nil {
-		return false, id, err
-	}
-	plan := &projectionPlan{nativeQueryer: snapshot}
-	if err := refreshNativeBoardCard(ctx, plan, id, now, map[string]changeSummaryPolicy{}); err != nil {
-		return false, id, err
-	}
-	if err := snapshot.Rollback(); err != nil {
-		return false, id, err
-	}
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, id, err
-	}
-	defer tx.Rollback()
-	var currentRevision int64
-	if err := tx.QueryRowContext(ctx, `SELECT coalesce((SELECT board_revision FROM derived_refresh_revisions WHERE work_item_id=?),0)`, id).Scan(&currentRevision); err != nil {
-		return false, id, err
-	}
-	if revision != currentRevision {
-		return true, id, nil
-	}
-	for _, w := range plan.writes {
-		if _, err := tx.ExecContext(ctx, w.query, w.args...); err != nil {
-			return false, id, err
-		}
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO derived_refresh_revisions(work_item_id,board_revision) VALUES(?,1) ON CONFLICT(work_item_id) DO UPDATE SET board_revision=board_revision+1`, id); err != nil {
-		return false, id, err
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM native_board_dirty WHERE work_item_id=?", id); err != nil {
-		return false, id, err
-	}
-	return true, id, tx.Commit()
-}
-
-func (d *database) nextNativeBoardCandidate(ctx context.Context, now time.Time, cursor string) (string, bool, error) {
-	rows, err := d.reader.QueryContext(ctx, nativeBoardCandidateQuery, cursor, now.UTC().Format("2006-01-02T15:04:05.000000000Z"), cursor)
-	if err != nil {
-		return "", false, err
-	}
-	defer rows.Close()
-	var id string
-	var refresh bool
-	for rows.Next() {
-		var candidate string
-		var due bool
-		if err := rows.Scan(&candidate, &due); err != nil {
-			return "", false, err
-		}
-		if id == "" || candidate < id {
-			id = candidate
-			refresh = due
-		} else if candidate == id {
-			refresh = refresh || due
-		}
-	}
-	return id, refresh, rows.Err()
 }
 
 func (d *database) commit(_ context.Context, tx *sql.Tx) error {

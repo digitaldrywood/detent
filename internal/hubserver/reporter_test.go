@@ -851,7 +851,7 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := f.service.database.approvePolicy(t.Context(), "org_security/"+string(f.project), "test-owner", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}); err != nil {
+			if _, err := f.service.approveTestTenantPolicy(t.Context(), "org_security/"+string(f.project), "test-owner", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}); err != nil {
 				t.Fatal(err)
 			}
 			executor := hostedOperatorExecutor{f.service}

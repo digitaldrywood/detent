@@ -153,7 +153,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						operatorSQL(t, f, "DELETE FROM hosted_project_grants WHERE project_id='prj_grantless'")
 						operatorSQL(t, f, "DELETE FROM token_grants WHERE project_id='prj_grantless'")
 					}
-					if _, err := f.service.database.approvePolicy(t.Context(), "org_security/"+string(f.project), "test", policy.Change{Policy: hubTestPolicy()}); err != nil {
+					if _, err := f.service.approveTestTenantPolicy(t.Context(), "org_security/"+string(f.project), "test", policy.Change{Policy: hubTestPolicy()}); err != nil {
 						t.Fatal(err)
 					}
 				}

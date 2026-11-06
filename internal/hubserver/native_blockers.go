@@ -101,45 +101,6 @@ type nativeRecordedRecovery struct {
 	prior   string
 }
 
-func (s *Service) prepareNativeRecordedRecovery(ctx context.Context, scope nativeScope, item string, request tracker.Transition) (nativeRecordedRecovery, error) {
-	ctx = s.freshRunDetailContext(ctx)
-	issue, _, err := readNativeIssue(ctx, s.database.reader, scope, item)
-	if err != nil {
-		return nativeRecordedRecovery{}, err
-	}
-	if err := requireNativeEdit(issue, request.ExpectedRevision); err != nil {
-		return nativeRecordedRecovery{}, err
-	}
-	var latest string
-	if err := s.database.reader.QueryRowContext(ctx, `SELECT id FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? ORDER BY fencing_token DESC LIMIT 1`, scope.organization, scope.project, issue.WorkItemID).Scan(&latest); err != nil {
-		return nativeRecordedRecovery{}, err
-	}
-	if latest != request.BlockerAttemptID {
-		return nativeRecordedRecovery{}, tracker.ErrStaleFencingToken
-	}
-	attempt, err := readNativeAttemptRecord(ctx, s.database.reader, scope, string(issue.WorkItemID), request.BlockerAttemptID, s.config.now())
-	if err != nil {
-		return nativeRecordedRecovery{}, err
-	}
-	if attempt.Status != "succeeded" || attempt.Disposition == nil || attempt.Disposition.Status != workpad.StatusBlocked {
-		return nativeRecordedRecovery{}, nativePublicInvalid("Recorded blockers do not authorize recovery")
-	}
-	history, err := readNativeBlockerHistory(ctx, s.database.reader, scope, issue, attempt)
-	if err != nil {
-		return nativeRecordedRecovery{}, err
-	}
-	if !slices.ContainsFunc(history, func(event tracker.CollaborationEvent) bool {
-		return event.Type == "run.finished" && event.Data.Run != nil && event.Data.Run.AttemptID == attempt.AttemptID && event.Data.Run.FencingToken == attempt.FencingToken
-	}) {
-		return nativeRecordedRecovery{}, nativePublicInvalid("Recorded blockers do not authorize recovery")
-	}
-	_, prior, valid := tracker.RecordedNativeBlockers(issue, []tracker.NativeAttempt{attempt}, history)
-	if !valid {
-		return nativeRecordedRecovery{}, nativePublicInvalid("Recorded blockers do not authorize recovery")
-	}
-	return nativeRecordedRecovery{attempt: attempt, prior: prior}, nil
-}
-
 func resolveNativeBlockerReference(ctx context.Context, q nativeQueryer, scope nativeScope, reference string) (tracker.NativeIssue, error) {
 	parsed, err := workpad.ParseRef(reference, string(scope.project))
 	if err != nil {

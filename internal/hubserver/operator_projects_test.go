@@ -319,7 +319,7 @@ func TestHostedProjectTools(t *testing.T) {
 				t.Fatalf("stale=%v", err)
 			}
 			policyScope := "org_security/" + id
-			previous, err := f.service.database.approvePolicy(t.Context(), policyScope, operatortool.ConnectionIdentity(ctx).PrincipalID, policy.Change{Policy: hubTestPolicy()})
+			previous, err := f.service.approveTestTenantPolicy(t.Context(), policyScope, operatortool.ConnectionIdentity(ctx).PrincipalID, policy.Change{Policy: hubTestPolicy()})
 			if err != nil {
 				t.Fatal(err)
 			}

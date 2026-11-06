@@ -82,32 +82,12 @@ func (s *Service) hydrateWorkItemRelationshipFactsPage(ctx context.Context, scop
 	slices.Sort(projectIDs)
 	authorizedProjects := map[tracker.ProjectID]bool{scope.project: true}
 	if len(projectIDs) > 0 {
-		if s.config.AccessRepository != nil {
-			err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
-				for _, projectID := range projectIDs {
-					targetScope := scope
-					targetScope.project = projectID
-					err := s.authorizeAccessScope(ctx, r, targetScope, false)
-					if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, operatortool.ErrAccessDenied) || isNativeNotFound(err) {
-						authorizedProjects[projectID] = false
-						continue
-					}
-					if err != nil {
-						return err
-					}
-					authorizedProjects[projectID] = true
-				}
-				return nil
-			})
-			if err != nil {
-				return err
-			}
-		} else {
+		err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
 			for _, projectID := range projectIDs {
 				targetScope := scope
 				targetScope.project = projectID
-				err := s.authorizeProjectRecordWith(ctx, s.database.auth(), targetScope, false)
-				if isNativeNotFound(err) {
+				err := s.authorizeAccessScope(ctx, r, targetScope, false)
+				if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, operatortool.ErrAccessDenied) || isNativeNotFound(err) {
 					authorizedProjects[projectID] = false
 					continue
 				}
@@ -116,6 +96,10 @@ func (s *Service) hydrateWorkItemRelationshipFactsPage(ctx context.Context, scop
 				}
 				authorizedProjects[projectID] = true
 			}
+			return nil
+		})
+		if err != nil {
+			return err
 		}
 	}
 

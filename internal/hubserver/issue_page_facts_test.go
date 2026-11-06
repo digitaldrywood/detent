@@ -67,7 +67,7 @@ func TestIssuePageFactsAcrossBackfill(t *testing.T) {
 					}
 				}
 			case "unknown":
-				for _, statement := range []string{"UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,page_filters_ready=NULL", "UPDATE collaboration_events SET page_projection_ready=NULL,event_revision=NULL,from_state=NULL,to_state=NULL", "UPDATE workflow_states SET board_rank=NULL", "UPDATE native_board_items SET actor_principal_id=NULL,issue_type=NULL,verification_state=NULL,priority=NULL,page_filters_ready=NULL", "DELETE FROM native_board_filter_values", "DELETE FROM native_issue_page_filter_values"} {
+				for _, statement := range []string{"UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,page_filters_ready=NULL", "UPDATE collaboration_events SET page_projection_ready=NULL,event_revision=NULL,from_state=NULL,to_state=NULL", "UPDATE native_board_items SET actor_principal_id=NULL,issue_type=NULL,verification_state=NULL,priority=NULL,page_filters_ready=NULL", "DELETE FROM native_board_filter_values", "DELETE FROM native_issue_page_filter_values"} {
 					if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
 						t.Fatal(err)
 					}
@@ -76,11 +76,8 @@ func TestIssuePageFactsAcrossBackfill(t *testing.T) {
 				if err := f.service.convertIssuePageFacts(t.Context()); err != nil {
 					t.Fatal(err)
 				}
-				if err := f.service.convertNativeBoardRanks(t.Context()); err != nil {
-					t.Fatal(err)
-				}
 				var unknown int
-				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM issues WHERE actor_principal_id IS NULL OR page_filters_ready IS NULL)+(SELECT count(*) FROM collaboration_events WHERE page_projection_ready IS NULL)+(SELECT count(*) FROM native_board_items WHERE actor_principal_id IS NULL OR page_filters_ready IS NULL)+(SELECT count(*) FROM workflow_states WHERE board_rank IS NULL)`).Scan(&unknown); err != nil || unknown != 0 {
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM issues WHERE actor_principal_id IS NULL OR page_filters_ready IS NULL)+(SELECT count(*) FROM collaboration_events WHERE page_projection_ready IS NULL)+(SELECT count(*) FROM native_board_items WHERE actor_principal_id IS NULL OR page_filters_ready IS NULL)`).Scan(&unknown); err != nil || unknown != 0 {
 					t.Fatalf("unknown=%d err=%v", unknown, err)
 				}
 			case "opaque payload differs":

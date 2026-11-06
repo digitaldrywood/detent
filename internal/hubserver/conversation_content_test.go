@@ -122,72 +122,6 @@ func TestConversationPayloadBytesStayBounded(t *testing.T) {
 	}
 }
 
-func TestConversationStreamCompactsIntoFinalContent(t *testing.T) {
-	for _, chunk := range []string{"small delta", strings.Repeat("delta ", 8000)} {
-		t.Run(strconv.Itoa(len(chunk)), func(t *testing.T) {
-			f := newStorageArchiveFixture(t)
-			f.store.contents = &conversationContentFixture{}
-			record := f.create(t, f.record(f.owner, "stream", f.now))
-			chat := f.service.conversations
-			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: f.owner}, CreatedAt: f.now, UpdatedAt: f.now}
-			tx := f.tx(t)
-			if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.appendEvent(t, t.Context(), tx, record.ID, conversation.EventMessageAccepted, projectMessage(message), f.now); err != nil {
-				t.Fatal(err)
-			}
-			f.commit(t, tx)
-			for range 2 {
-				tx := f.tx(t)
-				if err := f.appendDelta(t, chat, t.Context(), tx, &message, chunk, f.now); err != nil {
-					t.Fatal(err)
-				}
-				f.commit(t, tx)
-			}
-			before, err := f.store.listMessages(t.Context(), f.store.reader, record.ID, 0, 10)
-			if err != nil || len(before) != 1 || before[0].Text != chunk+chunk {
-				t.Fatalf("active snapshot: messages=%d err=%v", len(before), err)
-			}
-			message = before[0]
-			message.Delivery = conversation.DeliveryCompleted
-			tx = f.tx(t)
-			if err := f.updateChatMessage(t, chat, t.Context(), tx, message, f.now); err != nil {
-				t.Fatal(err)
-			}
-			f.commit(t, tx)
-			events, err := f.store.listEvents(t.Context(), f.store.reader, record.ID, 0, 10)
-			if err != nil || len(events) != 4 {
-				t.Fatalf("stream replay: events=%d err=%v", len(events), err)
-			}
-			for _, event := range events[1:3] {
-				var delta struct{ Text string }
-				if err := json.Unmarshal(event.Data, &delta); err != nil || delta.Text != chunk {
-					t.Fatalf("delta replay changed: err=%v", err)
-				}
-			}
-			if err := f.service.compactRetainedEvents(t.Context(), f.now); err != nil {
-				t.Fatal(err)
-			}
-			var deltas, inline int
-			if err := f.store.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM conversation_events WHERE conversation_id=? AND type='message.delta'`, record.ID).Scan(&deltas); err != nil || deltas != 0 {
-				t.Fatalf("completed delta rows=%d err=%v", deltas, err)
-			}
-			if err := f.store.reader.QueryRowContext(t.Context(), `SELECT length(CAST(text AS BLOB))+length(CAST(data_json AS BLOB))+length(CAST(actor_json AS BLOB)) FROM conversation_messages WHERE id=?`, message.ID).Scan(&inline); err != nil || inline != 4 {
-				t.Fatalf("final inline bytes=%d err=%v", inline, err)
-			}
-			after, err := f.store.listMessages(t.Context(), f.store.reader, record.ID, 0, 10)
-			if err != nil || len(after) != 1 || after[0].Text != message.Text {
-				t.Fatalf("final content changed after compaction: err=%v", err)
-			}
-			events, err = f.store.listEvents(t.Context(), f.store.reader, record.ID, 0, 10)
-			if err != nil || len(events) != 2 {
-				t.Fatalf("compacted replay: events=%d err=%v", len(events), err)
-			}
-		})
-	}
-}
-
 func TestConversationPayloadRequiresPublication(t *testing.T) {
 	for _, configured := range []bool{false, true} {
 		t.Run(strconv.FormatBool(configured), func(t *testing.T) {
@@ -629,63 +563,6 @@ func TestConversationEventStorageFootprint(t *testing.T) {
 	t.Logf("fixture: events=%d inline_total=%d archived_sqlite_plus_gzip_total=%d net_bytes_saved_per_event=%.2f", count, inline, archived, saved)
 	if saved <= 0 {
 		t.Fatalf("fixture did not save bytes: %.2f", saved)
-	}
-}
-
-func TestConversationRestartMaterializesStreamBeforeCompaction(t *testing.T) {
-	for _, stale := range []bool{false, true} {
-		t.Run(strconv.FormatBool(stale), func(t *testing.T) {
-			f := newStorageArchiveFixture(t)
-			objects := &conversationContentFixture{}
-			f.store.contents = objects
-			record := f.create(t, f.record(f.owner, "restart stream", f.now))
-			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}, CreatedAt: f.now, UpdatedAt: f.now}
-			tx := f.tx(t)
-			if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
-				t.Fatal(err)
-			}
-			if err := f.appendDelta(t, f.service.conversations, t.Context(), tx, &message, "retained streamed text", f.now); err != nil {
-				t.Fatal(err)
-			}
-			f.commit(t, tx)
-			mutated := false
-			objects.onIO = func() error {
-				if f.store.db.Stats().InUse != 0 {
-					return errors.New("restart object I/O held the writer")
-				}
-				if stale && !mutated {
-					mutated = true
-					_, err := f.store.db.ExecContext(t.Context(), "UPDATE conversation_messages SET revision=revision+1 WHERE id=?", message.ID)
-					return err
-				}
-				return nil
-			}
-			_, err := f.store.normalizeAfterRestart(t.Context(), f.now)
-			if stale {
-				if err == nil {
-					t.Fatal("stale restart content was accepted")
-				}
-				var delivery string
-				if err := f.store.reader.QueryRowContext(t.Context(), "SELECT delivery FROM conversation_messages WHERE id=?", message.ID).Scan(&delivery); err != nil || delivery != string(conversation.DeliveryResponding) {
-					t.Fatalf("stale recovery changed delivery=%s error=%v", delivery, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := f.service.compactRetainedEvents(t.Context(), f.now); err != nil {
-				t.Fatal(err)
-			}
-			got, err := f.store.listMessages(t.Context(), f.store.reader, record.ID, 0, 10)
-			if err != nil || len(got) != 1 || got[0].Text != message.Text || got[0].Delivery != conversation.DeliveryUnknown {
-				t.Fatalf("restart stream changed: messages=%v error=%v", got, err)
-			}
-			var deltas int
-			if err := f.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_events WHERE conversation_id=? AND type='message.delta'", record.ID).Scan(&deltas); err != nil || deltas != 0 {
-				t.Fatalf("compacted deltas=%d error=%v", deltas, err)
-			}
-		})
 	}
 }
 

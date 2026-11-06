@@ -91,14 +91,9 @@ func (s *Service) hydrateWorkItemRelationshipFacts(ctx context.Context, scope na
 			if visible {
 				targetScope := scope
 				targetScope.project = relation.RelatedProjectID
-				var err error
-				if s.config.AccessRepository != nil {
-					err = s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
-						return s.authorizeAccessScope(ctx, r, targetScope, false)
-					})
-				} else {
-					err = s.authorizeProjectRecordWith(ctx, s.database.auth(), targetScope, false)
-				}
+				err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+					return s.authorizeAccessScope(ctx, r, targetScope, false)
+				})
 				if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, operatortool.ErrAccessDenied) || isNativeNotFound(err) {
 					visible = false
 				} else if err != nil {
@@ -217,28 +212,16 @@ func (s *Service) readWorkItemRelationshipPage(ctx context.Context, scope native
 		if scope.credential.EntryKey != nil && !scope.credential.EntryKey.Allows(string(relation.RelatedProjectID)) {
 			continue
 		}
-		if s.config.AccessRepository != nil {
-			targetScope := scope
-			targetScope.project = relation.RelatedProjectID
-			err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
-				return s.authorizeAccessScope(ctx, r, targetScope, false)
-			})
-			if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, operatortool.ErrAccessDenied) || isNativeNotFound(err) {
-				continue
-			}
-			if err != nil {
-				return page, err
-			}
-		} else {
-			targetScope := scope
-			targetScope.project = relation.RelatedProjectID
-			err := s.authorizeProjectRecordWith(ctx, s.database.auth(), targetScope, false)
-			if isNativeNotFound(err) {
-				continue
-			}
-			if err != nil {
-				return page, err
-			}
+		targetScope := scope
+		targetScope.project = relation.RelatedProjectID
+		err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+			return s.authorizeAccessScope(ctx, r, targetScope, false)
+		})
+		if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, operatortool.ErrAccessDenied) || isNativeNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return page, err
 		}
 		browserURL := ""
 		if relation.OrganizationSlug != "" && relation.ProjectSlug != "" && s.config.Hosted != nil {

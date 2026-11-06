@@ -46,7 +46,7 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 			previous := hubTestPolicy()
 			pinnedPolicyID := previous.ID
 			policyScope := "org_security/" + string(f.project)
-			if _, err := f.service.database.approvePolicy(t.Context(), policyScope, "previous-admin", policy.Change{Policy: previous}); err != nil {
+			if _, err := f.service.approveTestTenantPolicy(t.Context(), policyScope, "previous-admin", policy.Change{Policy: previous}); err != nil {
 				t.Fatal(err)
 			}
 			issueID := f.seedIssue(t, 1)
@@ -135,7 +135,7 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.approvePolicy(t.Context(), policyScope, "previous-admin", policy.Change{ExpectedID: previous.ID, Policy: prior}); err != nil {
+				if _, err := f.service.approveTestTenantPolicy(t.Context(), policyScope, "previous-admin", policy.Change{ExpectedID: previous.ID, Policy: prior}); err != nil {
 					t.Fatal(err)
 				}
 				previous = prior
@@ -605,7 +605,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 				operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET repository_id=NULL WHERE repository_id=(SELECT id FROM repositories WHERE github_node_id='repository-policy')")
 				operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET repository_id=(SELECT id FROM repositories WHERE github_node_id='repository-policy') WHERE id=?", f.project)
 				policyScope = "repository:digitaldrywood/detent"
-				if _, err := f.service.database.approvePolicy(t.Context(), policyScope, "previous-admin", policy.Change{Policy: hubTestPolicy()}); err != nil {
+				if _, err := f.service.approveTestTenantPolicy(t.Context(), policyScope, "previous-admin", policy.Change{Policy: hubTestPolicy()}); err != nil {
 					t.Fatal(err)
 				}
 			}

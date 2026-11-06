@@ -10,7 +10,6 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -678,81 +677,5 @@ func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 	decodeHubResponse(t, response, &history)
 	if history.Compaction != nil {
 		t.Fatalf("history does not disclose compaction: %+v", history.Compaction)
-	}
-}
-
-func TestEventCompactionPassIsBoundedAndYieldsToWrites(t *testing.T) {
-	t.Parallel()
-	a := newTerminalAttemptFixture(t)
-	a.snapshots(t, 1)
-	tx, err := a.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	backlog := 2*eventCompactionBatch + 37
-	for range backlog {
-		if err := appendLegacyNativeHistory(t.Context(), tx, a.scope, string(a.issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: a.start.Data.AttemptID, Runtime: a.runtime("implementation")}}, a.service.config.now()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	a.finish(t)
-	a.advance(2 * time.Hour)
-	writes := make(chan error, 1)
-	stop := make(chan struct{})
-	var written atomic.Int64
-	go func() {
-		for index := 0; ; index++ {
-			select {
-			case <-stop:
-				writes <- nil
-				return
-			default:
-			}
-			body := tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("comment-%d", index)}, Body: "written during retention"}
-			response := performHubAPIRequest(t, a.service, http.MethodPost, a.base+"/work-items/"+string(a.issue.WorkItemID)+"/comments", a.token, body)
-			if response.Code != http.StatusOK {
-				writes <- fmt.Errorf("comment write status %d: %s", response.Code, response.Body.String())
-				return
-			}
-			written.Add(1)
-		}
-	}()
-	stopWriter := sync.OnceFunc(func() {
-		close(stop)
-		if err := <-writes; err != nil {
-			t.Error(err)
-		}
-	})
-	t.Cleanup(stopWriter)
-	var removed []int64
-	previous := int64(0)
-	for range 4 {
-		if err := a.service.compactRetainedEvents(t.Context(), a.service.config.now()); err != nil {
-			t.Fatal(err)
-		}
-		summary, err := readEventCompaction(t.Context(), a.service.database.db, a.scope.organization, a.scope.project, "work_item", string(a.issue.WorkItemID))
-		if err != nil {
-			t.Fatal(err)
-		}
-		removed = append(removed, summary.CompactedActivityEvents-previous)
-		previous = summary.CompactedActivityEvents
-	}
-	stopWriter()
-	if written.Load() == 0 {
-		t.Fatal("no request write completed while retention passes ran")
-	}
-	if want := []int64{eventCompactionBatch, eventCompactionBatch, int64(backlog) - 2*eventCompactionBatch, 0}; !slices.Equal(removed, want) {
-		t.Fatalf("removed per pass=%v want %v", removed, want)
-	}
-	var referenced int
-	if err := a.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND payload_version=1 AND payload_object_key<>''", a.issue.WorkItemID).Scan(&referenced); err != nil || referenced != 5 {
-		t.Fatalf("archive references=%d, want 5: %v", referenced, err)
-	}
-	if counts := a.runEvents(t); counts["run.observed"] != backlog+1 || counts["run.checkpointed"] != 1 {
-		t.Fatalf("history after backfill=%v", counts)
 	}
 }

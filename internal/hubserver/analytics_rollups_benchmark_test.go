@@ -82,36 +82,6 @@ func BenchmarkAnalyticsReportSubreads(b *testing.B) {
 	}
 }
 
-func BenchmarkAnalyticsRollupAppend(b *testing.B) {
-	for _, projected := range []bool{false, true} {
-		b.Run(fmt.Sprintf("projected=%t", projected), func(b *testing.B) {
-			f := benchmarkAnalyticsFixture(b, 0)
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			var id string
-			if err := f.service.database.reader.QueryRowContext(b.Context(), "SELECT native_id FROM issues WHERE organization_id=? AND project_id=?", scope.organization, scope.project).Scan(&id); err != nil {
-				b.Fatal(err)
-			}
-			b.ReportAllocs()
-			for b.Loop() {
-				tx, err := f.service.database.db.BeginTx(b.Context(), nil)
-				if err != nil {
-					b.Fatal(err)
-				}
-				if err := appendLegacyNativeHistory(b.Context(), tx, scope, id, "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "ready"}}, f.service.config.now()); err != nil {
-					b.Fatal(err)
-				}
-				err = f.service.database.commit(b.Context(), tx)
-				if err == nil && projected {
-					_, _, err = f.service.database.drainNativeBoardDirtyAfter(b.Context(), f.service.config.now(), "")
-				}
-				if err != nil {
-					b.Fatal(err)
-				}
-			}
-		})
-	}
-}
-
 func BenchmarkAnalyticsProjectionApply(b *testing.B) {
 	f := benchmarkAnalyticsFixture(b, 0)
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {

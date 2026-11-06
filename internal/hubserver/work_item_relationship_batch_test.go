@@ -37,7 +37,10 @@ func (r *relationshipBatchCountingReader) WorkItemRelationshipFacts(ctx context.
 }
 
 func TestHydrateWorkItemRelationshipFactsPagePreservesReporterRedaction(t *testing.T) {
-	repository, fixture, _ := newChangePolicyPostgresFixture(t)
+	repository, fixture, _, _ := newChangePolicyPostgresFixtureWithAdmin(t, 8)
+	if err := fixture.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	tenantReads := &relationshipBatchCountingRepository{Repository: repository}
 	accessReads := &relationshipBatchCountingRepository{Repository: repository}
 	fixture.service.config.TenantRepository = tenantReads

@@ -35,41 +35,26 @@ func policyMismatch(message string) error {
 }
 
 func (s *Service) policyScope(c echo.Context) (string, error) {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
-	if c.Param("organization") != "" {
-		scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project"))}
-		if s.config.TenantRepository != nil {
-			err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-				_, err := reader.ProjectRecord(ctx, scope.project)
-				return err
-			})
-			if errors.Is(err, corestore.ErrNotFound) {
-				return "", nativeNotFound()
-			}
-			if err != nil {
-				return "", err
-			}
-			return string(scope.organization) + "/" + string(scope.project), nil
-		}
-		var count int
-		if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&count); err != nil {
-			return "", err
-		}
-		if count != 1 {
-			return "", nativeNotFound()
-		}
-		return string(scope.organization) + "/" + string(scope.project), nil
+	if s.config.TenantRepository == nil {
+		return "", workItemStorageUnavailable()
 	}
-	repository := c.Param("owner") + "/" + c.Param("repo")
-	var count int
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM repositories WHERE github_owner || '/' || github_name = ? COLLATE NOCASE", repository).Scan(&count); err != nil {
-		return "", err
-	}
-	if count != 1 {
+	if c.Param("organization") == "" || c.Param("project") == "" {
 		return "", nativeNotFound()
 	}
-	return "repository:" + strings.ToLower(repository), nil
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project"))}
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		_, err := reader.ProjectRecord(ctx, scope.project)
+		return err
+	})
+	if errors.Is(err, corestore.ErrNotFound) {
+		return "", nativeNotFound()
+	}
+	if err != nil {
+		return "", err
+	}
+	return string(scope.organization) + "/" + string(scope.project), nil
 }
 
 func (s *Service) getProjectPolicy(c echo.Context) error {
@@ -89,13 +74,7 @@ func (s *Service) getProjectPolicy(c echo.Context) error {
 	}
 	var approval policy.Approval
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
-	if s.config.TenantRepository != nil && c.Param("organization") != "" {
-		approval, err = s.readTenantProjectPolicy(ctx, tracker.OrganizationID(c.Param("organization")), tracker.ProjectID(c.Param("project")))
-	} else if ok && credential.Runner.Valid() {
-		approval, _, err = readProjectPolicy(ctx, s.database.reader, scope)
-	} else {
-		approval, err = readProjectPolicyWithHistory(ctx, s.database.reader, scope, limit, c.QueryParam("after"))
-	}
+	approval, err = s.readTenantProjectPolicy(ctx, tracker.OrganizationID(c.Param("organization")), tracker.ProjectID(c.Param("project")))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -107,40 +86,24 @@ func (s *Service) getProjectPolicy(c echo.Context) error {
 		selection := workflowconfig.ResolveCloudModelSelection(workflowconfig.ModelSelection{}, workflowconfig.ModelSelection{})
 		if c.Param("organization") != "" {
 			projectScope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project"))}
-			if s.config.TenantRepository != nil {
-				record, err := s.readProjectRecord(ctx, projectScope)
-				if err != nil {
-					return s.nativeAPIError(c, err)
-				}
-				resolved, err := s.projectRecordModel(ctx, record)
-				if err != nil {
-					return s.nativeAPIError(c, err)
-				}
-				selection = resolved.Effective
-			} else {
-				resolved, err := readCloudModelSelection(ctx, s.database.reader, projectScope)
-				if err != nil {
-					return s.nativeAPIError(c, err)
-				}
-				selection = resolved.Effective
+			record, err := s.readProjectRecord(ctx, projectScope)
+			if err != nil {
+				return s.nativeAPIError(c, err)
 			}
+			resolved, err := s.projectRecordModel(ctx, record)
+			if err != nil {
+				return s.nativeAPIError(c, err)
+			}
+			selection = resolved.Effective
 		}
 		approval.ExecutionConfiguration, err = workflowconfig.NewExecutionConfiguration(workflow, approval.Policy, selection)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}
-	var view projectPolicyRead
-	if s.config.TenantRepository != nil && c.Param("organization") != "" {
-		view = projectPolicyView(approval)
-		if !ok || !credential.Runner.Valid() {
-			view, err = s.tenantProjectPolicyRead(ctx, tracker.OrganizationID(c.Param("organization")), tracker.ProjectID(c.Param("project")), approval, limit, c.QueryParam("after"))
-			if err != nil {
-				return s.nativeAPIError(c, err)
-			}
-		}
-	} else {
-		view, err = s.projectPolicyRead(ctx, s.database.reader, scope, approval, !ok || !credential.Runner.Valid())
+	view := projectPolicyView(approval)
+	if !ok || !credential.Runner.Valid() {
+		view, err = s.tenantProjectPolicyRead(ctx, tracker.OrganizationID(c.Param("organization")), tracker.ProjectID(c.Param("project")), approval, limit, c.QueryParam("after"))
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
@@ -357,7 +320,7 @@ func (s *Service) approveProjectPolicy(c echo.Context) error {
 			return s.nativeAPIError(c, nativeInvalid(err.Error()))
 		}
 	}
-	scope, err := s.policyScope(c)
+	_, err := s.policyScope(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -365,15 +328,8 @@ func (s *Service) approveProjectPolicy(c echo.Context) error {
 	if !ok || credential.ID == "" {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	if s.config.TenantRepository != nil && c.Param("organization") != "" {
-		scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential, requireHostedAdmin: true}
-		approval, err := s.approveTenantProjectPolicy(c.Request().Context(), scope, credential.ID, change)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return c.JSON(http.StatusOK, approval)
-	}
-	approval, err := s.database.approvePolicy(c.Request().Context(), scope, credential.ID, change)
+	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential, requireHostedAdmin: true}
+	approval, err := s.approveTenantProjectPolicy(c.Request().Context(), scope, credential.ID, change)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -688,7 +644,7 @@ func (s *Service) observeProjectPolicy(c echo.Context) error {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
 	}
 	observation.Descriptor = descriptor
-	scope, err := s.policyScope(c)
+	_, err = s.policyScope(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -700,19 +656,8 @@ func (s *Service) observeProjectPolicy(c echo.Context) error {
 	if reporter == "" {
 		reporter = credential.ID
 	}
-	if s.config.TenantRepository != nil && c.Param("organization") != "" {
-		if err := s.observeTenantProjectPolicy(c.Request().Context(), nativeRequestScope(c), credential, reporter, observation); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return c.NoContent(http.StatusNoContent)
-	}
-	if err := storeObservedPolicy(c.Request().Context(), s.database.db, scope, reporter, observation, s.config.now()); err != nil {
+	if err := s.observeTenantProjectPolicy(c.Request().Context(), nativeRequestScope(c), credential, reporter, observation); err != nil {
 		return s.nativeAPIError(c, err)
-	}
-	if credential.Runner.RunnerID != "" {
-		if err := s.database.applyObservedDefaultBranchPolicy(c.Request().Context(), scope, observation); err != nil {
-			return s.nativeAPIError(c, err)
-		}
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -1093,7 +1038,7 @@ func (s *Service) revokeProjectPolicy(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	scope, err := s.policyScope(c)
+	_, err := s.policyScope(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -1101,32 +1046,9 @@ func (s *Service) revokeProjectPolicy(c echo.Context) error {
 	if !ok || credential.ID == "" {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	if s.config.TenantRepository != nil && c.Param("organization") != "" {
-		return s.nativeAPIError(c, &nativeError{Code: "operation_retired", Message: "Repository configuration does not require execution approval; pause the runner or remove project access to stop work", status: http.StatusGone, publicMessage: true})
-	}
-	_, err = s.database.revokePolicy(c.Request().Context(), scope, credential.ID, request.ExpectedID)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.NoContent(http.StatusNoContent)
+	return s.nativeAPIError(c, &nativeError{Code: "operation_retired", Message: "Repository configuration does not require execution approval; pause the runner or remove project access to stop work", status: http.StatusGone, publicMessage: true})
 }
 
-func (d *database) approvePolicy(ctx context.Context, scope, actor string, change policy.Change) (result policy.Approval, resultErr error) {
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return result, err
-	}
-	defer func() {
-		if resultErr != nil {
-			resultErr = errors.Join(resultErr, tx.Rollback())
-		}
-	}()
-	result, err = d.approvePolicyInTx(ctx, tx, scope, actor, change, policyLanding{})
-	if err != nil {
-		return result, err
-	}
-	return result, d.commit(ctx, tx)
-}
 func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, actor string, change policy.Change, landing policyLanding) (result policy.Approval, resultErr error) {
 	if change.ObservedPolicyID != "" {
 		if !reflect.ValueOf(change.Policy).IsZero() {
@@ -1588,17 +1510,6 @@ func validateClaimPolicy(ctx context.Context, tx *sql.Tx, query claimCandidateQu
 	return scope, nil
 }
 
-func (d *database) leasePolicyID(ctx context.Context, lease tracker.LeaseID) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	var id string
-	err := d.reader.QueryRowContext(ctx, "SELECT policy_id FROM lease_policies WHERE lease_id = ?", lease).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	return id, err
-}
-
 func requireLeaseRouting(ctx context.Context, tx nativeQueryer, lease tracker.LeaseID) error {
 	var runner, machine, tags, state, raw string
 	var access bool
@@ -1633,27 +1544,27 @@ JOIN policy_revisions p ON p.scope = lp.scope AND p.policy_id = lp.policy_id WHE
 	return nil
 }
 
-func (d *database) revokePolicy(ctx context.Context, scope, actor, expectedID string) (result any, resultErr error) {
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if resultErr != nil {
-			resultErr = errors.Join(resultErr, tx.Rollback())
-		}
-	}()
-	now, err := d.currentTime()
-	if err != nil {
-		return nil, err
-	}
-	result, err = revokeProjectPolicyInTx(ctx, tx, scope, actor, expectedID, now)
-	if err != nil {
-		return nil, err
-	}
-	return result, d.commit(ctx, tx)
-}
-
 func revokeProjectPolicyInTx(ctx context.Context, tx *sql.Tx, scope, actor, expectedID string, now time.Time) (any, error) {
 	return nil, &nativeError{Code: "operation_retired", Message: "Repository configuration does not require execution approval; pause the runner or remove project access to stop work", status: http.StatusGone, publicMessage: true}
+}
+
+func (d *database) leasePolicyID(ctx context.Context, lease tracker.LeaseID) (string, error) {
+	if d.postgres == nil || d.hostedOrganization == "" {
+		return "", workItemStorageUnavailable()
+	}
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	var id string
+	err := d.postgres.ReadTenant(ctx, d.hostedOrganization, corestore.Serving, func(reader tenantstore.Reader) error {
+		record, err := reader.LeasePolicy(ctx, lease)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		id = record.PolicyID
+		return nil
+	})
+	return id, err
 }

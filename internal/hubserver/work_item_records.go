@@ -461,7 +461,11 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 				}
 			}
 			if (bodyChanged || contractChanged) && plan.issue.IssueContract != nil && plan.issue.IssueContract.ReturnState != "" {
-				contract, err := nativeIssueContract(ctx, s.database.reader, scope)
+				approval, err := s.readTenantProjectPolicy(ctx, scope.organization, scope.project)
+				if err != nil {
+					return plan, err
+				}
+				contract, err := config.ResolvePolicyIssueContract(approval.Policy)
 				if err != nil {
 					return plan, err
 				}
@@ -590,11 +594,6 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 	if !plan.create && plan.comment.ID == "" && plan.project.Core.WorkflowSource != "" {
 		return plan, workItemStorageUnavailable()
 	}
-	if plan.requiresIssueContract() && s.config.TenantRepository == nil {
-		if err := validateWorkItemRecordFiling(ctx, s.database.reader, scope, plan); err != nil {
-			return plan, err
-		}
-	}
 	return plan, nil
 }
 
@@ -602,27 +601,8 @@ func (p workItemRecordPlan) requiresIssueContract() bool {
 	return p.comment.ID == "" && (p.create || slices.Contains(p.fields, "body"))
 }
 
-func validateWorkItemRecordFiling(ctx context.Context, query nativeQueryer, scope nativeScope, plan workItemRecordPlan) error {
-	if scope.credential.HostedRole == "reporter" && plan.create {
-		contracts, err := nativeReporterContracts(ctx, query, scope)
-		if err != nil {
-			return err
-		}
-		contract := config.IssueContract{Sections: contracts[plan.issue.Type]}
-		if missing := reporterSectionsMissing(contract.Evaluate(nativeContractIssue(plan.issue)).Missing, plan.issue.ReportContext); len(missing) > 0 {
-			return nativePublicInvalid("Add or complete these required Reporter sections: " + strings.Join(missing, ", "))
-		}
-	}
-	return requireNativeIssueContractAtFiling(ctx, query, scope, plan.issue)
-}
-
-func releaseWorkItemAuthority(authority interface{ Rollback() error }, policyTx *sql.Tx) error {
+func releaseWorkItemAuthority(authority interface{ Rollback() error }) error {
 	var releaseErr error
-	if policyTx != nil {
-		if err := policyTx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-			releaseErr = errors.Join(releaseErr, err)
-		}
-	}
 	if err := authority.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
 		releaseErr = errors.Join(releaseErr, err)
 	}
@@ -727,15 +707,6 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 		}
 		if found {
 			return s.readWorkItemRecordReceipt(ctx, scope, receipt)
-		}
-		if options.Feature != "" && !options.Completion && s.database.billingRepository == nil {
-			now, err := s.database.currentTime()
-			if err != nil {
-				return nil, err
-			}
-			if err := s.database.requireHostedFeature(ctx, s.database.reader, options.Feature, now); err != nil {
-				return nil, err
-			}
 		}
 		var confirmation *workItemDuplicateConfirmation
 		if request, ok := input.(tracker.CreateIssue); ok && request.ChallengeToken != "" {
@@ -942,29 +913,7 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 		if err != nil {
 			return nil, err
 		}
-		var policyTx *sql.Tx
-		authorityQuery, ok := any(authority).(nativeQueryer)
-		if !ok && s.config.TenantRepository == nil {
-			policyTx, err = s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-			if err != nil {
-				return nil, errors.Join(err, releaseWorkItemAuthority(authority, nil))
-			}
-			authorityQuery = policyTx
-		}
-		if options.Feature != "" && !options.Completion && s.database.billingRepository == nil {
-			now, err := s.database.currentTime()
-			if err == nil {
-				err = s.database.requireHostedFeature(ctx, authorityQuery, options.Feature, now)
-			}
-			if err != nil {
-				return nil, errors.Join(err, releaseWorkItemAuthority(authority, policyTx))
-			}
-		}
-		if plan.requiresIssueContract() && !plan.existing && authorityQuery != nil {
-			if err := validateWorkItemRecordFiling(ctx, authorityQuery, scope, plan); err != nil {
-				return nil, errors.Join(err, releaseWorkItemAuthority(authority, policyTx))
-			}
-		}
+
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if plan.relationship != nil {
 				if err := w.LockRelationshipGraph(ctx); err != nil {
@@ -1056,7 +1005,7 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 					return nativeConflict(tracker.Revision(current.Revision))
 				}
 			}
-			if options.Feature != "" && !options.Completion && s.database.billingRepository != nil {
+			if options.Feature != "" && !options.Completion {
 				now, err := s.database.currentTime()
 				if err != nil {
 					return err
@@ -1268,7 +1217,7 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 			_, err = w.PutReceipt(ctx, receipt)
 			return err
 		})
-		err = errors.Join(err, releaseWorkItemAuthority(authority, policyTx))
+		err = errors.Join(err, releaseWorkItemAuthority(authority))
 		if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) || duplicateSearch != nil && duplicateSearch.available && errors.Is(err, searchstore.ErrIndexPending) {
 			continue
 		}

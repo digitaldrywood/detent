@@ -121,7 +121,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 				operatorSQL(t, f, "DELETE FROM project_policies WHERE scope=?", scope)
 			}
 			if test.name != "first approval" {
-				if _, err := f.service.database.approvePolicy(t.Context(), scope, "fixture", policy.Change{Policy: current}); err != nil {
+				if _, err := f.service.approveTestTenantPolicy(t.Context(), scope, "fixture", policy.Change{Policy: current}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -145,7 +145,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(second.binding.MachineID)+"/heartbeat", second.redemption.Credential, map[string]any{"display_name": "Second runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": second.redemption.BackendIsolation, "project_configuration": view}), http.StatusOK)
 			}
 			if test.tool == "apply_local_project_policy" && test.name != "unapproved application" {
-				if _, err := f.service.database.approvePolicy(t.Context(), scope, "fixture", policy.Change{ExpectedID: current.ID, Policy: selected}); err != nil {
+				if _, err := f.service.approveTestTenantPolicy(t.Context(), scope, "fixture", policy.Change{ExpectedID: current.ID, Policy: selected}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -167,7 +167,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 				secondFixture.grant(t, user, true, true)
 				secondScope := "org_security/" + string(second.ID)
 				foreignScope = secondScope
-				if _, err := f.service.database.approvePolicy(t.Context(), secondScope, "fixture", policy.Change{Policy: current}); err != nil {
+				if _, err := f.service.approveTestTenantPolicy(t.Context(), secondScope, "fixture", policy.Change{Policy: current}); err != nil {
 					t.Fatal(err)
 				}
 				if err := storeObservedPolicy(t.Context(), f.service.database.db, secondScope, r.binding.RunnerID, policy.Observation{Descriptor: selected, Source: &policy.RepositorySource{Repository: repository, Commit: selected.SourceRevision}}, f.service.config.now()); err != nil {
@@ -443,7 +443,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 				other := selected
 				other.Gates.AutoPromote = true
 				other = other.WithID()
-				if _, err := f.service.database.approvePolicy(t.Context(), scope, "other", policy.Change{ExpectedID: current.ID, Policy: other}); err != nil {
+				if _, err := f.service.approveTestTenantPolicy(t.Context(), scope, "other", policy.Change{ExpectedID: current.ID, Policy: other}); err != nil {
 					t.Fatal(err)
 				}
 			case "stale cloud workflow":
@@ -561,7 +561,7 @@ func (f *browserHostedFixture) seedCoordinatorWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := "org_browser_preview/" + f.project
-	if _, err := f.service.database.approvePolicy(t.Context(), scope, "fixture", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: current}); err != nil {
+	if _, err := f.service.approveTestTenantPolicy(t.Context(), scope, "fixture", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: current}); err != nil {
 		t.Fatal(err)
 	}
 	view := runnerauth.ProjectConfiguration{ProjectID: f.project, Authority: "local_global_configuration", Registered: true, RuntimeRegistered: true, Source: "configured_committed_workflow", ConfigRevision: strings.Repeat("c", 64), SelectedPolicy: &selected, EffectivePolicy: &current, ObservedAt: f.service.config.now()}

@@ -43,64 +43,6 @@ ORDER BY pr.id LIMIT 1`, source.Repository, source.Commit, source.DefaultBranch,
 	return landing, err
 }
 
-func (d *database) applyObservedDefaultBranchPolicy(ctx context.Context, scope string, observation policy.Observation) (resultErr error) {
-	source := observation.Source
-	descriptor := observation.Descriptor
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if resultErr != nil {
-			resultErr = errors.Join(resultErr, tx.Rollback())
-		}
-	}()
-	approval, _, err := readProjectPolicy(ctx, tx, scope)
-	if err != nil {
-		return err
-	}
-	current := approval.Policy.ID
-	if current != "" && current != descriptor.ID {
-		var previouslyApplied bool
-		if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM policy_revisions WHERE scope = ? AND policy_id = ? AND approved_by <> 'runner-report')", scope, descriptor.ID).Scan(&previouslyApplied); err != nil {
-			return err
-		}
-		if previouslyApplied {
-			return d.commit(ctx, tx)
-		}
-	}
-	var landing policyLanding
-	carryover := descriptor.SameAuthoredInputs(approval.Policy)
-	if descriptor.Workflow != nil {
-		repository, err := policyRepository(ctx, tx, scope)
-		if err != nil {
-			return err
-		}
-		landing.SourceUnavailable = source == nil || !validCommitID(source.Commit) || !validCommitID(source.DefaultBranchHead) || source.DefaultBranch == "" || source.Commit != descriptor.Workflow.Revision || repository == "" || !strings.EqualFold(repository, source.Repository)
-		if !landing.SourceUnavailable {
-			landing, err = readPolicyLanding(ctx, tx, scope, source)
-			if err != nil {
-				return err
-			}
-		}
-		if !carryover && (landing.SourceUnavailable || !source.DefaultBranchReachable && landing.ChangeID == "" && landing.PullRequestURL == "") {
-			return d.commit(ctx, tx)
-		}
-	}
-	if current != descriptor.ID {
-		actor := "repository-default-branch"
-		if carryover && approval.ApprovedBy != "" {
-			actor = approval.ApprovedBy
-		} else if landing.Actor != "" {
-			actor = landing.Actor
-		}
-		if _, err := d.approvePolicyInTx(ctx, tx, scope, actor, policy.Change{ExpectedID: current, Policy: descriptor}, landing); err != nil {
-			return err
-		}
-	}
-	return d.commit(ctx, tx)
-}
-
 func policyRepository(ctx context.Context, query policyQuerier, scope string) (string, error) {
 	if repository, ok := strings.CutPrefix(scope, "repository:"); ok {
 		return repository, nil

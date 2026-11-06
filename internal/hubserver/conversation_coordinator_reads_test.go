@@ -31,7 +31,7 @@ func coordinatorReadFixture(t *testing.T) (hostedSecurityFixture, hostedSecurity
 	})
 	owner := f.user(t, "screen-owner", "owner", "owner@example.test", "write", "")
 	seedCoordinatorRepository(t, f.service, f.project)
-	if _, err := f.service.database.approvePolicy(t.Context(), "org_security/"+string(f.project), "test", policy.Change{Policy: hubTestPolicy()}); err != nil {
+	if _, err := f.service.approveTestTenantPolicy(t.Context(), "org_security/"+string(f.project), "test", policy.Change{Policy: hubTestPolicy()}); err != nil {
 		t.Fatal(err)
 	}
 	response := f.request(t, owner, http.MethodPost, f.base+"/conversations", map[string]any{"key": "screen-chat"})

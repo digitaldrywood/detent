@@ -2305,3 +2305,16 @@ func TestNativeWorkflowPolicyCanonicalStates(t *testing.T) {
 		})
 	}
 }
+
+func (s *Service) approveTestTenantPolicy(ctx context.Context, path, actor string, change policy.Change) (policy.Approval, error) {
+	organization, project, ok := strings.Cut(path, "/")
+	if !ok {
+		return policy.Approval{}, nativeNotFound()
+	}
+	credential, _, err := s.authenticateTenantAPIHash(ctx, tracker.OrganizationID(organization), apikey.HashToken(testHubAdminToken), "", "")
+	if err != nil {
+		return policy.Approval{}, err
+	}
+	scope := nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(project), credential: credential, requireHostedAdmin: true}
+	return s.approveTenantProjectPolicy(ctx, scope, actor, change)
+}
