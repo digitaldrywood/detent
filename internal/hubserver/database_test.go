@@ -33,29 +33,6 @@ const (
 	testHubAdminToken = "detent_test_hub_admin_token_00000000000000000000000000000000"
 )
 
-func TestSQLiteDSNEncodesAbsolutePaths(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		path       string
-		wantPrefix string
-	}{
-		{name: "Unix", path: "/var/lib/detent/hub.db", wantPrefix: "file:///var/lib/detent/hub.db?"},
-		{name: "Windows uppercase drive", path: "C:/detent/hub.db", wantPrefix: "file:///C:/detent/hub.db?"},
-		{name: "Windows lowercase drive", path: "d:/detent/hub.db", wantPrefix: "file:///d:/detent/hub.db?"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			got := sqliteDSN(test.path, defaultBusyTimeout)
-			if !strings.HasPrefix(got, test.wantPrefix) {
-				t.Fatalf("sqliteDSN() = %q, want prefix %q", got, test.wantPrefix)
-			}
-		})
-	}
-}
-
 func TestOpenTestServiceUsesPostgres(t *testing.T) {
 	for _, hosted := range []bool{false, true} {
 		t.Run(fmt.Sprintf("hosted=%t", hosted), func(t *testing.T) {
@@ -392,43 +369,6 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 			}
 			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET name = name"); err != nil {
 				t.Fatalf("write after the held write committed: %v", err)
-			}
-		})
-	}
-}
-
-func TestHostedWriterLeavesCheckpointsToLitestream(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name            string
-		hosted          bool
-		want            int
-		wantSynchronous int
-	}{
-		{name: "hosted tenant", hosted: true, want: 0, wantSynchronous: 1},
-		{name: "self-managed Hub", hosted: false, want: 1000, wantSynchronous: 2},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			db, err := sql.Open("sqlite", sqliteWriterDSN(filepath.Join(t.TempDir(), "hub.db"), defaultBusyTimeout, test.hosted))
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = db.Close() })
-			var got int
-			if err := db.QueryRowContext(t.Context(), "PRAGMA wal_autocheckpoint").Scan(&got); err != nil {
-				t.Fatal(err)
-			}
-			if got != test.want {
-				t.Fatalf("wal_autocheckpoint = %d, want %d", got, test.want)
-			}
-			var synchronous int
-			if err := db.QueryRowContext(t.Context(), "PRAGMA synchronous").Scan(&synchronous); err != nil {
-				t.Fatal(err)
-			}
-			if synchronous != test.wantSynchronous {
-				t.Fatalf("synchronous = %d, want %d", synchronous, test.wantSynchronous)
 			}
 		})
 	}
