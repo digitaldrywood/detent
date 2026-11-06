@@ -9,12 +9,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/pgtransport"
-	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 var template = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
@@ -138,7 +139,7 @@ func TestCommitRejectsAbortedTransaction(t *testing.T) {
 	reuse(t, pools)
 }
 func TestTransactionCleanup(t *testing.T) {
-	for _, name := range []string{"bind failure", "rollback", "cancelled rollback", "failed batch", "failed initial batch", "open batch", "open rows", "commit open rows", "reader rejects writes", "cancelled query"} {
+	for _, name := range []string{"bind failure", "rollback", "cancelled rollback", "failed batch", "failed callback batch", "failed initial batch", "open batch", "open rows", "commit open rows", "reader rejects writes", "cancelled query"} {
 		t.Run(name, func(t *testing.T) {
 			_, config := fixture(t)
 			pools := openPools(t, config, nil)
@@ -183,13 +184,31 @@ func TestTransactionCleanup(t *testing.T) {
 					if err := tx.Rollback(ctx); err != nil {
 						t.Fatal(err)
 					}
-				case "failed batch":
+				case "failed batch", "failed callback batch":
 					batch := &pgx.Batch{}
-					batch.Queue(`SELECT 1/0`)
+					queued := batch.Queue(`SELECT 1/0`)
+					if name == "failed callback batch" {
+						queued.Query(func(rows pgx.Rows) error {
+							if rows.Conn() != nil {
+								return errors.New("callback exposes connection")
+							}
+							for rows.Next() {
+							}
+							return rows.Err()
+						})
+					}
 					batch.Queue(`SELECT * FROM protected`)
 					results := tx.SendBatch(t.Context(), batch)
-					if err := results.Close(); err == nil {
-						t.Fatal("failed batch succeeded")
+					batchErr := func() (result error) {
+						defer func() {
+							if recovered := recover(); recovered != nil {
+								result = fmt.Errorf("batch callback panic: %v", recovered)
+							}
+						}()
+						return results.Close()
+					}()
+					if pgtransport.SQLState(batchErr) != "22012" {
+						t.Fatalf("failed batch=%v", batchErr)
 					}
 					if err := tx.Commit(t.Context()); !errors.Is(err, pgx.ErrTxCommitRollback) {
 						t.Fatalf("commit=%v", err)
@@ -297,5 +316,55 @@ func TestGuardDetectsBypass(t *testing.T) {
 	}
 	if violations != 3 {
 		t.Fatalf("batch violations=%d", violations)
+	}
+}
+
+func TestGuardExpiresLocalBindings(t *testing.T) {
+	_, config := fixture(t)
+	violations := 0
+	config.ConnConfig.Tracer = pgtest.NewTenantGuard([]string{"protected"}, func(string) { violations++ })
+	conn, err := pgx.ConnectConfig(t.Context(), config.ConnConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(t.Context())
+	bind := `SELECT set_config('search_path', 'public, pg_catalog', true), set_config('detent.organization_id', $1, true)`
+	for _, statement := range []string{"BEGIN", bind, "COMMIT;"} {
+		var err error
+		if statement == bind {
+			_, err = conn.Exec(t.Context(), statement, "first")
+		} else {
+			_, err = conn.Exec(t.Context(), statement)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var count int
+	if err := conn.QueryRow(t.Context(), `SELECT count(*) FROM protected`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if violations != 1 || count != 0 {
+		t.Errorf("semicolon commit: violations=%d rows=%d", violations, count)
+	}
+	if _, err := conn.Exec(t.Context(), bind, "first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(t.Context(), `SELECT count(*) FROM protected`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if violations != 2 || count != 0 {
+		t.Errorf("autocommit binding: violations=%d rows=%d", violations, count)
+	}
+	batch := &pgx.Batch{}
+	batch.Queue("BEGIN")
+	batch.Queue(bind, "first")
+	batch.Queue("COMMIT;")
+	batch.Queue(`SELECT * FROM protected`)
+	if err := conn.SendBatch(t.Context(), batch).Close(); err != nil {
+		t.Fatal(err)
+	}
+	if violations != 3 {
+		t.Errorf("batch semicolon commit: violations=%d", violations)
 	}
 }

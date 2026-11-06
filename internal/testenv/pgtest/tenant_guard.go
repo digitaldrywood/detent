@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type TenantGuard struct {
@@ -49,27 +50,33 @@ func (g *TenantGuard) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx
 	return context.WithValue(ctx, tracedQueryKey{}, tracedQuery{data.SQL, data.Args})
 }
 func (g *TenantGuard) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
-	query, _ := ctx.Value(tracedQueryKey{}).(tracedQuery)
-	g.record(ctx, conn, query.sql, query.args, data.Err)
+	query, ok := ctx.Value(tracedQueryKey{}).(tracedQuery)
+	if !ok {
+		g.report("PostgreSQL query trace context is missing")
+		return
+	}
+	g.record(ctx, conn, query.sql, query.args, data.CommandTag, data.Err)
+	g.expire(conn)
 }
 func (g *TenantGuard) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
 	return ctx
 }
 func (g *TenantGuard) TraceBatchQuery(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchQueryData) {
-	g.record(ctx, conn, data.SQL, data.Args, data.Err)
+	g.record(ctx, conn, data.SQL, data.Args, data.CommandTag, data.Err)
 }
-func (g *TenantGuard) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
-func (g *TenantGuard) record(ctx context.Context, conn *pgx.Conn, query string, args []any, err error) {
+func (g *TenantGuard) TraceBatchEnd(_ context.Context, conn *pgx.Conn, _ pgx.TraceBatchEndData) {
+	g.expire(conn)
+}
+func (g *TenantGuard) record(ctx context.Context, conn *pgx.Conn, query string, args []any, tag pgconn.CommandTag, err error) {
 	if err != nil {
 		var state interface{ SQLState() string }
 		if errors.As(err, &state) && state.SQLState() == "25P02" {
 			return
 		}
 	}
-	normalized := strings.ToUpper(strings.TrimSpace(query))
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if err == nil && (strings.HasPrefix(normalized, "BEGIN") || normalized == "COMMIT" || normalized == "ROLLBACK") {
+	if err == nil && (tag.String() == "BEGIN" || tag.String() == "COMMIT" || tag.String() == "ROLLBACK") {
 		delete(g.tenants, conn)
 		delete(g.failed, conn)
 		return
@@ -79,12 +86,26 @@ func (g *TenantGuard) record(ctx context.Context, conn *pgx.Conn, query string, 
 			g.failed[conn] = true
 			return
 		}
-		tenant, _ := args[0].(string)
+		tenant, ok := args[0].(string)
+		if !ok {
+			delete(g.tenants, conn)
+			return
+		}
 		g.tenants[conn] = tenant
 		return
 	}
-	probe, _ := ctx.Value(unboundProbeKey{}).(bool)
-	if !probe && !(err != nil && g.failed[conn]) && g.protected.MatchString(query) && g.tenants[conn] == "" {
+	probe, hasProbe := ctx.Value(unboundProbeKey{}).(bool)
+	if (!hasProbe || !probe) && (err == nil || !g.failed[conn]) && g.protected.MatchString(query) && g.tenants[conn] == "" {
 		g.report("protected PostgreSQL query executed without a bound tenant")
 	}
+}
+
+func (g *TenantGuard) expire(conn *pgx.Conn) {
+	if conn.PgConn().TxStatus() != 'I' && !conn.IsClosed() {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.tenants, conn)
+	delete(g.failed, conn)
 }

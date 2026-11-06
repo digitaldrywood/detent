@@ -58,5 +58,38 @@ type failedBatch struct{ err error }
 
 func (b failedBatch) Exec() (pgconn.CommandTag, error) { return pgconn.CommandTag{}, b.err }
 func (b failedBatch) Query() (pgx.Rows, error)         { return nil, b.err }
-func (b failedBatch) QueryRow() pgx.Row                { return failedRow{b.err} }
+func (b failedBatch) QueryRow() pgx.Row                { return failedRow(b) }
 func (b failedBatch) Close() error                     { return b.err }
+
+type hiddenRows struct{ pgx.Rows }
+
+func (hiddenRows) Conn() *pgx.Conn       { return nil }
+func (*transactionRows) Conn() *pgx.Conn { return nil }
+func (b *transactionBatch) Query() (pgx.Rows, error) {
+	rows, err := b.BatchResults.Query()
+	if rows == nil {
+		return nil, err
+	}
+	return hiddenRows{rows}, err
+}
+
+type callbackBatch struct{ pgx.BatchResults }
+
+func (b callbackBatch) Query() (pgx.Rows, error) {
+	rows, err := b.BatchResults.Query()
+	if rows == nil {
+		return nil, err
+	}
+	return hiddenRows{rows}, err
+}
+func guardedBatch(batch *pgx.Batch) *pgx.Batch {
+	safe := &pgx.Batch{}
+	for _, queued := range batch.QueuedQueries {
+		copy := *queued
+		if callback := copy.Fn; callback != nil {
+			copy.Fn = func(results pgx.BatchResults) error { return callback(callbackBatch{results}) }
+		}
+		safe.QueuedQueries = append(safe.QueuedQueries, &copy)
+	}
+	return safe
+}

@@ -5,13 +5,15 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/jackc/pgx/v5"
 )
 
 type wireCounts struct {
@@ -168,4 +170,64 @@ func TestCancellationDuringProtectedRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	reuse(t, pools)
+}
+
+func TestResultsHideConnections(t *testing.T) {
+	_, config := fixture(t)
+	pools := openPools(t, config, nil)
+	for _, name := range []string{"direct", "batch", "initial batch", "callback", "initial callback"} {
+		t.Run(name, func(t *testing.T) {
+			var retained pgx.Rows
+			work := &pgx.Batch{}
+			queued := work.Queue(`SELECT * FROM protected`)
+			callback := strings.Contains(name, "callback")
+			if callback {
+				queued.Query(func(rows pgx.Rows) error { retained = rows; return nil })
+			}
+			var tx *pgtransport.Transaction
+			var results pgx.BatchResults
+			var err error
+			if strings.HasPrefix(name, "initial") {
+				tx, results, err = pools.BeginBatch(t.Context(), pgtransport.Scope{Organization: "first"}, pgtransport.Options{ReadOnly: true}, work)
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				tx = begin(t, pools, pgtransport.Options{ReadOnly: true})
+				if name != "direct" {
+					results = tx.SendBatch(t.Context(), work)
+				}
+			}
+			defer tx.Rollback(t.Context())
+			if name == "direct" {
+				retained, err = tx.Query(t.Context(), `SELECT * FROM protected`)
+			} else if !callback {
+				retained, err = results.Query()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if retained != nil {
+				retained.Close()
+			}
+			if results != nil {
+				if err := results.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if retained == nil {
+				t.Fatal("missing result")
+			}
+			if retained.Conn() != nil {
+				t.Error("result exposes its connection")
+			}
+			if err := tx.Commit(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			reuse(t, pools)
+			if retained.Conn() != nil {
+				t.Error("retained result exposes a released connection")
+			}
+		})
+	}
 }

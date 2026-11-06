@@ -7,10 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 var ErrTenantRequired = errors.New("authenticated organization is required")
@@ -80,7 +81,7 @@ func (p *Pools) BeginBatch(ctx context.Context, scope Scope, options Options, wo
 	batch.Queue("BEGIN ISOLATION LEVEL " + string(isolation) + mode)
 	batch.Queue(`SELECT set_config('search_path', 'public, pg_catalog', true), set_config('detent.organization_id', $1, true)`, string(scope.Organization))
 	if work != nil {
-		batch.QueuedQueries = append(batch.QueuedQueries, work.QueuedQueries...)
+		batch.QueuedQueries = append(batch.QueuedQueries, guardedBatch(work).QueuedQueries...)
 	}
 	results := conn.SendBatch(ctx, batch)
 	_, beginErr := results.Exec()
@@ -134,7 +135,7 @@ func (t *Transaction) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.Batch
 	if err := t.ready(); err != nil {
 		return failedBatch{err}
 	}
-	tracked := &transactionBatch{BatchResults: t.conn.SendBatch(ctx, batch), tx: t}
+	tracked := &transactionBatch{BatchResults: t.conn.SendBatch(ctx, guardedBatch(batch)), tx: t}
 	t.batch = tracked
 	return tracked
 }

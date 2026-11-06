@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 )
 
 func TestNativeValues(t *testing.T) {

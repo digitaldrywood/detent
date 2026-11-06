@@ -7,8 +7,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 )
 
 func (p *Template) NativeConfig(t *testing.T, fixture *sql.DB, role, password string) *pgxpool.Config {
@@ -44,6 +45,7 @@ func (p *Template) NativeConfig(t *testing.T, fixture *sql.DB, role, password st
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
