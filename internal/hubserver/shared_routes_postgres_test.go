@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"net/http"
@@ -19,8 +20,9 @@ import (
 )
 
 type sharedRouteFixture struct {
-	services map[string]*Service
-	key      ed25519.PrivateKey
+	services       map[string]*Service
+	key            ed25519.PrivateKey
+	requestContext func(context.Context) context.Context
 }
 
 func newSharedRouteFixture(t *testing.T, configure ...func(*Config)) sharedRouteFixture {
@@ -96,6 +98,9 @@ func (f sharedRouteFixture) request(t *testing.T, org, path, body string, mutate
 		for name, value := range values {
 			request.Header.Set(name, value)
 		}
+	}
+	if f.requestContext != nil {
+		request = request.WithContext(f.requestContext(request.Context()))
 	}
 	response := httptest.NewRecorder()
 	f.services[org].Handler().ServeHTTP(response, request)
