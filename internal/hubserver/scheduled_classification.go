@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,6 +10,9 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
@@ -38,22 +40,46 @@ func (b ciTextBackend) Generate(ctx context.Context, instructions, input string)
 	return text.String(), err
 }
 
-func readCIClassification(ctx context.Context, q nativeQueryer, scope nativeScope, input progresscheck.CIFailure) (progresscheck.CIDecision, bool, error) {
+func (s *Service) readCIClassification(ctx context.Context, scope nativeScope, input progresscheck.CIFailure) (progresscheck.CIDecision, bool, error) {
 	var result progresscheck.CIDecision
-	var head string
-	err := q.QueryRowContext(ctx, `SELECT head_sha,outcome,target,reason FROM scheduled_ci_decisions
- WHERE organization_id=? AND project_id=? AND repository=? AND run_id=? AND run_attempt=? AND job_id=?`,
-		scope.organization, scope.project, input.Repository, input.RunID, input.RunAttempt, input.JobID).Scan(&head, &result.Outcome, &result.Target, &result.Reason)
-	if errors.Is(err, sql.ErrNoRows) {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		owner, ok := r.(policystore.ScheduledReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		var err error
+		result, err = owner.ReadScheduledDecision(ctx, scope.project, input)
+		return err
+	})
+	if errors.Is(err, corestore.ErrNotFound) {
 		return result, false, nil
 	}
-	if err != nil {
-		return result, false, fmt.Errorf("read CI classification: %w", err)
-	}
-	if head != input.HeadSHA {
+	if errors.Is(err, corestore.ErrRevisionConflict) {
 		return result, false, nativePublicInvalid("CI classification commit differs from retained failure")
 	}
-	return result, true, result.Validate()
+	return result, err == nil, err
+}
+
+func (s *Service) scheduledRepository(ctx context.Context, scope nativeScope) (string, error) {
+	if s.config.TenantRepository == nil {
+		return "", workItemStorageUnavailable()
+	}
+	var repository string
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		record, err := r.ProjectRecord(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if record.Core.DeletedAt != nil {
+			return corestore.ErrNotFound
+		}
+		repository = record.Settings.CheckoutRepository
+		if repository == "" {
+			repository = record.Settings.Repository
+		}
+		return nil
+	})
+	return repository, projectRecordError(err)
 }
 
 func (s *Service) classifyScheduledFailure(c echo.Context) error {
@@ -70,7 +96,7 @@ func (s *Service) classifyScheduledFailure(c echo.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), time.Minute)
 	defer cancel()
-	repository, err := policyRepository(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
+	repository, err := s.scheduledRepository(ctx, scope)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -78,7 +104,7 @@ func (s *Service) classifyScheduledFailure(c echo.Context) error {
 		return s.nativeAPIError(c, nativePublicInvalid("CI classification repository differs from project"))
 	}
 	input.Repository = repository
-	result, found, err := readCIClassification(ctx, s.database.reader, scope, input)
+	result, found, err := s.readCIClassification(ctx, scope, input)
 	if found || err != nil {
 		if err != nil {
 			return s.nativeAPIError(c, err)
@@ -92,14 +118,17 @@ func (s *Service) classifyScheduledFailure(c echo.Context) error {
 		}
 		result = progresscheck.CIDecision{Outcome: progresscheck.CIUnknown, Reason: "AI classification unavailable or invalid; diagnose the retained job evidence through the source repair path."}
 	}
-	_, err = s.database.db.ExecContext(ctx, `INSERT INTO scheduled_ci_decisions
- (organization_id,project_id,repository,head_sha,run_id,run_attempt,job_id,outcome,target,reason,created_at)
- VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, scope.organization, scope.project, input.Repository, input.HeadSHA, input.RunID, input.RunAttempt, input.JobID,
-		result.Outcome, result.Target, result.Reason, s.config.now().UTC().Format("2006-01-02T15:04:05.000000000Z"))
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		owner, ok := w.(policystore.ScheduledWriter)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		return owner.StoreScheduledDecision(ctx, scope.project, input, result, s.config.now().UTC())
+	})
 	if err != nil {
 		return s.nativeAPIError(c, fmt.Errorf("store CI classification: %w", err))
 	}
-	result, _, err = readCIClassification(ctx, s.database.reader, scope, input)
+	result, _, err = s.readCIClassification(ctx, scope, input)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

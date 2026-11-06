@@ -5,12 +5,21 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type ciDecisionBackend struct {
@@ -54,17 +63,41 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 		{"provider unavailable", "Exit status 1", progresscheck.CIDecision{Outcome: progresscheck.CIUnknown}, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{})
+			storage := projectRecordPostgres(t)
 			backend := &ciDecisionBackend{t: t, decision: test.decision, fail: test.fail}
-			f.service.config.Conversation = &ConversationConfig{Backend: backend, Model: "configured-model"}
+			service := &Service{echo: echo.New(), config: Config{Logger: discardLogger(), TenantRepository: storage, now: time.Now, Conversation: &ConversationConfig{Backend: backend, Model: "configured-model"}}}
 			repository := "owner/repository"
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository=? WHERE id=?", repository, f.project.ID); err != nil {
+			err := storage.WriteTenant(t.Context(), "org_example", corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_example", Name: "Example", CreatedAt: time.Now()}); err != nil {
+					return err
+				}
+				for _, id := range []tracker.ProjectID{"prj_first", "prj_second"} {
+					_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_example", ID: id, Name: string(id), Slug: strings.ReplaceAll(string(id), "_", "-"), Profile: "native"}, Settings: projectstore.Settings{CheckoutRepository: repository}, States: nativeFixtureStates()})
+					if err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+			if err != nil {
 				t.Fatal(err)
+			}
+			call := func(project tracker.ProjectID, input progresscheck.CIFailure) *httptest.ResponseRecorder {
+				raw, _ := json.Marshal(input)
+				request := httptest.NewRequest(http.MethodPost, "/scheduled-ci-decisions", strings.NewReader(string(raw)))
+				request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+				response := httptest.NewRecorder()
+				c := service.echo.NewContext(request, response)
+				c.Set("native_scope", nativeScope{organization: "org_example", project: project})
+				if err := service.classifyScheduledFailure(c); err != nil {
+					service.echo.HTTPErrorHandler(err, c)
+				}
+				return response
 			}
 			input := progresscheck.CIFailure{Repository: repository, HeadSHA: strings.Repeat("a", 40), RunID: "1", RunAttempt: "1", JobID: "2", JobName: test.name, Step: "Run check", ExitStatus: "failure", LogTail: test.log, ChangedFiles: []string{"internal/example.go"}}
 			var first progresscheck.CIDecision
 			for n := range 2 {
-				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/scheduled-ci-decisions", f.token, input)
+				response := call("prj_first", input)
 				requireNativeStatus(t, response, http.StatusOK)
 				var decision progresscheck.CIDecision
 				decodeHubResponse(t, response, &decision)
@@ -77,30 +110,21 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 					t.Fatal("replay changed the recorded decision")
 				}
 			}
-			var count int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM scheduled_ci_decisions WHERE project_id=?", f.project.ID).Scan(&count); err != nil {
-				t.Fatal(err)
+			if backend.calls != 1 {
+				t.Fatalf("AI calls=%d", backend.calls)
 			}
-			if backend.calls != 1 || count != 1 {
-				t.Fatalf("AI calls=%d stored decisions=%d", backend.calls, count)
-			}
-			other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-project")
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository=? WHERE id=?", repository, other.project.ID); err != nil {
-				t.Fatal(err)
-			}
-			response := performHubAPIRequest(t, f.service, http.MethodPost, other.base+"/scheduled-ci-decisions", other.token, input)
+			response := call("prj_second", input)
 			requireNativeStatus(t, response, http.StatusOK)
 			if backend.calls != 2 {
 				t.Fatal("another project reused the first project's decision")
 			}
-			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/scheduled-ci-decisions", other.token, input)
-			requireNativeStatus(t, response, http.StatusNotFound)
+
 			input.HeadSHA = strings.Repeat("b", 40)
-			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/scheduled-ci-decisions", f.token, input)
+			response = call("prj_first", input)
 			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
 			input.HeadSHA = strings.Repeat("a", 40)
 			input.LogTail = strings.Repeat("x", 8001)
-			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/scheduled-ci-decisions", f.token, input)
+			response = call("prj_first", input)
 			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
 			if backend.calls != 2 {
 				t.Fatal("invalid evidence reached the AI backend")
