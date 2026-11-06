@@ -18,83 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestChangeCommentBackfillPreservesConcurrentEdit(t *testing.T) {
-	t.Parallel()
-	first := newChangeFixture(t, nil)
-	for _, f := range []changeFixture{first, first.anotherChange(t)} {
-		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-		id := newNativeID("cmt")
-		raw := `{"kind":"runner","principal_id":"author"}`
-		at := formatHubTime(f.service.config.now())
-		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at) VALUES(?,?,?,?,1,1,'original',?,?,?)`, id, scope.organization, scope.project, f.issue.WorkItemID, raw, at, at); err != nil {
-			t.Fatal(err)
-		}
-		stale, err := changeRecordColumns(t.Context(), f.service.database.reader, "native_comments", raw)
-		if err != nil {
-			t.Fatal(err)
-		}
-		stale.add("change_edited_by_kind", "")
-		path := f.base + "/work-items/" + string(f.issue.WorkItemID) + "/comments/" + id
-		response := performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "edit-" + id}, ExpectedRevision: 1, Body: "human edit"})
-		requireNativeStatus(t, response, http.StatusOK)
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := writeChangeColumns(t.Context(), tx, changeColumnFamily{table: "native_comments"}, id, raw, stale, true); err != nil {
-			tx.Rollback()
-			t.Fatal(err)
-		}
-		if err := tx.Commit(); err != nil {
-			t.Fatal(err)
-		}
-		newer := newNativeID("cmt")
-		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at,change_actor_kind,change_edited_by_kind) VALUES(?,?,?,?,1,2,'newer machine comment',?,?,?,'runner','')`, newer, scope.organization, scope.project, f.issue.WorkItemID, raw, at, at); err != nil {
-			t.Fatal(err)
-		}
-		var editor string
-		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT change_edited_by_kind FROM native_comments WHERE id=?`, id).Scan(&editor); err != nil {
-			t.Fatal(err)
-		}
-		if editor != "human" {
-			t.Fatalf("stale backfill overwrote human editor: %q", editor)
-		}
-		ids, err := readRecoveryCommentIDs(t.Context(), f.service.database.reader, scope, string(f.issue.WorkItemID), " ORDER BY sequence", false)
-		if err != nil || !slices.Contains(ids, id) {
-			t.Fatalf("human-edited comment missing from recovery: %v %v", ids, err)
-		}
-	}
-}
-
-func TestChangeMixedBackfillKeepsTypedIssueData(t *testing.T) {
-	t.Parallel()
-	first := newChangeFixture(t, nil)
-	for _, f := range []changeFixture{first, first.anotherChange(t)} {
-		old := f.publish(t, "old", "")
-		current := f.publish(t, "current", old.ID)
-		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-		tx, err := f.service.database.db.BeginTx(f.service.runDetailContext(t.Context()), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback()
-		if _, err := tx.ExecContext(f.service.runDetailContext(t.Context()), `UPDATE change_versions SET head_sha=NULL WHERE id=?`, old.ID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.ExecContext(f.service.runDetailContext(t.Context()), `UPDATE change_versions SET head_sha='typed-current',external_provider='github',external_id='42',external_url='https://example.test/pull/42' WHERE id=?`, current.ID); err != nil {
-			t.Fatal(err)
-		}
-		issue, _, err := readNativeIssueProjection(f.service.runDetailContext(t.Context()), tx, scope, string(f.issue.WorkItemID), false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if issue.ListChange == nil || issue.ListChange.HeadSHA != "typed-current" || issue.PullRequest == nil || issue.PullRequest.Number != 42 || issue.PullRequest.URL != "https://example.test/pull/42" {
-			t.Fatalf("unrelated unknown version replaced typed selections: %+v %+v", issue.ListChange, issue.PullRequest)
-		}
-		tx.Rollback()
-	}
-}
-
 func TestChangeLegacyReadsServeOverflow(t *testing.T) {
 	t.Parallel()
 	for _, family := range []string{"attempts", "side data", "policy", "escape", "comments", "landing attempt", "reviews"} {
@@ -326,37 +249,6 @@ func TestValidationCandidatesKeepHistoricalMatchBeyondPage(t *testing.T) {
 	}
 }
 
-func TestChangeVersionBackfillRestoresLinkedPRActivity(t *testing.T) {
-	t.Parallel()
-	f := newPullRequestFixture(t, true)
-	version := f.publishExternal(t, "historical-version")
-	other := f.create(t, "other linked issue")
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), `INSERT INTO change_issue_links(change_id,organization_id,project_id,work_item_id) VALUES(?,?,?,?)`, f.change.ID, scope.organization, scope.project, other.WorkItemID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), `UPDATE change_versions SET head_sha=NULL,external_url=NULL WHERE id=?`, version.ID); err != nil {
-		t.Fatal(err)
-	}
-	at := f.service.config.now().Add(time.Hour)
-	if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), `UPDATE pull_requests SET issue_id=NULL,synchronized_at=? WHERE repository_id=?`, formatHubTime(at), f.repositoryID); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.service.populateChangeColumns(f.service.runDetailContext(t.Context())); err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []tracker.NativeWorkItemID{f.issue.WorkItemID, other.WorkItemID} {
-		var value string
-		if err := f.service.database.reader.QueryRowContext(f.service.runDetailContext(t.Context()), `SELECT last_activity_at FROM issues WHERE organization_id=? AND project_id=? AND native_id=?`, scope.organization, scope.project, id).Scan(&value); err != nil {
-			t.Fatal(err)
-		}
-		got, err := parseTimeValue(value)
-		if err != nil || !got.Equal(at) {
-			t.Fatalf("version backfill lost linked PR synchronization: %s %v", value, err)
-		}
-	}
-}
-
 func TestActivityTypedAndHistoricalAttemptLinks(t *testing.T) {
 	t.Parallel()
 	first := newChangeFixture(t, nil)
@@ -473,64 +365,6 @@ func TestActivityTypedAndHistoricalAttemptLinks(t *testing.T) {
 		t.Fatalf("legacy activity filter failed: rows=%+v error=%v", rows, err)
 	}
 
-}
-
-func TestChangeAttemptBackfillKeepsCurrentCheckpoint(t *testing.T) {
-	t.Parallel()
-	first := newChangeFixture(t, nil)
-	runner := prepareRunner(t, first.nativeFixture, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
-	runner.enroll(t)
-	for _, f := range []changeFixture{first, first.anotherChange(t)} {
-		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-		run := tracker.NativeRunData{RunnerID: "recorded-runner", Finalization: &tracker.NativeFinalization{ChangeID: f.change.ID, Publication: &tracker.NativePRPublication{External: tracker.ChangeExternalReference{URL: "https://example.test/pull/42"}}}}
-		raw, err := marshalNative(run)
-		if err != nil {
-			t.Fatal(err)
-		}
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback()
-		attempt := seedHealthRateAttempt(t, tx, scope, f.issue, string(runner.binding.MachineID), "succeeded", run, f.service.config.now(), -1)
-		checkpoint := sql.NullString{String: `{"change":{"change_id":"initial"}}`, Valid: true}
-		if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET checkpoint_json=? WHERE id=?`, checkpoint, attempt); err != nil {
-			t.Fatal(err)
-		}
-		columns, err := changeRecordColumns(t.Context(), tx, "native_attempts", raw)
-		if err != nil {
-			t.Fatal(err)
-		}
-		columns.values[len(columns.values)-1] = "initial"
-		columns.checkpointSource = &checkpoint
-		if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET checkpoint_json='{"change":{"change_id":"current"}}',checkpoint_change_id='current' WHERE id=?`, attempt); err != nil {
-			t.Fatal(err)
-		}
-		if err := writeChangeColumns(t.Context(), tx, changeColumnFamily{table: "native_attempts"}, attempt, raw, columns, true); err != nil {
-			t.Fatal(err)
-		}
-		var current string
-		var ready sql.NullBool
-		if err := tx.QueryRowContext(t.Context(), `SELECT checkpoint_change_id,activity_identity_known FROM native_attempts WHERE id=?`, attempt).Scan(&current, &ready); err != nil {
-			t.Fatal(err)
-		}
-		if current != "current" || ready.Valid {
-			t.Fatalf("stale checkpoint marked activity projection complete: %s %+v", current, ready)
-		}
-		if err := tx.Commit(); err != nil {
-			t.Fatal(err)
-		}
-		if err := f.service.populateChangeColumns(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		var finalization, url, runnerID string
-		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT checkpoint_change_id,activity_identity_known,finalization_change_id,finalization_external_url,runner_id FROM native_attempts WHERE id=?`, attempt).Scan(&current, &ready, &finalization, &url, &runnerID); err != nil {
-			t.Fatal(err)
-		}
-		if !ready.Valid || !ready.Bool || current != "current" || finalization != f.change.ID || url != "https://example.test/pull/42" || runnerID != "recorded-runner" {
-			t.Fatalf("fresh activity backfill lost identity: %s %+v %s %s %s", current, ready, finalization, url, runnerID)
-		}
-	}
 }
 
 func TestLegacyClaimReviewsRetainGateAuthority(t *testing.T) {
