@@ -226,6 +226,7 @@ type ProjectAccessCleaner interface {
 }
 
 type Reader interface {
+	AccessCredentialHasMember(context.Context, string) (bool, error)
 	HubIdentity(context.Context) (HubIdentity, error)
 	AccessMemberCredentials(context.Context, string, string, int) ([]Credential, error)
 	AccessAudit(context.Context, int64) (Audit, error)

@@ -298,9 +298,6 @@ func TestHostedMetadataExcludesCustomerContent(t *testing.T) {
 	db := openHostedStorage(t, hostedStorageConfig(t))
 	_, issueID := seedProjection(t, db.db)
 	const sentinel = "private-content-credential-sentinel"
-	if err := db.ensureInitialAdminToken(t.Context(), []byte(testHubAdminToken)); err != nil {
-		t.Fatal(err)
-	}
 	for _, statement := range []string{
 		"UPDATE issues SET title = ?, body = ?, url = ?",
 		"UPDATE repositories SET github_owner = ?, github_name = ?, config_json = json_object('credential', ?)",

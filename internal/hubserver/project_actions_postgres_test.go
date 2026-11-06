@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 	"github.com/labstack/echo/v4"
@@ -76,6 +77,18 @@ func TestPostgresProjectActionsUseTenantOwner(t *testing.T) {
 			}
 			if action.ID == "" || action.Revision != 1 || action.Command != "printf example" || action.OrganizationID != string(organization) {
 				t.Fatalf("unexpected action: %+v", action)
+			}
+			scope := nativeScope{organization: organization, project: tracker.ProjectID(action.ProjectID)}
+			if err := service.checkOperatorResource(t.Context(), nil, scope, operatortool.Requirement{ResourceKind: "action", ResourceID: action.ID}); err != nil {
+				t.Fatalf("typed action authority: %v", err)
+			}
+			if err := service.checkOperatorResource(t.Context(), nil, scope, operatortool.Requirement{ResourceKind: "action", ResourceID: "missing"}); !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("missing action authority: %v", err)
+			}
+			foreign := scope
+			foreign.project = "other_project"
+			if err := service.checkOperatorResource(t.Context(), nil, foreign, operatortool.Requirement{ResourceKind: "action", ResourceID: action.ID}); !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("foreign project action authority: %v", err)
 			}
 			if replay := call(http.MethodPost, "", create, http.StatusCreated); string(replay) != string(created) {
 				t.Fatalf("create replay differs: %s", replay)

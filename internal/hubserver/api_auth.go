@@ -2,11 +2,8 @@ package hubserver
 
 import (
 	"context"
-	"crypto/subtle"
 	"database/sql"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -93,28 +90,6 @@ type tokenResponse struct {
 	Fingerprint   string               `json:"fingerprint"`
 	CreatedAt     time.Time            `json:"created_at"`
 	RotatedAt     time.Time            `json:"rotated_at,omitempty"`
-}
-
-func (d *database) ensureInitialAdminToken(ctx context.Context, token []byte) error {
-	value := strings.TrimSpace(string(token))
-	if value == "" {
-		return nil
-	}
-	now, err := d.currentTime()
-	if err != nil {
-		return err
-	}
-	formatted := formatHubTime(now)
-	_, err = d.db.ExecContext(ctx, `
-INSERT INTO api_tokens (id, name, token_hash, token_fingerprint, scope, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(id) DO NOTHING`,
-		bootstrapTokenID, "Bootstrap administrator", apikey.HashToken(value), tokenFingerprint(apikey.HashToken(value)), apiScopeAdmin, formatted, formatted,
-	)
-	if err != nil {
-		return fmt.Errorf("store initial hub administrator token: %w", err)
-	}
-	return nil
 }
 
 func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
@@ -215,92 +190,7 @@ func (s *Service) authenticateAPIToken(ctx context.Context, token, renewalRunner
 }
 
 func (s *Service) authenticateAPIHash(ctx context.Context, hash, renewalRunner, renewalOrganization string) (apiCredential, int, error) {
-	if s.config.AccessRepository != nil {
-		return s.authenticateAccessHash(ctx, hash, renewalRunner, renewalOrganization)
-	}
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancelRead()
-	var credential apiCredential
-	var storedHash, createdAt, operations string
-	var revokedAt, expiresAt, lastUsedAt sql.NullString
-	err := s.database.auth().QueryRowContext(readCtx, `
-SELECT t.id, t.name, t.scope, t.token_hash, t.revoked_at, t.native_only, t.expires_at, t.created_at, t.last_used_at,
-coalesce(r.id, ''), coalesce(r.machine_id, ''), coalesce(r.organization_id, ''), coalesce(r.operations_json, '[]'), coalesce(r.scope, 'projects')
-FROM api_tokens t LEFT JOIN runner_identities r ON r.token_id = t.id
-WHERE t.token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credential.Scope, &storedHash, &revokedAt, &credential.NativeOnly, &expiresAt, &createdAt, &lastUsedAt,
-		&credential.Runner.RunnerID, &credential.Runner.MachineID, &credential.Runner.OrganizationID, &operations, &credential.Runner.Scope)
-	if errors.Is(err, sql.ErrNoRows) {
-		return apiCredential{}, http.StatusUnauthorized, errors.New("token was not found")
-	}
-	if err != nil {
-		return apiCredential{}, http.StatusServiceUnavailable, fmt.Errorf("read hub API token: %w", err)
-	}
-	if subtle.ConstantTimeCompare([]byte(storedHash), []byte(hash)) != 1 || revokedAt.Valid {
-		return apiCredential{}, http.StatusUnauthorized, errors.New("token is inactive")
-	}
-	now, err := s.database.currentTime()
-	if err != nil {
-		return apiCredential{}, http.StatusServiceUnavailable, err
-	}
-	credential.runnerRenewal = credential.Runner.Valid() && renewalRunner != "" && credential.Runner.RunnerID == renewalRunner && string(credential.Runner.OrganizationID) == renewalOrganization
-	if !credential.timeValid(now, createdAt, expiresAt) {
-		return apiCredential{}, http.StatusUnauthorized, errors.New("token is outside its validity interval")
-	}
-	if expiresAt.Valid {
-		credential.Runner.ExpiresAt, err = parseTimeValue(expiresAt.String)
-		if err != nil {
-			return apiCredential{}, http.StatusServiceUnavailable, err
-		}
-	}
-	if err := json.Unmarshal([]byte(operations), &credential.Runner.Operations); err != nil {
-		return apiCredential{}, http.StatusServiceUnavailable, err
-	}
-	credential.Hash = hash
-	if s.config.Hosted != nil {
-		credential, err = s.hostedAPITokenCredential(ctx, credential, createdAt, expiresAt)
-		if err != nil {
-			if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
-				return apiCredential{}, http.StatusServiceUnavailable, err
-			}
-			return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
-		}
-	}
-	if tokenUseStale(lastUsedAt, now) {
-		s.recordTokenUse(ctx, credential.ID, now)
-	}
-	return credential, http.StatusOK, nil
-}
-
-// recordTokenUse writes last_used_at off the request path, at most one write
-// in flight per token, so authentication never waits for the writer.
-func (s *Service) recordTokenUse(ctx context.Context, id string, now time.Time) {
-	if _, pending := s.tokenUse.LoadOrStore(id, struct{}{}); pending {
-		return
-	}
-	s.tokenUseWork.Add(1)
-	go func() {
-		defer s.tokenUseWork.Done()
-		defer s.tokenUse.Delete(id)
-		background := context.WithValue(ctx, writerTimingKey{}, (*writerTiming)(nil))
-		background = context.WithValue(background, requestTimingKey{}, (*requestTiming)(nil))
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(background), 5*time.Second)
-		defer cancel()
-		if _, err := s.database.db.ExecContext(ctx, "UPDATE api_tokens SET last_used_at = ? WHERE id = ?", formatHubTime(now), id); err != nil {
-			s.config.Logger.Warn("record hub API token use failed", "token_id", id, "error", err)
-		}
-	}()
-}
-
-// tokenUseInterval bounds how often an authenticated request writes
-// last_used_at, so authentication reads never queue behind the writer.
-const tokenUseInterval = time.Minute
-
-func tokenUseStale(lastUsed sql.NullString, now time.Time) bool {
-	if !lastUsed.Valid {
-		return true
-	}
-	at, err := parseTimeValue(lastUsed.String)
-	return err != nil || now.Sub(at) >= tokenUseInterval
+	return s.authenticateAccessHash(ctx, hash, renewalRunner, renewalOrganization)
 }
 
 func (credential apiCredential) timeValid(now time.Time, created string, expires sql.NullString) bool {

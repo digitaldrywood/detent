@@ -12,6 +12,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -105,8 +108,14 @@ func (s *Service) checkOperatorResource(ctx context.Context, query nativeQueryer
 		_, err := s.conversations.loadConversation(ctx, query, scope, r.ResourceID)
 		return err
 	case "action":
-		_, err := readProjectAction(ctx, query, scope, r.ResourceID)
-		return err
+		return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			owner, ok := reader.(actionstore.Reader)
+			if !ok {
+				return nativeRunEventStorageUnavailable()
+			}
+			_, err := owner.ProjectAction(ctx, scope.project, r.ResourceID)
+			return err
+		})
 	case "work_item":
 		_, err := s.resolveOperatorNativeItem(ctx, query, scope, r.ResourceID)
 		return err

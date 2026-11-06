@@ -8,6 +8,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 func validateCredentialMaintenance(cfg Config) error {
@@ -46,8 +47,13 @@ func (s *Service) requireCredentialMaintenance(next echo.HandlerFunc) echo.Handl
 		if credential.Scope != apiScopeAdmin || credential.NativeOnly || credential.Hosted != nil || credential.Runner.RunnerID != "" {
 			return s.hostedJSONError(c, http.StatusForbidden, "A non-native instance administrator credential is required")
 		}
-		var members int
-		if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_members WHERE principal_id = ?", credential.ID).Scan(&members); err != nil || members != 0 {
+		var member bool
+		err = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
+			var err error
+			member, err = r.AccessCredentialHasMember(readCtx, credential.ID)
+			return err
+		})
+		if err != nil || member {
 			return s.hostedJSONError(c, http.StatusForbidden, "Hosted member credentials cannot maintain instance credentials")
 		}
 		identity := &auth.HostedIdentity{Subject: credential.ID, CreatedAt: s.config.now()}

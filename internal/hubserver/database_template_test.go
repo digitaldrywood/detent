@@ -199,9 +199,6 @@ func buildHubNativeDatabaseTemplate(ctx context.Context) error {
 }
 
 func seedHubNativeDefaults(ctx context.Context, store *database) error {
-	if err := store.ensureInitialAdminToken(ctx, []byte(testHubAdminToken)); err != nil {
-		return err
-	}
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

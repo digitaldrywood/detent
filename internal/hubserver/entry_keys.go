@@ -13,49 +13,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 func (s *Service) entryKeyCredential(ctx context.Context, claims cloudassert.Claims) (apiCredential, int, error) {
-	if s.config.AccessRepository != nil {
-		return s.entryAccessKeyCredential(ctx, claims)
-	}
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancelRead()
-	if !s.hostedShared() || claims.Kind != cloudassert.KindKey || claims.Key == nil || !claims.Key.Valid() || !claims.ExpiresAt.After(s.config.now()) || claims.Audience != s.config.Hosted.OrganizationID {
-		return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
-	}
-	provider, err := s.hostedProviderOrganization(ctx)
-	if err != nil || provider != claims.ProviderOrganization {
-		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
-	}
-	identity := &auth.HostedIdentity{Subject: claims.Subject, OrganizationID: provider, CreatedAt: claims.IssuedAt, ExpiresAt: claims.ExpiresAt, SessionID: claims.Key.ID}
-	credential := apiCredential{EntryKey: claims.Key, Hosted: identity, HostedRole: claims.Role, HostedKeyScope: claims.Key.Permission, HostedProjectAccess: hostedProjectsAll, ID: claims.Key.ID, Hash: apikey.HashToken(claims.Key.ID), NativeOnly: true, Scope: apiScopeOperator}
-	if claims.Key.Permission == apikey.ScopeAdmin {
-		credential.Scope = apiScopeAdmin
-	}
-	if claims.Key.Kind == "service" {
-		token, err := s.config.generateToken()
-		if err != nil {
-			return apiCredential{}, http.StatusServiceUnavailable, err
-		}
-		credential.ID = "service_" + claims.Key.ID
-		_, err = s.database.db.ExecContext(ctx, "INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) VALUES(?,?,?,'','operator',1,?,?) ON CONFLICT(id) DO NOTHING", credential.ID, "Organization service principal "+claims.Key.ID, apikey.HashToken(token), formatHubTime(s.config.now()), formatHubTime(s.config.now()))
-		if err != nil {
-			return apiCredential{}, http.StatusServiceUnavailable, err
-		}
-		credential.HostedPrincipal = credential.ID
-		return credential, http.StatusOK, nil
-	}
-	var local string
-	err = s.database.auth().QueryRowContext(readCtx, `SELECT m.membership_id,m.principal_id,m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.active=1 AND t.revoked_at IS NULL`, claims.Subject).Scan(&credential.HostedMembership, &credential.HostedPrincipal, &local)
-	if err != nil || !auth.ValidOrganizationRole(local) {
-		return apiCredential{}, http.StatusForbidden, &apikey.Refusal{Code: "membership_denied", Message: "The key owner is not an active organization member"}
-	}
-	credential.HostedRole = lesserHostedRole(local, claims.Role)
-	credential.ID = credential.HostedPrincipal
-	return credential, http.StatusOK, nil
+	return s.entryAccessKeyCredential(ctx, claims)
 }
 
 type entryKeyAuditContext struct{}
@@ -85,45 +50,8 @@ func (a *entryKeyAudit) readOnly() bool {
 	return method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
 }
 
-func (s *Service) auditEntryKey(ctx context.Context, exec hostedExecer, audit *entryKeyAudit, status int) error {
-	if s.config.AccessRepository != nil {
-		return s.recordEntryAccessKeyAudit(ctx, audit, status)
-	}
-	if audit.readOnly() && status < http.StatusBadRequest {
-		return nil
-	}
-	claims := audit.claims
-	metadata, err := json.Marshal(struct {
-		KeyID     string `json:"key_id"`
-		Owner     string `json:"owner"`
-		Kind      string `json:"kind"`
-		Operation string `json:"operation"`
-		Resource  string `json:"resource"`
-	}{claims.Key.ID, claims.Subject, claims.Key.Kind, audit.operation, audit.resource})
-	if err != nil {
-		return err
-	}
-	if audit.rowID != 0 {
-		result, err := exec.ExecContext(ctx, `UPDATE hosted_audit SET route=?,project_id=?,status=?,mutation_json=? WHERE id=? AND organization_id=? AND session_id=?`, audit.operation, audit.project, status, string(metadata), audit.rowID, claims.Audience, claims.Key.ID)
-		if err != nil {
-			return err
-		}
-		count, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if count != 1 {
-			return errors.New("key audit record is unavailable")
-		}
-		return nil
-	}
-	now := s.config.now()
-	result, err := exec.ExecContext(ctx, `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json,recorded_at_ns,account_kind,account_retry) VALUES(?,?,?,?,'','key_call',?,?,?,?,?,?,?,?,'','')`, claims.Audience, claims.Key.ID, claims.Subject, claims.Subject, audit.operation, audit.project, status, formatHubTime(claims.IssuedAt), formatHubTime(claims.ExpiresAt), formatHubTime(now), string(metadata), now.UnixNano())
-	if err != nil {
-		return err
-	}
-	audit.rowID, err = result.LastInsertId()
-	return err
+func (s *Service) auditEntryKey(ctx context.Context, _ hostedExecer, audit *entryKeyAudit, status int) error {
+	return s.recordEntryAccessKeyAudit(ctx, audit, status)
 }
 
 func (s *Service) entryKeyTools(ctx context.Context) ([]operatortool.Definition, error) {
@@ -307,14 +235,8 @@ func (s *Service) entryKeyAdmin(c echo.Context) error {
 	if !ok || claims.Kind != cloudassert.KindService || claims.Subject == "" || claims.Role != "owner" && claims.Role != "admin" {
 		return s.hostedJSONError(c, http.StatusForbidden, "Organization administrator service access is required")
 	}
-	var role string
-	var err error
-	if s.config.AccessRepository != nil {
-		member, readErr := s.activeAccessMember(ctx, claims.Subject)
-		role, err = member.Role, readErr
-	} else {
-		err = s.database.reader.QueryRowContext(ctx, "SELECT m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.active=1 AND t.revoked_at IS NULL", claims.Subject).Scan(&role)
-	}
+	member, err := s.activeAccessMember(ctx, claims.Subject)
+	role := member.Role
 	if err != nil || role != "owner" && role != "admin" {
 		return s.hostedJSONError(c, http.StatusForbidden, "Active organization administrator membership is required")
 	}
@@ -388,7 +310,7 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 		return s.refusedAPIError(c, http.StatusForbidden, "tool_unavailable", "The target organization's role or plan does not provide this tool", apikey.Refusal{Code: "tool_unavailable", Message: "The target organization's role or plan does not provide this tool"})
 	}
 	if audit := entryKeyAuditFrom(ctx); audit != nil {
-		if err := s.auditEntryKey(ctx, s.database.db, audit, 0); err != nil {
+		if err := s.auditEntryKey(ctx, nil, audit, 0); err != nil {
 			return s.internalAPIError(c, "audit_unavailable", "Key audit is unavailable", err)
 		}
 	}
@@ -471,12 +393,12 @@ func (s *Service) entryKeyAudit(c echo.Context) error {
 	if !ok || claims.Kind != cloudassert.KindService {
 		return s.hostedJSONError(c, http.StatusForbidden, "Shared service access is required to record key audit events")
 	}
-	metadata, err := json.Marshal(event)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
 	now := s.config.now()
-	_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json,recorded_at_ns,account_kind,account_retry) VALUES(?,?,?,?,'',?,?,'',0,?,?,?,?,?,'','')`, claims.Audience, event.KeyID, event.Owner, event.Owner, event.Event, claims.Path, formatHubTime(claims.IssuedAt), formatHubTime(claims.ExpiresAt), formatHubTime(now), string(metadata), now.UnixNano())
+	ctx := c.Request().Context()
+	err := s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
+		_, err := w.RecordAccessAudit(ctx, accessstore.Audit{OrganizationID: s.accessOrganization(), SessionID: event.KeyID, ActualActor: event.Owner, EffectiveUser: event.Owner, Event: event.Event, Route: claims.Path, StartedAt: claims.IssuedAt, ExpiresAt: claims.ExpiresAt, RecordedAt: now, RecordedAtNS: now.UnixNano(), KeyID: event.KeyID, KeyOwner: event.Owner})
+		return err
+	})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -488,14 +410,8 @@ func (s *Service) entryKeyContext(c echo.Context) error {
 	if !ok || claims.Kind != cloudassert.KindService || claims.Subject == "" {
 		return s.hostedJSONError(c, http.StatusForbidden, "Shared service identity is required to read key context")
 	}
-	var local string
-	var err error
-	if s.config.AccessRepository != nil {
-		member, readErr := s.activeAccessMember(c.Request().Context(), claims.Subject)
-		local, err = member.Role, readErr
-	} else {
-		err = s.database.auth().QueryRowContext(c.Request().Context(), "SELECT m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.active=1 AND t.revoked_at IS NULL", claims.Subject).Scan(&local)
-	}
+	member, err := s.activeAccessMember(c.Request().Context(), claims.Subject)
+	local := member.Role
 	if err != nil || !auth.ValidOrganizationRole(local) || !auth.ValidOrganizationRole(claims.Role) {
 		return s.hostedJSONError(c, http.StatusForbidden, "Active organization membership and a valid role are required")
 	}

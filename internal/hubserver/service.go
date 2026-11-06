@@ -193,11 +193,6 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 			return nil, errors.Join(err, database.Close())
 		}
 	}
-	if !cfg.CredentialMaintenance && database.postgres == nil {
-		if err := database.ensureInitialAdminToken(ctx, cfg.InitialAdminToken); err != nil {
-			return nil, errors.Join(err, database.Close())
-		}
-	}
 	cfg.InitialAdminToken = nil
 	var workTracker tracker.Tracker
 	if database.postgres == nil {

@@ -32,13 +32,10 @@ func isProjectRecordCommand(input any) bool {
 }
 
 func (s *Service) authorizeProjectRecord(ctx context.Context, scope nativeScope, write bool) error {
-	if s.config.TenantRepository != nil && s.config.AccessRepository == nil {
+	if s.config.AccessRepository == nil {
 		return nativeNotFound()
 	}
-	if s.config.AccessRepository != nil {
-		return s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { return s.authorizeAccessScope(ctx, r, scope, write) })
-	}
-	return s.authorizeProjectRecordWith(ctx, s.database.auth(), scope, write)
+	return s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { return s.authorizeAccessScope(ctx, r, scope, write) })
 }
 
 func (s *Service) authorizeProjectRecordWith(ctx context.Context, query nativeQueryer, scope nativeScope, write bool) error {
@@ -83,43 +80,15 @@ type projectAccessAuthority struct{}
 func (projectAccessAuthority) Rollback() error { return nil }
 
 func (s *Service) beginProjectRecordAuthority(ctx context.Context, scope nativeScope) (interface{ Rollback() error }, error) {
-	if s.config.TenantRepository != nil && s.config.AccessRepository == nil {
+	if s.config.AccessRepository == nil {
 		return nil, nativeNotFound()
 	}
-	if s.config.AccessRepository != nil {
-		if scope.credential.Hosted != nil {
-			if _, _, err := s.hostedMutationIdentity(ctx, scope.credential); err != nil {
-				return nil, err
-			}
+	if scope.credential.Hosted != nil {
+		if _, _, err := s.hostedMutationIdentity(ctx, scope.credential); err != nil {
+			return nil, err
 		}
-		return projectAccessAuthority{}, nil
 	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.authorizeProjectRecordWith(ctx, tx, scope, true); err != nil {
-		rollbackErr := tx.Rollback()
-		if errors.Is(rollbackErr, sql.ErrTxDone) {
-			rollbackErr = nil
-		}
-		return nil, errors.Join(err, rollbackErr)
-	}
-	saved := scope.project
-	scope.project = ""
-	err = s.recheckHostedMutation(ctx, tx, &scope)
-	scope.project = saved
-	if err == nil {
-		err = requireRunnerAuthority(ctx, tx, scope, s.config.now())
-	}
-	if err != nil {
-		rollbackErr := tx.Rollback()
-		if errors.Is(rollbackErr, sql.ErrTxDone) {
-			rollbackErr = nil
-		}
-		return nil, errors.Join(err, rollbackErr)
-	}
-	return tx, nil
+	return projectAccessAuthority{}, nil
 }
 
 func (s *Service) recheckProjectRecordMutation(ctx context.Context, scope nativeScope) error {
