@@ -15,13 +15,19 @@ import (
 
 	"github.com/lib/pq"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
@@ -109,6 +115,10 @@ func (w failingChangeEventWriter) AppendEvent(context.Context, eventstore.Event)
 	return eventstore.Event{}, errors.New("injected event write failure")
 }
 
+func (w failingChangeEventWriter) LockLease(ctx context.Context, id string) (leasestore.Lease, error) {
+	return w.Writer.(leasestore.FencedLeaseLocker).LockLease(ctx, id)
+}
+
 func (r *changeLandingLockRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
 	return r.Repository.WriteTenant(ctx, organization, workload, func(w tenantstore.Writer) error {
 		return write(changeLandingLockWriter{Writer: w, repository: r})
@@ -121,6 +131,10 @@ func (w changeLandingLockWriter) LockChange(ctx context.Context, id string) (eve
 		w.repository.lockedOnce.Do(func() { close(w.repository.locked) })
 	}
 	return change, err
+}
+
+func (w changeLandingLockWriter) LockLease(ctx context.Context, id string) (leasestore.Lease, error) {
+	return w.Writer.(leasestore.FencedLeaseLocker).LockLease(ctx, id)
 }
 
 func (w changeLandingLockWriter) CreateLandingReceipt(ctx context.Context, receipt eventstore.LandingReceipt) (eventstore.LandingReceipt, error) {
@@ -343,21 +357,6 @@ func TestApprovedChangeReviewRejectsPolicyChangedAfterPreflight(t *testing.T) {
 	decodeHubResponse(t, changeResponse, &change)
 	changePath += "/" + change.ID
 
-	service.config.NativeRunEvents = &nativeRunEventParticipantFixture{}
-	attemptID, runID, leaseID := newNativeID("attempt"), newNativeID("run"), newNativeID("lease")
-	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		workItem, err := w.WorkItem(t.Context(), project, item.WorkItemID)
-		if err != nil {
-			return err
-		}
-		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: "policy-race-machine", Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
-			return err
-		}
-		_, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: "policy-race-machine", SessionID: "policy-race-session", LeaseID: leaseID, TTL: time.Hour})
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
 	var member accessstore.Member
 	var principal accessstore.Credential
 	if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -373,20 +372,7 @@ func TestApprovedChangeReviewRejectsPolicyChangedAfterPreflight(t *testing.T) {
 	}
 	scope := nativeScope{organization: organization, project: project, credential: apiCredential{ID: principal.ID, Hash: principal.Hash, Scope: apiScopeOperator, Hosted: owner.identity.Hosted, HostedRole: "owner", HostedMembership: member.MembershipID, HostedPrincipal: member.PrincipalID, NativeOnly: true}}
 	policy := hubTestPolicy()
-	start := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "policy-race-run-start"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: attemptID, RunID: runID, LeaseID: tracker.LeaseID(leaseID), FencingToken: 1, PolicyID: policy.ID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "example"}}}
-	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(item.WorkItemID), start); err != nil {
-		t.Fatal(err)
-	}
-	finish := start
-	finish.IdempotencyKey = "policy-race-run-finish"
-	finish.Type = "run.finished"
-	finish.Data.Sequence = 2
-	finish.Data.Outcome = "succeeded"
-	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(item.WorkItemID), finish); err != nil {
-		t.Fatal(err)
-	}
 	input := changeTestInput()
-	input.AttemptID, input.RunID = attemptID, runID
 	bundle := changeTestSource(t, &input)
 	publish := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "policy-race-publish"}, ChangeVersionInput: input, SourceBundle: bundle}
 	versionResponse := f.request(t, owner, http.MethodPost, changePath+"/versions", publish)
@@ -465,26 +451,23 @@ func TestApprovedChangeReviewRejectsPolicyChangedAfterPreflight(t *testing.T) {
 }
 
 func newChangePolicyPostgresFixture(t *testing.T) (tenantstore.Repository, hostedSecurityFixture, hostedSecurityUser) {
-	repository, f, owner, _ := newChangePolicyPostgresFixtureWithAdmin(t, 2)
+	repository, f, owner, _ := newChangePolicyPostgresFixtureWithAdmin(t, 3)
 	return repository, f, owner
 }
 
 func newChangePolicyPostgresFixtureWithAdmin(t *testing.T, maxConnections int) (tenantstore.Repository, hostedSecurityFixture, hostedSecurityUser, *sql.DB) {
 	t.Helper()
 	repository, admin := projectRecordPostgresWithAdmin(t, maxConnections)
-	f := newHostedSecurityFixture(t, func(cfg *Config) {
-		cfg.AccessRepository = repository
-		cfg.TenantRepository = repository
-		cfg.RunDetails = &memoryRunDetails{}
-	})
-	now := f.service.config.now()
+	details := &memoryRunDetails{}
+	projectID := tracker.ProjectID("prj_security")
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	descriptor := hubTestPolicy()
-	content := eventstore.NewContent(f.service.runDetailStore())
+	content := eventstore.NewContent(details)
 	policyRevision, err := content.PrepareProjectPolicy(t.Context(), "org_security", descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	policyRevision.ProjectID = f.project
+	policyRevision.ProjectID = projectID
 	policyRevision.ApprovedBy = "example-owner"
 	policyRevision.ApprovedAt = now.UTC().Truncate(time.Microsecond)
 	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
@@ -494,14 +477,29 @@ func newChangePolicyPostgresFixtureWithAdmin(t *testing.T, maxConnections int) (
 		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: "org_security", ProviderID: "org_provider"}); err != nil {
 			return err
 		}
-		project := projectstore.Record{Core: corestore.Project{OrganizationID: "org_security", ID: f.project, Name: "Example project", Slug: "example-project", Profile: "native"}, States: nativeFixtureStates()}
+		project := projectstore.Record{Core: corestore.Project{OrganizationID: "org_security", ID: projectID, Name: "Example project", Slug: "example-project", Profile: "native"}, States: nativeFixtureStates()}
 		if _, err := w.CreateProjectRecord(t.Context(), project); err != nil {
 			return err
 		}
-		return w.ApproveProjectPolicy(t.Context(), policyRevision, "")
+		if err := w.ApproveProjectPolicy(t.Context(), policyRevision, ""); err != nil {
+			return err
+		}
+		free := normalizeHostedPlan(pilotHostedPlans().Plans[0])
+		plan := billingstore.Plan{OrganizationID: "org_security", PlanReference: billingstore.PlanReference{ID: free.ID, Version: free.Version}, Name: free.Name, MonthlyUSDCents: free.MonthlyUSDCents, Allowances: free.Allowances, Features: free.Features}
+		if err := w.CreateBillingPlan(t.Context(), plan); err != nil {
+			return err
+		}
+		return w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: "org_security", Base: plan.PlanReference}, 0)
 	}); err != nil {
 		t.Fatal(err)
 	}
+	f := newHostedSecurityFixture(t, func(cfg *Config) {
+		cfg.AccessRepository = repository
+		cfg.BillingRepository = repository
+		cfg.TenantRepository = repository
+		cfg.RunDetails = details
+	})
+	f.service.stopHealthDetector()
 	owner := f.user(t, "review_admin", "owner", "review-admin@example.test", "", "")
 	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 		member, err := w.AccessMember(t.Context(), owner.identity.Subject)
@@ -559,8 +557,11 @@ func TestChangeReviewPolicyRechecksDemotedAdminInTenantWriter(t *testing.T) {
 }
 
 func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *testing.T) {
-	repository, f, owner, admin := newChangePolicyPostgresFixtureWithAdmin(t, 3)
+	repository, f, owner, admin := newChangePolicyPostgresFixtureWithAdmin(t, 4)
 	service := f.service
+	originalPostgres := service.database.postgres
+	service.database.postgres = repository.(*postgres.Repository)
+	t.Cleanup(func() { service.database.postgres = originalPostgres })
 	orgID, projectID := tracker.OrganizationID("org_security"), f.project
 	response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-item"}, Title: "Version issue", Body: workItemRecordBody, State: "Todo"})
 	requireNativeStatus(t, response, http.StatusOK)
@@ -574,19 +575,51 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 	changePath := changesPath + "/" + change.ID
 	policy := hubTestPolicy()
 	reviewPolicy := defaultChangeReviewPolicy(policy)
-	service.config.NativeRunEvents = &nativeRunEventParticipantFixture{}
+	service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
 	attemptID, runID, leaseID := newNativeID("attempt"), newNativeID("run"), newNativeID("lease")
 	var lease leasestore.Lease
+	workerToken, err := apikey.GenerateToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := runnerauth.NewBinding()
+	workerID, runnerID := newNativeID("credential"), binding.RunnerID
+	workerHash := apikey.HashToken(workerToken)
+	now := service.config.now()
+	expires := now.Add(time.Hour)
 	if err := repository.WriteTenant(t.Context(), orgID, corestore.Serving, func(w tenantstore.Writer) error {
 		workItem, err := w.WorkItem(t.Context(), projectID, item.WorkItemID)
 		if err != nil {
 			return err
 		}
-		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: orgID, ID: "source-machine", Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: orgID, ID: string(binding.MachineID), Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
 			return err
 		}
-		lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: "source-machine", SessionID: "source-session", LeaseID: leaseID, TTL: time.Hour})
-		return err
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: orgID, ID: workerID, Name: "Source runner", Hash: workerHash, Fingerprint: tokenFingerprint(workerHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: orgID, TokenID: workerID, ProjectID: projectID}); err != nil {
+			return err
+		}
+		enrollmentID := newNativeID("enrollment")
+		operations := []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: orgID, ID: enrollmentID, RunnerID: runnerID, MachineID: binding.MachineID, TokenHash: apikey.HashToken("example-source-enrollment"), Scope: "projects", ProjectIDs: []tracker.ProjectID{projectID}, Operations: operations, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example-owner"}); err != nil {
+			return err
+		}
+		if err := w.RedeemRunnerEnrollment(t.Context(), enrollmentID, runnerID, binding.MachineID, now); err != nil {
+			return err
+		}
+		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: orgID, RunnerID: runnerID, MachineID: binding.MachineID, TokenID: workerID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", Operations: operations, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{projectID}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
+			return err
+		}
+		lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: string(binding.MachineID), SessionID: "source-session", LeaseID: leaseID, TTL: time.Hour})
+		if err != nil {
+			return err
+		}
+		if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: orgID, LeaseID: lease.LeaseID, RunnerID: runnerID, AssignedAt: now}); err != nil {
+			return err
+		}
+		return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: orgID, ProjectID: projectID, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: policy.ID, BoundAt: now})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -608,24 +641,20 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 		Mutation: tracker.Mutation{IdempotencyKey: "source-run-start"}, Type: "run.started", SchemaVersion: 1,
 		Data: tracker.NativeRunData{AttemptID: attemptID, RunID: runID, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), PolicyID: policy.ID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "example"}},
 	}
-	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(item.WorkItemID), start); err != nil {
-		t.Fatal(err)
-	}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, start), http.StatusOK)
 	finish := start
 	finish.IdempotencyKey = "source-run-finish"
 	finish.Type = "run.finished"
 	finish.Data.Sequence = 2
 	finish.Data.Outcome = "succeeded"
 	finish.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", LocalAttemptID: 42, Generation: 1, Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 42, Generation: 1, SessionID: 42}}
-	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(item.WorkItemID), finish); err != nil {
-		t.Fatal(err)
-	}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, finish), http.StatusOK)
 	input := changeTestInput()
 	input.AttemptID, input.RunID = start.Data.AttemptID, start.Data.RunID
 	bundle := changeTestSource(t, &input)
-	request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish-version"}, ExpectedVersionID: "", ChangeVersionInput: input, SourceBundle: bundle}
+	request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish-version", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, ExpectedVersionID: "", ChangeVersionInput: input, SourceBundle: bundle}
 	service.config.TenantRepository = failingChangeEventRepository{Repository: repository}
-	failed := f.request(t, owner, http.MethodPost, changePath+"/versions", request)
+	failed := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", workerToken, request)
 	requireNativeStatus(t, failed, http.StatusInternalServerError)
 	service.config.TenantRepository = repository
 	if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
@@ -640,7 +669,7 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 		if current.Revision != int64(change.Revision) || current.CurrentVersionID != nil {
 			t.Fatalf("failed publication changed current Change: %+v", current)
 		}
-		if _, err := r.Receipt(t.Context(), principal.ID, "POST "+changePath+"/versions", request.IdempotencyKey); !errors.Is(err, corestore.ErrNotFound) {
+		if _, err := r.Receipt(t.Context(), workerID, "POST "+changePath+"/versions", request.IdempotencyKey); !errors.Is(err, corestore.ErrNotFound) {
 			t.Fatalf("failed publication receipt lookup error = %v, want not found", err)
 		}
 		events, err := r.Events(t.Context(), projectID, item.WorkItemID, 0, 100)
@@ -657,7 +686,7 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 		t.Fatal(err)
 	}
 	service.config.TenantRepository = committedChangeWriteResponseLossRepository{Repository: repository}
-	uncertain := f.request(t, owner, http.MethodPost, changePath+"/versions", request)
+	uncertain := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", workerToken, request)
 	requireNativeStatus(t, uncertain, http.StatusInternalServerError)
 	service.config.TenantRepository = repository
 	if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
@@ -676,21 +705,21 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 	}); err != nil {
 		t.Fatal(err)
 	}
-	versionResponse := f.request(t, owner, http.MethodPost, changePath+"/versions", request)
+	versionResponse := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", workerToken, request)
 	requireNativeStatus(t, versionResponse, http.StatusOK)
 	var version tracker.ChangeVersion
 	decodeHubResponse(t, versionResponse, &version)
 	if version.Source == nil || version.Source.BundleSHA256 != input.Source.BundleSHA256 || version.Policy.ID != policy.ID || version.ReviewPolicy.ID != reviewPolicy.ID || version.Number != 1 {
 		t.Fatalf("published version=%+v", version)
 	}
-	replay := f.request(t, owner, http.MethodPost, changePath+"/versions", request)
+	replay := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", workerToken, request)
 	requireNativeStatus(t, replay, http.StatusOK)
 	if replay.Body.String() != versionResponse.Body.String() {
 		t.Fatalf("version replay changed immutable payload: %s != %s", replay.Body.String(), versionResponse.Body.String())
 	}
 	changed := request
 	changed.SourceBundle = append(bytes.Clone(bundle), 0)
-	conflict := f.request(t, owner, http.MethodPost, changePath+"/versions", changed)
+	conflict := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", workerToken, changed)
 	requireNativeStatus(t, conflict, http.StatusConflict)
 	sourceResponse := f.request(t, owner, http.MethodGet, changePath+"/versions/"+version.ID+"/source", nil)
 	requireNativeStatus(t, sourceResponse, http.StatusOK)
@@ -779,7 +808,7 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 		if err != nil || len(versions) != 1 || versions[0].SourceObjectKey == "" {
 			t.Fatalf("version rows=%+v err=%v", versions, err)
 		}
-		if versions[0].ImplementingSessionID != 42 || versions[0].ImplementingMachineID != "source-machine" {
+		if versions[0].ImplementingSessionID != 42 || versions[0].ImplementingMachineID != string(binding.MachineID) {
 			t.Fatalf("published source attribution = session %d machine %q", versions[0].ImplementingSessionID, versions[0].ImplementingMachineID)
 		}
 		events, err := r.Events(t.Context(), projectID, item.WorkItemID, 0, 10)
@@ -802,18 +831,11 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 	}); err != nil {
 		t.Fatal(err)
 	}
-	var sqliteVersions int
-	if err := service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM change_versions").Scan(&sqliteVersions); err != nil {
-		t.Fatal(err)
-	}
-	if sqliteVersions != 0 {
-		t.Fatal("selected Change version wrote to SQLite")
-	}
 	nextInput := changeTestInput()
 	nextInput.AttemptID, nextInput.RunID = start.Data.AttemptID, start.Data.RunID
 	nextBundle := changeTestSource(t, &nextInput)
-	nextRequest := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish-next-version"}, ExpectedVersionID: version.ID, ChangeVersionInput: nextInput, SourceBundle: nextBundle}
-	nextResponse := f.request(t, owner, http.MethodPost, changePath+"/versions", nextRequest)
+	nextRequest := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish-next-version", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, ExpectedVersionID: version.ID, ChangeVersionInput: nextInput, SourceBundle: nextBundle}
+	nextResponse := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", workerToken, nextRequest)
 	requireNativeStatus(t, nextResponse, http.StatusOK)
 	var nextVersion tracker.ChangeVersion
 	decodeHubResponse(t, nextResponse, &nextVersion)
@@ -823,12 +845,15 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 	detailResponse = f.request(t, owner, http.MethodGet, changePath, nil)
 	requireNativeStatus(t, detailResponse, http.StatusOK)
 	decodeHubResponse(t, detailResponse, &detail)
+	if err := service.populateChangeColumns(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	approveNext := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve-next-version"}, ExpectedRevision: detail.Change.Revision, ExpectedVersionID: nextVersion.ID, Decision: "approved", Body: "Reviewed current source"}
 	approveNextResponse := f.request(t, owner, http.MethodPost, changePath+"/versions/"+nextVersion.ID+"/reviews", approveNext)
 	requireNativeStatus(t, approveNextResponse, http.StatusOK)
 	mergeSHA := strings.Repeat("d", 40)
 	landingRequest := tracker.LandChangeVersion{
-		Mutation: tracker.Mutation{IdempotencyKey: "land-next-version"}, MergeSHA: mergeSHA, BaseRef: "main", Method: "squash",
+		Mutation: tracker.Mutation{IdempotencyKey: "land-next-version", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, MergeSHA: mergeSHA, BaseRef: "main", Method: "squash",
 		Receipt: &tracker.NativeLandingReceipt{Landed: true, ChangeID: change.ID, VersionID: nextVersion.ID, HeadSHA: nextVersion.HeadSHA, MergeSHA: mergeSHA, BaseRef: "main", BaseSHA: nextVersion.BaseSHA, Method: "squash", ObservedAt: service.config.now()},
 	}
 	landingPath := changePath + "/versions/" + nextVersion.ID + "/landing"
@@ -861,7 +886,7 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 	service.config.RunDetails = raceStore
 	staleLanding := landingRequest
 	staleLanding.IdempotencyKey = "land-after-review-evidence-change"
-	staleLandingResponse := f.request(t, owner, http.MethodPost, landingPath, staleLanding)
+	staleLandingResponse := performHubAPIRequest(t, service, http.MethodPost, landingPath, workerToken, staleLanding)
 	service.config.RunDetails = originalRunDetails
 	if !raceStore.fired {
 		t.Fatal("landing payload preparation did not trigger the concurrent review evidence")
@@ -879,7 +904,7 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 		if _, err := r.LandingReceipt(t.Context(), string(attemptID)); !errors.Is(err, corestore.ErrNotFound) {
 			t.Fatalf("stale landing retained receipt: %v", err)
 		}
-		if _, err := r.Receipt(t.Context(), principal.ID, "POST "+landingPath, staleLanding.IdempotencyKey); !errors.Is(err, corestore.ErrNotFound) {
+		if _, err := r.Receipt(t.Context(), workerID, "POST "+landingPath, staleLanding.IdempotencyKey); !errors.Is(err, corestore.ErrNotFound) {
 			t.Fatalf("stale landing retained command receipt: %v", err)
 		}
 		return nil
@@ -920,7 +945,7 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 	concurrentLanding := landingRequest
 	concurrentLanding.IdempotencyKey = "land-concurrent-evidence-lock"
 	go func() {
-		landingResult <- f.request(t, owner, http.MethodPost, landingPath, concurrentLanding).Code
+		landingResult <- performHubAPIRequest(t, service, http.MethodPost, landingPath, workerToken, concurrentLanding).Code
 	}()
 	t.Cleanup(func() {
 		releaseLanding()
@@ -1005,7 +1030,7 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 		t.Fatal(err)
 	}
 	service.config.TenantRepository = failingChangeEventRepository{Repository: repository}
-	failedLanding := f.request(t, owner, http.MethodPost, landingPath, landingRequest)
+	failedLanding := performHubAPIRequest(t, service, http.MethodPost, landingPath, workerToken, landingRequest)
 	requireNativeStatus(t, failedLanding, http.StatusInternalServerError)
 	service.config.TenantRepository = repository
 	if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
@@ -1023,9 +1048,9 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 	}); err != nil {
 		t.Fatal(err)
 	}
-	landedResponse := f.request(t, owner, http.MethodPost, landingPath, landingRequest)
+	landedResponse := performHubAPIRequest(t, service, http.MethodPost, landingPath, workerToken, landingRequest)
 	requireNativeStatus(t, landedResponse, http.StatusOK)
-	landedReplay := f.request(t, owner, http.MethodPost, landingPath, landingRequest)
+	landedReplay := performHubAPIRequest(t, service, http.MethodPost, landingPath, workerToken, landingRequest)
 	requireNativeStatus(t, landedReplay, http.StatusOK)
 	if landedReplay.Body.String() != landedResponse.Body.String() {
 		t.Fatal("landing retry changed the archived response")
@@ -1048,7 +1073,7 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 	}
 	staleRequest := request
 	staleRequest.IdempotencyKey = "publish-from-moved-version"
-	stale := f.request(t, owner, http.MethodPost, changePath+"/versions", staleRequest)
+	stale := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", workerToken, staleRequest)
 	requireNativeStatus(t, stale, http.StatusConflict)
 	if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
 		versions, err := r.Versions(t.Context(), change.ID, 0, 10)

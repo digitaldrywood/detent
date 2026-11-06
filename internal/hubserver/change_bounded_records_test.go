@@ -20,7 +20,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/gate"
 	hubapi "github.com/digitaldrywood/detent/internal/hubclient/api"
-	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -54,17 +53,6 @@ func (s *changeReadInterceptionStore) ReadDetail(ctx context.Context, organizati
 
 func TestPostgresBoundedChangeReadRechecksRoleAfterHydration(t *testing.T) {
 	repository, f, owner, _ := newChangePolicyPostgresFixtureWithAdmin(t, 3)
-	f.service.database.billingRepository = repository
-	free := normalizeHostedPlan(pilotHostedPlans().Plans[0])
-	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
-		plan := billingstore.Plan{OrganizationID: "org_security", PlanReference: billingstore.PlanReference{ID: free.ID, Version: free.Version}, Name: free.Name, Allowances: free.Allowances, Features: free.Features}
-		if err := w.CreateBillingPlan(t.Context(), plan); err != nil {
-			return err
-		}
-		return w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: "org_security", Base: plan.PlanReference}, 0)
-	}); err != nil {
-		t.Fatal(err)
-	}
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
@@ -184,17 +172,6 @@ func TestPostgresBoundedChangeReadRechecksRoleAfterHydration(t *testing.T) {
 
 func TestPostgresBoundedChangeRuntimeRecovery(t *testing.T) {
 	repository, f, owner, admin := newChangePolicyPostgresFixtureWithAdmin(t, 3)
-	f.service.database.billingRepository = repository
-	free := normalizeHostedPlan(pilotHostedPlans().Plans[0])
-	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
-		plan := billingstore.Plan{OrganizationID: "org_security", PlanReference: billingstore.PlanReference{ID: free.ID, Version: free.Version}, Name: free.Name, Allowances: free.Allowances, Features: free.Features}
-		if err := w.CreateBillingPlan(t.Context(), plan); err != nil {
-			return err
-		}
-		return w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: "org_security", Base: plan.PlanReference}, 0)
-	}); err != nil {
-		t.Fatal(err)
-	}
 	server := httptest.NewServer(f.service.Handler())
 	t.Cleanup(server.Close)
 	response := f.request(t, owner, http.MethodPost, "/api/v2/organizations/org_security/api-keys", hostedKeyRequest{Name: "Example recovery key", Scope: "read", NeverExpires: true, ProjectAccess: hostedProjectsAll})

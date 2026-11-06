@@ -19,7 +19,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -39,21 +38,12 @@ func TestPostgresCookieIssueLifecycle(t *testing.T) {
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
-	f.service.database.billingRepository = repository
-	free := normalizeHostedPlan(pilotHostedPlans().Plans[0])
 	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
-		plan := billingstore.Plan{OrganizationID: "org_security", PlanReference: billingstore.PlanReference{ID: free.ID, Version: free.Version}, Name: free.Name, Allowances: free.Allowances, Features: free.Features}
-		if err := w.CreateBillingPlan(t.Context(), plan); err != nil {
-			return err
-		}
-		if err := w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: "org_security", Base: plan.PlanReference}, 0); err != nil {
-			return err
-		}
 		project, err := w.ProjectRecord(t.Context(), f.project)
 		if err != nil {
 			return err
 		}
-		project.States = append(humanWorkflowFixtureStates(), tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo", "Cancelled"}})
+		project.States = nativeTriageStates(append(humanWorkflowFixtureStates(), tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo", "Cancelled"}}))
 		project.Settings.DuplicateChallenge = true
 		_, err = w.UpdateProjectRecord(t.Context(), project)
 		return err
