@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +32,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -148,6 +151,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 	service.config.Hosted.SharedEntry.verifier.Now = cfg.now
 	repository := service.config.TenantRepository
 	base := "/api/v2/organizations/org_startup/projects/project_example/work-items"
+	var requestTrace *requestTiming
 	requestFor := func(target *Service, user, path string, body any) *httptest.ResponseRecorder {
 		t.Helper()
 		raw, err := json.Marshal(body)
@@ -167,6 +171,9 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(cloudassert.Header, assertion)
 		response := httptest.NewRecorder()
+		if requestTrace != nil {
+			req = req.WithContext(withRequestTiming(req.Context(), requestTrace))
+		}
 		target.Handler().ServeHTTP(response, req)
 		return response
 	}
@@ -229,6 +236,101 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		}
 	}
 	configure("org_startup")
+	t.Run("board request scale", func(t *testing.T) {
+		otherConfig := cfg
+		hosted := *cfg.Hosted
+		entry := *cfg.Hosted.SharedEntry
+		hosted.OrganizationID = "org_other"
+		hosted.WorkOSOrganizationID = "provider_org_other"
+		entry.ResolveKey = resolver("org_other")
+		hosted.SharedEntry = &entry
+		otherConfig.Hosted = &hosted
+		other, err := Open(t.Context(), otherConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := other.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		other.config.Hosted.SharedEntry.verifier.Now = cfg.now
+		targets := []*Service{service, other}
+		previous := 0
+		for _, size := range []int{2, 2000} {
+			for _, target := range targets {
+				org := tracker.OrganizationID(target.config.Hosted.OrganizationID)
+				var project projectstore.Record
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					project, err = r.ProjectRecord(t.Context(), "project_example")
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				for index := previous; index < size; index++ {
+					id := tracker.NativeWorkItemID(fmt.Sprintf("board_scale_%04d", index))
+					issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "project_example", WorkItemID: id, Number: 200000 + index, Revision: 1, Profile: "native"}, Title: fmt.Sprintf("Example %04d", index), State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "credential_owner"}, CreatedAt: clock, UpdatedAt: clock, LastActivityAt: clock}
+					raw, err := json.Marshal(issue)
+					if err != nil {
+						t.Fatal(err)
+					}
+					version, err := eventstore.NewContent(cfg.RunDetails).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "project_example", WorkItemID: id, RecordID: string(id), Revision: 1}, raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					payload, err := viewstore.NewContent(cfg.RunDetails).PrepareBoard(t.Context(), tracker.NativeBoardCard{Issue: issue})
+					if err != nil {
+						t.Fatal(err)
+					}
+					record := viewstore.BoardRecord{OrganizationID: org, ProjectID: "project_example", WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("example#%06d", issue.Number)}, ActorPrincipalID: issue.Actor.PrincipalID, CreatedAt: clock, UpdatedAt: clock, Payload: payload}
+					if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+						if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "project_example", NativeID: id, Number: int64(issue.Number), Title: issue.Title, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State}); err != nil {
+							return err
+						}
+						if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
+							return err
+						}
+						return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: "project_example", WorkItemID: id, ExpectedRevision: 1, ExpectedProjectRevision: project.Core.ContentSettingsRevision, Current: &record})
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for sample := range 6 {
+					var mu sync.Mutex
+					statements := []string{}
+					requestTrace = &requestTiming{start: time.Now(), trace: func(query string, _ []driver.NamedValue) {
+						mu.Lock()
+						defer mu.Unlock()
+						statements = append(statements, strings.Join(strings.Fields(query), " "))
+					}}
+					started := time.Now()
+					response := requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": "project_example", "limit": 50}, "connection_id": "board_scale"})
+					elapsed := time.Since(started)
+					timingHeader := requestTrace.header(time.Now())
+					requestTrace = nil
+					requireNativeStatus(t, response, http.StatusOK)
+					if !strings.Contains(response.Body.String(), string(org)) {
+						t.Fatal("response lost tenant")
+					}
+					begins := 0
+					for index, query := range statements {
+						if strings.HasPrefix(query, "BEGIN") {
+							begins++
+						}
+						if sample == 0 {
+							t.Logf("BOARD4 SQL %d %s", index+1, query)
+						}
+					}
+					t.Logf("BOARD4 size=%d tenant=%s sample=%d duration=%s queries=%d transactions=%d timing=%s", size, org, sample, elapsed, len(statements), begins, timingHeader)
+					if begins > 15 || len(statements) > 90 {
+						t.Errorf("board request used %d queries and %d transactions; budget 90 queries and 15 transactions", len(statements), begins)
+					}
+				}
+			}
+			previous = size
+		}
+	})
 	t.Run("owner cancels backlog with selected principal grants", func(t *testing.T) {
 		item := create("owner", "backlog", "Backlog")
 		got := decode(call("owner", move(item, "cancel_backlog", "Cancelled")))

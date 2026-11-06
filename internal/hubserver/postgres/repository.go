@@ -74,13 +74,23 @@ func (r *Repository) transaction(ctx context.Context, organization tracker.Organ
 
 type transactionTimingKey struct{}
 
-func WithTransactionTiming(ctx context.Context, observe func(string, time.Time)) context.Context {
-	return context.WithValue(ctx, transactionTimingKey{}, observe)
+type transactionTiming struct {
+	span      func(string, time.Time)
+	statement func(time.Time, string)
+}
+
+func WithTransactionTiming(ctx context.Context, observe func(string, time.Time), statements ...func(time.Time, string)) context.Context {
+	timing := transactionTiming{span: observe}
+	if len(statements) > 0 {
+		timing.statement = statements[0]
+	}
+	return context.WithValue(ctx, transactionTimingKey{}, timing)
 }
 
 func transactionSpan(ctx context.Context, name string) func() {
-	observe, _ := ctx.Value(transactionTimingKey{}).(func(string, time.Time))
-	if observe == nil {
+	timing, ok := ctx.Value(transactionTimingKey{}).(transactionTiming)
+	observe := timing.span
+	if !ok || observe == nil {
 		return func() {}
 	}
 	started := time.Now()
@@ -105,7 +115,8 @@ func (r *Repository) transactionIsolation(ctx context.Context, organization trac
 	finishCallback := transactionSpan(ctx, "pg_callback")
 	err = func() error {
 		defer finishCallback()
-		return run(&session{organization: organization, queries: pgquery.New(tx), db: tx, readOnly: readOnly})
+		db := timedQueries{DBTX: tx}
+		return run(&session{organization: organization, queries: pgquery.New(db), db: db, readOnly: readOnly})
 	}()
 	if err != nil {
 		return mapError(ctx, err)
@@ -114,7 +125,9 @@ func (r *Repository) transactionIsolation(ctx context.Context, organization trac
 		return err
 	}
 	finishCommit := transactionSpan(ctx, "pg_commit")
+	started := time.Now()
 	err = tx.Commit()
+	observeStatement(ctx, started, "COMMIT")
 	finishCommit()
 	return mapError(ctx, err)
 }

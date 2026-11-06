@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -113,11 +114,17 @@ func (r *Runtime) Begin(ctx context.Context, organization tracker.OrganizationID
 	if options != nil && options.ReadOnly {
 		pool = r.reader
 	}
+	started := time.Now()
 	tx, err := pool.BeginTx(ctx, options)
+	begin := "BEGIN"
+	if options != nil && options.ReadOnly {
+		begin = "BEGIN READ ONLY"
+	}
+	observeStatement(ctx, started, begin)
 	if err != nil {
 		return nil, fmt.Errorf("begin PostgreSQL tenant transaction: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `SELECT set_config('search_path', 'public, pg_catalog', true), set_config('detent.organization_id', $1, true)`, organization); err != nil {
+	if _, err := (timedQueries{DBTX: tx}).ExecContext(ctx, `SELECT set_config('search_path', 'public, pg_catalog', true), set_config('detent.organization_id', $1, true)`, organization); err != nil {
 		rollbackErr := tx.Rollback()
 		if errors.Is(rollbackErr, sql.ErrTxDone) {
 			rollbackErr = nil

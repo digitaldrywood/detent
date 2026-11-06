@@ -227,6 +227,11 @@ func (s *Service) canonicalToolResult(ctx context.Context, result operatortool.R
 		case map[string]any:
 			for key, child := range value {
 				if link, ok := child.(string); ok && (key == "url" || key == "href" || strings.HasSuffix(key, "_url")) {
+					if name == operatortool.WorkList {
+						if key == "web_url" || key == "url" && value["web_url"] == link {
+							continue
+						}
+					}
 					parsed, err := url.Parse(link)
 					if err != nil {
 						continue

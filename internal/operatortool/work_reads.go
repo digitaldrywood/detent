@@ -500,7 +500,11 @@ type NativeItem struct {
 }
 
 func NativeItemView(projectID string, issue tracker.NativeIssue) NativeItem {
-	return NativeItem{NativeIssue: issue, Identifier: string(issue.ProjectID) + "#" + strconv.Itoa(issue.Number), URL: WorkItemURL(projectID, string(issue.WorkItemID))}
+	link := issue.WebURL
+	if link == "" {
+		link = WorkItemURL(projectID, string(issue.WorkItemID))
+	}
+	return NativeItem{NativeIssue: issue, Identifier: string(issue.ProjectID) + "#" + strconv.Itoa(issue.Number), URL: link}
 }
 func NativeItemPage(projectID string, page tracker.Page[tracker.NativeIssue]) tracker.Page[NativeItem] {
 	out := tracker.Page[NativeItem]{Items: []NativeItem{}, NextCursor: page.NextCursor}

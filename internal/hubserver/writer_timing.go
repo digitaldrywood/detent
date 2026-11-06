@@ -403,7 +403,7 @@ func (s *Service) timeWriterUse(next echo.HandlerFunc) echo.HandlerFunc {
 			request = &requestTiming{}
 			ctx = withRequestTiming(ctx, request)
 		}
-		ctx = postgres.WithTransactionTiming(ctx, request.span)
+		ctx = postgres.WithTransactionTiming(ctx, request.span, func(started time.Time, query string) { request.statement(started, query, nil) })
 		ctx, timing := withWriterTiming(ctx)
 		timing.route = c.Path()
 		c.SetRequest(c.Request().WithContext(ctx))
