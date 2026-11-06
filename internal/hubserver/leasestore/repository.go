@@ -19,6 +19,7 @@ type Repository interface {
 }
 
 type Reader interface {
+	AttemptDiffBodyReferenced(context.Context, tracker.ProjectID, string) (bool, bool, error)
 	Machine(context.Context, string) (Machine, error)
 	Lease(context.Context, string) (Lease, error)
 	LeaseBySession(context.Context, string) (Lease, error)
@@ -38,6 +39,7 @@ type CheckpointAttemptReader interface {
 }
 
 type Writer interface {
+	IndexAttemptDiffBodies(context.Context, tracker.ProjectID, string, []string) error
 	Reader
 	LockMachine(context.Context, string) (Machine, error)
 	RegisterMachine(context.Context, Machine) error
