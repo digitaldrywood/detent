@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/labstack/echo/v4"
@@ -33,6 +34,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+var projectRecordDatabases sync.Map
 
 func projectRecordPostgres(t *testing.T) *postgres.Repository {
 	repository, _ := projectRecordPostgresWithAdmin(t, 3)
@@ -109,6 +112,8 @@ func projectRecordPostgresWithAdmin(t *testing.T, maxConnections int) (*postgres
 			t.Error(err)
 		}
 	})
+	projectRecordDatabases.Store(repository, admin)
+	t.Cleanup(func() { projectRecordDatabases.Delete(repository) })
 	return repository, admin
 }
 
@@ -129,6 +134,11 @@ func openPostgresHubTestService(t *testing.T, repository *postgres.Repository, c
 	service.config.BillingRepository = repository
 	service.database.billingRepository = repository
 	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))
+	if config.Hosted == nil {
+		service.config.Hosted = nil
+		service.echo = echo.New()
+		service.registerNativeRoutes(service.echo)
+	}
 	return service
 }
 

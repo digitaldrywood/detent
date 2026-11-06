@@ -43,7 +43,6 @@ func seedHostedSecurityDatabaseTemplate(t *testing.T, cfg Config) {
 		templateCfg.DatabasePath = path
 		templateCfg.TenantRepository = nil
 		templateCfg.AccessRepository = nil
-		templateCfg.BillingRepository = nil
 		templateCfg.NativeRunEvents = nil
 		ctx := context.Background()
 		store, err := openDatabase(ctx, templateCfg.normalized())

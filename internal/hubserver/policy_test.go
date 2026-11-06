@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -1498,15 +1499,31 @@ func seedNativeFixturePolicy(t *testing.T, s *Service, scope string) {
 
 func seedNativeFixturePolicyContext(ctx context.Context, t *testing.T, s *Service, scope string) {
 	t.Helper()
-	descriptor := hubTestPolicy()
-	raw, err := json.Marshal(descriptor)
+	organization, project, ok := strings.Cut(scope, "/")
+	if !ok || organization == "" || project == "" {
+		t.Fatalf("invalid native policy scope %q", scope)
+	}
+	org, projectID := tracker.OrganizationID(organization), tracker.ProjectID(project)
+	err := s.config.TenantRepository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+		_, err := r.ProjectPolicy(ctx, projectID)
+		return err
+	})
+	if err == nil {
+		return
+	}
+	if !errors.Is(err, corestore.ErrNotFound) {
+		t.Fatal(err)
+	}
+	revision, err := eventstore.NewContent(s.runDetailStore()).PrepareProjectPolicy(ctx, org, hubTestPolicy())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.database.db.ExecContext(ctx, "INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at) VALUES (?, ?, ?, 'fixture', ?) ON CONFLICT DO NOTHING", scope, descriptor.ID, string(raw), formatHubTime(s.config.now())); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.database.db.ExecContext(ctx, "INSERT INTO project_policies (scope, policy_id) VALUES (?, ?) ON CONFLICT DO NOTHING", scope, descriptor.ID); err != nil {
+	revision.ProjectID = projectID
+	revision.ApprovedBy = "fixture"
+	revision.ApprovedAt = s.config.now()
+	if err := s.config.TenantRepository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.ApproveProjectPolicy(ctx, revision, "")
+	}); err != nil {
 		t.Fatal(err)
 	}
 }

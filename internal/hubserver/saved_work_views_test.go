@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -425,6 +426,7 @@ type postgresWorkViewFixture struct {
 func newPostgresWorkViewFixture(t *testing.T) postgresWorkViewFixture {
 	t.Helper()
 	repository, fixture, _, admin := newChangePolicyPostgresFixtureWithAdmin(t, 4)
+	fixture.service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{fixture.service}, chat.WithClock(fixture.service.config.now))
 	if err := fixture.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}

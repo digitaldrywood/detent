@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -1072,6 +1073,17 @@ func openTestService(t *testing.T, cfg Config) *Service {
 	}
 	if len(cfg.InitialAdminToken) == 0 {
 		cfg.InitialAdminToken = []byte(testHubAdminToken)
+	}
+	if repository, ok := cfg.TenantRepository.(*postgres.Repository); ok && cfg.Postgres == nil {
+		if admin, ok := projectRecordDatabases.Load(repository); ok {
+			defaults := startupConfig(startupConnection(t, admin.(*sql.DB), "detent_runtime_v2", ""))
+			cfg.DatabaseBackend = DatabasePostgres
+			cfg.DatabasePath = ""
+			cfg.Postgres = defaults.Postgres
+			if cfg.Hosted == nil {
+				cfg.Hosted = defaults.Hosted
+			}
+		}
 	}
 	if cfg.Postgres == nil {
 		admin := postgresStartupTemplate.Database(t)
