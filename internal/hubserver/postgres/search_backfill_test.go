@@ -93,3 +93,45 @@ func TestSearchNativeRepresentationIsolation(t *testing.T) {
 		t.Fatalf("cascade damaged another source: count=%d err=%v", count, err)
 	}
 }
+
+func TestSearchBackfillResumesBoundedTenantPages(t *testing.T) {
+	f := newSearchFixture(t)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		for _, item := range []string{"wi_first_1", "wi_first_2"} {
+			f.put(t, searchIssue(org, item), searchstore.Text{Title: "sentinel"}, 0)
+		}
+		f.drain(t, org)
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		for page := 1; page <= 2; page++ {
+			visited, err := f.repository.QueueSearchBackfill(t.Context(), org, 1)
+			if err != nil || visited != 1 {
+				t.Fatalf("page %d: visited=%d err=%v", page, visited, err)
+			}
+			var pending, examined int
+			if err := f.admin.QueryRowContext(t.Context(), `SELECT count(*) FROM search_documents WHERE organization_id=$1 AND indexed_revision<>revision`, org).Scan(&pending); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.admin.QueryRowContext(t.Context(), `SELECT examined_rows FROM storage_conversion_cursors WHERE organization_id=$1 AND family='search'`, org).Scan(&examined); err != nil {
+				t.Fatal(err)
+			}
+			if pending != page || examined != page {
+				t.Fatalf("pending=%d examined=%d want=%d", pending, examined, page)
+			}
+		}
+		if n, err := f.repository.QueueSearchBackfill(t.Context(), org, 1); err != nil || n != 0 {
+			t.Fatalf("wrap: n=%d err=%v", n, err)
+		}
+		if _, err := f.admin.ExecContext(t.Context(), `UPDATE search_documents SET search_format=1 WHERE organization_id=$1`, org); err != nil {
+			t.Fatal(err)
+		}
+		if n, err := f.repository.QueueSearchBackfill(t.Context(), org, 1); err != nil || n != 0 {
+			t.Fatalf("converted rows revisited: n=%d err=%v", n, err)
+		}
+	}
+	for _, limit := range []int{0, 33} {
+		if _, err := f.repository.QueueSearchBackfill(t.Context(), "org_first", limit); err == nil {
+			t.Fatal("unbounded page accepted")
+		}
+	}
+}

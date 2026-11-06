@@ -56,7 +56,9 @@ ALTER TABLE storage_conversion_cursors ADD CONSTRAINT storage_conversion_cursors
  CHECK (family IN ('runs', 'versions', 'evidence', 'search'));
 
 -- +goose Down
+ALTER TABLE storage_conversion_cursors DISABLE ROW LEVEL SECURITY;
 DELETE FROM storage_conversion_cursors WHERE family = 'search';
+ALTER TABLE storage_conversion_cursors ENABLE ROW LEVEL SECURITY;
 ALTER TABLE storage_conversion_cursors DROP CONSTRAINT storage_conversion_cursors_family_check;
 ALTER TABLE storage_conversion_cursors ADD CONSTRAINT storage_conversion_cursors_family_check
  CHECK (family IN ('runs', 'versions', 'evidence'));
