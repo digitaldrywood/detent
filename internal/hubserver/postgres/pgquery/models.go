@@ -1797,6 +1797,19 @@ type NativePrPublication struct {
 	ExternalURL       string
 }
 
+type OnboardingIssueIntake struct {
+	OrganizationID      tracker.OrganizationID
+	ProjectID           tracker.ProjectID
+	ID                  string
+	Revision            int64
+	BatchStatus         string
+	HubOwned            bool
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
+}
+
 type Organization struct {
 	OrganizationID             tracker.OrganizationID
 	Name                       string
