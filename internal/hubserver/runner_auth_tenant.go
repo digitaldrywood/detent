@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -36,39 +37,55 @@ func (s *Service) authenticateTenantAPIHash(ctx context.Context, organization tr
 	var runner runnerauth.Identity
 	var provider string
 	var runnerRenewal bool
-	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		var err error
-		token, err = reader.CredentialByHash(ctx, hash)
-		if err != nil {
-			return err
-		}
-		record, err := reader.RunnerIdentityByCredential(ctx, token.ID)
+	var err error
+	if authority, ok := s.config.TenantRepository.(tenantauth.Reader); ok {
+		var scope tenantauth.Scope
+		scope, err = authority.ReadTenantAuthority(ctx, tenantauth.RequestIdentity{Organization: organization, CredentialHash: hash, RenewalRunner: renewalRunner, RenewalOrganization: tracker.OrganizationID(renewalOrganization)})
 		if err == nil {
-			if record.OrganizationID != organization || record.RemovedAt != nil || token.Scope != string(apiScopeWorker) || token.Kind != "service" {
-				return accessstore.ErrDenied
+			principal := scope.Principal()
+			if scope.Organization() != organization || scope.ValidAt(s.config.now()) != nil {
+				err = accessstore.ErrDenied
+			} else {
+				token = accessstore.Credential{ID: principal.CredentialID, Name: principal.Name, Scope: principal.Scope, NativeOnly: principal.NativeOnly, UserID: principal.UserID, MembershipID: principal.MembershipID, KeyScope: principal.KeyScope, ProjectAccess: principal.ProjectAccess, Kind: principal.Kind}
+				member = accessstore.Member{PrincipalID: principal.PrincipalID, Role: principal.Role}
+				runner, runnerRenewal, provider = scope.Runner(), scope.Renewal(), principal.ProviderID
 			}
-			now := s.config.now()
-			runnerRenewal = renewalRunner != "" && renewalRunner == record.RunnerID && renewalOrganization == string(record.OrganizationID)
-			if !validRunnerCredentialForRenewal(token, hash, now, runnerRenewal) || !record.ExpiresAt.After(now) && !runnerRenewal {
-				return accessstore.ErrDenied
+		}
+	} else {
+		err = s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			var err error
+			token, err = reader.CredentialByHash(ctx, hash)
+			if err != nil {
+				return err
 			}
-			runner, err = runnerIdentityRecord(ctx, reader, record)
-			return err
-		}
-		if !errors.Is(err, corestore.ErrNotFound) {
-			return err
-		}
-		member, err = reader.AuthorizeAccess(ctx, accessstore.Authority{CredentialID: token.ID, Hash: hash, UserID: token.UserID, MembershipID: token.MembershipID}, s.config.now())
-		if err != nil {
-			return err
-		}
-		tenant, err := reader.AccessTenant(ctx)
-		if err != nil {
-			return err
-		}
-		provider = tenant.ProviderID
-		return nil
-	})
+			record, err := reader.RunnerIdentityByCredential(ctx, token.ID)
+			if err == nil {
+				if record.OrganizationID != organization || record.RemovedAt != nil || token.Scope != string(apiScopeWorker) || token.Kind != "service" {
+					return accessstore.ErrDenied
+				}
+				now := s.config.now()
+				runnerRenewal = renewalRunner != "" && renewalRunner == record.RunnerID && renewalOrganization == string(record.OrganizationID)
+				if !validRunnerCredentialForRenewal(token, hash, now, runnerRenewal) || !record.ExpiresAt.After(now) && !runnerRenewal {
+					return accessstore.ErrDenied
+				}
+				runner, err = runnerIdentityRecord(ctx, reader, record)
+				return err
+			}
+			if !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			member, err = reader.AuthorizeAccess(ctx, accessstore.Authority{CredentialID: token.ID, Hash: hash, UserID: token.UserID, MembershipID: token.MembershipID}, s.config.now())
+			if err != nil {
+				return err
+			}
+			tenant, err := reader.AccessTenant(ctx)
+			if err != nil {
+				return err
+			}
+			provider = tenant.ProviderID
+			return nil
+		})
+	}
 	if err != nil {
 		if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, corestore.ErrNotFound) {
 			return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
