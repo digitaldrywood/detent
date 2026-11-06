@@ -73,6 +73,19 @@ describe("reading a project", () => {
 });
 
 describe("listing work items", () => {
+  it("reads scoped board counts independently of work item pagination", async () => {
+    const signal = new AbortController().signal;
+    const fetch = vi.fn(async (_input: string, _init?: RequestInit) => Response.json([]));
+    const api = makeWorkHttp({ origin: "https://example.com", apiBase: "/api/v2/organizations/example", csrfToken: "csrf", fetch });
+    expect(await api.getBoardCounts({ projectId: "project/id", archived: "all", includeCoordinator: true, signal })).toEqual([]);
+    const [target, options] = fetch.mock.calls[0]!;
+    const url = new URL(target);
+    expect(url.pathname).toBe("/api/v2/organizations/example/projects/project%2Fid/board/counts");
+    expect([...url.searchParams]).toEqual([["archived", "all"], ["include", "workspace"]]);
+    expect(options?.signal).toBe(signal);
+    expect(options?.credentials).toBe("same-origin");
+  });
+
   it("pages by cursor and stops when the cursor runs out", async () => {
     const first = await http.listWorkItems({ projectId: PROJECT, limit: 10 });
     expect(first.items).toHaveLength(10);

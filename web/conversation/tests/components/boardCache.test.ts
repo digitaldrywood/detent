@@ -286,6 +286,119 @@ describe("the Work snapshot ordering", () => {
     }
   });
 
+  it.each(["cards-first", "counts-first"])("loads cards and independent counts with %s completion", async (order) => {
+    const source = workPaginationFixture();
+    await source.control();
+    const counts = deferred<Response>();
+    const list = deferred<void>();
+    const listStarted = deferred<void>();
+    const requests: URL[] = [];
+    const http = makeWorkHttp({ ...source.client.http, fetch: async (input, init) => {
+      const url = new URL(input, "http://fixture.test");
+      if (url.pathname.endsWith("/board/counts")) { requests.push(url); return counts.promise; }
+      if (url.pathname.endsWith("/work-items")) { listStarted.resolve(); await list.promise; }
+      const response = await source.fetch(input, init);
+      if (!url.pathname.endsWith("/work-items") || !response.ok) return response;
+      const body = await response.json();
+      body.total = -1;
+      body.work = { items: [], lanes: [], truncated: false, as_of: "2026-11-06T12:00:00Z" };
+      return Response.json(body);
+    } });
+    const read = getBoardRead(source.client, http, "proj_alpha", { ...DEFAULT_VIEW_STATE, view: "list", tab: "all" });
+    const row = { running: 0, shipped_1h: 1, shipped_24h: 3, shipped_7d: 8, cancelled_1h: 0, cancelled_24h: 1, cancelled_7d: 2, projected_at: "2026-11-06T12:00:00Z", sequence: 0 };
+    const response = () => Response.json([
+      { ...row, state: "*", total: 25 }, { ...row, state: "@open", total: 17 }, { ...row, state: "@closed", total: 8 },
+      { ...row, state: "Backlog", total: 5 }, { ...row, state: "Todo", total: 12 }, { ...row, state: "Done", total: 8 },
+    ]);
+    try {
+      read.start();
+      await listStarted.promise;
+      expect(requests).toHaveLength(1);
+      expect([...requests[0]!.searchParams.keys()]).toEqual([]);
+      if (order === "counts-first") counts.resolve(response());
+      list.resolve();
+      await expect.poll(() => read.snapshot().resolved).toBe(true);
+      expect(read.snapshot().items.length).toBeGreaterThan(0);
+      if (order === "cards-first") expect(read.snapshot().totals).toBeNull();
+      expect(read.snapshot().backlogTotal).toBeGreaterThanOrEqual(0);
+      counts.resolve(response());
+      await expect.poll(() => read.snapshot().totals?.total).toBe(25);
+      expect(read.snapshot().totals?.lanes).toMatchObject({ Backlog: 5, Todo: 12, Done: 8 });
+      expect(read.snapshot().totals?.lanes).not.toHaveProperty("*");
+      expect(read.snapshot().totals?.completed).toBe(3);
+      expect(read.snapshot().totals?.cancelled).toBe(1);
+      expect(read.snapshot().totals?.shippedWindows?.["7d"]).toEqual({ shipped: 8, cancelled: 2 });
+      expect(read.snapshot().backlogTotal).toBe(5);
+    } finally {
+      list.resolve();
+      counts.resolve(response());
+    }
+  });
+
+  it("loads each project in parallel without the legacy aggregate route", async () => {
+    const source = workPaginationFixture();
+    await source.control();
+    const gate = deferred<void>();
+    const projects = new Set<string>();
+    const http = makeWorkHttp({ ...source.client.http, fetch: async (input, init) => {
+      const url = new URL(input, "http://fixture.test");
+      if (url.pathname.endsWith("/work-items")) {
+        projects.add(url.pathname.split("/").at(-2)!);
+        await gate.promise;
+      }
+      return source.fetch(input, init);
+    } });
+    const aggregate = vi.spyOn(http, "readBoard");
+    const read = getBoardRead(source.client, http, null, { ...DEFAULT_VIEW_STATE, view: "list", tab: "all" }, undefined, true);
+    try {
+      read.start();
+      expect(aggregate).not.toHaveBeenCalled();
+      await expect.poll(() => projects.size).toBe(2);
+      expect(read.snapshot().resolved).toBe(false);
+      gate.resolve();
+      await expect.poll(() => read.snapshot().resolved).toBe(true);
+      expect(new Set(read.snapshot().items.map((item) => item.projectId))).toEqual(new Set(["proj_alpha", "proj_beta"]));
+    } finally { gate.resolve(); }
+  });
+
+  it("keeps a list summary and cards when independent counts fail", async () => {
+    const source = workPaginationFixture();
+    await source.control();
+    let counts = 0;
+    const http = makeWorkHttp({ ...source.client.http, fetch: async (input, init) => {
+      if (new URL(input, "http://fixture.test").pathname.endsWith("/board/counts")) {
+        counts++;
+        return Response.json({ code: "unavailable", message: "Counts unavailable" }, { status: 503 });
+      }
+      return source.fetch(input, init);
+    } });
+    const read = getBoardRead(source.client, http, "proj_alpha", { ...DEFAULT_VIEW_STATE, view: "list", tab: "all" });
+    read.start();
+    await expect.poll(() => read.snapshot().resolved).toBe(true);
+    expect(counts).toBe(1);
+    expect(read.snapshot().error).toBeNull();
+    expect(read.snapshot().items.length).toBeGreaterThan(0);
+    expect(read.snapshot().totals?.total).toBeGreaterThan(0);
+  });
+
+  it.each([
+    { q: "Example" }, { type: ["bug"] }, { label: ["example"] }, { assignee: ["owner"] },
+    { priority: ["1"] }, { createdBy: "me" as const }, { completedFrom: "2026-11-06T12:00:00Z" },
+    { completedTo: "2026-11-06T13:00:00Z" },
+  ])("skips independent exact counts for unsupported filters %j", async (filter) => {
+    const source = workPaginationFixture();
+    await source.control();
+    const counts = vi.fn();
+    const http = makeWorkHttp({ ...source.client.http, fetch: async (input, init) => {
+      if (new URL(input, "http://fixture.test").pathname.endsWith("/board/counts")) counts();
+      return source.fetch(input, init);
+    } });
+    const read = getBoardRead(source.client, http, "proj_alpha", { ...DEFAULT_VIEW_STATE, ...filter, view: "list", tab: "all" });
+    read.start();
+    await expect.poll(() => read.snapshot().resolved).toBe(true);
+    expect(counts).not.toHaveBeenCalled();
+  });
+
   it("keeps summary windows in the cache identity, page requests and stream", async () => {
     const source = workPaginationFixture();
     await source.control();

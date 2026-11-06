@@ -172,7 +172,16 @@ export interface ListWorkItemsInput {
   readonly createdBy?: string | undefined;
 }
 
+const BoardCountSchema = Schema.Struct({
+  kind: Schema.optional(Schema.String), state: Schema.String, total: Schema.Number, running: Schema.Number,
+  shipped_1h: Schema.Number, shipped_24h: Schema.Number, shipped_7d: Schema.Number,
+  cancelled_1h: Schema.Number, cancelled_24h: Schema.Number, cancelled_7d: Schema.Number,
+  projected_at: Schema.String, sequence: Schema.Number,
+});
+export type BoardCount = typeof BoardCountSchema.Type;
+
 export interface WorkHttp {
+  readonly getBoardCounts: (input: Pick<ListWorkItemsInput, "projectId" | "archived" | "includeCoordinator" | "signal">) => Promise<readonly BoardCount[]>;
   readonly readBoard: (projectIds: readonly string[], state: WorkViewState, signal?: AbortSignal) => Promise<readonly Loaded[]>;
   readonly getSourceRecovery: (projectId: string, itemId: string) => Promise<SourceRecovery>;
   readonly transferSource: (input: { projectId: string; itemId: string; key: string; expectedRevision: string; versionId: string; destinationRunnerId: string }) => Promise<SourceRecovery>;
@@ -715,6 +724,10 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         completed_window: board?.filters.completedWindow }),
     listHealthFindings: (projectId, cursor, signal, options) => send(HealthFindingsRead, "GET", url(`${projectBase(projectId)}/health/findings`, { cursor, ...options }), undefined, signal),
     getProject: (projectId, signal) => send(NativeProject, "GET", url(projectBase(projectId)), undefined, signal),
+    getBoardCounts: (input) => send(Schema.Array(BoardCountSchema), "GET", url(`${projectBase(input.projectId)}/board/counts`, {
+      archived: input.archived === "all" ? "all" : input.archived === true ? "true" : undefined,
+      include: input.includeCoordinator === true ? "workspace" : undefined,
+    }), undefined, input.signal),
     listWorkItems: (input) =>
       send(
         WorkItemPage,

@@ -7,7 +7,7 @@ import { authorizeQueryCache, clearQueryCache, invalidateQueries } from "../../l
 import { BOARD_CACHE_LIMIT, BOARD_CACHE_VERSION, readBoardDisk, updateBoardDisk } from "./boardDisk.ts";
 import { toBoardCardView, toLanes, toProjectView, toWorkItemView } from "./fromWire.ts";
 import type { Lane, ProjectView, ScopedWorkStats, ShippedCount, WorkItemView } from "./model.ts";
-import { WorkApiError, type WorkHttp } from "./workHttp.ts";
+import { WorkApiError, type BoardCount, type WorkHttp } from "./workHttp.ts";
 import { effectiveSort, tabMatches, tabQuery, type WorkViewState } from "./viewState.ts";
 
 export interface BoardData {
@@ -171,7 +171,7 @@ export function getBoardRead(client: BoardAccount, http: WorkHttp, projectId: st
   }
   board = new BoardRead(owner, key, http, projectId, scope, view, client.bootstrap.actor?.principal_id,
     new Map(client.bootstrap.projects.flatMap((project) => project.states === undefined ||
-      project.states.some((state) => typeof state.terminal !== "boolean") ? [] : [[project.id, project.states as readonly LaneState[]] as const])), aggregate);
+      project.states.some((state) => typeof state.terminal !== "boolean") ? [] : [[project.id, project.states as readonly LaneState[]] as const])));
   boards.set(key, board);
   for (const [oldKey, old] of boards) {
     if (boards.size <= BOARD_CACHE_LIMIT) break;
@@ -194,6 +194,7 @@ export class BoardRead {
   private state: BoardData = EMPTY;
   private entries: readonly Loaded[] = [];
   private controller: AbortController | null = null;
+  private countController: AbortController | null = null;
   private readonly frames = new Map<string, NativeBoardFrame[]>();
   private readonly views = new Map<string, { issue: NativeIssue; card: NativeBoardCard | undefined; item: WorkItemView }>();
   private generation = 0;
@@ -207,7 +208,7 @@ export class BoardRead {
 
   constructor(readonly owner: string, readonly key: string, readonly http: WorkHttp,
     readonly projectId: string | null, readonly scope: readonly string[], readonly view: WorkViewState,
-    private readonly principalId?: string, private readonly hints: ReadonlyMap<string, readonly LaneState[]> = new Map(), private readonly aggregate = false) {
+    private readonly principalId?: string, private readonly hints: ReadonlyMap<string, readonly LaneState[]> = new Map()) {
     this.facetKey = JSON.stringify([owner, scope, view.archived === true]);
     if (scope.length === 0) this.state = { ...EMPTY, loading: false, resolved: true };
     else {
@@ -289,6 +290,8 @@ export class BoardRead {
   dispose(): void {
     this.generation++;
     this.controller?.abort();
+    this.countController?.abort();
+    this.countController = null;
     this.controller = null;
     this.pending = false;
   }
@@ -359,7 +362,7 @@ export class BoardRead {
           sort: effectiveSort(this.view) === "closed" ? "closed" : undefined, cursor });
         issues.push(...page.items);
         cards.push(...(page.cards ?? []));
-        work = page.work;
+        work = page.total === -1 ? previous?.work : page.work;
         sequence = Math.min(sequence ?? Infinity, page.change_sequence ?? page.sequence ?? 0);
         grantVersion ??= page.grant_version;
         cursor = page.next_cursor;
@@ -377,7 +380,7 @@ export class BoardRead {
       if (previous?.backlogCursor === undefined || backlog === undefined) return previous!;
       const page = await readPage(backlog.name, previous.backlogCursor);
       return { ...previous, issues: [...previous.issues, ...page.items], cards: [...(previous.cards ?? []), ...(page.cards ?? [])],
-        work: page.work ?? previous.work, backlogCursor: page.next_cursor, backlogTotal: page.total ?? previous.backlogTotal,
+        work: (page.total === -1 ? undefined : page.work) ?? previous.work, backlogCursor: page.next_cursor, backlogTotal: page.total !== undefined && page.total >= 0 ? page.total : previous.backlogTotal,
         backlogPageCount: previous.backlogPageCount + 1 };
     }
     const readLane = async (state: string) => {
@@ -397,8 +400,8 @@ export class BoardRead {
         cursor = page.next_cursor;
         sequence = Math.min(sequence, page.change_sequence ?? page.sequence ?? 0);
         grantVersion ??= page.grant_version;
-        work = page.work;
-        total = page.total ?? total;
+        work = page.total === -1 ? previous?.work : page.work;
+        total = page.total !== undefined && page.total >= 0 ? page.total : total;
         pageCount++;
       } while (cursor !== undefined && pageCount < (backlogLane ? previous?.backlogPageCount ?? 1 : 1));
       return { state, issues, cards, cursor, pageCount, total, sequence, grantVersion, work };
@@ -420,7 +423,7 @@ export class BoardRead {
     const fallback = pages.length === 0 ? await this.http.listWorkItems({ ...filters, signal, includeBoard: true, limit: 1 }) : undefined;
     return { project: resolved, issues: pages.flatMap((page) => page.issues), cards: pages.flatMap((page) => page.cards),
       grantVersion: pages[0]?.grantVersion ?? fallback?.grant_version,
-      work: pages[0]?.work ?? fallback?.work, sequence: pages.length === 0 ? fallback?.change_sequence ?? fallback?.sequence ?? 0 : Math.min(...pages.map((page) => page.sequence)),
+      work: pages[0]?.work ?? (fallback?.total === -1 ? previous?.work : fallback?.work), sequence: pages.length === 0 ? fallback?.change_sequence ?? fallback?.sequence ?? 0 : Math.min(...pages.map((page) => page.sequence)),
       pageCount: 1, backlogCursor: back?.cursor, backlogPageCount: back?.pageCount ?? 0, backlogTotal: back?.total ?? 0 };
   }
 
@@ -532,15 +535,44 @@ export class BoardRead {
     this.publish({ ...this.state, loading: (!this.state.resolved || (continuing && this.view.view !== "board")),
       backlogLoading: continuing && this.view.view === "board", refreshing: true, error: null });
     if (!this.state.resolved) void this.restore(generation);
+    this.countController?.abort();
+    this.countController = controller;
+    const counts = new Map<string, readonly BoardCount[]>();
+    let cardsReady = false;
+    const withCounts = (entry: Loaded): Loaded => {
+      const rows = counts.get(entry.project.project_id);
+      if (rows === undefined) return entry;
+      const total = rows.find((row) => row.kind === "total" || row.kind === undefined && row.state === "*");
+      const windows = ["1h", "24h", "7d"] as const;
+      const lanes = rows.filter((row) => row.kind === "lane" || row.kind === undefined && !["*", "@open", "@closed"].includes(row.state)).map(({ state, total, running }) => ({ state, total, running }));
+      return { ...entry, backlogTotal: lanes.find((row) => row.state.toLowerCase() === "backlog")?.total ?? 0,
+        work: { items: entry.work?.items ?? [], lanes, truncated: false,
+          completed: total?.[`shipped_${this.view.completedWindow}`] ?? 0,
+          cancelled: total?.[`cancelled_${this.view.completedWindow}`] ?? 0,
+          shipped_windows: windows.map((window) => ({ window, shipped: total?.[`shipped_${window}`] ?? 0, cancelled: total?.[`cancelled_${window}`] ?? 0 })),
+          as_of: total?.projected_at ?? entry.work?.as_of ?? new Date().toISOString() } };
+    };
+    const supportsCounts = this.view.q.length === 0 && this.view.type.length === 0 && this.view.label.length === 0 &&
+      this.view.assignee.length === 0 && this.view.priority.length === 0 && this.view.createdBy === undefined &&
+      !this.view.completedFrom && !this.view.completedTo;
+    if (supportsCounts) void pooled(this.scope.filter((id) => targets === undefined || targets.has(id)), async (id) => {
+      try {
+        const rows = await this.http.getBoardCounts({ projectId: id, archived: this.view.archived === true, signal });
+        if (signal.aborted || generation !== this.generation || this.revoked) return;
+        counts.set(id, rows);
+        if (!cardsReady) return;
+        this.entries = this.entries.map(withCounts);
+        this.publish({ ...this.build(this.entries, this.state.asOf ?? Date.now()), refreshing: this.state.refreshing, backlogLoading: this.state.backlogLoading });
+        this.persist();
+      } catch { return; }
+    });
     void (async () => {
       try {
-        const initial = this.aggregate && !continuing
-          ? new Map((await this.http.readBoard(this.scope, this.view, signal)).map((entry) => [entry.project.project_id, entry])) : undefined;
         const loaded = await pooled(this.scope, async (id) => {
           if (!continuing && prior.length === 0 && this.entries.length > 0) prior = this.entries;
           const previous = prior.find((entry) => entry.project.project_id === id);
           if (targets !== undefined && !targets.has(id) && previous !== undefined) return previous;
-          const entry = initial?.get(id) ?? await this.loadProject(id, signal, previous, continuing);
+          const entry = await this.loadProject(id, signal, previous, continuing);
           const issues = entry.issues;
           let changed = false;
           const previousItems = new Map(this.entries.flatMap((entry) => entry.issues).map((issue) => [issue.work_item_id, issue]));
@@ -564,8 +596,9 @@ export class BoardRead {
           return { ...entry, issues: current, work: changed ? undefined : entry.work };
         });
         if (signal.aborted || generation !== this.generation || [...snapshots.values()].some((snapshot) => !snapshot.current())) return;
-        this.entries = loaded;
-        this.publish(this.build(loaded, Date.now()));
+        this.entries = loaded.map(withCounts);
+        cardsReady = true;
+        this.publish(this.build(this.entries, Date.now()));
         for (const [id, frames] of this.frames) {
           for (const frame of frames) this.applyFrame(id, frame, true);
         }
