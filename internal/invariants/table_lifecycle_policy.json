@@ -187,6 +187,7 @@
     "pull_requests": {"class": "hot_state"},
     "quality_landings": {"class": "immutable_payload"},
     "queue_entries": {"class": "hot_state"},
+    "release_audit_heads": {"class": "index"},
     "release_audit_checkpoints": {"class": "immutable_payload"},
     "release_audit_parts": {"class": "immutable_payload"},
     "release_deliveries": {"class": "hot_state"},

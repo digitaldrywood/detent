@@ -2336,6 +2336,55 @@ type QueueEntry struct {
 	UpdatedAt        time.Time
 }
 
+type ReleaseAuditCheckpoint struct {
+	OrganizationID       tracker.OrganizationID
+	ProjectID            tracker.ProjectID
+	ID                   string
+	Repository           string
+	CommitSha            string
+	ReleaseSeries        string
+	RunID                string
+	RunAttempt           string
+	JobID                string
+	RunUrl               string
+	Sequence             int64
+	Status               string
+	BundleCommit         string
+	BundleDigest         string
+	AllowanceInvocations int64
+	AllowanceInput       int64
+	AllowanceOutput      int64
+	AllowanceCached      int64
+	Invocations          int64
+	InputTokens          int64
+	OutputTokens         int64
+	CachedInputTokens    int64
+	Digest               string
+	Bytes                int64
+	RecordedAt           time.Time
+}
+
+type ReleaseAuditHead struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	RunID          string
+	RunAttempt     string
+	JobID          string
+	CheckpointID   string
+	Sequence       int64
+}
+
+type ReleaseAuditPart struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	CheckpointID   string
+	PartIndex      int64
+	AttachmentID   string
+	ByteOffset     int64
+	Bytes          int64
+	Digest         string
+}
+
 type ReleaseDelivery struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
