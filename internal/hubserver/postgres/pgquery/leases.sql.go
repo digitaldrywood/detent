@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const advanceLeaseAttempt = `-- name: AdvanceLeaseAttempt :one
@@ -506,6 +507,209 @@ func (q *Queries) InsertLeaseAttempt(ctx context.Context, arg InsertLeaseAttempt
 	return i, err
 }
 
+const leaseMutationFacts = `-- name: LeaseMutationFacts :one
+SELECT l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason,i.organization_id, i.id, i.native_id, i.project_id, i.number, i.revision, i.event_sequence, i.native_source_key, i.title, i.body_object_key, i.issue_contract_object_key, i.report_context_object_key, i.actor_kind, i.actor_principal_id, i.provenance_provider, i.provenance_external_id, i.archived, i.created_at, i.updated_at, i.native_created_at, i.native_updated_at, i.workflow_state_name, i.last_activity_at, i.issue_type, i.priority, i.dispatch_generation, i.dispatch_requested_at, i.recovery_runner_id, i.recovery_version_id
+FROM leases l
+JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
+JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id AND p.deleted_at IS NULL
+WHERE l.organization_id=$1 AND l.lease_id=$2 AND i.project_id=$3
+`
+
+type LeaseMutationFactsParams struct {
+	OrganizationID tracker.OrganizationID
+	LeaseID        string
+	ProjectID      tracker.ProjectID
+}
+
+type LeaseMutationFactsRow struct {
+	Lease Lease
+	Issue Issue
+}
+
+func (q *Queries) LeaseMutationFacts(ctx context.Context, arg LeaseMutationFactsParams) (LeaseMutationFactsRow, error) {
+	row := q.db.QueryRow(ctx, leaseMutationFacts, arg.OrganizationID, arg.LeaseID, arg.ProjectID)
+	var i LeaseMutationFactsRow
+	err := row.Scan(
+		&i.Lease.OrganizationID,
+		&i.Lease.LeaseID,
+		&i.Lease.FencingToken,
+		&i.Lease.IssueID,
+		&i.Lease.MachineID,
+		&i.Lease.SessionID,
+		&i.Lease.WorkItemRevision,
+		&i.Lease.LandingCapacity,
+		&i.Lease.AcquiredAt,
+		&i.Lease.RenewedAt,
+		&i.Lease.ExpiresAt,
+		&i.Lease.ReleasedAt,
+		&i.Lease.ReleaseReason,
+		&i.Issue.OrganizationID,
+		&i.Issue.ID,
+		&i.Issue.NativeID,
+		&i.Issue.ProjectID,
+		&i.Issue.Number,
+		&i.Issue.Revision,
+		&i.Issue.EventSequence,
+		&i.Issue.NativeSourceKey,
+		&i.Issue.Title,
+		&i.Issue.BodyObjectKey,
+		&i.Issue.IssueContractObjectKey,
+		&i.Issue.ReportContextObjectKey,
+		&i.Issue.ActorKind,
+		&i.Issue.ActorPrincipalID,
+		&i.Issue.ProvenanceProvider,
+		&i.Issue.ProvenanceExternalID,
+		&i.Issue.Archived,
+		&i.Issue.CreatedAt,
+		&i.Issue.UpdatedAt,
+		&i.Issue.NativeCreatedAt,
+		&i.Issue.NativeUpdatedAt,
+		&i.Issue.WorkflowStateName,
+		&i.Issue.LastActivityAt,
+		&i.Issue.IssueType,
+		&i.Issue.Priority,
+		&i.Issue.DispatchGeneration,
+		&i.Issue.DispatchRequestedAt,
+		&i.Issue.RecoveryRunnerID,
+		&i.Issue.RecoveryVersionID,
+	)
+	return i, err
+}
+
+const leaseMutationReservation = `-- name: LeaseMutationReservation :many
+SELECT r.organization_id, r.lease_id, r.requirement_role, r.requirement_backend, r.requirement_model, r.provider, r.backend, r.account_alias, r.shared_account_alias, r.billing, r.max_concurrent, r.availability, r.observed_at, r.reset_at, r.reason,c.kind, c.position, c.model_id, c.has_detail, c.label, c.model_provider, c.is_default, c.default_reasoning_effort, c.legacy, c.effort, c.window_kind, c.percent_used, c.window_reset_at, c.window_observed_at
+FROM provider_reservations r
+CROSS JOIN LATERAL (
+ SELECT 0::integer AS kind,0::integer AS position,''::text AS model_id,false AS has_detail,
+ ''::text AS label,''::text AS model_provider,false AS is_default,''::text AS default_reasoning_effort,false AS legacy,
+ ''::text AS effort,''::text AS window_kind,NULL::double precision AS percent_used,NULL::timestamptz AS window_reset_at,NULL::timestamptz AS window_observed_at
+ UNION ALL
+ SELECT 1,m.position,m.model_id,m.has_detail,m.label,m.model_provider,m.is_default,m.default_reasoning_effort,m.legacy,'','',NULL,NULL,NULL
+ FROM provider_reservation_models m WHERE m.organization_id=r.organization_id AND m.lease_id=r.lease_id
+ UNION ALL
+ SELECT 2,e.position,e.model_id,false,'','',false,'',false,e.effort,'',NULL,NULL,NULL
+ FROM provider_reservation_model_efforts e WHERE e.organization_id=r.organization_id AND e.lease_id=r.lease_id
+ UNION ALL
+ SELECT 3,w.position,'',false,'','',false,'',false,'',w.kind,w.percent_used,w.reset_at,w.observed_at
+ FROM provider_reservation_usage_windows w WHERE w.organization_id=r.organization_id AND w.lease_id=r.lease_id
+) c
+WHERE r.organization_id=$1 AND r.lease_id=$2
+ORDER BY c.kind,CASE WHEN c.kind=2 THEN c.model_id ELSE '' END,c.position
+`
+
+type LeaseMutationReservationParams struct {
+	OrganizationID tracker.OrganizationID
+	LeaseID        string
+}
+
+type LeaseMutationReservationRow struct {
+	ProviderReservation    ProviderReservation
+	Kind                   int32
+	Position               int32
+	ModelID                string
+	HasDetail              bool
+	Label                  string
+	ModelProvider          string
+	IsDefault              bool
+	DefaultReasoningEffort string
+	Legacy                 bool
+	Effort                 string
+	WindowKind             string
+	PercentUsed            pgtype.Float8
+	WindowResetAt          *time.Time
+	WindowObservedAt       *time.Time
+}
+
+func (q *Queries) LeaseMutationReservation(ctx context.Context, arg LeaseMutationReservationParams) ([]LeaseMutationReservationRow, error) {
+	rows, err := q.db.Query(ctx, leaseMutationReservation, arg.OrganizationID, arg.LeaseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LeaseMutationReservationRow{}
+	for rows.Next() {
+		var i LeaseMutationReservationRow
+		if err := rows.Scan(
+			&i.ProviderReservation.OrganizationID,
+			&i.ProviderReservation.LeaseID,
+			&i.ProviderReservation.RequirementRole,
+			&i.ProviderReservation.RequirementBackend,
+			&i.ProviderReservation.RequirementModel,
+			&i.ProviderReservation.Provider,
+			&i.ProviderReservation.Backend,
+			&i.ProviderReservation.AccountAlias,
+			&i.ProviderReservation.SharedAccountAlias,
+			&i.ProviderReservation.Billing,
+			&i.ProviderReservation.MaxConcurrent,
+			&i.ProviderReservation.Availability,
+			&i.ProviderReservation.ObservedAt,
+			&i.ProviderReservation.ResetAt,
+			&i.ProviderReservation.Reason,
+			&i.Kind,
+			&i.Position,
+			&i.ModelID,
+			&i.HasDetail,
+			&i.Label,
+			&i.ModelProvider,
+			&i.IsDefault,
+			&i.DefaultReasoningEffort,
+			&i.Legacy,
+			&i.Effort,
+			&i.WindowKind,
+			&i.PercentUsed,
+			&i.WindowResetAt,
+			&i.WindowObservedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const leaseMutationRunner = `-- name: LeaseMutationRunner :one
+SELECT r.organization_id,r.runner_id,r.machine_id,r.token_id,r.state,r.expires_at,r.removed_at,r.isolation_tier,r.host_services
+FROM runner_identities r JOIN runner_lease_assignments a ON a.organization_id=r.organization_id AND a.runner_id=r.runner_id
+WHERE a.organization_id=$1 AND a.lease_id=$2
+`
+
+type LeaseMutationRunnerParams struct {
+	OrganizationID tracker.OrganizationID
+	LeaseID        string
+}
+
+type LeaseMutationRunnerRow struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	MachineID      string
+	TokenID        string
+	State          string
+	ExpiresAt      time.Time
+	RemovedAt      *time.Time
+	IsolationTier  string
+	HostServices   []string
+}
+
+func (q *Queries) LeaseMutationRunner(ctx context.Context, arg LeaseMutationRunnerParams) (LeaseMutationRunnerRow, error) {
+	row := q.db.QueryRow(ctx, leaseMutationRunner, arg.OrganizationID, arg.LeaseID)
+	var i LeaseMutationRunnerRow
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.RunnerID,
+		&i.MachineID,
+		&i.TokenID,
+		&i.State,
+		&i.ExpiresAt,
+		&i.RemovedAt,
+		&i.IsolationTier,
+		&i.HostServices,
+	)
+	return i, err
+}
+
 const leaseTime = `-- name: LeaseTime :one
 SELECT clock_timestamp()::timestamptz AS now
 `
@@ -643,6 +847,46 @@ func (q *Queries) LockLease(ctx context.Context, arg LockLeaseParams) (Lease, er
 		&i.ExpiresAt,
 		&i.ReleasedAt,
 		&i.ReleaseReason,
+	)
+	return i, err
+}
+
+const lockLeaseMutationRunner = `-- name: LockLeaseMutationRunner :one
+SELECT r.organization_id,r.runner_id,r.machine_id,r.token_id,r.state,r.expires_at,r.removed_at,r.isolation_tier,r.host_services
+FROM runner_identities r JOIN runner_lease_assignments a ON a.organization_id=r.organization_id AND a.runner_id=r.runner_id
+WHERE a.organization_id=$1 AND a.lease_id=$2 FOR UPDATE OF r
+`
+
+type LockLeaseMutationRunnerParams struct {
+	OrganizationID tracker.OrganizationID
+	LeaseID        string
+}
+
+type LockLeaseMutationRunnerRow struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	MachineID      string
+	TokenID        string
+	State          string
+	ExpiresAt      time.Time
+	RemovedAt      *time.Time
+	IsolationTier  string
+	HostServices   []string
+}
+
+func (q *Queries) LockLeaseMutationRunner(ctx context.Context, arg LockLeaseMutationRunnerParams) (LockLeaseMutationRunnerRow, error) {
+	row := q.db.QueryRow(ctx, lockLeaseMutationRunner, arg.OrganizationID, arg.LeaseID)
+	var i LockLeaseMutationRunnerRow
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.RunnerID,
+		&i.MachineID,
+		&i.TokenID,
+		&i.State,
+		&i.ExpiresAt,
+		&i.RemovedAt,
+		&i.IsolationTier,
+		&i.HostServices,
 	)
 	return i, err
 }
