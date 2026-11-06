@@ -247,34 +247,48 @@ func TestAICreditAutoFundFailureDoesNotRegressWebhookPayment(t *testing.T) {
 
 func newPostgresAICreditFixture(t *testing.T, automatic bool) (*Service, *hostedCreditProvider, tenantstore.Repository) {
 	t.Helper()
-	f := newHostedSharedFixture(t)
-	base := &hostedBillingProvider{snapshot: billing.Snapshot{Status: "free"}}
-	plan := f.service.config.Hosted.Plans.Plans[1].PlanReference
-	f.service.config.Hosted.Billing = &HostedBillingConfig{
-		AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_2196_secret"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: base,
-		Prices: []HostedBillingPrice{{PriceID: "price_fixture", Label: "Extended pilot", Plan: plan}},
-	}
-	if err := f.service.config.Hosted.validate(); err != nil {
-		t.Fatal(err)
-	}
-	p := configureTestCredits(t, &browserHostedFixture{service: f.service}, base)
-	d := f.service.database
 	repository := projectRecordPostgres(t)
-	d.billingRepository = repository
-	seedHostedBillingRecordAccount(t, repository, d.hostedOrganization, billingstore.Account{
-		OrganizationID: d.hostedOrganization,
-		Mode:           billing.ModeTest,
-		Binding:        billing.Binding{OrganizationID: string(d.hostedOrganization), AccountID: "acct_fixture", CustomerID: "cus_fixture"},
-		Status:         "free",
-	})
-	if err := repository.WriteTenant(t.Context(), d.hostedOrganization, corestore.Serving, func(writer tenantstore.Writer) error {
-		if err := writer.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: d.hostedOrganization, Mode: billing.ModeTest, AutoEnabled: automatic, ThresholdCents: 100, PriceID: "price_credit", PaymentMethod: "pm_credit"}); err != nil {
-			return err
-		}
-		return writer.CreateCreditPack(t.Context(), billingstore.CreditPack{OrganizationID: d.hostedOrganization, Mode: billing.ModeTest, PriceID: "price_credit", USDCents: 500})
-	}); err != nil {
-		t.Fatal(err)
+	f := accountPreferencesPostgresFixture(t, repository)
+	plans := pilotHostedPlans()
+	f.service.config.Hosted.Plans = &plans
+	now := time.Date(2026, 11, 3, 12, 0, 0, 123456000, time.UTC)
+	f.service.config.now = func() time.Time { return now }
+	d := f.service.database
+	d.now = f.service.config.now
+	d.aiCreditMode = billing.ModeTest
+	d.billingAuditStore = &memoryRunDetails{}
+	base := &hostedBillingProvider{snapshot: billing.Snapshot{Status: "free"}}
+	p := &hostedCreditProvider{hostedBillingProvider: base, chargeStatus: "succeeded"}
+	f.service.config.Hosted.Billing = &HostedBillingConfig{
+		AccountID: "acct_fixture", CustomerID: "cus_fixture", Mode: billing.ModeTest, PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_2196_secret"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: p,
+		Prices:      []HostedBillingPrice{{PriceID: "price_fixture", Label: "Extended pilot", Plan: plans.Plans[1].PlanReference}},
+		CreditPacks: []HostedCreditPack{{PriceID: "price_credit", Label: "AI credit pack", USDCents: 500}},
 	}
+	for _, organization := range []tracker.OrganizationID{d.hostedOrganization, "org_credit_other"} {
+		seedHostedBillingRecordAccount(t, repository, organization, billingstore.Account{
+			OrganizationID: organization, Mode: billing.ModeTest,
+			Binding: billing.Binding{OrganizationID: string(organization), AccountID: "acct_fixture", CustomerID: "cus_fixture"}, Status: "free",
+		})
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+			if err := writer.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: organization, Mode: billing.ModeTest, AutoEnabled: automatic, ThresholdCents: 100, PriceID: "price_credit", PaymentMethod: "pm_credit"}); err != nil {
+				return err
+			}
+			return writer.CreateCreditPack(t.Context(), billingstore.CreditPack{OrganizationID: organization, Mode: billing.ModeTest, PriceID: "price_credit", USDCents: 500})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		if err := repository.ReadTenant(context.WithoutCancel(t.Context()), "org_credit_other", corestore.Serving, func(reader tenantstore.Reader) error {
+			account, err := reader.BillingCreditAccount(context.WithoutCancel(t.Context()), billing.ModeTest)
+			if err == nil && (account.BalanceMicros != 0 || account.AutoEnabled != automatic || account.PaymentMethod != "pm_credit") {
+				return fmt.Errorf("other organization credit account changed: %+v", account)
+			}
+			return err
+		}); err != nil {
+			t.Error(err)
+		}
+	})
 	done := make(chan struct{})
 	close(done)
 	f.service.billing = &hostedBillingWorker{service: f.service, cancel: func() {}, done: done}
