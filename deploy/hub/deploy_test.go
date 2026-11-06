@@ -263,7 +263,7 @@ exec "$@"
 	}
 	wants := map[string]string{
 		"--entry-config":    filepath.Join(root, "etc/detent-hub/cloud.postgres.yaml"),
-		"--sqlite-config":   filepath.Join(root, "etc/detent-hub/cloud.yaml"),
+		"--cloud-config":    filepath.Join(root, "etc/detent-hub/cloud.yaml"),
 		"--repository-root": filepath.Join(root, "opt/detent-hub/sources", commit),
 		"--cloud-env":       filepath.Join(root, "etc/detent-hub/cloud.env"),
 		"--attachments-env": filepath.Join(root, "etc/detent-hub/attachments.env"),

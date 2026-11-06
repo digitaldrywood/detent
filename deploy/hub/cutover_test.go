@@ -20,8 +20,10 @@ import (
 func TestPostgresCutoverFencesCopiesAndSelectsPostgresRelease(t *testing.T) {
 	for _, test := range []cutoverCase{
 		{name: "complete cutover", wantPostgres: true},
+		{name: "relative configuration paths retain authority", relativeConfigPaths: true, wantPostgres: true},
 		{name: "import failure restores SQLite", importFailure: true},
 		{name: "health failure retains PostgreSQL fence", healthFailure: true, wantPostgres: true},
+		{name: "alias failure retains PostgreSQL fence", aliasFailure: true, wantPostgres: true},
 		{name: "remaining child prevents copy and restart", childRemains: true},
 		{name: "checkpointed WAL source preserves committed data", checkpointedWALSource: true, wantPostgres: true},
 		{name: "empty WAL metadata change preserves committed data", checkpointedWALSource: true, existingEmptyWALSource: true, wantPostgres: true},
@@ -41,12 +43,14 @@ type cutoverCase struct {
 	name                       string
 	importFailure              bool
 	healthFailure              bool
+	aliasFailure               bool
 	childRemains               bool
 	checkpointedWALSource      bool
 	existingEmptyWALSource     bool
 	sourceWALMutation          bool
 	emptyControlGroupAfterStop bool
 	lockConflict               string
+	relativeConfigPaths        bool
 	wantPostgres               bool
 }
 
@@ -54,7 +58,7 @@ func cutoverFixture(t *testing.T, test cutoverCase) {
 	t.Helper()
 	root := t.TempDir()
 	for _, name := range []string{
-		"bin", "run/lock", "var/lib/detent-hub", "opt/detent-hub/releases", "source-state", "source-repo",
+		"bin", "config", "run/lock", "var/lib/detent-hub", "opt/detent-hub/releases", "source-state", "source-repo",
 		"tenant-root/org_example", "sys/fs/cgroup/system.slice/detent-cloud.service", "proc/111", "proc/112", "proc/222",
 	} {
 		if err := os.MkdirAll(filepath.Join(root, name), 0700); err != nil {
@@ -82,13 +86,13 @@ func cutoverFixture(t *testing.T, test cutoverCase) {
 	}
 	cloudEnv := filepath.Join(root, "cloud.env")
 	attachmentsEnv := filepath.Join(root, "attachments.env")
-	entryConfig := filepath.Join(root, "cloud-postgres.yaml")
-	sqliteConfig := filepath.Join(root, "cloud.yaml")
+	entryConfig := filepath.Join(root, "config/cloud-postgres.yaml")
+	cloudConfig := filepath.Join(root, "config/cloud.yaml")
 	credentials := map[string][]byte{
 		cloudEnv:       []byte("DETENT_CLOUD_ENV_PRESENT=1\n"),
 		attachmentsEnv: []byte("DETENT_ATTACHMENTS_ACCESS_KEY_ID=cutover-test-key\n"),
 		entryConfig:    []byte("backend: postgres\n"),
-		sqliteConfig:   []byte("backend: sqlite\n"),
+		cloudConfig:    []byte("backend: sqlite\n"),
 	}
 	for path, contents := range credentials {
 		if err := os.WriteFile(path, contents, 0600); err != nil {
@@ -386,7 +390,12 @@ esac
 exec "$FIXTURE_REAL_FLOCK" "$@"
 `,
 		"systemctl": serviceUnit,
-		"seq":       "#!/bin/bash\necho 1\n",
+		"mv": `#!/bin/bash
+set -eu
+if [ "$FIXTURE_ALIAS_FAILURE" = true ] && [ "${!#}" = "$FIXTURE_ENTRY_ARGUMENT" ]; then exit 1; fi
+exec "$FIXTURE_REAL_MV" "$@"
+`,
+		"seq": "#!/bin/bash\necho 1\n",
 		"getent": `#!/bin/bash
 set -eu
 [ "$1" = passwd ] || exit 2
@@ -416,10 +425,15 @@ exec "$@"
 	if err != nil {
 		t.Fatal(err)
 	}
+	entryArgument, cloudArgument := entryConfig, cloudConfig
+	if test.relativeConfigPaths {
+		entryArgument = filepath.Join("config", filepath.Base(entryConfig))
+		cloudArgument = filepath.Join("config", filepath.Base(cloudConfig))
+	}
 	command := exec.CommandContext(t.Context(), "bash", scriptPath,
 		"--binary", candidate,
-		"--entry-config", entryConfig,
-		"--sqlite-config", sqliteConfig,
+		"--entry-config", entryArgument,
+		"--cloud-config", cloudArgument,
 		"--repository-root", filepath.Join(root, "source-repo"),
 		"--cloud-env", cloudEnv,
 		"--attachments-env", attachmentsEnv,
@@ -428,6 +442,11 @@ exec "$@"
 		"--backup-root", backupRoot,
 		"--health-url", server.URL,
 	)
+	command.Dir = root
+	realMove, err := exec.LookPath("mv")
+	if err != nil {
+		t.Fatal(err)
+	}
 	command.Env = append(os.Environ(),
 		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"TMPDIR="+root,
@@ -438,6 +457,9 @@ exec "$@"
 		"FIXTURE_STATE="+state,
 		"FIXTURE_BACKUP_ROOT="+backupRoot,
 		"FIXTURE_REAL_FLOCK="+realFlock,
+		"FIXTURE_REAL_MV="+realMove,
+		"FIXTURE_ENTRY_ARGUMENT="+entryArgument,
+		fmt.Sprintf("FIXTURE_ALIAS_FAILURE=%t", test.aliasFailure),
 		fmt.Sprintf("FIXTURE_IMPORT_FAILURE=%t", test.importFailure),
 		fmt.Sprintf("FIXTURE_HEALTH_FAILURE=%t", test.healthFailure),
 		fmt.Sprintf("FIXTURE_CHILD_REMAINS=%t", test.childRemains),
@@ -453,7 +475,7 @@ exec "$@"
 	)
 	output, runErr := command.CombinedOutput()
 	if test.wantPostgres {
-		if test.healthFailure {
+		if test.healthFailure || test.aliasFailure {
 			if runErr == nil || !strings.Contains(string(output), "PostgreSQL startup was attempted") {
 				t.Fatalf("cutover = %v, want fenced health failure: %s", runErr, output)
 			}
@@ -464,14 +486,14 @@ exec "$@"
 		if err != nil || selected != candidate {
 			t.Fatalf("selected release = %q, want %q (%v)", selected, candidate, err)
 		}
-		config, err := os.ReadFile(sqliteConfig)
+		config, err := os.ReadFile(cloudConfig)
 		if err != nil || !bytes.Equal(config, credentials[entryConfig]) {
 			t.Fatalf("active config = %q, want PostgreSQL config (%v)", config, err)
 		}
 		if _, err := os.Stat(filepath.Join(state, "POSTGRES_CUTOVER")); err != nil {
 			t.Fatalf("cutover marker missing: %v", err)
 		}
-		if test.healthFailure {
+		if test.healthFailure || test.aliasFailure {
 			for _, filename := range []string{"service-active", "socket-active"} {
 				value, err := os.ReadFile(filepath.Join(root, filename))
 				if err != nil || string(value) != "false\n" {
@@ -490,6 +512,29 @@ exec "$@"
 			startService := strings.Index(callLog, "\nstart detent-cloud\n")
 			if stopSocket < 0 || stopService < stopSocket || startSocket < stopService || startService < startSocket {
 				t.Fatalf("Cloud fencing and activation order = %s", callLog)
+			}
+			activePath, err := filepath.EvalSymlinks(cloudConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			aliasPath, err := filepath.EvalSymlinks(entryConfig)
+			if err != nil || aliasPath != activePath {
+				t.Fatalf("entry config resolves to %q, want authoritative %q (%v)", aliasPath, activePath, err)
+			}
+			preserved, err := os.ReadFile(filepath.Join(backupRoot, "cloud.postgres.yaml"))
+			if err != nil || !bytes.Equal(preserved, credentials[entryConfig]) {
+				t.Fatalf("staged PostgreSQL configuration was not preserved (%v)", err)
+			}
+			updated := []byte("backend: postgres\noperator_change: retained\n")
+			if err := os.WriteFile(cloudConfig+".edit", updated, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(cloudConfig+".edit", cloudConfig); err != nil {
+				t.Fatal(err)
+			}
+			aliased, err := os.ReadFile(entryConfig)
+			if err != nil || !bytes.Equal(aliased, updated) {
+				t.Fatalf("entry config missed authoritative edit (%v)", err)
 			}
 			imports, err := os.ReadFile(filepath.Join(root, "imports.log"))
 			if err != nil || string(imports) != "tenant\n" {
@@ -522,6 +567,16 @@ exec "$@"
 		t.Fatalf("cutover unexpectedly succeeded: %s", output)
 	}
 	if !test.wantPostgres {
+		for _, path := range []string{cloudConfig, entryConfig} {
+			contents, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(contents, credentials[path]) {
+				t.Fatalf("pre-start failure changed migration configuration %s (%v)", filepath.Base(path), err)
+			}
+			info, err := os.Lstat(path)
+			if err != nil || !info.Mode().IsRegular() {
+				t.Fatalf("pre-start failure replaced migration input %s (%v)", filepath.Base(path), err)
+			}
+		}
 		selected, err := os.Readlink(currentLink)
 		if err != nil || selected != previous {
 			t.Fatalf("failed cutover selected %q, want previous %q (%v): %s", selected, previous, err, output)

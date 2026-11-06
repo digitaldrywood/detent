@@ -12,7 +12,7 @@ SETPRIV=/usr/bin/setpriv
 
 usage() {
 	cat >&2 <<'EOF'
-usage: cutover-postgres.sh --binary PATH --entry-config PATH --sqlite-config PATH --repository-root PATH --cloud-env PATH --attachments-env PATH --source-state PATH --tenant-root PATH --backup-root PATH --health-url URL
+usage: cutover-postgres.sh --binary PATH --entry-config PATH --cloud-config PATH --repository-root PATH --cloud-env PATH --attachments-env PATH --source-state PATH --tenant-root PATH --backup-root PATH --health-url URL
 EOF
 }
 
@@ -21,12 +21,12 @@ fail() {
 	exit 1
 }
 
-binary='' entry_config='' sqlite_config='' repository_root='' cloud_env='' attachments_env='' source_state='' tenant_root='' backup_root='' health_url=''
+binary='' entry_config='' cloud_config='' repository_root='' cloud_env='' attachments_env='' source_state='' tenant_root='' backup_root='' health_url=''
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 		--binary) binary=${2:-}; shift 2 ;;
 		--entry-config) entry_config=${2:-}; shift 2 ;;
-		--sqlite-config) sqlite_config=${2:-}; shift 2 ;;
+		--cloud-config) cloud_config=${2:-}; shift 2 ;;
 		--repository-root) repository_root=${2:-}; shift 2 ;;
 		--cloud-env) cloud_env=${2:-}; shift 2 ;;
 		--attachments-env) attachments_env=${2:-}; shift 2 ;;
@@ -38,13 +38,15 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
-for value in "$binary" "$entry_config" "$sqlite_config" "$repository_root" "$cloud_env" "$attachments_env" "$source_state" "$tenant_root" "$backup_root" "$health_url"; do
+for value in "$binary" "$entry_config" "$cloud_config" "$repository_root" "$cloud_env" "$attachments_env" "$source_state" "$tenant_root" "$backup_root" "$health_url"; do
 	[ -n "$value" ] || { usage; exit 2; }
 done
 
 [ -f "$binary" ] && [ ! -L "$binary" ] && [ -x "$binary" ] || fail "the selected release binary is unavailable"
 [ -f "$entry_config" ] && [ ! -L "$entry_config" ] || fail "the PostgreSQL configuration is not a regular file"
-[ -f "$sqlite_config" ] && [ ! -L "$sqlite_config" ] || fail "the active SQLite configuration is not a regular file"
+[ -f "$cloud_config" ] && [ ! -L "$cloud_config" ] || fail "the authoritative Cloud configuration is not a regular file"
+[ ! "$entry_config" -ef "$cloud_config" ] || fail "the staged PostgreSQL configuration must be distinct from the active configuration"
+cloud_config=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$cloud_config") || fail "the authoritative Cloud configuration path cannot be resolved"
 [ -f "$cloud_env" ] && [ ! -L "$cloud_env" ] || fail "the provisioned Cloud environment file is unavailable"
 [ -f "$attachments_env" ] && [ ! -L "$attachments_env" ] || fail "the provisioned archive environment file is unavailable"
 [ -d "$repository_root" ] && [ ! -L "$repository_root" ] || fail "the exact source tree is unavailable"
@@ -161,8 +163,8 @@ restored_sqlite=false
 
 restore_sqlite_service() {
 	if [ "$config_switched" = true ]; then
-		sudo -n install -o root -g "$SERVICE_GROUP" -m 0640 "$backup_root/cloud.sqlite.yaml" "$sqlite_config.restore.$$" || return 1
-		sudo -n mv -f "$sqlite_config.restore.$$" "$sqlite_config" || return 1
+		sudo -n install -o root -g "$SERVICE_GROUP" -m 0640 "$backup_root/cloud.sqlite.yaml" "$cloud_config.restore.$$" || return 1
+		sudo -n mv -f "$cloud_config.restore.$$" "$cloud_config" || return 1
 		config_switched=false
 	fi
 	if [ "$release_switched" = true ]; then
@@ -223,10 +225,14 @@ on_exit() {
 		echo "the Cloud socket was stopped before service state was verified; both Cloud units remain fenced" >&2
 	fi
 	if [ "$marker_written" = true ] && [ "$postgres_start_attempted" != true ] && [ "$restored_sqlite" = true ]; then sudo -n rm -f "$STATE/POSTGRES_CUTOVER"; fi
-	sudo -n rm -f "$current_link.next.$$" "$current_link.restore.$$" "$sqlite_config.next.$$" "$sqlite_config.restore.$$" || true
+	sudo -n rm -f "$current_link.next.$$" "$current_link.restore.$$" "$cloud_config.next.$$" "$cloud_config.restore.$$" "$entry_config.next.$$" || true
 	exit "$status"
 }
 trap on_exit EXIT
+
+sudo -n install -o root -g "$SERVICE_GROUP" -m 0440 "$entry_config" "$backup_root/cloud.postgres.yaml"
+sudo -n cmp -s "$entry_config" "$backup_root/cloud.postgres.yaml" || fail "the staged PostgreSQL configuration copy could not be verified"
+sudo -n ln -s "$cloud_config" "$entry_config.next.$$"
 
 pre_stop_pid=$(systemctl show -p MainPID --value "$UNIT") || fail "the active Cloud process ID is unavailable"
 [ "$pre_stop_pid" != 0 ] || fail "the active Cloud service has no main process"
@@ -291,7 +297,7 @@ PY
 children_clear=true
 
 sudo -n install -d -o root -g "$SERVICE_GROUP" -m 0750 "$backup_root/platform" "$backup_root/tenants"
-sudo -n install -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0440 "$sqlite_config" "$backup_root/cloud.sqlite.yaml"
+sudo -n install -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0440 "$cloud_config" "$backup_root/cloud.sqlite.yaml"
 copy_sealed() {
 	local source=$1 destination=$2
 	if ! sudo -n test -f "$source" || sudo -n test -L "$source"; then fail "a registered SQLite source is not a regular file"; fi
@@ -521,8 +527,8 @@ except BaseException:
 PY
 marker_written=true
 config_switched=true
-sudo -n install -o root -g "$SERVICE_GROUP" -m 0640 "$entry_config" "$sqlite_config.next.$$"
-sudo -n mv -f "$sqlite_config.next.$$" "$sqlite_config"
+sudo -n install -o root -g "$SERVICE_GROUP" -m 0640 "$entry_config" "$cloud_config.next.$$"
+sudo -n mv -f "$cloud_config.next.$$" "$cloud_config"
 release_switched=true
 sudo -n ln -s "$candidate_release" "$current_link.next.$$"
 sudo -n mv -f "$current_link.next.$$" "$current_link"
@@ -543,5 +549,6 @@ for _ in $(seq 1 300); do
 	sleep 2
 done
 [ "$healthy" = true ] || fail "the PostgreSQL service did not reach verified health"
+sudo -n mv -f "$entry_config.next.$$" "$entry_config" || fail "the PostgreSQL configuration alias could not be selected"
 complete=true
 echo "PostgreSQL cutover is serving commit ${commit:0:9}; retained $metrics_database_count tenant metrics copies"

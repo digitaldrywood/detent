@@ -564,7 +564,7 @@ PY
 	sudo -n env DETENT_DEPLOY_LOCK_HELD=true "$receiver_release" \
 		--binary "$candidate_release" \
 		--entry-config /etc/detent-hub/cloud.postgres.yaml \
-		--sqlite-config /etc/detent-hub/cloud.yaml \
+		--cloud-config /etc/detent-hub/cloud.yaml \
 		--repository-root "$cutover_source" \
 		--cloud-env /etc/detent-hub/cloud.env \
 		--attachments-env /etc/detent-hub/attachments.env \
