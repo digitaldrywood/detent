@@ -140,7 +140,7 @@ func newExportPostgresFixture(t *testing.T) (tenantstore.Repository, hostedSecur
 	plans := pilotHostedPlans()
 	cfg.Hosted.Plans = &plans
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	cfg.now = func() time.Time { return now }
 	store, err := openDatabase(t.Context(), cfg)
 	if err != nil {
