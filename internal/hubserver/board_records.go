@@ -321,7 +321,7 @@ func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, param
 	finishHydration := timeSpan(ctx, "board_hydrate")
 	defer finishHydration()
 	prepared := make(map[tracker.NativeWorkItemID]boardPreparedRecord, len(records)+len(workRecordsForResponse))
-	preparation := s.prepareBoardPage(ctx, scope, records, now, true, prepared)
+	preparation := s.prepareBoardPage(ctx, scope, records, now, includeBoard, prepared)
 	defer preparation.close()
 	returnedRecords := make([]viewstore.BoardRecord, 0, min(len(records), limit))
 	for index, record := range records {

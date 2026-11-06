@@ -128,6 +128,7 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+		scope := nativeScope{organization: org, project: "example", credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
 		for index := range 200 {
 			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index))
 			changeID := fmt.Sprintf("change_%03d", index)
@@ -193,6 +194,30 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
+			if index == 1 || index == 199 {
+				counted.relationshipItems = map[tracker.NativeWorkItemID]int{}
+				counted.changeItems = map[tracker.NativeWorkItemID]int{}
+				counted.reads.Store(0)
+				started := time.Now()
+				deadline, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+				page, err := service.readBoardRecords(deadline, scope, url.Values{"limit": {"1"}})
+				cancel()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(page.Items) != 1 || page.Items[0].OrganizationID != org || page.Items[0].WorkItemID != "wi_001" {
+					t.Fatalf("default list=%+v", page.Items)
+				}
+				if len(counted.changeItems) != 0 {
+					t.Errorf("default list fetched %d discarded Change summaries", len(counted.changeItems))
+				}
+				if reads := counted.reads.Load(); reads > 4 {
+					t.Errorf("default list used %d tenant reads, want <=4", reads)
+				}
+				t.Logf("default tenant=%s size=%d tenant_reads=%d elapsed=%s", org, index+1, counted.reads.Load(), time.Since(started))
+				counted.relationshipItems = nil
+				counted.changeItems = nil
+			}
 		}
 		newer := tracker.ChangeRequest{ID: "change_newer", OrganizationID: org, ProjectID: "example", WorkItemID: "wi_000", LinkedIssues: []tracker.NativeWorkItemID{"wi_000"}, Title: "Newer draft", Revision: 1, CreatedAt: now.Add(time.Minute), UpdatedAt: now.Add(time.Minute)}
 		raw, _ := json.Marshal(newer)
@@ -216,7 +241,6 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		scope := nativeScope{organization: org, project: "example", credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
 		counted.scalar = true
 		counted.reads.Store(0)
 		before, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "archived": {"all"}, "include": {"board"}})
@@ -288,12 +312,8 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 				if got := counted.relationshipItems[id]; got != 1 {
 					t.Errorf("%s limit %d: item %s hydrated %d times, want once", org, limit, id, got)
 				}
-				wantChange := 0
-				if index < limit {
-					wantChange = 1
-				}
-				if got := counted.changeItems[id]; got != wantChange {
-					t.Errorf("limit %d: item %s enriched %d times, want %d", limit, id, got, wantChange)
+				if got := counted.changeItems[id]; got != 0 {
+					t.Errorf("limit %d: item %s enriched %d times, want 0", limit, id, got)
 				}
 			}
 			t.Logf("%s limit=%d distinct=%d ordinary=%d work=%d", org, limit, len(counted.relationshipItems), len(combined.Items), len(combined.Work.Items))

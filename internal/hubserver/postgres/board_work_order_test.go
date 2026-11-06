@@ -279,7 +279,7 @@ func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
 			index  int
 			action string
 			want   int64
-		}{{2, "remove label", 257}, {1, "move archive lane", 256}, {4, "delete", 256}, {6, "rollback", 256}, {6, "remove label", 257}, {6, "repeat", 257}} {
+		}{{2, "remove label", 257}, {1, "move archive lane", 256}, {4, "delete", 256}, {6, "rollback", 256}, {6, "remove label", 257}, {8, "repeat", 257}} {
 			err := repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
 				row, err := w.BoardItem(ctx, "prj_example", tracker.NativeWorkItemID(fmt.Sprintf("wi_%04d", change.index)))
 				if err != nil {
