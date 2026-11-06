@@ -394,19 +394,13 @@ func (w *outboxWorker) run(ctx context.Context) {
 	defer ticker.Stop()
 	for {
 		for {
-			processed, err := w.service.processSlackDelivery(ctx)
-			if err != nil && ctx.Err() == nil {
-				w.service.config.Logger.WarnContext(ctx, "Slack delivery storage failed", "error", err)
-			}
-			githubProcessed := false
+			var github func(context.Context) (bool, error)
 			if w.service.config.OutboxBackend != nil {
-				githubProcessed, err = w.service.ProcessOutbox(ctx)
-			} else {
-				err = nil
+				github = w.service.ProcessOutbox
 			}
-			processed = processed || githubProcessed
-			if err != nil && !errors.Is(err, context.Canceled) {
-				w.service.config.Logger.WarnContext(ctx, "github outbox delivery failed", "error", err)
+			processed, err := processOutboxStep(ctx, w.service.processSlackDelivery, github)
+			if err != nil && ctx.Err() == nil {
+				w.service.config.Logger.WarnContext(ctx, "outbox delivery failed", "error", err)
 			}
 			if !processed || ctx.Err() != nil {
 				break
@@ -419,6 +413,20 @@ func (w *outboxWorker) run(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+func processOutboxStep(ctx context.Context, slack, github func(context.Context) (bool, error)) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	processed, err := slack(ctx)
+	if processed || err != nil || github == nil {
+		return processed, err
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return github(ctx)
 }
 
 func (w *outboxWorker) signal() {
