@@ -115,47 +115,13 @@ func (s *Service) startGitHubImport(c echo.Context) error {
 }
 
 func (s *Service) startGitHubImportOperation(request startGitHubImportRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
-	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		now = payloadTimestamp(ctx, now)
-		integration, err := readProjectIntegration(ctx, tx, scope)
-		if err != nil {
-			return nil, err
-		}
-		if !integration.ManualImportEnabled || integration.RepositoryID == 0 || request.IssueNumber <= 0 {
-			return nil, nativePublicInvalid("Enable manual intake on a repository-backed project and provide a positive issue number")
-		}
-		var id string
-		err = tx.QueryRowContext(ctx, "SELECT id FROM github_imports WHERE project_id = ? AND issue_number = ?", scope.project, request.IssueNumber).Scan(&id)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return nil, err
-		}
-		if id == "" {
-			id = payloadNativeID(ctx, "imp")
-			_, err = tx.ExecContext(ctx, "INSERT INTO github_imports (id, project_id, issue_number, observed_at) VALUES (?, ?, ?, ?)", id, scope.project, request.IssueNumber, formatHubTime(now))
-			if err != nil {
-				return nil, err
-			}
-		} else if request.Restart {
-			current, err := readGitHubImport(ctx, tx, scope, id)
-			if err != nil {
-				return nil, err
-			}
-			if current.Revision != request.ExpectedRevision {
-				return nil, nativeConflict(current.Revision)
-			}
-			_, err = tx.ExecContext(ctx, "UPDATE github_imports SET stage = 'issue', cursor = '', edit_sequence = 0, status = 'pending', gaps_json = '[]', last_error = '', retry_after = NULL, revision = revision + 1 WHERE id = ?", id)
-			if err != nil {
-				return nil, err
-			}
-		}
-		return readGitHubImport(ctx, tx, scope, id)
-	}
+	return nil
 }
 
 func (s *Service) getGitHubImport(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
-	result, err := readGitHubImport(ctx, s.database.reader, nativeRequestScope(c), c.Param("import"))
+	result, err := s.readGitHubImportRecord(ctx, nativeRequestScope(c), c.Param("import"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -176,7 +142,7 @@ func (s *Service) advanceGitHubImport(c echo.Context) error {
 		// Legacy callers do not supply a retry key; preserve their revision
 		// conflict semantics. Explicit keys use the shared durable receipt.
 		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-		current, err := readGitHubImport(readCtx, s.database.reader, nativeRequestScope(c), id)
+		current, err := s.readGitHubImportRecord(readCtx, nativeRequestScope(c), id)
 		cancelRead()
 		if err != nil {
 			return s.nativeAPIError(c, err)
@@ -191,7 +157,7 @@ func (s *Service) advanceGitHubImport(c echo.Context) error {
 		var failure *nativeError
 		if errors.As(err, &failure) && failure.status == http.StatusTooManyRequests {
 			// Read back the import state advanced by this request on the writer.
-			current, readErr := readGitHubImport(c.Request().Context(), s.database.db, nativeRequestScope(c), id)
+			current, readErr := s.readGitHubImportRecord(c.Request().Context(), nativeRequestScope(c), id)
 			if readErr != nil {
 				return s.nativeAPIError(c, readErr)
 			}
@@ -202,229 +168,11 @@ func (s *Service) advanceGitHubImport(c echo.Context) error {
 	return c.JSONBlob(http.StatusOK, result)
 }
 func (s *Service) advanceGitHubImportCommand(ctx context.Context, scope nativeScope, id string, revision tracker.Revision, key string) (json.RawMessage, error) {
-	input := struct {
-		ExpectedRevision tracker.Revision `json:"expected_revision,string"`
-	}{revision}
-	options := nativeCommandOptions{OperationID: projectOperationID(scope, "POST", "/imports/"+id+"/advance"), Feature: "github_integration"}
-	if replay, found, err := s.nativeCommandReplay(ctx, scope, options.OperationID, key, input); found || err != nil {
-		return replay, err
-	}
-
-	if s.config.ImportBackend == nil {
-		return nil, nativePublicInvalid("GitHub import transport is not configured")
-	}
-	current, err := readGitHubImport(ctx, s.database.reader, scope, id)
-	if err != nil {
-		return nil, err
-	}
-	if current.Revision != revision {
-		return nil, nativeConflict(current.Revision)
-	}
-	if current.Stage == "finished" {
-		return json.Marshal(current)
-	}
-	if current.RetryAfter != nil && s.config.now().Before(*current.RetryAfter) {
-		return nil, &nativeError{Code: "invalid_request", Message: "Import retry is not ready", status: http.StatusTooManyRequests, publicMessage: true}
-	}
-	integration, err := readProjectIntegration(ctx, s.database.reader, scope)
-	if err != nil {
-		return nil, err
-	}
-	if !integration.ManualImportEnabled {
-		return nil, nativePublicInvalid("Manual intake is disabled")
-	}
-	page, fetchErr := s.fetchImportPage(ctx, integration, current)
-	return s.executeNativeMutation(ctx, scope, options, tracker.Mutation{IdempotencyKey: key}, input, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		now = payloadTimestamp(ctx, now)
-		latest, err := readGitHubImport(ctx, tx, scope, current.ID)
-		if err != nil {
-			return nil, err
-		}
-		if latest.Revision != current.Revision {
-			return nil, nativeConflict(latest.Revision)
-		}
-		active, err := readProjectIntegration(ctx, tx, scope)
-		if err != nil {
-			return nil, err
-		}
-		if active.Revision != integration.Revision {
-			return nil, nativeConflict(active.Revision)
-		}
-		if fetchErr != nil {
-			retry := now.Add(time.Minute)
-			if page.RetryAt.After(retry) {
-				retry = page.RetryAt
-			}
-			_, err = tx.ExecContext(ctx, "UPDATE github_imports SET status = 'partial', last_error = ?, retry_after = ?, revision = revision + 1 WHERE id = ?", truncateOutboxError(fetchErr.Error()), formatHubTime(retry), current.ID)
-		} else {
-			err = applyGitHubImportPage(ctx, tx, scope, integration, current, page, now)
-		}
-		if err != nil {
-			return nil, err
-		}
-		result, err := readGitHubImport(ctx, tx, scope, current.ID)
-		if err != nil {
-			return nil, err
-		}
-		return result, nil
-	})
-}
-
-func applyGitHubImportPage(ctx context.Context, tx *sql.Tx, scope nativeScope, integration ProjectIntegration, current GitHubImport, page GitHubImportPage, now time.Time) error {
-	if page.NextCursor != "" && page.NextCursor == current.Cursor {
-		return nativePublicInvalid("GitHub pagination did not advance")
-	}
-	if current.Stage == "issue" {
-		if page.Issue == nil || page.Issue.Number != current.IssueNumber {
-			return nativePublicInvalid("GitHub import returned the wrong issue")
-		}
-		if err := importGitHubIssue(ctx, tx, scope, integration, &current, *page.Issue, now); err != nil {
-			return err
-		}
-	}
-	if current.Stage == "dependencies" && current.Cursor == "" {
-		if _, err := tx.ExecContext(ctx, "UPDATE github_import_records SET current_dependency = 0 WHERE import_id = ? AND kind = 'dependency'", current.ID); err != nil {
-			return err
-		}
-	}
-	for _, record := range page.Records {
-		if record.SourceKey == "" || !json.Valid(record.Data) {
-			return nativePublicInvalid("GitHub import record is incomplete")
-		}
-		raw, err := marshalNative(record)
-		if err != nil {
-			return err
-		}
-		inserted, err := tx.ExecContext(ctx, `INSERT INTO github_import_records (import_id, source_key, kind, record_json, observed_at, dependency_id, provenance_external_id) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, current.ID, record.SourceKey, record.Kind, raw, formatHubTime(now), record.DependencyID, record.Provenance.ExternalID)
-		if err != nil {
-			return err
-		}
-		count, err := inserted.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if count == 0 {
-			if record.Kind == "dependency" {
-				if _, err := tx.ExecContext(ctx, "UPDATE github_import_records SET current_dependency = 1 WHERE import_id = ? AND source_key = ?", current.ID, record.SourceKey); err != nil {
-					return err
-				}
-			}
-			continue
-		}
-		if record.Kind == "comment" && record.Body != "" {
-			if err := importGitHubComment(ctx, tx, scope, current.WorkItemID, record, now); err != nil {
-				return err
-			}
-		} else if err := appendNativeHistory(ctx, tx, scope, current.WorkItemID, "github.imported", tracker.CollaborationData{Operation: record.Kind, Reason: record.SourceKey}, now); err != nil {
-			return err
-		}
-	}
-	current.Gaps = append(current.Gaps, page.Gaps...)
-	stage := current.Stage
-	if page.NextCursor == "" {
-		switch stage {
-		case "issue":
-			stage = "comments"
-		case "comments":
-			stage = "timeline"
-		case "timeline":
-			stage = "dependencies"
-		case "dependencies":
-			stage = "edits"
-		case "edits":
-			if page.EditsFinished {
-				stage = "finished"
-			}
-		}
-	}
-	if page.EditSequence != 0 && page.NextCursor == "" {
-		current.EditSequence = page.EditSequence
-	}
-	status := "pending"
-	if stage == "finished" {
-		status = "retrieved"
-	}
-	gaps, err := marshalNative(current.Gaps)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE github_imports SET work_item_id = ?, stage = ?, cursor = ?, status = ?, gaps_json = ?, source_updated_at = ?, observed_at = ?, pages = pages + 1, revision = revision + 1, last_error = '', retry_after = NULL, edit_sequence = ? WHERE id = ?`, current.WorkItemID, stage, page.NextCursor, status, gaps, current.SourceUpdatedAt, formatHubTime(now), current.EditSequence, current.ID)
-	if err != nil {
-		return err
-	}
-	return resolveImportedDependencies(ctx, tx, scope, now)
+	return nil, nativePublicInvalid("GitHub import transport is not configured")
 }
 
 func (s *Service) fetchImportPage(ctx context.Context, integration ProjectIntegration, job GitHubImport) (GitHubImportPage, error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancelRead()
-	request := GitHubImportRequest{Repository: integration.Repository, Profile: integration.Profile, IssueNumber: job.IssueNumber, Stage: job.Stage, Cursor: job.Cursor}
-	var sequence int64
-	if job.Stage == "edits" {
-		var external, legacy sql.NullString
-		err := s.database.reader.QueryRowContext(readCtx, `SELECT sequence, provenance_external_id, CASE WHEN provenance_external_id IS NULL THEN record_json END FROM github_import_records WHERE import_id = ? AND kind IN ('issue', 'comment') AND sequence > ? ORDER BY sequence LIMIT 1`, job.ID, job.EditSequence).Scan(&sequence, &external, &legacy)
-		if errors.Is(err, sql.ErrNoRows) {
-			return GitHubImportPage{EditsFinished: true}, nil
-		}
-		if err != nil {
-			return GitHubImportPage{}, err
-		}
-		if external.Valid {
-			request.SourceID = external.String
-		} else {
-			var record GitHubImportRecord
-			if err := json.Unmarshal([]byte(legacy.String), &record); err != nil {
-				return GitHubImportPage{}, err
-			}
-			request.SourceID = record.Provenance.ExternalID
-		}
-		if request.SourceID == "" {
-			return GitHubImportPage{EditSequence: sequence, Gaps: []string{"Source node ID was unavailable for an edit-history lookup"}}, nil
-		}
-	}
-	page, err := s.config.ImportBackend.FetchImportPage(ctx, request)
-	page.EditSequence = sequence
-	return page, err
-}
-
-func importGitHubIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, integration ProjectIntegration, current *GitHubImport, source IssueSource, now time.Time) error {
-	scope.importedContent = true
-	if source.NodeID == "" || source.CreatedAt.IsZero() || source.UpdatedAt.IsZero() {
-		return nativePublicInvalid("GitHub issue provenance is incomplete")
-	}
-	if integration.Profile == "github_compatible" {
-		stamp, err := newSourceStamp(source.UpdatedAt, normalizedIssue(source))
-		if err != nil {
-			return err
-		}
-		if _, err := applyIssueProjection(ctx, tx, integration.RepositoryID, normalizedIssue(source), stamp, now, true); err != nil {
-			return err
-		}
-	}
-	err := tx.QueryRowContext(ctx, "SELECT native_id FROM issues WHERE project_id = ? AND github_node_id = ?", scope.project, source.NodeID).Scan(&current.WorkItemID)
-	if errors.Is(err, sql.ErrNoRows) && integration.Profile == "native" {
-		author := source.AuthorID
-		if author == "" {
-			author = "unavailable"
-		}
-		issue, createErr := createNativeIssueTx(ctx, tx, scope, tracker.CreateIssue{Title: source.Title, Body: source.Body, Labels: source.Labels, Assignees: source.Assignees, Provenance: &tracker.Provenance{Provider: "github", ExternalID: source.NodeID, AuthorID: author, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt, ObservedAt: now}}, now)
-		if createErr != nil {
-			return createErr
-		}
-		current.WorkItemID = string(issue.WorkItemID)
-		if _, err := tx.ExecContext(ctx, "UPDATE github_imports SET intake_pending = 1 WHERE id = ?", current.ID); err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, "UPDATE issues SET repository_id = ?, github_node_id = ?, github_number = ?, github_database_id = ?, source_updated_at = ?, synchronized_at = ?, created_at = ?, author_login = ? WHERE native_id = ?", integration.RepositoryID, source.NodeID, source.Number, source.DatabaseID, formatHubTime(source.UpdatedAt), formatHubTime(now), formatHubTime(source.CreatedAt), author, current.WorkItemID)
-	}
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE issues SET url = ? WHERE native_id = ?", source.URL, current.WorkItemID); err != nil {
-		return err
-	}
-	current.SourceUpdatedAt = formatHubTime(source.UpdatedAt)
-	return nil
+	return GitHubImportPage{}, nativePublicInvalid("GitHub import transport is not configured")
 }
 
 func importGitHubComment(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, record GitHubImportRecord, now time.Time) error {
@@ -455,34 +203,12 @@ func importGitHubComment(ctx context.Context, tx *sql.Tx, scope nativeScope, ite
 	return recordNativeChange(ctx, tx, scope, comment, item, 1, "comment.imported", tracker.CollaborationData{CommentID: comment.ID, Revision: 1}, now)
 }
 
-func resolveImportedDependencies(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
-	prefix, legacy, err := legacyImportDependencies(ctx, tx, scope.project)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, prefix+`DELETE FROM issue_dependencies WHERE provenance = 'github_import'
-AND dependent_issue_id IN (SELECT i.id FROM issues i JOIN github_imports g ON g.work_item_id = i.native_id WHERE g.project_id = ? AND g.intake_pending = 1)
-AND NOT EXISTS (SELECT 1 FROM github_import_records r JOIN github_imports g ON g.id = r.import_id JOIN issues b ON b.id = issue_dependencies.blocker_issue_id JOIN issues i ON i.id = issue_dependencies.dependent_issue_id
-WHERE g.work_item_id = i.native_id AND r.kind = 'dependency' AND r.current_dependency = 1 AND b.github_node_id = `+importedDependencyID+`)`, append(append([]any{}, legacy...), scope.project)...)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, prefix+`INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at)
-SELECT b.id, i.id, 'github_import', ?, ? FROM github_import_records r JOIN github_imports g ON g.id = r.import_id JOIN issues i ON i.native_id = g.work_item_id JOIN issues b ON b.project_id = i.project_id AND b.github_node_id = `+importedDependencyID+` WHERE g.project_id = ? AND g.intake_pending = 1 AND r.kind = 'dependency' AND r.current_dependency = 1 ON CONFLICT DO NOTHING`, append(append([]any{}, legacy...), formatHubTime(now), formatHubTime(now), scope.project)...)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, prefix+`UPDATE github_imports SET intake_pending = 0 WHERE project_id = ? AND intake_pending = 1 AND stage = 'finished' AND NOT EXISTS (
-SELECT 1 FROM github_import_records r WHERE r.import_id = github_imports.id AND r.kind = 'dependency' AND r.current_dependency = 1 AND NOT EXISTS (
-SELECT 1 FROM issues i WHERE i.project_id = github_imports.project_id AND i.github_node_id = `+importedDependencyID+`))`, append(append([]any{}, legacy...), scope.project)...)
-	return err
-}
-
 func (s *Service) listGitHubImportRecords(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	scope := nativeRequestScope(c)
-	if _, err := readGitHubImport(ctx, s.database.reader, scope, c.Param("import")); err != nil {
+	id := c.Param("import")
+	if _, err := s.readGitHubImportRecord(ctx, scope, id); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	limit, cursor, key, err := s.nativePage(c)
@@ -493,19 +219,12 @@ func (s *Service) listGitHubImportRecords(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, nativePublicInvalid("Invalid import cursor"))
 	}
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT sequence, record_json, current_dependency FROM github_import_records WHERE import_id = ? AND sequence > ? ORDER BY sequence LIMIT ?", c.Param("import"), after, limit+1)
+	records, err := s.readGitHubImportRecords(ctx, scope, id, after, limit)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	defer rows.Close()
 	result := tracker.Page[GitHubImportRecord]{Items: []GitHubImportRecord{}}
-	for rows.Next() {
-		var sequence int64
-		var raw string
-		var currentDependency bool
-		if err := rows.Scan(&sequence, &raw, &currentDependency); err != nil {
-			return s.nativeAPIError(c, err)
-		}
+	for _, row := range records {
 		if len(result.Items) == limit {
 			result.NextCursor, err = encodeNativeCursor(cursor, key)
 			if err != nil {
@@ -513,18 +232,12 @@ func (s *Service) listGitHubImportRecords(c echo.Context) error {
 			}
 			break
 		}
-		var record GitHubImportRecord
-		if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		record, err := s.decodeGitHubImportRecord(ctx, row)
+		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		if record.Kind == "dependency" {
-			record.CurrentDependency = &currentDependency
-		}
 		result.Items = append(result.Items, record)
-		cursor.After = strconv.FormatInt(sequence, 10)
-	}
-	if err := rows.Err(); err != nil {
-		return s.nativeAPIError(c, err)
+		cursor.After = strconv.FormatInt(row.Sequence, 10)
 	}
 	return c.JSON(http.StatusOK, result)
 }

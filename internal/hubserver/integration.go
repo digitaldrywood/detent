@@ -99,25 +99,16 @@ FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id WHERE p.organ
 }
 
 func (s *Service) getProjectIntegration(c echo.Context) error {
-	if s.config.TenantRepository != nil {
-		record, err := s.readProjectRecord(c.Request().Context(), nativeRequestScope(c))
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		value := projectIntegrationRecord(record)
-		value.WorkflowMarkdown, err = s.projectRecordWorkflow(c.Request().Context(), record)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return c.JSON(http.StatusOK, value)
-	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
-	result, err := s.projectIntegration(ctx, s.database.reader, nativeRequestScope(c))
+	record, err := s.readProjectRecord(c.Request().Context(), nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, result)
+	value := projectIntegrationRecord(record)
+	value.WorkflowMarkdown, err = s.projectRecordWorkflow(c.Request().Context(), record)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, value)
 }
 
 func (s *Service) getCutoverReceipt(c echo.Context) error {
