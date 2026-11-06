@@ -37,8 +37,8 @@ func (r *summaryCostReader) ReadFacets(context.Context, []tracker.ProjectID, tim
 func (r *summaryCostReader) HasPriorData(context.Context, []tracker.ProjectID, time.Time, string) (bool, error) {
 	panic("unexpected prior read")
 }
-func (r *summaryCostReader) ReadReportUsage(_ context.Context, q reportstore.OverviewQuery) ([]reportstore.UsageFact, error) {
-	if q.Principal != r.principal {
+func (r *summaryCostReader) ReadSummaryUsage(_ context.Context, project tracker.ProjectID, principal string, from, to time.Time, lifetime []tracker.NativeWorkItemID) ([]reportstore.UsageFact, error) {
+	if principal != r.principal {
 		panic("summary visibility changed")
 	}
 	return r.usage, nil

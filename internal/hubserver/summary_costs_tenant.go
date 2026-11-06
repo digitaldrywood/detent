@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -18,7 +17,7 @@ func (s *Service) readSummaryCostsTenant(ctx context.Context, scope nativeScope,
 		if !ok {
 			return fmt.Errorf("daily summary report owner is unavailable")
 		}
-		usageReader, ok := r.(reportstore.UsageReader)
+		usageReader, ok := r.(reportstore.SummaryUsageReader)
 		if !ok {
 			return fmt.Errorf("daily summary usage owner is unavailable")
 		}
@@ -35,9 +34,11 @@ func (s *Service) readSummaryCostsTenant(ctx context.Context, scope nativeScope,
 				out.shipped = append(out.shipped, nativeShippedIssue{ID: id, ClosedAt: *fact.CompletedAt})
 			}
 		}
-		query.From = time.Unix(0, 0).UTC()
-		query.Limit = 100000
-		usage, err := usageReader.ReadReportUsage(ctx, query)
+		ids := make([]tracker.NativeWorkItemID, 0, len(shipped))
+		for id := range shipped {
+			ids = append(ids, tracker.NativeWorkItemID(id))
+		}
+		usage, err := usageReader.ReadSummaryUsage(ctx, scope.project, principal, window.From, window.To, ids)
 		if err != nil {
 			return err
 		}
