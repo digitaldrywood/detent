@@ -15,18 +15,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/gate"
 	hubapi "github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -71,10 +75,7 @@ func TestPostgresBoundedChangeReadRechecksRoleAfterHydration(t *testing.T) {
 	var change tracker.ChangeRequest
 	decodeHubResponse(t, created, &change)
 	details := f.service.config.RunDetails.(*memoryRunDetails)
-	keyResponse := f.request(t, owner, http.MethodPost, "/api/v2/organizations/org_security/api-keys", hostedKeyRequest{Name: "Example read key", Scope: "read", NeverExpires: true, ProjectAccess: hostedProjectsAll})
-	requireNativeStatus(t, keyResponse, http.StatusCreated)
-	var key tokenResponse
-	decodeHubResponse(t, keyResponse, &key)
+	key := seedChangeReadCredential(t, repository, f.project)
 	var keyRevoked bool
 	details.beforeRead = func(ctx context.Context) error {
 		details.beforeRead = nil
@@ -174,10 +175,7 @@ func TestPostgresBoundedChangeRuntimeRecovery(t *testing.T) {
 	repository, f, owner, admin := newChangePolicyPostgresFixtureWithAdmin(t, 3)
 	server := httptest.NewServer(f.service.Handler())
 	t.Cleanup(server.Close)
-	response := f.request(t, owner, http.MethodPost, "/api/v2/organizations/org_security/api-keys", hostedKeyRequest{Name: "Example recovery key", Scope: "read", NeverExpires: true, ProjectAccess: hostedProjectsAll})
-	requireNativeStatus(t, response, http.StatusCreated)
-	var key tokenResponse
-	decodeHubResponse(t, response, &key)
+	key := seedChangeReadCredential(t, repository, f.project)
 	originalDB, originalReader := f.service.database.db, f.service.database.reader
 	f.service.database.db, f.service.database.reader = nil, nil
 	t.Cleanup(func() { f.service.database.db, f.service.database.reader = originalDB, originalReader })
@@ -713,4 +711,40 @@ func boundedChangeSpool(t *testing.T, source *memoryRunDetails) *eventstore.Cont
 		}
 	}
 	return eventstore.NewContent(spool)
+}
+
+func seedChangeReadCredential(t *testing.T, repository tenantstore.Repository, project tracker.ProjectID) tokenResponse {
+	t.Helper()
+	token, err := apikey.GenerateToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := newNativeID("credential")
+	hash := apikey.HashToken(token)
+	now := time.Now().UTC()
+	expires := now.Add(time.Hour)
+	binding := runnerauth.NewBinding()
+	enrollmentID := newNativeID("enrollment")
+	operations := []string{runnerauth.Read}
+	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_security", ID: id, Name: "Example read credential", Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "worker", KeyScope: "read", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_security", TokenID: id, ProjectID: project}); err != nil {
+			return err
+		}
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: "org_security", ID: string(binding.MachineID), Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
+			return err
+		}
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: "org_security", ID: enrollmentID, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenHash: apikey.HashToken(enrollmentID), Scope: "projects", ProjectIDs: []tracker.ProjectID{project}, Operations: operations, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example-owner"}); err != nil {
+			return err
+		}
+		if err := w.RedeemRunnerEnrollment(t.Context(), enrollmentID, binding.RunnerID, binding.MachineID, now); err != nil {
+			return err
+		}
+		return w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: "org_security", RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenID: id, EnrollmentID: enrollmentID, Scope: "projects", State: "active", Operations: operations, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{project}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return tokenResponse{ID: id, Token: token}
 }
