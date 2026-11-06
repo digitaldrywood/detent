@@ -3,8 +3,11 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"slices"
@@ -12,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -122,6 +127,9 @@ func TestBoardRequestHasFixedSQLBudget(t *testing.T) {
 							}
 							slices.Sort(durations)
 							t.Logf("RTT=%s samples=%d p50=%s p95=%s", wire.delay, samples, durations[len(durations)/2], durations[(len(durations)-1)*95/100])
+							if durations[(len(durations)-1)*95/100] > time.Second || durations[len(durations)/2] > 250*time.Millisecond {
+								t.Error("page latency exceeds p50=250ms or p95=1s")
+							}
 						}
 						count := len(statements) + 2
 						t.Logf("statements=%d", count)
@@ -146,6 +154,93 @@ func TestBoardRequestHasFixedSQLBudget(t *testing.T) {
 					})
 				}
 			}
+			for _, part := range []string{"counts", "status"} {
+				t.Run(fmt.Sprintf("%s/%d/%s", org, size, part), func(t *testing.T) {
+					boardPartBudget(t, service, measured, wire, details, scope, size, part, expectedCounts)
+				})
+			}
+		}
+	}
+}
+
+func boardPartBudget(t *testing.T, service *Service, measured *postgres.Repository, wire *boardWire, details *memoryRunDetails, scope nativeScope, size int, part string, expectedCounts map[string][2]int) {
+	t.Helper()
+	details.beforeRead = func(context.Context) error { return errors.New("page part read an object") }
+	statements := []string{}
+	ctx := postgres.WithTransactionTiming(t.Context(), func(string, time.Time) {}, func(_ time.Time, query string) { statements = append(statements, query) })
+	params := url.Values{}
+	for index := 1; index <= 10; index++ {
+		params.Add("item", fmt.Sprintf("wi_example_%04d", index))
+	}
+	read := func() *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, "/board/"+part+"?"+params.Encode(), nil).WithContext(ctx)
+		recorder := httptest.NewRecorder()
+		c := echo.New().NewContext(request, recorder)
+		c.Set("native_scope", scope)
+		if err := service.boardModelEndpoint(c, part == "status"); err != nil {
+			t.Fatal(err)
+		}
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+		return recorder
+	}
+	if err := measured.Ping(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	wire.reset()
+	response := read()
+	exchanges, actualStatements := wire.stop()
+	if exchanges > 9 || actualStatements > 16 {
+		t.Fatalf("wire exchanges=%d statements=%d", exchanges, actualStatements)
+	}
+	if expected, ok := expectedCounts[part]; ok && expected != [2]int{exchanges, actualStatements} {
+		t.Errorf("SQL/wire cost changed with data size or tenant: got %d/%d want %v", exchanges, actualStatements, expected)
+	}
+	expectedCounts[part] = [2]int{exchanges, actualStatements}
+	t.Logf("wire exchanges=%d statements=%d", exchanges, actualStatements)
+	modelReads := 0
+	for _, query := range statements {
+		if strings.Contains(query, "FROM native_board_page_summaries c") || strings.Contains(query, "b.page_projected_at") {
+			modelReads++
+		}
+	}
+	if modelReads != 1 {
+		t.Errorf("model reads=%d want 1", modelReads)
+	}
+	if part == "counts" {
+		var rows []viewstore.BoardSummaryRecord
+		if err := json.Unmarshal(response.Body.Bytes(), &rows); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, row := range rows {
+			if row.Kind == "total" {
+				found = row.Total == int64(size)
+			}
+		}
+		if !found {
+			t.Fatalf("missing total=%d in %+v", size, rows)
+		}
+	} else {
+		var rows []viewstore.BoardStatusRecord
+		if err := json.Unmarshal(response.Body.Bytes(), &rows); err != nil || len(rows) != 10 {
+			t.Fatalf("status rows=%d error=%v", len(rows), err)
+		}
+	}
+	if samples, err := strconv.Atoi(os.Getenv("A5_BOARD_RTT_SAMPLES")); err == nil && samples > 0 {
+		durations := make([]time.Duration, 0, samples)
+		for range samples {
+			wire.reset()
+			started := time.Now()
+			read()
+			durations = append(durations, time.Since(started))
+			wire.stop()
+		}
+		slices.Sort(durations)
+		t.Logf("RTT=%s samples=%d p50=%s p95=%s", wire.delay, samples, durations[len(durations)/2], durations[(len(durations)-1)*95/100])
+		if durations[(len(durations)-1)*95/100] > time.Second {
+			t.Error("page part latency exceeds p95=1s")
 		}
 	}
 }
