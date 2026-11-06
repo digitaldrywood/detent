@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -10,6 +9,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -19,52 +21,60 @@ type operatorChatIdentity struct {
 	Origin string `json:"origin,omitempty"`
 }
 
-type operatorChatStore struct {
-	database *database
-}
+type operatorChatOrganizationKey struct{}
+
+type operatorChatStore struct{ database *database }
 
 func (store operatorChatStore) Load(ctx context.Context, id string, now time.Time, ttl time.Duration) (chat.SessionState, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	state := chat.SessionState{ID: id}
-	var identity, lastUsed string
-	err := store.database.reader.QueryRowContext(ctx, `SELECT identity_json, client, last_used_at FROM operator_chat_sessions WHERE connection_id = ? AND last_used_at >= ?`, id, now.Add(-ttl).UTC().Format("2006-01-02T15:04:05.000000000Z")).Scan(&identity, &state.Client, &lastUsed)
-	if errors.Is(err, sql.ErrNoRows) {
-		return state, false, nil
+	organization := tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID)
+	if organization == "" {
+		if scoped, ok := ctx.Value(operatorChatOrganizationKey{}).(tracker.OrganizationID); ok {
+			organization = scoped
+		}
+	}
+	if organization == "" || store.database.postgres == nil {
+		return chat.SessionState{}, false, operatortool.ErrAccessDenied
+	}
+	var row accessstore.OperatorSession
+	err := store.database.postgres.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		row, err = r.OperatorSession(ctx, id, now.Add(-ttl))
+		return err
+	})
+	if errors.Is(err, corestore.ErrNotFound) {
+		return chat.SessionState{}, false, nil
 	}
 	if err != nil {
-		return state, false, err
+		return chat.SessionState{}, false, err
 	}
-	var stored operatorChatIdentity
-	if err := json.Unmarshal([]byte(identity), &stored); err != nil {
-		return state, false, err
+	state := chat.SessionState{ID: id, Identity: operatortool.Identity{OrganizationID: string(organization), PrincipalID: row.PrincipalID, CredentialID: row.CredentialID, SessionID: row.SessionID}, Client: row.Client, LastUsedAt: row.LastUsedAt}
+	if row.Origin.KeyID != "" {
+		raw, err := json.Marshal(row.Origin)
+		if err != nil {
+			return state, false, err
+		}
+		state.Origin = string(raw)
 	}
-	state.Identity, state.Origin = stored.Identity, stored.Origin
-	state.LastUsedAt, err = parseTimeValue(lastUsed)
-	return state, err == nil, err
+	return state, true, nil
 }
 
-func (store operatorChatStore) Save(ctx context.Context, state chat.SessionState, now time.Time, ttl time.Duration, limit int) error {
-	identity, err := json.Marshal(operatorChatIdentity{Identity: state.Identity, Origin: state.Origin})
-	if err != nil {
-		return err
-	}
-	tx, err := store.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `INSERT INTO operator_chat_sessions(connection_id, organization_id, identity_json, client, last_used_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(connection_id) DO UPDATE SET last_used_at = excluded.last_used_at WHERE identity_json = excluded.identity_json`, state.ID, state.Identity.OrganizationID, string(identity), state.Client, state.LastUsedAt.UTC().Format("2006-01-02T15:04:05.000000000Z"))
-	if err != nil {
-		return err
-	}
-	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+func (store operatorChatStore) Save(ctx context.Context, state chat.SessionState, _ time.Time, _ time.Duration, limit int) error {
+	if !state.Identity.Valid() || store.database.postgres == nil {
 		return operatortool.ErrAccessDenied
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM operator_chat_sessions WHERE last_used_at < ? OR connection_id NOT IN (SELECT connection_id FROM operator_chat_sessions ORDER BY last_used_at DESC, connection_id DESC LIMIT ?)`, now.Add(-ttl).UTC().Format("2006-01-02T15:04:05.000000000Z"), limit); err != nil {
-		return err
+	row := accessstore.OperatorSession{OrganizationID: tracker.OrganizationID(state.Identity.OrganizationID), ID: state.ID, PrincipalID: state.Identity.PrincipalID, CredentialID: state.Identity.CredentialID, SessionID: state.Identity.SessionID, Client: state.Client, LastUsedAt: state.LastUsedAt}
+	if state.Origin != "" {
+		if err := json.Unmarshal([]byte(state.Origin), &row.Origin); err != nil || row.Origin.KeyID == "" {
+			return operatortool.ErrAccessDenied
+		}
 	}
-	return tx.Commit()
+	err := store.database.postgres.WriteTenant(ctx, row.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error { return w.SaveOperatorSession(ctx, row, limit) })
+	if errors.Is(err, accessstore.ErrDenied) {
+		return operatortool.ErrAccessDenied
+	}
+	return err
 }
 
 func (s *Service) resolveOperatorChatAuthority(ctx context.Context, identity operatortool.Identity, origin string) (operatortool.Authority, error) {

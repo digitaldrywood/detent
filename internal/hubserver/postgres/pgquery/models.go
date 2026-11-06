@@ -1811,6 +1811,21 @@ type OnboardingIssueIntake struct {
 	PayloadContentBytes int64
 }
 
+type OperatorChatSession struct {
+	OrganizationID   tracker.OrganizationID
+	ConnectionID     string
+	PrincipalID      string
+	CredentialID     string
+	SessionID        string
+	Client           string
+	OriginKeyID      string
+	OriginBinding    string
+	OriginSubject    string
+	OriginIssuer     string
+	OriginGeneration int64
+	LastUsedAt       time.Time
+}
+
 type Organization struct {
 	OrganizationID             tracker.OrganizationID
 	Name                       string

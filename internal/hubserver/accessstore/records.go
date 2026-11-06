@@ -233,6 +233,7 @@ type ProjectAccessCleaner interface {
 }
 
 type Reader interface {
+	OperatorSession(context.Context, string, time.Time) (OperatorSession, error)
 	AccessCredentialHasMember(context.Context, string) (bool, error)
 	HubIdentity(context.Context) (HubIdentity, error)
 	AccessMemberCredentials(context.Context, string, string, int) ([]Credential, error)
@@ -268,6 +269,7 @@ type Reader interface {
 }
 
 type Writer interface {
+	SaveOperatorSession(context.Context, OperatorSession, int) error
 	CreateHubIdentity(context.Context, HubIdentity) error
 	UpdateAccessKeyAudit(context.Context, int64, string, string, tracker.ProjectID, string, int) error
 	SyncHostedAdministratorProjectAccess(context.Context, string, string) error
