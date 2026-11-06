@@ -12,9 +12,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestRequestMetricsBackendParity(t *testing.T) {
+func TestRequestMetricsPostgres(t *testing.T) {
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
-	for _, backend := range []DatabaseBackend{DatabaseSQLite, DatabasePostgres} {
+	for _, backend := range []DatabaseBackend{DatabasePostgres} {
 		t.Run(string(backend), func(t *testing.T) {
 			var store *database
 			if backend == DatabasePostgres {

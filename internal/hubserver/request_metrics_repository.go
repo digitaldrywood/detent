@@ -13,7 +13,7 @@ import (
 
 func (d *database) openRequestMetrics(ctx context.Context, organization tracker.OrganizationID) (*tenantRequestMetrics, error) {
 	if d.postgres == nil {
-		return openRequestMetrics(ctx, d.path+".metrics.sqlite", organization)
+		return nil, ErrHostedDatabaseBinding
 	}
 	if organization == "" {
 		return nil, ErrHostedDatabaseBinding
