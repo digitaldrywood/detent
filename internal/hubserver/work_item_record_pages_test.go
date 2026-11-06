@@ -275,7 +275,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 
 				slices.Sort(durations)
 				p95 := durations[(len(durations)*95+99)/100-1]
-				t.Logf("tenant=%s rows=%d page=%d samples=%d p95=%s sql=7 transactions=1", org.ID, size, limit, len(durations), p95)
+				t.Logf("tenant=%s rows=%d page=%d samples=%d p95=%s sql=8 transactions=1", org.ID, size, limit, len(durations), p95)
 
 			}
 		}
