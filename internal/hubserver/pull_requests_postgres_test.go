@@ -101,6 +101,14 @@ func TestPostgresLinkedChanges(t *testing.T) {
 				if len(views) != 1 || views[0].Head.SHA != input.HeadSHA || views[0].Base.SHA != input.BaseSHA || views[0].Author != owner.identity.Subject {
 					t.Fatalf("current source lost: %+v", views)
 				}
+				stale := tracker.ChangeRequest{ID: changeID, Title: "stale title", CurrentVersion: "stale version"}
+				current, err := f.service.changePullRequestView(t.Context(), nativeScope{organization: "org_security", project: f.project}, string(id), stale, nil, 0, f.service.config.now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if current.Title != views[0].Title || current.Head.SHA != input.HeadSHA || current.URL != views[0].URL {
+					t.Fatalf("mixed Change revisions: %+v", current)
+				}
 				if number == 2 && (views[0].Number != 42 || views[0].URL != input.External.URL) {
 					t.Fatalf("external reference lost: %+v", views)
 				}

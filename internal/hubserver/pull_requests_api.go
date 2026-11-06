@@ -246,6 +246,7 @@ func (s *Service) changePullRequestView(ctx context.Context, scope nativeScope, 
 	if err != nil {
 		return pullRequestView{}, err
 	}
+	change = detail.Change
 	view := pullRequestView{
 		ID: change.ID, ChangeID: change.ID, Title: change.Title, State: "open",
 		Head: pullRequestRef{}, Base: pullRequestRef{}, Checks: []pullRequestCheck{}, Reviews: []pullRequestReview{},
@@ -352,8 +353,12 @@ func (s *Service) readWorkItemPullRequests(ctx context.Context, scope nativeScop
 	}
 	now := s.config.now()
 	key := pullRequestCacheKey(scope, item)
+	cacheable := scope.credential.HostedRole != "reporter"
 	if refresh == "" {
-		if cached, ok := s.pullRequests.get(key, now); ok {
+		if cached, ok := s.pullRequests.get(key, now); cacheable && ok {
+			if err := s.authorizeLinkedChangeView(readCtx, scope, item); err != nil {
+				return nil, err
+			}
 			return cached, nil
 		}
 	} else if !s.pullRequests.allowRefresh(scope.organization, now) {
@@ -380,8 +385,19 @@ func (s *Service) readWorkItemPullRequests(ctx context.Context, scope nativeScop
 			return nil, err
 		}
 	}
-	s.pullRequests.set(key, views, now)
+	if err := s.authorizeLinkedChangeView(readCtx, scope, item); err != nil {
+		return nil, err
+	}
+	if cacheable {
+		s.pullRequests.set(key, views, now)
+	}
 	return views, nil
+}
+
+func (s *Service) authorizeLinkedChangeView(ctx context.Context, scope nativeScope, item string) error {
+	return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		return s.authorizeBulkExportItem(ctx, r, scope, tracker.NativeWorkItemID(item))
+	})
 }
 
 // requestPullRequestHydration asks the reconciler to re-fetch every pull
