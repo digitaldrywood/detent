@@ -1,5 +1,6 @@
 {
   "tables": {
+    "issue_notification_notices": {"class": "hot_state"},
 	"runner_attempt_token_usage": {"class": "hot_state"},
 	"runner_project_daily_tokens": {"class": "hot_state"},
 	"runner_issue_tokens": {"class": "hot_state"},

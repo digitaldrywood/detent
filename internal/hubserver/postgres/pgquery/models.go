@@ -1461,6 +1461,29 @@ type IssueLabel struct {
 	Label          string
 }
 
+type IssueNotificationCursor struct {
+	OrganizationID     tracker.OrganizationID
+	WorkItemID         string
+	Sequence           int64
+	RecipientItem      string
+	RecipientPrincipal string
+}
+
+type IssueNotificationNotice struct {
+	OrganizationID tracker.OrganizationID
+	WorkItemID     string
+	UserID         string
+	EventID        string
+	SourceItem     string
+	DueAt          time.Time
+	StateFrom      string
+	StateTo        string
+	Author         string
+	CommentID      string
+	Related        bool
+	Verify         bool
+}
+
 type IssueRelationship struct {
 	OrganizationID   tracker.OrganizationID
 	FirstProjectID   string
@@ -1469,6 +1492,14 @@ type IssueRelationship struct {
 	SecondIssueID    int64
 	RelationshipType string
 	CreatedAt        time.Time
+}
+
+type IssueSubscription struct {
+	OrganizationID tracker.OrganizationID
+	WorkItemID     string
+	UserID         string
+	Token          string
+	Unsubscribed   bool
 }
 
 type Lease struct {
