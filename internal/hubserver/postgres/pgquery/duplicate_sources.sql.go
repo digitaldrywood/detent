@@ -51,7 +51,7 @@ func (q *Queries) DuplicateDocumentIdentity(ctx context.Context, arg DuplicateDo
 }
 
 const duplicateParentSource = `-- name: DuplicateParentSource :one
-SELECT organization_id, id, project_id, work_item_id, kind, source_id, comment_id, event_id, change_id, revision, indexed_revision, title, scope, status, updated_at, updated_at_submicrosecond, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, vector, token_count, terms, term_frequencies, refresh_order, source_vector, generation, source_visible, placeholder, aggregate_object_key, aggregate_sha256, aggregate_bytes, aggregate_content_bytes, progress_generation, progress_after_id, progress_object_key, progress_sha256, progress_bytes, progress_content_bytes FROM search_documents WHERE organization_id=$1 AND project_id=$2 AND kind='issue' AND source_id=$3 AND NOT placeholder
+SELECT organization_id, id, project_id, work_item_id, kind, source_id, comment_id, event_id, change_id, revision, indexed_revision, title, scope, status, updated_at, updated_at_submicrosecond, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, vector, token_count, terms, term_frequencies, refresh_order, source_vector, generation, source_visible, placeholder, aggregate_object_key, aggregate_sha256, aggregate_bytes, aggregate_content_bytes, progress_generation, progress_after_id, progress_object_key, progress_sha256, progress_bytes, progress_content_bytes, content_revision, content_sha256, indexed_generation, search_format FROM search_documents WHERE organization_id=$1 AND project_id=$2 AND kind='issue' AND source_id=$3 AND NOT placeholder
 `
 
 type DuplicateParentSourceParams struct {
@@ -103,6 +103,10 @@ func (q *Queries) DuplicateParentSource(ctx context.Context, arg DuplicateParent
 		&i.ProgressSha256,
 		&i.ProgressBytes,
 		&i.ProgressContentBytes,
+		&i.ContentRevision,
+		&i.ContentSha256,
+		&i.IndexedGeneration,
+		&i.SearchFormat,
 	)
 	return i, err
 }
@@ -155,9 +159,9 @@ const duplicateSources = `-- name: DuplicateSources :many
 WITH hits AS MATERIALIZED (
  SELECT DISTINCT ON (d.work_item_id) d.id,ts_rank(d.candidate_vector,$2::tsquery) AS rank,i.number,(d.candidate_vector @@ $3::tsquery) AS fingerprint_hit
  FROM (
- SELECT d.organization_id, d.id, d.project_id, d.work_item_id, d.kind, d.source_id, d.comment_id, d.event_id, d.change_id, d.revision, d.indexed_revision, d.title, d.scope, d.status, d.updated_at, d.updated_at_submicrosecond, d.payload_object_key, d.payload_sha256, d.payload_bytes, d.payload_content_bytes, d.vector, d.token_count, d.terms, d.term_frequencies, d.refresh_order, d.source_vector, d.generation, d.source_visible, d.placeholder, d.aggregate_object_key, d.aggregate_sha256, d.aggregate_bytes, d.aggregate_content_bytes, d.progress_generation, d.progress_after_id, d.progress_object_key, d.progress_sha256, d.progress_bytes, d.progress_content_bytes,d.vector AS candidate_vector FROM search_documents d WHERE d.kind='issue' AND NOT d.placeholder AND d.indexed_revision=d.revision AND (d.vector || array_to_tsvector(ARRAY['~'||md5(d.organization_id||':'||md5(d.id))])) @@ $2::tsquery
+ SELECT d.organization_id, d.id, d.project_id, d.work_item_id, d.kind, d.source_id, d.comment_id, d.event_id, d.change_id, d.revision, d.indexed_revision, d.title, d.scope, d.status, d.updated_at, d.updated_at_submicrosecond, d.payload_object_key, d.payload_sha256, d.payload_bytes, d.payload_content_bytes, d.vector, d.token_count, d.terms, d.term_frequencies, d.refresh_order, d.source_vector, d.generation, d.source_visible, d.placeholder, d.aggregate_object_key, d.aggregate_sha256, d.aggregate_bytes, d.aggregate_content_bytes, d.progress_generation, d.progress_after_id, d.progress_object_key, d.progress_sha256, d.progress_bytes, d.progress_content_bytes, d.content_revision, d.content_sha256, d.indexed_generation, d.search_format,d.vector AS candidate_vector FROM search_documents d WHERE d.kind='issue' AND NOT d.placeholder AND d.indexed_revision=d.revision AND (d.vector || array_to_tsvector(ARRAY['~'||md5(d.organization_id||':'||md5(d.id))])) @@ $2::tsquery
  UNION ALL
- SELECT d.organization_id, d.id, d.project_id, d.work_item_id, d.kind, d.source_id, d.comment_id, d.event_id, d.change_id, d.revision, d.indexed_revision, d.title, d.scope, d.status, d.updated_at, d.updated_at_submicrosecond, d.payload_object_key, d.payload_sha256, d.payload_bytes, d.payload_content_bytes, d.vector, d.token_count, d.terms, d.term_frequencies, d.refresh_order, d.source_vector, d.generation, d.source_visible, d.placeholder, d.aggregate_object_key, d.aggregate_sha256, d.aggregate_bytes, d.aggregate_content_bytes, d.progress_generation, d.progress_after_id, d.progress_object_key, d.progress_sha256, d.progress_bytes, d.progress_content_bytes,d.source_vector AS candidate_vector FROM search_documents d WHERE d.kind='comment' AND NOT d.placeholder AND d.source_vector @@ $2::tsquery
+ SELECT d.organization_id, d.id, d.project_id, d.work_item_id, d.kind, d.source_id, d.comment_id, d.event_id, d.change_id, d.revision, d.indexed_revision, d.title, d.scope, d.status, d.updated_at, d.updated_at_submicrosecond, d.payload_object_key, d.payload_sha256, d.payload_bytes, d.payload_content_bytes, d.vector, d.token_count, d.terms, d.term_frequencies, d.refresh_order, d.source_vector, d.generation, d.source_visible, d.placeholder, d.aggregate_object_key, d.aggregate_sha256, d.aggregate_bytes, d.aggregate_content_bytes, d.progress_generation, d.progress_after_id, d.progress_object_key, d.progress_sha256, d.progress_bytes, d.progress_content_bytes, d.content_revision, d.content_sha256, d.indexed_generation, d.search_format,d.source_vector AS candidate_vector FROM search_documents d WHERE d.kind='comment' AND NOT d.placeholder AND d.source_vector @@ $2::tsquery
 ) d
 LEFT JOIN issues i ON i.organization_id=d.organization_id AND i.project_id=d.project_id AND i.native_id=d.work_item_id
 LEFT JOIN project_workflow_states w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.name=i.workflow_state_name
@@ -178,7 +182,7 @@ ORDER BY d.work_item_id,fingerprint_hit DESC,(d.kind='comment') DESC,rank DESC,i
 ), candidates AS MATERIALIZED (
  SELECT id,rank,number,fingerprint_hit FROM hits ORDER BY fingerprint_hit DESC,rank DESC,number DESC,id COLLATE "C" LIMIT 5
 )
-SELECT d.organization_id, d.id, d.project_id, d.work_item_id, d.kind, d.source_id, d.comment_id, d.event_id, d.change_id, d.revision, d.indexed_revision, d.title, d.scope, d.status, d.updated_at, d.updated_at_submicrosecond, d.payload_object_key, d.payload_sha256, d.payload_bytes, d.payload_content_bytes, d.vector, d.token_count, d.terms, d.term_frequencies, d.refresh_order, d.source_vector, d.generation, d.source_visible, d.placeholder, d.aggregate_object_key, d.aggregate_sha256, d.aggregate_bytes, d.aggregate_content_bytes, d.progress_generation, d.progress_after_id, d.progress_object_key, d.progress_sha256, d.progress_bytes, d.progress_content_bytes,d.token_count::bigint AS source_tokens,d.terms::text[] AS source_terms,d.term_frequencies::bigint[] AS source_frequencies,
+SELECT d.organization_id, d.id, d.project_id, d.work_item_id, d.kind, d.source_id, d.comment_id, d.event_id, d.change_id, d.revision, d.indexed_revision, d.title, d.scope, d.status, d.updated_at, d.updated_at_submicrosecond, d.payload_object_key, d.payload_sha256, d.payload_bytes, d.payload_content_bytes, d.vector, d.token_count, d.terms, d.term_frequencies, d.refresh_order, d.source_vector, d.generation, d.source_visible, d.placeholder, d.aggregate_object_key, d.aggregate_sha256, d.aggregate_bytes, d.aggregate_content_bytes, d.progress_generation, d.progress_after_id, d.progress_object_key, d.progress_sha256, d.progress_bytes, d.progress_content_bytes, d.content_revision, d.content_sha256, d.indexed_generation, d.search_format,d.token_count::bigint AS source_tokens,d.terms::text[] AS source_terms,d.term_frequencies::bigint[] AS source_frequencies,
 coalesce(i.revision,0)::bigint AS issue_revision,coalesce(i.number,0)::bigint AS issue_number,coalesce(i.workflow_state_name,'')::text AS issue_state,coalesce(w.terminal,false)::boolean AS terminal
 FROM candidates hit JOIN search_documents d ON d.organization_id=$1 AND d.id=hit.id
 LEFT JOIN issues i ON i.organization_id=d.organization_id AND i.project_id=d.project_id AND i.native_id=d.work_item_id
@@ -278,6 +282,10 @@ func (q *Queries) DuplicateSources(ctx context.Context, arg DuplicateSourcesPara
 			&i.SearchDocument.ProgressSha256,
 			&i.SearchDocument.ProgressBytes,
 			&i.SearchDocument.ProgressContentBytes,
+			&i.SearchDocument.ContentRevision,
+			&i.SearchDocument.ContentSha256,
+			&i.SearchDocument.IndexedGeneration,
+			&i.SearchDocument.SearchFormat,
 			&i.SourceTokens,
 			&i.SourceTerms,
 			&i.SourceFrequencies,

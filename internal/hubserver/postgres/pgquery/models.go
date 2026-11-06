@@ -3629,6 +3629,24 @@ type SearchDocument struct {
 	ProgressSha256          *string
 	ProgressBytes           pgtype.Int8
 	ProgressContentBytes    pgtype.Int8
+	ContentRevision         int64
+	ContentSha256           string
+	IndexedGeneration       int64
+	SearchFormat            int16
+}
+
+type SearchDocumentIndex struct {
+	OrganizationID  tracker.OrganizationID
+	DocumentID      string
+	Generation      int64
+	Format          int16
+	ContentSha256   string
+	WordVector      string
+	SearchText      string
+	SegmentEnds     []int32
+	TokenCount      int64
+	Terms           []string
+	TermFrequencies []int64
 }
 
 type SearchPosting struct {
