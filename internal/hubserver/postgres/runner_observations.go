@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -78,6 +79,9 @@ func (s *session) AppendRunnerHostMetricSegments(ctx context.Context, runnerID s
 		}
 	}
 	acknowledged := make([]hostmetrics.Acknowledgment, 0, len(ordered))
+	filtered := make([]hostmetrics.Summary, 0, len(ordered))
+	hours := make([]time.Time, 0, len(ordered))
+	locks := make([]string, 0, len(ordered))
 	for _, segment := range ordered {
 		if segment.Hour.After(now.UTC().Truncate(time.Hour)) || segment.SegmentID.After(now) {
 			continue
@@ -86,27 +90,49 @@ func (s *session) AppendRunnerHostMetricSegments(ctx context.Context, runnerID s
 		if !segment.Hour.After(now.UTC().Truncate(time.Hour).Add(-720 * time.Hour)) {
 			continue
 		}
-		lock := runnerHostMetricLockKey(s.organization, runnerID, segment.Hour)
-		if _, err := s.db.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, lock); err != nil {
+		filtered = append(filtered, segment)
+		if len(hours) == 0 || !hours[len(hours)-1].Equal(segment.Hour) {
+			hours = append(hours, segment.Hour.UTC())
+			locks = append(locks, runnerHostMetricLockKey(s.organization, runnerID, segment.Hour))
+		}
+	}
+	if len(filtered) == 0 {
+		return acknowledged, nil
+	}
+	if _, err := s.db.Exec(ctx, `WITH ordered AS MATERIALIZED (SELECT key FROM unnest($1::text[]) AS key ORDER BY key) SELECT pg_advisory_xact_lock(hashtextextended(key,0)) FROM ordered ORDER BY key`, locks); err != nil {
+		return nil, mapError(ctx, err)
+	}
+	type segmentKey struct{ hour, id time.Time }
+	existing := make(map[segmentKey]bool)
+	counts := make(map[time.Time]int)
+	stored, err := s.db.Query(ctx, `SELECT hour,segment_id FROM runner_host_metric_segments WHERE organization_id=$1 AND runner_id=$2 AND hour=ANY($3::timestamptz[])`, s.organization, runnerID, hours)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	for stored.Next() {
+		var key segmentKey
+		if err := stored.Scan(&key.hour, &key.id); err != nil {
+			stored.Close()
 			return nil, mapError(ctx, err)
 		}
-		var exists bool
-		if err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM runner_host_metric_segments WHERE organization_id=$1 AND runner_id=$2 AND hour=$3 AND segment_id=$4)`, s.organization, runnerID, segment.Hour, segment.SegmentID).Scan(&exists); err != nil {
-			return nil, mapError(ctx, err)
-		}
-		if exists {
+		existing[key] = true
+		counts[key.hour]++
+	}
+	if err := stored.Err(); err != nil {
+		return nil, mapError(ctx, err)
+	}
+	rows := make([][]any, 0, len(filtered))
+	for _, segment := range filtered {
+		key := segmentKey{hour: pgtransport.Timestamp(segment.Hour), id: pgtransport.Timestamp(segment.SegmentID)}
+		if existing[key] || counts[key.hour] >= maxRunnerHostSegmentsPerHour {
 			continue
 		}
-		var count int
-		if err := s.db.QueryRow(ctx, `SELECT count(*) FROM runner_host_metric_segments WHERE organization_id=$1 AND runner_id=$2 AND hour=$3`, s.organization, runnerID, segment.Hour).Scan(&count); err != nil {
-			return nil, mapError(ctx, err)
-		}
-		if count >= maxRunnerHostSegmentsPerHour {
-			continue
-		}
-		if _, err := s.db.Exec(ctx, `INSERT INTO runner_host_metric_segments (organization_id,runner_id,hour,segment_id,partial,sample_count,logical_cores,memory_total_bytes,memory_available_min_bytes,memory_available_sum_bytes,memory_sample_count,swap_used_max_bytes,swap_sample_count,psi_some_avg10_sum,psi_some_sample_count,psi_full_avg10_sum,psi_full_sample_count,pressure_warn_count,pressure_critical_count,pressure_sample_count,cpu_busy_sum_percent,cpu_busy_max_percent,cpu_sample_count,load1_max,load_sample_count,disk_free_min_bytes,disk_total_min_bytes,disk_sample_count) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`, s.organization, runnerID, segment.Hour, segment.SegmentID, segment.Partial, int64(segment.SampleCount), segment.LogicalCores, int64(segment.MemoryTotalBytes), int64(segment.MemoryAvailableMinBytes), int64(segment.MemoryAvailableSumBytes), int64(segment.MemorySampleCount), int64(segment.SwapUsedMaxBytes), int64(segment.SwapSampleCount), segment.PSISomeAvg10Sum, int64(segment.PSISomeSampleCount), segment.PSIFullAvg10Sum, int64(segment.PSIFullSampleCount), int64(segment.PressureWarnCount), int64(segment.PressureCriticalCount), int64(segment.PressureSampleCount), segment.CPUBusySumPercent, segment.CPUBusyMaxPercent, int64(segment.CPUSampleCount), segment.Load1Max, int64(segment.LoadSampleCount), int64(segment.DiskFreeMinBytes), int64(segment.DiskTotalMinBytes), int64(segment.DiskSampleCount)); err != nil {
-			return nil, mapError(ctx, err)
-		}
+		existing[key] = true
+		counts[key.hour]++
+		rows = append(rows, []any{s.organization, runnerID, segment.Hour, segment.SegmentID, segment.Partial, int64(segment.SampleCount), segment.LogicalCores, int64(segment.MemoryTotalBytes), int64(segment.MemoryAvailableMinBytes), int64(segment.MemoryAvailableSumBytes), int64(segment.MemorySampleCount), int64(segment.SwapUsedMaxBytes), int64(segment.SwapSampleCount), segment.PSISomeAvg10Sum, int64(segment.PSISomeSampleCount), segment.PSIFullAvg10Sum, int64(segment.PSIFullSampleCount), int64(segment.PressureWarnCount), int64(segment.PressureCriticalCount), int64(segment.PressureSampleCount), segment.CPUBusySumPercent, segment.CPUBusyMaxPercent, int64(segment.CPUSampleCount), segment.Load1Max, int64(segment.LoadSampleCount), int64(segment.DiskFreeMinBytes), int64(segment.DiskTotalMinBytes), int64(segment.DiskSampleCount)})
+	}
+	if err := s.insertRunnerCurrentRows(ctx, "runner_host_metric_segments", "organization_id,runner_id,hour,segment_id,partial,sample_count,logical_cores,memory_total_bytes,memory_available_min_bytes,memory_available_sum_bytes,memory_sample_count,swap_used_max_bytes,swap_sample_count,psi_some_avg10_sum,psi_some_sample_count,psi_full_avg10_sum,psi_full_sample_count,pressure_warn_count,pressure_critical_count,pressure_sample_count,cpu_busy_sum_percent,cpu_busy_max_percent,cpu_sample_count,load1_max,load_sample_count,disk_free_min_bytes,disk_total_min_bytes,disk_sample_count", rows); err != nil {
+		return nil, err
 	}
 	return acknowledged, nil
 }

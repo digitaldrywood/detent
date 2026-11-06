@@ -7,18 +7,20 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type heartbeatWire struct {
 	sync.Mutex
-	statements, exchanges int
+	statements, exchanges, transactions int
 }
 type heartbeatConn struct {
 	net.Conn
@@ -47,6 +49,10 @@ func (c *heartbeatConn) Write(value []byte) (int, error) {
 		} else {
 			c.wire.Lock()
 			switch c.pending[0] {
+			case 'P':
+				if len(c.pending) > 6 && strings.HasPrefix(string(c.pending[6:]), "BEGIN ") {
+					c.wire.transactions++
+				}
 			case 'E':
 				c.wire.statements++
 			case 'S':
@@ -100,13 +106,14 @@ func TestTenantHeartbeatHTTPCommandAndAuthority(t *testing.T) {
 		wire.Lock()
 		wire.statements = 0
 		wire.exchanges = 0
+		wire.transactions = 0
 		wire.Unlock()
 		response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], request)
 		requireNativeStatus(t, response, http.StatusOK)
 		wire.Lock()
-		statements, exchanges := wire.statements, wire.exchanges
+		statements, exchanges, transactions := wire.statements, wire.exchanges, wire.transactions
 		wire.Unlock()
-		t.Logf("full HTTP heartbeat statements=%d exchanges=%d", statements, exchanges)
+		t.Logf("full HTTP heartbeat statements=%d exchanges=%d transactions=%d", statements, exchanges, transactions)
 		var snapshot runnerauth.RoutingSnapshot
 		if err := json.Unmarshal(response.Body.Bytes(), &snapshot); err != nil {
 			t.Fatal(err)

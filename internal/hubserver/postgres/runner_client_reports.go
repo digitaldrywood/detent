@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -171,6 +173,7 @@ func (s *session) runnerProviderReportRows(runnerID string, reports []providerca
 }
 
 func (s *session) runnerReportRowsMatch(ctx context.Context, runnerID string, project tracker.ProjectID, tables []runnerReportRows) (bool, error) {
+	arrayTypes := pgtype.NewMap()
 	for _, table := range tables {
 		names, types := strings.Split(table.columns, ","), strings.Split(table.types, ",")
 		args := []any{s.organization, runnerID}
@@ -185,8 +188,23 @@ func (s *session) runnerReportRowsMatch(ctx context.Context, runnerID string, pr
 			values := make([]*string, len(table.rows))
 			for j, row := range table.rows {
 				value := row[i]
-				if at, ok := value.(time.Time); ok {
-					value = at.Format(time.RFC3339Nano)
+				switch typed := value.(type) {
+				case time.Time:
+					value = typed.Format(time.RFC3339Nano)
+				case *time.Time:
+					value = nil
+					if typed != nil {
+						value = typed.Format(time.RFC3339Nano)
+					}
+				case []string:
+					encoded, err := arrayTypes.Encode(pgtype.TextArrayOID, pgtype.TextFormatCode, typed, nil)
+					if err != nil {
+						return false, err
+					}
+					value = nil
+					if encoded != nil {
+						value = string(encoded)
+					}
 				}
 				if value != nil {
 					values[j] = new(fmt.Sprint(value))

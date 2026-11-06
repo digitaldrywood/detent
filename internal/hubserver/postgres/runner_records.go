@@ -749,21 +749,6 @@ func (s *session) ReplaceRunnerProjectObservation(ctx context.Context, row runne
 		}
 		return runnerstore.ErrStaleObservation
 	}
-	if err := s.writeRunnerProjectDiagnosticDetails(ctx, row); err != nil {
-		return err
-	}
-	if _, err := s.db.Exec(ctx, `DELETE FROM runner_project_diagnostic_attempts WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, row.OrganizationID, row.RunnerID, row.ProjectID); err != nil {
-		return mapError(ctx, err)
-	}
-	if _, err := s.db.Exec(ctx, `DELETE FROM runner_project_diagnostic_counts WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, row.OrganizationID, row.RunnerID, row.ProjectID); err != nil {
-		return mapError(ctx, err)
-	}
-	if _, err := s.db.Exec(ctx, `DELETE FROM runner_project_diagnostic_unavailable WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, row.OrganizationID, row.RunnerID, row.ProjectID); err != nil {
-		return mapError(ctx, err)
-	}
-	if _, err := s.db.Exec(ctx, `DELETE FROM runner_project_diagnostic_admissions WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, row.OrganizationID, row.RunnerID, row.ProjectID); err != nil {
-		return mapError(ctx, err)
-	}
 	attemptRows := make([][]any, 0, len(attempts))
 	unavailableRows := make([][]any, 0)
 	for _, attempt := range attempts {
@@ -774,9 +759,6 @@ func (s *session) ReplaceRunnerProjectObservation(ctx context.Context, row runne
 		for key, reason := range attempt.Unavailable {
 			unavailableRows = append(unavailableRows, []any{row.OrganizationID, row.RunnerID, row.ProjectID, "attempt", attempt.Position, key, reason})
 		}
-	}
-	if err := s.insertRunnerCurrentRows(ctx, "runner_project_diagnostic_attempts", "organization_id,runner_id,project_id,position,record_key,issue_id,local_attempt_id,native_attempt_id,generation,fence,stage,running,native_claim,provider_completed_at,host_operation,operation_pending,lease_renewed_at,membership,operation_started_at,operation_observed_at,latest_error_code,latest_error,deferred_at,retry_at,retry_attempt,recovery_owner,lease_expires_at", attemptRows); err != nil {
-		return err
 	}
 	admissionRows := make([][]any, 0)
 	countRows := make([][]any, 0)
@@ -801,14 +783,31 @@ func (s *session) ReplaceRunnerProjectObservation(ctx context.Context, row runne
 			unavailableRows = append(unavailableRows, []any{row.OrganizationID, row.RunnerID, row.ProjectID, "snapshot", -1, key, reason})
 		}
 	}
-	if err := s.insertRunnerCurrentRows(ctx, "runner_project_diagnostic_admissions", "organization_id,runner_id,project_id,position,issue_id,work_item_revision,observed_at,result,predicate,repository_reservations,host_landing_occupancy,provider_role,provider_backend,provider_model", admissionRows); err != nil {
-		return err
+	tables := []runnerReportRows{
+		{"runner_project_diagnostic_attempts", "organization_id,runner_id,project_id,position,record_key,issue_id,local_attempt_id,native_attempt_id,generation,fence,stage,running,native_claim,provider_completed_at,host_operation,operation_pending,lease_renewed_at,membership,operation_started_at,operation_observed_at,latest_error_code,latest_error,deferred_at,retry_at,retry_attempt,recovery_owner,lease_expires_at", "text,text,text,integer,text,text,bigint,text,bigint,bigint,text,boolean,boolean,timestamptz,text,boolean,timestamptz,text[],timestamptz,timestamptz,text,text,timestamptz,timestamptz,integer,text,timestamptz", attemptRows},
+		{"runner_project_diagnostic_admissions", "organization_id,runner_id,project_id,position,issue_id,work_item_revision,observed_at,result,predicate,repository_reservations,host_landing_occupancy,provider_role,provider_backend,provider_model", "text,text,text,integer,text,bigint,timestamptz,text,text,text[],bigint,text,text,text", admissionRows},
+		{"runner_project_diagnostic_counts", "organization_id,runner_id,project_id,count_key,count_value", "text,text,text,text,bigint", countRows},
+		{"runner_project_diagnostic_unavailable", "organization_id,runner_id,project_id,source,position,unavailable_key,reason", "text,text,text,text,integer,text,text", unavailableRows},
 	}
-	if err := s.insertRunnerCurrentRows(ctx, "runner_project_diagnostic_counts", "organization_id,runner_id,project_id,count_key,count_value", countRows); err != nil {
-		return err
+	if currentDigest != row.SnapshotDigest {
+		if err := s.writeRunnerProjectDiagnosticDetails(ctx, row); err != nil {
+			return err
+		}
 	}
-	if err := s.insertRunnerCurrentRows(ctx, "runner_project_diagnostic_unavailable", "organization_id,runner_id,project_id,source,position,unavailable_key,reason", unavailableRows); err != nil {
-		return err
+	for _, table := range tables {
+		equal, err := s.runnerReportRowsMatch(ctx, row.RunnerID, row.ProjectID, []runnerReportRows{table})
+		if err != nil {
+			return err
+		}
+		if equal {
+			continue
+		}
+		if _, err := s.db.Exec(ctx, `DELETE FROM `+table.name+` WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, row.OrganizationID, row.RunnerID, row.ProjectID); err != nil {
+			return mapError(ctx, err)
+		}
+		if err := s.insertRunnerCurrentRows(ctx, table.name, table.columns, table.rows); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -16,7 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type heartbeatWire struct {
@@ -119,6 +120,11 @@ func TestRunnerHeartbeatCommandBoundsAndRollback(t *testing.T) {
 					}
 					if identity.OrganizationID != org {
 						t.Fatalf("cross-tenant identity: %s", identity.OrganizationID)
+					}
+					if locker, ok := w.(runnerstore.UpdateLocker); ok {
+						if err := locker.LockRunnerUpdate(ctx, identity.RunnerID); err != nil {
+							return err
+						}
 					}
 					if _, err := w.AccessCredential(ctx, "runner_shared"); err != nil {
 						return err

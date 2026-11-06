@@ -5,6 +5,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -13,7 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/jackc/pgx/v5"
 )
 
 type runnerHeartbeatIdentityKey struct{}
@@ -30,6 +31,9 @@ type runnerHeartbeatSession struct {
 }
 
 func (r *Repository) WriteRunnerHeartbeat(ctx context.Context, organization tracker.OrganizationID, credentialID, runnerID string, write func(context.Context, tenantstore.Writer) error) (resultErr error) {
+	if _, ok := ctx.Value(readRequestKey{}).(*readRequest); ok {
+		return corestore.ErrTenantMismatch
+	}
 	release, err := r.acquire(ctx, corestore.Serving)
 	if err != nil {
 		return err
@@ -59,7 +63,8 @@ func (r *Repository) WriteRunnerHeartbeat(ctx context.Context, organization trac
 	if identity.RunnerID != runnerID {
 		return errors.Join(accessstore.ErrDenied, results.Close())
 	}
-	h := &runnerHeartbeatSession{session: &session{organization: organization, db: tx, queries: pgquery.New(tx)}, identity: identity}
+	db := timedQueries{DBTX: tx}
+	h := &runnerHeartbeatSession{session: &session{organization: organization, db: db, queries: pgquery.New(db)}, identity: identity}
 	rows, err := results.Query()
 	if err != nil {
 		return errors.Join(mapError(ctx, err), results.Close())
@@ -85,6 +90,13 @@ func (r *Repository) WriteRunnerHeartbeat(ctx context.Context, organization trac
 	}
 	if err := errors.Join(rows.Err(), results.Close()); err != nil {
 		return mapError(ctx, err)
+	}
+	h.credentials = make(map[string]accessstore.Credential)
+	if _, err := h.AccessCredential(ctx, credentialID); err != nil {
+		if errors.Is(err, corestore.ErrNotFound) {
+			err = accessstore.ErrDenied
+		}
+		return err
 	}
 	h.identity.ProjectIDs, err = h.runnerRoutingProjects(ctx, &h.identity, runnerstore.MaxRunnerProjectList)
 	if err != nil {
@@ -139,4 +151,11 @@ func (h *runnerHeartbeatSession) RunnerUrgentUpdate(ctx context.Context) (runner
 func (h *runnerHeartbeatSession) ReplaceRunnerUpdateObservation(ctx context.Context, id string, report *runnerauth.UpdateObservation) error {
 	h.hasUpdate = true
 	return h.session.ReplaceRunnerUpdateObservation(ctx, id, report)
+}
+
+func (h *runnerHeartbeatSession) LockRunnerUpdate(_ context.Context, id string) error {
+	if id != h.identity.RunnerID {
+		return corestore.ErrNotFound
+	}
+	return nil
 }

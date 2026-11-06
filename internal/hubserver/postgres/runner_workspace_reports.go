@@ -28,6 +28,8 @@ func (s *session) ReplaceRunnerWorkspaceReport(ctx context.Context, runnerID str
 	}
 	_, err := s.db.Exec(ctx, `INSERT INTO runner_workspace_reports (organization_id,runner_id,terminal,files,diff,preview,exec,git,isolation)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
-		ON CONFLICT(organization_id,runner_id) DO UPDATE SET terminal=EXCLUDED.terminal,files=EXCLUDED.files,diff=EXCLUDED.diff,preview=EXCLUDED.preview,exec=EXCLUDED.exec,git=EXCLUDED.git,isolation=EXCLUDED.isolation`, s.organization, runnerID, capabilities.Terminal, capabilities.Files, capabilities.Diff, capabilities.Preview, capabilities.Exec, capabilities.Git, isolation)
+		ON CONFLICT(organization_id,runner_id) DO UPDATE SET terminal=EXCLUDED.terminal,files=EXCLUDED.files,diff=EXCLUDED.diff,preview=EXCLUDED.preview,exec=EXCLUDED.exec,git=EXCLUDED.git,isolation=EXCLUDED.isolation
+ WHERE (runner_workspace_reports.terminal,runner_workspace_reports.files,runner_workspace_reports.diff,runner_workspace_reports.preview,runner_workspace_reports.exec,runner_workspace_reports.git,runner_workspace_reports.isolation)
+ IS DISTINCT FROM (EXCLUDED.terminal,EXCLUDED.files,EXCLUDED.diff,EXCLUDED.preview,EXCLUDED.exec,EXCLUDED.git,EXCLUDED.isolation)`, s.organization, runnerID, capabilities.Terminal, capabilities.Files, capabilities.Diff, capabilities.Preview, capabilities.Exec, capabilities.Git, isolation)
 	return mapError(ctx, err)
 }
