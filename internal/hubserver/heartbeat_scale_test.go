@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -15,75 +14,193 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestHeartbeatScaleBenchmark(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "heartbeat-scale")
-	projects := []nativeFixture{f}
-	for i := 1; i < 4; i++ {
-		projects = append(projects, newNativeFixture(t, f.service, f.project.OrganizationID, fmt.Sprintf("heartbeat-scale-%d", i)))
-	}
-	runners := make([]runnerFixture, 3)
-	for i := range runners {
-		runners[i] = prepareRunnerForScope(t, f, "organization", runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
-		runners[i].enroll(t)
-	}
-	r := runners[0]
-	now := f.service.config.now()
-	at := formatHubTime(now)
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	f := newRunnerPGFixture(t)
+	const organization tracker.OrganizationID = "org_startup"
+	const project tracker.ProjectID = "prj_runner"
+	projects := []tracker.ProjectID{project, "prj_scale_1", "prj_scale_2", "prj_scale_3"}
+	binding := runnerauth.NewBinding()
+	token, err := apikey.GenerateToken()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback()
+	f.bindings = append(f.bindings, binding)
+	f.tokens = append(f.tokens, token)
+	now := f.service.config.now()
+	content := eventstore.NewContent(f.service.runDetailStore())
+	versions := make([]eventstore.CollaborationVersion, 0, 1500)
 	for i := range 1500 {
 		state := "Done"
 		if i < 50 {
 			state = "Todo"
 		}
-		result, err := tx.ExecContext(t.Context(), `INSERT INTO issues(workflow_state_id,native_id,organization_id,project_id,number,title,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,native_created_at,native_updated_at) VALUES((SELECT id FROM workflow_states WHERE project_id=? AND source_name=?),?,?,?,?,?,'','open','v1',?,?,?,?,?,?)`, f.project.ID, state, fmt.Sprintf("wi_scale_%d", i), f.project.OrganizationID, f.project.ID, i+1, "Example issue", at, at, at, at, at, at)
+		item := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: project, WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_scale_%d", i)), Number: i + 3, Revision: 1}, Title: "Example issue", State: state, CreatedAt: now, UpdatedAt: now}
+		raw, err := json.Marshal(item)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if i >= 300 {
-			continue
-		}
-		issue, err := result.LastInsertId()
+		version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: organization, ProjectID: project, WorkItemID: item.WorkItemID, RecordID: string(item.WorkItemID), Revision: 1}, raw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		id := fmt.Sprintf("scale-attempt-%d", i)
-		lease, err := tx.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, id, issue, r.binding.MachineID, id, at, at, at, at, at, at)
-		if err != nil {
-			t.Fatal(err)
-		}
-		fence, err := lease.LastInsertId()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.ExecContext(t.Context(), `INSERT INTO lease_runners(lease_id,runner_id) VALUES(?,?)`, id, r.binding.RunnerID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,checkpoint_json,started_at,updated_at,worker_cleanup_required,runner_id) VALUES(?,?,?,?,?,?,?,1,'interrupted','{}',?,?,?,1,?)`, id, f.project.OrganizationID, f.project.ID, fmt.Sprintf("wi_scale_%d", i), id, fence, id, `{"worktree_state":"dirty","resume":"checkpoint","ref":"refs/heads/example","sha":"`+strings.Repeat("a", 40)+`"}`, at, at, r.binding.RunnerID); err != nil {
-			t.Fatal(err)
-		}
+		versions = append(versions, version)
 	}
-	if err := tx.Commit(); err != nil {
+	var items []corestore.WorkItem
+	var leases []leasestore.Lease
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		for _, id := range projects[1:] {
+			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: id, Name: string(id), Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+				return err
+			}
+		}
+		credential, err := w.AccessCredential(t.Context(), "credential_1")
+		if err != nil {
+			return err
+		}
+		credential.ID, credential.Name, credential.Hash = "credential_3", "Example runner 3", apikey.HashToken(token)
+		credential.Fingerprint = tokenFingerprint(credential.Hash)
+		if err := w.CreateAccessCredential(t.Context(), credential); err != nil {
+			return fmt.Errorf("create scale runner credential: %w", err)
+		}
+		enrollment, err := w.RunnerEnrollment(t.Context(), "enrollment_1")
+		if err != nil {
+			return err
+		}
+		enrollment.ID, enrollment.RunnerID, enrollment.MachineID = "enrollment_3", binding.RunnerID, binding.MachineID
+		enrollment.TokenHash, enrollment.RedeemedAt = apikey.HashToken("example_enrollment_3"), nil
+		if err := w.CreateRunnerEnrollment(t.Context(), enrollment); err != nil {
+			return err
+		}
+		if err := w.RedeemRunnerEnrollment(t.Context(), enrollment.ID, binding.RunnerID, binding.MachineID, now); err != nil {
+			return err
+		}
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: string(binding.MachineID), Hostname: "example", Capacity: 4, Version: "test"}); err != nil {
+			return err
+		}
+		identity, err := w.RunnerIdentity(t.Context(), f.bindings[0].RunnerID)
+		if err != nil {
+			return err
+		}
+		identity.RunnerID, identity.MachineID, identity.TokenID, identity.EnrollmentID = binding.RunnerID, binding.MachineID, credential.ID, enrollment.ID
+		if err := w.CreateRunnerIdentity(t.Context(), identity); err != nil {
+			return err
+		}
+		for index, binding := range f.bindings {
+			identity, err := w.RunnerIdentity(t.Context(), binding.RunnerID)
+			if err != nil {
+				return err
+			}
+			identity.ProjectIDs, identity.CapacityLimit, identity.ReportedCapacity, identity.DisplayName = projects, 4, 4, "Example"
+			if err := w.UpdateRunnerRouting(t.Context(), identity.Revision, identity); err != nil {
+				return err
+			}
+			for _, id := range projects {
+				if id == project && index < 2 {
+					continue
+				}
+				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: fmt.Sprintf("credential_%d", index+1), ProjectID: id}); err != nil {
+					return err
+				}
+			}
+		}
+		for i := range 1500 {
+			state := "Done"
+			if i < 50 {
+				state = "Todo"
+			}
+			item, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: project, NativeID: tracker.NativeWorkItemID(fmt.Sprintf("wi_scale_%d", i)), Number: int64(i + 3), Title: "Example issue", WorkflowStateName: &state})
+			if err != nil {
+				return err
+			}
+			if _, err := w.CreateCollaborationVersion(t.Context(), versions[i]); err != nil {
+				return err
+			}
+			items = append(items, item)
+			if i >= 300 {
+				continue
+			}
+			id := fmt.Sprintf("scale-attempt-%04d", i)
+			lease, err := w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(f.bindings[0].MachineID), SessionID: id, LeaseID: id, TTL: time.Hour})
+			if err != nil {
+				return err
+			}
+			if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: organization, LeaseID: id, RunnerID: f.bindings[0].RunnerID, AssignedAt: now}); err != nil {
+				return err
+			}
+			leases = append(leases, lease)
+		}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, runner := range runners {
+	attempts := make([]leasestore.AttemptEvent, 0, len(leases))
+	events := make([]eventstore.Event, 0, len(leases))
+	for index, lease := range leases {
+		data := tracker.NativeRunData{AttemptID: lease.LeaseID, RunID: lease.LeaseID, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), PolicyID: f.policy.PolicyID, Sequence: 1,
+			MachineID: tracker.MachineID(lease.MachineID), SessionID: lease.SessionID, RunnerID: f.bindings[0].RunnerID, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "example", Model: "example"},
+			Runtime: &tracker.NativeRuntimeObservation{WorkerLaunch: &tracker.NativeWorkerLaunch{PID: 1, ProcessStart: now}}}
+		raw, err := json.Marshal(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref, err := f.service.runDetailStore().StoreDetail(t.Context(), string(organization), raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateNativeDetailReference(t.Context(), f.service.runDetailStore(), organization, ref, raw); err != nil {
+			t.Fatal(err)
+		}
+		attempts = append(attempts, leasestore.AttemptEvent{ID: data.AttemptID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: data.RunID, Sequence: 1, Status: "interrupted", PayloadObjectKey: ref.Key, PayloadReference: ref})
+		raw, err = json.Marshal(tracker.CollaborationEvent{ID: "event_" + lease.LeaseID, OrganizationID: organization, ProjectID: project, AggregateID: items[index].NativeID, Type: "run.started", SchemaVersion: 1, Actor: tracker.Actor{Kind: "service", PrincipalID: "credential_1"}, RecordedAt: now, Data: tracker.CollaborationData{Run: &data}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, err := content.PrepareEvent(t.Context(), organization, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, event)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		for index, attempt := range attempts {
+			if _, err := w.RecordAttempt(t.Context(), attempt); err != nil {
+				return fmt.Errorf("record scale attempt %d: %w", index, err)
+			}
+			if _, err := w.AppendEvent(t.Context(), events[index]); err != nil {
+				return err
+			}
+			if _, err := w.Release(t.Context(), attempt.Fence, "example"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for index, binding := range f.bindings {
 		for _, project := range projects {
-			view := runnerauth.ProjectConfiguration{ProjectID: string(project.project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now}
-			response := performHubAPIRequest(t, f.service, http.MethodPost, project.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"capacity": 4, "version": "test", "project_configuration": view})
+			view := runnerauth.ProjectConfiguration{ProjectID: string(project), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now}
+			path := fmt.Sprintf("/api/v2/organizations/%s/projects/%s/machines/%s/heartbeat", organization, project, binding.MachineID)
+			response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], nativeMachineHeartbeatRequest{DisplayName: "Example", Capacity: 4, Version: "test", OS: "linux", Architecture: "amd64", ProjectConfiguration: &view})
 			requireNativeStatus(t, response, http.StatusOK)
 		}
 	}
-	f.service.tokenUseWork.Wait()
+	path := fmt.Sprintf("/api/v2/organizations/%s/projects/%s/machines/%s/heartbeat", organization, project, f.bindings[0].MachineID)
 	var writer *writerTiming
 	f.service.echo.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -92,74 +209,45 @@ func TestHeartbeatScaleBenchmark(t *testing.T) {
 			return err
 		}
 	})
-	path := f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat"
-	totals := map[string]time.Duration{}
-	var hold, db time.Duration
-	var count int
+	var heartbeat, claimState, hold, db time.Duration
+	var count, released int
 	result := testing.Benchmark(func(b *testing.B) {
-		totals = map[string]time.Duration{}
-		hold, db, count = 0, 0, 0
+		heartbeat, claimState, hold, db, count, released = 0, 0, 0, 0, 0, 0
 		for b.Loop() {
+			started := time.Now()
 			timing := &requestTiming{}
-			previous, last := "", time.Now()
-			timing.trace = func(_ string, _ []driver.NamedValue) {
-				current := time.Now()
-				if previous != "" {
-					totals[previous] += current.Sub(last)
-				}
-				pcs := make([]uintptr, 48)
-				n := runtime.Callers(2, pcs)
-				frames := runtime.CallersFrames(pcs[:n])
-				previous = "transaction_other"
-				for {
-					frame, more := frames.Next()
-					for _, name := range []string{"readRunnerRoutingSnapshot", "mergeRunnerHostMetrics", "readRunnerClaimState", "readHeartbeatChanges", "runnerProjectConfiguration", "readGitHubBatchTask", "runnerDispatchFingerprint", "hostedConsumption", "checkHostedGrowth", "requireCredentialAuthority", "updateRunnerHeartbeat", "storeEncodedRunner", "updateRunnerProblems", "updateProviderReports", "storeRunnerUpdateObservation"} {
-						if strings.Contains(frame.Function, name) {
-							previous = name
-						}
-					}
-					if !more {
-						break
-					}
-				}
-				last = time.Now()
-			}
-			request := newHubAPIRequest(t, http.MethodPost, path, r.redemption.Credential, map[string]any{"capacity": 4, "version": "test", "change_cursor": "", "backend_isolation": r.redemption.BackendIsolation})
+			request := newHubAPIRequest(t, http.MethodPost, path, f.tokens[0], nativeMachineHeartbeatRequest{DisplayName: "Example", Capacity: 4, Version: "test", OS: "linux", Architecture: "amd64"})
 			response := httptest.NewRecorder()
 			f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
 			requireNativeStatus(t, response, http.StatusOK)
-			var snapshot runnerauth.RoutingSnapshot
-			if err := json.Unmarshal(response.Body.Bytes(), &snapshot); err != nil {
-				t.Fatal(err)
-			}
-			if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) > releasedExecutionsPageSize {
-				t.Fatalf("released executions = %+v", snapshot.ClaimState)
-			}
 			if writer == nil {
 				t.Fatal("missing writer timing")
 			}
 			hold += time.Duration(writer.hold.Load())
 			db += time.Duration(timing.db.Load())
+			var snapshot runnerauth.RoutingSnapshot
+			decodeHubResponse(t, response, &snapshot)
+			if snapshot.RunnerID != f.bindings[0].RunnerID {
+				t.Fatalf("heartbeat routing = %+v", snapshot)
+			}
+			heartbeat += time.Since(started)
+			started = time.Now()
+			registrationPath := fmt.Sprintf("/api/v2/organizations/%s/projects/%s/machines/register", organization, project)
+			response = performHubAPIRequest(t, f.service, http.MethodPost, registrationPath, f.tokens[0], map[string]any{"id": f.bindings[0].MachineID, "hostname": "example", "display_name": "Example", "capacity": 4, "version": "test", "os": "linux", "architecture": "amd64"})
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &snapshot)
+			if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) > releasedExecutionsPageSize {
+				t.Fatalf("released executions = %+v", snapshot.ClaimState)
+			}
+			released += len(snapshot.ClaimState.ReleasedExecutions)
+			claimState += time.Since(started)
 			count++
 		}
 	})
-	t.Logf("benchmark=%s issues=1500 nonterminal=50 released=300 runners=3 projects=4 writer_mean_ms=%.3f db_mean_ms=%.3f", result.String(), float64(hold)/float64(count)/1e6, float64(db)/float64(count)/1e6)
-	names := make([]string, 0, len(totals))
-	for name := range totals {
-		names = append(names, name)
+	if released == 0 {
+		t.Fatal("registration did not return seeded released executions")
 	}
-	slices.SortFunc(names, func(a, b string) int {
-		if totals[a] > totals[b] {
-			return -1
-		}
-		if totals[a] < totals[b] {
-			return 1
-		}
-		return 0
-	})
-	for _, name := range names {
-		t.Logf("operation=%s mean_ms=%.3f", name, float64(totals[name])/float64(count)/1e6)
-	}
+	t.Logf("benchmark=%s issues=1500 nonterminal=50 released=300 runners=3 projects=4 heartbeat_mean_ms=%.3f registration_mean_ms=%.3f writer_mean_ms=%.3f db_mean_ms=%.3f", result.String(), float64(heartbeat)/float64(count)/1e6, float64(claimState)/float64(count)/1e6, float64(hold)/float64(count)/1e6, float64(db)/float64(count)/1e6)
 }
 
 func TestHeartbeatResponseReaderSnapshot(t *testing.T) {
