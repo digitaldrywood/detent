@@ -137,6 +137,140 @@ func TestCommitRejectsAbortedTransaction(t *testing.T) {
 	}
 	reuse(t, pools)
 }
+func TestTransactionCleanup(t *testing.T) {
+	for _, name := range []string{"bind failure", "rollback", "cancelled rollback", "failed batch", "failed initial batch", "open batch", "open rows", "commit open rows", "reader rejects writes", "cancelled query"} {
+		t.Run(name, func(t *testing.T) {
+			_, config := fixture(t)
+			pools := openPools(t, config, nil)
+			if name == "bind failure" || name == "failed initial batch" {
+				work := &pgx.Batch{}
+				work.Queue(`INSERT INTO protected VALUES ('first','must-not-run')`)
+				scope := pgtransport.Scope{Organization: "first\x00"}
+				if name == "failed initial batch" {
+					scope.Organization = "first"
+					work = &pgx.Batch{}
+					work.Queue(`SELECT 1/0`)
+				}
+				tx, results, err := pools.BeginBatch(t.Context(), scope, pgtransport.Options{}, work)
+				if name == "bind failure" {
+					if pgtransport.SQLState(err) != "22021" {
+						t.Fatalf("bind failure=%v", err)
+					}
+				} else {
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := results.Close(); pgtransport.SQLState(err) != "22012" {
+						t.Fatalf("initial batch=%v", err)
+					}
+					if err := tx.Commit(t.Context()); !errors.Is(err, pgx.ErrTxCommitRollback) {
+						t.Fatalf("initial batch commit=%v", err)
+					}
+				}
+			} else {
+				tx := begin(t, pools, pgtransport.Options{ReadOnly: name == "reader rejects writes"})
+				switch name {
+				case "rollback", "cancelled rollback":
+					if _, err := tx.Exec(t.Context(), `INSERT INTO protected VALUES ('first','discarded')`); err != nil {
+						t.Fatal(err)
+					}
+					ctx := t.Context()
+					if name == "cancelled rollback" {
+						var cancel context.CancelFunc
+						ctx, cancel = context.WithCancel(ctx)
+						cancel()
+					}
+					if err := tx.Rollback(ctx); err != nil {
+						t.Fatal(err)
+					}
+				case "failed batch":
+					batch := &pgx.Batch{}
+					batch.Queue(`SELECT 1/0`)
+					batch.Queue(`SELECT * FROM protected`)
+					results := tx.SendBatch(t.Context(), batch)
+					if err := results.Close(); err == nil {
+						t.Fatal("failed batch succeeded")
+					}
+					if err := tx.Commit(t.Context()); !errors.Is(err, pgx.ErrTxCommitRollback) {
+						t.Fatalf("commit=%v", err)
+					}
+				case "open batch":
+					batch := &pgx.Batch{}
+					batch.Queue(`SELECT * FROM protected`)
+					results := tx.SendBatch(t.Context(), batch)
+					if err := tx.Rollback(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+					if err := results.Close(); err == nil {
+						t.Fatal("open batch survived rollback")
+					}
+				case "open rows", "commit open rows":
+					rows, err := tx.Query(t.Context(), `SELECT * FROM protected`)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer rows.Close()
+					if name == "commit open rows" {
+						if err := tx.Commit(t.Context()); !errors.Is(err, pgtransport.ErrOpenResults) {
+							t.Fatalf("commit=%v", err)
+						}
+					} else if err := tx.Rollback(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+				case "reader rejects writes":
+					if _, err := tx.Exec(t.Context(), `INSERT INTO protected VALUES ('first','forbidden')`); pgtransport.SQLState(err) != "25006" {
+						t.Fatalf("read-only write=%v", err)
+					}
+					if err := tx.Rollback(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+				case "cancelled query":
+					ctx, cancel := context.WithCancel(t.Context())
+					cancel()
+					_, err := tx.Exec(ctx, `SELECT * FROM protected`)
+					if pgtransport.Classify(err) != pgtransport.Cancel {
+						t.Fatalf("cancelled query=%v", err)
+					}
+					if err := tx.Rollback(ctx); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			reuse(t, pools)
+			tx := begin(t, pools, pgtransport.Options{ReadOnly: true})
+			var count int
+			if err := tx.QueryRow(t.Context(), `SELECT count(*) FROM protected WHERE id<>'same'`).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("unexpected writes=%d err=%v", count, err)
+			}
+		})
+	}
+}
+func TestPoolRoutingAndIsolation(t *testing.T) {
+	_, read := fixture(t)
+	write := read.Copy()
+	read.ConnConfig.RuntimeParams["application_name"] = "example-reader"
+	write.ConnConfig.RuntimeParams["application_name"] = "example-writer"
+	read.ConnConfig.RuntimeParams["default_transaction_isolation"] = "serializable"
+	write.ConnConfig.RuntimeParams["default_transaction_isolation"] = "serializable"
+	pools := openPools(t, read, write)
+	for _, readOnly := range []bool{true, false} {
+		tx := begin(t, pools, pgtransport.Options{ReadOnly: readOnly})
+		var app, isolation string
+		if err := tx.QueryRow(t.Context(), `SELECT current_setting('application_name'),current_setting('transaction_isolation')`).Scan(&app, &isolation); err != nil {
+			t.Fatal(err)
+		}
+		want := "example-writer"
+		if readOnly {
+			want = "example-reader"
+		}
+		if app != want || isolation != "read committed" {
+			t.Fatalf("route=%s isolation=%s", app, isolation)
+		}
+		if err := tx.Commit(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 func TestGuardDetectsBypass(t *testing.T) {
 	_, config := fixture(t)
 	violations := 0
