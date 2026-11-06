@@ -109,8 +109,10 @@ func (s *Service) entryKeyTools(ctx context.Context) ([]operatortool.Definition,
 		}
 	}
 	supported := make([]operatortool.Definition, 0)
+	seen := make(map[string]bool)
 	for _, definition := range definitions {
-		if entryKeyToolSupported(definition.Name) {
+		if entryKeyToolSupported(definition.Name) && !seen[definition.Name] {
+			seen[definition.Name] = true
 			supported = append(supported, definition)
 		}
 	}

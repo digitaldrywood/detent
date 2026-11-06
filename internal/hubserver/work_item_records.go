@@ -674,6 +674,10 @@ func (s *Service) executeWorkItemRecordMutation(ctx context.Context, scope nativ
 	if err != nil || commentID != "" {
 		return raw, err
 	}
+	switch input.(type) {
+	case tracker.CreateComment, tracker.UpdateComment:
+		return raw, nil
+	}
 	var issue tracker.NativeIssue
 	if json.Unmarshal(raw, &issue) == nil && issue.WorkItemID != "" {
 		return s.nativeIssueJSON(ctx, scope, raw)
