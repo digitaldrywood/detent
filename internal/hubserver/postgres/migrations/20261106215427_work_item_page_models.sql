@@ -180,10 +180,6 @@ END $$;
 -- +goose StatementEnd
 CREATE TRIGGER native_work_item_page_issue_dirty AFTER INSERT OR UPDATE OR DELETE ON issues FOR EACH ROW EXECUTE FUNCTION mark_work_item_page_dirty();
 CREATE TRIGGER native_work_item_page_comment_dirty AFTER INSERT OR UPDATE OR DELETE ON native_comments FOR EACH ROW EXECUTE FUNCTION mark_work_item_page_dirty();
-INSERT INTO native_work_item_page_dirty (organization_id,project_id,work_item_id,record_id,kind)
-SELECT organization_id,project_id,native_id,native_id,'item' FROM issues;
-INSERT INTO native_work_item_page_dirty (organization_id,project_id,work_item_id,record_id,kind)
-SELECT organization_id,project_id,work_item_id,id,'comment' FROM native_comments;
 ALTER TABLE native_work_item_pages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE native_work_item_pages FORCE ROW LEVEL SECURITY;
 ALTER TABLE native_comment_pages ENABLE ROW LEVEL SECURITY;

@@ -49,8 +49,6 @@ END $$;
 -- +goose StatementEnd
 CREATE TRIGGER native_relationship_dependency_dirty AFTER INSERT OR UPDATE OR DELETE ON issue_dependencies FOR EACH ROW EXECUTE FUNCTION mark_relationship_page_dirty();
 CREATE TRIGGER native_relationship_related_dirty AFTER INSERT OR UPDATE OR DELETE ON issue_relationships FOR EACH ROW EXECUTE FUNCTION mark_relationship_page_dirty();
-INSERT INTO native_work_item_page_dirty (organization_id,project_id,work_item_id,record_id,kind,propagate)
-SELECT organization_id,project_id,native_id,native_id,'relationships',true FROM issues;
 -- +goose Down
 ALTER TABLE native_work_item_page_progress DROP COLUMN publication_revision;
 DROP TRIGGER native_relationship_related_dirty ON issue_relationships;

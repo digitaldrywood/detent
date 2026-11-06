@@ -31,6 +31,21 @@ func (s *Service) MaintainWorkItemPage(ctx context.Context, organization tracker
 	if _, ok := s.runDetailStore().(*hubmaintenance.Details); !ok {
 		return false, errors.New("maintenance requires byte-limited payload storage")
 	}
+	complete := false
+	if err := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+		backfill, ok := w.(viewstore.WorkItemPageBackfiller)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		var err error
+		complete, err = backfill.BackfillWorkItemPages(ctx)
+		return err
+	}); err != nil {
+		return false, err
+	}
+	if !complete {
+		return true, nil
+	}
 	ctx = context.WithValue(ctx, detailBatchContextKey{}, nil)
 	ctx = context.WithValue(ctx, changeContentKey{}, nil)
 	ctx = context.WithValue(ctx, runDetailContextKey{}, nil)

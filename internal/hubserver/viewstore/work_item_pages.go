@@ -67,3 +67,7 @@ type WorkItemReferenceReader interface {
 type WorkItemPageRevisionReader interface {
 	WorkItemPageProjectionRevision(context.Context) (int64, error)
 }
+
+type WorkItemPageBackfiller interface {
+	BackfillWorkItemPages(context.Context) (bool, error)
+}
