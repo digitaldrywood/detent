@@ -24,7 +24,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 var strippedRequestHeaders = []string{
@@ -512,9 +511,6 @@ func (s *Service) signedCallCSRF(ctx context.Context, organization Organization,
 		request.Header.Set("X-CSRF-Token", csrf)
 	}
 	timeout := 15 * time.Second
-	if claims.Path == "/internal/v1/diff-bodies/vacuum" {
-		timeout = 5 * time.Minute
-	}
 	response, err := (&http.Client{Transport: transport, Timeout: timeout}).Do(request)
 	if err != nil {
 		return 0, nil, err
@@ -531,9 +527,6 @@ func (s *Service) signedCallCSRF(ctx context.Context, organization Organization,
 		if json.Unmarshal(body, &call) == nil {
 			limit = max(limit, int64(operatortool.ResultByteLimit(call.Name)))
 		}
-	}
-	if claims.Path == "/internal/v1/diff-bodies/batch" {
-		limit = 6*tracker.MaxDiffPatchBytes + (1 << 20)
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {

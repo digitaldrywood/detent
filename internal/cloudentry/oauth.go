@@ -359,12 +359,7 @@ func (s *Service) oauthApprove(c echo.Context) (resultErr error) {
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
-	var result sql.Result
-	if s.auth.store.db.postgres != nil {
-		result, err = tx.ExecContext(ctx, `INSERT INTO oauth_requests(id,client_id,redirect_uri,challenge,resource,code_hash,code_expires_at,grant_id,organization_id) SELECT ?,?,?,?,?,?,?,?,? WHERE ?::timestamptz>?::timestamptz ON CONFLICT(id) DO NOTHING`, r.ID, r.Client, r.Redirect, r.Challenge, r.Resource, apikey.HashToken(code), formatTime(s.config.now().Add(5*time.Minute)), id, org.ID, formatTime(r.ExpiresAt), formatTime(s.config.now()))
-	} else {
-		result, err = tx.ExecContext(ctx, `INSERT INTO oauth_requests(id,client_id,redirect_uri,challenge,resource,code_hash,code_expires_at,grant_id) SELECT ?,?,?,?,?,?,?,? WHERE julianday(?)>julianday(?) ON CONFLICT(id) DO NOTHING`, r.ID, r.Client, r.Redirect, r.Challenge, r.Resource, apikey.HashToken(code), formatTime(s.config.now().Add(5*time.Minute)), id, formatTime(r.ExpiresAt), formatTime(s.config.now()))
-	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO oauth_requests(id,client_id,redirect_uri,challenge,resource,code_hash,code_expires_at,grant_id,organization_id) SELECT ?,?,?,?,?,?,?,?,? WHERE ?::timestamptz>?::timestamptz ON CONFLICT(id) DO NOTHING`, r.ID, r.Client, r.Redirect, r.Challenge, r.Resource, apikey.HashToken(code), formatTime(s.config.now().Add(5*time.Minute)), id, org.ID, formatTime(r.ExpiresAt), formatTime(s.config.now()))
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}

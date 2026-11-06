@@ -67,59 +67,12 @@ type Registry struct {
 	now   func() time.Time
 }
 
-func OpenRegistry(ctx context.Context, path string) (*Registry, error) {
-	s, err := openStore(ctx, path, registryApplicationID, "registry")
-	if err != nil {
-		return nil, err
-	}
-	return &Registry{store: s, now: time.Now}, nil
-}
-
 func (r *Registry) Close() error {
 	return r.store.Close()
 }
 
-func (r *Registry) Register(ctx context.Context, organization Organization) (_ bool, resultErr error) {
-	if r.store.db.postgres != nil {
-		return r.postgresRegister(ctx, organization)
-	}
-	if organization.State == "" {
-		organization.State = "ready"
-	}
-	if err := organization.validate(); err != nil {
-		return false, err
-	}
-	tx, err := r.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer tx.cleanup(&resultErr)
-	existing, err := scanOrganization(tx.QueryRowContext(ctx, organizationSelect+" WHERE id = ? OR provider_id = ?", organization.ID, organization.ProviderID))
-	now := formatTime(r.now())
-	switch {
-	case errors.Is(err, ErrOrganizationNotFound):
-		if _, err := tx.ExecContext(ctx, "INSERT INTO organizations(id,provider_id,name,state,endpoint,generation,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
-			organization.ID, organization.ProviderID, organization.Name, organization.State, organization.Endpoint, organization.Generation, now, now); err != nil {
-			return false, err
-		}
-	case err != nil:
-		return false, err
-	case existing.ID != organization.ID || existing.ProviderID != organization.ProviderID || organization.Generation < existing.Generation || existing.Managed || existing.State == "deleted":
-		return false, ErrOrganizationConflict
-	case existing.Name == organization.Name && existing.State == organization.State && existing.Endpoint == organization.Endpoint && existing.Generation == organization.Generation:
-		return false, nil
-	case existing.Generation == organization.Generation && existing.Endpoint != organization.Endpoint:
-		return false, ErrOrganizationConflict
-	default:
-		if _, err := tx.ExecContext(ctx, "UPDATE organizations SET name = ?, state = ?, endpoint = ?, generation = ?, updated_at = ? WHERE id = ?",
-			organization.Name, organization.State, organization.Endpoint, organization.Generation, now, organization.ID); err != nil {
-			return false, err
-		}
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO organization_events(organization_id,event,generation,recorded_at) VALUES (?,?,?,?)", organization.ID, "registered_"+organization.State, organization.Generation, now); err != nil {
-		return false, err
-	}
-	return true, tx.Commit()
+func (r *Registry) Register(ctx context.Context, organization Organization) (bool, error) {
+	return r.postgresRegister(ctx, organization)
 }
 
 const organizationSelect = "SELECT slug,id,provider_id,name,state,endpoint,generation,managed,creator_subject,creator_email,step,attempts,next_attempt_at,error_code,error_detail,checkout_price,updated_at FROM organizations"

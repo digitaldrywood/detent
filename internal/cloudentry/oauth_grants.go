@@ -71,39 +71,25 @@ func (s *Service) revokeOAuthGrant(ctx context.Context, owner, id string) error 
 		}
 		return nil
 	}
-	if s.auth.store.db.postgres != nil {
-		rows, err := s.auth.store.reader.QueryContext(ctx, "SELECT organization_id FROM oauth_grants WHERE id=? AND owner_subject=? LIMIT 2", id, owner)
-		if err != nil {
-			return err
-		}
-		var organizations []string
-		for rows.Next() {
-			var organization string
-			if err := rows.Scan(&organization); err != nil {
-				return errors.Join(err, rows.Close())
-			}
-			organizations = append(organizations, organization)
-		}
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			return err
-		}
-		if len(organizations) != 1 {
-			return sql.ErrNoRows
-		}
-		return s.auth.store.db.postgres.RevokeOAuthGrant(ctx, tracker.OrganizationID(organizations[0]), owner, id)
-	}
-	result, err := s.auth.store.db.ExecContext(ctx, "UPDATE oauth_grants SET revoked_at=COALESCE(revoked_at,?) WHERE id=? AND owner_subject=?", formatTime(s.config.now()), id, owner)
+	rows, err := s.auth.store.reader.QueryContext(ctx, "SELECT organization_id FROM oauth_grants WHERE id=? AND owner_subject=? LIMIT 2", id, owner)
 	if err != nil {
 		return err
 	}
-	count, err := result.RowsAffected()
-	if err != nil {
+	var organizations []string
+	for rows.Next() {
+		var organization string
+		if err := rows.Scan(&organization); err != nil {
+			return errors.Join(err, rows.Close())
+		}
+		organizations = append(organizations, organization)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
-	if count != 1 {
+	if len(organizations) != 1 {
 		return sql.ErrNoRows
 	}
-	return nil
+	return s.auth.store.db.postgres.RevokeOAuthGrant(ctx, tracker.OrganizationID(organizations[0]), owner, id)
 }
 
 func (s *Service) oauthGrantsJSON(c echo.Context) error {

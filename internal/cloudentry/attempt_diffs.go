@@ -5,12 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -280,72 +278,4 @@ func pageHydratedDiff(diff *tracker.AttemptDiff, args operatortool.ChangeArgumen
 		next = &position
 	}
 	return value, next
-}
-
-func (s *Service) maintainAttemptDiffBodies(ctx context.Context, organization Organization) (bool, error) {
-	status, raw, err := s.serviceCall(ctx, organization, "/internal/v1/diff-bodies/batch", struct{}{}, nil)
-	if err != nil {
-		return false, err
-	}
-	if status != http.StatusOK {
-		return false, fmt.Errorf("diff body batch refused: %d", status)
-	}
-	var batch diffbody.Batch
-	if err := json.Unmarshal(raw, &batch); err != nil {
-		return false, err
-	}
-	unlock := s.attachmentLocks.lock(organization.ID, false)
-	defer unlock()
-	for _, file := range batch.Files {
-		if file.Organization != organization.ID {
-			return false, errors.New("diff body batch organization mismatch")
-		}
-		if err := file.Body.Validate(organization.ID, file.Project, tracker.MaxDiffPatchBytes); err != nil {
-			return false, err
-		}
-		path := "/internal/v1/diff-bodies/deleted"
-		var payload any = map[string]string{"key": file.Body.Key}
-		if file.Patch != "" {
-			if err := s.storeDiffBody(ctx, organization.ID, file.Project, file.Body, file.Patch); err != nil {
-				return false, err
-			}
-			file.Patch = ""
-			path, payload = "/internal/v1/diff-bodies/stored", file
-		} else if err := s.attachments.Delete(ctx, file.Body.Key); err != nil {
-			return false, err
-		}
-		status, err := s.serviceRequest(ctx, organization, path, payload, nil)
-		if err != nil {
-			return false, err
-		}
-		if status != http.StatusNoContent {
-			return false, fmt.Errorf("diff body acknowledgment refused: %d", status)
-		}
-	}
-	return len(batch.Files) > 0, nil
-}
-
-func (s *Service) maintainOrganizationDiffBodies(ctx context.Context) {
-	if s.attachments == nil || (s.config.Allocation != nil && s.config.Allocation.TenantPostgres) || s.config.now().Before(s.diffBodySweepAt) {
-		return
-	}
-	organizations, err := s.registry.List(ctx)
-	if err != nil {
-		s.config.Logger.WarnContext(ctx, "diff body registry unavailable", "error", err)
-		return
-	}
-	pending := false
-	for _, organization := range organizations {
-		if organization.State != "ready" {
-			continue
-		}
-		active, err := s.maintainAttemptDiffBodies(ctx, organization)
-		pending = pending || active || err != nil
-		if err != nil && !errors.Is(err, context.Canceled) {
-			s.config.Logger.WarnContext(ctx, "diff body maintenance failed", "organization", organization.ID, "error", err)
-		}
-	}
-	if !pending {
-		s.diffBodySweepAt = s.config.now().Add(time.Hour)
-	}
 }

@@ -327,10 +327,7 @@ func (s *Service) applyPlatformEntitlement(ctx context.Context, session accountS
 }
 
 func (r *Registry) recordEntitlementChange(ctx context.Context, organization string, session accountSession, command tenantPlanCommand, now time.Time) error {
-	var expires any = ""
-	if r.store.db.postgres != nil {
-		expires = nil
-	}
+	var expires any
 	if command.ExpiresAt != nil {
 		expires = formatTime(*command.ExpiresAt)
 	}

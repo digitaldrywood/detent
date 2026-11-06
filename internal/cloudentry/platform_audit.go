@@ -103,24 +103,7 @@ func parseAuditFilter(query url.Values) (platformAuditFilter, error) {
 }
 
 const (
-	auditRecordedKey = "substr(replace(recorded_at,'Z','') || CASE WHEN instr(recorded_at,'.')=0 THEN '.' ELSE '' END || '000000000',1,29)"
-	auditPagePrefix  = `WITH events AS (`
-	auditPageSuffix  = `), keyed AS (SELECT *,` + auditRecordedKey + ` AS at FROM events)
-SELECT id,recorded_at,organization_id,actor,event,detail FROM keyed
-WHERE (?='' OR organization_id=?) AND (?='' OR instr(lower(actor),lower(?))>0)
-AND (?='' OR event=?) AND (?='' OR at>=?) AND (?='' OR at<=?)
-AND (?='' OR (at,?,id)<(?,?,?)) ORDER BY at DESC,id DESC LIMIT ?`
-	authAuditEvents = `SELECT CAST(id AS TEXT) AS id,recorded_at,organization_id,
-COALESCE((SELECT email FROM sessions WHERE subject=a.subject ORDER BY created_at DESC,token_hash DESC LIMIT 1),subject) AS actor,
-CASE WHEN json_valid(event) THEN json_extract(event,'$.kind')
-WHEN event LIKE 'support_requested:%' OR event LIKE 'support_started:%' THEN substr(event,1,instr(event,':')-1) ELSE event END AS event,
-CASE WHEN json_valid(event) THEN '$' || json_extract(event,'$.amount_usd') || ' · ' || json_extract(event,'$.reason')
-WHEN event LIKE 'support_requested:%' OR event LIKE 'support_started:%' THEN substr(event,instr(event,':')+1) ELSE '' END AS detail FROM audit a
-WHERE CASE WHEN json_valid(event) THEN json_extract(event,'$.kind')='ai_credits_adjusted' ELSE 1 END`
-
-	entitlementAuditEvents = `SELECT CAST(rowid AS TEXT) AS id,recorded_at,organization_id,staff_email AS actor,
-CASE action WHEN 'grant' THEN 'plan_granted' WHEN 'create_plan' THEN 'plan_created' WHEN 'base' THEN 'plan_base_changed' WHEN 'subscription' THEN 'plan_subscription_changed' WHEN 'end_subscription' THEN 'plan_subscription_ended' ELSE 'plan_revoked' END AS event,
-plan_id || ' v' || plan_version || CASE WHEN expires_at='' THEN '' ELSE ' until ' || expires_at END || ' · ' || reason AS detail FROM entitlement_changes`
+	auditPagePrefix         = `WITH events AS (`
 	organizationAuditEvents = `SELECT CAST(id AS TEXT) AS id,recorded_at,organization_id,'system' AS actor,'organization_' || event AS event,'generation ' || generation AS detail FROM organization_events`
 	memberAuditEvents       = `SELECT CAST(id AS TEXT) AS id,recorded_at,'' AS organization_id,actor_email AS actor,'member_' || action AS event,
 email || CASE WHEN action='role_changed' THEN ' from ' || previous_role || ' to ' || role WHEN role!='' THEN ' as ' || role ELSE '' END || ' · ' || reason AS detail FROM platform_member_changes`
@@ -173,17 +156,10 @@ func (s *Service) readPlatformAudit(ctx context.Context, f platformAuditFilter) 
 		db                     *entryDatabase
 		pageQuery, eventsQuery string
 	}{
-		{"audit", s.auth.store.db, auditPagePrefix + authAuditEvents + auditPageSuffix, "SELECT DISTINCT event FROM (" + authAuditEvents + ")"},
-		{"entitlement_changes", s.registry.store.db, auditPagePrefix + entitlementAuditEvents + auditPageSuffix, "SELECT DISTINCT event FROM (" + entitlementAuditEvents + ")"},
-		{"organization_events", s.registry.store.db, auditPagePrefix + organizationAuditEvents + auditPageSuffix, "SELECT DISTINCT event FROM (" + organizationAuditEvents + ")"},
-		{"platform_member_changes", s.registry.store.db, auditPagePrefix + memberAuditEvents + auditPageSuffix, "SELECT DISTINCT event FROM (" + memberAuditEvents + ")"},
-	}
-	if s.auth.store.db.postgres != nil {
-		definitions := []string{postgresAuthAuditEvents, postgresEntitlementAuditEvents, organizationAuditEvents, memberAuditEvents}
-		for i := range sources {
-			sources[i].pageQuery = auditPagePrefix + definitions[i] + postgresAuditPageSuffix
-			sources[i].eventsQuery = "SELECT DISTINCT event FROM (" + definitions[i] + ") AS events"
-		}
+		{"audit", s.auth.store.db, auditPagePrefix + postgresAuthAuditEvents + postgresAuditPageSuffix, "SELECT DISTINCT event FROM (" + postgresAuthAuditEvents + ") AS events"},
+		{"entitlement_changes", s.registry.store.db, auditPagePrefix + postgresEntitlementAuditEvents + postgresAuditPageSuffix, "SELECT DISTINCT event FROM (" + postgresEntitlementAuditEvents + ") AS events"},
+		{"organization_events", s.registry.store.db, auditPagePrefix + organizationAuditEvents + postgresAuditPageSuffix, "SELECT DISTINCT event FROM (" + organizationAuditEvents + ") AS events"},
+		{"platform_member_changes", s.registry.store.db, auditPagePrefix + memberAuditEvents + postgresAuditPageSuffix, "SELECT DISTINCT event FROM (" + memberAuditEvents + ") AS events"},
 	}
 	events := map[string]bool{}
 	for _, source := range sources {

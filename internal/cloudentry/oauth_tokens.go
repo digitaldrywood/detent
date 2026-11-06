@@ -78,69 +78,15 @@ func (s *Service) exchangeOAuthToken(ctx context.Context, client string, form ur
 	}
 	refresh = "oauth_refresh_" + refresh
 
-	if s.auth.store.db.postgres != nil {
-		tokens := platformstore.OAuthTokens{AccessHash: apikey.HashToken(access), RefreshHash: apikey.HashToken(refresh), AccessExpiresAt: now.Add(oauthAccessLifetime), RefreshExpiresAt: refreshExpires}
-		repository := s.auth.store.db.postgres
-		if form.Get("grant_type") == "authorization_code" {
-			err = repository.ExchangeOAuthCode(ctx, tracker.OrganizationID(organization.ID), hash, client, form.Get("resource"), form.Get("redirect_uri"), form.Get("code_verifier"), tokens)
-		} else {
-			err = repository.RotateOAuthRefresh(ctx, tracker.OrganizationID(organization.ID), hash, client, form.Get("resource"), tokens)
-		}
-		if err != nil {
-			return oauthTokenResponse{}, entryAuthError(err)
-		}
-		return oauthTokenResponse{AccessToken: access, TokenType: "Bearer", ExpiresIn: int(oauthAccessLifetime / time.Second), RefreshToken: refresh, Scope: oauthScope}, nil
-	}
-
-	tx, err := s.auth.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return oauthTokenResponse{}, err
-	}
-	defer tx.cleanup(&resultErr)
-	var result sql.Result
+	tokens := platformstore.OAuthTokens{AccessHash: apikey.HashToken(access), RefreshHash: apikey.HashToken(refresh), AccessExpiresAt: now.Add(oauthAccessLifetime), RefreshExpiresAt: refreshExpires}
+	repository := s.auth.store.db.postgres
 	if form.Get("grant_type") == "authorization_code" {
-		result, err = tx.ExecContext(ctx, "UPDATE oauth_requests SET consumed_at=? WHERE code_hash=? AND client_id=? AND consumed_at IS NULL AND julianday(code_expires_at)>julianday(?)", formatTime(now), hash, client, formatTime(now))
+		err = repository.ExchangeOAuthCode(ctx, tracker.OrganizationID(organization.ID), hash, client, form.Get("resource"), form.Get("redirect_uri"), form.Get("code_verifier"), tokens)
 	} else {
-		result, err = tx.ExecContext(ctx, "UPDATE oauth_refresh_tokens SET token_hash=?,expires_at=? WHERE grant_id=? AND token_hash=? AND julianday(expires_at)>julianday(?)", apikey.HashToken(refresh), formatTime(refreshExpires), grant, hash, formatTime(now))
+		err = repository.RotateOAuthRefresh(ctx, tracker.OrganizationID(organization.ID), hash, client, form.Get("resource"), tokens)
 	}
 	if err != nil {
-		return oauthTokenResponse{}, err
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return oauthTokenResponse{}, err
-	}
-	if count != 1 {
-		if form.Get("grant_type") == "refresh_token" {
-			if _, err = tx.ExecContext(ctx, "UPDATE oauth_grants SET revoked_at=? WHERE id=? AND revoked_at IS NULL", formatTime(now), grant); err != nil {
-				return oauthTokenResponse{}, err
-			}
-			if err = tx.Commit(); err != nil {
-				return oauthTokenResponse{}, err
-			}
-		}
-		return oauthTokenResponse{}, errNoSession
-	}
-	if form.Get("grant_type") == "refresh_token" {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO oauth_spent_refresh_tokens(token_hash,grant_id,expires_at) VALUES(?,?,?)", hash, grant, codeExpires); err != nil {
-			return oauthTokenResponse{}, err
-		}
-	}
-	result, err = tx.ExecContext(ctx, `UPDATE oauth_grants SET access_hash=?,access_expires_at=? WHERE id=? AND revoked_at IS NULL AND client_id=? AND resource=?`, apikey.HashToken(access), formatTime(now.Add(oauthAccessLifetime)), grant, client, form.Get("resource"))
-	if err != nil {
-		return oauthTokenResponse{}, err
-	}
-	count, err = result.RowsAffected()
-	if err != nil || count != 1 {
-		return oauthTokenResponse{}, errNoSession
-	}
-	if form.Get("grant_type") == "authorization_code" {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO oauth_refresh_tokens(token_hash,grant_id,expires_at) VALUES(?,?,?)", apikey.HashToken(refresh), grant, formatTime(refreshExpires)); err != nil {
-			return oauthTokenResponse{}, err
-		}
-	}
-	if err = tx.Commit(); err != nil {
-		return oauthTokenResponse{}, err
+		return oauthTokenResponse{}, entryAuthError(err)
 	}
 	return oauthTokenResponse{AccessToken: access, TokenType: "Bearer", ExpiresIn: int(oauthAccessLifetime / time.Second), RefreshToken: refresh, Scope: oauthScope}, nil
 }
@@ -154,10 +100,8 @@ func (s *Service) oauthKey(ctx context.Context, column, value string, requireAcc
 	var expires, hash sql.NullString
 	query := `SELECT g.id,c.name,g.owner_subject,g.owner_email,g.organization_id,g.permission,g.resource,g.created_at,g.access_hash,g.access_expires_at FROM oauth_grants g JOIN oauth_clients c ON c.id=g.client_id WHERE g.` + column + `=? AND g.revoked_at IS NULL`
 	args := []any{value}
-	if s.auth.store.db.postgres != nil {
-		query += ` AND (SELECT count(*) FROM oauth_grants duplicate WHERE duplicate.` + column + `=?)=1`
-		args = append(args, value)
-	}
+	query += ` AND (SELECT count(*) FROM oauth_grants duplicate WHERE duplicate.` + column + `=?)=1`
+	args = append(args, value)
 	err := s.auth.store.reader.QueryRowContext(ctx, query, args...).Scan(&k.ID, &k.Name, &k.Owner, &k.OwnerEmail, &organization, &k.Permission, &resource, &created, &hash, &expires)
 	if err != nil {
 		return k, err

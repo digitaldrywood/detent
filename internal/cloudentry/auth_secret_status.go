@@ -2,10 +2,7 @@ package cloudentry
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"net/url"
-	"path/filepath"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
@@ -33,46 +30,9 @@ type AuthSecretDatabaseStatus struct {
 	Problem                    string              `json:"problem,omitempty"`
 }
 
-func AuthSecretStatus(ctx context.Context, path string, keys *hubsecrets.Keyring) (status AuthSecretDatabaseStatus) {
-	status = AuthSecretDatabaseStatus{Database: path, Counts: []AuthSecretCount{}, Problems: []AuthSecretProblem{}}
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		status.Problem = "unreadable_database"
-		return status
-	}
-	databasePath := filepath.ToSlash(absolute)
-	if len(databasePath) >= 3 && databasePath[1] == ':' && databasePath[2] == '/' {
-		databasePath = "/" + databasePath
-	}
-	u := &url.URL{Scheme: "file", Path: databasePath}
-	query := u.Query()
-	query.Set("mode", "ro")
-	query.Add("_pragma", "query_only(1)")
-	query.Add("_pragma", "busy_timeout(2500)")
-	u.RawQuery = query.Encode()
-	db, err := sql.Open("sqlite", u.String())
-	if err != nil {
-		status.Problem = "unreadable_database"
-		return status
-	}
-	defer func() {
-		if err := db.Close(); err != nil {
-			status.Problem = "unreadable_database"
-		}
-	}()
-	if err := db.PingContext(ctx); err != nil {
-		status.Problem = "unreadable_database"
-		return status
-	}
-	if err := readAuthSecretStatus(ctx, &entryDatabase{DB: db}, keys, &status); err != nil {
-		status.Problem = "unreadable_auth_tables"
-	}
-	return status
-}
-
 func readAuthSecretStatus(ctx context.Context, db *entryDatabase, keys *hubsecrets.Keyring, status *AuthSecretDatabaseStatus) (resultErr error) {
 	var hasGitHubConnections bool
-	if err := db.QueryRowContext(ctx, db.choose(`SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='github_user_connections')`, `SELECT to_regclass('platform.github_user_connections') IS NOT NULL`)).Scan(&hasGitHubConnections); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT to_regclass('platform.github_user_connections') IS NOT NULL`).Scan(&hasGitHubConnections); err != nil {
 		return err
 	}
 	query := `SELECT binding,'provider-access',access_token FROM authorizations UNION ALL SELECT binding,'provider-refresh',refresh_token FROM authorizations`

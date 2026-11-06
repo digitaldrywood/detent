@@ -15,11 +15,9 @@ reachable roles whose privileges are not inherited. It requires the critical
 platform tables and their DML grants. No credentials or databases are discovered
 from host state.
 
-Cloud entry selects this repository for every global entry owner through one
-explicit storage backend. SQLite remains the default. Selecting PostgreSQL does
-not import existing files; import and cutover require their own fence and verified
-migration. Never combine PostgreSQL sessions with SQLite key, billing,
-provisioning or platform-administration owners.
+Cloud entry uses this repository for every global entry owner. PostgreSQL
+configuration is required at startup; all durable registry, authentication,
+billing, provisioning and platform-administration state shares this owner.
 
 ## Records and authorization
 
@@ -99,7 +97,7 @@ concurrent mutation and cross-tenant refusals.
 
 ## Cloud entry backend selection
 
-The entry configuration accepts `storage.backend: sqlite` or `postgres`.
+The entry configuration requires `storage.backend: postgres`.
 PostgreSQL requires a platform-only DSN supplied through an environment variable,
 explicit fixed connection budgets and the existing immutable attachment storage:
 
@@ -113,10 +111,10 @@ storage:
 ```
 
 Keep the existing assertion signing key and retained Hub keyring versions. The
-runtime never opens the SQLite registry or auth file in this mode. Invalid roles,
-missing tables or incomplete storage configuration fail startup. The SQLite-only
-disposable staging snapshot is rejected for PostgreSQL; use an isolated staging
-database. Migration authority remains external to entry startup.
+runtime reads registry and authentication records through PostgreSQL. Invalid
+roles, missing tables or incomplete storage configuration fail startup. Use an
+isolated PostgreSQL database for staging. Migration authority remains external
+to entry startup.
 
 Registry, sessions, provider bindings, API keys, OAuth, GitHub connections,
 provisioning, billing, notification queues, archive bindings and administration
@@ -130,7 +128,7 @@ receipt rows store typed output fields and object references. Secret status read
 through the service inspect the selected backend.
 
 Organization identity, monotonic generations, deletion fences, immutable billing
-mappings and retained administration/entitlement history preserve the SQLite
+mappings and retained administration/entitlement history preserve their existing
 contracts. Generated organization slugs allocate a suffix through one counter row
 per base. A preexisting custom alias uses a deterministic organization suffix;
 allocation does not scan an expanding collision history. Imported slug aliases
@@ -145,60 +143,7 @@ The port retains the entry application's existing enumeration and reconciliation
 contracts and adds no fleet scan or per-organization pool. The invariant scope is
 INV-16, INV-18, INV-20, INV-21 and INV-22.
 
-The entry backend-parity journeys exercise SQLite and disposable PostgreSQL with
-isolated SQLite tenant Hubs: login and tenant routing, revoked keys, OAuth exchange
-and refresh replay/rollback, provisioning/deletion, billing, notification identity,
-receipt replay, selected-backend secret diagnostics and keyring-compatible restart.
-
-## Platform snapshot transformation
-
-`Repository.NewImporter` binds a frozen registry/auth snapshot to the P28 catalog,
-both exact source schema manifests, one snapshot ID, the complete organization
-allowlist, the original assertion signing public key and retained keyring versions.
-The source pool must have an explicit connection limit. Both staging schemas use
-text columns with primary B-tree keys in source key order and `C` collation.
-Unknown columns, changed manifests, missing indexes, unsupported platform tables,
-foreign organizations and unavailable signing/keyring authority fail closed.
-Engine catalogs, schema-version rows and SQLite sequence bookkeeping remain
-source-only; PostgreSQL sequences advance beyond every imported history ID.
-
-Start with an empty platform target. Fence all platform writers and keep both
-source schemas immutable through import and verification. The importer neither
-fences writers nor enables serving or cutover. It is an offline storage owner,
-not a route, command or background daemon. Do not change a snapshot's identity or
-reset its checkpoint to import over existing platform authority.
-
-Call `Step` with one to `ImportLimit` source records. A single durable typed
-checkpoint binds the snapshot and catalog digest, resumes by source primary key,
-and commits with the corresponding target rows and children. A competing step
-with an older revision returns a revision conflict. Cancellation or a rejected
-batch leaves its progress unchanged; restarting with the same manifest resumes
-that batch. Completion replay writes nothing and cannot restore revoked access.
-Registry and auth families retain their existing separate transaction boundaries.
-
-Session and authorization identities expand into typed columns. Selected key
-organizations/projects and blocked projects become relational children; reach,
-approval and revocation state remain authoritative. OAuth child records resolve
-the original grant's organization through an indexed lookup and retain code
-consumption, refresh rotation and spent-token history. Provider and GitHub
-ciphertext is validated with its original purpose and binding, then copied
-unchanged. SQLite's plaintext login verifier and invitation fields are sealed
-using the selected platform cipher, preserving their values on consumption.
-
-Structured and support audit events retain their original bytes in the same
-immutable compressed object format used by entry serving. Credit amounts decode
-as exact decimal strings. Administration receipts expand into typed fields and
-verified output objects; the greatest original audit ID selects the latest
-receipt independently of staging text-key order. Object preparation and readback
-finish before the database transaction. A failed database write may leave an
-unreferenced content-addressed object; retry uses the same object identity.
-
-INV-16 keeps migration authority and receipts out of repository runtime notes.
-INV-18 limits each commit to its batch and directly owned children. Records are
-capped at one MiB and key selections retain the serving limits of 200
-organizations and 200 projects per organization. INV-20 keeps all target fields
-typed, with audit/output data in objects. At 10,000 tenants and runners, INV-21
-cost is at most `ImportLimit` indexed source rows per step plus their bounded
-children, one checkpoint lock during database writes, and no object I/O under
-that lock. Startup checks the fixed platform table inventory; no fleet scan or
-per-tenant connection pool is introduced.
+The entry journeys use disposable PostgreSQL platform and tenant databases:
+login and tenant routing, revoked keys, OAuth exchange and refresh replay,
+provisioning/deletion, billing, notification identity, receipt replay, secret
+diagnostics and keyring-compatible restart.

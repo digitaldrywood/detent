@@ -2,9 +2,7 @@ package cloudentry
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/url"
 	"sort"
@@ -376,48 +374,14 @@ func (a entryAdministration) Execute(ctx context.Context, name string, in operat
 	return out, nil
 }
 
-type administrationReceipt struct {
-	Kind    string               `json:"kind"`
-	Retry   string               `json:"retry"`
-	Hash    string               `json:"hash"`
-	Outcome string               `json:"outcome"`
-	Output  operatoradmin.Output `json:"output"`
+func (s *Service) administrationReceipt(ctx context.Context, session accountSession, m mutation.Metadata) (operatoradmin.Output, bool, error) {
+	return s.postgresAdministrationReceipt(ctx, session, m)
 }
 
-func (s *Service) administrationReceipt(ctx context.Context, session accountSession, m mutation.Metadata) (operatoradmin.Output, bool, error) {
-	if s.auth.store.db.postgres != nil {
-		return s.postgresAdministrationReceipt(ctx, session, m)
-	}
-	var raw string
-	err := s.auth.store.db.QueryRowContext(ctx, `SELECT event FROM audit WHERE subject=? AND organization_id=? AND CASE WHEN json_valid(event) THEN json_extract(event,'$.kind') END='operator_administration' AND json_extract(CASE WHEN json_valid(event) THEN event ELSE '{}' END,'$.retry')=? ORDER BY id DESC LIMIT 1`, session.Subject, m.OrganizationID, m.RetryIdentity).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return operatoradmin.Output{}, false, nil
-	}
-	if err != nil {
-		return operatoradmin.Output{}, false, err
-	}
-	var receipt administrationReceipt
-	if json.Unmarshal([]byte(raw), &receipt) != nil {
-		return operatoradmin.Output{}, false, operatoradmin.ErrUnavailable
-	}
-	if receipt.Hash != m.InputHash {
-		return operatoradmin.Output{}, false, mutation.ErrConflict
-	}
-	if receipt.Outcome != "succeeded" {
-		return operatoradmin.Output{}, false, mutation.ErrUncertain
-	}
-	return receipt.Output, true, nil
-}
 func (s *Service) recordAdministrationReceipt(ctx context.Context, session accountSession, m mutation.Metadata, outcome string, out operatoradmin.Output) error {
-	if s.auth.store.db.postgres != nil {
-		return s.postgresRecordAdministrationReceipt(ctx, session, m, outcome, out)
-	}
-	raw, err := json.Marshal(administrationReceipt{Kind: "operator_administration", Retry: m.RetryIdentity, Hash: m.InputHash, Outcome: outcome, Output: out})
-	if err != nil {
-		return err
-	}
-	return s.auth.audit(ctx, session.Subject, m.OrganizationID, string(raw))
+	return s.postgresRecordAdministrationReceipt(ctx, session, m, outcome, out)
 }
+
 func (a entryAdministration) Audit(ctx context.Context, m mutation.Metadata, outcome string) {
 	m.RetryIdentity, m.InputHash = "", ""
 	a.service.config.Logger.InfoContext(ctx, "operator mutation", "audit", m, "outcome", outcome)

@@ -28,14 +28,12 @@ import (
 func TestExecLauncherWritesPrivateFilesAndStops(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name           string
-		environment    []string
-		want           string
-		tenantPostgres bool
+		name        string
+		environment []string
+		want        string
 	}{
 		{name: "without App credentials", want: "\n\n\n"},
 		{name: "product App credentials", environment: []string{"DETENT_HUB_GITHUB_APP_ID=123", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY=private-key", "DETENT_HUB_GITHUB_WEBHOOK_SECRET=webhook-secret"}, want: "123\nprivate-key\nwebhook-secret\n"},
-		{name: "PostgreSQL tenant", want: "\n\n\n", tenantPostgres: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -49,7 +47,7 @@ func TestExecLauncherWritesPrivateFilesAndStops(t *testing.T) {
 				return []byte("organization_id: " + spec.Organization.ID + "\n"), nil
 			}}
 			t.Cleanup(func() { _ = launcher.Close() })
-			spec := TenantSpec{Organization: Organization{ID: "org_exec"}, Directory: directory, Socket: filepath.Join(directory, "t.sock"), TenantPostgres: test.tenantPostgres}
+			spec := TenantSpec{Organization: Organization{ID: "org_exec"}, Directory: directory, Socket: filepath.Join(directory, "t.sock")}
 			if err := launcher.Start(t.Context(), spec); err != nil {
 				t.Fatal(err)
 			}
@@ -62,8 +60,8 @@ func TestExecLauncherWritesPrivateFilesAndStops(t *testing.T) {
 			if err != nil || strings.Contains(string(arguments), "--github-disabled") {
 				t.Fatalf("tenant arguments = %s: %v", arguments, err)
 			}
-			if test.tenantPostgres == strings.Contains(string(arguments), "--database") {
-				t.Fatalf("tenant PostgreSQL selection = %v but args are %s", test.tenantPostgres, arguments)
+			if strings.Contains(string(arguments), "--database") {
+				t.Fatalf("tenant received a local database argument: %s", arguments)
 			}
 			environment, err := os.ReadFile(filepath.Join(directory, "env"))
 			if err != nil || string(environment) != test.want {
@@ -336,12 +334,12 @@ func TestExecLauncherJoinsTenantShutdown(t *testing.T) {
 				t.Fatal("missing process deadline")
 			}
 			binary := filepath.Join(directory, "tenant-fixture")
-			script := "#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = --database ]; then shift; export DETENT_TEST_LOCK=\"$1.lock\"; export GOCOVERDIR=\"$1.lock.coverage\"; fi\n  shift\ndone\nexec \"$DETENT_TEST_BINARY\" -test.run=^TestTenantShutdownHelperProcess$ -test.timeout=" + time.Until(deadline).String() + "\n"
+			script := "#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = --hosted-config ]; then shift; tenant_dir=${1%/*}; tenant_id=${tenant_dir##*/}; export DETENT_TEST_LOCK=\"$DETENT_TEST_LOCK_ROOT/$tenant_id/process.lock\"; export GOCOVERDIR=\"$DETENT_TEST_LOCK_ROOT/$tenant_id/coverage\"; fi\n  shift\ndone\nexec \"$DETENT_TEST_BINARY\" -test.run=^TestTenantShutdownHelperProcess$ -test.timeout=" + time.Until(deadline).String() + "\n"
 			if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
 				t.Fatal(err)
 			}
 			launcher := &ExecLauncher{Binary: binary, RestartLimit: 1, Logger: slog.New(slog.DiscardHandler), Environment: []string{
-				"DETENT_TEST_BINARY=" + os.Args[0], "DETENT_TEST_ADDRESS=" + listener.Addr().String(),
+				"DETENT_TEST_BINARY=" + os.Args[0], "DETENT_TEST_ADDRESS=" + listener.Addr().String(), "DETENT_TEST_LOCK_ROOT=" + directory,
 			}, Configure: func(TenantSpec) ([]byte, error) { return []byte("{}\n"), nil }}
 			t.Cleanup(func() { _ = launcher.Close() })
 			var connections []net.Conn
@@ -352,7 +350,7 @@ func TestExecLauncherJoinsTenantShutdown(t *testing.T) {
 				if err := os.Mkdir(tenantDirectory, 0700); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Mkdir(filepath.Join(tenantDirectory, "hub.db.lock.coverage"), 0700); err != nil {
+				if err := os.Mkdir(filepath.Join(tenantDirectory, "coverage"), 0700); err != nil {
 					t.Fatal(err)
 				}
 				spec := TenantSpec{Organization: Organization{ID: id, Generation: 1}, Issuer: "entry", Directory: tenantDirectory, ResolveKey: func(_ context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {

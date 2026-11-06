@@ -142,33 +142,16 @@ func (s *Service) describeKeyWithReachCache(ctx context.Context, key accessKey, 
 			}
 			return view, err
 		}
-		var blocked, approved bool
-		var blockedJSON string
+		var approved bool
 		var used sql.NullString
-		if s.auth.store.db.postgres != nil {
-			var exclusions []string
-			blocked, exclusions, err = s.keyRestrictions(ctx, key.ID, org.ID)
-			if err == nil {
-				var encoded []byte
-				encoded, err = json.Marshal(exclusions)
-				blockedJSON = string(encoded)
-			}
-			if err == nil {
-				err = s.auth.store.reader.QueryRowContext(ctx, "SELECT approved_at IS NOT NULL,last_used_at FROM access_key_organizations WHERE key_id=? AND organization_id=?", key.ID, org.ID).Scan(&approved, &used)
-			}
-		} else {
-			err = s.auth.store.db.QueryRowContext(ctx, "SELECT blocked,approved_at IS NOT NULL,blocked_projects_json,last_used_at FROM access_key_organizations WHERE key_id=? AND organization_id=?", key.ID, org.ID).Scan(&blocked, &approved, &blockedJSON, &used)
+		blocked, exclusions, err := s.keyRestrictions(ctx, key.ID, org.ID)
+		if err == nil {
+			err = s.auth.store.reader.QueryRowContext(ctx, "SELECT approved_at IS NOT NULL,last_used_at FROM access_key_organizations WHERE key_id=? AND organization_id=?", key.ID, org.ID).Scan(&approved, &used)
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return view, err
 		}
 		reach.Blocked = blocked
-		exclusions := []string{}
-		if blockedJSON != "" {
-			if err := json.Unmarshal([]byte(blockedJSON), &exclusions); err != nil {
-				return view, err
-			}
-		}
 		policy, err := s.personalKeyPolicy(ctx, org.ID)
 		if err != nil {
 			return view, err

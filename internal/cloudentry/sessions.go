@@ -8,16 +8,13 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 )
@@ -153,25 +150,7 @@ func (a *authStore) tokens(item authorization) (auth.HostedTokens, error) {
 }
 
 func (a *authStore) storeTokens(ctx context.Context, binding string, tokens auth.HostedTokens, previous ...auth.HostedTokens) error {
-	if a.store.db.postgres != nil {
-		return a.postgresStoreTokens(ctx, binding, tokens, previous...)
-	}
-	access, err := a.sealToken("provider-access", binding, tokens.AccessToken)
-	if err != nil {
-		return err
-	}
-	refresh, err := a.sealToken("provider-refresh", binding, tokens.RefreshToken)
-	if err != nil {
-		return err
-	}
-	result, err := a.store.db.ExecContext(ctx, "UPDATE authorizations SET access_token = ?, refresh_token = ? WHERE binding = ? AND revoked_at IS NULL", access, refresh, binding)
-	if err != nil {
-		return err
-	}
-	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
-		return errNoSession
-	}
-	return nil
+	return a.postgresStoreTokens(ctx, binding, tokens, previous...)
 }
 
 func (a *authStore) authorizationByBinding(ctx context.Context, binding string) (authorization, error) {
@@ -220,16 +199,7 @@ func (r *refreshLocks) lock(key string) func() {
 }
 
 func (a *authStore) createSession(ctx context.Context, hash, csrfSecret string, identity auth.Identity) error {
-	if a.store.db.postgres != nil {
-		return a.store.db.postgres.CreateSession(ctx, platformstore.Session{Hash: hash, Subject: identity.Subject, Email: identity.Email, CSRFSecret: csrfSecret, Identity: *identity.Hosted})
-	}
-	encoded, err := json.Marshal(identity.Hosted)
-	if err != nil {
-		return err
-	}
-	_, err = a.store.db.ExecContext(ctx, "INSERT INTO sessions(token_hash,subject,email,csrf_secret,identity_json,created_at,expires_at) VALUES (?,?,?,?,?,?,?)",
-		hash, identity.Subject, identity.Email, csrfSecret, string(encoded), formatTime(a.now()), formatTime(identity.Hosted.ExpiresAt))
-	return err
+	return a.store.db.postgres.CreateSession(ctx, platformstore.Session{Hash: hash, Subject: identity.Subject, Email: identity.Email, CSRFSecret: csrfSecret, Identity: *identity.Hosted})
 }
 
 func (a *authStore) session(ctx context.Context, hash string) (accountSession, error) {
@@ -241,63 +211,11 @@ func (a *authStore) session(ctx context.Context, hash string) (accountSession, e
 }
 
 func (a *authStore) storedSession(ctx context.Context, hash string) (accountSession, time.Time, error) {
-	if a.store.db.postgres != nil {
-		return a.postgresSession(ctx, hash)
-	}
-	var session accountSession
-	var encoded, expires string
-	var revoked sql.NullString
-	err := a.store.db.QueryRowContext(ctx, "SELECT token_hash,subject,email,csrf_secret,identity_json,expires_at,revoked_at FROM sessions WHERE token_hash = ?", hash).
-		Scan(&session.Hash, &session.Subject, &session.Email, &session.CSRFSecret, &encoded, &expires, &revoked)
-	if err != nil || revoked.Valid {
-		return accountSession{}, time.Time{}, errNoSession
-	}
-	expiry, err := parseTime(expires)
-	if err != nil || json.Unmarshal([]byte(encoded), &session.Identity) != nil || session.Identity.Subject != session.Subject {
-		return accountSession{}, time.Time{}, errNoSession
-	}
-	return session, expiry, nil
+	return a.postgresSession(ctx, hash)
 }
 
 func (a *authStore) authorize(ctx context.Context, session accountSession, organization string, identity auth.HostedIdentity, tokens auth.HostedTokens, effectiveEmail string) (_ authorization, _ []authorization, resultErr error) {
-	if a.store.db.postgres != nil {
-		return a.postgresAuthorize(ctx, session, organization, identity, tokens, effectiveEmail)
-	}
-	encoded, err := json.Marshal(identity)
-	if err != nil {
-		return authorization{}, nil, err
-	}
-	result := authorization{Binding: cloudassert.AuthorizationBinding(session.Hash, organization, identity.SessionID), Organization: organization, Identity: identity, Support: identity.SupportActor != "", EffectiveEmail: effectiveEmail}
-	if result.sealedAccess, err = a.sealToken("provider-access", result.Binding, tokens.AccessToken); err != nil {
-		return authorization{}, nil, err
-	}
-	if result.sealedRefresh, err = a.sealToken("provider-refresh", result.Binding, tokens.RefreshToken); err != nil {
-		return authorization{}, nil, err
-	}
-	tx, err := a.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return authorization{}, nil, err
-	}
-	defer tx.cleanup(&resultErr)
-	replaced, err := activeAuthorizations(ctx, tx, "session_hash = ? AND organization_id = ? AND revoked_at IS NULL", session.Hash, organization)
-	if err != nil {
-		return authorization{}, nil, err
-	}
-	now := formatTime(a.now())
-	if _, err := tx.ExecContext(ctx, "UPDATE authorizations SET revoked_at = ? WHERE session_hash = ? AND organization_id = ? AND revoked_at IS NULL", now, session.Hash, organization); err != nil {
-		return authorization{}, nil, err
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO authorizations(binding,session_hash,organization_id,identity_json,created_at,expires_at,support,effective_email,access_token,refresh_token) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(binding) DO UPDATE SET identity_json = excluded.identity_json, expires_at = excluded.expires_at, support = excluded.support, effective_email = excluded.effective_email, access_token = excluded.access_token, refresh_token = excluded.refresh_token, revoked_at = NULL",
-		result.Binding, session.Hash, organization, string(encoded), now, formatTime(identity.ExpiresAt), result.Support, effectiveEmail, result.sealedAccess, result.sealedRefresh); err != nil {
-		return authorization{}, nil, err
-	}
-	var stale []authorization
-	for _, previous := range replaced {
-		if previous.Binding != result.Binding {
-			stale = append(stale, previous)
-		}
-	}
-	return result, stale, tx.Commit()
+	return a.postgresAuthorize(ctx, session, organization, identity, tokens, effectiveEmail)
 }
 
 type queryer interface {
@@ -305,27 +223,7 @@ type queryer interface {
 }
 
 func activeAuthorizations(ctx context.Context, query queryer, where string, args ...any) (_ []authorization, resultErr error) {
-	if dialect, ok := query.(interface{ isPostgres() bool }); ok && dialect.isPostgres() {
-		return postgresAuthorizations(ctx, query, where, args...)
-	}
-	rows, err := query.QueryContext(ctx, "SELECT binding,organization_id,identity_json,expires_at,support,effective_email,access_token,refresh_token FROM authorizations WHERE "+where, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer closeEntryRows(rows, &resultErr)
-	var result []authorization
-	for rows.Next() {
-		var item authorization
-		var encoded, expires string
-		if err := rows.Scan(&item.Binding, &item.Organization, &encoded, &expires, &item.Support, &item.EffectiveEmail, &item.sealedAccess, &item.sealedRefresh); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal([]byte(encoded), &item.Identity); err != nil {
-			return nil, err
-		}
-		result = append(result, item)
-	}
-	return result, rows.Err()
+	return postgresAuthorizations(ctx, query, where, args...)
 }
 
 func (a *authStore) authorization(ctx context.Context, session accountSession, organization string) (authorization, error) {
@@ -346,26 +244,7 @@ func (a *authStore) revokeAuthorization(ctx context.Context, binding string) err
 }
 
 func (a *authStore) revokeSession(ctx context.Context, hash string) (_ []authorization, resultErr error) {
-	if a.store.db.postgres != nil {
-		return a.postgresRevokeSession(ctx, hash)
-	}
-	tx, err := a.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.cleanup(&resultErr)
-	items, err := activeAuthorizations(ctx, tx, "session_hash = ? AND revoked_at IS NULL", hash)
-	if err != nil {
-		return nil, err
-	}
-	now := formatTime(a.now())
-	if _, err := tx.ExecContext(ctx, "UPDATE authorizations SET revoked_at = ? WHERE session_hash = ? AND revoked_at IS NULL", now, hash); err != nil {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL", now, hash); err != nil {
-		return nil, err
-	}
-	return items, tx.Commit()
+	return a.postgresRevokeSession(ctx, hash)
 }
 
 type loginTransaction struct {
@@ -382,39 +261,11 @@ type loginTransaction struct {
 }
 
 func (a *authStore) createTransaction(ctx context.Context, hash string, transaction loginTransaction) error {
-	if a.store.db.postgres != nil {
-		return a.postgresLogin(ctx, hash, transaction)
-	}
-	_, err := a.store.db.ExecContext(ctx, "INSERT INTO transactions(token_hash,transaction_id,state,verifier,organization_id,return_path,invitation_token,invitation_organization,support_actor,support_session,support_reason,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-		hash, transaction.ID, transaction.State, transaction.Verifier, transaction.Organization, transaction.ReturnPath, transaction.InvitationToken, transaction.InvitationOrganization, transaction.SupportActor, transaction.SupportSession, transaction.SupportReason, formatTime(a.now().Add(10*time.Minute)))
-	return err
+	return a.postgresLogin(ctx, hash, transaction)
 }
 
 func (a *authStore) consumeTransaction(ctx context.Context, hash, id string) (_ loginTransaction, resultErr error) {
-	if a.store.db.postgres != nil {
-		return a.postgresConsumeLogin(ctx, hash, id)
-	}
-	tx, err := a.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return loginTransaction{}, err
-	}
-	defer tx.cleanup(&resultErr)
-	var result loginTransaction
-	var expires string
-	var consumed sql.NullString
-	err = tx.QueryRowContext(ctx, "SELECT transaction_id,state,verifier,organization_id,return_path,invitation_token,invitation_organization,support_actor,support_session,expires_at,consumed_at FROM transactions WHERE token_hash = ? AND transaction_id = ?", hash, id).
-		Scan(&result.ID, &result.State, &result.Verifier, &result.Organization, &result.ReturnPath, &result.InvitationToken, &result.InvitationOrganization, &result.SupportActor, &result.SupportSession, &expires, &consumed)
-	if err != nil || consumed.Valid {
-		return loginTransaction{}, errNoSession
-	}
-	expiry, err := parseTime(expires)
-	if err != nil || !expiry.After(a.now()) {
-		return loginTransaction{}, errNoSession
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE transactions SET consumed_at = ?, invitation_token = '' WHERE token_hash = ?", formatTime(a.now()), hash); err != nil {
-		return loginTransaction{}, err
-	}
-	return result, tx.Commit()
+	return a.postgresConsumeLogin(ctx, hash, id)
 }
 
 func (a *authStore) audit(ctx context.Context, subject, organization, event string) error {

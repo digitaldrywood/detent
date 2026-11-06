@@ -25,20 +25,12 @@ const maxArchiveOrigins = 16
 const maxArchiveOriginBytes = 4096
 
 func archiveBindingOrigins(ctx context.Context, q queryer, organization, candidate string) (_ []string, resultErr error) {
-	query := `WITH RECURSIVE origins(endpoint) AS (
- SELECT (SELECT endpoint FROM archive_storage_bindings WHERE organization_id=? ORDER BY endpoint COLLATE NOCASE LIMIT 1)
- UNION ALL
- SELECT (SELECT endpoint FROM archive_storage_bindings WHERE organization_id=? AND endpoint>origins.endpoint COLLATE NOCASE ORDER BY endpoint COLLATE NOCASE LIMIT 1)
- FROM origins WHERE endpoint IS NOT NULL LIMIT ?
-) SELECT substr(endpoint,1,?) FROM origins WHERE endpoint IS NOT NULL`
-	if dialect, ok := q.(interface{ isPostgres() bool }); ok && dialect.isPostgres() {
-		query = `WITH RECURSIVE origins(endpoint,ordinal) AS (
+	query := `WITH RECURSIVE origins(endpoint,ordinal) AS (
  SELECT (SELECT min(lower(endpoint)) FROM archive_storage_bindings WHERE organization_id=?),1
  UNION ALL
  SELECT (SELECT min(lower(endpoint)) FROM archive_storage_bindings WHERE organization_id=? AND lower(endpoint)>origins.endpoint),ordinal+1
  FROM origins WHERE endpoint IS NOT NULL AND ordinal<?
  ) SELECT substr(endpoint,1,?) FROM origins WHERE endpoint IS NOT NULL`
-	}
 	rows, err := q.QueryContext(ctx, query, organization, organization, maxArchiveOrigins+1, maxArchiveOriginBytes+1)
 	if err != nil {
 		return nil, err

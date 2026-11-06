@@ -25,7 +25,6 @@ import (
 type AllocationConfig struct {
 	TenantRoot              string
 	SocketRoot              string
-	TenantPostgres          bool
 	MaxTenants              int
 	MaxConcurrent           int
 	Prices                  []hubserver.HostedBillingPrice
@@ -122,7 +121,6 @@ func (s *Service) startAllocator(parent context.Context) {
 				s.resumeDeletions(ctx)
 				s.provisionDue(ctx)
 			}
-			s.maintainOrganizationDiffBodies(ctx)
 			s.sweepAttachments(ctx)
 			select {
 			case <-ctx.Done():
@@ -154,11 +152,10 @@ func (s *Service) wakeAllocator() {
 }
 
 func (s *Service) tenantSpec(organization Organization) TenantSpec {
-	tenantPostgres := s.config.Allocation != nil && s.config.Allocation.TenantPostgres
 	return TenantSpec{
 		Icons:           tenantIconStore{service: s, allocation: organization},
 		ArchiveContents: attachment.ArchiveContents{Storage: archiveStorage(s.attachments)},
-		Organization:    organization, Directory: filepath.Join(s.config.Allocation.TenantRoot, organization.ID), TenantPostgres: tenantPostgres,
+		Organization:    organization, Directory: filepath.Join(s.config.Allocation.TenantRoot, organization.ID),
 		Socket: strings.TrimPrefix(organization.Endpoint, "unix:"), PublicURL: s.config.PublicURL, Issuer: s.config.Issuer,
 		PublicKey: cloudassert.PublicKeyOf(s.config.SigningKey),
 		Content: func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
@@ -227,7 +224,7 @@ func (s *Service) provision(ctx context.Context, organization Organization) {
 		if step == "publish" {
 			organization.State = "ready"
 		}
-		if _, err := s.registry.store.db.ExecContext(ctx, s.registry.store.db.choose("UPDATE organizations SET state = ?, provider_id = ?, step = ?, attempts = 0, next_attempt_at = '', error_code = '', error_detail = '', updated_at = ? WHERE id = ?", "UPDATE organizations SET state = ?, provider_id = ?, step = ?, attempts = 0, next_attempt_at = NULL, error_code = '', error_detail = '', updated_at = ? WHERE id = ?"),
+		if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = ?, provider_id = ?, step = ?, attempts = 0, next_attempt_at = NULL, error_code = '', error_detail = '', updated_at = ? WHERE id = ?",
 			organization.State, organization.ProviderID, step, formatTime(s.config.now()), organization.ID); err != nil {
 			return
 		}
@@ -251,7 +248,7 @@ func (s *Service) recordFailure(ctx context.Context, organization Organization, 
 	}
 	detail := failureDetail(cause)
 	s.config.Logger.Warn("organization provisioning step failed", "organization", organization.ID, "step", step, "attempt", attempts, "retry_limit", s.config.Allocation.RetryLimit, "state", state, "detail", detail)
-	if _, err := s.registry.store.db.ExecContext(ctx, s.registry.store.db.choose("UPDATE organizations SET state = ?, attempts = ?, next_attempt_at = ?, error_code = ?, error_detail = ?, updated_at = ? WHERE id = ?", "UPDATE organizations SET state = ?, attempts = ?, next_attempt_at = NULLIF(?, '')::timestamptz, error_code = ?, error_detail = ?, updated_at = ? WHERE id = ?"),
+	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = ?, attempts = ?, next_attempt_at = NULLIF(?, '')::timestamptz, error_code = ?, error_detail = ?, updated_at = ? WHERE id = ?",
 		state, attempts, next, code, detail, formatTime(s.config.now()), organization.ID); err != nil {
 		s.config.Logger.Warn("organization provisioning state could not be recorded", "organization", organization.ID)
 	}
@@ -594,7 +591,7 @@ func (s *Service) resumeOrganization(ctx context.Context, organization Organizat
 	if organization.Step == "" {
 		state = "requested"
 	}
-	if _, err := s.registry.store.db.ExecContext(ctx, s.registry.store.db.choose("UPDATE organizations SET state = ?, attempts = 0, next_attempt_at = '', error_code = '', error_detail = '', updated_at = ? WHERE id = ? AND state = 'failed'", "UPDATE organizations SET state = ?, attempts = 0, next_attempt_at = NULL, error_code = '', error_detail = '', updated_at = ? WHERE id = ? AND state = 'failed'"), state, formatTime(s.config.now()), organization.ID); err != nil {
+	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = ?, attempts = 0, next_attempt_at = NULL, error_code = '', error_detail = '', updated_at = ? WHERE id = ? AND state = 'failed'", state, formatTime(s.config.now()), organization.ID); err != nil {
 		return Organization{}, err
 	}
 	s.wakeAllocator()

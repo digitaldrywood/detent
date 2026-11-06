@@ -1,14 +1,6 @@
 package cloudentry
 
-import (
-	"fmt"
-	"io/fs"
-	"sort"
-	"strconv"
-	"strings"
-
-	"github.com/digitaldrywood/detent/internal/schemafingerprint"
-)
+import "github.com/digitaldrywood/detent/internal/hubserver/postgres"
 
 type SchemaVersions struct {
 	Registry            int64
@@ -18,27 +10,13 @@ type SchemaVersions struct {
 }
 
 func LatestSchemaVersions() (SchemaVersions, error) {
-	var versions SchemaVersions
-	for directory, target := range map[string]struct {
-		version     *int64
-		fingerprint *string
-	}{"registry": {version: &versions.Registry, fingerprint: &versions.RegistryFingerprint}, "auth": {version: &versions.Auth, fingerprint: &versions.AuthFingerprint}} {
-		entries, err := fs.ReadDir(migrationFiles, "migrations/"+directory)
-		if err != nil {
-			return SchemaVersions{}, err
-		}
-		ids := make([]int64, 0, len(entries))
-		for _, entry := range entries {
-			prefix, _, _ := strings.Cut(entry.Name(), "_")
-			version, err := strconv.ParseInt(prefix, 10, 64)
-			if err != nil {
-				return SchemaVersions{}, fmt.Errorf("parse %s migration version: %w", directory, err)
-			}
-			ids = append(ids, version)
-			*target.version = max(*target.version, version)
-		}
-		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-		*target.fingerprint = schemafingerprint.Versions(ids)
+	version, err := postgres.LatestSchemaVersion()
+	if err != nil {
+		return SchemaVersions{}, err
 	}
-	return versions, nil
+	fingerprint, err := postgres.LatestSchemaFingerprint()
+	if err != nil {
+		return SchemaVersions{}, err
+	}
+	return SchemaVersions{Registry: version, Auth: version, RegistryFingerprint: fingerprint, AuthFingerprint: fingerprint}, nil
 }

@@ -137,7 +137,6 @@ type Service struct {
 	attachments       attachment.Storage
 	attachmentLocks   attachmentLocks
 	attachmentSweepAt time.Time
-	diffBodySweepAt   time.Time
 	githubRoutes      githubRoutes
 
 	stopAuthReseal    context.CancelFunc
@@ -149,7 +148,6 @@ type Service struct {
 	wake              chan struct{}
 	stopBilling       context.CancelFunc
 	billingDone       chan struct{}
-	closeDevelopState func() error
 	closePlatformMCP  func() error
 }
 
@@ -179,15 +177,6 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	if cfg.generateToken == nil {
 		cfg.generateToken = apikey.GenerateToken
 	}
-	cfg, closeDevelopState, err := prepareDevelopState(ctx, cfg)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if resultErr != nil && closeDevelopState != nil {
-			resultErr = errors.Join(resultErr, closeDevelopState())
-		}
-	}()
 	var attachments attachment.Storage
 	if cfg.Attachments != nil {
 		var err error
@@ -218,7 +207,7 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	if err != nil {
 		return nil, errors.Join(err, authStorage.Close(), registry.Close())
 	}
-	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.now, seal: seal, keys: keys}, secure: strings.HasPrefix(cfg.PublicURL, "https://"), closeDevelopState: closeDevelopState}
+	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.now, seal: seal, keys: keys}, secure: strings.HasPrefix(cfg.PublicURL, "https://")}
 	service.configureRuntimeLauncher()
 	service.attachments = attachments
 	if cfg.transport == nil {
@@ -229,9 +218,6 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	service.echo.Server.ReadHeaderTimeout = 5 * time.Second
 	service.routes()
 	service.registerPlatformCredits(ctx)
-	if err := service.routeDevelopTenants(ctx); err != nil {
-		return nil, errors.Join(err, service.CloseContext(ctx))
-	}
 	service.startAllocator(ctx)
 	if err := service.initializeGitHubRoutes(ctx); err != nil {
 		return nil, errors.Join(err, service.CloseContext(ctx))
@@ -279,9 +265,6 @@ func (s *Service) CloseContext(ctx context.Context) error {
 		mcpErr = s.closePlatformMCP()
 	}
 	err := errors.Join(keyErr, mcpErr, s.closeAllocator(), s.registry.Close(), s.auth.store.Close())
-	if s.closeDevelopState != nil {
-		err = errors.Join(err, s.closeDevelopState())
-	}
 	return err
 }
 

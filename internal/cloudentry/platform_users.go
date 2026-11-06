@@ -39,17 +39,12 @@ func (s *Service) searchPlatformUsers(ctx context.Context, query platformusers.Q
 		}
 		return platformusers.User{Email: email, Memberships: []platformusers.Membership{}, Invitations: []platformusers.Invitation{}}
 	}
-	rows, err := s.auth.store.db.QueryContext(ctx, s.auth.store.db.choose(`WITH latest AS (
-SELECT lower(email) AS email,subject,created_at,
-row_number() OVER (PARTITION BY lower(email) ORDER BY julianday(created_at) DESC,token_hash) AS rank
-FROM sessions WHERE coalesce(json_extract(identity_json,'$.support_actor'),'') = ''
-AND CASE WHEN ? THEN lower(email)=? ELSE instr(lower(email),?)>0 END)
-SELECT email,subject,created_at FROM latest WHERE rank=1 ORDER BY email`, `WITH latest AS (
+	rows, err := s.auth.store.db.QueryContext(ctx, `WITH latest AS (
 SELECT lower(email) AS email,subject,created_at,
 row_number() OVER (PARTITION BY lower(email) ORDER BY created_at DESC,token_hash) AS rank
 FROM sessions WHERE support_actor = ''
 AND CASE WHEN ? THEN lower(email)=? ELSE strpos(lower(email),?)>0 END)
-SELECT email,subject,created_at FROM latest WHERE rank=1 ORDER BY email`), query.Exact, query.Text, query.Text)
+SELECT email,subject,created_at FROM latest WHERE rank=1 ORDER BY email`, query.Exact, query.Text, query.Text)
 	if err != nil {
 		return result, err
 	}
@@ -67,9 +62,8 @@ SELECT email,subject,created_at FROM latest WHERE rank=1 ORDER BY email`), query
 	if err != nil {
 		return result, err
 	}
-	rows, err = s.registry.store.db.QueryContext(ctx, s.registry.store.db.choose(`SELECT email,role FROM platform_members
-WHERE CASE WHEN ? THEN lower(email)=? ELSE instr(lower(email),?)>0 END ORDER BY email`, `SELECT email,role FROM platform_members
-WHERE CASE WHEN ? THEN lower(email)=? ELSE strpos(lower(email),?)>0 END ORDER BY email`), query.Exact, query.Text, query.Text)
+	rows, err = s.registry.store.db.QueryContext(ctx, `SELECT email,role FROM platform_members
+WHERE CASE WHEN ? THEN lower(email)=? ELSE strpos(lower(email),?)>0 END ORDER BY email`, query.Exact, query.Text, query.Text)
 	if err != nil {
 		return result, err
 	}

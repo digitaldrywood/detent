@@ -61,7 +61,7 @@ type hubSecretsStatus struct {
 }
 
 func newHubSecretsStatusCommand(lookupEnv func(string) string) *cobra.Command {
-	var databasePath, tenantRoot, authDatabasePath string
+	var databasePath, tenantRoot string
 	cmd := &cobra.Command{
 		Use:          "status",
 		Short:        "Check encrypted Hub secrets with the proposed environment keyring without writing",
@@ -76,8 +76,8 @@ func newHubSecretsStatusCommand(lookupEnv func(string) string) *cobra.Command {
 			code := 0
 			keys, err := hubsecrets.FromEnvironment(lookupEnv)
 			switch {
-			case strings.TrimSpace(databasePath) != "" && strings.TrimSpace(tenantRoot) != "" || strings.TrimSpace(databasePath) == "" && strings.TrimSpace(tenantRoot) == "" && strings.TrimSpace(authDatabasePath) == "":
-				report.Problem = "select --database or --tenant-root, optionally with --auth-database, or --auth-database alone"
+			case strings.TrimSpace(databasePath) != "" && strings.TrimSpace(tenantRoot) != "" || strings.TrimSpace(databasePath) == "" && strings.TrimSpace(tenantRoot) == "":
+				report.Problem = "select --database or --tenant-root"
 				code = 2
 			case err != nil:
 				report.Problem = "invalid_keyring"
@@ -121,29 +121,7 @@ func newHubSecretsStatusCommand(lookupEnv func(string) string) *cobra.Command {
 						}
 					}
 				}
-				if strings.TrimSpace(authDatabasePath) != "" {
-					status := cloudentry.AuthSecretStatus(cmd.Context(), authDatabasePath, keys)
-					report.AuthDatabase = &status
-					if status.Problem != "" {
-						complete = false
-						code = 2
-					}
-					for _, count := range status.Counts {
-						if count.Format == "hk1" && count.Version > 0 {
-							referenced[count.Version] = true
-						}
-					}
-					for _, problem := range status.Problems {
-						if problem.Problem == "missing_key" {
-							missing[problem.Version] = true
-						}
-						if problem.Problem != "not_active_version" && problem.Problem != "legacy" {
-							code = 2
-						} else if code == 0 {
-							code = 3
-						}
-					}
-				}
+
 				for version := range missing {
 					report.MissingVersions = append(report.MissingVersions, version)
 				}
@@ -165,7 +143,6 @@ func newHubSecretsStatusCommand(lookupEnv func(string) string) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&authDatabasePath, "auth-database", "", "Cloud entry auth database to inspect read-only")
 	cmd.Flags().StringVar(&databasePath, "database", "", "Hub database to inspect read-only")
 	cmd.Flags().StringVar(&tenantRoot, "tenant-root", "", "scan every tenant directory's hub.db read-only")
 	return cmd

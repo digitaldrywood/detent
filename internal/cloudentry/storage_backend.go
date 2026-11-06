@@ -23,10 +23,6 @@ type StorageConfig struct {
 
 func (c StorageConfig) validate() error {
 	switch c.Backend {
-	case "", "sqlite":
-		if c.PostgresDSN != "" || c.PostgresPool != nil || c.Pool != (platformstore.PoolConfig{}) {
-			return errors.New("PostgreSQL entry settings require the postgres backend")
-		}
 	case "postgres":
 		if (strings.TrimSpace(c.PostgresDSN) == "") == (c.PostgresPool == nil) || c.Pool.MaxConnections < 3 || c.Pool.ServingConnections < 1 || c.Pool.BackgroundConnections < 1 || c.Pool.ServingConnections >= c.Pool.MaxConnections || c.Pool.BackgroundConnections > c.Pool.MaxConnections-c.Pool.ServingConnections || c.Pool.BackgroundConnections > c.Pool.MaxConnections-2 {
 			return errors.New("PostgreSQL entry storage requires a DSN and positive workload budgets with room for a reserved health connection")
@@ -53,16 +49,12 @@ func closeEntryRows(rows entryRows, resultErr *error) {
 }
 
 type entryDatabase struct {
-	*sql.DB
 	postgres *platformstore.Repository
 	auth     bool
 	clock    func() time.Time
 }
 
 func (d *entryDatabase) statement(query string) string {
-	if d.postgres == nil {
-		return query
-	}
 	if d.auth {
 		query = strings.ReplaceAll(query, "platform_notifications", "auth_notifications")
 	}
@@ -97,10 +89,6 @@ func (t *entryTransaction) cleanup(resultErr *error) {
 }
 
 func (d *entryDatabase) BeginTx(ctx context.Context, options *sql.TxOptions) (*entryTransaction, error) {
-	if d.postgres == nil {
-		tx, err := d.DB.BeginTx(ctx, options)
-		return &entryTransaction{Tx: tx, owner: d}, err
-	}
 	var tx *platformstore.EntryTransaction
 	var err error
 	if health, _ := ctx.Value(entryHealthReadKey{}).(bool); health && options != nil && options.ReadOnly {
@@ -115,47 +103,31 @@ func (d *entryDatabase) BeginTx(ctx context.Context, options *sql.TxOptions) (*e
 }
 
 func (t *entryTransaction) Commit() error {
-	if t.postgres != nil {
-		return t.postgres.Commit()
-	}
-	return t.Tx.Commit()
+	return t.postgres.Commit()
 }
 
 func (t *entryTransaction) Rollback() error {
-	if t.postgres != nil {
-		return t.postgres.Rollback()
-	}
-	return t.Tx.Rollback()
+	return t.postgres.Rollback()
 }
 
 func (t *entryTransaction) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	result, err := t.Tx.ExecContext(ctx, t.owner.statement(query), args...)
-	if t.postgres != nil {
-		err = t.postgres.Classify(ctx, err)
-	}
+	err = t.postgres.Classify(ctx, err)
 	return result, err
 }
 
 func (t *entryTransaction) QueryContext(ctx context.Context, query string, args ...any) (entryRows, error) {
 	rows, err := t.Tx.QueryContext(ctx, t.owner.statement(query), args...)
-	if t.postgres != nil {
-		err = t.postgres.Classify(ctx, err)
-	}
+	err = t.postgres.Classify(ctx, err)
 	return rows, err
 }
 
 func (t *entryTransaction) QueryRowContext(ctx context.Context, query string, args ...any) entryRow {
 	row := t.Tx.QueryRowContext(ctx, t.owner.statement(query), args...)
-	if t.postgres == nil {
-		return row
-	}
 	return deferredEntryRow{scan: func(dest ...any) error { return t.postgres.Classify(ctx, row.Scan(dest...)) }}
 }
 
 func (d *entryDatabase) ExecContext(ctx context.Context, query string, args ...any) (_ sql.Result, resultErr error) {
-	if d.postgres == nil {
-		return d.DB.ExecContext(ctx, query, args...)
-	}
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -186,9 +158,6 @@ func (r *transactionRows) Close() error { return r.close() }
 func (r *transactionRows) Err() error   { return errors.Join(r.Rows.Err(), r.cleanupErr) }
 
 func (d *entryDatabase) QueryContext(ctx context.Context, query string, args ...any) (entryRows, error) {
-	if d.postgres == nil {
-		return d.DB.QueryContext(ctx, query, args...)
-	}
 	tx, err := d.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
@@ -207,9 +176,6 @@ type deferredEntryRow struct{ scan func(...any) error }
 func (r deferredEntryRow) Scan(dest ...any) error { return r.scan(dest...) }
 
 func (d *entryDatabase) QueryRowContext(ctx context.Context, query string, args ...any) entryRow {
-	if d.postgres == nil {
-		return d.DB.QueryRowContext(ctx, query, args...)
-	}
 	return deferredEntryRow{scan: func(dest ...any) (resultErr error) {
 		tx, err := d.BeginTx(ctx, &sql.TxOptions{ReadOnly: strings.HasPrefix(strings.TrimSpace(strings.ToUpper(query)), "SELECT")})
 		if err != nil {
@@ -224,17 +190,6 @@ func (d *entryDatabase) QueryRowContext(ctx context.Context, query string, args 
 }
 
 func openEntryStores(ctx context.Context, cfg Config, keys *hubsecrets.Keyring) (*Registry, *store, error) {
-	if cfg.Storage.Backend != "postgres" {
-		r, err := OpenRegistry(ctx, cfg.StateDir+"/registry.db")
-		if err != nil {
-			return nil, nil, err
-		}
-		a, err := openStore(ctx, cfg.StateDir+"/auth.db", authApplicationID, "auth")
-		if err != nil {
-			return nil, nil, errors.Join(err, r.Close())
-		}
-		return r, a, nil
-	}
 	pool := cfg.Storage.PostgresPool
 	var err error
 	if pool == nil {
@@ -253,17 +208,7 @@ func openEntryStores(ctx context.Context, cfg Config, keys *hubsecrets.Keyring) 
 	return &Registry{store: &store{db: registryDB, reader: registryDB, close: closePool}, now: cfg.now}, &store{db: authDB, reader: authDB, close: closePool}, nil
 }
 
-func (d *entryDatabase) choose(sqlite, postgres string) string {
-	if d.postgres != nil {
-		return postgres
-	}
-	return sqlite
-}
-
 func (d *entryDatabase) PingContext(ctx context.Context) error {
-	if d.postgres == nil {
-		return d.DB.PingContext(ctx)
-	}
 	return d.postgres.Ping(ctx)
 }
 

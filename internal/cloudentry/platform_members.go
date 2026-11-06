@@ -89,10 +89,8 @@ func (r *Registry) seedPlatformMembers(ctx context.Context, cfg Config) (resultE
 		return err
 	}
 	defer tx.cleanup(&resultErr)
-	if r.store.db.postgres != nil {
-		if _, err := tx.ExecContext(ctx, "LOCK TABLE platform_members IN SHARE ROW EXCLUSIVE MODE"); err != nil {
-			return err
-		}
+	if _, err := tx.ExecContext(ctx, "LOCK TABLE platform_members IN SHARE ROW EXCLUSIVE MODE"); err != nil {
+		return err
 	}
 	var count int
 	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM platform_members").Scan(&count); err != nil {
@@ -207,10 +205,8 @@ func (a entryAdministration) executePlatformMember(ctx context.Context, name str
 		return operatoradmin.Output{}, err
 	}
 	defer tx.cleanup(&resultErr)
-	if s.registry.store.db.postgres != nil {
-		if _, err := tx.ExecContext(ctx, "LOCK TABLE platform_members IN SHARE ROW EXCLUSIVE MODE"); err != nil {
-			return operatoradmin.Output{}, err
-		}
+	if _, err := tx.ExecContext(ctx, "LOCK TABLE platform_members IN SHARE ROW EXCLUSIVE MODE"); err != nil {
+		return operatoradmin.Output{}, err
 	}
 	var revision int64
 	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM platform_member_changes").Scan(&revision); err != nil {
@@ -245,15 +241,10 @@ func (a entryAdministration) executePlatformMember(ctx context.Context, name str
 			return operatoradmin.Output{}, operatortool.ErrAccessDenied
 		}
 	}
-	var pendingErr error
-	if s.auth.store.db.postgres != nil {
-		pendingErr = s.writePostgresAdministrationReceipt(ctx, tx, session, m, "pending", operatoradmin.Output{}, "", operatortool.SignOutResult{})
-	} else {
-		pendingErr = s.recordAdministrationReceipt(ctx, session, m, "pending", operatoradmin.Output{})
-	}
-	if err := pendingErr; err != nil {
+	if err := s.writePostgresAdministrationReceipt(ctx, tx, session, m, "pending", operatoradmin.Output{}, "", operatortool.SignOutResult{}); err != nil {
 		return operatoradmin.Output{}, err
 	}
+
 	now := formatTime(s.config.now())
 	action, role := "added", in.Role
 	switch name {

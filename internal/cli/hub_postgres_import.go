@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -14,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -117,4 +119,20 @@ func (d tenantImportDetails) ReadDetail(ctx context.Context, organization string
 		return nil, attachment.ErrInvalid
 	}
 	return attachment.ReadArchive(ctx, d.storage, organization, ref)
+}
+
+func readPlatformImportCatalog(repositoryRoot string) (storagecatalog.Catalog, error) {
+	absolute, err := filepath.Abs(repositoryRoot)
+	if err != nil {
+		return storagecatalog.Catalog{}, err
+	}
+	files := os.DirFS(absolute)
+	catalog, err := storagecatalog.Read(files, "tools/storageinventory/mappings/v1.json")
+	if err != nil {
+		return storagecatalog.Catalog{}, fmt.Errorf("read platform import mapping catalog: %w", err)
+	}
+	if err := catalog.ValidateInventory(files); err != nil {
+		return storagecatalog.Catalog{}, fmt.Errorf("validate platform import mapping catalog: %w", err)
+	}
+	return catalog, nil
 }

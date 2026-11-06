@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lib/pq"
+
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -708,11 +710,6 @@ func nativeMoveArgumentError() error {
 	return err
 }
 
-type codedTestError struct{ code int }
-
-func (e codedTestError) Error() string { return "coded" }
-func (e codedTestError) Code() int     { return e.code }
-
 func TestErrorClass(t *testing.T) {
 	sentinel := errors.New("sentinel")
 	for _, tt := range []struct {
@@ -723,7 +720,7 @@ func TestErrorClass(t *testing.T) {
 		{"plain", errors.New("tenant text"), "*errors.errorString"},
 		{"deadline", fmt.Errorf("query: %w", context.DeadlineExceeded), "deadline_exceeded"},
 		{"canceled", fmt.Errorf("query: %w", context.Canceled), "canceled"},
-		{"sqlite code", fmt.Errorf("insert: %w", codedTestError{5}), "sqlite_5"},
+		{"postgres error", fmt.Errorf("insert: %w", &pq.Error{Code: "23505", Message: "tenant text"}), "*pq.Error"},
 		{"multi wrap reaches the cause", fmt.Errorf("%w: %w", sentinel, &json.SyntaxError{}), "*json.SyntaxError"},
 	} {
 		if got := ErrorClass(tt.err); got != tt.want {

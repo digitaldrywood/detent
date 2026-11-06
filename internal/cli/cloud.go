@@ -343,8 +343,7 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		}
 		result.Allocation = &cloudentry.AllocationConfig{
 			TenantRoot: allocation.TenantRoot, SocketRoot: allocation.SocketRoot, MaxTenants: allocation.MaxTenants, MaxConcurrent: allocation.MaxConcurrentProvisions,
-			TenantPostgres: config.TenantPostgres != nil,
-			RetryLimit:     allocation.RetryLimit, MinFreeDiskBytes: allocation.MinFreeDiskBytes, MinAvailableMemoryBytes: allocation.MinAvailableMemoryBytes,
+			RetryLimit: allocation.RetryLimit, MinFreeDiskBytes: allocation.MinFreeDiskBytes, MinAvailableMemoryBytes: allocation.MinAvailableMemoryBytes,
 			AllowedEmails: allocation.AllowedEmails, AllowedDomains: allocation.AllowedDomains,
 			Launcher: &cloudentry.ExecLauncher{Binary: binary, Environment: tenantEnvironment(config, lookupEnv), Configure: tenantConfiguration(config), Logger: slog.Default(), RestartLimit: allocation.RetryLimit},
 		}
@@ -436,7 +435,7 @@ func newCloudCommand(opts options) *cobra.Command {
 		Long:    "Opt-in operator-hosted functionality: one shared public origin for sign-in, organization selection and authenticated routing to dedicated tenant Hubs. Self-hosted Detent never needs it.",
 		Args:    NoArgs,
 	}
-	cmd.AddCommand(newCloudServeCommand(lookupEnv, opts.build), newCloudRegistryCommand(), newCloudAssertionKeyCommand(lookupEnv), newCloudPlatformImportCommand(lookupEnv))
+	cmd.AddCommand(newCloudServeCommand(lookupEnv, opts.build), newCloudAssertionKeyCommand(lookupEnv))
 	return cmd
 }
 
@@ -478,69 +477,6 @@ func newCloudServeCommand(lookupEnv func(string) string, build buildinfo.Info) *
 	if err := cmd.MarkFlagRequired("entry-config"); err != nil {
 		panic(err)
 	}
-	return cmd
-}
-
-func newCloudRegistryCommand() *cobra.Command {
-	var registryPath string
-	var organization cloudentry.Organization
-	var disabled bool
-	cmd := &cobra.Command{
-		Use:     "registry",
-		Short:   "Administer the stopped shared entry's organization registry",
-		Example: "detent cloud registry list --registry /var/lib/detent/cloud/registry.db",
-		Args:    NoArgs,
-	}
-	cmd.PersistentFlags().StringVar(&registryPath, "registry", "", "registry database (STATE_DIRECTORY/registry.db); the shared entry must be stopped")
-	add := &cobra.Command{
-		Use:          "register",
-		Short:        "Register or update an organization allocation idempotently",
-		Example:      "detent cloud registry register --registry /var/lib/detent/cloud/registry.db --organization org_example --provider-organization org_workos --name Example --endpoint unix:/run/detent/tenants/org_example.sock --generation 1",
-		Args:         NoArgs,
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			registry, err := cloudentry.OpenRegistry(cmd.Context(), registryPath)
-			if err != nil {
-				return err
-			}
-			if disabled {
-				organization.State = "disabled"
-			}
-			changed, registerErr := registry.Register(cmd.Context(), organization)
-			if err := errors.Join(registerErr, registry.Close()); err != nil {
-				return err
-			}
-			return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"organization": organization.ID, "changed": changed})
-		},
-	}
-	add.Flags().StringVar(&organization.ID, "organization", "", "immutable Detent organization ID (org_...)")
-	add.Flags().StringVar(&organization.ProviderID, "provider-organization", "", "WorkOS organization ID")
-	add.Flags().StringVar(&organization.Name, "name", "", "organization name shown in the chooser")
-	add.Flags().StringVar(&organization.Endpoint, "endpoint", "", "private tenant endpoint: unix:/absolute/socket in a directory private to the service user")
-	add.Flags().Int64Var(&organization.Generation, "generation", 0, "allocation generation matching the tenant's shared_entry configuration")
-	add.Flags().BoolVar(&disabled, "disabled", false, "register the organization without routing traffic to it")
-	list := &cobra.Command{
-		Use:          "list",
-		Short:        "List registered organizations",
-		Example:      "detent cloud registry list --registry /var/lib/detent/cloud/registry.db",
-		Args:         NoArgs,
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			registry, err := cloudentry.OpenRegistry(cmd.Context(), registryPath)
-			if err != nil {
-				return err
-			}
-			organizations, listErr := registry.List(cmd.Context())
-			if err := errors.Join(listErr, registry.Close()); err != nil {
-				return err
-			}
-			if organizations == nil {
-				organizations = []cloudentry.Organization{}
-			}
-			return json.NewEncoder(cmd.OutOrStdout()).Encode(organizations)
-		},
-	}
-	cmd.AddCommand(add, list)
 	return cmd
 }
 

@@ -2,7 +2,6 @@ package cloudentry
 
 import (
 	"context"
-	"database/sql"
 	"net/http"
 	"strings"
 	"time"
@@ -81,13 +80,7 @@ func (s *Service) startSupport(c echo.Context) error {
 	if err := s.auth.createTransaction(c.Request().Context(), apikey.HashToken(token), transaction); err != nil {
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable", denial)
 	}
-	var auditErr error
-	if s.auth.store.db.postgres != nil {
-		auditErr = s.postgresSupportRequest(c.Request().Context(), session, organization.ID, reason, requested)
-	} else {
-		auditErr = s.auth.audit(c.Request().Context(), session.Subject, organization.ID, requested)
-	}
-	if err := auditErr; err != nil {
+	if err := s.postgresSupportRequest(c.Request().Context(), session, organization.ID, reason, requested); err != nil {
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable", denial)
 	}
 	s.setCookie(c, supportCookie, token, s.config.now().Add(10*time.Minute))
@@ -99,36 +92,12 @@ func supportAuditEvent(event, reason string) string {
 	return event + ":" + reason
 }
 
-func (a *authStore) consumeSupportTransaction(ctx context.Context, hash string) (_ loginTransaction, resultErr error) {
-	if a.store.db.postgres != nil {
-		var id string
-		if err := a.store.reader.QueryRowContext(ctx, "SELECT transaction_id FROM transactions WHERE token_hash=? AND support_actor<>''", hash).Scan(&id); err != nil {
-			return loginTransaction{}, errNoSession
-		}
-		return a.postgresConsumeLogin(ctx, hash, id)
-	}
-
-	tx, err := a.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return loginTransaction{}, err
-	}
-	defer tx.cleanup(&resultErr)
-	var result loginTransaction
-	var expires string
-	var consumed sql.NullString
-	err = tx.QueryRowContext(ctx, "SELECT transaction_id,organization_id,support_actor,support_session,support_reason,expires_at,consumed_at FROM transactions WHERE token_hash = ? AND support_actor != ''", hash).
-		Scan(&result.ID, &result.Organization, &result.SupportActor, &result.SupportSession, &result.SupportReason, &expires, &consumed)
-	if err != nil || consumed.Valid {
+func (a *authStore) consumeSupportTransaction(ctx context.Context, hash string) (loginTransaction, error) {
+	var id string
+	if err := a.store.reader.QueryRowContext(ctx, "SELECT transaction_id FROM transactions WHERE token_hash=? AND support_actor<>''", hash).Scan(&id); err != nil {
 		return loginTransaction{}, errNoSession
 	}
-	expiry, err := parseTime(expires)
-	if err != nil || !expiry.After(a.now()) {
-		return loginTransaction{}, errNoSession
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE transactions SET consumed_at = ? WHERE token_hash = ?", formatTime(a.now()), hash); err != nil {
-		return loginTransaction{}, err
-	}
-	return result, tx.Commit()
+	return a.postgresConsumeLogin(ctx, hash, id)
 }
 
 func (s *Service) completeSupport(c echo.Context) error {

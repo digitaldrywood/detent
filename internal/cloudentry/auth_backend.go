@@ -35,9 +35,6 @@ func entryAuthorization(item platformstore.Authorization) authorization {
 	return authorization{Binding: item.Binding, Organization: string(item.OrganizationID), Identity: item.Identity, Support: item.Support, EffectiveEmail: item.EffectiveEmail}
 }
 
-func (d *entryDatabase) isPostgres() bool    { return d.postgres != nil }
-func (t *entryTransaction) isPostgres() bool { return t.owner.isPostgres() }
-
 func postgresAuthorizations(ctx context.Context, query queryer, where string, args ...any) (_ []authorization, resultErr error) {
 	clock, ok := query.(interface{ entryNow() time.Time })
 	if !ok {

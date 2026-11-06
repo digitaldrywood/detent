@@ -1,9 +1,7 @@
 package platformstore
 
 import (
-	"encoding/json"
 	"errors"
-	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -15,30 +13,41 @@ import (
 
 func TestPlatformInventoryAndRoleSeparation(t *testing.T) {
 	db := template.Database(t)
-	tables := map[string]bool{}
-	for _, family := range []string{"registry", "auth"} {
-		content, err := os.ReadFile("../testdata/" + family + "_classification.json")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var classes map[string]json.RawMessage
-		if err := json.Unmarshal(content, &classes); err != nil {
-			t.Fatal(err)
-		}
-		for name := range classes {
-			if name == "entry_schema_version" || strings.HasPrefix(name, "sqlite_") {
-				continue
-			}
-			if family == "auth" && name == "platform_notifications" {
-				name = "auth_notifications"
-			}
-			tables[name] = true
-		}
+	tables := []string{
+		"access_key_blocked_projects",
+		"access_key_notifications",
+		"access_key_organizations",
+		"access_key_projects",
+		"access_keys",
+		"administration_receipts",
+		"archive_deletion_failures",
+		"archive_deletion_receipts",
+		"archive_storage_bindings",
+		"audit",
+		"auth_notifications",
+		"authorizations",
+		"billing_customers",
+		"billing_events",
+		"entitlement_changes",
+		"github_user_connections",
+		"oauth_client_redirect_uris",
+		"oauth_clients",
+		"oauth_grants",
+		"oauth_refresh_tokens",
+		"oauth_requests",
+		"oauth_spent_refresh_tokens",
+		"organization_events",
+		"organization_intents",
+		"organization_key_policy",
+		"organization_slug_counters",
+		"organization_slugs",
+		"organizations",
+		"platform_member_changes",
+		"platform_members",
+		"platform_notifications",
+		"sessions",
+		"transactions",
 	}
-	tables["administration_receipts"] = true
-	tables["organization_slug_counters"] = true
-	tables["access_key_projects"] = true
-	tables["access_key_blocked_projects"] = true
 	var untyped int
 	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM information_schema.columns WHERE table_schema='platform' AND (data_type IN ('json','jsonb') OR column_name LIKE '%\_json' ESCAPE '\')`).Scan(&untyped); err != nil || untyped != 0 {
 		t.Fatalf("untyped columns=%d err=%v", untyped, err)
@@ -46,7 +55,7 @@ func TestPlatformInventoryAndRoleSeparation(t *testing.T) {
 	for _, group := range []string{postgres.RuntimeRoleName, postgres.PlatformRoleName, postgres.MigrationRoleName} {
 		t.Run(group, func(t *testing.T) {
 			pool := rolePool(t, db, group, "")
-			for table := range tables {
+			for _, table := range tables {
 				t.Run(table, func(t *testing.T) {
 					var owner string
 					if err := db.QueryRowContext(t.Context(), `SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid=$1::regclass`, "platform."+table).Scan(&owner); err != nil {

@@ -398,7 +398,7 @@ func entryBackendConfig(t *testing.T, backend string) func(*Config) {
 }
 
 func TestEntryStorageSelectionFailsClosed(t *testing.T) {
-	for _, selection := range []StorageConfig{{Backend: "other"}, {Backend: "postgres"}, {PostgresDSN: "postgres://example.invalid/example"}, {Backend: "postgres", PostgresDSN: "postgres://example.invalid/example", Pool: platformstore.PoolConfig{MaxConnections: 2, ServingConnections: 2, BackgroundConnections: 1}}} {
+	for _, selection := range []StorageConfig{{}, {Backend: "sqlite"}, {Backend: "other"}, {Backend: "postgres"}, {PostgresDSN: "postgres://example.invalid/example"}, {Backend: "postgres", PostgresDSN: "postgres://example.invalid/example", Pool: platformstore.PoolConfig{MaxConnections: 2, ServingConnections: 2, BackgroundConnections: 1}}} {
 		t.Run(selection.Backend, func(t *testing.T) {
 			var logs lockedBuffer
 			config := secretEntryConfig(t, &logs)
