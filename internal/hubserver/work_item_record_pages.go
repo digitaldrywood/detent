@@ -3,14 +3,19 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -143,5 +148,84 @@ func (s *Service) workItemResource(ctx context.Context, scope nativeScope, id st
 			}
 		}
 	}
-	return s.readWorkItem(ctx, scope, id)
+
+	var issue tracker.NativeIssue
+	err := s.readWorkItemPageSnapshot(ctx, scope, func(ctx context.Context) error {
+		var err error
+		issue, err = s.readWorkItemPageModel(ctx, scope, id)
+		return err
+	})
+	return issue, err
+}
+
+func (s *Service) readWorkItemPageSnapshot(ctx context.Context, scope nativeScope, run func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	if repository, ok := s.config.TenantRepository.(tenantstore.RequestReader); ok {
+		return repository.ReadRequest(ctx, scope.organization, run)
+	}
+	return run(ctx)
+}
+
+func (s *Service) readWorkItemPageModel(ctx context.Context, scope nativeScope, id string) (tracker.NativeIssue, error) {
+
+	if err := s.authorizeCommentWorkItem(ctx, scope, id); err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	var record viewstore.ItemPageRecord
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		reader, ok := r.(viewstore.WorkItemPageReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		var err error
+		record, err = reader.WorkItemDetailPage(ctx, scope.project, tracker.NativeWorkItemID(id))
+		if errors.Is(err, corestore.ErrNotFound) {
+			return workItemStorageUnavailable()
+		}
+		return err
+	})
+	if err != nil {
+		return tracker.NativeIssue{}, projectRecordError(err)
+	}
+	return scope.reporterIssue(record.Value), nil
+}
+
+func (s *Service) GetWorkItemReferences(c echo.Context) error {
+	params, err := nativeReadQuery(c)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if len(params) != 0 {
+		return s.nativeAPIError(c, nativePublicInvalid("References do not accept query parameters"))
+	}
+	scope := nativeRequestScope(c)
+	var references []tracker.ExternalReference
+	err = s.readWorkItemPageSnapshot(c.Request().Context(), scope, func(ctx context.Context) error {
+		if err := s.authorizeCommentWorkItem(ctx, scope, c.Param("item")); err != nil {
+			return err
+		}
+		return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			reader, ok := r.(viewstore.WorkItemReferenceReader)
+			if !ok {
+				return workItemStorageUnavailable()
+			}
+			var err error
+			references, err = reader.WorkItemReferenceRecords(ctx, scope.project, tracker.NativeWorkItemID(c.Param("item")))
+			return err
+		})
+	})
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, references)
+}
+
+func WorkItemPageOrganizationRoute(path string) bool {
+	switch path {
+	case nativeOrganizationIssuePath, nativeOrganizationIssuePath + "/comments", nativeOrganizationIssuePath + "/relationships", nativeOrganizationIssuePath + "/references":
+		return true
+	default:
+		return false
+	}
 }
