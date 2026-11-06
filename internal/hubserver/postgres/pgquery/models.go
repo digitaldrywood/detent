@@ -3188,6 +3188,20 @@ type RunnerWorkspaceReport struct {
 	Isolation      string
 }
 
+type ScheduledCiDecision struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Repository     string
+	HeadSHA        string
+	RunID          string
+	RunAttempt     string
+	JobID          string
+	Outcome        string
+	Target         string
+	Reason         string
+	CreatedAt      time.Time
+}
+
 type SearchDocument struct {
 	OrganizationID          tracker.OrganizationID
 	ID                      string
