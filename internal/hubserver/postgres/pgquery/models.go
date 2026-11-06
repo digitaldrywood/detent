@@ -1809,6 +1809,9 @@ type Organization struct {
 	ModelSelectionBytes        sql.NullInt64
 	ModelSelectionContentBytes sql.NullInt64
 	SchedulingRevision         int64
+	LogoImageKey               string
+	LogoImageSha256            string
+	LogoRevision               int64
 }
 
 type OrganizationSecret struct {

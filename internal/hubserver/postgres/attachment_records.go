@@ -17,17 +17,18 @@ const attachmentRecordColumns = `organization_id,project_id,id,uploader,name,con
 
 func scanAttachmentRecord(row interface{ Scan(...any) error }) (attachmentstore.Record, error) {
 	var r attachmentstore.Record
-	var item, comment, attempt sql.NullString
-	err := row.Scan(&r.OrganizationID, &r.Metadata.ProjectID, &r.Metadata.ID, &r.Metadata.Uploader, &r.Metadata.Name, &r.Metadata.ContentType, &r.Metadata.Size, &r.Metadata.SHA256, &r.Metadata.Width, &r.Metadata.Height, &r.Metadata.CreatedAt, &item, &comment, &attempt, &r.EvidenceCaption, &r.Metadata.DeletedAt, &r.ObjectDeletedAt, &r.Kind, &r.Retention, &r.ObjectKey, &r.UncompressedSize, &r.Codec, &r.SchemaVersion, &r.StorageBindingID, &r.CustomerOwned, &r.PendingContent)
+	var project, item, comment, attempt sql.NullString
+	err := row.Scan(&r.OrganizationID, &project, &r.Metadata.ID, &r.Metadata.Uploader, &r.Metadata.Name, &r.Metadata.ContentType, &r.Metadata.Size, &r.Metadata.SHA256, &r.Metadata.Width, &r.Metadata.Height, &r.Metadata.CreatedAt, &item, &comment, &attempt, &r.EvidenceCaption, &r.Metadata.DeletedAt, &r.ObjectDeletedAt, &r.Kind, &r.Retention, &r.ObjectKey, &r.UncompressedSize, &r.Codec, &r.SchemaVersion, &r.StorageBindingID, &r.CustomerOwned, &r.PendingContent)
+	r.Metadata.ProjectID = project.String
 	r.Metadata.WorkItemID, r.Metadata.CommentID, r.EvidenceAttemptID = item.String, comment.String, attempt.String
 	return r, err
 }
 func (s *session) Attachment(ctx context.Context, project tracker.ProjectID, id string) (attachmentstore.Record, error) {
-	r, err := scanAttachmentRecord(s.db.QueryRowContext(ctx, `SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND project_id=$2 AND id=$3`, s.organization, project, id))
+	r, err := scanAttachmentRecord(s.db.QueryRowContext(ctx, `SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND project_id IS NOT DISTINCT FROM NULLIF($2,'') AND id=$3`, s.organization, project, id))
 	return r, mapError(ctx, err)
 }
 func (s *session) LockAttachment(ctx context.Context, project tracker.ProjectID, id string) (attachmentstore.Record, error) {
-	r, err := scanAttachmentRecord(s.db.QueryRowContext(ctx, `SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND project_id=$2 AND id=$3 FOR SHARE`, s.organization, project, id))
+	r, err := scanAttachmentRecord(s.db.QueryRowContext(ctx, `SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND project_id IS NOT DISTINCT FROM NULLIF($2,'') AND id=$3 FOR SHARE`, s.organization, project, id))
 	return r, mapError(ctx, err)
 }
 func (s *session) AttachmentEvidence(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, attempt string, limit int) ([]attachmentstore.Record, error) {
@@ -53,7 +54,7 @@ func (s *session) CreateAttachment(ctx context.Context, r attachmentstore.Record
 	if err := s.checkOrganization(r.OrganizationID); err != nil {
 		return err
 	}
-	if r.Metadata.Validate() != nil || r.Metadata.ProjectID == "" || r.Metadata.Uploader == "" || r.Metadata.CreatedAt.IsZero() || r.Kind != "attachment" || r.PendingContent != nil {
+	if r.Metadata.Validate() != nil || r.Metadata.ProjectID == "" && (r.Retention != "organization" || r.Metadata.Name != "organization-logo.png" || r.Metadata.WorkItemID != "") || r.Metadata.Uploader == "" || r.Metadata.CreatedAt.IsZero() || r.Kind != "attachment" || r.PendingContent != nil {
 		return attachment.ErrInvalid
 	}
 	if r.Metadata.WorkItemID != "" {
@@ -78,7 +79,7 @@ func (s *session) CreateAttachment(ctx context.Context, r attachmentstore.Record
 	} else if r.Metadata.CommentID != "" || r.EvidenceAttemptID != "" {
 		return attachment.ErrInvalid
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO attachments (`+attachmentRecordColumns+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,''),NULLIF($13,''),NULLIF($14,''),$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`, s.organization, r.Metadata.ProjectID, r.Metadata.ID, r.Metadata.Uploader, r.Metadata.Name, r.Metadata.ContentType, r.Metadata.Size, r.Metadata.SHA256, r.Metadata.Width, r.Metadata.Height, r.Metadata.CreatedAt, r.Metadata.WorkItemID, r.Metadata.CommentID, r.EvidenceAttemptID, r.EvidenceCaption, r.Metadata.DeletedAt, r.ObjectDeletedAt, r.Kind, r.Retention, r.ObjectKey, r.UncompressedSize, r.Codec, r.SchemaVersion, r.StorageBindingID, r.CustomerOwned, r.PendingContent)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO attachments (`+attachmentRecordColumns+`) VALUES ($1,NULLIF($2,''),$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,''),NULLIF($13,''),NULLIF($14,''),$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`, s.organization, r.Metadata.ProjectID, r.Metadata.ID, r.Metadata.Uploader, r.Metadata.Name, r.Metadata.ContentType, r.Metadata.Size, r.Metadata.SHA256, r.Metadata.Width, r.Metadata.Height, r.Metadata.CreatedAt, r.Metadata.WorkItemID, r.Metadata.CommentID, r.EvidenceAttemptID, r.EvidenceCaption, r.Metadata.DeletedAt, r.ObjectDeletedAt, r.Kind, r.Retention, r.ObjectKey, r.UncompressedSize, r.Codec, r.SchemaVersion, r.StorageBindingID, r.CustomerOwned, r.PendingContent)
 	return mapError(ctx, err)
 }
 func (s *session) AttachmentReferences(ctx context.Context, project tracker.ProjectID, id string, limit int) ([]attachmentstore.Reference, error) {
@@ -226,6 +227,6 @@ func (s *session) ExpireAttachment(ctx context.Context, project tracker.ProjectI
 }
 
 func (s *session) DeleteIconAttachment(ctx context.Context, project tracker.ProjectID, id string, at time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE attachments SET deleted_at=COALESCE(deleted_at,$4) WHERE organization_id=$1 AND project_id=$2 AND id=$3 AND kind='attachment' AND retention_class='organization' AND name IN ('project-icon.png','organization-logo.png')`, s.organization, project, id, at)
+	_, err := s.db.ExecContext(ctx, `UPDATE attachments SET deleted_at=COALESCE(deleted_at,$4) WHERE organization_id=$1 AND project_id IS NOT DISTINCT FROM NULLIF($2,'') AND id=$3 AND kind='attachment' AND retention_class='organization' AND name IN ('project-icon.png','organization-logo.png')`, s.organization, project, id, at)
 	return mapError(ctx, err)
 }

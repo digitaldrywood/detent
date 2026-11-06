@@ -17,6 +17,13 @@ var ErrDenied = errors.New("tenant access is unavailable or inactive")
 
 var ErrSeatLimit = errors.New("hosted member allowance is exhausted")
 
+type Logo struct {
+	ImageKey    string           `json:"image_key,omitempty"`
+	ImageSHA256 string           `json:"image_sha256,omitempty"`
+	URL         string           `json:"url,omitempty"`
+	Revision    tracker.Revision `json:"revision,string"`
+}
+
 type Organization struct {
 	OrganizationID tracker.OrganizationID
 	Name           string
@@ -239,6 +246,7 @@ type Reader interface {
 	AccessInvitationGrants(context.Context, string, tracker.ProjectID, int) ([]InvitationGrant, error)
 	AccessProjectGrants(context.Context, string, tracker.ProjectID, int) ([]ProjectGrant, error)
 	AccessTokenGrants(context.Context, string, tracker.ProjectID, int) ([]TokenGrant, error)
+	OrganizationLogo(context.Context) (Logo, error)
 	AccessOrganization(context.Context) (Organization, error)
 	AccessOrganizationSlug(context.Context, string) (bool, error)
 	AccessTenant(context.Context) (Tenant, error)
@@ -274,6 +282,7 @@ type Writer interface {
 	SetAccessTokenGrant(context.Context, TokenGrant) error
 	Reader
 	CreateAccessOrganization(context.Context, Organization) error
+	UpdateOrganizationLogo(context.Context, Logo, tracker.Revision) error
 	LockAccessOrganization(context.Context) error
 	UpdateAccessOrganizationName(context.Context, string) error
 	AddAccessOrganizationSlug(context.Context, string) error

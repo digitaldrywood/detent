@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -551,4 +552,22 @@ func (s *session) EnsureAccessCredential(ctx context.Context, row accessstore.Cr
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO api_tokens (organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at,rotated_at,revoked_at,expires_at,last_used_at,hosted_user_id,hosted_membership_id,operator_key_scope,operator_project_access,key_kind) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT(organization_id,id) DO NOTHING`, row.OrganizationID, row.ID, row.Name, row.Hash, row.Fingerprint, row.Scope, row.NativeOnly, row.CreatedAt, row.UpdatedAt, row.RotatedAt, row.RevokedAt, row.ExpiresAt, row.LastUsedAt, row.UserID, row.MembershipID, row.KeyScope, row.ProjectAccess, row.Kind)
 	return mapError(ctx, err)
+}
+
+func (s *session) OrganizationLogo(ctx context.Context) (accessstore.Logo, error) {
+	var logo accessstore.Logo
+	err := s.db.QueryRowContext(ctx, `SELECT logo_image_key,logo_image_sha256,logo_revision FROM organizations WHERE organization_id=$1`, s.organization).Scan(&logo.ImageKey, &logo.ImageSHA256, &logo.Revision)
+	return logo, mapError(ctx, err)
+}
+
+func (s *session) UpdateOrganizationLogo(ctx context.Context, logo accessstore.Logo, revision tracker.Revision) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE organizations SET logo_image_key=$2,logo_image_sha256=$3,logo_revision=logo_revision+1 WHERE organization_id=$1 AND logo_revision=$4`, s.organization, logo.ImageKey, logo.ImageSHA256, revision)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	n, err := result.RowsAffected()
+	if err == nil && n == 0 {
+		return corestore.ErrRevisionConflict
+	}
+	return err
 }

@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,18 +11,18 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type organizationLogo struct {
-	ImageKey    string           `json:"image_key,omitempty"`
-	ImageSHA256 string           `json:"image_sha256,omitempty"`
-	URL         string           `json:"url,omitempty"`
-	Revision    tracker.Revision `json:"revision,string"`
-}
+type organizationLogo = accessstore.Logo
 
 type setOrganizationLogoRequest struct {
 	tracker.Mutation
@@ -53,7 +52,7 @@ func (s *Service) getOrganizationLogo(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	logo, err := readOrganizationLogo(c.Request().Context(), s.database.reader, scope.organization)
+	logo, err := s.readOrganizationLogoRecord(c.Request().Context(), scope.organization)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -100,15 +99,14 @@ func (s *Service) setOrganizationLogoCommand(ctx context.Context, scope nativeSc
 		return raw, err
 	}
 
-	current, err := readOrganizationLogo(ctx, s.database.reader, scope.organization)
+	current, err := s.readOrganizationLogoRecord(ctx, scope.organization)
 	if err != nil {
 		return nil, err
 	}
 	if current.Revision != request.ExpectedRevision {
 		return nil, nativeConflict(current.Revision)
 	}
-
-	logo := organizationLogo{}
+	logo := organizationLogo{Revision: request.ExpectedRevision + 1}
 	if !request.Remove {
 		store := s.config.Icons
 		if s.hostedShared() {
@@ -120,53 +118,54 @@ func (s *Service) setOrganizationLogoCommand(ctx context.Context, scope nativeSc
 		logo.ImageKey = conversation.NewAttachmentID()
 		digest := sha256.Sum256(request.Content)
 		logo.ImageSHA256 = hex.EncodeToString(digest[:])
+		logo.URL = "/organizations/" + string(scope.organization) + "/api/v2/attachments/" + logo.ImageKey
 		defer func() {
 			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 			defer cancel()
-			var stored bool
-			if err := s.database.reader.QueryRowContext(cleanup, "SELECT EXISTS(SELECT 1 FROM attachments WHERE organization_id=? AND id=?)", scope.organization, logo.ImageKey).Scan(&stored); err != nil {
-				resultErr = errors.Join(resultErr, err)
-				return
-			}
-			if !stored {
+			err := s.config.TenantRepository.ReadTenant(cleanup, scope.organization, corestore.Serving, func(r tenantstore.Reader) error { _, err := r.Attachment(cleanup, "", logo.ImageKey); return err })
+			if errors.Is(err, corestore.ErrNotFound) {
 				resultErr = errors.Join(resultErr, store.DeleteIcon(cleanup, string(scope.organization), logo.ImageKey))
+			} else if err != nil {
+				resultErr = errors.Join(resultErr, err)
 			}
 		}()
 		if err := store.PutIcon(ctx, string(scope.organization), logo.ImageKey, request.Content); err != nil {
 			return nil, err
 		}
 	}
-	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		current, err := readOrganizationLogo(ctx, tx, scope.organization)
+	return s.tenantReceiptMutation(ctx, scope, options.OperationID, request.Mutation, request, logo, func(w tenantstore.Writer) error {
+		if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", s.config.now()); err != nil {
+			return err
+		}
+		current, err := w.OrganizationLogo(ctx)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if current.Revision != request.ExpectedRevision {
-			return nil, nativeConflict(current.Revision)
+			return nativeConflict(current.Revision)
 		}
 		if !request.Remove {
-			before, err := s.database.hostedConsumption(ctx, tx, now, "collaboration_bytes", "usage_windows")
-			if err != nil {
-				return nil, err
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO attachments(id,organization_id,uploader,name,content_type,size,sha256,width,height,created_at,retention_class) VALUES(?,?,?,'organization-logo.png','image/png',?,?,128,128,?,'organization')`, logo.ImageKey, scope.organization, scope.credential.ID, len(request.Content), logo.ImageSHA256, formatHubTime(now)); err != nil {
-				return nil, err
-			}
-			if err := s.database.checkHostedGrowth(ctx, tx, before, now, false, "collaboration_bytes", "usage_windows"); err != nil {
-				return nil, err
+			metadata := attachment.Metadata{ID: logo.ImageKey, Name: "organization-logo.png", ContentType: "image/png", Size: int64(len(request.Content)), SHA256: logo.ImageSHA256, Width: 128, Height: 128}
+			if err := s.createIconAttachment(ctx, w, scope, metadata); err != nil {
+				return err
 			}
 		}
-
 		if current.ImageKey != "" {
-			if _, err := tx.ExecContext(ctx, `UPDATE attachments SET deleted_at=? WHERE organization_id=? AND project_id IS NULL AND id=? AND deleted_at IS NULL`, formatHubTime(now), scope.organization, current.ImageKey); err != nil {
-				return nil, err
+			if err := w.DeleteIconAttachment(ctx, "", current.ImageKey, s.config.now()); err != nil {
+				return err
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE organizations SET logo_image_key=nullif(?,''),logo_image_sha256=nullif(?,''),logo_revision=logo_revision+1 WHERE id=?`, logo.ImageKey, logo.ImageSHA256, scope.organization); err != nil {
-			return nil, err
-		}
-		return readOrganizationLogo(ctx, tx, scope.organization)
+		return w.UpdateOrganizationLogo(ctx, logo, request.ExpectedRevision)
 	})
+}
+
+func (s *Service) readOrganizationLogoRecord(ctx context.Context, organization tracker.OrganizationID) (organizationLogo, error) {
+	var logo organizationLogo
+	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error { var err error; logo, err = r.OrganizationLogo(ctx); return err })
+	if logo.ImageKey != "" {
+		logo.URL = "/organizations/" + string(organization) + "/api/v2/attachments/" + logo.ImageKey
+	}
+	return logo, projectRecordError(err)
 }
 
 func (s *Service) getCurrentOrganizationLogoAttachment(c echo.Context) error {
@@ -174,7 +173,7 @@ func (s *Service) getCurrentOrganizationLogoAttachment(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	logo, err := readOrganizationLogo(c.Request().Context(), s.database.reader, scope.organization)
+	logo, err := s.readOrganizationLogoRecord(c.Request().Context(), scope.organization)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -190,13 +189,31 @@ func (s *Service) getOrganizationLogoAttachment(c echo.Context) error {
 }
 
 func (s *Service) organizationLogoAttachment(c echo.Context, scope nativeScope, id string) error {
-	record, err := scanCloudAttachment(s.database.reader.QueryRowContext(c.Request().Context(), `SELECT `+cloudAttachmentColumns+` FROM attachments WHERE organization_id=? AND project_id IS NULL AND id=? AND kind='attachment' AND deleted_at IS NULL AND id=(SELECT logo_image_key FROM organizations WHERE id=?)`, scope.organization, id, scope.organization))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			err = nativeNotFound()
+	var record attachmentstore.Record
+	err := s.config.TenantRepository.ReadTenant(c.Request().Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		ctx := c.Request().Context()
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
 		}
-		return s.nativeAPIError(c, err)
+		logo, err := r.OrganizationLogo(ctx)
+		if err != nil {
+			return err
+		}
+		if id == "" || id != logo.ImageKey {
+			return nativeNotFound()
+		}
+		record, err = r.Attachment(ctx, "", id)
+		if err != nil {
+			return err
+		}
+		if record.Metadata.DeletedAt != nil || record.Kind != "attachment" {
+			return nativeNotFound()
+		}
+		return nil
+	})
+	if err != nil {
+		return s.nativeAPIError(c, projectRecordError(err))
 	}
-	record.AuthorizedPrincipal = scope.credential.ID
-	return c.JSON(http.StatusOK, record)
+	record.Metadata.AuthorizedPrincipal = scope.credential.ID
+	return c.JSON(http.StatusOK, record.Metadata)
 }

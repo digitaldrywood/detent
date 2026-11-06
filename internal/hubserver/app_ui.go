@@ -593,7 +593,7 @@ func (s *Service) readAppBootstrap(ctx context.Context, credential apiCredential
 	if err := s.database.reader.QueryRowContext(ctx, "SELECT name,slug FROM organizations WHERE id = ?", organization).Scan(&payload.Organization.Name, &payload.Organization.Slug); err != nil {
 		return appBootstrap{}, fmt.Errorf("read organization name: %w", err)
 	}
-	logo, err := readOrganizationLogo(ctx, s.database.reader, tracker.OrganizationID(organization))
+	logo, err := s.readOrganizationLogoRecord(ctx, tracker.OrganizationID(organization))
 	if err != nil {
 		return appBootstrap{}, err
 	}
