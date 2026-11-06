@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -153,13 +154,17 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 			Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 1},
 			BaseSHA:    strings.Repeat("a", 40),
 			HeadSHA:    strings.Repeat("b", 40),
-			Files:      []tracker.AttemptDiffFile{{Path: "example.go", Status: tracker.DiffStatusModified, Additions: index + 1, Patch: "+example"}},
+			Files: []tracker.AttemptDiffFile{
+				{Path: "example.go", Status: tracker.DiffStatusModified, Additions: index + 1, Patch: "+example"},
+				{Path: ".env", Status: tracker.DiffStatusAdded, Patch: "+EXAMPLE_SECRET=private"},
+				{Path: "large.go", Status: tracker.DiffStatusModified, Additions: 5, Patch: strings.Repeat("x", tracker.MaxDiffPatchBytes+512)},
+			},
 		}
 		path := strings.ReplaceAll(strings.ReplaceAll(nativeBase+"/attempts/"+fixture.attempt.ID+"/diff", ":organization", string(organization)), ":project", string(project))
 		response := performHubAPIRequest(t, service, http.MethodPost, path, workerToken, request)
 		requireNativeStatus(t, response, http.StatusAccepted)
 		var receipt tracker.AttemptDiffReceipt
-		if err := json.Unmarshal(response.Body.Bytes(), &receipt); err != nil || !receipt.Accepted || receipt.FileCount != 1 {
+		if err := json.Unmarshal(response.Body.Bytes(), &receipt); err != nil || !receipt.Accepted || receipt.FileCount != 3 {
 			t.Fatalf("attempt diff receipt=%+v error=%v body=%s", receipt, err, response.Body.String())
 		}
 		var archiveBytesAfterWrite int64
@@ -211,6 +216,21 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 		if err := json.Unmarshal(read.Body.Bytes(), &diff); err != nil || diff.ID != receipt.DiffID || diff.Files[0].Additions != index+1 || diff.Files[0].Patch != "+example" || diff.HeadSHA != strings.Repeat("b", 40) {
 			t.Fatalf("attempt diff read=%+v error=%v body=%s", diff, err, read.Body.String())
 		}
+		if len(diff.Files) != 3 || !diff.Files[1].Denied || diff.Files[1].Patch != "" {
+			t.Fatalf("stored diff exposed a blocked patch: %+v", diff.Files)
+		}
+		if !diff.Truncated || !diff.Files[2].Truncated || len(diff.Files[2].Patch) != tracker.MaxDiffPatchBytes || diff.Files[2].Additions != 5 {
+			t.Fatal("stored diff lost patch truncation or counts")
+		}
+		func() {
+			legacy := service.database
+			service.database = nil
+			defer func() { service.database = legacy }()
+			direct, err := service.readAttemptDiff(t.Context(), nativeScope{organization: organization, project: project}, string(fixture.item), fixture.attempt.ID, tracker.DiffSourceAttempt, 1)
+			if err != nil || direct.ID != receipt.DiffID || len(direct.Files) != 3 || direct.Files[0].Patch != "+example" {
+				t.Fatalf("diff without legacy database=%+v error=%v", direct, err)
+			}
+		}()
 		itemPath := strings.ReplaceAll(strings.ReplaceAll(nativeBase+"/work-items/"+string(fixture.item)+"/diff", ":organization", string(organization)), ":project", string(project))
 		itemRead := performHubAPIRequest(t, service, http.MethodGet, itemPath, workerToken, nil)
 		requireNativeStatus(t, itemRead, http.StatusOK)
@@ -266,6 +286,132 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 	if response := performHubAPIRequest(t, service, http.MethodPost, wrongPath, workerToken, wrongProducer); response.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("producer identity mismatch status=%d body=%s", response.Code, response.Body.String())
 	}
+
+	for _, test := range []struct {
+		name   string
+		mutate func(*tracker.AttemptDiffRequest)
+		status int
+	}{
+		{"earlier generation", func(r *tracker.AttemptDiffRequest) { r.Generation.Seq = 1 }, http.StatusConflict},
+		{"wrong attempt", func(r *tracker.AttemptDiffRequest) { r.Producer.ID = fixtures[1].attempt.ID }, http.StatusConflict},
+		{"missing lease", func(r *tracker.AttemptDiffRequest) { r.Producer.LeaseID = "" }, http.StatusUnprocessableEntity},
+		{"zero generation", func(r *tracker.AttemptDiffRequest) { r.Generation.Seq = 0 }, http.StatusUnprocessableEntity},
+		{"source mismatch", func(r *tracker.AttemptDiffRequest) {
+			r.Generation.Source = tracker.DiffSourceWorkspace
+			r.Generation.ID = "ws_example"
+		}, http.StatusUnprocessableEntity},
+		{"unsupported workspace", func(r *tracker.AttemptDiffRequest) {
+			r.Producer.Kind = tracker.DiffSourceWorkspace
+			r.Generation.Source = tracker.DiffSourceWorkspace
+			r.Generation.ID = "ws_" + strings.Repeat("0", 32)
+		}, http.StatusConflict},
+		{"unknown status", func(r *tracker.AttemptDiffRequest) { r.Files[0].Status = "copied" }, http.StatusUnprocessableEntity},
+		{"oversized SHA", func(r *tracker.AttemptDiffRequest) { r.HeadSHA = strings.Repeat("c", tracker.MaxDiffSHABytes+1) }, http.StatusUnprocessableEntity},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := secondGeneration
+			request.Generation.Seq = 3
+			request.Files = append([]tracker.AttemptDiffFile(nil), secondGeneration.Files...)
+			test.mutate(&request)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, firstPath, workerToken, request), test.status)
+		})
+	}
+	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "project_other", Name: "Other project", Slug: "other-project", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+			return err
+		}
+		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: tokenID, ProjectID: "project_other"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, scopeErr := service.readAttemptDiff(t.Context(), nativeScope{organization: organization, project: "project_other"}, "", first.attempt.ID, tracker.DiffSourceAttempt, 1)
+	if !errors.Is(scopeErr, corestore.ErrNotFound) {
+		t.Fatalf("foreign project diff read error=%v", scopeErr)
+	}
+	cleanupContext := t.Context()
+	for _, test := range []struct {
+		name   string
+		query  string
+		args   []any
+		status int
+	}{
+		{"missing project grant", "DELETE FROM token_grants WHERE organization_id=$1 AND token_id=$2 AND project_id=$3", []any{organization, tokenID, project}, http.StatusForbidden},
+		{"missing claim", "UPDATE runner_identities SET operations=ARRAY['read','events']::text[] WHERE organization_id=$1 AND runner_id=$2", []any{organization, runnerID}, http.StatusForbidden},
+		{"released lease", "UPDATE leases SET released_at=$1 WHERE organization_id=$2 AND lease_id=$3", []any{service.config.now().UTC(), organization, first.lease.LeaseID}, http.StatusConflict},
+		{"expired lease", "UPDATE leases SET acquired_at=$1,renewed_at=$1,expires_at=$2 WHERE organization_id=$3 AND lease_id=$4", []any{service.config.now().UTC().Add(-2 * time.Minute), service.config.now().UTC().Add(-time.Minute), organization, first.lease.LeaseID}, http.StatusConflict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Cleanup(func() {
+				if _, err := admin.ExecContext(cleanupContext, "INSERT INTO token_grants(organization_id,token_id,project_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING", organization, tokenID, project); err != nil {
+					t.Error(err)
+				}
+				if _, err := admin.ExecContext(cleanupContext, "UPDATE runner_identities SET operations=ARRAY['read','claim','events']::text[] WHERE organization_id=$1 AND runner_id=$2", organization, runnerID); err != nil {
+					t.Error(err)
+				}
+				if _, err := admin.ExecContext(cleanupContext, "UPDATE leases SET acquired_at=$1,renewed_at=$2,expires_at=$3,released_at=NULL WHERE organization_id=$4 AND lease_id=$5", first.lease.AcquiredAt, first.lease.RenewedAt, first.lease.ExpiresAt, organization, first.lease.LeaseID); err != nil {
+					t.Error(err)
+				}
+			})
+			if _, err := admin.ExecContext(t.Context(), test.query, test.args...); err != nil {
+				t.Fatal(err)
+			}
+			if test.name == "missing project grant" {
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, firstPath, workerToken, nil), http.StatusForbidden)
+			}
+			request := secondGeneration
+			request.Generation.Seq = 3
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, firstPath, workerToken, request), test.status)
+		})
+	}
+	oversized := secondGeneration
+	oversized.Generation.Seq = 3
+	oversized.Files = make([]tracker.AttemptDiffFile, 21)
+	for index := range oversized.Files {
+		oversized.Files[index] = tracker.AttemptDiffFile{Path: "large" + strconv.Itoa(index) + ".go", Status: tracker.DiffStatusModified, Additions: 1, Patch: strings.Repeat("y", tracker.MaxDiffPatchBytes)}
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, firstPath, workerToken, oversized), http.StatusRequestEntityTooLarge)
+	oversized.Files = tracker.StripDiffPatches(oversized.Files)
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, firstPath, workerToken, oversized), http.StatusAccepted)
+	var stripped tracker.AttemptDiff
+	decodeHubResponse(t, performHubAPIRequest(t, service, http.MethodGet, firstPath, workerToken, nil), &stripped)
+	if len(stripped.Files) != 21 || stripped.Files[0].Patch != "" || stripped.Files[0].Additions != 1 {
+		t.Fatal("stored stripped diff lost file metadata")
+	}
+
+	for index, fixture := range fixtures {
+		body := diffbody.New(string(organization), string(project), "diff_body_"+strconv.Itoa(index), 0, "+object")
+		request := tracker.AttemptDiffRequest{
+			Producer:   tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: fixture.attempt.ID, RunnerID: runnerID, LeaseID: tracker.LeaseID(fixture.lease.LeaseID), FencingToken: tracker.FencingToken(fixture.lease.FencingToken)},
+			Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 4},
+			BaseSHA:    strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40),
+			Files: []tracker.AttemptDiffFile{{Path: "object.go", Status: tracker.DiffStatusModified, PatchBody: &body}},
+		}
+		path := strings.ReplaceAll(strings.ReplaceAll(nativeBase+"/attempts/"+fixture.attempt.ID+"/diff", ":organization", string(organization)), ":project", string(project))
+		response := performHubAPIRequest(t, service, http.MethodPost, path, workerToken, request)
+		requireNativeStatus(t, response, http.StatusAccepted)
+		for _, check := range []struct {
+			key  string
+			want bool
+		}{{body.Key, true}, {diffbody.New(string(organization), string(project), "diff_missing", 0, "missing").Key, false}, {diffbody.New(string(organization), "project_other", "diff_body_"+strconv.Itoa(index), 0, "+object").Key, false}} {
+			func() {
+				defer func() {
+					if value := recover(); value != nil {
+						t.Fatalf("body lookup used legacy storage: %v", value)
+					}
+				}()
+				exists, err := service.manifestDiffBodyExists(t.Context(), check.key)
+				if err != nil || exists != check.want {
+					t.Fatalf("body referenced=%v want=%v error=%v", exists, check.want, err)
+				}
+			}()
+		}
+	}
+	if _, err := admin.ExecContext(t.Context(), "UPDATE attempt_diffs SET body_references_indexed=false WHERE organization_id=$1 AND project_id=$2", organization, project); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.manifestDiffBodyExists(t.Context(), diffbody.New(string(organization), string(project), "diff_unknown", 0, "unknown").Key); err == nil {
+		t.Fatal("unindexed historic manifests authorized orphan deletion")
+	}
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.RevokeAccessCredential(t.Context(), tokenID, service.config.now().UTC())
 	}); err != nil {
@@ -273,5 +419,28 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 	}
 	if response := performHubAPIRequest(t, service, http.MethodGet, firstPath, workerToken, nil); response.Code != http.StatusUnauthorized && response.Code != http.StatusForbidden {
 		t.Fatalf("revoked runner diff read status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestAttemptDiffReadsRequireTypedOwner(t *testing.T) {
+	for _, operation := range []string{"attempt", "work-item"} {
+		t.Run(operation, func(t *testing.T) {
+			defer func() {
+				if value := recover(); value != nil {
+					t.Fatalf("read used legacy storage: %v", value)
+				}
+			}()
+			service := &Service{}
+			var err error
+			if operation == "attempt" {
+				_, err = service.readAttemptDiff(t.Context(), nativeScope{}, "item", "attempt", "attempt", 1)
+			} else {
+				_, err = service.readWorkItemDiff(t.Context(), nativeScope{}, "item", "attempt")
+			}
+			var unavailable *nativeError
+			if !errors.As(err, &unavailable) || unavailable.status != http.StatusServiceUnavailable {
+				t.Fatalf("missing owner error = %v", err)
+			}
+		})
 	}
 }

@@ -36,24 +36,7 @@ func (s *Service) checkAttachmentEvidence(c echo.Context, input *attachment.Evid
 	if input == nil || input.AttemptID != c.Param("attempt") || strings.TrimSpace(input.Caption) == "" || len(input.Caption) > 1024 || !utf8.ValidString(input.Caption) || strings.ContainsAny(input.Caption, "\r\n\x00") || input.IdempotencyKey == "" || input.LeaseID == "" || input.FencingToken <= 0 {
 		return nativePublicInvalid("Invalid attempt evidence")
 	}
-	if s.config.TenantRepository != nil {
-		return s.checkAttachmentEvidenceTenant(c.Request().Context(), nativeRequestScope(c), *input)
-	}
-	tx, err := s.database.db.BeginTx(c.Request().Context(), nil)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-			resultErr = errors.Join(resultErr, err)
-		}
-	}()
-	now, err := s.database.currentTime()
-	if err != nil {
-		return err
-	}
-	_, err = readEvidenceAttempt(c.Request().Context(), tx, nativeRequestScope(c), *input, now)
-	return err
+	return s.checkAttachmentEvidenceTenant(c.Request().Context(), nativeRequestScope(c), *input)
 }
 
 func readEvidenceAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, input attachment.EvidenceRequest, now time.Time) (tracker.NativeRunData, error) {

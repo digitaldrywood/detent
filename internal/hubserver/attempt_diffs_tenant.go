@@ -138,13 +138,22 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope nativeScope, 
 		if err != nil {
 			return err
 		}
-		return w.CreateAttemptDiff(ctx, leasestore.AttemptDiff{
+		if err := w.CreateAttemptDiff(ctx, leasestore.AttemptDiff{
 			OrganizationID: scope.organization, ID: diffID, AttemptID: attemptID, IssueID: attempt.IssueID,
 			ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(item), Generation: request.Generation,
 			Producer: tracker.DiffProducer{Kind: request.Producer.Kind, ID: attemptID, RunnerID: scope.credential.Runner.RunnerID, LeaseID: request.Producer.LeaseID, FencingToken: request.Producer.FencingToken},
 			BaseSHA:  request.BaseSHA, HeadSHA: request.HeadSHA, FileCount: len(files), PatchBytes: patchBytes,
 			PostedBytes: postedBytes, Truncated: truncated, ArchiveID: object.ID, CreatedAt: now,
-		})
+		}); err != nil {
+			return err
+		}
+		keys := make([]string, 0, len(files))
+		for _, file := range files {
+			if file.PatchBody != nil {
+				keys = append(keys, file.PatchBody.Key)
+			}
+		}
+		return w.IndexAttemptDiffBodies(ctx, scope.project, diffID, keys)
 	})
 	if err != nil {
 		return receipt, err

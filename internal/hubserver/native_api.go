@@ -672,15 +672,6 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 			return nil, err
 		}
 	}
-	if event, ok := input.(tracker.NativeRunEvent); ok {
-		useStableRunHistoryIDs(ctx)
-		if !replay {
-			ctx, err = s.prepareRunDetail(ctx, scope, options.Item, event)
-			if err != nil {
-				return nil, err
-			}
-		}
-	}
 	preparedCtx, preparationErr := prepareContentMutation(ctx, s.database.reader, func() (context.Context, error) { return s.prepareHostedImportMutation(ctx, scope, operationID, input) })
 	if preparationErr == nil {
 		ctx = preparedCtx

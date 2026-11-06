@@ -30,13 +30,6 @@ func TestHotQueryPlans(t *testing.T) {
 	if _, err := db.ExecContext(t.Context(), `INSERT INTO issue_relationships SELECT a.id,b.id,'related',a.created_at FROM issues a JOIN issues b ON b.id=a.id+1 WHERE a.native_id LIKE 'wi_plan_%' AND b.native_id LIKE 'wi_plan_%'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO attempt_diffs(id,attempt_id,organization_id,project_id,work_item_id,source,seq,base_sha,head_sha,producer_kind,producer_id,producer_runner_id,producer_lease_id,producer_fencing_token,created_at)
- SELECT 'diff_'||native_id,'attempt_'||native_id,organization_id,project_id,native_id,'attempt',1,'base','head','attempt',native_id,'runner','lease',id,created_at FROM issues WHERE project_id=?`, f.project.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO attempt_diff_files(diff_id,position,path,status,patch_object) SELECT id,0,'example.go','modified',id FROM attempt_diffs`); err != nil {
-		t.Fatal(err)
-	}
 
 	if _, err := db.ExecContext(t.Context(), `INSERT INTO issue_relationships SELECT a.id,b.id,'related',a.native_created_at FROM issues a,issues b WHERE a.native_id=? AND b.native_id=?`, f.issue.WorkItemID, other.WorkItemID); err != nil {
 		t.Fatal(err)
@@ -58,33 +51,10 @@ func TestHotQueryPlans(t *testing.T) {
 	if _, found, err := nativeCommandReceiptReference(t.Context(), q, scope, "POST /example", "missing", "hash"); err != nil || found {
 		t.Fatalf("missing command receipt found=%t: %v", found, err)
 	}
-	for _, key := range []string{"diff_" + string(f.issue.WorkItemID), "missing"} {
-		var exists bool
-		if err := q.QueryRowContext(t.Context(), attemptDiffBodyExistsSQL(key), key).Scan(&exists); err != nil {
-			t.Fatal(err)
-		}
-		if exists != (key != "missing") {
-			t.Fatalf("key %q: exists=%v", key, exists)
-		}
-	}
 	for i, statement := range q.statements {
 		plans := explainQueryPlan(t, db, statement, q.arguments[i])
 		t.Logf("SQL %d: %s\nPLAN:\n%s", i, statement, strings.Join(plans, "\n"))
 		assertHotQueryPlan(t, statement, plans)
-	}
-	for _, want := range []bool{false, true} {
-		if want {
-			if _, err := db.ExecContext(t.Context(), "UPDATE attempt_diff_files SET patch_object='' WHERE diff_id=?", "diff_"+string(f.issue.WorkItemID)); err != nil {
-				t.Fatal(err)
-			}
-		}
-		var exists bool
-		if err := db.QueryRowContext(t.Context(), attemptDiffBodyExistsSQL(""), "").Scan(&exists); err != nil {
-			t.Fatal(err)
-		}
-		if exists != want {
-			t.Fatalf("empty key: exists=%v, want %v", exists, want)
-		}
 	}
 }
 
@@ -94,8 +64,6 @@ func assertHotQueryPlan(t *testing.T, statement string, plans []string) {
 	switch {
 	case strings.Contains(statement, "FROM native_commands WHERE organization_id"):
 		lookups = map[string][]string{"native_commands": {"organization_id=?", "actor_id=?", "command_key=?", "operation>?", "operation<?"}}
-	case strings.Contains(statement, "FROM attempt_diff_files WHERE patch_object"):
-		lookups = map[string][]string{"attempt_diff_files": {"patch_object=?"}}
 	case strings.Contains(statement, "CROSS JOIN issue_relationships"):
 		lookups = map[string][]string{"source": {"native_id=?"}, "r": {"first_issue_id=?", "second_issue_id=?"}}
 	case statement == runnerAuthoritySelect:

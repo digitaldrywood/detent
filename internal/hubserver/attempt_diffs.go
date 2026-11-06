@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,9 +12,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/artifact"
-	"github.com/digitaldrywood/detent/internal/attachment"
-	"github.com/digitaldrywood/detent/internal/diffbody"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -48,224 +44,6 @@ func attemptDiffTooLarge(limit int64) error {
 	}
 }
 
-// attemptDiffRecord is one stored generation, without its files.
-type attemptDiffRecord struct {
-	ID         string
-	AttemptID  string
-	WorkItemID string
-	Producer   tracker.DiffProducer
-	Generation tracker.DiffGeneration
-	BaseSHA    string
-	HeadSHA    string
-	FileCount  int
-	PatchBytes int64
-	Truncated  bool
-	CreatedAt  time.Time
-}
-
-const attemptDiffColumns = `id, attempt_id, work_item_id, source, source_id, seq, base_sha, head_sha,
- producer_kind, producer_id, producer_runner_id, producer_lease_id, producer_fencing_token,
- file_count, patch_bytes, truncated, created_at`
-
-func scanAttemptDiff(row interface{ Scan(...any) error }) (attemptDiffRecord, error) {
-	var record attemptDiffRecord
-	var created string
-	if err := row.Scan(&record.ID, &record.AttemptID, &record.WorkItemID, &record.Generation.Source, &record.Generation.ID, &record.Generation.Seq,
-		&record.BaseSHA, &record.HeadSHA, &record.Producer.Kind, &record.Producer.ID, &record.Producer.RunnerID,
-		&record.Producer.LeaseID, &record.Producer.FencingToken, &record.FileCount, &record.PatchBytes, &record.Truncated, &created); err != nil {
-		return record, err
-	}
-	var err error
-	if record.CreatedAt, err = parseTimeValue(created); err != nil {
-		return record, fmt.Errorf("decode attempt diff %s created_at: %w", record.ID, err)
-	}
-	return record, nil
-}
-
-// readAttemptDiffFiles reads one stored diff's files in producer order.
-func readAttemptDiffFiles(ctx context.Context, query nativeQueryer, diffID string) ([]tracker.AttemptDiffFile, error) {
-	ref := contentReference()
-	var organization string
-	var expired bool
-	if err := query.QueryRowContext(ctx, `SELECT organization_id,object_key,object_sha256,object_bytes,content_bytes,manifest_expired FROM attempt_diffs WHERE id=?`, diffID).Scan(&organization, &ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize, &expired); err != nil {
-		return nil, err
-	}
-	if ref.Key != "" {
-		data, err := readChangeContent(ctx, organization, ref)
-		if err != nil {
-			return nil, err
-		}
-		var files []tracker.AttemptDiffFile
-		if err := json.Unmarshal(data, &files); err != nil {
-			return nil, err
-		}
-		for i := range files {
-			if expired && files[i].PatchBody != nil {
-				files[i].PatchBody = nil
-				files[i].PatchExpired = true
-			}
-		}
-		return files, nil
-	}
-	rows, err := query.QueryContext(ctx, `SELECT position, path, old_path, status, additions, deletions, binary, patch, truncated, denied, patch_object, patch_sha256, patch_size, patch_expired,
-'', '', 0, 0 FROM attempt_diff_files WHERE diff_id = ?
-UNION ALL
-SELECT position, '', '', '', 0, 0, 0, '', 0, 0, '', '', 0, 0,
-object_key, object_sha256, object_bytes, content_bytes FROM attempt_diff_file_archives WHERE diff_id=? AND organization_id=?
-ORDER BY position`, diffID, diffID, organization)
-	if err != nil {
-		return nil, fmt.Errorf("query attempt diff files: %w", err)
-	}
-	defer rows.Close()
-	type positionedFile struct {
-		position int
-		file     tracker.AttemptDiffFile
-		ref      attachment.ArchiveReference
-	}
-	positioned := []positionedFile{}
-	for rows.Next() {
-		var position int
-		var file tracker.AttemptDiffFile
-		var body diffbody.Reference
-		ref := contentReference()
-		if err := rows.Scan(&position, &file.Path, &file.OldPath, &file.Status, &file.Additions, &file.Deletions,
-			&file.Binary, &file.Patch, &file.Truncated, &file.Denied, &body.Key, &body.SHA256, &body.Bytes, &file.PatchExpired, &ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize); err != nil {
-			return nil, fmt.Errorf("scan attempt diff file: %w", err)
-		}
-		if body.Key != "" && !file.PatchExpired {
-			file.PatchBody = &body
-		}
-		positioned = append(positioned, positionedFile{position: position, file: file, ref: ref})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate attempt diff files: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	for i, f := range positioned {
-		if f.ref.Key == "" {
-			continue
-		}
-		data, err := readChangeContent(ctx, organization, f.ref)
-		if err != nil {
-			return nil, err
-		}
-		var file storageDiffFile
-		if err := json.Unmarshal(data, &file); err != nil {
-			return nil, err
-		}
-		if file.DiffID != diffID || file.Position != f.position {
-			return nil, artifact.ErrIntegrity
-		}
-		if expired && file.File.PatchBody != nil {
-			file.File.PatchBody = nil
-			file.File.PatchExpired = true
-		}
-		positioned[i].file = file.File
-	}
-	files := make([]tracker.AttemptDiffFile, 0, len(positioned))
-	for _, file := range positioned {
-		files = append(files, file.file)
-	}
-	return files, nil
-}
-
-// readAttemptDiffGeneration reads one generation of an attempt. With seq zero
-// it reads the latest of that source.
-func readAttemptDiffGeneration(ctx context.Context, query nativeQueryer, scope nativeScope, attemptID, source string, seq int64) (attemptDiffRecord, error) {
-	statement := `SELECT ` + attemptDiffColumns + ` FROM attempt_diffs
-WHERE organization_id = ? AND project_id = ? AND attempt_id = ? AND source = ?`
-	args := []any{scope.organization, scope.project, attemptID, source}
-	if seq > 0 {
-		statement += ` AND seq = ?`
-		args = append(args, seq)
-	}
-	statement += ` ORDER BY seq DESC LIMIT 1`
-	return scanAttemptDiff(query.QueryRowContext(ctx, statement, args...))
-}
-
-// readWorkItemDiffGeneration reads the latest diff stored against one work
-// item, whichever attempt produced it. Ordering is by creation rather than by
-// seq: seq is monotonic within one attempt's generations and says nothing
-// across attempts, so the newest write is the honest answer to "what does this
-// issue look like now".
-func readWorkItemDiffGeneration(ctx context.Context, query nativeQueryer, scope nativeScope, item, source string) (attemptDiffRecord, error) {
-	return scanAttemptDiff(query.QueryRowContext(ctx, `SELECT `+attemptDiffColumns+` FROM attempt_diffs
-WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND source = ?
-ORDER BY created_at DESC, rowid DESC LIMIT 1`, scope.organization, scope.project, item, source))
-}
-
-// resolveAttemptDiffProducer validates the producer of a diff write and
-// returns the work item the subject attempt belongs to.
-//
-// Only an attempt producer can be honoured today. A workspace producer names a
-// lease the hub has never issued, so it is refused as stale_execution: that is
-// also what a released attempt lease gets, which is the point of the rule —
-// once the run is over, the attempt's own generation can no longer write.
-func resolveAttemptDiffProducer(ctx context.Context, tx *sql.Tx, scope nativeScope, attemptID string, producer tracker.DiffProducer, now time.Time) (string, error) {
-	if producer.Kind != tracker.DiffSourceAttempt {
-		return "", nativeStaleExecution("Only the attempt's own lease may write this diff until a workspace session owns it")
-	}
-	if producer.ID != "" && producer.ID != attemptID {
-		return "", nativeStaleExecution("An attempt producer may only write its own attempt's diff")
-	}
-	if strings.TrimSpace(string(producer.LeaseID)) == "" || producer.FencingToken <= 0 {
-		return "", nativePublicInvalid("A producer lease and fencing token are required")
-	}
-	if producer.RunnerID != "" && producer.RunnerID != scope.credential.Runner.RunnerID {
-		return "", nativePublicInvalid("Producer identity must match the authenticated lease owner")
-	}
-	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
-		return "", err
-	}
-	lease, found, err := readLeaseByID(ctx, tx, producer.LeaseID)
-	if err != nil {
-		return "", err
-	}
-	if !found {
-		return "", nativeNotFound()
-	}
-	if err := requireCurrentLease(lease, producer.FencingToken, now); err != nil {
-		return "", nativeStaleLease(err, "The producer lease is no longer current")
-	}
-	if err := requireLeaseRouting(ctx, tx, producer.LeaseID); err != nil {
-		return "", err
-	}
-	if err := requireLeaseRunner(ctx, tx, producer.LeaseID, scope); err != nil {
-		return "", err
-	}
-	var item string
-	err = tx.QueryRowContext(ctx, `SELECT work_item_id FROM native_attempts
-WHERE id = ? AND organization_id = ? AND project_id = ? AND lease_id = ? AND fencing_token = ? AND status = 'running'`,
-		attemptID, scope.organization, scope.project, producer.LeaseID, producer.FencingToken).Scan(&item)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nativeStaleExecution("The attempt is not the running owner of the producer lease")
-	}
-	if err != nil {
-		return "", fmt.Errorf("read diff producer attempt: %w", err)
-	}
-	return item, nil
-}
-
-func validateStoredDiff(ctx context.Context, tx *sql.Tx, scope nativeScope, attemptID string, request tracker.AttemptDiffRequest) ([]tracker.AttemptDiffFile, int64, error) {
-	files, patchBytes, err := normalizeAttemptDiff(scope, request)
-	if err != nil {
-		return nil, 0, err
-	}
-	var stored int64
-	err = tx.QueryRowContext(ctx, `SELECT coalesce(max(seq), 0) FROM attempt_diffs
-WHERE attempt_id = ? AND source = ? AND source_id = ?`, attemptID, request.Generation.Source, request.Generation.ID).Scan(&stored)
-	if err != nil {
-		return nil, 0, fmt.Errorf("read stored diff generation: %w", err)
-	}
-	if request.Generation.Seq <= stored {
-		return nil, 0, attemptDiffStaleGeneration("Generation " + strconv.FormatInt(request.Generation.Seq, 10) +
-			" is not ahead of the stored generation " + strconv.FormatInt(stored, 10))
-	}
-	return files, patchBytes, nil
-}
-
 func normalizeAttemptDiff(scope nativeScope, request tracker.AttemptDiffRequest) ([]tracker.AttemptDiffFile, int64, error) {
 	files, patchBytes := tracker.NormalizeDiffFiles(request.Files)
 	if patchBytes > tracker.MaxDiffBytes {
@@ -293,60 +71,6 @@ func normalizeAttemptDiff(scope nativeScope, request tracker.AttemptDiffRequest)
 	return files, patchBytes, nil
 }
 
-// storeAttemptDiff applies the write-side rules and inserts one generation.
-func storeAttemptDiff(ctx context.Context, tx *sql.Tx, scope nativeScope, attemptID, item string, request tracker.AttemptDiffRequest, now time.Time) (tracker.AttemptDiffReceipt, error) {
-	var receipt tracker.AttemptDiffReceipt
-	files, patchBytes, err := validateStoredDiff(ctx, tx, scope, attemptID, request)
-	if err != nil {
-		return receipt, err
-	}
-	postedBytes := diffPostedBytes(request.Files)
-	if request.PostedBytes > 0 {
-		postedBytes = request.PostedBytes
-	}
-	truncated := false
-	for _, file := range files {
-		if file.Truncated {
-			truncated = true
-			break
-		}
-	}
-	id := payloadNativeID(ctx, "diff")
-	if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_diffs (id, attempt_id, organization_id, project_id, work_item_id,
-source, source_id, seq, base_sha, head_sha, producer_kind, producer_id, producer_runner_id, producer_lease_id, producer_fencing_token,
-file_count, patch_bytes, posted_bytes, truncated, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, attemptID, scope.organization, scope.project, item,
-		request.Generation.Source, request.Generation.ID, request.Generation.Seq, request.BaseSHA, request.HeadSHA,
-		request.Producer.Kind, attemptID, scope.credential.Runner.RunnerID, request.Producer.LeaseID, request.Producer.FencingToken,
-		len(files), patchBytes, postedBytes, truncated, formatHubTime(now)); err != nil {
-		return receipt, fmt.Errorf("insert attempt diff: %w", err)
-	}
-	data, err := json.Marshal(files)
-	if err != nil {
-		return receipt, err
-	}
-	key, err := storedPayloadKey(ctx, string(scope.organization), data)
-	if err != nil {
-		return receipt, err
-	}
-	ref, err := preparedChangeContent(ctx, string(scope.organization), data)
-	if err != nil {
-		return receipt, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE attempt_diffs SET object_key=?,object_sha256=?,object_bytes=?,content_bytes=? WHERE id=?`, key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize, id); err != nil {
-		return receipt, err
-	}
-
-	return tracker.AttemptDiffReceipt{
-		Accepted: true, DiffID: id, Generation: request.Generation,
-		FileCount: len(files), PatchBytes: patchBytes, Truncated: truncated,
-	}, nil
-}
-
-// diffPostedBytes is how much patch text the producer sent, before the filter
-// and the caps ran. Keeping it beside the stored size is what makes "the
-// denylist removed this much" answerable without the removed bytes.
 func diffPostedBytes(files []tracker.AttemptDiffFile) int64 {
 	var total int64
 	for _, file := range files {
@@ -388,51 +112,7 @@ func (s *Service) postAttemptDiff(c echo.Context) error {
 	}
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
-	if s.config.TenantRepository != nil {
-		receipt, err := s.postAttemptDiffTenant(ctx, scope, attemptID, request, c.Get("attempt_diff_check") == true)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		if c.Get("attempt_diff_check") == true {
-			return c.NoContent(http.StatusNoContent)
-		}
-		return c.JSON(http.StatusAccepted, receipt)
-	}
-	var receipt tracker.AttemptDiffReceipt
-	if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok && c.Get("attempt_diff_check") != true {
-		if err := s.prepareDiffManifest(ctx, scope, attemptID, request); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-	}
-	err := s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
-			return err
-		}
-		item, err := resolveAttemptDiffProducer(ctx, tx, scope, attemptID, request.Producer, now)
-		if err != nil {
-			return err
-		}
-		if c.Get("attempt_diff_check") == true {
-			_, _, err = validateStoredDiff(ctx, tx, scope, attemptID, request)
-			return err
-		}
-		if s.hostedShared() {
-			for _, file := range request.Files {
-				if file.Patch != "" {
-					return nativePublicInvalid("Shared diff bodies must arrive through object storage")
-				}
-			}
-		} else {
-			request.PostedBytes = 0
-			for _, file := range request.Files {
-				if file.PatchBody != nil {
-					return nativePublicInvalid("Object-backed diffs require the shared entry")
-				}
-			}
-		}
-		receipt, err = storeAttemptDiff(ctx, tx, scope, attemptID, item, request, now)
-		return err
-	})
+	receipt, err := s.postAttemptDiffTenant(ctx, scope, attemptID, request, c.Get("attempt_diff_check") == true)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -481,39 +161,12 @@ func (s *Service) getAttemptDiff(c echo.Context) error {
 }
 
 func (s *Service) readAttemptDiff(ctx context.Context, scope nativeScope, item, attemptID, source string, seq int64) (tracker.AttemptDiff, error) {
-	ctx = s.contentContext(ctx)
+	if s.config.TenantRepository == nil {
+		return tracker.AttemptDiff{}, nativeUnavailable("Attempt diff storage is unavailable")
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	if s.config.TenantRepository != nil {
-		return s.readAttemptDiffTenant(ctx, scope, item, attemptID, source, seq)
-	}
-	if item == "" {
-		if err := s.database.reader.QueryRowContext(ctx, "SELECT work_item_id FROM attempt_diffs WHERE organization_id=? AND project_id=? AND attempt_id=? ORDER BY seq DESC LIMIT 1", scope.organization, scope.project, attemptID).Scan(&item); err != nil {
-			return tracker.AttemptDiff{}, err
-		}
-	}
-	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
-		return tracker.AttemptDiff{}, err
-	}
-	query, err := archiveQuery(ctx, s.database.reader, item, "run", attemptID, 0)
-	if err != nil {
-		return tracker.AttemptDiff{}, err
-	}
-	record, err := readAttemptDiffGeneration(ctx, query, scope, attemptID, source, seq)
-	if err != nil {
-		return tracker.AttemptDiff{}, err
-	}
-	if item != "" && record.WorkItemID != item {
-		return tracker.AttemptDiff{}, nativeNotFound()
-	}
-	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, record.WorkItemID); err != nil {
-		return tracker.AttemptDiff{}, err
-	}
-	files, err := readAttemptDiffFiles(ctx, query, record.ID)
-	if err != nil {
-		return tracker.AttemptDiff{}, err
-	}
-	return tracker.AttemptDiff{ID: record.ID, AttemptID: record.AttemptID, Producer: record.Producer, Generation: record.Generation, BaseSHA: record.BaseSHA, HeadSHA: record.HeadSHA, Files: files, FileCount: record.FileCount, PatchBytes: record.PatchBytes, Truncated: record.Truncated, CreatedAt: record.CreatedAt}, nil
+	return s.readAttemptDiffTenant(ctx, scope, item, attemptID, source, seq)
 }
 
 // getWorkItemDiff reads the latest stored diff on one issue, or reports that
@@ -541,24 +194,12 @@ func (s *Service) getWorkItemDiff(c echo.Context) error {
 }
 
 func (s *Service) readWorkItemDiff(ctx context.Context, scope nativeScope, item, source string) (tracker.WorkItemDiff, error) {
+	if s.config.TenantRepository == nil {
+		return tracker.WorkItemDiff{}, nativeUnavailable("Attempt diff storage is unavailable")
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	if s.config.TenantRepository != nil {
-		return s.readWorkItemDiffTenant(ctx, scope, item, source)
-	}
-	issue, _, err := readNativeIssue(ctx, s.database.reader, scope, item)
-	if err != nil {
-		return tracker.WorkItemDiff{}, err
-	}
-	record, err := readWorkItemDiffGeneration(ctx, s.database.reader, scope, string(issue.WorkItemID), source)
-	if errors.Is(err, sql.ErrNoRows) {
-		return tracker.WorkItemDiff{}, nil
-	}
-	if err != nil {
-		return tracker.WorkItemDiff{}, err
-	}
-	diff, err := s.readAttemptDiff(ctx, scope, item, record.AttemptID, source, record.Generation.Seq)
-	return tracker.WorkItemDiff{Diff: &diff}, err
+	return s.readWorkItemDiffTenant(ctx, scope, item, source)
 }
 
 // hubTransact runs fn in one transaction on the hub pool and commits when it
@@ -592,36 +233,4 @@ func (s *Service) commitHubTransaction(ctx context.Context, fn func(tx *sql.Tx, 
 		return fmt.Errorf("commit hub transaction: %w", err)
 	}
 	return nil
-}
-
-func (s *Service) prepareDiffManifest(ctx context.Context, scope nativeScope, attemptID string, request tracker.AttemptDiffRequest) error {
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
-		return err
-	}
-	if _, err := resolveAttemptDiffProducer(ctx, tx, scope, attemptID, request.Producer, s.config.now()); err != nil {
-		return err
-	}
-	files, _, err := validateStoredDiff(ctx, tx, scope, attemptID, request)
-	if err != nil {
-		return err
-	}
-	for _, file := range files {
-		if s.hostedShared() && file.Patch != "" {
-			return nativePublicInvalid("Shared diff bodies must arrive through object storage")
-		}
-	}
-	if err := tx.Rollback(); err != nil {
-		return err
-	}
-	data, err := json.Marshal(files)
-	if err != nil {
-		return err
-	}
-	_, err = prepareChangeContent(ctx, string(scope.organization), data)
-	return err
 }

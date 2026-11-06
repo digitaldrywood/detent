@@ -431,24 +431,6 @@ func TestPayloadPreparationPreservesMutationIDs(t *testing.T) {
 		setup func(*testing.T) (*Service, tracker.OrganizationID, func(context.Context, *sql.Tx, time.Time) (string, error))
 	}{
 		{
-			name: "attempt diff",
-			setup: func(t *testing.T) (*Service, tracker.OrganizationID, func(context.Context, *sql.Tx, time.Time) (string, error)) {
-				f := newAttemptDiffFixture(t)
-				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-				request := f.request(1, tracker.AttemptDiffFile{Path: "example.go", Status: tracker.DiffStatusModified, Patch: "+example"})
-				return f.service, scope.organization, func(ctx context.Context, tx *sql.Tx, now time.Time) (string, error) {
-					_, err := storeAttemptDiff(ctx, tx, scope, f.attempt, string(f.issue.WorkItemID), request, now)
-					var hydration *claimHydration
-					if err != nil && !errors.As(err, &hydration) {
-						return "", err
-					}
-					var id string
-					readErr := tx.QueryRowContext(ctx, "SELECT id FROM attempt_diffs WHERE attempt_id=?", f.attempt).Scan(&id)
-					return id, errors.Join(err, readErr)
-				}
-			},
-		},
-		{
 			name: "conversation audience",
 			setup: func(t *testing.T) (*Service, tracker.OrganizationID, func(context.Context, *sql.Tx, time.Time) (string, error)) {
 				f := newConversationFixture(t)
