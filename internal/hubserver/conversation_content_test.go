@@ -653,3 +653,44 @@ func TestConversationRejectedTurnBatchDoesNotPublish(t *testing.T) {
 		})
 	}
 }
+
+func TestConversationUsesExistingArchiveBackend(t *testing.T) {
+	objects := map[string][]byte{}
+	writes := 0
+	server := &Service{database: &database{}, notifications: newNotificationBroker(), config: Config{Logger: discardLogger(), now: time.Now}}
+	server.config.Content = func(_ context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+		if request.Write {
+			writes++
+			objects[request.Reference.Key] = bytes.Clone(request.Data)
+		}
+		data, ok := objects[request.Reference.Key]
+		if !ok {
+			return nil, errors.New("object missing")
+		}
+		return bytes.Clone(data), nil
+	}
+	chat := newConversationService(server, (ConversationConfig{Enabled: true}).normalized())
+	server.conversations = chat
+	t.Cleanup(chat.stop)
+	for index := range 2 {
+		text := "archive message " + strconv.Itoa(index)
+		payload, err := messageContent(conversationMessageRecord{Text: text})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref, err := chat.store.publishPayload(t.Context(), "org_example", payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got conversationContent
+		if err := server.readConversationObject(t.Context(), "org_example", ref, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Text != text {
+			t.Fatalf("archive message = %q, want %q", got.Text, text)
+		}
+	}
+	if writes != 2 || len(objects) != 2 {
+		t.Fatalf("archive writes=%d objects=%d", writes, len(objects))
+	}
+}
