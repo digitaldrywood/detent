@@ -537,7 +537,7 @@ PY
 	sudo -n cmp -s "$cutover_stage/cutover-postgres.sh" "$cutover_source/deploy/hub/cutover-postgres.sh" || { echo "the uploaded receiver does not match the frozen release source" >&2; exit 1; }
 	cutover_metadata=$(sudo -n -u "$NAME" "$cutover_stage/detent" version --format json 2>/dev/null) || { echo "the cutover candidate version is unavailable" >&2; exit 1; }
 	printf '%s' "$cutover_metadata" | python3 -c 'import json,sys; data=json.load(sys.stdin); sys.exit(0 if data.get("commit")==sys.argv[1] and data.get("postgres_storage_supported") is True and data.get("socket_activation_supported") is True else 1)' "$sha" || { echo "the cutover candidate does not match the exact PostgreSQL-capable release" >&2; exit 1; }
-	for command in "cloud import-platform-postgres" "hub import-core-postgres"; do
+	for command in "hub import-core-postgres"; do
 		read -r group name <<<"$command"
 		sudo -n -u "$NAME" "$cutover_stage/detent" "$group" "$name" --help >/dev/null || { echo "the cutover candidate lacks a required importer" >&2; exit 1; }
 	done

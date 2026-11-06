@@ -123,7 +123,6 @@ source_commit=$(GIT_OPTIONAL_LOCKS=0 git -c safe.directory="$repository_root" -C
 source_changes=$(GIT_OPTIONAL_LOCKS=0 git -c safe.directory="$repository_root" -C "$repository_root" status --porcelain --untracked-files=all) || fail "the selected source checkout cannot be verified"
 [ -z "$source_changes" ] || fail "the selected source checkout is not clean"
 cmp -s "$0" "$repository_root/deploy/hub/cutover-postgres.sh" || fail "the installed receiver differs from the exact source commit"
-run_service "$binary" cloud import-platform-postgres --help >/dev/null || fail "the selected binary lacks the platform importer"
 run_service "$binary" hub import-core-postgres --help >/dev/null || fail "the selected binary lacks the complete tenant importer"
 
 current_link=/opt/detent-hub/detent
@@ -483,7 +482,6 @@ for database in "${source_metrics_databases[@]}"; do
 	metrics_database_count=$((metrics_database_count + 1))
 done
 
-run_service "$binary" cloud import-platform-postgres --entry-config "$entry_config" --registry-copy "$registry_copy" --auth-copy "$auth_copy" --repository-root "$repository_root" --format json | python3 -c 'import json,sys; result=json.load(sys.stdin); sys.exit(0 if result.get("done") is True and type(result.get("processed")) is int else 1)' || fail "the platform import did not report complete"
 for organization in "${tenant_organizations[@]}"; do
 	run_service "$binary" hub import-core-postgres --entry-config "$entry_config" --database-copy "$backup_root/tenants/$organization/hub.db" --organization "$organization" --repository-root "$repository_root" --format json | python3 -c 'import json,sys; result=json.load(sys.stdin); sys.exit(0 if result.get("core_import_complete") is True else 1)' || fail "a tenant import did not report core_import_complete"
 done

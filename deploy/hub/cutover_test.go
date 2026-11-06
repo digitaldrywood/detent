@@ -221,16 +221,11 @@ if [ "$FIXTURE_CHECK_SERVICE_IDENTITY" = true ]; then
 fi
 if [ "$1" = version ]; then
   printf '%%s\n' '{"commit":"%s","postgres_storage_supported":true,"socket_activation_supported":true}'
-elif [ "$1" = cloud ] && [ "$2" = import-platform-postgres ] && [ "${3:-}" = --help ]; then
-  exit 0
 elif [ "$1" = hub ] && [ "$2" = import-core-postgres ] && [ "${3:-}" = --help ]; then
   exit 0
-elif [ "$1" = cloud ] && [ "$2" = import-platform-postgres ]; then
-  printf 'platform\n' >> "$FIXTURE_ROOT/imports.log"
-  if [ "$FIXTURE_IMPORT_FAILURE" = true ]; then exit 1; fi
-  printf '%%s\n' '{"done":true,"processed":2}'
 elif [ "$1" = hub ] && [ "$2" = import-core-postgres ]; then
   printf 'tenant\n' >> "$FIXTURE_ROOT/imports.log"
+  if [ "$FIXTURE_IMPORT_FAILURE" = true ]; then exit 1; fi
   printf '%%s\n' '{"core_import_complete":true}'
 else
   exit 2
@@ -497,8 +492,8 @@ exec "$@"
 				t.Fatalf("Cloud fencing and activation order = %s", callLog)
 			}
 			imports, err := os.ReadFile(filepath.Join(root, "imports.log"))
-			if err != nil || string(imports) != "platform\ntenant\n" {
-				t.Fatalf("platform and tenant import order = %q (%v)", imports, err)
+			if err != nil || string(imports) != "tenant\n" {
+				t.Fatalf("tenant import execution = %q (%v)", imports, err)
 			}
 			registryCopy := filepath.Join(backupRoot, "platform/registry.db")
 			verify := exec.Command("python3", "-c", `import sqlite3,sys; db=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro&immutable=1",uri=True); assert db.execute("SELECT id FROM organizations WHERE id='org_example'").fetchone()[0]=='org_example'`, registryCopy)
