@@ -8,9 +8,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -374,4 +377,80 @@ func (s *session) UpdateRunnerHost(ctx context.Context, id string, change runner
 		return revision, corestore.ErrRevisionConflict
 	}
 	return updated, mapError(ctx, err)
+}
+
+func (s *session) LeaseMutationFacts(ctx context.Context, project tracker.ProjectID, id string) (leasestore.Lease, corestore.WorkItem, error) {
+	row, err := s.queries.LeaseMutationFacts(ctx, pgquery.LeaseMutationFactsParams{OrganizationID: s.organization, ProjectID: project, LeaseID: id})
+	return leasestore.Lease(row.Lease), corestore.WorkItem(row.Issue), mapError(ctx, err)
+}
+
+func (s *session) LeaseMutationIdentity(ctx context.Context, id string) (runnerstore.Identity, error) {
+	var row pgquery.LeaseMutationRunnerRow
+	var err error
+	if s.readOnly {
+		row, err = s.queries.LeaseMutationRunner(ctx, pgquery.LeaseMutationRunnerParams{OrganizationID: s.organization, LeaseID: id})
+	} else {
+		var locked pgquery.LockLeaseMutationRunnerRow
+		locked, err = s.queries.LockLeaseMutationRunner(ctx, pgquery.LockLeaseMutationRunnerParams{OrganizationID: s.organization, LeaseID: id})
+		row = pgquery.LeaseMutationRunnerRow(locked)
+	}
+	if err != nil {
+		return runnerstore.Identity{}, mapError(ctx, err)
+	}
+	return runnerstore.Identity{OrganizationID: row.OrganizationID, RunnerID: row.RunnerID, MachineID: tracker.MachineID(row.MachineID), TokenID: row.TokenID, State: row.State, ExpiresAt: row.ExpiresAt, RemovedAt: row.RemovedAt, IsolationTier: row.IsolationTier, HostServices: row.HostServices}, nil
+}
+
+func (s *session) LeaseMutationReservation(ctx context.Context, id tracker.LeaseID) (claimstore.ProviderReservation, error) {
+	rows, err := s.queries.LeaseMutationReservation(ctx, pgquery.LeaseMutationReservationParams{OrganizationID: s.organization, LeaseID: string(id)})
+	if err != nil {
+		return claimstore.ProviderReservation{}, mapError(ctx, err)
+	}
+	if len(rows) == 0 {
+		return claimstore.ProviderReservation{}, corestore.ErrNotFound
+	}
+	h := rows[0].ProviderReservation
+	report := providercapacity.Report{Provider: h.Provider, Backend: h.Backend, AccountAlias: h.AccountAlias, SharedAccountAlias: h.SharedAccountAlias, Billing: h.Billing, MaxConcurrent: int(h.MaxConcurrent), Availability: h.Availability, ObservedAt: h.ObservedAt, Models: []string{}, ModelDetails: []providercapacity.ModelDetail{}, UsageWindows: []providercapacity.UsageWindow{}}
+	if h.ResetAt != nil {
+		report.ResetAt = *h.ResetAt
+	}
+	details := make(map[string]int)
+	for _, row := range rows {
+		switch row.Kind {
+		case 1:
+			if int(row.Position) != len(report.Models) {
+				return claimstore.ProviderReservation{}, corestore.ErrInvalidPage
+			}
+			report.Models = append(report.Models, row.ModelID)
+			if row.HasDetail {
+				details[row.ModelID] = len(report.ModelDetails)
+				report.ModelDetails = append(report.ModelDetails, providercapacity.ModelDetail{ID: row.ModelID, Label: row.Label, Provider: row.ModelProvider, Default: row.IsDefault, DefaultReasoningEffort: row.DefaultReasoningEffort, Legacy: row.Legacy})
+			}
+		case 2:
+			index, found := details[row.ModelID]
+			if !found || int(row.Position) != len(report.ModelDetails[index].ReasoningEfforts) {
+				return claimstore.ProviderReservation{}, corestore.ErrInvalidPage
+			}
+			report.ModelDetails[index].ReasoningEfforts = append(report.ModelDetails[index].ReasoningEfforts, row.Effort)
+		case 3:
+			if int(row.Position) != len(report.UsageWindows) {
+				return claimstore.ProviderReservation{}, corestore.ErrInvalidPage
+			}
+			window := providercapacity.UsageWindow{Kind: row.WindowKind}
+			if row.PercentUsed.Valid {
+				window.PercentUsed = &row.PercentUsed.Float64
+			}
+			if row.WindowResetAt != nil {
+				window.ResetAt = *row.WindowResetAt
+			}
+			if row.WindowObservedAt != nil {
+				window.ObservedAt = *row.WindowObservedAt
+			}
+			report.UsageWindows = append(report.UsageWindows, window)
+		}
+	}
+	reservation := providercapacity.Reservation{Requirement: providercapacity.Requirement{Role: h.RequirementRole, Backend: h.RequirementBackend, Model: h.RequirementModel}, Report: report, Reason: h.Reason}
+	if providercapacity.Validate([]providercapacity.Report{report}) != nil || !report.Supports(reservation.Requirement) {
+		return claimstore.ProviderReservation{}, corestore.ErrInvalidPage
+	}
+	return claimstore.ProviderReservation{OrganizationID: h.OrganizationID, LeaseID: tracker.LeaseID(h.LeaseID), Reservation: reservation}, nil
 }

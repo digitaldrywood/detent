@@ -176,3 +176,40 @@ WITH owner AS MATERIALIZED (
 )
 SELECT changed.*,true AS applied FROM changed
 UNION ALL SELECT locked.*,false AS applied FROM locked WHERE NOT EXISTS (SELECT 1 FROM changed);
+
+-- name: LeaseMutationFacts :one
+SELECT sqlc.embed(l),sqlc.embed(i)
+FROM leases l
+JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
+JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id AND p.deleted_at IS NULL
+WHERE l.organization_id=$1 AND l.lease_id=$2 AND i.project_id=$3;
+
+-- name: LeaseMutationRunner :one
+SELECT r.organization_id,r.runner_id,r.machine_id,r.token_id,r.state,r.expires_at,r.removed_at,r.isolation_tier,r.host_services
+FROM runner_identities r JOIN runner_lease_assignments a ON a.organization_id=r.organization_id AND a.runner_id=r.runner_id
+WHERE a.organization_id=$1 AND a.lease_id=$2;
+
+-- name: LockLeaseMutationRunner :one
+SELECT r.organization_id,r.runner_id,r.machine_id,r.token_id,r.state,r.expires_at,r.removed_at,r.isolation_tier,r.host_services
+FROM runner_identities r JOIN runner_lease_assignments a ON a.organization_id=r.organization_id AND a.runner_id=r.runner_id
+WHERE a.organization_id=$1 AND a.lease_id=$2 FOR UPDATE OF r;
+
+-- name: LeaseMutationReservation :many
+SELECT sqlc.embed(r),c.*
+FROM provider_reservations r
+CROSS JOIN LATERAL (
+ SELECT 0::integer AS kind,0::integer AS position,''::text AS model_id,false AS has_detail,
+ ''::text AS label,''::text AS model_provider,false AS is_default,''::text AS default_reasoning_effort,false AS legacy,
+ ''::text AS effort,''::text AS window_kind,NULL::double precision AS percent_used,NULL::timestamptz AS window_reset_at,NULL::timestamptz AS window_observed_at
+ UNION ALL
+ SELECT 1,m.position,m.model_id,m.has_detail,m.label,m.model_provider,m.is_default,m.default_reasoning_effort,m.legacy,'','',NULL,NULL,NULL
+ FROM provider_reservation_models m WHERE m.organization_id=r.organization_id AND m.lease_id=r.lease_id
+ UNION ALL
+ SELECT 2,e.position,e.model_id,false,'','',false,'',false,e.effort,'',NULL,NULL,NULL
+ FROM provider_reservation_model_efforts e WHERE e.organization_id=r.organization_id AND e.lease_id=r.lease_id
+ UNION ALL
+ SELECT 3,w.position,'',false,'','',false,'',false,'',w.kind,w.percent_used,w.reset_at,w.observed_at
+ FROM provider_reservation_usage_windows w WHERE w.organization_id=r.organization_id AND w.lease_id=r.lease_id
+) c
+WHERE r.organization_id=$1 AND r.lease_id=$2
+ORDER BY c.kind,CASE WHEN c.kind=2 THEN c.model_id ELSE '' END,c.position;

@@ -218,6 +218,14 @@ func TestLeaseMutationsUseOneStatement(t *testing.T) {
 	})
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedLeaseFamily(t, repository, org)
+		historySize := 2
+		if org == "org_second" {
+			historySize = 50
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at,released_at,release_reason)
+        SELECT $1,'history_'||n,2,'machine_2','history_'||n,1,now()-interval '2 hours',now()-interval '2 hours',now()-interval '1 hour',now()-interval '1 hour','expired' FROM generate_series(1,$2::integer) n`, org, historySize); err != nil {
+			t.Fatal(err)
+		}
 		for _, operation := range []string{"renew", "release", "expire"} {
 			t.Run(string(org)+"/"+operation, func(t *testing.T) {
 				request := leaseClaim(1)
