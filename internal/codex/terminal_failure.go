@@ -32,7 +32,13 @@ func (e *ResponseError) NativeTerminalFailure() tracker.NativeTerminalFailure {
 }
 
 func (e *TurnFailedError) NativeTerminalFailure() tracker.NativeTerminalFailure {
-	return (tracker.NativeTerminalFailure{Provider: "codex", Operation: "turn/completed"}).Public()
+	failure := tracker.NativeTerminalFailure{Provider: "codex", Operation: "turn/completed"}
+	if e.ProviderCode != "" {
+		failure.Operation = e.Operation
+		failure.ProviderCode = e.ProviderCode
+		failure.ErrorClass = "provider_refusal"
+	}
+	return failure.Public()
 }
 
 func nativeRequestFailureMetadata(raw []byte, failure *tracker.NativeTerminalFailure) {

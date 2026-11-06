@@ -117,9 +117,11 @@ func (e *ResponseError) BackendErrorMessage() string {
 }
 
 type TurnFailedError struct {
-	Status  string
-	Message string
-	Body    string
+	ProviderCode string
+	Operation    string
+	Status       string
+	Message      string
+	Body         string
 }
 
 func (e *TurnFailedError) Error() string {
@@ -694,7 +696,7 @@ func (s *AppServer) ReadCapacity(ctx context.Context) (observation runner.Capaci
 	if err := sendRequest(ctx, transport, rateLimitsReadRequestID, "account/rateLimits/read", nil); err != nil {
 		return observation, err
 	}
-	result, err := s.awaitResponse(ctx, transport, rateLimitsReadRequestID, nil, nil, nil)
+	result, err := s.awaitResponse(ctx, transport, rateLimitsReadRequestID, "", nil, nil, nil)
 	if err != nil {
 		var responseErr *ResponseError
 		if errors.As(err, &responseErr) && responseErr.Code == methodNotFoundCode {
@@ -728,7 +730,7 @@ func (s *AppServer) account(ctx context.Context, transport Transport) (account A
 	if err := sendRequest(ctx, transport, accountReadRequestID, "account/read", map[string]any{"refreshToken": false}); err != nil {
 		return Account{}, err
 	}
-	result, err := s.awaitResponse(ctx, transport, accountReadRequestID, nil, nil, nil)
+	result, err := s.awaitResponse(ctx, transport, accountReadRequestID, "", nil, nil, nil)
 	if err != nil {
 		return Account{}, err
 	}
@@ -787,7 +789,7 @@ func (s *AppServer) ListModels(ctx context.Context) (models []Model, err error) 
 		if err := sendRequest(ctx, transport, modelListRequestID, "model/list", params); err != nil {
 			return nil, err
 		}
-		result, err := s.awaitResponse(ctx, transport, modelListRequestID, nil, nil, nil)
+		result, err := s.awaitResponse(ctx, transport, modelListRequestID, "", nil, nil, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -884,7 +886,7 @@ func (s *AppServer) VerifyThread(ctx context.Context, threadID string) (err erro
 	if err := sendRequest(ctx, transport, threadReadRequestID, "thread/read", params); err != nil {
 		return err
 	}
-	result, err := s.awaitResponse(ctx, transport, threadReadRequestID, nil, nil, nil)
+	result, err := s.awaitResponse(ctx, transport, threadReadRequestID, "", nil, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -913,7 +915,7 @@ func (s *AppServer) initialize(ctx context.Context, transport Transport, onUpdat
 	if err := sendRequest(ctx, transport, initializeRequestID, "initialize", params); err != nil {
 		return err
 	}
-	if _, err := s.awaitResponse(ctx, transport, initializeRequestID, nil, nil, onUpdate); err != nil {
+	if _, err := s.awaitResponse(ctx, transport, initializeRequestID, "", nil, nil, onUpdate); err != nil {
 		return err
 	}
 	markTransportReady(transport, s.now())
@@ -1020,7 +1022,7 @@ func (s *AppServer) startThread(
 		return "", agentidentity.Identity{}, err
 	}
 
-	result, err := s.awaitResponse(ctx, transport, threadStartRequestID, req.ToolHandler, nil, onUpdate)
+	result, err := s.awaitResponse(ctx, transport, threadStartRequestID, "", req.ToolHandler, nil, onUpdate)
 	if err != nil {
 		return "", agentidentity.Identity{}, err
 	}
@@ -1090,7 +1092,7 @@ func (s *AppServer) resumeThread(
 		return "", agentidentity.Identity{}, err
 	}
 
-	result, err := s.awaitResponse(ctx, transport, threadResumeRequestID, req.ToolHandler, nil, onUpdate)
+	result, err := s.awaitResponse(ctx, transport, threadResumeRequestID, "", req.ToolHandler, nil, onUpdate)
 	if err != nil {
 		return "", agentidentity.Identity{}, err
 	}
@@ -1180,7 +1182,7 @@ func (s *AppServer) startTurn(
 		return onUpdate(update)
 	}
 
-	result, err := s.awaitResponse(ctx, transport, turnStartRequestID, req.ToolHandler, elicitationState, trackTurnStarted)
+	result, err := s.awaitResponse(ctx, transport, turnStartRequestID, threadID, req.ToolHandler, elicitationState, trackTurnStarted)
 	if err != nil {
 		return startTurnResult{}, err
 	}
@@ -1239,7 +1241,7 @@ func (s *AppServer) resolveDefaultModel(
 	if err := sendRequest(ctx, transport, configReadRequestID, "config/read", params); err != nil {
 		return "", err
 	}
-	result, err := s.awaitResponse(ctx, transport, configReadRequestID, nil, nil, onUpdate)
+	result, err := s.awaitResponse(ctx, transport, configReadRequestID, "", nil, nil, onUpdate)
 	if err != nil {
 		var responseErr *ResponseError
 		if errors.As(err, &responseErr) {
@@ -1263,6 +1265,7 @@ func (s *AppServer) awaitResponse(
 	ctx context.Context,
 	transport Transport,
 	requestID int,
+	threadID string,
 	toolHandler DynamicToolHandler,
 	elicitationState *mcpElicitationState,
 	onUpdate UpdateHandler,
@@ -1273,6 +1276,7 @@ func (s *AppServer) awaitResponse(
 		ctx, cancel = s.timeoutContext(ctx, s.readTimeout, nil)
 		defer cancel()
 	}
+	var turnID string
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("wait for %s response: %w", requestName(requestID), err)
@@ -1295,6 +1299,21 @@ func (s *AppServer) awaitResponse(
 				return nil, fmt.Errorf("%w: %s response missing result", ErrInvalidResponse, requestName(requestID))
 			}
 			return msg.Result, nil
+		}
+
+		if requestID == turnStartRequestID {
+			if msg.Method == "turn/started" {
+				update, ok, err := updateFromMessage(msg)
+				if err != nil {
+					return nil, err
+				}
+				if ok && (update.ThreadID == "" || update.ThreadID == threadID) {
+					turnID = update.TurnID
+				}
+			}
+			if failure := earlyTurnFailure(msg, threadID, turnID); failure != nil {
+				return nil, failure
+			}
 		}
 
 		if err := elicitationState.observe(msg); err != nil {

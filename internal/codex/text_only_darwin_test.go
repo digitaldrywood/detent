@@ -77,7 +77,7 @@ func TestTextOnlySymlinkedRuntime(t *testing.T) {
 	if err := sendRequest(ctx, transport, threadStartRequestID, "thread/start", params); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := server.awaitResponse(ctx, transport, threadStartRequestID, nil, nil, nil)
+	raw, err := server.awaitResponse(ctx, transport, threadStartRequestID, "", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
