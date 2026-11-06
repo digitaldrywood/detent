@@ -462,10 +462,10 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 				read func() (tracker.NativeAttempt, error)
 			}{
 				{"single", func() (tracker.NativeAttempt, error) {
-					return service.readNativeAttemptTenant(readContext, scope, string(issue.WorkItemID), start.Data.AttemptID)
+					return service.readNativeAttempt(readContext, scope, string(issue.WorkItemID), start.Data.AttemptID)
 				}},
 				{"page", func() (tracker.NativeAttempt, error) {
-					page, err := service.readNativeAttemptPageTenant(readContext, scope, string(issue.WorkItemID), url.Values{}, json.Marshal)
+					page, err := service.readNativeAttemptPage(readContext, scope, string(issue.WorkItemID), url.Values{}, json.Marshal)
 					if err != nil {
 						return tracker.NativeAttempt{}, err
 					}
@@ -475,7 +475,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 					return page.Items[0], nil
 				}},
 				{"initial_recovery", func() (tracker.NativeAttempt, error) {
-					recovery, err := service.readNativeRecoveryTenant(readContext, scope, string(issue.WorkItemID))
+					recovery, err := service.readNativeRecovery(readContext, scope, string(issue.WorkItemID))
 					if err != nil {
 						return tracker.NativeAttempt{}, err
 					}
@@ -528,7 +528,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 					if value.Sequence != previous || value.AttemptID != start.Data.AttemptID || value.RunID != start.Data.RunID || value.LeaseID != start.Data.LeaseID || value.FencingToken != start.Data.FencingToken {
 						t.Fatalf("inconsistent snapshot: %+v", value.NativeRunData)
 					}
-					current, err := service.readNativeAttemptTenant(readContext, scope, string(issue.WorkItemID), start.Data.AttemptID)
+					current, err := service.readNativeAttempt(readContext, scope, string(issue.WorkItemID), start.Data.AttemptID)
 					if err != nil || current.Sequence != sequence {
 						t.Fatalf("committed append sequence = %d, want %d: %v", current.Sequence, sequence, err)
 					}
@@ -536,7 +536,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 			}
 
 			if otherAttempt != "" {
-				_, err := service.readNativeAttemptTenant(readContext, scope, string(issue.WorkItemID), otherAttempt)
+				_, err := service.readNativeAttempt(readContext, scope, string(issue.WorkItemID), otherAttempt)
 				if !errors.Is(err, corestore.ErrNotFound) && !isNativeNotFound(err) {
 					t.Fatalf("cross-organization attempt read = %v", err)
 				}

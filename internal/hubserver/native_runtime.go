@@ -243,31 +243,7 @@ func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item
 	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	if s.config.TenantRepository != nil {
-		return s.readNativeRuntimeTenant(ctx, scope, item, attemptID, admission...)
-	}
-	prepared := &nativeRuntimePreparation{objects: make(map[nativeRuntimeObjectKey]nativeRuntimeObjectResult)}
-	ctx = context.WithValue(ctx, nativeRuntimePreparationKey{}, prepared)
-	for {
-		tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-		if err != nil {
-			return tracker.NativeRuntimeEvidence{}, err
-		}
-		prepared.collecting = true
-		result, readErr := readNativeRuntimeWithAdmission(ctx, tx, scope, item, attemptID, s.config.now().UTC(), minimumRunnerVersion(s.config.Version), s.database.billingRepository, admission...)
-		prepared.collecting = false
-		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-			return tracker.NativeRuntimeEvidence{}, errors.Join(readErr, err)
-		}
-		var hydration *nativeRuntimeHydration
-		if !errors.As(readErr, &hydration) {
-			return result, readErr
-		}
-		if len(prepared.objects) >= nativeRuntimeObjectLimit {
-			return tracker.NativeRuntimeEvidence{}, &nativeError{Code: "runtime_object_limit", Message: "Runtime object references exceed the read bound", status: http.StatusServiceUnavailable, publicMessage: true}
-		}
-		hydration.read()
-	}
+	return s.readNativeRuntimeTenant(ctx, scope, item, attemptID, admission...)
 }
 
 const nativeRuntimeObjectLimit = 256

@@ -3,13 +3,10 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
-	"errors"
 	"slices"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func storeRunnerBoardProjection(ctx context.Context, tx *sql.Tx, scope nativeScope, runner string, view runnerauth.ProjectConfiguration) error {
@@ -89,76 +86,4 @@ func readRunnerBoardProjection(ctx context.Context, q nativeQueryer, scope nativ
 		d.Records = append(d.Records, r)
 	}
 	return view, rows.Err()
-}
-
-func (s *Service) convertRunnerBoardProjections(ctx context.Context) error {
-	positions, err := s.storageProjectionPage(ctx, "runner-board", `SELECT o.runner_id FROM runner_project_observations o WHERE o.board_projection_version=0`, "o.organization_id,o.runner_id,o.project_id", storageConversionLimit(ctx))
-	if err != nil {
-		return err
-	}
-	type candidate struct {
-		scope       nativeScope
-		runner, raw string
-	}
-	var candidates []candidate
-	for _, position := range positions {
-		organization, ok := position.cursor[0].(string)
-		if !ok {
-			return errors.New("invalid runner board organization key")
-		}
-		project, ok := position.cursor[2].(string)
-		if !ok {
-			return errors.New("invalid runner board project key")
-		}
-		c := candidate{scope: nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(project)}, runner: position.id}
-		if err := s.database.reader.QueryRowContext(ctx, "SELECT project_configuration_json FROM runner_identities WHERE organization_id=? AND id=?", c.scope.organization, c.runner).Scan(&c.raw); err != nil {
-			return err
-		}
-		candidates = append(candidates, c)
-	}
-	for _, c := range candidates {
-		if err := chargeStorageConversion(ctx, len(c.raw)); err != nil {
-			return err
-		}
-		entry, err := projectConfigurationEntry(c.raw, string(c.scope.project))
-		if err != nil {
-			return err
-		}
-		var view runnerauth.ProjectConfiguration
-		if entry.Valid {
-			if err := json.Unmarshal([]byte(entry.String), &view); err != nil {
-				return err
-			}
-		}
-		if view.ProjectID != string(c.scope.project) {
-			view.Diagnostics = nil
-		}
-		if err := s.convertRunnerBoardRow(ctx, c.scope, c.runner, c.raw, view); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *Service) convertRunnerBoardRow(ctx context.Context, scope nativeScope, runner, raw string, view runnerauth.ProjectConfiguration) error {
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var ready int
-	err = tx.QueryRowContext(ctx, `SELECT o.board_projection_version FROM runner_project_observations o JOIN runner_identities r ON r.id=o.runner_id AND r.organization_id=o.organization_id WHERE o.organization_id=? AND o.runner_id=? AND o.project_id=? AND r.project_configuration_json=?`, scope.organization, runner, scope.project, raw).Scan(&ready)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if ready == 1 {
-		return nil
-	}
-	if err := storeRunnerBoardProjection(ctx, tx, scope, runner, view); err != nil {
-		return err
-	}
-	return tx.Commit()
 }

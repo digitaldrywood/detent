@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -32,107 +31,7 @@ func progressRevision(ctx context.Context, q nativeQueryer, scope nativeScope, i
 }
 
 func (s *Service) nativeProgressRequest(ctx context.Context, scope nativeScope, item, policy, instance string) (progresscheck.Request, int64, error) {
-	if s.config.TenantRepository != nil {
-		return s.nativeProgressRequestTenant(ctx, scope, item, policy, instance)
-	}
-	before, err := progressRevision(ctx, s.database.reader, scope, item)
-	if err != nil {
-		return progresscheck.Request{}, 0, err
-	}
-	recovery, err := s.readNativeRecovery(ctx, scope, item, true)
-	if err != nil {
-		return progresscheck.Request{}, 0, err
-	}
-	rows, err := s.database.reader.QueryContext(ctx, nativeProgressAttemptsSQL, scope.organization, scope.project, item, progresscheck.MaxAttempts)
-	if err != nil {
-		return progresscheck.Request{}, 0, err
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return progresscheck.Request{}, 0, err
-		}
-		ids = append(ids, id)
-	}
-	err = errors.Join(rows.Err(), rows.Close())
-	if err != nil {
-		return progresscheck.Request{}, 0, err
-	}
-	recovery.Attempts = nil
-	slices.Reverse(ids)
-	for _, id := range ids {
-		a, err := readNativeAttemptRecord(s.runDetailContext(ctx), s.database.reader, scope, item, id, s.config.now())
-		if err != nil {
-			return progresscheck.Request{}, 0, err
-		}
-		recovery.Attempts = append(recovery.Attempts, a)
-	}
-	rows, err = s.database.reader.QueryContext(ctx, `SELECT c.id FROM (SELECT id,deleted,progress_request_id,sequence FROM native_comments WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence<=(SELECT CASE WHEN progress_comment_sequence>0 THEN progress_comment_sequence ELSE event_sequence END FROM issues WHERE organization_id=? AND project_id=? AND native_id=?) ORDER BY sequence DESC LIMIT ?) c WHERE c.deleted=0 AND c.progress_request_id='' ORDER BY c.sequence DESC`, scope.organization, scope.project, item, scope.organization, scope.project, item, progresscheck.MaxComments)
-	if err != nil {
-		return progresscheck.Request{}, 0, err
-	}
-	defer rows.Close()
-	ids = nil
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return progresscheck.Request{}, 0, err
-		}
-		ids = append(ids, id)
-	}
-	err = errors.Join(rows.Err(), rows.Close())
-	if err != nil {
-		return progresscheck.Request{}, 0, err
-	}
-	recovery.Discussion = nil
-	slices.Reverse(ids)
-	for _, id := range ids {
-		comment, err := readNativeComment(ctx, s.database.reader, scope, item, id)
-		if err != nil {
-			return progresscheck.Request{}, 0, err
-		}
-		recovery.Discussion = append(recovery.Discussion, comment)
-	}
-	var humanComment string
-	var revision int64
-	if err := s.database.reader.QueryRowContext(ctx, `SELECT progress_evidence_revision,progress_human_comment_id FROM issues WHERE organization_id=? AND project_id=? AND native_id=?`, scope.organization, scope.project, item).Scan(&revision, &humanComment); err != nil {
-		return progresscheck.Request{}, 0, err
-	}
-	if humanComment != "" {
-		comment, err := readNativeComment(ctx, s.database.reader, scope, item, humanComment)
-		if err != nil {
-			return progresscheck.Request{}, 0, err
-		}
-		if !comment.Deleted {
-			recovery.Discussion = slices.DeleteFunc(recovery.Discussion, func(c tracker.NativeComment) bool { return c.ID == comment.ID })
-			recovery.Discussion = append(recovery.Discussion, comment)
-		}
-	}
-	request := progresscheck.NativeRequest(recovery, policy, instance)
-	request.EvidenceRevision = strconv.FormatInt(revision, 10)
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT version FROM machines WHERE organization_id=? AND id=?", scope.organization, instance).Scan(&request.InstanceVersion); err != nil {
-		return progresscheck.Request{}, 0, err
-	}
-	defect, state, err := readNativeProgressDefect(ctx, s.database.reader, scope, item)
-	if err != nil {
-		return progresscheck.Request{}, 0, err
-	}
-	if state == "Done" {
-		if len(request.Receipts) == progresscheck.MaxReceipts {
-			request.Receipts = request.Receipts[1:]
-		}
-		request.Receipts = append(request.Receipts, progresscheck.Receipt{ID: defect + ":done", Step: "system_defect", Outcome: "fixed"})
-	}
-	after, err := progressRevision(ctx, s.database.reader, scope, item)
-	if err != nil {
-		return progresscheck.Request{}, 0, err
-	}
-	if before != after {
-		return progresscheck.Request{}, 0, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
-	}
-	return request, after, nil
+	return s.nativeProgressRequestTenant(ctx, scope, item, policy, instance)
 }
 
 func (s *Service) nativeProgressRequestTenant(ctx context.Context, scope nativeScope, item, policy, instance string) (progresscheck.Request, int64, error) {
@@ -245,19 +144,7 @@ func (s *Service) getNativeProgress(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	view := nativeProgressView{Request: request}
-	if request.NeedsCheck() && s.config.TenantRepository == nil {
-		id, err := request.ID()
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		record, found, err := readNativeProgress(c.Request().Context(), s.database.reader, scope, request.IssueID, id)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		if found {
-			view.Record = &record
-		}
-	} else if request.NeedsCheck() {
+	if request.NeedsCheck() {
 		id, err := request.ID()
 		if err != nil {
 			return s.nativeAPIError(c, err)

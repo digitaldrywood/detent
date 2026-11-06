@@ -259,9 +259,6 @@ func (s *Service) trackerAPIError(c echo.Context, err error) error {
 }
 
 func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, reconcileInterval time.Duration) (tracker.Lease, error) {
-	if query.NativeScope != nil {
-		return d.claimNativePrepared(ctx, request, query, reconcileInterval)
-	}
 	if d.claimReader != nil {
 		lease, err := d.claimPreflight(ctx, request, query, reconcileInterval)
 		var selected *claimSelected

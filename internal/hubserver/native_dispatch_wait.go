@@ -128,48 +128,27 @@ func (s *Service) waitNativeCandidates(c echo.Context) error {
 	authorize := func() error {
 		ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 		defer cancel()
-		if s.config.TenantRepository != nil {
-			now := s.config.now().UTC()
-			return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-				if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
-					return err
-				}
-				identity, err := r.RunnerIdentityByCredential(ctx, scope.credential.ID)
-				if err != nil {
-					return err
-				}
-				if !runnerIdentityCanClaim(identity, scope, scope.credential.Runner.MachineID, now) {
-					return tracker.ErrMachineNotFound
-				}
-				allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
-				if err != nil {
-					return err
-				}
-				if !allowed {
-					return tracker.ErrMachineNotFound
-				}
-				return nil
-			})
-		}
-		tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback()
-		now, err := s.database.currentTime()
-		if err != nil {
-			return err
-		}
-		if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
-			return err
-		}
-		if err := s.requireHostedProject(ctx, tx, scope, false); err != nil {
-			return err
-		}
-		if err := authorizeNativeProject(ctx, tx, scope); err != nil {
-			return err
-		}
-		return tx.Commit()
+		now := s.config.now().UTC()
+		return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+				return err
+			}
+			identity, err := r.RunnerIdentityByCredential(ctx, scope.credential.ID)
+			if err != nil {
+				return err
+			}
+			if !runnerIdentityCanClaim(identity, scope, scope.credential.Runner.MachineID, now) {
+				return tracker.ErrMachineNotFound
+			}
+			allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				return tracker.ErrMachineNotFound
+			}
+			return nil
+		})
 	}
 	if err := authorize(); err != nil {
 		return s.nativeAPIError(c, err)

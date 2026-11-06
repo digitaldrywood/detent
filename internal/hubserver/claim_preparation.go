@@ -95,58 +95,6 @@ func claimWriting(ctx context.Context) bool {
 	return ok && writing
 }
 
-func (d *database) claimNativePrepared(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, interval time.Duration) (tracker.Lease, error) {
-	contentMutation(ctx, true)
-	defer contentMutation(ctx, false)
-	prepared := &claimPreparation{versions: make(map[string]preparedClaimVersion), checkpoints: make(map[string]preparedClaimCheckpoint), details: make(map[string]preparedClaimDetail)}
-	pass := context.WithValue(ctx, claimPreparationKey{}, prepared)
-	for prepared.passes < claimPreparationLimit {
-		lease, err := d.prepareClaim(pass, request, query, interval)
-		var selected *claimSelected
-		mode := claimMode{}
-		switch {
-		case errors.As(err, &selected):
-			mode.hint = selected
-		case err == nil:
-			return lease, nil
-		case preflightAnswered(err):
-			if len(prepared.decisions) == 0 && len(prepared.selection) == 0 {
-				return tracker.Lease{}, err
-			}
-			mode.answer = err
-		default:
-			return tracker.Lease{}, err
-		}
-		if err := prepareClaimDecisionPayloads(pass, prepared); err != nil {
-			return tracker.Lease{}, err
-		}
-		contentWriting(pass, true)
-		lease, err = d.claimNextOn(pass, d.db, nil, mode, request, query, interval)
-		contentWriting(pass, false)
-		var hydration *claimHydration
-		if errors.As(err, &hydration) {
-			prepared.hydrating = true
-			err = hydration.run(pass, d.reader)
-			prepared.hydrating = false
-			if err != nil {
-				return tracker.Lease{}, err
-			}
-			continue
-		}
-		if !errors.Is(err, errClaimHintStale) {
-			return lease, err
-		}
-		for _, progress := range prepared.selection {
-			if progress.head == prepared.selected {
-				progress.head = 0
-				progress.done = false
-			}
-		}
-		prepared.selected = 0
-	}
-	return tracker.Lease{}, ErrNoClaimableWork
-}
-
 func prepareClaimDecisionPayloads(ctx context.Context, prepared *claimPreparation) error {
 	for i := range prepared.decisions {
 		value := &prepared.decisions[i]
@@ -175,33 +123,6 @@ func prepareClaimDecisionPayloads(ctx context.Context, prepared *claimPreparatio
 		value.payload = ref
 	}
 	return nil
-}
-
-func (d *database) prepareClaim(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, interval time.Duration) (tracker.Lease, error) {
-	prepared := claimPrepared(ctx)
-	if prepared == nil {
-		return tracker.Lease{}, errClaimHintStale
-	}
-	for prepared.passes < claimPreparationLimit {
-		prepared.passes++
-		candidateRows := prepared.candidateRows
-		lease, err := d.claimPreflight(ctx, request, query, interval)
-		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil || d.claimReader == nil {
-			lease, err = d.claimNextOn(ctx, d.reader, &sql.TxOptions{ReadOnly: true}, claimMode{preflight: true}, request, query, interval)
-		}
-		var hydration *claimHydration
-		if !errors.As(err, &hydration) {
-			return lease, err
-		}
-		prepared.candidateRows = candidateRows
-		prepared.hydrating = true
-		err = hydration.run(ctx, d.reader)
-		prepared.hydrating = false
-		if err != nil {
-			return tracker.Lease{}, err
-		}
-	}
-	return tracker.Lease{}, ErrNoClaimableWork
 }
 
 func readClaimChange(ctx context.Context, q nativeQueryer, scope nativeScope, item string) (tracker.ChangeRequest, bool, error) {

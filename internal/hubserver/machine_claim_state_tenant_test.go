@@ -65,6 +65,19 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 		if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != want {
 			t.Fatalf("runner %d cleanup = %+v", index, snapshot.ClaimState)
 		}
+		cleanupPath := "/api/v2/organizations/org_startup/projects/prj_runner/work-items/" + string(lease.WorkItemID) + "/attempts/" + data.AttemptID + "?view=cleanup"
+		response := performHubAPIRequest(t, f.service, http.MethodGet, cleanupPath, f.tokens[index], nil)
+		if index == 0 {
+			requireNativeStatus(t, response, http.StatusOK)
+			var cleanup tracker.NativeAttempt
+			decodeHubResponse(t, response, &cleanup)
+			if cleanup.AttemptID != data.AttemptID || cleanup.LeaseID != lease.ID || cleanup.FencingToken != lease.FencingToken || cleanup.ClaimReleasedAt == nil || cleanup.CleanupAcknowledgedAt != nil || cleanup.Runtime == nil || cleanup.Runtime.WorkerLaunch == nil || cleanup.Runtime.WorkerLaunch.PID != 123 {
+				t.Fatalf("cleanup identity differs: %+v", cleanup)
+			}
+		} else {
+			requireNativeStatus(t, response, http.StatusNotFound)
+		}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, cleanupPath, f.tokens[1-index], nil), http.StatusNotFound)
 		if index == 0 {
 			if snapshot.ClaimState.ReleasedExecutions[0].AttemptID != data.AttemptID {
 				t.Fatalf("cleanup attempt = %+v", snapshot.ClaimState)
@@ -72,15 +85,17 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 			original := f.service.config.RunDetails
 			f.service.config.RunDetails = nil
 			missingErr := reader.readRegistrationClaimStateTenant(t.Context(), scope, &snapshot)
+			_, cleanupErr := f.service.readNativeCleanupAttempt(t.Context(), scope, string(lease.WorkItemID), data.AttemptID)
 			f.service.config.RunDetails = original
-			if missingErr == nil {
+			if missingErr == nil || cleanupErr == nil {
 				t.Fatal("missing archive store was accepted")
 			}
 			f.service.config.RunDetails = invalidRegistrationArchive{DetailStore: original}
 			err := reader.readRegistrationClaimStateTenant(t.Context(), scope, &snapshot)
+			_, cleanupErr = f.service.readNativeCleanupAttempt(t.Context(), scope, string(lease.WorkItemID), data.AttemptID)
 			f.service.config.RunDetails = original
-			if !errors.Is(err, artifact.ErrIntegrity) {
-				t.Fatalf("corrupt archive error = %v", err)
+			if !errors.Is(err, artifact.ErrIntegrity) || !errors.Is(cleanupErr, artifact.ErrIntegrity) {
+				t.Fatalf("corrupt archive errors: registration=%v cleanup=%v", err, cleanupErr)
 			}
 		}
 	}

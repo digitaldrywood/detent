@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"net/http"
 	"slices"
 	"strings"
@@ -67,8 +66,6 @@ func authorizeClaimItem(ctx context.Context, tx *sql.Tx, id tracker.WorkItemID, 
 
 func (s *Service) claimNativeIssue(c echo.Context) error {
 	ctx := c.Request().Context()
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancelRead()
 	var request tracker.NativeClaim
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
@@ -98,136 +95,23 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 	if request.WorkItemID == "" && len(request.ProviderCandidates) == 1 {
 		request.WorkItemID = request.ProviderCandidates[0].WorkItemID
 	}
-	if s.config.TenantRepository != nil {
-		lease, err := s.claimNativeIssueTenant(ctx, scope, request, ttl)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return s.respondNativeLeaseTenant(c, scope, lease.LeaseID)
-	}
-	var id tracker.WorkItemID
-	if request.WorkItemID != "" {
-		_, id, err = readNativeIssue(readCtx, s.database.reader, scope, string(request.WorkItemID))
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-	}
-	lease, err := s.database.claimNext(ctx, tracker.ClaimRequest{WorkItemID: id, MachineID: request.MachineID, SessionID: request.SessionID, TTL: ttl}, claimCandidateQuery{
-		LandingCapacity:      request.LandingCapacity,
-		LandingCapacityKnown: request.LandingCapacity > 0 || slices.Contains(request.Capabilities, tracker.NativeLandingCapacityCapability),
-		MinimumRunnerVersion: minimumRunnerVersion(s.config.Version),
-		PolicyID:             request.PolicyID, RequirePolicy: true, ProviderCandidates: request.ProviderCandidates, RequireProviderCapacity: slices.Contains(request.Capabilities, tracker.NativeProviderCapacityCapability),
-		DispatchPriorityByState: request.DispatchPriorityByState, DispatchPriorityByLabel: request.DispatchPriorityByLabel, PrioritizeUnblockers: request.PrioritizeUnblockers,
-		NativeScope: &scope, Scope: string(scope.project), WorkflowStates: request.WorkflowStates, Authors: request.Authors, Assignees: request.Assignees, LabelInclude: request.LabelInclude, LabelExclude: request.LabelExclude,
-		// Only a lane that declares the workspace capability is offered
-		// workspace items.
-		WorkspaceLane: slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability),
-	}, s.config.ReconcileInterval)
+	lease, err := s.claimNativeIssueTenant(ctx, scope, request, ttl)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return s.respondNativeLease(c, scope, lease)
+	return s.respondNativeLeaseTenant(c, scope, lease.LeaseID)
 }
 
 func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tracker.Lease) error {
-	if s.config.TenantRepository != nil {
-		return s.respondNativeLeaseTenant(c, scope, string(lease.ID))
-	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
-	policyID, err := s.database.leasePolicyID(ctx, lease.ID)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	var id tracker.NativeWorkItemID
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT native_id FROM issues WHERE id = ? AND organization_id = ? AND project_id = ?", lease.WorkItemID, scope.organization, scope.project).Scan(&id); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	reservation, reserved, err := readProviderReservation(ctx, s.database.reader, lease.ID)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	var providerReservation *providercapacity.Reservation
-	if reserved {
-		providerReservation = &reservation
-	}
-	var policy *isolation.Policy
-	if scope.credential.Runner.RunnerID != "" {
-		var encoded string
-		if err := s.database.reader.QueryRowContext(ctx, "SELECT isolation_policy_json FROM lease_runners WHERE lease_id = ? AND runner_id = ?", lease.ID, scope.credential.Runner.RunnerID).Scan(&encoded); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		policy = &isolation.Policy{}
-		if err := json.Unmarshal([]byte(encoded), policy); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-	}
-	return c.JSON(http.StatusOK, tracker.NativeLease{RunDetailBatching: s.runDetailStore() != nil, IsolationPolicy: policy, ProviderReservation: providerReservation, ServerTime: s.config.now().UTC(), PolicyID: policyID, ID: lease.ID, WorkItemID: id, MachineID: lease.Machine.ID, SessionID: lease.SessionID, FencingToken: lease.FencingToken, AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt})
-}
-
-func (s *Service) requireNativeLease(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
-	scope := nativeRequestScope(c)
-	return requireLeaseRunner(ctx, s.database.reader, tracker.LeaseID(c.Param("lease")), scope)
+	return s.respondNativeLeaseTenant(c, scope, string(lease.ID))
 }
 
 func (s *Service) renewNativeLease(c echo.Context) error {
-	if s.config.TenantRepository != nil {
-		return s.renewNativeLeaseTenant(c)
-	}
-	if err := s.requireNativeLease(c); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	var request tracker.NativeLeaseMutation
-	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
-	}
-	if request.LandingCapacity < 0 {
-		return s.nativeAPIError(c, nativePublicInvalid("Landing capacity must be non-negative"))
-	}
-	ttl, err := apiTTL(request.TTLSeconds)
-	if err != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("Lease TTL is invalid"))
-	}
-	lease, err := s.database.renew(c.Request().Context(), tracker.RenewRequest{LeaseID: tracker.LeaseID(c.Param("lease")), FencingToken: request.FencingToken, TTL: ttl}, true, request.LandingCapacity, nativeRequestScope(c))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return s.respondNativeLease(c, nativeRequestScope(c), lease)
+	return s.renewNativeLeaseTenant(c)
 }
 
 func (s *Service) releaseNativeLease(c echo.Context) error {
-	if s.config.TenantRepository != nil {
-		return s.releaseNativeLeaseTenant(c)
-	}
-	if err := s.requireNativeLease(c); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	var request tracker.NativeLeaseMutation
-	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
-	}
-	if request.CancelAttempt && request.Reason != "cancelled" || !slices.Contains([]string{"completed", "cancelled", "failed", "work_item_hydration_failed", "work_item_identity_missing", "released"}, request.Reason) {
-		return s.nativeAPIError(c, nativePublicInvalid("Release reason is invalid"))
-	}
-	ctx := c.Request().Context()
-	if request.Reason == "cancelled" {
-		var err error
-		ctx, err = s.prepareNativeLeaseCancellation(ctx, nativeRequestScope(c), tracker.LeaseID(c.Param("lease")), request.FencingToken)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-	}
-	if err := s.database.releaseLease(ctx, tracker.ReleaseRequest{LeaseID: tracker.LeaseID(c.Param("lease")), FencingToken: request.FencingToken, Reason: request.Reason}); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	s.notifyNativeDispatch(c.Request().Context(), nativeRequestScope(c), request)
-	s.startSpritePoolForQueue(nativeRequestScope(c))
-	if s.conversations != nil {
-		s.conversations.leaseReleased(c.Request().Context(), tracker.LeaseID(c.Param("lease")))
-	}
-	return c.NoContent(http.StatusNoContent)
+	return s.releaseNativeLeaseTenant(c)
 }
 
 func (s *Service) registerNativeMachine(c echo.Context) error {

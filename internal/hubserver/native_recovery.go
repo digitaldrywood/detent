@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/url"
 	"slices"
 	"strconv"
@@ -19,177 +18,10 @@ import (
 )
 
 func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, item string, projected ...bool) (tracker.NativeRecovery, error) {
-	ctx = s.runDetailContext(ctx)
-	ctx = s.contentContext(ctx)
-	ctx = s.runDetailContext(ctx)
+	ctx = s.contentContext(s.runDetailContext(ctx))
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	bounded := len(projected) > 0 && projected[0]
-	var result tracker.NativeRecovery
-	query := s.database.reader
-	var err error
-	result.Issue, _, err = readNativeIssue(ctx, query, scope, item)
-	if err != nil {
-		return result, err
-	}
-	change, found, err := readLatestNativeChangeRequest(ctx, query, scope, item)
-	if err != nil {
-		return result, err
-	}
-	if err := query.QueryRowContext(ctx, `SELECT CASE WHEN recovery_runner_id != '' AND recovery_version_id = ? THEN recovery_version_id ELSE '' END FROM issues WHERE organization_id=? AND project_id=? AND native_id=?`, change.CurrentVersion, scope.organization, scope.project, item).Scan(&result.SourceVersionID); err != nil {
-		return result, err
-	}
-	source, err := readNativeSourceCheckpoint(ctx, query, scope, item)
-	if err != nil {
-		return result, err
-	}
-	sourceAttempt, changeAttempt := source.AttemptID, ""
-
-	result.SourceAttemptID = sourceAttempt
-	if found {
-		var detail tracker.ChangeDetail
-		if attemptSummaryRead(ctx) {
-			detail, err = readTypedRecoveryChange(ctx, query, change)
-		} else if bounded {
-			detail, err = s.readRecoveryChange(ctx, query, scope, item, change)
-		} else {
-			detail, err = readChangeDetailView(ctx, query, scope, item, change.ID, s.config.now(), true)
-		}
-		if err != nil {
-			return result, err
-		}
-		implementationReview, validator := -1, -1
-		for i := len(detail.Reviews) - 1; i >= 0; i-- {
-			if implementationReview < 0 && detail.Reviews[i].ImplementationReview != nil {
-				implementationReview = i
-			}
-			if validator < 0 && detail.Reviews[i].Validator != nil {
-				validator = i
-			}
-		}
-		reviews := detail.Reviews[:0]
-		for i, review := range detail.Reviews {
-			if review.ImplementationReview == nil && review.Validator == nil || i == implementationReview || i == validator {
-				reviews = append(reviews, review)
-			}
-		}
-		detail.Reviews = reviews
-		result.ChangeDetail = &detail
-		if change.CurrentVersion != "" {
-			if len(detail.Versions) != 1 {
-				return result, fmt.Errorf("read change: current version %s is missing", change.CurrentVersion)
-			}
-			version := detail.Versions[0]
-			changeAttempt = version.AttemptID
-			result.Change = &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}
-			if sourceAttempt == "" {
-				sourceAttempt = version.AttemptID
-				result.SourceAttemptID = sourceAttempt
-			}
-		}
-	}
-	discussionOrder := " ORDER BY sequence"
-	if bounded || attemptSummaryRead(ctx) {
-		discussionOrder = " ORDER BY sequence DESC LIMIT 33"
-	}
-	ids, err := readRecoveryCommentIDs(ctx, query, scope, item, discussionOrder, bounded)
-	if err != nil {
-		return result, err
-	}
-	if bounded || attemptSummaryRead(ctx) {
-		result.Read = &tracker.NativeRecoveryRead{DetailPath: "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "?view=recovery&limit=1"}
-		if attemptSummaryRead(ctx) {
-			result.Read.Omitted = append(result.Read.Omitted, "attempts", "change_detail.versions", "change_detail.reviews", "change_detail.checks", "change_detail.discussion")
-		}
-		if len(ids) == 33 {
-			result.Read.Omitted = append(result.Read.Omitted, "discussion")
-			ids = ids[:32]
-		}
-	}
-	discussionBytes := 0
-	for _, id := range ids {
-		comment, err := readNativeComment(ctx, query, scope, item, id)
-		if err != nil {
-			return result, err
-		}
-		if bounded {
-			encoded, err := json.Marshal(comment)
-			if err != nil {
-				return result, err
-			}
-			if discussionBytes+len(encoded) > 128<<10 {
-				result.Read.Omitted = append(result.Read.Omitted, "discussion")
-				break
-			}
-			discussionBytes += len(encoded)
-		}
-		result.Discussion = append(result.Discussion, comment)
-	}
-	landingAttempt, err := latestRecoveryLandingAttempt(ctx, query, scope, item)
-	if err != nil {
-		return result, err
-	}
-
-	attemptQuery := `SELECT COALESCE(NULLIF(a.payload_object_key,''),a.data_json), a.status, a.started_at, a.updated_at, COALESCE(NULLIF(a.checkpoint_object_key,''),a.checkpoint_json), a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation, a.cleanup_acknowledged_at
-FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
-WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND (a.id = ? OR a.id = ? OR a.id = (
- SELECT id FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ? ORDER BY fencing_token DESC LIMIT 1)
- OR a.id = ?
- OR a.id = (SELECT id FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ?
- AND COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json) IS NOT NULL ORDER BY fencing_token DESC LIMIT 1))
-ORDER BY a.fencing_token LIMIT 5`
-	if attemptSummaryRead(ctx) {
-		attemptQuery = typedAttemptSelection(attemptQuery)
-	}
-	rows, err := query.QueryContext(ctx, attemptQuery, scope.organization, scope.project, item, sourceAttempt, changeAttempt,
-		scope.organization, scope.project, item, landingAttempt, scope.organization, scope.project, item)
-	if err != nil {
-		return result, err
-	}
-	defer rows.Close()
-	var records []nativeAttemptRow
-	for rows.Next() {
-		record, err := scanNativeAttemptRow(rows)
-		if err != nil {
-			return result, err
-		}
-		records = append(records, record)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return result, err
-	}
-	for _, record := range records {
-		attempt, err := record.hydrate(ctx, query, s.config.now())
-		if err != nil {
-			return result, err
-		}
-		attempt.Runtime = attempt.Runtime.WithoutActivitySpans()
-		result.Attempts = append(result.Attempts, attempt)
-	}
-	if err := rows.Err(); err != nil {
-		return result, err
-	}
-	if err := rows.Close(); err != nil {
-		return result, err
-	}
-	if exit, found, err := readLatestLandingExit(ctx, query, scope, item); err != nil {
-		return result, err
-	} else if found {
-		result.History = []tracker.CollaborationEvent{exit}
-	}
-	if runner := scope.credential.Runner.RunnerID; runner != "" {
-		result.InstanceSuccesses, err = s.readInstanceStepSuccesses(ctx, scope, item, runner)
-		if err != nil {
-			return result, err
-		}
-	}
-	if bounded {
-		slices.Reverse(result.Discussion)
-		if err := projectNativeRecovery(&result); err != nil {
-			return result, err
-		}
-	}
-	return result, nil
+	return s.readNativeRecoveryTenant(ctx, scope, item)
 }
 
 type recoveryEvidenceCursor struct {
@@ -203,67 +35,7 @@ type recoveryEvidenceCursor struct {
 }
 
 func (s *Service) readNativeRecoveryPage(ctx context.Context, scope nativeScope, item, path string, params url.Values) (tracker.NativeRecovery, error) {
-	ctx = s.contentContext(ctx)
-	_, cursor, key, err := s.readNativePageLimit(ctx, scope, path, params, 1, 1)
-	if err != nil {
-		return tracker.NativeRecovery{}, err
-	}
-	query := s.database.reader
-	issue, _, err := readNativeIssueProjection(ctx, query, scope, item, true)
-	if err != nil {
-		return tracker.NativeRecovery{}, err
-	}
-	change, _, err := readLatestNativeChangeRequest(ctx, query, scope, item)
-	if err != nil {
-		return tracker.NativeRecovery{}, err
-	}
-	selection := recoveryEvidenceCursor{Change: change.ID, Version: change.CurrentVersion}
-	if cursor.After != "" {
-		if json.Unmarshal([]byte(cursor.After), &selection) != nil || selection.Section < 0 || selection.Section > 8 || selection.After < 0 || selection.Offset < 0 {
-			return tracker.NativeRecovery{}, nativePublicInvalid("Recovery cursor is invalid")
-		}
-		if selection.Change != change.ID || selection.Version != change.CurrentVersion {
-			return tracker.NativeRecovery{}, nativeConflict(0)
-		}
-		if selection.IssueRevision != 0 && selection.IssueRevision != issue.Revision {
-			return tracker.NativeRecovery{}, nativeConflict(issue.Revision)
-		}
-	}
-	sections := []string{"reviews", "checks", "change_discussion", "discussion", "attempts", "versions", "change", "issue_body"}
-	page := &tracker.NativeRecoveryPage{NativeReference: issue.NativeReference, Section: "complete"}
-	for selection.Section < len(sections) {
-		section := sections[selection.Section]
-		sequence, id, version, content, err := s.readRecoveryEvidenceRecord(ctx, query, scope, item, section, selection)
-		if errors.Is(err, sql.ErrNoRows) {
-			selection.Section++
-			selection.After, selection.Offset, selection.Digest = 0, 0, ""
-			continue
-		}
-		if err != nil {
-			return tracker.NativeRecovery{}, err
-		}
-		page.Section, page.RecordID, page.VersionID = section, id, version
-		if err := recoveryRecordFragment(page, content, selection.Offset, selection.Digest); err != nil {
-			return tracker.NativeRecovery{}, err
-		}
-		end, sha := page.Offset+int64(len(page.Data)), page.SHA256
-		if end == int64(len(content)) {
-			selection.After, selection.Offset, selection.Digest = sequence, 0, ""
-		} else {
-			selection.Offset, selection.Digest = end, sha
-		}
-		position, err := json.Marshal(selection)
-		if err != nil {
-			return tracker.NativeRecovery{}, err
-		}
-		cursor.After = string(position)
-		page.NextCursor, err = encodeNativeCursor(cursor, key)
-		if err != nil {
-			return tracker.NativeRecovery{}, err
-		}
-		break
-	}
-	return tracker.NativeRecovery{Continuation: page}, nil
+	return s.readNativeRecoveryPageTenant(s.contentContext(ctx), scope, item, path, params)
 }
 
 func recoveryRecordFragment(page *tracker.NativeRecoveryPage, content []byte, offset int64, expectedDigest string) error {

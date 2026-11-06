@@ -285,8 +285,8 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	if recovered.Issue.OrganizationID != "org_startup" || recovered.Issue.ProjectID != project.ID || recovered.Issue.WorkItemID != issue.WorkItemID || recovered.Issue.Body != recoveryBody {
 		t.Fatalf("PostgreSQL recovery detail = %+v", recovered.Issue)
 	}
-	if recovered.SourceVersionID != "" || recovered.InstanceSuccesses != nil || recovered.Read == nil || recovered.Read.IssueBody == nil || !slices.Contains(recovered.Read.Omitted, "source_version_id") || !slices.Contains(recovered.Read.Omitted, "instance_successes") {
-		t.Fatalf("PostgreSQL recovery unsupported fields were not explicitly omitted: %+v", recovered)
+	if recovered.SourceVersionID != "" || recovered.InstanceSuccesses != nil || recovered.Read == nil || recovered.Read.IssueBody == nil || slices.Contains(recovered.Read.Omitted, "source_version_id") || !slices.Contains(recovered.Read.Omitted, "instance_successes") {
+		t.Fatalf("PostgreSQL recovery field availability differs: source=%q successes=%d read=%+v", recovered.SourceVersionID, len(recovered.InstanceSuccesses), recovered.Read)
 	}
 	var storedLease leasestore.Lease
 	if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
@@ -943,6 +943,12 @@ type postgresSourceRecoveryRepository struct {
 	pageCalls *int
 }
 
+func (r postgresSourceRecoveryRepository) ReadTenantSnapshot(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, organization, workload, func(reader tenantstore.Reader) error {
+		return read(postgresSourceRecoveryReader{Reader: reader, pageCalls: r.pageCalls})
+	})
+}
+
 func (r postgresSourceRecoveryRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
 	return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
 		return read(postgresSourceRecoveryReader{Reader: reader, pageCalls: r.pageCalls})
@@ -1006,6 +1012,12 @@ type postgresProgressReceiptRepository struct {
 	tenantstore.Repository
 	mu          sync.Mutex
 	hideReceipt bool
+}
+
+func (r *postgresProgressReceiptRepository) ReadTenantSnapshot(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, organization, workload, func(reader tenantstore.Reader) error {
+		return read(postgresProgressReceiptReader{Reader: reader, repository: r})
+	})
 }
 
 func (r *postgresProgressReceiptRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
