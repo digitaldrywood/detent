@@ -465,10 +465,14 @@ describe("the Work snapshot ordering", () => {
     expect(events.searchParams.get("completed_to")).toBe(window.completedTo);
   });
 
-  it("loads one page per lane and continues only Backlog", async () => {
+  it.each([false, true])("preserves lane cards and continues Backlog with capped pages=%s", async (capped) => {
     const source = workPaginationFixture();
     await source.control({ activeOverflow: true, backlogOverflow: true });
-    const http = makeWorkHttp({ ...source.client.http, fetch: source.fetch });
+    const http = makeWorkHttp({ ...source.client.http, fetch: (input, init) => {
+      const url = new URL(input, "http://fixture.test");
+      if (capped && url.pathname.endsWith("/work-items")) url.searchParams.set("limit", "200");
+      return source.fetch(url.toString(), init);
+    } });
     const read = getBoardRead(source.client, http, "proj_alpha", DEFAULT_VIEW_STATE);
     read.start();
     await expect.poll(() => read.snapshot().resolved).toBe(true);
@@ -479,7 +483,7 @@ describe("the Work snapshot ordering", () => {
     expect(read.snapshot().backlogTotal).toBe(405);
     expect(read.snapshot().totals?.lanes.Backlog).toBe(405);
     const initial = source.requests.filter(({ url }) => url.pathname.endsWith("/work-items"));
-    expect(initial).toHaveLength(6);
+    expect(initial).toHaveLength(capped ? 7 : 6);
     expect(initial.every(({ url }) => url.searchParams.get("include") === "board" && url.searchParams.getAll("state").length === 1)).toBe(true);
     expect(source.requests.filter(({ url }) => /\/(attempts|changes)(\?|$)/.test(url.pathname))).toHaveLength(0);
     const before = source.requests.length;

@@ -154,6 +154,43 @@ func TestBoardRequestHasFixedSQLBudget(t *testing.T) {
 					})
 				}
 			}
+			t.Run(fmt.Sprintf("%s/%d/legacy", org, size), func(t *testing.T) {
+				details.beforeRead = func(context.Context) error { return errors.New("legacy board accessed an object") }
+				wire.reset()
+				result, err := service.readWorkBoardProject(t.Context(), scope, savedWorkState{View: "board", Lanes: []string{"Backlog", "Todo"}, CompletedWindow: "24h"})
+				exchanges, statements := wire.stop()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(result.Cards) != size || len(result.Issues) != size {
+					t.Errorf("legacy cards=%d issues=%d want=%d", len(result.Cards), len(result.Issues), size)
+				}
+				if result.Work == nil || len(result.Work.Lanes) != 1 || result.Work.Lanes[0].State != "Todo" || result.Work.Lanes[0].Total != size || len(result.Work.ShippedWindows) != 3 || result.BacklogTotal != 0 {
+					t.Errorf("legacy summary=%+v backlog=%d", result.Work, result.BacklogTotal)
+				}
+				for _, card := range result.Cards {
+					if card.Issue.OrganizationID != org {
+						t.Fatal("legacy tenant leak")
+					}
+				}
+				raw, err := json.Marshal(result)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var old struct {
+					Cards        []json.RawMessage          `json:"cards"`
+					Work         *tracker.NativeWorkSummary `json:"work"`
+					BacklogTotal int                        `json:"backlogTotal"`
+				}
+				if err := json.Unmarshal(raw, &old); err != nil || len(old.Cards) != size || old.Work == nil {
+					t.Errorf("old client cards=%d error=%v", len(old.Cards), err)
+				}
+				if expected, ok := expectedCounts["legacy"]; ok && expected != [2]int{exchanges, statements} {
+					t.Errorf("legacy SQL/wire changed: %d/%d want %v", exchanges, statements, expected)
+				}
+				expectedCounts["legacy"] = [2]int{exchanges, statements}
+				t.Logf("legacy wire exchanges=%d statements=%d", exchanges, statements)
+			})
 			for _, part := range []string{"counts", "status"} {
 				t.Run(fmt.Sprintf("%s/%d/%s", org, size, part), func(t *testing.T) {
 					boardPartBudget(t, service, measured, wire, details, scope, size, part, expectedCounts)

@@ -407,7 +407,7 @@ export class BoardRead {
         work = page.total === -1 ? previous?.work : page.work;
         total = page.total !== undefined && page.total >= 0 ? page.total : total;
         pageCount++;
-      } while (cursor !== undefined && pageCount < (backlogLane ? previous?.backlogPageCount ?? 1 : 1));
+      } while (cursor !== undefined && (backlogLane ? pageCount < (previous?.backlogPageCount ?? 1) : pageCount < 10 && issues.length < 2000));
       return { state, issues, cards, cursor, pageCount, total, sequence, grantVersion, work };
     };
     // The lanes do not wait for the project read when the workflow is already

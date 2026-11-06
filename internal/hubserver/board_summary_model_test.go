@@ -5,14 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/apikey"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
-	"github.com/labstack/echo/v4"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -113,6 +115,15 @@ func TestBoardSummaryProjectionReplaysAndExpiresWindowsPerTenant(t *testing.T) {
 			}
 		}
 		all, done, cancelled := rows["*"], rows["Done"], rows["Cancelled"]
+		scope := nativeScope{organization: org, project: projects[org], credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+		legacy, err := service.readWorkBoardProject(t.Context(), scope, savedWorkState{View: "board", Lanes: []string{"Todo"}, CompletedWindow: "24h"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if legacy.Work == nil || legacy.Work.Completed != 1 || legacy.Work.Cancelled != 1 || len(legacy.Work.Lanes) != 3 || len(legacy.Work.ShippedWindows) != 3 || legacy.Work.ShippedWindows[0].Shipped != 1 || legacy.Work.ShippedWindows[0].Cancelled != 0 {
+			t.Errorf("%s legacy windows=%+v", org, legacy.Work)
+		}
+
 		if all.Shipped1h != 1 || all.Shipped24h != 1 || all.Shipped7d != 1 || all.Cancelled1h != 0 || all.Cancelled24h != 1 || all.Cancelled7d != 1 {
 			t.Errorf("%s summary windows=%+v", org, all)
 		}

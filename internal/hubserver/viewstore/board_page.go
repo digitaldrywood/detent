@@ -7,6 +7,7 @@ import (
 )
 
 type BoardModelPage struct {
+	Summaries       []BoardSummaryRecord
 	Pending         bool
 	OldestPendingAt *time.Time
 	Records         []BoardRecord

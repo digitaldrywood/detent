@@ -105,6 +105,10 @@ func boardRecordCursor(row viewstore.BoardRecord, closed bool, sequence int64) *
 }
 
 func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
+	return s.readBoardRecordsFor(ctx, scope, params, false)
+}
+
+func (s *Service) readBoardRecordsFor(ctx context.Context, scope nativeScope, params url.Values, legacy bool) (tracker.NativeIssuePage, error) {
 	if err := validateNativeIssueQuery(params); err != nil {
 		return tracker.NativeIssuePage{}, err
 	}
@@ -113,7 +117,7 @@ func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, param
 	var page tracker.NativeIssuePage
 	read := func(ctx context.Context) error {
 		var err error
-		page, err = s.readBoardRecordSnapshot(ctx, scope, params)
+		page, err = s.readBoardRecordSnapshot(ctx, scope, params, legacy)
 		return err
 	}
 	if repository, ok := s.config.TenantRepository.(interface {
@@ -130,7 +134,7 @@ func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, param
 	return page, err
 }
 
-func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
+func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope, params url.Values, legacy bool) (tracker.NativeIssuePage, error) {
 	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}}
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
 		return page, workItemStorageUnavailable()
@@ -164,7 +168,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 	if len(selection.SearchText) > searchstore.MaxQueryTextBytes {
 		return page, nativePublicInvalid("Search query is too long")
 	}
-	_, err = nativeShippedWindow(params.Get("completed_window"))
+	selectedWindow, err := nativeShippedWindow(params.Get("completed_window"))
 	if err != nil {
 		return page, err
 	}
@@ -188,7 +192,10 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 	if err != nil {
 		return page, err
 	}
-	limit = min(limit, 200)
+	if !legacy {
+		limit = min(limit, 200)
+	}
+	selection.Summary = legacy
 	selection.Limit = limit + 1
 	selection.Compact = includeSummary || includeWork
 	if position := cursor.Issues; position != nil {
@@ -235,6 +242,9 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 			work = &value
 		}
 		snapshot, err = model.BoardModelPages(ctx, selection, work, s.accessAuthority(scope, false))
+		if legacy && snapshot.Pending && err == nil {
+			return searchstore.ErrIndexPending
+		}
 		if err != nil {
 			return err
 		}
@@ -254,6 +264,35 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 	page.Total = -1
 	if includeBoard || includeWork {
 		page.Work = &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{}, Lanes: []tracker.NativeWorkLane{}, AsOf: s.config.now()}
+	}
+	if legacy {
+		page.Total = 0
+		windows := []tracker.NativeShippedWindow{{Window: "1h"}, {Window: "24h"}, {Window: "7d"}}
+		for _, summary := range snapshot.Summaries {
+			if summary.Kind == "lane" {
+				page.Work.Lanes = append(page.Work.Lanes, tracker.NativeWorkLane{State: summary.State, Total: int(summary.Total), Running: int(summary.Running)})
+				if len(selection.States) > 0 && slices.Contains(selection.States, summary.State) {
+					page.Total += int(summary.Total)
+				}
+			}
+			if summary.Kind == "total" {
+				windows[0].Shipped, windows[0].Cancelled = int(summary.Shipped1h), int(summary.Cancelled1h)
+				windows[1].Shipped, windows[1].Cancelled = int(summary.Shipped24h), int(summary.Cancelled24h)
+				windows[2].Shipped, windows[2].Cancelled = int(summary.Shipped7d), int(summary.Cancelled7d)
+				page.Work.AsOf = summary.ProjectedAt
+			}
+			kind := "total"
+			if selection.Terminal != nil {
+				kind = "open"
+				if *selection.Terminal {
+					kind = "closed"
+				}
+			}
+			if len(selection.States) == 0 && summary.Kind == kind {
+				page.Total = int(summary.Total)
+			}
+		}
+		applyNativeShippedWindows(page.Work, windows, selectedWindow)
 	}
 	records := snapshot.Records
 	hasMore := len(records) > limit

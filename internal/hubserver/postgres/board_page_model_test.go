@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"

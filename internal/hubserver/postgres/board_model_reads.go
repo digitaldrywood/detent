@@ -130,7 +130,34 @@ func (s *session) BoardModelPages(ctx context.Context, selection viewstore.Board
 	}
 	query = "SELECT * FROM (" + query + ") ordered ORDER BY page_part," + mainOrder + ",CASE WHEN page_part=2 THEN running END DESC,CASE WHEN page_part=2 THEN dispatchable END DESC,CASE WHEN page_part=2 THEN issue_number END DESC,identifier"
 	batch := &pgx.Batch{}
-	batch.Queue(`SELECT coalesce((SELECT sequence FROM native_board_sequences WHERE organization_id=$1 AND project_id=$2),0),EXISTS(SELECT 1 FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT page_ready) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT list_ready),(SELECT queued_at FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 ORDER BY queued_at LIMIT 1)`, s.organization, selection.ProjectID).QueryRow(func(row pgx.Row) error { return row.Scan(&result.Sequence, &result.Pending, &result.OldestPendingAt) })
+	metaSQL := `SELECT coalesce((SELECT sequence FROM native_board_sequences WHERE organization_id=$1 AND project_id=$2),0),EXISTS(SELECT 1 FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT page_ready) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT list_ready),(SELECT queued_at FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 ORDER BY queued_at LIMIT 1)`
+	if selection.Summary {
+		summarySQL, summaryArgs, err := s.boardSummaryQuery(selection)
+		if err != nil {
+			return result, err
+		}
+		summarySQL = "SELECT metadata.*,coalesce(c.kind,''),coalesce(c.state,''),coalesce(c.total,0),coalesce(c.running,0),coalesce(c.shipped_1h,0),coalesce(c.shipped_24h,0),coalesce(c.shipped_7d,0),coalesce(c.cancelled_1h,0),coalesce(c.cancelled_24h,0),coalesce(c.cancelled_7d,0),coalesce(c.projected_at,'0001-01-01'::timestamptz),coalesce(c.summary_sequence,0) FROM (" + metaSQL + ") metadata LEFT JOIN (" + summarySQL + ") c(kind,state,total,running,shipped_1h,shipped_24h,shipped_7d,cancelled_1h,cancelled_24h,cancelled_7d,projected_at,summary_sequence) ON true"
+		batch.Queue(summarySQL, summaryArgs...).Query(func(rows pgx.Rows) error {
+			defer rows.Close()
+			for rows.Next() {
+				var summary viewstore.BoardSummaryRecord
+				targets := append([]any{&result.Sequence, &result.Pending, &result.OldestPendingAt}, boardSummaryTargets(&summary)...)
+				if err := rows.Scan(targets...); err != nil {
+					return err
+				}
+				if summary.Sequence == -1 {
+					result.Pending = true
+				}
+				if summary.Kind != "" {
+					result.Summaries = append(result.Summaries, summary)
+				}
+			}
+			return rows.Err()
+		})
+	} else {
+		batch.Queue(metaSQL, s.organization, selection.ProjectID).QueryRow(func(row pgx.Row) error { return row.Scan(&result.Sequence, &result.Pending, &result.OldestPendingAt) })
+	}
+
 	batch.Queue(query, args...).Query(func(rows pgx.Rows) error {
 		defer rows.Close()
 		for rows.Next() {

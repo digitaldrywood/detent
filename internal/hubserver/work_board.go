@@ -155,7 +155,7 @@ func (s *Service) readWorkBoardProject(ctx context.Context, scope nativeScope, s
 				params.Set("limit", "200")
 			}
 		}
-		page, err := s.readBoardIssues(ctx, scope, params)
+		page, err := s.readBoardRecordsFor(ctx, scope, params, true)
 		if err != nil {
 			return result, fmt.Errorf("read board page: %w", err)
 		}

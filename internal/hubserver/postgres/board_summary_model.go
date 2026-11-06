@@ -70,9 +70,9 @@ ON CONFLICT(organization_id,project_id,audience,archive_scope,exclude_workspace,
 	return nil
 }
 
-func (s *session) BoardSummaryModel(ctx context.Context, selection viewstore.BoardSelection) ([]viewstore.BoardSummaryRecord, error) {
+func (s *session) boardSummaryQuery(selection viewstore.BoardSelection) (string, []any, error) {
 	if selection.SearchText != "" || selection.Fingerprint != "" || selection.ActorPrincipalID != "" || len(selection.Types)+len(selection.Verification)+len(selection.Labels)+len(selection.Assignees)+len(selection.Priorities) > 0 || selection.NativeCreatedAfter != nil || selection.NativeCreatedBefore != nil || selection.NativeUpdatedAfter != nil || selection.CompletedFrom != nil || selection.CompletedTo != nil {
-		return nil, corestore.ErrInvalidPage
+		return "", nil, corestore.ErrInvalidPage
 	}
 	archive := "all"
 	if selection.Archived != nil {
@@ -82,12 +82,20 @@ func (s *session) BoardSummaryModel(ctx context.Context, selection viewstore.Boa
 	if selection.Reporter {
 		audience = selection.ReporterPrincipalID
 		if audience == "" {
-			return nil, corestore.ErrNotFound
+			return "", nil, corestore.ErrNotFound
 		}
 	}
-	rows, err := s.db.Query(ctx, `WITH readiness AS MATERIALIZED (SELECT EXISTS(SELECT 1 FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT page_ready) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT list_ready) AS pending)
+	return `WITH readiness AS MATERIALIZED (SELECT EXISTS(SELECT 1 FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT page_ready) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT list_ready) AS pending)
 (SELECT c.kind,c.state,c.total,c.running,c.shipped_1h,c.shipped_24h,c.shipped_7d,c.cancelled_1h,c.cancelled_24h,c.cancelled_7d,c.projected_at,coalesce(s.sequence,0) FROM native_board_page_summaries c LEFT JOIN native_board_sequences s ON s.organization_id=c.organization_id AND s.project_id=c.project_id WHERE c.organization_id=$1 AND c.project_id=$2 AND c.audience=$3 AND c.archive_scope=$4 AND c.exclude_workspace=$5 AND NOT (SELECT pending FROM readiness) ORDER BY c.kind,c.state LIMIT 204)
-UNION ALL SELECT '','',0,0,0,0,0,0,0,0,'0001-01-01'::timestamptz,-1 WHERE (SELECT pending FROM readiness)`, s.organization, selection.ProjectID, audience, archive, selection.ExcludeWorkspace)
+UNION ALL SELECT '','',0,0,0,0,0,0,0,0,'0001-01-01'::timestamptz,-1 WHERE (SELECT pending FROM readiness)`, []any{s.organization, selection.ProjectID, audience, archive, selection.ExcludeWorkspace}, nil
+}
+
+func (s *session) BoardSummaryModel(ctx context.Context, selection viewstore.BoardSelection) ([]viewstore.BoardSummaryRecord, error) {
+	query, args, err := s.boardSummaryQuery(selection)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -95,7 +103,7 @@ UNION ALL SELECT '','',0,0,0,0,0,0,0,0,'0001-01-01'::timestamptz,-1 WHERE (SELEC
 	result := []viewstore.BoardSummaryRecord{}
 	for rows.Next() {
 		var row viewstore.BoardSummaryRecord
-		if err := rows.Scan(&row.Kind, &row.State, &row.Total, &row.Running, &row.Shipped1h, &row.Shipped24h, &row.Shipped7d, &row.Cancelled1h, &row.Cancelled24h, &row.Cancelled7d, &row.ProjectedAt, &row.Sequence); err != nil {
+		if err := rows.Scan(boardSummaryTargets(&row)...); err != nil {
 			return nil, mapError(ctx, err)
 		}
 		if row.Sequence == -1 {
@@ -137,4 +145,8 @@ func (s *session) BoardStatusModel(ctx context.Context, selection viewstore.Boar
 		result = append(result, row)
 	}
 	return result, mapError(ctx, rows.Err())
+}
+
+func boardSummaryTargets(row *viewstore.BoardSummaryRecord) []any {
+	return []any{&row.Kind, &row.State, &row.Total, &row.Running, &row.Shipped1h, &row.Shipped24h, &row.Shipped7d, &row.Cancelled1h, &row.Cancelled24h, &row.Cancelled7d, &row.ProjectedAt, &row.Sequence}
 }
