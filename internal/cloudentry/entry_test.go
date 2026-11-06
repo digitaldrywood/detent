@@ -419,7 +419,13 @@ func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id,
 	t.Helper()
 	plans := pilotPlans()
 	plans.Plans[0].Allowances["projects"] = 10
-	logger := slog.New(slog.DiscardHandler)
+	var logs lockedBuffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("tenant fixture logs:\n%s", logs.String())
+		}
+	})
 	content := &conversationArchiveFixture{}
 	fixture := tenantFixture{id: id, provider: providerID, config: hubserver.Config{GitHubDisabled: true, InitialAdminToken: []byte(testAdminKey), Logger: logger, Content: content.handleContent, Conversation: &hubserver.ConversationConfig{Enabled: true},
 		Hosted: &hubserver.HostedConfig{Plans: plans, OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: testPublicURL, Provider: provider,
@@ -437,15 +443,20 @@ func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id,
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = shared.Close() })
-	setup := &Service{config: Config{Issuer: "entry", SigningKey: key, now: time.Now,
-		transport: func(Organization) (http.RoundTripper, error) { return handlerTransport{shared.Handler()}, nil },
-	}}
+	setup := &Service{config: Config{Issuer: "entry", SigningKey: key, now: time.Now}}
 	organization := Organization{ID: id, ProviderID: providerID, Name: providerID, Generation: 1}
-	status, bootstrapBody, err := setup.serviceCall(t.Context(), organization, "/internal/v1/owner/bootstrap", map[string]string{"organization_name": providerID}, func(claims *cloudassert.Claims) {
-		claims.Subject, claims.Email = owner, provider.users[owner]
-	})
-	if err != nil || status != http.StatusNoContent {
-		t.Fatalf("bootstrap owner: status=%d body=%s error=%v", status, bootstrapBody, err)
+	bootstrapJSON, err := json.Marshal(map[string]string{"organization_name": providerID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrapClaims, err := setup.claims(organization, cloudassert.KindService, http.MethodPost, "/internal/v1/owner/bootstrap", bootstrapJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrapClaims.Subject, bootstrapClaims.Email = owner, provider.users[owner]
+	status, bootstrapBody := signedTenantFixtureCall(t, t.Context(), shared.Handler(), key, bootstrapClaims, bootstrapJSON, "")
+	if status != http.StatusNoContent {
+		t.Fatalf("bootstrap owner: status=%d body=%s", status, bootstrapBody)
 	}
 	identity, err := provider.Exchange(t.Context(), owner+":"+providerID, "", "")
 	if err != nil {
@@ -463,9 +474,9 @@ func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id,
 	claims.SessionCreatedAt, claims.SessionExpiresAt = identity.Hosted.CreatedAt, identity.Hosted.ExpiresAt
 	claims.Role, claims.AccessExpiresAt = "owner", identity.Hosted.ExpiresAt
 	claims.Binding, claims.CSRF = cloudassert.AuthorizationBinding("fixture-session", id, identity.Hosted.SessionID), cloudassert.CSRFToken("fixture-csrf", id)
-	status, response, err := setup.signedCallCSRF(t.Context(), organization, claims, body, "", claims.CSRF)
-	if err != nil || status != http.StatusCreated {
-		t.Fatalf("create project: status=%d body=%s error=%v", status, response, err)
+	status, response := signedTenantFixtureCall(t, t.Context(), shared.Handler(), key, claims, body, claims.CSRF)
+	if status != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", status, response)
 	}
 	fixture.service = shared
 	return fixture, shared.Handler()
