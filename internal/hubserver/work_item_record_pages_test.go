@@ -120,6 +120,28 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPatch, path+"/"+firstComment.ID, testHubAdminToken, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "edit-first"}, ExpectedRevision: 1, Body: "Edited comment"}), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPatch, path+"/"+secondComment.ID, testHubAdminToken, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "delete-second"}, ExpectedRevision: 1, Deleted: true}), http.StatusOK)
 			}
+
+			scope := nativeScope{organization: org.ID, project: project.ID}
+			if size == 2 {
+				if _, err := service.workItemResource(t.Context(), scope, string(issue.WorkItemID), url.Values{}); err != nil {
+					t.Fatalf("cold detail: %v", err)
+				}
+				response := performHubAPIRequest(t, service, http.MethodGet, strings.TrimSuffix(path, "/comments"), testHubAdminToken, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				response = performHubAPIRequest(t, service, http.MethodGet, path, testHubAdminToken, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+			}
+			_, pendingErr := service.readCommentPageModel(t.Context(), scope, string(issue.WorkItemID), url.Values{"limit": {"50"}})
+			var publicErr *nativeError
+			if !errors.As(pendingErr, &publicErr) || publicErr.Code != "not_ready" {
+				t.Fatalf("cold or dirty comments must be pending, got %v", pendingErr)
+			}
+			if size == 2 {
+				for _, part := range []string{"/relationships", "/references"} {
+					response := performHubAPIRequest(t, service, http.MethodGet, strings.TrimSuffix(path, "/comments")+part, testHubAdminToken, nil)
+					requireNativeStatus(t, response, http.StatusServiceUnavailable)
+				}
+			}
 			seeded = size
 			tenant := hubmaintenance.Tenant{Organization: string(org.ID), Generation: 1}
 
@@ -130,6 +152,14 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 			for steps := 0; steps < 256; steps++ {
 				if err := scheduler.Tick(t.Context()); err != nil {
 					t.Fatal(err)
+				}
+
+				partial, partialErr := service.readCommentPageModel(t.Context(), scope, string(issue.WorkItemID), url.Values{"limit": {"50"}})
+				if partialErr == nil && len(partial.Items) != size {
+					t.Fatalf("partial projection returned complete success: %d/%d", len(partial.Items), size)
+				}
+				if partialErr != nil && (!errors.As(partialErr, &publicErr) || publicErr.Code != "not_ready") {
+					t.Fatal(partialErr)
 				}
 				err := repository.ReadTenant(t.Context(), org.ID, corestore.Background, func(r tenantstore.Reader) error {
 					_, err := r.(viewstore.WorkItemPageReader).NextWorkItemPageCandidate(t.Context())
@@ -182,8 +212,8 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						if statements != 5 || transactions != 1 {
-							t.Errorf("limit=%d: observed statements=%d (+2 setup), transactions=%d, want 5/1", limit, statements, transactions)
+						if statements != 6 || transactions != 1 {
+							t.Errorf("limit=%d: observed statements=%d (+2 setup), transactions=%d, want 6/1", limit, statements, transactions)
 						}
 						if counted.singles != 0 || counted.batches != 0 {
 							t.Errorf("%s limit=%d direction=%s: single versions=%d batches=%d, want 0/0", name, limit, direction, counted.singles, counted.batches)
@@ -234,7 +264,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 					service.Handler().ServeHTTP(response, request)
 					httpDurations = append(httpDurations, time.Since(started))
 					requireNativeStatus(t, response, http.StatusOK)
-					if httpStatements > 17 || httpTransactions > 3 {
+					if httpStatements > 18 || httpTransactions > 3 {
 						t.Errorf("HTTP statement budget: SQL=%d transactions=%d", httpStatements, httpTransactions)
 					}
 				}
@@ -280,4 +310,8 @@ func (p *pageObjectProbe) ReadDetail(ctx context.Context, org string, ref attach
 		p.t.Error("object read held a database connection")
 	}
 	return p.DetailStore.ReadDetail(ctx, org, ref)
+}
+
+func (r commentPageCountingReader) WorkItemPageReady(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, kind string) (bool, error) {
+	return r.Reader.(viewstore.WorkItemPageReadinessReader).WorkItemPageReady(ctx, project, item, kind)
 }

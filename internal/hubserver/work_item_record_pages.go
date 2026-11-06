@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -26,6 +27,9 @@ func (s *Service) readCommentRecords(ctx context.Context, scope nativeScope, ite
 		page, err = s.readCommentPageModel(ctx, scope, item, params)
 		return err
 	})
+	if pageModelPending(err) {
+		return s.readCommentSourceRecords(ctx, scope, item, params)
+	}
 	return page, err
 }
 
@@ -77,7 +81,7 @@ func (s *Service) readCommentPageModel(ctx context.Context, scope nativeScope, i
 		return err
 	})
 	if err != nil {
-		return page, projectRecordError(err)
+		return page, pageModelError(err)
 	}
 	more := len(records) > limit
 
@@ -141,6 +145,9 @@ func (s *Service) workItemResource(ctx context.Context, scope nativeScope, id st
 		issue, err = s.readWorkItemPageModel(ctx, scope, id)
 		return err
 	})
+	if pageModelPending(err) {
+		return s.readWorkItemSourcePage(ctx, scope, id)
+	}
 	return issue, err
 }
 
@@ -154,6 +161,9 @@ func (s *Service) readWorkItemPageModel(ctx context.Context, scope nativeScope, 
 		reader, ok := r.(viewstore.WorkItemPageReader)
 		if !ok {
 			return workItemStorageUnavailable()
+		}
+		if err := requireWorkItemPageReady(ctx, r, scope, id, "item"); err != nil {
+			return err
 		}
 		var err error
 		record, err = reader.WorkItemDetailPage(ctx, scope.project, tracker.NativeWorkItemID(id))
@@ -188,8 +198,11 @@ func (s *Service) GetWorkItemReferences(c echo.Context) error {
 				return workItemStorageUnavailable()
 			}
 			var err error
+			if err := requireWorkItemPageReady(ctx, r, scope, c.Param("item"), "item"); err != nil {
+				return err
+			}
 			references, err = reader.WorkItemReferenceRecords(ctx, scope.project, tracker.NativeWorkItemID(c.Param("item")))
-			return err
+			return pageModelError(err)
 		})
 	})
 	if err != nil {
@@ -205,4 +218,156 @@ func WorkItemPageOrganizationRoute(path string) bool {
 	default:
 		return false
 	}
+}
+
+func (s *Service) readCommentSourceRecords(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.NativeComment], error) {
+	page := tracker.Page[tracker.NativeComment]{Items: []tracker.NativeComment{}}
+	if err := validateNativeQuery(params, "direction"); err != nil {
+		return page, err
+	}
+	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/comments"
+	limit, cursor, key, err := s.readNativePage(ctx, scope, path, params)
+	if err != nil {
+		return page, err
+	}
+	if err := s.authorizeCommentWorkItem(ctx, scope, item); err != nil {
+		return page, err
+	}
+	if _, _, err := nativePageOrder(params, "sequence", cursor.After); err != nil {
+		return page, err
+	}
+	newest := params.Get("direction") == "newest"
+	after := int64(0)
+	if newest {
+		after = math.MaxInt64
+	}
+	if cursor.After != "" {
+		after, err = strconv.ParseInt(cursor.After, 10, 64)
+		if err != nil || after < 0 {
+			return page, nativePublicInvalid("Cursor is invalid")
+		}
+	}
+	var rows []corestore.Comment
+	var versions []eventstore.CollaborationVersion
+	more := false
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		rows, err = r.SelectComments(ctx, scope.project, tracker.NativeWorkItemID(item), after, newest, limit)
+		if err != nil {
+			return err
+		}
+		if len(rows) == limit {
+			boundary, err := r.SelectComments(ctx, scope.project, tracker.NativeWorkItemID(item), rows[len(rows)-1].Sequence, newest, 1)
+			if err != nil {
+				return err
+			}
+			more = len(boundary) > 0
+		}
+
+		batch, ok := r.(eventstore.CollaborationVersionsReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		keys := make([]eventstore.CollaborationVersionKey, len(rows))
+		for i, row := range rows {
+			keys[i] = eventstore.CollaborationVersionKey{RecordID: row.ID, Revision: row.Revision}
+		}
+		found, err := batch.CollaborationVersions(ctx, keys)
+		if err != nil {
+			return err
+		}
+		byKey := make(map[eventstore.CollaborationVersionKey]eventstore.CollaborationVersion, len(found))
+		for _, version := range found {
+			byKey[eventstore.CollaborationVersionKey{RecordID: version.RecordID, Revision: version.Revision}] = version
+		}
+		for _, key := range keys {
+			version, ok := byKey[key]
+			if !ok {
+				return corestore.ErrNotFound
+			}
+			versions = append(versions, version)
+		}
+		return nil
+	})
+	if err != nil {
+		return page, projectRecordError(err)
+	}
+	size := 8192
+	for i, row := range rows[:min(limit, len(rows))] {
+		comment, err := s.hydrateCommentRecord(ctx, row, versions[i])
+		if err != nil {
+			return page, err
+		}
+		raw, err := json.Marshal(comment)
+		if err != nil {
+			return page, err
+		}
+		if size+len(raw)+1 > operatortool.MaxResultBytes {
+			if len(page.Items) == 0 {
+				return page, nativePublicInvalid("A single comment exceeds the page budget")
+			}
+			more = true
+			break
+		}
+		size += len(raw) + 1
+		page.Items = append(page.Items, comment)
+		cursor.After = strconv.FormatInt(row.Sequence, 10)
+	}
+	if more {
+		page.NextCursor, err = encodeNativeCursor(cursor, key)
+	}
+	return page, err
+}
+
+func pageModelPending(err error) bool {
+	var public *nativeError
+	return errors.As(err, &public) && public.Code == "not_ready"
+}
+func pageModelError(err error) error {
+	if errors.Is(err, viewstore.ErrPagePending) || errors.Is(err, corestore.ErrNotFound) {
+		return workItemStorageUnavailable()
+	}
+	return projectRecordError(err)
+}
+func requireWorkItemPageReady(ctx context.Context, r tenantstore.Reader, scope nativeScope, item, kind string) error {
+	reader, ok := r.(viewstore.WorkItemPageReadinessReader)
+	if !ok {
+		return workItemStorageUnavailable()
+	}
+	ready, err := reader.WorkItemPageReady(ctx, scope.project, tracker.NativeWorkItemID(item), kind)
+	if err != nil {
+		return err
+	}
+	if !ready {
+		return workItemStorageUnavailable()
+	}
+	return nil
+}
+
+func (s *Service) readWorkItemSourcePage(ctx context.Context, scope nativeScope, id string) (tracker.NativeIssue, error) {
+	row, version, err := s.readWorkItemRecord(ctx, scope, id)
+	if err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	issue, err := s.hydrateWorkItemRecord(ctx, row, version)
+	if err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		organization, err := r.AccessOrganization(ctx)
+		if err != nil {
+			return err
+		}
+		project, err := r.Project(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		issue.WebURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: issueBrowserPath(organization.Slug, project.Slug, issue.Number)}).WebURL
+		return nil
+	})
+	if err == nil {
+		err = s.hydrateWorkItemRelationshipFacts(ctx, scope, &issue)
+	}
+	issue.OmittedFields = append(issue.OmittedFields, "change_sequence")
+	return scope.reporterIssue(issue), err
 }
