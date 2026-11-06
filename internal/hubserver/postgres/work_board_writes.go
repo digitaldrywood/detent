@@ -10,6 +10,7 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 )
 
@@ -28,7 +29,9 @@ func (s *session) ReplaceBoardItem(ctx context.Context, u viewstore.BoardUpdate)
 	if project.ContentSettingsRevision != u.ExpectedProjectRevision {
 		return corestore.ErrRevisionConflict
 	}
-	item, err := s.LockWorkItem(ctx, u.ProjectID, u.WorkItemID)
+	row, err := s.queries.LockWorkItem(ctx, pgquery.LockWorkItemParams{OrganizationID: s.organization, ProjectID: u.ProjectID, NativeID: u.WorkItemID})
+	item := corestore.WorkItem(row)
+	err = mapError(ctx, err)
 	if errors.Is(err, corestore.ErrNotFound) {
 		if u.ExpectedRevision != 0 {
 			return corestore.ErrRevisionConflict
