@@ -908,13 +908,8 @@ func (q *Queries) LockRunnerHostRevision(ctx context.Context, arg LockRunnerHost
 }
 
 const mutateLeaseCommand = `-- name: MutateLeaseCommand :one
-WITH owner AS MATERIALIZED (
- SELECT r.runner_id FROM runner_identities r
- JOIN runner_lease_assignments a ON a.organization_id=r.organization_id AND a.runner_id=r.runner_id
- WHERE a.organization_id=$1 AND a.lease_id=$2
- FOR UPDATE OF r
-), locked AS MATERIALIZED (
- SELECT l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason FROM leases l CROSS JOIN (SELECT count(*) FROM owner) ownership
+WITH locked AS MATERIALIZED (
+ SELECT l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason FROM leases l
  WHERE l.organization_id=$1 AND l.lease_id=$2
  FOR UPDATE OF l
 ), at AS MATERIALIZED (
@@ -1232,93 +1227,6 @@ func (q *Queries) RegisterOwnedMachine(ctx context.Context, arg RegisterOwnedMac
 		return 0, err
 	}
 	return result.RowsAffected(), nil
-}
-
-const releaseLease = `-- name: ReleaseLease :one
-UPDATE leases SET released_at=$1::timestamptz,release_reason=$2
-WHERE organization_id=$3 AND lease_id=$4
-AND fencing_token=$5::bigint AND released_at IS NULL AND expires_at>$1
-RETURNING organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason
-`
-
-type ReleaseLeaseParams struct {
-	Now            time.Time
-	Reason         string
-	OrganizationID tracker.OrganizationID
-	LeaseID        string
-	FencingToken   int64
-}
-
-func (q *Queries) ReleaseLease(ctx context.Context, arg ReleaseLeaseParams) (Lease, error) {
-	row := q.db.QueryRow(ctx, releaseLease,
-		arg.Now,
-		arg.Reason,
-		arg.OrganizationID,
-		arg.LeaseID,
-		arg.FencingToken,
-	)
-	var i Lease
-	err := row.Scan(
-		&i.OrganizationID,
-		&i.LeaseID,
-		&i.FencingToken,
-		&i.IssueID,
-		&i.MachineID,
-		&i.SessionID,
-		&i.WorkItemRevision,
-		&i.LandingCapacity,
-		&i.AcquiredAt,
-		&i.RenewedAt,
-		&i.ExpiresAt,
-		&i.ReleasedAt,
-		&i.ReleaseReason,
-	)
-	return i, err
-}
-
-const renewLease = `-- name: RenewLease :one
-UPDATE leases SET renewed_at=$1,expires_at=$2,
-landing_capacity=CASE WHEN $3::bigint>0 THEN $3::bigint ELSE landing_capacity END
-WHERE organization_id=$4 AND lease_id=$5
-AND fencing_token=$6::bigint AND released_at IS NULL AND expires_at>$1
-RETURNING organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason
-`
-
-type RenewLeaseParams struct {
-	Now             time.Time
-	ExpiresAt       time.Time
-	LandingCapacity int64
-	OrganizationID  tracker.OrganizationID
-	LeaseID         string
-	FencingToken    int64
-}
-
-func (q *Queries) RenewLease(ctx context.Context, arg RenewLeaseParams) (Lease, error) {
-	row := q.db.QueryRow(ctx, renewLease,
-		arg.Now,
-		arg.ExpiresAt,
-		arg.LandingCapacity,
-		arg.OrganizationID,
-		arg.LeaseID,
-		arg.FencingToken,
-	)
-	var i Lease
-	err := row.Scan(
-		&i.OrganizationID,
-		&i.LeaseID,
-		&i.FencingToken,
-		&i.IssueID,
-		&i.MachineID,
-		&i.SessionID,
-		&i.WorkItemRevision,
-		&i.LandingCapacity,
-		&i.AcquiredAt,
-		&i.RenewedAt,
-		&i.ExpiresAt,
-		&i.ReleasedAt,
-		&i.ReleaseReason,
-	)
-	return i, err
 }
 
 const updateLeaseLandingCapacity = `-- name: UpdateLeaseLandingCapacity :one
