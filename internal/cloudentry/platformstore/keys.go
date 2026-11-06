@@ -183,10 +183,14 @@ func (r *Repository) BlockKey(ctx context.Context, organization tracker.Organiza
 			}
 		}
 		if project == "" {
-			_, err := tx.ExecContext(ctx, `UPDATE platform.access_key_organizations SET blocked=true WHERE organization_id=$1 AND key_id=$2`, organization, id)
+			_, err = tx.ExecContext(ctx, `UPDATE platform.access_key_organizations SET blocked=true WHERE organization_id=$1 AND key_id=$2`, organization, id)
+		} else {
+			_, err = tx.ExecContext(ctx, `INSERT INTO platform.access_key_blocked_projects(organization_id,key_id,project_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, organization, id, project)
+		}
+		if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO platform.access_key_blocked_projects(organization_id,key_id,project_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, organization, id, project)
+		_, err = tx.ExecContext(ctx, `INSERT INTO platform.access_key_notifications(owner_subject,key_id,organization_id,project_id,created_at) SELECT k.owner_subject,k.id,$1,$2,$3 FROM platform.access_keys k JOIN platform.access_key_organizations o ON o.key_id=k.id AND o.organization_id=$1 WHERE k.id=$4`, organization, project, r.now(), id)
 		return err
 	})
 }

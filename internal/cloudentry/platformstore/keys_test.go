@@ -52,6 +52,10 @@ func TestKeyPermissionsAndTenantScopes(t *testing.T) {
 					if _, err := r.KeyAuthority(t.Context(), k.Hash, organization, "prj_shared"); !errors.Is(err, ErrNoSession) {
 						t.Fatalf("blocked project authorized: %v", err)
 					}
+					var notices int
+					if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM platform.access_key_notifications WHERE key_id=$1 AND organization_id=$2 AND project_id=$3", id, organization, "prj_shared").Scan(&notices); err != nil || notices != 1 {
+						t.Fatalf("blocked key notification: count=%d error=%v", notices, err)
+					}
 					stored, err := r.Key(t.Context(), k.Hash)
 					if err != nil || stored.OwnerSubject != k.OwnerSubject || len(stored.Organizations) != 1 || len(stored.Organizations[0].Projects) != 1 || stored.Organizations[0].Projects[0] != "prj_shared" {
 						t.Fatalf("block changed selected scope: %+v %v", stored, err)
