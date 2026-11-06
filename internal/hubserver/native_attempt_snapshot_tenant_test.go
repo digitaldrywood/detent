@@ -23,14 +23,72 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type attemptSnapshotContextKey struct{}
+
+type attemptAttachmentReader struct {
+	tenantstore.Reader
+	row attachmentstore.Record
+}
+
+func (r attemptAttachmentReader) Attachment(context.Context, tracker.ProjectID, string) (attachmentstore.Record, error) {
+	return r.row, nil
+}
+
+func TestNativeAttemptAttachmentPayloadIntegrity(t *testing.T) {
+	t.Parallel()
+	ref, _, err := attachment.PrepareArchive("org_example", 1, strings.NewReader(`{"sequence":43}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		change func(*attachmentstore.Record)
+	}{
+		{"valid", nil},
+		{"organization", func(r *attachmentstore.Record) { r.OrganizationID = "org_other" }},
+		{"project", func(r *attachmentstore.Record) { r.Metadata.ProjectID = "prj_other" }},
+		{"attachment", func(r *attachmentstore.Record) { r.Metadata.ID = "att_other" }},
+		{"key", func(r *attachmentstore.Record) { r.ObjectKey += "wrong" }},
+		{"digest", func(r *attachmentstore.Record) { r.Metadata.SHA256 = strings.Repeat("f", 64) }},
+		{"size", func(r *attachmentstore.Record) { r.Metadata.Size = 0 }},
+		{"content size", func(r *attachmentstore.Record) { r.UncompressedSize = 0 }},
+		{"codec", func(r *attachmentstore.Record) { r.Codec = "plain" }},
+		{"schema", func(r *attachmentstore.Record) { r.SchemaVersion = 2 }},
+		{"kind", func(r *attachmentstore.Record) { r.Kind = "attachment" }},
+		{"retention", func(r *attachmentstore.Record) { r.Retention = "temporary" }},
+		{"binding", func(r *attachmentstore.Record) { r.StorageBindingID = "binding_example" }},
+		{"customer owned", func(r *attachmentstore.Record) { r.CustomerOwned = true }},
+		{"deleted", func(r *attachmentstore.Record) { r.Metadata.DeletedAt = new(time.Time) }},
+		{"object deleted", func(r *attachmentstore.Record) { r.ObjectDeletedAt = new(time.Time) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := tenantAttemptSnapshot{attempt: leasestore.Attempt{OrganizationID: "org_example", PayloadObjectKey: ref.Key}, event: eventstore.Event{ProjectID: "prj_example"}}
+			row := attachmentstore.Record{OrganizationID: "org_example", ObjectKey: ref.Key, UncompressedSize: ref.UncompressedSize,
+				Codec: ref.Codec, SchemaVersion: 1, Kind: ref.Kind, Retention: ref.Retention,
+				Metadata: attachment.Metadata{ID: newRunDetailReference(ref, "org_example", "").AttachmentID, ProjectID: "prj_example", SHA256: ref.SHA256, Size: ref.CompressedSize}}
+			if test.change != nil {
+				test.change(&row)
+			}
+			err := readTenantAttemptAttachmentPayload(t.Context(), attemptAttachmentReader{row: row}, &snapshot)
+			if test.change == nil {
+				if err != nil || snapshot.payload == nil || *snapshot.payload != ref {
+					t.Fatalf("canonical reference = %+v: %v", snapshot.payload, err)
+				}
+			} else if !errors.Is(err, artifact.ErrIntegrity) || snapshot.payload != nil {
+				t.Fatalf("invalid metadata accepted: reference=%+v error=%v", snapshot.payload, err)
+			}
+		})
+	}
+}
 
 func TestNativeAttemptIdentityMismatchDiagnostics(t *testing.T) {
 	t.Parallel()
@@ -198,6 +256,188 @@ func (r attemptSnapshotReader) LatestRunEvent(ctx context.Context, project track
 		}
 	}
 	return r.Reader.LatestRunEvent(ctx, project, attempt)
+}
+
+func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
+	repository, _ := projectRecordPostgresWithAdmin(t, 4)
+	serving, _ := repository.WorkloadCapacities()
+	if serving < 2 {
+		t.Fatal("fixture needs separate reader and writer serving slots")
+	}
+	participant := &nativeRunEventParticipantFixture{}
+	keys := secretTestKeys(t, "1", "1")
+	details := &verifiedAttemptDetails{}
+	service := &Service{
+		echo: echo.New(), database: &database{now: time.Now, billingRepository: repository, billingAuditStore: details}, secretRewrapReady: make(chan struct{}),
+		notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1),
+		config: Config{
+			Logger: discardLogger(), now: time.Now, generateToken: apikey.GenerateToken,
+			TenantRepository: repository, AccessRepository: repository, RunDetails: details,
+			NativeRunEvents: participant, SecretKeys: keys,
+		},
+	}
+	service.ready.Store(true)
+	service.registerNativeRoutes(service.echo)
+	for _, organizationName := range []string{"Example organization one", "Example organization two"} {
+		t.Run(organizationName, func(t *testing.T) {
+			organization := nativeOrganization{ID: tracker.OrganizationID(newNativeID("org")), Name: organizationName, Slug: strings.ReplaceAll(strings.ToLower(organizationName), " ", "-")}
+			now := service.config.now().UTC()
+			cursorKey := bytes.Repeat([]byte{1}, 32)
+			cursorEnvelope, err := keys.Seal(cursorKey, accessstore.SecretAAD(organization.ID, "", accessstore.NativeCursorKeyKind))
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedPostgresHubAdmin(t, repository, service, organization)
+			if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Envelope: cursorEnvelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: cursorEnvelope.Version, RecordedAt: now}); err != nil {
+					return err
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			projectPath := "/api/v2/organizations/" + string(organization.ID) + "/projects"
+			projectResponse := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{
+				"idempotency_key": "project", "name": "Example project", "states": nativeFixtureStates(),
+			})
+			requireNativeStatus(t, projectResponse, http.StatusOK)
+			var project tracker.NativeProject
+			decodeHubResponse(t, projectResponse, &project)
+			itemPath := projectPath + "/" + string(project.ID) + "/work-items"
+			itemResponse := performHubAPIRequest(t, service, http.MethodPost, itemPath, testHubAdminToken, tracker.CreateIssue{
+				Mutation: tracker.Mutation{IdempotencyKey: "item"}, Title: "Example issue", Body: workItemRecordBody,
+			})
+			requireNativeStatus(t, itemResponse, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, itemResponse, &issue)
+			var lease leasestore.Lease
+			if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+				workItem, err := w.WorkItem(t.Context(), project.ID, issue.WorkItemID)
+				if err != nil {
+					return err
+				}
+				if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: "machine", Hostname: "example", Capacity: 2, Version: "example"}); err != nil {
+					return err
+				}
+				lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: "machine", SessionID: "session", LeaseID: "lease", TTL: time.Hour})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			scope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+			start := tracker.NativeRunEvent{
+				Mutation: tracker.Mutation{IdempotencyKey: "start"}, Type: "run.started", SchemaVersion: 1,
+				Data: tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), LeaseID: tracker.LeaseID(lease.LeaseID),
+					FencingToken: tracker.FencingToken(lease.FencingToken), PolicyID: "policy_" + strings.Repeat("a", 64), Sequence: 1,
+					Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "example-model"}},
+			}
+
+			terminal := start.Data
+			terminal.Sequence, terminal.Outcome = 42, "succeeded"
+			terminal.Usage = []tracker.NativeUsage{{Provider: "example", Model: "example-model", Input: 100, Output: 20}}
+			corrected := terminal
+			corrected.Sequence = 43
+			corrected.Usage = []tracker.NativeUsage{{Provider: "example", Model: "example-model", Input: 120, Output: 25}}
+			if !nativeUsageCorrection(terminal, corrected) {
+				t.Fatal("fixture must reproduce a terminal usage correction")
+			}
+			raw, err := json.Marshal(corrected)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref, err := details.StoreDetail(t.Context(), string(organization.ID), raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			historyRaw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: organization.ID, ProjectID: project.ID,
+				AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, RecordedAt: now,
+				Actor: tracker.Actor{Kind: "integration", PrincipalID: "example"}, Data: tracker.CollaborationData{Run: &terminal}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			content := eventstore.NewContent(details)
+			history, err := content.PrepareEvent(t.Context(), organization.ID, historyRaw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			archive := attachmentstore.ArchiveRecord{OrganizationID: organization.ID, ProjectID: project.ID,
+				ID: newRunDetailReference(ref, string(organization.ID), "").AttachmentID, Uploader: "test_hub_admin", CreatedAt: now, Reference: ref}
+			if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+				if _, err := w.AppendEvent(t.Context(), history); err != nil {
+					return err
+				}
+				if _, err := w.PrepareAttachmentArchive(t.Context(), archive); err != nil {
+					return err
+				}
+				return w.PublishAttachmentArchive(t.Context(), archive, issue.WorkItemID)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			attempt := leasestore.Attempt{OrganizationID: organization.ID, ID: corrected.AttemptID, IssueID: lease.IssueID,
+				LeaseID: lease.LeaseID, FencingToken: lease.FencingToken, RunID: corrected.RunID, Sequence: 43, Status: "succeeded",
+				WorkItemRevision: lease.WorkItemRevision, PayloadObjectKey: ref.Key, StartedAt: now.Add(-time.Minute), UpdatedAt: now}
+			receipt, err := prepareCoreExecutionReceipt(t.Context(), content, organization.ID, strings.Repeat("a", 64), "core-attempt", attempt.ID, attempt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ImportCoreAttempt(t.Context(), postgres.CoreAttemptImport{Attempt: attempt, Receipt: receipt}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+				_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, "completed")
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+				_, err := r.(attemptArchiveReader).ArchiveObjectByKey(t.Context(), ref.Key)
+				if !errors.Is(err, corestore.ErrNotFound) {
+					return fmt.Errorf("import must preserve attachment-only payload metadata: %v", err)
+				}
+				latest, err := r.LatestRunEvent(t.Context(), project.ID, attempt.ID)
+				if err != nil {
+					return err
+				}
+				stored, err := content.Event(t.Context(), latest)
+				if err == nil && (stored.Data.Run == nil || stored.Data.Run.Sequence != 42) {
+					return errors.New("terminal history must remain at sequence 42")
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, view := range []string{"single", "detail", "recovery"} {
+				t.Run(view, func(t *testing.T) {
+					var value tracker.NativeAttempt
+					var err error
+					if view == "single" {
+						value, err = service.readNativeAttemptTenant(t.Context(), scope, string(issue.WorkItemID), attempt.ID)
+					} else {
+						var page nativeAttemptPage
+						page, err = service.readNativeAttemptPageTenant(t.Context(), scope, string(issue.WorkItemID), url.Values{"view": {view}}, json.Marshal)
+						if err == nil && len(page.Items) == 1 {
+							value = page.Items[0]
+						}
+					}
+					if err != nil {
+						t.Fatalf("hydrate imported attempt 43 with terminal history 42: %v", err)
+					}
+					if value.Sequence != 43 || value.Outcome != "succeeded" || value.Status != "succeeded" || value.AttemptID != attempt.ID || len(value.Usage) != 1 || value.Usage[0].Input != 120 || value.Usage[0].Output != 25 {
+						t.Fatalf("canonical corrected attempt = %+v", value)
+					}
+				})
+			}
+			t.Run("corrupt canonical payload", func(t *testing.T) {
+				original := details.data[ref.Key]
+				t.Cleanup(func() { details.data[ref.Key] = original })
+				details.data[ref.Key] = []byte(`{"sequence":43}`)
+				_, err := service.readNativeAttemptTenant(t.Context(), scope, string(issue.WorkItemID), attempt.ID)
+				if !errors.Is(err, artifact.ErrIntegrity) {
+					t.Fatalf("corrupt canonical payload fell back to history: %v", err)
+				}
+			})
+		})
+	}
 }
 
 func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {

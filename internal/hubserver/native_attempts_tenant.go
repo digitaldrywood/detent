@@ -384,7 +384,7 @@ func readTenantAttemptPayload(ctx context.Context, r tenantstore.Reader, snapsho
 	}
 	object, err := reader.ArchiveObjectByKey(ctx, snapshot.attempt.PayloadObjectKey)
 	if errors.Is(err, corestore.ErrNotFound) {
-		return nil
+		return readTenantAttemptAttachmentPayload(ctx, r, snapshot)
 	}
 	if err != nil {
 		return err
@@ -393,6 +393,28 @@ func readTenantAttemptPayload(ctx context.Context, r tenantstore.Reader, snapsho
 		return artifact.ErrIntegrity
 	}
 	snapshot.payload = &object.Reference
+	return nil
+}
+
+func readTenantAttemptAttachmentPayload(ctx context.Context, r tenantstore.Reader, snapshot *tenantAttemptSnapshot) error {
+	attempt := snapshot.attempt
+	id := newRunDetailReference(attachment.ArchiveReference{Key: attempt.PayloadObjectKey}, string(attempt.OrganizationID), "").AttachmentID
+	row, err := r.Attachment(ctx, snapshot.event.ProjectID, id)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	ref := attachment.ArchiveReference{Key: row.ObjectKey, SHA256: row.Metadata.SHA256, CompressedSize: row.Metadata.Size,
+		UncompressedSize: row.UncompressedSize, Codec: row.Codec, SchemaVersion: int(row.SchemaVersion),
+		Kind: row.Kind, Retention: row.Retention, BindingID: row.StorageBindingID, CustomerOwned: row.CustomerOwned}
+	if row.OrganizationID != attempt.OrganizationID || row.Metadata.ProjectID != string(snapshot.event.ProjectID) || row.Metadata.ID != id ||
+		row.Metadata.DeletedAt != nil || row.ObjectDeletedAt != nil || ref.Key != attempt.PayloadObjectKey || ref.Validate(string(attempt.OrganizationID)) != nil ||
+		ref.SchemaVersion != 1 || ref.BindingID != "" || ref.CustomerOwned {
+		return artifact.ErrIntegrity
+	}
+	snapshot.payload = &ref
 	return nil
 }
 
