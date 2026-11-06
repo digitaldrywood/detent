@@ -11,6 +11,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -84,29 +86,42 @@ func (t *coordinatorToolset) proposeIssueArchive(ctx context.Context, record con
 		}
 	}
 	s := t.coordinator.service.server
-	tx, err := s.database.reader.BeginTx(readCtx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	now, err := s.database.currentTime()
-	if err != nil {
-		return nil, err
-	}
 	archive := chat.IssueArchive{Items: make([]chat.IssueArchiveItem, 0, len(args.WorkItemIDs))}
+	if scope.credential.Scope == apiScopeWorker {
+		return nil, nativePublicInvalid("Archive and restore require an operator")
+	}
 	for _, id := range args.WorkItemIDs {
-		current, _, err := readNativeIssue(ctx, tx, scope, id)
+		row, version, err := s.readWorkItemRecord(readCtx, scope, id)
 		if err != nil {
 			return nil, err
 		}
-		issue, err := readCoordinatorArchiveIssue(ctx, tx, scope, id, current.Revision, now)
+		issue, err := s.hydrateWorkItemRecord(readCtx, row, version)
+		if err != nil {
+			return nil, err
+		}
+		if err := requireNativeEdit(issue, issue.Revision); err != nil {
+			return nil, err
+		}
+		if issue.Archived {
+			return nil, nativeInvalid("Issue is already archived: " + id)
+		}
+		if issue.State == "Merging" {
+			return nil, nativeInvalid("A Merging issue cannot be archived: " + id)
+		}
+		err = s.config.TenantRepository.ReadTenant(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			active, err := r.WorkItemHasActiveLease(readCtx, scope.project, row.NativeID, s.config.now())
+			if err != nil {
+				return err
+			}
+			if active {
+				return nativeInvalid("Finish or stop the running issue before archiving: " + id)
+			}
+			return nil
+		})
 		if err != nil {
 			return nil, err
 		}
 		archive.Items = append(archive.Items, chat.IssueArchiveItem{WorkItemID: id, Revision: int64(issue.Revision), Number: issue.Number, Title: issue.Title, State: issue.State})
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
 	}
 	arguments, err := json.Marshal(archive)
 	if err != nil {

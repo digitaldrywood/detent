@@ -2,11 +2,12 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
-	"errors"
 
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const coordinatorAgentName = "Luna"
@@ -22,44 +23,18 @@ func coordinatorAgent(model string) string {
 // stored, never from the submitted action, so a client cannot relabel who
 // acted.
 func (s *Service) coordinatorProposalAgent(ctx context.Context, action chat.Action) (string, error) {
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT operator_action_agent,operator_action_id,query_metadata_version,data_json FROM conversation_messages WHERE conversation_id=? AND (operator_action_id=? OR query_metadata_version=0) ORDER BY rowid DESC LIMIT ?`, action.ConversationID, action.ID, storageConversionRows+1)
-	if err != nil {
-		return "", err
-	}
-	defer rows.Close()
-	processed := 0
-	for rows.Next() {
-		processed++
-		if processed > storageConversionRows {
-			return "", errors.New("conversation action metadata conversion is pending")
+	agent := coordinatorAgentName
+	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(action.OrganizationID), corestore.Serving, func(r tenantstore.Reader) error {
+		page, err := r.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: action.ConversationID, OperatorActionID: action.ID, Limit: 1})
+		if err != nil {
+			return err
 		}
-		var agent, id sql.NullString
-		var version int
-		var raw string
-		if err := rows.Scan(&agent, &id, &version, &raw); err != nil {
-			return "", err
+		if len(page.Items) > 0 && page.Items[0].OperatorAgent != nil && *page.Items[0].OperatorAgent != "" {
+			agent = *page.Items[0].OperatorAgent
 		}
-		if version == 0 {
-			var data queryMessageData
-			if err := json.Unmarshal([]byte(raw), &data); err != nil {
-				return "", err
-			}
-			if data.OperatorAction == nil || data.OperatorAction.Action == nil || data.OperatorAction.Action.ID == nil || *data.OperatorAction.Action.ID != action.ID {
-				continue
-			}
-			if data.OperatorAction.Action.Agent != nil {
-				agent.String = *data.OperatorAction.Action.Agent
-			}
-		}
-		if agent.String == "" {
-			return coordinatorAgentName, nil
-		}
-		return agent.String, nil
-	}
-	if err := rows.Err(); err != nil {
-		return "", err
-	}
-	return coordinatorAgentName, nil
+		return nil
+	})
+	return agent, err
 }
 
 // withCoordinatorAgent attributes application writes made under ctx to the

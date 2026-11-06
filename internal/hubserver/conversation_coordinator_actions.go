@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,6 +19,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -171,7 +173,10 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 	requestID := coordinatorActionRequestID(t.state.users[len(t.state.users)-1].ID, call)
 	action := chat.Action{RequiresConfirmation: len(requireConfirmation) > 0 && requireConfirmation[0], ConversationID: record.ID, Kind: chat.ActionKind(call.Name), ProjectID: string(record.ProjectID), RequestID: requestID, Title: strings.ReplaceAll(call.Name, "_", " "), Material: true}
 	if call.Name == "get_project_integration" || call.Name == "update_project_integration" {
-		current, err := s.projectIntegration(ctx, s.database.reader, scope)
+		project, err := s.readProjectRecord(ctx, scope)
+		current := projectIntegrationRecord(project)
+		available := !s.config.GitHubDisabled && s.config.ReconcileBackend != nil
+		current.GitHubTransportAvailable = &available
 		if err != nil {
 			return nil, err
 		}
@@ -294,12 +299,29 @@ func (s *Service) validateCoordinatorMoveAnswer(ctx context.Context, scope nativ
 	if !strings.EqualFold(issue.State, "Blocked") || strings.EqualFold(target, issue.State) || strings.TrimSpace(answer) != "" {
 		return nil
 	}
-	var humanAction bool
-	err := s.database.reader.QueryRowContext(ctx, `SELECT disposition_human_action
-FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ?
-AND disposition_status = 'blocked' ORDER BY fencing_token DESC LIMIT 1`, scope.organization, scope.project, issue.WorkItemID).Scan(&humanAction)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	var attemptID string
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		item, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(issue.WorkItemID))
+		if err != nil {
+			return err
+		}
+		attempt, err := r.LatestAttempt(ctx, item.ID)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		attemptID = attempt.ID
 		return err
+	})
+	if err != nil {
+		return err
+	}
+	humanAction := false
+	if attemptID != "" {
+		attempt, err := s.readNativeAttemptTenant(ctx, scope, string(issue.WorkItemID), attemptID)
+		if err != nil {
+			return err
+		}
+		humanAction = attempt.Disposition != nil && attempt.Disposition.Status == "blocked" && attempt.Disposition.HumanAction
 	}
 	if humanAction {
 		return &operatortool.RequestError{Code: "invalid_request", Message: "Provide the human's answer to the recorded human_action question in reason_detail before moving this item out of Blocked"}
@@ -465,7 +487,11 @@ func (s *Service) authorizeCoordinatorAction(ctx context.Context, action chat.Ac
 	if err != nil {
 		return nil, err
 	}
-	record, err := s.conversations.store.readConversation(ctx, s.database.reader, tracker.OrganizationID(action.OrganizationID), tracker.ProjectID(action.ProjectID), action.ConversationID)
+	credential, err := currentHubOperator(ctx)
+	if err != nil {
+		return nil, err
+	}
+	record, err := s.readPGConversation(ctx, nativeScope{organization: tracker.OrganizationID(action.OrganizationID), project: tracker.ProjectID(action.ProjectID), credential: credential}, action.ConversationID)
 	if err != nil {
 		return nil, operatortool.ErrAccessDenied
 	}
@@ -513,35 +539,25 @@ func (s *Service) publishCoordinatorDecision(ctx context.Context, action chat.Ac
 	if !ok {
 		return operatortool.ErrAccessDenied
 	}
-	legacyResults, err := s.legacyCoordinatorResults(ctx, action.ConversationID, action.ID)
-	if err != nil {
-		return err
-	}
 	data, err := json.Marshal(map[string]string{"operator_action_result": action.ID})
 	if err != nil {
 		return err
 	}
 	text := fmt.Sprintf("%s: %s. %s", action.Title, action.Status, action.Result)
 	message := conversationMessageRecord{Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: text, Data: data, Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}}
-	return coordinator.write(ctx, action.ConversationID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
+	return coordinator.write(ctx, action.ConversationID, func(ctx context.Context, tx tenantstore.Writer, record *conversationRecord, now time.Time) error {
 		if string(record.ProjectID) != action.ProjectID || string(record.OrganizationID) != action.OrganizationID {
 			return operatortool.ErrAccessDenied
 		}
-		var posted bool
-		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation_id=? AND operator_action_result=?)", record.ID, action.ID).Scan(&posted); err != nil {
+		page, err := tx.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: record.ID, OperatorResult: action.ID, Limit: 1})
+		if err != nil {
 			return err
 		}
-		for _, legacy := range legacyResults {
-			var unchanged bool
-			if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation_id=? AND id=? AND data_json=?)", record.ID, legacy.id, legacy.raw).Scan(&unchanged); err != nil {
-				return err
-			}
-			posted = posted || unchanged
-		}
+		posted := len(page.Items) > 0
 		if posted {
 			return nil
 		}
-		return s.conversations.appendMessage(ctx, tx, record, &message, now)
+		return coordinator.appendMessage(ctx, tx, record, &message, now)
 	}, func(ctx context.Context, p *conversationPublicationPlan) error {
 		if string(p.record.ProjectID) != action.ProjectID || string(p.record.OrganizationID) != action.OrganizationID {
 			return operatortool.ErrAccessDenied
@@ -559,11 +575,11 @@ func (s *Service) postConversationAction(c echo.Context) error {
 	ctx := c.Request().Context()
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
-	record, err := s.conversations.store.readConversation(readCtx, s.database.reader, scope.organization, scope.project, c.Param("conversation"))
+	record, err := s.readPGConversation(readCtx, scope, c.Param("conversation"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if err := s.conversations.authorizeWrite(readCtx, s.database.reader, scope, record); err != nil {
+	if err := s.authorizeConversationScopePG(readCtx, scope, true); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if (!coordinatorSettingsTool(string(action.Kind)) && !coordinatorWorkflowMutation(string(action.Kind)) && !coordinatorCatalogWrite(string(action.Kind)) && !slices.Contains([]string{operatortool.StopRun, operatortool.FileIssue, operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "update_project_integration", "set_runner_tier", "convert_runner_scope", "promote_sprites_token", "set_sprite_pool", "scale_up_sprite_pool", string(chat.ActionIssueSplit), string(chat.ActionArchiveItems)}, string(action.Kind))) || action.ProjectID != string(scope.project) || action.RequestID == "" || len(action.RequestID) > 128 {

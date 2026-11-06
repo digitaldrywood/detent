@@ -14,9 +14,12 @@ import (
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
-	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/skills"
@@ -345,7 +348,7 @@ func (c *conversationTurnCoordinator) loop(conversationID string) {
 func (c *conversationTurnCoordinator) pass(conversationID string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), coordinatorWriteTimeout)
 	defer cancel()
-	record, err := c.readConversation(ctx, c.service.store.reader, conversationID)
+	record, err := c.readConversation(ctx, nil, conversationID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -355,7 +358,7 @@ func (c *conversationTurnCoordinator) pass(conversationID string) (bool, error) 
 	if !coordinatorHandles(record) {
 		return false, nil
 	}
-	pending, err := c.pendingMessages(ctx, c.service.store.reader, conversationID)
+	pending, err := c.pendingMessages(ctx, nil, conversationID)
 	if err != nil {
 		return false, err
 	}
@@ -374,132 +377,92 @@ func coordinatorHandles(record conversationRecord) bool {
 }
 
 func (c *conversationTurnCoordinator) readConversation(ctx context.Context, query nativeQueryer, id string) (conversationRecord, error) {
-	record, err := c.service.store.readConversationRecord(ctx, query, query.QueryRowContext(ctx, "SELECT "+conversationReadProjection(ctx, query, id)+" FROM conversations WHERE id = ?", id))
-	if err != nil {
-		return record, fmt.Errorf("read conversation %s: %w", id, err)
-	}
-	return record, nil
+	return c.service.readPublicationConversation(ctx, id)
 }
 
 // pendingMessages returns the user text messages saved after the last
 // assistant message, oldest first.
 func (c *conversationTurnCoordinator) pendingMessages(ctx context.Context, query nativeQueryer, conversationID string) ([]conversationMessageRecord, error) {
-	// Selection follows delivery alone, oldest first: a retried message sits
-	// before later answers and a backlog beyond one turn's bound is served
-	// by the next pass. queued is matched as well as saved, so an unlinked
-	// message that was queued for any reason is still answered.
-	rows, err := query.QueryContext(ctx, "SELECT "+conversationMessageReadColumns+` FROM conversation_messages
-WHERE conversation_id = ? AND role = ? AND kind = ? AND delivery IN (?, ?)
-ORDER BY seq LIMIT ?`, conversationID, conversation.RoleUser, conversation.MessageText, conversation.DeliverySaved, conversation.DeliveryQueued, coordinatorPendingMessages)
-	if err != nil {
-		return nil, fmt.Errorf("list pending messages: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var messages []conversationMessageRecord
-	for rows.Next() {
-		message, err := scanConversationMessage(rows)
-		if err != nil {
-			return nil, fmt.Errorf("list pending messages: %w", err)
-		}
-		messages = append(messages, message)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list pending messages: %w", err)
-	}
-	// The rows are drained before the follow-up query: the hub pool holds a
-	// single connection. References are resolved here because these records
-	// are updated and re-projected, and a message.updated event that dropped
-	// them would take them off the client's copy.
-	pointers := make([]*conversationMessageRecord, 0, len(messages))
-	for i := range messages {
-		pointers = append(pointers, &messages[i])
-	}
-	if err := c.service.store.resolveMessageContents(ctx, query, pointers); err != nil {
-		return nil, err
-	}
-	if err := resolveMessageReferences(ctx, query, pointers); err != nil {
-		return nil, err
-	}
-	if err := resolveMessageAttachments(ctx, query, pointers); err != nil {
-		return nil, err
-	}
-	return messages, nil
+	return c.coordinatorMessages(ctx, conversationstore.MessageFilter{ConversationID: conversationID, Role: conversation.RoleUser, Kind: conversation.MessageText, Deliveries: []conversation.Delivery{conversation.DeliverySaved, conversation.DeliveryQueued}, Limit: coordinatorPendingMessages, Oldest: true})
 }
 
 // write runs fn against a fresh copy of the conversation inside one
 // transaction, commits and reports the commit to the service. Reading the
 // record inside the transaction keeps revision checks exact even when the
 // API changed the conversation during the turn.
-func (c *conversationTurnCoordinator) write(ctx context.Context, conversationID string, fn func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error, preparations ...func(context.Context, *conversationPublicationPlan) error) error {
-	now, err := c.service.server.database.currentTime()
-	if err != nil {
-		return err
-	}
+func (c *conversationTurnCoordinator) write(ctx context.Context, conversationID string, fn func(ctx context.Context, tx tenantstore.Writer, record *conversationRecord, now time.Time) error, preparations ...func(context.Context, *conversationPublicationPlan) error) error {
+	now := c.service.server.config.now()
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		prepared := newConversationArchiveReads(ctx)
-		original, err := c.readConversation(prepared, c.service.store.reader, conversationID)
+		original, err := c.readConversation(prepared, nil, conversationID)
 		if err != nil {
 			return err
 		}
 		if !coordinatorHandles(original) {
 			return errCoordinatorLinked
 		}
-		plan := conversationPublicationPlan{service: c.service, record: original, original: original, now: now}
+		plan := conversationPublicationPlan{service: c.service, record: original, original: original, now: now, coordinator: true}
 		for _, prepare := range preparations {
 			if err := prepare(prepared, &plan); err != nil {
 				return err
 			}
 		}
-		retry, err := func() (retry bool, resultErr error) {
+		for id, message := range plan.messages {
+			message, err = plan.message(prepared, message)
+			if err != nil {
+				return err
+			}
+			plan.messages[id] = message
+		}
+		for _, body := range plan.events {
+			raw, err := json.Marshal(body)
+			if err != nil {
+				return err
+			}
+			if err := plan.prepareValue(prepared, raw); err != nil {
+				return err
+			}
+		}
+		var committed conversationRecord
+		err = c.service.server.config.TenantRepository.WriteTenant(plan.context(prepared), original.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 			ctx := plan.context(prepared)
-			tx, err := c.service.store.db.BeginTx(ctx, nil)
+			stored, err := w.LockConversation(ctx, original.ProjectID, original.ID)
 			if err != nil {
-				return false, fmt.Errorf("begin coordinator write: %w", err)
+				return err
 			}
-			defer func() {
-				resultErr = errors.Join(resultErr, rollbackConversationPreparation(tx))
-			}()
-			var revision, sequence int64
-			if err := tx.QueryRowContext(ctx, "SELECT revision,event_seq FROM conversations WHERE id=?", conversationID).Scan(&revision, &sequence); err != nil {
-				return false, fmt.Errorf("read conversation revision: %w", err)
+			if stored.Revision != original.Revision || stored.EventSequence != original.EventSeq {
+				return errCoordinatorRevision
 			}
-			if revision != original.Revision || sequence != original.EventSeq {
-				if err := rollbackConversationPreparation(tx); err != nil {
-					return false, err
-				}
-				return true, nil
-			}
-			record, err := c.readConversation(ctx, tx, conversationID)
-			if err != nil {
-				return false, err
-			}
+			record := conversationRecordFromStore(stored)
 			if !coordinatorHandles(record) {
-				return false, errCoordinatorLinked
+				return errCoordinatorLinked
 			}
-			if err := fn(ctx, tx, &record, now); err != nil {
-				return false, err
+			if err := registerPreparedConversationObjects(ctx, w, original.OrganizationID, plan.prepared, now); err != nil {
+				return err
 			}
-			if err := c.service.server.database.commit(ctx, tx); err != nil {
-				return false, fmt.Errorf("commit coordinator write: %w", err)
+			if err := fn(ctx, w, &record, now); err != nil {
+				return err
 			}
-			c.service.committed(record)
-			return false, nil
-		}()
-		if err != nil {
+			stored, err = w.ConversationByID(ctx, record.ID)
+			committed = conversationRecordFromStore(stored)
 			return err
+		})
+		if errors.Is(err, errCoordinatorRevision) {
+			continue
 		}
-		if !retry {
-			return nil
+		if err == nil {
+			c.service.committed(committed)
 		}
+		return err
 	}
 }
 
 func (c *conversationTurnCoordinator) appendPreparedMessage(ctx context.Context, conversationID string, message conversationMessageRecord) error {
-	return c.write(ctx, conversationID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
-		return c.service.appendMessage(ctx, tx, record, &message, now)
+	return c.write(ctx, conversationID, func(ctx context.Context, tx tenantstore.Writer, record *conversationRecord, now time.Time) error {
+		return c.appendMessage(ctx, tx, record, &message, now)
 	}, func(ctx context.Context, p *conversationPublicationPlan) error {
 		return p.appendMessage(ctx, &message)
 	})
@@ -507,6 +470,8 @@ func (c *conversationTurnCoordinator) appendPreparedMessage(ctx context.Context,
 
 // errCoordinatorNothingPending aborts the start transaction when the
 // re-check inside the transaction finds no work.
+var errCoordinatorRevision = errors.New("coordinator conversation changed")
+
 var errCoordinatorNothingPending = errors.New("coordinator: nothing pending")
 
 // errCoordinatorLinked refuses a coordinator write to a conversation that
@@ -567,41 +532,49 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 	if err != nil {
 		return false, fmt.Errorf("prepare coordinator assistant: %w", err)
 	}
-	err = c.write(turnCtx, conversationID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
+	err = c.write(turnCtx, conversationID, func(ctx context.Context, tx tenantstore.Writer, record *conversationRecord, now time.Time) error {
 		if !coordinatorHandles(*record) {
 			return errCoordinatorNothingPending
 		}
 		if len(pending) == 0 {
 			return errCoordinatorNothingPending
 		}
-		decision, err := checkMonthlyBudget(ctx, tx, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, budget.CostExposure{LunaAPI: true}, false, now, c.service.server.database.billingRepository)
+		decision, err := coordinatorMonthlyBudget(ctx, tx, record.ProjectID, now)
 		if err != nil {
 			return err
 		}
 		if !decision.Allowed {
 			return errCoordinatorNothingPending
 		}
-		refusal = c.service.server.database.requireHostedFeature(ctx, tx, "native_execution", now)
+		refusal = c.service.server.database.requireHostedFeatureRecord(ctx, tx, "native_execution", now)
 		var limit *hostedLimitError
 		if refusal != nil && !errors.As(refusal, &limit) {
 			return refusal
 		}
 		if c.service.server.hasLunaCoordinator() && c.service.server.database.aiCreditMode != "" {
 			d := c.service.server.database
-			var balance int64
-			var failure string
-			if err := tx.QueryRowContext(ctx, "SELECT balance_micros,failure FROM ai_credit_accounts WHERE organization_id=? AND mode=?", record.OrganizationID, d.aiCreditMode).Scan(&balance, &failure); err != nil {
+			account, err := tx.BillingCreditAccount(ctx, d.aiCreditMode)
+			if err != nil {
 				return err
 			}
+			balance, failure := account.BalanceMicros, account.Failure
 			refusal = nil
-			included, err := d.includedAICredits(ctx, tx, record.OrganizationID, now)
+			included, err := d.includedAICreditsFromReader(ctx, tx, now)
 			if err != nil {
 				return err
 			}
 			if balance+included.remaining() <= 0 {
-				var owner bool
-				if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM hosted_members WHERE principal_id=? AND active=1 AND role='owner')", pending[len(pending)-1].Actor.PrincipalID).Scan(&owner); err != nil {
+				owner := false
+				credential, err := tx.AccessCredential(ctx, pending[len(pending)-1].Actor.PrincipalID)
+				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 					return err
+				}
+				if credential.UserID != "" {
+					member, err := tx.AccessMember(ctx, credential.UserID)
+					if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+						return err
+					}
+					owner = member.Active && member.Role == "owner"
 				}
 				message := "AI credits are exhausted. Ask an organization owner to buy credits in billing settings."
 				if owner {
@@ -614,12 +587,12 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 			}
 		}
 		if refusal == nil && c.service.server.hasLunaCoordinator() {
-			state.modelChoice, err = c.service.server.conversationModelChoiceGranted(ctx, tx, record.OrganizationID, now)
+			state.modelChoice, err = c.modelChoiceGranted(ctx, tx, record.OrganizationID, now)
 			if err != nil {
 				return err
 			}
 			if model := record.Preferences.ModelValue(); model != "" {
-				models, err := c.service.server.conversationModelChoices(ctx, tx, record.OrganizationID, []string{string(record.ProjectID)}, now)
+				models, err := c.modelChoices(ctx, tx, record.ProjectID, now)
 				if err != nil {
 					return err
 				}
@@ -630,7 +603,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 		}
 		for i := range pending {
 			pending[i].Delivery = conversation.DeliverySending
-			if err := c.service.updateMessage(ctx, tx, pending[i], now); err != nil {
+			if err := c.updateMessage(ctx, tx, pending[i], now); err != nil {
 				return err
 			}
 			pending[i].UpdatedAt = now
@@ -640,14 +613,14 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 		state.projectID = record.ProjectID
 		state.threadID = record.ProviderThreadID
 		state.preferences = record.Preferences
-		if err := c.service.appendMessage(ctx, tx, record, &state.assistant, now); err != nil {
+		if err := c.appendMessage(ctx, tx, record, &state.assistant, now); err != nil {
 			return err
 		}
 		execution := conversation.Execution{Status: conversation.ExecutionRunning, Owner: conversation.Owner{ThreadID: record.ProviderThreadID}}
-		return c.service.updateExecution(ctx, tx, record, execution, now)
+		return c.updateExecution(ctx, tx, record, execution, now)
 	}, func(ctx context.Context, p *conversationPublicationPlan) error {
 		var err error
-		pending, err = c.pendingMessages(p.context(ctx), c.service.store.reader, p.record.ID)
+		pending, err = c.pendingMessages(p.context(ctx), nil, p.record.ID)
 		if err != nil {
 			return err
 		}
@@ -655,7 +628,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 			return errCoordinatorNothingPending
 		}
 		if p.record.ProviderThreadID == "" {
-			transcript, err = c.transcript(p.context(ctx), c.service.store.reader, p.record.ID, pending[0].Seq)
+			transcript, err = c.transcript(p.context(ctx), nil, p.record.ID, pending[0].Seq)
 			if err != nil {
 				return err
 			}
@@ -695,7 +668,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 	attachments, runErr := c.coordinatorAttachments(turnCtx, state.users)
 	prompt := coordinatorPrompt(transcript, state.users)
 	if runErr == nil {
-		record, err := c.readConversation(turnCtx, c.service.store.reader, conversationID)
+		record, err := c.readConversation(turnCtx, nil, conversationID)
 		if err != nil {
 			runErr = err
 		} else {
@@ -714,7 +687,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 					if authErr != nil {
 						runErr = authErr
 					} else {
-						runErr = c.service.authorizeRead(actorCtx, c.service.store.reader, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, record)
+						runErr = c.authorizeRecord(actorCtx, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, record, false)
 						if runErr == nil {
 							runErr = tools.restrictReadAudience(actorCtx, record, credential)
 						}
@@ -927,7 +900,7 @@ func coordinatorOutcome(runErr error, cancelled bool) conversation.Delivery {
 // transcript returns the last messages before seq as context for a turn
 // without a provider thread.
 func (c *conversationTurnCoordinator) transcript(ctx context.Context, query nativeQueryer, conversationID string, beforeSeq int64) ([]conversationMessageRecord, error) {
-	messages, err := c.service.store.listMessages(ctx, query, conversationID, beforeSeq, coordinatorTranscriptMessages)
+	messages, err := c.coordinatorMessages(ctx, conversationstore.MessageFilter{ConversationID: conversationID, BeforeSequence: beforeSeq, Limit: coordinatorTranscriptMessages})
 	if err != nil {
 		return nil, err
 	}
@@ -962,7 +935,7 @@ func (c *conversationTurnCoordinator) coordinatorAttachments(ctx context.Context
 			if strings.HasPrefix(attachment.MIME, "image/") {
 				continue
 			}
-			content, err := c.service.store.readAttachmentContent(ctx, c.service.store.reader, attachment.ArtifactRef)
+			content, err := c.attachmentContent(ctx, attachment.ContentID)
 			if errors.Is(err, sql.ErrNoRows) {
 				// The upload was swept or deleted between accept and turn;
 				// the turn still runs without it.
@@ -1119,7 +1092,7 @@ func (s *coordinatorTurnState) observeThread(ctx context.Context, threadID strin
 		return
 	}
 	s.threadID = threadID
-	err := s.coordinator.write(ctx, s.conversationID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
+	err := s.coordinator.write(ctx, s.conversationID, func(ctx context.Context, tx tenantstore.Writer, record *conversationRecord, now time.Time) error {
 		if record.ProviderThreadID == threadID && record.ProviderThreadRunnerID == "" && record.ProviderThreadOrigin == conversation.ThreadOriginCoordinator {
 			return nil
 		}
@@ -1129,7 +1102,7 @@ func (s *coordinatorTurnState) observeThread(ctx context.Context, threadID strin
 		// It is still a coordinator thread, so a worker attempt is handed a
 		// transcript even if a runner ever reached it.
 		record.ProviderThreadOrigin = conversation.ThreadOriginCoordinator
-		return s.coordinator.service.saveConversation(ctx, tx, record, now)
+		return s.coordinator.saveConversation(ctx, tx, record, now)
 	}, func(ctx context.Context, p *conversationPublicationPlan) error {
 		if p.record.ProviderThreadID == threadID && p.record.ProviderThreadRunnerID == "" && p.record.ProviderThreadOrigin == conversation.ThreadOriginCoordinator {
 			return nil
@@ -1206,11 +1179,15 @@ func (s *coordinatorTurnState) flush(ctx context.Context) {
 	}
 	text := s.buffered.String()
 	s.buffered.Reset()
-	err := s.coordinator.write(ctx, s.conversationID, func(ctx context.Context, tx *sql.Tx, _ *conversationRecord, now time.Time) error {
-		return s.coordinator.service.appendDelta(ctx, tx, &s.assistant, text, now)
+	updated := s.assistant
+	err := s.coordinator.write(ctx, s.conversationID, func(ctx context.Context, tx tenantstore.Writer, _ *conversationRecord, now time.Time) error {
+		return s.coordinator.appendDelta(ctx, tx, &updated, text, now)
 	}, func(ctx context.Context, p *conversationPublicationPlan) error {
 		return p.appendDelta(ctx, s.assistant, text)
 	})
+	if err == nil {
+		s.assistant = updated
+	}
 	if err != nil {
 		// Keep the text so the completion write carries it.
 		s.assistant.Text += text
@@ -1236,17 +1213,17 @@ func (s *coordinatorTurnState) recordTool(ctx context.Context, update runner.Age
 	ctx = prepared
 	existing, known := s.toolMessages[update.ItemID]
 	var message conversationMessageRecord
-	err = s.coordinator.write(ctx, s.conversationID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
+	err = s.coordinator.write(ctx, s.conversationID, func(ctx context.Context, tx tenantstore.Writer, record *conversationRecord, now time.Time) error {
 		if known && update.ItemID != "" {
 			existing.Text = summary
 			existing.Data = data
-			if err := s.coordinator.service.updateMessage(ctx, tx, existing, now); err != nil {
+			if err := s.coordinator.updateMessage(ctx, tx, existing, now); err != nil {
 				return err
 			}
 			s.toolMessages[update.ItemID] = existing
 			return nil
 		}
-		if err := s.coordinator.service.appendMessage(ctx, tx, record, &message, now); err != nil {
+		if err := s.coordinator.appendMessage(ctx, tx, record, &message, now); err != nil {
 			return err
 		}
 		if update.ItemID != "" {
@@ -1331,27 +1308,34 @@ func (s *coordinatorTurnState) finish(ctx context.Context, outcome conversation.
 		return err
 	}
 	ctx = prepared
-	return s.coordinator.write(ctx, s.conversationID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
+	var preparedUsage preparedConversationUsage
+	if usage != nil {
+		preparedUsage, err = s.coordinator.service.server.database.prepareConversationUsagePostgres(ctx, *usage)
+		if err != nil {
+			return err
+		}
+	}
+	return s.coordinator.write(ctx, s.conversationID, func(ctx context.Context, tx tenantstore.Writer, record *conversationRecord, now time.Time) error {
 		if usage != nil {
-			if err := s.coordinator.service.server.database.recordConversationUsage(ctx, tx, *usage); err != nil {
+			if err := s.coordinator.service.server.database.writeConversationUsagePostgres(ctx, tx, preparedUsage); err != nil {
 				return err
 			}
 		}
-		if err := s.coordinator.service.updateMessage(ctx, tx, s.assistant, now); err != nil {
+		if err := s.coordinator.updateMessage(ctx, tx, s.assistant, now); err != nil {
 			return err
 		}
 		for i := range s.users {
 			// setControlDelivery rather than updateMessage: the receipt must
 			// follow the message so the client can offer the retry command
 			// a failed or unknown turn leaves as the only way forward.
-			if err := s.coordinator.service.setControlDelivery(ctx, tx, &s.users[i], userDelivery, failure, now); err != nil {
+			if err := s.coordinator.setControlDelivery(ctx, tx, &s.users[i], userDelivery, failure, now); err != nil {
 				return err
 			}
 		}
 		if s.threadID != "" {
 			record.ProviderThreadID = s.threadID
 		}
-		return s.coordinator.service.updateExecution(ctx, tx, record, execution, now)
+		return s.coordinator.updateExecution(ctx, tx, record, execution, now)
 	}, func(ctx context.Context, p *conversationPublicationPlan) error {
 		if err := p.updateMessage(ctx, s.assistant); err != nil {
 			return err

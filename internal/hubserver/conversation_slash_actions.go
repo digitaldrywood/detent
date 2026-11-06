@@ -78,7 +78,7 @@ func (t *coordinatorToolset) slashAction(ctx context.Context, record conversatio
 		return nil, err
 	}
 	scope.project = record.ProjectID
-	issue, err := t.coordinator.service.server.resolveOperatorNativeItem(ctx, t.coordinator.service.store.reader, scope, args.WorkItemID)
+	issue, err := t.coordinator.service.server.resolveOperatorNativeItem(ctx, nil, scope, args.WorkItemID)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +107,7 @@ func (t *coordinatorToolset) slashAction(ctx context.Context, record conversatio
 		return nil, operatortool.ErrUnknownTool
 	}
 	if name == operatortool.MoveItem {
-		project, err := readNativeProject(ctx, t.coordinator.service.store.reader, scope)
+		project, err := t.coordinator.service.server.readProjectRecord(ctx, scope)
 		if err != nil {
 			return nil, err
 		}

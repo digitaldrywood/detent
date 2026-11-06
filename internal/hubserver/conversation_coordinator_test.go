@@ -22,6 +22,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -200,12 +202,12 @@ func TestCoordinatorPublicationRefreshesBeforeMutation(t *testing.T) {
 			preparedUpdate := prepareTestConversationRecord(t, f.conversations.store, updated)
 			message := conversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageStatus, Text: "prepared", Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}}
 			preparations, mutations := 0, 0
-			err := f.coordinator().(*conversationTurnCoordinator).write(t.Context(), record.ID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
+			err := f.coordinator().(*conversationTurnCoordinator).write(t.Context(), record.ID, func(ctx context.Context, tx tenantstore.Writer, record *conversationRecord, now time.Time) error {
 				mutations++
 				if record.Preferences != updated.Preferences || record.Execution.Status != updated.Execution.Status {
 					t.Fatalf("mutation used stale payload: preferences=%+v execution=%+v", record.Preferences, record.Execution)
 				}
-				return f.conversations.appendMessage(ctx, tx, record, &message, now)
+				return f.coordinator().(*conversationTurnCoordinator).appendMessage(ctx, tx, record, &message, now)
 			}, func(ctx context.Context, p *conversationPublicationPlan) error {
 				preparations++
 				if err := p.appendMessage(ctx, &message); err != nil {
@@ -268,7 +270,7 @@ func TestCoordinatorWriterReadsIgnoreHistory(t *testing.T) {
 				}
 				statements = append(statements, statement)
 			}})
-			err := f.coordinator().(*conversationTurnCoordinator).write(ctx, record.ID, func(_ context.Context, _ *sql.Tx, record *conversationRecord, _ time.Time) error {
+			err := f.coordinator().(*conversationTurnCoordinator).write(ctx, record.ID, func(_ context.Context, _ tenantstore.Writer, record *conversationRecord, _ time.Time) error {
 				if record.MessageCount != int64(count) {
 					t.Fatalf("message count=%d want=%d", record.MessageCount, count)
 				}
@@ -344,8 +346,9 @@ func (f *coordinatorFixture) say(t *testing.T, record *conversationRecord, text 
 		t.Fatal(err)
 	}
 	ctx := plan.context(t.Context())
-	if err := f.conversations.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		return f.conversations.appendMessage(ctx, tx, record, &message, now)
+	if err := f.service.config.TenantRepository.WriteTenant(ctx, f.organization, corestore.Serving, func(tx tenantstore.Writer) error {
+		now := f.service.config.now()
+		return f.coordinator().(*conversationTurnCoordinator).appendMessage(ctx, tx, record, &message, now)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -369,8 +372,9 @@ func (f *coordinatorFixture) history(t *testing.T, record *conversationRecord, r
 		t.Fatal(err)
 	}
 	ctx := plan.context(t.Context())
-	if err := f.conversations.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		return f.conversations.appendMessage(ctx, tx, record, &message, now)
+	if err := f.service.config.TenantRepository.WriteTenant(ctx, f.organization, corestore.Serving, func(tx tenantstore.Writer) error {
+		now := f.service.config.now()
+		return f.coordinator().(*conversationTurnCoordinator).appendMessage(ctx, tx, record, &message, now)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1985,7 +1989,7 @@ func TestConversationCoordinatorRefusesWritesOnceLinked(t *testing.T) {
 				}
 			})
 			called := false
-			err := f.coordinator().(*conversationTurnCoordinator).write(t.Context(), record.ID, func(context.Context, *sql.Tx, *conversationRecord, time.Time) error {
+			err := f.coordinator().(*conversationTurnCoordinator).write(t.Context(), record.ID, func(context.Context, tenantstore.Writer, *conversationRecord, time.Time) error {
 				called = true
 				return nil
 			})

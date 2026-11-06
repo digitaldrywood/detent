@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -155,21 +156,29 @@ func (t *coordinatorToolset) proposeIssueSplit(ctx context.Context, record conve
 	}
 	scope.project = record.ProjectID
 	s := t.coordinator.service.server
-	tx, err := s.database.reader.BeginTx(readCtx, &sql.TxOptions{ReadOnly: true})
+	row, version, err := s.readWorkItemRecord(readCtx, scope, split.ParentID)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
-	parent, _, err := readNativeIssue(ctx, tx, scope, split.ParentID)
+	parent, err := s.hydrateWorkItemRecord(readCtx, row, version)
 	if err != nil {
 		return nil, err
 	}
 	split.Revision = int64(parent.Revision)
-	if _, err := validateCoordinatorSplitDrafts(ctx, tx, scope, split); err != nil {
+	if err := requireNativeEdit(parent, parent.Revision); err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
+	project, err := s.readProjectRecord(readCtx, scope)
+	if err != nil {
 		return nil, err
+	}
+	for _, child := range split.Children {
+		if err := validateWorkItemRecordCreateInput(readCtx, scope, project, tracker.CreateIssue{Title: child.Title, Body: child.Description, Priority: child.Priority}); err != nil {
+			return nil, err
+		}
+		if !slices.ContainsFunc(project.States, func(state tracker.NativeState) bool { return state.Name == child.State }) {
+			return nil, nativePublicInvalid("Workflow state does not exist")
+		}
 	}
 	arguments, err := json.Marshal(split)
 	if err != nil {

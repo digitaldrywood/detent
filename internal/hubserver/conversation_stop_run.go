@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -11,6 +12,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -57,35 +61,42 @@ func (t *coordinatorToolset) proposeStopRun(ctx context.Context, record conversa
 		return nil, err
 	}
 	scope.project = record.ProjectID
-	query := t.coordinator.service.store.reader
-	issue, err := t.coordinator.service.server.resolveOperatorNativeItem(ctx, query, scope, args.WorkItemID)
+	server := t.coordinator.service.server
+	issue, err := server.resolveOperatorNativeItem(ctx, nil, scope, args.WorkItemID)
 	if err != nil {
 		return nil, err
 	}
-	_, internalID, err := readNativeIssue(ctx, query, scope, string(issue.WorkItemID))
-	if err != nil {
-		return nil, err
-	}
-	lease, found, err := readUnreleasedLease(ctx, query, internalID)
-	if err != nil {
-		return nil, err
-	}
-	if !found || requireCurrentLease(lease, lease.session.FencingToken, t.coordinator.service.server.config.now()) != nil {
+	var lease leasestore.Lease
+	err = server.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := server.authorizeAccessScope(ctx, r, scope, true); err != nil {
+			return err
+		}
+		item, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
+		if err != nil {
+			return err
+		}
+		lease, err = r.ActiveLeaseForIssue(ctx, item.ID)
+		return err
+	})
+	if errors.Is(err, corestore.ErrNotFound) || err == nil && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(server.config.now())) {
 		return nil, nativePublicInvalid("This item has no active runner attempt")
 	}
-	project, err := readNativeProject(ctx, query, scope)
+	if err != nil {
+		return nil, err
+	}
+	project, err := server.readProjectRecord(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
 	if err := validateNativeWorkflowTransition(project.States, issue.State, args.Destination, scope.credential.Scope); err != nil {
 		return nil, err
 	}
-	request := coordinatorStopRunArguments{ProjectID: string(record.ProjectID), Identifier: string(issue.WorkItemID), ExpectedRevision: issue.Revision, LeaseID: lease.session.ID, FencingToken: lease.session.FencingToken, Destination: args.Destination, Priority: args.Priority, Reason: args.Reason}
+	request := coordinatorStopRunArguments{ProjectID: string(record.ProjectID), Identifier: string(issue.WorkItemID), ExpectedRevision: issue.Revision, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Destination: args.Destination, Priority: args.Priority, Reason: args.Reason}
 	raw, err := json.Marshal(request)
 	if err != nil {
 		return nil, err
 	}
-	action := chat.Action{ConversationID: record.ID, Kind: chat.ActionStopRun, ProjectID: request.ProjectID, IssueID: request.Identifier, Identifier: fmt.Sprintf("#%d", issue.Number), CurrentState: issue.State, Destination: args.Destination, Revision: int64(issue.Revision), Title: "Stop runner attempt", Description: fmt.Sprintf("Release attempt %s for %s and move it to %s.", lease.session.ID, issue.Title, args.Destination), Arguments: raw, Material: true, RequiresConfirmation: true}
+	action := chat.Action{ConversationID: record.ID, Kind: chat.ActionStopRun, ProjectID: request.ProjectID, IssueID: request.Identifier, Identifier: fmt.Sprintf("#%d", issue.Number), CurrentState: issue.State, Destination: args.Destination, Revision: int64(issue.Revision), Title: "Stop runner attempt", Description: fmt.Sprintf("Release attempt %s for %s and move it to %s.", tracker.LeaseID(lease.LeaseID), issue.Title, args.Destination), Arguments: raw, Material: true, RequiresConfirmation: true}
 	return t.submitCoordinatorAction(ctx, record, call, action)
 }
 
