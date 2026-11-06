@@ -101,12 +101,8 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 			creditErr = errors.Join(creditErr, err)
 			continue
 		}
-		if s.database.billingRepository != nil {
+		{
 			if err := s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error { return writer.SetBillingEventCreditProcessed(ctx, event.id) }); err != nil {
-				return err
-			}
-		} else {
-			if _, err := s.database.db.ExecContext(ctx, "UPDATE hosted_billing_events SET credit_processed=1 WHERE event_id=?", event.id); err != nil {
 				return err
 			}
 		}

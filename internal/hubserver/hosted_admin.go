@@ -68,7 +68,7 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 			}
 			credential.ManageRunners = true
 		case strings.HasPrefix(c.Path(), enrollmentBase) || strings.HasPrefix(c.Path(), runnerBase) || c.Path() == "/api/v2/organizations/:organization/machines/:machine/routing":
-			if err := s.requireHostedRunnerAdministration(c.Request().Context(), s.database.reader, credential); err != nil {
+			if err := s.requireHostedRunnerAdministration(c.Request().Context(), nil, credential); err != nil {
 				return c.JSON(http.StatusNotFound, apiErrorResponse{Code: "not_found", Message: err.Error()})
 			}
 			credential.ManageRunners = true
@@ -86,9 +86,16 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 func (s *Service) hostedAllUsageGrants(ctx context.Context, credential apiCredential) bool {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	var missing int
-	err := s.database.reader.QueryRowContext(ctx, `SELECT count(*) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=? AND NOT EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.project_id=p.id AND g.user_id=?)`, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&missing)
-	return err == nil && missing == 0
+	if credential.Hosted == nil {
+		return false
+	}
+	var missing bool
+	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+		var err error
+		missing, err = r.AccessMissingUsageGrant(ctx, credential.Hosted.Subject)
+		return err
+	})
+	return err == nil && !missing
 }
 
 func (s *Service) hostedAllRunnerGrants(ctx context.Context, credential apiCredential) bool {
@@ -97,7 +104,7 @@ func (s *Service) hostedAllRunnerGrants(ctx context.Context, credential apiCrede
 	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	return s.requireHostedRunnerAdministration(ctx, s.database.reader, credential) == nil
+	return s.requireHostedRunnerAdministration(ctx, nil, credential) == nil
 }
 
 func (s *Service) requireHostedRunnerAdministration(ctx context.Context, query nativeQueryer, credential apiCredential) error {
@@ -225,7 +232,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, email) {
 		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 	}
-	if err := s.validateHostedInvitationGrants(readCtx, s.database.reader, credential, email, nil); err != nil {
+	if err := s.validateHostedInvitationGrants(readCtx, nil, credential, email, nil); err != nil {
 		return s.hostedError(c, http.StatusForbidden, "You cannot replace this member's project access")
 	}
 	_, err = s.reserveHostedInvitationSeatFor(ctx, credential, email)

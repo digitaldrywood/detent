@@ -548,7 +548,7 @@ func (s *Service) billingRequestBinding(ctx context.Context, name string, reques
 		Pack                                                        HostedCreditPack
 	}{Account: cfg.AccountID, Mode: cfg.mode(), Return: s.hostedBillingReturn(true), Customer: cfg.CustomerID, Disabled: cfg.CheckoutDisabled, Pack: pack}
 	if name == operatortool.CreditAutoFund {
-		if s.database.billingRepository != nil {
+		{
 			err := s.database.readBillingTenant(readCtx, func(reader tenantstore.Reader) error {
 				account, err := reader.BillingCreditAccount(readCtx, s.database.aiCreditMode)
 				if err != nil {
@@ -560,8 +560,6 @@ func (s *Service) billingRequestBinding(ctx context.Context, name string, reques
 			if err != nil {
 				return "", "", err
 			}
-		} else if err := s.database.reader.QueryRowContext(readCtx, "SELECT auto_enabled,threshold_cents,price_id,payment_method FROM ai_credit_accounts WHERE organization_id=? AND mode=?", s.database.hostedOrganization, s.database.aiCreditMode).Scan(&state.Enabled, &state.Threshold, &state.Price, &state.Method); err != nil {
-			return "", "", err
 		}
 		if *request.Enabled {
 			binding, err := s.database.hostedBillingBinding(ctx, cfg)

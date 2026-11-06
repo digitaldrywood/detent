@@ -83,52 +83,8 @@ func hostedRoleAllows(role string, scope apikey.Scope, action ...string) bool {
 }
 
 func (s *Service) hostedAPITokenCredential(ctx context.Context, credential apiCredential, created string, expires sql.NullString) (apiCredential, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	var user, organization, membership, scope sql.NullString
-	var access hostedProjectAccess
-	err := s.database.auth().QueryRowContext(ctx, "SELECT hosted_user_id,hosted_organization_id,hosted_membership_id,operator_key_scope,operator_project_access,key_kind FROM api_tokens WHERE id=?", credential.ID).Scan(&user, &organization, &membership, &scope, &access, &credential.HostedKeyKind)
-	if err != nil {
-		return apiCredential{}, err
-	}
-	if !user.Valid && !organization.Valid && !membership.Valid && !scope.Valid {
-		return credential, nil
-	}
-	if access != hostedProjectsAll && access != hostedProjectsSelected || !user.Valid || organization.String != s.config.Hosted.OrganizationID || membership.String == "" || !credential.NativeOnly || credential.Runner.RunnerID != "" || credential.Scope != apiScopeOperator && credential.Scope != apiScopeAdmin || !hostedKeyAllows(apikey.Scope(scope.String), apikey.ScopeRead) {
-		return apiCredential{}, auth.ErrHostedIdentity
-	}
-	provider, err := s.hostedProviderOrganization(ctx)
-	if err != nil {
-		return apiCredential{}, err
-	}
-	identity := &auth.HostedIdentity{Subject: user.String, OrganizationID: provider, SessionID: "api-key:" + credential.ID}
-	identity.CreatedAt, err = parseTimeValue(created)
-	if err != nil {
-		return apiCredential{}, err
-	}
-	if expires.Valid {
-		identity.ExpiresAt, err = parseTimeValue(expires.String)
-		if err != nil {
-			return apiCredential{}, err
-		}
-	}
-	current, err := s.hostedMembership(ctx, identity)
-	if err != nil {
-		return apiCredential{}, err
-	}
-	if current.ID != membership.String {
-		return apiCredential{}, auth.ErrHostedIdentity
-	}
-	var local string
-	err = s.database.auth().QueryRowContext(ctx, `SELECT m.principal_id,m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.membership_id=? AND m.active=1 AND t.revoked_at IS NULL`, user.String, membership.String).Scan(&credential.HostedPrincipal, &local)
-	if err != nil || !auth.ValidOrganizationRole(local) {
-		return apiCredential{}, auth.ErrHostedIdentity
-	}
-	credential.Hosted, credential.HostedMembership = identity, membership.String
-	credential.HostedRole = lesserHostedRole(current.Role.Slug, local)
-	credential.HostedKeyScope = apikey.Scope(scope.String)
-	credential.HostedProjectAccess = access
-	return credential, nil
+	result, _, err := s.authenticateAccessHash(ctx, credential.Hash, "", "")
+	return result, err
 }
 
 func (s *Service) hostedKeyBrowser(c echo.Context) (apiCredential, error) {
@@ -248,7 +204,7 @@ func (s *Service) authorizeHostedKeyRequest(ctx context.Context, credential apiC
 	}
 	for _, project := range request.Projects {
 		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project), credential: credential}
-		if err := s.requireHostedProject(ctx, s.database.reader, scope, false); err != nil {
+		if err := s.requireHostedProject(ctx, nil, scope, false); err != nil {
 			return err
 		}
 		if err := s.database.authorizeNativeProject(ctx, scope); err != nil {

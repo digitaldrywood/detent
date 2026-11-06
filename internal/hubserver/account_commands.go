@@ -8,6 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -34,8 +37,12 @@ func (s *Service) createHostedOrganizationFor(ctx context.Context, credential ap
 	if err != nil || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
 		return "", operatortool.ErrAccessDenied
 	}
-	var members int
-	if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_members").Scan(&members); err != nil || members != 0 {
+	var members []accessstore.Member
+	if err := s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
+		var err error
+		members, err = r.AccessMembers(readCtx, "", 1)
+		return err
+	}); err != nil || len(members) != 0 {
 		return "", operatortool.ErrAccessDenied
 	}
 	name = strings.TrimSpace(name)
@@ -52,7 +59,7 @@ func (s *Service) createHostedOrganizationFor(ctx context.Context, credential ap
 			return "", auth.ErrHostedIdentity
 		}
 		providerID = organization.ID
-		if _, err := s.database.db.ExecContext(ctx, "UPDATE hosted_tenant SET provider_id=? WHERE singleton=1 AND provider_id=''", providerID); err != nil {
+		if err := s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return w.BindAccessTenantProvider(ctx, providerID) }); err != nil {
 			return "", err
 		}
 	}
@@ -81,7 +88,7 @@ func (s *Service) executeHostedAccountFor(ctx context.Context, credential apiCre
 		s.hostedMutationMu.Lock()
 		defer s.hostedMutationMu.Unlock()
 	}
-	raw, err := readAccountReceipt(ctx, s.database.reader, s.config.Hosted.OrganizationID, credential.Hosted.Subject, m.RetryIdentity)
+	raw, err := s.readAccessAccountReceipt(ctx, credential.Hosted.Subject, m.RetryIdentity)
 	if err == nil {
 		var receipt accountReceipt
 		if json.Unmarshal([]byte(raw), &receipt) != nil {
@@ -99,11 +106,7 @@ func (s *Service) executeHostedAccountFor(ctx context.Context, credential apiCre
 		return operatoradmin.Output{}, err
 	}
 	record := func(recordCtx context.Context, outcome string, out operatoradmin.Output) error {
-		raw, err := json.Marshal(accountReceipt{Kind: "account_administration", Retry: m.RetryIdentity, Hash: m.InputHash, Outcome: outcome, Output: out})
-		if err != nil {
-			return err
-		}
-		return s.hostedAudit(recordCtx, credential.Hosted, string(raw), "mcp/account", "", 0)
+		return s.storeAccessAccountReceipt(recordCtx, credential, accountReceipt{Kind: "account_administration", Retry: m.RetryIdentity, Hash: m.InputHash, Outcome: outcome, Output: out}, m)
 	}
 	if err := record(ctx, "pending", operatoradmin.Output{}); err != nil {
 		return operatoradmin.Output{}, err

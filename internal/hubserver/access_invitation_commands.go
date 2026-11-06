@@ -305,7 +305,7 @@ func (s *Service) reserveAccessInvitationSeat(ctx context.Context, credential ap
 	if runtimePlans == nil {
 		return false, errors.New("hosted entitlements are disabled")
 	}
-	entitlement, err := s.database.hostedEntitlement(ctx, s.database.reader, s.config.now())
+	entitlement, err := s.database.hostedEntitlement(ctx, nil, s.config.now())
 	if err != nil {
 		return false, err
 	}

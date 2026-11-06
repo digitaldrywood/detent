@@ -347,11 +347,16 @@ func (s *Service) stopMonthlyBudgetTurns(ctx context.Context, organization track
 	}
 	coordinator.mu.Unlock()
 	for _, id := range ids {
-		record, err := coordinator.readConversation(ctx, s.database.reader, id)
-		if err != nil || record.OrganizationID != organization {
+		var project tracker.ProjectID
+		err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			record, err := reader.ConversationByID(ctx, id)
+			project = record.ProjectID
+			return err
+		})
+		if err != nil {
 			continue
 		}
-		decision, err := checkMonthlyBudget(ctx, s.database.reader, nativeScope{organization: organization, project: record.ProjectID}, budget.CostExposure{LunaAPI: true}, true, s.config.now(), s.database.billingRepository)
+		decision, err := checkMonthlyBudget(ctx, nil, nativeScope{organization: organization, project: project}, budget.CostExposure{LunaAPI: true}, true, s.config.now(), s.database.billingRepository)
 		if err != nil {
 			s.config.Logger.Warn("Check active conversation monthly budget", "error", err)
 			continue
@@ -381,7 +386,7 @@ func (s *Service) stopMonthlyBudgetSpritePasses(ctx context.Context, organizatio
 	}
 	s.spriteWakeMu.Unlock()
 	for _, key := range keys {
-		decision, err := checkMonthlyBudget(ctx, s.database.reader, nativeScope{organization: key.organization}, budget.CostExposure{SpriteInfrastructure: true}, true, s.config.now(), s.database.billingRepository)
+		decision, err := checkMonthlyBudget(ctx, nil, nativeScope{organization: key.organization}, budget.CostExposure{SpriteInfrastructure: true}, true, s.config.now(), s.database.billingRepository)
 		if err != nil {
 			s.config.Logger.Warn("Check active Sprite lifecycle monthly budget", "error", err)
 			continue

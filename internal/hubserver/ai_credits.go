@@ -76,7 +76,7 @@ func (s *Service) readAICredits(ctx context.Context, pages ...creditPageRequest)
 	if err != nil {
 		return nil, err
 	}
-	included, err := d.includedAICredits(ctx, d.reader, d.hostedOrganization, s.config.now())
+	included, err := d.includedAICredits(ctx, nil, d.hostedOrganization, s.config.now())
 	if err != nil {
 		return nil, err
 	}

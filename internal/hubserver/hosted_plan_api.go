@@ -105,7 +105,7 @@ func (d *database) hostedEntitlementReport(ctx context.Context, historyAfter int
 		return report, err
 	}
 	report = hostedEntitlementReport{OrganizationID: entitlement.OrganizationID, Base: entitlement.Base, EffectiveBase: entitlement.EffectiveBase, Source: entitlement.Source, Revision: entitlement.Revision, Features: entitlement.Features, Grants: []hostedGrantRecord{}, GrantHistory: []hostedGrantRecord{}, Plans: []HostedPlan{}}
-	report.Plans, err = d.readHostedPlans(ctx, d.reader)
+	report.Plans, err = d.readHostedPlans(ctx, nil)
 	if err != nil {
 		return report, err
 	}
