@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,7 +22,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -38,30 +41,110 @@ type nativeFixture struct {
 func newNativeFixture(t *testing.T, service *Service, organization tracker.OrganizationID, name string) nativeFixture {
 	t.Helper()
 	if service == nil {
-		service = openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
+		service = newPostgresNativeService(t, Config{})
 	}
 	if organization == "" {
-		if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM organizations WHERE local = 1").Scan(&organization); err != nil {
-			t.Fatal(err)
+		organization = service.database.hostedOrganization
+		if organization == "" {
+			organization = "org_first"
 		}
 	}
-	states := nativeFixtureStates()
-	response := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", testHubAdminToken, map[string]any{"idempotency_key": "project-" + name, "name": name, "states": states})
-	requireNativeStatus(t, response, http.StatusOK)
-	var project tracker.NativeProject
-	decodeHubResponse(t, response, &project)
-	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=0 WHERE id=?", project.ID); err != nil {
+	project := tracker.NativeProject{OrganizationID: organization, ID: tracker.ProjectID(newNativeID("prj")), Name: name, States: nativeFixtureStates(), Profile: "native"}
+	token := tokenResponse{ID: newNativeID("credential"), Token: newNativeID("token")}
+	now := service.config.now().UTC().Truncate(time.Microsecond)
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project.ID, Name: name, Profile: "native"}, States: project.States})
+		if err != nil {
+			return err
+		}
+		project.Slug = record.Core.Slug
+		row := accessstore.Credential{OrganizationID: organization, ID: token.ID, Name: "Example operator " + token.ID, Hash: apikey.HashToken(token.Token), Scope: "operator", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}
+		if service.config.Hosted != nil {
+			member, err := w.AccessMember(t.Context(), "user_"+string(organization))
+			if errors.Is(err, corestore.ErrNotFound) {
+				membership, membershipErr := service.config.Hosted.Provider.CreateMembership(t.Context(), "user_"+string(organization), service.config.Hosted.WorkOSOrganizationID, "owner")
+				if membershipErr != nil {
+					return membershipErr
+				}
+				member = accessstore.Member{OrganizationID: organization, UserID: membership.UserID, MembershipID: membership.ID, Email: "operator@example.test", Role: "owner", Active: true, PrincipalID: "test_hub_admin", CreatedAt: now, UpdatedAt: now}
+				err = w.CreateAccessMember(t.Context(), member)
+			}
+			if err != nil {
+				return err
+			}
+			row.Kind, row.UserID, row.MembershipID, row.KeyScope = "personal", member.UserID, member.MembershipID, "write"
+			if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization, UserID: member.UserID, ProjectID: project.ID, CanWrite: true}); err != nil {
+				return err
+			}
+			if err := w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: member.PrincipalID, ProjectID: project.ID}); err != nil {
+				return err
+			}
+		}
+		if err := w.CreateAccessCredential(t.Context(), row); err != nil {
+			return err
+		}
+		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: token.ID, ProjectID: project.ID})
+	}); err != nil {
 		t.Fatal(err)
 	}
-	response = performHubAPIRequest(t, service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "operator-" + name, "scope": "operator"})
-	requireNativeStatus(t, response, http.StatusCreated)
-	var token tokenResponse
-	decodeHubResponse(t, response, &token)
-	response = performHubAPIRequest(t, service, http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", testHubAdminToken, map[string]any{"organization_id": organization, "project_id": project.ID})
-	requireNativeStatus(t, response, http.StatusNoContent)
+	credential, status, err := service.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(token.Token), "", "")
+	if err != nil {
+		t.Fatalf("fixture credential status=%d: %v", status, err)
+	}
+	if _, err := service.readAuthorizedProjectRecord(t.Context(), nativeScope{organization: organization, project: project.ID, credential: credential}, true, false); err != nil {
+		t.Fatalf("fixture project authority: %v", err)
+	}
 	f := nativeFixture{service: service, project: project, base: "/api/v2/organizations/" + string(organization) + "/projects/" + string(project.ID), token: token.Token}
 	seedNativeFixturePolicy(t, service, string(organization)+"/"+string(project.ID))
 	return f
+}
+
+func newPostgresNativeService(t *testing.T, cfg Config) *Service {
+	t.Helper()
+	repository, _ := projectRecordPostgresWithAdmin(t, 4)
+	if cfg.SecretKeys == nil {
+		cfg.SecretKeys = secretTestKeys(t, "1", "1")
+	}
+	var service *Service
+	primary := tracker.OrganizationID("org_first")
+	if cfg.Hosted == nil {
+		service = openLocalPostgresHubTestService(t, repository, cfg)
+	} else {
+		primary = tracker.OrganizationID(cfg.Hosted.OrganizationID)
+		if err := repository.WriteTenant(t.Context(), primary, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: primary, Name: string(primary), Slug: strings.ReplaceAll(string(primary), "_", "-"), Local: true, CreatedAt: time.Now().UTC().Truncate(time.Microsecond)})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		service = openPostgresHubTestService(t, repository, cfg)
+	}
+	for _, organization := range []tracker.OrganizationID{primary + "_second", primary} {
+		seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: organization, Name: string(organization), Slug: strings.ReplaceAll(string(organization), "_", "-")})
+		key := bytes.Repeat([]byte{0x5a}, 32)
+		envelope, err := service.config.SecretKeys.Seal(key, accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := service.config.now().UTC().Truncate(time.Microsecond)
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: newNativeID("hub"), CursorKey: key}); err != nil {
+				return err
+			}
+			return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: now})
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+	}
+	service.database.hostedOrganization = primary
+	service.localOrganization = string(primary)
+	service.requestMetrics.organization = primary
+	return service
+}
+
+func newPostgresDefaultNativeFixture(t *testing.T, cfg Config) nativeFixture {
+	t.Helper()
+	return newNativeFixture(t, newPostgresNativeService(t, cfg), "", "Example project")
 }
 
 func requireNativeStatus(t *testing.T, response *httptest.ResponseRecorder, want int) {
@@ -1077,5 +1160,47 @@ func TestNativeNewestIssuePages(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestNativeFixturePostgresCallers(t *testing.T) {
+	for _, mode := range []string{"nil", "default", "supplied"} {
+		t.Run(mode, func(t *testing.T) {
+			var service *Service
+			if mode == "supplied" {
+				service = openTestService(t, Config{})
+			}
+			var first nativeFixture
+			if mode == "default" {
+				first = newPostgresDefaultNativeFixture(t, Config{})
+			} else {
+				first = newNativeFixture(t, service, "", "First project")
+			}
+			if service != nil && first.service != service {
+				t.Fatal("fixture replaced caller service")
+			}
+			service = first.service
+			if service.database.postgres == nil || service.database.db != nil || service.database.reader != nil {
+				t.Fatal("fixture requires PostgreSQL without legacy handles")
+			}
+			second := newNativeFixture(t, service, first.project.OrganizationID, "Second project")
+			for _, fixture := range []nativeFixture{first, second} {
+				response := performHubAPIRequest(t, service, http.MethodGet, fixture.base, fixture.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var got tracker.NativeProject
+				decodeHubResponse(t, response, &got)
+				if got.ID != fixture.project.ID || got.Name != fixture.project.Name {
+					t.Fatalf("project=%+v", got)
+				}
+			}
+			if first.project.ID == second.project.ID || first.token == second.token {
+				t.Fatal("fixture reused project or credential identity")
+			}
+			if mode != "supplied" {
+				other := newNativeFixture(t, service, first.project.OrganizationID+"_second", "Other tenant")
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, other.base, other.token, nil), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, first.base, other.token, nil), http.StatusUnauthorized)
+			}
+		})
 	}
 }

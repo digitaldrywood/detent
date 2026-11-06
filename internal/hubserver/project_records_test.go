@@ -142,7 +142,11 @@ func openLocalPostgresHubTestService(t *testing.T, repository *postgres.Reposito
 	service := openPostgresHubTestService(t, repository, config)
 	service.config.Hosted = nil
 	service.echo = echo.New()
+	service.echo.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware)
 	service.registerNativeRoutes(service.echo)
+	service.registerRunnerRoutes(service.echo)
+	service.registerOperatorTools(service.echo)
+	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))
 	return service
 }
 
