@@ -990,138 +990,131 @@ func TestWorkItemRecordBodyEditClearsReturnedIssueAction(t *testing.T) {
 
 func TestWorkItemRecordCommentEditConflictAfterConcurrentWrite(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})
-	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
-	if err != nil {
-		t.Fatal(err)
-	}
-	seedPostgresHubAdmin(t, repository, service, organization)
-	cursorEnvelope, err := service.config.SecretKeys.Seal(bytes.Repeat([]byte{0x31}, 32), accessstore.SecretAAD(organization.ID, "", accessstore.NativeCursorKeyKind))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Envelope: cursorEnvelope, UpdatedAt: service.config.now()}, accessstore.SecretAudit{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: cursorEnvelope.Version, RecordedAt: service.config.now()})
-	}); err != nil {
-		t.Fatal(err)
-	}
-	projects := "/api/v2/organizations/" + string(organization.ID) + "/projects"
-	response := performHubAPIRequest(t, service, http.MethodPost, projects, testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Example project", "states": nativeFixtureStates()})
-	requireNativeStatus(t, response, http.StatusOK)
-	var project tracker.NativeProject
-	decodeHubResponse(t, response, &project)
-	items := projects + "/" + string(project.ID) + "/work-items"
-	response = performHubAPIRequest(t, service, http.MethodPost, items, testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "issue"}, Title: "Example issue", Body: nativeContractTestBody})
-	requireNativeStatus(t, response, http.StatusOK)
-	var issue tracker.NativeIssue
-	decodeHubResponse(t, response, &issue)
-	itemPath := items + "/" + string(issue.WorkItemID)
-	response = performHubAPIRequest(t, service, http.MethodPost, itemPath+"/comments", testHubAdminToken, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "comment"}, Body: "Original comment"})
-	requireNativeStatus(t, response, http.StatusOK)
-	var comment tracker.NativeComment
-	decodeHubResponse(t, response, &comment)
-	originalDetails := service.config.RunDetails
-	var itemVersion eventstore.CollaborationVersion
-	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-		row, err := r.WorkItem(t.Context(), project.ID, issue.WorkItemID)
-		if err != nil {
-			return err
-		}
-		itemVersion, err = r.CollaborationVersion(t.Context(), string(row.NativeID), row.Revision)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	missingParentReads := 0
-	service.config.RunDetails = missingDetailReferenceStore{DetailStore: originalDetails, key: itemVersion.PayloadObjectKey, reads: &missingParentReads}
-	commentScope := nativeScope{organization: organization.ID, project: project.ID}
-	if _, err := service.readWorkItem(t.Context(), commentScope, string(issue.WorkItemID)); !errors.Is(err, artifact.ErrMissing) {
-		t.Fatalf("parent read error = %v, want missing archive", err)
-	}
-	if missingParentReads != 1 {
-		t.Fatalf("parent archive reads = %d, want one", missingParentReads)
-	}
-	missingParentReads = 0
-	if _, err := service.readCommentRecords(t.Context(), commentScope, string(issue.WorkItemID), url.Values{}); err != nil {
-		t.Fatalf("list comments with missing parent archive: %v", err)
-	}
-	if missingParentReads != 0 {
-		t.Fatalf("comment list read parent archive %d times, want zero", missingParentReads)
-	}
-	unauthorizedScope := commentScope
-	unauthorizedScope.credential.HostedRole = "reporter"
-	unauthorizedScope.sourceActor = &tracker.Actor{Kind: "human", PrincipalID: "example-other-reporter"}
-	_, unauthorizedErr := service.readCommentRecords(t.Context(), unauthorizedScope, string(issue.WorkItemID), url.Values{})
-	var unauthorizedResponse *nativeError
-	if !errors.As(unauthorizedErr, &unauthorizedResponse) || unauthorizedResponse.status != http.StatusNotFound {
-		t.Fatalf("unauthorized comment list error = %v, want not found", unauthorizedErr)
-	}
-	listed := performHubAPIRequest(t, service, http.MethodGet, itemPath+"/comments", testHubAdminToken, nil)
-	service.config.RunDetails = originalDetails
-	if missingParentReads != 0 {
-		t.Fatalf("comments GET read parent archive %d times, want zero", missingParentReads)
-	}
-	requireNativeStatus(t, listed, http.StatusOK)
-	var commentPage tracker.Page[tracker.NativeComment]
-	decodeHubResponse(t, listed, &commentPage)
-	if len(commentPage.Items) != 1 || commentPage.Items[0].ID != comment.ID || commentPage.Items[0].Body != comment.Body {
-		t.Fatalf("listed comments = %+v, want created comment %+v", commentPage.Items, comment)
-	}
-	commentPath := itemPath + "/comments/" + comment.ID
-	intercepted := &projectUpdateBeforeWriteRepository{Repository: repository}
-	intercepted.before = func() (writeErr error) {
-		body, err := service.prepareWorkItemField(t.Context(), organization.ID, []byte(`"Competing comment"`))
-		if err != nil {
-			return err
-		}
-		competing := comment
-		competing.Body = "Competing comment"
-		competing.Revision++
-		competing.UpdatedAt = service.config.now()
-		raw, err := json.Marshal(competing)
-		if err != nil {
-			return err
-		}
-		version, err := eventstore.NewContent(service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: competing.OrganizationID, ProjectID: competing.ProjectID, WorkItemID: competing.WorkItemID, RecordID: competing.ID, Revision: int64(competing.Revision)}, raw)
-		if err != nil {
-			return err
-		}
-		return repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-			row, err := w.Comment(t.Context(), issue.ProjectID, issue.WorkItemID, comment.ID)
-			if err != nil {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})
+	for _, id := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(id), func(t *testing.T) {
+			organization := nativeOrganization{ID: id, Name: string(id), Slug: string(id)}
+			seedWorkItemRecordOrganization(t, repository, service, organization)
+			projects := "/api/v2/organizations/" + string(organization.ID) + "/projects"
+			response := performHubAPIRequest(t, service, http.MethodPost, projects, testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Example project", "states": nativeFixtureStates()})
+			requireNativeStatus(t, response, http.StatusOK)
+			var project tracker.NativeProject
+			decodeHubResponse(t, response, &project)
+			items := projects + "/" + string(project.ID) + "/work-items"
+			response = performHubAPIRequest(t, service, http.MethodPost, items, testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "issue"}, Title: "Example issue", Body: nativeContractTestBody})
+			requireNativeStatus(t, response, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			itemPath := items + "/" + string(issue.WorkItemID)
+			response = performHubAPIRequest(t, service, http.MethodPost, itemPath+"/comments", testHubAdminToken, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "comment"}, Body: "Original comment"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var comment tracker.NativeComment
+			decodeHubResponse(t, response, &comment)
+			originalDetails := service.config.RunDetails
+			var itemVersion eventstore.CollaborationVersion
+			if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+				row, err := r.WorkItem(t.Context(), project.ID, issue.WorkItemID)
+				if err != nil {
+					return err
+				}
+				itemVersion, err = r.CollaborationVersion(t.Context(), string(row.NativeID), row.Revision)
 				return err
+			}); err != nil {
+				t.Fatal(err)
 			}
-			row.BodyObjectKey = body
-			row.UpdatedAt = competing.UpdatedAt
-			if _, err = w.UpdateComment(t.Context(), row); err != nil {
+			missingParentReads := 0
+			service.config.RunDetails = missingDetailReferenceStore{DetailStore: originalDetails, key: itemVersion.PayloadObjectKey, reads: &missingParentReads}
+			commentScope := nativeScope{organization: organization.ID, project: project.ID}
+			if _, err := service.readWorkItem(t.Context(), commentScope, string(issue.WorkItemID)); !errors.Is(err, artifact.ErrMissing) {
+				t.Fatalf("parent read error = %v, want missing archive", err)
+			}
+			if missingParentReads != 1 {
+				t.Fatalf("parent archive reads = %d, want one", missingParentReads)
+			}
+			missingParentReads = 0
+			if _, err := service.readCommentRecords(t.Context(), commentScope, string(issue.WorkItemID), url.Values{}); err != nil {
+				t.Fatalf("list comments with missing parent archive: %v", err)
+			}
+			if missingParentReads != 0 {
+				t.Fatalf("comment list read parent archive %d times, want zero", missingParentReads)
+			}
+			unauthorizedScope := commentScope
+			unauthorizedScope.credential.HostedRole = "reporter"
+			unauthorizedScope.sourceActor = &tracker.Actor{Kind: "human", PrincipalID: "example-other-reporter"}
+			_, unauthorizedErr := service.readCommentRecords(t.Context(), unauthorizedScope, string(issue.WorkItemID), url.Values{})
+			var unauthorizedResponse *nativeError
+			if !errors.As(unauthorizedErr, &unauthorizedResponse) || unauthorizedResponse.status != http.StatusNotFound {
+				t.Fatalf("unauthorized comment list error = %v, want not found", unauthorizedErr)
+			}
+			listed := performHubAPIRequest(t, service, http.MethodGet, itemPath+"/comments", testHubAdminToken, nil)
+			service.config.RunDetails = originalDetails
+			if missingParentReads != 0 {
+				t.Fatalf("comments GET read parent archive %d times, want zero", missingParentReads)
+			}
+			requireNativeStatus(t, listed, http.StatusOK)
+			var commentPage tracker.Page[tracker.NativeComment]
+			decodeHubResponse(t, listed, &commentPage)
+			if len(commentPage.Items) != 1 || commentPage.Items[0].ID != comment.ID || commentPage.Items[0].Body != comment.Body {
+				t.Fatalf("listed comments = %+v, want created comment %+v", commentPage.Items, comment)
+			}
+			commentPath := itemPath + "/comments/" + comment.ID
+			intercepted := &projectUpdateBeforeWriteRepository{Repository: repository}
+			intercepted.before = func() (writeErr error) {
+				body, err := service.prepareWorkItemField(t.Context(), organization.ID, []byte(`"Competing comment"`))
+				if err != nil {
+					return err
+				}
+				competing := comment
+				competing.Body = "Competing comment"
+				competing.Revision++
+				competing.UpdatedAt = service.config.now()
+				raw, err := json.Marshal(competing)
+				if err != nil {
+					return err
+				}
+				version, err := eventstore.NewContent(service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: competing.OrganizationID, ProjectID: competing.ProjectID, WorkItemID: competing.WorkItemID, RecordID: competing.ID, Revision: int64(competing.Revision)}, raw)
+				if err != nil {
+					return err
+				}
+				return repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+					row, err := w.Comment(t.Context(), issue.ProjectID, issue.WorkItemID, comment.ID)
+					if err != nil {
+						return err
+					}
+					row.BodyObjectKey = body
+					row.UpdatedAt = competing.UpdatedAt
+					if _, err = w.UpdateComment(t.Context(), row); err != nil {
+						return err
+					}
+					_, err = w.CreateCollaborationVersion(t.Context(), version)
+					return err
+				})
+			}
+			service.config.TenantRepository = intercepted
+			outer := tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "stale-edit"}, ExpectedRevision: comment.Revision, Body: "Stale comment"}
+			response = performHubAPIRequest(t, service, http.MethodPatch, commentPath, testHubAdminToken, outer)
+			requireNativeStatus(t, response, http.StatusConflict)
+			service.config.TenantRepository = repository
+			var current tracker.NativeComment
+			if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+				row, err := r.Comment(t.Context(), issue.ProjectID, issue.WorkItemID, comment.ID)
+				if err != nil {
+					return err
+				}
+				version, err := r.CollaborationVersion(t.Context(), comment.ID, row.Revision)
+				if err != nil {
+					return err
+				}
+				current, err = service.hydrateCommentRecord(t.Context(), row, version)
 				return err
+			}); err != nil {
+				t.Fatal(err)
 			}
-			_, err = w.CreateCollaborationVersion(t.Context(), version)
-			return err
+			if current.Revision != comment.Revision+1 || current.Body != "Competing comment" {
+				t.Fatalf("concurrent comment state = %+v", current)
+			}
 		})
-	}
-	service.config.TenantRepository = intercepted
-	outer := tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "stale-edit"}, ExpectedRevision: comment.Revision, Body: "Stale comment"}
-	response = performHubAPIRequest(t, service, http.MethodPatch, commentPath, testHubAdminToken, outer)
-	requireNativeStatus(t, response, http.StatusConflict)
-	service.config.TenantRepository = repository
-	var current tracker.NativeComment
-	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-		row, err := r.Comment(t.Context(), issue.ProjectID, issue.WorkItemID, comment.ID)
-		if err != nil {
-			return err
-		}
-		version, err := r.CollaborationVersion(t.Context(), comment.ID, row.Revision)
-		if err != nil {
-			return err
-		}
-		current, err = service.hydrateCommentRecord(t.Context(), row, version)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if current.Revision != comment.Revision+1 || current.Body != "Competing comment" {
-		t.Fatalf("concurrent comment state = %+v", current)
 	}
 }
 
