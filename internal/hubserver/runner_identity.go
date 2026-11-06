@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -14,7 +13,6 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
-	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -120,23 +118,15 @@ func (s *Service) getRunnerIdentity(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if s.config.TenantRepository != nil {
-		identity, err := s.readRunnerIdentityTenant(ctx, tracker.OrganizationID(c.Param("organization")), c.Param("runner"))
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		if identity.Binding != credential.Runner.Binding {
-			return s.nativeAPIError(c, nativeNotFound())
-		}
-		c.Response().Header().Set("Cache-Control", "no-store")
-		return c.JSON(http.StatusOK, identity)
-	}
-	credential.Runner.ProjectIDs, err = readRunnerProjects(ctx, s.database.reader, credential.ID)
+	identity, err := s.readRunnerIdentityTenant(ctx, tracker.OrganizationID(c.Param("organization")), c.Param("runner"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	if identity.Binding != credential.Runner.Binding {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
 	c.Response().Header().Set("Cache-Control", "no-store")
-	return c.JSON(http.StatusOK, credential.Runner)
+	return c.JSON(http.StatusOK, identity)
 }
 
 func (s *Service) renewRunnerIdentity(c echo.Context) error {
@@ -166,34 +156,12 @@ func (s *Service) changeRunnerCredential(c echo.Context, replacement string) err
 	if apikey.HashToken(replacement) == credential.Hash {
 		return s.nativeAPIError(c, nativePublicInvalid("Rotation requires a different credential"))
 	}
-	if s.config.TenantRepository != nil {
-		identity, err := s.changeRunnerCredentialTenant(c.Request().Context(), credential, replacement)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		c.Response().Header().Set("Cache-Control", "no-store")
-		return c.JSON(http.StatusOK, identity)
+	identity, err := s.changeRunnerCredentialTenant(c.Request().Context(), credential, replacement)
+	if err != nil {
+		return s.nativeAPIError(c, err)
 	}
-	return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
-		// runnerTransaction rechecks the current hash, revocation and time
-		// policy before this mutation; renewal alone permits elapsed expiry.
-		hash := credential.Hash
-		kind := "renewed"
-		if replacement != "" {
-			kind = "rotated"
-			hash = apikey.HashToken(replacement)
-		}
-		credential.Runner.ExpiresAt = now.Add(runnerauth.CredentialTTL)
-		result, err := tx.ExecContext(ctx, "UPDATE api_tokens SET token_hash = ?, token_fingerprint = ?, expires_at = ?, updated_at = ?, rotated_at = CASE WHEN ? = 'rotated' THEN ? ELSE rotated_at END WHERE id = ?", hash, tokenFingerprint(hash), formatHubTime(credential.Runner.ExpiresAt), formatHubTime(now), kind, formatHubTime(now), credential.ID)
-		if err := requireRunnerUpdate(result, err); err != nil {
-			return nil, runnerCollision()
-		}
-		if err := recordRunnerEvent(ctx, tx, credential.Runner.RunnerID, credential.ID, kind, now); err != nil {
-			return nil, err
-		}
-		credential.Runner.ProjectIDs, err = readRunnerProjects(ctx, tx, credential.ID)
-		return credential.Runner, err
-	})
+	c.Response().Header().Set("Cache-Control", "no-store")
+	return c.JSON(http.StatusOK, identity)
 }
 
 func (s *Service) changeRunnerCredentialTenant(ctx context.Context, credential apiCredential, replacement string) (runnerauth.Identity, error) {
@@ -269,36 +237,51 @@ func (s *Service) revokeRunnerIdentity(c echo.Context) error {
 }
 
 func (s *Service) revokeRunnerIdentityCommand(ctx context.Context, scope nativeScope, resource string) (any, error) {
-	return s.runnerAdminTransaction(ctx, scope, true, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
-		var token string
-		var removed bool
-		if err := tx.QueryRowContext(ctx, "SELECT token_id, removed_at IS NOT NULL FROM runner_identities WHERE id = ? AND organization_id = ?", resource, scope.organization).Scan(&token, &removed); err != nil {
-			return nil, err
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.requireRunnerAdministrationTenant(ctx, w, scope); err != nil {
+			return err
 		}
-		if removed {
-			return struct{}{}, nil
+		identity, err := w.RunnerIdentity(ctx, resource)
+		if err != nil {
+			return err
 		}
-		var busy bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
-SELECT 1 FROM leases l JOIN lease_runners lr ON lr.lease_id = l.lease_id
-WHERE lr.runner_id = ? AND l.released_at IS NULL AND julianday(l.expires_at) > julianday(?))`, resource, formatHubTime(now)).Scan(&busy); err != nil {
-			return nil, err
+		if identity.RemovedAt != nil {
+			return nil
+		}
+		now := s.config.now().UTC()
+		busy, err := w.RunnerHasActiveLease(ctx, resource, now)
+		if err != nil {
+			return err
 		}
 		if busy {
-			return nil, &nativeError{Code: "invalid_request", Message: "This runner has active work. Drain it and wait for its leases to finish or expire before removing it.", status: http.StatusUnprocessableEntity, publicMessage: true}
+			return nativePublicInvalid("This runner has active work. Drain it and wait for its leases to finish or expire before removing it.")
 		}
-		var revoked bool
-		if err := tx.QueryRowContext(ctx, "SELECT revoked_at IS NOT NULL FROM api_tokens WHERE id = ?", token).Scan(&revoked); err != nil {
-			return nil, err
+		credential, err := w.AccessCredential(ctx, identity.TokenID)
+		if err != nil {
+			return err
 		}
-		if !revoked {
-			if err := revokeRunnerIdentityInTx(ctx, tx, scope, resource, now); err != nil {
-				return nil, err
+		if credential.RevokedAt == nil {
+			if err := w.RevokeAccessCredential(ctx, identity.TokenID, now); err != nil {
+				return err
+			}
+			if err := w.RecordRunnerIdentityEvent(ctx, runnerstore.Event{OrganizationID: scope.organization, RunnerID: resource, ActorID: scope.credential.ID, Kind: "revoked", OccurredAt: now}); err != nil {
+				return err
 			}
 		}
-		_, err := tx.ExecContext(ctx, "UPDATE runner_identities SET removed_at = ?, revision = revision + 1 WHERE id = ? AND organization_id = ?", formatHubTime(now), resource, scope.organization)
-		return struct{}{}, err
+		if err := w.RemoveRunnerIdentity(ctx, resource, now); err != nil {
+			return err
+		}
+		return s.applyRunnerTenantUsage(ctx, w, now, resource, true, false)
 	})
+	if err != nil {
+		return nil, err
+	}
+	if s.notifications != nil {
+		s.notifications.notify(dispatchNotificationKey(scope.organization))
+	}
+	return struct{}{}, nil
 }
 
 func revokeRunnerIdentityInTx(ctx context.Context, tx *sql.Tx, scope nativeScope, resource string, now time.Time) error {
@@ -373,290 +356,9 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	if s.config.TenantRepository != nil {
-		return s.heartbeatNativeMachineTenant(c, request)
-	}
-	if !workspacesession.ValidIsolation(request.WorkspaceIsolation) {
-		return s.nativeAPIError(c, nativePublicInvalid("Workspace isolation must be sandbox, container or user"))
-	}
-	scope := nativeRequestScope(c)
-	if scope.credential.Runner.RunnerID != "" && string(scope.credential.Runner.MachineID) != c.Param("machine") {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	if len(request.DisplayName) > 200 || request.Capacity < 0 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || !validRunnerPlatform(request.OS, request.Architecture) {
-		return s.nativeAPIError(c, nativePublicInvalid("Display name, version and nonnegative capacity are required"))
-	}
-	target := runnerUpdateTarget(s.config.Version)
-	published := false
-	if scope.credential.Runner.RunnerID != "" {
-		published = s.runnerReleasePublished(c.Request().Context(), target, request.OS, request.Architecture)
-	}
-	status := http.StatusNoContent
-	var changeCursor nativeCursor
-	var changeKey []byte
-	var changeReset bool
-	var digest string
-	if scope.credential.Runner.RunnerID != "" {
-		status = http.StatusOK
-		if request.ChangeCursor != nil {
-			params := url.Values{"cursor": {*request.ChangeCursor}}
-			var err error
-			_, changeCursor, changeKey, err = s.readNativePage(c.Request().Context(), scope, c.Request().URL.EscapedPath()+"/changes", params)
-			if err != nil {
-				params.Set("cursor", "")
-				_, changeCursor, changeKey, err = s.readNativePage(c.Request().Context(), scope, c.Request().URL.EscapedPath()+"/changes", params)
-			}
-			if err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			changeReset = *request.ChangeCursor == "" || changeCursor.After == ""
-			capabilities, err := s.readNativeCapabilities(c.Request().Context())
-			if err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			digest, err = capabilitiesDigest(capabilities)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	receivedAt, err := s.database.currentTime()
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	ctx := s.runDetailContext(c.Request().Context())
-	useStableRunHistoryIDs(ctx)
-	c.SetRequest(c.Request().WithContext(ctx))
-	var hostSummaries []hostmetrics.Summary
-	var admission, isolationRaw, workspaceRaw, skillsRaw, capacityRaw, checksRaw string
-	if scope.credential.Runner.RunnerID != "" {
-		if err := validateRunnerUpdateObservation(request.Update, request.ProtocolMajor, request.Version, request.OS, request.Architecture); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		if err := validateProviderReports(request.ProviderReports); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		if err := validateRunnerCheckoutReport(scope, request.CheckoutRepository); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		hostSummaries = prepareRunnerHostMetrics(request.HostMetrics)
-		admission, err = prepareRunnerAdmissionObservation(request.Admission, receivedAt)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		isolationRaw, err = prepareRunnerIsolationReport(request.BackendIsolation)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		workspaceRaw, err = prepareRunnerWorkspaceReport(request.WorkspaceCapabilities)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		skillsRaw, err = prepareRunnerSkills(scope, request.Skills)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		if request.CapacityConfig != nil {
-			if err := request.CapacityConfig.Validate(); err != nil {
-				return s.nativeAPIError(c, nativeInvalid(err.Error()))
-			}
-			request.CapacityConfig.ObservedAt = receivedAt
-			raw, err := json.Marshal(request.CapacityConfig)
-			if err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			capacityRaw = string(raw)
-		}
-		if request.LocalChecks != nil {
-			if err := request.LocalChecks.Validate(); err != nil {
-				return s.nativeAPIError(c, nativeInvalid(err.Error()))
-			}
-			request.LocalChecks.ObservedAt = receivedAt
-			raw, err := json.Marshal(request.LocalChecks)
-			if err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			checksRaw = string(raw)
-		}
-		if request.SpriteName != "" {
-			if !validSpritesSlug(request.SpriteName) {
-				return s.nativeAPIError(c, nativePublicInvalid("Sprite name is invalid"))
-			}
-			var hostname string
-			if err := s.database.reader.QueryRowContext(ctx, "SELECT hostname FROM machines WHERE id=? AND organization_id=?", scope.credential.Runner.MachineID, scope.organization).Scan(&hostname); err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			if hostname != request.SpriteName {
-				return s.nativeAPIError(c, nativePublicInvalid("Sprite name must match the runner hostname"))
-			}
-		}
-		if err := runnerauth.ValidateReportedProblems(request.Problems); err != nil {
-			return s.nativeAPIError(c, nativeInvalid(err.Error()))
-		}
-	}
-	configurationIssuer, err := s.prepareProjectConfigurationIssuer(c.Request().Context(), scope, request.ProjectConfiguration)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	var configuration preparedProjectConfiguration
-	if scope.credential.Runner.RunnerID != "" {
-		configuration, err = s.prepareProjectConfiguration(c.Request().Context(), scope, request.ProjectConfiguration, receivedAt)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-	}
-	if err := s.prepareProjectConfigurationReceipt(ctx, scope, configuration.view, configurationIssuer, receivedAt); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return s.runnerTransaction(c, status, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
-		step := heartbeatWriterSteps(ctx)
-		defer step("")
-		step("sprite")
-		if scope.credential.Runner.RunnerID != "" {
-			if request.SpriteName != "" {
-				result, err := tx.ExecContext(ctx, "UPDATE machines SET sprite_name=? WHERE id=? AND organization_id=? AND hostname=?", request.SpriteName, scope.credential.Runner.MachineID, scope.organization, request.SpriteName)
-				if err != nil {
-					return nil, err
-				}
-				count, err := result.RowsAffected()
-				if err != nil {
-					return nil, err
-				}
-				if count != 1 {
-					return nil, nativePublicInvalid("Sprite name must match the runner hostname")
-				}
-				if err := updateMachineSpriteFact(ctx, tx, scope.credential.Runner.MachineID, "sprite_name", request.SpriteName); err != nil {
-					return nil, err
-				}
-			}
-			step("admission")
-			if err := storeEncodedRunnerAdmission(ctx, tx, scope, admission); err != nil {
-				return nil, err
-			}
-			step("update")
-			if err := s.storeRunnerUpdateObservation(ctx, tx, scope, request.Update, request.ProtocolMajor, request.Version, request.OS, request.Architecture, now); err != nil {
-				return nil, err
-			}
-			step("capacity")
-			if capacityRaw != "" {
-				if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET capacity_configuration_json = ? WHERE organization_id = ? AND id = ?", capacityRaw, scope.organization, scope.credential.Runner.RunnerID); err != nil {
-					return nil, err
-				}
-			}
-			step("isolation")
-			if err := storeEncodedRunnerIsolationReport(ctx, tx, scope, isolationRaw); err != nil {
-				return nil, err
-			}
-			step("heartbeat")
-			if err := updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.Version, request.OS, request.Architecture, now); err != nil {
-				return nil, err
-			}
-			step("workspace")
-			if err := storeEncodedRunnerWorkspaceReport(ctx, tx, scope, workspaceRaw, request.WorkspaceIsolation); err != nil {
-				return nil, err
-			}
-			step("skills")
-			if err := storeEncodedRunnerSkills(ctx, tx, scope, skillsRaw, receivedAt); err != nil {
-				return nil, err
-			}
-			step("checkout")
-			if err := updateRunnerCheckoutReport(ctx, tx, scope, request.CheckoutRepository, now); err != nil {
-				return nil, err
-			}
-			step("providers")
-			if err := updateProviderReports(ctx, tx, scope, request.ProviderReports, now); err != nil {
-				return nil, err
-			}
-			step("local_checks")
-			if checksRaw != "" {
-				err := storeEncodedLocalChecks(ctx, tx, scope, checksRaw)
-				if err != nil {
-					return nil, err
-				}
-			}
-			step("host_metrics")
-			acknowledged := s.mergeRunnerHostMetrics(ctx, tx, scope, hostSummaries, now)
-			step("configuration")
-			configurationRequest, err := s.runnerProjectConfiguration(ctx, tx, scope, configuration, configurationIssuer, now)
-			if err != nil {
-				return nil, err
-			}
-			step("problems")
-			if err := updateRunnerProblems(ctx, tx, scope, request.Problems, request.ProtocolMajor, request.SettingsRejected, now); err != nil {
-				return nil, err
-			}
-			return runnerCommittedResponse(func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
-				snapshot, err := readRunnerRoutingSnapshot(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
-				if err != nil {
-					return nil, err
-				}
-				snapshot.HostMetricsAcknowledged = acknowledged
-				if err := authorizeNativeProject(ctx, tx, scope); err != nil {
-					if isNativeNotFound(err) {
-						return snapshot, nil
-					}
-					return nil, err
-				}
-				if err := s.readRunnerClaimState(ctx, tx, scope, &snapshot, now); err != nil {
-					return nil, err
-				}
-				if request.ChangeCursor != nil {
-					snapshot.Changes, err = readHeartbeatChanges(ctx, tx, scope, changeCursor, changeKey, changeReset, digest, snapshot.ClaimState.PolicyIDs[scope.project], now)
-					if err != nil {
-						return nil, err
-					}
-				}
-				if configurationRequest.RequestID != "" {
-					snapshot.ProjectConfigurationRequest = &configurationRequest
-				}
-				if published {
-					snapshot.TargetRunnerVersion = strings.TrimPrefix(target, "v")
-				}
-				snapshot.GitHubIntake, err = readGitHubBatchTask(ctx, tx, scope)
-				return snapshot, err
-			}), nil
-		}
-		if request.Admission != nil {
-			return nil, nativePublicInvalid("Admission observations require an enrolled runner")
-		}
-		if request.Update != nil {
-			return nil, nativePublicInvalid("Update evidence requires an enrolled runner")
-		}
-		if request.ProjectConfiguration != nil {
-			return nil, nativePublicInvalid("Project configuration requires an enrolled runner")
-		}
-		if request.LocalChecks != nil {
-			return nil, nativePublicInvalid("Local checks require an enrolled runner")
-		}
-		if len(request.ProviderReports) != 0 {
-			return nil, nativePublicInvalid("Provider reports require an enrolled runner")
-		}
-		if request.WorkspaceCapabilities != nil {
-			return nil, nativePublicInvalid("Workspace capabilities require an enrolled runner")
-		}
-		if request.Skills != nil {
-			return nil, nativePublicInvalid("Skill reports require an enrolled runner")
-		}
-		if request.CheckoutRepository != nil && *request.CheckoutRepository != "" {
-			return nil, nativePublicInvalid("Checkout reports require an enrolled runner")
-		}
-		result, err := tx.ExecContext(ctx, `UPDATE machines SET display_name = ?, capacity = ?, version = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND token_id = ?`, request.DisplayName, request.Capacity, request.Version, formatHubTime(now), formatHubTime(now), c.Param("machine"), scope.organization, scope.credential.ID)
-		return struct{}{}, requireRunnerUpdate(result, err)
-	})
+	return s.heartbeatNativeMachineTenant(c, request)
 }
 
 func validRunnerPlatform(os, architecture string) bool {
 	return (os == "" || policy.ValidToken(os)) && (architecture == "" || policy.ValidToken(architecture))
-}
-
-func updateRunnerHeartbeat(ctx context.Context, tx *sql.Tx, scope nativeScope, capacity int, version, os, architecture string, now time.Time) error {
-	result, err := tx.ExecContext(ctx, `UPDATE runner_identities SET reported_capacity = ?, os = ?, architecture = ?, last_heartbeat_at = ? WHERE id = ? AND token_id = ? AND organization_id = ?`, capacity, os, architecture, formatHubTime(now), scope.credential.Runner.RunnerID, scope.credential.ID, scope.organization)
-	if err != nil {
-		return err
-	}
-	if err := requireRunnerUpdate(result, nil); err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, "UPDATE machines SET version = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ?", version, formatHubTime(now), formatHubTime(now), scope.credential.Runner.MachineID)
-	return err
 }

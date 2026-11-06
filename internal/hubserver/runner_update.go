@@ -2,8 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"net/http"
 	"slices"
 	"strings"
@@ -11,7 +9,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/update"
@@ -65,111 +62,11 @@ func runnerUpdateConflict(revision int64, message string) error {
 }
 
 func (s *Service) readRunnerUpdate(ctx context.Context, scope nativeScope, resource string) (any, error) {
-	if s.config.TenantRepository != nil {
-		return s.runnerUpdateViewTenant(ctx, scope, resource)
-	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	now, err := s.database.currentTime()
-	if err != nil {
-		return nil, err
-	}
-	if err := s.requireRunnerAccess(ctx, tx, scope, now, apikey.ScopeRead); err != nil {
-		return nil, err
-	}
-	runner, err := readRunner(ctx, tx, scope.organization, resource, now)
-	if err != nil {
-		return nil, err
-	}
-	return runner.UpdateView(now), nil
+	return s.runnerUpdateViewTenant(ctx, scope, resource)
 }
 
 func (s *Service) applyRunnerUpdateCommand(ctx context.Context, scope nativeScope, resource string, request runnerUpdateChange) (any, error) {
-	if s.config.TenantRepository != nil {
-		return s.applyRunnerUpdateCommandTenant(ctx, scope, resource, request)
-	}
-	ctx = s.contentContext(ctx)
-	return prepareContentMutation(ctx, s.database.reader, func() (any, error) {
-		return s.persistRunnerUpdateCommand(ctx, scope, resource, request)
-	})
-}
-
-func (s *Service) persistRunnerUpdateCommand(ctx context.Context, scope nativeScope, resource string, request runnerUpdateChange) (any, error) {
-	if request.ExpectedRevision < 1 || request.delivery("validate", s.config.now()).Validate() != nil || strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("A selected service, observed runner/build revision, release version and idempotency key are required")
-	}
-	if !request.Confirm {
-		return nil, &nativeError{Code: "confirmation_required", Message: "Confirm the selected runner update and coordinated restart", status: http.StatusPreconditionRequired, publicMessage: true}
-	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	now, err := s.database.currentTime()
-	if err != nil {
-		return nil, err
-	}
-	now = payloadTimestamp(ctx, now)
-	if err := s.requireRunnerAdministration(ctx, tx, scope, now); err != nil {
-		return nil, err
-	}
-	runner, err := readRunner(ctx, tx, scope.organization, resource, now)
-	if err != nil {
-		return nil, err
-	}
-	operation := "runner_update " + resource
-	hash, err := nativeCommandHash(request)
-	if err != nil {
-		return nil, err
-	}
-	raw, found, err := nativeCommandReceipt(ctx, tx, scope, operation, request.IdempotencyKey, hash)
-	if err != nil {
-		return nil, err
-	}
-	if found {
-		return json.RawMessage(raw), tx.Commit()
-	}
-	if err := runnerUpdateReady(runner, request, now); err != nil {
-		return nil, err
-	}
-	before, err := s.database.hostedConsumption(ctx, tx, now)
-	if err != nil {
-		return nil, err
-	}
-	delivery := request.delivery(payloadNativeID(ctx, "update"), now)
-	runner.UpdateRequest = &delivery
-	settings, err := marshalNative(settingsFromRouting(runner.Routing))
-	if err != nil {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET routing_settings_json = ?, revision = revision + 1 WHERE organization_id = ? AND id = ?", settings, scope.organization, resource); err != nil {
-		return nil, err
-	}
-	if err := storeRunnerRoutingFacts(ctx, tx, resource, settings); err != nil {
-		return nil, err
-	}
-	runner.Revision++
-	view := runner.UpdateView(now)
-	raw, err = marshalNative(view)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := insertNativeCommandReceipt(ctx, tx, scope.organization, scope.credential.ID, operation, request.IdempotencyKey, hash, raw, formatHubTime(now)); err != nil {
-		return nil, err
-	}
-	if err := s.database.checkHostedGrowth(ctx, tx, before, now, false); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return view, nil
+	return s.applyRunnerUpdateCommandTenant(ctx, scope, resource, request)
 }
 
 func validateRunnerUpdateObservation(report *runnerauth.UpdateObservation, protocol int, version, platform, architecture string) error {
@@ -177,93 +74,6 @@ func validateRunnerUpdateObservation(report *runnerauth.UpdateObservation, proto
 		return nativePublicInvalid("Update observation must identify this runner's actual process and supported protocol")
 	}
 	return nil
-}
-
-func (s *Service) storeRunnerUpdateObservation(ctx context.Context, tx *sql.Tx, scope nativeScope, report *runnerauth.UpdateObservation, protocol int, version, platform, architecture string, now time.Time) error {
-	if err := validateRunnerUpdateObservation(report, protocol, version, platform, architecture); err != nil {
-		return err
-	}
-	if report != nil {
-		runner, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
-		if err != nil {
-			return err
-		}
-		if report.Receipt != nil {
-			matches := runner.UpdateRequest != nil && report.Receipt.Request.Matches(*runner.UpdateRequest)
-			previous := runner.Update != nil && runner.Update.Receipt != nil && report.Receipt.Request.Matches(runner.Update.Receipt.Request)
-			if !matches && !previous {
-				accepted, err := runnerUpdateReceiptMatches(ctx, tx, scope, report.Receipt.Request)
-				if err != nil {
-					return err
-				}
-				if !accepted {
-					report.Receipt = nil
-				}
-			}
-		}
-		if report.Receipt != nil && runner.Update != nil {
-			report.Receipt.RetainPreviousFailure(runner.Update.Receipt)
-		}
-		report.ReceivedAt = now
-	}
-	raw, err := json.Marshal(report)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, "UPDATE runner_identities SET update_observation_json = ? WHERE organization_id = ? AND id = ?", string(raw), scope.organization, scope.credential.Runner.RunnerID)
-	if err != nil || report == nil || !report.Supported {
-		return err
-	}
-	return s.followHubRunnerUpdate(ctx, tx, scope, *report, now)
-}
-
-func (s *Service) followHubRunnerUpdate(ctx context.Context, tx *sql.Tx, scope nativeScope, report runnerauth.UpdateObservation, now time.Time) error {
-	version := runnerUpdateTarget(s.config.Version)
-	comparison, err := update.CompareVersions(version, report.Running.Version)
-	repair := comparison == 0 && report.Running.Source == "release" && !report.Running.VerifiedRelease
-	if version == "" || err != nil || comparison < 0 || comparison == 0 && !repair {
-		return nil
-	}
-	if _, published := s.runnerPublishedReleases.Load("v" + strings.TrimPrefix(version, "v") + "/" + report.Running.OS + "/" + report.Running.Architecture); !published {
-		return nil
-	}
-	var raw string
-	if err := tx.QueryRowContext(ctx, "SELECT routing_settings_json FROM runner_identities WHERE organization_id = ? AND id = ?", scope.organization, scope.credential.Runner.RunnerID).Scan(&raw); err != nil {
-		return err
-	}
-	var settings runnerSettings
-	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
-		return err
-	}
-	if current := settings.UpdateRequest; current != nil {
-		staleRefusal := repair && current.ExpectedBuildRevision != report.Revision && report.Receipt != nil && report.Receipt.Request.Matches(*current) && report.Receipt.Status == "refused"
-		if current.FollowHub && current.Version == strings.TrimPrefix(version, "v") && !staleRefusal {
-			return nil
-		}
-		if !runnerUpdateSuperseded(*current, report.Receipt, version) {
-			return nil
-		}
-	}
-	urgent, err := readUrgentRunnerUpdate(ctx, tx, scope.organization)
-	if err != nil {
-		return err
-	}
-	if urgent.Request != nil {
-		comparison, err := update.CompareVersions(urgent.Request.Version, report.Running.Version)
-		if err == nil && comparison > 0 {
-			return nil
-		}
-	}
-	settings.UpdateRequest = &runnerauth.UpdateRequest{ID: newNativeID("update"), RequestedAt: canonicalRunnerUpdateTime(now), Service: "detent", Version: strings.TrimPrefix(version, "v"), Release: true, FromRelease: true, FollowHub: true, ExpectedBuildRevision: report.Revision}
-	raw, err = marshalNative(settings)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, "UPDATE runner_identities SET routing_settings_json = ?, revision = revision + 1 WHERE organization_id = ? AND id = ?", raw, scope.organization, scope.credential.Runner.RunnerID)
-	if err != nil {
-		return err
-	}
-	return storeRunnerRoutingFacts(ctx, tx, scope.credential.Runner.RunnerID, raw)
 }
 
 func (s *Service) getRunnerUpdate(c echo.Context) error {

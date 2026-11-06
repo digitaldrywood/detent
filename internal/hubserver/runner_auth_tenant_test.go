@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -38,15 +37,9 @@ import (
 
 func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, TenantRepository: repository})
-	first, err := service.createNativeOrganizationFor(t.Context(), "First organization")
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := service.createNativeOrganizationFor(t.Context(), "Second organization")
-	if err != nil {
-		t.Fatal(err)
-	}
+	service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, now: time.Now}}
+	first := nativeOrganization{ID: "org_first", Name: "First organization", Slug: "first"}
+	second := nativeOrganization{ID: "org_second", Name: "Second organization", Slug: "second"}
 	now := service.config.now()
 	provider := newHostedSecurityProvider()
 	service.config.Hosted = &HostedConfig{OrganizationID: string(first.ID), Provider: provider}
@@ -282,12 +275,9 @@ func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing
 func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	clock := &leaseTestClock{value: time.Date(2026, time.November, 1, 22, 0, 0, 0, time.UTC)}
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, TenantRepository: repository, Clock: clock.Now})
-	service.config.AccessRepository = repository
-	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
-	if err != nil {
-		t.Fatal(err)
-	}
+	service := &Service{database: &database{postgres: repository, now: clock.Now}, notifications: newNotificationBroker(), echo: echo.New(), secretRewrapReady: make(chan struct{}), config: (Config{RunDetails: &memoryRunDetails{}, TenantRepository: repository, AccessRepository: repository, Clock: clock.Now, Logger: discardLogger(), RunnerReleaseClient: &runnerReleaseFixture{}}).normalized()}
+	service.registerPostgresRoutes(service.echo)
+	organization := nativeOrganization{ID: "org_example", Name: "Example organization", Slug: "example"}
 	service.database.hostedOrganization = organization.ID
 	service.database.billingRepository = repository
 	service.database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}})
@@ -301,6 +291,9 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	expires := now.Add(time.Hour)
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization.ID, Name: organization.Name, Slug: organization.Slug, Local: true, CreatedAt: now}); err != nil {
+			return err
+		}
+		if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization.ID, ID: "hub_" + strings.Repeat("a", 32), CursorKey: bytes.Repeat([]byte{0x5a}, 32)}); err != nil {
 			return err
 		}
 		if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: organization.ID, PlanReference: usagePlan, Name: "Runner protocol", Features: []string{"collaboration"}, Allowances: map[string]int64{"api_mutations": 100}}); err != nil {
@@ -583,11 +576,16 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	recommendationRunner := runnerauth.Runner{Binding: runnerauth.Binding{RunnerID: "runner_example", MachineID: "machine_example"}, OrganizationID: organization.ID, Routing: runnerauth.Routing{MachineUse: "dedicated", Availability: runnerauth.Availability{Timezone: "UTC"}}}
-	recommendation, err := service.readRunnerRecommendation(t.Context(), service.database.reader, recommendationRunner, clock.value)
+	recommendationScope := nativeScope{organization: organization.ID, credential: apiCredential{ID: "admin", Hash: adminHash, Scope: apiScopeAdmin}}
+	recommendationRunner, err := service.readRunnerRouting(t.Context(), recommendationScope, "runner_example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	capacity, err := service.readRunnerCapacity(t.Context(), recommendationScope, "runner_example", "")
 	if err != nil {
 		t.Fatalf("read typed host metrics for recommendation: %v", err)
 	}
+	recommendation := capacity.(runnerCapacityRead).Recommendation
 	recommendationHours, err := recommendationHoursFromSegments([]hostmetrics.Summary{recommendationSegment})
 	if err != nil {
 		t.Fatal(err)
@@ -1103,7 +1101,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	connector, repositoryID, enabled, err := service.projectRepositoryBinding(t.Context(), service.database.reader, nativeScope{organization: organization.ID, project: project.ID})
+	connector, repositoryID, enabled, err := service.projectRepositoryBinding(t.Context(), nil, nativeScope{organization: organization.ID, project: project.ID})
 	if err != nil || connector == nil || connector.Repository != "owner/repository" || repositoryID != 0 || enabled {
 		t.Fatalf("postgres checkout binding=%+v repository_id=%d enabled=%t error=%v", connector, repositoryID, enabled, err)
 	}
@@ -1177,11 +1175,8 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 func TestRunnerTenantUsageUsesBillingReceiptsAndPreservesExemptions(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	clock := &leaseTestClock{value: time.Date(2026, time.November, 1, 22, 0, 0, 0, time.UTC)}
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, TenantRepository: repository, Clock: clock.Now})
-	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
-	if err != nil {
-		t.Fatal(err)
-	}
+	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, now: clock.Now}}
+	organization := nativeOrganization{ID: "org_example", Name: "Example organization", Slug: "example"}
 	service.database.hostedOrganization = organization.ID
 	service.database.billingRepository = repository
 	service.database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}})

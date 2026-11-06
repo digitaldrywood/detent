@@ -20,3 +20,7 @@ JOIN leases l ON l.organization_id=sqlc.arg(organization_id) AND l.lease_id=page
 JOIN issues i ON i.organization_id=sqlc.arg(organization_id) AND i.id=page.issue_id
 LEFT JOIN runner_lease_assignments a ON a.organization_id=sqlc.arg(organization_id) AND a.lease_id=page.lease_id
 ORDER BY page.id;
+
+-- name: RemoveRunnerIdentity :execrows
+UPDATE runner_identities SET removed_at=sqlc.arg(removed_at),revision=revision+1
+WHERE organization_id=sqlc.arg(organization_id) AND runner_id=sqlc.arg(runner_id) AND removed_at IS NULL;

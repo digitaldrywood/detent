@@ -12,6 +12,25 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const removeRunnerIdentity = `-- name: RemoveRunnerIdentity :execrows
+UPDATE runner_identities SET removed_at=$1,revision=revision+1
+WHERE organization_id=$2 AND runner_id=$3 AND removed_at IS NULL
+`
+
+type RemoveRunnerIdentityParams struct {
+	RemovedAt      *time.Time
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+}
+
+func (q *Queries) RemoveRunnerIdentity(ctx context.Context, arg RemoveRunnerIdentityParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, removeRunnerIdentity, arg.RemovedAt, arg.OrganizationID, arg.RunnerID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const runnerClaimSlots = `-- name: RunnerClaimSlots :many
 SELECT l.lease_id, COALESCE(a.runner_id,'')::text AS runner_id
 FROM leases l LEFT JOIN runner_lease_assignments a ON a.organization_id=l.organization_id AND a.lease_id=l.lease_id

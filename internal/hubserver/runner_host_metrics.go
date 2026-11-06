@@ -2,13 +2,10 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"math"
-	"slices"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
@@ -124,67 +121,6 @@ func prepareRunnerHostMetrics(raw json.RawMessage) []hostmetrics.Summary {
 	return summaries
 }
 
-func (s *Service) mergeRunnerHostMetrics(ctx context.Context, tx *sql.Tx, scope nativeScope, summaries []hostmetrics.Summary, now time.Time) []hostmetrics.Acknowledgment {
-	if summaries == nil {
-		return nil
-	}
-	acknowledged := make([]hostmetrics.Acknowledgment, 0, len(summaries))
-	for _, summary := range summaries {
-		if summary.Hour.After(now.UTC().Truncate(time.Hour)) || summary.SegmentID.After(now) {
-			slog.Default().Warn("runner host summary dropped", "reason", "invalid summary")
-			continue
-		}
-		if summary.Hour.After(now.UTC().Truncate(time.Hour).Add(-720 * time.Hour)) {
-			if err := storeRunnerHostSegment(ctx, tx, scope, summary); err != nil {
-				slog.Default().Warn("runner host summary dropped", "error", err)
-				continue
-			}
-		}
-		acknowledged = append(acknowledged, hostmetrics.Acknowledgment{Hour: summary.Hour, SegmentID: summary.SegmentID})
-	}
-	return acknowledged
-}
-
-func storeRunnerHostSegment(ctx context.Context, tx *sql.Tx, scope nativeScope, summary hostmetrics.Summary) error {
-	hour := formatHubTime(summary.Hour)
-	var stored, rawIDs string
-	ids := []time.Time{}
-	aggregate := summary
-	err := tx.QueryRowContext(ctx, "SELECT summary_json, segment_ids_json FROM runner_host_hours WHERE organization_id=? AND runner_id=? AND hour=?", scope.organization, scope.credential.Runner.RunnerID, hour).Scan(&stored, &rawIDs)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("read host hour: %w", err)
-	}
-	if err == nil {
-		if json.Unmarshal([]byte(stored), &aggregate) != nil || json.Unmarshal([]byte(rawIDs), &ids) != nil {
-			return errors.New("invalid stored host hour")
-		}
-		if slices.ContainsFunc(ids, func(id time.Time) bool { return id.Equal(summary.SegmentID) }) {
-			return nil
-		}
-		if len(ids) == maxHostSegments {
-			slog.Default().Warn("runner host summary dropped", "reason", "hour segment limit")
-			return nil
-		}
-		var ok bool
-		aggregate, ok = mergeHostSummary(aggregate, summary)
-		if !ok {
-			return errors.New("host hour sum overflow")
-		}
-	}
-	ids = append(ids, summary.SegmentID)
-	rawAggregate, err := json.Marshal(aggregate)
-	if err != nil {
-		return err
-	}
-	rawSegments, err := json.Marshal(ids)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO runner_host_hours(organization_id,runner_id,hour,summary_json,segment_ids_json) VALUES(?,?,?,?,?)
-ON CONFLICT(organization_id,runner_id,hour) DO UPDATE SET summary_json=excluded.summary_json,segment_ids_json=excluded.segment_ids_json`, scope.organization, scope.credential.Runner.RunnerID, hour, string(rawAggregate), string(rawSegments))
-	return err
-}
-
 type runnerHostHour struct {
 	hostmetrics.Summary
 	SegmentID                   *time.Time `json:"segment_id,omitempty"`
@@ -217,39 +153,15 @@ func (s *Service) readRunnerHostHistory(ctx context.Context, organization tracke
 	}
 	from = from.UTC()
 	from = maxHostHistoryTime(from, now.Add(-719*time.Hour))
-	if s.config.TenantRepository != nil {
-		var segments []hostmetrics.Summary
-		if err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
-			var err error
-			segments, err = r.RunnerHostMetrics(ctx, runner, from, to.UTC())
-			return err
-		}); err != nil {
-			return nil, err
-		}
-		return aggregateRunnerHostHours(segments)
-	}
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT summary_json FROM runner_host_hours WHERE organization_id=? AND runner_id=? AND hour>=? AND hour<? ORDER BY hour LIMIT 720`, organization, runner, formatHubTime(from), formatHubTime(to.UTC()))
-	if err != nil {
+	var segments []hostmetrics.Summary
+	if err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		segments, err = r.RunnerHostMetrics(ctx, runner, from, to.UTC())
+		return err
+	}); err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	history := []runnerHostHour{}
-	for rows.Next() {
-		var raw string
-		var hour runnerHostHour
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal([]byte(raw), &hour.Summary); err != nil {
-			return nil, err
-		}
-		hour.MemoryAvailableAverageBytes = hostMetricAverage(float64(hour.MemoryAvailableSumBytes), hour.MemorySampleCount)
-		hour.PSISomeAvg10Average = hostMetricAverage(hour.PSISomeAvg10Sum, hour.PSISomeSampleCount)
-		hour.PSIFullAvg10Average = hostMetricAverage(hour.PSIFullAvg10Sum, hour.PSIFullSampleCount)
-		hour.CPUBusyAveragePercent = hostMetricAverage(hour.CPUBusySumPercent, hour.CPUSampleCount)
-		history = append(history, hour)
-	}
-	return history, rows.Err()
+	return aggregateRunnerHostHours(segments)
 }
 
 func aggregateRunnerHostHours(segments []hostmetrics.Summary) ([]runnerHostHour, error) {

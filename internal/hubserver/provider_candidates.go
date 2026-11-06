@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"net/http"
 	"time"
@@ -30,78 +29,12 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 	if request.LandingCapacity < 0 {
 		return s.nativeAPIError(c, nativePublicInvalid("Landing capacity must be non-negative"))
 	}
-	if s.config.TenantRepository != nil {
-		page, err := s.previewProviderCandidatesTenant(c.Request().Context(), nativeRequestScope(c), request, s.config.now().UTC())
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		c.Response().Header().Set("Cache-Control", "no-store")
-		return c.JSON(http.StatusOK, page)
+	page, err := s.previewProviderCandidatesTenant(c.Request().Context(), nativeRequestScope(c), request, s.config.now().UTC())
+	if err != nil {
+		return s.nativeAPIError(c, err)
 	}
-	return s.runnerReadTransaction(c, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
-		scope := nativeRequestScope(c)
-		if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
-			return nil, err
-		}
-		if err := authorizeClaimScope(ctx, tx, tracker.ClaimRequest{MachineID: request.MachineID}, &scope); err != nil {
-			return nil, err
-		}
-		query := claimCandidateQuery{LandingCapacity: request.LandingCapacity, DispatchPriorityByState: request.DispatchPriorityByState, DispatchPriorityByLabel: request.DispatchPriorityByLabel, PrioritizeUnblockers: request.PrioritizeUnblockers, PolicyID: request.PolicyID, RequirePolicy: true, NativeScope: &scope, Scope: string(scope.project)}
-		query.Limit, query.After, query.AvailableAt = request.Limit, request.After, now
-		if _, err := validateClaimPolicy(ctx, tx, query, request.MachineID); err != nil {
-			return nil, err
-		}
-		if scope.credential.Runner.RunnerID != "" {
-			if err := validateRunnerDispatch(ctx, tx, scope, now); err != nil {
-				return nil, err
-			}
-		}
-		ids, err := claimCandidateIDs(ctx, tx, query, nil, nil, normalizedQueryStrings(request.WorkflowStates), normalizedQueryStrings(request.Authors), normalizedQueryStrings(request.Assignees), normalizedQueryStrings(request.LabelInclude), normalizedQueryStrings(request.LabelExclude), nil)
-		if err != nil {
-			return nil, err
-		}
-		page := tracker.NativeCapacityPage{Items: []tracker.NativeIssue{}}
-		limit := request.Limit
-		if limit == 0 {
-			limit = 100
-		}
-		for _, id := range ids {
-			lease, found, err := readUnreleasedLease(ctx, tx, id)
-			if err != nil {
-				return nil, err
-			}
-			if found && lease.session.ExpiresAt.After(now) {
-				continue
-			}
-			claimable, _, err := nativeIssueContractClaimable(ctx, tx, scope, id)
-			if err != nil {
-				return nil, err
-			}
-			if !claimable {
-				continue
-			}
-			ready, _, _, err := nativeLandingCandidateReady(ctx, tx, &scope, id, request.MachineID, request.LandingCapacity, now)
-			if err != nil {
-				return nil, err
-			}
-			if !ready {
-				continue
-			}
-			var native string
-			if err := tx.QueryRowContext(ctx, "SELECT native_id FROM issues WHERE id = ?", id).Scan(&native); err != nil {
-				return nil, err
-			}
-			issue, _, err := readNativeIssue(ctx, tx, scope, native)
-			if err != nil {
-				return nil, err
-			}
-			page.Items = append(page.Items, s.nativeIssueResponse(issue))
-		}
-		if len(ids) == limit {
-			page.Next = ids[len(ids)-1]
-		}
-		return page, nil
-	})
+	c.Response().Header().Set("Cache-Control", "no-store")
+	return c.JSON(http.StatusOK, page)
 }
 
 func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nativeScope, request tracker.NativeCapacityPreview, now time.Time) (tracker.NativeCapacityPage, error) {

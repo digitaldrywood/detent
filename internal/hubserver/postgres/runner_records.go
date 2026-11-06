@@ -12,6 +12,7 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -1277,8 +1278,8 @@ func (s *session) replaceRunnerRoutingRows(ctx context.Context, row runnerstore.
 }
 
 func (s *session) RemoveRunnerIdentity(ctx context.Context, id string, at time.Time) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE runner_identities SET removed_at=$3 WHERE organization_id=$1 AND runner_id=$2 AND removed_at IS NULL`, s.organization, id, at)
-	return updateOwned(ctx, result, err)
+	count, err := s.queries.RemoveRunnerIdentity(ctx, pgquery.RemoveRunnerIdentityParams{OrganizationID: s.organization, RunnerID: id, RemovedAt: &at})
+	return affected(ctx, count, err)
 }
 
 func (s *session) RecordRunnerIdentityEvent(ctx context.Context, row runnerstore.Event) error {

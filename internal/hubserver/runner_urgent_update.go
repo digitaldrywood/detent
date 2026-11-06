@@ -2,12 +2,9 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -77,46 +74,6 @@ func runnerUpdateRequestSettled(r *runnerauth.Runner, request runnerauth.UpdateR
 	return receipt.Status == "refused" || receipt.Status == "uncertain" && receipt.FailureReason != ""
 }
 
-func runnerUpdateReceiptMatches(ctx context.Context, tx *sql.Tx, scope nativeScope, request runnerauth.UpdateRequest) (bool, error) {
-	var raw string
-	if err := tx.QueryRowContext(ctx, "SELECT routing_settings_json FROM runner_identities WHERE organization_id = ? AND id = ?", scope.organization, scope.credential.Runner.RunnerID).Scan(&raw); err != nil {
-		return false, err
-	}
-	var settings runnerSettings
-	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
-		return false, err
-	}
-	if settings.UpdateRequest != nil && request == *settings.UpdateRequest {
-		return true, nil
-	}
-	if !request.Urgent {
-		return false, nil
-	}
-	hash, err := nativeCommandHash(request)
-	if err != nil {
-		return false, err
-	}
-	var matches bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM native_commands WHERE organization_id=? AND operation='urgent_runner_update' AND response_request_id=? AND response_reconciliation_hash=?)`, scope.organization, request.ID, hash).Scan(&matches); err != nil {
-		return false, err
-	}
-	if matches {
-		return true, nil
-	}
-	raw, err = readUrgentCommandReceipt(ctx, tx, scope.organization, request.ID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	var urgent urgentRunnerUpdate
-	if err := json.Unmarshal([]byte(raw), &urgent); err != nil {
-		return false, err
-	}
-	return urgent.Request != nil && request == *urgent.Request, nil
-}
-
 func (s *Service) getUrgentRunnerUpdate(c echo.Context) error {
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
 	if !ok {
@@ -132,24 +89,19 @@ func (s *Service) getUrgentRunnerUpdate(c echo.Context) error {
 }
 
 func (s *Service) readUrgentRunnerUpdateCommand(ctx context.Context, scope nativeScope) (any, error) {
-	if s.config.TenantRepository != nil {
-		var value urgentRunnerUpdate
-		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-			if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
-				return err
-			}
-			row, err := reader.RunnerUrgentUpdate(ctx)
-			if err != nil {
-				return err
-			}
-			value = urgentRunnerUpdate{Revision: row.Revision, Request: row.Request}
-			return nil
-		})
-		return value, err
-	}
-	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, _ time.Time) (any, error) {
-		return readUrgentRunnerUpdate(ctx, tx, scope.organization)
+	var value urgentRunnerUpdate
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
+			return err
+		}
+		row, err := reader.RunnerUrgentUpdate(ctx)
+		if err != nil {
+			return err
+		}
+		value = urgentRunnerUpdate{Revision: row.Revision, Request: row.Request}
+		return nil
 	})
+	return value, err
 }
 
 func (s *Service) markUrgentRunnerUpdate(c echo.Context) error {
@@ -178,52 +130,5 @@ func (s *Service) markUrgentRunnerUpdateCommand(ctx context.Context, scope nativ
 	if !request.Confirm {
 		return nil, &nativeError{Code: "confirmation_required", Message: "Confirm updating all runners below the selected release", status: http.StatusPreconditionRequired, publicMessage: true}
 	}
-	if s.config.TenantRepository != nil {
-		return s.markUrgentRunnerUpdateTenant(ctx, scope, request)
-	}
-	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
-		const operation = "urgent_runner_update"
-		hash, err := nativeCommandHash(request)
-		if err != nil {
-			return nil, err
-		}
-		raw, found, err := nativeCommandReceipt(ctx, tx, scope, operation, request.IdempotencyKey, hash)
-		if err != nil {
-			return nil, err
-		}
-		if found {
-			return json.RawMessage(raw), nil
-		}
-		current, err := readUrgentRunnerUpdate(ctx, tx, scope.organization)
-		if err != nil {
-			return nil, err
-		}
-		if current.Revision != request.ExpectedRevision {
-			return nil, nativeConflict(tracker.Revision(current.Revision))
-		}
-		if current.Request != nil {
-			comparison, err := update.CompareVersions(request.Version, current.Request.Version)
-			if err != nil || comparison < 0 {
-				return nil, nativePublicInvalid("An urgent release cannot lower the existing update target")
-			}
-		}
-		value := urgentRunnerUpdate{Revision: current.Revision + 1, Request: &runnerauth.UpdateRequest{ID: payloadNativeID(ctx, "update"), RequestedAt: canonicalRunnerUpdateTime(now), Service: "detent", Version: request.Version, Release: true, Urgent: true}}
-		if current.Request != nil && current.Request.Version == request.Version {
-			value.Request = current.Request
-		}
-		if err := value.Request.Validate(); err != nil {
-			return nil, nativeInvalid(err.Error())
-		}
-		raw, err = marshalNative(value)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, "UPDATE organizations SET urgent_runner_update_json = ? WHERE id = ?", raw, scope.organization); err != nil {
-			return nil, err
-		}
-		if _, err := insertNativeCommandReceipt(ctx, tx, scope.organization, scope.credential.ID, operation, request.IdempotencyKey, hash, raw, formatHubTime(now)); err != nil {
-			return nil, err
-		}
-		return value, nil
-	})
+	return s.markUrgentRunnerUpdateTenant(ctx, scope, request)
 }
