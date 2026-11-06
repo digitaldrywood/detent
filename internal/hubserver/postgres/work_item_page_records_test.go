@@ -43,7 +43,61 @@ func TestWorkItemPageModelFencesReplayAndTenants(t *testing.T) {
 		if err := publish(replay); err != nil {
 			t.Fatal(err)
 		}
+
+		update := func(title string) error {
+			return repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				row, err := w.WorkItem(t.Context(), candidate.ProjectID, candidate.WorkItemID)
+				if err != nil {
+					return err
+				}
+				row.Title = title
+				_, err = w.UpdateWorkItem(t.Context(), row)
+				return err
+			})
+		}
+		if err := update("First source update"); err != nil {
+			t.Fatal(err)
+		}
+		var stale viewstore.PageCandidate
+		for step := 0; step < 16; step++ {
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				stale, err = r.(viewstore.WorkItemPageReader).NextWorkItemPageCandidate(t.Context())
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if stale.Kind == "item" && stale.WorkItemID == candidate.WorkItemID {
+				break
+			}
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.(viewstore.WorkItemPageWriter).AdvanceWorkItemPageCursor(t.Context(), stale)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if step == 15 {
+				t.Fatal("fixture source not reached")
+			}
+		}
+		if err := update("Second source update"); err != nil {
+			t.Fatal(err)
+		}
+		obsolete := original
+		obsolete.Generation = stale.Generation
+		obsolete.Value.Title = "Obsolete projection"
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.(viewstore.WorkItemPageWriter).PublishWorkItemPage(t.Context(), stale, &obsolete, nil)
+		}); err != nil {
+			t.Fatal(err)
+		}
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			revision, err := r.(viewstore.WorkItemPageRevisionReader).WorkItemPageProjectionRevision(t.Context())
+			if err != nil {
+				return err
+			}
+			if revision != 1 {
+				t.Fatalf("publication watermark=%d, want one after replay and stale publication", revision)
+			}
 			got, err := r.(viewstore.WorkItemPageReader).WorkItemDetailPage(t.Context(), candidate.ProjectID, candidate.WorkItemID)
 			if err != nil {
 				return err
