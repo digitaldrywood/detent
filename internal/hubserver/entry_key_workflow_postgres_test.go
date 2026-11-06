@@ -323,7 +323,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 						}
 					}
 					t.Logf("BOARD4 size=%d tenant=%s sample=%d duration=%s queries=%d transactions=%d timing=%s", size, org, sample, elapsed, len(statements), begins, timingHeader)
-					if begins > 15 || len(statements) > 90 {
+					if begins > 1 || len(statements) > 35 {
 						t.Errorf("board request used %d queries and %d transactions; budget 90 queries and 15 transactions", len(statements), begins)
 					}
 				}

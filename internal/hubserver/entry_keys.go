@@ -295,8 +295,10 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 		call.ClientName = "shared-entry"
 	}
 	ctx := operatortool.BindConnection(c.Request().Context(), call.ConnectionID, call.ClientName)
-	if err := (hostedOperatorExecutor{s}).OpenConnection(ctx); err != nil {
-		return s.nativeAPIError(c, err)
+	if call.Name != operatortool.WorkList {
+		if err := (hostedOperatorExecutor{s}).OpenConnection(ctx); err != nil {
+			return s.nativeAPIError(c, err)
+		}
 	}
 	credential, _, err := s.authenticateAPIRequest(c)
 	if err != nil {

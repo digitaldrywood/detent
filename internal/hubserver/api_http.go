@@ -126,7 +126,7 @@ func (s *Service) registerPostgresRoutes(e *echo.Echo) {
 	if s.config.Hosted != nil && s.config.Hosted.SharedEntry != nil {
 		s.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{s}, chat.WithClock(s.config.now))
 		e.POST("/internal/v1/keys/catalog", s.entryKeyCatalog, s.operatorAuthority)
-		e.POST("/internal/v1/keys/call", s.entryKeyCall, s.operatorAuthority)
+		e.POST("/internal/v1/keys/call", s.entryKeyCall, s.entryKeyReadAuthority)
 		e.POST("/internal/v1/keys/admin", s.entryKeyAdmin)
 		e.POST("/internal/v1/keys/context", s.entryKeyContext)
 		e.POST("/internal/v1/keys/audit", s.entryKeyAudit)

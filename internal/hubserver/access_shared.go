@@ -124,7 +124,12 @@ func (s *Service) entryAccessKeyCredential(ctx context.Context, claims cloudasse
 	if claims.Key.Permission == apikey.ScopeAdmin {
 		credential.Scope = apiScopeAdmin
 	}
-	err := s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
+	if _, scoped := entryBoardCredential(ctx); !scoped && claims.Key.Kind == "service" {
+		if err := s.ensureEntryServicePrincipal(ctx, claims); err != nil {
+			return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
+		}
+	}
+	err := s.accessRead(ctx, s.accessOrganization(), func(w tenantstore.Reader) error {
 		tenant, err := w.AccessTenant(ctx)
 		if err != nil {
 			return err
@@ -135,15 +140,6 @@ func (s *Service) entryAccessKeyCredential(ctx context.Context, claims cloudasse
 		var principal accessstore.Credential
 		if claims.Key.Kind == "service" {
 			id := "service_" + claims.Key.ID
-			token, err := s.config.generateToken()
-			if err != nil {
-				return err
-			}
-			now := s.config.now()
-			hash := apikey.HashToken(token)
-			if err := w.EnsureAccessCredential(ctx, accessstore.Credential{OrganizationID: s.accessOrganization(), ID: id, Name: "Organization service principal " + claims.Key.ID, Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "operator", NativeOnly: true, ProjectAccess: "all", Kind: "service", CreatedAt: now, UpdatedAt: now}); err != nil {
-				return err
-			}
 			principal, err = w.AccessCredential(ctx, id)
 			if err != nil {
 				return err
@@ -169,8 +165,38 @@ func (s *Service) entryAccessKeyCredential(ctx context.Context, claims cloudasse
 		credential.ID, credential.Hash, credential.HostedPrincipal = principal.ID, principal.Hash, principal.ID
 		return nil
 	})
+	if errors.Is(err, corestore.ErrNotFound) && claims.Key.Kind == "service" {
+		return apiCredential{}, http.StatusForbidden, err
+	}
 	if err != nil {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
 	return credential, http.StatusOK, nil
+}
+
+func (s *Service) ensureEntryServicePrincipal(ctx context.Context, claims cloudassert.Claims) error {
+	id := "service_" + claims.Key.ID
+	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+		_, err := r.AccessCredential(ctx, id)
+		return err
+	})
+	if !errors.Is(err, corestore.ErrNotFound) {
+		return err
+	}
+	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
+		tenant, err := w.AccessTenant(ctx)
+		if err != nil {
+			return err
+		}
+		if tenant.ProviderID != claims.ProviderOrganization {
+			return auth.ErrHostedIdentity
+		}
+		token, err := s.config.generateToken()
+		if err != nil {
+			return err
+		}
+		now := s.config.now()
+		hash := apikey.HashToken(token)
+		return w.EnsureAccessCredential(ctx, accessstore.Credential{OrganizationID: s.accessOrganization(), ID: id, Name: "Organization service principal " + claims.Key.ID, Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "operator", NativeOnly: true, ProjectAccess: "all", Kind: "service", CreatedAt: now, UpdatedAt: now})
+	})
 }

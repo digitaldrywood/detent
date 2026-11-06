@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -98,6 +99,14 @@ func transactionSpan(ctx context.Context, name string) func() {
 }
 
 func (r *Repository) transactionIsolation(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, readOnly bool, isolation sql.IsolationLevel, run func(*session) error) error {
+	if request, ok := ctx.Value(readRequestKey{}).(*readRequest); ok {
+		if request.repository != r || request.session.organization != organization || workload != corestore.Serving || !readOnly {
+			return corestore.ErrTenantMismatch
+		}
+		request.mu.Lock()
+		defer request.mu.Unlock()
+		return run(request.session)
+	}
 	finishAdmission := transactionSpan(ctx, "pg_admission")
 	release, err := r.acquire(ctx, workload)
 	finishAdmission()
@@ -153,10 +162,13 @@ func (r *Repository) acquire(ctx context.Context, workload corestore.Workload) (
 }
 
 type session struct {
-	db           pgquery.DBTX
-	readOnly     bool
-	organization tracker.OrganizationID
-	queries      *pgquery.Queries
+	credentials        map[string]accessstore.Credential
+	members            map[string]accessstore.Member
+	organizationRecord *accessstore.Organization
+	db                 pgquery.DBTX
+	readOnly           bool
+	organization       tracker.OrganizationID
+	queries            *pgquery.Queries
 }
 
 func (s *session) checkOrganization(organization tracker.OrganizationID) error {

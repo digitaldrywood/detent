@@ -23,7 +23,9 @@ func (s *Service) withOperatorCatalog(ctx context.Context, credential apiCredent
 	readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	catalog := operatorCatalogAuthority{identity: operatorIdentity(credential, organization), credential: credential}
-	if credential.Hosted != nil && credential.HostedRole != "account" {
+	if _, board := entryBoardCredential(ctx); board {
+		catalog.runnerAccess = operatortool.ErrAccessDenied
+	} else if credential.Hosted != nil && credential.HostedRole != "account" {
 		catalog.runnerAccess = s.requireHostedRunnerAdministration(readCtx, s.database.reader, credential)
 	}
 	if s.config.Hosted != nil && !s.hostedShared() && credential.Hosted != nil && credential.SessionHash != "" && credential.Hosted.SupportActor == "" {

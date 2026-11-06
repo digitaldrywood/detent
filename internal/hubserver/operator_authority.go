@@ -96,6 +96,9 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			entryOrigin = string(encoded)
 		}
 		resolve := func(ctx context.Context) (apiCredential, error) {
+			if current, ok := entryBoardCredential(ctx); ok {
+				return current, nil
+			}
 			current := credential
 			if credential.EntryKey != nil {
 				var err error

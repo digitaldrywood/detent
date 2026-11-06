@@ -82,6 +82,10 @@ type ClaimPreviewPlanRow struct {
 	LatestRunEvent       *eventstore.Event
 }
 
+type RequestReader interface {
+	ReadRequest(context.Context, tracker.OrganizationID, func(context.Context) error) error
+}
+
 type SnapshotRepository interface {
 	ReadTenantSnapshot(context.Context, tracker.OrganizationID, corestore.Workload, func(Reader) error) error
 }

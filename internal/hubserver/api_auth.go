@@ -147,6 +147,9 @@ func (s *Service) authenticateAPIRequest(c echo.Context) (apiCredential, int, er
 }
 
 func (s *Service) authenticateAPIRequestContext(ctx context.Context, c echo.Context) (apiCredential, int, error) {
+	if credential, ok := entryBoardCredential(ctx); ok {
+		return credential, http.StatusOK, nil
+	}
 	if s.config.Hosted == nil && (c.Request().Header.Get(echo.HeaderAuthorization) == "" || strings.HasPrefix(c.Request().Header.Get(echo.HeaderAuthorization), "Basic ")) {
 		credential, status, err := s.localAppCredentialContext(ctx, c)
 		if status == http.StatusUnauthorized {

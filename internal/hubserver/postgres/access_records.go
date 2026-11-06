@@ -25,8 +25,14 @@ func (s *session) CreateHubIdentity(ctx context.Context, row accessstore.HubIden
 }
 
 func (s *session) AccessOrganization(ctx context.Context) (accessstore.Organization, error) {
+	if s.organizationRecord != nil {
+		return *s.organizationRecord, nil
+	}
 	var row accessstore.Organization
 	err := s.db.QueryRowContext(ctx, `SELECT organization_id,name,slug,local,created_at FROM organizations WHERE organization_id=$1`+s.accessLock(), s.organization).Scan(&row.OrganizationID, &row.Name, &row.Slug, &row.Local, &row.CreatedAt)
+	if err == nil && s.credentials != nil {
+		s.organizationRecord = &row
+	}
 	return row, mapError(ctx, err)
 }
 
@@ -80,8 +86,14 @@ func (s *session) CreateAccessTenant(ctx context.Context, row accessstore.Tenant
 }
 
 func (s *session) AccessCredential(ctx context.Context, id string) (accessstore.Credential, error) {
+	if row, ok := s.credentials[id]; ok {
+		return row, nil
+	}
 	var row accessstore.Credential
 	err := s.db.QueryRowContext(ctx, `SELECT organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at,rotated_at,revoked_at,expires_at,last_used_at,hosted_user_id,hosted_membership_id,operator_key_scope,operator_project_access,key_kind FROM api_tokens WHERE organization_id=$1 AND id=$2`+s.accessLock(), s.organization, id).Scan(&row.OrganizationID, &row.ID, &row.Name, &row.Hash, &row.Fingerprint, &row.Scope, &row.NativeOnly, &row.CreatedAt, &row.UpdatedAt, &row.RotatedAt, &row.RevokedAt, &row.ExpiresAt, &row.LastUsedAt, &row.UserID, &row.MembershipID, &row.KeyScope, &row.ProjectAccess, &row.Kind)
+	if err == nil && s.credentials != nil {
+		s.credentials[id] = row
+	}
 	return row, mapError(ctx, err)
 }
 
@@ -94,8 +106,14 @@ func (s *session) CreateAccessCredential(ctx context.Context, row accessstore.Cr
 }
 
 func (s *session) AccessMember(ctx context.Context, user_id string) (accessstore.Member, error) {
+	if row, ok := s.members[user_id]; ok {
+		return row, nil
+	}
 	var row accessstore.Member
 	err := s.db.QueryRowContext(ctx, `SELECT organization_id,user_id,email,membership_id,role,active,principal_id,notify_issues,created_at,updated_at FROM hosted_members WHERE organization_id=$1 AND user_id=$2`+s.accessLock(), s.organization, user_id).Scan(&row.OrganizationID, &row.UserID, &row.Email, &row.MembershipID, &row.Role, &row.Active, &row.PrincipalID, &row.NotifyIssues, &row.CreatedAt, &row.UpdatedAt)
+	if err == nil && s.members != nil {
+		s.members[user_id] = row
+	}
 	return row, mapError(ctx, err)
 }
 

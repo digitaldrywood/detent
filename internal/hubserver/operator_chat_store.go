@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -108,14 +109,22 @@ func (s *Service) resolveOperatorChatAuthority(ctx context.Context, identity ope
 	return s.operatorCurrentAuthority(ctx, credential, identity.OrganizationID)
 }
 
-func (s *Service) currentEntryOriginCredential(ctx context.Context, encoded string) (apiCredential, error) {
+func (s *Service) currentEntryOriginClaims(ctx context.Context, encoded string) (cloudassert.Claims, error) {
 	var origin entryauthority.Origin
 	if !s.hostedShared() || s.config.Hosted.SharedEntry.ResolveKey == nil || json.Unmarshal([]byte(encoded), &origin) != nil || origin.Issuer != s.config.Hosted.SharedEntry.Issuer || origin.Generation != s.config.Hosted.SharedEntry.Generation || len(origin.CredentialBinding) != 64 || origin.KeyID == "" || origin.Subject == "" {
-		return apiCredential{}, operatortool.ErrAccessDenied
+		return cloudassert.Claims{}, operatortool.ErrAccessDenied
 	}
 	claims, err := s.config.Hosted.SharedEntry.ResolveKey(ctx, origin)
 	if err != nil || claims.Key == nil || claims.Key.ID != origin.KeyID || claims.Key.CredentialBinding != origin.CredentialBinding || claims.Subject != origin.Subject || claims.Issuer != origin.Issuer || claims.Generation != origin.Generation {
-		return apiCredential{}, operatortool.ErrAccessDenied
+		return cloudassert.Claims{}, operatortool.ErrAccessDenied
+	}
+	return claims, nil
+}
+
+func (s *Service) currentEntryOriginCredential(ctx context.Context, encoded string) (apiCredential, error) {
+	claims, err := s.currentEntryOriginClaims(ctx, encoded)
+	if err != nil {
+		return apiCredential{}, err
 	}
 	credential, _, err := s.entryKeyCredential(ctx, claims)
 	return credential, err
