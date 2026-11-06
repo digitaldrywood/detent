@@ -428,99 +428,105 @@ func (s *Service) requireInstanceAdmin() echo.MiddlewareFunc {
 func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return s.requireAPIScope(roles...)(func(c echo.Context) error {
-			readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-			defer cancelRead()
-			credential, ok := c.Get("hub_api_credential").(apiCredential)
-			if !ok {
-				return s.nativeAPIError(c, nativeNotFound())
+			if err := s.authorizeNativeReadRequest(c); err != nil {
+				return s.nativeAPIError(c, err)
 			}
-			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
-			if c.Path() == nativeOrganizationIssuePath {
-				var item corestore.WorkItem
-				err := s.config.TenantRepository.ReadTenant(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-					var err error
-					item, err = r.WorkItemByNativeID(readCtx, tracker.NativeWorkItemID(c.Param("item")))
-					return err
-				})
-				if err != nil {
-					return s.nativeAPIError(c, projectRecordError(err))
-				}
-				scope.project = item.ProjectID
-			}
-			runnerHeartbeat := c.Path() == nativeBase+"/machines/:machine/heartbeat" && credential.Runner.RunnerID != ""
-			if runnerHeartbeat {
-				if credential.Runner.OrganizationID != scope.organization {
-					return s.nativeAPIError(c, nativeNotFound())
-				}
-			} else {
-				write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c) && c.Path() != nativeBase+"/runner-sessions/find"
-				if write && c.Request().Method == http.MethodPost && c.Path() == nativeBase+"/work-items/:item/workflow" {
-					scope.action = operatortool.MoveItem
-				}
-				if write && credential.HostedRole == "reporter" {
-					switch c.Request().Method + " " + c.Path() {
-					case "POST " + nativeBase + "/release-audits":
-						return s.nativeAPIError(c, nativeNotFound())
-					case "PATCH " + nativeBase + "/work-items/:item":
-						scope.action = operatortool.EditItem
-					case "POST " + nativeBase + "/work-items":
-						scope.action = operatortool.FileIssue
-					case "POST " + nativeBase + "/work-items/:item/comments":
-						scope.action = operatortool.AddComment
-					case "POST " + nativeBase + "/work-items/:item/dependencies":
-						scope.action = operatortool.SetDependency
-					case "PATCH " + nativeBase + "/work-items/:item/comments/:comment":
-						scope.action = operatortool.EditComment
-					case "POST " + nativeBase + "/work-items/:item/workflow":
-						scope.action = operatortool.MoveItem
-					case "POST " + nativeBase + "/work-items/:item/test-items":
-					case "POST " + nativeBase + "/work-items/:item/verification":
-						scope.action = operatortool.VerifyFix
-					case "POST " + attachmentMetadataBase, "POST " + attachmentMetadataBase + "/check":
-						scope.action = operatortool.UploadAttachment
-					case "POST " + attachmentMetadataBase + "/:attachment/reference":
-						scope.action = operatortool.ReferenceAttachment
-					}
-					if !hostedRoleAllows(credential.HostedRole, apikey.ScopeWrite, scope.action) {
-						return s.nativeAPIError(c, operatortool.ErrAccessDenied)
-					}
-				}
-				if runnerLeaseMutationRoute(c.Path()) {
-					if err := s.authorizeRunnerLeaseProject(readCtx, scope); err != nil {
-						return s.nativeAPIError(c, err)
-					}
-				} else if runnerRepositoryReportRoute(c.Path()) && credential.Runner.RunnerID != "" {
-					if err := s.authorizeRunnerRepositoryProject(readCtx, scope); err != nil {
-						return s.nativeAPIError(c, err)
-					}
-				} else {
-					record, err := s.readAuthorizedProjectRecord(readCtx, scope, write, c.Request().Method == http.MethodGet && c.Path() == nativeBase)
-					if err != nil {
-						return s.nativeAPIError(c, err)
-					}
-					c.Set("native_project_record", record)
-				}
-			}
-			if item := c.Param("item"); item != "" {
-				_, _, visibilityErr := s.readWorkItemRecord(readCtx, scope, item)
-				if err := visibilityErr; err != nil {
-					return s.nativeAPIError(c, err)
-				}
-			}
-			c.Set("native_scope", scope)
+			scope := nativeRequestScope(c)
 			if c.Request().Method == http.MethodGet {
 				ctx := s.archiveRequestContext(c, scope)
 				c.SetRequest(c.Request().WithContext(ctx))
 			}
 			c.Response().Header().Set("Cache-Control", "no-store")
-			if credential.Hosted != nil {
-				if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0); err != nil {
+			if scope.credential.Hosted != nil {
+				if err := s.hostedAudit(c.Request().Context(), scope.credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0); err != nil {
 					return s.nativeAPIError(c, err)
 				}
 			}
 			return next(c)
 		})
 	}
+}
+
+func (s *Service) resolveNativeRequestScope(readCtx context.Context, c echo.Context) error {
+	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	if !ok {
+		return nativeNotFound()
+	}
+	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
+	if c.Path() == nativeOrganizationIssuePath {
+		var item corestore.WorkItem
+		err := s.config.TenantRepository.ReadTenant(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			item, err = r.WorkItemByNativeID(readCtx, tracker.NativeWorkItemID(c.Param("item")))
+			return err
+		})
+		if err != nil {
+			return projectRecordError(err)
+		}
+		scope.project = item.ProjectID
+	}
+	runnerHeartbeat := c.Path() == nativeBase+"/machines/:machine/heartbeat" && credential.Runner.RunnerID != ""
+	if runnerHeartbeat {
+		if credential.Runner.OrganizationID != scope.organization {
+			return nativeNotFound()
+		}
+	} else {
+		write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c) && c.Path() != nativeBase+"/runner-sessions/find"
+		if write && c.Request().Method == http.MethodPost && c.Path() == nativeBase+"/work-items/:item/workflow" {
+			scope.action = operatortool.MoveItem
+		}
+		if write && credential.HostedRole == "reporter" {
+			switch c.Request().Method + " " + c.Path() {
+			case "POST " + nativeBase + "/release-audits":
+				return nativeNotFound()
+			case "PATCH " + nativeBase + "/work-items/:item":
+				scope.action = operatortool.EditItem
+			case "POST " + nativeBase + "/work-items":
+				scope.action = operatortool.FileIssue
+			case "POST " + nativeBase + "/work-items/:item/comments":
+				scope.action = operatortool.AddComment
+			case "POST " + nativeBase + "/work-items/:item/dependencies":
+				scope.action = operatortool.SetDependency
+			case "PATCH " + nativeBase + "/work-items/:item/comments/:comment":
+				scope.action = operatortool.EditComment
+			case "POST " + nativeBase + "/work-items/:item/workflow":
+				scope.action = operatortool.MoveItem
+			case "POST " + nativeBase + "/work-items/:item/test-items":
+			case "POST " + nativeBase + "/work-items/:item/verification":
+				scope.action = operatortool.VerifyFix
+			case "POST " + attachmentMetadataBase, "POST " + attachmentMetadataBase + "/check":
+				scope.action = operatortool.UploadAttachment
+			case "POST " + attachmentMetadataBase + "/:attachment/reference":
+				scope.action = operatortool.ReferenceAttachment
+			}
+			if !hostedRoleAllows(credential.HostedRole, apikey.ScopeWrite, scope.action) {
+				return operatortool.ErrAccessDenied
+			}
+		}
+		if runnerLeaseMutationRoute(c.Path()) {
+			if err := s.authorizeRunnerLeaseProject(readCtx, scope); err != nil {
+				return err
+			}
+		} else if runnerRepositoryReportRoute(c.Path()) && credential.Runner.RunnerID != "" {
+			if err := s.authorizeRunnerRepositoryProject(readCtx, scope); err != nil {
+				return err
+			}
+		} else {
+			record, err := s.readAuthorizedProjectRecord(readCtx, scope, write, c.Request().Method == http.MethodGet && c.Path() == nativeBase)
+			if err != nil {
+				return err
+			}
+			c.Set("native_project_record", record)
+		}
+	}
+	if item := c.Param("item"); item != "" {
+		_, _, visibilityErr := s.readWorkItemRecord(readCtx, scope, item)
+		if err := visibilityErr; err != nil {
+			return err
+		}
+	}
+	c.Set("native_scope", scope)
+	return nil
 }
 
 func (d *database) authorizeNativeProject(ctx context.Context, scope nativeScope) error {

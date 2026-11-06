@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/threadstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -84,6 +85,17 @@ type ClaimPreviewPlanRow struct {
 
 type RequestReader interface {
 	ReadRequest(context.Context, tracker.OrganizationID, func(context.Context) error) error
+}
+
+type AuthorizedRead func(context.Context, tenantauth.Scope, Reader) error
+
+type AuthorizedWrite func(context.Context, tenantauth.Scope, Writer) error
+
+type RequestRepository interface {
+	ReadRunnerAuthorized(context.Context, tenantauth.RequestIdentity, AuthorizedRead) error
+	WriteRunnerAuthorized(context.Context, tenantauth.RequestIdentity, AuthorizedWrite) error
+	ReadAuthorized(context.Context, tenantauth.Scope, []tenantauth.Requirement, AuthorizedRead) error
+	WriteAuthorized(context.Context, tenantauth.Scope, []tenantauth.Requirement, AuthorizedWrite) error
 }
 
 type SnapshotRepository interface {
