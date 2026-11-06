@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -165,7 +166,7 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 				t.Fatal(err)
 			}
 			project := tracker.ProjectID("project_" + string(org))
-			states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Verified"}}, {Name: "Verified", Terminal: true, Transitions: []string{"Todo"}}}
+			states := nativeTriageStates([]tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Verified"}}, {Name: "Verified", Terminal: true, Transitions: []string{"Todo"}}})
 			descriptor := hubTestPolicy()
 			descriptor.Workflow = &policy.Workflow{Source: "WORKFLOW.md", Revision: descriptor.SourceRevision, States: states}
 			descriptor = descriptor.WithID()
@@ -401,6 +402,21 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			}
 			request.ChallengeToken = challenge.ChallengeToken
 			request.NotDuplicateOf = []int{issue.Number}
+			foreignOrg := org + "_foreign"
+			seedStartupOrganization(t, repository, foreignOrg)
+			foreignScope := nativeScope{organization: foreignOrg, project: project, credential: apiCredential{ID: credential, Scope: apiScopeOperator}}
+			if _, err := service.prepareWorkItemDuplicateConfirmation(t.Context(), foreignScope, request); !errors.Is(err, receiptstore.ErrExpired) {
+				t.Fatalf("cross-tenant challenge accepted: %v", err)
+			}
+			wrong := request
+			wrong.ChallengeToken = "dup_unknown"
+			call(wrong, http.StatusGone)
+			wrong = request
+			wrong.IdempotencyKey += "-other"
+			call(wrong, http.StatusGone)
+			wrong = request
+			wrong.NotDuplicateOf = []int{issue.Number + 1000}
+			call(wrong, http.StatusUnprocessableEntity)
 			changed := request
 			changed.Title += " changed"
 			call(changed, http.StatusGone)
@@ -660,12 +676,17 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 				t.Fatal("signed file_issue lost duplicate challenge")
 			}
 			entryArguments["challenge_token"], entryArguments["not_duplicate_of"] = entryChallenge.ChallengeToken, []int{entryIssue.Number}
+			service.config.TenantRepository = duplicateBoundedRepository{Repository: repository}
 			entryConfirmed := entryCall("/internal/v1/keys/call", entryPayload)
+			service.config.TenantRepository = repository
 			if err := json.Unmarshal(entryConfirmed.Body.Bytes(), &entryEnvelope); err != nil {
 				t.Fatal(err)
 			}
 			if entryEnvelope.Data.Number != entryIssue.Number+1 || len(entryEnvelope.Data.Related) != 1 || entryEnvelope.Data.Related[0].ID != entryIssue.WorkItemID {
 				t.Fatal("signed file_issue confirmation lost issue or related link")
+			}
+			if related := entryEnvelope.Data.Related[0]; related.Title != entryIssue.Title || related.State != entryIssue.State || !related.Terminal || related.ProjectID != project || related.WebURL != fmt.Sprintf("http://example.test/example-%s/example/issues/%d", strings.TrimPrefix(string(org), "org_"), entryIssue.Number) {
+				t.Fatalf("confirmation link lost typed candidate fields: %+v", related)
 			}
 			beforeSignedReplay := accounting()
 			entryReplayed := entryCall("/internal/v1/keys/call", entryPayload)
@@ -972,4 +993,25 @@ func (w createProofWriter) PutReceipt(ctx context.Context, receipt eventstore.Re
 		return stored, w.receiptError
 	}
 	return stored, err
+}
+
+type duplicateBoundedRepository struct{ tenantstore.Repository }
+
+func (r duplicateBoundedRepository) ReadTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.ReadTenant(ctx, org, workload, func(reader tenantstore.Reader) error {
+		return read(duplicateBoundedReader{Reader: reader, DuplicateChallengeReader: reader.(corestore.DuplicateChallengeReader)})
+	})
+}
+
+type duplicateBoundedReader struct {
+	tenantstore.Reader
+	corestore.DuplicateChallengeReader
+}
+
+func (duplicateBoundedReader) CollaborationVersion(context.Context, string, int64) (eventstore.CollaborationVersion, error) {
+	return eventstore.CollaborationVersion{}, errors.New("confirmation must not hydrate candidate content")
+}
+
+func (duplicateBoundedReader) Relationships(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, corestore.RelationshipCursor, int) (corestore.RelationshipPage, error) {
+	return corestore.RelationshipPage{}, errors.New("confirmation must not scan candidate relationships")
 }

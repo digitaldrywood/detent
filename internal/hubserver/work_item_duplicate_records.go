@@ -236,7 +236,7 @@ func (s *Service) prepareWorkItemDuplicateConfirmation(ctx context.Context, scop
 	if err != nil {
 		return nil, err
 	}
-	confirmation := &workItemDuplicateConfirmation{}
+	confirmation := &workItemDuplicateConfirmation{issues: make(map[tracker.NativeWorkItemID]tracker.NativeIssue, len(request.NotDuplicateOf))}
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		challenges, ok := reader.(corestore.DuplicateChallengeReader)
 		if !ok {
@@ -253,6 +253,17 @@ func (s *Service) prepareWorkItemDuplicateConfirmation(ctx context.Context, scop
 			return receiptstore.ErrExpired
 		}
 		confirmation.challenge = stored
+		project, err := reader.ProjectRecord(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if project.Core.DeletedAt != nil {
+			return nativeNotFound()
+		}
+		organization, err := reader.AccessOrganization(ctx)
+		if err != nil {
+			return err
+		}
 		for _, number := range request.NotDuplicateOf {
 			if slices.ContainsFunc(confirmation.selected, func(candidate corestore.DuplicateCandidate) bool { return candidate.Number == int64(number) }) {
 				return nativePublicInvalid("Not duplicate of must contain unique issue numbers")
@@ -273,22 +284,13 @@ func (s *Service) prepareWorkItemDuplicateConfirmation(ctx context.Context, scop
 				return nativeConflict(tracker.Revision(item.Revision))
 			}
 			confirmation.selected = append(confirmation.selected, candidate)
+			state := stringValue(item.WorkflowStateName)
+			confirmation.issues[candidate.WorkItemID] = s.nativeIssueResponse(tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item.NativeID, Number: int(item.Number), Revision: tracker.Revision(item.Revision)}, Title: item.Title, State: state, Terminal: tenantProjectStateTerminal(project, state), WebURL: issueBrowserPath(organization.Slug, project.Core.Slug, int(item.Number))})
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, projectRecordError(err)
-	}
-	confirmation.issues = make(map[tracker.NativeWorkItemID]tracker.NativeIssue, len(confirmation.selected))
-	for _, candidate := range confirmation.selected {
-		issue, err := s.readWorkItem(ctx, scope, string(candidate.WorkItemID))
-		if err != nil {
-			return nil, err
-		}
-		if int64(issue.Revision) != candidate.Revision || issue.Archived {
-			return nil, nativeConflict(issue.Revision)
-		}
-		confirmation.issues[candidate.WorkItemID] = issue
 	}
 	return confirmation, nil
 }
