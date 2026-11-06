@@ -1,10 +1,13 @@
 package hubserver
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +21,91 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type concurrentRuntimeRepository struct{ tenantstore.Repository }
+
+func (r concurrentRuntimeRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, _ corestore.Workload, write func(tenantstore.Writer) error) error {
+	return r.Repository.WriteTenant(ctx, organization, corestore.Serving, write)
+}
+
+func TestPostgresRuntimeFirstAdoptionRejectsConcurrentHead(t *testing.T) {
+	for _, pauseAfter := range []string{"MissingConfiguredBillingPlan", "InsertRuntimeRevision"} {
+		t.Run(pauseAfter, func(t *testing.T) {
+			repo, admin := projectRecordPostgresWithAdmin(t, 4)
+			tenants := []hubmaintenance.Tenant{{Organization: "org_first", Generation: 1}, {Organization: "org_second", Generation: 1}}
+			for _, tenant := range tenants {
+				org := tracker.OrganizationID(tenant.Organization)
+				if err := repo.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: time.Now()})
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			older, newer := uuid.NewString(), uuid.NewString()
+			if _, err := admin.ExecContext(t.Context(), "INSERT INTO hosted_runtime_publications(id) VALUES($1),($2)", older, newer); err != nil {
+				t.Fatal(err)
+			}
+			oldSnapshots, err := NewHostedRuntimeSnapshots(concurrentRuntimeRepository{repo}, &memoryRunDetails{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			newSnapshots, err := NewHostedRuntimeSnapshots(repo, &memoryRunDetails{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			paused, resume, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var release sync.Once
+			var olderErr error
+			ctx := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, query string) {
+				if strings.Contains(query, "-- name: "+pauseAfter+" ") {
+					close(paused)
+					<-resume
+				}
+			})
+			oldPlans := pilotHostedPlans()
+			go func() {
+				defer close(done)
+				olderErr = oldSnapshots.Adopt(ctx, tenants[0], "", HostedRuntimeUpdate{Plans: &oldPlans, Reason: "older publication", StageID: older})
+			}()
+			t.Cleanup(func() {
+				release.Do(func() { close(resume) })
+				<-done
+			})
+			select {
+			case <-paused:
+			case <-done:
+				t.Fatalf("older adoption did not reach barrier: %v", olderErr)
+			}
+			for i, tenant := range tenants {
+				plans := pilotHostedPlans()
+				plans.Plans[0].Allowances["concurrent_work"] = int64(17 + i)
+				if err := newSnapshots.Adopt(t.Context(), tenant, "", HostedRuntimeUpdate{Plans: &plans, Reason: "newer publication", StageID: newer}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			release.Do(func() { close(resume) })
+			<-done
+			if !errors.Is(olderErr, corestore.ErrRevisionConflict) {
+				t.Errorf("older first adoption error = %v; want revision conflict", olderErr)
+			}
+			for i, tenant := range tenants {
+				if err := repo.ReadTenant(t.Context(), tracker.OrganizationID(tenant.Organization), corestore.Serving, func(r tenantstore.Reader) error {
+					head, err := r.CurrentRuntime(t.Context())
+					if err != nil {
+						return err
+					}
+					plan, err := r.BillingPlan(t.Context(), billingstore.PlanReference{ID: oldPlans.Plans[0].ID, Version: oldPlans.Plans[0].Version})
+					if err == nil && (head.ID != newer || plan.RuntimeID != newer || plan.Allowances["concurrent_work"] != int64(17+i)) {
+						t.Errorf("%s head=%s plan runtime=%s allowance=%d; want newer head/catalog and allowance=%d", tenant.Organization, head.ID, plan.RuntimeID, plan.Allowances["concurrent_work"], 17+i)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
 
 func TestPostgresRuntimeAdoptionCommitsPlansWithHead(t *testing.T) {
 	repo, admin := projectRecordPostgresWithAdmin(t, 4)

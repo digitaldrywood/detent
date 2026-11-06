@@ -29,9 +29,16 @@ func (s *session) CurrentRuntime(ctx context.Context) (billingstore.RuntimeRevis
 }
 
 func (s *session) StageRuntime(ctx context.Context, revision billingstore.RuntimeRevision) error {
+	return s.stageRuntime(ctx, revision, nil)
+}
+
+func (s *session) stageRuntime(ctx context.Context, revision billingstore.RuntimeRevision, expected *string) error {
 	head, err := s.queries.LockRuntimeHead(ctx, s.organization)
 	if err != nil && !errors.Is(mapError(ctx, err), corestore.ErrNotFound) {
 		return mapError(ctx, err)
+	}
+	if expected != nil && head.PreparedID != *expected {
+		return corestore.ErrRevisionConflict
 	}
 	active := head.ActiveID
 	if err != nil && revision.Published {
@@ -49,14 +56,23 @@ func (s *session) StageRuntime(ctx context.Context, revision billingstore.Runtim
 	if err := s.queries.InsertRuntimeRevision(ctx, pgquery.InsertRuntimeRevisionParams{OrganizationID: s.organization, ID: revision.ID, LocalPublished: revision.Published, BindingID: ref.BindingID, CustomerOwned: ref.CustomerOwned, ObjectKey: ref.Key, Sha256: ref.SHA256, CompressedBytes: ref.CompressedBytes, ContentBytes: ref.ContentBytes, Codec: ref.Codec, FormatVersion: int32(ref.FormatVersion), Kind: ref.Kind, Retention: ref.Retention}); err != nil {
 		return mapError(ctx, err)
 	}
-	return mapError(ctx, s.queries.SetRuntimeHead(ctx, pgquery.SetRuntimeHeadParams{OrganizationID: s.organization, ActiveID: active, PreparedID: revision.ID}))
+	result, err := s.db.Exec(ctx, `INSERT INTO public.hosted_runtime_heads(organization_id,active_id,prepared_id) VALUES($1,$2,$3)
+ON CONFLICT(organization_id) DO UPDATE SET active_id=EXCLUDED.active_id,prepared_id=EXCLUDED.prepared_id
+WHERE hosted_runtime_heads.prepared_id=$4`, s.organization, active, revision.ID, head.PreparedID)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if result.RowsAffected() != 1 {
+		return corestore.ErrRevisionConflict
+	}
+	return nil
 }
 
-func (s *session) ApplyPublishedRuntimeCatalog(ctx context.Context, revision billingstore.RuntimeRevision, plans []billingstore.Plan, prices []billingstore.Price, audits []billingstore.PlanAudit) error {
+func (s *session) ApplyPublishedRuntimeCatalog(ctx context.Context, expected string, revision billingstore.RuntimeRevision, plans []billingstore.Plan, prices []billingstore.Price, audits []billingstore.PlanAudit) error {
 	if len(plans) > 100 || len(prices) > 20 || len(audits) != len(plans)+1 {
 		return errors.New("invalid runtime catalog bounds")
 	}
-	if err := s.StageRuntime(ctx, revision); err != nil {
+	if err := s.stageRuntime(ctx, revision, &expected); err != nil {
 		return err
 	}
 	published, err := s.RuntimePublished(ctx, revision.ID)

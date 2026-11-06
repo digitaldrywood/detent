@@ -17,7 +17,7 @@ import (
 
 type publishedRuntimeCatalogWriter interface {
 	RuntimePrepared(context.Context) (string, error)
-	ApplyPublishedRuntimeCatalog(context.Context, billingstore.RuntimeRevision, []billingstore.Plan, []billingstore.Price, []billingstore.PlanAudit) error
+	ApplyPublishedRuntimeCatalog(context.Context, string, billingstore.RuntimeRevision, []billingstore.Plan, []billingstore.Price, []billingstore.PlanAudit) error
 }
 
 func (d *database) applyRuntimeRecords(ctx context.Context, plans HostedPlansConfig, prices []HostedBillingPrice, actor, reason, stage string, validate bool) error {
@@ -103,7 +103,7 @@ func (d *database) applyRuntimeRecordsAtRevision(ctx context.Context, plans Host
 			for _, price := range prices {
 				mappings = append(mappings, billingstore.Price{OrganizationID: d.hostedOrganization, PriceID: price.PriceID, Plan: billingstore.PlanReference{ID: price.Plan.ID, Version: price.Plan.Version}})
 			}
-			return writer.ApplyPublishedRuntimeCatalog(ctx, revision, catalog, mappings, audits)
+			return writer.ApplyPublishedRuntimeCatalog(ctx, *expected, revision, catalog, mappings, audits)
 		}
 		for i, command := range commands[:len(commands)-1] {
 			plan := *command.Definition
