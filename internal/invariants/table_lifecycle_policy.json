@@ -279,6 +279,7 @@
     "runner_urgent_updates": {"class": "hot_state"},
     "runner_workspace_reports": {"class": "derived_with_retention", "retention": "latest runner workspace capability report"},
     "search_documents": {"class": "index"},
+    "search_document_index": {"class": "index"},
     "search_postings": {"class": "index"},
     "search_scope_documents": {"class": "index"},
     "search_scope_refresh": {"class": "hot_state"}
