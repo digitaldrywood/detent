@@ -118,6 +118,9 @@ func (s *Service) prepareReleasePick(ctx context.Context, scope nativeScope, ite
 	if err := validateReleasePick(r); err != nil {
 		return err
 	}
+	if s.config.TenantRepository == nil {
+		return workItemStorageUnavailable()
+	}
 	connector, _, _, err := s.projectRepositoryBinding(ctx, s.database.reader, scope)
 	if err != nil {
 		return err

@@ -2,13 +2,13 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -36,38 +36,32 @@ func (s *Service) prepareReleasePublication(ctx context.Context, scope nativeSco
 		return result, err
 	}
 	authorize := func(ctx context.Context) error {
-		tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if s.config.TenantRepository == nil {
+			return workItemStorageUnavailable()
+		}
+		if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+			return err
+		}
+		plan, err := s.prepareReleaseDeliveryCheck(ctx, scope, item, association, s.config.now(), true)
 		if err != nil {
 			return err
 		}
-		defer tx.Rollback()
-		if err := s.database.requireHostedFeature(ctx, tx, "collaboration", s.config.now()); err != nil {
-			return err
-		}
-		current := scope
-		if err := s.recheckHostedMutation(ctx, tx, &current); err != nil {
-			return err
-		}
-		if err := authorizeNativeProject(ctx, tx, current); err != nil {
-			return err
-		}
-		if err := s.requireHostedProject(ctx, tx, current, true); err != nil {
-			return err
-		}
-		if current.credential.Hosted == nil {
-			var active bool
-			if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM api_tokens WHERE id = ? AND scope = ? AND native_only = ? AND revoked_at IS NULL AND (expires_at IS NULL OR julianday(expires_at) > julianday(?)))", current.credential.ID, current.credential.Scope, current.credential.NativeOnly, formatHubTime(s.config.now())).Scan(&active); err != nil {
+		return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := s.recheckReleaseDelivery(ctx, w, scope, plan); err != nil {
 				return err
 			}
-			if !active {
-				return nativeNotFound()
+			receipt, err := w.Receipt(ctx, scope.credential.ID, releasePublicationOperation(scope, item), r.IdempotencyKey)
+			if errors.Is(err, corestore.ErrNotFound) {
+				return nil
 			}
-		}
-		if err := s.checkReleasePickDelivery(ctx, tx, current, item, association, s.config.now(), true); err != nil {
-			return err
-		}
-		_, _, err = nativeCommandReceipt(ctx, tx, current, releasePublicationOperation(scope, item), r.IdempotencyKey, hash)
-		return err
+			if err != nil {
+				return err
+			}
+			if receipt.RequestHash != hash {
+				return nativeConflict(0)
+			}
+			return nil
+		})
 	}
 	if err := authorize(ctx); err != nil {
 		return result, err
@@ -104,5 +98,5 @@ func (s *Service) publishReleasePick(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return s.nativeMutation(c, r.Mutation, r, func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) { return result, nil })
+	return s.recordReleasePublication(c, r, result)
 }
