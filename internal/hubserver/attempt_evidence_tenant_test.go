@@ -403,6 +403,44 @@ func TestPostgresAttemptEvidencePreflightChecksRunningFencedOwner(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
+	observation := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "completion-observation"}, Type: "run.observed", SchemaVersion: 1, Data: runtime.Attempt.NativeRunData}
+	observation.Data.Evidence = nil
+	observation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: clock.Now()}
+	observation.Data.Sequence++
+	finished := observation
+	finished.Type, finished.IdempotencyKey = "run.finished", "evidence-completed"
+	finished.Data.Sequence++
+	finished.Data.Outcome, finished.Data.CompletionBody = "failed", "Completed evidence review"
+	finished.PriorEvents = []tracker.NativeRunEvent{observation}
+	var completionUsage int64
+	for replay := range 2 {
+		response := performHubAPIRequest(t, service, http.MethodPost, itemsPath+"/"+string(issue.WorkItemID)+"/events", secret, finished)
+		requireNativeStatus(t, response, http.StatusOK)
+		comments := performHubAPIRequest(t, service, http.MethodGet, commentPath, secret, nil)
+		requireNativeStatus(t, comments, http.StatusOK)
+		var page tracker.Page[tracker.NativeComment]
+		decodeHubResponse(t, comments, &page)
+		found := 0
+		for _, comment := range page.Items {
+			if comment.Body == finished.Data.CompletionBody {
+				found++
+			}
+		}
+		if found != 1 {
+			t.Fatalf("completion comments after replay %d: %d", replay, found)
+		}
+		if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+			used, err := r.CollaborationBytes(t.Context())
+			if replay == 0 {
+				completionUsage = used
+			} else if used != completionUsage {
+				t.Error("completion replay charged twice")
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, "released")
 		return err

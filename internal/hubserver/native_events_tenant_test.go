@@ -112,9 +112,9 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	}
 	projectPath := "/api/v2/organizations/" + string(organization.ID) + "/projects"
 	projectResponse := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{
-		"idempotency_key": "project", "name": "Example project", "states": nativeFixtureStates(),
+		"idempotency_key": "project", "name": "Example project", "states": nativeFixtureStates(), "grant_access": true,
 	})
-	requireNativeStatus(t, projectResponse, http.StatusOK)
+	requireNativeStatus(t, projectResponse, http.StatusCreated)
 	var project tracker.NativeProject
 	decodeHubResponse(t, projectResponse, &project)
 	itemPath := projectPath + "/" + string(project.ID) + "/work-items"
@@ -233,7 +233,8 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	stale := finish
 	stale.IdempotencyKey = "stale"
 	stale.Data.Sequence = 4
-	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(issue.WorkItemID), stale); !errors.Is(err, leasestore.ErrAttemptConflict) {
+	var conflict *nativeError
+	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(issue.WorkItemID), stale); !errors.As(err, &conflict) || conflict.Code != "revision_conflict" {
 		t.Fatalf("stale event sequence error=%v", err)
 	}
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
@@ -655,7 +656,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 		t.Fatalf("PG history lost cancellation payload: event=%+v, want=%+v", cancelledEvent, wantCancelledData)
 	}
 	readAttempt, err := service.readNativeAttemptTenant(t.Context(), scope, string(secondIssue.WorkItemID), string(secondStart.Data.AttemptID))
-	if err != nil || readAttempt.Sequence != 4 || readAttempt.Outcome != "succeeded" || readAttempt.Status != "succeeded" || len(readAttempt.Unavailable) != 1 || readAttempt.Unavailable[0] != "evidence" {
+	if err != nil || readAttempt.Sequence != 4 || readAttempt.Outcome != "succeeded" || readAttempt.Status != "succeeded" || len(readAttempt.Unavailable) != 0 {
 		t.Fatalf("tenant attempt detail=%+v error=%v", readAttempt, err)
 	}
 	service.config.AccessRepository = repository

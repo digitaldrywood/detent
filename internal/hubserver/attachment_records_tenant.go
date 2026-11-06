@@ -252,7 +252,12 @@ func (s *Service) prepareAttachmentEvidencePublication(ctx context.Context, scop
 	if input == nil {
 		return result, nil
 	}
-	row, version, err := s.readWorkItemRecord(ctx, scope, string(input.WorkItemID))
+	return s.prepareEvidenceComment(ctx, scope, input.WorkItemID, escapeEvidenceCaption(input.Caption)+"\n\n"+metadata.Markdown(string(scope.organization)), 0)
+}
+
+func (s *Service) prepareEvidenceComment(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, body string, offset int64) (attachmentEvidencePublication, error) {
+	result := attachmentEvidencePublication{}
+	row, version, err := s.readWorkItemRecord(ctx, scope, string(item))
 	if err != nil {
 		return result, err
 	}
@@ -260,8 +265,9 @@ func (s *Service) prepareAttachmentEvidencePublication(ctx context.Context, scop
 	if err != nil {
 		return result, err
 	}
+	row.EventSequence += offset
 	at := s.config.now().UTC().Truncate(time.Microsecond)
-	comment := tracker.NativeComment{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: input.WorkItemID, ID: newNativeID("cmt"), Revision: 1, Sequence: row.EventSequence + 1, Body: escapeEvidenceCaption(input.Caption) + "\n\n" + metadata.Markdown(string(scope.organization)), Actor: scope.actor(), CreatedAt: at, UpdatedAt: at}
+	comment := tracker.NativeComment{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, ID: newNativeID("cmt"), Revision: 1, Sequence: row.EventSequence + 1, Body: body, Actor: scope.actor(), CreatedAt: at, UpdatedAt: at}
 	result.plan = workItemRecordPlan{current: row, issue: issue, comment: comment, create: true, eventType: "comment.created"}
 	result.fields, err = s.prepareWorkItemFields(ctx, scope.organization, result.plan)
 	if err != nil {
@@ -272,12 +278,12 @@ func (s *Service) prepareAttachmentEvidencePublication(ctx context.Context, scop
 		return result, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	result.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: input.WorkItemID, RecordID: comment.ID, Revision: 1}, raw)
+	result.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, RecordID: comment.ID, Revision: 1}, raw)
 	if err != nil {
 		return result, err
 	}
 	data := tracker.CollaborationData{Revision: 1, CommentID: comment.ID}
-	event := tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: input.WorkItemID, Type: "comment.created", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: at, Data: data}
+	event := tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: item, Type: "comment.created", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: at, Data: data}
 	eventRaw, err := json.Marshal(event)
 	if err != nil {
 		return result, err
@@ -295,7 +301,7 @@ func (s *Service) prepareAttachmentEvidencePublication(ctx context.Context, scop
 		return result, err
 	}
 	result.bytes = int64(len(comment.Body) + len(raw) + len(dataRaw) + len(actorRaw))
-	result.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: input.WorkItemID, ID: "comment:" + comment.ID, SourceID: comment.ID, Kind: "comment", Scope: "issue", Revision: 1, UpdatedAt: at}, searchstore.Text{Body: comment.Body})
+	result.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, ID: "comment:" + comment.ID, SourceID: comment.ID, Kind: "comment", Scope: "issue", Revision: 1, UpdatedAt: at}, searchstore.Text{Body: comment.Body})
 	return result, err
 }
 func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.UploadRequest) error {

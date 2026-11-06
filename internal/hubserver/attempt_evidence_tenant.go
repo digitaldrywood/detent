@@ -54,3 +54,27 @@ func (s *Service) checkAttachmentEvidenceTenant(ctx context.Context, scope nativ
 	}
 	return nil
 }
+
+func (s *Service) publishEvidenceCompletion(ctx context.Context, w tenantstore.Writer, publication attachmentEvidencePublication) error {
+	limit, err := s.attachmentQuotaLimit(ctx, w)
+	if err != nil {
+		return err
+	}
+	usage, err := w.AdjustCollaborationBytes(ctx, publication.bytes, limit)
+	if err != nil {
+		return err
+	}
+	if !usage.Allowed {
+		return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
+	}
+	if err := writeWorkItemRecord(ctx, w, publication.plan, publication.fields); err != nil {
+		return err
+	}
+	if _, err := w.CreateCollaborationVersion(ctx, publication.version); err != nil {
+		return err
+	}
+	if _, err := w.AppendEvent(ctx, publication.event); err != nil {
+		return err
+	}
+	return w.PutSearch(ctx, publication.search, 0)
+}

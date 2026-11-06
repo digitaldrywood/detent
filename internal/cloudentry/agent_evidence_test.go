@@ -23,7 +23,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/claudecode"
 	"github.com/digitaldrywood/detent/internal/hubclient"
@@ -67,17 +66,25 @@ func TestNativeAgentEvidence(t *testing.T) {
 			machine := func(method, path, token string, input any) pilotResponse {
 				return request(method, path, jsonBody(t, input), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + token})
 			}
-			binding := runnerauth.NewBinding()
+			identityPath := filepath.Join(t.TempDir(), "private", "runner.json")
+			file, err := runnerauth.Initialize(identityPath, testPublicURL+"/organizations/"+o.id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			binding := file.Identity.Binding
 			enrollment := ownerJSON(http.MethodPost, o.api()+"/runner-enrollments", o.ownerCSRF, runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(o.project)}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 900})
 			pilotStatus(t, "enrollment", enrollment, http.StatusCreated)
 			var issued runnerauth.Enrollment
 			pilotDecode(t, enrollment, &issued)
-			credential, err := apikey.GenerateToken()
-			if err != nil {
+			credential := file.Credential
+			redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}, "claude": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "evidence-runner", DisplayName: "evidence-runner", Capacity: 1, Version: "test", OS: "linux", Architecture: "amd64"}
+			redeemed := machine(http.MethodPost, o.api()+"/runner-enrollments/redeem", issued.Token, redemption)
+			pilotStatus(t, "redemption", redeemed, http.StatusCreated)
+			var identity runnerauth.Identity
+			pilotDecode(t, redeemed, &identity)
+			if err := runnerauth.Save(identityPath, runnerauth.File{Schema: 1, HubURL: file.HubURL, Identity: identity, Credential: credential}); err != nil {
 				t.Fatal(err)
 			}
-			redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}, "claude": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "evidence-runner", DisplayName: "evidence-runner", Capacity: 1, Version: "test", OS: "linux", Architecture: "amd64"}
-			pilotStatus(t, "redemption", machine(http.MethodPost, o.api()+"/runner-enrollments/redeem", issued.Token, redemption), http.StatusCreated)
 			descriptor := pilotPolicy()
 			pilotStatus(t, "policy", ownerJSON(http.MethodPut, o.projectAPI()+"/onboarding/policy", o.ownerCSRF, policy.Change{Policy: descriptor}), http.StatusOK)
 			var issue tracker.NativeIssue
@@ -102,11 +109,13 @@ func TestNativeAgentEvidence(t *testing.T) {
 			pilotDecode(t, inputUpload, &inputAttachment)
 			inputComment := ownerJSON(http.MethodPost, o.projectAPI()+"/work-items/"+string(issue.WorkItemID)+"/comments", o.ownerCSRF, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "input-comment"}, Body: inputAttachment.Reference})
 			pilotStatus(t, "human input comment", inputComment, http.StatusOK)
-			client, err := hubclient.New(hubclient.Config{URL: testPublicURL + "/organizations/" + o.id, TokenSource: func() string { return credential }, HTTPClient: &http.Client{Transport: handlerTransport{f.service.Handler()}}})
+			client, err := hubclient.New(hubclient.Config{URL: file.HubURL, IdentityFile: identityPath, HTTPClient: &http.Client{Transport: handlerTransport{f.service.Handler()}}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			scheduler, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{OrganizationID: tracker.OrganizationID(o.id), NativeProjects: map[string]tracker.ProjectID{"local": tracker.ProjectID(o.project)}, Machine: hubclient.Machine{ID: binding.MachineID, Hostname: "evidence-runner", Capacity: 1, Version: "test", BackendIsolation: redemption.BackendIsolation}, LeaseTTL: 90 * time.Second, HeartbeatInterval: time.Second})
+			scheduler, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{CapacityConfiguration: func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig {
+				return &runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, ObservedAt: time.Now()}
+			}, OrganizationID: tracker.OrganizationID(o.id), NativeProjects: map[string]tracker.ProjectID{"local": tracker.ProjectID(o.project)}, Machine: hubclient.Machine{ID: binding.MachineID, Hostname: "evidence-runner", DisplayName: "evidence-runner", Capacity: 1, Version: "test", BackendIsolation: redemption.BackendIsolation}, LeaseTTL: 90 * time.Second, HeartbeatInterval: time.Second})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -363,7 +372,11 @@ func TestNativeAgentEvidence(t *testing.T) {
 			if !ok {
 				t.Fatal("native client unavailable")
 			}
-			pending, err := native.RuntimeEvidence(t.Context(), issue.WorkItemID, "")
+			activeAttempts, err := native.Attempts(t.Context(), issue.WorkItemID, "")
+			if err != nil || len(activeAttempts.Items) != 1 {
+				t.Fatalf("active attempt: %+v, %v", activeAttempts, err)
+			}
+			pending, err := native.RuntimeEvidence(t.Context(), issue.WorkItemID, activeAttempts.Items[0].AttemptID)
 			if err != nil || pending.Attempt == nil || len(pending.Attempt.Evidence) != len(published) || pending.Attempt.Evidence[0].AttachmentID != uploads[0].ID {
 				t.Fatalf("authenticated upload unavailable before finish: %+v, %v", pending.Attempt, err)
 			}
@@ -417,8 +430,8 @@ func TestNativeAgentEvidence(t *testing.T) {
 				want          int
 			}{
 				{"wrong fence", pending.Attempt.AttemptID, issue.WorkItemID, lease.FencingToken + 1, http.StatusConflict},
-				{"wrong attempt", "attempt_missing", issue.WorkItemID, lease.FencingToken, http.StatusConflict},
-				{"cross item", pending.Attempt.AttemptID, previousIssue.WorkItemID, lease.FencingToken, http.StatusNotFound},
+				{"wrong attempt", "attempt_missing", issue.WorkItemID, lease.FencingToken, http.StatusNotFound},
+				{"cross item", pending.Attempt.AttemptID, previousIssue.WorkItemID, lease.FencingToken, http.StatusConflict},
 				{"cross attempt", previousAttempt, issue.WorkItemID, lease.FencingToken, http.StatusConflict},
 			} {
 				if refusal.item == "" || refusal.attempt == "" {
@@ -433,7 +446,7 @@ func TestNativeAgentEvidence(t *testing.T) {
 					t.Fatalf("%s: %+v", refusal.name, response)
 				}
 			}
-			_, organizationPage := owner.get("/organizations/" + o.id + "/organization")
+			_, organizationPage := owner.get("/organizations/" + o.id + "/app/bootstrap")
 			other := owner.do(http.MethodPost, "/organizations/"+o.id+"/projects", url.Values{"name": {fmt.Sprintf("Other evidence project %d", index)}, "grant_access": {"true"}, "csrf": {csrfFrom(t, organizationPage)}}, nil)
 			if other.StatusCode != http.StatusSeeOther {
 				t.Fatalf("other project: %d", other.StatusCode)
@@ -444,7 +457,7 @@ func TestNativeAgentEvidence(t *testing.T) {
 				fence                tracker.FencingToken
 				status               int
 			}{
-				{"cross-project", foreignProject, credential, lease.FencingToken, http.StatusNotFound},
+				{"cross-project", foreignProject, credential, lease.FencingToken, http.StatusForbidden},
 				{"unauthorized", o.project, "invalid-worker-token", lease.FencingToken, http.StatusUnauthorized},
 			} {
 				authority := attachment.EvidenceRequest{Mutation: tracker.Mutation{IdempotencyKey: test.name, LeaseID: lease.ID, FencingToken: test.fence}, AttemptID: pending.Attempt.AttemptID, WorkItemID: issue.WorkItemID, Caption: "Refused evidence"}

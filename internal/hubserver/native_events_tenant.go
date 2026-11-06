@@ -63,6 +63,7 @@ type NativeLeaseResponseDetails struct {
 }
 
 type preparedNativeRunEvent struct {
+	completion      *attachmentEvidencePublication
 	authority       NativeRunEventAuthority
 	attempt         leasestore.AttemptEvent
 	history         eventstore.Event
@@ -418,6 +419,33 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		if i == len(events)-1 && usageCorrection {
 			preparedEvent.previousAttempt, preparedEvent.previousEvent = previousAttempt, previousRunEvent
 		}
+		if event.Type == "run.finished" && !attemptEvent.UsageCorrection && event.Data.CompletionBody != "" {
+			var hasEvidence bool
+			err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				rows, err := r.AttachmentEvidence(ctx, scope.project, tracker.NativeWorkItemID(item), event.Data.AttemptID, 1)
+				hasEvidence = len(rows) != 0
+				return err
+			})
+			if err != nil {
+				return nil, err
+			}
+			if hasEvidence {
+				var offset int64
+				for _, earlier := range prepared {
+					if earlier.attempt.Sequence > previousAttempt.Sequence {
+						offset++
+					}
+				}
+				publication, err := s.prepareEvidenceComment(ctx, scope, tracker.NativeWorkItemID(item), event.Data.CompletionBody, offset)
+				if err != nil {
+					return nil, err
+				}
+				if publication.plan.current.EventSequence-offset != workItem.EventSequence || publication.plan.current.Revision != workItem.Revision {
+					return nil, corestore.ErrSerializationFailure
+				}
+				preparedEvent.completion = &publication
+			}
+		}
 		prepared = append(prepared, preparedEvent)
 	}
 
@@ -493,6 +521,11 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			}
 			if duplicate {
 				continue
+			}
+			if event.completion != nil {
+				if err := s.publishEvidenceCompletion(ctx, w, *event.completion); err != nil {
+					return err
+				}
 			}
 			if _, err := w.AppendEvent(ctx, event.history); err != nil {
 				return err
