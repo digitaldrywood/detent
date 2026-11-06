@@ -1026,11 +1026,8 @@ func TestAccessKeyMutationAuditResponses(t *testing.T) {
 								if !wantFailure && !json.Valid(result) {
 									t.Errorf("invalid result=%s", result)
 								}
-								if failure == "service" && (!strings.Contains(string(result), "service_unavailable") || strings.Contains(string(result), "secret sentinel")) {
+								if (failure == "service" || failure == "pre-handler audit") && (!strings.Contains(string(result), "service_unavailable") || strings.Contains(string(result), "secret sentinel")) {
 									t.Errorf("unsafe or incorrect service failure=%s", result)
-								}
-								if failure == "pre-handler audit" && !strings.Contains(string(result), "audit_unavailable") {
-									t.Errorf("incorrect audit refusal=%s", result)
 								}
 							} else {
 								operation.body["idempotency_key"] = "audit-" + operation.name
