@@ -538,6 +538,13 @@ func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 							t.Errorf("projects=%v error=%v, want %v error=%v", projects, err, check.want, check.wantError)
 						}
 						if check.wantError == nil {
+							counter.count.Store(0)
+							if _, err := r.RunnerIdentity(ctx, check.runner); err != nil {
+								return err
+							}
+							if got := counter.count.Load(); got > 2 {
+								t.Errorf("RunnerIdentity queries=%d, want at most 2", got)
+							}
 							t.Logf("RunnerProjects actual PostgreSQL queries=%d", queries)
 							if queries != 2 {
 								t.Errorf("RunnerProjects queries=%d, want 2", queries)

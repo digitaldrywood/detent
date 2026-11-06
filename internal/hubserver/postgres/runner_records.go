@@ -91,6 +91,11 @@ func (s *session) RunnerProjects(ctx context.Context, runnerID string, limit int
 	if err != nil {
 		return nil, err
 	}
+	return s.runnerRoutingProjects(ctx, &identity, limit)
+}
+
+func (s *session) runnerRoutingProjects(ctx context.Context, identity *runnerstore.Identity, limit int) ([]tracker.ProjectID, error) {
+	runnerID := identity.RunnerID
 	rows, err := s.db.Query(ctx, `SELECT kind,key,number,value FROM (
 SELECT 0 AS kind,'' AS key,position AS number,window_spec AS value FROM runner_availability_windows WHERE organization_id=$1 AND runner_id=$2
 UNION ALL
@@ -100,13 +105,14 @@ SELECT 2,project_id,capacity_limit,'' FROM runner_project_capacity_limits WHERE 
 UNION ALL
 (SELECT 3,project_id,rank,'' FROM runner_project_ranks WHERE organization_id=$1 AND runner_id=$2 ORDER BY project_id LIMIT $6)
 UNION ALL
-(SELECT 4,p.id,0,'' FROM projects p WHERE p.organization_id=$1 AND p.deleted_at IS NULL AND ($4='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.organization_id=$1 AND g.token_id=$3 AND g.project_id=p.id)) ORDER BY p.id LIMIT $5)
+(SELECT 4,p.id,0,'' FROM projects p WHERE p.organization_id=$1 AND p.deleted_at IS NULL AND $5>1 AND ($4='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.organization_id=$1 AND g.token_id=$3 AND g.project_id=p.id)) ORDER BY p.id LIMIT $5)
 ) routing_projects ORDER BY kind,key,number`, s.organization, runnerID, identity.TokenID, identity.Scope, limit+1, runnerstore.MaxRunnerProjectRanks+1)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
 	defer rows.Close()
 	projects := make([]tracker.ProjectID, 0)
+	identity.Availability.Windows = nil
 	identity.Availability.WindowSlots = make(map[string]int)
 	identity.ProjectCapacityLimits = make(map[tracker.ProjectID]int)
 	identity.ProjectRanks = make(map[tracker.ProjectID]int)
@@ -211,77 +217,8 @@ func (s *session) runnerIdentityRow(ctx context.Context, predicate string, value
 }
 
 func (s *session) runnerIdentityRouting(ctx context.Context, row *runnerstore.Identity) error {
-	rows, err := s.db.Query(ctx, `SELECT position,window_spec FROM runner_availability_windows WHERE organization_id=$1 AND runner_id=$2 ORDER BY position`, s.organization, row.RunnerID)
-	if err != nil {
-		return mapError(ctx, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var position int
-		var window string
-		if err := rows.Scan(&position, &window); err != nil {
-			return mapError(ctx, err)
-		}
-		if position != len(row.Availability.Windows) {
-			return corestore.ErrInvalidPage
-		}
-		row.Availability.Windows = append(row.Availability.Windows, window)
-	}
-	if err := mapError(ctx, rows.Err()); err != nil {
-		return err
-	}
-	rows, err = s.db.Query(ctx, `SELECT slot_key,capacity FROM runner_availability_window_slots WHERE organization_id=$1 AND runner_id=$2 ORDER BY slot_key`, s.organization, row.RunnerID)
-	if err != nil {
-		return mapError(ctx, err)
-	}
-	defer rows.Close()
-	row.Availability.WindowSlots = make(map[string]int)
-	for rows.Next() {
-		var key string
-		var capacity int
-		if err := rows.Scan(&key, &capacity); err != nil {
-			return mapError(ctx, err)
-		}
-		row.Availability.WindowSlots[key] = capacity
-	}
-	if err := mapError(ctx, rows.Err()); err != nil {
-		return err
-	}
-	row.ProjectCapacityLimits = make(map[tracker.ProjectID]int)
-	rows, err = s.db.Query(ctx, `SELECT project_id,capacity_limit FROM runner_project_capacity_limits WHERE organization_id=$1 AND runner_id=$2 ORDER BY project_id`, s.organization, row.RunnerID)
-	if err != nil {
-		return mapError(ctx, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var project tracker.ProjectID
-		var limit int
-		if err := rows.Scan(&project, &limit); err != nil {
-			return mapError(ctx, err)
-		}
-		row.ProjectCapacityLimits[project] = limit
-	}
-	if err := mapError(ctx, rows.Err()); err != nil {
-		return err
-	}
-	row.ProjectRanks = make(map[tracker.ProjectID]int)
-	rows, err = s.db.Query(ctx, `SELECT project_id,rank FROM runner_project_ranks WHERE organization_id=$1 AND runner_id=$2 ORDER BY project_id LIMIT $3`, s.organization, row.RunnerID, runnerstore.MaxRunnerProjectRanks+1)
-	if err != nil {
-		return mapError(ctx, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var project tracker.ProjectID
-		var rank int
-		if err := rows.Scan(&project, &rank); err != nil {
-			return mapError(ctx, err)
-		}
-		row.ProjectRanks[project] = rank
-		if len(row.ProjectRanks) > runnerstore.MaxRunnerProjectRanks {
-			return runnerstore.ErrInvalidRecord
-		}
-	}
-	return mapError(ctx, rows.Err())
+	_, err := s.runnerRoutingProjects(ctx, row, 0)
+	return err
 }
 
 func (s *session) RunnerActiveLeaseIDs(ctx context.Context, runnerID string, now time.Time, limit int) ([]string, error) {
