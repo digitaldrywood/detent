@@ -1,9 +1,13 @@
 package pgtransport
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"time"
+	"unicode/utf8"
 )
 
 type State string
@@ -26,6 +30,16 @@ func SQLState(err error) State {
 	return ""
 }
 
+func Classify(err error) State {
+	if state := SQLState(err); state != "" {
+		return state
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return Cancel
+	}
+	return ""
+}
+
 func Timestamp(value time.Time) time.Time { return value.UTC().Truncate(time.Microsecond) }
 func Nullable[T any](value T, valid bool) *T {
 	if !valid {
@@ -33,18 +47,41 @@ func Nullable[T any](value T, valid bool) *T {
 	}
 	return &value
 }
-func Array[T any](value []T) []T {
-	if value == nil {
-		return []T{}
-	}
-	return value
-}
+func Array[T any](value []T) []T { return value }
 func JSONB(value json.RawMessage) (json.RawMessage, error) {
 	if value == nil {
 		return nil, nil
 	}
-	if !json.Valid(value) {
+	if !json.Valid(value) || !utf8.Valid(value) || !validJSONUnicode(value) {
 		return nil, errors.New("invalid PostgreSQL JSONB")
 	}
 	return value, nil
+}
+
+func validJSONUnicode(value []byte) bool {
+	for index := 0; index < len(value); index++ {
+		if value[index] != '\\' {
+			continue
+		}
+		index++
+		if index >= len(value) || value[index] != 'u' {
+			continue
+		}
+		scalar, err := strconv.ParseUint(string(value[index+1:index+5]), 16, 16)
+		if err != nil || scalar == 0 || scalar >= 0xDC00 && scalar <= 0xDFFF {
+			return false
+		}
+		if scalar >= 0xD800 && scalar <= 0xDBFF {
+			if index+11 > len(value) || !bytes.Equal(value[index+5:index+7], []byte(`\u`)) {
+				return false
+			}
+			low, err := strconv.ParseUint(string(value[index+7:index+11]), 16, 16)
+			if err != nil || low < 0xDC00 || low > 0xDFFF {
+				return false
+			}
+			index += 6
+		}
+		index += 4
+	}
+	return true
 }
