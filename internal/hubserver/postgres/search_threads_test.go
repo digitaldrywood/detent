@@ -67,11 +67,25 @@ func TestSearchExistingTeamThreadFilters(t *testing.T) {
 		{"own grant", []tracker.ProjectID{"prj_first"}, []string{"last", "middle", "first"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			page := f.find(t, "org_first", searchstore.Query{Kind: "thread", ProjectIDs: test.projects, Text: "shared"})
-			if !slices.Equal(searchIDs(page), test.want) {
-				t.Fatalf("grant filters=%v want=%v", searchIDs(page), test.want)
+			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+				page := f.find(t, org, searchstore.Query{Kind: "thread", ProjectIDs: test.projects, Text: "shared"})
+				if !slices.Equal(searchIDs(page), test.want) {
+					t.Fatalf("tenant=%s grant filters=%v want=%v", org, searchIDs(page), test.want)
+				}
 			}
 		})
+	}
+	if _, err := f.admin.ExecContext(t.Context(), `UPDATE projects SET deleted_at=$1 WHERE organization_id='org_first' AND id='prj_first'`, historyAt()); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		org  tracker.OrganizationID
+		want []string
+	}{{"org_first", []string{"first"}}, {"org_second", []string{"last", "middle", "first"}}} {
+		page := f.find(t, test.org, searchstore.Query{Kind: "thread", Text: "shared"})
+		if !slices.Equal(searchIDs(page), test.want) {
+			t.Fatalf("tenant=%s deleted-project visibility=%v want=%v", test.org, searchIDs(page), test.want)
+		}
 	}
 }
 
@@ -184,5 +198,35 @@ func TestSearchThreadCursorContinuesBeyondCandidateBudget(t *testing.T) {
 	}
 	if page := f.find(t, org, searchstore.Query{Kind: "thread", Text: "unsearchablepreview"}); len(page.Items) != 0 {
 		t.Fatal("thread preview was indexed")
+	}
+}
+
+func TestSearchTargetKeysetSurvivesEarlierDeletion(t *testing.T) {
+	f := newSearchFixture(t)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		for _, id := range []string{"a", "b", "c", "d"} {
+			f.put(t, searchstore.Document{OrganizationID: org, ID: id, SourceID: id, Kind: "thread", Scope: "general", Status: "open", Revision: 1, UpdatedAt: historyAt()}, searchstore.Text{Title: "keyset sentinel"}, 0)
+		}
+		f.drain(t, org)
+		q := searchstore.Query{Kind: "thread", Text: "keyset", Limit: 1}
+		first := f.find(t, org, q)
+		if !slices.Equal(searchIDs(first), []string{"d"}) || first.NextCursor == "" {
+			t.Fatalf("first page=%+v", first)
+		}
+		if err := f.repository.WriteSearch(t.Context(), org, corestore.Serving, func(w searchstore.Writer) error {
+			return w.DeleteSearch(t.Context(), "d", 1)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		q.Cursor, q.Limit = first.NextCursor, 2
+		second := f.find(t, org, q)
+		if !slices.Equal(searchIDs(second), []string{"c", "b"}) || second.NextCursor == "" {
+			t.Fatalf("deleting earlier row shifted keyset: %+v", second)
+		}
+		q.Cursor = second.NextCursor
+		last := f.find(t, org, q)
+		if !slices.Equal(searchIDs(last), []string{"a"}) || last.NextCursor != "" {
+			t.Fatalf("last page=%+v", last)
+		}
 	}
 }

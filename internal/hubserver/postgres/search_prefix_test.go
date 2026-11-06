@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/testenv/searchtest"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestSearchPrefixReachesEveryThread(t *testing.T) {
@@ -49,11 +50,14 @@ func TestSearchPrefixReachesEveryThread(t *testing.T) {
 
 func TestSearchExistingPrefixes(t *testing.T) {
 	f := newSearchFixture(t)
-	f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: strings.Repeat("a", 64) + "one café cafeteria tokenalpha tokenbeta"}, 0)
-	f.put(t, searchIssue("org_first", "wi_first_2"), searchstore.Text{Title: strings.Repeat("a", 64) + "two cag tokenalphabet"}, 0)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		f.put(t, searchIssue(org, "wi_first_1"), searchstore.Text{Title: strings.Repeat("a", 64) + "one café cafeteria tokenalpha tokenbeta"}, 0)
+		f.put(t, searchIssue(org, "wi_first_2"), searchstore.Text{Title: strings.Repeat("a", 64) + "two cag tokenalphabet"}, 0)
+	}
 	for _, mode := range []string{"pending", "indexed"} {
 		if mode == "indexed" {
 			f.drain(t, "org_first")
+			f.drain(t, "org_second")
 		}
 		for _, test := range searchtest.Prefixes() {
 			t.Run(mode+"/"+test.Name, func(t *testing.T) {
@@ -61,9 +65,11 @@ func TestSearchExistingPrefixes(t *testing.T) {
 				if test.First {
 					want = "wi_first_1"
 				}
-				page := f.find(t, "org_first", searchstore.Query{Text: test.Query, Exact: test.Exact})
-				if !slices.Equal(searchIDs(page), []string{want}) {
-					t.Fatalf("matches=%v want=%s", searchIDs(page), want)
+				for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+					page := f.find(t, org, searchstore.Query{Text: test.Query, Exact: test.Exact})
+					if !slices.Equal(searchIDs(page), []string{want}) {
+						t.Fatalf("tenant=%s matches=%v want=%s", org, searchIDs(page), want)
+					}
 				}
 			})
 		}

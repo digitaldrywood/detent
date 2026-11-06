@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -174,10 +175,24 @@ func TestSearchRankingAndCursor(t *testing.T) {
 						break
 					}
 					if q.Cursor == "" {
-						wrong := q
-						wrong.ProjectID, wrong.Cursor = "prj_second", page.NextCursor
-						if _, err := f.content.Find(t.Context(), f.repository, org, wrong); !errors.Is(err, corestore.ErrInvalidCursor) {
-							t.Fatalf("cross-scope cursor error=%v", err)
+						for _, changed := range []string{"tenant", "project", "text", "reporter", "exact"} {
+							wrong, tenant := q, org
+							wrong.Cursor = page.NextCursor
+							switch changed {
+							case "tenant":
+								tenant = "org_second"
+							case "project":
+								wrong.ProjectID = "prj_second"
+							case "text":
+								wrong.Text = "other"
+							case "reporter":
+								wrong.Reporter = new("example-principal")
+							case "exact":
+								wrong.Exact = true
+							}
+							if _, err := f.content.Find(t.Context(), f.repository, tenant, wrong); !errors.Is(err, corestore.ErrInvalidCursor) {
+								t.Fatalf("cursor reused after %s changed: %v", changed, err)
+							}
 						}
 					}
 					q.Cursor = page.NextCursor
@@ -191,10 +206,10 @@ func TestSearchRankingAndCursor(t *testing.T) {
 	}
 }
 
-func TestSearchTenantVisibilityAndLiteralMatches(t *testing.T) {
+func TestSearchAcceptanceMatrix(t *testing.T) {
 	f := newSearchFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		f.put(t, searchIssue(org, "wi_first_1"), searchstore.Text{Title: "repo/path-name:word@example.org #123", Body: "Café naïve Ελληνικά 中文 Unicorns decorate mock fixture data.", Labels: []string{"unique-xyz"}}, 0)
+		f.put(t, searchIssue(org, "wi_first_1"), searchstore.Text{Title: "repo/path-name:word@example.org #123", Body: "Café naïve Ελληνικά 中文 Unicorns decorate mock fixture data. rate%_\\marker %% __", Labels: []string{"unique-xyz", "leftedge", "rightedge"}}, 0)
 		f.put(t, searchIssue(org, "wi_first_2"), searchstore.Text{Title: "Other title", Body: "separate"}, 0)
 		other := searchIssue(org, "wi_second_1")
 		other.ProjectID = "prj_second"
@@ -223,6 +238,10 @@ func TestSearchTenantVisibilityAndLiteralMatches(t *testing.T) {
 			{"body substring", "corns decor", "prj_first", nil, []string{"wi_first_1"}},
 			{"label substring", "nique-xy", "prj_first", nil, []string{"wi_first_1"}},
 			{"short substring", "@", "prj_first", nil, []string{"wi_first_1"}},
+			{"literal LIKE metacharacters", `%_\`, "prj_first", nil, []string{"wi_first_1"}},
+			{"doubled percent is literal", "%%", "prj_first", nil, []string{"wi_first_1"}},
+			{"doubled underscore is literal", "__", "prj_first", nil, []string{"wi_first_1"}},
+			{"label boundary", "leftedgerightedge", "prj_first", nil, nil},
 			{"foreign project", "foreignsentinel", "prj_first", nil, nil},
 			{"project name substring", "first#", "prj_first", nil, []string{"wi_first_2", "wi_first_1"}},
 			{"project ID substring", "rj_first#", "prj_first", nil, []string{"wi_first_2", "wi_first_1"}},
@@ -579,5 +598,156 @@ func TestSearchCoverageSurvivesCandidateLimit(t *testing.T) {
 	page := f.find(t, "org_first", searchstore.Query{Text: "commonterm rareterm", Limit: 1})
 	if got := searchIDs(page); !slices.Equal(got, []string{"wi_first_2"}) || page.Items[0].Coverage != 2 {
 		t.Fatalf("top result=%+v", page)
+	}
+}
+
+func TestSearchTargetRankCD(t *testing.T) {
+	t.Skip("S3_TARGET_RANK_CD: weighted ts_rank_cd reader is not implemented")
+	for _, test := range []struct {
+		name, kind, firstTitle, firstBody, secondTitle, secondBody string
+	}{
+		{"work title above body", "work", "alpha beta", "filler", "filler", "alpha beta"},
+		{"work rank without BM25 length penalty", "work", "alpha alpha beta beta " + strings.Repeat("filler ", 32), "", "alpha beta", ""},
+		{"thread relevance above recency", "thread", "alpha beta", "", "alpha", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newSearchFixture(t)
+			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+				for index, text := range []searchstore.Text{{Title: test.firstTitle, Body: test.firstBody}, {Title: test.secondTitle, Body: test.secondBody}} {
+					d := searchIssue(org, fmt.Sprintf("wi_first_%d", index+1))
+					if test.kind == "thread" {
+						d.Status = "open"
+						d.UpdatedAt = historyAt().AddDate(0, 0, index)
+						d.ID, d.SourceID, d.Kind, d.Scope, d.ProjectID, d.WorkItemID = fmt.Sprintf("thread_%d", index), fmt.Sprintf("thread_%d", index), "thread", "general", "", ""
+					}
+					f.put(t, d, text, 0)
+				}
+			}
+			for _, mode := range []string{"pending", "indexed"} {
+				for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+					if mode == "indexed" {
+						f.drain(t, org)
+					}
+					q := searchstore.Query{Kind: test.kind, Text: "alpha beta", Limit: 1}
+					if test.kind == "work" {
+						q.ProjectID = "prj_first"
+					}
+					page := f.find(t, org, q)
+					want := "wi_first_1"
+					if test.kind == "thread" {
+						want = "thread_0"
+					}
+					if !slices.Equal(searchIDs(page), []string{want}) || page.NextCursor == "" {
+						t.Fatalf("%s tenant=%s rank page=%+v want first=%s and continuation", mode, org, page, want)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestSearchTargetCappedCounts(t *testing.T) {
+	t.Skip("S3_TARGET_CAPPED_COUNTS: search Page Total and TotalCapped metadata is not implemented")
+	f := newSearchFixture(t)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		documents := make([]searchstore.Document, 0, 1001)
+		for index := range 1001 {
+			id := fmt.Sprintf("count_%04d", index)
+			title := "allcount"
+			if index < 1000 {
+				title += " exactcap"
+			}
+			if index < 999 {
+				title += " belowcap"
+			}
+			d, err := f.content.Prepare(t.Context(), searchstore.Document{OrganizationID: org, ID: id, SourceID: id, Kind: "thread", Scope: "general", Status: "open", Revision: 1, UpdatedAt: historyAt()}, searchstore.Text{Title: title})
+			if err != nil {
+				t.Fatal(err)
+			}
+			documents = append(documents, d)
+		}
+		if err := f.repository.WriteSearch(t.Context(), org, corestore.Serving, func(w searchstore.Writer) error {
+			for _, d := range documents {
+				if err := w.PutSearch(t.Context(), d, 0); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct {
+		text   string
+		total  int
+		capped bool
+	}{{"absent", 0, false}, {"belowcap", 999, false}, {"exactcap", 1000, false}, {"allcount", 1000, true}} {
+		t.Run(test.text, func(t *testing.T) {
+			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+				page := f.find(t, org, searchstore.Query{Kind: "thread", Text: test.text, Limit: 1})
+				raw, err := json.Marshal(page)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var count struct {
+					Total       *int
+					TotalCapped *bool
+				}
+				if err := json.Unmarshal(raw, &count); err != nil {
+					t.Fatal(err)
+				}
+				if count.Total == nil || count.TotalCapped == nil {
+					t.Fatal("search page must distinguish an exact total from a capped lower bound")
+				}
+				if *count.Total != test.total || *count.TotalCapped != test.capped {
+					t.Fatalf("tenant=%s count=%d capped=%t want=%d capped=%t", org, *count.Total, *count.TotalCapped, test.total, test.capped)
+				}
+				if test.total > 1 && page.NextCursor == "" {
+					t.Fatal("count cap truncated continuation")
+				}
+			}
+		})
+	}
+}
+
+func TestSearchTargetTrigramRepresentation(t *testing.T) {
+	t.Skip("S2_TARGET_TRIGRAM: bounded normalized search_document_index.literal_text with pg_trgm GIN is not implemented")
+	f := newSearchFixture(t)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		f.put(t, searchIssue(org, "wi_first_1"), searchstore.Text{Title: "leftedge", Body: `rightedge PATH/Substring rate%_\marker`, Labels: []string{"labelleft", "labelright"}}, 0)
+		f.put(t, searchIssue(org, "wi_first_2"), searchstore.Text{Title: "unrelated", Body: strings.Repeat("x", 64*1024) + "outsidebudget"}, 0)
+		f.drain(t, org)
+		for _, test := range []struct {
+			text  string
+			exact bool
+			want  []string
+		}{
+			{"ubstri", false, []string{"wi_first_1"}},
+			{`%_\`, false, []string{"wi_first_1"}},
+			{"abelle", false, []string{"wi_first_1"}},
+			{"leftedgerightedge", false, nil},
+			{"labelleftlabelright", false, nil},
+			{"outsidebudget", false, nil},
+			{"ubstri", true, nil},
+		} {
+			page := f.find(t, org, searchstore.Query{Text: test.text, Exact: test.exact})
+			if !slices.Equal(searchIDs(page), test.want) {
+				t.Fatalf("tenant=%s literal=%q exact=%t matches=%v want=%v", org, test.text, test.exact, searchIDs(page), test.want)
+			}
+		}
+		var rows, oversized int
+		if err := f.admin.QueryRowContext(t.Context(), `SELECT count(*),count(*) FILTER (WHERE octet_length(literal_text)>65536) FROM search_document_index WHERE organization_id=$1`, org).Scan(&rows, &oversized); err != nil {
+			t.Fatal(err)
+		}
+		if rows < 2 || oversized != 0 {
+			t.Fatalf("bounded search representation: rows=%d oversized=%d", rows, oversized)
+		}
+	}
+	var indexed bool
+	if err := f.admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_am a ON a.oid=c.relam JOIN pg_opclass o ON o.oid=ANY(i.indclass) WHERE i.indrelid='search_document_index'::regclass AND i.indisvalid AND a.amname='gin' AND o.opcname='gin_trgm_ops')`).Scan(&indexed); err != nil {
+		t.Fatal(err)
+	}
+	if !indexed {
+		t.Fatal("search representation has no valid pg_trgm GIN index")
 	}
 }
