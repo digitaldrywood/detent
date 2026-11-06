@@ -918,6 +918,55 @@ type GoTestReceiptAttestation struct {
 	ExpiresAt      time.Time
 }
 
+type HealthBaselineUnavailable struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Signal         string
+	Lane           string
+}
+
+type HealthDetectorTick struct {
+	OrganizationID tracker.OrganizationID
+	LastTickAt     time.Time
+}
+
+type HealthFinding struct {
+	OrganizationID       tracker.OrganizationID
+	ID                   string
+	Sequence             sql.NullInt64
+	Fingerprint          string
+	Signal               string
+	Class                string
+	SubjectKind          string
+	SubjectID            string
+	OpenedAt             time.Time
+	LastSeenAt           time.Time
+	ResolvedAt           *time.Time
+	Severity             string
+	Summary              string
+	NextAction           string
+	EvidenceObjectKey    string
+	EvidenceSha256       string
+	EvidenceBytes        int64
+	EvidenceContentBytes int64
+	EmailUnavailable     bool
+	SlackUnavailableAt   *time.Time
+	SlackStatusCode      int32
+}
+
+type HealthFindingIssue struct {
+	OrganizationID tracker.OrganizationID
+	FindingID      string
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+}
+
+type HealthFindingProject struct {
+	OrganizationID tracker.OrganizationID
+	FindingID      string
+	ProjectID      tracker.ProjectID
+}
+
 type HostedArtifactUsage struct {
 	OrganizationID tracker.OrganizationID
 	ServiceID      string
