@@ -1,5 +1,9 @@
 {
   "tables": {
+    "native_work_item_pages": {"class": "derived_with_retention", "retention": "current work item lifetime; replay from immutable source versions"},
+    "native_comment_pages": {"class": "derived_with_retention", "retention": "current comment lifetime; replay from immutable source versions"},
+    "native_work_item_page_dirty": {"class": "index"},
+    "native_work_item_page_progress": {"class": "hot_state"},
     "issue_notification_notices": {"class": "hot_state"},
     "runner_attempt_token_usage": {"class": "hot_state"},
     "runner_project_daily_tokens": {"class": "hot_state"},
