@@ -290,6 +290,10 @@ func (s *Service) loadRuntime(ctx context.Context) (*entryRuntime, error) {
 	if s.config.ConfigureRuntime != nil {
 		state.Configure = s.config.ConfigureRuntime(update)
 	}
+	if shared {
+		s.reloadMu.Lock()
+		defer s.reloadMu.Unlock()
+	}
 	if s.runtime.CompareAndSwap(current, state) {
 		if shared {
 			s.allowlist.Store(&signupAllowlist{emails: state.AllowedEmails, domains: state.AllowedDomains})
