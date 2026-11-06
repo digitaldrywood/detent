@@ -663,6 +663,99 @@ func (q *Queries) LockRunnerHostRevision(ctx context.Context, arg LockRunnerHost
 	return routing_revision, err
 }
 
+const mutateLeaseCommand = `-- name: MutateLeaseCommand :one
+WITH owner AS MATERIALIZED (
+ SELECT r.runner_id FROM runner_identities r
+ JOIN runner_lease_assignments a ON a.organization_id=r.organization_id AND a.runner_id=r.runner_id
+ WHERE a.organization_id=$1 AND a.lease_id=$2
+ FOR UPDATE OF r
+), locked AS MATERIALIZED (
+ SELECT l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason FROM leases l CROSS JOIN (SELECT count(*) FROM owner) ownership
+ WHERE l.organization_id=$1 AND l.lease_id=$2
+ FOR UPDATE OF l
+), at AS MATERIALIZED (
+ SELECT clock_timestamp() AS now FROM locked
+), changed AS (
+ UPDATE leases l SET
+ renewed_at=CASE WHEN $3::text='renew' THEN at.now ELSE l.renewed_at END,
+ expires_at=CASE WHEN $3::text='renew' THEN at.now+$4::bigint*interval '1 microsecond' ELSE l.expires_at END,
+ landing_capacity=CASE WHEN $3::text='renew' AND $5::bigint>0 THEN $5::bigint ELSE l.landing_capacity END,
+ released_at=CASE WHEN $3::text='renew' THEN l.released_at ELSE at.now END,
+ release_reason=CASE WHEN $3::text='renew' THEN l.release_reason WHEN $3::text='expire' THEN 'expired' ELSE $6::text END
+ FROM locked,at
+ WHERE l.organization_id=locked.organization_id AND l.lease_id=locked.lease_id
+ AND locked.fencing_token=$7::bigint AND locked.released_at IS NULL
+ AND CASE WHEN $3::text='expire' THEN locked.expires_at<=at.now ELSE locked.expires_at>at.now END
+ RETURNING l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason
+), cancelled AS (
+ UPDATE native_attempts a SET status='cancelled',sequence=sequence+1,updated_at=c.released_at
+ FROM changed c WHERE a.organization_id=c.organization_id AND a.lease_id=c.lease_id AND a.fencing_token=c.fencing_token
+ AND a.status='running' AND $3::text<>'renew'
+), heartbeat AS (
+ UPDATE machines m SET last_heartbeat_at=greatest(m.last_heartbeat_at,at.now),updated_at=greatest(m.updated_at,at.now)
+ FROM changed c,at WHERE m.organization_id=c.organization_id AND m.id=c.machine_id AND $3::text<>'expire'
+)
+SELECT changed.organization_id, changed.lease_id, changed.fencing_token, changed.issue_id, changed.machine_id, changed.session_id, changed.work_item_revision, changed.landing_capacity, changed.acquired_at, changed.renewed_at, changed.expires_at, changed.released_at, changed.release_reason,true AS applied FROM changed
+UNION ALL SELECT locked.organization_id, locked.lease_id, locked.fencing_token, locked.issue_id, locked.machine_id, locked.session_id, locked.work_item_revision, locked.landing_capacity, locked.acquired_at, locked.renewed_at, locked.expires_at, locked.released_at, locked.release_reason,false AS applied FROM locked WHERE NOT EXISTS (SELECT 1 FROM changed)
+`
+
+type MutateLeaseCommandParams struct {
+	OrganizationID  tracker.OrganizationID
+	LeaseID         string
+	Operation       string
+	TtlUs           int64
+	LandingCapacity int64
+	Reason          string
+	FencingToken    int64
+}
+
+type MutateLeaseCommandRow struct {
+	OrganizationID   tracker.OrganizationID
+	LeaseID          string
+	FencingToken     int64
+	IssueID          int64
+	MachineID        string
+	SessionID        string
+	WorkItemRevision int64
+	LandingCapacity  int64
+	AcquiredAt       time.Time
+	RenewedAt        time.Time
+	ExpiresAt        time.Time
+	ReleasedAt       *time.Time
+	ReleaseReason    string
+	Applied          bool
+}
+
+func (q *Queries) MutateLeaseCommand(ctx context.Context, arg MutateLeaseCommandParams) (MutateLeaseCommandRow, error) {
+	row := q.db.QueryRow(ctx, mutateLeaseCommand,
+		arg.OrganizationID,
+		arg.LeaseID,
+		arg.Operation,
+		arg.TtlUs,
+		arg.LandingCapacity,
+		arg.Reason,
+		arg.FencingToken,
+	)
+	var i MutateLeaseCommandRow
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.LeaseID,
+		&i.FencingToken,
+		&i.IssueID,
+		&i.MachineID,
+		&i.SessionID,
+		&i.WorkItemRevision,
+		&i.LandingCapacity,
+		&i.AcquiredAt,
+		&i.RenewedAt,
+		&i.ExpiresAt,
+		&i.ReleasedAt,
+		&i.ReleaseReason,
+		&i.Applied,
+	)
+	return i, err
+}
+
 const pageIssueAttempts = `-- name: PageIssueAttempts :many
 SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded FROM native_attempts
 WHERE organization_id=$1 AND issue_id=$2
