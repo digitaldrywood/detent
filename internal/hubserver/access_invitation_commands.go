@@ -23,7 +23,10 @@ func (s *Service) validateAccessInvitationGrants(ctx context.Context, r tenantst
 		return err
 	}
 	tenant, err := r.AccessTenant(ctx)
-	if err != nil || tenant.ProviderID != credential.Hosted.OrganizationID {
+	if err != nil {
+		return operatorAuthorizationError(err)
+	}
+	if tenant.ProviderID != credential.Hosted.OrganizationID {
 		return operatortool.ErrAccessDenied
 	}
 	selected := make(map[string]bool, len(grants))
@@ -33,14 +36,20 @@ func (s *Service) validateAccessInvitationGrants(ctx context.Context, r tenantst
 		}
 		selected[grant.ProjectID] = true
 		project, err := r.ProjectRecord(ctx, tracker.ProjectID(grant.ProjectID))
-		if err != nil || project.Core.DeletedAt != nil {
+		if err != nil {
+			return operatorAuthorizationError(err)
+		}
+		if project.Core.DeletedAt != nil {
 			return operatortool.ErrAccessDenied
 		}
 		if credential.EntryKey != nil && !credential.EntryKey.Allows(grant.ProjectID) {
 			return operatortool.ErrAccessDenied
 		}
 		projectGrant, err := r.AccessProjectGrant(ctx, credential.Hosted.Subject, tracker.ProjectID(grant.ProjectID))
-		if err != nil || grant.Write && !projectGrant.CanWrite || grant.Runner && !projectGrant.ManageRunner {
+		if err != nil {
+			return operatorAuthorizationError(err)
+		}
+		if grant.Write && !projectGrant.CanWrite || grant.Runner && !projectGrant.ManageRunner {
 			return &nativeError{Code: "forbidden", Message: "You can only grant project access that you hold", status: 403, publicMessage: true}
 		}
 	}
@@ -110,7 +119,10 @@ func (s *Service) validateAccessInvitationGrants(ctx context.Context, r tenantst
 
 func (s *Service) validateAccessInvitationGrant(ctx context.Context, r tenantstore.Reader, credential apiCredential, project tracker.ProjectID, write, runner bool) error {
 	row, err := r.ProjectRecord(ctx, project)
-	if err != nil || row.Core.DeletedAt != nil {
+	if err != nil {
+		return operatorAuthorizationError(err)
+	}
+	if row.Core.DeletedAt != nil {
 		return operatortool.ErrAccessDenied
 	}
 	if credential.EntryKey != nil {
@@ -123,7 +135,10 @@ func (s *Service) validateAccessInvitationGrant(ctx context.Context, r tenantsto
 		return nil
 	}
 	grant, err := r.AccessProjectGrant(ctx, credential.Hosted.Subject, project)
-	if err != nil || write && !grant.CanWrite || runner && !grant.ManageRunner {
+	if err != nil {
+		return operatorAuthorizationError(err)
+	}
+	if write && !grant.CanWrite || runner && !grant.ManageRunner {
 		return &nativeError{Code: "forbidden", Message: "You can only grant project access that you hold", status: 403, publicMessage: true}
 	}
 	tokenID := credential.ID
@@ -131,11 +146,11 @@ func (s *Service) validateAccessInvitationGrant(ctx context.Context, r tenantsto
 		tokenID = credential.HostedPrincipal
 	}
 	if _, err := r.AccessTokenGrant(ctx, tokenID, project); err != nil {
-		return operatortool.ErrAccessDenied
+		return operatorAuthorizationError(err)
 	}
 	if credential.Hosted != nil {
 		if _, err := r.AccessTokenGrant(ctx, credential.HostedPrincipal, project); err != nil {
-			return operatortool.ErrAccessDenied
+			return operatorAuthorizationError(err)
 		}
 	}
 	return nil
@@ -149,11 +164,20 @@ func (s *Service) pendingAccessInvitationFor(ctx context.Context, credential api
 	var row accessstore.Invitation
 	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
 		tenant, err := r.AccessTenant(ctx)
-		if err != nil || tenant.ProviderID != credential.Hosted.OrganizationID {
+		if err != nil {
+			return operatorAuthorizationError(err)
+		}
+		if tenant.ProviderID != credential.Hosted.OrganizationID {
 			return operatortool.ErrAccessDenied
 		}
 		row, err = r.AccessInvitation(ctx, id)
-		if err != nil || row.AcceptedUserID != "" || !row.ExpiresAt.After(s.config.now()) {
+		if err != nil {
+			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+				return classified
+			}
+			return nativeNotFound()
+		}
+		if row.AcceptedUserID != "" || !row.ExpiresAt.After(s.config.now()) {
 			return nativeNotFound()
 		}
 		if row.Role == "owner" && credential.HostedRole != "owner" {
@@ -231,7 +255,13 @@ func (s *Service) editAccessInvitation(ctx context.Context, credential apiCreden
 			return fmt.Errorf("authorize invitation edit: %w", err)
 		}
 		current, err := w.AccessInvitation(ctx, id)
-		if err != nil || current.AcceptedUserID != "" || !current.ExpiresAt.After(s.config.now()) || current.Email != view.Email || current.Role != view.Role {
+		if err != nil {
+			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+				return classified
+			}
+			return nativeNotFound()
+		}
+		if current.AcceptedUserID != "" || !current.ExpiresAt.After(s.config.now()) || current.Email != view.Email || current.Role != view.Role {
 			return nativeNotFound()
 		}
 		currentView, err := s.accessInvitationView(ctx, w, current)
@@ -268,7 +298,10 @@ func (s *Service) revokeAccessInvitation(ctx context.Context, credential apiCred
 			return err
 		}
 		tenant, err := r.AccessTenant(ctx)
-		if err != nil || credential.Hosted == nil || tenant.ProviderID != credential.Hosted.OrganizationID {
+		if err != nil {
+			return operatorAuthorizationError(err)
+		}
+		if credential.Hosted == nil || tenant.ProviderID != credential.Hosted.OrganizationID {
 			return operatortool.ErrAccessDenied
 		}
 		current, err = r.AccessInvitation(ctx, id)
@@ -290,7 +323,10 @@ func (s *Service) revokeAccessInvitation(ctx context.Context, credential apiCred
 			return err
 		}
 		tenant, err := w.AccessTenant(ctx)
-		if err != nil || credential.Hosted == nil || tenant.ProviderID != credential.Hosted.OrganizationID {
+		if err != nil {
+			return operatorAuthorizationError(err)
+		}
+		if credential.Hosted == nil || tenant.ProviderID != credential.Hosted.OrganizationID {
 			return operatortool.ErrAccessDenied
 		}
 		if _, err := w.DeleteAccessInvitation(ctx, id); err != nil {
@@ -320,7 +356,10 @@ func (s *Service) reserveAccessInvitationSeat(ctx context.Context, credential ap
 			return err
 		}
 		tenant, err := w.AccessTenant(ctx)
-		if err != nil || credential.Hosted == nil || tenant.ProviderID != credential.Hosted.OrganizationID {
+		if err != nil {
+			return operatorAuthorizationError(err)
+		}
+		if credential.Hosted == nil || tenant.ProviderID != credential.Hosted.OrganizationID {
 			return operatortool.ErrAccessDenied
 		}
 		created, err = w.ReserveAccessMemberReservation(ctx, accessstore.MemberReservation{OrganizationID: s.accessOrganization(), Email: strings.ToLower(email), ExpiresAt: s.config.now().Add(time.Duration(runtimePlans.InvitationSeconds) * time.Second)}, s.config.now(), limit)

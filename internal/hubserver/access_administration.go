@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -162,7 +163,7 @@ func (s *Service) changeAccessGrant(ctx context.Context, credential apiCredentia
 func (s *Service) accessLocalMember(ctx context.Context, user string) (bool, string, error) {
 	var member accessstore.Member
 	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error { var err error; member, err = r.AccessMember(ctx, user); return err })
-	if errors.Is(err, corestore.ErrNotFound) {
+	if errors.Is(err, corestore.ErrNotFound) && errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 		return false, "", nil
 	}
 	return member.Active, member.Role, err
@@ -186,7 +187,10 @@ func (s *Service) changeAccessRole(ctx context.Context, credential apiCredential
 		}
 		if role == "owner" || target.Role == "owner" {
 			actor, err := r.AccessMember(ctx, credential.Hosted.Subject)
-			if err != nil || !actor.Active || lesserHostedRole(actor.Role, credential.HostedRole) != "owner" {
+			if err != nil {
+				return target, operatorAuthorizationError(err)
+			}
+			if !actor.Active || lesserHostedRole(actor.Role, credential.HostedRole) != "owner" {
 				return target, auth.ErrHostedIdentity
 			}
 		}
