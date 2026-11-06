@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"crypto/subtle"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -212,7 +211,9 @@ func (s *Service) completeHostedLogin(c echo.Context) error {
 		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", denial)
 	}
 	if cookie, err := c.Cookie(hostedCookie); err == nil {
-		if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE hosted_sessions SET revoked_at = ? WHERE token_hash = ?", formatHubTime(s.config.now()), apikey.HashToken(cookie.Value)); err != nil {
+		if err := s.accessWrite(c.Request().Context(), s.accessOrganization(), func(w tenantstore.Writer) error {
+			return w.RevokeAccessSession(c.Request().Context(), apikey.HashToken(cookie.Value), s.config.now())
+		}); err != nil {
 			denial.Reason = "session_store_failed"
 			return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", denial)
 		}
@@ -234,11 +235,15 @@ func (s *Service) bootstrapHostedMember(ctx context.Context, identity auth.Ident
 	if err != nil || organization == "" || identity.Hosted.OrganizationID != organization {
 		return err
 	}
-	var existing int
-	if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_members").Scan(&existing); err != nil {
+	var existing []accessstore.Member
+	if err := s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
+		var err error
+		existing, err = r.AccessMembers(readCtx, "", 1)
+		return err
+	}); err != nil {
 		return err
 	}
-	if existing != 0 {
+	if len(existing) != 0 {
 		return nil
 	}
 	membership, err := s.hostedMembership(ctx, identity.Hosted)
@@ -288,9 +293,18 @@ func (s *Service) logoutHosted(c echo.Context) error {
 		hash = apikey.HashToken(cookie.Value)
 	}
 	if sessionErr != nil && hash != "" {
-		var encoded string
-		err := s.database.reader.QueryRowContext(readCtx, "SELECT identity_json FROM hosted_sessions WHERE token_hash = ? AND revoked_at IS NULL", hash).Scan(&encoded)
-		if err == nil && json.Unmarshal([]byte(encoded), &session.Identity) == nil && session.Identity != nil {
+		err := s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
+			row, err := r.AccessSession(readCtx, hash)
+			if err != nil {
+				return err
+			}
+			if row.RevokedAt != nil {
+				return auth.ErrInvalidSession
+			}
+			session.Identity = &auth.HostedIdentity{Subject: row.Subject, OrganizationID: row.ProviderOrganizationID, SessionID: row.SessionID, CreatedAt: row.IdentityCreatedAt, ExpiresAt: row.IdentityExpiresAt, SupportActor: row.SupportActor, SupportReason: row.SupportReason}
+			return nil
+		})
+		if err == nil {
 			sessionErr = nil
 		}
 	}
