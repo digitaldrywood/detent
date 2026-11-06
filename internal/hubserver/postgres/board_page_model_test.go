@@ -2,7 +2,9 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"reflect"
 	"testing"
 	"time"
@@ -70,7 +72,7 @@ func TestBoardPageRetainsTypedIssueContract(t *testing.T) {
 					return "*"
 				}
 				return "Todo"
-			}(), Identifier: fmt.Sprintf("example#%d", index+1)}, Payload: ref, PageIssue: issue, ProjectedAt: at}
+			}(), Identifier: fmt.Sprintf("example#%d", index+1)}, Payload: ref, PageIssue: issue, ListIssue: issue, ProjectedAt: at}
 			if err := repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
 				_, err := w.CreateWorkItem(ctx, corestore.WorkItem{OrganizationID: org, ProjectID: record.ProjectID, NativeID: id, Number: int64(index + 1), Title: "Example", WorkflowStateName: new(record.Position.State)})
 				if err != nil {
@@ -134,6 +136,25 @@ func TestBoardPageRetainsTypedIssueContract(t *testing.T) {
 				t.Fatal(err)
 			}
 
+		}
+		if err := repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+			rows, err := r.(interface {
+				BoardSummaryModel(context.Context, viewstore.BoardSelection) ([]viewstore.BoardSummaryRecord, error)
+			}).BoardSummaryModel(ctx, viewstore.BoardSelection{ProjectID: "prj_example"})
+			if !errors.Is(err, searchstore.ErrIndexPending) || len(rows) != 0 {
+				t.Errorf("incomplete typed fixture exposed counts=%+v error=%v", rows, err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
+			if err := w.DeleteWorkItem(ctx, "prj_example", "wi_2"); err != nil {
+				return err
+			}
+			return w.ReplaceBoardItem(ctx, viewstore.BoardUpdate{ProjectID: "prj_example", WorkItemID: "wi_2"})
+		}); err != nil {
+			t.Fatal(err)
 		}
 		if err := repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
 			rows, err := r.(interface {

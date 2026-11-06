@@ -209,18 +209,18 @@ func boardPartBudget(t *testing.T, service *Service, measured *postgres.Reposito
 		t.Errorf("model reads=%d want 1", modelReads)
 	}
 	if part == "counts" {
-		var rows []viewstore.BoardSummaryRecord
-		if err := json.Unmarshal(response.Body.Bytes(), &rows); err != nil {
+		var envelope viewstore.BoardSummaryPage
+		if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 			t.Fatal(err)
 		}
 		found := false
-		for _, row := range rows {
+		for _, row := range envelope.Rows {
 			if row.Kind == "total" {
 				found = row.Total == int64(size)
 			}
 		}
 		if !found {
-			t.Fatalf("missing total=%d in %+v", size, rows)
+			t.Fatalf("missing total=%d in %+v", size, envelope.Rows)
 		}
 	} else {
 		var rows []viewstore.BoardStatusRecord

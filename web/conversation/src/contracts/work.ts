@@ -270,6 +270,8 @@ export const NativeBoardFrame = Schema.Struct({
 export type NativeBoardFrame = typeof NativeBoardFrame.Type;
 
 export const WorkItemPage = Schema.Struct({
+  projection_pending: Schema.optional(Schema.Boolean),
+  projection_oldest_pending_at: Schema.optional(Schema.String),
   change_sequence: Schema.optional(Schema.Number),
   total: Schema.optional(Schema.Number),
   items: Schema.Array(NativeIssue),

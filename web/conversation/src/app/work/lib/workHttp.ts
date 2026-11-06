@@ -724,10 +724,16 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         completed_window: board?.filters.completedWindow }),
     listHealthFindings: (projectId, cursor, signal, options) => send(HealthFindingsRead, "GET", url(`${projectBase(projectId)}/health/findings`, { cursor, ...options }), undefined, signal),
     getProject: (projectId, signal) => send(NativeProject, "GET", url(projectBase(projectId)), undefined, signal),
-    getBoardCounts: (input) => send(Schema.Array(BoardCountSchema), "GET", url(`${projectBase(input.projectId)}/board/counts`, {
+    getBoardCounts: (input) => send(Schema.Union([Schema.Array(BoardCountSchema), Schema.Struct({ projection_pending: Schema.Boolean, rows: Schema.Array(BoardCountSchema) })]), "GET", url(`${projectBase(input.projectId)}/board/counts`, {
       archived: input.archived === "all" ? "all" : input.archived === true ? "true" : undefined,
       include: input.includeCoordinator === true ? "workspace" : undefined,
-    }), undefined, input.signal),
+    }), undefined, input.signal).then((response) => {
+      if ("rows" in response) {
+        if (response.projection_pending) throw new WorkApiError({ status: 503, code: "not_ready", message: "Board projection is pending" });
+        return response.rows;
+      }
+      return response;
+    }),
     listWorkItems: (input) =>
       send(
         WorkItemPage,

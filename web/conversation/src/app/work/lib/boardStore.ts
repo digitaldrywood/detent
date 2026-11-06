@@ -195,6 +195,7 @@ export class BoardRead {
   private entries: readonly Loaded[] = [];
   private controller: AbortController | null = null;
   private countController: AbortController | null = null;
+  private readonly countsPending = new Set<string>();
   private readonly frames = new Map<string, NativeBoardFrame[]>();
   private readonly views = new Map<string, { issue: NativeIssue; card: NativeBoardCard | undefined; item: WorkItemView }>();
   private generation = 0;
@@ -360,6 +361,7 @@ export class BoardRead {
         signal.throwIfAborted();
         const page = await this.http.listWorkItems({ ...filters, limit: 100, ...tabQuery(this.view, toLanes(project)),
           sort: effectiveSort(this.view) === "closed" ? "closed" : undefined, cursor });
+        if (page.projection_pending) throw new Error("Board projection is pending");
         issues.push(...page.items);
         cards.push(...(page.cards ?? []));
         work = page.total === -1 ? previous?.work : page.work;
@@ -379,6 +381,7 @@ export class BoardRead {
       const backlog = this.laneStates((await projectRead).states).find((state) => state.name.toLowerCase() === "backlog");
       if (previous?.backlogCursor === undefined || backlog === undefined) return previous!;
       const page = await readPage(backlog.name, previous.backlogCursor);
+      if (page.projection_pending) throw new Error("Board projection is pending");
       return { ...previous, issues: [...previous.issues, ...page.items], cards: [...(previous.cards ?? []), ...(page.cards ?? [])],
         work: (page.total === -1 ? undefined : page.work) ?? previous.work, backlogCursor: page.next_cursor, backlogTotal: page.total !== undefined && page.total >= 0 ? page.total : previous.backlogTotal,
         backlogPageCount: previous.backlogPageCount + 1 };
@@ -395,6 +398,7 @@ export class BoardRead {
       const backlogLane = state.toLowerCase() === "backlog";
       do {
         const page = await readPage(state, cursor);
+        if (page.projection_pending) throw new Error("Board projection is pending");
         issues.push(...page.items);
         cards.push(...(page.cards ?? []));
         cursor = page.next_cursor;
@@ -550,7 +554,7 @@ export class BoardRead {
           completed: total?.[`shipped_${this.view.completedWindow}`] ?? 0,
           cancelled: total?.[`cancelled_${this.view.completedWindow}`] ?? 0,
           shipped_windows: windows.map((window) => ({ window, shipped: total?.[`shipped_${window}`] ?? 0, cancelled: total?.[`cancelled_${window}`] ?? 0 })),
-          as_of: total?.projected_at ?? entry.work?.as_of ?? new Date().toISOString() } };
+          as_of: total?.projected_at ?? rows[0]?.projected_at ?? entry.work?.as_of ?? "0001-01-01T00:00:00Z" } };
     };
     const supportsCounts = this.view.q.length === 0 && this.view.type.length === 0 && this.view.label.length === 0 &&
       this.view.assignee.length === 0 && this.view.priority.length === 0 && this.view.createdBy === undefined &&
@@ -559,12 +563,20 @@ export class BoardRead {
       try {
         const rows = await this.http.getBoardCounts({ projectId: id, archived: this.view.archived === true, signal });
         if (signal.aborted || generation !== this.generation || this.revoked) return;
+        this.countsPending.delete(id);
         counts.set(id, rows);
         if (!cardsReady) return;
         this.entries = this.entries.map(withCounts);
         this.publish({ ...this.build(this.entries, this.state.asOf ?? Date.now()), refreshing: this.state.refreshing, backlogLoading: this.state.backlogLoading });
         this.persist();
-      } catch { return; }
+      } catch (cause) {
+        if (signal.aborted || generation !== this.generation || this.revoked) return;
+        if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "not_ready") {
+          this.countsPending.add(id);
+          this.entries = this.entries.map((entry) => entry.project.project_id === id ? { ...entry, work: undefined } : entry);
+          if (cardsReady) this.publish(this.build(this.entries, this.state.asOf ?? Date.now()));
+        }
+      }
     });
     void (async () => {
       try {
@@ -639,7 +651,7 @@ export class BoardRead {
       }
     }
     let totals: ScopedWorkStats | null = null;
-    if (loaded.every((entry) => entry.work !== undefined)) {
+    if (this.countsPending.size === 0 && loaded.every((entry) => entry.work !== undefined)) {
       const counts = Object.create(null) as Record<string, number>;
       let running = 0, waiting = 0, needAttention = 0, backlog = 0, closed = 0, total = 0;
       for (const entry of loaded) {
@@ -696,7 +708,7 @@ export class BoardRead {
       priorities: [...new Set([...(previous?.priorities ?? []), ...current.priorities])].sort(),
     };
     facets.set(this.facetKey, choices);
-    return { resolved: true, refreshing: false, cached: false, loading: false, error: null,
+    return { resolved: true, refreshing: false, cached: false, loading: false, error: this.countsPending.size > 0 ? "Board counts projection is pending" : null,
       totals, hasMore: this.view.view !== "board" && loaded.some((entry) => entry.nextCursor !== undefined),
       backlogHasMore: loaded.some((entry) => entry.backlogCursor !== undefined), backlogLoading: false,
       backlogTotal: loaded.reduce((total, entry) => total + entry.backlogTotal, 0),

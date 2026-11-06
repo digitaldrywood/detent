@@ -130,7 +130,7 @@ func (s *session) BoardModelPages(ctx context.Context, selection viewstore.Board
 	}
 	query = "SELECT * FROM (" + query + ") ordered ORDER BY page_part," + mainOrder + ",CASE WHEN page_part=2 THEN running END DESC,CASE WHEN page_part=2 THEN dispatchable END DESC,CASE WHEN page_part=2 THEN issue_number END DESC,identifier"
 	batch := &pgx.Batch{}
-	batch.Queue(`SELECT coalesce((SELECT sequence FROM native_board_sequences WHERE organization_id=$1 AND project_id=$2),0),EXISTS(SELECT 1 FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT page_ready),(SELECT queued_at FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 ORDER BY queued_at LIMIT 1)`, s.organization, selection.ProjectID).QueryRow(func(row pgx.Row) error { return row.Scan(&result.Sequence, &result.Pending, &result.OldestPendingAt) })
+	batch.Queue(`SELECT coalesce((SELECT sequence FROM native_board_sequences WHERE organization_id=$1 AND project_id=$2),0),EXISTS(SELECT 1 FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT page_ready) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT list_ready),(SELECT queued_at FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 ORDER BY queued_at LIMIT 1)`, s.organization, selection.ProjectID).QueryRow(func(row pgx.Row) error { return row.Scan(&result.Sequence, &result.Pending, &result.OldestPendingAt) })
 	batch.Queue(query, args...).Query(func(rows pgx.Rows) error {
 		defer rows.Close()
 		for rows.Next() {

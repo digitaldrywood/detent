@@ -43,3 +43,8 @@ type BoardReadAuthority struct {
 	Items   map[tracker.NativeWorkItemID]tracker.ProjectID
 	Changes map[string]bool
 }
+
+type BoardSummaryPage struct {
+	ProjectionPending bool                 `json:"projection_pending"`
+	Rows              []BoardSummaryRecord `json:"rows"`
+}

@@ -2,12 +2,14 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -94,7 +96,9 @@ func (s *Service) boardModelEndpoint(c echo.Context, status bool) error {
 				if !ok {
 					return workItemStorageUnavailable()
 				}
-				response, err = model.BoardSummaryModel(ctx, selection)
+				var rows []viewstore.BoardSummaryRecord
+				rows, err = model.BoardSummaryModel(ctx, selection)
+				response = viewstore.BoardSummaryPage{Rows: rows}
 			}
 			return err
 		})
@@ -105,6 +109,13 @@ func (s *Service) boardModelEndpoint(c echo.Context, status bool) error {
 		err = repository.ReadBoardRequest(ctx, scope.organization, scope.credential.ID, read)
 	} else {
 		err = read(ctx)
+	}
+	if errors.Is(err, searchstore.ErrIndexPending) && !status {
+		return c.JSON(http.StatusServiceUnavailable, struct {
+			ProjectionPending bool   `json:"projection_pending"`
+			Code              string `json:"code"`
+			Message           string `json:"message"`
+		}{true, "not_ready", "Board projection is pending"})
 	}
 	if err != nil {
 		return s.nativeAPIError(c, err)

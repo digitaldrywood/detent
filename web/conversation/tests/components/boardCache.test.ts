@@ -346,6 +346,41 @@ describe("the Work snapshot ordering", () => {
     }
   });
 
+  it.each(["cold", "partial", "counts"])("surfaces %s projection readiness instead of successful empty data", async (mode) => {
+    const source = workPaginationFixture();
+    await source.control();
+    let pending = true;
+    const http = makeWorkHttp({ ...source.client.http, fetch: async (input, init) => {
+      const url = new URL(input, "http://fixture.test");
+      if (url.pathname.endsWith("/board/counts")) return pending
+        ? Response.json({ projection_pending: true, code: "not_ready", message: "Board projection is pending" }, { status: 503 })
+        : Response.json({ projection_pending: false, rows: [] });
+      const response = await source.fetch(input, init);
+      if (!url.pathname.endsWith("/work-items") || !response.ok) return response;
+      const body = await response.json();
+      if (pending && mode !== "counts") {
+        body.projection_pending = true;
+        if (mode === "cold") body.items = [];
+        else body.items = body.items.slice(0, 1);
+      }
+      body.total = -1;
+      delete body.work;
+      return Response.json(body);
+    } });
+    const read = getBoardRead(source.client, http, "proj_alpha", { ...DEFAULT_VIEW_STATE, view: "list", tab: "all" });
+    read.start();
+    await expect.poll(() => read.snapshot().error).toMatch(/pending/i);
+    expect(read.snapshot().totals).toBeNull();
+    if (mode !== "counts") {
+      expect(read.snapshot().resolved).toBe(false);
+      expect(read.snapshot().items).toEqual([]);
+    }
+    pending = false;
+    read.reload();
+    await expect.poll(() => read.snapshot().resolved && read.snapshot().error === null).toBe(true);
+    expect(read.snapshot().items.length).toBeGreaterThan(0);
+  });
+
   it("loads each project in parallel without the legacy aggregate route", async () => {
     const source = workPaginationFixture();
     await source.control();
