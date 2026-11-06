@@ -617,9 +617,6 @@ func (s *Service) listNativeAttempts(c echo.Context) error {
 		}
 		return c.JSONBlob(http.StatusOK, result.encoded)
 	}
-	if handled, err := s.archiveView(c, c.Param("item"), "attempts", nil); handled {
-		return err
-	}
 	ctx := c.Request().Context()
 	scope := nativeRequestScope(c)
 	params, err := nativeReadQuery(c)

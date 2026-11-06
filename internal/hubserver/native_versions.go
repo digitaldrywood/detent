@@ -24,9 +24,6 @@ func (s *Service) getNativeVersion(c echo.Context) error {
 	if err != nil || revision <= 0 {
 		return s.nativeAPIError(c, nativePublicInvalid("Revision must be a positive decimal integer"))
 	}
-	if handled, err := s.archiveView(c, c.Param("item"), "revision:"+c.Param("comment")+":"+c.Param("revision"), nil); handled {
-		return err
-	}
 	body, err := s.readVersion(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("comment"), revision)
 	if err != nil {
 		return s.nativeAPIError(c, err)

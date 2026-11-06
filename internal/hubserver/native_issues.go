@@ -372,9 +372,6 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 		result.Issue = s.nativeIssueResponse(result.Issue)
 		return c.JSON(http.StatusOK, result)
 	}
-	if handled, err := s.archiveView(c, c.Param("item"), "issue", nil); handled {
-		return err
-	}
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return s.nativeAPIError(c, err)
