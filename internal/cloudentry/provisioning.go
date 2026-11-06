@@ -416,6 +416,9 @@ func (s *Service) newOrganizationPage(c echo.Context) error {
 	}
 	session, err := s.session(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Forganizations")
 	}
 	key, err := cloudassert.NewID()
@@ -439,6 +442,9 @@ func (s *Service) createOrganization(c echo.Context) error {
 	wantJSON := wantsJSON(c)
 	session, err := s.session(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return s.refuse(c, http.StatusUnauthorized, "unauthenticated", "Sign in to create an organization")
 	}
 	if !s.csrfValid(c, session, "") {
@@ -477,7 +483,10 @@ var (
 func (s *Service) recordIntent(ctx context.Context, session accountSession, key, fingerprint, name, price string) (_ string, resultErr error) {
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
-	bypass := s.entitlementAdministrator(ctx, session)
+	bypass, err := s.readEntitlementAdministrator(ctx, session)
+	if err != nil {
+		return "", err
+	}
 	plan := ""
 	if s.notifications != nil {
 		plan = s.platformNotificationPlan(ctx, price)
@@ -550,7 +559,10 @@ func (s *Service) creatorOrganizationFor(ctx context.Context, session accountSes
 		return Organization{}, operatoradmin.ErrUnavailable
 	}
 	organization, err := s.registry.Organization(ctx, id)
-	if err != nil || !organization.Managed || organization.CreatorSubject != session.Subject || organization.State == "deleted" {
+	if err != nil {
+		return Organization{}, err
+	}
+	if !organization.Managed || organization.CreatorSubject != session.Subject || organization.State == "deleted" {
 		return Organization{}, operatortool.ErrAccessDenied
 	}
 	return organization, nil
@@ -632,6 +644,9 @@ func provisioningStatus(organization Organization, retryLimit int) templates.Hos
 func (s *Service) provisioningPage(c echo.Context) error {
 	session, organization, err := s.creatorOrganization(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusNotFound) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return s.denied(c, http.StatusNotFound, "This organization is unavailable")
 	}
 	if organization.State == "ready" {
@@ -646,6 +661,9 @@ func (s *Service) provisioningPage(c echo.Context) error {
 func (s *Service) provisioningJSON(c echo.Context) error {
 	_, organization, err := s.creatorOrganization(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusNotFound) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "Resource was not found"})
 	}
 	status := provisioningStatus(organization, s.retryLimit())
@@ -662,6 +680,9 @@ func (s *Service) provisioningJSON(c echo.Context) error {
 func (s *Service) resumeProvisioning(c echo.Context) error {
 	session, organization, err := s.creatorOrganization(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusNotFound) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return s.refuse(c, http.StatusNotFound, "not_found", "This organization is unavailable")
 	}
 	if !s.csrfValid(c, session, "") {
@@ -693,6 +714,9 @@ func (s *Service) pendingOrganizations(ctx context.Context, subject string) (_ [
 func (s *Service) deleteOrganizationPage(c echo.Context) error {
 	session, organization, err := s.ownerOrganization(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusForbidden) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return s.denied(c, http.StatusForbidden, "Only a current owner can delete this organization")
 	}
 	return s.render(c, http.StatusOK, templates.HostedPageData{Mode: "delete", Title: "Delete " + organization.Name, Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, organization.ID),
@@ -713,6 +737,9 @@ func (s *Service) deleteOrganization(c echo.Context) error {
 	ctx := c.Request().Context()
 	session, organization, err := s.ownerOrganization(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusForbidden) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return s.denied(c, http.StatusForbidden, "Only a current owner can delete this organization")
 	}
 	if !s.csrfValid(c, session, organization.ID) || c.FormValue("confirm") != organization.Name {

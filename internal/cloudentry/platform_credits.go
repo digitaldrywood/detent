@@ -57,9 +57,13 @@ func (s *Service) platformCreditAuthority(next echo.HandlerFunc) echo.HandlerFun
 		} else {
 			session, err := s.session(c)
 			if err != nil {
-				return c.NoContent(http.StatusUnauthorized)
+				return c.NoContent(entryAuthStatus(err, http.StatusUnauthorized))
 			}
-			if !s.entitlementAdministrator(ctx, session) || !s.csrfValid(c, session, "") {
+			administrator, err := s.readEntitlementAdministrator(ctx, session)
+			if err != nil {
+				return c.NoContent(http.StatusServiceUnavailable)
+			}
+			if !administrator || !s.csrfValid(c, session, "") {
 				return c.NoContent(http.StatusForbidden)
 			}
 			identity = operatortool.Identity{PrincipalID: session.Subject, OrganizationID: "account:" + session.Subject, CredentialID: session.Hash, SessionID: session.Hash}
@@ -79,7 +83,17 @@ func (a platformCredits) actor(ctx context.Context) (string, error) {
 		return id.PrincipalID, nil
 	}
 	session, err := s.currentAdministrationSession(ctx, id)
-	if err != nil || !s.entitlementAdministrator(ctx, session) {
+	if err != nil {
+		if entryAuthStatus(err, http.StatusForbidden) != http.StatusServiceUnavailable {
+			return "", operatortool.ErrAccessDenied
+		}
+		return "", err
+	}
+	administrator, err := s.readEntitlementAdministrator(ctx, session)
+	if err != nil {
+		return "", err
+	}
+	if !administrator {
 		return "", operatortool.ErrAccessDenied
 	}
 	return session.Email, nil

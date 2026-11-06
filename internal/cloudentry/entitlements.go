@@ -71,6 +71,17 @@ func (s *Service) entitlementAdministrator(ctx context.Context, session accountS
 	return role == "admin" || role == "billing"
 }
 
+func (s *Service) readEntitlementAdministrator(ctx context.Context, session accountSession) (bool, error) {
+	if session.Identity.SupportActor != "" {
+		return false, nil
+	}
+	role, err := s.readPlatformRole(ctx, session.Email)
+	if err != nil {
+		return false, err
+	}
+	return role == "admin" || role == "billing", nil
+}
+
 func tenantEntitlementsPath(organization string) string {
 	return "/api/v2/organizations/" + organization + "/entitlements"
 }
@@ -143,16 +154,23 @@ func (s *Service) entitlementSession(c echo.Context, event string) (accountSessi
 	if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
 		actor, err := (platformCredits{s}).actor(c.Request().Context())
 		if err != nil {
-			return session, Organization{}, false, c.NoContent(http.StatusForbidden)
+			return session, Organization{}, false, c.NoContent(entryAuthStatus(err, http.StatusForbidden))
 		}
 		session.Subject, session.Email = actor, actor
 	} else {
 		var err error
 		session, err = s.session(c)
 		if err != nil {
+			if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+				return session, Organization{}, false, c.NoContent(http.StatusServiceUnavailable)
+			}
 			return session, Organization{}, false, c.JSON(http.StatusUnauthorized, map[string]string{"code": "unauthenticated", "message": "Sign in to continue"})
 		}
-		if !s.entitlementAdministrator(c.Request().Context(), session) {
+		administrator, err := s.readEntitlementAdministrator(c.Request().Context(), session)
+		if err != nil {
+			return session, Organization{}, false, c.NoContent(http.StatusServiceUnavailable)
+		}
+		if !administrator {
 			return session, Organization{}, false, c.NoContent(http.StatusForbidden)
 		}
 	}
@@ -162,6 +180,9 @@ func (s *Service) entitlementSession(c echo.Context, event string) (accountSessi
 	ctx := c.Request().Context()
 	organization, err := s.readyOrganization(ctx, c.Param("organization"))
 	if err != nil {
+		if entryAuthStatus(err, http.StatusNotFound) == http.StatusServiceUnavailable {
+			return accountSession{}, Organization{}, false, c.NoContent(http.StatusServiceUnavailable)
+		}
 		return accountSession{}, Organization{}, false, c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "That organization is not ready"})
 	}
 	if err := s.auth.audit(ctx, session.Subject, organization.ID, event); err != nil {

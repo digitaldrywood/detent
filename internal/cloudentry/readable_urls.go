@@ -20,6 +20,9 @@ func (s *Service) readableProxy(c echo.Context) error {
 	}
 	if wantsHTMLNavigation(c) {
 		if _, err := s.session(c); err != nil {
+			if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+				return c.NoContent(http.StatusServiceUnavailable)
+			}
 			returnPath := "/organizations"
 			if validReturnPath(c.Request().URL.Path, "") {
 				returnPath = c.Request().URL.Path
@@ -29,6 +32,9 @@ func (s *Service) readableProxy(c echo.Context) error {
 	}
 	var id string
 	if err := s.registry.store.db.QueryRowContext(c.Request().Context(), "SELECT organization_id FROM platform.organization_slugs WHERE slug=$1", parts[0]).Scan(&id); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return readableNotFound(c)
 	}
 	if len(parts) == 1 {
@@ -46,6 +52,9 @@ func (s *Service) readableOrganizationRoot(c echo.Context, id string) error {
 	}
 	organization, err := s.readyOrganization(c.Request().Context(), id)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusNotFound) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return readableNotFound(c)
 	}
 	claims := cloudassert.Claims{}
@@ -60,15 +69,24 @@ func (s *Service) readableOrganizationRoot(c echo.Context, id string) error {
 }
 
 func (s *Service) readableSignIn(c echo.Context, organization Organization, status int) error {
+	if status == http.StatusServiceUnavailable {
+		return c.NoContent(http.StatusServiceUnavailable)
+	}
 	if status != http.StatusUnauthorized || !wantsHTMLNavigation(c) {
 		return readableNotFound(c)
 	}
 	session, err := s.session(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusNotFound) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return readableNotFound(c)
 	}
 	choices, err := s.organizationChoices(c.Request().Context(), session)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusNotFound) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return readableNotFound(c)
 	}
 	for _, choice := range choices {
@@ -92,11 +110,20 @@ func readableNotFound(c echo.Context) error {
 func (s *Service) organizationSlug(c echo.Context) (resultErr error) {
 	ctx := c.Request().Context()
 	organization, err := s.readyOrganization(ctx, c.Param("organization"))
-	if err != nil || c.Request().Header.Get(echo.HeaderAuthorization) != "" {
+	if err != nil {
+		if entryAuthStatus(err, http.StatusNotFound) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
+		return readableNotFound(c)
+	}
+	if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
 		return readableNotFound(c)
 	}
 	claims := cloudassert.Claims{}
-	if _, _, err := s.browserClaims(c, organization, &claims); err != nil {
+	if status, _, err := s.browserClaims(c, organization, &claims); err != nil {
+		if status == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return readableNotFound(c)
 	}
 	if c.Request().Method == http.MethodGet {

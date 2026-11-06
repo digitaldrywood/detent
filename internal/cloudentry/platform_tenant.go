@@ -246,7 +246,11 @@ func (s *Service) resumePlatformProvisioning(c echo.Context) error {
 		return err
 	}
 	ctx := c.Request().Context()
-	if s.sessionPlatformRole(ctx, session) != "admin" {
+	role, err := s.readPlatformRole(ctx, session.Email)
+	if err != nil {
+		return c.NoContent(http.StatusServiceUnavailable)
+	}
+	if session.Identity.SupportActor != "" || role != "admin" {
 		return c.JSON(http.StatusForbidden, map[string]string{"code": "forbidden", "message": "Only platform administrators can resume provisioning"})
 	}
 	if !s.csrfValid(c, session, "") {
@@ -256,7 +260,10 @@ func (s *Service) resumePlatformProvisioning(c echo.Context) error {
 	if errors.Is(err, ErrOrganizationNotFound) {
 		return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "That tenant is not registered"})
 	}
-	if err != nil || s.config.Allocation == nil || !organization.Managed || !provisioningRetryable(organization) {
+	if err != nil {
+		return c.NoContent(http.StatusServiceUnavailable)
+	}
+	if s.config.Allocation == nil || !organization.Managed || !provisioningRetryable(organization) {
 		return c.JSON(http.StatusConflict, map[string]string{"code": "not_retryable", "message": "That tenant cannot resume provisioning"})
 	}
 	if _, err := s.resumeOrganization(ctx, organization); err != nil {

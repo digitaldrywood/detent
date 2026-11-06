@@ -105,14 +105,26 @@ func (s *Service) archiveDeletionReceipt(c echo.Context) (resultErr error) {
 	ctx := c.Request().Context()
 	session, err := s.session(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusNotFound) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return readableNotFound(c)
 	}
 	organization, err := s.registry.Organization(ctx, c.Param("organization"))
-	if err != nil || session.Identity.SupportActor != "" {
+	if err != nil {
+		if entryAuthStatus(err, http.StatusNotFound) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
+		return readableNotFound(c)
+	}
+	if session.Identity.SupportActor != "" {
 		return readableNotFound(c)
 	}
 	members, err := s.config.Provider.Memberships(ctx, session.Subject, organization.ProviderID)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusNotFound) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return readableNotFound(c)
 	}
 	owner := false

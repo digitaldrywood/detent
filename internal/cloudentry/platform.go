@@ -30,9 +30,16 @@ func (s *Service) platformStaff(ctx context.Context, session accountSession) boo
 func (s *Service) platformSession(c echo.Context, event string) (accountSession, bool, error) {
 	session, err := s.session(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return accountSession{}, false, c.NoContent(http.StatusServiceUnavailable)
+		}
 		return accountSession{}, false, c.JSON(http.StatusUnauthorized, map[string]string{"code": "unauthenticated", "message": "Sign in to continue"})
 	}
-	if !s.platformStaff(c.Request().Context(), session) {
+	role, err := s.readPlatformRole(c.Request().Context(), session.Email)
+	if err != nil {
+		return accountSession{}, false, c.NoContent(http.StatusServiceUnavailable)
+	}
+	if role == "" || session.Identity.SupportActor != "" {
 		return accountSession{}, false, c.JSON(http.StatusForbidden, map[string]string{"code": "forbidden", "message": "The platform console is limited to Detent staff"})
 	}
 	if err := s.auth.audit(c.Request().Context(), session.Subject, "", event); err != nil {
@@ -44,9 +51,16 @@ func (s *Service) platformSession(c echo.Context, event string) (accountSession,
 func (s *Service) platformPage(c echo.Context) error {
 	session, err := s.session(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Fplatform")
 	}
-	if !s.platformStaff(c.Request().Context(), session) {
+	role, err := s.readPlatformRole(c.Request().Context(), session.Email)
+	if err != nil {
+		return c.NoContent(http.StatusServiceUnavailable)
+	}
+	if role == "" || session.Identity.SupportActor != "" {
 		return s.denied(c, http.StatusForbidden, "The platform console is limited to Detent staff")
 	}
 	if err := s.auth.audit(c.Request().Context(), session.Subject, "", "platform_opened"); err != nil {

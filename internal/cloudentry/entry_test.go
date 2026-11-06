@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/policy"
 )
@@ -1661,4 +1662,116 @@ func inviteEntryTestMember(t *testing.T, b *browser, email, role, csrf string) p
 	t.Helper()
 	response := attachmentRequest(t, b, http.MethodPost, "/api/v2/organizations/org_alpha/members/invitations", jsonBody(t, map[string]any{"email": email, "role": role, "idempotency_key": "invite-" + email}), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf})
 	return page{StatusCode: response.Code, Header: response.Header(), Body: response.Body.String()}
+}
+
+func TestEntryAuthDependencyOutages(t *testing.T) {
+	for _, table := range []string{"sessions", "authorizations", "platform_members", "transactions", "keyring"} {
+		t.Run(table, func(t *testing.T) {
+			admin := entryPostgresDatabase(t)
+			f := newEntryFixture(t, entryPostgresConfig(t, admin), func(cfg *Config) { cfg.LookupEnv = entrySecretEnvironment(1, 1) })
+			b := newBrowser(t, f.service.Handler())
+			b.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			other := newBrowser(t, f.service.Handler())
+			other.login("/organizations/org_beta/organization", "user_bob:porg_beta")
+			start, _ := b.get("/auth/oidc/start?organization=org_alpha")
+			callback := "/auth/oidc/callback?" + url.Values{"state": {stateOf(t, start)}, "code": {"user_alice:porg_alpha"}}.Encode()
+			if table == "keyring" {
+				var err error
+				f.service.auth.keys, err = hubsecrets.FromEnvironment(entrySecretEnvironment(2, 2))
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if _, err := admin.ExecContext(t.Context(), "ALTER TABLE platform."+table+" RENAME TO example_auth_unavailable"); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if _, err := admin.ExecContext(context.WithoutCancel(t.Context()), "ALTER TABLE platform.example_auth_unavailable RENAME TO "+table); err != nil {
+						t.Error(err)
+					}
+				})
+			}
+			targets := []string{"/organizations/org_alpha/app/bootstrap"}
+			if table == "transactions" {
+				targets = []string{callback}
+			} else if table != "authorizations" && table != "keyring" {
+				targets = append(targets, "/api/cloud/session", "/api/cloud/account/api-keys", "/organizations", "/platform", "/support", "/alpha/work")
+			}
+			for _, target := range targets {
+				response, _ := b.get(target)
+				if response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("WWW-Authenticate") != "" || response.Header.Get("Location") != "" {
+					t.Errorf("GET %s = %d challenge %q redirect %q; want 503 without credential challenge or redirect", target, response.StatusCode, response.Header.Get("WWW-Authenticate"), response.Header.Get("Location"))
+				}
+			}
+			if table == "keyring" {
+				var revoked int
+				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM platform.authorizations WHERE revoked_at IS NOT NULL").Scan(&revoked); err != nil || revoked != 0 {
+					t.Fatalf("keyring outage revoked authorizations = %d, error %v", revoked, err)
+				}
+			}
+		})
+	}
+}
+
+type entrySessionFailureProvider struct {
+	auth.HostedProvider
+	failure error
+}
+
+func (p entrySessionFailureProvider) CurrentSession(context.Context, auth.HostedIdentity) (auth.HostedIdentity, error) {
+	return auth.HostedIdentity{}, p.failure
+}
+
+func (p entrySessionFailureProvider) Exchange(context.Context, string, string, string) (auth.Identity, error) {
+	return auth.Identity{}, p.failure
+}
+
+func TestEntryProviderSessionFailures(t *testing.T) {
+	f := newEntryFixture(t)
+	b := newBrowser(t, f.service.Handler())
+	b.login("/organizations", "user_alice:")
+	provider := f.service.config.Provider
+	for _, test := range []struct {
+		name    string
+		failure error
+		want    int
+	}{
+		{"unavailable", &auth.HostedIdentityError{Reason: auth.HostedReasonProviderUnavailable}, http.StatusServiceUnavailable},
+		{"cancelled", context.Canceled, http.StatusServiceUnavailable},
+		{"revoked", &auth.HostedIdentityError{Reason: auth.HostedReasonSessionNotFound}, http.StatusUnauthorized},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f.service.config.Provider = entrySessionFailureProvider{HostedProvider: provider, failure: test.failure}
+			response := b.do(http.MethodPost, "/api/cloud/mcp", nil, nil)
+			if response.StatusCode != test.want || response.Header.Get("WWW-Authenticate") != "" {
+				t.Fatalf("session failure = %d challenge %q, want %d without challenge", response.StatusCode, response.Header.Get("WWW-Authenticate"), test.want)
+			}
+			start, _ := b.get("/auth/oidc/start")
+			callback, _ := b.get("/auth/oidc/callback?" + url.Values{"state": {stateOf(t, start)}, "code": {"example_code"}}.Encode())
+			if callback.StatusCode != test.want || callback.Header.Get("WWW-Authenticate") != "" {
+				t.Fatalf("exchange failure = %d challenge %q, want %d without challenge", callback.StatusCode, callback.Header.Get("WWW-Authenticate"), test.want)
+			}
+		})
+	}
+}
+
+func TestEntryLoginKeyOutagePreservesAuthorizations(t *testing.T) {
+	admin := entryPostgresDatabase(t)
+	f := newEntryFixture(t, entryPostgresConfig(t, admin), func(cfg *Config) { cfg.LookupEnv = entrySecretEnvironment(1, 1) })
+	b := newBrowser(t, f.service.Handler())
+	b.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	var err error
+	f.service.auth.keys, err = hubsecrets.FromEnvironment(entrySecretEnvironment(2, 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, _ := b.get("/auth/oidc/start?organization=org_alpha")
+	response, _ := b.get("/auth/oidc/callback?" + url.Values{"state": {stateOf(t, start)}, "code": {"user_alice:porg_alpha"}}.Encode())
+	if response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Location") != "" {
+		t.Errorf("replacement during key outage = %d redirect %q, want 503 without redirect", response.StatusCode, response.Header.Get("Location"))
+	}
+	var revoked int
+	if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM platform.sessions WHERE revoked_at IS NOT NULL)+(SELECT count(*) FROM platform.authorizations WHERE revoked_at IS NOT NULL)").Scan(&revoked); err != nil || revoked != 0 {
+		t.Fatalf("replacement during key outage revoked %d sessions/authorizations, error %v", revoked, err)
+	}
 }

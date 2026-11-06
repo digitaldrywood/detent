@@ -75,7 +75,7 @@ func (s *Service) githubOAuthConfig() oauth2.Config {
 func (s *Service) connectGitHub(c echo.Context) error {
 	session, err := s.accountKeySession(c)
 	if err != nil {
-		return c.NoContent(http.StatusUnauthorized)
+		return c.NoContent(entryAuthStatus(err, http.StatusUnauthorized))
 	}
 	if !s.githubConnectionAvailable() {
 		return c.NoContent(http.StatusNotFound)
@@ -133,7 +133,7 @@ func (s *Service) saveGitHubState(c echo.Context, state githubConnectionState) e
 func (s *Service) completeGitHubConnection(c echo.Context) error {
 	session, err := s.accountKeySession(c)
 	if err != nil {
-		return c.NoContent(http.StatusUnauthorized)
+		return c.NoContent(entryAuthStatus(err, http.StatusUnauthorized))
 	}
 	cookie, err := c.Cookie(s.cookieName("github-connect"))
 	if err != nil && c.QueryParam("installation_id") != "" {
@@ -199,7 +199,7 @@ func (s *Service) saveGitHubConnection(ctx context.Context, owner string, token 
 func (s *Service) githubRepositories(c echo.Context) error {
 	session, err := s.accountKeySession(c)
 	if err != nil {
-		return c.NoContent(http.StatusUnauthorized)
+		return c.NoContent(entryAuthStatus(err, http.StatusUnauthorized))
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
 	result := githubRepositoryList{Available: s.githubConnectionAvailable(), Repositories: []runnerauth.Repository{}}

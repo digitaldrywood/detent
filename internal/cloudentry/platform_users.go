@@ -15,10 +15,17 @@ import (
 func (s *Service) platformUsersJSON(c echo.Context) error {
 	session, err := s.session(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return c.JSON(http.StatusUnauthorized, map[string]string{"code": "unauthenticated", "message": "Sign in to continue"})
 	}
 	ctx := c.Request().Context()
-	if !s.platformStaff(ctx, session) {
+	role, err := s.readPlatformRole(ctx, session.Email)
+	if err != nil {
+		return c.NoContent(http.StatusServiceUnavailable)
+	}
+	if role == "" || session.Identity.SupportActor != "" {
 		return c.JSON(http.StatusForbidden, map[string]string{"code": "forbidden", "message": "The platform console is limited to Detent staff"})
 	}
 	query := platformusers.Parse(c.QueryParam("q"))
