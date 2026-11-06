@@ -3,6 +3,7 @@ package hubserver
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +26,11 @@ func TestNativeOrganizationReadsUsePostgresWithoutLegacyHandles(t *testing.T) {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: id, Name: string(id), Slug: string(id), CreatedAt: time.Now().UTC()}); err != nil {
 				return err
 			}
+			if id == "org_first" {
+				if err := w.UpdateOrganizationLogo(t.Context(), accessstore.Logo{ImageKey: "att_example", ImageSHA256: strings.Repeat("a", 64)}, 1); err != nil {
+					return err
+				}
+			}
 			return w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: id, ID: serverIDs[id], CursorKey: make([]byte, 32)})
 		}); err != nil {
 			t.Fatal(err)
@@ -42,6 +48,13 @@ func TestNativeOrganizationReadsUsePostgresWithoutLegacyHandles(t *testing.T) {
 			decodeHubResponse(t, response, &organizations)
 			if len(organizations.Items) != 1 || organizations.Items[0].ID != id || organizations.Items[0].Name != string(id) || organizations.Items[0].Slug != string(id) {
 				t.Fatalf("tenant organizations = %+v", organizations.Items)
+			}
+			wantLogo := organizationLogo{Revision: 1}
+			if id == "org_first" {
+				wantLogo = organizationLogo{ImageKey: "att_example", ImageSHA256: strings.Repeat("a", 64), Revision: 2, URL: "/organizations/org_first/api/v2/attachments/att_example"}
+			}
+			if organizations.Items[0].Logo != wantLogo {
+				t.Fatalf("organization logo = %+v, want %+v", organizations.Items[0].Logo, wantLogo)
 			}
 			capabilities, err := service.readNativeCapabilities(t.Context())
 			if err != nil {

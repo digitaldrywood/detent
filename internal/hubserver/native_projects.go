@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -88,7 +89,14 @@ func (s *Service) nativeOrganizations(c echo.Context) error {
 		if err != nil {
 			return err
 		}
-		result.Items = append(result.Items, nativeOrganization{ID: record.OrganizationID, Name: record.Name, Slug: record.Slug, Local: record.Local})
+		logo, err := reader.OrganizationLogo(ctx)
+		if err != nil {
+			return fmt.Errorf("read organization logo: %w", err)
+		}
+		if logo.ImageKey != "" {
+			logo.URL = "/organizations/" + string(record.OrganizationID) + "/api/v2/attachments/" + logo.ImageKey
+		}
+		result.Items = append(result.Items, nativeOrganization{ID: record.OrganizationID, Name: record.Name, Slug: record.Slug, Local: record.Local, Logo: logo})
 		return nil
 	})
 	if err != nil {
