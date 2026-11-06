@@ -15,7 +15,7 @@ import (
 const (
 	TenantLimit = 32
 	WorkerLimit = 2
-	ByteLimit   = 8 << 20
+	ByteLimit   = 16 << 30
 )
 
 type Tenant struct {
@@ -119,7 +119,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		after = tenant.Organization
 	}
 	feature := s.features[s.family]
-	count := min(len(page), int(ByteLimit/feature.Bytes))
+	count := int(min(int64(len(page)), ByteLimit/feature.Bytes))
 	jobs := make(chan Tenant)
 	failures := make(chan error, TenantLimit)
 	var workers sync.WaitGroup

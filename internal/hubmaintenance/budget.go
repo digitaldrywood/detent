@@ -16,6 +16,7 @@ type budgetKey struct{}
 type byteBudget struct {
 	mu        sync.Mutex
 	tenant    Tenant
+	allowance int64
 	remaining int64
 }
 
@@ -24,12 +25,12 @@ func (b Budget) Context(ctx context.Context, tenant Tenant) context.Context {
 	if b.Items != 1 || remaining <= 0 || remaining > ByteLimit || tenant.Organization == "" || tenant.Generation <= 0 {
 		remaining = 0
 	}
-	return context.WithValue(ctx, budgetKey{}, &byteBudget{tenant: tenant, remaining: remaining})
+	return context.WithValue(ctx, budgetKey{}, &byteBudget{tenant: tenant, allowance: remaining, remaining: remaining})
 }
 
 func RequireBudget(ctx context.Context, organization string) error {
 	budget, ok := ctx.Value(budgetKey{}).(*byteBudget)
-	if !ok || budget.tenant.Organization != organization || budget.tenant.Generation <= 0 {
+	if !ok || budget.tenant.Organization != organization || budget.tenant.Generation <= 0 || budget.allowance <= 0 {
 		return errors.New("maintenance requires its selected tenant byte budget")
 	}
 	return nil
@@ -39,8 +40,20 @@ func RequireTenant(ctx context.Context, tenant Tenant) error {
 	if err := RequireBudget(ctx, tenant.Organization); err != nil {
 		return err
 	}
-	if ctx.Value(budgetKey{}).(*byteBudget).tenant != tenant {
+	budget, ok := ctx.Value(budgetKey{}).(*byteBudget)
+	if !ok || budget.tenant != tenant {
 		return errors.New("maintenance allocation generation mismatch")
+	}
+	return nil
+}
+
+func RequireAllowance(ctx context.Context, organization string, minimum int64) error {
+	if err := RequireBudget(ctx, organization); err != nil {
+		return err
+	}
+	budget, ok := ctx.Value(budgetKey{}).(*byteBudget)
+	if !ok || minimum <= 0 || budget.allowance < minimum {
+		return ErrByteBudget
 	}
 	return nil
 }

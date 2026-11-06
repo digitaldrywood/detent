@@ -16,6 +16,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const BoardMaintenanceBytes = hubmaintenance.ByteLimit
+
 type boardRefreshError struct {
 	item  tracker.NativeWorkItemID
 	step  string
@@ -62,12 +64,15 @@ func (s *Service) maintainBoardRecords(ctx context.Context) error {
 }
 
 func (s *Service) MaintainBoardRecord(ctx context.Context, organization tracker.OrganizationID, after tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, error) {
-	if err := hubmaintenance.RequireBudget(ctx, string(organization)); err != nil {
+	if err := hubmaintenance.RequireAllowance(ctx, string(organization), BoardMaintenanceBytes); err != nil {
 		return after, false, err
 	}
 	if _, ok := s.runDetailStore().(*hubmaintenance.Details); !ok {
 		return after, false, errors.New("maintenance requires byte-limited payload storage")
 	}
+	ctx = context.WithValue(ctx, detailBatchContextKey{}, nil)
+	ctx = context.WithValue(ctx, changeContentKey{}, nil)
+	ctx = context.WithValue(ctx, runDetailContextKey{}, nil)
 	return s.maintainBoardRecord(ctx, organization, after)
 }
 

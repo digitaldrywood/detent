@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +40,9 @@ func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 		for index := range 34 {
 			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%02d", index))
 			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "example", WorkItemID: id, Number: index + 1, Revision: 1}, Title: fmt.Sprintf("Example %d", index), State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: now, UpdatedAt: now}
+			if org == "org_second" && index == 32 {
+				issue.Body = strings.Repeat("example ", (9<<20)/8)
+			}
 			raw, err := json.Marshal(issue)
 			if err != nil {
 				t.Fatal(err)
@@ -187,11 +191,11 @@ func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 	service.localOrganization = "org_first"
 	tenant := hubmaintenance.Tenant{Organization: "org_second", Generation: 1}
 	ctx := (hubmaintenance.Budget{Items: 1, Bytes: 1}).Context(t.Context(), tenant)
-	if next, processed, err := service.MaintainBoardRecord(ctx, "org_second", ""); !errors.Is(err, hubmaintenance.ErrByteBudget) || !processed || next != "wi_32" {
+	if next, processed, err := service.MaintainBoardRecord(ctx, "org_second", ""); !errors.Is(err, hubmaintenance.ErrByteBudget) || processed || next != "" {
 		t.Fatalf("payload byte limit: next=%s processed=%t err=%v", next, processed, err)
 	}
 	assertPage("org_second", 32)
-	ctx = (hubmaintenance.Budget{Items: 1, Bytes: hubmaintenance.ByteLimit}).Context(t.Context(), tenant)
+	ctx = (hubmaintenance.Budget{Items: 1, Bytes: BoardMaintenanceBytes}).Context(t.Context(), tenant)
 	next, processed, err := service.MaintainBoardRecord(ctx, "org_second", "")
 	if err != nil || !processed || next != "wi_32" {
 		t.Fatalf("one-item maintenance: next=%s processed=%t err=%v", next, processed, err)
