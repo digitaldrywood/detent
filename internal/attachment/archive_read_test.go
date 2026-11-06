@@ -2,6 +2,7 @@ package attachment
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -115,5 +116,28 @@ func TestArchiveReadFailures(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestCanonicalArchiveRejectsInvalidContent(t *testing.T) {
+	var expanded bytes.Buffer
+	writer := gzip.NewWriter(&expanded)
+	if _, err := io.Copy(writer, strings.NewReader(strings.Repeat("x", MaxArchiveBytes+1))); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, data := range [][]byte{bytes.Repeat([]byte("x"), MaxArchiveBytes+1), expanded.Bytes(), []byte("invalid gzip")} {
+		key, err := ArchiveKey("org_example", artifact.Digest(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		store := archiveReadStorage{open: func(context.Context) (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(data)), nil
+		}}
+		if raw, err := ReadCanonicalArchive(t.Context(), store, "org_example", "prj_example", key); !errors.Is(err, artifact.ErrIntegrity) || raw != nil {
+			t.Fatalf("invalid canonical object returned %d bytes: %v", len(raw), err)
+		}
 	}
 }
