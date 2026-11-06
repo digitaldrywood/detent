@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 

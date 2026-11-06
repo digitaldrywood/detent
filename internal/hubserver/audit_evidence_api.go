@@ -181,7 +181,11 @@ func (s *Service) prepareValidatorAuditDispositionsFor(ctx context.Context, scop
 	var sources []eventstore.Evidence
 	var err error
 	if len(facts) > 0 && facts[0] != nil && facts[0].AuditDispositions != nil {
-		rows = facts[0].AuditDispositions[run.ID]
+		var covered bool
+		rows, covered = facts[0].AuditDispositions[run.ID]
+		if !covered {
+			return nil, nil, corestore.ErrRevisionConflict
+		}
 		if len(rows) > 200 {
 			return nil, nil, corestore.ErrInvalidPage
 		}

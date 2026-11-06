@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"reflect"
@@ -101,7 +102,7 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 				t.Fatal(err)
 			}
 			run := securityaudit.Run{ID: int64(index + 1), ProjectID: "example", Repository: input.Repository, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, Findings: []securityaudit.Finding{{ID: "finding", Body: "Example", Certainty: securityaudit.CertaintyConfirmed}}}
-			review := tracker.ChangeReview{ID: "review", VersionID: versionID, Decision: "changes_requested", Actor: issue.Actor, CreatedAt: now, SecurityAudit: &tracker.SecurityAuditReview{Run: run, VersionID: versionID}}
+			review := tracker.ChangeReview{ID: "review", VersionID: versionID, Decision: "changes_requested", Actor: issue.Actor, CreatedAt: now, SecurityAudit: &tracker.SecurityAuditReview{SessionID: run.ID, Run: run, VersionID: versionID}}
 			raw, _ = json.Marshal(review)
 			evidence, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: changeID, VersionID: &versionID, Kind: "review", CreatedAt: now}, raw)
 			if err != nil {
@@ -179,15 +180,12 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 				if hydrated.changeRecord.OrganizationID != org {
 					t.Fatal("cross tenant change")
 				}
-				detail, err := service.nativeClaimCurrentChangeDetail(ctx, scope, plan, now)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if plan.candidate.WorkItemID == scan.plans[0].candidate.WorkItemID && !reflect.DeepEqual(detail, expected) {
-					t.Fatal("snapshot changed validated detail")
-				}
 			}
 			got := exchanges.Load()
+			detail, err := service.nativeClaimCurrentChangeDetail(t.Context(), scope, scan.plans[0], now)
+			if err != nil || !reflect.DeepEqual(detail, expected) {
+				t.Fatalf("snapshot changed validated detail: %v", err)
+			}
 			t.Logf("tenant=%s candidates=%d statements=%d exchanges=%d", org, index+1, statements, got)
 			if baselineExchanges == 0 {
 				baselineExchanges = got
@@ -197,5 +195,36 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 				t.Errorf("snapshot cost grew: statements=%d exchanges=%d; baseline=%d/%d", statements, got, baselineStatements, baselineExchanges)
 			}
 		}
+		input := changeTestInput()
+		run := securityaudit.Run{ID: 501, ProjectID: "example", Repository: input.Repository, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA}
+		review := tracker.ChangeReview{ID: "foreign-run", VersionID: "version_049", Decision: "changes_requested", CreatedAt: now, SecurityAudit: &tracker.SecurityAuditReview{SessionID: 501, VersionID: "version_049", Run: run}}
+		raw, _ := json.Marshal(review)
+		evidence, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: "change_049", Kind: "review"}, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		disposition := securityaudit.Disposition{AuditRunID: 501, FindingID: "foreign", Status: securityaudit.DispositionFalsePositive, ServiceIdentity: securityaudit.ServiceIdentity("example"), RecordedAt: now}
+		raw, _ = json.Marshal(disposition)
+		ref, err := details.StoreDetail(t.Context(), string(org), raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: "wi_049", WorkflowStates: []string{"Merging"}}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(t.Context(), evidence); return err }); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.readNativeClaimPlan(t.Context(), scope, request, now); err != nil {
+			t.Fatalf("audit without dispositions: %v", err)
+		}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.(eventstore.AuditDispositionWriter).CreateAuditDisposition(t.Context(), eventstore.AuditDisposition{Organization: org, Project: "example", ChangeID: "change_000", ReviewSequence: 1, ActorID: "test_hub_admin", RequestKey: "foreign-run", RequestHash: "example", Reference: ref, Disposition: disposition})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.readNativeClaimPlan(t.Context(), scope, request, now); !errors.Is(err, corestore.ErrRevisionConflict) {
+			t.Fatalf("foreign audit disposition outside candidate page: %v", err)
+		}
+
 	}
 }
