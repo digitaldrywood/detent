@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
+	"database/sql/driver"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -68,7 +69,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func rolePool(t *testing.T, admin *sql.DB, group, attributes string) *sql.DB {
+func rolePool(t *testing.T, admin *sql.DB, group, attributes string, wrappers ...func(driver.Connector) driver.Connector) *sql.DB {
 	t.Helper()
 	name := "example_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	password := uuid.NewString()
@@ -96,7 +97,34 @@ func rolePool(t *testing.T, admin *sql.DB, group, attributes string) *sql.DB {
 			t.Fatal(err)
 		}
 	}
-	return template.OpenRole(t, admin, name, password)
+	pool := template.OpenRole(t, admin, name, password)
+	if len(wrappers) == 0 {
+		return pool
+	}
+	var database string
+	if err := pool.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&database); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Close(); err != nil {
+		t.Fatal(err)
+	}
+	config, err := pq.NewConfig(os.Getenv(pgtest.Environment))
+	if err != nil {
+		t.Fatal("configure test connection")
+	}
+	config.Database, config.User, config.Password = database, name, password
+	config.SSLMode = pq.SSLModeDisable
+	connector, err := pq.NewConnectorConfig(config)
+	if err != nil {
+		t.Fatal("configure test connector")
+	}
+	pool = sql.OpenDB(wrappers[0](connector))
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return pool
 }
 
 func testConfig(t *testing.T) Config {

@@ -473,6 +473,9 @@ func TestResolvePreservesErrorClass(t *testing.T) {
 			if errors.Is(cause, cloudassert.ErrInvalid) != errors.Is(err, cloudassert.ErrInvalid) {
 				t.Fatalf("denial class lost: %v", err)
 			}
+			if cause.Error() == "database unavailable" && !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("outage class lost: %v", err)
+			}
 			if (errors.Is(cause, context.DeadlineExceeded) || errors.Is(cause, context.Canceled)) && !errors.Is(err, cause) {
 				t.Fatalf("context class lost: %v", err)
 			}
