@@ -467,7 +467,7 @@ export class BoardRead {
           cards.set(issue.work_item_id, card);
         }
       }
-      const work = frame.work ?? entry.work;
+      const work = frame.counts_independent ? entry.work : frame.work ?? entry.work;
       return { ...entry, issues: [...issues.values()], cards: [...cards.values()], sequence: frame.sequence, work,
         backlogTotal: work?.lanes.find((lane) => lane.state.toLowerCase() === "backlog")?.total ?? entry.backlogTotal };
     });

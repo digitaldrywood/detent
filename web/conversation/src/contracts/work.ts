@@ -259,6 +259,7 @@ export const NativeBoardCard = Schema.Struct({
 export type NativeBoardCard = typeof NativeBoardCard.Type;
 
 export const NativeBoardFrame = Schema.Struct({
+  counts_independent: Schema.optional(Schema.Boolean),
   sequence: Schema.Number,
   grant_version: Schema.optional(Schema.String),
   gap: Schema.Boolean,

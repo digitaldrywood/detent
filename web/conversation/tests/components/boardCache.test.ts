@@ -1,3 +1,5 @@
+import { Schema } from "effect";
+import { NativeBoardFrame } from "../../src/contracts/work.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { makeAccountApi } from "../../src/app/account/api.ts";
@@ -329,6 +331,15 @@ describe("the Work snapshot ordering", () => {
       expect(read.snapshot().totals?.cancelled).toBe(1);
       expect(read.snapshot().totals?.shippedWindows?.["7d"]).toEqual({ shipped: 8, cancelled: 2 });
       expect(read.snapshot().backlogTotal).toBe(5);
+      const loadedTotals = read.snapshot().totals;
+      for (const sequence of [1, 2]) {
+        const frame = Schema.decodeUnknownSync(NativeBoardFrame)({ sequence, gap: false, deltas: [], counts_independent: true,
+          work: { items: [], lanes: [], truncated: false, as_of: "2026-11-06T12:01:00Z" } });
+        read.applyFrame("proj_alpha", frame);
+        expect(read.snapshot().totals).toEqual(loadedTotals);
+        expect(read.snapshot().backlogTotal).toBe(5);
+      }
+
     } finally {
       list.resolve();
       counts.resolve(response());

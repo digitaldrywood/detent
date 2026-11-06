@@ -153,7 +153,7 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 	if err != nil {
 		return false, err
 	}
-	frame.Work = summary.Work
+	frame.CountsIndependent = true
 	if summary.ChangeSequence != head || summary.GrantVersion != frame.GrantVersion {
 		frame.Gap, frame.Sequence, frame.GrantVersion, frame.Deltas = true, summary.ChangeSequence, summary.GrantVersion, []tracker.NativeBoardDelta{}
 	}

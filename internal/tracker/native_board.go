@@ -45,9 +45,10 @@ type NativeBoardDelta struct {
 }
 
 type NativeBoardFrame struct {
-	Sequence     int64              `json:"sequence"`
-	GrantVersion string             `json:"grant_version"`
-	Gap          bool               `json:"gap"`
-	Deltas       []NativeBoardDelta `json:"deltas"`
-	Work         *NativeWorkSummary `json:"work,omitempty"`
+	CountsIndependent bool               `json:"counts_independent,omitempty"`
+	Sequence          int64              `json:"sequence"`
+	GrantVersion      string             `json:"grant_version"`
+	Gap               bool               `json:"gap"`
+	Deltas            []NativeBoardDelta `json:"deltas"`
+	Work              *NativeWorkSummary `json:"work,omitempty"`
 }

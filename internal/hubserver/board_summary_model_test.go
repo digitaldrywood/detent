@@ -195,7 +195,7 @@ func TestBoardCountsFenceOwnershipUntilProjection(t *testing.T) {
 						return err
 					}
 					issue.Revision = tracker.Revision(item.Revision)
-					row := viewstore.BoardRecord{OrganizationID: org, ProjectID: fixture.project.ID, WorkItemID: issue.WorkItemID, SourceRevision: item.Revision, SourceEventSequence: item.EventSequence, SourceProjectRevision: project.ContentSettingsRevision, Position: viewstore.BoardPosition{State: issue.State, Identifier: "example#1"}, ActorPrincipalID: issue.Actor.PrincipalID, Terminal: true, Running: true, WindowMask: 7, Payload: payload, PageIssue: &issue, ListIssue: &issue, ListBytes: 1000, ProjectedAt: now, CreatedAt: now, UpdatedAt: now}
+					row := viewstore.BoardRecord{OrganizationID: org, ProjectID: fixture.project.ID, WorkItemID: issue.WorkItemID, SourceRevision: item.Revision, SourceEventSequence: item.EventSequence, SourceProjectRevision: project.ContentSettingsRevision, Position: viewstore.BoardPosition{State: issue.State, Identifier: "example#1"}, ActorPrincipalID: issue.Actor.PrincipalID, Terminal: true, Running: true, WindowMask: 7, ReporterRelations: &viewstore.BoardReporterRelations{}, Payload: payload, PageIssue: &issue, ListIssue: &issue, ListBytes: 1000, ProjectedAt: now, CreatedAt: now, UpdatedAt: now}
 					return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: fixture.project.ID, WorkItemID: issue.WorkItemID, ExpectedRevision: item.Revision, ExpectedEventSequence: item.EventSequence, ExpectedProjectRevision: project.ContentSettingsRevision, Current: &row})
 				})
 				if err != nil {
@@ -249,6 +249,23 @@ func TestBoardCountsFenceOwnershipUntilProjection(t *testing.T) {
 				}
 			}
 			publish(true)
+			sub := &dashboardSubscription{initial: true, sequence: 1, params: map[string][]string{}, frames: make(chan dashboardFrame, 1), done: make(chan struct{})}
+			delivery := &dashboardDelivery{config: dashboardDeliveryConfig{pageSize: 10}}
+			if _, err := service.dashboardBoardRecordPage(t.Context(), delivery, sub, scope); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case frame := <-sub.frames:
+				var body map[string]json.RawMessage
+				if err := json.Unmarshal([]byte(frame.data), &body); err != nil {
+					t.Fatal(err)
+				}
+				if string(body["counts_independent"]) != "true" {
+					t.Errorf("live frame does not preserve independently loaded counts: %s", frame.data)
+				}
+			default:
+				t.Fatal("missing initial board frame")
+			}
 			read("owner", false, 1)
 			httpRead(http.StatusOK)
 			if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
