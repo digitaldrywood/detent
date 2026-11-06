@@ -25,7 +25,6 @@ func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 	now := time.Date(2026, 11, 1, 22, 0, 0, 0, time.UTC)
 	details := &memoryRunDetails{}
 	service := &Service{config: Config{TenantRepository: repository, RunDetails: details, now: func() time.Time { return now }}, localOrganization: "org_first"}
-	var failingKey string
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), CreatedAt: now}); err != nil {
@@ -46,9 +45,6 @@ func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 			version, err := eventstore.NewContent(service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "example", WorkItemID: id, RecordID: string(id), Revision: 1}, raw)
 			if err != nil {
 				t.Fatal(err)
-			}
-			if org == "org_first" && index == 1 {
-				failingKey = version.PayloadObjectKey
 			}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "example", NativeID: id, Number: int64(index + 1), Title: issue.Title, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State}); err != nil {
@@ -100,67 +96,77 @@ func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 	if got := assertPage("org_first", 34); got != sequence {
 		t.Fatalf("unchanged refresh advanced sequence %d to %d", sequence, got)
 	}
-	if err := repository.WriteTenant(t.Context(), "org_first", corestore.Background, func(w tenantstore.Writer) error {
-		row, err := w.BoardItem(t.Context(), "example", "wi_01")
-		if err != nil {
-			return err
+	for index := 1; index < 30; index++ {
+		if err := repository.WriteTenant(t.Context(), "org_first", corestore.Background, func(w tenantstore.Writer) error {
+			row, err := w.BoardItem(t.Context(), "example", tracker.NativeWorkItemID(fmt.Sprintf("wi_%02d", index)))
+			if err != nil {
+				return err
+			}
+			row.Display.Ready = false
+			return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: row.ProjectID, WorkItemID: row.WorkItemID, ExpectedRevision: row.SourceRevision, ExpectedEventSequence: row.SourceEventSequence, ExpectedProjectRevision: row.SourceProjectRevision, Current: &row})
+		}); err != nil {
+			t.Fatal(err)
 		}
-		row.Display.Ready = false
-		return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: row.ProjectID, WorkItemID: row.WorkItemID, ExpectedRevision: row.SourceRevision, ExpectedEventSequence: row.SourceEventSequence, ExpectedProjectRevision: row.SourceProjectRevision, Current: &row})
-	}); err != nil {
-		t.Fatal(err)
 	}
+	changeIssue := func(t *testing.T, index int) string {
+		t.Helper()
+		id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%02d", index))
+		issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_first", ProjectID: "example", WorkItemID: id, Number: index + 1, Revision: 2}, Title: fmt.Sprintf("Updated example %d", index), State: "Done", Terminal: true, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: now, UpdatedAt: now.Add(time.Second)}
+		raw, err := json.Marshal(issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		version, err := eventstore.NewContent(service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: "org_first", ProjectID: "example", WorkItemID: id, RecordID: string(id), Revision: 2}, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+			row, err := w.WorkItem(t.Context(), "example", id)
+			if err != nil {
+				return err
+			}
+			row.Title, row.WorkflowStateName = issue.Title, new("Done")
+			if _, err := w.UpdateWorkItem(t.Context(), row); err != nil {
+				return err
+			}
+			_, err = w.CreateCollaborationVersion(t.Context(), version)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return version.PayloadObjectKey
+	}
+	failingKey := changeIssue(t, 1)
 	details.mu.Lock()
 	missing := details.data[failingKey]
 	delete(details.data, failingKey)
 	details.mu.Unlock()
 	for _, test := range []struct {
-		name   string
-		index  int
-		cursor string
-	}{{"late dirty after cold start", 33, ""}, {"dirty before cursor", 0, "wi_99"}} {
+		name    string
+		indices []int
+		cursor  string
+	}{{"late dirty after cold start", []int{32, 33}, ""}, {"dirty before cursor", []int{0, 30}, "wi_99"}} {
 		t.Run(test.name, func(t *testing.T) {
-			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%02d", test.index))
-			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_first", ProjectID: "example", WorkItemID: id, Number: test.index + 1, Revision: 2}, Title: fmt.Sprintf("Example %d", test.index), State: "Done", Terminal: true, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: now, UpdatedAt: now.Add(time.Second)}
-			raw, err := json.Marshal(issue)
-			if err != nil {
-				t.Fatal(err)
-			}
-			version, err := eventstore.NewContent(service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: "org_first", ProjectID: "example", WorkItemID: id, RecordID: string(id), Revision: 2}, raw)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
-				row, err := w.WorkItem(t.Context(), "example", id)
-				if err != nil {
-					return err
-				}
-				row.WorkflowStateName = new("Done")
-				if _, err := w.UpdateWorkItem(t.Context(), row); err != nil {
-					return err
-				}
-				_, err = w.CreateCollaborationVersion(t.Context(), version)
-				return err
-			}); err != nil {
-				t.Fatal(err)
+			for _, index := range test.indices {
+				changeIssue(t, index)
 			}
 			service.boardRefreshCursor = test.cursor
-			failed := false
-			for range 2 {
-				err := service.maintainBoardRecords(t.Context())
-				if errors.Is(err, artifact.ErrMissing) {
-					failed = true
-				} else if err != nil {
-					t.Fatal(err)
-				}
-			}
-			if !failed {
-				t.Fatal("missing payload was not attempted during the sweep")
+			if err := service.maintainBoardRecords(t.Context()); !errors.Is(err, artifact.ErrMissing) {
+				t.Fatalf("missing dirty payload error=%v", err)
 			}
 			if err := repository.ReadTenant(t.Context(), "org_first", corestore.Serving, func(r tenantstore.Reader) error {
-				row, err := r.BoardItem(t.Context(), "example", id)
-				if err == nil && (row.SourceRevision != 2 || row.Position.State != "Done") {
-					t.Fatalf("dirty card stayed stale behind a failing pending row after two bounded passes: revision=%d state=%s", row.SourceRevision, row.Position.State)
+				for _, index := range test.indices {
+					row, err := r.BoardItem(t.Context(), "example", tracker.NativeWorkItemID(fmt.Sprintf("wi_%02d", index)))
+					if err != nil {
+						return err
+					}
+					if row.SourceRevision != 2 || row.Position.State != "Done" || row.Display.Title != fmt.Sprintf("Updated example %d", index) {
+						t.Errorf("dirty card %d stayed stale after one bounded pass: revision=%d state=%s title=%s", index, row.SourceRevision, row.Position.State, row.Display.Title)
+					}
+				}
+				pending, err := r.BoardItem(t.Context(), "example", "wi_02")
+				if err == nil && !pending.Display.Ready {
+					t.Error("failing dirty row prevented pending backfill progress")
 				}
 				return err
 			}); err != nil {

@@ -136,7 +136,7 @@ type BoardUpdate struct {
 type BoardReader interface {
 	BoardAttemptCount(context.Context, int64) (int64, error)
 	BoardAccessRevisions(context.Context, string, string) ([3]int64, error)
-	NextBoardCandidate(context.Context, tracker.NativeWorkItemID) (BoardCandidate, error)
+	NextBoardCandidate(context.Context, tracker.NativeWorkItemID, ...tracker.NativeWorkItemID) (BoardCandidate, error)
 	BoardItem(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (BoardRecord, error)
 	BoardPage(context.Context, BoardSelection) ([]BoardRecord, error)
 	BoardLanes(context.Context, BoardSelection, time.Time) ([]BoardLane, error)

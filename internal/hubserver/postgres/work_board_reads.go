@@ -38,16 +38,22 @@ func scanBoard(row interface{ Scan(...any) error }, extra ...any) (viewstore.Boa
 	return b, err
 }
 
-func (s *session) NextBoardCandidate(ctx context.Context, after tracker.NativeWorkItemID) (viewstore.BoardCandidate, error) {
+func (s *session) NextBoardCandidate(ctx context.Context, after tracker.NativeWorkItemID, attempted ...tracker.NativeWorkItemID) (viewstore.BoardCandidate, error) {
+	skipped := make([]string, len(attempted))
+	for index, id := range attempted {
+		skipped[index] = string(id)
+	}
 	var candidate viewstore.BoardCandidate
 	err := s.db.QueryRowContext(ctx, `SELECT project_id,work_item_id FROM (
- (SELECT project_id,native_id AS work_item_id,0 AS priority FROM issues WHERE organization_id=$1 AND native_id>$2 ORDER BY native_id LIMIT 1)
- UNION ALL (SELECT project_id,work_item_id,0 AS priority FROM native_board_items WHERE organization_id=$1 AND work_item_id>$2 ORDER BY work_item_id LIMIT 1)
- UNION ALL (SELECT project_id,work_item_id,0 AS priority FROM native_board_dirty WHERE organization_id=$1 AND work_item_id>$2 ORDER BY work_item_id LIMIT 1)
- UNION ALL (SELECT project_id,native_id AS work_item_id,1 AS priority FROM issues WHERE organization_id=$1 AND native_id<=$2 ORDER BY native_id LIMIT 1)
- UNION ALL (SELECT project_id,work_item_id,1 AS priority FROM native_board_items WHERE organization_id=$1 AND work_item_id<=$2 ORDER BY work_item_id LIMIT 1)
- UNION ALL (SELECT project_id,work_item_id,1 AS priority FROM native_board_dirty WHERE organization_id=$1 AND work_item_id<=$2 ORDER BY work_item_id LIMIT 1)
- ) candidates ORDER BY priority,work_item_id LIMIT 1`, s.organization, after).Scan(&candidate.ProjectID, &candidate.WorkItemID)
+ (SELECT project_id,work_item_id,0 AS priority FROM native_board_dirty WHERE organization_id=$1 AND work_item_id>$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
+ UNION ALL (SELECT project_id,work_item_id,1 AS priority FROM native_board_dirty WHERE organization_id=$1 AND work_item_id<=$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
+ UNION ALL (SELECT project_id,work_item_id,2 AS priority FROM native_board_items WHERE organization_id=$1 AND NOT card_display_ready AND work_item_id>$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
+ UNION ALL (SELECT project_id,work_item_id,3 AS priority FROM native_board_items WHERE organization_id=$1 AND NOT card_display_ready AND work_item_id<=$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
+ UNION ALL (SELECT project_id,native_id AS work_item_id,4 AS priority FROM issues WHERE organization_id=$1 AND native_id>$2 AND native_id<>ALL($3::text[]) ORDER BY native_id LIMIT 1)
+ UNION ALL (SELECT project_id,work_item_id,4 AS priority FROM native_board_items WHERE organization_id=$1 AND work_item_id>$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
+ UNION ALL (SELECT project_id,native_id AS work_item_id,5 AS priority FROM issues WHERE organization_id=$1 AND native_id<=$2 AND native_id<>ALL($3::text[]) ORDER BY native_id LIMIT 1)
+ UNION ALL (SELECT project_id,work_item_id,5 AS priority FROM native_board_items WHERE organization_id=$1 AND work_item_id<=$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
+ ) candidates ORDER BY priority,work_item_id LIMIT 1`, s.organization, after, pq.Array(skipped)).Scan(&candidate.ProjectID, &candidate.WorkItemID)
 	return candidate, mapError(ctx, err)
 }
 
