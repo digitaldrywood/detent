@@ -3,15 +3,11 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
-	"reflect"
 	"slices"
 	"time"
 
@@ -142,10 +138,10 @@ func pilotHostedPlans() HostedPlansConfig {
 		Base: PlanReference{ID: "pilot_free", Version: 1}, WindowSeconds: 3600, RetentionWindows: 24, ConnectedSeconds: 90, InvitationSeconds: 86400,
 		Plans: []HostedPlan{{PlanReference: PlanReference{ID: "pilot_free", Version: 1}, Features: []string{"collaboration", "native_execution", "github_integration"}, Allowances: map[string]int64{
 			"members": 10, "projects": 10, "repositories": 10, "registered_runners": 10, "connected_runners": 10, "concurrent_work": 5,
-			"api_mutations": 10000, "ingested_events": 10000, "collaboration_bytes": 64 << 20, "history_records": 10000,
+			"api_mutations": 1000000, "ingested_events": 1000000, "collaboration_bytes": 64 << 20, "history_records": 10000,
 		}}, {PlanReference: PlanReference{ID: "comp_team", Version: 1}, Features: []string{"collaboration", "native_execution", "github_integration", "hosted_artifacts"}, Allowances: map[string]int64{
 			"members": 20, "projects": 20, "repositories": 20, "registered_runners": 20, "connected_runners": 20, "concurrent_work": 10,
-			"api_mutations": 20000, "ingested_events": 20000, "collaboration_bytes": 128 << 20, "history_records": 20000,
+			"api_mutations": 1000000, "ingested_events": 1000000, "collaboration_bytes": 128 << 20, "history_records": 20000,
 		}}},
 	}
 }
@@ -249,7 +245,7 @@ func CheckoutHostedPlans(plans *HostedPlansConfig) *HostedPlansConfig {
 		allowances[name] = 0
 	}
 	free := capacityHostedPlans().Plans[0]
-	for _, name := range []string{"api_mutations", "history_records", "collaboration_bytes"} {
+	for _, name := range []string{"api_mutations", "ingested_events", "history_records", "collaboration_bytes"} {
 		allowances[name] = free.Allowances[name]
 	}
 	config.Plans = append(config.Plans, HostedPlan{PlanReference: config.Base, Name: "Payment pending", Features: []string{}, Allowances: allowances})
@@ -302,9 +298,6 @@ func (d *database) configureHostedPlans(ctx context.Context, cfg *HostedConfig) 
 	if err := d.refreshRuntime(ctx); err != nil {
 		return err
 	}
-	if state := d.hostedRuntime.Load(); state != nil && state.Revision != "" {
-		return nil
-	}
 	config := defaultHostedPlans(cfg)
 	if !cfg.Plans.IsZero() {
 		config = *cfg.Plans
@@ -316,57 +309,14 @@ func (d *database) configureHostedPlans(ctx context.Context, cfg *HostedConfig) 
 		return err
 	}
 
-	if d.billingAuditStore == nil {
-		return errors.New("hosted billing audit storage is unavailable")
-	}
-	audits := make(map[PlanReference]billingstore.PlanAudit, len(config.Plans))
-	for _, configured := range config.Plans {
-		configured = normalizeHostedPlan(configured)
-		ref := configured.PlanReference
-		command := hostedPlanCommand{ID: fmt.Sprintf("seed_%s_%d", ref.ID, ref.Version), Action: "create_plan", Plan: ref, Definition: &configured, Reason: "startup seed"}
-		raw, err := json.Marshal(command)
-		if err != nil {
-			return err
-		}
-		archive, err := d.billingAuditStore.StoreDetail(ctx, string(d.hostedOrganization), raw)
-		if err != nil {
-			return fmt.Errorf("store hosted plan seed audit: %w", err)
-		}
-		digest := sha256.Sum256(raw)
-		audits[ref] = billingstore.PlanAudit{OrganizationID: d.hostedOrganization, CommandID: command.ID, RequestHash: hex.EncodeToString(digest[:]), ActorID: "configuration", Action: command.Action, RecordedAt: d.now().UTC(), Reference: billingstore.AuditReferenceFromArchive(archive)}
-	}
 	var prices []HostedBillingPrice
 	if cfg.Billing != nil {
 		prices = cfg.Billing.Prices
 	}
-	revision, err := d.archiveRuntime(ctx, config, prices, "", true)
-	if err != nil {
+	if err := d.applyRuntimeRecords(ctx, config, prices, "configuration", "startup configuration", "", false); err != nil {
 		return err
 	}
-	err = d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
-		for _, configured := range config.Plans {
-			configured = normalizeHostedPlan(configured)
-			record := billingstore.Plan{OrganizationID: d.hostedOrganization, PlanReference: billingstore.PlanReference{ID: configured.ID, Version: configured.Version}, Name: configured.Name, MonthlyUSDCents: configured.MonthlyUSDCents, RuntimeID: "", Allowances: configured.Allowances, Features: configured.Features}
-			stored, err := writer.BillingPlan(ctx, record.PlanReference)
-			if errors.Is(err, corestore.ErrNotFound) {
-				if err := writer.CreateBillingPlan(ctx, record); err != nil {
-					return err
-				}
-				if _, err := writer.CreateBillingPlanAudit(ctx, audits[configured.PlanReference]); err != nil {
-					return err
-				}
-			} else if err != nil {
-				return err
-			} else {
-				storedPlan := HostedPlan{PlanReference: PlanReference{ID: stored.ID, Version: stored.Version}, Name: stored.Name, MonthlyUSDCents: stored.MonthlyUSDCents, Allowances: stored.Allowances, Features: stored.Features}
-				if !reflect.DeepEqual(normalizeHostedPlan(storedPlan), configured) {
-					d.logger.WarnContext(ctx, "hosted plan seed differs from immutable stored version; keeping stored version", "plan", configured.ID, "version", configured.Version, "actor", "configuration", "reason", "startup seed")
-				}
-			}
-		}
-		if err := writer.StageRuntime(ctx, revision); err != nil {
-			return err
-		}
+	err := d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
 		assignment := billingstore.Assignment{OrganizationID: d.hostedOrganization, Base: billingstore.PlanReference{ID: config.Base.ID, Version: config.Base.Version}}
 		if _, err := writer.BillingAssignment(ctx); errors.Is(err, corestore.ErrNotFound) {
 			return writer.SetBillingAssignment(ctx, assignment, 0)
@@ -396,6 +346,9 @@ func normalizeHostedPlan(plan HostedPlan) HostedPlan {
 	plan.Features = slices.Clone(plan.Features)
 	slices.Sort(plan.Features)
 	plan.Features = slices.Compact(plan.Features)
+	if len(plan.Features) == 0 {
+		plan.Features = nil
+	}
 	return plan
 }
 
@@ -456,28 +409,6 @@ func (d *database) loadHostedPlan(ctx context.Context, ref PlanReference, read f
 	}
 	if _, exists := plan.Allowances["unarchived_issues"]; !exists {
 		plan.Allowances["unarchived_issues"] = hostedOpenIssueGuard
-	}
-	if tier, ok := hostedTierFor(ref); ok {
-		return tier.apply(plan), nil
-	}
-	if ref.Version == 1 && slices.Contains([]string{"pilot_free", "comp_team"}, ref.ID) {
-		_, _, err := read(ctx, PlanReference{ID: "starter", Version: 1})
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return plan, err
-		}
-		if err == nil {
-			plan.Allowances["unarchived_issues"] = max(plan.Allowances["unarchived_issues"], hostedOpenIssueGuard)
-			plan.Allowances["history_records"] = max(plan.Allowances["history_records"], 2000000)
-			for _, resource := range []string{"members", "projects", "repositories", "registered_runners", "connected_runners", "concurrent_work"} {
-				delete(plan.Allowances, resource)
-			}
-			if plan.Name == "" {
-				plan.Name = "Legacy complimentary pilot"
-				if ref.ID == "comp_team" {
-					plan.Name = "Legacy Team"
-				}
-			}
-		}
 	}
 	return plan, err
 }

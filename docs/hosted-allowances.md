@@ -74,8 +74,8 @@ entitlements:
         registered_runners: 10
         connected_runners: 10
         concurrent_work: 5
-        api_mutations: 10000
-        ingested_events: 10000
+        api_mutations: 1000000
+        ingested_events: 1000000
         collaboration_bytes: 67108864
         history_records: 10000
     - id: comp_team
@@ -88,8 +88,8 @@ entitlements:
         registered_runners: 20
         connected_runners: 20
         concurrent_work: 10
-        api_mutations: 20000
-        ingested_events: 20000
+        api_mutations: 1000000
+        ingested_events: 1000000
         collaboration_bytes: 134217728
         history_records: 20000
 ```
@@ -108,8 +108,10 @@ telemetry retains at most 720 windows and 30 days. Invitation reservations last
 between one minute and seven days. These are validation bounds, not public
 retention periods.
 
-Plan records are immutable by `(id, version)`. To change a plan, add another
-version and explicitly assign it. Configured `base` initializes a new assignment;
+Operator configuration owns plan definitions by `(id, version)`. Startup and
+runtime reload replace configured names, prices, features and allowances in the
+typed plan owner, with an audit record attributed to `configuration`.
+Configured `base` initializes a new assignment;
 restarting or changing the file does not overwrite an existing assignment or a
 later administrator decision. Existing plan versions remain available for audit
 and historical grants. Legacy `plan_id`, positive `storage_quota_bytes`, and
@@ -181,8 +183,8 @@ idempotency rules as assignments and grants. For example:
 
 Read the new revision, then assign or grant the created version. Creating an
 existing version under a different command key conflicts; it never overwrites
-the stored definition. File plans are startup seeds: matching definitions do
-nothing, and differing existing versions warn and retain the stored version.
+the stored definition. File configuration can replace that definition at startup
+or runtime reload; matching definitions do not generate an update audit.
 
 Grant `starts_at` defaults to transaction time; optional `expires_at` uses an
 RFC3339 timestamp after the start. A `revoke` command names `grant_id` and a
@@ -231,18 +233,17 @@ administrator authority. Customer API keys do not acquire this authority.
 On Unix, SIGHUP reloads the existing `cloud.yaml` file. The full document,
 including restart-only fields, must parse and validate. The reloadable fields
 are `allocation.entitlements`, `allocation.billing.prices`,
-`allocation.allowed_emails`, and `allocation.allowed_domains`. Existing plan
-versions and Stripe price mappings remain immutable; use a new version or price
-rather than changing one already stored. The entitlement policy, including
-usage-window settings, and the active billing price list publish as one
+`allocation.allowed_emails`, and `allocation.allowed_domains`. Configured plan
+definitions replace the stored definition for the same ID and version. Stripe price mappings remain immutable; configure a new price to change
+a mapping. The entitlement policy, including usage-window settings, and the active billing price list publish as one
 immutable snapshot in each tenant after the database transaction succeeds.
 New plans, reloads, and their reasons are recorded in `hosted_plan_audit`.
 
-The entry validates every ready managed tenant, then prepares immutable plan
-records without exposing the new catalog, policy, or active prices. One atomic
-publication file selects the prepared settings for all managed tenants and
-future launches. Tenant Hubs read this shared publication through an entry-owned
-link beside their database; publication requires no tenant activation request.
+The entry validates every ready managed tenant, then prepares the runtime
+snapshot without changing active definitions. The PostgreSQL publication selects
+the prepared settings for managed tenants and future launches. Each tenant
+runtime refresh replaces its configured definitions and writes their audit
+records in one transaction before activating its in-memory snapshot.
 A rejected preparation, a lost reply after preparation commits, or a persistent
 transport outage leaves the previous publication active. Unpublished plan records
 cannot be read or assigned through the entitlement API. Preparation and reload

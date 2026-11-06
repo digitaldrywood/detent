@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -230,6 +231,10 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 		t.Fatal("invalid file replaced runtime")
 	}
 	plans := *f.fixtures["org_alpha"].config.Hosted.Plans
+	plans.Plans = append([]hubserver.HostedPlan(nil), plans.Plans...)
+	plans.Plans[0].Allowances = maps.Clone(plans.Plans[0].Allowances)
+	plans.Plans[0].Allowances["api_mutations"] = 123456
+	plans.Plans[0].Allowances["ingested_events"] = 234567
 	plan := plans.Plans[1]
 	plan.Version++
 	plans.Plans = append(plans.Plans, plan)
@@ -253,6 +258,9 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 		}
 		found := false
 		for _, p := range report.Plans {
+			if p.ID == plans.Base.ID && p.Version == plans.Base.Version && (p.Allowances["api_mutations"] != 123456 || p.Allowances["ingested_events"] != 234567) {
+				t.Fatalf("%s retained old configured allowances: %+v", id, p.Allowances)
+			}
 			found = found || p.ID == plan.ID && p.Version == plan.Version
 		}
 		if !found {
@@ -281,7 +289,16 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 		fixture := f.fixtures[id]
 		endpoint := testSocketEndpoint(strings.TrimPrefix(id, "org_") + ".sock")
 		previous := f.tenants[endpoint]
-		restarted, err := hubserver.Open(t.Context(), fixture.config)
+		restartConfig := fixture.config
+		hosted := *restartConfig.Hosted
+		hosted.Plans = before.Plans
+		if hosted.Billing != nil {
+			billing := *hosted.Billing
+			billing.Prices = before.Prices
+			hosted.Billing = &billing
+		}
+		restartConfig.Hosted = &hosted
+		restarted, err := hubserver.Open(t.Context(), restartConfig)
 		if err != nil {
 			t.Fatal(err)
 		}

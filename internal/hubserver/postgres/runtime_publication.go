@@ -15,6 +15,11 @@ func (s *session) RuntimePublished(ctx context.Context, id string) (bool, error)
 }
 
 func (s *session) CurrentRuntime(ctx context.Context) (billingstore.RuntimeRevision, error) {
+	if !s.readOnly {
+		if _, err := s.queries.LockRuntimeHead(ctx, s.organization); err != nil {
+			return billingstore.RuntimeRevision{}, mapError(ctx, err)
+		}
+	}
 	row, err := s.queries.CurrentRuntime(ctx, s.organization)
 	return billingstore.RuntimeRevision{ID: row.ID, Published: row.LocalPublished, Reference: billingstore.AuditReference{BindingID: row.BindingID, CustomerOwned: row.CustomerOwned, Key: row.ObjectKey, SHA256: row.Sha256, CompressedBytes: row.CompressedBytes, ContentBytes: row.ContentBytes, Codec: row.Codec, FormatVersion: int(row.FormatVersion), Kind: row.Kind, Retention: row.Retention}}, mapError(ctx, err)
 }

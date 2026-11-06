@@ -47,6 +47,28 @@ func (p *runtimeReadProbe) ReadTenant(ctx context.Context, _ tracker.Organizatio
 	return read(runtimeRevisionProbe{id: p.revision})
 }
 
+func (p *runtimeReadProbe) WriteTenant(ctx context.Context, _ tracker.OrganizationID, _ corestore.Workload, write func(tenantstore.Writer) error) error {
+	return write(runtimeWriteProbe{runtimeReadProbe: p})
+}
+
+type runtimeWriteProbe struct {
+	tenantstore.Writer
+	*runtimeReadProbe
+}
+
+func (p runtimeWriteProbe) CurrentRuntime(ctx context.Context) (billingstore.RuntimeRevision, error) {
+	return runtimeRevisionProbe{id: p.revision}.CurrentRuntime(ctx)
+}
+
+func (p runtimeWriteProbe) BillingPlan(_ context.Context, ref billingstore.PlanReference) (billingstore.Plan, error) {
+	for _, plan := range pilotHostedPlans().Plans {
+		if plan.ID == ref.ID && plan.Version == ref.Version {
+			return billingstore.Plan{PlanReference: ref, Features: plan.Features, Allowances: plan.Allowances}, nil
+		}
+	}
+	return billingstore.Plan{}, corestore.ErrNotFound
+}
+
 type runtimeRevisionProbe struct {
 	tenantstore.Reader
 	id string

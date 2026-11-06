@@ -22,10 +22,6 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
-	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -372,49 +368,6 @@ func TestHostedPlanReportPaginatesGrantHistory(t *testing.T) {
 			t.Fatalf("final grant history page has continuation %q", report.NextGrantHistory)
 		}
 		after = report.NextGrantHistory
-	}
-}
-
-func TestHostedLegacyTierFeaturesSurviveSelectedPostgresAdapter(t *testing.T) {
-	t.Parallel()
-	f := newHostedSharedFixture(t)
-	d := f.service.database
-	org := tracker.OrganizationID(d.hostedOrganization)
-	repository := projectRecordPostgres(t)
-	d.billingRepository = repository
-	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
-	d.now = func() time.Time { return now }
-	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example organization", CreatedAt: now})
-	}); err != nil {
-		t.Fatal(err)
-	}
-	legacy := HostedPlan{PlanReference: PlanReference{ID: "starter", Version: 1}, Name: "Starter", Features: []string{}, Allowances: map[string]int64{}}
-	if len(legacy.Features) != 0 {
-		t.Fatalf("historical plan unexpectedly has features: %v", legacy.Features)
-	}
-	loaded, err := d.loadHostedPlan(t.Context(), legacy.PlanReference, func(context.Context, PlanReference) (HostedPlan, string, error) {
-		return legacy, "", nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Contains(loaded.Features, "hosted_artifacts") {
-		t.Fatalf("shared legacy tier resolution features=%v", loaded.Features)
-	}
-	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-		plan := billingstore.Plan{OrganizationID: org, PlanReference: billingstore.PlanReference{ID: loaded.ID, Version: loaded.Version}, Name: loaded.Name, RuntimeID: "", Features: loaded.Features, Allowances: loaded.Allowances}
-		if err := w.CreateBillingPlan(t.Context(), plan); err != nil {
-			return err
-		}
-		return w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: org, Base: plan.PlanReference}, 0)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-		return d.requireHostedFeatureRecord(t.Context(), r, "hosted_artifacts", now)
-	}); err != nil {
-		t.Fatalf("selected PostgreSQL adapter lost derived historical tier feature: %v", err)
 	}
 }
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -56,6 +58,9 @@ func (d *database) refreshRuntime(ctx context.Context) error {
 		if update.Plans == nil {
 			return nil, workItemStorageUnavailable()
 		}
+		if err := d.applyPublishedPlans(ctx, revision, *update.Plans); err != nil {
+			return nil, err
+		}
 		state := &hostedRuntimeConfig{Revision: revision.ID, Plans: *update.Plans}
 		if d.runtimeBilling != nil {
 			next := *d.runtimeBilling
@@ -80,4 +85,39 @@ func (s *Service) refreshHostedRuntime(next echo.HandlerFunc) echo.HandlerFunc {
 		}
 		return next(c)
 	}
+}
+
+func (d *database) applyPublishedPlans(ctx context.Context, revision billingstore.RuntimeRevision, plans HostedPlansConfig) error {
+	return d.writeBillingTenant(ctx, func(w tenantstore.Writer) error {
+		current, err := w.CurrentRuntime(ctx)
+		if err != nil {
+			return err
+		}
+		if current.ID != revision.ID {
+			return corestore.ErrRevisionConflict
+		}
+		for _, configured := range plans.Plans {
+			configured = normalizeHostedPlan(configured)
+			ref := billingstore.PlanReference{ID: configured.ID, Version: configured.Version}
+			stored, err := w.BillingPlan(ctx, ref)
+			if err != nil {
+				return err
+			}
+			existing := normalizeHostedPlan(HostedPlan{PlanReference: configured.PlanReference, Name: stored.Name, MonthlyUSDCents: stored.MonthlyUSDCents, Features: stored.Features, Allowances: stored.Allowances})
+			if reflect.DeepEqual(existing, configured) {
+				continue
+			}
+			stored.Name, stored.MonthlyUSDCents = configured.Name, configured.MonthlyUSDCents
+			stored.Features, stored.Allowances = configured.Features, configured.Allowances
+			stored.RuntimeID = revision.ID
+			if err := w.ReplaceBillingPlan(ctx, stored); err != nil {
+				return err
+			}
+			audit := billingstore.PlanAudit{OrganizationID: d.hostedOrganization, CommandID: fmt.Sprintf("configuration_%s_%s_%d", revision.ID, ref.ID, ref.Version), RequestHash: revision.Reference.SHA256, ActorID: "configuration", Action: "update_plan", RecordedAt: d.now().UTC(), Reference: revision.Reference}
+			if _, err := w.CreateBillingPlanAudit(ctx, audit); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

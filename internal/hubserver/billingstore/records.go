@@ -342,6 +342,7 @@ type Writer interface {
 	RecordBillingCosts(context.Context, []CostObservation) ([]bool, error)
 	ImportBillingCostRevision(context.Context, CostObservation) (bool, error)
 	CreateBillingPlan(context.Context, Plan) error
+	ReplaceBillingPlan(context.Context, Plan) error
 	SetBillingPlanRuntime(context.Context, PlanReference, string) error
 	SetBillingAssignment(context.Context, Assignment, int64) error
 	CreateBillingGrant(context.Context, Grant) error

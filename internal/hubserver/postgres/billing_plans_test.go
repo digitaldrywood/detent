@@ -182,7 +182,7 @@ func TestBillingFeatureGateUsesCurrentAssignmentsAndGrantScope(t *testing.T) {
 	grantPlan := billingstore.Plan{OrganizationID: org, PlanReference: billingstore.PlanReference{ID: "grant", Version: 1}, Name: "Grant", RuntimeID: "grant", Features: []string{"github_integration"}, Allowances: map[string]int64{}}
 	retiredPlan := billingstore.Plan{OrganizationID: org, PlanReference: billingstore.PlanReference{ID: "retired", Version: 1}, Name: "Retired", RuntimeID: "", Features: []string{"hosted_artifacts"}, Allowances: map[string]int64{}}
 	stalePlan := billingstore.Plan{OrganizationID: org, PlanReference: billingstore.PlanReference{ID: "stale", Version: 1}, Name: "Stale", RuntimeID: "runtime_stale", Features: []string{"hosted_artifacts"}, Allowances: map[string]int64{}}
-	capacityPlan := billingstore.Plan{OrganizationID: org, PlanReference: billingstore.PlanReference{ID: "starter", Version: 1}, Name: "Capacity", RuntimeID: "starter", Features: []string{}, Allowances: map[string]int64{}}
+	capacityPlan := billingstore.Plan{OrganizationID: org, PlanReference: billingstore.PlanReference{ID: "starter", Version: 1}, Name: "Capacity", RuntimeID: "starter", Features: []string{"native_execution"}, Allowances: map[string]int64{}}
 	assignment := billingstore.Assignment{OrganizationID: org, Base: base.PlanReference, Revision: 1}
 	grants := []billingstore.Grant{
 		{OrganizationID: org, ID: "active_feature", Plan: grantPlan.PlanReference, Scope: []string{"github_integration"}, StartsAt: now.Add(-time.Hour)},

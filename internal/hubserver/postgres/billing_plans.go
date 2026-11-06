@@ -66,6 +66,10 @@ func (s *session) CreateBillingPlan(ctx context.Context, plan billingstore.Plan)
 	if err := s.queries.CreateBillingPlan(ctx, pgquery.CreateBillingPlanParams{OrganizationID: s.organization, ID: plan.ID, Version: plan.Version, Name: plan.Name, MonthlyUsdCents: price, RuntimeID: plan.RuntimeID}); err != nil {
 		return mapError(ctx, err)
 	}
+	return s.createBillingPlanContents(ctx, plan)
+}
+
+func (s *session) createBillingPlanContents(ctx context.Context, plan billingstore.Plan) error {
 	for _, metric := range slices.Sorted(maps.Keys(plan.Allowances)) {
 		if err := s.queries.CreateBillingPlanAllowance(ctx, pgquery.CreateBillingPlanAllowanceParams{OrganizationID: s.organization, PlanID: plan.ID, PlanVersion: plan.Version, Metric: metric, Amount: plan.Allowances[metric]}); err != nil {
 			return mapError(ctx, err)
@@ -77,6 +81,27 @@ func (s *session) CreateBillingPlan(ctx context.Context, plan billingstore.Plan)
 		}
 	}
 	return nil
+}
+
+func (s *session) ReplaceBillingPlan(ctx context.Context, plan billingstore.Plan) error {
+	if err := s.checkOrganization(plan.OrganizationID); err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE hosted_plans SET name=$4,monthly_usd_cents=$5,runtime_id=$6 WHERE organization_id=$1 AND id=$2 AND version=$3`, s.organization, plan.ID, plan.Version, plan.Name, plan.MonthlyUSDCents, plan.RuntimeID)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	count, err := result.RowsAffected()
+	if err := affected(ctx, count, err); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM hosted_plan_allowances WHERE organization_id=$1 AND plan_id=$2 AND plan_version=$3`, s.organization, plan.ID, plan.Version); err != nil {
+		return mapError(ctx, err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM hosted_plan_features WHERE organization_id=$1 AND plan_id=$2 AND plan_version=$3`, s.organization, plan.ID, plan.Version); err != nil {
+		return mapError(ctx, err)
+	}
+	return s.createBillingPlanContents(ctx, plan)
 }
 
 func (s *session) SetBillingPlanRuntime(ctx context.Context, ref billingstore.PlanReference, runtimeID string) error {

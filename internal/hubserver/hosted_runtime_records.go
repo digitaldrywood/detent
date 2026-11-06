@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"reflect"
 
 	"github.com/google/uuid"
 
@@ -62,10 +61,6 @@ func (d *database) applyRuntimeRecords(ctx context.Context, plans HostedPlansCon
 			} else if err != nil {
 				return err
 			} else {
-				existing := normalizeHostedPlan(HostedPlan{PlanReference: plan.PlanReference, Name: stored.Name, MonthlyUSDCents: stored.MonthlyUSDCents, Allowances: stored.Allowances, Features: stored.Features})
-				if !reflect.DeepEqual(existing, plan) {
-					d.logger.WarnContext(ctx, "hosted plan seed differs from immutable stored version; keeping stored version", "plan", plan.ID, "version", plan.Version, "actor", actor, "reason", reason)
-				}
 				visible, err := w.RuntimePublished(ctx, stored.RuntimeID)
 				if err != nil {
 					return err

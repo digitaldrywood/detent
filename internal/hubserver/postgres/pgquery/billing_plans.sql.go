@@ -104,7 +104,7 @@ SELECT EXISTS(
     LEFT JOIN hosted_plan_features f ON f.organization_id=p.organization_id AND f.plan_id=p.id AND f.plan_version=p.version AND f.feature=s.scope
     WHERE g.organization_id=$1 AND g.revoked_at IS NULL AND g.starts_at<=$3 AND (g.expires_at IS NULL OR g.expires_at>$3)
       AND (p.runtime_id='' OR EXISTS(SELECT 1 FROM hosted_runtime_revisions r WHERE r.organization_id=p.organization_id AND r.id=p.runtime_id AND (r.local_published OR EXISTS(SELECT 1 FROM hosted_runtime_publications pub WHERE pub.id=r.id))))
-      AND ((s.scope=$2 AND (f.feature IS NOT NULL OR s.scope='model_choice')) OR ($2='native_execution' AND p.id||':'||p.version::text=ANY($4::text[])))
+      AND ((s.scope=$2 AND (f.feature IS NOT NULL OR s.scope='model_choice')) OR ($2='native_execution' AND p.id||':'||p.version::text=ANY($4::text[]) AND EXISTS(SELECT 1 FROM hosted_plan_features capacity_feature WHERE capacity_feature.organization_id=p.organization_id AND capacity_feature.plan_id=p.id AND capacity_feature.plan_version=p.version AND capacity_feature.feature=$2)))
 )
 `
 
