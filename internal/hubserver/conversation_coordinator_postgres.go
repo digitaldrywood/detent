@@ -114,6 +114,9 @@ func (c *conversationTurnCoordinator) coordinatorMessages(ctx context.Context, f
 }
 
 func (c *conversationTurnCoordinator) authorizeRecord(ctx context.Context, scope nativeScope, record conversationRecord, write bool) error {
+	if record.OrganizationID != scope.organization || record.ProjectID != scope.project {
+		return nativeNotFound()
+	}
 	return c.service.server.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := c.service.server.authorizeAccessScope(ctx, r, scope, write); err != nil {
 			return err
