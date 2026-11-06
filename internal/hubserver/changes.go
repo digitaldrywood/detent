@@ -437,7 +437,7 @@ func (s *Service) getChange(c echo.Context) error {
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		return nativeArchiveJSON(c, http.StatusOK, result)
+		return nativeArchiveJSON(c, http.StatusOK, changeDetailResponse(result))
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
@@ -473,11 +473,34 @@ func (s *Service) getChange(c echo.Context) error {
 		}
 		return s.nativeAPIError(c, err)
 	}
+	if result.Detail != nil {
+		detail := changeDetailResponse(*result.Detail)
+		result.Detail = &detail
+	}
 	bounded, err := operatortool.BoundedChangeResult(result)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.Blob(http.StatusOK, "application/json", bounded.Content)
+}
+
+func changeDetailResponse(detail tracker.ChangeDetail) tracker.ChangeDetail {
+	detail.Change.LinkedIssues = append([]tracker.NativeWorkItemID{}, detail.Change.LinkedIssues...)
+	detail.Versions = append([]tracker.ChangeVersion{}, detail.Versions...)
+	detail.Reviews = append([]tracker.ChangeReview{}, detail.Reviews...)
+	detail.Checks = append([]tracker.ChangeCheck{}, detail.Checks...)
+	detail.Discussion = append([]tracker.ChangeDiscussion{}, detail.Discussion...)
+	detail.Summary.Messages = append([]string{}, detail.Summary.Messages...)
+	for i := range detail.Versions {
+		version := &detail.Versions[i]
+		version.Artifacts = append([]tracker.ChangeArtifact{}, version.Artifacts...)
+		version.Checks = append([]tracker.ChangeCheckExpectation{}, version.Checks...)
+		version.ReviewPolicy.RequiredChecks = append([]tracker.ChangeCheckSpec{}, version.ReviewPolicy.RequiredChecks...)
+	}
+	for i := range detail.Checks {
+		detail.Checks[i].Evidence = append([]tracker.ChangeArtifact{}, detail.Checks[i].Evidence...)
+	}
+	return detail
 }
 
 func readChangeDetail(ctx context.Context, query nativeQueryer, scope nativeScope, item, id string, now time.Time) (tracker.ChangeDetail, error) {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -182,6 +183,117 @@ func (s *changeReviewDetailReadGuard) ReadDetail(ctx context.Context, organizati
 		return nil, errors.New("archive read while Change writer is held")
 	}
 	return s.DetailStore.ReadDetail(ctx, organization, ref)
+}
+
+func TestChangeDetailEmptyCollectionsAreArrays(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	service := openLocalPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
+	for _, id := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(id), func(t *testing.T) {
+			seedWorkItemRecordOrganization(t, repository, service, nativeOrganization{ID: id, Name: string(id), Slug: string(id)})
+			projects := "/api/v2/organizations/" + string(id) + "/projects"
+			response := performHubAPIRequest(t, service, http.MethodPost, projects, testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Example project", "states": nativeFixtureStates()})
+			requireNativeStatus(t, response, http.StatusOK)
+			var project tracker.NativeProject
+			decodeHubResponse(t, response, &project)
+			base := projects + "/" + string(project.ID)
+			approveHubTestPolicy(t, service, base+"/policy", hubTestPolicy())
+			response = performHubAPIRequest(t, service, http.MethodPost, base+"/work-items", testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "issue"}, Title: "Example issue", Body: workItemRecordBody})
+			requireNativeStatus(t, response, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			path := base + "/work-items/" + string(issue.WorkItemID) + "/changes"
+			response = performHubAPIRequest(t, service, http.MethodPost, path, testHubAdminToken, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: "Example Change"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var change tracker.ChangeRequest
+			decodeHubResponse(t, response, &change)
+			path += "/" + change.ID
+			for _, published := range []bool{false, true} {
+				if published {
+					input := changeTestInput()
+					input.Artifacts = nil
+					response = performHubAPIRequest(t, service, http.MethodPost, path+"/versions", testHubAdminToken, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish"}, ChangeVersionInput: input})
+					requireNativeStatus(t, response, http.StatusOK)
+				}
+				for _, view := range []string{"", "?view=bounded"} {
+					response = performHubAPIRequest(t, service, http.MethodGet, path+view, testHubAdminToken, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var payload json.RawMessage
+					decodeHubResponse(t, response, &payload)
+					if view != "" {
+						var envelope struct{ Detail json.RawMessage }
+						if err := json.Unmarshal(payload, &envelope); err != nil {
+							t.Fatal(err)
+						}
+						payload = envelope.Detail
+					}
+					var typed tracker.ChangeDetail
+					if err := json.Unmarshal(payload, &typed); err != nil {
+						t.Fatal(err)
+					}
+					if typed.Change.OrganizationID != id || len(typed.Change.LinkedIssues) != 1 || typed.Change.LinkedIssues[0] != issue.WorkItemID || typed.Summary.Messages == nil {
+						t.Errorf("view=%q invalid Change identity or collection shape: %+v", view, typed)
+					}
+					var detail struct {
+						Checks, Reviews, Discussion json.RawMessage
+						Versions                    []struct {
+							Artifacts, Checks json.RawMessage
+							ReviewPolicy      struct {
+								RequiredChecks json.RawMessage `json:"required_checks"`
+							} `json:"review_policy"`
+						}
+					}
+					if err := json.Unmarshal(payload, &detail); err != nil {
+						t.Fatal(err)
+					}
+					for name, raw := range map[string]json.RawMessage{"checks": detail.Checks, "reviews": detail.Reviews, "discussion": detail.Discussion} {
+						if string(raw) != "[]" {
+							t.Errorf("published=%t %s=%s, want []", published, name, raw)
+						}
+					}
+					if !published {
+						if detail.Versions == nil || len(detail.Versions) != 0 {
+							t.Errorf("draft versions=%+v, want []", detail.Versions)
+						}
+						continue
+					}
+					if len(detail.Versions) != 1 {
+						t.Fatalf("versions=%d, want 1", len(detail.Versions))
+					}
+					version := detail.Versions[0]
+					for name, raw := range map[string]json.RawMessage{"artifacts": version.Artifacts, "checks": version.Checks, "review_policy.required_checks": version.ReviewPolicy.RequiredChecks} {
+						if string(raw) != "[]" {
+							t.Errorf("version %s=%s, want []", name, raw)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestChangeDetailResponsePreservesStoredCollections(t *testing.T) {
+	stored := tracker.ChangeDetail{Versions: []tracker.ChangeVersion{{ID: "version_example"}}, Checks: []tracker.ChangeCheck{{VersionID: "version_example"}}}
+	raw, err := json.Marshal(changeDetailResponse(stored))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response tracker.ChangeDetail
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	version := response.Versions[0]
+	for name, missing := range map[string]bool{"linked_issues": response.Change.LinkedIssues == nil, "messages": response.Summary.Messages == nil, "evidence": response.Checks[0].Evidence == nil, "artifacts": version.Artifacts == nil, "checks": version.Checks == nil, "required_checks": version.ReviewPolicy.RequiredChecks == nil} {
+		if missing {
+			t.Errorf("response %s is null, want []", name)
+		}
+	}
+	if stored.Versions[0].Artifacts != nil || stored.Versions[0].Checks != nil || stored.Versions[0].ReviewPolicy.RequiredChecks != nil || stored.Checks[0].Evidence != nil {
+		t.Fatal("formatting a response mutated stored collection values")
+	}
+	if version.ID != "version_example" || response.Checks[0].VersionID != "version_example" {
+		t.Fatal("formatting a response dropped populated values")
+	}
 }
 
 func TestChangeRecordBackendParity(t *testing.T) {
