@@ -1139,7 +1139,7 @@
       "event_seq": {"source":"[14,\"event_seq\",\"INTEGER\",1,\"0\",0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.conversations","column":"event_seq","type":"bigint"}]},
       "execution_json": {"source":"[13,\"execution_json\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"json","null":"reject","empty":"preserve","targets":[{"table":"public.conversations","column":"execution_json","type":"jsonb"}]},
       "execution_lease_id": {"source":"[27,\"execution_lease_id\",\"TEXT\",0,null,0,0]","disposition":"column","codec":"text","null":"preserve","empty":"preserve","targets":[{"table":"public.conversations","column":"execution_lease_id","type":"text"}]},
-      "execution_settled": {"source":"[28,\"execution_settled\",\"INTEGER\",0,null,0,0]","disposition":"column","codec":"int64","null":"preserve","empty":"reject","targets":[{"table":"public.conversations","column":"execution_settled","type":"bigint"}]},
+      "execution_settled": {"source":"[28,\"execution_settled\",\"INTEGER\",0,null,0,0]","disposition":"column","codec":"bool01","null":"preserve","empty":"reject","targets":[{"table":"public.conversations","column":"execution_settled","type":"boolean"}]},
       "execution_status": {"source":"[26,\"execution_status\",\"TEXT\",0,null,0,0]","disposition":"column","codec":"text","null":"preserve","empty":"preserve","targets":[{"table":"public.conversations","column":"execution_status","type":"text"}]},
       "id": {"source":"[0,\"id\",\"TEXT\",0,null,1,0]","disposition":"column","codec":"text","null":"preserve","empty":"preserve","targets":[{"table":"public.conversations","column":"id","type":"text"}]},
       "last_message_at": {"source":"[18,\"last_message_at\",\"TEXT\",0,null,0,0]","disposition":"column","codec":"timestamp","null":"preserve","empty":"preserve","targets":[{"table":"public.conversations","column":"last_message_at","type":"timestamp with time zone"}]},
@@ -1549,7 +1549,7 @@
         "route": {"source":"[7,\"route\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_audit","column":"route","type":"text"}]},
         "session_id": {"source":"[2,\"session_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_audit","column":"session_id","type":"text"}]},
         "started_at": {"source":"[10,\"started_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.hosted_audit","column":"started_at","type":"timestamp with time zone"}]},
-        "status": {"source":"[9,\"status\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.hosted_audit","column":"status","type":"bigint"}],"minimum":0}
+        "status": {"source":"[9,\"status\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int32","null":"reject","empty":"reject","targets":[{"table":"public.hosted_audit","column":"status","type":"integer"}],"minimum":0}
       }
     },
     "hub/hosted_audit_times": {
@@ -3065,7 +3065,7 @@
         "actor": {"source":"[2,\"actor\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.organization_secret_audit","column":"actor","type":"text"}]},
         "event": {"source":"[5,\"event\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.organization_secret_audit","column":"event","type":"text"}]},
         "id": {"source":"[0,\"id\",\"INTEGER\",0,null,1,0]","disposition":"column","codec":"int64","null":"preserve","empty":"reject","targets":[{"table":"public.organization_secret_audit","column":"id","type":"bigint"}],"minimum":0},
-        "key_version": {"source":"[4,\"key_version\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.organization_secret_audit","column":"key_version","type":"bigint"}],"minimum":0},
+        "key_version": {"source":"[4,\"key_version\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int32","null":"reject","empty":"reject","targets":[{"table":"public.organization_secret_audit","column":"key_version","type":"integer"}],"minimum":0},
         "kind": {"source":"[3,\"kind\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.organization_secret_audit","column":"kind","type":"text"}]},
         "organization_id": {"source":"[1,\"organization_id\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
         "recorded_at": {"source":"[6,\"recorded_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.organization_secret_audit","column":"recorded_at","type":"timestamp with time zone"}]}
@@ -3079,7 +3079,7 @@
       "columns": {
         "ciphertext": {"source":"[2,\"ciphertext\",\"BLOB\",1,null,0,0]","disposition":"column","codec":"bytes","null":"reject","empty":"preserve","targets":[{"table":"public.organization_secrets","column":"ciphertext","type":"bytea"}]},
         "kind": {"source":"[1,\"kind\",\"TEXT\",1,null,2,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.organization_secrets","column":"kind","type":"text"}]},
-        "master_key_version": {"source":"[5,\"master_key_version\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.organization_secrets","column":"master_key_version","type":"bigint"}],"minimum":1},
+        "master_key_version": {"source":"[5,\"master_key_version\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int32","null":"reject","empty":"reject","targets":[{"table":"public.organization_secrets","column":"master_key_version","type":"integer"}],"minimum":1},
         "nonce": {"source":"[3,\"nonce\",\"BLOB\",1,null,0,0]","disposition":"column","codec":"bytes","null":"reject","empty":"preserve","targets":[{"table":"public.organization_secrets","column":"nonce","type":"bytea"}]},
         "organization_id": {"source":"[0,\"organization_id\",\"TEXT\",1,null,1,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
         "organization_slug": {"source":"[7,\"organization_slug\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.organization_secrets","column":"organization_slug","type":"text"}]},
@@ -3266,7 +3266,7 @@
         "actor": {"source":"[3,\"actor\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.project_secret_audit","column":"actor","type":"text"}]},
         "event": {"source":"[6,\"event\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.project_secret_audit","column":"event","type":"text"}]},
         "id": {"source":"[0,\"id\",\"INTEGER\",0,null,1,0]","disposition":"column","codec":"int64","null":"preserve","empty":"reject","targets":[{"table":"public.project_secret_audit","column":"id","type":"bigint"}],"minimum":0},
-        "key_version": {"source":"[5,\"key_version\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.project_secret_audit","column":"key_version","type":"bigint"}],"minimum":0},
+        "key_version": {"source":"[5,\"key_version\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int32","null":"reject","empty":"reject","targets":[{"table":"public.project_secret_audit","column":"key_version","type":"integer"}],"minimum":0},
         "kind": {"source":"[4,\"kind\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.project_secret_audit","column":"kind","type":"text"}]},
         "organization_id": {"source":"[1,\"organization_id\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
         "project_id": {"source":"[2,\"project_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.project_secret_audit","column":"project_id","type":"text"}]},
@@ -3281,7 +3281,7 @@
       "columns": {
         "ciphertext": {"source":"[4,\"ciphertext\",\"BLOB\",1,null,0,0]","disposition":"column","codec":"bytes","null":"reject","empty":"preserve","targets":[{"table":"public.project_secrets","column":"ciphertext","type":"bytea"}]},
         "kind": {"source":"[2,\"kind\",\"TEXT\",1,null,3,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.project_secrets","column":"kind","type":"text"}]},
-        "master_key_version": {"source":"[7,\"master_key_version\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.project_secrets","column":"master_key_version","type":"bigint"}],"minimum":1},
+        "master_key_version": {"source":"[7,\"master_key_version\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int32","null":"reject","empty":"reject","targets":[{"table":"public.project_secrets","column":"master_key_version","type":"integer"}],"minimum":1},
         "nonce": {"source":"[5,\"nonce\",\"BLOB\",1,null,0,0]","disposition":"column","codec":"bytes","null":"reject","empty":"preserve","targets":[{"table":"public.project_secrets","column":"nonce","type":"bytea"}]},
         "organization_id": {"source":"[0,\"organization_id\",\"TEXT\",1,null,1,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
         "organization_slug": {"source":"[3,\"organization_slug\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.project_secrets","column":"organization_slug","type":"text"}]},
