@@ -3,6 +3,7 @@ package cloudentry
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,25 +60,35 @@ func (s *Service) configureRuntimeLauncher(ctx context.Context) {
 }
 
 func (s *Service) reloadConfiguration(ctx context.Context) error {
+	tenants, err := s.publishRuntimeConfiguration(ctx)
+	s.refreshPublishedTenants(ctx, tenants)
+	if err != nil {
+		return err
+	}
+	s.config.Logger.InfoContext(ctx, "cloud configuration reloaded", "actor", "operator", "reason", "SIGHUP", "settings", []string{"allocation.entitlements", "allocation.billing.prices", "allocation.allowlist"})
+	return nil
+}
+
+func (s *Service) publishRuntimeConfiguration(ctx context.Context) ([]Organization, error) {
 	s.reloadMu.Lock()
 	defer s.reloadMu.Unlock()
 	next, err := s.config.Reload()
 	if err != nil {
-		return fmt.Errorf("validate cloud file: %w", err)
+		return nil, fmt.Errorf("validate cloud file: %w", err)
 	}
 	if err := next.validate(); err != nil {
-		return fmt.Errorf("validate cloud configuration: %w", err)
+		return nil, fmt.Errorf("validate cloud configuration: %w", err)
 	}
 	s.config.Logger.WarnContext(ctx, "cloud configuration settings require restart; retaining running values", "actor", "operator", "reason", "SIGHUP", "changed", !bytes.Equal(next.RestartSettings, s.config.RestartSettings), "settings", []string{"public_url", "listen", "state_directory", "assertion", "workos", "platform", "staff_emails", "support_actors", "entitlement_administrators", "attachments", "billing", "allocation.paths_and_capacity", "allocation.entitlement_credentials", "allocation.billing_except_prices"})
 	if s.config.Allocation == nil || next.Allocation == nil || next.Runtime == nil {
-		return errors.New("changing allocation availability requires a restart")
+		return nil, errors.New("changing allocation availability requires a restart")
 	}
 	if s.config.ConfigureRuntime == nil {
-		return errors.New("runtime reload requires the configured tenant launcher")
+		return nil, errors.New("runtime reload requires the configured tenant launcher")
 	}
 	organizations, err := s.registry.List(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	update := *next.Runtime
 	update.Reason = "SIGHUP cloud configuration reload"
@@ -93,37 +104,36 @@ func (s *Service) reloadConfiguration(ctx context.Context) error {
 		validation := update
 		validation.ValidateOnly = true
 		if err := s.changeTenantRuntime(ctx, tenant, &validation); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	for _, tenant := range tenants {
 		prepared := update
 		if err := s.changeTenantRuntime(ctx, tenant, &prepared); err != nil {
-			return err
+			return nil, err
 		}
 
 	}
 	raw, err := json.Marshal(update)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	key, err := s.storeEntryObject(ctx, raw)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	targets := make([]tracker.OrganizationID, len(tenants))
 	for i, tenant := range tenants {
 		targets[i] = tracker.OrganizationID(tenant.ID)
 	}
 	if err := s.registry.store.db.postgres.PublishRuntime(ctx, update.StageID, s.config.Issuer, key, targets); err != nil {
-		return fmt.Errorf("publish runtime settings: %w", err)
+		return nil, fmt.Errorf("publish runtime settings: %w", err)
 	}
 	if _, err := s.loadRuntime(ctx); err != nil {
-		return err
+		return tenants, err
 	}
 	s.allowlist.Store(&signupAllowlist{emails: slices.Clone(next.Allocation.AllowedEmails), domains: slices.Clone(next.Allocation.AllowedDomains)})
-	s.config.Logger.InfoContext(ctx, "cloud configuration reloaded", "actor", "operator", "reason", "SIGHUP", "settings", []string{"allocation.entitlements", "allocation.billing.prices", "allocation.allowlist"})
-	return nil
+	return tenants, nil
 }
 
 func (s *Service) publishTenantRuntime(ctx context.Context, organization Organization) error {
@@ -140,6 +150,7 @@ func (s *Service) publishTenantRuntime(ctx context.Context, organization Organiz
 	if err := s.registry.store.db.postgres.PublishRuntime(ctx, update.StageID, "", "", []tracker.OrganizationID{tracker.OrganizationID(organization.ID)}); err != nil {
 		return fmt.Errorf("publish tenant runtime settings: %w", err)
 	}
+	s.refreshPublishedTenants(ctx, []Organization{organization})
 	return nil
 }
 
@@ -203,4 +214,26 @@ func (s *Service) changeTenantRuntime(ctx context.Context, organization Organiza
 		return fmt.Errorf("tenant %s runtime reload answered %d", organization.ID, status)
 	}
 	return nil
+}
+
+func (s *Service) refreshPublishedTenants(ctx context.Context, tenants []Organization) {
+	for i, tenant := range tenants {
+		if i > 0 && len(tenants) > 32 {
+			jitter := sha256.Sum256([]byte(tenant.ID))
+			timer := time.NewTimer(time.Duration(1+int(jitter[0])%10) * time.Millisecond)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+			}
+			timer.Stop()
+		}
+		if err := ctx.Err(); err != nil {
+			s.config.Logger.WarnContext(ctx, "published runtime refresh interrupted", "remaining", len(tenants)-i, "error", err)
+			return
+		}
+		status, _, err := s.machineCall(ctx, tenant, http.MethodGet, tenantEntitlementsPath(tenant.ID)+"/runtime", nil, string(s.config.Allocation.EntitlementAdminToken))
+		if err != nil || status != http.StatusOK {
+			s.config.Logger.WarnContext(ctx, "published runtime tenant refresh failed", "organization", tenant.ID, "status", status, "error", err)
+		}
+	}
 }
