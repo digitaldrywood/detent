@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -117,6 +118,56 @@ func TestPostgresBulkExport(t *testing.T) {
 		}
 	})
 
+	t.Run("role_changed_during_hydration", func(t *testing.T) {
+		var key string
+		for id := range expected {
+			if err := repository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+				rows, err := r.Comments(t.Context(), f.project, id, 0, 1)
+				if err != nil {
+					return err
+				}
+				version, err := r.CollaborationVersion(t.Context(), rows[0].ID, rows[0].Revision)
+				key = version.PayloadObjectKey
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+		original := f.service.config.RunDetails
+		defer func() { f.service.config.RunDetails = original }()
+		changed := false
+		f.service.config.RunDetails = &changeReadInterceptionStore{DetailStore: original, key: key, afterRead: func(ctx context.Context) error {
+			return repository.WriteTenant(ctx, "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+				member, err := w.AccessMember(ctx, owner.identity.Subject)
+				if err != nil {
+					return err
+				}
+				member.Role = "reporter"
+				changed = true
+				return w.UpdateAccessMember(ctx, member)
+			})
+		}}
+		defer func() {
+			if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+				member, err := w.AccessMember(t.Context(), owner.identity.Subject)
+				if err != nil {
+					return err
+				}
+				member.Role = "owner"
+				return w.UpdateAccessMember(t.Context(), member)
+			}); err != nil {
+				t.Error(err)
+			}
+		}()
+		response := f.request(t, owner, http.MethodGet, f.base+"/work-items/export", nil)
+		if !changed {
+			t.Fatal("role hook did not run during comment version hydration")
+		}
+		if response.Code == http.StatusOK {
+			t.Fatal("export accepted stale role during object hydration")
+		}
+	})
 	t.Run("large_discussion", func(t *testing.T) {
 		for id := range expected {
 			for sequence := int64(2); sequence <= 202; sequence++ {

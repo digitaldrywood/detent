@@ -11,6 +11,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -138,6 +139,19 @@ func (s *Service) readBulkExport(ctx context.Context, scope nativeScope, params 
 			break
 		}
 	}
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeBulkExportItem(ctx, r, scope, ""); err != nil {
+			return err
+		}
+		for _, item := range page.Items {
+			if err := s.authorizeBulkExportItem(ctx, r, scope, item.WorkItemID); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return page, err
+	}
 	if page.Truncated {
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
 		if err != nil {
@@ -158,7 +172,7 @@ func (s *Service) readBulkExportItem(ctx context.Context, scope nativeScope, iss
 		var rows []corestore.Comment
 		var versions []eventstore.CollaborationVersion
 		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			if err := s.authorizeBulkExportItem(ctx, r, scope, issue.WorkItemID); err != nil {
 				return err
 			}
 			var err error
@@ -195,10 +209,44 @@ func (s *Service) readBulkExportItem(ctx context.Context, scope nativeScope, iss
 			after = row.Sequence
 		}
 		if len(rows) < corestore.MaxPageSize {
-			return exported, nil
+			err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error { return s.authorizeBulkExportItem(ctx, r, scope, issue.WorkItemID) })
+			return exported, err
 		}
 	}
 }
+func (s *Service) authorizeBulkExportItem(ctx context.Context, r tenantstore.Reader, scope nativeScope, item tracker.NativeWorkItemID) error {
+	if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+		return err
+	}
+	if scope.credential.Hosted != nil {
+		member, err := r.AuthorizeAccess(ctx, s.accessAuthority(scope, false), s.config.now())
+		if err != nil {
+			return err
+		}
+		if member.UserID != "" && lesserHostedRole(member.Role, scope.credential.HostedRole) != scope.credential.HostedRole {
+			return auth.ErrHostedIdentity
+		}
+	}
+	project, err := r.Project(ctx, scope.project)
+	if err != nil {
+		return err
+	}
+	if project.DeletedAt != nil {
+		return corestore.ErrNotFound
+	}
+	if item == "" {
+		return nil
+	}
+	row, err := r.WorkItem(ctx, scope.project, item)
+	if err != nil {
+		return err
+	}
+	if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
+		return corestore.ErrNotFound
+	}
+	return nil
+}
+
 func bulkExportItemFailure(id, step string, err error) error {
 	return &operatortool.WorkBulkExportItemError{Code: "bulk_export_item_failed", Message: "Work item could not be exported: " + step, WorkItemID: id, Err: fmt.Errorf("%s: %w", step, err)}
 }
