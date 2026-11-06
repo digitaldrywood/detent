@@ -27,9 +27,16 @@ func projectSettings(row pgquery.ProjectSetting) projectstore.Settings {
 }
 
 func (s *session) ProjectRecord(ctx context.Context, id tracker.ProjectID) (projectstore.Record, error) {
-	rows, err := s.queries.BoundProjectRecord(ctx, pgquery.BoundProjectRecordParams{OrganizationID: s.organization, ID: id})
-	if err != nil {
-		return projectstore.Record{}, mapError(ctx, err)
+	rows, found := s.projectRows[id]
+	if !found {
+		var err error
+		rows, err = s.queries.BoundProjectRecord(ctx, pgquery.BoundProjectRecordParams{OrganizationID: s.organization, ID: id})
+		if err != nil {
+			return projectstore.Record{}, mapError(ctx, err)
+		}
+		if s.projectRows != nil {
+			s.projectRows[id] = rows
+		}
 	}
 	if len(rows) == 0 {
 		return projectstore.Record{}, corestore.ErrNotFound

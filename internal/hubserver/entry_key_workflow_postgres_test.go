@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -296,6 +298,9 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				details := &boardDetailBatchCounter{DetailStore: target.runDetailStore()}
+				originalDetails := target.config.RunDetails
+				target.config.RunDetails = details
 				for sample := range 6 {
 					var mu sync.Mutex
 					statements := []string{}
@@ -310,23 +315,83 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 					timingHeader := requestTrace.header(time.Now())
 					requestTrace = nil
 					requireNativeStatus(t, response, http.StatusOK)
-					if !strings.Contains(response.Body.String(), string(org)) {
-						t.Fatal("response lost tenant")
+					var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
+					if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+						t.Fatal(err)
 					}
+					if len(result.Data.Items) != min(size, 50) {
+						t.Fatalf("items=%d want=%d", len(result.Data.Items), min(size, 50))
+					}
+					for _, item := range result.Data.Items {
+						if item.OrganizationID != org || item.Title == "" || item.URL != item.WebURL {
+							t.Fatalf("invalid scoped card: %+v", item)
+						}
+					}
+					if details.scalar.Load() != 0 || details.batches.Load() != 0 {
+						t.Fatalf("board fetched objects: scalar=%d batch=%d", details.scalar.Load(), details.batches.Load())
+					}
+
 					begins := 0
 					for index, query := range statements {
 						if strings.HasPrefix(query, "BEGIN") {
 							begins++
+							if query != "BEGIN READ ONLY" {
+								t.Errorf("board opened write transaction: %s", query)
+							}
 						}
 						if sample == 0 {
 							t.Logf("BOARD4 SQL %d %s", index+1, query)
 						}
 					}
 					t.Logf("BOARD4 size=%d tenant=%s sample=%d duration=%s queries=%d transactions=%d timing=%s", size, org, sample, elapsed, len(statements), begins, timingHeader)
-					if begins > 1 || len(statements) > 35 {
-						t.Errorf("board request used %d queries and %d transactions; budget 90 queries and 15 transactions", len(statements), begins)
+					if begins != 1 || len(statements) > 20 {
+						t.Errorf("board request used %d queries and %d transactions; budget 20 queries and 1 transaction", len(statements), begins)
 					}
 				}
+				claims, err := resolver(string(org))(t.Context(), entryauthority.Origin{KeyID: "key_owner", CredentialBinding: strings.Repeat("a", 64), Subject: "owner", Issuer: "entry", Generation: 1})
+				if err != nil {
+					t.Fatal(err)
+				}
+				credential, _, err := target.entryKeyCredential(t.Context(), claims)
+				if err != nil {
+					t.Fatal(err)
+				}
+				scope := nativeScope{organization: org, project: "project_example", credential: credential}
+				for sample := range 6 {
+					statements, begins := 0, 0
+					timing := &requestTiming{start: time.Now(), trace: func(query string, _ []driver.NamedValue) {
+						statements++
+						if strings.HasPrefix(query, "BEGIN") {
+							begins++
+						}
+					}}
+					ctx := postgres.WithTransactionTiming(withRequestTiming(t.Context(), timing), timing.span, func(started time.Time, query string) { timing.statement(started, query, nil) })
+					page, err := target.readBoardRecords(ctx, scope, url.Values{"include": {"board"}, "limit": {"2000"}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(page.Cards) != size {
+						t.Fatalf("board cards=%d want=%d", len(page.Cards), size)
+					}
+					for _, card := range page.Cards {
+						if card.Issue.OrganizationID != org || card.Issue.Title == "" {
+							t.Fatalf("invalid scoped board card: %+v", card.Issue.NativeReference)
+						}
+					}
+					if _, err := json.Marshal(page); err != nil {
+						t.Fatal(err)
+					}
+					t.Logf("BOARD4 full-board size=%d tenant=%s sample=%d duration=%s queries=%d transactions=%d", size, org, sample, time.Since(timing.start), statements, begins)
+					if statements > 50 || begins != 1 || details.scalar.Load() != 0 || details.batches.Load() != 0 {
+						t.Fatalf("full board queries=%d transactions=%d scalar=%d batches=%d", statements, begins, details.scalar.Load(), details.batches.Load())
+					}
+				}
+				target.config.RunDetails = originalDetails
+				revoked = true
+				denied := requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": "project_example", "limit": 50}, "connection_id": "board_scale"})
+				revoked = false
+				requireNativeStatus(t, denied, http.StatusForbidden)
+
 			}
 			previous = size
 		}

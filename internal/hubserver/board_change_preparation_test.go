@@ -171,6 +171,7 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 				t.Fatal(err)
 			}
 			board := viewstore.BoardRecord{OrganizationID: org, ProjectID: "example", WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("example#%03d", index)}, Archived: issue.Archived, ActorPrincipalID: issue.Actor.PrincipalID, CreatedAt: now, UpdatedAt: now, Payload: payload}
+			board.Display = viewstore.BoardDisplay{ChangePrincipalID: issue.Actor.PrincipalID, Title: issue.Title, Number: issue.Number, Actor: tracker.Actor{Kind: issue.Actor.Kind}, Change: card.Change}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "example", NativeID: id, Number: int64(index + 1), Title: "Example", Archived: issue.Archived, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State}); err != nil {
 					return err
@@ -262,13 +263,13 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 		for _, span := range timing.namedSpans() {
 			phases[span.name] = true
 		}
-		for _, phase := range []string{"board_cursor", "board_select", "board_payloads", "board_relationships", "board_change_rows", "board_change_payloads", "board_change_policy", "board_hydrate"} {
+		for _, phase := range []string{"board_cursor", "board_select", "board_relationships", "board_hydrate"} {
 			if !phases[phase] {
 				t.Errorf("board timing omitted phase %s", phase)
 			}
 		}
 		t.Logf("board phases: %+v", timing.namedSpans())
-		if batches, scalar := batchDetails.batches.Load(), batchDetails.scalar.Load(); batches < 3 || batches > 5 || scalar != 0 {
+		if batches, scalar := batchDetails.batches.Load(), batchDetails.scalar.Load(); batches != 0 || scalar != 0 {
 			t.Fatalf("200-card allocation lookups: batches=%d scalar=%d", batches, scalar)
 		}
 		if len(before.Cards) != 200 || len(after.Cards) != 200 {
@@ -283,7 +284,7 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 				archived++
 			}
 		}
-		if archived != 100 || scalarReads < 800 || batchReads > 10 {
+		if archived != 100 || scalarReads <= batchReads || batchReads > 10 {
 			t.Fatalf("archived%d scalarUOW%d batchUOW%d", archived, scalarReads, batchReads)
 		}
 		t.Logf("tenant=%s cards=200 scalar_uows=%d batch_uows=%d", org, scalarReads, batchReads)
@@ -389,6 +390,26 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 			t.Fatal("reporter lost visible primary issue")
 		}
 
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			row, err := w.BoardItem(t.Context(), scope.project, "wi_001")
+			if err != nil {
+				return err
+			}
+			row.Display.ChangePrincipalID = "other_principal"
+			return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: scope.project, WorkItemID: row.WorkItemID, ExpectedRevision: row.SourceRevision, ExpectedEventSequence: row.SourceEventSequence, ExpectedProjectRevision: row.SourceProjectRevision, Current: &row})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		hidden, err := service.readBoardRecords(t.Context(), reporter, url.Values{"limit": {"200"}, "archived": {"all"}, "include": {"board"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, card := range hidden.Cards {
+			if card.Issue.WorkItemID == "wi_001" && card.Change != nil {
+				t.Fatal("reporter received a Change owned by another principal")
+			}
+		}
+
 		query := url.Values{"limit": {"1"}, "archived": {"all"}}
 		first, err := service.readBoardRecords(t.Context(), scope, query)
 		if err != nil || first.NextCursor == "" {
@@ -490,6 +511,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 				t.Fatal(err)
 			}
 			board := viewstore.BoardRecord{OrganizationID: org, ProjectID: "example", WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("example#%03d", index)}, Archived: issue.Archived, ActorPrincipalID: issue.Actor.PrincipalID, CreatedAt: now, UpdatedAt: now, Payload: payload}
+			board.Display = viewstore.BoardDisplay{ChangePrincipalID: issue.Actor.PrincipalID, Title: issue.Title, Number: issue.Number, Actor: tracker.Actor{Kind: issue.Actor.Kind}, Change: card.Change}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "example", NativeID: id, Number: int64(index + 1), Title: "Example", Archived: issue.Archived, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State}); err != nil {
 					return err
@@ -512,6 +534,14 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			}
 		}
 		scope := nativeScope{organization: org, project: "example", credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+		refresh := func() {
+			for index := range 2 {
+				if err := service.refreshBoardRecord(t.Context(), org, viewstore.BoardCandidate{ProjectID: "example", WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index))}, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		refresh()
 		before, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "include": {"board"}})
 		if err != nil || len(before.Cards) != 2 {
 			t.Fatalf("current-policy board cards=%d error=%v", len(before.Cards), err)
@@ -543,6 +573,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+		refresh()
 		stale, err := service.readBoardRecords(t.Context(), scope, url.Values{"limit": {"200"}, "archived": {"all"}, "include": {"board"}})
 		if err != nil {
 			t.Fatalf("stale review reference prevents scoped board read: %v", err)

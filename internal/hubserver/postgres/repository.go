@@ -161,7 +161,15 @@ func (r *Repository) acquire(ctx context.Context, workload corestore.Workload) (
 	}
 }
 
+type projectAccessKey struct {
+	principal string
+	project   tracker.ProjectID
+}
+
 type session struct {
+	projectGrants      map[projectAccessKey]accessstore.ProjectGrant
+	tokenGrants        map[projectAccessKey]accessstore.TokenGrant
+	projectRows        map[tracker.ProjectID][]pgquery.BoundProjectRecordRow
 	credentials        map[string]accessstore.Credential
 	members            map[string]accessstore.Member
 	organizationRecord *accessstore.Organization

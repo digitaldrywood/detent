@@ -104,6 +104,21 @@ func boardRecordCursor(row viewstore.BoardRecord, closed bool, sequence int64) *
 }
 
 func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	if repository, ok := s.config.TenantRepository.(tenantstore.RequestReader); ok {
+		var page tracker.NativeIssuePage
+		err := repository.ReadRequest(ctx, scope.organization, func(ctx context.Context) error {
+			var err error
+			page, err = s.readBoardRecordSnapshot(ctx, scope, params)
+			return err
+		})
+		return page, err
+	}
+	return s.readBoardRecordSnapshot(ctx, scope, params)
+}
+
+func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
 	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}}
 	ctx, cancel := context.WithTimeout(s.runDetailContext(ctx), hubReadTimeout)
 	defer cancel()
@@ -321,7 +336,12 @@ func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, param
 	finishHydration := timeSpan(ctx, "board_hydrate")
 	defer finishHydration()
 	prepared := make(map[tracker.NativeWorkItemID]boardPreparedRecord, len(records)+len(workRecordsForResponse))
-	preparation := s.prepareBoardPage(ctx, scope, records, now, includeBoard, prepared)
+	var preparation *boardRecordPreparation
+	if includeBoard || includeSummary || includeWork {
+		preparation = s.prepareProjectedBoardPage(ctx, scope, records, prepared)
+	} else {
+		preparation = s.prepareBoardPage(ctx, scope, records, now, false, prepared)
+	}
 	defer preparation.close()
 	returnedRecords := make([]viewstore.BoardRecord, 0, min(len(records), limit))
 	for index, record := range records {
@@ -363,7 +383,7 @@ func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, param
 	}
 	preparation.close()
 	if includeWork {
-		workPreparation := s.prepareBoardPage(ctx, scope, workRecordsForResponse, now, false, prepared)
+		workPreparation := s.prepareProjectedBoardPage(ctx, scope, workRecordsForResponse, prepared)
 		defer workPreparation.close()
 		for index, record := range workRecordsForResponse {
 			card, err := workPreparation.card(ctx, index)

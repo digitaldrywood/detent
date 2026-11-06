@@ -129,8 +129,15 @@ func (s *session) CreateAccessMember(ctx context.Context, row accessstore.Member
 }
 
 func (s *session) AccessProjectGrant(ctx context.Context, user_id string, project_id tracker.ProjectID) (accessstore.ProjectGrant, error) {
+	key := projectAccessKey{principal: user_id, project: project_id}
+	if row, ok := s.projectGrants[key]; ok {
+		return row, nil
+	}
 	var row accessstore.ProjectGrant
 	err := s.db.QueryRowContext(ctx, `SELECT organization_id,user_id,project_id,can_write,manage_runner FROM hosted_project_grants WHERE organization_id=$1 AND user_id=$2 AND project_id=$3`+s.accessLock(), s.organization, user_id, project_id).Scan(&row.OrganizationID, &row.UserID, &row.ProjectID, &row.CanWrite, &row.ManageRunner)
+	if err == nil && s.projectGrants != nil {
+		s.projectGrants[key] = row
+	}
 	return row, mapError(ctx, err)
 }
 
@@ -143,8 +150,15 @@ func (s *session) CreateAccessProjectGrant(ctx context.Context, row accessstore.
 }
 
 func (s *session) AccessTokenGrant(ctx context.Context, token_id string, project_id tracker.ProjectID) (accessstore.TokenGrant, error) {
+	key := projectAccessKey{principal: token_id, project: project_id}
+	if row, ok := s.tokenGrants[key]; ok {
+		return row, nil
+	}
 	var row accessstore.TokenGrant
 	err := s.db.QueryRowContext(ctx, `SELECT organization_id,token_id,project_id FROM token_grants WHERE organization_id=$1 AND token_id=$2 AND project_id=$3`+s.accessLock(), s.organization, token_id, project_id).Scan(&row.OrganizationID, &row.TokenID, &row.ProjectID)
+	if err == nil && s.tokenGrants != nil {
+		s.tokenGrants[key] = row
+	}
 	return row, mapError(ctx, err)
 }
 
