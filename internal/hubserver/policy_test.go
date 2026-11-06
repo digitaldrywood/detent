@@ -2306,6 +2306,21 @@ func TestNativeWorkflowPolicyCanonicalStates(t *testing.T) {
 	}
 }
 
+func TestPolicyScopeRequiresTypedRepository(t *testing.T) {
+	for _, organization := range []string{"", "org_example"} {
+		t.Run(organization, func(t *testing.T) {
+			service := &Service{}
+			c := echo.New().NewContext(nil, nil)
+			c.SetRequest((&http.Request{}).WithContext(t.Context()))
+			c.SetParamNames("organization", "project", "owner", "repo")
+			c.SetParamValues(organization, "prj_example", "example-org", "example-project")
+			if _, err := service.policyScope(c); err == nil {
+				t.Fatal("policy scope accepted missing typed repository")
+			}
+		})
+	}
+}
+
 func (s *Service) approveTestTenantPolicy(ctx context.Context, path, actor string, change policy.Change) (policy.Approval, error) {
 	organization, project, ok := strings.Cut(path, "/")
 	if !ok {

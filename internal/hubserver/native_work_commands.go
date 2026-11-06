@@ -21,165 +21,12 @@ import (
 )
 
 func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
-	if s.config.TenantRepository != nil {
-		scope.action = operatortool.FileIssue
-		operation := "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items"
-		if request.ChallengeToken != "" {
-			operation += "/duplicate-confirmation"
-		}
-		return s.executeWorkItemRecordMutation(ctx, scope, nativeCommandOptions{OperationID: operation, Feature: "collaboration"}, request.Mutation, request, "")
-	}
-	if request.ScheduledFailure != nil {
-		return s.attributeScheduledFailure(ctx, scope, request)
-	}
-	if request.ScheduledValidation != nil {
-		scope.action = ""
-		return s.recordScheduledValidation(ctx, scope, request)
-	}
-	if err := validateNativeIssueType(request.Type, scope.credential.HostedRole == "reporter"); err != nil {
-		return nil, err
-	}
-	if err := validateNativeReportContext(request.ReportContext); err != nil {
-		return nil, err
-	}
-	if request.ReportContext != nil {
-		request.ReportContext = request.ReportContext.Normalized()
-	}
 	scope.action = operatortool.FileIssue
-	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items", Feature: "collaboration"}
-	if len(request.ChallengeToken) > 128 || len(request.NotDuplicateOf) > 5 || (request.ChallengeToken == "") != (len(request.NotDuplicateOf) == 0) {
-		return nil, nativePublicInvalid("Supply a duplicate challenge token and one to five issue numbers together")
-	}
+	operation := "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items"
 	if request.ChallengeToken != "" {
-		if request.GitHubIssueURL != "" || request.Provenance != nil {
-			return nil, nativePublicInvalid("Duplicate confirmation requires an unlinked native issue")
-		}
-		options.OperationID += "/duplicate-confirmation"
+		operation += "/duplicate-confirmation"
 	}
-	scope.scheduledRepair = s.observeScheduledRepair(ctx, scope, request)
-	var snapshot *tracker.GitHubIssueSnapshot
-	var sourceRepository *RepositorySource
-	if request.GitHubIssueURL != "" {
-		if replay, found, err := s.nativeCommandReplay(ctx, scope, options.OperationID, request.IdempotencyKey, request); found || err != nil {
-			if err != nil {
-				return nil, err
-			}
-			return s.nativeIssueJSON(ctx, scope, replay)
-		}
-		canonical, repository, _, err := tracker.ParseGitHubIssueURL(request.GitHubIssueURL)
-		if err != nil {
-			return nil, nativeInvalid(err.Error())
-		}
-		readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
-		defer cancelRead()
-		var exists int
-		if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM issues WHERE project_id = ? AND native_source_key = ?", scope.project, "github:"+canonical).Scan(&exists); err != nil {
-			return nil, err
-		}
-		if exists == 0 {
-			snapshot, err = s.fetchLinkedSnapshot(ctx, scope, canonical)
-			if err != nil {
-				return nil, err
-			}
-			scope.scheduledRepair = s.observeImportedScheduledRepair(ctx, scope, *snapshot)
-			repositoryCtx, cancelRepository := context.WithTimeout(ctx, hubReadTimeout)
-			var found bool
-			_, found, err = resolveWebhookRepositoryID(repositoryCtx, s.database.reader, repository)
-			cancelRepository()
-			if err != nil {
-				return nil, err
-			} else if !found {
-				if s.config.ReconcileBackend == nil {
-					return nil, nativePublicInvalid("GitHub App repository transport is unavailable")
-				}
-				parts := strings.Split(repository, "/")
-				fetched, err := s.config.ReconcileBackend.Reconcile(ctx, ReconcileRequest{Profile: "native", SkipIssues: true, SkipRepository: true, Repository: RepositoryTarget{Owner: parts[0], Name: parts[1]}})
-				if err != nil {
-					return nil, err
-				}
-				if err := validateReconcileSnapshot(ReconcileSnapshot{Repository: fetched.Repository}); err != nil {
-					return nil, err
-				}
-				if !strings.EqualFold(fetched.Repository.Owner+"/"+fetched.Repository.Name, repository) {
-					return nil, nativePublicInvalid("GitHub App repository does not match the linked source")
-				}
-				sourceRepository = &fetched.Repository
-			}
-		}
-	}
-	if request.ChallengeToken == "" && request.Provenance == nil {
-		searchRequest := request
-		if verified := scope.scheduledRepair; verified != nil && request.GitHubIssueURL != "" {
-			searchRequest.Body = verified.importBody
-		}
-		_, machine := issueorigin.Parse(searchRequest.Body)
-		if request.GitHubIssueURL == "" || machine {
-			readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
-			search, err := prepareNativeDuplicates(readCtx, s.database.reader, scope, searchRequest, s.config.now(), machine && scope.credential.HostedRole != "reporter")
-			cancelRead()
-			if err != nil {
-				return nil, err
-			}
-			scope.duplicateSearch = search
-		}
-	}
-	result, err := s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		origin, machine := issueorigin.Parse(request.Body)
-		if machine && scope.credential.HostedRole != "reporter" && request.ChallengeToken != "" {
-			return nil, nativePublicInvalid("Machine reports do not accept duplicate challenges")
-		}
-		workerReport := machine && origin.Kind == "worker" && request.State == "Backlog" && scope.credential.Runner.RunnerID != "" && request.LeaseID != ""
-		scheduledReport := machine && origin.Kind == "doctor" && origin.Instance == "github-actions" && scope.credential.Scope != apiScopeWorker
-		if scope.credential.HostedRole != "reporter" && request.GitHubIssueURL == "" && (workerReport || scheduledReport) {
-			return createNativeMachineIntakeTx(ctx, tx, scope, request, now, scheduledReport)
-		}
-		if request.GitHubIssueURL == "" && request.Provenance == nil && (!machine || scope.credential.HostedRole == "reporter") {
-			if err := validateNativeIssueFiling(ctx, tx, scope, request, now); err != nil {
-				return nil, err
-			}
-		}
-		var related []possibleDuplicate
-		if request.ChallengeToken != "" {
-			var err error
-			related, err = confirmNativeDuplicateTx(ctx, tx, scope, request, now)
-			if err != nil {
-				return nil, err
-			}
-		} else if request.GitHubIssueURL == "" && request.Provenance == nil {
-			if machine && scope.credential.HostedRole != "reporter" {
-				return reportNativeMachineIssueTx(ctx, tx, scope, request, now)
-			}
-			challenge, err := challengeNativeIssueTx(ctx, tx, scope, request, now)
-			if err != nil || challenge.ChallengeToken != "" {
-				return challenge, err
-			}
-		}
-		if sourceRepository != nil {
-			owner, name, node := sourceRepository.Owner, sourceRepository.Name, sourceRepository.NodeID
-			_, err := ensureWebhookSourceRepository(ctx, tx, &githubWebhookRepository{NodeID: &node, Name: &name, Owner: &githubWebhookActor{Login: &owner}}, now)
-			if err != nil {
-				return nil, err
-			}
-		}
-		issue, err := createNativeIssueTx(ctx, tx, scope, request, now)
-		if err != nil {
-			return nil, err
-		}
-		for _, match := range related {
-			issue, err = changeNativeDependencyTx(ctx, tx, scope, string(issue.WorkItemID), tracker.DependencyMutation{ExpectedRevision: issue.Revision, RelatedWorkItemID: match.WorkItemID, RelationshipType: "related", Operation: "add"}, now)
-			if err != nil {
-				return nil, err
-			}
-		}
-		if snapshot == nil || issue.LinkedSource == nil || issue.LinkedSource.URL != snapshot.URL {
-			return issue, err
-		}
-		return intakeLinkedIssueTx(ctx, tx, scope, string(issue.WorkItemID), *snapshot, now)
-	})
-	if err == nil {
-		s.wakeSpriteRunnersAfter(scope, result)
-	}
-	return result, err
+	return s.executeWorkItemRecordMutation(ctx, scope, nativeCommandOptions{OperationID: operation, Feature: "collaboration"}, request.Mutation, request, "")
 }
 
 func createNativeMachineIntakeTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, terminalRepair bool) (tracker.NativeIssue, error) {
@@ -560,11 +407,7 @@ func (s *Service) setNativeArchiveCommand(ctx context.Context, scope nativeScope
 }
 
 func (s *Service) nativeWorkObservation(ctx context.Context, scope nativeScope, item string) (tracker.NativeIssue, error) {
-	if s.config.TenantRepository != nil {
-		return s.readWorkItem(ctx, scope, item)
-	}
-	issue, _, err := readNativeIssue(ctx, s.database.reader, scope, item)
-	return s.nativeIssueResponse(issue), err
+	return s.readWorkItem(ctx, scope, item)
 }
 
 func (s *Service) nativeWorkComments(ctx context.Context, scope nativeScope, item string, limit int, cursor string) (tracker.Page[tracker.NativeComment], error) {
@@ -573,20 +416,11 @@ func (s *Service) nativeWorkComments(ctx context.Context, scope nativeScope, ite
 }
 
 func (s *Service) operatorCreateNativeWork(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
-	var states []tracker.NativeState
-	if s.config.TenantRepository != nil {
-		project, err := s.readProjectRecord(ctx, scope)
-		if err != nil {
-			return nil, err
-		}
-		states = project.States
-	} else {
-		project, err := readNativeProject(ctx, s.database.reader, scope)
-		if err != nil {
-			return nil, err
-		}
-		states = project.States
+	project, err := s.readProjectRecord(ctx, scope)
+	if err != nil {
+		return nil, err
 	}
+	states := project.States
 	if request.State == "" && request.GitHubIssueURL == "" {
 		request.State = defaultNativeIssueState(states)
 	}
@@ -634,10 +468,11 @@ func (s *Service) operatorNativeWork(ctx context.Context, scope nativeScope, nam
 }
 
 func (s *Service) operatorCompatibilityWork(ctx context.Context, scope nativeScope, name string, request operatortool.WorkArguments, command tracker.Mutation) (json.RawMessage, error) {
-	_, id, err := readNativeIssue(ctx, s.database.reader, scope, request.Identifier)
+	record, _, err := s.readWorkItemRecord(ctx, scope, request.Identifier)
 	if err != nil {
 		return nil, err
 	}
+	id := tracker.WorkItemID(record.ID)
 	switch name {
 	case operatortool.SetQueuePriority:
 		result, err := s.workItemPriorityCommand(ctx, id, priorityMutationRequest{Scope: request.Scope, State: request.State, Priority: request.QueuePriority, IdempotencyKey: command.IdempotencyKey})

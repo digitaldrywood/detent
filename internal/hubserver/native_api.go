@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -397,23 +398,16 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 			}
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
 			if c.Path() == nativeOrganizationIssuePath {
-				if s.config.TenantRepository != nil {
-					var item corestore.WorkItem
-					err := s.config.TenantRepository.ReadTenant(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-						var err error
-						item, err = r.WorkItemByNativeID(readCtx, tracker.NativeWorkItemID(c.Param("item")))
-						return err
-					})
-					if err != nil {
-						return s.nativeAPIError(c, projectRecordError(err))
-					}
-					scope.project = item.ProjectID
-				} else {
-					err := s.database.auth().QueryRowContext(readCtx, "SELECT project_id FROM issues WHERE organization_id = ? AND native_id = ?", scope.organization, c.Param("item")).Scan(&scope.project)
-					if err != nil {
-						return s.nativeAPIError(c, err)
-					}
+				var item corestore.WorkItem
+				err := s.config.TenantRepository.ReadTenant(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					item, err = r.WorkItemByNativeID(readCtx, tracker.NativeWorkItemID(c.Param("item")))
+					return err
+				})
+				if err != nil {
+					return s.nativeAPIError(c, projectRecordError(err))
 				}
+				scope.project = item.ProjectID
 			}
 			runnerHeartbeat := c.Path() == nativeBase+"/machines/:machine/heartbeat" && credential.Runner.RunnerID != ""
 			if runnerHeartbeat {
@@ -453,38 +447,24 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 						return s.nativeAPIError(c, operatortool.ErrAccessDenied)
 					}
 				}
-				if s.config.TenantRepository != nil {
-					if runnerLeaseMutationRoute(c.Path()) {
-						if err := s.authorizeRunnerLeaseProject(readCtx, scope); err != nil {
-							return s.nativeAPIError(c, err)
-						}
-					} else if runnerRepositoryReportRoute(c.Path()) && credential.Runner.RunnerID != "" {
-						if err := s.authorizeRunnerRepositoryProject(readCtx, scope); err != nil {
-							return s.nativeAPIError(c, err)
-						}
-					} else {
-						record, err := s.readAuthorizedProjectRecord(readCtx, scope, write, c.Request().Method == http.MethodGet && c.Path() == nativeBase)
-						if err != nil {
-							return s.nativeAPIError(c, err)
-						}
-						c.Set("native_project_record", record)
+				if runnerLeaseMutationRoute(c.Path()) {
+					if err := s.authorizeRunnerLeaseProject(readCtx, scope); err != nil {
+						return s.nativeAPIError(c, err)
+					}
+				} else if runnerRepositoryReportRoute(c.Path()) && credential.Runner.RunnerID != "" {
+					if err := s.authorizeRunnerRepositoryProject(readCtx, scope); err != nil {
+						return s.nativeAPIError(c, err)
 					}
 				} else {
-					if err := s.requireHostedProject(readCtx, s.database.auth(), scope, write); err != nil {
+					record, err := s.readAuthorizedProjectRecord(readCtx, scope, write, c.Request().Method == http.MethodGet && c.Path() == nativeBase)
+					if err != nil {
 						return s.nativeAPIError(c, err)
 					}
-					if err := s.database.authorizeNativeProject(readCtx, scope); err != nil {
-						return s.nativeAPIError(c, err)
-					}
+					c.Set("native_project_record", record)
 				}
 			}
 			if item := c.Param("item"); item != "" {
-				var visibilityErr error
-				if s.config.TenantRepository != nil {
-					_, _, visibilityErr = s.readWorkItemRecord(readCtx, scope, item)
-				} else {
-					visibilityErr = requireReporterItem(readCtx, s.database.reader, scope, item)
-				}
+				_, _, visibilityErr := s.readWorkItemRecord(readCtx, scope, item)
 				if err := visibilityErr; err != nil {
 					return s.nativeAPIError(c, err)
 				}
@@ -506,7 +486,41 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 }
 
 func (d *database) authorizeNativeProject(ctx context.Context, scope nativeScope) error {
-	return authorizeNativeProject(ctx, d.auth(), scope)
+	if d.postgres == nil {
+		return nativeNotFound()
+	}
+	service := &Service{config: Config{now: d.now}}
+	return d.postgres.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if scope.credential.Runner.RunnerID != "" {
+			if scope.credential.Runner.OrganizationID != scope.organization {
+				return nativeNotFound()
+			}
+			identity, err := r.RunnerIdentityByCredential(ctx, scope.credential.ID)
+			if err != nil {
+				return projectRecordError(err)
+			}
+			if identity.RunnerID != scope.credential.Runner.RunnerID {
+				return nativeNotFound()
+			}
+			allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, d.now())
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				return nativeNotFound()
+			}
+		} else if err := service.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		project, err := r.Project(ctx, scope.project)
+		if err != nil {
+			return projectRecordError(err)
+		}
+		if project.DeletedAt != nil {
+			return nativeNotFound()
+		}
+		return nil
+	})
 }
 
 func authorizeNativeProject(ctx context.Context, db nativeQueryer, scope nativeScope) error {
@@ -825,25 +839,8 @@ func (s *Service) commitNativeMutation(ctx context.Context, scope nativeScope, o
 	return json.RawMessage(response), nil
 }
 func (s *Service) requireCompatibilityResource(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
-	var query string
 	path := c.Path()
-	switch {
-	case strings.HasPrefix(path, "/api/v1/work-items/:id"):
-		query = "SELECT count(*) FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = ? AND p.profile = 'native'"
-	case strings.HasPrefix(path, "/api/v1/leases/:id"):
-		query = "SELECT count(*) FROM leases l JOIN issues i ON i.id = l.issue_id JOIN projects p ON p.id = i.project_id WHERE l.lease_id = ? AND p.profile = 'native'"
-	case strings.HasPrefix(path, "/api/v1/machines/:id"):
-		query = "SELECT count(*) FROM machines WHERE id = ? AND organization_id IS NOT NULL"
-	default:
-		return nil
-	}
-	var count int
-	if err := s.database.reader.QueryRowContext(ctx, query, c.Param("id")).Scan(&count); err != nil {
-		return fmt.Errorf("check compatibility resource: %w", err)
-	}
-	if count != 0 {
+	if strings.HasPrefix(path, "/api/v1/work-items/:id") || strings.HasPrefix(path, "/api/v1/leases/:id") || strings.HasPrefix(path, "/api/v1/machines/:id") {
 		return echo.NewHTTPError(http.StatusNotFound, apiErrorResponse{Code: "not_found", Message: "Resource was not found"})
 	}
 	return nil
@@ -898,21 +895,30 @@ func (s *Service) nativeCommandReplay(ctx context.Context, scope nativeScope, op
 	if err != nil {
 		return nil, false, err
 	}
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
+		return nil, false, nativeNotFound()
+	}
+	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+		return nil, false, err
+	}
+	var receipt eventstore.Receipt
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
+			return err
+		}
+		var err error
+		receipt, err = r.ReplayReceipt(ctx, scope.credential.ID, operation, key)
+		return err
+	})
+	if errors.Is(err, corestore.ErrNotFound) {
+		return nil, false, nil
+	}
 	if err != nil {
-		return nil, false, err
+		return nil, false, projectRecordError(err)
 	}
-	defer tx.Rollback()
-	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
-		return nil, false, err
+	if receipt.RequestHash != hash {
+		return nil, false, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict, publicMessage: true}
 	}
-	response, found, err := nativeCommandReceiptReference(ctx, tx, scope, operation, key, hash)
-	if !found || err != nil {
-		return nil, found, err
-	}
-	if err := tx.Rollback(); err != nil {
-		return nil, false, err
-	}
-	resolved, err := resolveStorageJSON(s.contentContext(ctx), []byte(response))
-	return json.RawMessage(resolved), true, err
+	resolved, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, receipt)
+	return resolved, true, err
 }
