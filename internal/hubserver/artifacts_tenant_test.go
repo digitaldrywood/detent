@@ -146,7 +146,7 @@ func TestPostgresArtifactUploadAuthority(t *testing.T) {
 			}
 
 			path := "/api/v2/organizations/" + string(organization) + "/projects/" + string(project) + "/work-items/" + reservation.WorkItemID + "/artifact-authority"
-			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, "boundary_operator_"+suffix, reservation), http.StatusForbidden)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, "boundary_operator_"+suffix, reservation), http.StatusNotFound)
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, "boundary_publisher_"+suffix, reservation), http.StatusNotFound)
 			for _, tc := range []struct {
 				name   string
@@ -376,7 +376,7 @@ func testPostgresArtifactReceipts(t *testing.T, admin *sql.DB, service *Service,
 	}
 	path := "/api/v2/organizations/" + string(organization) + "/projects/" + string(project) + "/artifact-services/" + reservation.ServiceID + "/receipts"
 	reference := artifact.Reference{SchemaVersion: 1, Scope: reservation.Scope, ServiceID: reservation.ServiceID, ArtifactID: "artifact_" + strings.Repeat("e", 32), ManifestID: artifact.NewID("manifest"), Revision: 1, SHA256: artifact.Digest([]byte("example")), Kind: "log", State: "complete", Availability: "available", Bytes: 10, Objects: 1, ObservedAt: now, ExpiresAt: now.Add(time.Hour)}
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, reference), http.StatusNotFound)
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, reference), http.StatusForbidden)
 	for _, tc := range []struct {
 		name   string
 		mutate func(*artifact.Reference)
