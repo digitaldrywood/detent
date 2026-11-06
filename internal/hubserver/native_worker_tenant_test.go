@@ -3,18 +3,22 @@ package hubserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -47,39 +51,71 @@ func TestLeaseRenewalReturnsItsCommittedSnapshot(t *testing.T) {
 	}
 	service := &Service{config: f.service.config}
 	service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
-	counter := &leaseTransactionCounter{Repository: service.config.TenantRepository}
-	service.config.TenantRepository = counter
-	response := httptest.NewRecorder()
-	request := newHubAPIRequest(t, http.MethodPost, "/renew", f.tokens[0], tracker.NativeLeaseMutation{FencingToken: f.leases[0].FencingToken, TTLSeconds: 300})
-	var statements []string
-	ctx := postgres.WithTransactionTiming(context.WithValue(t.Context(), leaseTransactionKey{}, true), nil, func(_ time.Time, query string) { statements = append(statements, query) })
-	request = request.WithContext(ctx)
-	c := echo.New().NewContext(request, response)
-	c.SetParamNames("lease")
-	c.SetParamValues(string(f.leases[0].ID))
-	c.Set("native_scope", nativeScope{organization: "org_startup", project: "prj_runner", credential: credential})
-	if err := service.renewNativeLeaseTenant(c); err != nil {
-		t.Fatal(err)
+	for _, rich := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rich_%t", rich), func(t *testing.T) {
+			var reservation providercapacity.Reservation
+			if rich {
+				report := providercapacity.Report{Provider: "example-provider", Backend: "example-backend", AccountAlias: "example-account", SharedAccountAlias: "example-shared", Billing: "subscription", MaxConcurrent: 1, Availability: "available", ObservedAt: time.Now().UTC().Truncate(time.Microsecond)}
+				for index := 0; index < 128; index++ {
+					id := fmt.Sprintf("model_%03d", 127-index)
+					report.Models = append(report.Models, id)
+					detail := providercapacity.ModelDetail{ID: id, Label: "Example", Provider: report.Provider, Default: index == 0, DefaultReasoningEffort: "effort_00", Legacy: index%2 == 0}
+					for effort := 0; effort < 16; effort++ {
+						detail.ReasoningEfforts = append(detail.ReasoningEfforts, fmt.Sprintf("effort_%02d", effort))
+					}
+					report.ModelDetails = append(report.ModelDetails, detail)
+				}
+				for index, kind := range []string{"primary", "secondary", "five_hour", "weekly", "weekly_opus", "weekly_sonnet", "seven_day", "seven_day_opus"} {
+					window := providercapacity.UsageWindow{Kind: kind}
+					if index > 0 {
+						percent := float64(index)
+						window.PercentUsed = &percent
+						window.ObservedAt = report.ObservedAt
+						window.ResetAt = report.ObservedAt.Add(time.Hour)
+					}
+					report.UsageWindows = append(report.UsageWindows, window)
+				}
+				reservation = providercapacity.Reservation{Requirement: providercapacity.Requirement{Role: "code", Backend: report.Backend, Model: report.Models[0]}, Report: report, Reason: "available"}
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+					return w.CreateProviderReservation(t.Context(), claimstore.ProviderReservation{OrganizationID: "org_startup", LeaseID: f.leases[0].ID, Reservation: reservation})
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			counter := &leaseTransactionCounter{Repository: f.service.config.TenantRepository}
+			service.config.TenantRepository = counter
+			response := httptest.NewRecorder()
+			request := newHubAPIRequest(t, http.MethodPost, "/renew", f.tokens[0], tracker.NativeLeaseMutation{FencingToken: f.leases[0].FencingToken, TTLSeconds: 300})
+			var statements []string
+			ctx := postgres.WithTransactionTiming(context.WithValue(t.Context(), leaseTransactionKey{}, true), nil, func(_ time.Time, query string) { statements = append(statements, query) })
+			request = request.WithContext(ctx)
+			c := echo.New().NewContext(request, response)
+			c.SetParamNames("lease")
+			c.SetParamValues(string(f.leases[0].ID))
+			c.Set("native_scope", nativeScope{organization: "org_startup", project: "prj_runner", credential: credential})
+			if err := service.renewNativeLeaseTenant(c); err != nil {
+				t.Fatal(err)
+			}
+			requireNativeStatus(t, response, http.StatusOK)
+			var renewed tracker.NativeLease
+			decodeHubResponse(t, response, &renewed)
+			if renewed.ID != f.leases[0].ID || renewed.FencingToken != f.leases[0].FencingToken || renewed.PolicyID != f.policy.PolicyID || renewed.IsolationPolicy == nil {
+				t.Fatalf("renewal lost authority or response details: %+v", renewed)
+			}
+			if got := len(statements) + 1; got > 8 {
+				t.Errorf("renew command exchanges=%d, want at most 8 including BEGIN/binding", got)
+			}
+			t.Logf("renew command statements excluding BEGIN/binding=%d", len(statements))
+
+			if counter.reads != 0 || counter.writes != 1 {
+				t.Fatalf("renewal transactions read=%d write=%d, want 0 and 1", counter.reads, counter.writes)
+			}
+			if rich && !reflect.DeepEqual(renewed.ProviderReservation, &reservation) {
+				t.Fatalf("renewal changed provider snapshot: got=%+v", renewed.ProviderReservation)
+			}
+		})
 	}
-	requireNativeStatus(t, response, http.StatusOK)
-	var renewed tracker.NativeLease
-	decodeHubResponse(t, response, &renewed)
-	if renewed.ID != f.leases[0].ID || renewed.FencingToken != f.leases[0].FencingToken || renewed.PolicyID != f.policy.PolicyID || renewed.IsolationPolicy == nil {
-		t.Fatalf("renewal lost authority or response details: %+v", renewed)
-	}
-	if got := len(statements) + 1; got > 8 {
-		t.Errorf("renew command exchanges=%d, want at most 8 including BEGIN/binding", got)
-	}
-	t.Logf("renew command statements excluding BEGIN/binding=%d", len(statements))
-	for _, query := range statements {
-		if len(query) > 100 {
-			query = query[:100]
-		}
-		t.Logf("SQL: %s", query)
-	}
-	if counter.reads != 0 || counter.writes != 1 {
-		t.Fatalf("renewal transactions read=%d write=%d, want 0 and 1", counter.reads, counter.writes)
-	}
+
 }
 
 func TestLeaseCommandLocksRunnerBeforeFence(t *testing.T) {
