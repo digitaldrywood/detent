@@ -52,16 +52,6 @@ func ValidEndpoint(endpoint string) bool {
 	return ok && filepath.IsAbs(path) && filepath.Clean(path) == path
 }
 
-func (o Organization) validate() error {
-	if !ValidOrganizationID(o.ID) || !safeID(o.ProviderID) || strings.TrimSpace(o.Name) == "" || len(o.Name) > 120 || o.Generation < 1 || !ValidEndpoint(o.Endpoint) {
-		return errors.New("organization ID, provider organization, name, endpoint and generation are required and must be valid")
-	}
-	if o.State != "ready" && o.State != "disabled" {
-		return errors.New("organization state must be ready or disabled")
-	}
-	return nil
-}
-
 type Registry struct {
 	store *store
 	now   func() time.Time
