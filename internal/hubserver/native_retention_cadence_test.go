@@ -145,7 +145,6 @@ func TestNativeRetentionCompletedBackfillsAvoidWriter(t *testing.T) {
 		{"conversation metadata", s.convertConversationQueryMetadata},
 		{"claim facts", s.database.populateClaimFacts},
 		{"runner facts", s.database.populateRunnerFacts},
-		{"archive facts", s.database.populateArchiveFacts},
 		{"hosted import fields", s.database.populateHostedImportFields},
 		{"time indexes", s.database.populateTimeIndexes},
 	} {

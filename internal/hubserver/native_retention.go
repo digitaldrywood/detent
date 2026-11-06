@@ -38,7 +38,6 @@ func (s *Service) maintainNativeBackfills(ctx context.Context) error {
 		{"populate runner facts", func(ctx context.Context) error {
 			return s.database.populateRunnerFacts(s.runDetailContext(s.contentContext(ctx)))
 		}},
-		{"populate archive facts", s.database.populateArchiveFacts},
 		{"populate hosted import fields", s.database.populateHostedImportFields},
 		{"populate time indexes", s.database.populateTimeIndexes},
 		{"expire request metrics", func(ctx context.Context) error { return s.expireRequestMetrics(ctx, s.config.now()) }},

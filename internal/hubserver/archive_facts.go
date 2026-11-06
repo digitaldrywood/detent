@@ -11,8 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const archiveFactsRowsPerTick = 200
-
 func writeArchiveChangeFacts(ctx context.Context, tx *sql.Tx, change tracker.ChangeRequest, source string) error {
 	landed := tracker.ChangeLanding{}
 	var at, merge any
@@ -80,66 +78,6 @@ func writeConversationExecutionFacts(ctx context.Context, tx *sql.Tx, id string,
 	}
 	_, err := tx.ExecContext(ctx, query, args...)
 	return err
-}
-
-func (d *database) populateArchiveFacts(ctx context.Context) error {
-	for range archiveFactsRowsPerTick {
-		changed, err := d.populateArchiveFact(ctx)
-		if err != nil || !changed {
-			return err
-		}
-	}
-	return nil
-}
-
-func (d *database) populateArchiveFact(ctx context.Context) (bool, error) {
-	var id, raw string
-	var write func(context.Context, *sql.Tx) error
-	err := d.reader.QueryRowContext(ctx, `SELECT id,record_json FROM change_requests WHERE archive_landed_version_id IS NULL ORDER BY id LIMIT 1`).Scan(&id, &raw)
-	if err == nil {
-		var change tracker.ChangeRequest
-		if err := json.Unmarshal([]byte(raw), &change); err != nil {
-			return false, err
-		}
-		change.ID = id
-		write = func(ctx context.Context, tx *sql.Tx) error { return writeArchiveChangeFacts(ctx, tx, change, raw) }
-	} else if errors.Is(err, sql.ErrNoRows) {
-		err = d.reader.QueryRowContext(ctx, `SELECT id,execution_json FROM conversations WHERE execution_status IS NULL OR execution_lease_id IS NULL ORDER BY id LIMIT 1`).Scan(&id, &raw)
-		if err == nil {
-			var execution conversation.Execution
-			if err := json.Unmarshal([]byte(raw), &execution); err != nil {
-				return false, err
-			}
-			write = func(ctx context.Context, tx *sql.Tx) error {
-				return writeConversationExecutionFacts(ctx, tx, id, execution, raw)
-			}
-		} else if errors.Is(err, sql.ErrNoRows) {
-			err = d.reader.QueryRowContext(ctx, `SELECT id,data_json FROM collaboration_events WHERE archive_operation IS NULL ORDER BY id LIMIT 1`).Scan(&id, &raw)
-			if errors.Is(err, sql.ErrNoRows) {
-				return false, nil
-			}
-			if err != nil {
-				return false, err
-			}
-			values, err := archiveEventValues(raw)
-			if err != nil {
-				return false, err
-			}
-			write = func(ctx context.Context, tx *sql.Tx) error { return writeArchiveEventFacts(ctx, tx, id, values, raw) }
-		}
-	}
-	if err != nil {
-		return false, err
-	}
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-	if err := write(ctx, tx); err != nil {
-		return false, err
-	}
-	return true, d.commit(ctx, tx)
 }
 
 func archiveNullValue(value sql.NullString) any {

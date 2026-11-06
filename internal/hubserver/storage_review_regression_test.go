@@ -171,7 +171,7 @@ func TestRunHistoryConversionPreservesPendingArchiveFacts(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.commit(t, tx)
-			for _, phase := range []string{"legacy", "converted", "backfilled"} {
+			for _, phase := range []string{"legacy", "converted"} {
 				switch phase {
 				case "converted":
 					if err := f.service.convertStorageFamily(f.service.freshRunDetailContext(t.Context()), scope, storageConversionFamilies[0], f.now); err != nil {
@@ -180,10 +180,6 @@ func TestRunHistoryConversionPreservesPendingArchiveFacts(t *testing.T) {
 					var converted int
 					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type=? AND payload_object_key<>'' AND data_json='{}'`, issue.WorkItemID, kind).Scan(&converted); err != nil || converted != 1 {
 						t.Fatalf("converted rows=%d, want 1: %v", converted, err)
-					}
-				case "backfilled":
-					if err := f.service.database.populateArchiveFacts(t.Context()); err != nil {
-						t.Fatal(err)
 					}
 				}
 				timeline, err := readArchiveTimeline(t.Context(), f.service.database.reader, scope, string(issue.WorkItemID))
