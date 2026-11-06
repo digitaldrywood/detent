@@ -58,12 +58,7 @@ func (s *Service) reviewChange(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	if s.config.TenantRepository != nil {
-		return s.changeRecordEvidenceMutation(c, "review", c.Param("version"), "", request)
-	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		return s.reviewChangeCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), c.Param("version"), request, now)
-	})
+	return s.changeRecordEvidenceMutation(c, "review", c.Param("version"), "", request)
 }
 
 func (s *Service) submitChangeCheck(c echo.Context) error {
@@ -143,12 +138,7 @@ func (s *Service) discussChange(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	if s.config.TenantRepository != nil {
-		return s.changeRecordEvidenceMutation(c, "discussion", request.VersionID, "", request)
-	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		return s.discussChangeCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), request, now)
-	})
+	return s.changeRecordEvidenceMutation(c, "discussion", request.VersionID, "", request)
 }
 
 func validateChangeReview(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID, versionID string, request tracker.ReviewChange, now time.Time) (tracker.ChangeRequest, tracker.MachineID, error) {

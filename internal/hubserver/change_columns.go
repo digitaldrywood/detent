@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -310,119 +309,19 @@ func decodeChangeColumnCheckpoint(ctx context.Context, raw string) (*tracker.Nat
 	return &checkpoint, nil
 }
 
-const changeColumnsPerTick = 100
-
 func (s *Service) populateChangeColumns(ctx context.Context) error {
-	if s.config.TenantRepository != nil {
-		owner, ok := s.config.TenantRepository.(interface {
-			BackfillCurrentChangeReviewsAfter(context.Context, tracker.OrganizationID, *eventstore.Content, int, string) (int, string, error)
-		})
-		if !ok {
-			return workItemStorageUnavailable()
-		}
-		after, _ := s.changeColumnAfter.(string)
-		_, next, err := owner.BackfillCurrentChangeReviewsAfter(ctx, tracker.OrganizationID(s.appOrganizationID()), eventstore.NewContent(s.runDetailStore()), corestore.MaxPageSize, after)
-		if next != "" || err == nil {
-			s.changeColumnAfter = next
-		}
-		return err
+	owner, ok := s.config.TenantRepository.(interface {
+		BackfillCurrentChangeReviewsAfter(context.Context, tracker.OrganizationID, *eventstore.Content, int, string) (int, string, error)
+	})
+	if !ok {
+		return workItemStorageUnavailable()
 	}
-
-	ctx = s.runDetailContext(ctx)
-	var failures error
-	for range changeColumnsPerTick {
-		changed, err := s.populateChangeColumn(ctx)
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		failures = errors.Join(failures, err)
-		if !changed {
-			return failures
-		}
+	after, _ := s.changeColumnAfter.(string)
+	_, next, err := owner.BackfillCurrentChangeReviewsAfter(ctx, tracker.OrganizationID(s.appOrganizationID()), eventstore.NewContent(s.runDetailStore()), corestore.MaxPageSize, after)
+	if next != "" || err == nil {
+		s.changeColumnAfter = next
 	}
-	return failures
-}
-
-func (s *Service) populateChangeColumn(ctx context.Context) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	for s.changeColumnFamily < len(changeColumnFamilies) {
-		family := changeColumnFamilies[s.changeColumnFamily]
-		var id any
-		var raw string
-		statement := "SELECT " + family.key + "," + family.payloadColumn() + " FROM " + family.table + " WHERE " + family.pending + " IS NULL"
-		var args []any
-		if s.changeColumnAfter != nil {
-			statement += " AND " + family.key + ">?"
-			args = append(args, s.changeColumnAfter)
-		}
-		err := s.database.reader.QueryRowContext(ctx, statement+" ORDER BY "+family.key+" LIMIT 1", args...).Scan(&id, &raw)
-		if errors.Is(err, sql.ErrNoRows) {
-			s.changeColumnFamily++
-			s.changeColumnAfter = nil
-			continue
-		}
-		if err != nil {
-			return true, err
-		}
-		s.changeColumnAfter = id
-		columns, err := changeRecordColumns(ctx, s.database.reader, family.table, raw)
-		if err != nil {
-			return true, fmt.Errorf("decode %s columns: %w", family.table, err)
-		}
-		if family.table == "change_requests" {
-			version, head, err := readChangeColumnIdentity(ctx, s.database.reader, fmt.Sprint(id), raw)
-			if err != nil {
-				return true, err
-			}
-			columns.add("claim_version_id", version)
-			columns.add("claim_head_sha", head)
-		}
-		if family.table == "native_attempts" {
-			var checkpoint sql.NullString
-			if err := s.database.reader.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json) FROM native_attempts WHERE id=?`, id).Scan(&checkpoint); err != nil {
-				return true, err
-			}
-			checkpointID := ""
-			if checkpoint.Valid {
-				value, err := decodeChangeColumnCheckpoint(ctx, checkpoint.String)
-				if err != nil {
-					return true, err
-				}
-				if value != nil && value.Change != nil {
-					checkpointID = value.Change.ChangeID
-				}
-			}
-			columns.values[len(columns.values)-1] = checkpointID
-			columns.checkpointSource = &checkpoint
-		}
-		if family.table == "native_comments" {
-			var edited sql.NullString
-			if err := s.database.reader.QueryRowContext(ctx, `SELECT edited_by_json FROM native_comments WHERE id=?`, id).Scan(&edited); err != nil {
-				return true, err
-			}
-			actor := tracker.Actor{}
-			if edited.Valid {
-				if err := decodeChangeColumnsJSON(ctx, []byte(edited.String), &actor); err != nil {
-					return true, err
-				}
-			}
-			columns.add("change_edited_by_kind", actor.Kind)
-		}
-		tx, err := s.database.db.BeginTx(ctx, nil)
-		if err != nil {
-			return true, err
-		}
-		err = writeChangeColumns(ctx, tx, family, id, raw, columns, true)
-		if err == nil {
-			err = s.database.commit(ctx, tx)
-		}
-		_ = tx.Rollback()
-		return true, err
-	}
-	s.changeColumnFamily = 0
-	s.changeColumnAfter = nil
-	return s.populateChangeSession(ctx)
+	return err
 }
 
 func readPriorChangeApproval(ctx context.Context, query nativeQueryer, change, version string) (bool, error) {

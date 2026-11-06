@@ -60,7 +60,7 @@ func (s *Service) contentContext(ctx context.Context) context.Context {
 	if call == nil && store == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, changeContentKey{}, &changeContent{encoder: &s.archiveEncoder, call: call, store: store, register: s.registerChangeContent, query: s.database.reader})
+	return context.WithValue(ctx, changeContentKey{}, &changeContent{encoder: &s.archiveEncoder, call: call, store: store, register: s.registerChangeContent})
 }
 
 func (s *Service) changeContentMiddleware(next echo.HandlerFunc) echo.HandlerFunc {

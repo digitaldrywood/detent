@@ -57,73 +57,37 @@ func (s *Service) validateReviewBundleRecord(ctx context.Context, scope nativeSc
 }
 
 func (s *Service) changeViewedFiles(c echo.Context) error {
-	if s.config.TenantRepository != nil {
-		ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-		defer cancel()
-		scope := nativeRequestScope(c)
-		change, err := s.readChangeRecord(ctx, scope, c.Param("item"), c.Param("change"))
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		version, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, c.Param("version"))
-		if err != nil {
-			return s.nativeAPIError(c, projectRecordError(err))
-		}
-		var rows []eventstore.ViewedFile
-		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			var err error
-			rows, err = r.ViewedFiles(ctx, c.Param("version"), scope.credential.ID, 4097)
-			return err
-		})
-		if err != nil {
-			return s.nativeAPIError(c, projectRecordError(err))
-		}
-		if len(rows) > 4096 {
-			return s.nativeAPIError(c, corestore.ErrInvalidPage)
-		}
-		result := make([]tracker.ChangeViewedFile, 0, len(rows))
-		for _, row := range rows {
-			if row.ChangeID != change.ID || row.VersionID != version.ID || row.PrincipalID != scope.credential.ID {
-				return s.nativeAPIError(c, corestore.ErrTenantMismatch)
-			}
-			result = append(result, tracker.ChangeViewedFile{ManifestSHA256: row.ManifestSHA256, FileSHA256: row.FileSHA256, Viewed: row.Viewed})
-		}
-		return c.JSON(http.StatusOK, result)
-	}
-	result, err := s.changeViewedFilesCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("change"), c.Param("version"))
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	scope := nativeRequestScope(c)
+	change, err := s.readChangeRecord(ctx, scope, c.Param("item"), c.Param("change"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, result)
-}
-func (s *Service) changeViewedFilesCommand(ctx context.Context, scope nativeScope, item, changeID, versionID string) ([]tracker.ChangeViewedFile, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	change, err := readChange(ctx, s.database.reader, scope, item, changeID)
+	version, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, c.Param("version"))
 	if err != nil {
-		return nil, err
+		return s.nativeAPIError(c, projectRecordError(err))
 	}
-	version, err := readChangeVersion(ctx, s.database.reader, change.ID, versionID)
+	var rows []eventstore.ViewedFile
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		rows, err = r.ViewedFiles(ctx, c.Param("version"), scope.credential.ID, 4097)
+		return err
+	})
 	if err != nil {
-		return nil, err
+		return s.nativeAPIError(c, projectRecordError(err))
 	}
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT manifest_sha256, file_sha256, viewed FROM change_viewed_files WHERE version_id=? AND principal_id=? ORDER BY manifest_sha256, file_sha256 LIMIT 4096", version.ID, scope.credential.ID)
-	if err != nil {
-		return nil, err
+	if len(rows) > 4096 {
+		return s.nativeAPIError(c, corestore.ErrInvalidPage)
 	}
-	defer rows.Close()
-	result := []tracker.ChangeViewedFile{}
-	for rows.Next() {
-		var value tracker.ChangeViewedFile
-		if err := rows.Scan(&value.ManifestSHA256, &value.FileSHA256, &value.Viewed); err != nil {
-			return nil, err
+	result := make([]tracker.ChangeViewedFile, 0, len(rows))
+	for _, row := range rows {
+		if row.ChangeID != change.ID || row.VersionID != version.ID || row.PrincipalID != scope.credential.ID {
+			return s.nativeAPIError(c, corestore.ErrTenantMismatch)
 		}
-		result = append(result, value)
+		result = append(result, tracker.ChangeViewedFile{ManifestSHA256: row.ManifestSHA256, FileSHA256: row.FileSHA256, Viewed: row.Viewed})
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return result, nil
+	return c.JSON(http.StatusOK, result)
 }
 
 func (s *Service) viewChangeFile(c echo.Context) error {

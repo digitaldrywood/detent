@@ -449,3 +449,23 @@ func TestAttachmentReceiptBillingMigration(t *testing.T) {
 		t.Fatalf("recounted receipt usage=%d want=%d err=%v", usage, total, err)
 	}
 }
+
+func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
+	t.Run("immutable content without legacy database", func(t *testing.T) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				t.Errorf("immutable content requires legacy database: %v", recovered)
+			}
+		}()
+		contentService := &Service{config: Config{RunDetails: &memoryRunDetails{}}}
+		payload := []byte("retained source metadata")
+		ref, err := contentService.runDetailStore().StoreDetail(t.Context(), "org_first", payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := readChangeContent(contentService.contentContext(t.Context()), "org_first", ref)
+		if err != nil || !bytes.Equal(got, payload) {
+			t.Fatalf("immutable content = %q, %v", got, err)
+		}
+	})
+}

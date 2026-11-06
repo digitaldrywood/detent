@@ -103,38 +103,8 @@ func (s *Service) getNativeSourceRecovery(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	scope := nativeRequestScope(c)
-	if s.config.TenantRepository != nil {
-		view, err := s.readNativeSourceRecoveryTenant(ctx, scope, c.Param("item"), c.QueryParam("destinations_after"))
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return c.JSON(http.StatusOK, view)
-	}
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	view, err := s.readNativeSourceRecoveryTenant(ctx, scope, c.Param("item"), c.QueryParam("destinations_after"))
 	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	defer tx.Rollback()
-	view, _, err := readSourceRecoveryView(ctx, tx, scope, c.Param("item"))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	approval, found, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if found {
-		runners, err := readPlacementRunners(ctx, tx, scope, s.config.now())
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		for _, r := range runners {
-			if placementRunnerCompatible(r, scope.project, approval.Policy.Requirements, s.config.now(), false) && validateReadRunnerIsolation(ctx, tx, scope, r.Runner) == nil {
-				view.Destinations = append(view.Destinations, sourceRecoveryRunner{ID: r.RunnerID, Name: r.DisplayName})
-			}
-		}
-	}
-	if err := tx.Commit(); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, view)

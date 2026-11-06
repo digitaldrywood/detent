@@ -163,18 +163,9 @@ func readChangePolicy(ctx context.Context, query nativeQueryer, scope nativeScop
 }
 
 func (s *Service) getChangeReviewPolicy(c echo.Context) error {
-	if s.config.TenantRepository != nil {
-		ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-		defer cancel()
-		result, err := s.changeReviewPolicyRecord(ctx, nativeRequestScope(c))
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return c.JSON(http.StatusOK, result)
-	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
-	result, err := readChangePolicy(ctx, s.database.reader, nativeRequestScope(c))
+	result, err := s.changeReviewPolicyRecord(ctx, nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -422,33 +413,7 @@ func (s *Service) listChanges(c echo.Context) error {
 }
 
 func (s *Service) readChanges(ctx context.Context, scope nativeScope, item string) ([]tracker.ChangeRequest, error) {
-	if s.config.TenantRepository != nil {
-		return s.listChangeRecords(ctx, scope, item)
-	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
-		return nil, err
-	}
-	result, err := changeRows[tracker.ChangeRequest](ctx, s.database.reader, `SELECT c.record_json FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
-WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? ORDER BY c.rowid`, scope.organization, scope.project, item)
-	if err != nil {
-		return nil, err
-	}
-	if scope.credential.HostedRole == "reporter" {
-		filtered := []tracker.ChangeRequest{}
-		for _, change := range result {
-			value, visible, err := reporterChange(ctx, s.database.reader, scope, change)
-			if err != nil {
-				return nil, err
-			}
-			if visible {
-				filtered = append(filtered, value)
-			}
-		}
-		result = filtered
-	}
-	return result, nil
+	return s.listChangeRecords(ctx, scope, item)
 }
 
 func (s *Service) createChange(c echo.Context) error {
@@ -465,7 +430,7 @@ func (s *Service) createChange(c echo.Context) error {
 }
 
 func (s *Service) getChange(c echo.Context) error {
-	if s.config.TenantRepository != nil && c.QueryParam("view") != "bounded" {
+	if c.QueryParam("view") != "bounded" {
 		ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 		defer cancel()
 		result, err := s.selectedChangeDetail(ctx, nativeRequestScope(c), c.Param("item"), c.Param("change"), s.config.now())
@@ -474,66 +439,45 @@ func (s *Service) getChange(c echo.Context) error {
 		}
 		return nativeArchiveJSON(c, http.StatusOK, result)
 	}
-	if s.config.TenantRepository == nil {
-		if handled, err := s.archiveView(c, c.Param("item"), "change:"+c.Param("change"), nil); handled {
-			return err
-		}
-	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	scope, ctx := nativeRequestScope(c), ctx
-	var query nativeQueryer
-	if s.config.TenantRepository == nil {
-		query = s.database.reader
-	}
 	var err error
-	if c.QueryParam("view") == "bounded" {
-		args := operatortool.ChangeArguments{ProjectID: string(scope.project), ItemID: c.Param("item"), ChangeID: c.Param("change"), VersionID: c.QueryParam("version_id"), Section: c.QueryParam("section"), Cursor: c.QueryParam("cursor")}
-		if c.QueryParam("limit") != "" {
-			args.Limit, err = strconv.Atoi(c.QueryParam("limit"))
-			if err != nil {
-				return s.nativeAPIError(c, nativePublicInvalid("limit must be an integer"))
-			}
-		}
-		raw, err := json.Marshal(args)
+	args := operatortool.ChangeArguments{ProjectID: string(scope.project), ItemID: c.Param("item"), ChangeID: c.Param("change"), VersionID: c.QueryParam("version_id"), Section: c.QueryParam("section"), Cursor: c.QueryParam("cursor")}
+	if c.QueryParam("limit") != "" {
+		args.Limit, err = strconv.Atoi(c.QueryParam("limit"))
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return s.nativeAPIError(c, nativePublicInvalid("limit must be an integer"))
 		}
-		args, err = operatortool.DecodeChangeArguments(operatortool.GetChange, raw)
-		if err != nil {
-			return s.nativeAPIError(c, nativePublicInvalid("invalid Change read selector"))
-		}
-		result := (hubChangeApplication{service: s}).result(scope, args)
-		if s.config.TenantRepository != nil {
-			result, err = s.readBoundedChangeRecord(ctx, scope, args, result)
-		} else {
-			result, err = readBoundedChange(ctx, query, scope, args, result)
-		}
-		if err != nil {
-			var refusal *operatortool.RequestError
-			if errors.As(err, &refusal) {
-				return s.nativeAPIError(c, refusal)
-			}
-			if errors.Is(err, mutation.ErrConflict) {
-				return s.nativeAPIError(c, nativeConflict(0))
-			}
-			if errors.Is(err, operatortool.ErrInvalidArguments) {
-				return s.nativeAPIError(c, nativePublicInvalid("invalid Change read cursor"))
-			}
-			return s.nativeAPIError(c, err)
-		}
-		bounded, err := operatortool.BoundedChangeResult(result)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return c.Blob(http.StatusOK, "application/json", bounded.Content)
 	}
-
-	result, err := readChangeDetail(ctx, query, scope, c.Param("item"), c.Param("change"), s.config.now())
+	raw, err := json.Marshal(args)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return nativeArchiveJSON(c, http.StatusOK, result)
+	args, err = operatortool.DecodeChangeArguments(operatortool.GetChange, raw)
+	if err != nil {
+		return s.nativeAPIError(c, nativePublicInvalid("invalid Change read selector"))
+	}
+	result := (hubChangeApplication{service: s}).result(scope, args)
+	result, err = s.readBoundedChangeRecord(ctx, scope, args, result)
+	if err != nil {
+		var refusal *operatortool.RequestError
+		if errors.As(err, &refusal) {
+			return s.nativeAPIError(c, refusal)
+		}
+		if errors.Is(err, mutation.ErrConflict) {
+			return s.nativeAPIError(c, nativeConflict(0))
+		}
+		if errors.Is(err, operatortool.ErrInvalidArguments) {
+			return s.nativeAPIError(c, nativePublicInvalid("invalid Change read cursor"))
+		}
+		return s.nativeAPIError(c, err)
+	}
+	bounded, err := operatortool.BoundedChangeResult(result)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.Blob(http.StatusOK, "application/json", bounded.Content)
 }
 
 func readChangeDetail(ctx context.Context, query nativeQueryer, scope nativeScope, item, id string, now time.Time) (tracker.ChangeDetail, error) {

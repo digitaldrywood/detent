@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -11,12 +10,9 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/policy"
-	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 // landingLane is the lane a reviewed Change Request waits in for the runner
@@ -248,165 +244,7 @@ func reviewInstructions(change tracker.ChangeRequest, review tracker.ChangeRevie
 }
 
 func (s *Service) landChange(c echo.Context) error {
-	if s.config.TenantRepository != nil {
-		return s.landChangeRecord(c)
-	}
-	var request tracker.LandChangeVersion
-	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
-	}
-	if request.Receipt != nil && request.Receipt.Incorporation != nil {
-		ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-		defer cancel()
-		if err := s.authorizeLandingIncorporation(ctx, nativeRequestScope(c), c.Param("item"), c.Param("change"), c.Param("version"), request); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		select {
-		case s.sourceVerification <- struct{}{}:
-		case <-ctx.Done():
-			return s.nativeAPIError(c, ctx.Err())
-		}
-		err := workspace.VerifyLandingIncorporation(ctx, *request.Receipt.Incorporation, request.IncorporationObjects)
-		<-s.sourceVerification
-		if err != nil {
-			return s.nativeAPIError(c, nativePublicInvalid("landing incorporation objects do not prove the reviewed range"))
-		}
-	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		change, err := readChange(ctx, tx, scope, c.Param("item"), c.Param("change"))
-		if err != nil {
-			return nil, err
-		}
-		if change.WorkItemID != tracker.NativeWorkItemID(c.Param("item")) {
-			return nil, nativePublicInvalid("Land through the Change Request's primary issue")
-		}
-		version, err := readChangeVersion(ctx, tx, change.ID, c.Param("version"))
-		if err != nil {
-			return nil, err
-		}
-		if !changerequest.ValidHash(request.MergeSHA, 40) && !changerequest.ValidHash(request.MergeSHA, 64) {
-			return nil, nativePublicInvalid("The landed commit must be a lowercase commit identity")
-		}
-		if strings.TrimSpace(request.BaseRef) == "" || len(request.BaseRef) > 256 || !slices.Contains([]string{"squash", "merge", "rebase"}, request.Method) {
-			return nil, nativePublicInvalid("Landing names the base branch and a merge method of squash, merge or rebase")
-		}
-		delivery, associated, err := readReleaseDelivery(ctx, tx, scope, string(change.WorkItemID))
-		if err != nil {
-			return nil, err
-		}
-		if associated && (delivery.ChangeID != change.ID || delivery.VersionID != version.ID || delivery.HeadSHA != version.HeadSHA || delivery.BaseRef != request.BaseRef) {
-			return nil, nativePublicInvalid("Landing must cover the associated release version and branch")
-		}
-		if landed := change.CurrentLanding(); landed != nil {
-			if landed.VersionID == version.ID && landed.MergeSHA == request.MergeSHA {
-				return change, nil
-			}
-			return nil, nativeConflict(change.Revision)
-		}
-		if change.CurrentVersion != version.ID {
-			return nil, nativeConflict(change.Revision)
-		}
-		detail, err := readChangeDetail(ctx, tx, scope, string(change.WorkItemID), change.ID, now)
-		if err != nil {
-			return nil, err
-		}
-		if detail.Summary.Status != "reviewed" {
-			return nil, &nativeError{Code: "not_reviewed", Message: "Only a reviewed current version lands: " + strings.Join(detail.Summary.Messages, " "), status: 409}
-		}
-		if associated && (request.Receipt == nil || request.Receipt.BaseSHA != delivery.BaseSHA || request.Receipt.HeadSHA != version.HeadSHA || request.Receipt.MergeSHA != request.MergeSHA) {
-			return nil, nativePublicInvalid("Release landing must retain the reviewed base and head")
-		}
-		auditHead := request.MergeSHA
-		if receipt := request.Receipt; receipt != nil && receipt.Incorporation != nil {
-			proof := receipt.Incorporation
-			if receipt.HeadSHA != version.HeadSHA || receipt.MergeSHA != request.MergeSHA || proof.SourceBaseSHA != version.BaseSHA || proof.SourceHeadSHA != version.HeadSHA || proof.TargetHeadSHA != request.MergeSHA || !changerequest.ValidHash(proof.TargetTreeSHA, len(version.HeadSHA)) || proof.MergeTreeSHA != proof.TargetTreeSHA {
-				return nil, nativePublicInvalid("landing incorporation proof must bind the reviewed range to the target tree")
-			}
-			auditHead = version.HeadSHA
-		}
-		if version.Policy.Gates.SecurityAudit && !version.Policy.Gates.GitHubPullRequest && !associated {
-			if request.Receipt == nil || request.Receipt.SecurityAudit == nil || request.Receipt.BaseSHA == "" || request.Receipt.MergeSHA != request.MergeSHA || request.Receipt.Incorporation != nil && request.Receipt.BaseSHA != version.BaseSHA {
-				return nil, nativePublicInvalid("landing requires security audit evidence for its exact base and head")
-			}
-			audit := request.Receipt.SecurityAudit
-			securityaudit.NormalizeAttribution(&audit.Run)
-			run := audit.Run
-			evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: string(scope.project), Repository: version.Repository, PRNumber: run.PRNumber, BaseSHA: request.Receipt.BaseSHA, HeadSHA: auditHead}, "", []string{"none"})
-			auditRaw, err := marshalNative(audit)
-			if err != nil {
-				return nil, err
-			}
-			recorded := false
-			for _, review := range detail.Reviews {
-				if review.VersionID != version.ID || review.SecurityAudit == nil || !review.SecurityAudit.Landing || review.Decision != "approved" {
-					continue
-				}
-				reviewRaw, err := marshalNative(review.SecurityAudit)
-				if err != nil {
-					return nil, err
-				}
-				if auditRaw == reviewRaw {
-					recorded = true
-				}
-			}
-			if !evaluation.Allowed || audit.Verdict != "pass" || !audit.Landing || !recorded {
-				return nil, nativePublicInvalid("landing security audit does not match recorded approval for the integrated change")
-			}
-		}
-		quality, err := readLandingQualitySnapshot(ctx, tx, scope, change, version, now)
-		if err != nil {
-			return nil, err
-		}
-		change.Landed = &tracker.ChangeLanding{Quality: quality, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: request.MergeSHA, BaseRef: request.BaseRef, Method: request.Method, Actor: scope.actor(), LandedAt: now, Rebased: request.Rebased}
-		qualityRaw, err := marshalNative(change.Landed)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO quality_landings (version_id,record_json) VALUES (?,?)", version.ID, qualityRaw); err != nil {
-			return nil, err
-		}
-		if err := projectChangeColumns(ctx, tx, "quality_landings", version.ID, qualityRaw); err != nil {
-			return nil, err
-		}
-		change.UpdatedAt = now
-		change.Revision++
-		raw, err := marshalNative(change)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, "UPDATE change_requests SET record_json = ?, claim_version_id = ?, claim_head_sha = ?, landed_version_id=?, activity_created_at = julianday(?), activity_current_version_id = ? WHERE id = ?", raw, version.ID, version.HeadSHA, change.Landed.VersionID, formatHubTime(change.CreatedAt), change.CurrentVersion, change.ID); err != nil {
-			return nil, err
-		}
-		if err := writeArchiveChangeFacts(ctx, tx, change, ""); err != nil {
-			return nil, err
-		}
-		if err := projectChangeColumns(ctx, tx, "change_requests", change.ID, raw); err != nil {
-			return nil, err
-		}
-		if err := recordPolicyLandingProvenance(ctx, tx, string(scope.organization)+"/"+string(scope.project), 0, validationRepository(version.Repository), request.MergeSHA, policyLanding{ChangeID: change.ID}); err != nil {
-			return nil, fmt.Errorf("record change policy landing: %w", err)
-		}
-		issue, _, err := readNativeIssue(ctx, tx, scope, string(change.WorkItemID))
-		if err != nil {
-			return nil, err
-		}
-		project, err := readNativeProject(ctx, tx, scope)
-		if err != nil {
-			return nil, err
-		}
-		if !issue.Terminal {
-			target := terminalTarget(project, issue.State)
-			if target == "" {
-				return nil, nativeInvalid("The workflow allows no move from " + issue.State + " to a terminal lane")
-			}
-			from := issue.State
-			issue.State = target
-			if _, err := persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: target, Reason: "worker_progress"}, now); err != nil {
-				return nil, err
-			}
-		}
-		return change, nil
-	})
+	return s.landChangeRecord(c)
 }
 
 func routeStaleNativeLandingChanges(ctx context.Context, tx *sql.Tx, policyScope, actor, preservedPolicyID string, revoking bool, now time.Time) error {
@@ -549,40 +387,4 @@ func nativeChangeLandingClaimable(state string, detail *tracker.ChangeDetail) bo
 	return detail != nil && detail.Change.CurrentLanding() == nil && detail.Change.CurrentVersion != "" && detail.Summary.Status == "needs_evidence" &&
 		slices.Contains([]string{"approved", "not_required", "stale"}, detail.Summary.NativeReview) &&
 		slices.Contains([]string{"success", "not_required", "stale"}, detail.Summary.Checks)
-}
-
-func (s *Service) authorizeLandingIncorporation(ctx context.Context, scope nativeScope, item, changeID, versionID string, request tracker.LandChangeVersion) error {
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
-		return err
-	}
-	now, err := s.database.currentTime()
-	if err != nil {
-		return err
-	}
-	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
-		return err
-	}
-	if scope.credential.Scope == apiScopeWorker {
-		if err := requireNativeMutationLease(ctx, tx, scope, item, request.Mutation, now); err != nil {
-			return err
-		}
-	}
-	change, err := readChange(ctx, tx, scope, item, changeID)
-	if err != nil {
-		return err
-	}
-	version, err := readChangeVersion(ctx, tx, change.ID, versionID)
-	if err != nil {
-		return err
-	}
-	proof := request.Receipt.Incorporation
-	if change.CurrentVersion != version.ID || proof.SourceBaseSHA != version.BaseSHA || proof.SourceHeadSHA != version.HeadSHA || proof.TargetHeadSHA != request.MergeSHA {
-		return nativePublicInvalid("landing incorporation identities differ from reviewed source")
-	}
-	return nil
 }

@@ -1,98 +1,24 @@
 package hubserver
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/attachment"
-	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func TestChangeColumnsBackfillProgress(t *testing.T) {
-	t.Parallel()
-	first := newChangeFixture(t, nil)
-	second := first.anotherChange(t)
-	versions := []tracker.ChangeVersion{first.publish(t, "first", ""), second.publish(t, "second", "")}
-	fixtures := []changeFixture{first, second}
-	if err := first.service.populateChangeColumns(first.service.runDetailContext(t.Context())); err != nil {
-		t.Fatal(err)
-	}
-	tx, err := first.service.database.db.BeginTx(first.service.runDetailContext(t.Context()), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	for i := range changeColumnsPerTick + 2 {
-		index := i % 2
-		raw := fmt.Sprintf(`{"review_id":"legacy-%d","version_id":%q,"decision":"changes_requested","validator":{},"actor":{"principal_id":"validator"},"created_at":"2026-10-25T12:00:00Z"}`, i, versions[index].ID)
-		if _, err := tx.ExecContext(first.service.runDetailContext(t.Context()), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review',?)`, fixtures[index].change.ID, versions[index].ID, raw); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	count := func() int {
-		t.Helper()
-		var value int
-		if err := first.service.database.reader.QueryRowContext(first.service.runDetailContext(t.Context()), `SELECT count(*) FROM change_evidence WHERE has_validator=1`).Scan(&value); err != nil {
-			t.Fatal(err)
-		}
-		return value
-	}
-	if got := count(); got != 0 {
-		t.Fatalf("startup populated %d historical reviews", got)
-	}
-	for _, f := range fixtures {
-		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-		detail, err := f.service.readRecoveryChange(first.service.runDetailContext(t.Context()), f.service.database.reader, scope, string(f.issue.WorkItemID), f.changeWithCurrentVersion(t))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(detail.Reviews) == 0 || detail.Summary.Status == "reviewed" {
-			t.Fatalf("unknown review authorized landing or hid refusals: %+v", detail.Summary)
-		}
-	}
-	for tick, want := range []int{changeColumnsPerTick, changeColumnsPerTick + 2} {
-		if err := first.service.populateChangeColumns(first.service.runDetailContext(t.Context())); err != nil {
-			t.Fatal(err)
-		}
-		if got := count(); got != want {
-			t.Fatalf("tick %d converted %d rows, want %d", tick+1, got, want)
-		}
-	}
-	changed, err := first.service.populateChangeColumn(first.service.runDetailContext(t.Context()))
-	if err != nil || changed {
-		t.Fatalf("completed backfill: changed=%v error=%v", changed, err)
-	}
-	for _, raw := range []string{`{"validator":{},"decision":"changes_requested"}`, `{"validator":"invalid"}`} {
-		if _, err := first.service.database.db.ExecContext(first.service.runDetailContext(t.Context()), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review',?)`, first.change.ID, versions[0].ID, raw); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := first.service.populateChangeColumns(first.service.runDetailContext(t.Context())); err == nil {
-		t.Fatal("invalid historical projection did not fail")
-	}
-	if got := count(); got != changeColumnsPerTick+3 {
-		t.Fatalf("failed row rolled back earlier item's transaction: %d", got)
-	}
-}
 
 func (f changeFixture) changeWithCurrentVersion(t *testing.T) tracker.ChangeRequest {
 	t.Helper()
@@ -895,100 +821,4 @@ func TestChangeAnalyticsFallbackServesLegacyHistory(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestChangeColumnBackfillUsesInlineAndRetriesArchive(t *testing.T) {
-	t.Parallel()
-	objects := &changeObjectFixture{}
-	f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Content: objects.call}))
-	version := f.publish(t, "version", "")
-	if err := f.service.populateChangeColumns(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	calls := 0
-	f.service.config.Content = func(context.Context, entryauthority.ContentRequest) ([]byte, error) {
-		calls++
-		return nil, context.DeadlineExceeded
-	}
-	data := []byte(`{"decision":"approved","validator":{},"created_at":"2026-10-25T12:00:00Z"}`)
-	payload, err := json.Marshal(storageJSONPayload{Organization: string(f.project.OrganizationID), Project: string(f.project.ID), Family: "change_evidence", Row: 1, Data: data})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ref, _, err := attachment.PrepareArchive(string(f.project.OrganizationID), 1, bytes.NewReader(payload))
-	if err != nil {
-		t.Fatal(err)
-	}
-	reference := storageJSONReference{Organization: string(f.project.OrganizationID), Project: string(f.project.ID), Family: "change_evidence", Row: 1, Reference: ref}
-	envelope, err := json.Marshal(map[string]any{"_storage_archive": reference})
-	if err != nil {
-		t.Fatal(err)
-	}
-	inline, err := compactStorageJSON(data, reference)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, raw := range [][]byte{envelope, inline} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review',?)`, f.change.ID, version.ID, string(raw)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := f.service.populateChangeColumns(t.Context()); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("archive failure=%v", err)
-	}
-	var pending, converted int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FILTER(WHERE has_validator IS NULL),count(*) FILTER(WHERE has_validator=1) FROM change_evidence WHERE change_id=?`, f.change.ID).Scan(&pending, &converted); err != nil {
-		t.Fatal(err)
-	}
-	if pending != 1 || converted != 1 || calls != 1 {
-		t.Fatalf("pending=%d converted=%d archive reads=%d", pending, converted, calls)
-	}
-	_, compressed, err := attachment.PrepareArchive(string(f.project.OrganizationID), 1, bytes.NewReader(payload))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := objects.call(t.Context(), entryauthority.ContentRequest{Organization: string(f.project.OrganizationID), Reference: ref, Data: compressed, Write: true}); err != nil {
-		t.Fatal(err)
-	}
-	f.service.config.Content = objects.call
-	if err := f.service.populateChangeColumns(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_evidence WHERE change_id=? AND has_validator=1`, f.change.ID).Scan(&converted); err != nil || converted != 2 {
-		t.Fatalf("retry converted=%d error=%v", converted, err)
-	}
-	change := f.changeWithCurrentVersion(t)
-	changeRaw, err := json.Marshal(change)
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload, err = json.Marshal(storageJSONPayload{Organization: string(f.project.OrganizationID), Project: string(f.project.ID), Family: "change_requests", Row: 2, Data: changeRaw})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ref, compressed, err = attachment.PrepareArchive(string(f.project.OrganizationID), 1, bytes.NewReader(payload))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := objects.call(t.Context(), entryauthority.ContentRequest{Organization: string(f.project.OrganizationID), Reference: ref, Data: compressed, Write: true}); err != nil {
-		t.Fatal(err)
-	}
-	envelope, err = json.Marshal(map[string]any{"_storage_archive": storageJSONReference{Organization: string(f.project.OrganizationID), Project: string(f.project.ID), Family: "change_requests", Row: 2, Reference: ref}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE change_requests SET record_json=?,created_at=NULL WHERE id=?`, string(envelope), f.change.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.service.populateChangeColumns(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	var claimVersion, claimHead string
-	if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT claim_version_id,claim_head_sha FROM change_requests WHERE id=?`, f.change.ID).Scan(&claimVersion, &claimHead); err != nil {
-		t.Fatal(err)
-	}
-	if claimVersion != version.ID || claimHead != version.HeadSHA {
-		t.Fatalf("archive-only identity=%s/%s want=%s/%s", claimVersion, claimHead, version.ID, version.HeadSHA)
-	}
-
 }

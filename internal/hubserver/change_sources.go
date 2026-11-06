@@ -12,50 +12,27 @@ import (
 )
 
 func (s *Service) changeSource(c echo.Context) error {
-	if s.config.TenantRepository != nil {
-		ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-		defer cancel()
-		scope := nativeRequestScope(c)
-		change, err := s.readChangeRecord(ctx, scope, c.Param("item"), c.Param("change"))
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		row, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, c.Param("version"))
-		if err != nil {
-			return s.nativeAPIError(c, projectRecordError(err))
-		}
-		content := eventstore.NewContent(s.runDetailStore())
-		version, err := content.Version(ctx, row)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		if version.Source == nil {
-			return s.nativeAPIError(c, nativeNotFound())
-		}
-		bundle, err := content.SourceBundle(ctx, scope.organization, row, *version.Source)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return c.Blob(http.StatusOK, "application/x-git-bundle", bundle)
-	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
-	change, err := readChange(ctx, s.database.reader, nativeRequestScope(c), c.Param("item"), c.Param("change"))
+	scope := nativeRequestScope(c)
+	change, err := s.readChangeRecord(ctx, scope, c.Param("item"), c.Param("change"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	version, err := readChangeVersion(ctx, s.database.reader, change.ID, c.Param("version"))
+	row, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, c.Param("version"))
+	if err != nil {
+		return s.nativeAPIError(c, projectRecordError(err))
+	}
+	content := eventstore.NewContent(s.runDetailStore())
+	version, err := content.Version(ctx, row)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if version.Source == nil {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	bundle, err := readChangeSourceBundle(ctx, s.database.reader, version)
+	bundle, err := content.SourceBundle(ctx, scope.organization, row, *version.Source)
 	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := version.Source.Validate(version.BaseSHA, version.HeadSHA, bundle); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.Blob(http.StatusOK, "application/x-git-bundle", bundle)

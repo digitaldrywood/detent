@@ -685,14 +685,6 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	if preparationErr == nil {
 		ctx = preparedCtx
 	}
-	if preparationErr == nil {
-		preparedCtx, preparationErr = prepareContentMutation(ctx, s.database.reader, func() (context.Context, error) {
-			return s.prepareChangeMutation(ctx, scope, options, command, input, requestHash)
-		})
-		if preparationErr == nil {
-			ctx = preparedCtx
-		}
-	}
 	result, err = prepareContentMutation(ctx, s.database.reader, func() (json.RawMessage, error) {
 		return s.commitNativeMutation(ctx, scope, options, command, input, operation, requestHash, preparationErr)
 	})
