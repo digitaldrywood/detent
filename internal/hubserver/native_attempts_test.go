@@ -103,6 +103,33 @@ func nativeAttemptListingScope(t *testing.T, f nativeFixture) nativeScope {
 	return nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
 }
 
+func nativeAttemptFixtureLease(t *testing.T, runner runnerFixture, issue tracker.NativeIssue, session string) tracker.NativeLease {
+	t.Helper()
+	f := runner.nativeFixture
+	var claimed leasestore.Lease
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		item, err := w.WorkItem(t.Context(), issue.ProjectID, issue.WorkItemID)
+		if err != nil {
+			return fmt.Errorf("read attempt work item %s: %w", issue.WorkItemID, err)
+		}
+		claimed, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(runner.binding.MachineID), SessionID: session, LeaseID: newNativeID("lease"), TTL: time.Hour})
+		if err != nil {
+			return fmt.Errorf("claim work item: %w", err)
+		}
+		now := f.service.config.now().UTC()
+		if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: issue.OrganizationID, LeaseID: claimed.LeaseID, RunnerID: runner.binding.RunnerID, AssignedAt: now}); err != nil {
+			return fmt.Errorf("assign attempt runner: %w", err)
+		}
+		if err := w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, LeaseID: tracker.LeaseID(claimed.LeaseID), PolicyID: hubTestPolicy().ID, BoundAt: now}); err != nil {
+			return fmt.Errorf("bind attempt policy: %w", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("claim attempt lease: %v", err)
+	}
+	return tracker.NativeLease{ID: tracker.LeaseID(claimed.LeaseID), WorkItemID: issue.WorkItemID, MachineID: runner.binding.MachineID, SessionID: claimed.SessionID, FencingToken: tracker.FencingToken(claimed.FencingToken), PolicyID: hubTestPolicy().ID, ExpiresAt: claimed.ExpiresAt}
+}
+
 func nativeAttemptListingFixture(t *testing.T, count, bodyBytes int) (nativeFixture, tracker.NativeIssue, []tracker.NativeRunData) {
 	t.Helper()
 	var frozen atomic.Pointer[time.Time]
@@ -119,28 +146,7 @@ func nativeAttemptListingFixture(t *testing.T, count, bodyBytes int) (nativeFixt
 	worker := runner.redemption.Credential
 	var records []tracker.NativeRunData
 	for index := range count {
-		var claimed leasestore.Lease
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-			item, err := w.WorkItem(t.Context(), issue.ProjectID, issue.WorkItemID)
-			if err != nil {
-				return fmt.Errorf("read listing work item %s: %w", issue.WorkItemID, err)
-			}
-			claimed, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(runner.binding.MachineID), SessionID: fmt.Sprintf("listing-session-%d", index), LeaseID: newNativeID("lease"), TTL: time.Hour})
-			if err != nil {
-				return fmt.Errorf("claim work item: %w", err)
-			}
-			now := f.service.config.now().UTC()
-			if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: issue.OrganizationID, LeaseID: claimed.LeaseID, RunnerID: runner.binding.RunnerID, AssignedAt: now}); err != nil {
-				return fmt.Errorf("assign listing runner: %w", err)
-			}
-			if err := w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, LeaseID: tracker.LeaseID(claimed.LeaseID), PolicyID: hubTestPolicy().ID, BoundAt: now}); err != nil {
-				return fmt.Errorf("bind listing policy: %w", err)
-			}
-			return nil
-		}); err != nil {
-			t.Fatalf("claim listing lease %d: %v", index, err)
-		}
-		lease := tracker.NativeLease{ID: tracker.LeaseID(claimed.LeaseID), WorkItemID: issue.WorkItemID, MachineID: runner.binding.MachineID, SessionID: claimed.SessionID, FencingToken: tracker.FencingToken(claimed.FencingToken), PolicyID: hubTestPolicy().ID, ExpiresAt: claimed.ExpiresAt}
+		lease := nativeAttemptFixtureLease(t, runner, issue, fmt.Sprintf("listing-session-%d", index))
 		start := nativeStartedEvent(lease)
 		start.IdempotencyKey = fmt.Sprintf("listing-start-%d", index)
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, start), http.StatusOK)
@@ -894,11 +900,13 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 
 func TestNativeConcurrentOrderedEvents(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
+	f := newDefaultNativeFixture(t, Config{RunDetails: &memoryRunDetails{}})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "work")
-	worker := f.worker(t, "worker")
-	event := nativeStartedEvent(claimNativeAttempt(t, f, worker, "machine", "session", issue.WorkItemID))
+	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+	runner.enroll(t)
+	worker := runner.redemption.Credential
+	event := nativeStartedEvent(nativeAttemptFixtureLease(t, runner, issue, "concurrent-session"))
 	start := make(chan struct{})
 	var group sync.WaitGroup
 	for index := range 8 {
@@ -912,7 +920,7 @@ func TestNativeConcurrentOrderedEvents(t *testing.T) {
 	close(start)
 	group.Wait()
 	var count int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempt_events").Scan(&count); err != nil || count != 1 {
+	if err := nativeAttemptTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempt_events WHERE organization_id=$1 AND attempt_id=$2", issue.OrganizationID, event.Data.AttemptID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("duplicate progress: %d, %v", count, err)
 	}
 }
