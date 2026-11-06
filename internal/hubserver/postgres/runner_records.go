@@ -164,6 +164,9 @@ AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.orga
 }
 
 func (s *session) runnerIdentity(ctx context.Context, predicate string, value any) (runnerstore.Identity, error) {
+	if locked, ok := ctx.Value(runnerHeartbeatIdentityKey{}).(runnerHeartbeatIdentity); ok && locked.session == s && (predicate == `runner_id=$2` && value == locked.identity.RunnerID || predicate == `token_id=$2` && value == locked.identity.TokenID) {
+		return locked.identity, nil
+	}
 	row, err := s.runnerIdentityRow(ctx, predicate, value)
 	if err != nil {
 		return runnerstore.Identity{}, err
@@ -175,6 +178,19 @@ func (s *session) runnerIdentity(ctx context.Context, predicate string, value an
 }
 
 func (s *session) runnerIdentityRow(ctx context.Context, predicate string, value any) (runnerstore.Identity, error) {
+	if locked, ok := ctx.Value(runnerHeartbeatIdentityKey{}).(runnerHeartbeatIdentity); ok && locked.session == s && (predicate == `runner_id=$2` && value == locked.identity.RunnerID || predicate == `token_id=$2` && value == locked.identity.TokenID) {
+		return locked.identity, nil
+	}
+	query := runnerIdentitySelect + predicate
+	if !s.readOnly {
+		query += ` FOR UPDATE`
+	}
+	return scanRunnerIdentity(ctx, s.db.QueryRow(ctx, query, s.organization, value))
+}
+
+const runnerIdentitySelect = `SELECT organization_id,runner_id,machine_id,token_id,enrollment_id,scope,state,revision,tags,machine_use,isolation_tier,host_services,availability_timezone,availability_hard_deadline,operations,display_name,capacity_limit,reported_capacity,os,architecture,created_at,expires_at,last_heartbeat_at,removed_at,capacity_config_revision,capacity_config_local_limit,capacity_config_client_limit,capacity_config_runtime_limit,capacity_config_manageable,capacity_config_constraint,capacity_config_observed_at,capacity_request_revision,capacity_request_limit,capacity_request_backend FROM runner_identities WHERE organization_id=$1 AND `
+
+func scanRunnerIdentity(ctx context.Context, result pgx.Row) (runnerstore.Identity, error) {
 	var row runnerstore.Identity
 	var operations []string
 	var tags, hostServices []string
@@ -185,11 +201,7 @@ func (s *session) runnerIdentityRow(ctx context.Context, predicate string, value
 	var capacityManageable pgtype.Bool
 	var capacityObserved pgtype.Timestamptz
 	var application runnerauth.CapacityRequest
-	query := `SELECT organization_id,runner_id,machine_id,token_id,enrollment_id,scope,state,revision,tags,machine_use,isolation_tier,host_services,availability_timezone,availability_hard_deadline,operations,display_name,capacity_limit,reported_capacity,os,architecture,created_at,expires_at,last_heartbeat_at,removed_at,capacity_config_revision,capacity_config_local_limit,capacity_config_client_limit,capacity_config_runtime_limit,capacity_config_manageable,capacity_config_constraint,capacity_config_observed_at,capacity_request_revision,capacity_request_limit,capacity_request_backend FROM runner_identities WHERE organization_id=$1 AND ` + predicate
-	if !s.readOnly {
-		query += ` FOR UPDATE`
-	}
-	err := s.db.QueryRow(ctx, query, s.organization, value).Scan(&row.OrganizationID, &row.RunnerID, &machineID, &row.TokenID, &row.EnrollmentID, &row.Scope, &row.State, &row.Revision, &tags, &row.MachineUse, &row.IsolationTier, &hostServices, &row.Availability.Timezone, &row.Availability.HardDeadline, &operations, &row.DisplayName, &row.CapacityLimit, &row.ReportedCapacity, &row.OS, &row.Architecture, &row.CreatedAt, &row.ExpiresAt, &row.LastHeartbeatAt, &removedAt, &capacityRevision, &capacityLocal, &capacityClient, &capacityRuntime, &capacityManageable, &capacityConstraint, &capacityObserved, &application.ExpectedConfigRevision, &application.Capacity, &application.Backend)
+	err := result.Scan(&row.OrganizationID, &row.RunnerID, &machineID, &row.TokenID, &row.EnrollmentID, &row.Scope, &row.State, &row.Revision, &tags, &row.MachineUse, &row.IsolationTier, &hostServices, &row.Availability.Timezone, &row.Availability.HardDeadline, &operations, &row.DisplayName, &row.CapacityLimit, &row.ReportedCapacity, &row.OS, &row.Architecture, &row.CreatedAt, &row.ExpiresAt, &row.LastHeartbeatAt, &removedAt, &capacityRevision, &capacityLocal, &capacityClient, &capacityRuntime, &capacityManageable, &capacityConstraint, &capacityObserved, &application.ExpectedConfigRevision, &application.Capacity, &application.Backend)
 	if err != nil {
 		return runnerstore.Identity{}, mapError(ctx, err)
 	}
@@ -1253,20 +1265,28 @@ func (s *session) ReplaceRunnerBackendIsolation(ctx context.Context, runnerID st
 	if _, err := s.RunnerIdentity(ctx, runnerID); err != nil {
 		return err
 	}
-	if _, err := s.db.Exec(ctx, `DELETE FROM runner_backend_isolations WHERE organization_id=$1 AND runner_id=$2`, s.organization, runnerID); err != nil {
-		return mapError(ctx, err)
-	}
 	backends := make([]string, 0, len(report))
 	for backend := range report {
 		backends = append(backends, backend)
 	}
 	sort.Strings(backends)
+	values := make([]string, 0, len(backends))
+	args := []any{s.organization, runnerID}
 	for _, backend := range backends {
-		if _, err := s.db.Exec(ctx, `INSERT INTO runner_backend_isolations (organization_id,runner_id,backend,tiers) VALUES ($1,$2,$3,$4)`, s.organization, runnerID, backend, report[backend]); err != nil {
-			return mapError(ctx, err)
-		}
+		args = append(args, backend, report[backend])
+		values = append(values, fmt.Sprintf("($%d::text,$%d::text[])", len(args)-1, len(args)))
 	}
-	return nil
+	incoming := `SELECT NULL::text AS backend,NULL::text[] AS tiers WHERE false`
+	if len(values) > 0 {
+		incoming = `VALUES ` + strings.Join(values, ",")
+	}
+	_, err := s.db.Exec(ctx, `WITH incoming(backend,tiers) AS (`+incoming+`), removed AS (
+ DELETE FROM runner_backend_isolations WHERE organization_id=$1 AND runner_id=$2 AND backend NOT IN (SELECT backend FROM incoming)
+) INSERT INTO runner_backend_isolations(organization_id,runner_id,backend,tiers)
+ SELECT $1,$2,backend,tiers FROM incoming
+ ON CONFLICT(organization_id,runner_id,backend) DO UPDATE SET tiers=EXCLUDED.tiers
+ WHERE runner_backend_isolations.tiers IS DISTINCT FROM EXCLUDED.tiers`, args...)
+	return mapError(ctx, err)
 }
 
 func (s *session) RunnerSpriteMembershipByEnrollment(ctx context.Context, enrollmentID string) (runnerstore.SpriteMembership, error) {

@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -117,7 +118,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	var snapshot runnerauth.RoutingSnapshot
 	var heartbeatChanges *runnerauth.HeartbeatChanges
 	var acknowledgments []hostmetrics.Acknowledgment
-	err := s.config.TenantRepository.WriteTenant(ctx, credential.Runner.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+	write := func(ctx context.Context, w tenantstore.Writer) error {
 		identity, err := w.RunnerIdentityByCredential(ctx, credential.ID)
 		if err != nil {
 			if errors.Is(err, corestore.ErrNotFound) {
@@ -223,8 +224,10 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 				return err
 			}
 		}
-		if err := s.storeRunnerUpdateObservationTenant(ctx, w, identity, request.Update, request.ProtocolMajor, request.Version, request.OS, request.Architecture, receivedAt, updateReleasePublished); err != nil {
-			return err
+		if request.Update != nil {
+			if err := s.storeRunnerUpdateObservationTenant(ctx, w, identity, request.Update, request.ProtocolMajor, request.Version, request.OS, request.Architecture, receivedAt, updateReleasePublished); err != nil {
+				return err
+			}
 		}
 		if request.ProjectConfiguration != nil {
 			view := *request.ProjectConfiguration
@@ -291,12 +294,11 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		if err != nil {
 			return err
 		}
-		if err := w.ReplaceRunnerProblems(ctx, identity.RunnerID, mergeRunnerProblems(problems, request.Problems, request.ProtocolMajor, request.SettingsRejected, receivedAt)); err != nil {
-			return err
-		}
-		identity, err = w.RunnerIdentity(ctx, identity.RunnerID)
-		if err != nil {
-			return err
+		mergedProblems := mergeRunnerProblems(problems, request.Problems, request.ProtocolMajor, request.SettingsRejected, receivedAt)
+		if !slices.Equal(problems, mergedProblems) {
+			if err := w.ReplaceRunnerProblems(ctx, identity.RunnerID, mergedProblems); err != nil {
+				return err
+			}
 		}
 		projects, err := w.RunnerProjects(ctx, identity.RunnerID, runnerstore.MaxRunnerProjectList)
 		if err != nil {
@@ -344,7 +346,18 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 			return err
 		}
 		return s.applyRunnerTenantUsage(ctx, w, receivedAt, newNativeID("runner_heartbeat"), hasActiveLease, true)
-	})
+	}
+	var err error
+	if command, ok := s.config.TenantRepository.(interface {
+		WriteRunnerHeartbeat(context.Context, tracker.OrganizationID, string, string, func(context.Context, tenantstore.Writer) error) error
+	}); ok {
+		err = command.WriteRunnerHeartbeat(ctx, credential.Runner.OrganizationID, credential.ID, credential.Runner.RunnerID, write)
+		if errors.Is(err, accessstore.ErrDenied) {
+			err = runnerUnauthorized()
+		}
+	} else {
+		err = s.config.TenantRepository.WriteTenant(ctx, credential.Runner.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error { return write(ctx, w) })
+	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
