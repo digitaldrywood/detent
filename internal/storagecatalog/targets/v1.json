@@ -96,6 +96,7 @@
     "internal/hubserver/postgres/migrations/20261103164805_account_preferences.sql",
     "internal/hubserver/postgres/migrations/20261103172438_activity_history_lookup.sql",
     "internal/hubserver/postgres/migrations/20261103173525_runner_project_diagnostic_details.sql",
+    "internal/hubserver/postgres/migrations/20261103191156_pending_search_visibility_markers.sql",
     "internal/hubserver/postgres/migrations/20261103193325_hosted_operation_receipts.sql"
   ],
   "tables": {

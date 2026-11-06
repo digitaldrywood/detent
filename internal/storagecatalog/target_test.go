@@ -1,10 +1,13 @@
 package storagecatalog
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -70,5 +73,42 @@ func TestTargetCatalogAcceptsBinaryColumns(t *testing.T) {
 	}
 	if err := catalog.Validate(); err != nil {
 		t.Fatalf("binary target schema: %v", err)
+	}
+}
+
+func TestMigrationCatalogPreservesPinnedHistory(t *testing.T) {
+	const root = "internal/hubserver/postgres/migrations/"
+	const legacy = root + "00001_legacy.sql"
+	const catalogued = root + "20261101000000_catalogued.sql"
+	const later = root + "20261102000000_later.sql"
+	original := []byte("CREATE TABLE old (id text);")
+	catalog := TargetCatalog{LegacyMigrations: map[string]string{legacy: fmt.Sprintf("%x", sha256.Sum256(original))}, Migrations: []string{catalogued}}
+	for _, mode := range []string{"later migration", "changed legacy", "missing legacy", "missing catalogued", "uncatalogued history"} {
+		t.Run(mode, func(t *testing.T) {
+			files := fstest.MapFS{legacy: {Data: original}, catalogued: {Data: []byte("SELECT 1;")}, later: {Data: []byte("CREATE TABLE future (id text);")}}
+			switch mode {
+			case "changed legacy":
+				files[legacy] = &fstest.MapFile{Data: []byte("SELECT 2;")}
+			case "missing legacy":
+				delete(files, legacy)
+			case "missing catalogued":
+				delete(files, catalogued)
+			case "uncatalogued history":
+				files[root+"20261001000000_missing.sql"] = &fstest.MapFile{Data: []byte("SELECT 3;")}
+			}
+			err := catalog.ValidateMigrations(files, nil)
+			if mode == "later migration" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrCatalog) {
+				t.Fatalf("expected invalid history: %v", err)
+			}
+			if mode == "changed legacy" && !strings.Contains(err.Error(), "digest changed") {
+				t.Fatalf("digest check missed: %v", err)
+			}
+		})
 	}
 }

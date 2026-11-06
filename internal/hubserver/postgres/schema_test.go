@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
 	"strings"
 	"testing"
@@ -161,6 +162,33 @@ func TestTargetOnlyBillingSchemaMatchesContracts(t *testing.T) {
 	}
 	if err := catalog.ValidateClassification(classification); err != nil {
 		t.Fatal(err)
+	}
+	sourceData, err := os.ReadFile("../testdata/hub_classification.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sourceTables map[string]json.RawMessage
+	if err := json.Unmarshal(sourceData, &sourceTables); err != nil {
+		t.Fatal(err)
+	}
+	sourceInventory := make(map[string]json.RawMessage, len(sourceTables))
+	for name, definition := range sourceTables {
+		sourceInventory["hub/"+name] = definition
+	}
+	if err := catalog.ValidateMigrations(os.DirFS("../../.."), sourceInventory); err != nil {
+		t.Fatal(err)
+	}
+
+	for migration := range catalog.LegacyMigrations {
+		t.Run("digest/"+migration, func(t *testing.T) {
+			changed := catalog
+			changed.LegacyMigrations = maps.Clone(catalog.LegacyMigrations)
+			changed.LegacyMigrations[migration] = strings.Repeat("0", 64)
+			err := changed.ValidateMigrations(os.DirFS("../../.."), sourceInventory)
+			if !errors.Is(err, storagecatalog.ErrCatalog) || !strings.Contains(err.Error(), "digest changed") {
+				t.Fatalf("legacy digest was not checked: %v", err)
+			}
+		})
 	}
 	for table, contract := range catalog.Tables {
 		table := table

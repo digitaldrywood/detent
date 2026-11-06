@@ -20,9 +20,13 @@ Target-only PostgreSQL objects have a separate typed contract in
 `internal/storagecatalog/targets/v1.json`. It records family, tenant ownership
 and every target column without inventing a SQLite source row. The Hub target
 classification and storage routing inventory must cover the same target-only
-tables. Existing PostgreSQL migrations are pinned by digest as a legacy boundary;
-new migrations are enumerated and require explicit target contract coverage,
-including schema-qualified table names. This scoped contract is not a complete
+tables. Existing PostgreSQL migrations are pinned by digest as a legacy boundary.
+The enumerated migrations define the historical catalog boundary and require
+explicit target contract coverage, including schema-qualified table names.
+Later migrations do not require catalog registry edits. Missing catalogued files,
+gaps within the catalog boundary, and changed or missing pinned migrations fail
+validation. A target contract takes precedence when a table also appears in the
+source inventory. This scoped contract is not a complete
 inventory of the pre-existing PostgreSQL schema, which remains a cutover prerequisite.
 
 Every column declares its codec, SQL NULL policy, empty-value policy and one of

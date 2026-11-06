@@ -84,8 +84,12 @@ func (c TargetCatalog) ValidateMigrations(files fs.FS, sourceTables map[string]j
 		return err
 	}
 	covered := make(map[string]bool, len(c.Migrations))
+	var catalogEnd string
 	for _, migration := range c.Migrations {
 		covered[migration] = true
+		if migration > catalogEnd {
+			catalogEnd = migration
+		}
 	}
 	legacySeen := make(map[string]bool, len(c.LegacyMigrations))
 	for _, entry := range entries {
@@ -106,6 +110,9 @@ func (c TargetCatalog) ValidateMigrations(files fs.FS, sourceTables map[string]j
 			continue
 		}
 		if !covered[migration] {
+			if catalogEnd != "" && migration > catalogEnd {
+				continue
+			}
 			return errors.Join(ErrCatalog, errors.New("new PostgreSQL migration is missing target schema coverage"))
 		}
 		delete(covered, migration)
@@ -119,7 +126,8 @@ func (c TargetCatalog) ValidateMigrations(files fs.FS, sourceTables map[string]j
 				schema, name = strings.Trim(string(match[1]), `"`), strings.Trim(string(match[2]), `"`)
 			}
 			if schema == "public" {
-				if _, exists := sourceTables["hub/"+name]; exists {
+				_, target := c.Tables["public."+name]
+				if _, exists := sourceTables["hub/"+name]; exists && !target {
 					continue
 				}
 			}
