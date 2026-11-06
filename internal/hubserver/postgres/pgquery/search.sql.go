@@ -92,11 +92,11 @@ SELECT d.organization_id, d.id, d.project_id, d.work_item_id, d.kind, d.source_i
 )
 SELECT candidates.organization_id, candidates.id, COALESCE(candidates.project_id, '')::text AS project_id, candidates.work_item_id,
     candidates.kind, candidates.source_id, candidates.revision, candidates.title, candidates.scope, candidates.status, candidates.updated_at, candidates.updated_at_submicrosecond,
-    COALESCE(candidates.aggregate_object_key,candidates.payload_object_key)::text AS payload_object_key,
-    COALESCE(candidates.aggregate_sha256,candidates.payload_sha256)::text AS payload_sha256,
-    COALESCE(candidates.aggregate_bytes,candidates.payload_bytes)::bigint AS payload_bytes,
-    COALESCE(candidates.aggregate_content_bytes,candidates.payload_content_bytes)::bigint AS payload_content_bytes,
-    candidates.generation,(candidates.placeholder AND candidates.aggregate_object_key IS NULL)::boolean AS placeholder,
+    COALESCE(CASE WHEN candidates.indexed_revision=candidates.revision THEN candidates.aggregate_object_key END,candidates.payload_object_key)::text AS payload_object_key,
+    COALESCE(CASE WHEN candidates.indexed_revision=candidates.revision THEN candidates.aggregate_sha256 END,candidates.payload_sha256)::text AS payload_sha256,
+    COALESCE(CASE WHEN candidates.indexed_revision=candidates.revision THEN candidates.aggregate_bytes END,candidates.payload_bytes)::bigint AS payload_bytes,
+    COALESCE(CASE WHEN candidates.indexed_revision=candidates.revision THEN candidates.aggregate_content_bytes END,candidates.payload_content_bytes)::bigint AS payload_content_bytes,
+    candidates.generation,(candidates.placeholder AND (candidates.indexed_revision<>candidates.revision OR candidates.aggregate_object_key IS NULL))::boolean AS placeholder,
     candidates.scan_boundary::boolean AS scan_boundary, candidates.stream_key::text AS stream_key,candidates.stream_impact::double precision AS stream_impact,candidates.stream_exhausted::boolean AS stream_exhausted, candidates.indexed_revision, candidates.token_count, candidates.terms, candidates.term_frequencies,
     COALESCE((SELECT i.number FROM issues i WHERE i.organization_id = candidates.organization_id AND i.project_id = candidates.project_id AND i.native_id = candidates.work_item_id), 0)::bigint AS number,
     COALESCE((SELECT p.name FROM projects p WHERE p.organization_id = candidates.organization_id AND p.id = candidates.project_id), '')::text AS project_name

@@ -114,6 +114,10 @@ func TestSearchCommentEventAndChange(t *testing.T) {
 	if page := f.find(t, org, searchstore.Query{Text: "unicorn"}); len(page.Items) != 0 {
 		t.Fatal("deleted comment remains searchable")
 	}
+	f.drain(t, org)
+	if page := f.find(t, org, searchstore.Query{Text: "unicorn"}); len(page.Items) != 0 {
+		t.Fatal("refreshed index restored deleted comment text")
+	}
 	err = f.repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
 		return w.DeleteComment(t.Context(), "prj_first", "wi_first_1", "comment_first_1_1")
 	})
