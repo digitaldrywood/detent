@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -105,27 +106,32 @@ func boardRecordCursor(row viewstore.BoardRecord, closed bool, sequence int64) *
 
 func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
 	if err := validateNativeIssueQuery(params); err != nil {
-		return tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}}, err
+		return tracker.NativeIssuePage{}, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	if repository, ok := s.config.TenantRepository.(tenantstore.RequestReader); ok {
-		var page tracker.NativeIssuePage
-		err := repository.ReadRequest(ctx, scope.organization, func(ctx context.Context) error {
-			var err error
-			page, err = s.readBoardRecordSnapshot(ctx, scope, params)
-			return err
-		})
+	var page tracker.NativeIssuePage
+	read := func(ctx context.Context) error {
+		var err error
+		page, err = s.readBoardRecordSnapshot(ctx, scope, params)
+		return err
+	}
+	if repository, ok := s.config.TenantRepository.(interface {
+		ReadBoardRequest(context.Context, tracker.OrganizationID, string, func(context.Context) error) error
+	}); ok {
+		err := repository.ReadBoardRequest(ctx, scope.organization, scope.credential.ID, read)
 		return page, err
 	}
-	return s.readBoardRecordSnapshot(ctx, scope, params)
+	if repository, ok := s.config.TenantRepository.(tenantstore.RequestReader); ok {
+		err := repository.ReadRequest(ctx, scope.organization, read)
+		return page, err
+	}
+	err := read(ctx)
+	return page, err
 }
 
 func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
 	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}}
-	ctx, cancel := context.WithTimeout(s.runDetailContext(ctx), hubReadTimeout)
-	defer cancel()
-	ctx = s.withRequestDetails(ctx)
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
 		return page, workItemStorageUnavailable()
 	}
@@ -158,7 +164,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 	if len(selection.SearchText) > searchstore.MaxQueryTextBytes {
 		return page, nativePublicInvalid("Search query is too long")
 	}
-	selectedWindow, err := nativeShippedWindow(params.Get("completed_window"))
+	_, err = nativeShippedWindow(params.Get("completed_window"))
 	if err != nil {
 		return page, err
 	}
@@ -178,15 +184,15 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 			cursorParams.Set("include", strings.Join(includes, ","))
 		}
 	}
-	finishCursor := timeSpan(ctx, "board_cursor")
 	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, path, cursorParams, maximum, defaultAPIPageLimit)
-	finishCursor()
 	if err != nil {
 		return page, err
 	}
-	selection.SearchRanked = selection.SearchText != "" && !includeBoard
+	limit = min(limit, 200)
+	selection.Limit = limit + 1
+	selection.Compact = includeSummary || includeWork
 	if position := cursor.Issues; position != nil {
-		selection.After = &viewstore.BoardPosition{SearchExact: position.SearchExact, SearchRank: position.Score, SearchNumber: position.SearchNumber, Lane: position.Lane, State: position.State, Priority: position.Priority, ActivityMissing: position.ActivityMissing != 0, Identifier: position.Identifier}
+		selection.After = &viewstore.BoardPosition{Lane: position.Lane, State: position.State, Priority: position.Priority, ActivityMissing: position.ActivityMissing != 0, Identifier: position.Identifier}
 		selection.AfterSequence = position.Sequence
 		if position.Activity != "" {
 			at, err := time.Parse(time.RFC3339Nano, position.Activity)
@@ -196,232 +202,137 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 			selection.After.Activity = &at
 		}
 	}
-	now := s.config.now()
-	starts := make([]time.Time, len(nativeShippedWindowSpans))
-	for index, span := range nativeShippedWindowSpans {
-		starts[index] = now.Add(-span.span)
-	}
-	var records []viewstore.BoardRecord
-	var workRecordsForResponse []viewstore.BoardRecord
-	var projectSlug string
-	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
-	if !ok {
-		return page, workItemStorageUnavailable()
-	}
-	finishSelection := timeSpan(ctx, "board_select")
-	err = snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+	var snapshot viewstore.BoardModelPage
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
 			return err
 		}
-		var err error
-		if includeBoard {
-			page.GrantVersion, err = s.boardAccessVersion(ctx, r, scope)
-			if err != nil {
-				return err
-			}
-		}
-		project, err := r.ProjectRecord(ctx, scope.project)
+		project, err := reader.Project(ctx, scope.project)
 		if err != nil {
 			return err
 		}
-		if project.Core.DeletedAt != nil {
+		if project.DeletedAt != nil || project.Profile != "native" {
 			return corestore.ErrNotFound
 		}
-		projectSlug = project.Core.Slug
-		sequence, err := r.BoardSequence(ctx, scope.project)
-		if err != nil {
-			return err
-		}
-		page.ChangeSequence = sequence.Sequence
-		if selection.AfterSequence != nil && *selection.AfterSequence != sequence.Sequence {
-			return nativePublicInvalid("Work list order changed; restart the query")
-		}
 		if includeBoard {
-			page.Sequence = sequence.Sequence
+			page.GrantVersion, err = s.boardAccessVersion(ctx, reader, scope)
+			if err != nil {
+				return err
+			}
 		}
-		lanes, err := r.BoardLanes(ctx, selection, now)
+		model, ok := reader.(interface {
+			BoardModelPages(context.Context, viewstore.BoardSelection, *viewstore.BoardSelection, accessstore.Authority) (viewstore.BoardModelPage, error)
+		})
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		var work *viewstore.BoardSelection
+		if includeWork {
+			value := selection
+			value.After = nil
+			value.WorkOrder = true
+			value.Terminal = new(false)
+			work = &value
+		}
+		snapshot, err = model.BoardModelPages(ctx, selection, work, s.accessAuthority(scope, false))
 		if err != nil {
 			return err
 		}
-		if includeBoard || includeWork {
-			page.Work = &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{}, Lanes: []tracker.NativeWorkLane{}, AsOf: now}
-		}
-		for _, lane := range lanes {
-			if page.Work != nil && (includeBoard || laneSelected(lane.State, selection, project.States)) {
-				page.Work.Lanes = append(page.Work.Lanes, tracker.NativeWorkLane{State: lane.State, Total: int(lane.Total), Running: int(lane.Running)})
-			}
-			if len(selection.States) != 0 && !slices.Contains(selection.States, lane.State) {
-				continue
-			}
-			if selection.Terminal != nil {
-				terminal := false
-				for _, state := range project.States {
-					if state.Name == lane.State {
-						terminal = state.Terminal
-					}
-				}
-				if terminal != *selection.Terminal {
-					continue
-				}
-			}
-			page.Total += int(lane.Total)
-		}
-		if page.Work != nil {
-			counts, err := r.BoardClosedWindows(ctx, selection, starts, now)
-			if err != nil {
-				return err
-			}
-			windows := make([]tracker.NativeShippedWindow, len(starts))
-			for index, span := range nativeShippedWindowSpans {
-				windows[index].Window = span.name
-			}
-			for _, count := range counts {
-				switch count.State {
-				case nativeShippedState:
-					windows[count.Window].Shipped = int(count.Total)
-				case nativeCancelledState:
-					windows[count.Window].Cancelled = int(count.Total)
-				}
-			}
-			applyNativeShippedWindows(page.Work, windows, selectedWindow)
-		}
-		for len(records) < limit+1 {
-			selection.Limit = min(corestore.MaxPageSize, limit+1-len(records))
-			batch, err := r.BoardPage(ctx, selection)
-			if err != nil {
-				return err
-			}
-			records = append(records, batch...)
-			if len(batch) < selection.Limit {
-				break
-			}
-			last := batch[len(batch)-1]
-			selection.After = &last.Position
-			if selection.ClosedOrder {
-				selection.After.Activity = last.ClosedAt
-			}
-		}
-		if includeWork {
-			workSelection := selection
-			workSelection.After = nil
-			workSelection.Terminal = new(false)
-			workSelection.WorkOrder = true
-			workSelection.Limit = min(corestore.MaxPageSize, limit+1)
-			workRecords, err := r.BoardPage(ctx, workSelection)
-			if err != nil {
-				return err
-			}
-			page.Work.Truncated = len(workRecords) > limit
-			if page.Work.Truncated {
-				workRecords = workRecords[:limit]
-			}
-			workRecordsForResponse = append(workRecordsForResponse, workRecords...)
-		}
-		return nil
+		return s.authorizeBoardModel(ctx, reader, scope, &snapshot)
 	})
-	finishSelection()
 	if err != nil {
 		return page, projectRecordError(err)
 	}
+	if selection.AfterSequence != nil && *selection.AfterSequence != snapshot.Sequence {
+		return page, nativePublicInvalid("Work list order changed; restart the query")
+	}
+	page.ProjectionPending, page.ProjectionOldestPendingAt = snapshot.Pending, snapshot.OldestPendingAt
+	page.ChangeSequence = snapshot.Sequence
+	if includeBoard {
+		page.Sequence = snapshot.Sequence
+	}
+	page.Total = -1
+	if includeBoard || includeWork {
+		page.Work = &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{}, Lanes: []tracker.NativeWorkLane{}, AsOf: s.config.now()}
+	}
+	records := snapshot.Records
 	hasMore := len(records) > limit
 	if hasMore {
 		records = records[:limit]
 	}
-	finishSlug := timeSpan(ctx, "board_slug")
-	organizationSlug, err := s.readableOrganizationSlug(ctx)
-	finishSlug()
-	if err != nil {
-		return page, err
-	}
-	finishHydration := timeSpan(ctx, "board_hydrate")
-	defer finishHydration()
-	prepared := make(map[tracker.NativeWorkItemID]boardPreparedRecord, len(records)+len(workRecordsForResponse))
-	var preparation *boardRecordPreparation
-	if includeBoard || includeSummary || includeWork {
-		preparation = s.prepareProjectedBoardPage(ctx, scope, records, includeBoard, prepared)
-	} else {
-		preparation = s.prepareBoardPage(ctx, scope, records, now, false, prepared)
-	}
-	defer preparation.close()
-	returnedRecords := make([]viewstore.BoardRecord, 0, min(len(records), limit))
-	for index, record := range records {
-		card, err := preparation.card(ctx, index)
+	returned := make([]viewstore.BoardRecord, 0, len(records))
+	used := 0
+	for _, row := range records {
+		if selection.Compact && used+row.ListBytes > operatortool.WorkListPageBytes {
+			if len(page.Items) == 0 {
+				return page, operatortool.ErrResultTooLarge
+			}
+			hasMore = true
+			break
+		}
+		card, err := boardModelCard(scope, row)
 		if err != nil {
 			return page, err
 		}
-		card.Issue.WebURL = issueBrowserPath(organizationSlug, projectSlug, card.Issue.Number)
-		if selection.SearchText != "" {
-			if err := s.applyIssueSearchHit(ctx, scope, params, record.WorkItemID, &card.Issue); err != nil {
-				return page, err
-			}
-		}
-		card.Issue = s.nativeIssueResponse(scope.reporterIssue(card.Issue))
-		if includeSummary || includeWork {
-			card.Issue = operatortool.NativeListIssue(card.Issue)
-			candidate := tracker.Page[tracker.NativeIssue]{Items: append(page.Items, card.Issue)}
-			raw, err := json.Marshal(operatortool.NativeItemPage(string(scope.project), candidate))
-			if err != nil {
-				return page, err
-			}
-			if len(raw) > operatortool.WorkListPageBytes {
-				if len(page.Items) > 0 {
-					hasMore = true
-					break
-				}
-				card.Issue, err = operatortool.BoundNativeListIssue(card.Issue)
-				if err != nil {
-					return page, err
-				}
-			}
-		}
+		used += row.ListBytes
+		page.Items = append(page.Items, card.Issue)
+		returned = append(returned, row)
 		if includeBoard {
-			card.StatusLine = nativeBoardStatusLine(card)
 			page.Cards = append(page.Cards, card)
 		}
-		page.Items = append(page.Items, card.Issue)
-		returnedRecords = append(returnedRecords, record)
 	}
-	preparation.close()
 	if includeWork {
-		workPreparation := s.prepareProjectedBoardPage(ctx, scope, workRecordsForResponse, false, prepared)
-		defer workPreparation.close()
-		for index, record := range workRecordsForResponse {
-			card, err := workPreparation.card(ctx, index)
+		work := snapshot.WorkRecords
+		page.Work.Truncated = len(work) > limit
+		if page.Work.Truncated {
+			work = work[:limit]
+		}
+		used = 0
+		for _, row := range work {
+			if used+row.ListBytes > operatortool.WorkListPageBytes {
+				if len(page.Work.Items) == 0 {
+					return page, operatortool.ErrResultTooLarge
+				}
+				page.Work.Truncated = true
+				break
+			}
+			card, err := boardModelCard(scope, row)
 			if err != nil {
 				return page, err
 			}
-			if selection.SearchText != "" {
-				if err := s.applyIssueSearchHit(ctx, scope, params, record.WorkItemID, &card.Issue); err != nil {
-					return page, err
-				}
-			}
-			card.Issue = operatortool.NativeListIssue(s.nativeIssueResponse(scope.reporterIssue(card.Issue)))
-			candidate := tracker.Page[tracker.NativeIssue]{Items: append(page.Work.Items, card.Issue)}
-			raw, err := json.Marshal(operatortool.NativeItemPage(string(scope.project), candidate))
-			if err != nil {
-				return page, err
-			}
-			if len(raw) > operatortool.WorkListPageBytes {
-				if len(page.Work.Items) > 0 {
-					page.Work.Truncated = true
-					break
-				}
-				card.Issue, err = operatortool.BoundNativeListIssue(card.Issue)
-				if err != nil {
-					return page, err
-				}
-			}
+			used += row.ListBytes
 			page.Work.Items = append(page.Work.Items, card.Issue)
 		}
 	}
 	if hasMore {
-		if len(returnedRecords) == 0 {
+		if len(returned) == 0 {
 			return page, operatortool.ErrResultTooLarge
 		}
-		cursor.Issues = boardRecordCursor(returnedRecords[len(returnedRecords)-1], selection.ClosedOrder, page.ChangeSequence)
+		cursor.Issues = boardRecordCursor(returned[len(returned)-1], selection.ClosedOrder, snapshot.Sequence)
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
 	}
 	return page, err
+}
+
+func boardModelCard(scope nativeScope, row viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
+	if row.PageIssue == nil {
+		return tracker.NativeBoardCard{}, viewstore.ErrInvalidView
+	}
+	issue := *row.PageIssue
+	if scope.credential.HostedRole == "reporter" {
+		facts := row.ReporterRelations
+		if facts == nil {
+			return tracker.NativeBoardCard{}, viewstore.ErrInvalidView
+		}
+		issue.ReporterStatus = facts.ReporterStatus
+		issue.Dependencies, issue.Blockers, issue.Dependents, issue.Related = facts.Dependencies, facts.Blockers, facts.Dependents, facts.Related
+		issue.DependencyReady, issue.BlockedReason, issue.UnblocksReason = facts.DependencyReady, facts.BlockedReason, facts.UnblocksReason
+	}
+	card := tracker.NativeBoardCard{Issue: issue, StatusLine: row.Display.StatusLine, Attempt: row.Display.Attempt, Execution: row.Display.Execution, Change: row.Display.Change}
+	if !scope.reporterOwns(tracker.Actor{PrincipalID: row.Display.ChangePrincipalID}) {
+		card.Change = nil
+	}
+	return card, nil
 }
 
 func laneSelected(state string, selection viewstore.BoardSelection, states []policy.State) bool {

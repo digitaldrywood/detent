@@ -484,7 +484,9 @@ type EventCompaction struct {
 }
 
 type NativeIssuePage struct {
-	ChangeSequence int64 `json:"change_sequence"`
+	ProjectionPending         bool       `json:"projection_pending"`
+	ProjectionOldestPendingAt *time.Time `json:"projection_oldest_pending_at,omitempty"`
+	ChangeSequence            int64      `json:"change_sequence"`
 	Page[NativeIssue]
 	Total        int                `json:"total"`
 	Work         *NativeWorkSummary `json:"work,omitempty"`
