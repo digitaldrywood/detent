@@ -12,9 +12,11 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type hostedBillingWorker struct {
@@ -24,7 +26,60 @@ type hostedBillingWorker struct {
 	done    chan struct{}
 }
 
-func (s *Service) MaintainBillingCredit(ctx context.Context, after int64) (int64, bool, error) {
+type BillingTenant struct {
+	Tenant   hubmaintenance.Tenant
+	Revision string
+	Plans    HostedPlansConfig
+	Config   *HostedBillingConfig
+}
+
+type maintenanceBillingRepository struct{ tenantstore.Repository }
+
+func (r maintenanceBillingRepository) ReadTenant(ctx context.Context, org tracker.OrganizationID, _ corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.ReadTenant(ctx, org, corestore.Background, read)
+}
+
+func (r maintenanceBillingRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, _ corestore.Workload, write func(tenantstore.Writer) error) error {
+	return r.Repository.WriteTenant(ctx, org, corestore.Background, write)
+}
+
+func (s *Service) billingMaintenance(ctx context.Context, tenant BillingTenant) (*Service, error) {
+	if err := hubmaintenance.RequireTenant(ctx, tenant.Tenant); err != nil {
+		return nil, err
+	}
+	if tenant.Revision == "" || tenant.Config != nil && tenant.Config.Provider == nil {
+		return nil, errors.New("maintenance requires an applied billing configuration")
+	}
+	if s.database == nil || s.database.billingRepository == nil {
+		return nil, ErrHostedDatabaseBinding
+	}
+	now, leaseID := s.config.now, s.config.newLeaseID
+	if now == nil {
+		now = time.Now
+	}
+	if leaseID == nil {
+		leaseID = func() string { return newNativeID("billing") }
+	}
+	d := &database{billingRepository: maintenanceBillingRepository{s.database.billingRepository}, billingAuditStore: hubmaintenance.LimitDetails(s.database.billingAuditStore), hostedOrganization: tracker.OrganizationID(tenant.Tenant.Organization), now: now, newLeaseID: leaseID}
+	d.hostedRuntime.Store(&hostedRuntimeConfig{Revision: tenant.Revision, Plans: tenant.Plans, Billing: tenant.Config})
+	if tenant.Config != nil {
+		d.aiCreditMode = tenant.Config.mode()
+	}
+	return &Service{database: d, config: Config{Hosted: &HostedConfig{OrganizationID: tenant.Tenant.Organization, Billing: tenant.Config}, now: now, newLeaseID: leaseID}}, nil
+}
+
+func (s *Service) MaintainBillingCredit(ctx context.Context, tenant BillingTenant, after int64) (int64, bool, error) {
+	view, err := s.billingMaintenance(ctx, tenant)
+	if err != nil {
+		return after, false, err
+	}
+	if tenant.Config == nil {
+		return after, false, nil
+	}
+	return view.maintainBillingCredit(ctx, after)
+}
+
+func (s *Service) maintainBillingCredit(ctx context.Context, after int64) (int64, bool, error) {
 	if after < 0 || s.database == nil || s.database.hostedOrganization == "" || s.database.billingRepository == nil {
 		return after, false, ErrHostedDatabaseBinding
 	}
@@ -54,11 +109,23 @@ func (s *Service) MaintainBillingCredit(ctx context.Context, after int64) (int64
 	return event.Sequence, true, err
 }
 
-func (s *Service) MaintainBillingFunding(ctx context.Context) error {
-	return (&hostedBillingWorker{service: s}).autoFund(ctx)
+func (s *Service) MaintainBillingFunding(ctx context.Context, tenant BillingTenant) error {
+	view, err := s.billingMaintenance(ctx, tenant)
+	if err != nil {
+		return err
+	}
+	return (&hostedBillingWorker{service: view}).autoFund(ctx)
 }
 
-func (s *Service) MaintainBillingSubscription(ctx context.Context) error {
+func (s *Service) MaintainBillingSubscription(ctx context.Context, tenant BillingTenant) error {
+	view, err := s.billingMaintenance(ctx, tenant)
+	if err != nil {
+		return err
+	}
+	return view.maintainBillingSubscription(ctx)
+}
+
+func (s *Service) maintainBillingSubscription(ctx context.Context) error {
 	cfg := s.hostedBillingConfig()
 	if cfg == nil {
 		return nil
