@@ -35,6 +35,7 @@ type Reference struct {
 
 type Reader interface {
 	ArchiveReader
+	AttachmentObjectExists(context.Context, string, string) (bool, error)
 	Attachment(context.Context, tracker.ProjectID, string) (Record, error)
 	AttachmentReferences(context.Context, tracker.ProjectID, string, int) ([]Reference, error)
 	AttachmentEvidence(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string, int) ([]Record, error)

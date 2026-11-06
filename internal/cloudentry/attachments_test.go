@@ -468,7 +468,7 @@ func TestAttachmentOrphanSweepAndDeprovision(t *testing.T) {
 			t.Fatal(err)
 		}
 		stamp := old
-		if i == 1 {
+		if i != 0 {
 			stamp = time.Now()
 		}
 		store.mu.Lock()

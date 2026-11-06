@@ -72,3 +72,34 @@ func TestAttachmentReferenceBound(t *testing.T) {
 		})
 	}
 }
+
+func TestAttachmentObjectLookupProtectsTenantHistory(t *testing.T) {
+	r, _ := repositoryFor(t, template.Database(t), smallPool())
+	keys := map[tracker.OrganizationID]string{}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedRepository(t, r, org)
+		f := seedHistory(t, r, org, "lookup")
+		keys[org] = f.event.PayloadObjectKey
+	}
+	for org, key := range keys {
+		if err := r.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
+			for other, candidate := range keys {
+				exists, err := reader.AttachmentObjectExists(t.Context(), "", candidate)
+				if err != nil {
+					return err
+				}
+				if exists != (other == org) {
+					t.Errorf("history object ownership: tenant=%s object tenant=%s exists=%v", org, other, exists)
+				}
+			}
+			orphan := strings.Replace(key, key[len(key)-64:], strings.Repeat("0", 64), 1)
+			exists, err := reader.AttachmentObjectExists(t.Context(), "", orphan)
+			if exists {
+				t.Error("unreferenced object retained")
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

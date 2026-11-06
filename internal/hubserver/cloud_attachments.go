@@ -11,6 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -619,9 +622,6 @@ func (s *Service) finishCloudAttachmentDeletion(c echo.Context) error {
 }
 
 func (s *Service) cloudAttachmentExists(c echo.Context) error {
-	if s.config.TenantRepository != nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
-	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	claims, ok := hostedSharedClaims(c)
@@ -642,12 +642,16 @@ func (s *Service) cloudAttachmentExists(c echo.Context) error {
 		if err != nil || key != input.Key {
 			return s.nativeAPIError(c, nativeInvalid("Invalid archive key"))
 		}
-		if err := s.database.reader.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM attachments WHERE organization_id=? AND object_key=? AND kind='archive' AND object_deleted_at IS NULL)", claims.Audience, key).Scan(&exists); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-	} else if err := s.database.reader.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM attachments WHERE id=? AND object_deleted_at IS NULL)", input.ID).Scan(&exists); err != nil {
+	}
+	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(claims.Audience), corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		exists, err = r.AttachmentObjectExists(ctx, input.ID, input.Key)
+		return err
+	})
+	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+
 	return c.JSON(http.StatusOK, map[string]bool{"exists": exists})
 }
 
