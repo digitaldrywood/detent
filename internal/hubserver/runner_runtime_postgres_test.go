@@ -672,3 +672,52 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 		}
 	}
 }
+
+func TestPostgresRunnerSessionMutationOrdersLocksWithLeaseRenewal(t *testing.T) {
+	f := newRunnerPGFixture(t)
+	native, ctx := f.client(t, 0)
+	sessions := api.NewRunnerSessions(native)
+	id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(f.leases[0].WorkItemID), StartedAt: time.Now().UTC(), Model: "example-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewal, err := f.admin.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = renewal.Rollback() })
+	var runnerID string
+	if err := renewal.QueryRowContext(t.Context(), `SELECT runner_id FROM runner_identities WHERE organization_id='org_startup' AND runner_id=$1 FOR UPDATE`, f.bindings[0].RunnerID).Scan(&runnerID); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		result <- sessions.UpdateSessionWorkerProcess(ctx, id, store.WorkerProcessRegistration{CleanupRoot: "/example/workspace", CleanupPath: "/example/workspace/scratch"})
+	}()
+	for {
+		var waiting bool
+		if err := f.admin.QueryRowContext(t.Context(), `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%runner_identities%')`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case err := <-result:
+			t.Fatalf("session mutation finished while the runner identity was locked: %v", err)
+		default:
+		}
+	}
+	if _, err := renewal.ExecContext(t.Context(), `SELECT lease_id FROM leases WHERE organization_id='org_startup' AND lease_id=$1 FOR UPDATE`, string(f.leases[0].ID)); err != nil {
+		t.Fatalf("renewal lock order deadlocked with session mutation: %v", err)
+	}
+	if err := renewal.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-result; err != nil {
+		t.Fatalf("session mutation refused after concurrent renewal: %v", err)
+	}
+	if err := sessions.UpdateSessionWorkerProcess(ctx, id, store.WorkerProcessRegistration{CleanupRoot: "/example/workspace", CleanupPath: "/example/workspace/scratch"}); err != nil {
+		t.Fatalf("session mutation refused after renewal: %v", err)
+	}
+}
