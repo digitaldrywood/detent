@@ -44,29 +44,47 @@ func (s *Service) maintainBoardRecords(ctx context.Context) error {
 	var failures []error
 	attempted := make([]tracker.NativeWorkItemID, 0, 32)
 	for range 32 {
-		var candidate viewstore.BoardCandidate
-		err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
-			var err error
-			candidate, err = r.NextBoardCandidate(ctx, tracker.NativeWorkItemID(s.boardRefreshCursor), attempted...)
-			return err
-		})
-		if errors.Is(err, corestore.ErrNotFound) {
-			s.boardRefreshCursor = ""
-			return errors.Join(failures...)
-		}
+		next, processed, err := s.maintainBoardRecord(ctx, organization, tracker.NativeWorkItemID(s.boardRefreshCursor), attempted...)
+		s.boardRefreshCursor = string(next)
 		if err != nil {
-			return errors.Join(append(failures, err)...)
-		}
-		attempted = append(attempted, candidate.WorkItemID)
-		s.boardRefreshCursor = string(candidate.WorkItemID)
-		if err := s.refreshBoardRecord(ctx, organization, candidate, s.config.now()); err != nil && !errors.Is(err, corestore.ErrRevisionConflict) {
 			failures = append(failures, err)
 		}
+		if !processed {
+			return errors.Join(failures...)
+		}
+		attempted = append(attempted, next)
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(failures, err)...)
 		}
 	}
 	return errors.Join(failures...)
+}
+
+func (s *Service) MaintainBoardRecord(ctx context.Context, organization tracker.OrganizationID, after tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, error) {
+	return s.maintainBoardRecord(ctx, organization, after)
+}
+
+func (s *Service) maintainBoardRecord(ctx context.Context, organization tracker.OrganizationID, after tracker.NativeWorkItemID, attempted ...tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, error) {
+	if organization == "" || s.config.TenantRepository == nil {
+		return after, false, corestore.ErrTenantMismatch
+	}
+	var candidate viewstore.BoardCandidate
+	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
+		var err error
+		candidate, err = r.NextBoardCandidate(ctx, after, attempted...)
+		return err
+	})
+	if errors.Is(err, corestore.ErrNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return after, false, err
+	}
+	err = s.refreshBoardRecord(ctx, organization, candidate, s.config.now())
+	if errors.Is(err, corestore.ErrRevisionConflict) {
+		err = nil
+	}
+	return candidate.WorkItemID, true, err
 }
 
 func (s *Service) boardProjectionSnapshot(ctx context.Context, organization tracker.OrganizationID, candidate viewstore.BoardCandidate, now time.Time) (snapshot boardProjectionSnapshot, err error) {

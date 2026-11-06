@@ -183,6 +183,13 @@ func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertPage("org_second", 32)
+	service.localOrganization = "org_first"
+	next, processed, err := service.MaintainBoardRecord(t.Context(), "org_second", "")
+	if err != nil || !processed || next != "wi_32" {
+		t.Fatalf("one-item maintenance: next=%s processed=%t err=%v", next, processed, err)
+	}
+	assertPage("org_first", 34)
+	assertPage("org_second", 33)
 	if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error { return w.RetireProject(t.Context(), "example", 1, now) }); err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +202,7 @@ func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertPage("org_first", 0)
-	assertPage("org_second", 32)
+	assertPage("org_second", 33)
 }
 
 type boardHistoricalDetailStore struct {
