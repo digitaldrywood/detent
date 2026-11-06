@@ -41,7 +41,7 @@ CREATE TABLE release_audit_parts (
   digest TEXT NOT NULL,
   PRIMARY KEY (organization_id, project_id, checkpoint_id, part_index),
   FOREIGN KEY (organization_id, project_id, checkpoint_id) REFERENCES release_audit_checkpoints(organization_id, project_id, id),
-  FOREIGN KEY (organization_id, attachment_id) REFERENCES attachments(organization_id, id)
+  FOREIGN KEY (organization_id, project_id, attachment_id) REFERENCES attachments(organization_id, project_id, id)
 );
 
 CREATE INDEX release_audit_parts_attachment ON release_audit_parts(organization_id, attachment_id);

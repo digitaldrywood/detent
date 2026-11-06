@@ -18,30 +18,66 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/releaseaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/labstack/echo/v4"
 )
 
 func TestReleaseAuditProjectRecords(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
-	first := newNativeFixture(t, service, "", "audit-first")
-	second := newNativeFixture(t, service, first.project.OrganizationID, "audit-second")
+	repository, admin := projectRecordPostgresWithAdmin(t, 4)
+	service := &Service{echo: echo.New(), database: &database{postgres: repository}, localOrganization: "org_audit", config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Logger: discardLogger(), now: func() time.Time { return now }}}
+	service.registerReleaseAuditRoutes(service.echo)
+	perform := func(method, path, token string, payload any) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		service.echo.ServeHTTP(response, newHubAPIRequest(t, method, path, token, payload))
+		return response
+	}
+	makeFixture := func(id string) nativeFixture {
+		token := "example-token-" + id
+		project := tracker.NativeProject{OrganizationID: "org_audit", ID: tracker.ProjectID(id)}
+		if err := repository.WriteTenant(t.Context(), project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			if id == "prj_first" {
+				if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: project.OrganizationID, Name: "Example", CreatedAt: now}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: project.OrganizationID, ProviderID: "example-provider"}); err != nil {
+					return err
+				}
+			}
+			record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: project.OrganizationID, ID: project.ID, Name: id, Profile: "native"}, States: nativeFixtureStates()})
+			if err != nil {
+				return err
+			}
+			record.Settings.CheckoutRepository = "example-org/example-project"
+			if _, err := w.UpdateProjectRecord(t.Context(), record); err != nil {
+				return err
+			}
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: project.OrganizationID, ID: id, Name: id, Hash: apikey.HashToken(token), Scope: "operator", Kind: "service", KeyScope: "write", ProjectAccess: "selected", NativeOnly: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+				return err
+			}
+			return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: project.OrganizationID, TokenID: id, ProjectID: project.ID})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return nativeFixture{project: project, token: token, base: "/api/v2/organizations/org_audit/projects/" + id}
+	}
+	first := makeFixture("prj_first")
+	second := makeFixture("prj_second")
 	blobs := map[string][]byte{}
 	metadata := map[string]attachment.Metadata{}
 	for _, fixture := range []nativeFixture{first, second} {
-		var uploader string
-		if err := service.database.reader.QueryRowContext(t.Context(), "SELECT token_id FROM token_grants WHERE project_id=? LIMIT 1", fixture.project.ID).Scan(&uploader); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository=? WHERE id=?", "example-org/example-project", fixture.project.ID); err != nil {
-			t.Fatal(err)
-		}
+		uploader := string(fixture.project.ID)
 		for sequence := 1; sequence <= 2; sequence++ {
 			state := releaseaudit.Snapshot{Identity: releaseaudit.Identity{ProjectID: string(fixture.project.ID), Repository: "example-org/example-project", Commit: strings.Repeat("a", 40), ReleaseSeries: "release/v1.0", RunID: "run", Attempt: "1", JobID: "audit", RunURL: "https://example.test/runs/1"}, Sequence: sequence, Status: "incomplete", BundleCommit: releaseaudit.BundleCommit, BundleDigest: releaseaudit.BundleDigest, Allowance: releaseaudit.Allowance{Invocations: 20, Usage: releaseaudit.Usage{Input: 1000, Output: 1000, Cached: 1000}}, Ledger: []byte(`[]`)}
 			raw, checkpoint, err := releaseaudit.SnapshotBytes(state)
@@ -52,7 +88,7 @@ func TestReleaseAuditProjectRecords(t *testing.T) {
 			digest := sha256.Sum256(raw)
 			blobs[id] = raw
 			metadata[id] = attachment.Metadata{ID: id, ProjectID: string(fixture.project.ID), Uploader: uploader, Name: "audit.txt", ContentType: "text/plain", Size: int64(len(raw)), SHA256: hex.EncodeToString(digest[:]), CreatedAt: now}
-			if _, err := service.database.db.ExecContext(t.Context(), `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, id, fixture.project.OrganizationID, fixture.project.ID, uploader, "audit.txt", "text/plain", len(raw), hex.EncodeToString(digest[:]), formatHubTime(now.Add(-48*time.Hour))); err != nil {
+			if _, err := admin.ExecContext(t.Context(), `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, id, fixture.project.OrganizationID, fixture.project.ID, uploader, "audit.txt", "text/plain", len(raw), hex.EncodeToString(digest[:]), now.Add(-48*time.Hour)); err != nil {
 				t.Fatal(err)
 			}
 			checkpoint.Parts = []releaseaudit.Part{{AttachmentID: id, Index: 0, Offset: 0, Bytes: len(raw), Digest: hex.EncodeToString(digest[:])}}
@@ -60,7 +96,10 @@ func TestReleaseAuditProjectRecords(t *testing.T) {
 				tracker.Mutation
 				releaseaudit.Checkpoint
 			}{tracker.Mutation{IdempotencyKey: fmt.Sprintf("audit-%s-%d", fixture.project.ID, sequence)}, checkpoint}
-			response := performHubAPIRequest(t, service, http.MethodPost, fixture.base+"/release-audits", fixture.token, request)
+			mismatched := request
+			mismatched.Identity.Repository = "example-org/other-project"
+			requireNativeStatus(t, perform(http.MethodPost, fixture.base+"/release-audits", fixture.token, mismatched), http.StatusUnprocessableEntity)
+			response := perform(http.MethodPost, fixture.base+"/release-audits", fixture.token, request)
 			requireNativeStatus(t, response, http.StatusOK)
 			var retained releaseaudit.Checkpoint
 			decodeHubResponse(t, response, &retained)
@@ -68,19 +107,16 @@ func TestReleaseAuditProjectRecords(t *testing.T) {
 				t.Fatalf("checkpoint=%+v want=%+v", retained, checkpoint)
 			}
 			request.IdempotencyKey += "-replay"
-			response = performHubAPIRequest(t, service, http.MethodPost, fixture.base+"/release-audits", fixture.token, request)
+			response = perform(http.MethodPost, fixture.base+"/release-audits", fixture.token, request)
 			requireNativeStatus(t, response, http.StatusOK)
 			request.IdempotencyKey += "-conflict"
 			request.Status = "clean"
-			response = performHubAPIRequest(t, service, http.MethodPost, fixture.base+"/release-audits", fixture.token, request)
+			response = perform(http.MethodPost, fixture.base+"/release-audits", fixture.token, request)
 			requireNativeStatus(t, response, http.StatusConflict)
 		}
 	}
-	if err := service.maintainNativeRetention(t.Context(), now); err != nil {
-		t.Fatal(err)
-	}
 	for _, fixture := range []nativeFixture{first, second} {
-		response := performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/release-audits", fixture.token, nil)
+		response := perform(http.MethodGet, fixture.base+"/release-audits", fixture.token, nil)
 		requireNativeStatus(t, response, http.StatusOK)
 		var page releaseaudit.CheckpointPage
 		decodeHubResponse(t, response, &page)
@@ -89,20 +125,17 @@ func TestReleaseAuditProjectRecords(t *testing.T) {
 		}
 		for _, part := range page.Items[0].Parts {
 			var deleted bool
-			if err := service.database.reader.QueryRowContext(t.Context(), "SELECT deleted_at IS NOT NULL FROM attachments WHERE id=?", part.AttachmentID).Scan(&deleted); err != nil || deleted {
+			if err := admin.QueryRowContext(t.Context(), "SELECT deleted_at IS NOT NULL FROM attachments WHERE organization_id=$1 AND id=$2", fixture.project.OrganizationID, part.AttachmentID).Scan(&deleted); err != nil || deleted {
 				t.Fatalf("audit evidence expired: %v %v", deleted, err)
 			}
 		}
 	}
-	response := performHubAPIRequest(t, service, http.MethodGet, second.base+"/release-audits", first.token, nil)
-	requireNativeStatus(t, response, http.StatusNotFound)
-	var uploader string
-	if err := service.database.reader.QueryRowContext(t.Context(), "SELECT token_id FROM token_grants WHERE project_id=? LIMIT 1", first.project.ID).Scan(&uploader); err != nil {
-		t.Fatal(err)
-	}
+	response := perform(http.MethodGet, second.base+"/release-audits", first.token, nil)
+	requireNativeStatus(t, response, http.StatusForbidden)
+	uploader := string(first.project.ID)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, first.base+"/attachments") {
-			service.Handler().ServeHTTP(w, r)
+			service.echo.ServeHTTP(w, r)
 			return
 		}
 		if r.Header.Get("Authorization") != "Bearer "+first.token {
@@ -119,7 +152,7 @@ func TestReleaseAuditProjectRecords(t *testing.T) {
 			digest := sha256.Sum256(body)
 			record := attachment.Metadata{ID: id, ProjectID: string(first.project.ID), Uploader: uploader, Name: r.Header.Get("X-Attachment-Name"), ContentType: r.Header.Get("Content-Type"), Size: int64(len(body)), SHA256: hex.EncodeToString(digest[:]), CreatedAt: now}
 			record.Reference = record.Markdown(string(first.project.OrganizationID))
-			_, err = service.database.db.ExecContext(r.Context(), `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, id, first.project.OrganizationID, first.project.ID, uploader, record.Name, record.ContentType, record.Size, record.SHA256, formatHubTime(now))
+			_, err = admin.ExecContext(r.Context(), `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, id, first.project.OrganizationID, first.project.ID, uploader, record.Name, record.ContentType, record.Size, record.SHA256, now)
 			if err != nil {
 				t.Error(err)
 				http.Error(w, "storage failed", http.StatusInternalServerError)
