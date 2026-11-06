@@ -47,7 +47,7 @@ func TestRepositorySerializationFailure(t *testing.T) {
 		_, err = second.ExecContext(t.Context(), `UPDATE projects SET name='Rejected' WHERE organization_id='org_first' AND id='prj_first'`)
 		return fmt.Errorf("update core project: %w", err)
 	})
-	if !errors.Is(err, corestore.ErrSerializationFailure) || !errors.Is(err, mutation.ErrConflict) {
+	if !errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, mutation.ErrConflict) {
 		t.Fatalf("serialization error = %v", err)
 	}
 	requireSQLState(t, err, "40001")
@@ -119,7 +119,7 @@ func TestRepositoryDeadlockFailure(t *testing.T) {
 	for _, task := range []*repositoryTask{first, second} {
 		if err := task.wait(t); err != nil {
 			failures++
-			if !errors.Is(err, corestore.ErrSerializationFailure) || !errors.Is(err, mutation.ErrConflict) {
+			if !errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, mutation.ErrConflict) {
 				t.Errorf("deadlock error = %v", err)
 			}
 			requireSQLState(t, err, "40P01")

@@ -83,6 +83,9 @@ func (s *Service) releaseNativeLeaseTenant(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	err = s.config.TenantRepository.WriteTenant(c.Request().Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if _, err := w.RunnerForLease(c.Request().Context(), leaseID); err != nil {
+			return err
+		}
 		if err := w.LockWorkItemProject(c.Request().Context(), scope.project); err != nil {
 			return err
 		}

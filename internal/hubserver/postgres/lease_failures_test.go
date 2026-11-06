@@ -39,7 +39,7 @@ func TestLeaseTransactionFailureReturnsToRetryOwner(t *testing.T) {
 					return err
 				}
 				err := r.WriteLeases(t.Context(), "org_first", corestore.Serving, write)
-				if !errors.Is(err, corestore.ErrSerializationFailure) || !errors.Is(err, mutation.ErrConflict) || calls != 1 {
+				if !errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, mutation.ErrConflict) || calls != 1 {
 					t.Fatalf("failure=%v callback calls=%d", err, calls)
 				}
 				requireSQLState(t, err, code)

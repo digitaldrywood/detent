@@ -379,6 +379,7 @@ func TestNativeAPIError(t *testing.T) {
 		{"access denied", "access_denied", "operator access is unavailable", "WARN", operatortool.ErrAccessDenied, http.StatusForbidden},
 		{"authorization diagnostic", "service_unavailable", operatortool.ErrServiceUnavailable.Error(), "ERROR", &operatortool.AuthorizationError{Stage: "check", Cause: errors.New("private-context"), PrincipalID: "principal_example", OrganizationID: "org_example", ProjectID: "prj_example"}, http.StatusServiceUnavailable},
 		{"authorization timeout", "service_unavailable", operatortool.ErrServiceUnavailable.Error(), "ERROR", &operatortool.AuthorizationError{Stage: "resolve", Cause: context.DeadlineExceeded}, http.StatusServiceUnavailable},
+		{"aborted transaction", "service_unavailable", "Database transaction was aborted; retry the request", "ERROR", corestore.ErrSerializationFailure, http.StatusServiceUnavailable},
 		{"expired session", "access_denied", "Access is no longer available", "WARN", auth.ErrInvalidSession, http.StatusForbidden},
 		{"allowance", "allowance_exhausted", "Hosted active_runners allowance reached (2 of 2). Existing data, reading, export and billing remain available.", "WARN", &hostedLimitError{Resource: "active_runners", Allowance: 2, Consumption: 2}, http.StatusTooManyRequests},
 		{"request refusal", "invalid_request", "A project is required", "WARN", &operatortool.RequestError{Code: "invalid_request", Message: "A project is required"}, http.StatusUnprocessableEntity},

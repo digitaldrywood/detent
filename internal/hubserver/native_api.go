@@ -142,6 +142,11 @@ func operatorAuthorizationCause(err error) string {
 }
 
 func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) error {
+	if errors.Is(err, corestore.ErrSerializationFailure) {
+		message := "Database transaction was aborted; retry the request"
+		s.config.Logger.Error(message, append([]any{"error", err}, postgresErrorAttributes(err)...)...)
+		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "service_unavailable", Message: message})
+	}
 	if errors.Is(err, receiptstore.ErrExpired) {
 		return s.nativeAPIError(c, commandResponseExpired(), attributes...)
 	}

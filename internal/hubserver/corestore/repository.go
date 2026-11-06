@@ -12,7 +12,7 @@ import (
 
 var (
 	ErrUniqueViolation      = fmt.Errorf("resource already exists: %w", mutation.ErrConflict)
-	ErrSerializationFailure = fmt.Errorf("transaction must be retried: %w", mutation.ErrConflict)
+	ErrSerializationFailure = errors.New("transaction must be retried")
 	ErrRevisionConflict     = fmt.Errorf("resource has changed: %w", mutation.ErrConflict)
 	ErrNotFound             = errors.New("resource was not found")
 	ErrTenantMismatch       = errors.New("resource organization does not match transaction")
