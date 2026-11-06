@@ -13,7 +13,7 @@ NOT EXISTS (
  SELECT 1 FROM release_deliveries d WHERE d.organization_id=i.organization_id AND lower(d.repository)=lower(sqlc.arg(repository)::text) AND d.pr_number=sqlc.arg(pr_number) AND (d.project_id<>i.project_id OR d.work_item_id<>i.native_id)
 ) OR EXISTS (
  SELECT 1 FROM change_versions v JOIN change_requests c ON c.organization_id=v.organization_id AND c.id=v.change_id
- WHERE v.organization_id=i.organization_id AND v.repository=sqlc.arg(repository) AND v.external_provider='github' AND v.external_id=sqlc.arg(pr_number)::text AND (c.project_id<>i.project_id OR c.work_item_id<>i.native_id)
+ WHERE v.organization_id=i.organization_id AND lower(v.repository)=lower(sqlc.arg(repository)) AND v.external_provider='github' AND v.external_id=sqlc.arg(pr_number)::text AND (c.project_id<>i.project_id OR c.work_item_id<>i.native_id)
 ))) AS conflicting_pr
 FROM issues i WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND i.native_id=sqlc.arg(item)::text;
 

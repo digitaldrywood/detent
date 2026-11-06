@@ -27,7 +27,7 @@ NOT EXISTS (
  SELECT 1 FROM release_deliveries d WHERE d.organization_id=i.organization_id AND lower(d.repository)=lower($3::text) AND d.pr_number=$2 AND (d.project_id<>i.project_id OR d.work_item_id<>i.native_id)
 ) OR EXISTS (
  SELECT 1 FROM change_versions v JOIN change_requests c ON c.organization_id=v.organization_id AND c.id=v.change_id
- WHERE v.organization_id=i.organization_id AND v.repository=$3 AND v.external_provider='github' AND v.external_id=$2::text AND (c.project_id<>i.project_id OR c.work_item_id<>i.native_id)
+ WHERE v.organization_id=i.organization_id AND lower(v.repository)=lower($3) AND v.external_provider='github' AND v.external_id=$2::text AND (c.project_id<>i.project_id OR c.work_item_id<>i.native_id)
 ))) AS conflicting_pr
 FROM issues i WHERE i.organization_id=$4 AND i.project_id=$5 AND i.native_id=$6::text
 `
