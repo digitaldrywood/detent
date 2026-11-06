@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"sync"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -15,7 +14,6 @@ type readRequestKey struct{}
 type readRequest struct {
 	repository *Repository
 	session    *session
-	mu         sync.Mutex
 }
 
 func (r *Repository) ReadRequest(ctx context.Context, organization tracker.OrganizationID, run func(context.Context) error) error {

@@ -25,6 +25,8 @@ func (s *session) CreateHubIdentity(ctx context.Context, row accessstore.HubIden
 }
 
 func (s *session) AccessOrganization(ctx context.Context) (accessstore.Organization, error) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
 	if s.organizationRecord != nil {
 		return *s.organizationRecord, nil
 	}
@@ -86,6 +88,8 @@ func (s *session) CreateAccessTenant(ctx context.Context, row accessstore.Tenant
 }
 
 func (s *session) AccessCredential(ctx context.Context, id string) (accessstore.Credential, error) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
 	if row, ok := s.credentials[id]; ok {
 		return row, nil
 	}
@@ -106,6 +110,8 @@ func (s *session) CreateAccessCredential(ctx context.Context, row accessstore.Cr
 }
 
 func (s *session) AccessMember(ctx context.Context, user_id string) (accessstore.Member, error) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
 	if row, ok := s.members[user_id]; ok {
 		return row, nil
 	}
@@ -129,6 +135,8 @@ func (s *session) CreateAccessMember(ctx context.Context, row accessstore.Member
 }
 
 func (s *session) AccessProjectGrant(ctx context.Context, user_id string, project_id tracker.ProjectID) (accessstore.ProjectGrant, error) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
 	key := projectAccessKey{principal: user_id, project: project_id}
 	if row, ok := s.projectGrants[key]; ok {
 		return row, nil
@@ -150,6 +158,8 @@ func (s *session) CreateAccessProjectGrant(ctx context.Context, row accessstore.
 }
 
 func (s *session) AccessTokenGrant(ctx context.Context, token_id string, project_id tracker.ProjectID) (accessstore.TokenGrant, error) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
 	key := projectAccessKey{principal: token_id, project: project_id}
 	if row, ok := s.tokenGrants[key]; ok {
 		return row, nil

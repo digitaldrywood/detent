@@ -27,6 +27,8 @@ func projectSettings(row pgquery.ProjectSetting) projectstore.Settings {
 }
 
 func (s *session) ProjectRecord(ctx context.Context, id tracker.ProjectID) (projectstore.Record, error) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
 	rows, found := s.projectRows[id]
 	if !found {
 		var err error

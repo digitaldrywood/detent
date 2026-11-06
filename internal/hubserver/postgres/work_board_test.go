@@ -1,6 +1,7 @@
 package postgres_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -25,6 +26,38 @@ func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedTenantAccess(t, repository, org)
+		t.Run(string(org)+"/nested request snapshot", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			nested := make(chan error, 1)
+			err := repository.ReadRequest(ctx, org, func(ctx context.Context) error {
+				err := repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+					go func() {
+						nested <- repository.ReadTenant(ctx, org, corestore.Serving, func(inner tenantstore.Reader) error {
+							row, err := inner.AccessOrganization(ctx)
+							if err == nil && row.OrganizationID != org {
+								return corestore.ErrTenantMismatch
+							}
+							return err
+						})
+					}()
+					select {
+					case err := <-nested:
+						return err
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				})
+				if ctx.Err() != nil {
+					<-nested
+				}
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+
 		records := make([]viewstore.BoardRecord, 0, 2)
 		for index := 0; index < 2; index++ {
 			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_example_%d", index))

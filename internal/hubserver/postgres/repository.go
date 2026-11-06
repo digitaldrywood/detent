@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -103,8 +104,6 @@ func (r *Repository) transactionIsolation(ctx context.Context, organization trac
 		if request.repository != r || request.session.organization != organization || workload != corestore.Serving || !readOnly {
 			return corestore.ErrTenantMismatch
 		}
-		request.mu.Lock()
-		defer request.mu.Unlock()
 		return run(request.session)
 	}
 	finishAdmission := transactionSpan(ctx, "pg_admission")
@@ -167,6 +166,7 @@ type projectAccessKey struct {
 }
 
 type session struct {
+	cacheMu            sync.Mutex
 	projectGrants      map[projectAccessKey]accessstore.ProjectGrant
 	tokenGrants        map[projectAccessKey]accessstore.TokenGrant
 	projectRows        map[tracker.ProjectID][]pgquery.BoundProjectRecordRow
