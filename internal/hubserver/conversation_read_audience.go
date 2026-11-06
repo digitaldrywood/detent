@@ -99,6 +99,30 @@ func conversationReadAudienceRecord(ctx context.Context, reader tenantstore.Read
 	if !member.Active {
 		return "", operatortool.ErrAccessDenied
 	}
+	token, err := reader.AccessCredential(ctx, credential.ID)
+	if err != nil {
+		return "", fmt.Errorf("read audience credential: %w", err)
+	}
+	if credential.EntryKey != nil && !credential.EntryKey.Valid() {
+		return "", operatortool.ErrAccessDenied
+	}
+	keyProjects := map[tracker.ProjectID]bool{}
+	if token.ProjectAccess != "all" {
+		var after tracker.ProjectID
+		for {
+			rows, err := reader.AccessTokenGrants(ctx, credential.ID, after, 100)
+			if err != nil {
+				return "", fmt.Errorf("read audience key grants: %w", err)
+			}
+			for _, row := range rows {
+				keyProjects[row.ProjectID] = true
+			}
+			if len(rows) < 100 {
+				break
+			}
+			after = rows[len(rows)-1].ProjectID
+		}
+	}
 	type grant struct {
 		Project       string
 		Write, Runner bool
@@ -111,6 +135,12 @@ func conversationReadAudienceRecord(ctx context.Context, reader tenantstore.Read
 			return "", err
 		}
 		for _, row := range rows {
+			if token.ProjectAccess != "all" && !keyProjects[row.ProjectID] {
+				continue
+			}
+			if credential.EntryKey != nil && !credential.EntryKey.Allows(string(row.ProjectID)) {
+				continue
+			}
 			grants = append(grants, grant{string(row.ProjectID), row.CanWrite, row.ManageRunner})
 		}
 		if len(rows) < 100 {
