@@ -15,7 +15,7 @@ type RuntimePublication struct{ Revision, ObjectKey string }
 
 func (r *Repository) RuntimePublication(ctx context.Context, issuer string) (RuntimePublication, error) {
 	var result RuntimePublication
-	err := r.transaction(ctx, corestore.Serving, true, func(tx pgx.Tx) error {
+	err := r.read(ctx, corestore.Serving, func(tx pgquery.DBTX) error {
 		row, err := pgquery.New(tx).EntryRuntime(ctx, issuer)
 		result = RuntimePublication{Revision: row.RevisionID, ObjectKey: row.ObjectKey}
 		return err
@@ -32,7 +32,7 @@ func (r *Repository) PublishRuntime(ctx context.Context, revision, issuer, key s
 	if len(slices.Compact(targets)) != len(organizations) {
 		return ErrInvalid
 	}
-	return r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	return r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 		q := pgquery.New(tx)
 		locked, err := q.LockRuntimePublicationTargets(ctx, pgquery.LockRuntimePublicationTargetsParams{Organizations: runtimeTargetStrings(targets), Revision: revision})
 		if err != nil {

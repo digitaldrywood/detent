@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -37,7 +39,7 @@ func (r *Repository) Register(ctx context.Context, o Organization) (bool, error)
 		return false, ErrInvalid
 	}
 	changed := false
-	err := r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	err := r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 
 		now := r.now()
 		inserted, err := tx.Exec(ctx, `INSERT INTO platform.organizations(id,provider_id,name,state,endpoint,generation,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$7) ON CONFLICT DO NOTHING`, o.ID, o.ProviderID, o.Name, o.State, o.Endpoint, o.Generation, now)
@@ -79,7 +81,7 @@ func (r *Repository) Register(ctx context.Context, o Organization) (bool, error)
 
 func (r *Repository) Organization(ctx context.Context, id tracker.OrganizationID) (Organization, error) {
 	var o Organization
-	err := r.transaction(ctx, corestore.Serving, true, func(tx pgx.Tx) error {
+	err := r.read(ctx, corestore.Serving, func(tx pgquery.DBTX) error {
 		var err error
 		o, err = scanOrganization(tx.QueryRow(ctx, `SELECT `+organizationColumns+` FROM platform.organizations WHERE id=$1`, id))
 		return err
@@ -92,7 +94,7 @@ func (r *Repository) ByProvider(ctx context.Context, provider string) (Organizat
 		return Organization{}, corestore.ErrNotFound
 	}
 	var o Organization
-	err := r.transaction(ctx, corestore.Serving, true, func(tx pgx.Tx) error {
+	err := r.read(ctx, corestore.Serving, func(tx pgquery.DBTX) error {
 		var err error
 		o, err = scanOrganization(tx.QueryRow(ctx, `SELECT `+organizationColumns+` FROM platform.organizations WHERE provider_id=$1 AND provider_id<>''`, provider))
 		return err
@@ -105,7 +107,7 @@ func (r *Repository) Organizations(ctx context.Context, after tracker.Organizati
 		return nil, ErrInvalid
 	}
 	result := []Organization{}
-	err := r.transaction(ctx, corestore.Serving, true, func(tx pgx.Tx) error {
+	err := r.read(ctx, corestore.Serving, func(tx pgquery.DBTX) error {
 		rows, err := tx.Query(ctx, `SELECT `+organizationColumns+` FROM platform.organizations WHERE id>$1 ORDER BY id LIMIT $2`, after, limit)
 		if err != nil {
 			return err
@@ -125,7 +127,7 @@ func (r *Repository) Organizations(ctx context.Context, after tracker.Organizati
 
 func (r *Repository) Member(ctx context.Context, email string) (Member, error) {
 	var m Member
-	err := r.transaction(ctx, corestore.Serving, true, func(tx pgx.Tx) error {
+	err := r.read(ctx, corestore.Serving, func(tx pgquery.DBTX) error {
 		return tx.QueryRow(ctx, `SELECT email,role,added_by,added_at,updated_at FROM platform.platform_members WHERE email=$1`, strings.ToLower(strings.TrimSpace(email))).Scan(&m.Email, &m.Role, &m.AddedBy, &m.AddedAt, &m.UpdatedAt)
 	})
 	return m, err

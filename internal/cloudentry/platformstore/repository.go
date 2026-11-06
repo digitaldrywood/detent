@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 
 	"github.com/jackc/pgx/v5"
@@ -125,8 +127,8 @@ func (r *Repository) SchemaFingerprint(ctx context.Context) (string, error) {
 	return schemafingerprint.Versions(versions), nil
 }
 
-func (r *Repository) transaction(ctx context.Context, workload corestore.Workload, readOnly bool, run func(pgx.Tx) error) (resultErr error) {
-	tx, err := r.BeginEntry(ctx, workload, readOnly)
+func (r *Repository) transaction(ctx context.Context, workload corestore.Workload, run func(pgx.Tx) error) (resultErr error) {
+	tx, err := r.BeginEntry(ctx, workload, false)
 	if err != nil {
 		return err
 	}
@@ -180,3 +182,12 @@ func (e *storageError) Error() string {
 }
 func (e *storageError) Unwrap() error        { return e.cause }
 func (e *storageError) Is(target error) bool { return errors.Is(e.domain, target) }
+
+func (r *Repository) read(ctx context.Context, workload corestore.Workload, read func(pgquery.DBTX) error) error {
+	release, err := r.acquireEntry(ctx, workload)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return mapError(ctx, read(r.pool))
+}

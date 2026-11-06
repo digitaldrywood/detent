@@ -5,6 +5,8 @@ import (
 	"crypto/subtle"
 	"errors"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -22,7 +24,7 @@ func (r *Repository) CreateOAuthClient(ctx context.Context, c OAuthClient) error
 	if c.AuthMethod != "none" && c.SecretHash == "" {
 		return ErrInvalid
 	}
-	return r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	return r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO platform.oauth_clients(id,name,auth_method,secret_hash,created_at) VALUES($1,$2,$3,$4,$5)`, c.ID, c.Name, c.AuthMethod, c.SecretHash, r.now()); err != nil {
 			return err
 		}
@@ -39,7 +41,7 @@ func (r *Repository) CreateOAuthGrant(ctx context.Context, g OAuthGrant, request
 	if g.OrganizationID == "" || g.ID == "" || g.ClientID == "" || g.OwnerSubject == "" || g.Resource == "" || !apikey.ValidScope(apikey.Scope(g.Permission)) || request.ID == "" || request.CodeHash == "" || request.Challenge == "" || !request.CodeExpiresAt.After(r.now()) {
 		return ErrInvalid
 	}
-	return r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	return r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 		var allowed bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM platform.oauth_client_redirect_uris WHERE client_id=$1 AND uri=$2)`, g.ClientID, request.RedirectURI).Scan(&allowed); err != nil {
 			return err
@@ -75,7 +77,7 @@ func (r *Repository) ExchangeOAuthCode(ctx context.Context, organization tracker
 	if tokens.AccessHash == "" || tokens.RefreshHash == "" || !tokens.AccessExpiresAt.After(r.now()) || !tokens.RefreshExpiresAt.After(r.now()) {
 		return ErrInvalid
 	}
-	return r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	return r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 		var id, challenge string
 		err := tx.QueryRow(ctx, `SELECT grant_id,challenge FROM platform.oauth_requests WHERE organization_id=$1 AND code_hash=$2 AND client_id=$3 AND resource=$4 AND redirect_uri=$5 AND consumed_at IS NULL AND code_expires_at>$6`, organization, hash, client, resource, redirect, r.now()).Scan(&id, &challenge)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -114,7 +116,7 @@ func (r *Repository) RotateOAuthRefresh(ctx context.Context, organization tracke
 		return ErrInvalid
 	}
 	replay := false
-	err := r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	err := r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 		var id string
 		err := tx.QueryRow(ctx, `SELECT grant_id FROM platform.oauth_refresh_tokens WHERE organization_id=$1 AND token_hash=$2 UNION ALL SELECT grant_id FROM platform.oauth_spent_refresh_tokens WHERE organization_id=$1 AND token_hash=$2 LIMIT 1`, organization, hash).Scan(&id)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -162,7 +164,7 @@ func (r *Repository) RotateOAuthRefresh(ctx context.Context, organization tracke
 
 func (r *Repository) OAuthGrant(ctx context.Context, organization tracker.OrganizationID, accessHash string) (OAuthGrant, error) {
 	var g OAuthGrant
-	err := r.transaction(ctx, corestore.Serving, true, func(tx pgx.Tx) error {
+	err := r.read(ctx, corestore.Serving, func(tx pgquery.DBTX) error {
 		var err error
 		g, err = scanOAuthGrant(tx.QueryRow(ctx, `SELECT `+grantColumns+` FROM platform.oauth_grants WHERE organization_id=$1 AND access_hash=$2 AND revoked_at IS NULL AND access_expires_at>$3`, organization, accessHash, r.now()))
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -174,7 +176,7 @@ func (r *Repository) OAuthGrant(ctx context.Context, organization tracker.Organi
 }
 
 func (r *Repository) RevokeOAuthGrant(ctx context.Context, organization tracker.OrganizationID, owner, id string) error {
-	return r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	return r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `UPDATE platform.oauth_grants SET revoked_at=$1 WHERE organization_id=$2 AND owner_subject=$3 AND id=$4 AND revoked_at IS NULL`, r.now(), organization, owner, id)
 		return err
 	})

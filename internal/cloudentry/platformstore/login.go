@@ -23,7 +23,7 @@ func (r *Repository) CreateLogin(ctx context.Context, item LoginTransaction) err
 	if err != nil {
 		return err
 	}
-	return r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	return r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO platform.transactions(token_hash,transaction_id,state,verifier,organization_id,return_path,invitation_token,invitation_organization,support_actor,support_session,support_reason,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, item.Hash, item.ID, item.State, verifier, item.OrganizationID, item.ReturnPath, invitation, item.InvitationOrganization, item.SupportActor, item.SupportSession, item.SupportReason, item.ExpiresAt)
 		return err
 	})
@@ -31,7 +31,7 @@ func (r *Repository) CreateLogin(ctx context.Context, item LoginTransaction) err
 
 func (r *Repository) ConsumeLogin(ctx context.Context, hash, id string) (LoginTransaction, error) {
 	var item LoginTransaction
-	err := r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	err := r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, `WITH candidate AS (
  SELECT * FROM platform.transactions WHERE token_hash=$1 AND transaction_id=$2 AND consumed_at IS NULL AND expires_at>$3 FOR UPDATE
  ) UPDATE platform.transactions t SET consumed_at=$3,verifier='',invitation_token='' FROM candidate c WHERE t.token_hash=c.token_hash

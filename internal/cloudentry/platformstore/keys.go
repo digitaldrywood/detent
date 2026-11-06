@@ -7,6 +7,8 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -52,7 +54,7 @@ func (r *Repository) CreateKey(ctx context.Context, k Key) error {
 	if !validKey(k) {
 		return ErrInvalid
 	}
-	return r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	return r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO platform.access_keys(id,token_hash,name,kind,owner_subject,owner_email,permission,access_context,service_organization_id,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, k.ID, k.Hash, k.Name, k.Kind, k.OwnerSubject, k.OwnerEmail, k.Permission, k.AccessContext, k.ServiceOrganizationID, r.now(), k.ExpiresAt)
 		if err != nil {
 			return err
@@ -73,7 +75,7 @@ func (r *Repository) CreateKey(ctx context.Context, k Key) error {
 
 func (r *Repository) KeyAuthority(ctx context.Context, hash string, organization tracker.OrganizationID, project tracker.ProjectID) (apikey.KeyAuthority, error) {
 	var authority apikey.KeyAuthority
-	err := r.transaction(ctx, corestore.Serving, true, func(tx pgx.Tx) error {
+	err := r.read(ctx, corestore.Serving, func(tx pgquery.DBTX) error {
 		var k Key
 		var blocked, approved bool
 		var policy, access string
@@ -131,14 +133,14 @@ func (r *Repository) SetPersonalKeyPolicy(ctx context.Context, organization trac
 	if organization == "" || policy != "allowed" && policy != "approval" && policy != "blocked" {
 		return ErrInvalid
 	}
-	return r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	return r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO platform.organization_key_policy(organization_id,personal_keys) VALUES($1,$2) ON CONFLICT(organization_id) DO UPDATE SET personal_keys=excluded.personal_keys`, organization, policy)
 		return err
 	})
 }
 
 func (r *Repository) ApproveKey(ctx context.Context, organization tracker.OrganizationID, id string) error {
-	return r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	return r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 		var kind, access string
 		err := tx.QueryRow(ctx, `SELECT kind,access_context FROM platform.access_keys WHERE id=$1 AND revoked_at IS NULL FOR UPDATE`, id).Scan(&kind, &access)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -173,7 +175,7 @@ func (r *Repository) BlockKey(ctx context.Context, organization tracker.Organiza
 	if organization == "" || id == "" || strings.TrimSpace(string(project)) != string(project) {
 		return ErrInvalid
 	}
-	return r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	return r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 		var access string
 		err := tx.QueryRow(ctx, `SELECT access_context FROM platform.access_keys WHERE id=$1 FOR UPDATE`, id).Scan(&access)
 		if err != nil {
@@ -198,7 +200,7 @@ func (r *Repository) BlockKey(ctx context.Context, organization tracker.Organiza
 }
 
 func (r *Repository) RevokeKey(ctx context.Context, owner, id string) error {
-	return r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	return r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `UPDATE platform.access_keys SET revoked_at=$1 WHERE owner_subject=$2 AND id=$3 AND revoked_at IS NULL`, r.now(), owner, id)
 		return err
 	})
@@ -206,7 +208,7 @@ func (r *Repository) RevokeKey(ctx context.Context, owner, id string) error {
 
 func (r *Repository) Key(ctx context.Context, hash string) (Key, error) {
 	var k Key
-	err := r.transaction(ctx, corestore.Serving, true, func(tx pgx.Tx) error {
+	err := r.read(ctx, corestore.Serving, func(tx pgquery.DBTX) error {
 		err := tx.QueryRow(ctx, `SELECT id,token_hash,name,kind,owner_subject,owner_email,permission,access_context,service_organization_id,created_at,expires_at,revoked_at FROM platform.access_keys WHERE token_hash=$1`, hash).Scan(&k.ID, &k.Hash, &k.Name, &k.Kind, &k.OwnerSubject, &k.OwnerEmail, &k.Permission, &k.AccessContext, &k.ServiceOrganizationID, &k.CreatedAt, &k.ExpiresAt, &k.RevokedAt)
 		if err != nil {
 			return err

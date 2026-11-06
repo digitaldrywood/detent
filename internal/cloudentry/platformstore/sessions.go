@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -33,7 +35,7 @@ func (r *Repository) CreateSession(ctx context.Context, s Session) error {
 	if s.Hash == "" || s.Subject == "" || s.Subject != s.Identity.Subject || s.Identity.SessionID == "" || s.CSRFSecret == "" || !s.Identity.ExpiresAt.After(r.now()) {
 		return ErrInvalid
 	}
-	return r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	return r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO platform.sessions(`+sessionColumns+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$9,NULL)`, s.Hash, s.Subject, s.Email, s.CSRFSecret, s.Identity.Subject, s.Identity.OrganizationID, s.Identity.SessionID, s.Identity.CreatedAt, s.Identity.ExpiresAt, s.Identity.SupportActor, s.Identity.SupportReason, r.now())
 		return err
 	})
@@ -49,7 +51,7 @@ func (r *Repository) Session(ctx context.Context, hash string) (Session, error) 
 
 func (r *Repository) StoredSession(ctx context.Context, hash string) (Session, error) {
 	var result Session
-	err := r.transaction(ctx, corestore.Serving, true, func(tx pgx.Tx) error {
+	err := r.read(ctx, corestore.Serving, func(tx pgquery.DBTX) error {
 		var err error
 		result, err = scanSession(tx.QueryRow(ctx, `SELECT `+sessionColumns+` FROM platform.sessions WHERE token_hash=$1 AND revoked_at IS NULL`, hash))
 		return err
@@ -82,7 +84,7 @@ func (r *Repository) Authorize(ctx context.Context, hash string, organization tr
 		return Authorization{}, nil, err
 	}
 	var replaced *Authorization
-	err = r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	err = r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 		s, err := r.lockSession(ctx, tx, hash)
 		if err != nil {
 			return err
@@ -136,7 +138,7 @@ func (r *Repository) Authorize(ctx context.Context, hash string, organization tr
 
 func (r *Repository) Authorization(ctx context.Context, hash string, organization tracker.OrganizationID) (Authorization, error) {
 	var result Authorization
-	err := r.transaction(ctx, corestore.Serving, true, func(tx pgx.Tx) error {
+	err := r.read(ctx, corestore.Serving, func(tx pgquery.DBTX) error {
 		var err error
 		result, err = scanAuthorization(tx.QueryRow(ctx, `SELECT `+authorizationColumns+` FROM platform.authorizations a JOIN platform.sessions s ON s.token_hash=a.session_hash JOIN platform.organizations tenant ON tenant.id=a.organization_id AND tenant.provider_id=a.provider_organization_id AND tenant.state='ready' WHERE a.organization_id=$1 AND a.session_hash=$2 AND a.revoked_at IS NULL AND a.expires_at>$3 AND s.revoked_at IS NULL AND s.expires_at>$3 AND ((a.support AND lower(a.support_actor)=lower(s.email)) OR (NOT a.support AND a.identity_subject=s.subject))`, organization, hash, r.now()))
 		return err
@@ -148,14 +150,14 @@ func (r *Repository) Authorization(ctx context.Context, hash string, organizatio
 }
 
 func (r *Repository) RevokeSession(ctx context.Context, hash string) error {
-	return r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	return r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `UPDATE platform.sessions SET revoked_at=$1 WHERE token_hash=$2 AND revoked_at IS NULL`, r.now(), hash)
 		return err
 	})
 }
 
 func (r *Repository) RevokeAuthorization(ctx context.Context, hash string, organization tracker.OrganizationID, binding string) error {
-	return r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	return r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 		if _, err := r.lockSession(ctx, tx, hash); err != nil {
 			return err
 		}
@@ -166,7 +168,7 @@ func (r *Repository) RevokeAuthorization(ctx context.Context, hash string, organ
 
 func (r *Repository) Tokens(ctx context.Context, hash string, organization tracker.OrganizationID, binding string) (auth.HostedTokens, error) {
 	var tokens auth.HostedTokens
-	err := r.transaction(ctx, corestore.Serving, true, func(tx pgx.Tx) error {
+	err := r.read(ctx, corestore.Serving, func(tx pgquery.DBTX) error {
 		var access, refresh string
 		err := tx.QueryRow(ctx, `SELECT a.access_token,a.refresh_token FROM platform.authorizations a JOIN platform.sessions s ON s.token_hash=a.session_hash JOIN platform.organizations tenant ON tenant.id=a.organization_id AND tenant.provider_id=a.provider_organization_id AND tenant.state='ready' WHERE a.organization_id=$1 AND a.session_hash=$2 AND a.binding=$3 AND a.revoked_at IS NULL AND a.expires_at>$4 AND s.revoked_at IS NULL AND s.expires_at>$4 AND ((a.support AND lower(a.support_actor)=lower(s.email)) OR (NOT a.support AND a.identity_subject=s.subject))`, organization, hash, binding, r.now()).Scan(&access, &refresh)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -197,7 +199,7 @@ func (r *Repository) RotateTokens(ctx context.Context, hash string, organization
 	if err != nil {
 		return err
 	}
-	return r.transaction(ctx, corestore.Serving, false, func(tx pgx.Tx) error {
+	return r.transaction(ctx, corestore.Serving, func(tx pgx.Tx) error {
 		if _, err := r.lockSession(ctx, tx, hash); err != nil {
 			return err
 		}

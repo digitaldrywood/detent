@@ -3,7 +3,12 @@ package platformstore
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -136,5 +141,47 @@ func TestConcurrentRegistryRegistrationIsIdempotent(t *testing.T) {
 				t.Fatalf("events=%d err=%v", events, err)
 			}
 		})
+	}
+}
+
+func TestOrganizationReadsUseOneStatement(t *testing.T) {
+	db := template.Database(t)
+	var calls atomic.Int64
+	pool := rolePool(t, db, postgres.PlatformRoleName, "", countedTracer{calls: &calls})
+	native := pool.Config()
+	pool.Close()
+	native.MaxConns = 3
+	pool, err := pgxpool.NewWithConfig(t.Context(), native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	r, err := New(t.Context(), pool, testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := r.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	seedOrganizations(t, r)
+	for _, id := range []tracker.OrganizationID{"org_first", "org_second"} {
+		before := calls.Load()
+		organization, err := r.Organization(t.Context(), id)
+		if err != nil || organization.ID != id {
+			t.Fatalf("organization=%s err=%v", organization.ID, err)
+		}
+		if count := calls.Load() - before; count != 1 {
+			t.Fatalf("organization read used %d statements", count)
+		}
+		before = calls.Load()
+		organization, err = r.ByProvider(t.Context(), organization.ProviderID)
+		if err != nil || organization.ID != id {
+			t.Fatalf("provider organization=%s err=%v", organization.ID, err)
+		}
+		if count := calls.Load() - before; count != 1 {
+			t.Fatalf("provider read used %d statements", count)
+		}
 	}
 }
