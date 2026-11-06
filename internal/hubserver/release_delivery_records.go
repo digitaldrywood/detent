@@ -12,6 +12,9 @@ import (
 
 func (s *Service) readReleaseDeliveryRecord(ctx context.Context, scope nativeScope, item string) (tracker.ReleaseDelivery, bool, error) {
 	var record eventstore.ReleaseDelivery
+	if s.config.TenantRepository == nil {
+		return record.ReleaseDelivery, false, workItemStorageUnavailable()
+	}
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		record, err = r.ReleaseDelivery(ctx, scope.project, tracker.NativeWorkItemID(item))
@@ -20,5 +23,5 @@ func (s *Service) readReleaseDeliveryRecord(ctx context.Context, scope nativeSco
 	if errors.Is(err, corestore.ErrNotFound) {
 		return tracker.ReleaseDelivery{}, false, nil
 	}
-	return record.ReleaseDelivery, err == nil, err
+	return record.ReleaseDelivery, err == nil, projectRecordError(err)
 }
