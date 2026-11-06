@@ -50,33 +50,29 @@ func (s *Service) readAICredits(ctx context.Context, pages ...creditPageRequest)
 	view := &aiCreditView{Packs: []HostedCreditPack{}, History: []aiCreditTransaction{}}
 	var method string
 	var err error
-	if d.billingRepository != nil {
-		err = d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
-			account, err := reader.BillingCreditAccount(ctx, d.aiCreditMode)
-			if err != nil {
-				return err
-			}
-			view.BalanceMicros = account.BalanceMicros
-			view.AutoEnabled = account.AutoEnabled
-			view.ThresholdCents = account.ThresholdCents
-			view.PriceID = account.PriceID
-			view.Failure = account.Failure
-			method = account.PaymentMethod
-			_, pendingErr := reader.BillingPendingCreditPurchase(ctx, d.aiCreditMode, true)
-			if pendingErr == nil {
-				view.InFlight = true
-				return nil
-			}
-			if !errors.Is(pendingErr, corestore.ErrNotFound) {
-				return pendingErr
-			}
+
+	err = d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+		account, err := reader.BillingCreditAccount(ctx, d.aiCreditMode)
+		if err != nil {
+			return err
+		}
+		view.BalanceMicros = account.BalanceMicros
+		view.AutoEnabled = account.AutoEnabled
+		view.ThresholdCents = account.ThresholdCents
+		view.PriceID = account.PriceID
+		view.Failure = account.Failure
+		method = account.PaymentMethod
+		_, pendingErr := reader.BillingPendingCreditPurchase(ctx, d.aiCreditMode, true)
+		if pendingErr == nil {
+			view.InFlight = true
 			return nil
-		})
-	} else {
-		err = d.reader.QueryRowContext(ctx, `SELECT balance_micros,auto_enabled,threshold_cents,price_id,failure,payment_method,
- EXISTS(SELECT 1 FROM ai_credit_purchases p WHERE p.organization_id=a.organization_id AND p.mode=a.mode AND p.automatic=1 AND p.state='pending')
- FROM ai_credit_accounts a WHERE organization_id=? AND mode=?`, d.hostedOrganization, d.aiCreditMode).Scan(&view.BalanceMicros, &view.AutoEnabled, &view.ThresholdCents, &view.PriceID, &view.Failure, &method, &view.InFlight)
-	}
+		}
+		if !errors.Is(pendingErr, corestore.ErrNotFound) {
+			return pendingErr
+		}
+		return nil
+	})
+
 	if err != nil {
 		return nil, err
 	}
@@ -308,123 +304,31 @@ func (w *hostedBillingWorker) creditEvent(ctx context.Context, id, kind string) 
 	if err != nil {
 		return err
 	}
-	if s.database.billingRepository != nil {
-		return s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
-			event, err := writer.BillingEvent(ctx, id)
-			if err != nil {
-				return err
-			}
-			if event.CreditProcessed {
-				return nil
-			}
-			if err := s.database.applyCreditPaymentRecord(ctx, writer, payment); err != nil {
-				return err
-			}
-			return writer.SetBillingEventCreditProcessed(ctx, id)
-		})
-	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var processed bool
-	if err := tx.QueryRowContext(ctx, "SELECT credit_processed FROM hosted_billing_events WHERE event_id=?", id).Scan(&processed); err != nil {
-		return err
-	}
-	if processed {
-		return nil
-	}
-	if err := s.database.applyCreditPayment(ctx, tx, payment); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE hosted_billing_events SET credit_processed=1 WHERE event_id=?", id); err != nil {
-		return err
-	}
-	return tx.Commit()
+
+	return s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+		event, err := writer.BillingEvent(ctx, id)
+		if err != nil {
+			return err
+		}
+		if event.CreditProcessed {
+			return nil
+		}
+		if err := s.database.applyCreditPaymentRecord(ctx, writer, payment); err != nil {
+			return err
+		}
+		return writer.SetBillingEventCreditProcessed(ctx, id)
+	})
 }
 
 func (w *hostedBillingWorker) autoFund(ctx context.Context) error {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancelRead()
 	s := w.service
 	d := s.database
 	cfg := s.hostedBillingConfig()
 	if cfg == nil || d.aiCreditMode == "" {
 		return nil
 	}
-	if d.billingRepository != nil {
-		return w.autoFundRecord(ctx, cfg)
-	}
-	var key, price, method string
-	var cents, at int64
-	err := d.reader.QueryRowContext(readCtx, "SELECT purchase_key,price_id,usd_cents,payment_method,created_at FROM ai_credit_purchases WHERE organization_id=? AND mode=? AND automatic=1 AND state='pending'", d.hostedOrganization, d.aiCreditMode).Scan(&key, &price, &cents, &method, &at)
-	if errors.Is(err, sql.ErrNoRows) {
-		var enabled bool
-		var balance, threshold int64
-		if err := d.reader.QueryRowContext(readCtx, "SELECT auto_enabled,balance_micros,threshold_cents,price_id,payment_method FROM ai_credit_accounts WHERE organization_id=? AND mode=?", d.hostedOrganization, d.aiCreditMode).Scan(&enabled, &balance, &threshold, &price, &method); err != nil {
-			return err
-		}
-		if !enabled || balance >= threshold*10000 {
-			return nil
-		}
-		included, includedErr := d.includedAICredits(readCtx, d.reader, d.hostedOrganization, s.config.now())
-		if includedErr != nil {
-			return includedErr
-		}
-		if included.remaining() > 0 {
-			return nil
-		}
-		pack, ok := s.creditPack(price)
-		if !ok {
-			return nil
-		}
-		key, cents, at = "detent-autofund-"+s.config.newLeaseID(), pack.USDCents, s.config.now().UnixMicro()
-		var inserted sql.Result
-		inserted, err = d.db.ExecContext(ctx, `INSERT INTO ai_credit_purchases(purchase_key,organization_id,mode,price_id,usd_cents,automatic,payment_method,created_at)
- SELECT ?,organization_id,mode,?,?,1,payment_method,? FROM ai_credit_accounts WHERE organization_id=? AND mode=? AND auto_enabled=1 AND balance_micros<threshold_cents*10000`, key, price, cents, at, d.hostedOrganization, d.aiCreditMode)
-		if err == nil {
-			n, e := inserted.RowsAffected()
-			if e != nil {
-				return e
-			}
-			if n == 0 {
-				return nil
-			}
-		}
-	}
-	if err != nil {
-		return err
-	}
-	if s.config.now().Sub(time.UnixMicro(at)) >= 23*time.Hour {
-		return errors.New("automatic credit payment needs billing review")
-	}
-	binding, err := d.hostedBillingBinding(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	provider, ok := cfg.Provider.(billing.CreditProvider)
-	if !ok {
-		return errors.New("AI credit purchases are unavailable")
-	}
-	payment, chargeErr := provider.CreditCharge(ctx, billing.CreditRequest{CheckoutRequest: billing.CheckoutRequest{Binding: binding, PriceID: price, IdempotencyKey: key}, USDCents: cents}, method)
-	if chargeErr != nil && !errors.Is(chargeErr, billing.ErrPaymentFailed) {
-		return chargeErr
-	}
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if chargeErr != nil {
-		err = d.failCreditAutoFund(ctx, tx, key)
-	} else {
-		err = d.applyCreditPayment(ctx, tx, payment)
-	}
-	if err != nil {
-		return err
-	}
-	return tx.Commit()
+
+	return w.autoFundRecord(ctx, cfg)
 }
 
 func (w *hostedBillingWorker) autoFundRecord(ctx context.Context, cfg *HostedBillingConfig) error {

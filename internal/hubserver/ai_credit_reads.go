@@ -88,75 +88,29 @@ func (s *Service) readCreditHistory(ctx context.Context, view *aiCreditView, p c
 	}
 	cursor := creditHistoryCursor{At: math.MaxInt64, ID: math.MaxInt64, From: from, To: to}
 	d := s.database
-	if d.billingRepository != nil {
-		if p.Cursor != "" {
-			raw, decodeErr := base64.RawURLEncoding.DecodeString(p.Cursor)
-			if decodeErr != nil || json.Unmarshal(raw, &cursor) != nil || cursor.Snapshot < 0 || cursor.At < 0 || cursor.ID <= 0 || cursor.From != from || cursor.To != to {
-				return nativeInvalid("invalid credit transaction cursor")
-			}
-		}
-		if cursor.At == math.MaxInt64 {
-			cursor.At = 253402300799999999
-		}
-		var rows []billingstore.CreditHistoryEntry
-		err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
-			var snapshot int64
-			var err error
-			snapshot, view.TotalRows, rows, err = reader.BillingCreditHistory(ctx, d.aiCreditMode, cursor.Snapshot, from, to, cursor.At, cursor.ID, p.Limit+1)
-			cursor.Snapshot = snapshot
-			return err
-		})
-		if err != nil {
-			return err
-		}
-		var lastID, lastAt int64
-		for _, row := range rows {
-			if len(view.History) == p.Limit {
-				cursor.At, cursor.ID = lastAt, lastID
-				raw, err := json.Marshal(cursor)
-				if err != nil {
-					return err
-				}
-				view.NextCursor = base64.RawURLEncoding.EncodeToString(raw)
-				break
-			}
-			reason, err := d.readBillingReason(ctx, row.ReasonReference)
-			if err != nil {
-				return err
-			}
-			view.History = append(view.History, aiCreditTransaction{AmountMicros: row.AmountMicros, IncludedAmountMicros: row.IncludedAmountMicros, Kind: row.Kind, Actor: row.Actor, Reason: reason, At: row.RecordedAt.UTC(), Turns: row.Turns})
-			lastID, lastAt = row.ID, row.RecordedAt.UnixMicro()
-		}
-		return nil
-	}
-	if p.Cursor == "" {
-		err = d.reader.QueryRowContext(ctx, `SELECT coalesce(max(id),0) FROM ai_credit_transactions WHERE organization_id=? AND mode=?`, d.hostedOrganization, d.aiCreditMode).Scan(&cursor.Snapshot)
-		if err != nil {
-			return err
-		}
-	} else {
+
+	if p.Cursor != "" {
 		raw, decodeErr := base64.RawURLEncoding.DecodeString(p.Cursor)
 		if decodeErr != nil || json.Unmarshal(raw, &cursor) != nil || cursor.Snapshot < 0 || cursor.At < 0 || cursor.ID <= 0 || cursor.From != from || cursor.To != to {
 			return nativeInvalid("invalid credit transaction cursor")
 		}
 	}
-	args := []any{d.hostedOrganization, d.aiCreditMode, cursor.Snapshot, from, to}
-	if err := d.reader.QueryRowContext(ctx, groupedCreditHistory+`SELECT count(*) FROM grouped`, args...).Scan(&view.TotalRows); err != nil {
-		return err
+	if cursor.At == math.MaxInt64 {
+		cursor.At = 253402300799999999
 	}
-	args = append(args, cursor.At, cursor.At, cursor.ID, p.Limit+1)
-	rows, err := d.reader.QueryContext(ctx, groupedCreditHistory+`SELECT row_id,amount,included,kind,actor,reason,at,turns FROM grouped WHERE at<? OR (at=? AND row_id<?) ORDER BY at DESC,row_id DESC LIMIT ?`, args...)
+	var rows []billingstore.CreditHistoryEntry
+	err = d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+		var snapshot int64
+		var err error
+		snapshot, view.TotalRows, rows, err = reader.BillingCreditHistory(ctx, d.aiCreditMode, cursor.Snapshot, from, to, cursor.At, cursor.ID, p.Limit+1)
+		cursor.Snapshot = snapshot
+		return err
+	})
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 	var lastID, lastAt int64
-	for rows.Next() {
-		var item aiCreditTransaction
-		var id, at int64
-		if err := rows.Scan(&id, &item.AmountMicros, &item.IncludedAmountMicros, &item.Kind, &item.Actor, &item.Reason, &at, &item.Turns); err != nil {
-			return err
-		}
+	for _, row := range rows {
 		if len(view.History) == p.Limit {
 			cursor.At, cursor.ID = lastAt, lastID
 			raw, err := json.Marshal(cursor)
@@ -166,11 +120,14 @@ func (s *Service) readCreditHistory(ctx context.Context, view *aiCreditView, p c
 			view.NextCursor = base64.RawURLEncoding.EncodeToString(raw)
 			break
 		}
-		item.At = time.UnixMicro(at).UTC()
-		view.History = append(view.History, item)
-		lastID, lastAt = id, at
+		reason, err := d.readBillingReason(ctx, row.ReasonReference)
+		if err != nil {
+			return err
+		}
+		view.History = append(view.History, aiCreditTransaction{AmountMicros: row.AmountMicros, IncludedAmountMicros: row.IncludedAmountMicros, Kind: row.Kind, Actor: row.Actor, Reason: reason, At: row.RecordedAt.UTC(), Turns: row.Turns})
+		lastID, lastAt = row.ID, row.RecordedAt.UnixMicro()
 	}
-	return rows.Err()
+	return nil
 }
 
 func (s *Service) hostedCreditTransactions(c echo.Context) error {
@@ -199,39 +156,8 @@ func (s *Service) exportCreditTransactions(ctx context.Context, c echo.Context, 
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if s.database.billingRepository != nil {
-		return s.exportPostgresCreditTransactions(ctx, c, credential, from, to)
-	}
-	d := s.database
-	rows, err := d.reader.QueryContext(ctx, `SELECT t.recorded_at,t.kind,
- CASE WHEN t.kind='usage' THEN substr(t.source,7) ELSE '' END,
- CASE WHEN t.kind='usage' THEN u.input+u.output ELSE NULL END,t.amount_micros,t.included_amount_micros
- FROM ai_credit_transactions t LEFT JOIN conversation_usage u ON t.kind='usage' AND u.organization_id=t.organization_id AND t.source='usage:'||u.turn_id
- WHERE t.organization_id=? AND t.mode=? AND t.recorded_at>=? AND t.recorded_at<? ORDER BY t.recorded_at DESC,t.id DESC`, d.hostedOrganization, d.aiCreditMode, from, to)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	defer rows.Close()
-	writer, err := s.creditCSVWriter(ctx, c, credential)
-	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var at, amount, included int64
-		var kind, turn string
-		var tokens *int64
-		if err := rows.Scan(&at, &kind, &turn, &tokens, &amount, &included); err != nil {
-			return err
-		}
-		if err := writeCreditCSVEntry(writer, billingstore.CreditExportEntry{RecordedAt: time.UnixMicro(at).UTC(), Kind: kind, TurnID: turn, Tokens: tokens, AmountMicros: amount, IncludedAmountMicros: included}); err != nil {
-			return err
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	writer.Flush()
-	return writer.Error()
+
+	return s.exportPostgresCreditTransactions(ctx, c, credential, from, to)
 }
 
 func creditCSVCell(value string) string {

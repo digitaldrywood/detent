@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/labstack/echo/v4"
 )
 
 type hostedCreditProvider struct {
@@ -490,8 +491,8 @@ func TestPlatformAICreditBalanceRead(t *testing.T) {
 }
 
 func TestPlatformAICreditBalanceReadsPostgresTenantLedger(t *testing.T) {
-	f := newHostedSharedFixture(t)
-	d := f.service.database
+	d := &database{hostedOrganization: "org_example"}
+	service := &Service{database: d, echo: echo.New()}
 	d.aiCreditMode = billing.ModeTest
 	d.now = func() time.Time { return time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC) }
 	repository := projectRecordPostgres(t)
@@ -519,9 +520,9 @@ func TestPlatformAICreditBalanceReadsPostgresTenantLedger(t *testing.T) {
 	d.billingRepository = repository
 	request := httptest.NewRequest(http.MethodPost, "/internal/v1/platform/ai-credits/balance", strings.NewReader(`{}`)).WithContext(t.Context())
 	response := httptest.NewRecorder()
-	c := f.service.echo.NewContext(request, response)
+	c := service.echo.NewContext(request, response)
 	c.Set(hostedSharedClaimsKey, cloudassert.Claims{Kind: cloudassert.KindService})
-	if err := f.service.platformTenantAICreditBalance(c); err != nil {
+	if err := service.platformTenantAICreditBalance(c); err != nil {
 		t.Fatal(err)
 	}
 	if response.Code != http.StatusOK {

@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"math"
 	"net/http"
@@ -38,60 +37,33 @@ func (s *Service) platformTenantAICreditBalance(c echo.Context) error {
 	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	result.Month = start.Format("2006-01")
 	result.History = []aiCreditTransaction{}
-	if d.billingRepository != nil {
-		err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
-			account, err := reader.BillingCreditAccount(ctx, d.aiCreditMode)
-			if err != nil {
-				return err
-			}
-			result.BalanceMicros, result.AutoEnabled = account.BalanceMicros, account.AutoEnabled
-			result.SpentMicros, err = reader.BillingCreditUsage(ctx, d.aiCreditMode, start, start.AddDate(0, 1, 0))
-			if err != nil {
-				return err
-			}
-			rows, err := reader.BillingRecentCreditTransactions(ctx, d.aiCreditMode, 50)
-			if err != nil {
-				return err
-			}
-			creditRows = rows
-			return nil
-		})
+
+	err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+		account, err := reader.BillingCreditAccount(ctx, d.aiCreditMode)
 		if err != nil {
-			return s.internalAPIError(c, "ai_credits_unavailable", "AI credits are unavailable", err)
+			return err
 		}
-		for _, row := range creditRows {
-			reason, err := d.readBillingReason(ctx, row.ReasonReference)
-			if err != nil {
-				return s.internalAPIError(c, "ai_credits_unavailable", "AI credits are unavailable", err)
-			}
-			result.History = append(result.History, aiCreditTransaction{AmountMicros: row.AmountMicros, Kind: row.Kind, Actor: row.Actor, Reason: reason, At: row.RecordedAt.UTC()})
+		result.BalanceMicros, result.AutoEnabled = account.BalanceMicros, account.AutoEnabled
+		result.SpentMicros, err = reader.BillingCreditUsage(ctx, d.aiCreditMode, start, start.AddDate(0, 1, 0))
+		if err != nil {
+			return err
 		}
-		return c.JSON(http.StatusOK, result)
-	}
-	if err := d.reader.QueryRowContext(ctx, "SELECT balance_micros,auto_enabled FROM ai_credit_accounts WHERE organization_id=? AND mode=?", d.hostedOrganization, d.aiCreditMode).Scan(&result.BalanceMicros, &result.AutoEnabled); err != nil {
-		return s.internalAPIError(c, "ai_credits_unavailable", "AI credits are unavailable", err)
-	}
-	if err := d.reader.QueryRowContext(ctx, `SELECT coalesce(-sum(amount_micros),0) FROM ai_credit_transactions
- WHERE organization_id=? AND mode=? AND kind='usage' AND recorded_at>=? AND recorded_at<?`, d.hostedOrganization, d.aiCreditMode, start.UnixMicro(), start.AddDate(0, 1, 0).UnixMicro()).Scan(&result.SpentMicros); err != nil {
-		return s.internalAPIError(c, "ai_credits_unavailable", "AI credits are unavailable", err)
-	}
-	rows, err := d.reader.QueryContext(ctx, `SELECT amount_micros,kind,actor,reason,recorded_at FROM ai_credit_transactions
- WHERE organization_id=? AND mode=? AND kind IN ('complimentary','purchase','auto_fund') ORDER BY recorded_at DESC,id DESC LIMIT 50`, d.hostedOrganization, d.aiCreditMode)
+		rows, err := reader.BillingRecentCreditTransactions(ctx, d.aiCreditMode, 50)
+		if err != nil {
+			return err
+		}
+		creditRows = rows
+		return nil
+	})
 	if err != nil {
 		return s.internalAPIError(c, "ai_credits_unavailable", "AI credits are unavailable", err)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var item aiCreditTransaction
-		var at int64
-		if err := rows.Scan(&item.AmountMicros, &item.Kind, &item.Actor, &item.Reason, &at); err != nil {
+	for _, row := range creditRows {
+		reason, err := d.readBillingReason(ctx, row.ReasonReference)
+		if err != nil {
 			return s.internalAPIError(c, "ai_credits_unavailable", "AI credits are unavailable", err)
 		}
-		item.At = time.UnixMicro(at).UTC()
-		result.History = append(result.History, item)
-	}
-	if err := rows.Err(); err != nil {
-		return s.internalAPIError(c, "ai_credits_unavailable", "AI credits are unavailable", err)
+		result.History = append(result.History, aiCreditTransaction{AmountMicros: row.AmountMicros, Kind: row.Kind, Actor: row.Actor, Reason: reason, At: row.RecordedAt.UTC()})
 	}
 	return c.JSON(http.StatusOK, result)
 }
@@ -124,70 +96,37 @@ func (d *database) adjustAICredits(ctx context.Context, actor string, adjustment
 	if d.aiCreditMode == "" {
 		return 0, nativePublicInvalid("AI credits are not configured for this organization")
 	}
-	if d.billingRepository != nil {
-		reference, err := d.archiveBillingReason(ctx, adjustment.Reason)
-		if err != nil {
-			return 0, err
-		}
-		var balance int64
-		err = d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
-			account, err := writer.BillingCreditAccount(ctx, d.aiCreditMode)
-			if err != nil {
-				return err
-			}
-			balance = account.BalanceMicros
-			source := "adjustment:" + adjustment.IdempotencyKey
-			previous, err := writer.BillingCreditTransactionBySource(ctx, d.aiCreditMode, source)
-			if err == nil {
-				if previous.AmountMicros != amount || previous.Actor != actor || previous.ReasonReference.SHA256 != reference.SHA256 {
-					return &nativeError{status: http.StatusConflict, Code: "idempotency_conflict", Message: "That idempotency key was used for a different credit adjustment", publicMessage: true}
-				}
-				return nil
-			}
-			if !errors.Is(err, corestore.ErrNotFound) {
-				return err
-			}
-			if amount > 0 && balance > math.MaxInt64-amount || amount < 0 && balance < math.MinInt64-amount {
-				return nativePublicInvalid("The adjusted balance is out of range")
-			}
-			_, err = writer.PostBillingCredit(ctx, billingstore.CreditTransaction{OrganizationID: d.hostedOrganization, Mode: d.aiCreditMode, Source: source, AmountMicros: amount, Kind: "complimentary", Actor: actor, ReasonReference: reference, RecordedAt: d.now().UTC()})
-			if err == nil {
-				balance += amount
-			}
-			return err
-		})
-		return balance, err
-	}
-	tx, err := d.db.BeginTx(ctx, nil)
+
+	reference, err := d.archiveBillingReason(ctx, adjustment.Reason)
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
 	var balance int64
-	if err := tx.QueryRowContext(ctx, "SELECT balance_micros FROM ai_credit_accounts WHERE organization_id=? AND mode=?", d.hostedOrganization, d.aiCreditMode).Scan(&balance); err != nil {
-		return 0, err
-	}
-	source := "adjustment:" + adjustment.IdempotencyKey
-	var previousAmount int64
-	var previousActor, previousReason string
-	err = tx.QueryRowContext(ctx, "SELECT amount_micros,actor,reason FROM ai_credit_transactions WHERE organization_id=? AND mode=? AND source=?", d.hostedOrganization, d.aiCreditMode, source).Scan(&previousAmount, &previousActor, &previousReason)
-	if err == nil {
-		if previousAmount != amount || previousActor != actor || previousReason != adjustment.Reason {
-			return 0, &nativeError{status: http.StatusConflict, Code: "idempotency_conflict", Message: "That idempotency key was used for a different credit adjustment", publicMessage: true}
+	err = d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+		account, err := writer.BillingCreditAccount(ctx, d.aiCreditMode)
+		if err != nil {
+			return err
 		}
-		return balance, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return 0, err
-	}
-	if amount > 0 && balance > math.MaxInt64-amount || amount < 0 && balance < math.MinInt64-amount {
-		return 0, nativePublicInvalid("The adjusted balance is out of range")
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,actor,reason,recorded_at) VALUES(?,?,?,?,'complimentary',?,?,?)", d.hostedOrganization, d.aiCreditMode, source, amount, actor, adjustment.Reason, d.now().UnixMicro()); err != nil {
-		return 0, err
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE ai_credit_accounts SET balance_micros=balance_micros+? WHERE organization_id=? AND mode=?", amount, d.hostedOrganization, d.aiCreditMode); err != nil {
-		return 0, err
-	}
-	return balance + amount, tx.Commit()
+		balance = account.BalanceMicros
+		source := "adjustment:" + adjustment.IdempotencyKey
+		previous, err := writer.BillingCreditTransactionBySource(ctx, d.aiCreditMode, source)
+		if err == nil {
+			if previous.AmountMicros != amount || previous.Actor != actor || previous.ReasonReference.SHA256 != reference.SHA256 {
+				return &nativeError{status: http.StatusConflict, Code: "idempotency_conflict", Message: "That idempotency key was used for a different credit adjustment", publicMessage: true}
+			}
+			return nil
+		}
+		if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if amount > 0 && balance > math.MaxInt64-amount || amount < 0 && balance < math.MinInt64-amount {
+			return nativePublicInvalid("The adjusted balance is out of range")
+		}
+		_, err = writer.PostBillingCredit(ctx, billingstore.CreditTransaction{OrganizationID: d.hostedOrganization, Mode: d.aiCreditMode, Source: source, AmountMicros: amount, Kind: "complimentary", Actor: actor, ReasonReference: reference, RecordedAt: d.now().UTC()})
+		if err == nil {
+			balance += amount
+		}
+		return err
+	})
+	return balance, err
 }

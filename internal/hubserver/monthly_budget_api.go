@@ -25,11 +25,9 @@ func (s *Service) getMonthlyBudget(c echo.Context) error {
 	scope := nativeRequestScope(c)
 	var result monthlyBudgetSettings
 	var err error
-	if s.database.billingRepository != nil {
-		result, err = readBillingMonthlySettings(ctx, s.database.billingRepository, scope)
-	} else {
-		result, err = readMonthlyBudgetSettings(ctx, s.database.reader, scope)
-	}
+
+	result, err = readBillingMonthlySettings(ctx, s.database.billingRepository, scope)
+
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

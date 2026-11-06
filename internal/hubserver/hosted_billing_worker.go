@@ -70,50 +70,31 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 	var unprocessedEventIDs []string
 	type pendingEvent struct{ id, kind string }
 	var events []pendingEvent
-	if s.database.billingRepository != nil {
-		if err := s.database.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
-			unprocessed, err := reader.UnprocessedBillingEvents(ctx, corestore.MaxPageSize)
-			if err != nil {
-				return err
-			}
-			for _, row := range unprocessed {
-				through = row.Sequence
-				unprocessedEventIDs = append(unprocessedEventIDs, row.ID)
-			}
-			pending, err := reader.PendingBillingEvents(ctx, corestore.MaxPageSize)
-			if err != nil {
-				return err
-			}
-			for _, row := range pending {
-				if row.Sequence > through {
-					through = row.Sequence
-				}
-				events = append(events, pendingEvent{id: row.ID, kind: row.Type})
-			}
-			return nil
-		}); err != nil {
-			return err
-		}
-	} else {
-		if err := s.database.reader.QueryRowContext(ctx, "SELECT coalesce(max(sequence),0) FROM hosted_billing_events").Scan(&through); err != nil {
-			return err
-		}
-		rows, err := s.database.reader.QueryContext(ctx, "SELECT event_id,event_type FROM hosted_billing_events WHERE credit_processed=0 AND sequence<=? ORDER BY sequence", through)
+
+	if err := s.database.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+		unprocessed, err := reader.UnprocessedBillingEvents(ctx, corestore.MaxPageSize)
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var event pendingEvent
-			if err := rows.Scan(&event.id, &event.kind); err != nil {
-				return err
-			}
-			events = append(events, event)
+		for _, row := range unprocessed {
+			through = row.Sequence
+			unprocessedEventIDs = append(unprocessedEventIDs, row.ID)
 		}
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		pending, err := reader.PendingBillingEvents(ctx, corestore.MaxPageSize)
+		if err != nil {
 			return err
 		}
+		for _, row := range pending {
+			if row.Sequence > through {
+				through = row.Sequence
+			}
+			events = append(events, pendingEvent{id: row.ID, kind: row.Type})
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
+
 	var creditErr error
 	for _, event := range events {
 		if err := w.creditEvent(ctx, event.id, event.kind); err != nil {
@@ -170,17 +151,12 @@ func (s *Service) hostedStripeWebhook(c echo.Context) error {
 	if !event.Relevant() {
 		return c.NoContent(http.StatusOK)
 	}
-	if s.database.billingRepository != nil {
-		err := s.database.writeBillingTenant(c.Request().Context(), func(writer tenantstore.Writer) error {
-			_, err := writer.CreateBillingEvent(c.Request().Context(), billingstore.Event{OrganizationID: s.database.hostedOrganization, ID: event.ID, Type: event.Type, ReceivedAt: s.config.now().UTC()})
-			return err
-		})
-		if err != nil {
-			return c.NoContent(http.StatusServiceUnavailable)
-		}
-		return c.NoContent(http.StatusOK)
-	}
-	if _, err := s.database.db.ExecContext(c.Request().Context(), "INSERT INTO hosted_billing_events(event_id,event_type,received_at) VALUES(?,?,?) ON CONFLICT(event_id) DO NOTHING", event.ID, event.Type, formatHubTime(s.config.now())); err != nil {
+
+	err = s.database.writeBillingTenant(c.Request().Context(), func(writer tenantstore.Writer) error {
+		_, err := writer.CreateBillingEvent(c.Request().Context(), billingstore.Event{OrganizationID: s.database.hostedOrganization, ID: event.ID, Type: event.Type, ReceivedAt: s.config.now().UTC()})
+		return err
+	})
+	if err != nil {
 		return c.NoContent(http.StatusServiceUnavailable)
 	}
 	return c.NoContent(http.StatusOK)
