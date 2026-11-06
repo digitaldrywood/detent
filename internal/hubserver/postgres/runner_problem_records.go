@@ -42,19 +42,20 @@ func (s *session) ReplaceRunnerProblems(ctx context.Context, runnerID string, pr
 	if _, err := s.RunnerIdentity(ctx, runnerID); err != nil {
 		return err
 	}
-	if _, err := s.db.Exec(ctx, `DELETE FROM runner_problem_reports WHERE organization_id=$1 AND runner_id=$2`, s.organization, runnerID); err != nil {
-		return mapError(ctx, err)
-	}
+	rows := make([][]any, 0, len(problems))
 	for _, problem := range problems {
 		if problem.Code == "" || len(problem.ProjectID) > 200 || len(problem.Subject) > 2000 || len(problem.Check) > 2000 || len(problem.ErrorOutput) > 2000 || len(problem.FixCommand) > 2000 || len(problem.Message) == 0 || len(problem.Message) > 1000 || len(problem.FixHint) == 0 || len(problem.FixHint) > 1000 || problem.ReportedAt.IsZero() || problem.FirstSeen.IsZero() {
 			return runnerstore.ErrInvalidRecord
 		}
-		_, err := s.db.Exec(ctx, `INSERT INTO runner_problem_reports
-			(organization_id,runner_id,code,project_id,subject,check_name,error_output,fix_command,message,fix_hint,reported_at,first_seen)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, s.organization, runnerID, problem.Code, problem.ProjectID, problem.Subject, problem.Check, problem.ErrorOutput, problem.FixCommand, problem.Message, problem.FixHint, problem.ReportedAt, problem.FirstSeen)
-		if err != nil {
-			return mapError(ctx, err)
-		}
+		rows = append(rows, []any{s.organization, runnerID, problem.Code, problem.ProjectID, problem.Subject, problem.Check, problem.ErrorOutput, problem.FixCommand, problem.Message, problem.FixHint, problem.ReportedAt, problem.FirstSeen})
 	}
-	return nil
+	table := runnerReportRows{"runner_problem_reports", "organization_id,runner_id,code,project_id,subject,check_name,error_output,fix_command,message,fix_hint,reported_at,first_seen", "text,text,text,text,text,text,text,text,text,text,timestamptz,timestamptz", rows}
+	equal, err := s.runnerReportRowsMatch(ctx, runnerID, "", []runnerReportRows{table})
+	if err != nil || equal {
+		return err
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM runner_problem_reports WHERE organization_id=$1 AND runner_id=$2`, s.organization, runnerID); err != nil {
+		return mapError(ctx, err)
+	}
+	return s.insertRunnerCurrentRows(ctx, table.name, table.columns, rows)
 }

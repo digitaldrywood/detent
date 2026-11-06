@@ -199,21 +199,25 @@ func (s *session) ReplaceRunnerAdmissionObservation(ctx context.Context, runnerI
 	if _, err := s.db.Exec(ctx, `INSERT INTO runner_native_admission_observations (organization_id,runner_id,project_id,runner_revision,received_at,observed_at,policy_id,last_refresh_at,refresh_duration) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (organization_id,runner_id,project_id) DO UPDATE SET runner_revision=EXCLUDED.runner_revision,received_at=EXCLUDED.received_at,observed_at=EXCLUDED.observed_at,policy_id=EXCLUDED.policy_id,last_refresh_at=EXCLUDED.last_refresh_at,refresh_duration=EXCLUDED.refresh_duration`, s.organization, runnerID, project, row.RunnerRevision, row.ReceivedAt, row.Context.ObservedAt, row.Context.PolicyID, row.Context.LastRefreshAt, int64(row.Context.RefreshDuration)); err != nil {
 		return mapError(ctx, err)
 	}
-	if _, err := s.db.Exec(ctx, `DELETE FROM runner_native_admission_selectors WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, s.organization, runnerID, project); err != nil {
-		return mapError(ctx, err)
-	}
+	rows := make([][]any, 0)
 	selectors := []struct {
 		kind   string
 		values []string
 	}{{"workflow", row.Context.WorkflowStates}, {"author", row.Context.Authors}, {"assignee", row.Context.Assignees}, {"include", row.Context.LabelInclude}, {"exclude", row.Context.LabelExclude}}
 	for _, selector := range selectors {
 		for position, value := range selector.values {
-			if _, err := s.db.Exec(ctx, `INSERT INTO runner_native_admission_selectors (organization_id,runner_id,project_id,kind,position,value) VALUES ($1,$2,$3,$4,$5,$6)`, s.organization, runnerID, project, selector.kind, position, value); err != nil {
-				return mapError(ctx, err)
-			}
+			rows = append(rows, []any{s.organization, runnerID, project, selector.kind, position, value})
 		}
 	}
-	return nil
+	table := runnerReportRows{"runner_native_admission_selectors", "organization_id,runner_id,project_id,kind,position,value", "text,text,text,text,integer,text", rows}
+	equal, err := s.runnerReportRowsMatch(ctx, runnerID, project, []runnerReportRows{table})
+	if err != nil || equal {
+		return err
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM runner_native_admission_selectors WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, s.organization, runnerID, project); err != nil {
+		return mapError(ctx, err)
+	}
+	return s.insertRunnerCurrentRows(ctx, table.name, table.columns, rows)
 }
 
 func (s *session) PruneRunnerHostMetrics(ctx context.Context, cutoff time.Time, limit int) error {
