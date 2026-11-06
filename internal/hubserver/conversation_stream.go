@@ -13,7 +13,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -37,7 +39,8 @@ const (
 
 // conversationStream writes server-sent event frames for one subscriber.
 type conversationStream struct {
-	response *echo.Response
+	response  *echo.Response
+	authorize func() error
 }
 
 func newConversationStream(c echo.Context) *conversationStream {
@@ -53,6 +56,11 @@ func newConversationStream(c echo.Context) *conversationStream {
 
 // event writes a committed event with its sequence as the frame id.
 func (s *conversationStream) event(event conversation.Event) error {
+	if s.authorize != nil {
+		if err := s.authorize(); err != nil {
+			return err
+		}
+	}
 	if _, err := fmt.Fprintf(s.response, "id: %d\nevent: %s\ndata: %s\n\n", event.Seq, event.Type, event.Data); err != nil {
 		return err
 	}
@@ -126,6 +134,12 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	stream := newConversationStream(c)
+	if scope.credential.EntryKey != nil {
+		stream.authorize = func() error {
+			_, err := s.reauthorizeConversationStream(c, &scope, record.ID)
+			return err
+		}
+	}
 	if after > record.EventSeq {
 		return stream.closed(conversationClosedCursorExpired)
 	}
@@ -152,7 +166,7 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 			if errors.Is(err, errConversationCursorExpired) {
 				return stream.closed(conversationClosedCursorExpired)
 			}
-			return nil
+			return stream.closed(conversationStreamCloseReason(err))
 		}
 	wait:
 		for {
@@ -183,7 +197,21 @@ func (s *Service) reauthorizeConversationStream(c echo.Context, scope *nativeSco
 	ctx := c.Request().Context()
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
-	if scope.credential.Hosted != nil {
+	if scope.credential.EntryKey != nil {
+		claims, ok := hostedSharedClaims(c)
+		if !ok || claims.Key == nil {
+			return conversationRecord{}, auth.ErrHostedIdentity
+		}
+		encoded, err := json.Marshal(entryauthority.Origin{KeyID: claims.Key.ID, CredentialBinding: claims.Key.CredentialBinding, Subject: claims.Subject, Issuer: claims.Issuer, Generation: claims.Generation})
+		if err != nil {
+			return conversationRecord{}, err
+		}
+		credential, err := s.currentEntryOriginCredential(readCtx, string(encoded))
+		if err != nil {
+			return conversationRecord{}, err
+		}
+		scope.credential = credential
+	} else if scope.credential.Hosted != nil {
 		credential, _, err := s.authenticateAPIRequestContext(readCtx, c)
 		if err != nil {
 			return conversationRecord{}, err
@@ -212,7 +240,7 @@ func conversationStreamCloseReason(err error) string {
 		return conversationClosedServerError
 	case errors.As(err, &native):
 		return conversationClosedAccessRevoked
-	case errors.Is(err, sql.ErrNoRows), errors.Is(err, auth.ErrHostedIdentity), errors.Is(err, accessstore.ErrDenied):
+	case errors.Is(err, sql.ErrNoRows), errors.Is(err, auth.ErrHostedIdentity), errors.Is(err, accessstore.ErrDenied), errors.Is(err, operatortool.ErrAccessDenied):
 		return conversationClosedAccessRevoked
 	default:
 		return conversationClosedServerError
