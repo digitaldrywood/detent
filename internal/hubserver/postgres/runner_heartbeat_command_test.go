@@ -251,3 +251,130 @@ func TestRunnerHeartbeatReturnsCommittedUpdateRevision(t *testing.T) {
 		}
 	}
 }
+
+func TestRunnerHeartbeatCapacityConfigIsVisibleToLaterWritersAndResponse(t *testing.T) {
+	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	now := historyAt()
+	for index, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return seedCoreOrganization(t.Context(), w, org) }); err != nil {
+			t.Fatal(err)
+		}
+		seedRunnerIdentity(t, repository, org, "runner_shared", "machine_shared", now, true)
+		previous := runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, ObservedAt: now}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.UpdateRunnerCapacityConfig(t.Context(), "runner_shared", previous)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		config := runnerauth.CapacityConfig{Revision: strings.Repeat("b", 64), LocalLimit: 4 + index, ClientLimit: 3 + index, RuntimeLimit: 2 + index, Manageable: true, ObservedAt: now.Add(time.Second + 789*time.Nanosecond)}
+		expected := config
+		expected.ObservedAt = expected.ObservedAt.UTC().Truncate(time.Microsecond)
+		var response runnerstore.Identity
+		check := func(stage string, identity runnerstore.Identity) {
+			t.Helper()
+			if identity.CapacityConfig == nil || *identity.CapacityConfig != expected {
+				t.Errorf("%s/%s stale capacity config: got=%+v want=%+v", org, stage, identity.CapacityConfig, expected)
+			}
+		}
+		if err := repository.WriteRunnerHeartbeat(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
+			if err := w.UpdateRunnerCapacityConfig(ctx, "runner_shared", config); err != nil {
+				return err
+			}
+			byCredential, err := w.RunnerIdentityByCredential(ctx, "runner_shared")
+			if err != nil {
+				return err
+			}
+			check("later writer", byCredential)
+			if byCredential.CapacityConfig != nil {
+				byCredential.ReportedCapacity = int64(byCredential.CapacityConfig.RuntimeLimit)
+			}
+			if err := w.UpdateRunnerIdentity(ctx, byCredential); err != nil {
+				return err
+			}
+			invalid := config
+			invalid.LocalLimit = 0
+			if err := w.UpdateRunnerCapacityConfig(ctx, "runner_shared", invalid); !errors.Is(err, runnerstore.ErrInvalidRecord) {
+				t.Errorf("invalid capacity write: %v", err)
+			}
+			config.RuntimeLimit = 999
+			response, err = w.RunnerIdentity(ctx, "runner_shared")
+			if err != nil {
+				return err
+			}
+			check("response snapshot", response)
+			if response.ReportedCapacity != int64(expected.RuntimeLimit) {
+				t.Errorf("later writer used stale capacity: %d", response.ReportedCapacity)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		check("returned response", response)
+		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			committed, err := r.RunnerIdentity(t.Context(), "runner_shared")
+			if err != nil {
+				return err
+			}
+			check("committed", committed)
+			if committed.ReportedCapacity != response.ReportedCapacity {
+				t.Error("response differs from committed later write")
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestRunnerHeartbeatOtherCachedWritesStayCoherent(t *testing.T) {
+	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	now := historyAt()
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return seedCoreOrganization(t.Context(), w, org) }); err != nil {
+			t.Fatal(err)
+		}
+		seedRunnerIdentity(t, repository, org, "runner_shared", "machine_shared", now, true)
+		if err := repository.WriteRunnerHeartbeat(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
+			problem := runnerauth.Problem{Code: "backend_missing", Message: "Example", FixHint: "Retry", ReportedAt: now, FirstSeen: now}
+			if err := w.ReplaceRunnerProblems(ctx, "runner_shared", []runnerauth.Problem{problem}); err != nil {
+				return err
+			}
+			problems, err := w.RunnerProblems(ctx, "runner_shared")
+			if err != nil {
+				return err
+			}
+			if len(problems) != 1 || problems[0] != problem {
+				t.Errorf("%s stale problem snapshot: %+v", org, problems)
+			}
+			identity, err := w.RunnerIdentity(ctx, "runner_shared")
+			if err != nil {
+				return err
+			}
+			identity.State = "draining"
+			if err := w.UpdateRunnerRouting(ctx, identity.Revision, identity); err != nil {
+				return err
+			}
+			current, err := w.RunnerIdentityByCredential(ctx, "runner_shared")
+			if err != nil {
+				return err
+			}
+			if current.State != "draining" || current.Revision != identity.Revision+1 {
+				t.Errorf("%s stale routing identity: %+v", org, current)
+			}
+			at := now.Add(time.Second + 789*time.Nanosecond)
+			if err := w.RemoveRunnerIdentity(ctx, "runner_shared", at); err != nil {
+				return err
+			}
+			removed, err := w.RunnerIdentity(ctx, "runner_shared")
+			if err != nil {
+				return err
+			}
+			if removed.RemovedAt == nil || !removed.RemovedAt.Equal(at.Truncate(time.Microsecond)) || removed.Revision != identity.Revision+2 {
+				t.Errorf("%s stale removed identity: %+v", org, removed)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

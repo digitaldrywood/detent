@@ -26,6 +26,7 @@ type runnerHeartbeatSession struct {
 	*session
 	identity                              runnerstore.Identity
 	problems                              []runnerauth.Problem
+	problemsChanged                       bool
 	repositories                          runnerstore.RepositoryList
 	hasRepositories, hasUpdate, hasUrgent bool
 }
@@ -124,9 +125,12 @@ func (h *runnerHeartbeatSession) RunnerProjects(_ context.Context, id string, li
 	}
 	return append([]tracker.ProjectID{}, h.identity.ProjectIDs...), nil
 }
-func (h *runnerHeartbeatSession) RunnerProblems(_ context.Context, id string) ([]runnerauth.Problem, error) {
+func (h *runnerHeartbeatSession) RunnerProblems(ctx context.Context, id string) ([]runnerauth.Problem, error) {
 	if id != h.identity.RunnerID {
 		return nil, corestore.ErrNotFound
+	}
+	if h.problemsChanged {
+		return h.session.RunnerProblems(ctx, id)
 	}
 	return append([]runnerauth.Problem{}, h.problems...), nil
 }
@@ -149,8 +153,13 @@ func (h *runnerHeartbeatSession) RunnerUrgentUpdate(ctx context.Context) (runner
 	return h.session.RunnerUrgentUpdate(ctx)
 }
 func (h *runnerHeartbeatSession) ReplaceRunnerUpdateObservation(ctx context.Context, id string, report *runnerauth.UpdateObservation) error {
-	h.hasUpdate = true
-	return h.session.ReplaceRunnerUpdateObservation(ctx, id, report)
+	if err := h.session.ReplaceRunnerUpdateObservation(ctx, id, report); err != nil {
+		return err
+	}
+	if id == h.identity.RunnerID {
+		h.hasUpdate = true
+	}
+	return nil
 }
 
 func (h *runnerHeartbeatSession) LockRunnerUpdate(_ context.Context, id string) error {
@@ -183,6 +192,58 @@ func (h *runnerHeartbeatSession) SetRunnerUpdateDesired(ctx context.Context, id 
 	if id == h.identity.RunnerID {
 		h.identity.Revision = revision + 1
 		h.hasUpdate = true
+	}
+	return nil
+}
+
+func (h *runnerHeartbeatSession) UpdateRunnerCapacityConfig(ctx context.Context, id string, config runnerauth.CapacityConfig) error {
+	if err := h.session.UpdateRunnerCapacityConfig(ctx, id, config); err != nil {
+		return err
+	}
+	if id == h.identity.RunnerID {
+		config.ObservedAt = pgtransport.Timestamp(config.ObservedAt)
+		h.identity.CapacityConfig = &config
+	}
+	return nil
+}
+
+func (h *runnerHeartbeatSession) ReplaceRunnerProblems(ctx context.Context, id string, problems []runnerauth.Problem) error {
+	if err := h.session.ReplaceRunnerProblems(ctx, id, problems); err != nil {
+		return err
+	}
+	if id == h.identity.RunnerID {
+		h.problemsChanged = true
+	}
+	return nil
+}
+
+func (h *runnerHeartbeatSession) UpdateRunnerRouting(ctx context.Context, revision int64, row runnerstore.Identity) error {
+	if err := h.session.UpdateRunnerRouting(ctx, revision, row); err != nil {
+		return err
+	}
+	if row.RunnerID != h.identity.RunnerID {
+		return nil
+	}
+	current, err := scanRunnerIdentity(ctx, h.db.QueryRow(ctx, runnerIdentitySelect+`runner_id=$2`, h.organization, row.RunnerID))
+	if err != nil {
+		return err
+	}
+	current.ProjectIDs, err = h.runnerRoutingProjects(ctx, &current, runnerstore.MaxRunnerProjectList)
+	if err != nil {
+		return err
+	}
+	h.identity = current
+	return nil
+}
+
+func (h *runnerHeartbeatSession) RemoveRunnerIdentity(ctx context.Context, id string, at time.Time) error {
+	if err := h.session.RemoveRunnerIdentity(ctx, id, at); err != nil {
+		return err
+	}
+	if id == h.identity.RunnerID {
+		at = pgtransport.Timestamp(at)
+		h.identity.RemovedAt = &at
+		h.identity.Revision++
 	}
 	return nil
 }
