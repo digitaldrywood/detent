@@ -72,9 +72,10 @@ var testChangeObjects sync.Map
 func openTestService(t *testing.T, cfg Config) *Service {
 	t.Helper()
 	if cfg.Content == nil && cfg.RunDetails == nil && (cfg.Hosted == nil || cfg.Hosted.SharedEntry == nil || cfg.Hosted.SharedEntry.Content == nil && cfg.Hosted.SharedEntry.RunDetails == nil) {
-		value, loaded := testChangeObjects.LoadOrStore(cfg.DatabasePath, &changeObjectFixture{})
+		objectKey := cfg.DatabasePath
+		value, loaded := testChangeObjects.LoadOrStore(objectKey, &changeObjectFixture{})
 		if !loaded {
-			t.Cleanup(func() { testChangeObjects.Delete(cfg.DatabasePath) })
+			t.Cleanup(func() { testChangeObjects.Delete(objectKey) })
 		}
 		cfg.Content = value.(*changeObjectFixture).call
 	}
