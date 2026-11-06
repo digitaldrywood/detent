@@ -36,6 +36,10 @@ func (r *relationshipBatchCountingReader) WorkItemRelationshipFacts(ctx context.
 	return batch.WorkItemRelationshipFacts(ctx, project, workItems)
 }
 
+func (r *relationshipBatchCountingReader) RelationshipProjects(ctx context.Context, authority accessstore.Authority, projects []tracker.ProjectID, now time.Time) (map[tracker.ProjectID]bool, error) {
+	return r.Reader.(relationshipProjectReader).RelationshipProjects(ctx, authority, projects, now)
+}
+
 func TestHydrateWorkItemRelationshipFactsPagePreservesReporterRedaction(t *testing.T) {
 	repository, fixture, _, _ := newChangePolicyPostgresFixtureWithAdmin(t, 8)
 	if err := fixture.service.stopGitHubWebhookMaintenance(); err != nil {

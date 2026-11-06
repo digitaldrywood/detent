@@ -4,17 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -22,6 +26,7 @@ import (
 type workItemRelationshipPage struct {
 	Dependencies []tracker.NativeWorkItemID  `json:"dependencies"`
 	Blockers     []tracker.NativeDependency  `json:"blockers"`
+	Dependents   []tracker.NativeDependency  `json:"dependents"`
 	References   []tracker.ExternalReference `json:"references"`
 	Related      []tracker.NativeDependency  `json:"related"`
 	NextCursor   string                      `json:"next_cursor,omitempty"`
@@ -152,10 +157,21 @@ func (s *Service) hydrateWorkItemRelationshipFacts(ctx context.Context, scope na
 }
 
 func (s *Service) readWorkItemRelationshipPage(ctx context.Context, scope nativeScope, request operatortool.WorkReadRequest, item tracker.NativeIssue) (workItemRelationshipPage, error) {
+	var page workItemRelationshipPage
+	err := s.readWorkItemPageSnapshot(ctx, scope, func(ctx context.Context) error {
+		var err error
+		page, err = s.readRelationshipPageModel(ctx, scope, request, item)
+		return err
+	})
+	return page, err
+}
+
+func (s *Service) readRelationshipPageModel(ctx context.Context, scope nativeScope, request operatortool.WorkReadRequest, item tracker.NativeIssue) (workItemRelationshipPage, error) {
 	page := workItemRelationshipPage{
 		Dependencies: []tracker.NativeWorkItemID{},
 		Blockers:     []tracker.NativeDependency{},
-		References:   item.ExternalReferences,
+		Dependents:   []tracker.NativeDependency{},
+		References:   append([]tracker.ExternalReference{}, item.ExternalReferences...),
 		Related:      []tracker.NativeDependency{},
 	}
 	params := url.Values{"reference": {request.Reference}}
@@ -176,24 +192,33 @@ func (s *Service) readWorkItemRelationshipPage(ctx context.Context, scope native
 			return page, nativePublicInvalid("Relationship cursor is invalid")
 		}
 	}
-	var relations corestore.RelationshipPage
+	if err := s.authorizeCommentWorkItem(ctx, scope, string(item.WorkItemID)); err != nil {
+		return page, err
+	}
+	var records []viewstore.RelationshipPageRecord
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		relations, err = r.Relationships(ctx, scope.project, item.WorkItemID, after, limit)
+		reader, ok := r.(viewstore.RelationshipPageReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		records, err = reader.RelationshipPageRecords(ctx, scope.project, item.WorkItemID, after, limit)
 		return err
 	})
 	if err != nil {
 		return page, projectRecordError(err)
 	}
 	projectVisible := map[tracker.ProjectID]bool{}
-	for _, relation := range relations.Items {
+	for _, record := range records[:min(limit, len(records))] {
+		relation := record.Relationship
 		projectVisible[relation.RelatedProjectID] = true
 	}
 	authorizedProjects, err := s.relationshipProjectAccess(ctx, scope, projectVisible)
 	if err != nil {
 		return page, err
 	}
-	for _, relation := range relations.Items {
+	for _, record := range records[:min(limit, len(records))] {
+		relation := record.Relationship
 		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(relation.ActorPrincipalID)}) {
 			continue
 		}
@@ -203,16 +228,13 @@ func (s *Service) readWorkItemRelationshipPage(ctx context.Context, scope native
 		if !authorizedProjects[relation.RelatedProjectID] {
 			continue
 		}
-		browserURL := ""
-		if relation.OrganizationSlug != "" && relation.ProjectSlug != "" && s.config.Hosted != nil {
-			browserURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: issueBrowserPath(relation.OrganizationSlug, relation.ProjectSlug, relation.Number)}).WebURL
-		}
+
 		link := tracker.NativeDependency{
 			Dispatchable: relation.Dispatchable,
 			Number:       relation.Number,
 			Title:        relation.Title,
-			WebURL:       browserURL,
-			Identifier:   string(relation.RelatedProjectID) + "#" + strconv.Itoa(relation.Number),
+			WebURL:       record.WebURL,
+			Identifier:   record.Identifier,
 			ID:           relation.RelatedWorkItemID,
 			ProjectID:    relation.RelatedProjectID,
 			State:        relation.State,
@@ -226,13 +248,17 @@ func (s *Service) readWorkItemRelationshipPage(ctx context.Context, scope native
 			case "blocked_by":
 				page.Dependencies = append(page.Dependencies, relation.RelatedWorkItemID)
 				page.Blockers = append(page.Blockers, link)
+			case "blocks":
+				page.Dependents = append(page.Dependents, link)
 			}
 		case "related":
 			page.Related = append(page.Related, link)
 		}
 	}
-	if relations.Next.RelatedWorkItemID != "" {
-		cursorAfter, err := json.Marshal(relations.Next)
+	if len(records) > limit {
+		last := records[limit-1].Relationship
+		next := corestore.RelationshipCursor{Type: last.Type, Direction: last.Direction, RelatedProjectID: last.RelatedProjectID, RelatedWorkItemID: last.RelatedWorkItemID}
+		cursorAfter, err := json.Marshal(next)
 		if err != nil {
 			return page, err
 		}
@@ -266,7 +292,11 @@ func (s *Service) relationshipProjectAccess(ctx context.Context, scope nativeSco
 			if s.config.Hosted != nil && scope.organization != s.accessOrganization() {
 				return auth.ErrHostedIdentity
 			}
-			if scope.credential.EntryKey != nil && (!hostedKeyAllows(scope.credential.HostedKeyScope, apikey.ScopeRead) || !hostedRoleAllows(scope.credential.HostedRole, apikey.ScopeRead, scope.action)) {
+			required := apikey.ScopeRead
+			if scope.requireHostedAdmin {
+				required = apikey.ScopeAdmin
+			}
+			if scope.credential.EntryKey != nil && (!hostedKeyAllows(scope.credential.HostedKeyScope, required) || !hostedRoleAllows(scope.credential.HostedRole, required, scope.action)) {
 				return auth.ErrHostedIdentity
 			}
 			found, err := batch.RelationshipProjects(ctx, s.accessAuthority(scope, false), projects, s.config.now())
@@ -293,4 +323,28 @@ func (s *Service) relationshipProjectAccess(ctx context.Context, scope nativeSco
 		return nil
 	})
 	return allowed, err
+}
+
+func (s *Service) GetWorkItemRelationships(c echo.Context) error {
+	params, err := nativeReadQuery(c)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if err := validateNativeQuery(params); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	limit := 0
+	if raw := params.Get("limit"); raw != "" {
+		limit, err = strconv.Atoi(raw)
+		if err != nil || limit < 1 || limit > maxAPIPageLimit {
+			return s.nativeAPIError(c, nativePublicInvalid("Page limit is invalid"))
+		}
+	}
+	scope := nativeRequestScope(c)
+	item := tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(c.Param("item"))}}
+	page, err := s.readWorkItemRelationshipPage(c.Request().Context(), scope, operatortool.WorkReadRequest{Reference: c.Param("item"), Limit: limit, Cursor: params.Get("cursor")}, item)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, page)
 }
