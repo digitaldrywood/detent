@@ -20,7 +20,7 @@ const boardColumns = `b.organization_id,b.project_id,b.work_item_id,b.source_rev
 b.state,b.archived,b.terminal,b.running,b.dispatchable,b.lane_rank,b.priority_rank,b.activity_missing,b.activity_at,b.identifier,b.closed_at,b.expires_at,b.execution_fence,
 b.actor_principal_id,b.issue_type,b.verification_state,b.priority,b.created_at,b.updated_at,b.payload_object_key,b.payload_sha256,b.payload_bytes,b.payload_content_bytes,
 ARRAY(SELECT value FROM native_board_filter_values f WHERE f.organization_id=b.organization_id AND f.project_id=b.project_id AND f.work_item_id=b.work_item_id AND f.kind='label' ORDER BY value),
-ARRAY(SELECT value FROM native_board_filter_values f WHERE f.organization_id=b.organization_id AND f.project_id=b.project_id AND f.work_item_id=b.work_item_id AND f.kind='assignee' ORDER BY value)`
+ARRAY(SELECT value FROM native_board_filter_values f WHERE f.organization_id=b.organization_id AND f.project_id=b.project_id AND f.work_item_id=b.work_item_id AND f.kind='assignee' ORDER BY value),` + boardDisplayColumns
 
 func scanBoard(row interface{ Scan(...any) error }, extra ...any) (viewstore.BoardRecord, error) {
 	var b viewstore.BoardRecord
@@ -29,8 +29,11 @@ func scanBoard(row interface{ Scan(...any) error }, extra ...any) (viewstore.Boa
 	targets := []any{&b.OrganizationID, &b.ProjectID, &b.WorkItemID, &b.SourceRevision, &b.SourceEventSequence, &b.SourceProjectRevision,
 		&b.Position.State, &b.Archived, &b.Terminal, &b.Running, &b.Dispatchable, &b.Position.Lane, &b.Position.Priority, &b.Position.ActivityMissing, &b.Position.Activity, &b.Position.Identifier, &b.ClosedAt, &b.ExpiresAt, &b.ExecutionFence,
 		&b.ActorPrincipalID, &b.IssueType, &b.VerificationState, &b.Priority, &b.CreatedAt, &b.UpdatedAt, &key, &digest, &size, &content, pq.Array(&b.Labels), pq.Array(&b.Assignees)}
+	display, finish := boardDisplayTargets(&b.Display)
+	targets = append(targets, display...)
 	targets = append(targets, extra...)
 	err := row.Scan(targets...)
+	finish()
 	b.Payload = eventstore.Reference(key, digest, size, content)
 	return b, err
 }

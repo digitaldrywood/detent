@@ -20,6 +20,10 @@ type boardChangePreparation struct {
 }
 
 func (s *Service) prepareBoardChangeRows(ctx context.Context, scope nativeScope, cards []tracker.NativeBoardCard) (boardChangePreparation, bool) {
+	return s.prepareBoardChangeRowsFor(ctx, scope, cards, corestore.Serving)
+}
+
+func (s *Service) prepareBoardChangeRowsFor(ctx context.Context, scope nativeScope, cards []tracker.NativeBoardCard, workload corestore.Workload) (boardChangePreparation, bool) {
 	requests := []tenantstore.BoardChangeRequest{}
 	seen := map[tenantstore.BoardChangeRequest]bool{}
 	for _, card := range cards {
@@ -38,7 +42,7 @@ func (s *Service) prepareBoardChangeRows(ctx context.Context, scope nativeScope,
 	}
 	supported := false
 	finishRows := timeSpan(ctx, "board_change_rows")
-	result.err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	result.err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, workload, func(reader tenantstore.Reader) error {
 		batch, ok := reader.(tenantstore.BoardChangeRowsReader)
 		if !ok {
 			return nil

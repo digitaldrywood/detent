@@ -20,7 +20,20 @@ type BoardPosition struct {
 	SearchNumber    int64
 }
 
+type BoardDisplay struct {
+	ChangePrincipalID string
+	Title             string
+	Number            int
+	Actor             tracker.Actor
+	Reason            string
+	StatusLine        string
+	Attempt           *tracker.NativeBoardAttempt
+	Execution         *tracker.NativeBoardExecution
+	Change            *tracker.NativeBoardChange
+}
+
 type BoardRecord struct {
+	Display               BoardDisplay
 	OrganizationID        tracker.OrganizationID
 	ProjectID             tracker.ProjectID
 	WorkItemID            tracker.NativeWorkItemID

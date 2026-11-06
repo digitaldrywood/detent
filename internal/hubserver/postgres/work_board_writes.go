@@ -47,6 +47,13 @@ func (s *session) ReplaceBoardItem(ctx context.Context, u viewstore.BoardUpdate)
 			return corestore.ErrRevisionConflict
 		}
 		value := *u.Current
+		if value.Display.Title == "" {
+			value.Display.Title = item.Title
+			value.Display.Number = int(item.Number)
+			if item.ActorKind != nil {
+				value.Display.Actor.Kind = *item.ActorKind
+			}
+		}
 		if value.OrganizationID != s.organization {
 			return corestore.ErrTenantMismatch
 		}
@@ -154,6 +161,7 @@ func sameBoardContent(a, b *viewstore.BoardRecord) bool {
 	left.SourceRevision, left.SourceEventSequence, left.SourceProjectRevision = 0, 0, 0
 	right.SourceRevision, right.SourceEventSequence, right.SourceProjectRevision = 0, 0, 0
 	for _, record := range []*viewstore.BoardRecord{&left, &right} {
+		record.Display = comparableBoardDisplay(record.Display)
 		record.CreatedAt = record.CreatedAt.UTC().Truncate(time.Microsecond)
 		record.UpdatedAt = record.UpdatedAt.UTC().Truncate(time.Microsecond)
 		for _, at := range []**time.Time{&record.Position.Activity, &record.ClosedAt, &record.ExpiresAt} {
@@ -173,6 +181,9 @@ func (s *session) putBoardItem(ctx context.Context, b viewstore.BoardRecord, num
 		s.organization, b.ProjectID, b.WorkItemID, b.SourceRevision, b.SourceEventSequence, b.SourceProjectRevision, b.Position.State, b.Archived, b.Terminal, b.Running, b.Dispatchable, b.Position.Lane, b.Position.Priority, b.Position.ActivityMissing, b.Position.Activity, b.Position.Identifier, b.ClosedAt, b.ExpiresAt, b.ExecutionFence, b.ActorPrincipalID, b.IssueType, b.VerificationState, b.Priority, b.CreatedAt, b.UpdatedAt, b.Payload.Key, b.Payload.SHA256, b.Payload.CompressedSize, b.Payload.UncompressedSize, number)
 	if err != nil {
 		return mapError(ctx, err)
+	}
+	if err := s.putBoardDisplay(ctx, b); err != nil {
+		return err
 	}
 	if _, err := s.db.ExecContext(ctx, "DELETE FROM native_board_filter_values WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", s.organization, b.ProjectID, b.WorkItemID); err != nil {
 		return mapError(ctx, err)
@@ -206,4 +217,23 @@ func (s *session) adjustBoardWorkspaceCount(ctx context.Context, b viewstore.Boa
 		return viewstore.ErrInvalidView
 	}
 	return nil
+}
+
+func comparableBoardDisplay(display viewstore.BoardDisplay) viewstore.BoardDisplay {
+	if display.Attempt != nil {
+		attempt := *display.Attempt
+		attempt.StartedAt = attempt.StartedAt.UTC().Truncate(time.Microsecond)
+		attempt.ExpiresAt = attempt.ExpiresAt.UTC().Truncate(time.Microsecond)
+		display.Attempt = &attempt
+	}
+	if display.Execution != nil {
+		execution := *display.Execution
+		execution.ExpiresAt = execution.ExpiresAt.UTC().Truncate(time.Microsecond)
+		if execution.StartedAt != nil {
+			at := execution.StartedAt.UTC().Truncate(time.Microsecond)
+			execution.StartedAt = &at
+		}
+		display.Execution = &execution
+	}
+	return display
 }

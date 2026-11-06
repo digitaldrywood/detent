@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -49,6 +50,11 @@ func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 				t.Fatal(err)
 			}
 			record := viewstore.BoardRecord{OrganizationID: org, ProjectID: "prj_example", WorkItemID: id, SourceRevision: 1, Position: viewstore.BoardPosition{Lane: 1, State: "Todo", Priority: 1 - index, Activity: &now, Identifier: fmt.Sprintf("prj_example#%d", index+1)}, ActorPrincipalID: "first", IssueType: "bug", VerificationState: "pending", CreatedAt: now, UpdatedAt: now, Payload: ref, Labels: []string{fmt.Sprintf("label%d", index)}}
+			record.Display = viewstore.BoardDisplay{ChangePrincipalID: "first", Title: "Example", Number: index + 1, Actor: tracker.Actor{Kind: "human"}, Reason: "Ready", StatusLine: "Running",
+				Attempt:   &tracker.NativeBoardAttempt{ID: fmt.Sprintf("attempt_%d", index), Count: 2, Status: "running", RunnerID: "runner_example", MachineID: "machine_example", StartedAt: now, ExpiresAt: now.Add(time.Hour), Identity: &tracker.NativeExecutionIdentity{Role: "implementation", Backend: "example", Model: "example"}},
+				Execution: &tracker.NativeBoardExecution{ID: fmt.Sprintf("attempt_%d", index), Running: true, Stage: "implementation", StartedAt: &now, ExpiresAt: now.Add(time.Hour)},
+				Change:    &tracker.NativeBoardChange{ID: fmt.Sprintf("change_%d", index), Title: "Example change", Status: "open", External: &tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: "https://example.com/change/1"}},
+			}
 			records = append(records, record)
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: record.ProjectID, WorkItemID: id, ExpectedRevision: 1, Current: &record})
@@ -63,6 +69,9 @@ func TestBoardProjectionPreservesOrderAndSourceFence(t *testing.T) {
 			}
 			if len(page) != 1 || page[0].WorkItemID != "wi_example_1" || page[0].OrganizationID != org {
 				t.Fatalf("ordered first page=%+v", page)
+			}
+			if !reflect.DeepEqual(page[0].Display, records[1].Display) {
+				t.Fatalf("display roundtrip = %#v, want %#v", page[0].Display, records[1].Display)
 			}
 			next, err := r.BoardPage(t.Context(), viewstore.BoardSelection{ProjectID: "prj_example", After: &page[0].Position, Limit: 1})
 			if err != nil {

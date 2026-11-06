@@ -16,14 +16,15 @@ import (
 )
 
 type boardProjectionSnapshot struct {
-	project       projectstore.Record
-	item          corestore.WorkItem
-	version       eventstore.CollaborationVersion
-	attempt       *tenantAttemptSnapshot
-	attemptCount  int64
-	lease         *leasestore.Lease
-	change        *eventstore.Change
-	changeVersion *eventstore.Version
+	changePrincipalID string
+	project           projectstore.Record
+	item              corestore.WorkItem
+	version           eventstore.CollaborationVersion
+	attempt           *tenantAttemptSnapshot
+	attemptCount      int64
+	lease             *leasestore.Lease
+	change            *eventstore.Change
+	changeVersion     *eventstore.Version
 }
 
 func (s *Service) maintainBoardRecords(ctx context.Context) error {
@@ -111,6 +112,14 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 		change, err := r.LatestChange(ctx, candidate.ProjectID, candidate.WorkItemID)
 		if err == nil {
 			snapshot.change = &change
+			primary, err := r.WorkItem(ctx, candidate.ProjectID, change.WorkItemID)
+			if err != nil {
+				return err
+			}
+			if primary.ActorPrincipalID != nil {
+				snapshot.changePrincipalID = *primary.ActorPrincipalID
+			}
+
 			if change.CurrentVersionID != nil {
 				version, err := r.Version(ctx, change.ID, *change.CurrentVersionID)
 				if err != nil {
@@ -174,6 +183,18 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 				card.Change.External = &tracker.ChangeExternalReference{Provider: v.ExternalProvider, ID: v.ExternalID, URL: v.ExternalURL}
 			}
 		}
+		if card.Change != nil {
+			scope := nativeScope{organization: organization, project: candidate.ProjectID}
+			changes, supported := s.prepareBoardChangeRowsFor(ctx, scope, []tracker.NativeBoardCard{card}, corestore.Background)
+			if !supported {
+				return corestore.ErrNotFound
+			}
+			summary, err := changes.summary(ctx, s, scope, candidate.WorkItemID, card.Change.ID, now)
+			if err != nil {
+				return err
+			}
+			card.Change.Status = summary.Status
+		}
 		card.StatusLine = nativeBoardStatusLine(card)
 		payload, err := viewstore.NewContent(s.runDetailStore()).PrepareBoard(ctx, card)
 		if err != nil {
@@ -225,6 +246,8 @@ func boardProjectionRecord(snapshot boardProjectionSnapshot, card tracker.Native
 		position.Activity = &issue.LastActivityAt
 	}
 	record := viewstore.BoardRecord{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, SourceRevision: snapshot.item.Revision, SourceEventSequence: snapshot.item.EventSequence, SourceProjectRevision: snapshot.project.Core.ContentSettingsRevision, Position: position, Archived: issue.Archived, Terminal: issue.Terminal, Running: false, Dispatchable: dispatchable, ClosedAt: issue.ClosedAt, ActorPrincipalID: issue.Actor.PrincipalID, IssueType: issue.Type, Priority: issue.Priority, CreatedAt: issue.CreatedAt, UpdatedAt: issue.UpdatedAt, Labels: issue.Labels, Assignees: issue.Assignees}
+	record.Display = viewstore.BoardDisplay{ChangePrincipalID: snapshot.changePrincipalID, Title: issue.Title, Number: issue.Number, Actor: issue.Actor, Reason: issue.LatestTransitionReason, StatusLine: card.StatusLine, Attempt: card.Attempt, Execution: card.Execution, Change: card.Change}
+	record.Display.Actor.PrincipalID = ""
 	if issue.Verification != nil {
 		record.VerificationState = issue.Verification.State
 	}
