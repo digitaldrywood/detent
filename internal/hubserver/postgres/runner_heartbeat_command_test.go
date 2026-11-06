@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -197,6 +199,55 @@ func TestRunnerHeartbeatCommandBoundsAndRollback(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+		}
+	}
+}
+
+func TestRunnerHeartbeatReturnsCommittedUpdateRevision(t *testing.T) {
+	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	now := historyAt()
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return seedCoreOrganization(t.Context(), w, org) }); err != nil {
+			t.Fatal(err)
+		}
+		seedRunnerIdentity(t, repository, org, "runner_shared", "machine_shared", now, true)
+		if err := repository.WriteRunnerHeartbeat(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
+			identity, err := w.RunnerIdentity(ctx, "runner_shared")
+			if err != nil {
+				return err
+			}
+			identity.ReportedCapacity = 3
+			if err := w.UpdateRunnerIdentity(ctx, identity); err != nil {
+				return err
+			}
+			request := runnerauth.UpdateRequest{ID: "update_example", RequestedAt: now, Service: "detent", Version: "0.184.0", Release: true, FromRelease: true, ExpectedBuildRevision: strings.Repeat("a", 64)}
+			if err := w.CreateRunnerUpdateRequest(ctx, runnerstore.UpdateRequestRecord{OrganizationID: org, RunnerID: identity.RunnerID, Request: request}); err != nil {
+				return err
+			}
+			if err := w.SetRunnerUpdateDesired(ctx, identity.RunnerID, identity.Revision, request.ID); err != nil {
+				return err
+			}
+			identity.ReportedCapacity = 4
+			if err := w.UpdateRunnerIdentity(ctx, identity); err != nil {
+				return err
+			}
+			current, err := w.RunnerIdentity(ctx, identity.RunnerID)
+			if err != nil {
+				return err
+			}
+			if current.Revision != identity.Revision+1 || current.ReportedCapacity != 4 {
+				t.Errorf("heartbeat returns stale identity: revision=%d capacity=%d", current.Revision, current.ReportedCapacity)
+			}
+			state, err := w.RunnerUpdateState(ctx, identity.RunnerID)
+			if err != nil {
+				return err
+			}
+			if state.Desired == nil || state.Desired.ID != request.ID {
+				t.Error("heartbeat omitted its committed update request")
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

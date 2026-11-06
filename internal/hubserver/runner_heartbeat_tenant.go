@@ -300,6 +300,10 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 				return err
 			}
 		}
+		identity, err = w.RunnerIdentity(ctx, identity.RunnerID)
+		if err != nil {
+			return err
+		}
 		projects, err := w.RunnerProjects(ctx, identity.RunnerID, runnerstore.MaxRunnerProjectList)
 		if err != nil {
 			return err

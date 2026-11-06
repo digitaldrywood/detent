@@ -165,7 +165,7 @@ AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.orga
 
 func (s *session) runnerIdentity(ctx context.Context, predicate string, value any) (runnerstore.Identity, error) {
 	if locked, ok := ctx.Value(runnerHeartbeatIdentityKey{}).(runnerHeartbeatIdentity); ok && locked.session == s && (predicate == `runner_id=$2` && value == locked.identity.RunnerID || predicate == `token_id=$2` && value == locked.identity.TokenID) {
-		return locked.identity, nil
+		return *locked.identity, nil
 	}
 	row, err := s.runnerIdentityRow(ctx, predicate, value)
 	if err != nil {
@@ -179,7 +179,7 @@ func (s *session) runnerIdentity(ctx context.Context, predicate string, value an
 
 func (s *session) runnerIdentityRow(ctx context.Context, predicate string, value any) (runnerstore.Identity, error) {
 	if locked, ok := ctx.Value(runnerHeartbeatIdentityKey{}).(runnerHeartbeatIdentity); ok && locked.session == s && (predicate == `runner_id=$2` && value == locked.identity.RunnerID || predicate == `token_id=$2` && value == locked.identity.TokenID) {
-		return locked.identity, nil
+		return *locked.identity, nil
 	}
 	query := runnerIdentitySelect + predicate
 	if !s.readOnly {

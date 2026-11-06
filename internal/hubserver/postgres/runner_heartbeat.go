@@ -20,7 +20,7 @@ import (
 type runnerHeartbeatIdentityKey struct{}
 type runnerHeartbeatIdentity struct {
 	session  *session
-	identity runnerstore.Identity
+	identity *runnerstore.Identity
 }
 type runnerHeartbeatSession struct {
 	*session
@@ -102,7 +102,7 @@ func (r *Repository) WriteRunnerHeartbeat(ctx context.Context, organization trac
 	if err != nil {
 		return err
 	}
-	ctx = context.WithValue(ctx, runnerHeartbeatIdentityKey{}, runnerHeartbeatIdentity{session: h.session, identity: h.identity})
+	ctx = context.WithValue(ctx, runnerHeartbeatIdentityKey{}, runnerHeartbeatIdentity{session: h.session, identity: &h.identity})
 	if err := write(ctx, h); err != nil {
 		return err
 	}
@@ -156,6 +156,33 @@ func (h *runnerHeartbeatSession) ReplaceRunnerUpdateObservation(ctx context.Cont
 func (h *runnerHeartbeatSession) LockRunnerUpdate(_ context.Context, id string) error {
 	if id != h.identity.RunnerID {
 		return corestore.ErrNotFound
+	}
+	return nil
+}
+
+func (h *runnerHeartbeatSession) UpdateRunnerIdentity(ctx context.Context, row runnerstore.Identity) error {
+	if err := h.session.UpdateRunnerIdentity(ctx, row); err != nil {
+		return err
+	}
+	if row.RunnerID == h.identity.RunnerID {
+		h.identity.DisplayName = row.DisplayName
+		h.identity.CapacityLimit = row.CapacityLimit
+		h.identity.ReportedCapacity = row.ReportedCapacity
+		h.identity.OS = row.OS
+		h.identity.Architecture = row.Architecture
+		h.identity.LastHeartbeatAt = pgtransport.Timestamp(row.LastHeartbeatAt)
+		h.identity.ExpiresAt = pgtransport.Timestamp(row.ExpiresAt)
+	}
+	return nil
+}
+
+func (h *runnerHeartbeatSession) SetRunnerUpdateDesired(ctx context.Context, id string, revision int64, requestID string) error {
+	if err := h.session.SetRunnerUpdateDesired(ctx, id, revision, requestID); err != nil {
+		return err
+	}
+	if id == h.identity.RunnerID {
+		h.identity.Revision = revision + 1
+		h.hasUpdate = true
 	}
 	return nil
 }
