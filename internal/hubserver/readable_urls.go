@@ -406,6 +406,9 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 		} else {
 			var owner string
 			err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT organization_id FROM organization_slugs WHERE slug=?", parts[0]).Scan(&owner)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return "", false, err
+			}
 			owned = err == nil && owner == s.appOrganizationID()
 		}
 		if owned {
@@ -431,6 +434,9 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 	}
 	credential, _, err := s.appCredential(c)
 	if err != nil {
+		if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+			return "", false, classified
+		}
 		return "", false, nativeNotFound()
 	}
 	if s.config.TenantRepository != nil && (legacyIssue || legacyProjectIssue || legacyProject) {

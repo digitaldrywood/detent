@@ -123,7 +123,11 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 	if e.service.config.Hosted == nil {
 		return definitions, nil
 	}
-	definitions = append(definitions, (hostedContextExecutor(e)).listTools(ctx)...)
+	contextTools, err := (hostedContextExecutor(e)).listTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	definitions = append(definitions, contextTools...)
 	for _, definition := range operatortool.BillingCatalog() {
 		kind := "billing"
 		switch definition.Name {

@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/readableurl"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -84,6 +85,9 @@ func (s *Service) postgresAppBootstrapPayload(c echo.Context) error {
 	}
 	credential, status, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
+		if status >= http.StatusInternalServerError {
+			return s.nativeAPIError(c, operatorAuthorizationError(err))
+		}
 		if status == http.StatusForbidden {
 			return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", appBootstrapRefusal{Code: "forbidden", Message: "This account has no access to this organization", Details: appBootstrapRefusalDetails{Organization: s.config.Hosted.OrganizationID, CSRFToken: s.hostedPageCSRF(c)}})
 		}
@@ -185,7 +189,12 @@ func (s *Service) readPostgresAppBootstrap(ctx context.Context, credential apiCr
 			payload.Organizations[index].PublicURL = payload.Organization.PublicURL
 		}
 	}
-	payload.Actor.CanManageRunners = credential.HostedRole != "viewer" && s.appAllRunnerGrants(ctx, credential)
+	if credential.HostedRole != "viewer" {
+		payload.Actor.CanManageRunners, err = s.appAllRunnerGrants(ctx, credential)
+		if err != nil {
+			return appBootstrap{}, err
+		}
+	}
 	payload.Capabilities.Coordinator = s.conversations != nil && s.conversations.coordinator != nil && s.conversations.coordinator.Available()
 	payload.Feature = s.appBootstrapFeature()
 	payload.Feature.Workspaces = false
@@ -263,6 +272,9 @@ func (s *Service) postgresAppShell(c echo.Context) error {
 		return s.servePostgresAppShell(c, path)
 	}
 	if _, _, err := s.hostedSession(c.Request().Context(), c); err != nil {
+		if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+			return s.nativeAPIError(c, classified)
+		}
 		if first := strings.Split(strings.Trim(path, "/"), "/")[0]; readableurl.Validate(first) == nil && strings.Contains(strings.Trim(path, "/"), "/") {
 			return s.nativeAPIError(c, nativeNotFound())
 		}
@@ -272,6 +284,9 @@ func (s *Service) postgresAppShell(c echo.Context) error {
 	if len(parts) >= 2 && parts[0] == "projects" {
 		credential, _, err := s.hostedCredential(c.Request().Context(), c)
 		if err != nil {
+			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+				return s.nativeAPIError(c, classified)
+			}
 			return s.nativeAPIError(c, nativeNotFound())
 		}
 		organizationID := tracker.OrganizationID(s.config.Hosted.OrganizationID)
@@ -291,14 +306,23 @@ func (s *Service) postgresAppShell(c echo.Context) error {
 			return nil
 		})
 		if err != nil {
+			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+				return s.nativeAPIError(c, classified)
+			}
 			return s.nativeAPIError(c, nativeNotFound())
 		}
 		scope := nativeScope{organization: organizationID, project: project.Core.ID, credential: credential}
 		if err := s.authorizeProjectRecord(c.Request().Context(), scope, false); err != nil {
+			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+				return s.nativeAPIError(c, classified)
+			}
 			return s.nativeAPIError(c, nativeNotFound())
 		}
 	}
 	if target, handled, err := s.readableShellPath(c); err != nil {
+		if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+			return s.nativeAPIError(c, classified)
+		}
 		return s.nativeAPIError(c, nativeNotFound())
 	} else {
 		original := c.Request().URL.Path

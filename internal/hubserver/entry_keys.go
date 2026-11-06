@@ -82,7 +82,11 @@ func (s *Service) entryKeyTools(ctx context.Context) ([]operatortool.Definition,
 		}
 	}
 
-	definitions = append(definitions, (hostedContextExecutor{service: s}).listTools(ctx)...)
+	contextTools, err := (hostedContextExecutor{service: s}).listTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	definitions = append(definitions, contextTools...)
 	if catalog, err := operatorCatalog(ctx); err == nil && catalog.credential.HostedRole != "account" {
 		for _, definition := range operatortool.ThreadCatalog() {
 			required := apikey.ScopeRead
@@ -137,7 +141,7 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 			required = apikey.ScopeRead
 		}
 		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: required, ResourceKind: "work_item", Action: name})
-		return err == nil, nil
+		return err == nil, operatorAuthorizationError(err)
 	}
 	if !entryKeyToolSupported(name) {
 		return false, nil
@@ -159,7 +163,7 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 			return false, nil
 		}
 		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: projectToolScope(name, definition.Annotations.ReadOnly), ResourceKind: "work_item", Action: name})
-		return err == nil, nil
+		return err == nil, operatorAuthorizationError(err)
 	case "list_projects", "get_native_project", "get_project_policy":
 		definitions := append(operatortool.ProjectCatalog(), operatortool.LocalProjectCatalog()...)
 		definition, found := entryKeyDefinition(definitions, name)
@@ -171,7 +175,7 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 			requirement.ResourceKind = "project"
 		}
 		_, err := s.authorizeCatalog(ctx, requirement)
-		return err == nil, nil
+		return err == nil, operatorAuthorizationError(err)
 	case operatortool.AppUpdates, operatortool.AppBootstrapPayload:
 		if s.config.Hosted == nil || s.database == nil || catalog.credential.Hosted == nil || catalog.credential.HostedRole == "account" || operatorIdentity(catalog.credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
 			return false, nil
@@ -183,12 +187,16 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 		requirement := operatortool.Requirement{Scope: apikey.ScopeRead}
 		if name == operatortool.AppUpdates {
 			requirement.ResourceKind = "runners"
-			if !s.appAllRunnerGrants(ctx, catalog.credential) {
+			allowed, err := s.appAllRunnerGrants(ctx, catalog.credential)
+			if err != nil {
+				return false, operatorAuthorizationError(err)
+			}
+			if !allowed {
 				return false, nil
 			}
 		}
 		_, err := s.authorizeCatalog(ctx, requirement)
-		return err == nil, nil
+		return err == nil, operatorAuthorizationError(err)
 	case "list_threads", "get_thread", "create_thread", "post_to_thread", "resolve_thread":
 		if catalog.credential.HostedRole == "account" {
 			return false, nil
@@ -201,26 +209,26 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 			required = apikey.ScopeWrite
 		}
 		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: required, Action: name})
-		return err == nil, nil
+		return err == nil, operatorAuthorizationError(err)
 	case operatortool.ListComments:
 		if _, found := operatortool.Lookup(name); !found {
 			return false, nil
 		}
 		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ResourceKind: "comment", Action: name})
-		return err == nil, nil
+		return err == nil, operatorAuthorizationError(err)
 	case operatortool.CreateChange, operatortool.PublishChangeVersion, operatortool.ReviewChange:
 		required := apikey.ScopeWrite
 		if name == operatortool.ReviewChange && s.config.Hosted != nil {
 			required = apikey.ScopeAdmin
 		}
 		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: required, ResourceKind: "work_item", Action: name})
-		return err == nil, nil
+		return err == nil, operatorAuthorizationError(err)
 	case operatortool.ListChanges:
 		if _, found := operatortool.Lookup(name); !found {
 			return false, nil
 		}
 		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, Action: name})
-		return err == nil, nil
+		return err == nil, operatorAuthorizationError(err)
 	default:
 		return false, nil
 	}

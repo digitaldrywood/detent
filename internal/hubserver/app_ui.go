@@ -29,7 +29,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/readableurl"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/update"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -108,6 +107,9 @@ func (s *Service) appShell(c echo.Context) error {
 		// JSON API, which enforces membership. A session is enough here, so
 		// a staff account can still reach the support screen.
 		if _, _, err := s.hostedSession(c.Request().Context(), c); err != nil {
+			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+				return s.nativeAPIError(c, classified)
+			}
 			if first := strings.Split(strings.Trim(path, "/"), "/")[0]; readableurl.Validate(first) == nil && strings.Contains(strings.Trim(path, "/"), "/") {
 				return s.nativeAPIError(c, nativeNotFound())
 			}
@@ -117,14 +119,23 @@ func (s *Service) appShell(c echo.Context) error {
 		if len(parts) >= 2 && parts[0] == "projects" {
 			credential, _, err := s.hostedCredential(c.Request().Context(), c)
 			if err != nil {
+				if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+					return s.nativeAPIError(c, classified)
+				}
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 			var project tracker.ProjectID
 			if err := s.database.reader.QueryRowContext(c.Request().Context(), `SELECT p.id FROM projects p WHERE p.organization_id=? AND (p.id=? OR EXISTS(SELECT 1 FROM project_slugs a WHERE a.organization_id=p.organization_id AND a.project_id=p.id AND a.slug=?)) ORDER BY p.id=? DESC LIMIT 1`, s.config.Hosted.OrganizationID, parts[1], parts[1], parts[1]).Scan(&project); err != nil {
+				if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+					return s.nativeAPIError(c, classified)
+				}
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 			scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: project, credential: credential}
 			if err := s.database.authorizeNativeProject(c.Request().Context(), scope); err != nil {
+				if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+					return s.nativeAPIError(c, classified)
+				}
 				return s.nativeAPIError(c, err)
 			}
 		}
@@ -132,6 +143,9 @@ func (s *Service) appShell(c echo.Context) error {
 	if path != "/login" {
 		target, handled, err := s.readableShellPath(c)
 		if err != nil {
+			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+				return s.nativeAPIError(c, classified)
+			}
 			return s.nativeAPIError(c, nativeNotFound())
 		}
 		original := c.Request().URL.Path
@@ -299,6 +313,9 @@ func (s *Service) appUpdates(c echo.Context) error {
 	}
 	credential, status, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
+		if status >= http.StatusInternalServerError {
+			return s.nativeAPIError(c, operatorAuthorizationError(err))
+		}
 		if status == http.StatusForbidden {
 			return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", apiErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
 		}
@@ -314,8 +331,17 @@ func (s *Service) appUpdates(c echo.Context) error {
 func (s *Service) readAppUpdates(ctx context.Context, credential apiCredential) (appUpdates, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	if s.config.Hosted != nil && (credential.Hosted == nil || credential.HostedRole == "viewer" || !s.appAllRunnerGrants(ctx, credential)) {
-		return appUpdates{}, nativeNotFound()
+	if s.config.Hosted != nil {
+		if credential.Hosted == nil || credential.HostedRole == "viewer" {
+			return appUpdates{}, nativeNotFound()
+		}
+		allowed, err := s.appAllRunnerGrants(ctx, credential)
+		if err != nil {
+			return appUpdates{}, err
+		}
+		if !allowed {
+			return appUpdates{}, nativeNotFound()
+		}
 	}
 	current := detentVersion(s.config.Version)
 	minimum := minimumRunnerVersion(current)
@@ -536,7 +562,7 @@ func (s *Service) appBootstrapPayload(c echo.Context) error {
 	credential, status, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
 		if status >= http.StatusInternalServerError {
-			return s.nativeAPIError(c, errors.Join(tenantauth.ErrUnavailable, err))
+			return s.nativeAPIError(c, operatorAuthorizationError(err))
 		}
 		if status == http.StatusForbidden {
 			return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", appBootstrapRefusal{Code: "forbidden", Message: "This account has no access to this organization", Details: appBootstrapRefusalDetails{Organization: s.config.Hosted.OrganizationID, CSRFToken: s.hostedPageCSRF(c)}})
@@ -568,13 +594,21 @@ func (s *Service) readAppBootstrap(ctx context.Context, credential apiCredential
 	defer cancel()
 	organization := s.config.Hosted.OrganizationID
 	manage := credential.HostedRole == "owner" || credential.HostedRole == "admin"
+	manageRunners := false
+	if credential.HostedRole != "viewer" {
+		var err error
+		manageRunners, err = s.appAllRunnerGrants(ctx, credential)
+		if err != nil {
+			return appBootstrap{}, err
+		}
+	}
 	payload := appBootstrap{
 		Organization:  appBootstrapOrganization{ID: organization, Name: organization, PublicURL: s.config.Hosted.PublicURL, Current: true},
 		Organizations: []appBootstrapOrganization{},
 		Actor: appBootstrapActor{
 			PrincipalID: operatorIdentity(credential, organization).PrincipalID, Subject: credential.Hosted.Subject, Email: session.Email, Role: credential.HostedRole,
 			CanManage:        manage,
-			CanManageRunners: credential.HostedRole != "viewer" && s.appAllRunnerGrants(ctx, credential),
+			CanManageRunners: manageRunners,
 		},
 		Projects:   []appBootstrapProject{},
 		APIBase:    "/api/v2/organizations/" + organization,

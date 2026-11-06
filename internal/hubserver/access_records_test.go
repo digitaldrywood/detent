@@ -64,7 +64,7 @@ func TestPostgresTenantAccessWithoutSQLite(t *testing.T) {
 		if err != nil || status != http.StatusOK {
 			t.Fatalf("credential status=%d error=%v", status, err)
 		}
-		if !service.appAllRunnerGrants(t.Context(), credential) {
+		if allowed, err := service.appAllRunnerGrants(t.Context(), credential); err != nil || !allowed {
 			t.Fatal("typed administrator cannot manage runners")
 		}
 		scope := nativeScope{organization: org, project: "prj_example", credential: credential, requireHostedAdmin: true}

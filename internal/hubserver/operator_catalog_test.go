@@ -118,7 +118,7 @@ func TestHubCatalogProviderCalls(t *testing.T) {
 					list func(context.Context) ([]operatortool.Definition, error)
 				}{
 					{"hosted context", func(ctx context.Context) ([]operatortool.Definition, error) {
-						return (hostedContextExecutor{f.service}).listTools(ctx), nil
+						return (hostedContextExecutor{f.service}).listTools(ctx)
 					}},
 					{"work", (nativeOperatorExecutor{f.service}).ListTools},
 					{"projects", (hubProjectExecutor{f.service}).ListTools},

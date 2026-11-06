@@ -406,8 +406,14 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 		}
 	}
 	organizationAdmin := runner.Scope == "organization" && (credential.HostedRole == "owner" || credential.HostedRole == "admin") && (credential.HostedKeyScope == "" || credential.HostedProjectAccess == hostedProjectsAll)
-	if credential.Hosted != nil && !organizationAdmin && !s.appAllRunnerGrants(ctx, credential, projects...) {
-		return runnerauth.Runner{}, nativeNotFound()
+	if credential.Hosted != nil && !organizationAdmin {
+		allowed, err := s.appAllRunnerGrants(ctx, credential, projects...)
+		if err != nil {
+			return runnerauth.Runner{}, err
+		}
+		if !allowed {
+			return runnerauth.Runner{}, nativeNotFound()
+		}
 	}
 	return runner, nil
 }

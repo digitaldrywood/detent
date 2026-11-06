@@ -37,26 +37,38 @@ func (e hostedContextExecutor) credential(ctx context.Context, name, project str
 		return ctx, apiCredential{}, errHostedContextUnavailable
 	}
 	credential, err := currentHubOperator(ctx)
-	if err != nil || credential.Hosted == nil || credential.HostedRole == "account" || operatorIdentity(credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
+	if err != nil {
+		return ctx, apiCredential{}, operatorAuthorizationError(err)
+	}
+	if credential.Hosted == nil || credential.HostedRole == "account" || operatorIdentity(credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
 		return ctx, apiCredential{}, operatortool.ErrAccessDenied
 	}
-	if name == operatortool.AppUpdates && !s.appAllRunnerGrants(ctx, credential) {
-		return ctx, apiCredential{}, operatortool.ErrAccessDenied
+	if name == operatortool.AppUpdates {
+		allowed, err := s.appAllRunnerGrants(ctx, credential)
+		if err != nil {
+			return ctx, apiCredential{}, err
+		}
+		if !allowed {
+			return ctx, apiCredential{}, operatortool.ErrAccessDenied
+		}
 	}
 	return ctx, credential, nil
 }
 
-func (e hostedContextExecutor) listTools(ctx context.Context) []operatortool.Definition {
+func (e hostedContextExecutor) listTools(ctx context.Context) ([]operatortool.Definition, error) {
 	s := e.service
 	if s.config.Hosted == nil {
-		return nil
+		return nil, nil
 	}
 	if s.config.TenantRepository == nil {
-		return nil
+		return nil, nil
 	}
 	catalog, err := operatorCatalog(ctx)
-	if err != nil || catalog.credential.Hosted == nil || catalog.credential.HostedRole == "account" || operatorIdentity(catalog.credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
-		return nil
+	if err != nil {
+		return nil, operatorAuthorizationError(err)
+	}
+	if catalog.credential.Hosted == nil || catalog.credential.HostedRole == "account" || operatorIdentity(catalog.credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
+		return nil, nil
 	}
 	definitions := []operatortool.Definition{}
 	for _, definition := range operatortool.HostedContextCatalog() {
@@ -64,18 +76,26 @@ func (e hostedContextExecutor) listTools(ctx context.Context) []operatortool.Def
 		switch definition.Name {
 		case operatortool.AppUpdates:
 			requirement.ResourceKind = "runners"
-			if !s.appAllRunnerGrants(ctx, catalog.credential) {
+			allowed, err := s.appAllRunnerGrants(ctx, catalog.credential)
+			if err != nil {
+				return nil, err
+			}
+			if !allowed {
 				continue
 			}
 		case operatortool.AppBootstrapPayload:
 		default:
 			continue
 		}
-		if _, err := s.authorizeCatalog(ctx, requirement); err == nil {
-			definitions = append(definitions, definition)
+		if _, err := s.authorizeCatalog(ctx, requirement); err != nil {
+			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+				return nil, classified
+			}
+			continue
 		}
+		definitions = append(definitions, definition)
 	}
-	return definitions
+	return definitions, nil
 }
 
 func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, resultErr error) {
@@ -85,13 +105,14 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 		if resultErr == nil {
 			return
 		}
+		classified := operatorAuthorizationError(resultErr)
 		switch {
 		case errors.Is(resultErr, operatortool.ErrAccessDenied):
-			resultErr = operatortool.ErrAccessDenied
+			resultErr = classified
 		case errors.Is(resultErr, operatortool.ErrInvalidArguments):
 			resultErr = operatortool.ErrInvalidArguments
 		default:
-			resultErr = errHostedContextUnavailable
+			resultErr = classified
 		}
 	}()
 	switch call.Name {
@@ -114,12 +135,12 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 		if credential.SessionHash != "" {
 			session, err = s.storedWebSession(ctx, credential.SessionHash, s.config.now())
 			if err != nil {
-				return result, operatortool.ErrAccessDenied
+				return result, operatorAuthorizationError(err)
 			}
 		} else if credential.HostedKeyScope != "" {
 			member, err := s.activeAccessMember(readCtx, credential.Hosted.Subject)
 			if err != nil {
-				return result, operatortool.ErrAccessDenied
+				return result, operatorAuthorizationError(err)
 			}
 			session.Email = member.Email
 		}
@@ -175,18 +196,18 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 	return operatortool.Result{Content: raw}, nil
 }
 
-func (s *Service) appAllRunnerGrants(ctx context.Context, credential apiCredential, projects ...tracker.ProjectID) bool {
+func (s *Service) appAllRunnerGrants(ctx context.Context, credential apiCredential, projects ...tracker.ProjectID) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if credential.Hosted == nil {
-		return false
+		return false, nil
 	}
 	return s.appAllRunnerGrantsPostgres(ctx, credential, projects)
 }
 
-func (s *Service) appAllRunnerGrantsPostgres(ctx context.Context, credential apiCredential, projects []tracker.ProjectID) bool {
+func (s *Service) appAllRunnerGrantsPostgres(ctx context.Context, credential apiCredential, projects []tracker.ProjectID) (bool, error) {
 	if s.config.TenantRepository == nil {
-		return false
+		return false, errHostedContextUnavailable
 	}
 	var allowed bool
 	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
@@ -194,7 +215,14 @@ func (s *Service) appAllRunnerGrantsPostgres(ctx context.Context, credential api
 		allowed, err = s.appAllRunnerGrantsWith(ctx, reader, credential, projects)
 		return err
 	})
-	return err == nil && allowed
+	if err != nil {
+		classified := operatorAuthorizationError(err)
+		if errors.Is(classified, operatortool.ErrAccessDenied) {
+			return false, nil
+		}
+		return false, classified
+	}
+	return allowed, nil
 }
 
 func (s *Service) appAllRunnerGrantsWith(ctx context.Context, reader tenantstore.Reader, credential apiCredential, projects []tracker.ProjectID) (bool, error) {

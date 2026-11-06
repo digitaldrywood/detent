@@ -543,7 +543,7 @@ func TestHostedSecurityRunnerPermissionsAreSeparate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := f.service.appAllRunnerGrants(t.Context(), credential); got != (test.want == http.StatusOK) {
+			if got, err := f.service.appAllRunnerGrants(t.Context(), credential); err != nil || got != (test.want == http.StatusOK) {
 				t.Fatalf("Cloud runner controls available=%v", got)
 			}
 			catalogCtx := f.service.withOperatorCatalog(ctx, credential, "org_security")
