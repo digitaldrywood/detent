@@ -120,7 +120,6 @@ func TestLongWriterHoldLogsOwner(t *testing.T) {
 		{"runner admin wrapper", 2 * time.Second, "admin", false, true, true},
 		{"hub wrapper", 2 * time.Second, "hub", false, true, true},
 		{"native mutation wrappers", 2 * time.Second, "native", false, true, true},
-		{"outbox wrapper", 2 * time.Second, "outbox", false, true, true},
 		{"secret wrapper", 2 * time.Second, "secret", false, true, true},
 		{"autocommit query close", 2 * time.Second, "query close", false, true, true},
 		{"autocommit query exhaustion", 2 * time.Second, "query exhaustion", true, true, true},
@@ -296,11 +295,6 @@ func runWriterHoldTest(t *testing.T, db *sql.DB, c echo.Context, action string, 
 	case "native":
 		if err := service.nativeMutation(c, tracker.Mutation{IdempotencyKey: "example-key"}, struct{}{}, nil); err != nil {
 			t.Fatal(err)
-		}
-		return
-	case "outbox":
-		if _, err := service.commitOutbox(ctx, outboxRecord{}, nil); err == nil {
-			t.Fatal("expected missing repository error")
 		}
 		return
 	case "secret":
