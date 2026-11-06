@@ -145,6 +145,42 @@ func (q *Queries) PublishRuntime(ctx context.Context, id string) error {
 	return err
 }
 
+const runtimeAdoptionTarget = `-- name: RuntimeAdoptionTarget :one
+SELECT o.generation,o.managed,o.state,r.revision_id,r.object_key,COALESCE(h.prepared_id,'')::text AS applied_revision
+FROM platform.organizations o
+JOIN platform.runtime_heads r ON r.issuer=$1::text
+LEFT JOIN public.hosted_runtime_heads h ON h.organization_id=o.id
+WHERE o.id=$2::text
+`
+
+type RuntimeAdoptionTargetParams struct {
+	Issuer         string
+	OrganizationID string
+}
+
+type RuntimeAdoptionTargetRow struct {
+	Generation      int64
+	Managed         bool
+	State           string
+	RevisionID      string
+	ObjectKey       string
+	AppliedRevision string
+}
+
+func (q *Queries) RuntimeAdoptionTarget(ctx context.Context, arg RuntimeAdoptionTargetParams) (RuntimeAdoptionTargetRow, error) {
+	row := q.db.QueryRow(ctx, runtimeAdoptionTarget, arg.Issuer, arg.OrganizationID)
+	var i RuntimeAdoptionTargetRow
+	err := row.Scan(
+		&i.Generation,
+		&i.Managed,
+		&i.State,
+		&i.RevisionID,
+		&i.ObjectKey,
+		&i.AppliedRevision,
+	)
+	return i, err
+}
+
 const runtimePublished = `-- name: RuntimePublished :one
 SELECT ($2::text='') OR EXISTS(SELECT 1 FROM public.hosted_runtime_revisions r WHERE r.organization_id=$1 AND r.id=$2 AND (r.local_published OR EXISTS(SELECT 1 FROM public.hosted_runtime_publications p WHERE p.id=r.id)))
 `
@@ -159,6 +195,40 @@ func (q *Queries) RuntimePublished(ctx context.Context, arg RuntimePublishedPara
 	var column_1 pgtype.Bool
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const runtimeTenantPage = `-- name: RuntimeTenantPage :many
+SELECT id,generation FROM platform.organizations WHERE id>$1::text ORDER BY id LIMIT $2::integer
+`
+
+type RuntimeTenantPageParams struct {
+	AfterID   string
+	PageLimit int32
+}
+
+type RuntimeTenantPageRow struct {
+	ID         string
+	Generation int64
+}
+
+func (q *Queries) RuntimeTenantPage(ctx context.Context, arg RuntimeTenantPageParams) ([]RuntimeTenantPageRow, error) {
+	rows, err := q.db.Query(ctx, runtimeTenantPage, arg.AfterID, arg.PageLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RuntimeTenantPageRow{}
+	for rows.Next() {
+		var i RuntimeTenantPageRow
+		if err := rows.Scan(&i.ID, &i.Generation); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const setEntryRuntime = `-- name: SetEntryRuntime :exec
