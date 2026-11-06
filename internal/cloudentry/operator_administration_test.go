@@ -160,7 +160,7 @@ func TestEntryAdministrationContext(t *testing.T) {
 				f.provider.removeMember(user, "porg_alpha")
 			}
 			if scenario == "revoked session" {
-				if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE sessions SET revoked_at='revoked'"); err != nil {
+				if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE sessions SET revoked_at=?", f.service.config.now()); err != nil {
 					t.Fatal(err)
 				}
 			}

@@ -149,15 +149,10 @@ func TestEntryHealthRequiresServingTenants(t *testing.T) {
 
 func TestEntryHealthCompletesWithoutTenantDatabases(t *testing.T) {
 	t.Parallel()
-	f := newEntryFixture(t)
-	for _, statement := range []string{
-		"DROP TRIGGER organization_delete",
-		"DELETE FROM organization_events",
-		"DELETE FROM organizations",
-	} {
-		if _, err := f.service.registry.store.db.ExecContext(t.Context(), statement); err != nil {
-			t.Fatal(err)
-		}
+	admin := entryPostgresDatabase(t)
+	f := newEntryFixtureWithConfig(t, nil, []func(*Config){entryPostgresConfig(t, admin)})
+	if _, err := admin.ExecContext(t.Context(), "TRUNCATE platform.organizations CASCADE"); err != nil {
+		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
 	f.service.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil))
@@ -168,6 +163,7 @@ func TestEntryHealthCompletesWithoutTenantDatabases(t *testing.T) {
 		RegistrySchemaApplicable bool   `json:"registry_schema_applicable"`
 		AuthSchemaVersion        int64  `json:"auth_schema_version"`
 		AuthSchemaApplicable     bool   `json:"auth_schema_applicable"`
+		PlatformSchemaVersion    int64  `json:"platform_schema_version"`
 		PlatformSchemaApplicable bool   `json:"platform_schema_applicable"`
 		SchemaFactsComplete      bool   `json:"schema_facts_complete"`
 		Status                   string `json:"status"`
@@ -175,7 +171,7 @@ func TestEntryHealthCompletesWithoutTenantDatabases(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &health); err != nil {
 		t.Fatal(err)
 	}
-	if response.Code != http.StatusOK || health.Status != "ok" || !health.SchemaFactsComplete || health.HubSchemaApplicable || health.SchemaVersion != 0 || !health.RegistrySchemaApplicable || health.RegistrySchemaVersion == 0 || !health.AuthSchemaApplicable || health.AuthSchemaVersion == 0 || health.PlatformSchemaApplicable {
+	if response.Code != http.StatusOK || health.Status != "ok" || !health.SchemaFactsComplete || health.HubSchemaApplicable || health.SchemaVersion != 0 || health.RegistrySchemaApplicable || health.RegistrySchemaVersion != 0 || health.AuthSchemaApplicable || health.AuthSchemaVersion != 0 || !health.PlatformSchemaApplicable || health.PlatformSchemaVersion == 0 {
 		t.Fatalf("empty registry health = %d %+v", response.Code, health)
 	}
 }
