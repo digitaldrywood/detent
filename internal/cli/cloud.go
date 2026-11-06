@@ -287,8 +287,8 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		}
 	}
 	if config.Storage.MaxConnections == 0 && config.Storage.ServingConnections == 0 && config.Storage.BackgroundConnections == 0 {
-		config.Storage.MaxConnections = 10
-		config.Storage.ServingConnections = 8
+		config.Storage.MaxConnections = 6
+		config.Storage.ServingConnections = 4
 		config.Storage.BackgroundConnections = 1
 	}
 	if config.Storage.PostgresDSNEnv != "" && !validEnvName(config.Storage.PostgresDSNEnv) {

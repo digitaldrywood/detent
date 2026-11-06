@@ -157,8 +157,8 @@ func TestReadCloudConfig(t *testing.T) {
 			if err == nil && (config.GitHubUserClientID != test.env["DETENT_HUB_GITHUB_APP_CLIENT_ID"] || config.GitHubUserClientSecret != test.env["DETENT_HUB_GITHUB_APP_CLIENT_SECRET"]) {
 				t.Fatal("entry user authorization credentials were not read from the environment")
 			}
-			if err == nil && test.name == "valid" && (config.Storage.Pool.MaxConnections != 10 || config.Storage.Pool.ServingConnections != 8 || config.Storage.Pool.BackgroundConnections != 1) {
-				t.Fatal("omitted platform budgets did not select 10/8/1")
+			if err == nil && test.name == "valid" && (config.Storage.Pool.MaxConnections != 6 || config.Storage.Pool.ServingConnections != 4 || config.Storage.Pool.BackgroundConnections != 1) {
+				t.Fatal("omitted platform budgets did not select 6/4/1")
 			}
 			if err == nil && test.name == "postgres" {
 				if config.Storage.Backend != "postgres" || config.Storage.PostgresDSN != test.env["EXAMPLE_PLATFORM_DSN"] {
