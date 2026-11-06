@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 )
 
@@ -84,7 +85,9 @@ func (s *session) BoardSummaryModel(ctx context.Context, selection viewstore.Boa
 			return nil, corestore.ErrNotFound
 		}
 	}
-	rows, err := s.db.Query(ctx, `SELECT c.kind,c.state,c.total,c.running,c.shipped_1h,c.shipped_24h,c.shipped_7d,c.cancelled_1h,c.cancelled_24h,c.cancelled_7d,c.projected_at,coalesce(s.sequence,0) FROM native_board_page_summaries c LEFT JOIN native_board_sequences s ON s.organization_id=c.organization_id AND s.project_id=c.project_id WHERE c.organization_id=$1 AND c.project_id=$2 AND c.audience=$3 AND c.archive_scope=$4 AND c.exclude_workspace=$5 ORDER BY c.kind,c.state LIMIT 204`, s.organization, selection.ProjectID, audience, archive, selection.ExcludeWorkspace)
+	rows, err := s.db.Query(ctx, `WITH readiness AS MATERIALIZED (SELECT EXISTS(SELECT 1 FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2) AS pending)
+(SELECT c.kind,c.state,c.total,c.running,c.shipped_1h,c.shipped_24h,c.shipped_7d,c.cancelled_1h,c.cancelled_24h,c.cancelled_7d,c.projected_at,coalesce(s.sequence,0) FROM native_board_page_summaries c LEFT JOIN native_board_sequences s ON s.organization_id=c.organization_id AND s.project_id=c.project_id WHERE c.organization_id=$1 AND c.project_id=$2 AND c.audience=$3 AND c.archive_scope=$4 AND c.exclude_workspace=$5 AND NOT (SELECT pending FROM readiness) ORDER BY c.kind,c.state LIMIT 204)
+UNION ALL SELECT '','',0,0,0,0,0,0,0,0,'0001-01-01'::timestamptz,-1 WHERE (SELECT pending FROM readiness)`, s.organization, selection.ProjectID, audience, archive, selection.ExcludeWorkspace)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -94,6 +97,9 @@ func (s *session) BoardSummaryModel(ctx context.Context, selection viewstore.Boa
 		var row viewstore.BoardSummaryRecord
 		if err := rows.Scan(&row.Kind, &row.State, &row.Total, &row.Running, &row.Shipped1h, &row.Shipped24h, &row.Shipped7d, &row.Cancelled1h, &row.Cancelled24h, &row.Cancelled7d, &row.ProjectedAt, &row.Sequence); err != nil {
 			return nil, mapError(ctx, err)
+		}
+		if row.Sequence == -1 {
+			return nil, searchstore.ErrIndexPending
 		}
 		result = append(result, row)
 	}
