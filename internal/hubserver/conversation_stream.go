@@ -39,8 +39,11 @@ const (
 
 // conversationStream writes server-sent event frames for one subscriber.
 type conversationStream struct {
-	response  *echo.Response
-	authorize func() error
+	response          *echo.Response
+	authorize         func() error
+	now               func() time.Time
+	nextAuthorization time.Time
+	authorizationErr  error
 }
 
 func newConversationStream(c echo.Context) *conversationStream {
@@ -51,14 +54,22 @@ func newConversationStream(c echo.Context) *conversationStream {
 	header.Set("X-Accel-Buffering", "no")
 	response.WriteHeader(http.StatusOK)
 	response.Flush()
-	return &conversationStream{response: response}
+	return &conversationStream{response: response, now: time.Now}
 }
 
 // event writes a committed event with its sequence as the frame id.
 func (s *conversationStream) event(event conversation.Event) error {
 	if s.authorize != nil {
-		if err := s.authorize(); err != nil {
-			return err
+		if s.authorizationErr != nil {
+			return s.authorizationErr
+		}
+		now := s.now()
+		if !now.Before(s.nextAuthorization) {
+			s.nextAuthorization = now.Add(conversationStreamAuthorize)
+			if err := s.authorize(); err != nil {
+				s.authorizationErr = err
+				return err
+			}
 		}
 	}
 	if _, err := fmt.Fprintf(s.response, "id: %d\nevent: %s\ndata: %s\n\n", event.Seq, event.Type, event.Data); err != nil {
@@ -134,6 +145,7 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	stream := newConversationStream(c)
+	stream.now = s.config.now
 	if scope.credential.EntryKey != nil {
 		stream.authorize = func() error {
 			_, err := s.reauthorizeConversationStream(c, &scope, record.ID)
@@ -153,6 +165,7 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 	for {
 		// The re-read proves the stream may continue: a settled conversation
 		// keeps streaming, only a revoked audience closes it.
+		stream.nextAuthorization = stream.now().Add(conversationStreamAuthorize)
 		authorized, err := s.reauthorizeConversationStream(c, &scope, record.ID)
 		if err != nil {
 			reason := conversationStreamCloseReason(err)
