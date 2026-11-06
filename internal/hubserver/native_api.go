@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -125,6 +126,9 @@ func operatorAuthorizationCause(err error) string {
 	}{
 		{context.DeadlineExceeded, "deadline_exceeded"},
 		{context.Canceled, "cancelled"},
+		{corestore.ErrSerializationFailure, "serialization_failure"},
+		{sql.ErrConnDone, "connection_closed"},
+		{driver.ErrBadConn, "bad_connection"},
 		{accessstore.ErrDenied, "access_denied"},
 		{auth.ErrHostedIdentity, "hosted_identity"},
 		{operatortool.ErrAccessDenied, "operator_access_denied"},
@@ -154,8 +158,25 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 			Archive *tracker.ArchiveDescriptor `json:"archive"`
 		}{"archive_" + archive.Archive.Availability, archive.Archive})
 	}
-	if errors.Is(operatorAuthorizationError(err), operatortool.ErrProviderUnavailable) {
-		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: auth.HostedReasonProviderUnavailable, Message: operatortool.ErrProviderUnavailable.Error()})
+	var authorization *operatorAuthorizationFailure
+	var deniedAuthorization *operatortool.AuthorizationError
+	if errors.As(err, &deniedAuthorization) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable || errors.Is(err, operatortool.ErrProviderUnavailable) {
+		if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+			err = classified
+		}
+	}
+	if errors.As(err, &authorization) {
+		code := "service_unavailable"
+		if errors.Is(authorization, operatortool.ErrProviderUnavailable) {
+			code = auth.HostedReasonProviderUnavailable
+		}
+		attrs := []any{"error", authorization, "authorization_cause", operatorAuthorizationCause(authorization.cause), "cause_class", fmt.Sprintf("%T", authorization.cause)}
+		if deniedAuthorization != nil {
+			attrs = append(attrs, "authorization_stage", deniedAuthorization.Stage)
+		}
+		attrs = append(attrs, postgresErrorAttributes(authorization.cause)...)
+		s.config.Logger.Error("operator authorization unavailable", attrs...)
+		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: code, Message: authorization.Error()})
 	}
 	var export *operatortool.WorkBulkExportItemError
 	if errors.As(err, &export) {

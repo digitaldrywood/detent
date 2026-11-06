@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net/http"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 
@@ -62,13 +61,11 @@ func (s *Service) entryKeyReadAuthority(next echo.HandlerFunc) echo.HandlerFunc 
 		ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 		defer cancel()
 		c.SetRequest(c.Request().WithContext(ctx))
-		status := http.StatusOK
 		read := func() error {
 			return repository.ReadRequest(c.Request().Context(), s.accessOrganization(), func(ctx context.Context) error {
 				ctx = context.WithValue(ctx, entryBoardReadKey{}, &entryBoardRead{})
-				credential, code, err := s.entryKeyCredential(ctx, claims)
+				credential, _, err := s.entryKeyCredential(ctx, claims)
 				if err != nil {
-					status = code
 					return err
 				}
 				c.SetRequest(c.Request().WithContext(context.WithValue(ctx, entryBoardReadKey{}, &entryBoardRead{credential: credential})))
@@ -78,13 +75,12 @@ func (s *Service) entryKeyReadAuthority(next echo.HandlerFunc) echo.HandlerFunc 
 		err = read()
 		if errors.Is(err, corestore.ErrNotFound) && claims.Key.Kind == "service" {
 			if err := s.ensureEntryServicePrincipal(c.Request().Context(), claims); err != nil {
-				return s.nativeAPIError(c, err)
+				return s.nativeAPIError(c, operatorAuthorizationError(err))
 			}
-			status = http.StatusOK
 			err = read()
 		}
-		if status != http.StatusOK {
-			return s.refusedAPIError(c, status, "access_denied", operatortool.ErrAccessDenied.Error(), apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
+		if err != nil && !c.Response().Committed {
+			return s.nativeAPIError(c, operatorAuthorizationError(err))
 		}
 		return err
 	}

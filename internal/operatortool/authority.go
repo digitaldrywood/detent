@@ -128,6 +128,9 @@ func AuthorizeCurrent(ctx context.Context, requirement Requirement) (context.Con
 	if errors.Is(err, ErrProviderUnavailable) {
 		return ctx, ErrProviderUnavailable
 	}
+	if errors.Is(err, ErrServiceUnavailable) {
+		return ctx, err
+	}
 	if err != nil {
 		return denied("resolve", err)
 	}
@@ -143,6 +146,9 @@ func AuthorizeCurrent(ctx context.Context, requirement Requirement) (context.Con
 	if err := authority.Check(ctx, requirement); err != nil {
 		if errors.Is(err, ErrProviderUnavailable) {
 			return ctx, ErrProviderUnavailable
+		}
+		if errors.Is(err, ErrServiceUnavailable) {
+			return ctx, err
 		}
 		return denied("check", err)
 	}

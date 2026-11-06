@@ -126,7 +126,7 @@ func (s *Service) entryAccessKeyCredential(ctx context.Context, claims cloudasse
 	}
 	if _, scoped := entryBoardCredential(ctx); !scoped && claims.Key.Kind == "service" {
 		if err := s.ensureEntryServicePrincipal(ctx, claims); err != nil {
-			return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
+			return apiCredential{}, http.StatusForbidden, operatorAuthorizationError(err)
 		}
 	}
 	err := s.accessRead(ctx, s.accessOrganization(), func(w tenantstore.Reader) error {
@@ -169,7 +169,7 @@ func (s *Service) entryAccessKeyCredential(ctx context.Context, claims cloudasse
 		return apiCredential{}, http.StatusForbidden, err
 	}
 	if err != nil {
-		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
+		return apiCredential{}, http.StatusForbidden, operatorAuthorizationError(err)
 	}
 	return credential, http.StatusOK, nil
 }

@@ -377,8 +377,8 @@ func TestNativeAPIError(t *testing.T) {
 		{"validation", "invalid_request", "This runner has active work. Drain it and wait for its leases to finish or expire before removing it.", "WARN", &nativeError{Code: "invalid_request", Message: "This runner has active work. Drain it and wait for its leases to finish or expire before removing it.", status: http.StatusUnprocessableEntity, publicMessage: true}, http.StatusUnprocessableEntity},
 		{"key refusal", "scope_required", "Write access is required", "WARN", &apikey.Refusal{Code: "scope_required", Message: "Write access is required"}, http.StatusForbidden},
 		{"access denied", "access_denied", "operator access is unavailable", "WARN", operatortool.ErrAccessDenied, http.StatusForbidden},
-		{"authorization diagnostic", "access_denied", "operator access is unavailable", "WARN", &operatortool.AuthorizationError{Stage: "check", Cause: errors.New("private-context"), PrincipalID: "principal_example", OrganizationID: "org_example", ProjectID: "prj_example"}, http.StatusForbidden},
-		{"authorization timeout", "access_denied", "operator access is unavailable", "WARN", &operatortool.AuthorizationError{Stage: "resolve", Cause: context.DeadlineExceeded}, http.StatusForbidden},
+		{"authorization diagnostic", "service_unavailable", operatortool.ErrServiceUnavailable.Error(), "ERROR", &operatortool.AuthorizationError{Stage: "check", Cause: errors.New("private-context"), PrincipalID: "principal_example", OrganizationID: "org_example", ProjectID: "prj_example"}, http.StatusServiceUnavailable},
+		{"authorization timeout", "service_unavailable", operatortool.ErrServiceUnavailable.Error(), "ERROR", &operatortool.AuthorizationError{Stage: "resolve", Cause: context.DeadlineExceeded}, http.StatusServiceUnavailable},
 		{"expired session", "access_denied", "Access is no longer available", "WARN", auth.ErrInvalidSession, http.StatusForbidden},
 		{"allowance", "allowance_exhausted", "Hosted active_runners allowance reached (2 of 2). Existing data, reading, export and billing remain available.", "WARN", &hostedLimitError{Resource: "active_runners", Allowance: 2, Consumption: 2}, http.StatusTooManyRequests},
 		{"request refusal", "invalid_request", "A project is required", "WARN", &operatortool.RequestError{Code: "invalid_request", Message: "A project is required"}, http.StatusUnprocessableEntity},
@@ -462,7 +462,7 @@ func TestNativeAPIError(t *testing.T) {
 						t.Fatalf("authorization timeout cause was lost: %v", entry)
 					}
 					if test.name == "authorization diagnostic" {
-						for key, want := range map[string]any{"authorization_stage": "check", "authorization_cause": "unclassified", "cause_class": "*errors.errorString", "principal_id": "principal_example", "authorization_organization_id": "org_example", "authorization_project_id": "prj_example"} {
+						for key, want := range map[string]any{"authorization_stage": "check", "authorization_cause": "unclassified", "cause_class": "*errors.errorString"} {
 							if entry[key] != want {
 								t.Errorf("diagnostic %s = %v, want %v", key, entry[key], want)
 							}

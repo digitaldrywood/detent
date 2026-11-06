@@ -26,6 +26,7 @@ func TestCurrentAuthorityExecution(t *testing.T) {
 		stage               string
 		message             string
 		providerUnavailable bool
+		serviceUnavailable  bool
 	}{
 		{name: "current grant"},
 		{name: "provider unavailable resolving authority", denied: true, providerUnavailable: true, change: func(c *Connection, a *Authority) {
@@ -37,6 +38,12 @@ func TestCurrentAuthorityExecution(t *testing.T) {
 			a.Check = func(context.Context, Requirement) error {
 				return fmt.Errorf("private provider detail: %w", ErrProviderUnavailable)
 			}
+		}},
+		{name: "service unavailable resolving authority", denied: true, serviceUnavailable: true, change: func(c *Connection, a *Authority) {
+			c.Resolve = func(context.Context) (Authority, error) { return Authority{}, ErrServiceUnavailable }
+		}},
+		{name: "service unavailable checking authority", denied: true, serviceUnavailable: true, change: func(c *Connection, a *Authority) {
+			a.Check = func(context.Context, Requirement) error { return ErrServiceUnavailable }
 		}},
 		{name: "revoked credential", denied: true, cause: lookupFailure, stage: "resolve", change: func(c *Connection, a *Authority) {
 			c.Resolve = func(context.Context) (Authority, error) { return Authority{}, lookupFailure }
@@ -76,6 +83,9 @@ func TestCurrentAuthorityExecution(t *testing.T) {
 				wantError := ErrAccessDenied
 				if test.providerUnavailable {
 					wantError = ErrProviderUnavailable
+				}
+				if test.serviceUnavailable {
+					wantError = ErrServiceUnavailable
 				}
 				if !errors.Is(err, wantError) || reads != 0 {
 					t.Fatalf("err=%v reads=%d", err, reads)

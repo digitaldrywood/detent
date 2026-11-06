@@ -2,7 +2,7 @@ package hubserver
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 
@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/staticasset"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -70,25 +71,25 @@ func (s *Service) localAppCredential(c echo.Context) (apiCredential, int, error)
 
 func (s *Service) localAppCredentialContext(ctx context.Context, c echo.Context) (apiCredential, int, error) {
 	if s.config.Hosted != nil {
-		return apiCredential{}, http.StatusUnauthorized, errors.New("local authentication is unavailable")
+		return apiCredential{}, http.StatusUnauthorized, fmt.Errorf("%w: local authentication is unavailable", operatortool.ErrAccessDenied)
 	}
 	token, err := apiBearerToken(c)
 	if username, password, ok := c.Request().BasicAuth(); ok && username == "operator" {
 		token, err = password, nil
 	}
 	if err != nil || len(token) > maxBearerTokenBytes || token == "" {
-		return apiCredential{}, http.StatusUnauthorized, errors.New("local credentials are required")
+		return apiCredential{}, http.StatusUnauthorized, fmt.Errorf("%w: local credentials are required", operatortool.ErrAccessDenied)
 	}
 	credential, status, err := s.authenticateAPIToken(ctx, token, "", "")
 	if err != nil {
 		return apiCredential{}, status, err
 	}
 	if credential.Scope != apiScopeAdmin || credential.NativeOnly || credential.Runner.RunnerID != "" {
-		return apiCredential{}, http.StatusForbidden, errors.New("local browser access requires an administrator")
+		return apiCredential{}, http.StatusForbidden, fmt.Errorf("%w: local browser access requires an administrator", operatortool.ErrAccessDenied)
 	}
 	if _, _, basic := c.Request().BasicAuth(); basic {
 		if c.Request().Header.Get("Sec-Fetch-Site") == "cross-site" {
-			return apiCredential{}, http.StatusForbidden, errors.New("cross-site browser access is unavailable")
+			return apiCredential{}, http.StatusForbidden, fmt.Errorf("%w: cross-site browser access is unavailable", operatortool.ErrAccessDenied)
 		}
 		if !hostedReadRequest(c) {
 			origin, err := url.Parse(c.Request().Header.Get("Origin"))
@@ -97,7 +98,7 @@ func (s *Service) localAppCredentialContext(ctx context.Context, c echo.Context)
 				scheme = "https"
 			}
 			if err != nil || origin.Scheme != scheme || origin.Host != c.Request().Host || origin.User != nil || origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" {
-				return apiCredential{}, http.StatusForbidden, errors.New("same-origin browser access is required")
+				return apiCredential{}, http.StatusForbidden, fmt.Errorf("%w: same-origin browser access is required", operatortool.ErrAccessDenied)
 			}
 		}
 	}

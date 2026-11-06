@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -180,7 +181,7 @@ func (s *Service) authenticateAPIRequestContext(ctx context.Context, c echo.Cont
 	}
 	if s.config.TenantRepository != nil && organization != "" {
 		if hinted := strings.TrimSpace(c.Request().Header.Get("X-Detent-Organization")); hinted != "" && hinted != organization {
-			return apiCredential{}, http.StatusUnauthorized, errors.New("organization scope does not match request")
+			return apiCredential{}, http.StatusUnauthorized, fmt.Errorf("%w: organization scope does not match request", operatortool.ErrAccessDenied)
 		}
 		return s.authenticateTenantAPIHash(ctx, tracker.OrganizationID(organization), apikey.HashToken(token), renewalRunner, renewalOrganization)
 	}
@@ -213,20 +214,20 @@ func (credential apiCredential) timeValid(now time.Time, created string, expires
 
 func apiBearerToken(c echo.Context) (string, error) {
 	if c == nil || c.Request() == nil {
-		return "", errors.New("request is required")
+		return "", fmt.Errorf("%w: request is required", operatortool.ErrAccessDenied)
 	}
 	authorizations := c.Request().Header.Values(echo.HeaderAuthorization)
 	if len(authorizations) != 1 {
-		return "", errors.New("one authorization header is required")
+		return "", fmt.Errorf("%w: one authorization header is required", operatortool.ErrAccessDenied)
 	}
 	value := strings.TrimSpace(authorizations[0])
 	scheme, token, ok := strings.Cut(value, " ")
 	if !ok || !strings.EqualFold(scheme, "Bearer") {
-		return "", errors.New("bearer authorization is required")
+		return "", fmt.Errorf("%w: bearer authorization is required", operatortool.ErrAccessDenied)
 	}
 	token = strings.TrimSpace(token)
 	if token == "" || len(token) > maxBearerTokenBytes {
-		return "", errors.New("bearer token is invalid")
+		return "", fmt.Errorf("%w: bearer token is invalid", operatortool.ErrAccessDenied)
 	}
 	return token, nil
 }

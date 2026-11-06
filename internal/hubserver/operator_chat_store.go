@@ -115,7 +115,10 @@ func (s *Service) currentEntryOriginClaims(ctx context.Context, encoded string) 
 		return cloudassert.Claims{}, operatortool.ErrAccessDenied
 	}
 	claims, err := s.config.Hosted.SharedEntry.ResolveKey(ctx, origin)
-	if err != nil || claims.Key == nil || claims.Key.ID != origin.KeyID || claims.Key.CredentialBinding != origin.CredentialBinding || claims.Subject != origin.Subject || claims.Issuer != origin.Issuer || claims.Generation != origin.Generation {
+	if err != nil {
+		return cloudassert.Claims{}, operatorAuthorizationError(err)
+	}
+	if claims.Key == nil || claims.Key.ID != origin.KeyID || claims.Key.CredentialBinding != origin.CredentialBinding || claims.Subject != origin.Subject || claims.Issuer != origin.Issuer || claims.Generation != origin.Generation {
 		return cloudassert.Claims{}, operatortool.ErrAccessDenied
 	}
 	return claims, nil
