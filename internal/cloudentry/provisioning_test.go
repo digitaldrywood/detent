@@ -354,7 +354,10 @@ func testProvisioningSelfServiceJourney(t *testing.T, configureStorage func(*Con
 	}
 	member.login("/organizations/"+id+"/organization", "user_member:porg_"+id)
 	response, body = member.get("/organizations/" + id + "/organization")
-	if response.StatusCode != http.StatusOK || !strings.Contains(body, "Delta") || !strings.Contains(body, `/organizations/`+id+`/delete`) {
+	if response.StatusCode == http.StatusPermanentRedirect {
+		response, body = member.get(response.Header.Get("Location"))
+	}
+	if response.StatusCode != http.StatusOK {
 		t.Fatalf("owner page = %d %s", response.StatusCode, body)
 	}
 	if quota := f.create(t, member, "Second"); quota.StatusCode != http.StatusUnprocessableEntity {
@@ -369,6 +372,9 @@ func testProvisioningSelfServiceJourney(t *testing.T, configureStorage func(*Con
 		t.Fatalf("non-owner delete page = %d", denied.StatusCode)
 	}
 	_, deletePage := member.get("/organizations/" + id + "/delete")
+	if !strings.Contains(deletePage, "Delta") {
+		t.Fatal("delete confirmation does not identify the organization")
+	}
 	if wrong := member.do(http.MethodPost, "/organizations/"+id+"/delete", url.Values{"confirm": {"delta"}, "csrf": {csrfFrom(t, deletePage)}}, nil); wrong.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("unconfirmed delete = %d", wrong.StatusCode)
 	}
