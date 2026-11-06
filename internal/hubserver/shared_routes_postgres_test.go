@@ -133,7 +133,7 @@ func TestPostgresSharedKeyManagementRoutes(t *testing.T) {
 }
 
 func TestPostgresSharedPlatformReadRoutes(t *testing.T) {
-	f := newSharedRouteFixture(t)
+	f := newSharedRouteFixture(t, sharedRouteBillingConfig)
 	for org := range f.services {
 		for _, resource := range []string{"members", "runners", "projects", "usage", "users"} {
 			t.Run(org+"/"+resource, func(t *testing.T) {
@@ -141,6 +141,12 @@ func TestPostgresSharedPlatformReadRoutes(t *testing.T) {
 				response := f.request(t, org, path, `{}`, nil)
 				if response.Code != http.StatusOK {
 					t.Fatalf("allowed=%d %s", response.Code, response.Body)
+				}
+				if resource == "usage" {
+					var usage platformTenantUsage
+					if json.Unmarshal(response.Body.Bytes(), &usage) != nil || usage.Allowances["projects"].Limit == nil || usage.Allowances["projects"].Used != 0 || usage.WindowEndsAt == "" {
+						t.Fatalf("tenant usage: %s", response.Body)
+					}
 				}
 				if resource == "users" && !strings.Contains(response.Body.String(), org+"_owner@example.test") {
 					t.Fatalf("missing tenant owner: %s", response.Body)

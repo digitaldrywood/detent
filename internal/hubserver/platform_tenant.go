@@ -23,6 +23,7 @@ type platformTenantAllowance struct {
 }
 
 type platformTenantUsage struct {
+	Unavailable  []string                           `json:"unavailable,omitempty"`
 	WindowEndsAt string                             `json:"window_ends_at"`
 	Allowances   map[string]platformTenantAllowance `json:"allowances"`
 }
@@ -30,6 +31,18 @@ type platformTenantUsage struct {
 func (s *Service) platformTenantUsage(c echo.Context) error {
 	usage := platformTenantUsage{Allowances: map[string]platformTenantAllowance{}}
 	if s.database.plans() == nil {
+		return c.JSON(http.StatusOK, usage)
+	}
+	if s.database.postgres != nil {
+		fleet, err := s.hostedFleetUsageTenant(c.Request().Context())
+		if err != nil {
+			return s.internalAPIError(c, "usage_unavailable", "Usage is unavailable", err)
+		}
+		usage.WindowEndsAt, usage.Unavailable = fleet.WindowEndsAt, fleet.Unavailable
+		for name, allowance := range fleet.Allowances {
+			limit := allowance.Limit
+			usage.Allowances[name] = platformTenantAllowance{Used: allowance.Used, Limit: &limit}
+		}
 		return c.JSON(http.StatusOK, usage)
 	}
 	entitlement, err := s.database.hostedPlanUsage(c.Request().Context(), s.config.now())
