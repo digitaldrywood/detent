@@ -2,8 +2,6 @@ package platformstore
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -75,59 +73,14 @@ func (r *Repository) CreateKey(ctx context.Context, k Key) error {
 }
 
 func (r *Repository) KeyAuthority(ctx context.Context, hash string, organization tracker.OrganizationID, project tracker.ProjectID) (apikey.KeyAuthority, error) {
-	var authority apikey.KeyAuthority
-	err := r.read(ctx, corestore.Serving, func(tx pgquery.DBTX) error {
-		var k Key
-		var blocked, approved bool
-		var policy, access string
-		err := tx.QueryRow(ctx, `SELECT k.id,k.kind,k.permission,k.access_context,coalesce(o.project_access,'all'),coalesce(o.blocked,false),o.approved_at IS NOT NULL,coalesce(p.personal_keys,'allowed')
- FROM platform.access_keys k
- JOIN platform.organizations tenant ON tenant.id=$2 AND tenant.state='ready'
- LEFT JOIN platform.access_key_organizations o ON o.key_id=k.id AND o.organization_id=$2
- LEFT JOIN platform.organization_key_policy p ON p.organization_id=$2
- WHERE k.token_hash=$1 AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>$3)
- AND ((k.kind='personal' AND k.access_context='global') OR o.selected)
- AND (k.kind='personal' OR k.service_organization_id=$2)`, hash, organization, r.now()).Scan(&k.ID, &k.Kind, &k.Permission, &k.AccessContext, &access, &blocked, &approved, &policy)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNoSession
-		}
-		if err != nil {
-			return err
-		}
-		if blocked || k.Kind == "personal" && (policy == "blocked" || policy == "approval" && !approved) {
-			return ErrNoSession
-		}
-		sum := sha256.Sum256([]byte("detent-entry-coordinator-credential-v1\x00" + hash))
-		authority = apikey.KeyAuthority{ID: k.ID, CredentialBinding: hex.EncodeToString(sum[:]), Kind: k.Kind, Permission: apikey.Scope(k.Permission), ProjectContext: apikey.ProjectContext{Access: access}}
-		rows, err := tx.Query(ctx, `SELECT project_id,false AS blocked FROM platform.access_key_projects WHERE organization_id=$1 AND key_id=$2 UNION ALL SELECT project_id,true AS blocked FROM platform.access_key_blocked_projects WHERE organization_id=$1 AND key_id=$2 ORDER BY project_id LIMIT 401`, organization, k.ID)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var id string
-			var blocked bool
-			if err := rows.Scan(&id, &blocked); err != nil {
-				return err
-			}
-			if blocked {
-				authority.BlockedProjects = append(authority.BlockedProjects, id)
-			} else if access != "all" {
-				authority.Projects = append(authority.Projects, id)
-			}
-		}
-		if err := rows.Err(); err != nil {
-			return err
-		}
-		if !authority.Allows(string(project)) {
-			return ErrNoSession
-		}
-		return nil
-	})
+	result, err := r.PlatformKey(ctx, tenantauth.PlatformKeyRequest{Organization: organization, CredentialHash: hash})
 	if err != nil {
 		return apikey.KeyAuthority{}, err
 	}
-	return authority, nil
+	if !result.Authority.Allows(string(project)) {
+		return apikey.KeyAuthority{}, errors.Join(ErrNoSession, tenantauth.ErrDenied, &apikey.Refusal{Code: "key_project_denied", Message: "The project is outside this key's access context"})
+	}
+	return result.Authority, nil
 }
 
 func (r *Repository) SetPersonalKeyPolicy(ctx context.Context, organization tracker.OrganizationID, policy string) error {

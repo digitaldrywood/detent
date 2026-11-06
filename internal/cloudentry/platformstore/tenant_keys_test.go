@@ -14,11 +14,38 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type countedTracer struct{ calls *atomic.Int64 }
+
+func TestTenantKeyCorruptionIsDenied(t *testing.T) {
+	db := template.Database(t)
+	r := repository(t, db, testConfig(t))
+	seedOrganizations(t, r)
+	if _, err := db.ExecContext(t.Context(), `UPDATE platform.organizations SET managed=true`); err != nil {
+		t.Fatal(err)
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		id := "key_" + string(org)
+		if err := r.CreateKey(t.Context(), Key{ID: id, Hash: "hash_" + id, Name: "Example", Kind: "service", OwnerSubject: "owner", Permission: "read", AccessContext: "selected", ServiceOrganizationID: &org, Organizations: []KeyOrganization{{OrganizationID: org, ProjectAccess: "all"}}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(t.Context(), `UPDATE platform.access_keys SET owner_subject='' WHERE id=$1`, id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.TenantKey(t.Context(), id, org); !errors.Is(err, tenantauth.ErrDenied) || errors.Is(err, tenantauth.ErrUnavailable) {
+			t.Fatalf("corrupt tenant key must be a definite denial: %v", err)
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := r.TenantKey(ctx, "key_org_first", "org_first"); !errors.Is(err, context.Canceled) || !errors.Is(err, tenantauth.ErrUnavailable) || errors.Is(err, tenantauth.ErrDenied) {
+		t.Fatalf("cancelled authority query must remain an outage: %v", err)
+	}
+}
 
 func (c countedTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
 	c.calls.Add(1)
@@ -181,7 +208,7 @@ func TestTenantKeyPolicyAndOAuthSnapshot(t *testing.T) {
 			if _, err := db.ExecContext(t.Context(), `INSERT INTO platform.access_key_blocked_projects(organization_id,key_id,project_id) SELECT $1,$2,'prj_'||n FROM generate_series(1,201) AS n`, org, id); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := r.TenantKey(t.Context(), id, org); !errors.Is(err, ErrInvalid) {
+			if _, err := r.TenantKey(t.Context(), id, org); !errors.Is(err, tenantauth.ErrDenied) {
 				t.Fatalf("overflowing exclusions accepted: %v", err)
 			}
 			grant, request := createOAuthGrant(t, r, org, "oauth_grant_"+string(org))
