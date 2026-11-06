@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -689,59 +690,64 @@ func (r *projectUpdateBeforeWriteRepository) WriteTenant(ctx context.Context, or
 
 func TestWorkItemCreationReplansAfterProjectWorkflowChanges(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, TenantRepository: repository})
-	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
-	if err != nil {
-		t.Fatal(err)
-	}
-	projects := "/api/v2/organizations/" + string(organization.ID) + "/projects"
-	response := performHubAPIRequest(t, service, http.MethodPost, projects, testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Example project", "require_dependencies": true, "states": nativeFixtureStates()})
-	requireNativeStatus(t, response, http.StatusOK)
-	var project tracker.NativeProject
-	decodeHubResponse(t, response, &project)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})
+	for _, id := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(id), func(t *testing.T) {
+			service.config.Hosted = nil
+			service.config.TenantRepository = repository
+			organization := nativeOrganization{ID: id, Name: string(id), Slug: string(id)}
+			seedWorkItemRecordOrganization(t, repository, service, organization)
+			projects := "/api/v2/organizations/" + string(organization.ID) + "/projects"
+			response := performHubAPIRequest(t, service, http.MethodPost, projects, testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Example project", "require_dependencies": true, "states": nativeFixtureStates()})
+			requireNativeStatus(t, response, http.StatusOK)
+			var project tracker.NativeProject
+			decodeHubResponse(t, response, &project)
 
-	intercepted := &projectUpdateBeforeWriteRepository{Repository: repository}
-	var injectedErr error
-	intercepted.before = func() error {
-		injectedErr = repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-			record, err := w.ProjectRecord(t.Context(), project.ID)
-			if err != nil {
-				return err
+			intercepted := &projectUpdateBeforeWriteRepository{Repository: repository}
+			var injectedErr error
+			intercepted.before = func() error {
+				injectedErr = repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+					record, err := w.ProjectRecord(t.Context(), project.ID)
+					if err != nil {
+						return err
+					}
+					record.Core.RequireDependencies = false
+					_, err = w.UpdateProjectRecord(t.Context(), record)
+					return err
+				})
+				return injectedErr
 			}
-			record.Core.RequireDependencies = false
-			_, err = w.UpdateProjectRecord(t.Context(), record)
-			return err
-		})
-		return injectedErr
-	}
-	service.config.TenantRepository = intercepted
+			service.config.TenantRepository = intercepted
 
-	path := projects + "/" + string(project.ID) + "/work-items"
-	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "stale-workflow"}, Title: "Example issue", Body: workItemRecordBody}
-	response = performHubAPIRequest(t, service, http.MethodPost, path, testHubAdminToken, request)
-	if injectedErr != nil {
-		t.Fatalf("update project workflow: %v", injectedErr)
-	}
-	requireNativeStatus(t, response, http.StatusOK)
-	var issue tracker.NativeIssue
-	decodeHubResponse(t, response, &issue)
-	if !issue.IgnoreDependencies {
-		t.Fatal("issue used the pre-update require_dependencies setting")
-	}
-	if intercepted.before != nil {
-		t.Fatal("project update did not run before the issue write")
-	}
-	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-		items, err := r.WorkItems(t.Context(), project.ID, 0, 10)
-		if err != nil {
-			return err
-		}
-		if len(items) != 1 {
-			t.Errorf("issues=%d want 1", len(items))
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+			path := projects + "/" + string(project.ID) + "/work-items"
+			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "stale-workflow"}, Title: "Example issue", Body: workItemRecordBody}
+			response = performHubAPIRequest(t, service, http.MethodPost, path, testHubAdminToken, request)
+			if injectedErr != nil {
+				t.Fatalf("update project workflow: %v", injectedErr)
+			}
+			requireNativeStatus(t, response, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			if !issue.IgnoreDependencies {
+				t.Fatal("issue used the pre-update require_dependencies setting")
+			}
+			if intercepted.before != nil {
+				t.Fatal("project update did not run before the issue write")
+			}
+			if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+				items, err := r.WorkItems(t.Context(), project.ID, 0, 10)
+				if err != nil {
+					return err
+				}
+				if len(items) != 1 {
+					t.Errorf("issues=%d want 1", len(items))
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
@@ -1184,6 +1190,8 @@ type rejectedWorkItemRepository struct {
 
 type rejectedWorkItemWriter struct {
 	tenantstore.Writer
+	corestore.DuplicateChallengeWriter
+	searchstore.DuplicateSourceWriter
 	reject rejectedWorkItemRepository
 }
 
@@ -1201,7 +1209,7 @@ func (w rejectedWorkItemWriter) AppendEvent(ctx context.Context, event eventstor
 
 func (r rejectedWorkItemRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
 	return r.Repository.WriteTenant(ctx, org, workload, func(w tenantstore.Writer) error {
-		if err := write(rejectedWorkItemWriter{Writer: w, reject: r}); err != nil {
+		if err := write(rejectedWorkItemWriter{Writer: w, DuplicateChallengeWriter: w.(corestore.DuplicateChallengeWriter), DuplicateSourceWriter: w.(searchstore.DuplicateSourceWriter), reject: r}); err != nil {
 			return err
 		}
 		return r.err
@@ -1210,101 +1218,105 @@ func (r rejectedWorkItemRepository) WriteTenant(ctx context.Context, org tracker
 
 func TestWorkItemRecordRollback(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, TenantRepository: repository})
-	org, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
-	if err != nil {
-		t.Fatal(err)
-	}
-	seedPostgresHubAdmin(t, repository, service, org)
-	base := "/api/v2/organizations/" + string(org.ID) + "/projects"
-	created := performHubAPIRequest(t, service, http.MethodPost, base, testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Example project", "states": nativeFixtureStates()})
-	requireNativeStatus(t, created, http.StatusOK)
-	var project tracker.NativeProject
-	decodeHubResponse(t, created, &project)
-	base += "/" + string(project.ID) + "/work-items"
-	credential, _, err := service.authenticateTenantAPIHash(t.Context(), org.ID, apikey.HashToken(testHubAdminToken), "", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "rollback"}, Title: "Example issue", Body: workItemRecordBody}
-	service.config.AccessRepository = nil
-	_, err = service.executeWorkItemRecordMutation(t.Context(), nativeScope{organization: org.ID, project: project.ID, credential: credential}, nativeCommandOptions{}, request.Mutation, request, "")
-	if err == nil {
-		t.Fatal("PostgreSQL mutation accepted missing access authority")
-	}
-	service.config.AccessRepository = repository
-	for _, phase := range []string{"event", "receipt"} {
-		t.Run(phase, func(t *testing.T) {
-			var failedItem tracker.NativeWorkItemID
-			service.config.TenantRepository = rejectedWorkItemRepository{Repository: repository, err: errors.New("reject command"), phase: phase, item: &failedItem}
-			rejected := performHubAPIRequest(t, service, http.MethodPost, base, testHubAdminToken, request)
-			requireNativeStatus(t, rejected, http.StatusInternalServerError)
-			if err := repository.ReadTenant(t.Context(), org.ID, corestore.Serving, func(r tenantstore.Reader) error {
-				hits, err := r.Search(t.Context(), searchstore.Query{Kind: "work", ProjectID: project.ID, Text: "Example", Limit: 10})
-				if err != nil {
-					return err
-				}
-				for _, hit := range hits {
-					if hit.Document.ID != "" {
-						t.Errorf("search document survived rollback: %s", hit.Document.ID)
-					}
-				}
-				number, err := r.NextWorkItemNumber(t.Context(), project.ID)
-				if err != nil {
-					return err
-				}
-				if number != 1 {
-					t.Errorf("rolled back number=%d", number)
-				}
-				items, err := r.WorkItems(t.Context(), project.ID, 0, 10)
-				if err != nil {
-					return err
-				}
-				if len(items) != 0 {
-					t.Errorf("partial issues=%+v", items)
-				}
-				events, err := r.Events(t.Context(), project.ID, failedItem, 0, 10)
-				if err != nil {
-					return err
-				}
-				if len(events) != 0 {
-					t.Errorf("events survived rollback: %+v", events)
-				}
-				_, err = r.CollaborationVersion(t.Context(), string(failedItem), 1)
-				if !errors.Is(err, corestore.ErrNotFound) {
-					t.Errorf("version after rollback: %v", err)
-				}
-				_, err = r.Receipt(t.Context(), credential.ID, "POST "+base, "rollback")
-				if !errors.Is(err, corestore.ErrNotFound) {
-					t.Errorf("receipt after rollback: %v", err)
-				}
-				return nil
-			}); err != nil {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})
+	for _, id := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(id), func(t *testing.T) {
+			service.config.Hosted = nil
+			service.config.TenantRepository = repository
+			org := nativeOrganization{ID: id, Name: string(id), Slug: string(id)}
+			seedWorkItemRecordOrganization(t, repository, service, org)
+			base := "/api/v2/organizations/" + string(org.ID) + "/projects"
+			created := performHubAPIRequest(t, service, http.MethodPost, base, testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Example project", "states": nativeFixtureStates()})
+			requireNativeStatus(t, created, http.StatusOK)
+			var project tracker.NativeProject
+			decodeHubResponse(t, created, &project)
+			base += "/" + string(project.ID) + "/work-items"
+			credential, _, err := service.authenticateTenantAPIHash(t.Context(), org.ID, apikey.HashToken(testHubAdminToken), "", "")
+			if err != nil {
 				t.Fatal(err)
 			}
-		})
-	}
-	service.config.TenantRepository = repository
-	committed := performHubAPIRequest(t, service, http.MethodPost, base, testHubAdminToken, request)
-	requireNativeStatus(t, committed, http.StatusOK)
-	var issue tracker.NativeIssue
-	decodeHubResponse(t, committed, &issue)
-	if issue.Number != 1 {
-		t.Fatalf("committed number=%d", issue.Number)
-	}
-	service.config.Hosted = &HostedConfig{OrganizationID: string(org.ID)}
+			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "rollback"}, Title: "Example issue", Body: workItemRecordBody}
+			service.config.AccessRepository = nil
+			_, err = service.executeWorkItemRecordMutation(t.Context(), nativeScope{organization: org.ID, project: project.ID, credential: credential}, nativeCommandOptions{}, request.Mutation, request, "")
+			if err == nil {
+				t.Fatal("PostgreSQL mutation accepted missing access authority")
+			}
+			service.config.AccessRepository = repository
+			for _, phase := range []string{"event", "receipt"} {
+				t.Run(phase, func(t *testing.T) {
+					var failedItem tracker.NativeWorkItemID
+					service.config.TenantRepository = rejectedWorkItemRepository{Repository: repository, err: errors.New("reject command"), phase: phase, item: &failedItem}
+					rejected := performHubAPIRequest(t, service, http.MethodPost, base, testHubAdminToken, request)
+					requireNativeStatus(t, rejected, http.StatusInternalServerError)
+					if err := repository.ReadTenant(t.Context(), org.ID, corestore.Serving, func(r tenantstore.Reader) error {
+						hits, err := r.Search(t.Context(), searchstore.Query{Kind: "work", ProjectID: project.ID, Text: "Example", Limit: 10})
+						if err != nil {
+							return err
+						}
+						for _, hit := range hits {
+							if hit.Document.ID != "" {
+								t.Errorf("search document survived rollback: %s", hit.Document.ID)
+							}
+						}
+						number, err := r.NextWorkItemNumber(t.Context(), project.ID)
+						if err != nil {
+							return err
+						}
+						if number != 1 {
+							t.Errorf("rolled back number=%d", number)
+						}
+						items, err := r.WorkItems(t.Context(), project.ID, 0, 10)
+						if err != nil {
+							return err
+						}
+						if len(items) != 0 {
+							t.Errorf("partial issues=%+v", items)
+						}
+						events, err := r.Events(t.Context(), project.ID, failedItem, 0, 10)
+						if err != nil {
+							return err
+						}
+						if len(events) != 0 {
+							t.Errorf("events survived rollback: %+v", events)
+						}
+						_, err = r.CollaborationVersion(t.Context(), string(failedItem), 1)
+						if !errors.Is(err, corestore.ErrNotFound) {
+							t.Errorf("version after rollback: %v", err)
+						}
+						_, err = r.Receipt(t.Context(), credential.ID, "POST "+base, "rollback")
+						if !errors.Is(err, corestore.ErrNotFound) {
+							t.Errorf("receipt after rollback: %v", err)
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
+			service.config.TenantRepository = repository
+			committed := performHubAPIRequest(t, service, http.MethodPost, base, testHubAdminToken, request)
+			requireNativeStatus(t, committed, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, committed, &issue)
+			if issue.Number != 1 {
+				t.Fatalf("committed number=%d", issue.Number)
+			}
+			service.config.Hosted = &HostedConfig{OrganizationID: string(org.ID)}
 
-	for _, indexed := range []bool{false, true} {
-		if indexed {
-			service.maintainNativeSearch(t.Context())
-		}
-		page, err := searchstore.NewContent(service.runDetailStore()).Find(t.Context(), tenantSearchRepository{repository}, org.ID, searchstore.Query{Kind: "work", ProjectID: project.ID, Text: "Example", Limit: 10})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(page.Items) != 1 || page.Items[0].Document.WorkItemID != issue.WorkItemID {
-			t.Fatalf("committed search result indexed=%t: %+v", indexed, page.Items)
-		}
+			for _, indexed := range []bool{false, true} {
+				if indexed {
+					service.maintainNativeSearch(t.Context())
+				}
+				page, err := searchstore.NewContent(service.runDetailStore()).Find(t.Context(), tenantSearchRepository{repository}, org.ID, searchstore.Query{Kind: "work", ProjectID: project.ID, Text: "Example", Limit: 10})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(page.Items) != 1 || page.Items[0].Document.WorkItemID != issue.WorkItemID {
+					t.Fatalf("committed search result indexed=%t: %+v", indexed, page.Items)
+				}
+			}
+		})
 	}
 }
 
