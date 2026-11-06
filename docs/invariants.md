@@ -656,8 +656,10 @@ Each debt entry names its owning conversion family, including families whose
 conversion is still pending. This list may only shrink: never add entries,
 broaden an entry to a table or pattern, or relabel history as hot state or an
 index to bypass it. Removing a payload column requires removing its debt entry
-in the same change. `TestTableLifecycleViolations` mutates copies of the migrated
+in the same change. `TestTableLifecycleViolations` mutates copies of the migrated PostgreSQL
 template to verify unknown tables, inline payloads and stale debt are rejected.
+Discovery includes application tables in both the public and platform schemas;
+non-public table names are schema-qualified in the lifecycle catalog.
 
 ## INV-21 — Designs hold at ten thousand tenants and runners
 
