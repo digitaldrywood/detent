@@ -1007,7 +1007,7 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 		Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
 	})
 	service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
-	for _, name := range []string{"Example organization one", "Example organization two"} {
+	for fixtureIndex, name := range []string{"Example organization one", "Example organization two"} {
 		t.Run(name, func(t *testing.T) {
 			organization, err := service.createNativeOrganizationFor(t.Context(), name)
 			if err != nil {
@@ -1077,11 +1077,22 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 			if !errors.As(err, &refusal) || refusal.Code != "issue_contract_unsatisfied" {
 				t.Fatalf("targeted invalid claim error = %v", err)
 			}
+
+			for index := 1; index < []int{2, 50}[fixtureIndex]; index++ {
+				response := performHubAPIRequest(t, service, http.MethodPost, itemsPath, testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("refused-%d", index)}, Title: "Example refused issue", Body: "Missing required sections\n\n<!-- detent:no-dispatch -->", State: "Todo"})
+				requireNativeStatus(t, response, http.StatusOK)
+			}
+			counts := &nativePreviewReadCounts{}
+			service.config.TenantRepository = nativePreviewCountingRepository{Repository: repository, counts: counts}
 			request.WorkItemID = ""
 			logs.Reset()
 			_, err = service.claimNativeIssueTenant(t.Context(), scope, request, 5*time.Minute)
 			if !errors.Is(err, ErrNoClaimableWork) {
 				t.Errorf("invalid-only scan error = %v, want no claimable work", err)
+			}
+			service.config.TenantRepository = repository
+			if counts.readTenant != 1 || counts.claimPlanBatch != 1 || counts.candidatePage != 1 {
+				t.Errorf("claim scan reads=%d batch=%d candidate pages=%d; want 1 each", counts.readTenant, counts.claimPlanBatch, counts.candidatePage)
 			}
 			for _, field := range []string{string(organization.ID), string(project.ID), string(issue.WorkItemID), `"runner_id":"[redacted]"`, "issue_contract_unsatisfied"} {
 				if !strings.Contains(logs.String(), field) {
