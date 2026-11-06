@@ -334,6 +334,12 @@ func (s *session) FilteredMessages(ctx context.Context, filter conversationstore
 		args = append(args, value)
 		conditions = append(conditions, fmt.Sprintf(condition, len(args)))
 	}
+	if filter.OperatorActionID != "" {
+		add("operator_action_id=$%d", filter.OperatorActionID)
+	}
+	if filter.OperatorResult != "" {
+		add("operator_action_result=$%d", filter.OperatorResult)
+	}
 	if filter.AttemptID != "" {
 		add("attempt_id=$%d", filter.AttemptID)
 	}
@@ -357,7 +363,11 @@ func (s *session) FilteredMessages(ctx context.Context, filter conversationstore
 		conditions = append(conditions, fmt.Sprintf("delivery=ANY($%d)", len(args)))
 	}
 	args = append(args, filter.Limit+1)
-	query := `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result FROM conversation_messages WHERE ` + strings.Join(conditions, " AND ") + fmt.Sprintf(" ORDER BY seq DESC LIMIT $%d", len(args))
+	order := "DESC"
+	if filter.Oldest {
+		order = "ASC"
+	}
+	query := `SELECT organization_id,conversation_id,id,seq,role,kind,text,data_json,delivery,attempt_id,thread_id,turn_id,provider_item_id,actor_json,command_key,created_at,updated_at,content_attachment_id,revision,COALESCE(text_bytes,0),COALESCE(stored_text_bytes,0),tool_name,tool_item_id,tool_status,operator_action_id,operator_action_agent,operator_action_result FROM conversation_messages WHERE ` + strings.Join(conditions, " AND ") + fmt.Sprintf(" ORDER BY seq %s LIMIT $%d", order, len(args))
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return conversationstore.MessagePage{}, mapError(ctx, err)

@@ -201,15 +201,18 @@ type MessagePage struct {
 }
 
 type MessageFilter struct {
-	ConversationID string
-	AttemptID      string
-	TurnID         string
-	Role           conversation.Role
-	Kind           conversation.MessageKind
-	Deliveries     []conversation.Delivery
-	BeforeSequence int64
-	AfterSequence  int64
-	Limit          int
+	OperatorActionID string
+	OperatorResult   string
+	Oldest           bool
+	ConversationID   string
+	AttemptID        string
+	TurnID           string
+	Role             conversation.Role
+	Kind             conversation.MessageKind
+	Deliveries       []conversation.Delivery
+	BeforeSequence   int64
+	AfterSequence    int64
+	Limit            int
 }
 
 type EventPage struct {
