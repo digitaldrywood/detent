@@ -134,11 +134,15 @@ func openPostgresHubTestService(t *testing.T, repository *postgres.Repository, c
 	service.config.BillingRepository = repository
 	service.database.billingRepository = repository
 	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))
-	if config.Hosted == nil {
-		service.config.Hosted = nil
-		service.echo = echo.New()
-		service.registerNativeRoutes(service.echo)
-	}
+	return service
+}
+
+func openLocalPostgresHubTestService(t *testing.T, repository *postgres.Repository, config Config) *Service {
+	t.Helper()
+	service := openPostgresHubTestService(t, repository, config)
+	service.config.Hosted = nil
+	service.echo = echo.New()
+	service.registerNativeRoutes(service.echo)
 	return service
 }
 

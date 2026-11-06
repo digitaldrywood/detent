@@ -306,7 +306,7 @@ func TestWorkItemRecordBackendParity(t *testing.T) {
 
 func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
+	service := openLocalPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
 	if err := service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
@@ -884,7 +884,7 @@ func TestWorkItemProvenanceDedupRespectsReporterVisibility(t *testing.T) {
 
 func TestWorkItemRecordBodyEditClearsReturnedIssueAction(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
+	service := openLocalPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
 	organization := nativeOrganization{ID: "org_example", Name: "Example organization", Slug: "example-organization"}
 	seedWorkItemRecordOrganization(t, repository, service, organization)
 	projects := "/api/v2/organizations/" + string(organization.ID) + "/projects"
