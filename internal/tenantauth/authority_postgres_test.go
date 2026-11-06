@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -55,7 +56,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func fixture(t *testing.T) (*sql.DB, *pgtransport.Pools) {
+func fixture(t *testing.T, configure ...func(*pgxpool.Config)) (*sql.DB, *pgtransport.Pools) {
 	t.Helper()
 	db := template.Database(t)
 	role := "example_" + strings.ReplaceAll(uuid.NewString(), "-", "")
@@ -68,6 +69,9 @@ func fixture(t *testing.T) (*sql.DB, *pgtransport.Pools) {
 		}
 	})
 	config := template.NativeConfig(t, db, role, "fixture-only")
+	for _, apply := range configure {
+		apply(config)
+	}
 	pools, err := pgtransport.Open(t.Context(), config, nil)
 	if err != nil {
 		t.Fatal(err)
