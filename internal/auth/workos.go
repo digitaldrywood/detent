@@ -218,6 +218,9 @@ func (p *workosProvider) Exchange(ctx context.Context, code string, verifier str
 	}{"authorization_code", p.clientID, p.apiKey, code, verifier}
 	var response workosAuthentication
 	if err := p.request(ctx, http.MethodPost, "/user_management/authenticate", request, &response); err != nil {
+		if HostedIdentityReason(err) == HostedReasonProviderUnavailable || HostedIdentityReason(err) == HostedReasonProviderInvalid {
+			return Identity{}, err
+		}
 		return Identity{}, hostedDenialWrap(HostedReasonExchangeFailed, err)
 	}
 	identity, err := p.verifyToken(ctx, response.AccessToken, response.Impersonator)

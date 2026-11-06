@@ -382,8 +382,8 @@ func TestWorkOSDenialReasons(t *testing.T) {
 		{mode: "support-wrong-act", want: auth.HostedReasonSupportActorInvalid},
 		{mode: "session-missing", verifier: "verifier", want: auth.HostedReasonSessionNotFound},
 		{mode: "session-revoked", verifier: "verifier", want: auth.HostedReasonSessionInvalid},
-		{mode: "http-error", verifier: "verifier", want: auth.HostedReasonExchangeFailed},
-		{mode: "malformed", verifier: "verifier", want: auth.HostedReasonExchangeFailed},
+		{mode: "http-error", verifier: "verifier", want: auth.HostedReasonProviderUnavailable},
+		{mode: "malformed", verifier: "verifier", want: auth.HostedReasonProviderInvalid},
 	} {
 		t.Run(tt.mode, func(t *testing.T) {
 			f.mode.Store(tt.mode)

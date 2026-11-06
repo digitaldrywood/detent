@@ -57,6 +57,14 @@ func TestStoredCredentialsRemainConfidential(t *testing.T) {
 			if err != nil || got != (auth.HostedTokens{AccessToken: "access_initial", RefreshToken: "refresh_initial"}) {
 				t.Fatalf("restart: %+v %v", got, err)
 			}
+			if cfg.Keys != nil {
+				missingKeyConfig := cfg
+				missingKeyConfig.Keys = nil
+				missingKey := replicaRepository(t, r, missingKeyConfig)
+				if _, err := missingKey.Tokens(t.Context(), s.Hash, a.OrganizationID, a.Binding); !errors.Is(err, hubsecrets.ErrUnavailable) || errors.Is(err, ErrNoSession) {
+					t.Fatalf("unavailable encryption key = %v, want operational error", err)
+				}
+			}
 			if _, err := db.ExecContext(t.Context(), `UPDATE platform.authorizations SET access_token=$1 WHERE organization_id=$2 AND binding=$3`, access, other.OrganizationID, other.Binding); err != nil {
 				t.Fatal(err)
 			}

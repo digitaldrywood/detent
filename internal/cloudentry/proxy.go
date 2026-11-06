@@ -130,7 +130,7 @@ func (s *Service) browserClaims(c echo.Context, organization Organization, claim
 	ctx := c.Request().Context()
 	session, err := s.storedSession(c)
 	if err != nil {
-		return http.StatusUnauthorized, "", err
+		return entryAuthStatus(err, http.StatusUnauthorized), "", err
 	}
 	method := c.Request().Method
 	if method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions && !s.sameOrigin(c) {
@@ -138,11 +138,15 @@ func (s *Service) browserClaims(c echo.Context, organization Organization, claim
 	}
 	authorized, err := s.auth.authorization(ctx, session, organization.ID)
 	if err != nil {
-		return http.StatusUnauthorized, "", err
+		return entryAuthStatus(err, http.StatusUnauthorized), "", err
+	}
+	role, err := s.readPlatformRole(ctx, session.Email)
+	if err != nil {
+		return http.StatusServiceUnavailable, "", err
 	}
 	subject, email := session.Subject, session.Email
 	if authorized.Support {
-		if !s.supportActor(ctx, session.Email) || authorized.EffectiveEmail == "" {
+		if (role != "admin" && role != "support") || authorized.EffectiveEmail == "" {
 			s.dropAuthorization(ctx, authorized)
 			return http.StatusForbidden, "", errNoSession
 		}
@@ -167,7 +171,7 @@ func (s *Service) browserClaims(c echo.Context, organization Organization, claim
 	claims.SessionCreatedAt, claims.SessionExpiresAt = identity.CreatedAt, identity.ExpiresAt
 	claims.Role, claims.AccessExpiresAt = access.Role, access.ExpiresAt
 	if !authorized.Support {
-		claims.PlatformRole = s.platformRole(ctx, email)
+		claims.PlatformRole = role
 	}
 	claims.Binding, claims.CSRF = authorized.Binding, cloudassert.CSRFToken(session.CSRFSecret, organization.ID)
 	return http.StatusOK, verification, nil
@@ -180,6 +184,9 @@ func (s *Service) browserClaims(c echo.Context, organization Organization, claim
 // is dropped; an unreachable provider is a transient 503.
 func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) (auth.HostedAccess, string, int, error) {
 	tokens, err := s.auth.tokens(authorized)
+	if err != nil && entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+		return auth.HostedAccess{}, verificationToken, http.StatusServiceUnavailable, err
+	}
 	if err != nil || tokens.AccessToken == "" || tokens.RefreshToken == "" {
 		s.dropAuthorization(ctx, authorized)
 		return auth.HostedAccess{}, verificationToken, http.StatusUnauthorized, errNoSession
@@ -188,7 +195,7 @@ func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) 
 	if err == nil {
 		return access, verificationToken, http.StatusOK, nil
 	}
-	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+	if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
 		return auth.HostedAccess{}, verificationToken, http.StatusServiceUnavailable, err
 	}
 	if !errors.Is(err, auth.ErrAccessExpired) {
@@ -199,21 +206,29 @@ func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) 
 	defer unlock()
 	current, err := s.auth.authorizationByBinding(ctx, authorized.Binding)
 	if err != nil {
-		return auth.HostedAccess{}, verificationRefreshed, http.StatusUnauthorized, errNoSession
+		return auth.HostedAccess{}, verificationRefreshed, entryAuthStatus(err, http.StatusUnauthorized), err
 	}
 	if tokens, err = s.auth.tokens(current); err != nil {
+		if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return auth.HostedAccess{}, verificationRefreshed, http.StatusServiceUnavailable, err
+		}
 		s.dropAuthorization(ctx, authorized)
 		return auth.HostedAccess{}, verificationRefreshed, http.StatusUnauthorized, errNoSession
 	}
 	if access, err := s.config.Provider.VerifyAccess(ctx, tokens.AccessToken); err == nil {
 		return access, verificationRefreshed, http.StatusOK, nil
+	} else if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+		return auth.HostedAccess{}, verificationRefreshed, http.StatusServiceUnavailable, err
+	} else if !errors.Is(err, auth.ErrAccessExpired) {
+		s.dropAuthorization(ctx, authorized)
+		return auth.HostedAccess{}, verificationRefreshed, http.StatusUnauthorized, errNoSession
 	}
 	// The redeemed refresh token is spent, so the rotated pair is persisted
 	// even if the browser gives up on this request.
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	access, rotated, err := s.config.Provider.RefreshAccess(detached, tokens.RefreshToken, current.Identity.OrganizationID)
-	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+	if err != nil && entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
 		if rotated.RefreshToken != "" {
 			if err := s.auth.storeTokens(detached, authorized.Binding, rotated, tokens); err != nil {
 				s.config.Logger.WarnContext(ctx, "shared entry could not store rotated tokens", "organization", authorized.Organization)
@@ -222,11 +237,19 @@ func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) 
 		return auth.HostedAccess{}, verificationRefreshed, http.StatusServiceUnavailable, err
 	}
 	if err != nil {
-		if latest, lookupErr := s.auth.authorizationByBinding(detached, authorized.Binding); lookupErr == nil && latest.sealedRefresh != current.sealedRefresh {
+		latest, lookupErr := s.auth.authorizationByBinding(detached, authorized.Binding)
+		if lookupErr != nil && entryAuthStatus(lookupErr, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return auth.HostedAccess{}, verificationRefreshed, http.StatusServiceUnavailable, lookupErr
+		}
+		if lookupErr == nil && latest.sealedRefresh != current.sealedRefresh {
 			if latestTokens, openErr := s.auth.tokens(latest); openErr == nil {
 				if access, verifyErr := s.config.Provider.VerifyAccess(detached, latestTokens.AccessToken); verifyErr == nil {
 					return access, verificationRefreshed, http.StatusOK, nil
+				} else if entryAuthStatus(verifyErr, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+					return auth.HostedAccess{}, verificationRefreshed, http.StatusServiceUnavailable, verifyErr
 				}
+			} else if entryAuthStatus(openErr, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+				return auth.HostedAccess{}, verificationRefreshed, http.StatusServiceUnavailable, openErr
 			}
 		}
 		s.config.Logger.InfoContext(ctx, "shared entry token refresh rejected", "organization", authorized.Organization, "reason", auth.HostedIdentityReason(err))
@@ -234,7 +257,7 @@ func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) 
 		return auth.HostedAccess{}, verificationRefreshed, http.StatusUnauthorized, errNoSession
 	}
 	if err := s.auth.storeTokens(detached, authorized.Binding, rotated, tokens); err != nil {
-		return auth.HostedAccess{}, verificationRefreshed, http.StatusUnauthorized, errNoSession
+		return auth.HostedAccess{}, verificationRefreshed, entryAuthStatus(err, http.StatusUnauthorized), err
 	}
 	return access, verificationRefreshed, http.StatusOK, nil
 }
@@ -264,6 +287,9 @@ func (s *Service) proxy(c echo.Context) error {
 	}
 	organization, err := s.readyOrganization(ctx, c.Param("organization"))
 	if err != nil {
+		if entryAuthStatus(err, http.StatusNotFound) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		if c.Get("readable_url") == true {
 			return readableNotFound(c)
 		}
@@ -297,13 +323,13 @@ func (s *Service) proxy(c echo.Context) error {
 		if strings.HasSuffix(request.URL.Path, "/mcp") {
 			key, err = s.activeMCPKey(ctx, hash)
 			_, token, _ := strings.Cut(request.Header.Get(echo.HeaderAuthorization), " ")
-			if (errors.Is(err, sql.ErrNoRows) || errors.Is(err, errNoSession)) && strings.HasPrefix(token, oauthAccessPrefix) {
+			if entryAuthStatus(err, http.StatusUnauthorized) != http.StatusServiceUnavailable && (errors.Is(err, sql.ErrNoRows) || errors.Is(err, errNoSession)) && strings.HasPrefix(token, oauthAccessPrefix) {
 				return s.oauthChallenge(c)
 			}
 		} else {
 			key, err = s.activeAccessKey(ctx, hash)
 		}
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		if err != nil && (entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable || !errors.Is(err, sql.ErrNoRows)) {
 			return keyError(c, err)
 		}
 		if err == nil {

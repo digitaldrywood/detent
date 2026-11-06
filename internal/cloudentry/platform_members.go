@@ -64,9 +64,18 @@ func validPlatformEmail(email string) bool {
 	return address.Address == email && len(email) <= 254
 }
 
-func (s *Service) platformRole(ctx context.Context, email string) string {
+func (s *Service) readPlatformRole(ctx context.Context, email string) (string, error) {
 	var role string
-	if err := s.registry.store.db.QueryRowContext(ctx, "SELECT role FROM platform.platform_members WHERE email=$1", platformEmail(email)).Scan(&role); err != nil {
+	err := s.registry.store.db.QueryRowContext(ctx, "SELECT role FROM platform.platform_members WHERE email=$1", platformEmail(email)).Scan(&role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return role, err
+}
+
+func (s *Service) platformRole(ctx context.Context, email string) string {
+	role, err := s.readPlatformRole(ctx, email)
+	if err != nil {
 		return ""
 	}
 	return role
@@ -285,7 +294,7 @@ func (s *Service) platformMembersAuthority(c echo.Context, name string) (context
 		return ctx, session, operatoradmin.ErrUnavailable
 	}
 	if err != nil {
-		return ctx, session, errNoSession
+		return ctx, session, err
 	}
 	id := operatortool.Identity{PrincipalID: session.Subject, CredentialID: session.Hash, SessionID: session.Hash, OrganizationID: "account:" + session.Subject}
 	ctx = operatortool.WithConnection(ctx, operatortool.Connection{Identity: id})

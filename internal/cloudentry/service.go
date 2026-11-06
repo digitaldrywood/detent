@@ -466,7 +466,11 @@ func (s *Service) session(c echo.Context) (accountSession, error) {
 	method := c.Request().Method
 	// Staff and support sessions reach across organizations, so they are
 	// re-verified on every request rather than trusted for the recheck window.
-	cacheable := s.platformRole(c.Request().Context(), session.Email) == "" && session.Identity.SupportActor == ""
+	role, err := s.readPlatformRole(c.Request().Context(), session.Email)
+	if err != nil {
+		return accountSession{}, err
+	}
+	cacheable := role == "" && session.Identity.SupportActor == ""
 	if cacheable && (method == http.MethodGet || method == http.MethodHead) && session.Identity.ExpiresAt.After(now) && s.verified.fresh(session.Hash, now) {
 		return session, nil
 	}
@@ -478,6 +482,9 @@ func (s *Service) session(c echo.Context) (accountSession, error) {
 			reason = auth.HostedReasonSessionInvalid
 		}
 		s.config.Logger.InfoContext(c.Request().Context(), "hosted session revalidation failed", "reason", reason, "request_id", auth.HostedRequestID(c.Response(), c.Request()))
+		if err != nil && entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return accountSession{}, err
+		}
 		return accountSession{}, errNoSession
 	}
 	s.verified.record(session.Hash, now)
@@ -540,6 +547,12 @@ func (s *Service) browserUnavailable(c echo.Context, status int) error {
 }
 
 func (s *Service) loginDenied(c echo.Context, status int, message string, denial auth.HostedDenial) error {
+	if status >= http.StatusBadRequest && status < http.StatusInternalServerError && denial.Err != nil {
+		status = entryAuthStatus(denial.Err, status)
+		if status == http.StatusServiceUnavailable {
+			message = "Sign-in is temporarily unavailable"
+		}
+	}
 	denial.Status = status
 	auth.LogHostedDenial(s.config.Logger, c.Response(), c.Request(), denial)
 	return s.denied(c, status, message)
@@ -548,6 +561,8 @@ func (s *Service) loginDenied(c echo.Context, status int, message string, denial
 func (s *Service) home(c echo.Context) error {
 	if session, err := s.session(c); err == nil {
 		return c.Redirect(http.StatusSeeOther, s.landing(c.Request().Context(), session.Email, session.Identity))
+	} else if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+		return c.NoContent(http.StatusServiceUnavailable)
 	}
 	if served, err := s.clientShell(c); served || err != nil {
 		return err

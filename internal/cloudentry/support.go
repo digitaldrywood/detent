@@ -19,6 +19,9 @@ const supportCookie = "support"
 func (s *Service) supportPage(c echo.Context) error {
 	session, err := s.session(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start")
 	}
 	data := templates.HostedPageData{Mode: "support", Title: "Temporary support access", Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, ""), CanSupport: session.Identity.SupportActor == "" && s.supportActor(c.Request().Context(), session.Email)}
@@ -39,10 +42,18 @@ func (s *Service) supportPage(c echo.Context) error {
 func (s *Service) startSupport(c echo.Context) error {
 	session, err := s.session(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return s.loginDenied(c, http.StatusForbidden, "This account cannot start support access", auth.HostedDenial{Flow: "support_start", Reason: auth.HostedReasonSessionNotFound})
 	}
 	denial := auth.HostedDenial{Flow: "support_start", Email: session.Email}
-	if session.Identity.SupportActor != "" || !s.supportActor(c.Request().Context(), session.Email) {
+	role, err := s.readPlatformRole(c.Request().Context(), session.Email)
+	if err != nil {
+		denial.Err = err
+		return s.loginDenied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable", denial)
+	}
+	if session.Identity.SupportActor != "" || role != "admin" && role != "support" {
 		denial.Reason = "support_denied"
 		return s.loginDenied(c, http.StatusForbidden, "This account cannot start support access", denial)
 	}
@@ -52,7 +63,7 @@ func (s *Service) startSupport(c echo.Context) error {
 	}
 	organization, err := s.readyOrganization(c.Request().Context(), c.FormValue("organization"))
 	if err != nil {
-		denial.Reason = "organization_unavailable"
+		denial.Reason, denial.Err = "organization_unavailable", err
 		return s.loginDenied(c, http.StatusForbidden, "Select an allocated organization before starting support access", denial)
 	}
 	reason := c.FormValue("reason")
@@ -95,7 +106,7 @@ func supportAuditEvent(event, reason string) string {
 func (a *authStore) consumeSupportTransaction(ctx context.Context, hash string) (loginTransaction, error) {
 	var id string
 	if err := a.store.reader.QueryRowContext(ctx, "SELECT transaction_id FROM platform.transactions WHERE token_hash=$1 AND support_actor<>''", hash).Scan(&id); err != nil {
-		return loginTransaction{}, errNoSession
+		return loginTransaction{}, entryAuthError(err)
 	}
 	return a.postgresConsumeLogin(ctx, hash, id)
 }
@@ -105,7 +116,6 @@ func (s *Service) completeSupport(c echo.Context) error {
 	const invalidLink = "This sign-in link is invalid or has already been used"
 	denial := auth.HostedDenial{Flow: "support_callback", ProviderError: c.QueryParam("error")}
 	cookie, cookieErr := c.Cookie(s.cookieName(supportCookie))
-	s.setCookie(c, supportCookie, "", time.Unix(1, 0))
 	if cookieErr != nil || len(cookie.Value) > 256 {
 		denial.Reason = "transaction_cookie_missing"
 		return s.loginDenied(c, http.StatusUnauthorized, invalidLink, denial)
@@ -116,18 +126,28 @@ func (s *Service) completeSupport(c echo.Context) error {
 	}
 	transaction, err := s.auth.consumeSupportTransaction(ctx, apikey.HashToken(cookie.Value))
 	if err != nil {
-		denial.Reason = "transaction_missing"
+		denial.Reason, denial.Err = "transaction_missing", err
 		return s.loginDenied(c, http.StatusUnauthorized, invalidLink, denial)
 	}
+	s.setCookie(c, supportCookie, "", time.Unix(1, 0))
 	staff, err := s.session(c)
-	if err != nil || staff.Hash != transaction.SupportSession || !strings.EqualFold(staff.Email, transaction.SupportActor) || !s.supportActor(ctx, staff.Email) {
+	if err != nil {
+		denial.Err = err
+		return s.loginDenied(c, http.StatusForbidden, "Start support access from your authorized staff session", denial)
+	}
+	role, err := s.readPlatformRole(ctx, staff.Email)
+	if err != nil {
+		denial.Err = err
+		return s.loginDenied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable", denial)
+	}
+	if staff.Hash != transaction.SupportSession || !strings.EqualFold(staff.Email, transaction.SupportActor) || (role != "admin" && role != "support") {
 		denial.Reason, denial.Email = "support_session_mismatch", staff.Email
 		return s.loginDenied(c, http.StatusForbidden, "Start support access from your authorized staff session", denial)
 	}
 	denial.Email = staff.Email
 	organization, err := s.readyOrganization(ctx, transaction.Organization)
 	if err != nil {
-		denial.Reason = "organization_unavailable"
+		denial.Reason, denial.Err = "organization_unavailable", err
 		return s.loginDenied(c, http.StatusForbidden, "Support access is not authorized", denial)
 	}
 	identity, err := s.config.Provider.Exchange(ctx, c.QueryParam("code"), "", "")

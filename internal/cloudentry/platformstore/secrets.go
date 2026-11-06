@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -86,6 +87,9 @@ func (s *secretCipher) open(purpose, binding, sealed string) (string, error) {
 			*target = value
 		}
 		plain, err := s.keys.Open(envelope, secretAAD(purpose, binding))
+		if errors.Is(err, hubsecrets.ErrUnavailable) {
+			return "", err
+		}
 		if err != nil {
 			return "", ErrNoSession
 		}

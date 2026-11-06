@@ -109,7 +109,7 @@ func (s *Service) startLogin(c echo.Context) error {
 	if organizationID != "" {
 		organization, err := s.readyOrganization(c.Request().Context(), organizationID)
 		if err != nil {
-			return s.loginDenied(c, http.StatusNotFound, "This organization is unavailable", auth.HostedDenial{Flow: "login_start", Reason: "organization_unavailable"})
+			return s.loginDenied(c, http.StatusNotFound, "This organization is unavailable", auth.HostedDenial{Flow: "login_start", Reason: "organization_unavailable", Err: err})
 		}
 		providerOrganization = organization.ProviderID
 	}
@@ -142,6 +142,7 @@ func (s *Service) completeLogin(c echo.Context) error {
 		return s.loginDenied(c, http.StatusUnauthorized, invalidLink, callback)
 	}
 	transaction, err := s.auth.consumeTransaction(ctx, apikey.HashToken(cookie.Value), id)
+	callback.Err = err
 	if err == nil {
 		s.setCookie(c, "login", "", time.Unix(1, 0))
 	}
@@ -158,6 +159,7 @@ func (s *Service) completeLogin(c echo.Context) error {
 	if callback.Reason != "" {
 		if callback.Reason == "provider_error" && transaction.InvitationToken != "" {
 			invitation, err := s.config.Provider.Invitation(ctx, transaction.InvitationToken)
+			callback.Err = err
 			message := auth.InvitationUnavailable
 			if err == nil {
 				if problem := auth.InvitationProblem(invitation, "", "", s.config.now()); problem != "" {
@@ -192,7 +194,7 @@ func (s *Service) completeLogin(c echo.Context) error {
 	if transaction.Organization != "" {
 		organization, err = s.readyOrganization(ctx, transaction.Organization)
 		if err != nil {
-			callback.Reason = "organization_unavailable"
+			callback.Reason, callback.Err = "organization_unavailable", err
 		} else if identity.Hosted.OrganizationID != organization.ProviderID {
 			callback.Reason = auth.HostedReasonOrganizationMismatch
 		}
@@ -304,7 +306,7 @@ func (s *Service) establishSession(c echo.Context, identity auth.Identity) (acco
 	if cookie, err := c.Cookie(s.cookieName("session")); err == nil && len(cookie.Value) <= 256 {
 		hash := apikey.HashToken(cookie.Value)
 		if existing, err := s.auth.session(ctx, hash); err == nil {
-			revoked, err := s.auth.revokeSession(ctx, hash)
+			revoked, err := s.auth.postgresRevokeSession(ctx, hash, existing.Subject == identity.Subject)
 			if err != nil {
 				return accountSession{}, err
 			}
@@ -312,6 +314,8 @@ func (s *Service) establishSession(c echo.Context, identity auth.Identity) (acco
 			if existing.Subject == identity.Subject {
 				carried, csrfSecret = revoked, existing.CSRFSecret
 			}
+		} else if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return accountSession{}, err
 		}
 	}
 	token, err := s.config.generateToken()
@@ -363,6 +367,9 @@ func (s *Service) logout(c echo.Context) error {
 	// Logout revokes stored sessions even after their local expiry.
 	session, _, err := s.auth.storedSession(ctx, apikey.HashToken(cookie.Value))
 	if err != nil {
+		if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		s.setCookie(c, "session", "", time.Unix(1, 0))
 		return c.Redirect(http.StatusSeeOther, "https://detent.build")
 	}
@@ -416,6 +423,9 @@ func (s *Service) organizationChoices(ctx context.Context, session accountSessio
 func (s *Service) chooser(c echo.Context) error {
 	session, err := s.session(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Forganizations")
 	}
 	if served, err := s.clientShell(c); served || err != nil {
@@ -447,6 +457,9 @@ func (s *Service) chooser(c echo.Context) error {
 func (s *Service) sessionJSON(c echo.Context) error {
 	session, err := s.session(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return c.JSON(http.StatusUnauthorized, map[string]string{"code": "unauthenticated", "message": "Sign in to continue"})
 	}
 	account, err := s.accountContextFor(c.Request().Context(), session)
@@ -467,6 +480,9 @@ func (s *Service) sessionJSON(c echo.Context) error {
 func (s *Service) organizationsJSON(c echo.Context) error {
 	session, err := s.session(c)
 	if err != nil {
+		if entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return c.JSON(http.StatusUnauthorized, map[string]string{"code": "unauthenticated", "message": "Sign in to continue"})
 	}
 	choices, err := s.organizationChoices(c.Request().Context(), session)
@@ -497,6 +513,9 @@ func (s *Service) organizationsJSON(c echo.Context) error {
 }
 
 func (s *Service) invitationDenied(c echo.Context, message string, denial auth.HostedDenial) error {
+	if denial.Err != nil && entryAuthStatus(denial.Err, http.StatusForbidden) == http.StatusServiceUnavailable {
+		return s.loginDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", denial)
+	}
 	denial.Status = http.StatusForbidden
 	auth.LogHostedDenial(s.config.Logger, c.Response(), c.Request(), denial)
 	c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
@@ -524,6 +543,7 @@ func (s *Service) startInvitation(c echo.Context) error {
 	}
 	organization, err := s.registry.ByProvider(ctx, invitation.OrganizationID)
 	if err != nil || organization.State != "ready" {
+		denial.Err = err
 		return s.invitationDenied(c, auth.InvitationUnavailable, denial)
 	}
 	if err := s.beginLogin(c, loginTransaction{InvitationToken: token, InvitationOrganization: organization.ID}, "", ""); err != nil {
