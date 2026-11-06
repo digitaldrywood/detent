@@ -216,6 +216,18 @@ func TestRuntimeAdoptionWorkDoesNotGrowWithPlans(t *testing.T) {
 				t.Fatalf("catalog work grew: statements=%d exchanges=%d baseline=%d/%d", statements, exchanges, baselineStatements, baselineExchanges)
 			}
 			t.Logf("tenant=%s plans=%d adoption: statements=%d exchanges=%d", org, size, statements, exchanges)
+			update.StageID = uuid.NewString()
+			if err := platform.PublishRuntime(t.Context(), update.StageID, "entry", "example/next-payload", nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := snapshots.Adopt(t.Context(), hubmaintenance.Tenant{Organization: string(org), Generation: 1}, revision, update); err != nil {
+				t.Fatal(err)
+			}
+			statements, exchanges = counts.take()
+			if statements != baselineStatements+1 || exchanges != baselineExchanges+1 {
+				t.Fatalf("%d plans replacement grew: statements=%d exchanges=%d", size, statements, exchanges)
+			}
+			t.Logf("tenant=%s plans=%d replacement: statements=%d exchanges=%d", org, size, statements, exchanges)
 		}
 	}
 }
