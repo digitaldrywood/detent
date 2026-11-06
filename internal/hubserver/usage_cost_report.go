@@ -301,21 +301,7 @@ WHERE (? OR project_id IN (SELECT value FROM sql_rows(?))) ORDER BY project_id,p
 func (d *database) monthlyCosts(ctx context.Context, organization, scope string, projects []string, window usageWindow, now time.Time) (monthlyCostReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	tx, err := d.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return monthlyCostReport{}, err
-	}
-	defer tx.Rollback()
-	observations, err := readCostObservations(ctx, tx, organization, projects, window)
-	if err != nil {
-		return monthlyCostReport{}, err
-	}
-	luna, err := readLunaCostObservations(ctx, tx, organization, projects, window)
-	if err != nil {
-		return monthlyCostReport{}, err
-	}
-	observations = append(observations, luna...)
-	resources, err := readSpriteCostResources(ctx, tx, organization, projects)
+	observations, resources, snapshot, err := d.monthlyCostRecords(ctx, organization, projects, window)
 	if err != nil {
 		return monthlyCostReport{}, err
 	}
@@ -323,20 +309,11 @@ func (d *database) monthlyCosts(ctx context.Context, organization, scope string,
 	if err != nil {
 		return monthlyCostReport{}, err
 	}
-	encoded, err := sqlList(projects)
-	if err != nil {
-		return report, err
-	}
 	report.RunnerReporting = "finish_time"
-	err = queryRowSQL(ctx, tx, `SELECT coalesce(sum(status='running'),0),coalesce(sum(NOT EXISTS (SELECT 1 FROM usage_cost_observations u WHERE u.organization_id=a.organization_id AND u.resource_id=a.id AND u.bucket='runner_api')),0) FROM native_attempts a WHERE organization_id=? AND substr(started_at,1,19)<?
-AND (status='running' OR substr(updated_at,1,19)>? OR (substr(updated_at,1,19)=? AND length(updated_at)>20))
-AND (? OR project_id IN (SELECT value FROM sql_rows(?)))`, organization, window.To.UTC().Format("2006-01-02T15:04:05"), window.From.UTC().Format("2006-01-02T15:04:05"), window.From.UTC().Format("2006-01-02T15:04:05"), projects == nil, encoded).Scan(&report.ActiveAttempts, &report.UnreportedAttempts)
-	if err != nil {
-		return report, err
-	}
+	report.ActiveAttempts, report.UnreportedAttempts = snapshot.ActiveAttempts, snapshot.UnreportedAttempts
 	report.ActiveWorkComplete = report.ActiveAttempts == 0 && report.UnreportedAttempts == 0
 	if !report.ActiveWorkComplete && report.Coverage == "complete" {
 		report.Coverage = "partial"
 	}
-	return report, tx.Commit()
+	return report, nil
 }

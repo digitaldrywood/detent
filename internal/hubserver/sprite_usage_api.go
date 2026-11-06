@@ -3,12 +3,15 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"slices"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -67,12 +70,12 @@ func (s *Service) organizationMonthlyCosts(c echo.Context) error {
 	if s.config.Hosted != nil && organization != s.config.Hosted.OrganizationID {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	var exists int
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM organizations WHERE id=?", organization).Scan(&exists); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if exists != 1 {
+	err := s.accessRead(ctx, tracker.OrganizationID(organization), func(r tenantstore.Reader) error { _, err := r.AccessOrganization(ctx); return err })
+	if errors.Is(err, corestore.ErrNotFound) {
 		return s.nativeAPIError(c, nativeNotFound())
+	}
+	if err != nil {
+		return s.nativeAPIError(c, err)
 	}
 	window, err := costMonth(c.QueryParam("month"), s.config.now())
 	if err != nil {
