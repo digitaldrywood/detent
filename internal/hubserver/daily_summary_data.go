@@ -17,7 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type summaryProjectRef struct{ id, name string }
+type summaryProjectRef struct{ id, name, slug string }
 
 type summaryRecipient struct {
 	user, organization, email, principal, role, token string
