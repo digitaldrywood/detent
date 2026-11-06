@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -231,31 +233,9 @@ func seedHubNativeDefaults(ctx context.Context, store *database) error {
 	return tx.Commit()
 }
 
-// newDefaultNativeFixture copies immutable defaults into this test's own file.
-// Tests needing named projects or additional organizations use newNativeFixture.
 func newDefaultNativeFixture(t *testing.T, cfg Config) nativeFixture {
 	t.Helper()
-	started := time.Now()
-	defer func() { t.Logf("hub_fixture_default_seconds=%.6f", time.Since(started).Seconds()) }()
-	if cfg.DatabasePath == "" {
-		cfg.DatabasePath = filepath.Join(t.TempDir(), "hub.db")
-	}
-	seedHubDatabaseImage(t, cfg.DatabasePath, true)
-	service := openTestService(t, cfg)
-	var organization tracker.OrganizationID
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM organizations WHERE local = 1").Scan(&organization); err != nil {
-		t.Fatal(err)
-	}
-	project, err := readNativeProject(t.Context(), service.database.db, nativeScope{organization: organization, project: defaultHubProjectID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=0 WHERE id=?", project.ID); err != nil {
-		t.Fatal(err)
-	}
-	f := nativeFixture{service: service, project: project, base: "/api/v2/organizations/" + string(organization) + "/projects/" + string(project.ID), token: defaultHubOperatorToken}
-	seedNativeFixturePolicy(t, service, string(organization)+"/"+string(project.ID))
-	return f
+	return newPostgresDefaultNativeFixture(t, cfg)
 }
 
 func TestNativeDatabaseTemplateIsolation(t *testing.T) {
@@ -264,12 +244,19 @@ func TestNativeDatabaseTemplateIsolation(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			f := newDefaultNativeFixture(t, Config{})
-			// Identical mutations must succeed independently in both copies.
 			issue := f.create(t, "template-isolation")
 			if issue.Number != 1 {
 				t.Fatalf("fresh fixture issue number = %d, want 1", issue.Number)
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, "/api/v1/tokens/"+defaultHubOperatorID, testHubAdminToken, nil), http.StatusNoContent)
+			credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.RevokeAccessCredential(t.Context(), credential.ID, f.service.config.now())
+			}); err != nil {
+				t.Fatal(err)
+			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base, f.token, nil), http.StatusUnauthorized)
 			other := newNativeFixture(t, f.service, f.project.OrganizationID, "additional")
 			if other.project.ID == f.project.ID || other.token == f.token {
