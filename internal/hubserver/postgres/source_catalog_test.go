@@ -163,7 +163,7 @@ func TestSourceCatalogSyntheticRawSchemas(t *testing.T) {
 					}
 				}
 				for _, malformed := range []struct{ name, encoding, data string }{
-					{"revision", "utf8", "9223372036854775808"}, {"enabled", "utf8", "2"}, {"recorded_at", "utf8", "2026-11-01T00:00:00.000000001Z"}, {"ciphertext", "hex", hex.EncodeToString(encrypted) + "x"}, {"payload", "utf8", `{"private":`},
+					{"revision", "utf8", "9223372036854775808"}, {"enabled", "utf8", "2"}, {"recorded_at", "utf8", "2026-11-01T00:00:00.0000000001Z"}, {"ciphertext", "hex", hex.EncodeToString(encrypted) + "x"}, {"payload", "utf8", `{"private":`},
 				} {
 					if _, err := catalog.Decode("hub/records", malformed.name, storagecatalog.Cell{Encoding: malformed.encoding, Data: []byte(malformed.data)}); !errors.Is(err, storagecatalog.ErrValue) {
 						t.Fatalf("malformed %s accepted: %v", malformed.name, err)
