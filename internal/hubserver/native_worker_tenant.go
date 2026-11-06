@@ -11,9 +11,11 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -24,6 +26,109 @@ type preparedNativeLeaseCancellation struct {
 	payloadObjectKey string
 	event            tracker.NativeRunEvent
 	history          eventstore.Event
+}
+
+type nativeLeaseCommandReader struct {
+	tenantstore.Reader
+	lease            *leasestore.Lease
+	item             *corestore.WorkItem
+	runner           *runnerstore.Identity
+	runnerLease      string
+	reservation      claimstore.ProviderReservation
+	reservationLease tracker.LeaseID
+	reservationErr   error
+	project          tracker.ProjectID
+	compact          bool
+}
+
+func (s *Service) nativeLeaseReader(r tenantstore.Reader, scope nativeScope) *nativeLeaseCommandReader {
+	_, compact := s.config.NativeRunEvents.(tenantNativeRunEventParticipant)
+	return &nativeLeaseCommandReader{Reader: r, project: scope.project, compact: compact}
+}
+
+func (r *nativeLeaseCommandReader) Lease(ctx context.Context, id string) (leasestore.Lease, error) {
+	if r.lease != nil && r.lease.LeaseID == id {
+		return *r.lease, nil
+	}
+	if facts, ok := r.Reader.(interface {
+		LeaseMutationFacts(context.Context, tracker.ProjectID, string) (leasestore.Lease, corestore.WorkItem, error)
+	}); ok && r.compact {
+		lease, item, err := facts.LeaseMutationFacts(ctx, r.project, id)
+		if err == nil {
+			r.lease, r.item = &lease, &item
+		}
+		return lease, err
+	}
+	row, err := r.Reader.Lease(ctx, id)
+	if err == nil {
+		r.lease = &row
+	}
+	return row, err
+}
+
+func (r *nativeLeaseCommandReader) WorkItemByID(ctx context.Context, project tracker.ProjectID, id int64) (corestore.WorkItem, error) {
+	if r.item != nil && r.item.ProjectID == project && r.item.ID == id {
+		return *r.item, nil
+	}
+	row, err := r.Reader.WorkItemByID(ctx, project, id)
+	if err == nil {
+		r.item = &row
+	}
+	return row, err
+}
+
+func (r *nativeLeaseCommandReader) RunnerForLease(ctx context.Context, id string) (runnerstore.Identity, error) {
+	if r.runner != nil && r.runnerLease == id {
+		return *r.runner, nil
+	}
+	var row runnerstore.Identity
+	var err error
+	if compact, ok := r.Reader.(interface {
+		LeaseMutationIdentity(context.Context, string) (runnerstore.Identity, error)
+	}); ok && r.compact {
+		row, err = compact.LeaseMutationIdentity(ctx, id)
+	} else {
+		row, err = r.Reader.RunnerForLease(ctx, id)
+	}
+	if err == nil {
+		r.runner, r.runnerLease = &row, id
+	}
+	return row, err
+}
+
+func (r *nativeLeaseCommandReader) ProviderReservation(ctx context.Context, id tracker.LeaseID) (claimstore.ProviderReservation, error) {
+	if r.reservationLease == id && id != "" {
+		return r.reservation, r.reservationErr
+	}
+	var row claimstore.ProviderReservation
+	var err error
+	if compact, ok := r.Reader.(interface {
+		LeaseMutationReservation(context.Context, tracker.LeaseID) (claimstore.ProviderReservation, error)
+	}); ok && r.compact {
+		row, err = compact.LeaseMutationReservation(ctx, id)
+	} else {
+		row, err = r.Reader.ProviderReservation(ctx, id)
+	}
+	if err == nil || errors.Is(err, corestore.ErrNotFound) {
+		r.reservationLease, r.reservation, r.reservationErr = id, row, err
+	}
+	return row, err
+}
+
+func (s *Service) nativeLeaseResponseDetails(ctx context.Context, r tenantstore.Reader, scope nativeScope, lease leasestore.Lease) (NativeLeaseResponseDetails, error) {
+	details, err := s.config.NativeRunEvents.NativeLeaseResponse(ctx, r, scope, lease)
+	if err != nil {
+		return NativeLeaseResponseDetails{}, err
+	}
+	details.ProviderReservation = nil
+	reservation, found, err := readTenantProviderReservation(ctx, r, tracker.LeaseID(lease.LeaseID))
+	if err != nil {
+		return NativeLeaseResponseDetails{}, err
+	}
+	if found {
+		details.ProviderReservation = &reservation.Reservation
+	}
+	return details, nil
 }
 
 func (s *Service) renewNativeLeaseTenant(c echo.Context) error {
@@ -43,13 +148,18 @@ func (s *Service) renewNativeLeaseTenant(c echo.Context) error {
 	}
 	scope := nativeRequestScope(c)
 	var lease leasestore.Lease
+	var details NativeLeaseResponseDetails
 	err = s.config.TenantRepository.WriteTenant(c.Request().Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		current, err := w.Lease(c.Request().Context(), c.Param("lease"))
+		reader := s.nativeLeaseReader(w, scope)
+		if _, err := reader.RunnerForLease(c.Request().Context(), c.Param("lease")); err != nil {
+			return err
+		}
+		current, err := reader.Lease(c.Request().Context(), c.Param("lease"))
 		if err != nil {
 			return err
 		}
 		authority := NativeLeaseAuthority{Scope: scope, Lease: current, Request: request, Operation: "renew"}
-		if err := s.config.NativeRunEvents.ValidateNativeLeaseMutation(c.Request().Context(), w, &authority); err != nil {
+		if err := s.config.NativeRunEvents.ValidateNativeLeaseMutation(c.Request().Context(), reader, &authority); err != nil {
 			return err
 		}
 		lease, err = w.RenewWithLandingCapacity(c.Request().Context(), leasestore.Fence{LeaseID: c.Param("lease"), FencingToken: int64(request.FencingToken)}, ttl, int64(request.LandingCapacity))
@@ -57,12 +167,17 @@ func (s *Service) renewNativeLeaseTenant(c echo.Context) error {
 			return err
 		}
 		authority.Lease = lease
-		return s.config.NativeRunEvents.ApplyNativeLeaseMutation(c.Request().Context(), w, authority)
+		if err := s.config.NativeRunEvents.ApplyNativeLeaseMutation(c.Request().Context(), w, authority); err != nil {
+			return err
+		}
+		reader.lease = &lease
+		details, err = s.nativeLeaseResponseDetails(c.Request().Context(), reader, scope, lease)
+		return err
 	})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return s.respondNativeLease(c, scope, tracker.Lease{LeaseSummary: tracker.LeaseSummary{ID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Machine: tracker.MachineSummary{ID: tracker.MachineID(lease.MachineID)}, SessionID: lease.SessionID, AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt}})
+	return s.writeNativeLeaseResponse(c, lease, details)
 }
 
 func (s *Service) releaseNativeLeaseTenant(c echo.Context) error {
@@ -83,25 +198,28 @@ func (s *Service) releaseNativeLeaseTenant(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	err = s.config.TenantRepository.WriteTenant(c.Request().Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if _, err := w.RunnerForLease(c.Request().Context(), leaseID); err != nil {
+		reader := s.nativeLeaseReader(w, scope)
+		if _, err := reader.RunnerForLease(c.Request().Context(), leaseID); err != nil {
 			return err
 		}
 		if err := w.LockWorkItemProject(c.Request().Context(), scope.project); err != nil {
 			return err
 		}
-		lease, err := w.Lease(c.Request().Context(), leaseID)
+		lease, err := reader.Lease(c.Request().Context(), leaseID)
 		if err != nil {
 			return err
 		}
-		item, err := w.WorkItemByID(c.Request().Context(), scope.project, lease.IssueID)
+		item, err := reader.WorkItemByID(c.Request().Context(), scope.project, lease.IssueID)
 		if err != nil {
 			return err
 		}
-		if _, err := w.LockWorkItem(c.Request().Context(), scope.project, item.NativeID); err != nil {
+		lockedItem, err := w.LockWorkItem(c.Request().Context(), scope.project, item.NativeID)
+		if err != nil {
 			return err
 		}
+		reader.item = &lockedItem
 		authority := NativeLeaseAuthority{Scope: scope, Lease: lease, Request: request, Operation: "release"}
-		if err := s.config.NativeRunEvents.ValidateNativeLeaseMutation(c.Request().Context(), w, &authority); err != nil {
+		if err := s.config.NativeRunEvents.ValidateNativeLeaseMutation(c.Request().Context(), reader, &authority); err != nil {
 			return err
 		}
 		if prepared.attempt.ID != "" {
@@ -172,6 +290,7 @@ func (s *Service) prepareLeaseCancellationTenant(ctx context.Context, scope nati
 	var event eventstore.Event
 	var workItem corestore.WorkItem
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		r = s.nativeLeaseReader(r, scope)
 		var err error
 		lease, err = r.Lease(ctx, leaseID)
 		if err != nil {
@@ -278,28 +397,23 @@ func (s *Service) respondNativeLeaseTenant(c echo.Context, scope nativeScope, le
 	var lease leasestore.Lease
 	var details NativeLeaseResponseDetails
 	err := s.config.TenantRepository.ReadTenant(c.Request().Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+
+		reader := s.nativeLeaseReader(r, scope)
 		var err error
-		lease, err = r.Lease(c.Request().Context(), leaseID)
+		lease, err = reader.Lease(c.Request().Context(), leaseID)
 		if err != nil {
 			return err
 		}
-		details, err = s.config.NativeRunEvents.NativeLeaseResponse(c.Request().Context(), r, scope, lease)
-		if err != nil {
-			return err
-		}
-		details.ProviderReservation = nil
-		reservation, foundReservation, err := readTenantProviderReservation(c.Request().Context(), r, tracker.LeaseID(lease.LeaseID))
-		if err != nil {
-			return err
-		}
-		if foundReservation {
-			details.ProviderReservation = &reservation.Reservation
-		}
-		return nil
+		details, err = s.nativeLeaseResponseDetails(c.Request().Context(), reader, scope, lease)
+		return err
 	})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	return s.writeNativeLeaseResponse(c, lease, details)
+}
+
+func (s *Service) writeNativeLeaseResponse(c echo.Context, lease leasestore.Lease, details NativeLeaseResponseDetails) error {
 	if details.WorkItemID == "" {
 		return s.nativeAPIError(c, corestore.ErrNotFound)
 	}
