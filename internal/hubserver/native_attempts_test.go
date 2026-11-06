@@ -133,7 +133,7 @@ func nativeAttemptFixtureLease(t *testing.T, runner runnerFixture, issue tracker
 func nativeAttemptListingFixture(t *testing.T, count, bodyBytes int) (nativeFixture, tracker.NativeIssue, []tracker.NativeRunData) {
 	t.Helper()
 	var frozen atomic.Pointer[time.Time]
-	f := newDefaultNativeFixture(t, Config{RunDetails: &memoryRunDetails{}, now: func() time.Time {
+	f := newDefaultNativeFixture(t, Config{RunDetails: &verifiedAttemptDetails{}, now: func() time.Time {
 		if now := frozen.Load(); now != nil {
 			return *now
 		}
