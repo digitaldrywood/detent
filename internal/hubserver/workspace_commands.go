@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -132,12 +133,24 @@ func (s *Service) readRecordings(ctx context.Context, scope nativeScope, workspa
 
 // runner grants are required for headless execution too. A token retains the
 // dashboard's existing non-person restrictions on interactive terminals.
-func (s *Service) requireOperatorRunners(ctx context.Context, query nativeQueryer, scope nativeScope) error {
-	if scope.credential.Hosted != nil && !hostedRunnerGrants(ctx, query, string(scope.organization), scope.credential.Hosted.Subject, []tracker.ProjectID{scope.project}) {
-		return nativeNotFound()
-	}
+func (s *Service) requireOperatorRunners(ctx context.Context, _ nativeQueryer, scope nativeScope) error {
 	if scope.credential.Scope != apiScopeOperator && scope.credential.Scope != apiScopeAdmin {
 		return nativeNotFound()
 	}
-	return nil
+	if scope.credential.Hosted == nil {
+		return nil
+	}
+	return s.accessRead(ctx, scope.organization, func(reader tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
+			return err
+		}
+		grant, err := reader.AccessProjectGrant(ctx, scope.credential.Hosted.Subject, scope.project)
+		if err != nil {
+			return err
+		}
+		if !grant.ManageRunner {
+			return nativeNotFound()
+		}
+		return nil
+	})
 }

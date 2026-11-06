@@ -2,10 +2,12 @@ package hubserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -17,7 +19,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
@@ -86,6 +90,36 @@ func TestPostgresBillingBudgetReadRoutes(t *testing.T) {
 			if err := service.database.configureHostedPlans(t.Context(), service.config.Hosted); err != nil {
 				t.Fatal(err)
 			}
+			t.Run("shared billing binding", func(t *testing.T) {
+				service.config.Hosted.Billing = &HostedBillingConfig{AccountID: "acct_example", Mode: "test"}
+				t.Cleanup(func() {
+					service.config.Hosted.Billing = nil
+					ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+					defer cancel()
+					if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error { return w.DeleteBillingAccount(ctx) }); err != nil {
+						t.Error(err)
+					}
+				})
+				expires := now.Add(time.Duration(1-2*index) * time.Hour)
+				customer := "cus_" + string(organization)
+				if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.SetBillingAccount(t.Context(), billingstore.Account{OrganizationID: organization, Mode: "test", Binding: billing.Binding{AccountID: "acct_example", CustomerID: customer}, Status: "free", Checkout: billingstore.Checkout{Key: "checkout_example", PriceID: "price_example", ExpiresAt: expires}})
+				}); err != nil {
+					t.Fatal(err)
+				}
+				request := httptest.NewRequest(http.MethodPost, "/internal/v1/billing/binding", strings.NewReader(`{}`))
+				request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+				response := httptest.NewRecorder()
+				c := service.echo.NewContext(request, response)
+				c.Set(hostedSharedClaimsKey, cloudassert.Claims{Kind: cloudassert.KindService})
+				if err := service.hostedSharedBillingBinding(c); err != nil {
+					t.Fatal(err)
+				}
+				var got hostedSharedBilling
+				if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil || response.Code != http.StatusOK || got.CustomerID != customer || got.CheckoutPending != (index == 0) {
+					t.Fatalf("shared billing=%+v status=%d error=%v body=%s", got, response.Code, err, response.Body)
+				}
+			})
 			owner := f.user(t, string(organization)+"owner", "owner", "owner@example.test", "", "")
 			viewer := f.user(t, string(organization)+"viewer", "viewer", "viewer@example.test", "", "")
 			if service.database.db != nil || service.database.reader != nil {

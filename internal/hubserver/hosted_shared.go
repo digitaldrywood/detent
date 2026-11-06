@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/subtle"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -164,7 +163,7 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 			request = request.WithContext(context.WithValue(request.Context(), entryKeyAuditContext{}, audit))
 			c.SetRequest(request)
 			if path != "/internal/v1/keys/call" {
-				if err := s.auditEntryKey(request.Context(), s.database.db, audit, 0); err != nil {
+				if err := s.recordEntryAccessKeyAudit(request.Context(), audit, 0); err != nil {
 					return s.internalAPIError(c, "audit_unavailable", "Key audit is unavailable", err)
 				}
 			}
@@ -179,7 +178,7 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 			auditCtx, cancelAudit := context.WithTimeout(context.WithoutCancel(request.Context()), 2*time.Second)
 			defer cancelAudit()
-			if err := s.auditEntryKey(auditCtx, s.database.db, audit, status); err != nil {
+			if err := s.recordEntryAccessKeyAudit(auditCtx, audit, status); err != nil {
 				s.config.Logger.Error("Key audit is unavailable", append([]any{"error", err}, s.database.readTimeoutAttributes(err)...)...)
 				if c.Response().Committed || result != nil {
 					return result
@@ -202,49 +201,7 @@ func (s *Service) sharedHostedSession(ctx context.Context, c echo.Context) (auth
 	if !ok || claims.Kind != cloudassert.KindBrowser {
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
-	if s.config.AccessRepository != nil {
-		return s.sharedAccessSession(ctx, c, claims)
-	}
-	identity := auth.HostedIdentity{
-		Subject: claims.Subject, OrganizationID: claims.ProviderOrganization, SessionID: claims.ProviderSession,
-		CreatedAt: claims.SessionCreatedAt, ExpiresAt: claims.SessionExpiresAt, SupportActor: claims.SupportActor, SupportReason: claims.SupportReason,
-	}
-	encoded, err := json.Marshal(identity)
-	if err != nil {
-		return auth.Session{}, "", auth.ErrInvalidSession
-	}
-	now := s.config.now()
-	if !claims.AccessExpiresAt.After(now) || !auth.ValidOrganizationRole(claims.Role) {
-		return auth.Session{}, "", auth.ErrInvalidSession
-	}
-	if identity.SupportActor != "" && !auth.ValidSupportReason(identity.SupportReason) {
-		return auth.Session{}, "", auth.ErrInvalidSession
-	}
-	if session, err := s.storedWebSession(ctx, claims.Binding, now); err == nil && sharedSessionMatches(session, identity, claims.Email) {
-		c.Set("hosted_session", session)
-		return session, claims.Binding, nil
-	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return auth.Session{}, "", auth.ErrInvalidSession
-	}
-	defer tx.Rollback()
-	inserted, err := tx.ExecContext(ctx, "INSERT INTO hosted_sessions (token_hash,email,identity_json,expires_at,created_at,identity_subject) VALUES (?,?,?,?,?,?) ON CONFLICT(token_hash) DO NOTHING", claims.Binding, claims.Email, string(encoded), formatHubTime(claims.SessionExpiresAt), formatHubTime(s.config.now()), identity.Subject)
-	if err != nil {
-		return auth.Session{}, "", auth.ErrInvalidSession
-	}
-	if rows, err := inserted.RowsAffected(); err != nil || rows == 1 && identity.SupportActor != "" && s.hostedAuditWith(ctx, tx, &identity, "session_started", "/auth/oidc/callback", "", http.StatusOK) != nil {
-		return auth.Session{}, "", auth.ErrInvalidSession
-	}
-	if err := tx.Commit(); err != nil {
-		return auth.Session{}, "", auth.ErrInvalidSession
-	}
-	session, err := s.storedWebSession(ctx, claims.Binding, now)
-	if err != nil || !sharedSessionMatches(session, identity, claims.Email) {
-		return auth.Session{}, "", auth.ErrInvalidSession
-	}
-	c.Set("hosted_session", session)
-	return session, claims.Binding, nil
+	return s.sharedAccessSession(ctx, c, claims)
 }
 
 func sharedSessionMatches(session auth.Session, identity auth.HostedIdentity, email string) bool {
@@ -315,7 +272,7 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 	defer cancelRead()
 	cfg := s.hostedBillingConfig()
 	result := hostedSharedBilling{Status: "free"}
-	entitlement, err := s.database.hostedEntitlement(readCtx, s.database.reader, s.config.now())
+	entitlement, err := s.database.hostedEntitlement(readCtx, nil, s.config.now())
 	if err != nil {
 		return s.internalAPIError(c, "entitlements_unavailable", "Organization entitlements are unavailable", err)
 	}
@@ -347,10 +304,17 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 		}
 		checkoutCtx, cancelCheckout := context.WithTimeout(ctx, hubReadTimeout)
 		defer cancelCheckout()
-		var raw string
-		if err := s.database.reader.QueryRowContext(checkoutCtx, "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&raw); err == nil {
-			var checkout hostedCheckout
-			result.CheckoutPending = json.Unmarshal([]byte(raw), &checkout) == nil && checkout.ExpiresAt.After(s.config.now())
+		if err := s.database.readBillingTenant(checkoutCtx, func(reader tenantstore.Reader) error {
+			account, err := reader.BillingAccount(checkoutCtx)
+			if errors.Is(err, corestore.ErrNotFound) {
+				return nil
+			}
+			if err == nil {
+				result.CheckoutPending = account.Checkout.ExpiresAt.After(s.config.now())
+			}
+			return err
+		}); err != nil {
+			return s.internalAPIError(c, "billing_unavailable", "Billing binding is unavailable", err)
 		}
 		state, err := s.database.readHostedBilling(ctx)
 		if err != nil {
@@ -387,17 +351,11 @@ func (s *Service) hostedSharedBillingEvent(c echo.Context) error {
 	if err != nil || binding.CustomerID != request.CustomerID {
 		return s.refusedAPIError(c, http.StatusConflict, "customer_mismatch", "The event customer is not bound to this organization", apiErrorResponse{Code: "customer_mismatch", Message: "The event customer is not bound to this organization"})
 	}
-	if s.database.billingRepository != nil {
-		err := s.database.writeBillingTenant(c.Request().Context(), func(writer tenantstore.Writer) error {
-			_, err := writer.CreateBillingEvent(c.Request().Context(), billingstore.Event{OrganizationID: s.database.hostedOrganization, ID: request.EventID, Type: request.EventType, ReceivedAt: s.config.now().UTC()})
-			return err
-		})
-		if err != nil {
-			return s.internalAPIError(c, "billing_unavailable", "Billing event could not be recorded", err)
-		}
-		return c.NoContent(http.StatusNoContent)
-	}
-	if _, err := s.database.db.ExecContext(c.Request().Context(), "INSERT INTO hosted_billing_events(event_id,event_type,received_at) VALUES(?,?,?) ON CONFLICT(event_id) DO NOTHING", request.EventID, request.EventType, formatHubTime(s.config.now())); err != nil {
+	err = s.database.writeBillingTenant(c.Request().Context(), func(writer tenantstore.Writer) error {
+		_, err := writer.CreateBillingEvent(c.Request().Context(), billingstore.Event{OrganizationID: s.database.hostedOrganization, ID: request.EventID, Type: request.EventType, ReceivedAt: s.config.now().UTC()})
+		return err
+	})
+	if err != nil {
 		return s.internalAPIError(c, "billing_unavailable", "Billing event could not be recorded", err)
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -430,64 +388,6 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 		return s.invalidAPIRequest(c, errors.New("invalid owner bootstrap"))
 	}
 	ctx := c.Request().Context()
-	if s.database.postgres != nil {
-		provider, err := s.hostedProviderOrganization(ctx)
-		if err != nil || provider == "" {
-			return s.refusedAPIError(c, http.StatusConflict, "unallocated", "The tenant has no provider organization", apiErrorResponse{Code: "unallocated", Message: "The tenant has no provider organization"})
-		}
-		membership, err := s.hostedMembership(ctx, &auth.HostedIdentity{Subject: claims.Subject, OrganizationID: provider})
-		if err != nil || membership.Role.Slug != "owner" {
-			return s.refusedAPIError(c, http.StatusForbidden, "owner_unverified", "The provider does not report this identity as an owner", apiErrorResponse{Code: "owner_unverified", Message: "The provider does not report this identity as an owner"})
-		}
-		if s.config.TenantRepository == nil {
-			return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", nativeRunEventStorageUnavailable())
-		}
-		err = s.config.TenantRepository.WriteTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(w tenantstore.Writer) error {
-			if err := w.LockAccessOrganization(ctx); err != nil {
-				return err
-			}
-			members, err := w.AccessMembers(ctx, "", 2)
-			if err != nil {
-				return err
-			}
-			if len(members) > 0 {
-				if len(members) == 1 && members[0].UserID == claims.Subject && members[0].Role == "owner" && members[0].Active {
-					return nil
-				}
-				return errHostedOwnerAlreadyBootstrapped
-			}
-			identity := auth.Identity{Subject: claims.Subject, Email: claims.Email, EmailVerified: true}
-			if err := s.storeAccessMember(ctx, w, identity, membership); err != nil {
-				return err
-			}
-			if err := w.DeleteAccessMemberReservation(ctx, strings.ToLower(claims.Email)); err != nil {
-				return err
-			}
-			return w.UpdateAccessOrganizationName(ctx, name)
-		})
-		if errors.Is(err, errHostedOwnerAlreadyBootstrapped) {
-			return s.refusedAPIError(c, http.StatusConflict, "already_bootstrapped", "This organization already has members", apiErrorResponse{Code: "already_bootstrapped", Message: "This organization already has members"})
-		}
-		if err != nil {
-			return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", err)
-		}
-		return c.NoContent(http.StatusNoContent)
-	}
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancelRead()
-	s.hostedMutationMu.Lock()
-	defer s.hostedMutationMu.Unlock()
-	var members int
-	var owner string
-	if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*), COALESCE(max(CASE WHEN role = 'owner' AND active = 1 THEN user_id END), '') FROM hosted_members").Scan(&members, &owner); err != nil {
-		return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", err)
-	}
-	if members != 0 {
-		if members == 1 && owner == claims.Subject {
-			return c.NoContent(http.StatusNoContent)
-		}
-		return s.refusedAPIError(c, http.StatusConflict, "already_bootstrapped", "This organization already has members", apiErrorResponse{Code: "already_bootstrapped", Message: "This organization already has members"})
-	}
 	provider, err := s.hostedProviderOrganization(ctx)
 	if err != nil || provider == "" {
 		return s.refusedAPIError(c, http.StatusConflict, "unallocated", "The tenant has no provider organization", apiErrorResponse{Code: "unallocated", Message: "The tenant has no provider organization"})
@@ -496,7 +396,36 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 	if err != nil || membership.Role.Slug != "owner" {
 		return s.refusedAPIError(c, http.StatusForbidden, "owner_unverified", "The provider does not report this identity as an owner", apiErrorResponse{Code: "owner_unverified", Message: "The provider does not report this identity as an owner"})
 	}
-	if err := s.storeHostedMember(ctx, auth.Identity{Subject: claims.Subject, Email: claims.Email, EmailVerified: true}, membership, name); err != nil {
+	if s.config.TenantRepository == nil {
+		return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", nativeRunEventStorageUnavailable())
+	}
+	err = s.config.TenantRepository.WriteTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockAccessOrganization(ctx); err != nil {
+			return err
+		}
+		members, err := w.AccessMembers(ctx, "", 2)
+		if err != nil {
+			return err
+		}
+		if len(members) > 0 {
+			if len(members) == 1 && members[0].UserID == claims.Subject && members[0].Role == "owner" && members[0].Active {
+				return nil
+			}
+			return errHostedOwnerAlreadyBootstrapped
+		}
+		identity := auth.Identity{Subject: claims.Subject, Email: claims.Email, EmailVerified: true}
+		if err := s.storeAccessMember(ctx, w, identity, membership); err != nil {
+			return err
+		}
+		if err := w.DeleteAccessMemberReservation(ctx, strings.ToLower(claims.Email)); err != nil {
+			return err
+		}
+		return w.UpdateAccessOrganizationName(ctx, name)
+	})
+	if errors.Is(err, errHostedOwnerAlreadyBootstrapped) {
+		return s.refusedAPIError(c, http.StatusConflict, "already_bootstrapped", "This organization already has members", apiErrorResponse{Code: "already_bootstrapped", Message: "This organization already has members"})
+	}
+	if err != nil {
 		return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", err)
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -528,30 +457,11 @@ func (s *Service) revokeHostedSharedSessions(c echo.Context) error {
 }
 
 func (s *Service) revokeHostedSharedBinding(ctx context.Context, binding, now string) error {
-	if s.config.AccessRepository != nil {
-		at, err := parseTimeValue(now)
-		if err != nil {
-			return err
-		}
-		return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return w.RevokeAccessSession(ctx, binding, at) })
-	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
+	at, err := parseTimeValue(now)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	var encoded string
-	var identity auth.HostedIdentity
-	active := tx.QueryRowContext(ctx, "SELECT identity_json FROM hosted_sessions WHERE token_hash = ? AND revoked_at IS NULL", binding).Scan(&encoded) == nil
-	if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_sessions (token_hash,email,identity_json,expires_at,created_at,revoked_at,identity_subject) VALUES (?,'','{}',?,?,?,'') ON CONFLICT(token_hash) DO UPDATE SET revoked_at = COALESCE(revoked_at, excluded.revoked_at)", binding, now, now, now); err != nil {
-		return err
-	}
-	if active && json.Unmarshal([]byte(encoded), &identity) == nil && identity.SupportActor != "" {
-		if err := s.hostedAuditWith(ctx, tx, &identity, "session_ended", "/logout", "", http.StatusOK); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return w.RevokeAccessSession(ctx, binding, at) })
 }
 
 type hostedSharedInvitation struct {

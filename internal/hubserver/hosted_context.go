@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -15,38 +14,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 var errHostedContextUnavailable = errors.New("hosted application context is unavailable")
 
 type hostedContextExecutor struct{ service *Service }
-
-type hostedEventRequest = operatortool.HostedEventArguments
-
-type hostedEventCursor struct {
-	Organization string `json:"organization_id"`
-	Project      string `json:"project_id"`
-	Workspace    string `json:"workspace_id"`
-	Sequence     int64  `json:"sequence"`
-	Revision     int64  `json:"workspace_revision"`
-}
-
-type hostedEventObservation struct {
-	Sequence  int64                     `json:"sequence"`
-	Workspace *workspacesession.Session `json:"workspace,omitempty"`
-}
-
-type hostedEventResult struct {
-	OrganizationID string `json:"organization_id"`
-	ProjectID      string `json:"project_id"`
-	ObservedAt     string `json:"observed_at"`
-	Freshness      string `json:"freshness"`
-	Semantics      string `json:"semantics"`
-	Cursor         string `json:"cursor"`
-	Changed        bool   `json:"changed"`
-	hostedEventObservation
-}
 
 func (e hostedContextExecutor) credential(ctx context.Context, name, project string) (context.Context, apiCredential, error) {
 	requirement := operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: project}
@@ -58,23 +30,13 @@ func (e hostedContextExecutor) credential(ctx context.Context, name, project str
 		return ctx, apiCredential{}, err
 	}
 	s := e.service
-	if s.config.Hosted == nil || s.database == nil {
+	if s.config.Hosted == nil {
 		return ctx, apiCredential{}, errHostedContextUnavailable
 	}
-	if s.database.db == nil {
-		if s.config.TenantRepository == nil || name != operatortool.AppUpdates && name != operatortool.AppBootstrapPayload {
-			return ctx, apiCredential{}, errHostedContextUnavailable
-		}
-		credential, err := currentHubOperator(ctx)
-		if err != nil || credential.Hosted == nil || credential.HostedRole == "account" || operatorIdentity(credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
-			return ctx, apiCredential{}, operatortool.ErrAccessDenied
-		}
-		if name == operatortool.AppUpdates && !s.appAllRunnerGrants(ctx, credential) {
-			return ctx, apiCredential{}, operatortool.ErrAccessDenied
-		}
-		return ctx, credential, nil
+	if s.config.TenantRepository == nil || name != operatortool.AppUpdates && name != operatortool.AppBootstrapPayload {
+		return ctx, apiCredential{}, errHostedContextUnavailable
 	}
-	credential, err := (hubAdministration{s}).credential(ctx)
+	credential, err := currentHubOperator(ctx)
 	if err != nil || credential.Hosted == nil || credential.HostedRole == "account" || operatorIdentity(credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
 		return ctx, apiCredential{}, operatortool.ErrAccessDenied
 	}
@@ -86,53 +48,32 @@ func (e hostedContextExecutor) credential(ctx context.Context, name, project str
 
 func (e hostedContextExecutor) listTools(ctx context.Context) []operatortool.Definition {
 	s := e.service
-	if s.config.Hosted == nil || s.database == nil {
+	if s.config.Hosted == nil {
 		return nil
 	}
-	if s.database.db == nil {
-		if s.config.TenantRepository == nil {
-			return nil
-		}
-		catalog, err := operatorCatalog(ctx)
-		if err != nil || catalog.credential.Hosted == nil || catalog.credential.HostedRole == "account" || operatorIdentity(catalog.credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
-			return nil
-		}
-		definitions := []operatortool.Definition{}
-		for _, definition := range operatortool.HostedContextCatalog() {
-			requirement := operatortool.Requirement{Scope: apikey.ScopeRead}
-			switch definition.Name {
-			case operatortool.AppUpdates:
-				requirement.ResourceKind = "runners"
-				if !s.appAllRunnerGrants(ctx, catalog.credential) {
-					continue
-				}
-			case operatortool.AppBootstrapPayload:
-			default:
-				continue
-			}
-			if _, err := s.authorizeCatalog(ctx, requirement); err == nil {
-				definitions = append(definitions, definition)
-			}
-		}
-		return definitions
+	if s.config.TenantRepository == nil {
+		return nil
 	}
 	catalog, err := operatorCatalog(ctx)
 	if err != nil || catalog.credential.Hosted == nil || catalog.credential.HostedRole == "account" || operatorIdentity(catalog.credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
 		return nil
 	}
 	definitions := []operatortool.Definition{}
-	for _, d := range operatortool.HostedContextCatalog() {
+	for _, definition := range operatortool.HostedContextCatalog() {
 		requirement := operatortool.Requirement{Scope: apikey.ScopeRead}
-		if d.Name == operatortool.AppUpdates {
+		switch definition.Name {
+		case operatortool.AppUpdates:
 			requirement.ResourceKind = "runners"
-		}
-		if _, err := s.authorizeCatalog(ctx, requirement); err != nil {
+			if !s.appAllRunnerGrants(ctx, catalog.credential) {
+				continue
+			}
+		case operatortool.AppBootstrapPayload:
+		default:
 			continue
 		}
-		if d.Name == operatortool.AppUpdates && !s.appAllRunnerGrants(ctx, catalog.credential) {
-			continue
+		if _, err := s.authorizeCatalog(ctx, requirement); err == nil {
+			definitions = append(definitions, definition)
 		}
-		definitions = append(definitions, d)
 	}
 	return definitions
 }
@@ -153,17 +94,7 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 			resultErr = errHostedContextUnavailable
 		}
 	}()
-	var notesRequest operatortool.ReleaseNotesArguments
-	var request hostedEventRequest
 	switch call.Name {
-	case operatortool.ReleaseNotes:
-		if err := operatortool.DecodeArguments(call.Arguments, &notesRequest); err != nil {
-			return result, err
-		}
-	case operatortool.HostedEvents:
-		if err := operatortool.DecodeArguments(call.Arguments, &request); err != nil || request.ProjectID == "" || len(request.ProjectID) > 256 || len(request.WorkspaceID) > 256 || len(request.Cursor) > 2048 {
-			return result, operatortool.ErrInvalidArguments
-		}
 	case operatortool.AppBootstrapPayload, operatortool.AppUpdates:
 		if err := operatortool.DecodeArguments(call.Arguments, &struct{}{}); err != nil {
 			return result, err
@@ -171,19 +102,13 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 	default:
 		return result, operatortool.ErrUnknownTool
 	}
-	ctx, credential, err := e.credential(ctx, call.Name, request.ProjectID)
+	ctx, credential, err := e.credential(ctx, call.Name, "")
 	if err != nil {
 		return result, err
 	}
 	s := e.service
 	var payload any
 	switch call.Name {
-	case operatortool.ReleaseNotes:
-		notes, err := s.readReleaseNotes(ctx, credential, notesRequest)
-		if err != nil {
-			return result, err
-		}
-		payload = notes
 	case operatortool.AppBootstrapPayload:
 		session := auth.Session{}
 		if credential.SessionHash != "" {
@@ -192,35 +117,27 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 				return result, operatortool.ErrAccessDenied
 			}
 		} else if credential.HostedKeyScope != "" {
-			if s.database.db == nil {
-				member, err := s.activeAccessMember(readCtx, credential.Hosted.Subject)
-				if err != nil {
-					return result, operatortool.ErrAccessDenied
-				}
-				session.Email = member.Email
-			} else if err := s.database.reader.QueryRowContext(readCtx, "SELECT email FROM hosted_members WHERE user_id=? AND active=1", credential.Hosted.Subject).Scan(&session.Email); err != nil {
-				return result, err
+			member, err := s.activeAccessMember(readCtx, credential.Hosted.Subject)
+			if err != nil {
+				return result, operatortool.ErrAccessDenied
 			}
+			session.Email = member.Email
 		}
 		var bootstrap appBootstrap
-		if s.database.db == nil {
-			bootstrap, err = s.readPostgresAppBootstrap(readCtx, credential, session)
+		bootstrap, err = s.readPostgresAppBootstrap(readCtx, credential, session)
+		if err == nil {
+			var seen time.Time
+			seen, err = s.releaseSeenTime(readCtx, credential)
 			if err == nil {
-				var seen time.Time
-				seen, err = s.releaseSeenTime(readCtx, credential)
-				if err == nil {
-					bootstrap.HasUnread = s.releasesUnread(seen)
-				}
+				bootstrap.HasUnread = s.releasesUnread(seen)
 			}
-			if err == nil && s.database.plans() != nil {
-				var entitlement HostedEntitlement
-				entitlement, err = s.database.hostedEntitlement(readCtx, nil, s.config.now())
-				if err == nil {
-					bootstrap.Plan = &appBootstrapPlan{ID: entitlement.EffectiveBase.ID, Name: entitlement.Name, Source: entitlement.Source, WindowEndsAt: entitlement.WindowEndsAt.UTC().Format(time.RFC3339)}
-				}
+		}
+		if err == nil && s.database.plans() != nil {
+			var entitlement HostedEntitlement
+			entitlement, err = s.database.hostedEntitlement(readCtx, nil, s.config.now())
+			if err == nil {
+				bootstrap.Plan = &appBootstrapPlan{ID: entitlement.EffectiveBase.ID, Name: entitlement.Name, Source: entitlement.Source, WindowEndsAt: entitlement.WindowEndsAt.UTC().Format(time.RFC3339)}
 			}
-		} else {
-			bootstrap, err = s.readAppBootstrap(ctx, credential, session)
 		}
 		if err != nil {
 			return result, err
@@ -246,98 +163,16 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 			Freshness  string `json:"freshness"`
 			appUpdates
 		}{s.config.now().UTC().Format(time.RFC3339Nano), "current_observation", updates}
-	case operatortool.HostedEvents:
-		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(request.ProjectID), credential: credential}
-		observation, err := s.readHostedEventObservation(ctx, scope, request.WorkspaceID, "")
-		if err != nil {
-			return result, err
-		}
-		position := hostedEventCursor{Organization: string(scope.organization), Project: request.ProjectID, Workspace: request.WorkspaceID, Sequence: observation.Sequence}
-		if observation.Workspace != nil {
-			position.Revision = observation.Workspace.Revision
-			raw, err := json.Marshal(observation.Workspace)
-			raw, err = operatorWorkspaceProjection(raw, false, err)
-			var projected workspacesession.Session
-			if err != nil || json.Unmarshal(raw, &projected) != nil {
-				return result, errHostedContextUnavailable
-			}
-			observation.Workspace = &projected
-		}
-		changed := true
-		if request.Cursor != "" {
-			raw, err := base64.RawURLEncoding.DecodeString(request.Cursor)
-			var previous hostedEventCursor
-			if err != nil || operatortool.DecodeArguments(raw, &previous) != nil || previous.Organization != position.Organization || previous.Project != position.Project || previous.Workspace != position.Workspace || previous.Sequence < 0 || previous.Revision < 0 {
-				return result, operatortool.ErrInvalidArguments
-			}
-			changed = previous != position
-		}
-		raw, err := json.Marshal(position)
-		if err != nil {
-			return result, err
-		}
-		payload = hostedEventResult{OrganizationID: string(scope.organization), ProjectID: request.ProjectID, ObservedAt: s.config.now().UTC().Format(time.RFC3339Nano), Freshness: "current_observation", Semantics: "current project invalidation sequence and optional workspace revision; no heartbeat or event replay", Cursor: base64.RawURLEncoding.EncodeToString(raw), Changed: changed, hostedEventObservation: observation}
+
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil || len(raw) > operatortool.MaxResultBytes {
 		return result, errHostedContextUnavailable
 	}
-	if err := s.hostedAudit(ctx, credential.Hosted, "action", "mcp "+call.Name, request.ProjectID, http.StatusOK); err != nil {
+	if err := s.hostedAudit(ctx, credential.Hosted, "action", "mcp "+call.Name, "", http.StatusOK); err != nil {
 		return result, err
 	}
 	return operatortool.Result{Content: raw}, nil
-}
-
-func (s *Service) readHostedEventObservation(ctx context.Context, scope nativeScope, workspace, item string) (hostedEventObservation, error) {
-	var query nativeQueryer = s.database.reader
-	if scope.credential.HostedRole == "reporter" {
-		prepared, prepareErr := prepareNativePageQuery(ctx, query, scope, "", "native_issue_actors")
-		if prepareErr != nil {
-			return hostedEventObservation{}, prepareErr
-		}
-		query = prepared
-	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	observation := hostedEventObservation{}
-	if err := s.requireHostedProject(ctx, s.database.auth(), scope, false); err != nil {
-		return observation, operatortool.ErrAccessDenied
-	}
-	if err := s.database.authorizeNativeProject(ctx, scope); err != nil {
-		return observation, operatortool.ErrAccessDenied
-	}
-	if item != "" {
-		if err := requireReporterItem(ctx, s.database.reader, scope, item); err != nil {
-			return observation, err
-		}
-		if err := query.QueryRowContext(ctx, "SELECT event_sequence FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?", scope.organization, scope.project, item).Scan(&observation.Sequence); err != nil {
-			return observation, err
-		}
-	} else {
-		statement := "SELECT COALESCE(MAX(rowid),0) FROM collaboration_events WHERE organization_id = ? AND project_id = ?"
-		args := []any{scope.organization, scope.project}
-		if scope.credential.HostedRole == "reporter" {
-			visibility, visibilityArgs := scope.issueVisibilitySQL("i")
-			statement += " AND work_item_id IN (SELECT i.native_id FROM issues i WHERE (" + visibility + "))"
-			args = append(args, visibilityArgs...)
-		}
-		if err := query.QueryRowContext(ctx, statement, args...).Scan(&observation.Sequence); err != nil {
-			return observation, err
-		}
-	}
-	if workspace != "" {
-		if s.workspaces == nil {
-			return observation, errHostedContextUnavailable
-		}
-		raw, err := s.readWorkspace(ctx, scope, workspace)
-		if err != nil {
-			return observation, err
-		}
-		if err := json.Unmarshal(raw, &observation.Workspace); err != nil {
-			return observation, err
-		}
-	}
-	return observation, nil
 }
 
 func (s *Service) appAllRunnerGrants(ctx context.Context, credential apiCredential, projects ...tracker.ProjectID) bool {
@@ -346,36 +181,31 @@ func (s *Service) appAllRunnerGrants(ctx context.Context, credential apiCredenti
 	if credential.Hosted == nil {
 		return false
 	}
-	if s.database.db == nil && s.config.TenantRepository != nil {
-		return s.appAllRunnerGrantsPostgres(ctx, credential, projects)
-	}
-	if s.requireHostedRunnerProjects(ctx, s.database.reader, credential, projects) != nil {
-		return false
-	}
-	if credential.HostedKeyScope == "" {
-		return true
-	}
-	condition, args := credential.projectGrantSQL("p.organization_id", "p.id")
-	raw, err := sqlList(projects)
-	if err != nil {
-		return false
-	}
-	args = append(args, s.config.Hosted.OrganizationID, projects == nil, raw)
-	var total, granted int
-	err = queryRowSQL(ctx, s.database.reader, "SELECT count(*), COALESCE(sum("+condition+"),0) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id = ? AND (? OR p.id IN (SELECT value FROM sql_rows(?)))", args...).Scan(&total, &granted)
-	return err == nil && total > 0 && total == granted
+	return s.appAllRunnerGrantsPostgres(ctx, credential, projects)
 }
 
 func (s *Service) appAllRunnerGrantsPostgres(ctx context.Context, credential apiCredential, projects []tracker.ProjectID) bool {
-	if credential.HostedRole != "owner" && credential.HostedRole != "admin" && credential.HostedRole != "member" || projects != nil && len(projects) == 0 {
+	if s.config.TenantRepository == nil {
 		return false
 	}
-	if credential.HostedKeyScope == "" && (credential.HostedRole == "owner" || credential.HostedRole == "admin") {
-		return true
+	var allowed bool
+	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
+		var err error
+		allowed, err = s.appAllRunnerGrantsWith(ctx, reader, credential, projects)
+		return err
+	})
+	return err == nil && allowed
+}
+
+func (s *Service) appAllRunnerGrantsWith(ctx context.Context, reader tenantstore.Reader, credential apiCredential, projects []tracker.ProjectID) (bool, error) {
+	if credential.HostedRole != "owner" && credential.HostedRole != "admin" && credential.HostedRole != "member" || projects != nil && len(projects) == 0 {
+		return false, nil
 	}
-	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
+	if credential.HostedKeyScope == "" && (credential.HostedRole == "owner" || credential.HostedRole == "admin") {
+		return true, nil
+	}
 	var total, accessible int
-	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	err := func() error {
 		accessReader, ok := reader.(accessstore.ProjectAccessPageReader)
 		if !ok {
 			return ErrProjectParticipants
@@ -425,9 +255,6 @@ func (s *Service) appAllRunnerGrantsPostgres(ctx context.Context, credential api
 			}
 		}
 		return nil
-	})
-	if err != nil || total == 0 || total != accessible {
-		return false
-	}
-	return true
+	}()
+	return err == nil && total > 0 && total == accessible, err
 }

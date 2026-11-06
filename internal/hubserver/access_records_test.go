@@ -62,6 +62,9 @@ func TestPostgresTenantAccessWithoutSQLite(t *testing.T) {
 		if err != nil || status != http.StatusOK {
 			t.Fatalf("credential status=%d error=%v", status, err)
 		}
+		if !service.appAllRunnerGrants(t.Context(), credential) {
+			t.Fatal("typed administrator cannot manage runners")
+		}
 		scope := nativeScope{organization: org, project: "prj_example", credential: credential, requireHostedAdmin: true}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: member.UserID, ProjectID: scope.project, CanWrite: true}); err != nil {
@@ -70,6 +73,17 @@ func TestPostgresTenantAccessWithoutSQLite(t *testing.T) {
 			return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: credential.ID, ProjectID: scope.project})
 		}); err != nil {
 			t.Fatal(err)
+		}
+		if err := service.requireOperatorRunners(t.Context(), nil, scope); err == nil {
+			t.Fatal("runner access accepted without management grant")
+		}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: member.UserID, ProjectID: scope.project, CanWrite: true, ManageRunner: true})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := service.requireOperatorRunners(t.Context(), nil, scope); err != nil {
+			t.Fatalf("runner management grant rejected: %v", err)
 		}
 		token, err := service.createAPITokenFor(t.Context(), tokenRequest{Name: "Example key", Scope: apiScopeOperator, Issuer: &credential, KeyScope: apikey.ScopeRead, ProjectAccess: hostedProjectsAll})
 		if err != nil {
@@ -113,13 +127,14 @@ func TestPostgresTenantAccessWithoutSQLite(t *testing.T) {
 		service.config.SecretKeys = secretTestKeys(t, "1", "1")
 		c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), httptest.NewRecorder())
 		claims := cloudassert.Claims{Kind: cloudassert.KindBrowser, Audience: string(org), Subject: member.UserID, ProviderOrganization: member.OrganizationID, ProviderSession: identity.SessionID, SessionCreatedAt: now, SessionExpiresAt: identity.ExpiresAt, AccessExpiresAt: identity.ExpiresAt, Email: "member@example.com", Role: "admin", Binding: "shared_binding"}
-		if _, _, err := service.sharedAccessSession(t.Context(), c, claims); err != nil {
+		c.Set(hostedSharedClaimsKey, claims)
+		if _, _, err := service.sharedHostedSession(t.Context(), c); err != nil {
 			t.Fatal(err)
 		}
 		if err := service.revokeHostedSharedBinding(t.Context(), claims.Binding, formatHubTime(now)); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := service.sharedAccessSession(t.Context(), c, claims); err == nil {
+		if _, _, err := service.sharedHostedSession(t.Context(), c); err == nil {
 			t.Fatal("shared binding resurrected after revocation")
 		}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {

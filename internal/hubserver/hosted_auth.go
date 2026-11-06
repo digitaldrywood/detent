@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -42,37 +41,11 @@ func (e *hostedMembershipLookupError) Unwrap() error {
 }
 
 func (s *Service) CreateWebSession(ctx context.Context, record auth.SessionRecord) error {
-	if s.config.AccessRepository != nil {
-		return s.createAccessWebSession(ctx, record)
-	}
-	if s.config.Hosted == nil || record.Identity == nil {
-		return auth.ErrInvalidSession
-	}
-	encoded, err := json.Marshal(record.Identity)
-	if err != nil {
-		return auth.ErrInvalidSession
-	}
-	_, err = s.database.db.ExecContext(ctx, "INSERT INTO hosted_sessions (token_hash,email,identity_json,expires_at,created_at,identity_subject) VALUES (?,?,?,?,?,?)", record.TokenHash, record.Email, string(encoded), formatHubTime(record.ExpiresAt), formatHubTime(record.CreatedAt), record.Identity.Subject)
-	return err
+	return s.createAccessWebSession(ctx, record)
 }
 
 func (s *Service) storedWebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
-	if s.config.AccessRepository != nil {
-		return s.accessWebSession(ctx, hash, now)
-	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	var session auth.Session
-	var encoded, expiry string
-	err := s.database.auth().QueryRowContext(ctx, "SELECT email,identity_json,expires_at FROM hosted_sessions WHERE token_hash = ? AND revoked_at IS NULL", hash).Scan(&session.Email, &encoded, &expiry)
-	if err != nil || json.Unmarshal([]byte(encoded), &session.Identity) != nil || session.Identity == nil {
-		return auth.Session{}, auth.ErrInvalidSession
-	}
-	session.ExpiresAt, err = parseTimeValue(expiry)
-	if err != nil || !session.ExpiresAt.After(now) {
-		return auth.Session{}, auth.ErrInvalidSession
-	}
-	return session, nil
+	return s.accessWebSession(ctx, hash, now)
 }
 
 func (s *Service) WebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
@@ -162,45 +135,24 @@ func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (apiCred
 // so the tenant does not call the provider on the request path; membership
 // removal reaches the tenant through the entry's revocation of the binding.
 func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Session, hash, role string) (apiCredential, int, error) {
-	if s.config.AccessRepository != nil {
-		var member accessstore.Member
-		err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
-			var err error
-			member, err = r.AccessMember(ctx, session.Identity.Subject)
-			return err
-		})
-		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) || errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) {
-			return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
-		}
-		if err != nil {
-			return apiCredential{}, http.StatusInternalServerError, err
-		}
-		if !member.Active || !auth.ValidOrganizationRole(role) {
-			return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
-		}
-		membership := auth.Membership{ID: member.MembershipID}
-		membership.Role.Slug = lesserHostedRole(role, member.Role)
-		return s.accessMemberCredential(ctx, session, hash, membership)
-	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	if !auth.ValidOrganizationRole(role) {
-		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
-	}
-	var membership auth.Membership
-	var local string
-	err := s.database.auth().QueryRowContext(ctx, "SELECT membership_id, role FROM hosted_members WHERE user_id = ? AND active = 1", session.Identity.Subject).Scan(&membership.ID, &local)
-	if errors.Is(err, sql.ErrNoRows) {
+	var member accessstore.Member
+	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+		var err error
+		member, err = r.AccessMember(ctx, session.Identity.Subject)
+		return err
+	})
+	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) || errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
 	if err != nil {
-		return apiCredential{}, http.StatusInternalServerError, fmt.Errorf("read shared hosted membership: %w", err)
+		return apiCredential{}, http.StatusInternalServerError, err
 	}
-	if !auth.ValidOrganizationRole(local) {
+	if !member.Active || !auth.ValidOrganizationRole(role) {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
-	membership.Role.Slug = lesserHostedRole(role, local)
-	return s.hostedMemberCredential(ctx, session, hash, membership)
+	membership := auth.Membership{ID: member.MembershipID}
+	membership.Role.Slug = lesserHostedRole(role, member.Role)
+	return s.accessMemberCredential(ctx, session, hash, membership)
 }
 
 // completePendingHostedInvitation finishes an invitation the provider already
@@ -218,31 +170,27 @@ func (s *Service) completePendingHostedInvitation(ctx context.Context, session a
 	readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	var id string
 	var err error
-	if s.config.AccessRepository != nil {
-		var latest time.Time
-		after := ""
-		err = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
-			for {
-				page, err := r.AccessInvitations(readCtx, after, 200)
-				if err != nil {
-					return err
-				}
-				for _, row := range page {
-					if row.AcceptedUserID == "" && strings.EqualFold(row.Email, session.Email) && row.ExpiresAt.After(s.config.now()) && row.CreatedAt.After(latest) {
-						id, latest = row.ID, row.CreatedAt
-					}
-				}
-				if len(page) < 200 {
-					return nil
-				}
-				after = page[len(page)-1].ID
+	var latest time.Time
+	after := ""
+	err = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
+		for {
+			page, err := r.AccessInvitations(readCtx, after, 200)
+			if err != nil {
+				return err
 			}
-		})
-		if err == nil && id == "" {
-			err = sql.ErrNoRows
+			for _, row := range page {
+				if row.AcceptedUserID == "" && strings.EqualFold(row.Email, session.Email) && row.ExpiresAt.After(s.config.now()) && row.CreatedAt.After(latest) {
+					id, latest = row.ID, row.CreatedAt
+				}
+			}
+			if len(page) < 200 {
+				return nil
+			}
+			after = page[len(page)-1].ID
 		}
-	} else {
-		err = s.database.reader.QueryRowContext(readCtx, "SELECT id FROM hosted_invitations WHERE email = ? AND organization_id = ? AND accepted_user_id = '' AND (expires_at = '' OR expires_at > ?) ORDER BY rowid DESC LIMIT 1", strings.ToLower(session.Email), s.config.Hosted.OrganizationID, s.config.now().UTC().Format(time.RFC3339)).Scan(&id)
+	})
+	if err == nil && id == "" {
+		err = sql.ErrNoRows
 	}
 	cancel()
 	if err != nil {
@@ -285,38 +233,7 @@ func (s *Service) hostedSessionCredential(ctx context.Context, session auth.Sess
 }
 
 func (s *Service) hostedMemberCredential(ctx context.Context, session auth.Session, hash string, membership auth.Membership) (apiCredential, int, error) {
-	if s.config.AccessRepository != nil {
-		return s.accessMemberCredential(ctx, session, hash, membership)
-	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	if s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == "" {
-		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
-	}
-	providerID, err := s.hostedProviderOrganization(ctx)
-	if errors.Is(err, sql.ErrNoRows) {
-		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
-	}
-	if err != nil {
-		return apiCredential{}, http.StatusInternalServerError, fmt.Errorf("read hosted provider organization: %w", err)
-	}
-	if providerID == "" || session.Identity.OrganizationID != providerID {
-		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
-	}
-	credential := apiCredential{Scope: apiScopeOperator, NativeOnly: true, Hosted: session.Identity, SessionHash: hash, HostedRole: membership.Role.Slug, HostedMembership: membership.ID}
-	var localRole string
-	err = s.database.auth().QueryRowContext(ctx, "SELECT m.principal_id,t.token_hash,m.role FROM hosted_members m JOIN api_tokens t ON t.id = m.principal_id WHERE m.user_id = ? AND m.membership_id = ? AND m.active = 1 AND t.revoked_at IS NULL", session.Identity.Subject, membership.ID).Scan(&credential.ID, &credential.Hash, &localRole)
-	if errors.Is(err, sql.ErrNoRows) {
-		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
-	}
-	if err != nil {
-		return apiCredential{}, http.StatusInternalServerError, fmt.Errorf("read hosted member credential: %w", err)
-	}
-	if !auth.ValidOrganizationRole(localRole) {
-		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
-	}
-	credential.HostedRole = lesserHostedRole(credential.HostedRole, localRole)
-	return credential, http.StatusOK, nil
+	return s.accessMemberCredential(ctx, session, hash, membership)
 }
 
 func hostedCSRF(token string) string {
@@ -617,22 +534,7 @@ func (s *Service) addHostedMember(ctx context.Context, identity auth.Identity, m
 }
 
 func (s *Service) storeHostedMember(ctx context.Context, identity auth.Identity, membership auth.Membership, organizationName string) (resultErr error) {
-	if s.config.AccessRepository != nil {
-		return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return s.storeAccessMember(ctx, w, identity, membership) })
-	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-			resultErr = errors.Join(resultErr, err)
-		}
-	}()
-	if err := s.storeHostedMemberTx(ctx, tx, identity, membership, organizationName); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return s.storeAccessMember(ctx, w, identity, membership) })
 }
 
 func (s *Service) storeHostedMemberTx(ctx context.Context, tx *sql.Tx, identity auth.Identity, membership auth.Membership, organizationName string) error {
@@ -695,10 +597,7 @@ type hostedExecer interface {
 }
 
 func (s *Service) hostedAudit(ctx context.Context, identity *auth.HostedIdentity, event, route, project string, status int) error {
-	if s.config.AccessRepository != nil {
-		return s.recordAccessAudit(ctx, identity, event, route, project, status)
-	}
-	return s.hostedAuditWith(ctx, s.database.db, identity, event, route, project, status)
+	return s.recordAccessAudit(ctx, identity, event, route, project, status)
 }
 
 func (s *Service) hostedAuditWith(ctx context.Context, exec hostedExecer, identity *auth.HostedIdentity, event, route, project string, status int) error {
