@@ -22,6 +22,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
+var errNativeItemUnavailable = errors.New("native item is unavailable in the current scope")
+
 type NativeConnector struct {
 	client      *NativeClient
 	laneEntries nativeLaneEntries
@@ -84,6 +86,9 @@ func (c *NativeConnector) FetchIssuesByStates(ctx context.Context, states []stri
 				continue
 			}
 			issue, err := c.issueWithLanding(ctx, item)
+			if errors.Is(err, errNativeItemUnavailable) {
+				continue
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -99,6 +104,9 @@ func (c *NativeConnector) FetchIssuesByStates(ctx context.Context, states []stri
 		}
 		for _, item := range native {
 			converted, err := c.issueWithLanding(ctx, item)
+			if errors.Is(err, errNativeItemUnavailable) {
+				continue
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -128,6 +136,9 @@ func (c *NativeConnector) FetchIssueStatesByIDs(ctx context.Context, ids []strin
 			return nil, err
 		}
 		converted, err := c.issueWithLanding(ctx, issue)
+		if errors.Is(err, errNativeItemUnavailable) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -154,6 +165,14 @@ func (c *NativeConnector) issueWithLanding(ctx context.Context, native tracker.N
 			var err error
 			attempts, history, err = c.RecordedBlockerContext(ctx, native.WorkItemID)
 			if err != nil {
+				var failure *APIError
+				if errors.As(err, &failure) && failure.Status == http.StatusNotFound {
+					_, confirmErr := c.client.Issue(ctx, native.WorkItemID)
+					if errors.As(confirmErr, &failure) && failure.Status == http.StatusNotFound {
+						c.client.removeHeartbeatIssue(native)
+						return connector.Issue{}, errors.Join(errNativeItemUnavailable, err)
+					}
+				}
 				return connector.Issue{}, fmt.Errorf("read recorded blockers for %s (%s): %w", issue.Identifier, native.WorkItemID, err)
 			}
 			if versioned {

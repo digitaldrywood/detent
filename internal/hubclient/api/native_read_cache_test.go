@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -140,5 +142,124 @@ func TestNativeRefreshRereadsItemEvidenceOnlyWhenItChanges(t *testing.T) {
 		if current != step.want {
 			t.Fatalf("%s: reads=%+v want %+v", step.name, current, step.want)
 		}
+	}
+}
+
+func TestNativeRefreshDropsConfirmedMissingItem(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		attemptStatus int
+		itemStatus    int
+		newHeartbeat  bool
+		newSnapshot   bool
+		wantGone      bool
+	}{
+		{name: "missing item", attemptStatus: 404, itemStatus: 404, wantGone: true},
+		{name: "new heartbeat survives confirmation", attemptStatus: 404, itemStatus: 404, newHeartbeat: true, wantGone: true},
+		{name: "new snapshot survives confirmation", attemptStatus: 404, itemStatus: 404, newHeartbeat: true, newSnapshot: true, wantGone: true},
+		{name: "live item missing attempt data", attemptStatus: 404, itemStatus: 200},
+		{name: "confirmation unavailable", attemptStatus: 404, itemStatus: 503},
+		{name: "confirmation transport failure", attemptStatus: 404, itemStatus: -1},
+		{name: "attempts unavailable", attemptStatus: 503, itemStatus: 404},
+		{name: "attempts denied", attemptStatus: 403, itemStatus: 404},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			item := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_test", ProjectID: "prj_test", WorkItemID: "wi_missing", Revision: 1}, State: "Blocked", LastActivityAt: time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)}
+			attemptReads, itemReads := 0, 0
+			var native *NativeClient
+			client, err := New(Config{URL: "http://hub.test", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				w := httptest.NewRecorder()
+				switch r.URL.Path {
+				case "/api/v2/organizations/org_test/projects/prj_test/work-items":
+					_ = json.NewEncoder(w).Encode(tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{item}})
+				case "/api/v2/organizations/org_test/projects/prj_test/work-items/wi_missing/history":
+					_ = json.NewEncoder(w).Encode(tracker.Page[tracker.CollaborationEvent]{})
+				case "/api/v2/organizations/org_test/projects/prj_test/work-items/wi_missing/attempts":
+					attemptReads++
+					w.WriteHeader(test.attemptStatus)
+					if test.attemptStatus == 200 {
+						_ = json.NewEncoder(w).Encode(tracker.Page[tracker.NativeAttempt]{})
+					}
+				case "/api/v2/organizations/org_test/projects/prj_test/work-items/wi_missing":
+					itemReads++
+					if test.itemStatus < 0 {
+						return nil, errors.New("connection unavailable")
+					}
+					w.WriteHeader(test.itemStatus)
+					if test.newHeartbeat && itemReads == 1 {
+						item.Revision++
+						item.State = "Todo"
+						native.ApplyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "newer", Items: []runnerauth.HeartbeatItem{{ID: item.WorkItemID, Revision: item.Revision}}})
+						test.itemStatus = http.StatusOK
+						if test.newSnapshot {
+							native.ApplyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "reloaded", Reset: true})
+							if _, _, err := native.heartbeatIssues(t.Context()); err != nil {
+								t.Fatal(err)
+							}
+						}
+						return w.Result(), nil
+					}
+					if test.itemStatus == http.StatusOK {
+						_ = json.NewEncoder(w).Encode(item)
+					}
+				default:
+					t.Errorf("unexpected request: %s", r.URL)
+					w.WriteHeader(http.StatusInternalServerError)
+				}
+				return w.Result(), nil
+			})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err = client.Native(item.OrganizationID, item.ProjectID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			native.ApplyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "initial", Reset: true})
+			c, err := NewNativeConnector(native)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 3 {
+				issues, err := c.FetchIssuesByStates(t.Context(), []string{"Blocked"})
+				if test.wantGone {
+					if err != nil || len(issues) != 0 {
+						t.Fatalf("missing refresh: issues=%v error=%v", issues, err)
+					}
+				} else if err == nil {
+					t.Fatal("failed evidence read was accepted")
+				}
+			}
+			wantAttempts, wantItems := 3, 0
+			if test.attemptStatus == 404 {
+				wantItems = 3
+			}
+			if test.wantGone {
+				wantAttempts, wantItems = 1, 1
+			}
+			if test.newHeartbeat {
+				wantItems = 2
+				if test.newSnapshot {
+					wantItems = 1
+				}
+				issues, err := c.FetchIssuesByStates(t.Context(), []string{"Todo"})
+				if err != nil || len(issues) != 1 {
+					t.Fatalf("new heartbeat item: issues=%v error=%v", issues, err)
+				}
+			}
+			if attemptReads != wantAttempts || itemReads != wantItems {
+				t.Fatalf("attempt/item reads = %d/%d, want %d/%d", attemptReads, itemReads, wantAttempts, wantItems)
+			}
+			if test.wantGone {
+				test.attemptStatus = 200
+				item.State = "Blocked"
+				native.ApplyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "rediscovered", Reset: true})
+				issues, err := c.FetchIssuesByStates(t.Context(), []string{"Blocked"})
+				if err != nil || len(issues) != 1 {
+					t.Fatalf("rediscovered item: issues=%v error=%v", issues, err)
+				}
+			}
+		})
 	}
 }

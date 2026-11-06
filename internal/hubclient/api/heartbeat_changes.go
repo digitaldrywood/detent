@@ -205,3 +205,14 @@ func (c *NativeClient) heartbeatIssues(ctx context.Context) ([]tracker.NativeIss
 	})
 	return items, true, nil
 }
+
+func (c *NativeClient) removeHeartbeatIssue(observed tracker.NativeIssue) {
+	state := c.heartbeatProject()
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	current, ok := state.items[observed.WorkItemID]
+	if ok && current.Revision == observed.Revision && current.LastActivityAt.Equal(observed.LastActivityAt) {
+		delete(state.items, observed.WorkItemID)
+		c.client.reads.forget(c.base() + "/work-items/" + string(observed.WorkItemID))
+	}
+}
