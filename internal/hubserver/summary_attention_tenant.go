@@ -32,38 +32,28 @@ func (s *Service) readSummaryAttentionTenant(ctx context.Context, r summaryRecip
 	if r.role == "reporter" {
 		principal = r.principal
 	}
-	query := reportstore.OverviewQuery{Projects: []tracker.ProjectID{tracker.ProjectID(project.id)}, Principal: principal, From: time.Unix(0, 0).UTC(), Split: start, To: r.end, Limit: 5000}
+	query := reportstore.SummaryAttentionQuery{Project: tracker.ProjectID(project.id), Principal: principal, Recipient: r.principal, From: start, To: r.end, Limit: 5000}
 	records := []summaryAttentionRecord{}
 	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(r.organization), corestore.Serving, func(reader tenantstore.Reader) error {
-		historyReader, ok := reader.(reportstore.HistoryReader)
+		candidateReader, ok := reader.(reportstore.SummaryAttentionReader)
 		if !ok {
-			return fmt.Errorf("daily summary history owner is unavailable")
+			return fmt.Errorf("daily summary attention owner is unavailable")
 		}
-		attemptReader, ok := reader.(reportstore.AttemptReader)
-		if !ok {
-			return fmt.Errorf("daily summary attempt owner is unavailable")
-		}
-		history, err := historyReader.ReadHistory(ctx, query)
+		candidates, err := candidateReader.ReadSummaryAttention(ctx, query)
 		if err != nil {
 			return err
 		}
-		attempts, err := attemptReader.ReadAttemptFacts(ctx, reportstore.AttemptQuery{Projects: query.Projects, Principal: principal, From: query.From, To: r.end, Limit: 50000})
-		if err != nil {
-			return err
-		}
-		counts := map[tracker.NativeWorkItemID]int{}
-		for _, attempt := range attempts {
-			counts[attempt.WorkItemID]++
+		ids := make([]tracker.NativeWorkItemID, len(candidates))
+		for i, candidate := range candidates {
+			ids[i] = candidate.WorkItemID
 		}
 		spend := map[tracker.NativeWorkItemID]float64{}
 		if cost {
-			usageReader, ok := reader.(reportstore.UsageReader)
+			usageReader, ok := reader.(reportstore.SummaryUsageReader)
 			if !ok {
 				return fmt.Errorf("daily summary usage owner is unavailable")
 			}
-			usageQuery := query
-			usageQuery.Limit = 100000
-			usage, err := usageReader.ReadReportUsage(ctx, usageQuery)
+			usage, err := usageReader.ReadSummaryUsage(ctx, query.Project, principal, r.end, r.end, ids)
 			if err != nil {
 				return err
 			}
@@ -80,79 +70,62 @@ func (s *Service) readSummaryAttentionTenant(ctx context.Context, r summaryRecip
 		if !ok {
 			return fmt.Errorf("daily summary work item owner is unavailable")
 		}
-		for _, group := range history {
-			items := map[tracker.NativeWorkItemID]corestore.WorkItem{}
-			for offset := 0; offset < len(group.Issues); offset += corestore.MaxPageSize {
-				ids := []tracker.NativeWorkItemID{}
-				for _, fact := range group.Issues[offset:min(offset+corestore.MaxPageSize, len(group.Issues))] {
-					ids = append(ids, fact.WorkItemID)
-				}
-				rows, err := batchReader.WorkItemsByNativeIDs(ctx, group.ProjectID, ids)
+		items := map[tracker.NativeWorkItemID]corestore.WorkItem{}
+		for offset := 0; offset < len(ids); offset += corestore.MaxPageSize {
+			rows, err := batchReader.WorkItemsByNativeIDs(ctx, query.Project, ids[offset:min(offset+corestore.MaxPageSize, len(ids))])
+			if err != nil {
+				return err
+			}
+			for _, item := range rows {
+				items[item.NativeID] = item
+			}
+		}
+		for _, candidate := range candidates {
+			item, ok := items[candidate.WorkItemID]
+			if !ok {
+				return corestore.ErrNotFound
+			}
+			if item.Archived || principal != "" && stringValue(item.ActorPrincipalID) != principal {
+				continue
+			}
+			record := summaryAttentionRecord{item: item, at: candidate.At, attempts: int(candidate.Attempts), reworks: int(candidate.Reworks), spent: spend[item.NativeID]}
+			state := stringValue(item.WorkflowStateName)
+			if state != "Blocked" && state != "Human Review" && state != "In Progress" && !(state == "Done" && stringValue(item.ActorPrincipalID) == r.principal) && record.reworks < 2 {
+				continue
+			}
+			if state == "Done" {
+				record.version, err = reader.CollaborationVersion(ctx, string(item.NativeID), item.Revision)
 				if err != nil {
 					return err
 				}
-				for _, item := range rows {
-					items[item.NativeID] = item
-				}
 			}
-			for _, fact := range group.Issues {
-				item, ok := items[fact.WorkItemID]
-				if !ok {
-					return corestore.ErrNotFound
+			if state == "Blocked" {
+				record.attempt.attempt, err = reader.LatestAttempt(ctx, item.ID)
+				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+					return err
 				}
-				if item.Archived || principal != "" && stringValue(item.ActorPrincipalID) != principal {
-					continue
-				}
-				record := summaryAttentionRecord{item: item, at: item.NativeCreatedAt, attempts: counts[item.NativeID], spent: spend[item.NativeID]}
-				for _, event := range fact.Events {
-					if event.Type != "workflow.transitioned" {
-						continue
-					}
-					if event.FromState != event.ToState {
-						record.at = event.At
-					}
-					if event.ToState == "Rework" && !event.At.Before(start) && event.At.Before(r.end) {
-						record.reworks++
-					}
-				}
-				state := stringValue(item.WorkflowStateName)
-				if state != "Blocked" && state != "Human Review" && state != "In Progress" && !(state == "Done" && stringValue(item.ActorPrincipalID) == r.principal) && record.reworks < 2 {
-					continue
-				}
-				if state == "Done" {
-					record.version, err = reader.CollaborationVersion(ctx, string(item.NativeID), item.Revision)
+				if err == nil {
+					record.hasAttempt = true
+					record.attempt.lease, err = reader.Lease(ctx, record.attempt.attempt.LeaseID)
 					if err != nil {
 						return err
 					}
-				}
-				if state == "Blocked" {
-					record.attempt.attempt, err = reader.LatestAttempt(ctx, item.ID)
-					if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+					if record.attempt.lease.IssueID != item.ID || record.attempt.lease.FencingToken != record.attempt.attempt.FencingToken {
+						return artifact.ErrIntegrity
+					}
+					record.attempt.event, err = reader.LatestRunEvent(ctx, item.ProjectID, record.attempt.attempt.ID)
+					if err != nil {
 						return err
 					}
-					if err == nil {
-						record.hasAttempt = true
-						record.attempt.lease, err = reader.Lease(ctx, record.attempt.attempt.LeaseID)
-						if err != nil {
-							return err
-						}
-						if record.attempt.lease.IssueID != item.ID || record.attempt.lease.FencingToken != record.attempt.attempt.FencingToken {
-							return artifact.ErrIntegrity
-						}
-						record.attempt.event, err = reader.LatestRunEvent(ctx, item.ProjectID, record.attempt.attempt.ID)
-						if err != nil {
-							return err
-						}
-						if record.attempt.event.WorkItemID != item.NativeID {
-							return artifact.ErrIntegrity
-						}
-						if err := readTenantAttemptPayload(ctx, reader, &record.attempt); err != nil {
-							return err
-						}
+					if record.attempt.event.WorkItemID != item.NativeID {
+						return artifact.ErrIntegrity
+					}
+					if err := readTenantAttemptPayload(ctx, reader, &record.attempt); err != nil {
+						return err
 					}
 				}
-				records = append(records, record)
 			}
+			records = append(records, record)
 		}
 		return nil
 	})
