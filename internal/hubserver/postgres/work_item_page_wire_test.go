@@ -7,21 +7,39 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
 
 type pageWireCounts struct {
-	mu                    sync.Mutex
-	statements, exchanges int
+	mu                                    sync.Mutex
+	statements, exchanges                 int
+	checkoutStatements, checkoutExchanges int
 }
 
-func (c *pageWireCounts) reset() { c.mu.Lock(); defer c.mu.Unlock(); c.statements, c.exchanges = 0, 0 }
+func (c *pageWireCounts) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.statements, c.exchanges, c.checkoutStatements, c.checkoutExchanges = 0, 0, 0, 0
+}
 func (c *pageWireCounts) read() (int, int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.statements, c.exchanges
+}
+
+func (c *pageWireCounts) beginServing() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.checkoutStatements, c.checkoutExchanges = c.statements, c.exchanges
+	c.statements, c.exchanges = 0, 0
+}
+func (c *pageWireCounts) checkout() (int, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.checkoutStatements, c.checkoutExchanges
 }
 
 type pageWireConn struct {
@@ -72,6 +90,22 @@ func (c *pageWireConn) Write(data []byte) (int, error) {
 func pageMeasuredRepository(t *testing.T, source *pgxpool.Pool, counts *pageWireCounts) *postgres.Repository {
 	t.Helper()
 	config := source.Config()
+	prepare, before := config.PrepareConn, config.BeforeAcquire
+	config.BeforeAcquire = nil
+	config.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return true }
+	config.PrepareConn = func(ctx context.Context, conn *pgx.Conn) (bool, error) {
+		if prepare != nil {
+			ok, err := prepare(ctx, conn)
+			if !ok || err != nil {
+				return ok, err
+			}
+		}
+		if before != nil && !before(ctx, conn) {
+			return false, nil
+		}
+		counts.beginServing()
+		return true, nil
+	}
 	config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
 		conn, err := new(net.Dialer).DialContext(ctx, network, address)
 		if err != nil {

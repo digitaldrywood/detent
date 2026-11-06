@@ -105,7 +105,11 @@ func TestRelationshipReadModelHasFixedPageCost(t *testing.T) {
 					t.Fatal(err)
 				}
 				statements, exchanges := counts.read()
-				t.Logf("tenant=%s scale=%d page=%d statements=%d exchanges=%d", org, size, limit, statements, exchanges)
+				checkoutSQL, checkoutRTT := counts.checkout()
+				if checkoutSQL != 1 || checkoutRTT != 1 {
+					t.Fatalf("forced pool ping: SQL=%d exchanges=%d, want 1/1", checkoutSQL, checkoutRTT)
+				}
+				t.Logf("tenant=%s scale=%d page=%d statements=%d exchanges=%d checkout_ping=1/1", org, size, limit, statements, exchanges)
 				if statements != 4 || exchanges != 3 {
 					t.Fatalf("statements=%d exchanges=%d, want 4/3", statements, exchanges)
 				}
