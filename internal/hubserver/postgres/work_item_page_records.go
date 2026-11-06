@@ -20,6 +20,13 @@ func (s *session) CommentPageRecords(ctx context.Context, project tracker.Projec
 	if err := checkPage(limit); err != nil {
 		return nil, err
 	}
+	ready, err := s.WorkItemPageReady(ctx, project, item, "comment")
+	if err != nil {
+		return nil, err
+	}
+	if !ready {
+		return nil, viewstore.ErrPagePending
+	}
 	order, predicate := "ASC", ">"
 	if newest {
 		order, predicate = "DESC", "<"
@@ -142,4 +149,15 @@ func (s *session) advanceWorkItemPageProjectionRevision(ctx context.Context) err
 	_, err := s.db.Exec(ctx, `INSERT INTO native_work_item_page_progress(organization_id,publication_revision) VALUES($1,1)
  ON CONFLICT(organization_id) DO UPDATE SET publication_revision=native_work_item_page_progress.publication_revision+1`, s.organization)
 	return mapError(ctx, err)
+}
+
+func (s *session) WorkItemPageReady(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, kind string) (bool, error) {
+	var ready bool
+	err := s.db.QueryRow(ctx, `SELECT
+ EXISTS(SELECT 1 FROM native_work_item_page_progress WHERE organization_id=$1 AND backfill_phase=2)
+ AND NOT EXISTS(SELECT 1 FROM native_work_item_page_dirty WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND kind=$4 AND NOT cleaning)
+ AND CASE WHEN $4='item' THEN EXISTS(SELECT 1 FROM native_work_item_pages WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3)
+ WHEN $4='relationships' THEN EXISTS(SELECT 1 FROM native_relationship_page_heads WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3)
+ ELSE true END`, s.organization, project, item, kind).Scan(&ready)
+	return ready, mapError(ctx, err)
 }

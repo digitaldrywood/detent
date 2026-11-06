@@ -2,6 +2,7 @@ package viewstore
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -70,4 +71,10 @@ type WorkItemPageRevisionReader interface {
 
 type WorkItemPageBackfiller interface {
 	BackfillWorkItemPages(context.Context) (bool, error)
+}
+
+var ErrPagePending = errors.New("work item page projection pending")
+
+type WorkItemPageReadinessReader interface {
+	WorkItemPageReady(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (bool, error)
 }

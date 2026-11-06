@@ -16,6 +16,16 @@ func TestWorkItemPageModelFencesReplayAndTenants(t *testing.T) {
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedTenantAccess(t, repository, org)
 		seedRepository(t, repository, org)
+
+		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			_, err := r.(viewstore.WorkItemPageReader).CommentPageRecords(t.Context(), "prj_first", "wi_first_1", 0, false, 2)
+			if !errors.Is(err, viewstore.ErrPagePending) {
+				t.Fatalf("cold comments completed successfully: %v", err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
 		var candidate viewstore.PageCandidate
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error

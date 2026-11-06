@@ -22,6 +22,13 @@ func (s *session) RelationshipPageRecords(ctx context.Context, project tracker.P
 	if err := checkPage(limit); err != nil {
 		return nil, err
 	}
+	ready, err := s.WorkItemPageReady(ctx, project, item, "relationships")
+	if err != nil {
+		return nil, err
+	}
+	if !ready {
+		return nil, viewstore.ErrPagePending
+	}
 	rows, err := s.db.Query(ctx, `SELECT COALESCE(p.relationship_type,''),COALESCE(p.direction,''),COALESCE(p.related_project_id,''),COALESCE(p.related_work_item_id,''),COALESCE(p.number,0),CASE WHEN target.id IS NULL THEN '' ELSE COALESCE(p.title,'') END,COALESCE(p.state,''),COALESCE(p.terminal,false),COALESCE(p.dispatchable,false),target.actor_principal_id,(target.id IS NOT NULL AND target_project.id IS NOT NULL),COALESCE(p.web_url,''),COALESCE(p.identifier,''),p.closed_at,p.started_at
  FROM native_relationship_page_heads h LEFT JOIN LATERAL (
  SELECT p.* FROM native_relationship_pages p WHERE p.organization_id=h.organization_id AND p.project_id=h.project_id AND p.work_item_id=h.work_item_id AND p.generation=h.generation
@@ -53,7 +60,7 @@ func (s *session) RelationshipPageRecords(ctx context.Context, project tracker.P
 		return nil, mapError(ctx, err)
 	}
 	if !found {
-		return nil, corestore.ErrNotFound
+		return nil, viewstore.ErrPagePending
 	}
 	return result, nil
 }

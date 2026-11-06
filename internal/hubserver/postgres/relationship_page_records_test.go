@@ -1,7 +1,7 @@
 package postgres_test
 
 import (
-	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -19,6 +19,7 @@ func TestRelationshipReadModelHasFixedPageCost(t *testing.T) {
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedTenantAccess(t, repository, org)
 		seedRepository(t, repository, org)
+		backfillPageFixture(t, repository, org)
 		for _, size := range []int{2, 50} {
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				for index := range size {
@@ -111,8 +112,8 @@ func TestRelationshipReadModelHasFixedPageCost(t *testing.T) {
 					t.Fatalf("forced pool ping: SQL=%d exchanges=%d, want 1/1", checkoutSQL, checkoutRTT)
 				}
 				t.Logf("tenant=%s scale=%d page=%d statements=%d exchanges=%d checkout_ping=1/1", org, size, limit, statements, exchanges)
-				if statements != 4 || exchanges != 3 {
-					t.Fatalf("statements=%d exchanges=%d, want 4/3", statements, exchanges)
+				if statements != 5 || exchanges != 4 {
+					t.Fatalf("statements=%d exchanges=%d, want 5/4", statements, exchanges)
 				}
 			}
 			if size == 50 {
@@ -123,12 +124,17 @@ func TestRelationshipReadModelHasFixedPageCost(t *testing.T) {
 				check := func(deleted bool) {
 					t.Helper()
 					if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-						rows, err := r.(viewstore.RelationshipPageReader).RelationshipPageRecords(context.Background(), "prj_first", "wi_first_1", corestore.RelationshipCursor{}, 100)
+						rows, err := r.(viewstore.RelationshipPageReader).RelationshipPageRecords(t.Context(), "prj_first", "wi_first_1", corestore.RelationshipCursor{}, 100)
+						if deleted && errors.Is(err, viewstore.ErrPagePending) {
+							return nil
+						}
 						if err != nil {
 							return err
 						}
+						found := false
 						for _, row := range rows {
 							if string(row.Relationship.RelatedWorkItemID) == id {
+								found = true
 								if !deleted && (row.Relationship.ActorPrincipalID == nil || *row.Relationship.ActorPrincipalID != "new_owner") {
 									t.Error("projected target ownership remained stale")
 								}
@@ -136,6 +142,9 @@ func TestRelationshipReadModelHasFixedPageCost(t *testing.T) {
 									t.Error("deleted target still discloses projected title")
 								}
 							}
+						}
+						if !deleted && !found {
+							t.Error("authorization fixture target disappeared")
 						}
 						return nil
 					}); err != nil {

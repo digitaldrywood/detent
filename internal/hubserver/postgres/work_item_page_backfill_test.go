@@ -74,3 +74,23 @@ func TestPageBackfillResumesWithoutSourceWriteLocks(t *testing.T) {
 		}
 	}
 }
+
+func backfillPageFixture(t *testing.T, repository tenantstore.Repository, org tracker.OrganizationID) {
+	t.Helper()
+	for step := 0; step < 1000; step++ {
+		complete := false
+		if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+			var err error
+			complete, err = w.(interface {
+				BackfillWorkItemPages(context.Context) (bool, error)
+			}).BackfillWorkItemPages(t.Context())
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if complete {
+			return
+		}
+	}
+	t.Fatal("fixture backfill did not complete")
+}
