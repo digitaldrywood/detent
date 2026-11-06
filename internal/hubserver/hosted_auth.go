@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -104,13 +105,13 @@ func (s *Service) hostedMembership(ctx context.Context, identity *auth.HostedIde
 func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (apiCredential, int, error) {
 	session, hash, err := s.hostedSession(ctx, c)
 	if err != nil {
-		if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+		if errors.Is(err, tenantauth.ErrUnavailable) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable || auth.HostedIdentityReason(err) == auth.HostedReasonProviderInvalid {
 			return apiCredential{}, http.StatusServiceUnavailable, err
 		}
 		if errors.Is(err, auth.ErrInvalidSession) {
 			return apiCredential{}, http.StatusUnauthorized, auth.ErrInvalidSession
 		}
-		return apiCredential{}, http.StatusInternalServerError, err
+		return apiCredential{}, http.StatusServiceUnavailable, errors.Join(tenantauth.ErrUnavailable, err)
 	}
 	var credential apiCredential
 	var status int
@@ -123,6 +124,9 @@ func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (apiCred
 	credential, status, err = read()
 	if status == http.StatusForbidden && s.completePendingHostedInvitation(ctx, session) {
 		credential, status, err = read()
+	}
+	if err != nil && status >= http.StatusInternalServerError {
+		return apiCredential{}, http.StatusServiceUnavailable, errors.Join(tenantauth.ErrUnavailable, err)
 	}
 	if err == nil {
 		c.Set("hub_api_credential", credential)
@@ -145,7 +149,7 @@ func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Sessi
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
 	if err != nil {
-		return apiCredential{}, http.StatusInternalServerError, err
+		return apiCredential{}, http.StatusServiceUnavailable, errors.Join(tenantauth.ErrUnavailable, err)
 	}
 	if !member.Active || !auth.ValidOrganizationRole(role) {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity

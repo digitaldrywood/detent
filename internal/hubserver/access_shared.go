@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 )
 
 func (s *Service) sharedAccessSession(ctx context.Context, c echo.Context, claims cloudassert.Claims) (auth.Session, string, error) {
@@ -53,8 +54,14 @@ func (s *Service) sharedAccessSession(ctx context.Context, c echo.Context, claim
 			return err
 		})
 	}
+	if err != nil {
+		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, auth.ErrInvalidSession) {
+			return auth.Session{}, "", auth.ErrInvalidSession
+		}
+		return auth.Session{}, "", errors.Join(tenantauth.ErrUnavailable, err)
+	}
 	session := auth.Session{Email: row.Email, ExpiresAt: row.ExpiresAt, Identity: &auth.HostedIdentity{Subject: row.Subject, OrganizationID: row.ProviderOrganizationID, SessionID: row.SessionID, CreatedAt: row.IdentityCreatedAt, ExpiresAt: row.IdentityExpiresAt, SupportActor: row.SupportActor, SupportReason: row.SupportReason}}
-	if err != nil || row.RevokedAt != nil || !session.ExpiresAt.After(now) || !session.Identity.ExpiresAt.After(now) || !sharedSessionMatches(session, identity, claims.Email) {
+	if row.RevokedAt != nil || !session.ExpiresAt.After(now) || !session.Identity.ExpiresAt.After(now) || !sharedSessionMatches(session, identity, claims.Email) {
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
 	c.Set("hosted_session", session)

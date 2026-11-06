@@ -383,6 +383,7 @@ func TestWorkOSDenialReasons(t *testing.T) {
 		{mode: "session-missing", verifier: "verifier", want: auth.HostedReasonSessionNotFound},
 		{mode: "session-revoked", verifier: "verifier", want: auth.HostedReasonSessionInvalid},
 		{mode: "http-error", verifier: "verifier", want: auth.HostedReasonProviderUnavailable},
+		{mode: "http-timeout", verifier: "verifier", want: auth.HostedReasonProviderUnavailable},
 		{mode: "malformed", verifier: "verifier", want: auth.HostedReasonProviderInvalid},
 	} {
 		t.Run(tt.mode, func(t *testing.T) {
@@ -826,6 +827,9 @@ func (f *workosFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	switch mode {
 	case "http-error":
 		http.Error(w, "private customer content fixture-secret", http.StatusBadGateway)
+		return
+	case "http-timeout":
+		w.WriteHeader(http.StatusRequestTimeout)
 		return
 	case "malformed":
 		f.writeJSON(w, "private customer content fixture-secret")

@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -381,6 +382,8 @@ func TestNativeAPIError(t *testing.T) {
 		{"authorization timeout", "service_unavailable", operatortool.ErrServiceUnavailable.Error(), "ERROR", &operatortool.AuthorizationError{Stage: "resolve", Cause: context.DeadlineExceeded}, http.StatusServiceUnavailable},
 		{"aborted transaction", "service_unavailable", "Database transaction was aborted; retry the request", "ERROR", corestore.ErrSerializationFailure, http.StatusServiceUnavailable},
 		{"expired session", "access_denied", "Access is no longer available", "WARN", auth.ErrInvalidSession, http.StatusForbidden},
+		{"session lookup outage", "service_unavailable", "Authorization is temporarily unavailable", "ERROR", errors.Join(tenantauth.ErrUnavailable, auth.ErrInvalidSession), http.StatusServiceUnavailable},
+		{"invalid provider response", "service_unavailable", "Authorization is temporarily unavailable", "ERROR", &auth.HostedIdentityError{Reason: auth.HostedReasonProviderInvalid}, http.StatusServiceUnavailable},
 		{"allowance", "allowance_exhausted", "Hosted active_runners allowance reached (2 of 2). Existing data, reading, export and billing remain available.", "WARN", &hostedLimitError{Resource: "active_runners", Allowance: 2, Consumption: 2}, http.StatusTooManyRequests},
 		{"request refusal", "invalid_request", "A project is required", "WARN", &operatortool.RequestError{Code: "invalid_request", Message: "A project is required"}, http.StatusUnprocessableEntity},
 		{"private validation", "invalid_request", "Unprocessable Entity: invalid request", "WARN", nativeInvalid("private-context"), http.StatusUnprocessableEntity},
@@ -439,6 +442,9 @@ func TestNativeAPIError(t *testing.T) {
 					}
 					if entry["level"] != test.level || entry["error"] == nil {
 						t.Fatalf("log = %#v", entry)
+					}
+					if test.name == "expired session" && entry["authorization_cause"] != "invalid_session" {
+						t.Fatalf("denial class = %v, want invalid_session", entry["authorization_cause"])
 					}
 					if test.level == "WARN" || test.name == "service unavailable" {
 						fields := map[string]any{"refusal_code": test.code, "route": nativeBase + "/runners/:runner", "organization_id": "org_example", "project_id": "prj_example", "method": http.MethodDelete}

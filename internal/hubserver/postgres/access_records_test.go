@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -157,7 +158,7 @@ func TestAccessCurrentAuthority(t *testing.T) {
 	if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error { return w.RevokeAccessCredential(t.Context(), "first", now) }); err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.ReadTenant(t.Context(), "org_first", corestore.Serving, func(r tenantstore.Reader) error { _, err := r.AuthorizeAccess(t.Context(), base, now); return err }); !errors.Is(err, accessstore.ErrDenied) {
+	if err := repository.ReadTenant(t.Context(), "org_first", corestore.Serving, func(r tenantstore.Reader) error { _, err := r.AuthorizeAccess(t.Context(), base, now); return err }); !errors.Is(err, accessstore.ErrDenied) || errors.Is(err, tenantauth.ErrUnavailable) {
 		t.Fatalf("revoked credential=%v", err)
 	}
 }
@@ -427,5 +428,55 @@ func TestAccessAuditReferencesAndRewrap(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestAccessLookupFailureIsUnavailable(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	now := historyAt()
+	organizations := []tracker.OrganizationID{"org_first", "org_second"}
+	authority := accessstore.Authority{CredentialID: "first", Hash: "hash_first", UserID: "first", MembershipID: "membership_first", SessionHash: "session", ProjectID: "prj_first", Write: true}
+	for _, org := range organizations {
+		seedTenantAccess(t, repository, org)
+		seedRepository(t, repository, org)
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessSession(t.Context(), accessstore.Session{OrganizationID: org, Hash: authority.SessionHash, Subject: authority.UserID, CreatedAt: now, ExpiresAt: now.Add(time.Hour), IdentityCreatedAt: now, IdentityExpiresAt: now.Add(time.Hour)}); err != nil {
+				return err
+			}
+			if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: authority.UserID, ProjectID: authority.ProjectID, CanWrite: true}); err != nil {
+				return err
+			}
+			return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: authority.CredentialID, ProjectID: authority.ProjectID})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, table := range []string{"api_tokens", "hosted_members", "hosted_sessions", "hosted_project_grants", "token_grants"} {
+		t.Run(table, func(t *testing.T) {
+			if _, err := admin.ExecContext(t.Context(), "REVOKE SELECT ON "+table+" FROM detent_runtime_v2"); err != nil {
+				t.Fatal(err)
+			}
+			for _, org := range organizations {
+				err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					_, err := r.AuthorizeAccess(t.Context(), authority, now)
+					return err
+				})
+				if !errors.Is(err, tenantauth.ErrUnavailable) || errors.Is(err, accessstore.ErrDenied) {
+					t.Errorf("tenant %s lookup error=%v, want unavailable without denial", org, err)
+				}
+			}
+			if _, err := admin.ExecContext(t.Context(), "GRANT SELECT ON "+table+" TO detent_runtime_v2"); err != nil {
+				t.Fatal(err)
+			}
+			for _, org := range organizations {
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					_, err := r.AuthorizeAccess(t.Context(), authority, now)
+					return err
+				}); err != nil {
+					t.Fatalf("tenant %s recovery error=%v", org, err)
+				}
+			}
+		})
 	}
 }

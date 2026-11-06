@@ -2,11 +2,13 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -463,7 +465,7 @@ func (s *session) AuthorizeAccess(ctx context.Context, authority accessstore.Aut
 
 	credential, err := s.AccessCredential(ctx, authority.CredentialID)
 	if err != nil {
-		return accessstore.Member{}, err
+		return accessstore.Member{}, accessAuthorizationError(err)
 	}
 	if !credential.Valid(authority.Hash, now) {
 		return accessstore.Member{}, accessstore.ErrDenied
@@ -482,13 +484,16 @@ func (s *session) AuthorizeAccess(ctx context.Context, authority accessstore.Aut
 	if authority.UserID != "" {
 		member, err = s.AccessMember(ctx, authority.UserID)
 		if err != nil {
-			return member, err
+			return member, accessAuthorizationError(err)
 		}
 		if !member.Active || member.MembershipID != authority.MembershipID {
 			return member, accessstore.ErrDenied
 		}
 		principal, err := s.AccessCredential(ctx, member.PrincipalID)
-		if err != nil || principal.RevokedAt != nil {
+		if err != nil {
+			return member, accessAuthorizationError(err)
+		}
+		if principal.RevokedAt != nil {
 			return member, accessstore.ErrDenied
 		}
 		if credential.ID != member.PrincipalID && (credential.UserID != member.UserID || credential.MembershipID != member.MembershipID) {
@@ -507,27 +512,40 @@ func (s *session) AuthorizeAccess(ctx context.Context, authority accessstore.Aut
 	}
 	if authority.SessionHash != "" {
 		session, err := s.AccessSession(ctx, authority.SessionHash)
-		if err != nil || session.RevokedAt != nil || !session.ExpiresAt.After(now) || session.Subject != member.UserID {
+		if err != nil {
+			return member, accessAuthorizationError(err)
+		}
+		if session.RevokedAt != nil || !session.ExpiresAt.After(now) || session.Subject != member.UserID {
 			return member, accessstore.ErrDenied
 		}
 	}
 	if authority.ProjectID != "" && (credential.NativeOnly || credential.Scope != "admin") {
 		if member.UserID != "" {
 			grant, err := s.AccessProjectGrant(ctx, member.UserID, authority.ProjectID)
-			if err != nil || authority.Write && !grant.CanWrite {
+			if err != nil {
+				return member, accessAuthorizationError(err)
+			}
+			if authority.Write && !grant.CanWrite {
 				return member, accessstore.ErrDenied
 			}
 			if _, err := s.AccessTokenGrant(ctx, member.PrincipalID, authority.ProjectID); err != nil {
-				return member, accessstore.ErrDenied
+				return member, accessAuthorizationError(err)
 			}
 		}
 		if credential.ProjectAccess != "all" {
 			if _, err := s.AccessTokenGrant(ctx, credential.ID, authority.ProjectID); err != nil {
-				return member, accessstore.ErrDenied
+				return member, accessAuthorizationError(err)
 			}
 		}
 	}
 	return member, nil
+}
+
+func accessAuthorizationError(err error) error {
+	if errors.Is(err, corestore.ErrNotFound) {
+		return accessstore.ErrDenied
+	}
+	return errors.Join(tenantauth.ErrUnavailable, err)
 }
 
 var _ accessstore.Reader = (*session)(nil)

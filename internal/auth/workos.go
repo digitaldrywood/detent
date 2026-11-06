@@ -870,7 +870,7 @@ func (p *workosProvider) request(ctx context.Context, method string, path string
 	p.log().DebugContext(ctx, "workos request", "method", method, "path", logPath, "status", response.StatusCode)
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		reason := HostedReasonProviderRejected
-		if response.StatusCode >= http.StatusInternalServerError || response.StatusCode == http.StatusTooManyRequests {
+		if response.StatusCode >= http.StatusInternalServerError || response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusRequestTimeout {
 			reason = HostedReasonProviderUnavailable
 		}
 		return &HostedIdentityError{Reason: reason, Status: response.StatusCode}

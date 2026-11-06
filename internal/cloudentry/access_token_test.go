@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 type lockedBuffer struct {
@@ -207,25 +206,31 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 			}
 		}},
 		{"concurrent requests on an expired token refresh once", func(t *testing.T, f entryFixture, alice *browser) {
-			f.provider.expireAccess()
 			f.provider.mu.Lock()
-			f.provider.refreshDelay = 50 * time.Millisecond
+			f.provider.sharedSessions = true
 			f.provider.mu.Unlock()
-			var wg sync.WaitGroup
-			statuses := make([]int, 8)
-			for i := range statuses {
-				wg.Go(func() {
-					statuses[i] = alice.do(http.MethodGet, target, nil, nil).StatusCode
-				})
-			}
-			wg.Wait()
-			for i, status := range statuses {
-				if status != http.StatusOK {
-					t.Fatalf("request %d status = %d", i, status)
+			alice.login("/organizations/org_beta/organization", "user_alice:porg_beta")
+			for index, organization := range []string{"org_alpha", "org_beta"} {
+				f.provider.expireAccess()
+				start := make(chan struct{})
+				var wg sync.WaitGroup
+				statuses := make([]int, 8)
+				for i := range statuses {
+					wg.Go(func() {
+						<-start
+						statuses[i] = alice.do(http.MethodGet, "/api/v2/organizations/"+organization+"/projects", nil, nil).StatusCode
+					})
 				}
-			}
-			if f.provider.refreshes != 1 {
-				t.Fatalf("refreshes = %d, want 1", f.provider.refreshes)
+				close(start)
+				wg.Wait()
+				for i, status := range statuses {
+					if status != http.StatusOK {
+						t.Fatalf("tenant %s request %d status = %d", organization, i, status)
+					}
+				}
+				if f.provider.refreshes != index+1 {
+					t.Fatalf("refreshes = %d, want %d", f.provider.refreshes, index+1)
+				}
 			}
 		}},
 	}
