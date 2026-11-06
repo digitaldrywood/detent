@@ -55,10 +55,28 @@ func (s *HostedRuntimeSnapshots) Load(ctx context.Context, tenant hubmaintenance
 		return HostedRuntimeUpdate{}, err
 	}
 	var revision billingstore.RuntimeRevision
+	validated := false
 	if err := d.readBillingTenant(ctx, func(r tenantstore.Reader) error {
 		var err error
 		revision, err = r.CurrentRuntime(ctx)
-		return err
+		if err != nil {
+			return err
+		}
+		s.mu.Lock()
+		raw := s.cache[runtimeSnapshotKey{Tenant: tenant, Revision: revision.ID}]
+		s.mu.Unlock()
+		if raw == nil {
+			return nil
+		}
+		var update HostedRuntimeUpdate
+		if err := json.Unmarshal(raw, &update); err != nil {
+			return err
+		}
+		if err := d.validateConfiguredPlanReferences(ctx, r, *update.Plans); err != nil {
+			return err
+		}
+		validated = true
+		return nil
 	}); err != nil {
 		return HostedRuntimeUpdate{}, err
 	}
@@ -90,17 +108,19 @@ func (s *HostedRuntimeSnapshots) Load(ctx context.Context, tenant hubmaintenance
 		if err := ValidateHostedRuntimeUpdate(update); err != nil {
 			return nil, err
 		}
-		if err := d.readBillingTenant(ctx, func(r tenantstore.Reader) error {
-			current, err := r.CurrentRuntime(ctx)
-			if err != nil {
-				return err
+		if !validated {
+			if err := d.readBillingTenant(ctx, func(r tenantstore.Reader) error {
+				current, err := r.CurrentRuntime(ctx)
+				if err != nil {
+					return err
+				}
+				if current.ID != revision.ID {
+					return corestore.ErrRevisionConflict
+				}
+				return d.validateConfiguredPlanReferences(ctx, r, *update.Plans)
+			}); err != nil {
+				return nil, err
 			}
-			if current.ID != revision.ID {
-				return corestore.ErrRevisionConflict
-			}
-			return d.validateConfiguredPlanReferences(ctx, r, *update.Plans)
-		}); err != nil {
-			return nil, err
 		}
 		s.mu.Lock()
 		if len(s.cache) == 128 {
@@ -116,8 +136,12 @@ func (s *HostedRuntimeSnapshots) Load(ctx context.Context, tenant hubmaintenance
 	if err != nil {
 		return HostedRuntimeUpdate{}, err
 	}
+	raw, ok := value.([]byte)
+	if !ok {
+		return HostedRuntimeUpdate{}, errors.New("runtime snapshot load returned an invalid payload")
+	}
 	var update HostedRuntimeUpdate
-	err = json.Unmarshal(value.([]byte), &update)
+	err = json.Unmarshal(raw, &update)
 	return update, err
 }
 
