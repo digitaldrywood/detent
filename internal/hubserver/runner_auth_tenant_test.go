@@ -628,6 +628,13 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		providers, err := r.RunnerProviderReports(t.Context(), "runner_example")
+		if err != nil {
+			return err
+		}
+		if len(providers) != 1 {
+			t.Errorf("omitted provider reports cleared stored values: %d", len(providers))
+		}
 		if len(reports) != 1 || !verified {
 			t.Fatalf("omitted heartbeat reports changed stored values: skills=%+v checkout=%v", reports, verified)
 		}

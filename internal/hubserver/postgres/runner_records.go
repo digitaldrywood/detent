@@ -1069,8 +1069,16 @@ func (s *session) ReplaceRunnerProviderReports(ctx context.Context, runnerID str
 	if _, err := s.RunnerIdentity(ctx, runnerID); err != nil {
 		return err
 	}
+	tables := s.runnerProviderReportRows(runnerID, reports)
+	unchanged, err := s.runnerReportRowsMatch(ctx, runnerID, "", tables)
+	if err != nil {
+		return err
+	}
+	if unchanged {
+		return nil
+	}
 	keys := make(map[providerAccountLockKey]struct{})
-	err := func() (resultErr error) {
+	err = func() (resultErr error) {
 		rows, err := s.db.QueryContext(ctx, `SELECT provider,shared_account_alias FROM runner_provider_reports WHERE organization_id=$1 AND runner_id=$2 AND shared_account_alias<>''`, s.organization, runnerID)
 		if err != nil {
 			return mapError(ctx, err)
@@ -1111,53 +1119,10 @@ func (s *session) ReplaceRunnerProviderReports(ctx context.Context, runnerID str
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM runner_provider_reports WHERE organization_id=$1 AND runner_id=$2`, s.organization, runnerID); err != nil {
 		return mapError(ctx, err)
 	}
-	reportRows := make([][]any, 0)
-	modelRows := make([][]any, 0)
-	effortRows := make([][]any, 0)
-	windowRows := make([][]any, 0)
-	for _, report := range reports {
-		var resetAt any
-		if !report.ResetAt.IsZero() {
-			resetAt = report.ResetAt
+	for _, table := range tables {
+		if err := s.insertRunnerCurrentRows(ctx, table.name, table.columns, table.rows); err != nil {
+			return err
 		}
-		reportRows = append(reportRows, []any{s.organization, runnerID, report.Backend, report.Provider, report.AccountAlias, report.SharedAccountAlias, report.Billing, report.MaxConcurrent, report.Availability, report.ObservedAt, resetAt})
-		details := make(map[string]providercapacity.ModelDetail, len(report.ModelDetails))
-		for _, detail := range report.ModelDetails {
-			details[detail.ID] = detail
-		}
-		for position, model := range report.Models {
-			detail, hasDetail := details[model]
-			modelRows = append(modelRows, []any{s.organization, runnerID, report.Backend, position, model, hasDetail, detail.Label, detail.Provider, detail.Default, detail.DefaultReasoningEffort, detail.Legacy})
-			for effortPosition, effort := range detail.ReasoningEfforts {
-				effortRows = append(effortRows, []any{s.organization, runnerID, report.Backend, model, effortPosition, effort})
-			}
-		}
-		for position, window := range report.UsageWindows {
-			var percent any
-			if window.PercentUsed != nil {
-				percent = *window.PercentUsed
-			}
-			var windowResetAt, observedAt any
-			if !window.ResetAt.IsZero() {
-				windowResetAt = window.ResetAt
-			}
-			if !window.ObservedAt.IsZero() {
-				observedAt = window.ObservedAt
-			}
-			windowRows = append(windowRows, []any{s.organization, runnerID, report.Backend, position, window.Kind, percent, windowResetAt, observedAt})
-		}
-	}
-	if err := s.insertRunnerCurrentRows(ctx, "runner_provider_reports", "organization_id,runner_id,backend,provider,account_alias,shared_account_alias,billing,max_concurrent,availability,observed_at,reset_at", reportRows); err != nil {
-		return err
-	}
-	if err := s.insertRunnerCurrentRows(ctx, "runner_provider_report_models", "organization_id,runner_id,backend,position,model_id,has_detail,label,model_provider,is_default,default_reasoning_effort,legacy", modelRows); err != nil {
-		return err
-	}
-	if err := s.insertRunnerCurrentRows(ctx, "runner_provider_model_efforts", "organization_id,runner_id,backend,model_id,position,effort", effortRows); err != nil {
-		return err
-	}
-	if err := s.insertRunnerCurrentRows(ctx, "runner_provider_usage_windows", "organization_id,runner_id,backend,position,kind,percent_used,reset_at,observed_at", windowRows); err != nil {
-		return err
 	}
 	return nil
 }

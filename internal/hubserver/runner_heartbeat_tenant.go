@@ -201,12 +201,20 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 				return err
 			}
 		}
-		previousReports, err := w.RunnerProviderReports(ctx, identity.RunnerID)
-		if err != nil {
-			return err
-		}
-		if err := w.ReplaceRunnerProviderReports(ctx, identity.RunnerID, mergeRunnerProviderReports(previousReports, request.ProviderReports, receivedAt)); err != nil {
-			return err
+		if request.ProviderReports != nil {
+			equal, err := w.RunnerProviderReportsMatch(ctx, identity.RunnerID, request.ProviderReports)
+			if err != nil {
+				return err
+			}
+			if !equal {
+				previousReports, err := w.RunnerProviderReports(ctx, identity.RunnerID)
+				if err != nil {
+					return err
+				}
+				if err := w.ReplaceRunnerProviderReports(ctx, identity.RunnerID, mergeRunnerProviderReports(previousReports, request.ProviderReports, receivedAt)); err != nil {
+					return err
+				}
+			}
 		}
 		if request.CapacityConfig != nil {
 			config := *request.CapacityConfig

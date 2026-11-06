@@ -24,24 +24,42 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type providerBatchProbe struct {
 	pgquery.DBTX
-	inserts   int
-	failTable string
+	inserts    int
+	statements int
+	mutations  int64
+	failTable  string
 }
 
 func (p *providerBatchProbe) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	p.statements++
 	if strings.HasPrefix(query, "INSERT INTO runner_provider_") {
 		p.inserts++
 		if p.failTable != "" && strings.HasPrefix(query, "INSERT INTO "+p.failTable+" ") {
 			return p.DBTX.ExecContext(ctx, "SELECT 1/0")
 		}
 	}
-	return p.DBTX.ExecContext(ctx, query, args...)
+	result, err := p.DBTX.ExecContext(ctx, query, args...)
+	if err == nil && (strings.HasPrefix(query, "INSERT INTO runner_") || strings.HasPrefix(query, "DELETE FROM runner_")) {
+		n, _ := result.RowsAffected()
+		p.mutations += n
+	}
+	return result, err
+}
+
+func (p *providerBatchProbe) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	p.statements++
+	return p.DBTX.QueryContext(ctx, query, args...)
+}
+func (p *providerBatchProbe) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	p.statements++
+	return p.DBTX.QueryRowContext(ctx, query, args...)
 }
 
 func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
@@ -187,6 +205,25 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 		}
 	}
 	check(t)
+	t.Run("unchanged_report_does_not_mutate", func(t *testing.T) {
+		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+			if err := repository.transaction(t.Context(), org, corestore.Serving, false, func(s *session) error {
+				probe := &providerBatchProbe{DBTX: s.db}
+				s.db = probe
+				started := time.Now()
+				if err := s.ReplaceRunnerProviderReports(t.Context(), "runner_first", expected[string(org)+"runner_first"]); err != nil {
+					return err
+				}
+				t.Logf("org=%s statements=%d mutations=%d hold=%s", org, probe.statements, probe.mutations, time.Since(started))
+				if probe.mutations != 0 {
+					t.Errorf("unchanged report mutations=%d, want 0", probe.mutations)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
 	for _, tc := range []struct {
 		name            string
 		reports, models int
@@ -194,6 +231,27 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			write(t, "org_first", "runner_first", batchProviderReports(now, tc.reports, tc.models), "", false)
 			check(t)
+			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+				if err := repository.transaction(t.Context(), org, corestore.Serving, false, func(s *session) error {
+					report := batchProviderReports(now, tc.reports, tc.models)
+					if err := s.ReplaceRunnerProviderReports(t.Context(), "runner_second", report); err != nil {
+						return err
+					}
+					probe := &providerBatchProbe{DBTX: s.db}
+					s.db = probe
+					started := time.Now()
+					if err := s.ReplaceRunnerProviderReports(t.Context(), "runner_second", report); err != nil {
+						return err
+					}
+					t.Logf("provider org=%s reports=%d models=%d statements=%d mutations=%d hold=%s", org, tc.reports, tc.models, probe.statements, probe.mutations, time.Since(started))
+					if probe.mutations != 0 || probe.statements > 10 {
+						t.Errorf("unchanged provider statements=%d mutations=%d", probe.statements, probe.mutations)
+					}
+					return errors.New("discard replay fixture")
+				}); err == nil || err.Error() != "discard replay fixture" {
+					t.Fatalf("replay rollback: %v", err)
+				}
+			}
 		})
 	}
 	for _, tc := range []struct {
@@ -225,6 +283,75 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 			check(t)
 		})
 	}
+	for _, tc := range []struct {
+		name   string
+		change func(*providercapacity.Report)
+	}{
+		{"parent", func(r *providercapacity.Report) { r.MaxConcurrent++ }},
+		{"model", func(r *providercapacity.Report) { r.ModelDetails[0].Label = "Changed" }},
+		{"effort", func(r *providercapacity.Report) { r.ModelDetails[0].ReasoningEfforts[0] = "extra" }},
+		{"window", func(r *providercapacity.Report) { r.UsageWindows[1].PercentUsed = new(90.0) }},
+		{"observation", func(r *providercapacity.Report) { r.ObservedAt = r.ObservedAt.Add(time.Second) }},
+	} {
+		t.Run("changed_"+tc.name, func(t *testing.T) {
+			reports := batchProviderReports(now, 2, 3)
+			if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+				return w.ReplaceRunnerProviderReports(t.Context(), "runner_first", reports)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			tc.change(&reports[0])
+			write(t, "org_first", "runner_first", reports, "", false)
+			check(t)
+		})
+	}
+	t.Run("skill_replay_and_freshness", func(t *testing.T) {
+		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				_, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: org, ID: "prj_report", Name: "Example", Slug: "report", Profile: "native", WorkflowSource: "example", WorkflowSourceRevision: "source", WorkflowObjectKey: new("example/workflow"), StatesObjectKey: new("example/states"), ModelSelectionObjectKey: new("example/models")})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, size := range []int{1, 2000} {
+				report := make([]skills.ProviderSkill, size)
+				for i := range report {
+					report[i] = skills.ProviderSkill{Name: fmt.Sprintf("skill_%d", i), Path: fmt.Sprintf("/project/skill_%d/SKILL.md", i), Scope: "project", Enabled: true, UserInvocable: true, Invocation: fmt.Sprintf("$skill_%d", i)}
+				}
+				for _, step := range []struct {
+					name      string
+					at        time.Time
+					unchanged bool
+				}{{"initial", now, false}, {"replay", now, true}, {"fresh", now.Add(time.Second), false}, {"content", now.Add(time.Second), false}} {
+					if step.name == "content" {
+						report[0].Description = "Changed"
+					}
+					if err := repository.transaction(t.Context(), org, corestore.Serving, false, func(s *session) error {
+						probe := &providerBatchProbe{DBTX: s.db}
+						s.db = probe
+						started := time.Now()
+						if err := s.ReplaceRunnerProjectSkills(t.Context(), "runner_first", "prj_report", report, step.at); err != nil {
+							return err
+						}
+						t.Logf("skills org=%s size=%d step=%s statements=%d mutations=%d hold=%s", org, size, step.name, probe.statements, probe.mutations, time.Since(started))
+						if step.unchanged && (probe.mutations != 0 || probe.statements > 7) {
+							t.Errorf("unchanged skills statements=%d mutations=%d", probe.statements, probe.mutations)
+						}
+						got, err := s.RunnerProjectSkills(t.Context(), "prj_report", "runner_first", step.at, runnerstore.MaxProjectSkills)
+						if err != nil {
+							return err
+						}
+						if len(got) != size || got[0].Skill != report[0] || !got[0].ReportedAt.Equal(step.at) {
+							t.Errorf("skill content/freshness mismatch: count=%d", len(got))
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+		}
+	})
 	t.Run("empty_replacement", func(t *testing.T) {
 		write(t, "org_first", "runner_first", []providercapacity.Report{}, "", false)
 		check(t)

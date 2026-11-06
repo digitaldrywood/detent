@@ -371,6 +371,7 @@ type Writer interface {
 	AppendRunnerHostMetricSegments(context.Context, string, []hostmetrics.Summary, time.Time) ([]hostmetrics.Acknowledgment, error)
 	ReplaceRunnerAdmissionObservation(context.Context, string, tracker.ProjectID, tracker.NativeAdmissionObservation) error
 	PruneRunnerHostMetrics(context.Context, time.Time, int) error
+	RunnerProviderReportsMatch(context.Context, string, []providercapacity.Report) (bool, error)
 	ReplaceRunnerProviderReports(context.Context, string, []providercapacity.Report) error
 	LockRunnerProviderAccount(context.Context, ProviderAccountKey, time.Time) (ProviderAccountCapacity, error)
 	UpdateRunnerCapacityConfig(context.Context, string, runnerauth.CapacityConfig) error
