@@ -31,19 +31,6 @@ WHERE organization_id=sqlc.arg(organization_id) AND lease_id=sqlc.arg(lease_id)
 AND fencing_token=sqlc.arg(fencing_token)::bigint AND released_at IS NULL
 RETURNING *;
 
--- name: RenewLease :one
-UPDATE leases SET renewed_at=sqlc.arg(now),expires_at=sqlc.arg(expires_at),
-landing_capacity=CASE WHEN sqlc.arg(landing_capacity)::bigint>0 THEN sqlc.arg(landing_capacity)::bigint ELSE landing_capacity END
-WHERE organization_id=sqlc.arg(organization_id) AND lease_id=sqlc.arg(lease_id)
-AND fencing_token=sqlc.arg(fencing_token)::bigint AND released_at IS NULL AND expires_at>sqlc.arg(now)
-RETURNING *;
-
--- name: ReleaseLease :one
-UPDATE leases SET released_at=sqlc.arg(now)::timestamptz,release_reason=sqlc.arg(reason)
-WHERE organization_id=sqlc.arg(organization_id) AND lease_id=sqlc.arg(lease_id)
-AND fencing_token=sqlc.arg(fencing_token)::bigint AND released_at IS NULL AND expires_at>sqlc.arg(now)
-RETURNING *;
-
 -- name: ExpireLease :one
 UPDATE leases SET released_at=sqlc.arg(now)::timestamptz,release_reason='expired'
 WHERE organization_id=sqlc.arg(organization_id) AND lease_id=sqlc.arg(lease_id)
@@ -143,13 +130,8 @@ WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id) AND routing_
 RETURNING routing_revision;
 
 -- name: MutateLeaseCommand :one
-WITH owner AS MATERIALIZED (
- SELECT r.runner_id FROM runner_identities r
- JOIN runner_lease_assignments a ON a.organization_id=r.organization_id AND a.runner_id=r.runner_id
- WHERE a.organization_id=sqlc.arg(organization_id) AND a.lease_id=sqlc.arg(lease_id)
- FOR UPDATE OF r
-), locked AS MATERIALIZED (
- SELECT l.* FROM leases l CROSS JOIN (SELECT count(*) FROM owner) ownership
+WITH locked AS MATERIALIZED (
+ SELECT l.* FROM leases l
  WHERE l.organization_id=sqlc.arg(organization_id) AND l.lease_id=sqlc.arg(lease_id)
  FOR UPDATE OF l
 ), at AS MATERIALIZED (

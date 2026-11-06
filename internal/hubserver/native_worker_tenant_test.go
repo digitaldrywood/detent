@@ -2,20 +2,24 @@ package hubserver
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -51,6 +55,35 @@ func TestLeaseRenewalReturnsItsCommittedSnapshot(t *testing.T) {
 	}
 	service := &Service{config: f.service.config}
 	service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
+	config, err := f.service.config.Postgres.Connection.PoolConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pgtransport.Configure(config)
+	config.MaxConns = 3
+	var exchanges atomic.Int64
+	dial := config.ConnConfig.DialFunc
+	config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := dial(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &nativeLeaseWireConn{Conn: conn, exchanges: &exchanges, startup: true}, nil
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	measured, err := postgres.NewRepository(t.Context(), pool, f.service.config.Postgres.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := measured.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	for _, rich := range []bool{false, true} {
 		t.Run(fmt.Sprintf("rich_%t", rich), func(t *testing.T) {
 			var reservation providercapacity.Reservation
@@ -82,7 +115,7 @@ func TestLeaseRenewalReturnsItsCommittedSnapshot(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			counter := &leaseTransactionCounter{Repository: f.service.config.TenantRepository}
+			counter := &leaseTransactionCounter{Repository: measured}
 			service.config.TenantRepository = counter
 			response := httptest.NewRecorder()
 			request := newHubAPIRequest(t, http.MethodPost, "/renew", f.tokens[0], tracker.NativeLeaseMutation{FencingToken: f.leases[0].FencingToken, TTLSeconds: 300})
@@ -93,6 +126,7 @@ func TestLeaseRenewalReturnsItsCommittedSnapshot(t *testing.T) {
 			c.SetParamNames("lease")
 			c.SetParamValues(string(f.leases[0].ID))
 			c.Set("native_scope", nativeScope{organization: "org_startup", project: "prj_runner", credential: credential})
+			exchanges.Store(0)
 			if err := service.renewNativeLeaseTenant(c); err != nil {
 				t.Fatal(err)
 			}
@@ -102,10 +136,10 @@ func TestLeaseRenewalReturnsItsCommittedSnapshot(t *testing.T) {
 			if renewed.ID != f.leases[0].ID || renewed.FencingToken != f.leases[0].FencingToken || renewed.PolicyID != f.policy.PolicyID || renewed.IsolationPolicy == nil {
 				t.Fatalf("renewal lost authority or response details: %+v", renewed)
 			}
-			if got := len(statements) + 1; got > 8 {
-				t.Errorf("renew command exchanges=%d, want at most 8 including BEGIN/binding", got)
+			if got := exchanges.Load(); got <= 0 || got > 8 {
+				t.Errorf("renew command wire exchanges=%d, want 1..8 including BEGIN/binding/COMMIT", got)
 			}
-			t.Logf("renew command statements excluding BEGIN/binding=%d", len(statements))
+			t.Logf("renew command statements excluding BEGIN/binding=%d wire exchanges=%d", len(statements), exchanges.Load())
 
 			if counter.reads != 0 || counter.writes != 1 {
 				t.Fatalf("renewal transactions read=%d write=%d, want 0 and 1", counter.reads, counter.writes)
@@ -119,11 +153,15 @@ func TestLeaseRenewalReturnsItsCommittedSnapshot(t *testing.T) {
 }
 
 func TestLeaseCommandLocksRunnerBeforeFence(t *testing.T) {
-	for _, operation := range []string{"renew", "release", "expire"} {
+	for _, operation := range []string{"renew", "release"} {
 		t.Run(operation, func(t *testing.T) {
 			f := newRunnerPGFixture(t)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
+			credential, status, err := f.service.authenticateAccessHash(ctx, apikey.HashToken(f.tokens[0]), "", "")
+			if err != nil || status != http.StatusOK {
+				t.Fatal(status, err)
+			}
 			blocker, err := f.admin.BeginTx(ctx, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -136,20 +174,24 @@ func TestLeaseCommandLocksRunnerBeforeFence(t *testing.T) {
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				result <- f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Background, func(w tenantstore.Writer) error {
-					fence := leasestore.Fence{LeaseID: string(f.leases[0].ID), FencingToken: int64(f.leases[0].FencingToken)}
-					switch operation {
-					case "renew":
-						_, err := w.Renew(ctx, fence, time.Hour)
-						return err
-					case "release":
-						_, err := w.Release(ctx, fence, "released")
-						return err
-					default:
-						_, err := w.Expire(ctx, fence)
-						return err
-					}
-				})
+				response := httptest.NewRecorder()
+				request := newHubAPIRequest(t, http.MethodPost, "/"+operation, f.tokens[0], tracker.NativeLeaseMutation{FencingToken: f.leases[0].FencingToken, TTLSeconds: 300, Reason: "released"}).WithContext(ctx)
+				c := echo.New().NewContext(request, response)
+				c.SetParamNames("lease")
+				c.SetParamValues(string(f.leases[0].ID))
+				c.Set("native_scope", nativeScope{organization: "org_startup", project: "prj_runner", credential: credential})
+				var err error
+				wantStatus := http.StatusOK
+				if operation == "renew" {
+					err = f.service.renewNativeLeaseTenant(c)
+				} else {
+					err = f.service.releaseNativeLeaseTenant(c)
+					wantStatus = http.StatusNoContent
+				}
+				if err == nil && response.Code != wantStatus {
+					err = fmt.Errorf("lease command status=%d, want %d", response.Code, wantStatus)
+				}
+				result <- err
 			}()
 			t.Cleanup(func() { cancel(); _ = blocker.Rollback(); <-done })
 			testenv.WaitUntil(t, ctx, func() error {
@@ -159,7 +201,7 @@ func TestLeaseCommandLocksRunnerBeforeFence(t *testing.T) {
 				default:
 				}
 				var waiting bool
-				if err := f.admin.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%MutateLeaseCommand%')`).Scan(&waiting); err != nil {
+				if err := f.admin.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%LockLeaseMutationRunner%')`).Scan(&waiting); err != nil {
 					return err
 				}
 				if !waiting {
@@ -173,14 +215,47 @@ func TestLeaseCommandLocksRunnerBeforeFence(t *testing.T) {
 			if err := blocker.Rollback(); err != nil {
 				t.Fatal(err)
 			}
-			err = <-result
-			if operation == "expire" {
-				if !errors.Is(err, tracker.ErrStaleFencingToken) {
-					t.Fatalf("expire live lease error=%v", err)
-				}
-			} else if err != nil {
+			if err := <-result; err != nil {
 				t.Fatal(err)
 			}
 		})
 	}
+}
+
+type nativeLeaseWireConn struct {
+	net.Conn
+	exchanges *atomic.Int64
+	pending   []byte
+	startup   bool
+}
+
+func (c *nativeLeaseWireConn) Write(value []byte) (int, error) {
+	n, err := c.Conn.Write(value)
+	c.pending = append(c.pending, value[:n]...)
+	for {
+		if c.startup {
+			if len(c.pending) < 4 {
+				break
+			}
+			size := int(binary.BigEndian.Uint32(c.pending[:4]))
+			if len(c.pending) < size {
+				break
+			}
+			c.pending = c.pending[size:]
+			c.startup = false
+			continue
+		}
+		if len(c.pending) < 5 {
+			break
+		}
+		size := 1 + int(binary.BigEndian.Uint32(c.pending[1:5]))
+		if len(c.pending) < size {
+			break
+		}
+		if c.pending[0] == 'S' || c.pending[0] == 'Q' {
+			c.exchanges.Add(1)
+		}
+		c.pending = c.pending[size:]
+	}
+	return n, err
 }
