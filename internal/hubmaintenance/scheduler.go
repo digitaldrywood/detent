@@ -1,0 +1,123 @@
+package hubmaintenance
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"sync"
+	"sync/atomic"
+)
+
+const (
+	TenantLimit = 32
+	WorkerLimit = 2
+	ByteLimit   = 8 << 20
+)
+
+type Tenant struct {
+	Organization string
+	Generation   int64
+}
+
+type Budget struct {
+	Items int
+	Bytes int64
+}
+
+type Registry interface {
+	Page(context.Context, string, int) ([]Tenant, error)
+}
+
+type Feature struct {
+	Name  string
+	Bytes int64
+	Step  func(context.Context, Tenant, Budget) error
+}
+
+type Scheduler struct {
+	registry Registry
+	features []Feature
+	active   atomic.Bool
+	cursor   string
+	family   int
+}
+
+func New(registry Registry, features []Feature) (*Scheduler, error) {
+	if registry == nil || len(features) == 0 || len(features) > 16 {
+		return nil, errors.New("maintenance requires a registry and bounded feature families")
+	}
+	names := make(map[string]bool, len(features))
+	for _, feature := range features {
+		if feature.Name == "" || names[feature.Name] || feature.Step == nil || feature.Bytes <= 0 || feature.Bytes > ByteLimit {
+			return nil, errors.New("invalid maintenance feature")
+		}
+		names[feature.Name] = true
+	}
+	return &Scheduler{registry: registry, features: slices.Clone(features)}, nil
+}
+
+func (s *Scheduler) Tick(ctx context.Context) error {
+	if !s.active.CompareAndSwap(false, true) {
+		return errors.New("maintenance tick already running")
+	}
+	defer s.active.Store(false)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	page, err := s.registry.Page(ctx, s.cursor, TenantLimit)
+	if err != nil {
+		return fmt.Errorf("page maintenance tenants: %w", err)
+	}
+	if len(page) > TenantLimit {
+		return errors.New("maintenance registry exceeded page budget")
+	}
+	after := s.cursor
+	for _, tenant := range page {
+		if tenant.Organization <= after || len(tenant.Organization) > 128 || tenant.Generation <= 0 {
+			return errors.New("invalid maintenance tenant page")
+		}
+		after = tenant.Organization
+	}
+	feature := s.features[s.family]
+	count := min(len(page), int(ByteLimit/feature.Bytes))
+	jobs := make(chan Tenant)
+	failures := make(chan error, TenantLimit)
+	var workers sync.WaitGroup
+	for range min(WorkerLimit, count) {
+		workers.Go(func() {
+			for tenant := range jobs {
+				if err := ctx.Err(); err != nil {
+					failures <- err
+					continue
+				}
+				if err := feature.Step(ctx, tenant, Budget{Items: 1, Bytes: feature.Bytes}); err != nil {
+					failures <- fmt.Errorf("maintenance tenant %s feature %s: %w", tenant.Organization, feature.Name, err)
+				}
+			}
+		})
+	}
+	dispatched := 0
+dispatch:
+	for _, tenant := range page[:count] {
+		select {
+		case <-ctx.Done():
+			break dispatch
+		case jobs <- tenant:
+			s.cursor = tenant.Organization
+			dispatched++
+		}
+	}
+	close(jobs)
+	workers.Wait()
+	close(failures)
+	if dispatched == len(page) && len(page) < TenantLimit {
+		s.cursor = ""
+		s.family = (s.family + 1) % len(s.features)
+	}
+	var failure error
+	for err := range failures {
+		failure = errors.Join(failure, err)
+	}
+	return errors.Join(failure, ctx.Err())
+}
