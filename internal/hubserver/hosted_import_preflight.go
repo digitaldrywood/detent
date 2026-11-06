@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const hostedImportFallbackRows = 1000
@@ -90,67 +88,7 @@ func evaluatedHostedImportFields(ctx context.Context, query nativeQueryer, table
 }
 
 func (s *Service) prepareHostedImportMutation(ctx context.Context, scope nativeScope, operation string, input any) (context.Context, error) {
-	snapshot := make(hostedImportFieldSnapshot)
-	var tables []string
-	switch input.(type) {
-	case tracker.GitHubBatchCommand, tracker.GitHubBatchResult:
-		tables = []string{"issues", "github_import_records", "runner_identities"}
-	case CutoverRequest:
-		tables = []string{"github_import_records", "github_outbox"}
-	case updateProjectIntegrationRequest:
-		tables = []string{"github_outbox"}
-	case spriteUsageRequest:
-		tables = []string{"usage_cost_observations"}
-	}
-	if strings.Contains(operation, "/imports/") {
-		tables = append(tables, "github_import_records")
-	}
-	if event, ok := input.(tracker.NativeRunEvent); ok && event.Data.AttemptID != "" {
-		values, err := loadHostedImportFields(ctx, s.database.reader, "usage_cost_observations", `organization_id=? AND project_id=? AND resource_id=?`, scope.organization, scope.project, event.Data.AttemptID)
-		if err != nil {
-			return ctx, err
-		}
-		snapshot["usage_cost_observations"] = values
-	}
-	for _, table := range tables {
-		selection := "project_id=?"
-		args := []any{scope.project}
-		switch table {
-		case "issues", "usage_cost_observations":
-			selection = "organization_id=? AND project_id=?"
-			args = []any{scope.organization, scope.project}
-		case "github_import_records":
-			selection = "kind='dependency' AND import_id IN (SELECT id FROM github_imports WHERE project_id=?)"
-		case "github_outbox":
-			selection = "status IN ('pending','retrying') AND mutation_kind='workpad' AND issue_id IN (SELECT id FROM issues WHERE project_id=?)"
-		case "runner_identities":
-			selection = "organization_id=? AND id IN (SELECT runner_id FROM runner_checkout_repositories WHERE project_id=?)"
-			args = []any{scope.organization, scope.project}
-		}
-		values, err := loadHostedImportFields(ctx, s.database.reader, table, selection, args...)
-		if err != nil {
-			return ctx, err
-		}
-		snapshot[table] = values
-	}
-	return context.WithValue(ctx, hostedImportFieldsKey{}, snapshot), nil
-}
-
-func (s *Service) prepareOutboxClaimFields(ctx context.Context) (context.Context, error) {
-	now := s.config.now()
-	var raw string
-	err := s.database.reader.QueryRowContext(ctx, `SELECT o.desired_json FROM github_outbox o JOIN issues i ON i.id=o.issue_id JOIN projects p ON p.id=i.project_id JOIN repositories r ON r.id=o.repository_id WHERE o.desired_issue_number IS NULL AND ((o.status IN (?,?) AND (o.next_retry_at IS NULL OR o.next_retry_at<=?)) OR (o.status=? AND o.processing_started_at<=?)) ORDER BY o.id LIMIT 1`, outboxPending, outboxRetrying, formatOutboxTime(now), outboxProcessing, formatOutboxTime(now.Add(-s.config.OutboxProcessingTimeout))).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ctx, nil
-	}
-	if err != nil {
-		return ctx, err
-	}
-	fields, err := hostedImportFields("github_outbox", raw)
-	if err != nil {
-		return ctx, err
-	}
-	return context.WithValue(ctx, hostedImportFieldsKey{}, hostedImportFieldSnapshot{"github_outbox": {raw: fields}}), nil
+	return ctx, nil
 }
 
 func cachedRunnerOperations(ctx context.Context, query nativeQueryer, raw string) ([]string, error) {

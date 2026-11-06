@@ -25,24 +25,6 @@ func TestHostedImportTypedReads(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Run("artifact consumption preserves unknown and typed amounts", func(t *testing.T) {
-		exec(`INSERT INTO hosted_artifact_usage(singleton,service_id,usage_json,observed_at,retained_bytes,reserved_bytes) VALUES(1,'service','{"retained_bytes":11,"reserved_bytes":22}',0,101,202)`)
-		for _, entry := range []struct {
-			retained, reserved         any
-			wantRetained, wantReserved int64
-		}{
-			{101, 202, 101, 202},
-			{nil, 202, 11, 202},
-			{101, nil, 101, 22},
-			{nil, nil, 11, 22},
-		} {
-			exec(`UPDATE hosted_artifact_usage SET retained_bytes=?,reserved_bytes=?`, entry.retained, entry.reserved)
-			retained, reserved, err := d.readHostedArtifactUsage(t.Context(), d.reader)
-			if err != nil || retained != entry.wantRetained || reserved != entry.wantReserved {
-				t.Fatalf("usage=%d/%d want=%d/%d error=%v", retained, reserved, entry.wantRetained, entry.wantReserved, err)
-			}
-		}
-	})
 	t.Run("session revocation honors typed subjects and evaluates unknowns", func(t *testing.T) {
 		cases := []struct {
 			key, payload string

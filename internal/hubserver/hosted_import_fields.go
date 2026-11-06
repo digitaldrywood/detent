@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 
@@ -163,62 +162,4 @@ func insertRunnerOperations(ctx context.Context, tx *sql.Tx, runner string, oper
 		}
 	}
 	return nil
-}
-
-func (d *database) populateHostedImportFields(ctx context.Context) error {
-	for range hostedImportRowsPerTick {
-		changed, err := d.populateHostedImportField(ctx)
-		if err != nil || !changed {
-			return err
-		}
-	}
-	return nil
-}
-
-func (d *database) populateHostedImportField(ctx context.Context) (bool, error) {
-	for _, projection := range hostedImportProjections {
-		var rowID int64
-		var raw string
-		unknown := make([]string, len(projection.columns))
-		for i, column := range projection.columns {
-			unknown[i] = column + " IS NULL"
-		}
-		predicate := "(" + strings.Join(unknown, " OR ") + ")"
-		err := d.reader.QueryRowContext(ctx, `SELECT rowid,COALESCE(`+projection.payload+`,'null') FROM `+projection.table+` WHERE `+predicate+` LIMIT 1`).Scan(&rowID, &raw)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return false, err
-		}
-		values, err := hostedImportFields(projection.table, raw)
-		if err != nil {
-			return false, fmt.Errorf("decode %s typed fields: %w", projection.table, err)
-		}
-		tx, err := d.db.BeginTx(ctx, nil)
-		if err != nil {
-			return false, err
-		}
-		defer tx.Rollback()
-		args := append(values.columns[:len(projection.columns):len(projection.columns)], rowID, raw)
-		result, err := tx.ExecContext(ctx, projection.update, args...)
-		if err != nil {
-			return false, err
-		}
-		changed, err := result.RowsAffected()
-		if err != nil {
-			return false, err
-		}
-		if changed != 0 && projection.table == "runner_identities" {
-			var runner string
-			if err := tx.QueryRowContext(ctx, `SELECT id FROM runner_identities WHERE rowid=?`, rowID).Scan(&runner); err != nil {
-				return false, err
-			}
-			if err := insertRunnerOperations(ctx, tx, runner, values.operations); err != nil {
-				return false, err
-			}
-		}
-		return true, d.commit(ctx, tx)
-	}
-	return false, nil
 }

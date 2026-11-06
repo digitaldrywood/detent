@@ -132,16 +132,7 @@ func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, n
 		result[name] = count
 	}
 	if len(metrics) == 0 || slices.Contains(metrics, "artifact_retained_bytes") || slices.Contains(metrics, "artifact_reserved_bytes") {
-		retained, reserved, err := d.readHostedArtifactUsage(ctx, query)
-		if err != nil {
-			return nil, err
-		}
-		if len(metrics) == 0 || slices.Contains(metrics, "artifact_retained_bytes") {
-			result["artifact_retained_bytes"] = retained
-		}
-		if len(metrics) == 0 || slices.Contains(metrics, "artifact_reserved_bytes") {
-			result["artifact_reserved_bytes"] = reserved
-		}
+		return nil, ErrBillingUsageUnavailable
 	}
 	for _, sample := range []struct {
 		name, statement string

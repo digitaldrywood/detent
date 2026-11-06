@@ -116,34 +116,6 @@ func legacyHostedArtifactBinding(ctx context.Context, query nativeQueryer, servi
 	return "", rows.Err()
 }
 
-func (d *database) readHostedArtifactUsage(ctx context.Context, query nativeQueryer) (int64, int64, error) {
-	var retained, reserved sql.NullInt64
-	err := query.QueryRowContext(ctx, `SELECT retained_bytes,reserved_bytes FROM hosted_artifact_usage WHERE singleton=1`).Scan(&retained, &reserved)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, 0, nil
-	}
-	if err != nil {
-		return 0, 0, err
-	}
-	if !retained.Valid || !reserved.Valid {
-		var raw string
-		if err := d.reader.QueryRowContext(ctx, `SELECT usage_json FROM hosted_artifact_usage WHERE singleton=1`).Scan(&raw); err != nil {
-			return 0, 0, err
-		}
-		var value artifact.Usage
-		if err := json.Unmarshal([]byte(raw), &value); err != nil {
-			return 0, 0, err
-		}
-		if !retained.Valid {
-			retained.Int64 = value.RetainedBytes
-		}
-		if !reserved.Valid {
-			reserved.Int64 = value.ReservedBytes
-		}
-	}
-	return retained.Int64, reserved.Int64, nil
-}
-
 func findExistingGitHubIssue(ctx context.Context, query nativeQueryer, scope nativeScope, repository int64, preview tracker.GitHubIssuePreview) (string, error) {
 	var existing string
 	err := query.QueryRowContext(ctx, `SELECT native_id FROM issues WHERE organization_id=? AND project_id=? AND
