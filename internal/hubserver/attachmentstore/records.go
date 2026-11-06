@@ -34,6 +34,7 @@ type Reference struct {
 }
 
 type Reader interface {
+	ArchiveReader
 	Attachment(context.Context, tracker.ProjectID, string) (Record, error)
 	AttachmentReferences(context.Context, tracker.ProjectID, string, int) ([]Reference, error)
 	AttachmentEvidence(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string, int) ([]Record, error)
@@ -43,6 +44,7 @@ type LockingReader interface {
 }
 
 type Writer interface {
+	ArchiveWriter
 	Reader
 	CreateAttachment(context.Context, Record) error
 	DeleteIconAttachment(context.Context, tracker.ProjectID, string, time.Time) error

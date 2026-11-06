@@ -235,6 +235,13 @@ type Attachment struct {
 	ObjectDeletedAt   *time.Time
 }
 
+type AttachmentArchiveReference struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+	AttachmentID   string
+}
+
 type AttachmentItemReference struct {
 	OrganizationID     tracker.OrganizationID
 	ProjectID          tracker.ProjectID
@@ -1448,6 +1455,15 @@ type Issue struct {
 	DispatchRequestedAt    *time.Time
 	RecoveryRunnerID       string
 	RecoveryVersionID      string
+}
+
+type IssueArchiveSection struct {
+	OrganizationID  tracker.OrganizationID
+	ProjectID       tracker.ProjectID
+	WorkItemID      string
+	ArchiveRevision int64
+	SectionID       string
+	AttachmentID    string
 }
 
 type IssueClaimFact struct {
