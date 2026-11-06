@@ -22,6 +22,9 @@ func TestWorkspaceClaimAssociationIsTenantScopedAndPermanent(t *testing.T) {
 	now := time.Date(2026, time.November, 1, 20, 0, 0, 0, time.UTC)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		err := repository.Write(t.Context(), organization, corestore.Serving, func(w corestore.Writer) error {
+			if err := seedCoreOrganization(t.Context(), w, organization); err != nil {
+				return err
+			}
 			project, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: organization, ID: "prj_shared", Name: "Example", Profile: "native"})
 			if err != nil {
 				return err
@@ -98,6 +101,9 @@ func TestClaimCandidatePageUsesTenantScopedTypedFactsAndBoundedCursor(t *testing
 	now := time.Date(2026, time.November, 1, 21, 0, 0, 0, time.UTC)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := tenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := seedCoreOrganization(t.Context(), w, organization); err != nil {
+				return err
+			}
 			_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{
 				Core:   corestore.Project{OrganizationID: organization, ID: "prj_claim", Name: "Claim example", Profile: "native", RequireDependencies: true},
 				States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}, {Name: "Done", Terminal: true}},
@@ -241,6 +247,9 @@ func TestProviderReservationSnapshotIsTypedAndTenantScoped(t *testing.T) {
 	reservation := providercapacity.Reservation{Requirement: providercapacity.Requirement{Role: "code", Backend: "example-backend", Model: "example-model"}, Report: report, Reason: "Current account capacity is available"}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := tenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := seedCoreOrganization(t.Context(), w, organization); err != nil {
+				return err
+			}
 			project, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: organization, ID: "prj_provider", Name: "Example", Profile: "native"})
 			if err != nil {
 				return err
