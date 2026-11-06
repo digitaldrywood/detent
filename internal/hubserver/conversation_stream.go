@@ -119,11 +119,9 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 	service := s.conversations
 	ctx := c.Request().Context()
 	var record conversationRecord
-	if s.conversationRecordsSelected() {
-		record, err = s.readPGConversation(ctx, scope, c.Param("conversation"))
-	} else {
-		record, err = service.loadConversation(ctx, s.database.reader, scope, c.Param("conversation"))
-	}
+
+	record, err = s.readPGConversation(ctx, scope, c.Param("conversation"))
+
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -147,11 +145,9 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 			service.logger.Warn("conversation.stream_reauthorize_failed", "conversation_id", record.ID, "reason", reason, "error", err)
 			return stream.closed(reason)
 		}
-		if s.conversationRecordsSelected() {
-			cursor, err = s.replayPGConversationEvents(ctx, scope, stream, record.ID, cursor, authorized.EventSeq)
-		} else {
-			cursor, err = stream.replay(ctx, service.store, s.database.reader, record.ID, cursor, authorized.EventSeq)
-		}
+
+		cursor, err = s.replayPGConversationEvents(ctx, scope, stream, record.ID, cursor, authorized.EventSeq)
+
 		if err != nil {
 			if errors.Is(err, errConversationCursorExpired) {
 				return stream.closed(conversationClosedCursorExpired)
@@ -194,34 +190,15 @@ func (s *Service) reauthorizeConversationStream(c echo.Context, scope *nativeSco
 		}
 		scope.credential = credential
 	}
-	if s.config.TenantRepository != nil {
-		if err := s.authorizeProjectRecord(readCtx, *scope, false); err != nil {
-			return conversationRecord{}, err
-		}
-		if _, err := s.readProjectRecord(readCtx, *scope); err != nil {
-			return conversationRecord{}, err
-		}
-	} else {
-		if scope.credential.Hosted != nil {
-			if err := s.requireHostedProject(readCtx, s.database.reader, *scope, false); err != nil {
-				return conversationRecord{}, err
-			}
-		} else {
-			err := s.conversations.transact(readCtx, func(tx *sql.Tx, now time.Time) error {
-				return requireCredentialAuthority(readCtx, tx, scope.credential, now)
-			})
-			if err != nil {
-				return conversationRecord{}, err
-			}
-		}
-		if err := s.database.authorizeNativeProject(readCtx, *scope); err != nil {
-			return conversationRecord{}, err
-		}
+
+	if err := s.authorizeProjectRecord(readCtx, *scope, false); err != nil {
+		return conversationRecord{}, err
 	}
-	if s.conversationRecordsSelected() {
-		return s.readPGConversation(readCtx, *scope, conversationID)
+	if _, err := s.readProjectRecord(readCtx, *scope); err != nil {
+		return conversationRecord{}, err
 	}
-	return s.conversations.loadConversation(readCtx, s.database.reader, *scope, conversationID)
+
+	return s.readPGConversation(readCtx, *scope, conversationID)
 }
 
 // conversationStreamCloseReason tells a denial apart from a failure. A

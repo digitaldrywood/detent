@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -15,6 +16,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentoverride"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -297,107 +301,46 @@ var conversationSettleInterval = 5 * time.Minute
 // has ended or never started and whose last activity is older than the
 // settle window. It returns how many settled.
 func (c *conversationService) settleIdleConversations(ctx context.Context, now time.Time) (int, error) {
-	if c.server.conversationRecordsSelected() {
-		organization, err := c.lifecycleOrganization()
-		if err != nil {
-			return 0, err
-		}
-		return c.settleIdleConversationsPG(ctx, organization, now)
-	}
-	before := now.Add(-c.config.SettleWindow)
-	candidates, err := c.store.listSettleCandidates(ctx, c.store.reader, before, conversationSettleBatch)
+	organization, err := c.lifecycleOrganization()
 	if err != nil {
 		return 0, err
 	}
-	settled := 0
-	for _, candidate := range candidates {
-		changed, err := c.settleConversation(ctx, candidate.ID, before)
-		if err != nil {
-			return settled, err
-		}
-		if changed {
-			settled++
-		}
-	}
-	return settled, nil
-}
-
-// settleConversation settles one conversation, re-reading it inside the
-// transaction so a message that arrived since the sweep listed it keeps the
-// conversation active.
-func (c *conversationService) settleConversation(ctx context.Context, id string, before time.Time) (bool, error) {
-	plan, err := c.newPublicationPlan(ctx, id)
-	if err != nil {
-		return false, err
-	}
-	finished := plan.record.Execution.Status.Terminal() || plan.record.Execution.Status == conversation.ExecutionIdle
-	activity := plan.record.UpdatedAt
-	if plan.record.LastMessageAt != nil {
-		activity = *plan.record.LastMessageAt
-	}
-	if plan.record.Status != conversation.StatusActive || !finished || !activity.Before(before) {
-		return false, nil
-	}
-	plan.record.WorkItem = nil
-	plan.record.Status = conversation.StatusSettled
-	at := plan.now
-	plan.record.SettledAt = &at
-	if err := plan.saveConversation(ctx); err != nil {
-		return false, err
-	}
-	ctx = plan.context(ctx)
-	changed := false
-	err = c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		record, err := c.store.readConversationByID(ctx, tx, id)
-		if err != nil {
-			return err
-		}
-		// Execution.Settled is a different notion: it records that a bound
-		// worker's unbind was applied. What settles a conversation is the
-		// execution having ended or never started.
-		finished := record.Execution.Status.Terminal() || record.Execution.Status == conversation.ExecutionIdle
-		if record.Status != conversation.StatusActive || !finished {
-			return nil
-		}
-		activity := record.UpdatedAt
-		if record.LastMessageAt != nil {
-			activity = *record.LastMessageAt
-		}
-		if !activity.Before(before) {
-			return nil
-		}
-		record.Status = conversation.StatusSettled
-		at := now
-		record.SettledAt = &at
-		if err := c.saveConversation(ctx, tx, &record, now); err != nil {
-			return err
-		}
-		changed = true
-		c.logger.Info("conversation.settled", "conversation_id", record.ID, "last_activity", activity)
-		return nil
-	})
-	if err != nil {
-		return false, err
-	}
-	if changed {
-		c.broker.notify(id)
-	}
-	return changed, nil
+	return c.settleIdleConversationsPG(ctx, organization, now)
 }
 
 func (s *Service) readWorkItemReferences(ctx context.Context, scope nativeScope, id string) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, id); err != nil {
+	var stored []conversationstore.WorkItemReference
+	var audience string
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		item, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(id))
+		if err != nil {
+			return err
+		}
+		principal := ""
+		if item.ActorPrincipalID != nil {
+			principal = *item.ActorPrincipalID
+		}
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: principal}) {
+			return nativeNotFound()
+		}
+		audience, err = conversationReadAudienceRecord(ctx, r, scope.organization, scope.credential)
+		if err != nil {
+			return err
+		}
+		owner, ok := r.(conversationstore.WorkItemReferenceReader)
+		if !ok {
+			return errors.New("conversation reference owner is required")
+		}
+		stored, err = owner.WorkItemReferences(ctx, scope.project, id, conversationReferencePage)
+		return err
+	})
+	if err != nil {
 		return nil, translateConversationError(err)
-	}
-	stored, err := s.conversations.store.listWorkItemReferences(ctx, s.database.reader, scope.organization, scope.project, id, conversationReferencePage)
-	if err != nil {
-		return nil, err
-	}
-	audience, err := conversationReadAudience(ctx, s.database.reader, scope.organization, scope.credential)
-	if err != nil {
-		return nil, err
 	}
 	page := conversationWorkItemReferencePage{References: make([]conversationWorkItemReference, 0, len(stored))}
 	for _, reference := range stored {
@@ -407,10 +350,18 @@ func (s *Service) readWorkItemReferences(ctx context.Context, scope nativeScope,
 		if reference.Visibility == conversation.VisibilityPrivate && reference.OwnerPrincipalID != scope.credential.ID {
 			continue
 		}
-		page.References = append(page.References, conversationWorkItemReference{
-			MessageID: reference.MessageID, ConversationID: reference.ConversationID,
-			Excerpt: conversationExcerpt(reference.Excerpt, conversationReferenceExcerptRunes), CreatedAt: reference.CreatedAt,
-		})
+		if _, err := s.readPGConversation(ctx, scope, reference.ConversationID); err != nil {
+			var denied *nativeError
+			if errors.As(err, &denied) && (denied.status == http.StatusNotFound || denied.status == http.StatusForbidden) {
+				continue
+			}
+			return nil, err
+		}
+		message, err := s.conversations.readPublicationMessage(ctx, scope.organization, reference.ConversationID, reference.MessageID)
+		if err != nil {
+			return nil, err
+		}
+		page.References = append(page.References, conversationWorkItemReference{MessageID: reference.MessageID, ConversationID: reference.ConversationID, Excerpt: conversationExcerpt(message.Text, conversationReferenceExcerptRunes), CreatedAt: reference.CreatedAt})
 	}
 	return json.Marshal(page)
 }
