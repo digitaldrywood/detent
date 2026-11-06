@@ -17,9 +17,9 @@ import (
 )
 
 func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T) {
-	f := newConversationAPIFixture(t, nil)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	repository := projectRecordPostgres(t)
+	f := newConversationTenantFixture(t, repository, now)
 	f.service.config.TenantRepository = repository
 	f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 	f.service.config.now = func() time.Time { return now }
@@ -112,13 +112,6 @@ func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T)
 	}); err != nil {
 		t.Fatalf("seed PostgreSQL lifecycle records: %v", err)
 	}
-
-	database := f.service.database
-	db, reader, authReader, claimReader := database.db, database.reader, database.authReader, database.claimReader
-	database.db, database.reader, database.authReader, database.claimReader = nil, nil, nil, nil
-	t.Cleanup(func() {
-		database.db, database.reader, database.authReader, database.claimReader = db, reader, authReader, claimReader
-	})
 
 	staleWake, cancelWake := f.service.conversations.broker.subscribe(staleID)
 	defer cancelWake()
@@ -405,13 +398,7 @@ func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T)
 
 func conversationLifecyclePostgresOwner(t *testing.T, f conversationAPIFixture, now time.Time) accessstore.Credential {
 	t.Helper()
-	var owner accessstore.Credential
-	if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT id,name,token_hash,token_fingerprint,scope,native_only FROM api_tokens WHERE id=?`, f.ownerID).Scan(&owner.ID, &owner.Name, &owner.Hash, &owner.Fingerprint, &owner.Scope, &owner.NativeOnly); err != nil {
-		t.Fatal(err)
-	}
-	owner.OrganizationID, owner.ProjectAccess, owner.Kind = f.project.OrganizationID, "all", "personal"
-	owner.CreatedAt, owner.UpdatedAt = now, now
-	return owner
+	return accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: f.ownerID, Name: "Example owner", Hash: "example-owner-hash", Scope: "operator", ProjectAccess: "all", Kind: "personal", CreatedAt: now, UpdatedAt: now}
 }
 
 type lifecycleSignalCoordinator struct {
@@ -459,4 +446,20 @@ func (r *blockingLifecycleRepository) releaseNow() {
 	default:
 		close(r.release)
 	}
+}
+
+func newConversationTenantFixture(t *testing.T, repository tenantstore.Repository, now time.Time) conversationAPIFixture {
+	t.Helper()
+	service := &Service{
+		config:   Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: func() time.Time { return now }, Hosted: &HostedConfig{OrganizationID: "org_conversation"}},
+		database: &database{}, notifications: newNotificationBroker(),
+	}
+	service.ready.Store(true)
+	chat := &conversationService{server: service, store: &conversationStore{contents: &conversationContentFixture{}, database: service.database}, broker: service.notifications, logger: service.config.Logger, config: (ConversationConfig{Enabled: true}).normalized(), settle: make(chan struct{}), settled: make(chan struct{})}
+	close(chat.settled)
+	chat.coordinator = newConversationCoordinator(chat)
+	chat.controls = &conversationWorkerRouter{service: chat, stop: make(chan struct{})}
+	service.conversations = chat
+	t.Cleanup(service.conversations.stop)
+	return conversationAPIFixture{nativeFixture: nativeFixture{service: service, project: tracker.NativeProject{OrganizationID: "org_conversation", ID: "prj_conversation", Name: "Example project", Slug: "example-project", Profile: "native", States: nativeFixtureStates()}}, ownerID: "owner_conversation"}
 }
