@@ -12,7 +12,7 @@ import (
 func TestSecretStatusLiveDatabase(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "hub.db")
-	seedHubDatabaseImage(t, path, true)
+	seedHubDatabaseTemplate(t, path)
 	db, err := openDatabase(t.Context(), (Config{DatabasePath: path}).normalized())
 	if err != nil {
 		t.Fatal(err)

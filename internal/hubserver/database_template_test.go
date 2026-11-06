@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -23,11 +22,10 @@ import (
 )
 
 var hubDatabaseTemplate struct {
-	once       sync.Once
-	dir        string
-	path       string
-	nativePath string
-	err        error
+	once sync.Once
+	dir  string
+	path string
+	err  error
 }
 
 var hostedSecurityDatabaseTemplate struct {
@@ -100,11 +98,6 @@ func TestMain(m *testing.M) {
 
 func seedHubDatabaseTemplate(t *testing.T, path string) {
 	t.Helper()
-	seedHubDatabaseImage(t, path, false)
-}
-
-func seedHubDatabaseImage(t *testing.T, path string, native bool) {
-	t.Helper()
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
 	}
@@ -121,9 +114,6 @@ func seedHubDatabaseImage(t *testing.T, path string, native bool) {
 		t.Fatalf("build hub database template: %v", hubDatabaseTemplate.err)
 	}
 	template := hubDatabaseTemplate.path
-	if native {
-		template = hubDatabaseTemplate.nativePath
-	}
 	data, err := os.ReadFile(template)
 	if err != nil {
 		t.Fatalf("read hub database template: %v", err)
@@ -162,13 +152,10 @@ func buildHubDatabaseTemplate() {
 	hubDatabaseTemplate.err = errors.Join(err, db.Close())
 	if hubDatabaseTemplate.err == nil {
 		hubDatabaseTemplate.path = path
-		hubDatabaseTemplate.err = buildHubNativeDatabaseTemplate(ctx)
 	}
 }
 
-const defaultHubProjectID = tracker.ProjectID("prj_00000000000000000000000000003384")
 const defaultHubOperatorID = "tok_test_default"
-const defaultHubOperatorToken = "hub-test-default-operator-token"
 
 func nativeFixtureStates() []tracker.NativeState {
 	return []tracker.NativeState{
@@ -176,61 +163,6 @@ func nativeFixtureStates() []tracker.NativeState {
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Done"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
 	}
-}
-
-func buildHubNativeDatabaseTemplate(ctx context.Context) error {
-	data, err := os.ReadFile(hubDatabaseTemplate.path)
-	if err != nil {
-		return err
-	}
-	path := filepath.Join(hubDatabaseTemplate.dir, "native.db")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return err
-	}
-	store, err := openDatabase(ctx, Config{DatabasePath: path, Logger: discardLogger()}.normalized())
-	if err != nil {
-		return err
-	}
-	err = seedHubNativeDefaults(ctx, store)
-	err = errors.Join(err, store.Close())
-	if err == nil {
-		hubDatabaseTemplate.nativePath = path
-	}
-	return err
-}
-
-func seedHubNativeDefaults(ctx context.Context, store *database) error {
-	tx, err := store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var organization tracker.OrganizationID
-	if err := tx.QueryRowContext(ctx, "SELECT id FROM organizations WHERE local = 1").Scan(&organization); err != nil {
-		return err
-	}
-	states := nativeFixtureStates()
-	raw, err := json.Marshal(states)
-	if err != nil {
-		return err
-	}
-	now := formatHubTime(time.Now())
-	if _, err := tx.ExecContext(ctx, "INSERT INTO projects (id, organization_id, name, profile, states_json, require_dependencies, created_at, github_repository_enabled) VALUES (?, ?, 'native', 'native', ?, 1, ?, 0)", defaultHubProjectID, organization, string(raw), now); err != nil {
-		return err
-	}
-	for _, state := range states {
-		if _, err := tx.ExecContext(ctx, "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", defaultHubProjectID, state.Name, state.Name, state.Terminal, state.Dispatchable, now, now); err != nil {
-			return err
-		}
-	}
-	hash := apikey.HashToken(defaultHubOperatorToken)
-	if _, err := tx.ExecContext(ctx, "INSERT INTO api_tokens (id, name, token_hash, token_fingerprint, scope, native_only, created_at, updated_at) VALUES (?, 'operator-native', ?, ?, 'operator', 1, ?, ?)", defaultHubOperatorID, hash, tokenFingerprint(hash), now, now); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO token_grants (token_id, organization_id, project_id) VALUES (?, ?, ?)", defaultHubOperatorID, organization, defaultHubProjectID); err != nil {
-		return err
-	}
-	return tx.Commit()
 }
 
 func newDefaultNativeFixture(t *testing.T, cfg Config) nativeFixture {
