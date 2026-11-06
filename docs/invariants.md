@@ -639,6 +639,14 @@ other payload blobs are never stored inline in Hub rows, and no derived table
 copies them. Existing inline payload columns are migration debt to move to object
 storage; no change may add one, and a change that touches one moves it.
 
+Current page content may be projected into typed `page_read_model` tables so
+page handlers do not fetch objects. These tables retain only the current page,
+record the source revision and generation, source time and projection time,
+and are rebuilt asynchronously through `hubmaintenance`. Their typed `body`
+column is current display text, never a serialized history payload. JSON and
+other serialized payload columns remain prohibited; the frozen legacy payload
+list does not expand for read models.
+
 **Enforcement:** Review enforces payload placement in object storage. `TestINV20NoSQLOverJSON` in `internal/hubserver` scans non-test
 Go files in Hub and store (including generated SQL), and `db/queries` SQL sources.
 Per-file function counts must equal `testdata/inv20_json_sql_baseline.txt`;

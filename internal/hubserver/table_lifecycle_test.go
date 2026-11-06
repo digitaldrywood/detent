@@ -82,7 +82,7 @@ func checkTableLifecycles(schema map[string][]string, policy tableLifecyclePolic
 		switch lifecycle.Class {
 		case "hot_state", "index":
 			continue
-		case "derived_with_retention":
+		case "derived_with_retention", "page_read_model":
 			if strings.TrimSpace(lifecycle.Retention) == "" {
 				problems = append(problems, table+": derived table has no retention contract")
 			}
@@ -91,9 +91,23 @@ func checkTableLifecycles(schema map[string][]string, policy tableLifecyclePolic
 			problems = append(problems, fmt.Sprintf("%s: unknown lifecycle class %q", table, lifecycle.Class))
 			continue
 		}
+		if lifecycle.Class == "page_read_model" {
+			missing := []string{}
+			for _, required := range []string{"organization_id", "project_id", "work_item_id", "revision", "source_generation", "source_at", "projected_at"} {
+				if !slices.Contains(columns, required) {
+					missing = append(missing, required)
+				}
+			}
+			if len(missing) > 0 {
+				problems = append(problems, table+": page read model is missing "+strings.Join(missing, ", "))
+			}
+		}
 		for _, column := range columns {
 			name := strings.ToLower(column)
 			if !strings.HasSuffix(name, "_json") && name != "text" && name != "bundle" && name != "body" && name != "patch" && name != "artifact_ref" {
+				continue
+			}
+			if lifecycle.Class == "page_read_model" && name == "body" {
 				continue
 			}
 			key := table + "." + column
@@ -155,6 +169,12 @@ func TestTableLifecycleViolations(t *testing.T) {
 		{name: "new history bundle column", statement: `ALTER TABLE native_attempt_events ADD COLUMN bundle BYTEA`, want: "native_attempt_events.bundle: inline history payload"},
 		{name: "uppercase payload column", statement: `ALTER TABLE native_attempt_events ADD COLUMN "EXTRA_JSON" TEXT`, want: "native_attempt_events.EXTRA_JSON: inline history payload"},
 		{name: "existing debt cannot cover another column", statement: `ALTER TABLE native_attempts ADD COLUMN extra_json TEXT`, want: "native_attempts.extra_json: inline history payload"},
+
+		{name: "page model rejects serialized payload", statement: `ALTER TABLE native_work_item_pages ADD COLUMN extra_json TEXT`, want: "native_work_item_pages.extra_json: inline history payload"},
+		{name: "page model requires checkpoint", statement: `ALTER TABLE native_work_item_pages DROP COLUMN source_generation`, want: "native_work_item_pages: page read model is missing source_generation"},
+		{name: "history cannot become page content", mutate: func(p tableLifecyclePolicy) {
+			p.Tables["native_attempt_events"] = tableLifecycle{Class: "page_read_model", Retention: "current page"}
+		}, want: "native_attempt_events: page read model is missing"},
 		{name: "new derived payload column", statement: `ALTER TABLE report_attempt_facts ADD COLUMN extra_json TEXT`, want: "report_attempt_facts.extra_json: inline history payload"},
 		{name: "missing debt owner", mutate: func(p tableLifecyclePolicy) { p.LegacyPayloads["conversation_messages.text"] = "" }, want: "conversation_messages.text: legacy payload has no owning conversion family"},
 		{name: "unlisted legacy payload", mutate: func(p tableLifecyclePolicy) { delete(p.LegacyPayloads, "conversation_messages.text") }, want: "conversation_messages.text: inline history payload"},
