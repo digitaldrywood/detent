@@ -31,6 +31,7 @@
     "attempt_diff_body_migration": {"class": "hot_state"},
     "attempt_diff_file_archives": {"class": "immutable_payload"},
     "attempt_diff_files": {"class": "immutable_payload"},
+    "attempt_diff_body_references": {"class": "index"},
     "attempt_diffs": {"class": "immutable_payload"},
     "attempt_usage": {"class": "immutable_payload"},
     "change_command_outputs": {"class": "immutable_payload"},

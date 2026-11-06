@@ -245,29 +245,36 @@ type AttachmentItemReference struct {
 }
 
 type AttemptDiff struct {
-	OrganizationID       tracker.OrganizationID
-	ID                   string
-	AttemptID            string
-	IssueID              int64
-	ProjectID            tracker.ProjectID
-	WorkItemID           string
-	Source               string
-	SourceID             string
-	Sequence             int64
-	BaseSHA              string
-	HeadSHA              string
-	ProducerKind         string
-	ProducerID           string
-	ProducerRunnerID     string
-	ProducerLeaseID      string
-	ProducerFencingToken int64
-	FileCount            int32
-	PatchBytes           int64
-	PostedBytes          int64
-	Truncated            bool
-	ArchiveID            string
-	CreatedAt            time.Time
-	ManifestExpired      bool
+	OrganizationID        tracker.OrganizationID
+	ID                    string
+	AttemptID             string
+	IssueID               int64
+	ProjectID             tracker.ProjectID
+	WorkItemID            string
+	Source                string
+	SourceID              string
+	Sequence              int64
+	BaseSHA               string
+	HeadSHA               string
+	ProducerKind          string
+	ProducerID            string
+	ProducerRunnerID      string
+	ProducerLeaseID       string
+	ProducerFencingToken  int64
+	FileCount             int32
+	PatchBytes            int64
+	PostedBytes           int64
+	Truncated             bool
+	ArchiveID             string
+	CreatedAt             time.Time
+	ManifestExpired       bool
+	BodyReferencesIndexed bool
+}
+
+type AttemptDiffBodyReference struct {
+	OrganizationID tracker.OrganizationID
+	DiffID         string
+	ObjectKey      string
 }
 
 type AttemptUsage struct {
