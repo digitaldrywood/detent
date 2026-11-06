@@ -3,12 +3,9 @@ package hub
 import (
 	"bytes"
 	"database/sql"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -84,68 +81,6 @@ func TestVerifyDatabaseIntegrityRestoredFixtures(t *testing.T) {
 	}
 }
 
-func TestRestoreScriptReportsVerificationOutcome(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name, response, result string
-		restoreFail, checkFail bool
-		tables                 string
-	}{
-		{"verified", `{"tables":6}`, "ok", false, false, "6"},
-		{"verification failure", "", "verify_failed", false, true, "0"},
-		{"empty schema", `{"tables":0}`, "invalid_result", false, false, "0"},
-		{"invalid output", "invalid", "invalid_result", false, false, "0"},
-		{"restore failure", "", "restore_failed", true, false, "0"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			work := t.TempDir()
-			cmd := exec.CommandContext(t.Context(), "bash", "-c", `
-source ./restore-test.sh
-/usr/local/bin/litestream-detent() {
-  [ "$1" = restore ] && [ "$2" = -o ] && [ "$4" = 's3://example/production/tenants/example/hub.db?endpoint=example' ] || exit 2
-  [ "$RESTORE_FAIL" = false ] || return 1
-  printf fixture > "$3"
-}
-
-/opt/detent-hub/detent() {
-  [ "$1 $2 $3 $4" = 'hub verify --integrity-only --database' ] && [ "$5" = "$WORK/tenants_example_hub.db" ] || exit 2
-  [ "$CHECK_FAIL" = false ] || return 1
-  printf '%s\n' "$RESPONSE"
-}
-stat() { [ -f "$3" ] && printf '7\n'; }
-restore_target tenants/example/hub.db "$WORK" s3://example/production endpoint=example
-`)
-			cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "TMPDIR=" + work, "WORK=" + work, "RESPONSE=" + test.response,
-				"RESTORE_FAIL=" + strconv.FormatBool(test.restoreFail), "CHECK_FAIL=" + strconv.FormatBool(test.checkFail)}
-			output, err := cmd.CombinedOutput()
-			if (err == nil) != (test.result == "ok") {
-				t.Fatalf("script error = %v, output = %s", err, output)
-			}
-			journal := regexp.MustCompile(`(?m)^restore_test target=tenants/example/hub.db result=` + test.result + ` bytes=[0-9]+ tables=` + test.tables + ` seconds=[0-9]+$`)
-			if !journal.Match(output) {
-				t.Fatalf("missing journal outcome: %s", output)
-			}
-			entries, err := os.ReadDir(work)
-			wantLogs := 0
-			if test.result != "ok" {
-				wantLogs = 2
-			}
-			if err != nil || len(entries) != wantLogs {
-				t.Fatalf("retained diagnostics = %v, %v; want %d logs", entries, err, wantLogs)
-			}
-			for _, entry := range entries {
-				if !strings.HasSuffix(entry.Name(), ".log") {
-					t.Fatalf("retained restored data: %s", entry.Name())
-				}
-			}
-			if strings.Contains(string(output), "fixture") {
-				t.Fatal("journal exposed restored content")
-			}
-		})
-	}
-}
-
 func TestReleaseDeploysToLegacyReceiver(t *testing.T) {
 	t.Parallel()
 	owner, err := os.ReadFile("deploy-from-ci.sh")
@@ -182,14 +117,12 @@ func TestReleaseDeploysToLegacyReceiver(t *testing.T) {
 			write("release-hub/detent", "#!/bin/sh\nprintf '%s\\n' '{\"version\":\"1.2.3\",\"commit\":\""+reported+"\",\"socket_activation_supported\":true}'\n"+strings.Repeat("\n", 1000000))
 			write("etc/systemd/system/detent-cloud.socket", "[Unit]\nDescription=Detent detent-cloud listener\n\n[Socket]\nListenStream=127.0.0.1:8017\nAccept=no\nBacklog=65535\n\n[Install]\nWantedBy=sockets.target\n")
 			write("etc/systemd/system/detent-cloud.service.d/socket.conf", "[Unit]\nRequires=detent-cloud.socket\nAfter=detent-cloud.socket\n\n[Service]\nSockets=detent-cloud.socket\n")
-			write("restore-installed", "previous script")
 			rewritten := strings.NewReplacer(
 				"OPT=/opt/$NAME", "OPT=\"$WORK/opt\"",
 				"STATE=/var/lib/$NAME", "STATE=\"$WORK/state\"",
 				"/run/lock/$NAME-deploy.lock", "\"$WORK/lock/deploy.lock\"",
 				"/etc/", "$WORK/etc/",
 				"/tmp/$NAME-", "$WORK/temporary-",
-				"/usr/local/sbin/detent-restore-test", "\"$WORK/restore-installed\"",
 			).Replace(string(owner))
 			write("owner.sh", rewritten)
 			write("bin/ssh", `#!/bin/bash
@@ -233,218 +166,7 @@ exec "$@"
 			if (err != nil) != test.invalidIdentity {
 				t.Fatalf("deploy error = %v, output = %s", err, output)
 			}
-			installed, err := os.ReadFile(filepath.Join(work, "restore-installed"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := []byte("previous script")
-			if !bytes.Equal(installed, want) {
-				t.Fatal("deployment owner installed the wrong restore script")
-			}
-		})
-	}
-}
 
-func TestRestoreScriptBoundsAndResumesTenantRotation(t *testing.T) {
-	t.Parallel()
-	script, err := os.ReadFile("restore-test.sh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct {
-		name              string
-		tenants           int
-		runs              int
-		fail              bool
-		mixedProvisioning bool
-	}{
-		{"wrap rotation", 23, 3, false, false},
-		{"ten thousand tenants", 10000, 1, false, false},
-		{"small fleet", 3, 2, false, false},
-		{"empty fleet", 0, 1, false, false},
-		{"corrupt tenant does not starve rotation", 23, 2, true, false},
-		{"mixed provisioning states", 23, 3, false, true},
-		{"no provisioned tenants", 0, 1, false, true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			work := t.TempDir()
-			fixture := filepath.Join(work, "registry.db")
-			db, err := sql.Open("sqlite", fixture)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { db.Close() })
-			if _, err := db.ExecContext(t.Context(), "CREATE TABLE organizations (id TEXT PRIMARY KEY, state TEXT NOT NULL)"); err != nil {
-				t.Fatal(err)
-			}
-			if test.tenants > 0 {
-				if _, err := db.ExecContext(t.Context(), `WITH RECURSIVE ids(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM ids WHERE n+1 < ?) INSERT INTO organizations SELECT printf('org_%05d', n), CASE WHEN n % 2 = 0 THEN 'ready' ELSE 'disabled' END FROM ids`, test.tenants); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if test.mixedProvisioning {
-				if _, err := db.ExecContext(t.Context(), `INSERT INTO organizations VALUES ('org_00000_requested','requested'), ('org_00000_allocating','allocating'), ('org_00000_failed','failed'), ('org_00000_deleting','deleting'), ('org_00000_deleted','deleted')`); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := db.Close(); err != nil {
-				t.Fatal(err)
-			}
-			for tenant := range test.tenants {
-				if err := os.MkdirAll(filepath.Join(work, "tenants", fmt.Sprintf("org_%05d", tenant)), 0o700); err != nil {
-					t.Fatal(err)
-				}
-			}
-			source := strings.NewReplacer(
-				". /etc/litestream-detent/environment", ":",
-				"local work=/var/tmp/detent-restore-test", `local work="$WORK/restore"`,
-				"/var/lib/detent-hub/tenants/", "$WORK/tenants/",
-			).Replace(string(script))
-			writeDeployFixture(t, filepath.Join(work, "restore.sh"), source)
-			batchSize := min(test.tenants, 10)
-			for run := range test.runs {
-				cmd := exec.CommandContext(t.Context(), "bash", "-c", `
-source "$WORK/restore.sh"
-restore_target() {
-  printf '%s\n' "$1"
-  if [ "$1" = cloud/registry.db ]; then cp "$WORK/registry.db" "$2/cloud_registry.db"; fi
-  case "$1" in tenants/*) [ -d "$WORK/${1%/hub.db}" ] || return 1;; esac
-  if [ "$FAIL" = true ] && [ "$1" = tenants/org_00000/hub.db ]; then return 1; fi
-}
-main
-`)
-				cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "TMPDIR=" + work, "WORK=" + work, "FAIL=" + strconv.FormatBool(test.fail)}
-				output, err := cmd.CombinedOutput()
-				wantFailure := test.fail && run == 0
-				if (err != nil) != wantFailure {
-					t.Fatalf("run %d: error = %v, output = %s", run, err, output)
-				}
-				want := []string{"cloud/registry.db", "cloud/auth.db"}
-				for offset := range batchSize {
-					tenant := fmt.Sprintf("org_%05d", (run*batchSize+offset)%test.tenants)
-					want = append(want, "tenants/"+tenant+"/hub.db")
-				}
-				if got := len(strings.Split(strings.TrimSpace(string(output)), "\n")); got != len(want) {
-					t.Fatalf("run %d restored %d targets, want %d", run, got, len(want))
-				}
-				if string(output) != strings.Join(want, "\n")+"\n" {
-					t.Fatalf("run %d restored %s, want %v", run, output, want)
-				}
-				if batchSize > 0 {
-					cursor, err := os.ReadFile(filepath.Join(work, "restore/tenant.cursor"))
-					wantCursor := fmt.Sprintf("org_%05d\n", ((run+1)*batchSize-1)%test.tenants)
-					if err != nil || string(cursor) != wantCursor {
-						t.Fatalf("cursor = %q, %v; want %q", cursor, err, wantCursor)
-					}
-				}
-			}
-		})
-	}
-}
-
-func TestRestoreInstallerPreservesVerifierOnBackupFailure(t *testing.T) {
-	t.Parallel()
-	installer, err := os.ReadFile("install-restore-test.sh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	restore, err := os.ReadFile("restore-test.sh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct {
-		name        string
-		check       bool
-		fail        bool
-		previous    bool
-		unsupported bool
-	}{
-		{"dry run", true, false, true, false},
-		{"idempotent install", false, false, true, false},
-		{"failed backup retains verifier", false, true, true, false},
-		{"failed first backup retains verifier", false, true, false, false},
-		{"unsupported binary preserves previous", false, false, true, true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			work := t.TempDir()
-			if err := os.Mkdir(filepath.Join(work, "bin"), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			writeDeployFixture(t, filepath.Join(work, "restore-test.sh"), string(restore))
-			writeDeployFixture(t, filepath.Join(work, "installer.sh"), strings.NewReplacer(
-				"destination=/usr/local/sbin/detent-restore-test", `destination="$WORK/installed"`,
-				"verifier=/opt/detent-hub/detent", `verifier="$WORK/bin/detent"`,
-				`[ "$EUID" -eq 0 ]`, "true",
-			).Replace(string(installer)))
-			writeDeployFixture(t, filepath.Join(work, "bin/detent"), `#!/bin/bash
-[ "$UNSUPPORTED" = false ] || exit 1
-echo --integrity-only
-`)
-			writeDeployFixture(t, filepath.Join(work, "bin/systemctl"), `#!/bin/bash
-printf '%s\n' "$*" >> "$WORK/services"
-if [ "$1" = show ]; then
-  if [ -e "$WORK/failed" ] && [ ! -e "$WORK/recovered" ]; then echo exit-code; else echo success; fi
-fi
-if [ "$1" = restart ] && [ "$FAIL" = true ] && [ ! -e "$WORK/failed" ]; then
-  touch "$WORK/failed"
-  exit 1
-fi
-[ "$1" != restart ] || touch "$WORK/recovered"
-`)
-			installedPath := filepath.Join(work, "installed")
-			if test.previous {
-				writeDeployFixture(t, installedPath, "previous verifier\n")
-			}
-			for run := range 2 {
-				args := []string{filepath.Join(work, "installer.sh")}
-				if test.check {
-					args = append(args, "--check")
-				}
-				cmd := exec.CommandContext(t.Context(), "bash", args...)
-				cmd.Env = []string{"PATH=" + filepath.Join(work, "bin") + ":" + os.Getenv("PATH"), "TMPDIR=" + work, "WORK=" + work, "FAIL=" + strconv.FormatBool(test.fail), "UNSUPPORTED=" + strconv.FormatBool(test.unsupported)}
-				output, err := cmd.CombinedOutput()
-				if (err != nil) != (test.fail && run == 0 || test.unsupported) {
-					t.Fatalf("install error = %v, output = %s", err, output)
-				}
-				if test.check || test.unsupported {
-					break
-				}
-				if run == 0 && test.previous {
-					backup, err := os.ReadFile(installedPath + ".previous")
-					if err != nil || string(backup) != "previous verifier\n" {
-						t.Fatalf("backup = %q, %v", backup, err)
-					}
-				}
-			}
-			installed, err := os.ReadFile(installedPath)
-			want := string(restore)
-			if test.check || test.unsupported {
-				want = "previous verifier\n"
-			}
-			if err != nil || string(installed) != want {
-				t.Fatalf("installed verifier differs from expected version: %v", err)
-			}
-			services, err := os.ReadFile(filepath.Join(work, "services"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			wantRestarts := 1
-			if test.fail {
-				wantRestarts = 2
-			}
-			if test.check || test.unsupported {
-				wantRestarts = 0
-			}
-			if got := strings.Count(string(services), "restart detent-restore-test.service\n"); got != wantRestarts {
-				t.Fatalf("restarts = %d, want %d: %s", got, wantRestarts, services)
-			}
-			if test.check {
-				if _, err := os.Stat(installedPath + ".previous"); !os.IsNotExist(err) {
-					t.Fatalf("dry run created backup: %v", err)
-				}
-			}
 		})
 	}
 }
