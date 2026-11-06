@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -61,10 +62,10 @@ func (s *Service) exchangeOAuthToken(ctx context.Context, client string, form ur
 	}
 	organization, err := s.readyOrganization(ctx, key.Organizations[0].OrganizationID)
 	if err != nil {
-		return oauthTokenResponse{}, errNoSession
+		return oauthTokenResponse{}, oauthCredentialError(err)
 	}
 	if _, err := s.keyClaims(ctx, key, organization, "POST", "/internal/v1/keys/catalog", nil); err != nil {
-		return oauthTokenResponse{}, errNoSession
+		return oauthTokenResponse{}, oauthCredentialError(err)
 	}
 	access, err := s.config.generateToken()
 	if err != nil {
@@ -130,12 +131,23 @@ func (s *Service) oauthKey(ctx context.Context, column, value string, requireAcc
 	k.Organizations = []keyOrganization{{OrganizationID: organization, ProjectContext: apikey.ProjectContext{Access: "all"}}}
 	org, err := s.readyOrganization(ctx, organization)
 	if err != nil {
-		return k, errNoSession
+		return k, oauthCredentialError(err)
 	}
 	if _, err = s.keyMembership(ctx, k.Owner, org); err != nil {
-		return k, errNoSession
+		return k, oauthCredentialError(err)
 	}
 	return k, nil
+}
+
+func oauthCredentialError(err error) error {
+	if errors.Is(err, tenantauth.ErrUnavailable) {
+		return err
+	}
+	var refusal *apikey.Refusal
+	if errors.Is(err, ErrOrganizationNotFound) || errors.Is(err, tenantauth.ErrDenied) || errors.As(err, &refusal) {
+		return errors.Join(errNoSession, err)
+	}
+	return err
 }
 
 func (s *Service) activeMCPKey(ctx context.Context, hash string) (accessKey, error) {

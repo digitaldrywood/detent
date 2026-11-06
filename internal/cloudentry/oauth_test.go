@@ -2,6 +2,7 @@ package cloudentry
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -14,11 +15,149 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 const testOAuthVerifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
 const testOAuthChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+
+type oauthMembershipProvider struct {
+	auth.HostedProvider
+	memberships func(context.Context, string, string) ([]auth.Membership, error)
+}
+
+func (p oauthMembershipProvider) Memberships(ctx context.Context, user, organization string) ([]auth.Membership, error) {
+	return p.memberships(ctx, user, organization)
+}
+
+func TestOAuthEndpointAuthorityFailures(t *testing.T) {
+	for _, orgID := range []string{"org_alpha", "org_beta"} {
+		for _, endpoint := range []string{"authorization_code", "refresh_token", "bearer"} {
+			t.Run(orgID+"/"+endpoint, func(t *testing.T) {
+				ctx := t.Context()
+				admin := entryPostgresDatabase(t)
+				f := newEntryFixture(t, entryPostgresConfig(t, admin))
+				s := f.service
+				<-s.oauthBackfillDone
+				owner := newBrowser(t, s.Handler())
+				owner.login("/organizations", "user_alice:")
+				client := registerTestOAuth(t, owner, "Example assistant", "none")
+				for _, fault := range []string{"provider", "registry", "exchange registry", "exchange provider", "authority query", "refusal audit", "membership denied", "policy denied", "organization missing", "revoked", "missing"} {
+					if endpoint == "bearer" && (strings.HasPrefix(fault, "exchange ") || fault == "authority query" || fault == "refusal audit" || fault == "policy denied") {
+						continue
+					}
+					t.Run(fault, func(t *testing.T) {
+						form := approveTestOAuth(t, owner, client, orgID)
+						var grant string
+						if err := admin.QueryRowContext(t.Context(), "SELECT grant_id FROM platform.oauth_requests WHERE code_hash=$1", apikey.HashToken(form.Get("code"))).Scan(&grant); err != nil {
+							t.Fatal(err)
+						}
+						var token oauthTokenResponse
+						if endpoint != "authorization_code" {
+							token = exchangeTestOAuth(t, owner, form)
+							form = url.Values{"client_id": {client.ID}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
+						}
+						exec := func(query string, args ...any) {
+							t.Helper()
+							if _, err := admin.ExecContext(ctx, query, args...); err != nil {
+								t.Fatal(err)
+							}
+						}
+						provider, transport := s.config.Provider, s.config.transport
+						t.Cleanup(func() { s.config.Provider, s.config.transport = provider, transport })
+						outage := fault == "provider" || fault == "registry" || strings.HasPrefix(fault, "exchange ") || fault == "authority query" || fault == "refusal audit"
+						membershipCalls := 0
+						s.config.Provider = oauthMembershipProvider{HostedProvider: provider, memberships: func(ctx context.Context, user, organization string) ([]auth.Membership, error) {
+							membershipCalls++
+							if fault == "provider" || fault == "exchange provider" && membershipCalls == 2 {
+								return nil, errNoSession
+							}
+							if fault == "membership denied" {
+								return nil, nil
+							}
+							if fault == "exchange registry" && membershipCalls == 1 {
+								exec("ALTER TABLE platform.organizations RENAME TO organizations_unavailable")
+								t.Cleanup(func() { exec("ALTER TABLE platform.organizations_unavailable RENAME TO organizations") })
+							}
+							return provider.Memberships(ctx, user, organization)
+						}}
+						switch fault {
+						case "registry":
+							exec("ALTER TABLE platform.organizations RENAME TO organizations_unavailable")
+							t.Cleanup(func() { exec("ALTER TABLE platform.organizations_unavailable RENAME TO organizations") })
+						case "authority query":
+							exec("ALTER TABLE platform.organization_key_policy RENAME TO organization_key_policy_unavailable")
+							t.Cleanup(func() {
+								exec("ALTER TABLE platform.organization_key_policy_unavailable RENAME TO organization_key_policy")
+							})
+						case "refusal audit", "policy denied":
+							exec("INSERT INTO platform.organization_key_policy(organization_id,personal_keys) VALUES($1,'approval') ON CONFLICT(organization_id) DO UPDATE SET personal_keys='approval'", orgID)
+							t.Cleanup(func() { exec("DELETE FROM platform.organization_key_policy WHERE organization_id=$1", orgID) })
+							if fault == "refusal audit" {
+								s.config.transport = func(org Organization) (http.RoundTripper, error) {
+									return handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+										if r.URL.Path == "/internal/v1/keys/audit" {
+											w.WriteHeader(http.StatusServiceUnavailable)
+											return
+										}
+										f.tenants[org.Endpoint].ServeHTTP(w, r)
+									})}, nil
+								}
+							}
+						case "organization missing":
+							exec("UPDATE platform.organizations SET state='failed' WHERE id=$1", orgID)
+							t.Cleanup(func() { exec("UPDATE platform.organizations SET state='ready' WHERE id=$1", orgID) })
+						case "revoked":
+							exec("UPDATE platform.oauth_grants SET revoked_at=now() WHERE id=$1", grant)
+						case "missing":
+							form.Set("code", "missing_code")
+							form.Set("refresh_token", "missing_refresh")
+							token.AccessToken = oauthAccessPrefix + "missing_access"
+						}
+						want := http.StatusBadRequest
+						if endpoint == "bearer" {
+							want = http.StatusUnauthorized
+						}
+						if outage {
+							want = http.StatusServiceUnavailable
+						}
+						if endpoint == "bearer" {
+							response := owner.do(http.MethodPost, "/mcp", nil, map[string]string{"Authorization": "Bearer " + token.AccessToken})
+							if response.StatusCode != want || outage && response.Header.Get("WWW-Authenticate") != "" || !outage && response.Header.Get("WWW-Authenticate") == "" {
+								t.Fatalf("bearer status=%d want=%d challenge=%q body=%s", response.StatusCode, want, response.Header.Get("WWW-Authenticate"), response.Body)
+							}
+						} else {
+							response := owner.do(http.MethodPost, "/oauth/token", form, nil)
+							code := "invalid_grant"
+							if outage {
+								code = "server_error"
+							}
+							var body struct {
+								Error string `json:"error"`
+							}
+							if err := json.Unmarshal([]byte(response.Body), &body); err != nil || response.StatusCode != want || body.Error != code {
+								t.Fatalf("token status=%d want=%d error=%q want=%q body=%s", response.StatusCode, want, body.Error, code, response.Body)
+							}
+							if outage {
+								var consumed bool
+								if err := admin.QueryRowContext(t.Context(), "SELECT consumed_at IS NOT NULL FROM platform.oauth_requests WHERE grant_id=$1", grant).Scan(&consumed); err != nil || endpoint == "authorization_code" && consumed {
+									t.Fatalf("failed exchange consumed code: consumed=%v err=%v", consumed, err)
+								}
+								if endpoint == "refresh_token" {
+									var retained int
+									if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM platform.oauth_refresh_tokens WHERE token_hash=$1", apikey.HashToken(token.RefreshToken)).Scan(&retained); err != nil || retained != 1 {
+										t.Fatalf("failed exchange consumed refresh token: retained=%d err=%v", retained, err)
+									}
+								}
+							}
+						}
+					})
+				}
+			})
+		}
+	}
+}
 
 func TestOAuthAnonymousRequestsDoNotPersist(t *testing.T) {
 	f := newEntryFixture(t)

@@ -48,7 +48,7 @@ func (s *Service) accessKeyAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			key, err = s.activeAccessKey(c.Request().Context(), hash)
 		}
 		if err != nil {
-			if c.Path() == "/mcp" && (errors.Is(err, sql.ErrNoRows) || errors.Is(err, errNoSession)) {
+			if c.Path() == "/mcp" && !errors.Is(err, tenantauth.ErrUnavailable) && (errors.Is(err, sql.ErrNoRows) || errors.Is(err, errNoSession)) {
 				return s.oauthChallenge(c)
 			}
 			return keyError(c, err)

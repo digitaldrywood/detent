@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/httpratelimit"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -459,7 +460,7 @@ func (s *Service) oauthToken(c echo.Context) error {
 	}
 	response, err := s.exchangeOAuthToken(c.Request().Context(), client, form)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, errNoSession) {
+		if !errors.Is(err, tenantauth.ErrUnavailable) && (errors.Is(err, sql.ErrNoRows) || errors.Is(err, errNoSession)) {
 			return oauthError(c, 400, "invalid_grant")
 		}
 		return oauthError(c, 503, "server_error")
