@@ -49,6 +49,105 @@ func TestConfigureHostedBillingRecordsPreservesPaidAccount(t *testing.T) {
 	}
 }
 
+func TestBillingMaintenanceCreditStepAdvancesOneTenantEvent(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedHostedBillingRecordAccount(t, repository, org, billingstore.Account{OrganizationID: org, Mode: billing.ModeTest, Status: "free"})
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			for _, id := range []string{"first", "second"} {
+				if _, err := w.CreateBillingEvent(t.Context(), billingstore.Event{OrganizationID: org, ID: id, Type: "customer.updated", ReceivedAt: now}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		service := &Service{database: &database{billingRepository: repository, hostedOrganization: org}, config: Config{now: func() time.Time { return now }}}
+		next, processed, err := service.MaintainBillingCredit(t.Context(), 0)
+		if err != nil || !processed || next <= 0 {
+			t.Fatalf("one-event credit: next=%d processed=%t err=%v", next, processed, err)
+		}
+		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			first, err := r.BillingEvent(t.Context(), "first")
+			if err != nil {
+				return err
+			}
+			second, err := r.BillingEvent(t.Context(), "second")
+			if err == nil && (!first.CreditProcessed || second.CreditProcessed || first.ProcessedAt != nil || second.ProcessedAt != nil) {
+				return errors.New("credit maintenance exceeded one event or marked subscription receipt")
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if cursor, processed, err := service.MaintainBillingCredit(t.Context(), next); err != nil || !processed || cursor <= next {
+			t.Fatalf("credit cursor did not advance: next=%d processed=%t err=%v", cursor, processed, err)
+		}
+	}
+}
+
+type maintenanceBillingProvider struct {
+	billing.Provider
+	calls int
+	org   string
+}
+
+func (p *maintenanceBillingProvider) Reconcile(_ context.Context, binding billing.Binding) (billing.Snapshot, error) {
+	p.calls++
+	if binding.OrganizationID != p.org {
+		return billing.Snapshot{}, errors.New("cross-tenant billing binding")
+	}
+	return billing.Snapshot{Status: "free"}, nil
+}
+
+func TestBillingMaintenanceSubscriptionReceiptsAndDueCheck(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedHostedBillingRecordAccount(t, repository, org, billingstore.Account{OrganizationID: org, Mode: billing.ModeTest, Status: "free", Binding: billing.Binding{OrganizationID: string(org), AccountID: "acct_fixture", CustomerID: "cus_fixture"}})
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			plan := billingstore.PlanReference{ID: "starter", Version: 1}
+			if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: org, PlanReference: plan, Name: "Starter", Features: []string{}, Allowances: map[string]int64{}}); err != nil {
+				return err
+			}
+			if err := w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: org, Base: plan}, 0); err != nil {
+				return err
+			}
+			for _, id := range []string{"first", "second"} {
+				if _, err := w.CreateBillingEvent(t.Context(), billingstore.Event{OrganizationID: org, ID: id, Type: "customer.updated", ReceivedAt: now}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		provider := &maintenanceBillingProvider{org: string(org)}
+		service := &Service{database: &database{billingRepository: repository, hostedOrganization: org, billingAuditStore: &memoryRunDetails{}}, config: Config{Hosted: &HostedConfig{Billing: &HostedBillingConfig{AccountID: "acct_fixture", ReconcileSeconds: 60, Provider: provider}}, now: func() time.Time { return now }}}
+		for visit := range 3 {
+			if err := service.MaintainBillingSubscription(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if provider.calls != min(visit+1, 2) {
+				t.Fatalf("provider calls=%d visit=%d", provider.calls, visit)
+			}
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				pending, err := r.UnprocessedBillingEvents(t.Context(), 3)
+				if err == nil && len(pending) != max(0, 1-visit) {
+					return errors.New("subscription maintenance exceeded one receipt")
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
 func TestConfigureHostedBillingRecordsPreservesConcurrentPaidInsert(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)

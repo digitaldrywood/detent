@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"sync"
 	"time"
@@ -21,6 +22,69 @@ type hostedBillingWorker struct {
 	mu      sync.Mutex
 	cancel  context.CancelFunc
 	done    chan struct{}
+}
+
+func (s *Service) MaintainBillingCredit(ctx context.Context, after int64) (int64, bool, error) {
+	if after < 0 || s.database == nil || s.database.hostedOrganization == "" || s.database.billingRepository == nil {
+		return after, false, ErrHostedDatabaseBinding
+	}
+	var events []billingstore.Event
+	err := s.database.billingRepository.ReadTenant(ctx, s.database.hostedOrganization, corestore.Background, func(r tenantstore.Reader) error {
+		var err error
+		events, err = r.BillingEvents(ctx, after, math.MaxInt64, 1)
+		return err
+	})
+	if err != nil {
+		return after, false, err
+	}
+	if len(events) == 0 {
+		return 0, false, nil
+	}
+	event := events[0]
+	if event.CreditProcessed {
+		return event.Sequence, true, nil
+	}
+	worker := &hostedBillingWorker{service: s}
+	if err := worker.creditEvent(ctx, event.ID, event.Type); err != nil {
+		return event.Sequence, true, err
+	}
+	err = s.database.billingRepository.WriteTenant(ctx, s.database.hostedOrganization, corestore.Background, func(w tenantstore.Writer) error {
+		return w.SetBillingEventCreditProcessed(ctx, event.ID)
+	})
+	return event.Sequence, true, err
+}
+
+func (s *Service) MaintainBillingFunding(ctx context.Context) error {
+	return (&hostedBillingWorker{service: s}).autoFund(ctx)
+}
+
+func (s *Service) MaintainBillingSubscription(ctx context.Context) error {
+	cfg := s.hostedBillingConfig()
+	if cfg == nil {
+		return nil
+	}
+	var events []billingstore.Event
+	var reconciled *time.Time
+	if err := s.database.billingRepository.ReadTenant(ctx, s.database.hostedOrganization, corestore.Background, func(r tenantstore.Reader) error {
+		account, err := r.BillingAccount(ctx)
+		if err != nil {
+			return err
+		}
+		reconciled = account.ReconciledAt
+		events, err = r.UnprocessedBillingEvents(ctx, 1)
+		return err
+	}); err != nil {
+		return err
+	}
+	if len(events) == 0 && reconciled != nil && s.config.now().Before(reconciled.Add(time.Duration(cfg.ReconcileSeconds)*time.Second)) {
+		return nil
+	}
+	var ids []string
+	var through int64
+	if len(events) > 0 {
+		ids, through = []string{events[0].ID}, events[0].Sequence
+	}
+	return (&hostedBillingWorker{service: s}).reconcileSubscription(ctx, through, ids)
 }
 
 func (s *Service) startHostedBilling() {
@@ -111,6 +175,11 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 		}
 	}
 	creditErr = errors.Join(creditErr, w.autoFund(ctx))
+	return errors.Join(creditErr, w.reconcileSubscription(ctx, through, unprocessedEventIDs))
+}
+
+func (w *hostedBillingWorker) reconcileSubscription(ctx context.Context, through int64, unprocessedEventIDs []string) error {
+	s := w.service
 	previous, err := s.database.readHostedBilling(ctx)
 	if err != nil {
 		return err
@@ -131,7 +200,7 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 		return err
 	}
 	now := s.config.now().UTC()
-	return errors.Join(creditErr, s.database.commitHostedBilling(ctx, resolveHostedBilling(cfg, previous, snapshot, now), through, unprocessedEventIDs, now))
+	return s.database.commitHostedBilling(ctx, resolveHostedBilling(cfg, previous, snapshot, now), through, unprocessedEventIDs, now)
 }
 
 func (s *Service) hostedStripeWebhook(c echo.Context) error {
