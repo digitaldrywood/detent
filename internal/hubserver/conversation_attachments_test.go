@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 // The attachment endpoints. Uploads are sniffed and
@@ -88,19 +90,18 @@ func (f conversationAPIFixture) upload(t *testing.T, token, id, name, media stri
 // way a handoff does, without creating an issue.
 func (f conversationAPIFixture) share(t *testing.T, id string) {
 	t.Helper()
-	service := f.service.conversations
-	record, err := service.store.readConversationByID(t.Context(), service.store.reader, id)
-	if err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+		record, err := writer.Conversation(t.Context(), f.project.ID, id)
+		if err != nil {
+			return err
+		}
+		record.Visibility = conversation.VisibilityShared
+		_, err = writer.UpdateConversation(t.Context(), record, record.Revision)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
-	revision := record.Revision
-	record.Visibility = conversation.VisibilityShared
-	ctx := prepareTestConversationRecord(t, service.store, record)
-	if err := service.transact(ctx, func(tx *sql.Tx, _ time.Time) error {
-		return service.store.updateConversation(ctx, tx, &record, revision)
-	}); err != nil {
-		t.Fatalf("share conversation: %v", err)
-	}
+
 }
 
 func TestConversationAttachmentUploadAndRead(t *testing.T) {

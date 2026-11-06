@@ -1,8 +1,6 @@
 package hubserver
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +12,9 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -319,39 +320,18 @@ func newConversationQuestionFixture(t *testing.T, status conversation.QuestionSt
 	f := newConversationAPIFixture(t, nil)
 	record := f.create(t, f.token, map[string]any{"title": "Questions"}).Conversation
 	requireNativeStatus(t, f.link(t, f.token, record.ID, "link", true, "Ask me"), http.StatusOK)
-	service := f.service.conversations
 	questionID := conversation.NewQuestionID()
-	plan, err := service.newPublicationPlan(t.Context(), record.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
 	execution := conversation.Execution{Status: conversation.ExecutionWaitingInput, Owner: conversation.Owner{AttemptID: "att_1", RunID: "run_1", TurnID: "turn_1"}, Capabilities: conversation.Capabilities{Answer: true}}
-	if err := plan.updateExecution(t.Context(), execution); err != nil {
+	f.setExecution(t, record.ID, execution)
+	now := f.service.config.now()
+	question := conversation.Question{ID: questionID, ConversationID: record.ID, Status: status, Owner: execution.Owner, Prompts: []conversation.Prompt{{ID: "color", Question: "Which color?", Options: []conversation.Option{{Label: "red"}, {Label: "blue"}}}}, CreatedAt: now, UpdatedAt: now}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+		return writer.UpsertQuestion(t.Context(), conversationstore.Question{OrganizationID: f.project.OrganizationID, ConversationID: record.ID, Question: question})
+	}); err != nil {
 		t.Fatal(err)
-	}
-	question := conversationQuestionRecord{Question: conversation.Question{
-		ID: questionID, ConversationID: record.ID, Status: status, Owner: execution.Owner,
-		Prompts:   []conversation.Prompt{{ID: "color", Question: "Which color?", Options: []conversation.Option{{Label: "red"}, {Label: "blue"}}}},
-		CreatedAt: plan.now, UpdatedAt: plan.now,
-	}}
-	if err := plan.prepareQuestion(t.Context(), question); err != nil {
-		t.Fatal(err)
-	}
-	ctx := plan.context(t.Context())
-	err = service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		linked, err := service.store.readConversation(ctx, tx, f.project.OrganizationID, f.project.ID, record.ID)
-		if err != nil {
-			return err
-		}
-		if err := service.updateExecution(ctx, tx, &linked, execution, now); err != nil {
-			return err
-		}
-		return service.store.upsertQuestion(ctx, tx, question)
-	})
-	if err != nil {
-		t.Fatalf("seed question: %v", err)
 	}
 	return conversationQuestionFixture{conversationAPIFixture: f, conversationID: record.ID, questionID: questionID}
+
 }
 
 func (f conversationQuestionFixture) answer(t *testing.T, key, value string) *httptest.ResponseRecorder {
@@ -498,49 +478,41 @@ func TestConversationDuplicateAnswers(t *testing.T) {
 // It returns the sequence of event ids the burst produced.
 func conversationBurstDeltas(t *testing.T, f streamFixture, id string, count int) []string {
 	t.Helper()
-	service := f.service.conversations
-	message := conversationMessageRecord{Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "runner"}}
+	message := conversationstore.Message{OrganizationID: f.project.OrganizationID, ConversationID: id, ID: conversation.NewMessageID(), Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "runner"}, CreatedAt: f.service.config.now(), UpdatedAt: f.service.config.now()}
 	ids := make([]string, 0, count+1)
-	emit := func(apply func(context.Context, *sql.Tx, *conversationRecord, time.Time) error, prepare func(context.Context, *conversationPublicationPlan) error) {
-		t.Helper()
-		plan, err := service.newPublicationPlan(t.Context(), id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := prepare(t.Context(), plan); err != nil {
-			t.Fatal(err)
-		}
-		ctx := plan.context(t.Context())
-		err = service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-			record, err := service.store.readConversation(ctx, tx, f.project.OrganizationID, f.project.ID, id)
+	for index := range count + 1 {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+			var err error
+			if index == 0 {
+				message, err = writer.CreateMessage(t.Context(), message)
+				if err != nil {
+					return err
+				}
+				err = appendPGConversationEvent(t.Context(), writer, f.project.OrganizationID, id, conversation.EventMessageAccepted, projectMessage(conversationMessageFromStore(message)), f.service.config.now())
+			} else {
+				text := "d" + strconv.Itoa(index-1)
+				message.Text += text
+				message, err = writer.UpdateMessage(t.Context(), message, message.Revision)
+				if err != nil {
+					return err
+				}
+				err = appendPGConversationEvent(t.Context(), writer, f.project.OrganizationID, id, conversation.EventMessageDelta, conversationDeltaBody(message.ID, int64(index-1), text), f.service.config.now())
+			}
 			if err != nil {
 				return err
 			}
-			if err := apply(ctx, tx, &record, now); err != nil {
-				return err
+			record, err := writer.Conversation(t.Context(), f.project.ID, id)
+			if err == nil {
+				ids = append(ids, strconv.FormatInt(record.EventSequence, 10))
 			}
-			return tx.QueryRowContext(ctx, "SELECT event_seq FROM conversations WHERE id = ?", id).Scan(&record.EventSeq)
-		})
-		if err != nil {
-			t.Fatalf("emit: %v", err)
+			return err
+		}); err != nil {
+			t.Fatal(err)
 		}
-		service.broker.notify(id)
-	}
-	emit(func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
-		return service.appendMessage(ctx, tx, record, &message, now)
-	}, func(ctx context.Context, p *conversationPublicationPlan) error {
-		return p.appendMessage(ctx, &message)
-	})
-	ids = append(ids, "1")
-	for i := range count {
-		emit(func(ctx context.Context, tx *sql.Tx, _ *conversationRecord, now time.Time) error {
-			return service.appendDelta(ctx, tx, &message, "d"+strconv.Itoa(i), now)
-		}, func(ctx context.Context, p *conversationPublicationPlan) error {
-			return p.appendDelta(ctx, message, "d"+strconv.Itoa(i))
-		})
-		ids = append(ids, strconv.Itoa(i+2))
+		f.service.conversations.broker.notify(id)
 	}
 	return ids
+
 }
 
 // TestConversationTwoTabsShareOneOrderedLog covers two tabs on one

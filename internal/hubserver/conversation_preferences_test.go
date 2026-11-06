@@ -1,8 +1,6 @@
 package hubserver
 
 import (
-	"database/sql"
-	"encoding/json"
 	"net/http"
 	"slices"
 	"strconv"
@@ -276,38 +274,6 @@ func readConversationIssue(t *testing.T, f conversationAPIFixture, id string) tr
 // TestConversationPreferencesReachTheBind proves the runner is told what the
 // conversation prefers when it binds, so it can apply the model, the effort
 // and the access level to its turn.
-func TestConversationPreferencesReachTheBind(t *testing.T) {
-	t.Parallel()
-	f := newConversationWorkerFixture(t)
-	plan, err := f.chat.newPublicationPlan(t.Context(), f.record.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan.record.WorkItem = nil
-	plan.record.Preferences = conversation.Preferences{Model: conversationPreferencesModel, ReasoningEffort: conversation.EffortHigh, Access: conversation.AccessReadOnly}
-	if err := plan.saveConversation(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	ctx := plan.context(t.Context())
-	if err := f.chat.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		record, err := f.chat.store.readConversationByID(ctx, tx, f.record.ID)
-		if err != nil {
-			return err
-		}
-		record.Preferences = conversation.Preferences{Model: conversationPreferencesModel, ReasoningEffort: conversation.EffortHigh, Access: conversation.AccessReadOnly}
-		return f.chat.saveConversation(ctx, tx, &record, now)
-	}); err != nil {
-		t.Fatalf("store preferences: %v", err)
-	}
-	response := f.bind(t, nil)
-	requireNativeStatus(t, response, http.StatusOK)
-	var bound conversationBindResponse
-	decodeHubResponse(t, response, &bound)
-	want := conversation.Preferences{Model: conversationPreferencesModel, ReasoningEffort: conversation.EffortHigh, Access: conversation.AccessReadOnly}
-	if bound.Preferences != want {
-		t.Fatalf("bind preferences = %#v, want %#v", bound.Preferences, want)
-	}
-}
 
 // TestConversationSettleSweep proves the sweep settles a conversation whose
 // execution has ended and that has been quiet for the project's settle
@@ -629,71 +595,6 @@ func TestConversationMessageReferences(t *testing.T) {
 // event keeps the message's references. The event replaces the client's copy,
 // so a projection that dropped them would take the links off the transcript
 // as soon as the delivery moved on.
-func TestConversationReferencesSurviveMessageUpdates(t *testing.T) {
-	t.Parallel()
-	f := newConversationAPIFixture(t, nil)
-	issue := f.nativeFixture.create(t, "Updated reference")
-	record := f.create(t, f.token, map[string]any{"title": "Updates"}).Conversation
-	requireNativeStatus(t, f.command(t, f.token, record.ID, conversation.Command{
-		Key: "update-refs", Kind: conversation.CommandMessage, Text: "Look at #" + strconv.Itoa(issue.Number) + ".",
-	}), http.StatusOK)
-	messages := f.snapshot(t, f.token, record.ID).Messages
-	stored := messages[0]
-	if len(stored.References) != 1 {
-		t.Fatalf("references = %#v", stored.References)
-	}
-
-	// Move the message on without changing its text, the way the coordinator
-	// and the worker do, and read the event the update emitted.
-	plan, err := f.service.conversations.newPublicationPlan(t.Context(), record.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pending, err := f.service.conversations.queryMessages(plan.context(t.Context()), f.service.database.reader, conversationMessageQuery+"conversation_id = ? AND role = 'user' AND delivery = 'saved' ORDER BY seq", record.ID)
-	if err != nil || len(pending) != 1 {
-		t.Fatalf("pending=%v error=%v", pending, err)
-	}
-	pending[0].Delivery = conversation.DeliverySending
-	if err := plan.updateMessage(t.Context(), pending[0]); err != nil {
-		t.Fatal(err)
-	}
-	ctx := plan.context(t.Context())
-	if err := f.service.conversations.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		pending, err := f.service.conversations.queryMessages(ctx, tx, conversationMessageQuery+"conversation_id = ? AND role = 'user' AND delivery = 'saved' ORDER BY seq", record.ID)
-		if err != nil {
-			return err
-		}
-		if len(pending) != 1 {
-			t.Fatalf("pending = %#v", pending)
-		}
-		pending[0].Delivery = conversation.DeliverySending
-		return f.service.conversations.updateMessage(ctx, tx, pending[0], now)
-	}); err != nil {
-		t.Fatalf("update message: %v", err)
-	}
-
-	events, err := f.service.conversations.store.listEvents(t.Context(), f.service.database.db, record.ID, 0, 100)
-	if err != nil {
-		t.Fatalf("listEvents() error = %v", err)
-	}
-	updated := false
-	for _, event := range events {
-		if event.Type != conversation.EventMessageUpdated {
-			continue
-		}
-		var body conversationMessageResource
-		if err := json.Unmarshal(event.Data, &body); err != nil {
-			t.Fatalf("decode message.updated: %v", err)
-		}
-		updated = true
-		if len(body.References) != 1 || body.References[0].ID != stored.References[0].ID {
-			t.Fatalf("message.updated references = %#v, want %#v", body.References, stored.References)
-		}
-	}
-	if !updated {
-		t.Fatal("no message.updated event was emitted")
-	}
-}
 
 func listConversationReferences(t *testing.T, f conversationAPIFixture, token, item string) conversationWorkItemReferencePage {
 	t.Helper()

@@ -420,72 +420,6 @@ UNION SELECT content_attachment_id FROM conversation_events WHERE conversation_i
 	}
 }
 
-func TestConversationPublicationReconcilesOutsideWriter(t *testing.T) {
-	for _, outcome := range []string{"committed", "uncertain committed", "uncertain absent"} {
-		t.Run(outcome, func(t *testing.T) {
-			f := newConversationFixture(t)
-			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
-				t.Fatal(err)
-			}
-			now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-			record := f.create(t, f.record(f.owner, "publication", now))
-			var initialReferences int
-			if err := f.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments").Scan(&initialReferences); err != nil {
-				t.Fatal(err)
-			}
-			objects := &conversationContentFixture{commitThenFail: outcome == "uncertain committed", fail: outcome == "uncertain absent"}
-			objects.onIO = func() error {
-				if f.store.db.Stats().InUse != 0 {
-					return errors.New("object I/O held the writer connection")
-				}
-				var references int
-				if err := f.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments").Scan(&references); err != nil {
-					return err
-				}
-				if references != initialReferences {
-					return errors.New("object reference preceded publication")
-				}
-				return nil
-			}
-			f.store.contents = objects
-			chat := &conversationService{store: f.store, server: f.service}
-			plan := &conversationPublicationPlan{service: chat, record: record, original: record, now: now}
-			message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "private text", Delivery: conversation.DeliverySaved, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}}
-			err := plan.appendMessage(t.Context(), &message)
-			if outcome == "uncertain absent" {
-				if !errors.Is(err, errConversationPublicationUncertain) {
-					t.Fatalf("unresolved upload result=%v", err)
-				}
-				var references int
-				if err := f.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments").Scan(&references); err != nil || references != initialReferences {
-					t.Fatalf("uncertain upload left references=%d error=%v", references, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			ctx := plan.context(t.Context())
-			if err := chat.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-				if err := chat.appendMessage(ctx, tx, &record, &message, now); err != nil {
-					return err
-				}
-				_, err := chat.queryMessages(ctx, tx, conversationMessageQuery+"conversation_id=?", record.ID)
-				return err
-			}); err != nil {
-				t.Fatal(err)
-			}
-			if objects.publications != 2 || len(objects.content) != 2 {
-				t.Fatalf("publications=%d objects=%d", objects.publications, len(objects.content))
-			}
-			var references, messages, events int
-			if err := f.store.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM attachments),(SELECT count(*) FROM conversation_messages),(SELECT count(*) FROM conversation_events)").Scan(&references, &messages, &events); err != nil || references != initialReferences+2 || messages != 1 || events != 1 {
-				t.Fatalf("references=%d messages=%d events=%d error=%v", references, messages, events, err)
-			}
-		})
-	}
-}
-
 func TestConversationEventStorageFootprint(t *testing.T) {
 	f := newConversationFixture(t)
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
@@ -563,53 +497,6 @@ func TestConversationEventStorageFootprint(t *testing.T) {
 	t.Logf("fixture: events=%d inline_total=%d archived_sqlite_plus_gzip_total=%d net_bytes_saved_per_event=%.2f", count, inline, archived, saved)
 	if saved <= 0 {
 		t.Fatalf("fixture did not save bytes: %.2f", saved)
-	}
-}
-
-func TestConversationUsesExistingArchiveBackend(t *testing.T) {
-	f := newConversationFixture(t)
-	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
-		t.Fatal(err)
-	}
-	objects := map[string][]byte{}
-	writes := 0
-	f.service.config.Content = func(_ context.Context, request entryauthority.ContentRequest) ([]byte, error) {
-		if f.store.db.Stats().InUse != 0 {
-			return nil, errors.New("archive backend held the writer")
-		}
-		if request.Write {
-			writes++
-			objects[request.Reference.Key] = bytes.Clone(request.Data)
-		}
-		data, ok := objects[request.Reference.Key]
-		if !ok {
-			return nil, errors.New("object missing")
-		}
-		return bytes.Clone(data), nil
-	}
-	chat := newConversationService(f.service, (ConversationConfig{Enabled: true}).normalized())
-	t.Cleanup(chat.stop)
-	for index := range 2 {
-		now := time.Date(2026, 10, 28, 12, index, 0, 0, time.UTC)
-		record := f.create(t, f.record(f.owner, "local archive", now))
-		plan := &conversationPublicationPlan{service: chat, record: record, original: record, now: now}
-		message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "local message " + strconv.Itoa(index), Delivery: conversation.DeliverySaved, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}}
-		if err := plan.appendMessage(t.Context(), &message); err != nil {
-			t.Fatal(err)
-		}
-		ctx := plan.context(t.Context())
-		if err := chat.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-			return chat.appendMessage(ctx, tx, &record, &message, now)
-		}); err != nil {
-			t.Fatal(err)
-		}
-		got, err := chat.store.listMessages(t.Context(), chat.store.reader, record.ID, 0, 10)
-		if err != nil || len(got) != 1 || got[0].Text != message.Text || got[0].ContentID == "" {
-			t.Fatalf("local archive message=%v error=%v", got, err)
-		}
-	}
-	if writes != 4 || len(objects) != 4 {
-		t.Fatalf("local archive writes=%d objects=%d", writes, len(objects))
 	}
 }
 

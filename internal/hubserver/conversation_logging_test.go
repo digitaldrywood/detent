@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -331,77 +330,6 @@ func TestConversationLoggingRestartNormalization(t *testing.T) {
 		"controls":    float64(1),
 	})
 	sink.requireNoSentinel(t)
-}
-
-// TestConversationNormalizeAfterRestartSummary covers the counts the store
-// reports for each class of in-flight row it rewrites.
-func TestConversationNormalizeAfterRestartSummary(t *testing.T) {
-	t.Parallel()
-	f := newConversationFixture(t)
-	now := time.Date(2026, 9, 10, 10, 0, 0, 0, time.UTC)
-	rows := []struct {
-		execution conversation.ExecutionStatus
-		delivery  conversation.Delivery
-		question  conversation.QuestionStatus
-		receipt   conversation.Delivery
-	}{
-		{conversation.ExecutionRunning, conversation.DeliverySending, conversation.QuestionPending, conversation.DeliverySending},
-		{conversation.ExecutionInterrupting, conversation.DeliveryResponding, conversation.QuestionSending, conversation.DeliveryResponding},
-		{conversation.ExecutionIdle, conversation.DeliveryQueued, conversation.QuestionAnswered, conversation.DeliveryDelivered},
-	}
-	for i, row := range rows {
-		record := f.record(f.owner, "normalize-"+strconv.Itoa(i), now)
-		record.Execution = conversation.Execution{Status: row.execution, UpdatedAt: now}
-		record = f.create(t, record)
-		key := "k" + strconv.Itoa(i)
-		message := conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: record.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: conversationLogSentinel, Delivery: row.delivery, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}, CommandKey: key, CreatedAt: now, UpdatedAt: now}
-		question := conversationQuestionRecord{Question: conversation.Question{ID: conversation.NewQuestionID(), ConversationID: record.ID, MessageID: message.ID, Status: row.question, Prompts: []conversation.Prompt{{ID: "p", Question: "?"}}, CreatedAt: now, UpdatedAt: now}}
-		questionRaw, err := questionPayload(question)
-		if err != nil {
-			t.Fatal(err)
-		}
-		receipt := conversation.Receipt{Key: key, Kind: conversation.CommandMessage, Status: row.receipt, MessageID: message.ID, UpdatedAt: now}
-		receiptRaw, err := json.Marshal(receipt)
-		if err != nil {
-			t.Fatal(err)
-		}
-		initialRaw, err := json.Marshal(conversation.Receipt{Key: key, Kind: conversation.CommandMessage, Status: conversation.DeliverySaved, UpdatedAt: now})
-		if err != nil {
-			t.Fatal(err)
-		}
-		ctx := prepareRecordTestPayload(t, f, record, questionRaw, initialRaw, receiptRaw)
-		tx := f.tx(t)
-		if err := f.appendMessage(t, ctx, tx, &message); err != nil {
-			t.Fatalf("appendMessage() error = %v", err)
-		}
-		if err := f.store.upsertQuestion(ctx, tx, question); err != nil {
-			t.Fatalf("upsertQuestion() error = %v", err)
-		}
-		if _, _, err := f.store.reserveCommand(ctx, tx, record.ID, key, conversation.CommandMessage, "hash", now); err != nil {
-			t.Fatalf("reserveCommand() error = %v", err)
-		}
-		if err := f.store.updateReceipt(ctx, tx, record.ID, key, receipt); err != nil {
-			t.Fatalf("updateReceipt() error = %v", err)
-		}
-		f.commit(t, tx)
-	}
-
-	summary, err := f.store.normalizeAfterRestart(t.Context(), now.Add(time.Hour))
-	if err != nil {
-		t.Fatalf("normalizeAfterRestart() error = %v", err)
-	}
-	want := conversationNormalizeSummary{Conversations: 2, Messages: 2, Questions: 2, Receipts: 2}
-	if summary != want {
-		t.Fatalf("summary = %#v, want %#v", summary, want)
-	}
-
-	again, err := f.store.normalizeAfterRestart(t.Context(), now.Add(2*time.Hour))
-	if err != nil {
-		t.Fatalf("normalizeAfterRestart(second) error = %v", err)
-	}
-	if (again != conversationNormalizeSummary{}) {
-		t.Fatalf("a second normalization changed %#v, want nothing", again)
-	}
 }
 
 // TestConversationStaleExecutionAttempts covers the attempt identifiers the

@@ -123,35 +123,11 @@ func (f dispatchGuardFixture) reload(t *testing.T) tracker.NativeIssue {
 // does, through the same acceptCommand path.
 func (f dispatchGuardFixture) continueConversation(t *testing.T, key string) {
 	t.Helper()
-	ctx := f.service.runDetailContext(t.Context())
-	record, err := f.chat.store.readConversation(ctx, f.chat.store.reader, f.record.OrganizationID, f.record.ProjectID, f.record.ID)
-	if err != nil {
+	command := conversation.Command{Key: key, Kind: conversation.CommandContinue, Text: "Continue with the release notes.", Expected: conversation.Expected{AttemptID: f.record.Execution.Owner.AttemptID}}
+	if _, err := f.service.commandPostConversation(t.Context(), f.scope(), f.record.ID, command); err != nil {
 		t.Fatal(err)
 	}
-	command := conversation.Command{Key: key, Kind: conversation.CommandContinue, Text: "Continue with the release notes.", Expected: conversation.Expected{AttemptID: record.Execution.Owner.AttemptID}}
-	prepared, err := f.chat.prepareCommandContents(ctx, string(record.OrganizationID), string(record.ProjectID), record.OwnerPrincipalID, record.ID, command)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan, err := f.chat.newPublicationPlan(prepared, record.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := plan.command(prepared, f.scope(), command); err != nil {
-		t.Fatal(err)
-	}
-	ctx = plan.context(prepared)
-	if err := f.chat.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if _, _, err := f.chat.store.reserveCommand(ctx, tx, record.ID, key, command.Kind, "hash-"+key, now); err != nil {
-			return err
-		}
-		if _, err := f.chat.acceptCommand(ctx, tx, f.scope(), &record, command, now); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+
 }
 
 func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {

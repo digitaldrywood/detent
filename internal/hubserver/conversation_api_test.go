@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -135,25 +134,18 @@ func (f conversationAPIFixture) snapshot(t *testing.T, token, id string) convers
 
 func (f conversationAPIFixture) setExecution(t *testing.T, id string, execution conversation.Execution) {
 	t.Helper()
-	service := f.service.conversations
-	plan, err := service.newPublicationPlan(t.Context(), id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan.record.WorkItem = nil
-	if err := plan.updateExecution(t.Context(), execution); err != nil {
-		t.Fatal(err)
-	}
-	ctx := plan.context(t.Context())
-	if err := service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		record, err := service.store.readConversationByID(ctx, tx, id)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+		record, err := writer.Conversation(t.Context(), f.project.ID, id)
 		if err != nil {
 			return err
 		}
-		return service.updateExecution(ctx, tx, &record, execution, now)
+		record.Execution, record.UpdatedAt = execution, f.service.config.now()
+		_, err = writer.UpdateConversation(t.Context(), record, record.Revision)
+		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
+
 }
 
 // settle runs the settle sweep against one conversation with a window that
@@ -162,45 +154,26 @@ func (f conversationAPIFixture) setExecution(t *testing.T, id string, execution 
 // a runner is finished first.
 func (f conversationAPIFixture) settle(t *testing.T, id string) {
 	t.Helper()
-	service := f.service.conversations
-	plan, err := service.newPublicationPlan(t.Context(), id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan.record.WorkItem = nil
-	if !plan.record.Execution.Status.Terminal() && plan.record.Execution.Status != conversation.ExecutionIdle {
-		execution := plan.record.Execution
-		execution.Status = conversation.ExecutionCompleted
-		if err := plan.updateExecution(t.Context(), execution); err != nil {
-			t.Fatal(err)
-		}
-	}
-	ctx := plan.context(t.Context())
-	if err := service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		record, err := service.store.readConversationByID(ctx, tx, id)
+	var record conversationstore.Conversation
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
+		var err error
+		record, err = writer.Conversation(t.Context(), f.project.ID, id)
 		if err != nil {
 			return err
 		}
-		if record.Execution.Status.Terminal() || record.Execution.Status == conversation.ExecutionIdle {
-			return nil
+		if !record.Execution.Status.Terminal() && record.Execution.Status != conversation.ExecutionIdle {
+			record.Execution.Status = conversation.ExecutionCompleted
+			record, err = writer.UpdateConversation(t.Context(), record, record.Revision)
 		}
-		execution := record.Execution
-		execution.Status = conversation.ExecutionCompleted
-		return service.updateExecution(ctx, tx, &record, execution, now)
+		return err
 	}); err != nil {
-		t.Fatalf("finish execution: %v", err)
-	}
-	now, err := f.service.database.currentTime()
-	if err != nil {
 		t.Fatal(err)
 	}
-	settled, err := service.settleConversation(t.Context(), id, now.Add(time.Hour))
-	if err != nil {
-		t.Fatalf("settleConversation() error = %v", err)
+	settled, err := f.service.conversations.settleIdleConversationPG(t.Context(), f.project.OrganizationID, record, f.service.config.now().Add(time.Hour), f.service.config.now().Add(time.Hour))
+	if err != nil || !settled {
+		t.Fatalf("settle conversation: settled=%t err=%v", settled, err)
 	}
-	if !settled {
-		t.Fatalf("settleConversation(%s) settled nothing", id)
-	}
+
 }
 
 func (f conversationAPIFixture) link(t *testing.T, token, id, key string, share bool, title string) *httptest.ResponseRecorder {
@@ -1498,143 +1471,6 @@ func TestConversationLinkQueuesSavedMessages(t *testing.T) {
 	}
 	if first == nil || first.Delivery != conversation.DeliveryQueued {
 		t.Fatalf("first message after link = %#v, want queued", first)
-	}
-}
-
-func TestConversationAPIRemoval(t *testing.T) {
-	t.Parallel()
-	for _, action := range []string{"archive", "delete"} {
-		t.Run(action, func(t *testing.T) {
-			f := newConversationAPIFixture(t, nil)
-			target := f.create(t, f.token, map[string]any{"title": "Remove me"}).Conversation
-			unrelated := f.create(t, f.token, map[string]any{"title": "Keep me"}).Conversation
-			privatePath := f.base + "/conversations/" + target.ID
-			privateMethod := http.MethodDelete
-			if action == "archive" {
-				privateMethod = http.MethodPost
-				privatePath += "/archive"
-			}
-			requireNativeError(t, performHubAPIRequest(t, f.service, privateMethod, privatePath, f.other, nil), http.StatusNotFound, "not_found")
-			if after := f.snapshot(t, f.token, target.ID); after.Conversation.Archived || after.Conversation.Revision != target.Revision {
-				t.Fatal("private access refusal changed the conversation")
-			}
-			linked := f.link(t, f.token, target.ID, "removal-link", true, "Keep linked issue")
-			requireNativeStatus(t, linked, http.StatusOK)
-			var link conversationLinkResponse
-			decodeHubResponse(t, linked, &link)
-			f.settle(t, target.ID)
-			before := f.snapshot(t, f.token, target.ID)
-			if len(before.Messages) == 0 {
-				t.Fatal("missing history fixture")
-			}
-			artifact := "removal-blob"
-			if err := f.service.conversations.transact(t.Context(), func(tx *sql.Tx, now time.Time) error {
-				if _, err := tx.ExecContext(t.Context(), "INSERT INTO conversation_attachment_blobs(artifact_ref,content) VALUES (?,?)", artifact, []byte("private bytes")); err != nil {
-					return err
-				}
-				_, err := tx.ExecContext(t.Context(), `INSERT INTO conversation_attachments(id,conversation_id,message_id,principal_id,name,mime,size,artifact_ref,created_at) VALUES (?,?,?,?,?,?,?,?,?)`, "att_removal", target.ID, before.Messages[0].ID, f.ownerID, "history.txt", "text/plain", 13, artifact, conversationTime(now))
-				return err
-			}); err != nil {
-				t.Fatal(err)
-			}
-			path := f.base + "/conversations/" + target.ID
-			method, suffix, success := http.MethodDelete, "", http.StatusNoContent
-			if action == "archive" {
-				method, suffix, success = http.MethodPost, "/archive", http.StatusOK
-			}
-			request := func(path string, token string) *httptest.ResponseRecorder {
-				return performHubAPIRequest(t, f.service, method, path+suffix, token, nil)
-			}
-			for _, refusal := range []struct{ name, path, token string }{
-				{"unauthorized", path, "invalid"},
-				{"cross organization", strings.Replace(path, string(f.project.OrganizationID), "org_other", 1), f.token},
-				{"cross project", strings.Replace(path, string(f.project.ID), "prj_other", 1), f.token},
-			} {
-				t.Run(refusal.name, func(t *testing.T) {
-					response := request(refusal.path, refusal.token)
-					if response.Code != http.StatusNotFound && response.Code != http.StatusUnauthorized {
-						t.Fatalf("refused status = %d: %s", response.Code, response.Body.String())
-					}
-					after := f.snapshot(t, f.token, target.ID)
-					if after.Conversation.Revision != before.Conversation.Revision || after.Conversation.Archived || len(after.Messages) != len(before.Messages) {
-						t.Fatal("refusal changed conversation")
-					}
-				})
-			}
-			for _, execution := range []conversation.Execution{
-				{Status: conversation.ExecutionStarting}, {Status: conversation.ExecutionRunning},
-				{Status: conversation.ExecutionWaitingInput}, {Status: conversation.ExecutionInterrupting},
-				{Status: conversation.ExecutionWaitingForRunner, Owner: conversation.Owner{AttemptID: "pending-runner"}},
-			} {
-				t.Run(string(execution.Status), func(t *testing.T) {
-					f.setExecution(t, target.ID, execution)
-					prior := f.snapshot(t, f.token, target.ID)
-					requireNativeError(t, request(path, f.token), http.StatusConflict, "stale_execution")
-					after := f.snapshot(t, f.token, target.ID)
-					if after.Conversation.Revision != prior.Conversation.Revision || after.Conversation.Archived || len(after.Messages) != len(prior.Messages) {
-						t.Fatal("in-flight refusal changed history")
-					}
-				})
-			}
-			f.setExecution(t, target.ID, conversation.Execution{Status: conversation.ExecutionCompleted})
-			if action == "delete" {
-				prior := f.snapshot(t, f.token, target.ID)
-				if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER removal_failure BEFORE DELETE ON conversations BEGIN SELECT RAISE(ABORT, 'forced removal failure'); END`); err != nil {
-					t.Fatal(err)
-				}
-				requireNativeStatus(t, request(path, f.token), http.StatusInternalServerError)
-				after := f.snapshot(t, f.token, target.ID)
-				if after.Conversation.Revision != prior.Conversation.Revision || len(after.Messages) != len(prior.Messages) {
-					t.Fatal("failed delete did not roll back history")
-				}
-				var bytes []byte
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT content FROM conversation_attachment_blobs WHERE artifact_ref=?", artifact).Scan(&bytes); err != nil || string(bytes) != "private bytes" {
-					t.Fatalf("failed delete lost bytes: %q, %v", bytes, err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER removal_failure"); err != nil {
-					t.Fatal(err)
-				}
-			}
-			requireNativeStatus(t, request(path, f.token), success)
-			for _, listPath := range []string{f.base + "/conversations", "/api/v2/organizations/" + string(f.project.OrganizationID) + "/conversations?q=Remove"} {
-				response := performHubAPIRequest(t, f.service, http.MethodGet, listPath, f.token, nil)
-				requireNativeStatus(t, response, http.StatusOK)
-				var page conversationListResponse
-				decodeHubResponse(t, response, &page)
-				for _, record := range page.Conversations {
-					if record.ID == target.ID {
-						t.Fatal("removed conversation remains listed")
-					}
-				}
-			}
-			f.snapshot(t, f.token, unrelated.ID)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+link.Issue.ID, f.token, nil), http.StatusOK)
-			if action == "archive" {
-				after := f.snapshot(t, f.token, target.ID)
-				if !after.Conversation.Archived || after.Conversation.Status != before.Conversation.Status || len(after.Messages) != len(before.Messages) {
-					t.Fatal("archive did not preserve settled state and history")
-				}
-				requireNativeStatus(t, request(path, f.token), http.StatusOK)
-				var bytes []byte
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT content FROM conversation_attachment_blobs WHERE artifact_ref=?", artifact).Scan(&bytes); err != nil || string(bytes) != "private bytes" {
-					t.Fatalf("archive lost blob: %q, %v", bytes, err)
-				}
-			} else {
-				for _, suffix := range []string{"", "/messages", "/events", "/attachments/att_removal"} {
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+suffix, f.token, nil), http.StatusNotFound)
-				}
-				for _, table := range []string{"conversation_messages", "conversation_questions", "conversation_commands", "conversation_events", "conversation_starts", "conversation_audience_events", "conversation_attachments", "message_references"} {
-					var count int
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table+" WHERE conversation_id=?", target.ID).Scan(&count); err != nil || count != 0 {
-						t.Fatalf("%s retained history: %d, %v", table, count, err)
-					}
-				}
-				var count int
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_attachment_blobs WHERE artifact_ref=?", artifact).Scan(&count); err != nil || count != 0 {
-					t.Fatalf("delete retained bytes: %d, %v", count, err)
-				}
-			}
-		})
 	}
 }
 

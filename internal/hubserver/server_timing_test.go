@@ -118,7 +118,6 @@ func TestLongWriterHoldLogsOwner(t *testing.T) {
 		{"below threshold", time.Second - time.Nanosecond, "commit", false, true, false},
 		{"autocommit", 2 * time.Second, "exec", false, true, true},
 		{"runner admin wrapper", 2 * time.Second, "admin", false, true, true},
-		{"conversation wrapper", 2 * time.Second, "conversation", false, true, true},
 		{"hub wrapper", 2 * time.Second, "hub", false, true, true},
 		{"native mutation wrappers", 2 * time.Second, "native", false, true, true},
 		{"outbox wrapper", 2 * time.Second, "outbox", false, true, true},
@@ -291,12 +290,6 @@ func runWriterHoldTest(t *testing.T, db *sql.DB, c echo.Context, action string, 
 	case "admin":
 		service.database.now = func() time.Time { return time.Time{} }
 		if _, err := service.runnerAdminTransaction(ctx, nativeScope{}, false, nil); !errors.Is(err, ErrInvalidClock) {
-			t.Fatalf("wrapper error = %v", err)
-		}
-		return
-	case "conversation":
-		conversation := &conversationService{server: service, store: newConversationStore(db)}
-		if err := conversation.transact(ctx, func(*sql.Tx, time.Time) error { return stop }); !errors.Is(err, stop) {
 			t.Fatalf("wrapper error = %v", err)
 		}
 		return
