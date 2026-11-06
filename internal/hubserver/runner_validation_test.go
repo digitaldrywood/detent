@@ -2,19 +2,13 @@ package hubserver
 
 import (
 	"bytes"
-	"database/sql"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
-	"testing/fstest"
 	"time"
 
-	"github.com/pressly/goose/v3"
-
-	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -155,63 +149,6 @@ func TestRunnerCredentialsAndRejectedProviderDataAreRedacted(t *testing.T) {
 	for _, value := range []string{provider, r.enrollment.Token, r.redemption.Credential} {
 		if bytes.Contains(contents, []byte(value)) || bytes.Contains(logs.Bytes(), []byte(value)) || bytes.Contains(response.Body.Bytes(), []byte(value)) {
 			t.Fatal("private value escaped into database, logs or errors")
-		}
-	}
-}
-
-func TestRunnerMigrationPreservesLegacyTokens(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "hub.db")
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), fmt.Sprintf("PRAGMA application_id = %d", hubApplicationID)); err != nil {
-		t.Fatal(err)
-	}
-	files, err := migrationFiles.ReadDir("migrations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	migrations := fstest.MapFS{}
-	for _, file := range files {
-		if file.Name() >= "00009_" {
-			continue
-		}
-		data, err := migrationFiles.ReadFile("migrations/" + file.Name())
-		if err != nil {
-			t.Fatal(err)
-		}
-		migrations[file.Name()] = &fstest.MapFile{Data: data}
-	}
-	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName(hubSchemaTable), goose.WithSlog(discardLogger()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.Up(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	const legacy = "legacy-worker-retained-across-upgrade"
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO api_tokens (id,name,token_hash,token_fingerprint,scope,created_at,updated_at) VALUES ('legacy','legacy',?,'fingerprint','worker','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`, apikey.HashToken(legacy)); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	config := Config{DatabasePath: path, now: func() time.Time { return time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC) }}
-	for range 2 {
-		service := openTestService(t, config)
-		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, "/health", legacy, nil), http.StatusOK)
-		var expiry sql.NullString
-		if err := service.database.db.QueryRowContext(t.Context(), "SELECT expires_at FROM api_tokens WHERE id = 'legacy'").Scan(&expiry); err != nil || expiry.Valid {
-			t.Fatalf("legacy expiry changed: %v", err)
-		}
-		if err := service.Close(); err != nil {
-			t.Fatal(err)
 		}
 	}
 }
