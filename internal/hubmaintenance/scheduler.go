@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const (
@@ -39,8 +41,10 @@ type Scheduler struct {
 	registry Registry
 	features []Feature
 	active   atomic.Bool
+	running  atomic.Bool
 	cursor   string
 	family   int
+	wait     func(context.Context, time.Duration) error
 }
 
 func New(registry Registry, features []Feature) (*Scheduler, error) {
@@ -54,7 +58,33 @@ func New(registry Registry, features []Feature) (*Scheduler, error) {
 		}
 		names[feature.Name] = true
 	}
-	return &Scheduler{registry: registry, features: slices.Clone(features)}, nil
+	return &Scheduler{registry: registry, features: slices.Clone(features), wait: waitForWake}, nil
+}
+
+func waitForWake(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (s *Scheduler) Run(ctx context.Context, report func(error)) error {
+	if !s.running.CompareAndSwap(false, true) {
+		return errors.New("maintenance scheduler already running")
+	}
+	defer s.running.Store(false)
+	for {
+		if err := s.wait(ctx, 900*time.Millisecond+time.Duration(rand.Int64N(int64(200*time.Millisecond)))); err != nil {
+			return err
+		}
+		if err := s.Tick(ctx); err != nil && ctx.Err() == nil && report != nil {
+			report(err)
+		}
+	}
 }
 
 func (s *Scheduler) Tick(ctx context.Context) error {
