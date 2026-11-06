@@ -153,3 +153,16 @@ and background budgets. Startup rejects overcommitted budgets. Omitted Cloud
 pool budgets default to 10 total, 8 serving and 1 background. These small
 client pools work with PgBouncer transaction pooling; size the server pool for
 the fleet separately rather than reserving server connections per tenant.
+
+Tenant entry-key authority resolution reads the key, current organization binding,
+policy, approval and bounded project grants in one indexed, read-only statement.
+It acquires one serving slot and returns it before provider membership validation.
+No transaction or connection is held across provider calls. OAuth grant ID
+uniqueness checks use the grant identity index and read at most two matches.
+Project and exclusion reads each stop at 201 rows and reject more than 200.
+
+Authority is not cached. Every resolution observes a fresh PostgreSQL statement
+snapshot: a resolution started after a revocation or rotation commit refuses the
+old credential immediately. Concurrent reads already in flight retain the existing
+three-second RPC deadline and existing assertion expiry rules. Provider membership
+continues to use the provider's existing verification and cache policy.

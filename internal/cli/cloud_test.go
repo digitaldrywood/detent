@@ -118,17 +118,18 @@ func TestReadCloudConfig(t *testing.T) {
 	t.Parallel()
 	seed := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
 	base := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\n"
+	postgresStorage := "storage:\n  backend: postgres\n  postgres_dsn_env: EXAMPLE_PLATFORM_DSN\nattachments:\n  endpoint: https://storage.example.test\n  region: test\n  bucket: private\n"
 	for _, test := range []struct {
 		name, body string
 		env        map[string]string
 		wantError  bool
 	}{
-		{name: "valid", body: base, env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}},
+		{name: "valid", body: base + postgresStorage, env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed, "EXAMPLE_PLATFORM_DSN": "postgres://example:example@localhost/example"}},
 		{name: "unknown entry backend", body: base + "storage:\n  backend: other\n", env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}, wantError: true},
 		{name: "postgres needs explicit settings", body: base + "storage:\n  backend: postgres\n", env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}, wantError: true},
 		{name: "postgres DSN stays in environment", body: base + "storage:\n  backend: postgres\n  postgres_dsn: forbidden\n", env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}, wantError: true},
 		{name: "postgres", body: base + "storage:\n  backend: postgres\n  postgres_dsn_env: EXAMPLE_PLATFORM_DSN\n  max_connections: 5\n  serving_connections: 3\n  background_connections: 1\nattachments:\n  endpoint: https://storage.example.test\n  region: test\n  bucket: private\n", env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed, "EXAMPLE_PLATFORM_DSN": "postgres://example:example@localhost/example"}},
-		{name: "product App webhook", body: base, env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed, "DETENT_HUB_GITHUB_WEBHOOK_SECRET": "webhook-secret", "DETENT_HUB_GITHUB_APP_ID": "123", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY": "app-key", "DETENT_HUB_GITHUB_APP_CLIENT_ID": "app-client", "DETENT_HUB_GITHUB_APP_CLIENT_SECRET": "app-secret"}},
+		{name: "product App webhook", body: base + postgresStorage, env: map[string]string{"EXAMPLE_PLATFORM_DSN": "postgres://example:example@localhost/example", "WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed, "DETENT_HUB_GITHUB_WEBHOOK_SECRET": "webhook-secret", "DETENT_HUB_GITHUB_APP_ID": "123", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY": "app-key", "DETENT_HUB_GITHUB_APP_CLIENT_ID": "app-client", "DETENT_HUB_GITHUB_APP_CLIENT_SECRET": "app-secret"}},
 		{name: "missing signing key", body: base, env: map[string]string{"WORKOS_API_KEY": "sk_test"}, wantError: true},
 		{name: "literal secret rejected", body: base + "signing_key: " + seed + "\n", env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}, wantError: true},
 		{name: "attachment secret in YAML rejected", body: base + "attachments:\n  endpoint: https://nyc3.digitaloceanspaces.com\n  region: nyc3\n  bucket: private\n  access_key_id: forbidden\n", env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}, wantError: true},
@@ -155,6 +156,9 @@ func TestReadCloudConfig(t *testing.T) {
 			}
 			if err == nil && (config.GitHubUserClientID != test.env["DETENT_HUB_GITHUB_APP_CLIENT_ID"] || config.GitHubUserClientSecret != test.env["DETENT_HUB_GITHUB_APP_CLIENT_SECRET"]) {
 				t.Fatal("entry user authorization credentials were not read from the environment")
+			}
+			if err == nil && test.name == "valid" && (config.Storage.Pool.MaxConnections != 10 || config.Storage.Pool.ServingConnections != 8 || config.Storage.Pool.BackgroundConnections != 1) {
+				t.Fatal("omitted platform budgets did not select 10/8/1")
 			}
 			if err == nil && test.name == "postgres" {
 				if config.Storage.Backend != "postgres" || config.Storage.PostgresDSN != test.env["EXAMPLE_PLATFORM_DSN"] {
