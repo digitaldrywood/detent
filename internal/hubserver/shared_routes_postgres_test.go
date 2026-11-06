@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"crypto/ed25519"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,7 +21,7 @@ type sharedRouteFixture struct {
 	key      ed25519.PrivateKey
 }
 
-func newSharedRouteFixture(t *testing.T) sharedRouteFixture {
+func newSharedRouteFixture(t *testing.T, configure ...func(*Config)) sharedRouteFixture {
 	t.Helper()
 	admin := postgresStartupTemplate.Database(t)
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
@@ -55,6 +56,9 @@ func newSharedRouteFixture(t *testing.T) sharedRouteFixture {
 		hosted.SharedEntry = &entry
 		hosted.OrganizationID, hosted.WorkOSOrganizationID = string(org), "provider_"+string(org)
 		organizationConfig.Hosted = &hosted
+		for _, apply := range configure {
+			apply(&organizationConfig)
+		}
 		service, err := Open(t.Context(), organizationConfig)
 		if err != nil {
 			t.Fatal(err)
@@ -109,7 +113,7 @@ func TestPostgresSharedKeyManagementRoutes(t *testing.T) {
 					t.Fatalf("allowed=%d %s", response.Code, response.Body)
 				}
 				for _, mutate := range []func(*cloudassert.Claims){
-					func(c *cloudassert.Claims) { c.Kind = cloudassert.KindBrowser },
+					sharedRouteBrowserClaims,
 					func(c *cloudassert.Claims) { c.Audience = "org_foreign" },
 				} {
 					response = f.request(t, org, path, route.body, mutate)
@@ -147,7 +151,7 @@ func TestPostgresSharedPlatformReadRoutes(t *testing.T) {
 					}
 				}
 				for _, mutate := range []func(*cloudassert.Claims){
-					func(c *cloudassert.Claims) { c.Kind = cloudassert.KindBrowser },
+					sharedRouteBrowserClaims,
 					func(c *cloudassert.Claims) { c.Audience = "org_foreign" },
 				} {
 					response = f.request(t, org, path, `{}`, mutate)
@@ -158,4 +162,63 @@ func TestPostgresSharedPlatformReadRoutes(t *testing.T) {
 			})
 		}
 	}
+}
+
+func sharedRouteBillingConfig(cfg *Config) {
+	plans := pilotHostedPlans()
+	cfg.Hosted.Plans = &plans
+	cfg.Hosted.Billing = &HostedBillingConfig{
+		Mode: "test", AccountID: "acct_fixture", CustomerID: "cus_" + cfg.Hosted.OrganizationID,
+		PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_2196_secret"), GraceSeconds: 3600, ReconcileSeconds: 60,
+		Provider:    &hostedCreditProvider{hostedBillingProvider: &hostedBillingProvider{}},
+		Prices:      []HostedBillingPrice{{PriceID: "price_fixture", Label: "Example", Plan: plans.Plans[1].PlanReference}},
+		CreditPacks: []HostedCreditPack{{PriceID: "price_credit", Label: "AI credits", USDCents: 500}},
+	}
+}
+
+func TestPostgresSharedCreditRoutes(t *testing.T) {
+	f := newSharedRouteFixture(t, sharedRouteBillingConfig)
+	for org := range f.services {
+		t.Run(org, func(t *testing.T) {
+			path := "/internal/v1/platform/ai-credits"
+			balance := func(want int64) {
+				t.Helper()
+				response := f.request(t, org, path+"/balance", `{}`, nil)
+				var result struct {
+					Balance int64 `json:"balance_micros"`
+				}
+				if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &result) != nil || result.Balance != want {
+					t.Fatalf("balance=%d %s want=%d", response.Code, response.Body, want)
+				}
+			}
+			balance(0)
+			body := `{"idempotency_key":"example_adjustment","amount_usd":"1.00","reason":"Example credit"}`
+			for _, target := range []string{path, path + "/balance"} {
+				response := f.request(t, org, target, body, sharedRouteBrowserClaims)
+				if response.Code != http.StatusNotFound {
+					t.Fatalf("browser=%d %s", response.Code, response.Body)
+				}
+				response = f.request(t, org, target, body, func(c *cloudassert.Claims) { c.Audience = "org_foreign" })
+				if response.Code != http.StatusUnauthorized {
+					t.Fatalf("foreign=%d %s", response.Code, response.Body)
+				}
+			}
+			balance(0)
+			for range 2 {
+				response := f.request(t, org, path, body, nil)
+				if response.Code != http.StatusOK {
+					t.Fatalf("adjust=%d %s", response.Code, response.Body)
+				}
+			}
+			balance(1000000)
+		})
+	}
+}
+
+func sharedRouteBrowserClaims(c *cloudassert.Claims) {
+	c.Kind = cloudassert.KindBrowser
+	c.ProviderOrganization = "provider_" + c.Audience
+	c.ProviderSession = "example_session"
+	c.Binding, c.CSRF = strings.Repeat("a", 64), strings.Repeat("b", 64)
+	c.SessionCreatedAt, c.SessionExpiresAt, c.AccessExpiresAt = c.IssuedAt, c.ExpiresAt, c.ExpiresAt
 }
