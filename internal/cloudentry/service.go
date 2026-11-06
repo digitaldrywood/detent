@@ -208,8 +208,11 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 		return nil, errors.Join(err, authStorage.Close(), registry.Close())
 	}
 	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.now, seal: seal, keys: keys}, secure: strings.HasPrefix(cfg.PublicURL, "https://")}
-	service.configureRuntimeLauncher()
 	service.attachments = attachments
+	if _, err := service.loadRuntime(ctx); err != nil {
+		return nil, errors.Join(err, authStorage.Close(), registry.Close())
+	}
+	service.configureRuntimeLauncher(ctx)
 	if cfg.transport == nil {
 		service.config.transport = service.tenantTransport
 	}

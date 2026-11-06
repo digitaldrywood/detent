@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"slices"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 
 	"github.com/google/uuid"
 
@@ -20,7 +22,7 @@ type entryRuntime struct {
 	Update    hubserver.HostedRuntimeUpdate
 	Prices    []hubserver.HostedBillingPrice
 	Configure func(TenantSpec) ([]byte, error)
-	File      os.FileInfo
+	Revision  string
 }
 
 func (s *Service) allocationPrices() []hubserver.HostedBillingPrice {
@@ -33,7 +35,7 @@ func (s *Service) allocationPrices() []hubserver.HostedBillingPrice {
 	return s.config.Allocation.Prices
 }
 
-func (s *Service) configureRuntimeLauncher() {
+func (s *Service) configureRuntimeLauncher(ctx context.Context) {
 	if s.config.Allocation == nil {
 		return
 	}
@@ -43,10 +45,13 @@ func (s *Service) configureRuntimeLauncher() {
 	}
 	initial := launcher.Configure
 	launcher.Configure = func(spec TenantSpec) ([]byte, error) {
-		if err := s.linkRuntimePublication(spec.Directory); err != nil {
+		lookup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		state, err := s.loadRuntime(lookup)
+		cancel()
+		if err != nil {
 			return nil, err
 		}
-		if state := s.currentRuntime(); state != nil {
+		if state != nil {
 			return state.Configure(spec)
 		}
 		return initial(spec)
@@ -78,15 +83,6 @@ func (s *Service) reloadConfiguration(ctx context.Context) error {
 	update.Reason = "SIGHUP cloud configuration reload"
 	update.ValidateOnly = false
 	update.StageID = uuid.NewString()
-	publication := hubserver.HostedRuntimePublication{Tenants: make(map[string]hubserver.HostedRuntimeUpdate)}
-	if raw, err := os.ReadFile(s.runtimePublicationPath()); err == nil {
-		if err := json.Unmarshal(raw, &publication); err != nil {
-			return fmt.Errorf("read runtime publication: %w", err)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	publication.Update = update
 	var tenants []Organization
 	for _, organization := range organizations {
 		if organization.Managed && organization.State == "ready" {
@@ -101,108 +97,90 @@ func (s *Service) reloadConfiguration(ctx context.Context) error {
 		}
 	}
 	for _, tenant := range tenants {
-		if err := s.linkRuntimePublication(s.tenantSpec(tenant).Directory); err != nil {
-			return err
-		}
 		prepared := update
 		if err := s.changeTenantRuntime(ctx, tenant, &prepared); err != nil {
 			return err
 		}
-		publication.Tenants[tenant.ID] = prepared
+
 	}
-	publication.Published = append(slices.Clone(publication.Published), update.StageID)
-	raw, err := json.Marshal(publication)
+	raw, err := json.Marshal(update)
 	if err != nil {
 		return err
 	}
-	if err := ctx.Err(); err != nil {
+	key, err := s.storeEntryObject(ctx, raw)
+	if err != nil {
 		return err
 	}
-	if err := writePrivateFile(s.runtimePublicationPath(), raw); err != nil {
+	targets := make([]tracker.OrganizationID, len(tenants))
+	for i, tenant := range tenants {
+		targets[i] = tracker.OrganizationID(tenant.ID)
+	}
+	if err := s.registry.store.db.postgres.PublishRuntime(ctx, update.StageID, s.config.Issuer, key, targets); err != nil {
 		return fmt.Errorf("publish runtime settings: %w", err)
 	}
-	s.currentRuntime()
+	if _, err := s.loadRuntime(ctx); err != nil {
+		return err
+	}
 	s.allowlist.Store(&signupAllowlist{emails: slices.Clone(next.Allocation.AllowedEmails), domains: slices.Clone(next.Allocation.AllowedDomains)})
 	s.config.Logger.InfoContext(ctx, "cloud configuration reloaded", "actor", "operator", "reason", "SIGHUP", "settings", []string{"allocation.entitlements", "allocation.billing.prices", "allocation.allowlist"})
 	return nil
 }
 
-func (s *Service) runtimePublicationPath() string {
-	return filepath.Join(s.config.StateDir, hubserver.HostedRuntimeFilename)
-}
-
 func (s *Service) publishTenantRuntime(ctx context.Context, organization Organization) error {
-	raw, err := os.ReadFile(s.runtimePublicationPath())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
+	state, err := s.loadRuntime(ctx)
+	if err != nil || state == nil {
 		return err
 	}
-	publication := hubserver.HostedRuntimePublication{Tenants: make(map[string]hubserver.HostedRuntimeUpdate)}
-	if err := json.Unmarshal(raw, &publication); err != nil {
-		return fmt.Errorf("read runtime publication: %w", err)
-	}
-	if err := s.linkRuntimePublication(s.tenantSpec(organization).Directory); err != nil {
-		return err
-	}
-	update := publication.Update
+	update := state.Update
 	update.Reason = "tenant provisioning adopts published cloud runtime"
 	update.StageID = uuid.NewString()
 	if err := s.changeTenantRuntime(ctx, organization, &update); err != nil {
 		return err
 	}
-	publication.Tenants[organization.ID] = update
-	publication.Published = append(slices.Clone(publication.Published), update.StageID)
-	raw, err = json.Marshal(publication)
-	if err != nil {
-		return err
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := writePrivateFile(s.runtimePublicationPath(), raw); err != nil {
+	if err := s.registry.store.db.postgres.PublishRuntime(ctx, update.StageID, "", "", []tracker.OrganizationID{tracker.OrganizationID(organization.ID)}); err != nil {
 		return fmt.Errorf("publish tenant runtime settings: %w", err)
 	}
 	return nil
 }
 
-func (s *Service) linkRuntimePublication(directory string) error {
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return err
+func (s *Service) loadRuntime(ctx context.Context) (*entryRuntime, error) {
+	current := s.runtime.Load()
+	if s.registry == nil {
+		return current, nil
 	}
-	path := filepath.Join(directory, hubserver.HostedRuntimeFilename)
-	target, err := filepath.Abs(s.runtimePublicationPath())
+	publication, err := s.registry.store.db.postgres.RuntimePublication(ctx, s.config.Issuer)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return current, nil
+	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if existing, err := os.Readlink(path); err == nil {
-		if existing != target {
-			return errors.New("tenant runtime publication belongs to a different entry")
-		}
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+	if current != nil && current.Revision == publication.Revision {
+		return current, nil
 	}
-	return os.Symlink(target, path)
+	raw, err := s.readEntryObject(ctx, publication.ObjectKey)
+	if err != nil {
+		return nil, err
+	}
+	var update hubserver.HostedRuntimeUpdate
+	if err := json.Unmarshal(raw, &update); err != nil {
+		return nil, err
+	}
+	if s.config.ConfigureRuntime == nil {
+		return nil, errors.New("runtime reload requires the configured tenant launcher")
+	}
+	state := &entryRuntime{Update: update, Prices: update.Prices, Configure: s.config.ConfigureRuntime(update), Revision: publication.Revision}
+	s.runtime.Store(state)
+	return state, nil
 }
 
 func (s *Service) currentRuntime() *entryRuntime {
-	current := s.runtime.Load()
-	file, err := os.Stat(s.runtimePublicationPath())
-	if err != nil || current != nil && current.File != nil && os.SameFile(file, current.File) && file.ModTime().Equal(current.File.ModTime()) && file.Size() == current.File.Size() {
-		return current
-	}
-	raw, err := os.ReadFile(s.runtimePublicationPath())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	state, err := s.loadRuntime(ctx)
 	if err != nil {
-		return current
+		return s.runtime.Load()
 	}
-	var publication hubserver.HostedRuntimePublication
-	if json.Unmarshal(raw, &publication) != nil || s.config.ConfigureRuntime == nil {
-		return current
-	}
-	state := &entryRuntime{Update: publication.Update, Prices: publication.Update.Prices, Configure: s.config.ConfigureRuntime(publication.Update), File: file}
-	s.runtime.Store(state)
 	return state
 }
 

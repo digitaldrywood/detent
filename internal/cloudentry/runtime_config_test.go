@@ -170,7 +170,7 @@ func TestCloudReloadSignupAllowlist(t *testing.T) {
 }
 
 func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
-	f := newEntryFixture(t)
+	f, admin := runtimePublicationFixture(t)
 	const token = "runtime-entitlement-admin-0123456789abcdef"
 	for id, tenant := range f.fixtures {
 		tenant.config.Hosted.Billing = &hubserver.HostedBillingConfig{
@@ -216,6 +216,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 		select {
 		case record := <-logs.records:
 			if !strings.Contains(record.Message, want) {
+				record.Attrs(func(a slog.Attr) bool { t.Log(a.Key, a.Value); return true })
 				t.Fatalf("reload log=%s", record.Message)
 			}
 		case <-time.After(10 * time.Second):
@@ -274,6 +275,28 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 		}
 		return result
 	}
+	restartRuntime := func(id string) {
+		t.Helper()
+		before := readRuntime(id)
+		fixture := f.fixtures[id]
+		endpoint := testSocketEndpoint(strings.TrimPrefix(id, "org_") + ".sock")
+		previous := f.tenants[endpoint]
+		restarted, err := hubserver.Open(t.Context(), fixture.config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			f.tenants[endpoint] = previous
+			if err := restarted.Close(); err != nil {
+				t.Error(err)
+			}
+		}()
+		f.tenants[endpoint] = restarted.Handler()
+		if after := readRuntime(id); !reflect.DeepEqual(after, before) {
+			t.Fatalf("%s lost published runtime after restart", id)
+		}
+	}
+
 	beta, err := f.service.registry.Organization(t.Context(), "org_beta")
 	if err != nil {
 		t.Fatal(err)
@@ -284,7 +307,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 	if err := f.service.changeTenantRuntime(t.Context(), beta, &priorBeta); err != nil {
 		t.Fatal(err)
 	}
-	for _, failure := range []string{"later tenant refused", "reply lost after commit", "request canceled after commit", "persistent outage after prepare", "publication file refused"} {
+	for _, failure := range []string{"later tenant refused", "reply lost after commit", "request canceled after commit", "persistent outage after prepare", "publication transaction refused"} {
 		t.Run(failure, func(t *testing.T) {
 			before := map[string]hubserver.HostedRuntimeUpdate{"org_alpha": readRuntime("org_alpha"), "org_beta": readRuntime("org_beta")}
 			entryBefore := f.service.runtime.Load()
@@ -301,17 +324,17 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 			original := f.service.config.transport
 			defer func() { f.service.config.transport = original }()
 			failed := false
-			if failure == "publication file refused" {
-				path := f.service.runtimePublicationPath() + ".tmp"
-				if err := os.Mkdir(path, 0o700); err != nil {
+			if failure == "publication transaction refused" {
+				if _, err := admin.ExecContext(t.Context(), "REVOKE INSERT ON hosted_runtime_publications FROM detent_platform_v2"); err != nil {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() {
-					if err := os.Remove(path); err != nil {
+					if _, err := admin.ExecContext(context.WithoutCancel(t.Context()), "GRANT INSERT ON hosted_runtime_publications TO detent_platform_v2"); err != nil {
 						t.Error(err)
 					}
 				})
 			}
+
 			f.service.config.transport = func(organization Organization) (http.RoundTripper, error) {
 				transport, err := original(organization)
 				if err != nil || organization.ID != "org_beta" {
@@ -330,7 +353,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 					}
 					r.Body = io.NopCloser(bytes.NewReader(body))
 					var update hubserver.HostedRuntimeUpdate
-					if json.Unmarshal(body, &update) == nil && !update.ValidateOnly && !failed && failure != "publication file refused" {
+					if json.Unmarshal(body, &update) == nil && !update.ValidateOnly && !failed && failure != "publication transaction refused" {
 						failed = true
 						if applied := readRuntime("org_alpha"); applied.Plans.WindowSeconds != before["org_alpha"].Plans.WindowSeconds {
 							t.Errorf("prepared tenant exposed unpublished settings: window=%d", applied.Plans.WindowSeconds)
@@ -358,7 +381,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 			readings <- reading{config: attempt}
 			err := f.service.reloadConfiguration(attemptCtx)
 			wantError := "tenant org_beta runtime reload"
-			if failure == "publication file refused" {
+			if failure == "publication transaction refused" {
 				wantError = "publish runtime settings"
 			} else if !failed {
 				t.Fatal("tenant preparation failure was not injected")
@@ -383,6 +406,9 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 					if plan.ID == stagedPlan.ID && plan.Version == stagedPlan.Version {
 						t.Fatal("failed reload exposed a prepared plan")
 					}
+				}
+				if failure == "publication transaction refused" {
+					restartRuntime(id)
 				}
 				if after := readRuntime(id); !reflect.DeepEqual(after, before[id]) {
 					t.Fatalf("%s kept a partial reload: window=%d, want %d", id, after.Plans.WindowSeconds, before[id].Plans.WindowSeconds)
@@ -505,12 +531,12 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 			if state := readRuntime("org_beta"); state.Plans.WindowSeconds != before.Plans.WindowSeconds || !reflect.DeepEqual(state.Prices, before.Prices) {
 				t.Fatal("starting tenant exposed settings before preparation")
 			}
-			publicationTemp := f.service.runtimePublicationPath() + ".tmp"
 			if scenario.publishFailure {
-				if err := os.Mkdir(publicationTemp, 0o700); err != nil {
+				if _, err := admin.ExecContext(t.Context(), "REVOKE INSERT ON hosted_runtime_publications FROM detent_platform_v2"); err != nil {
 					t.Fatal(err)
 				}
 			}
+
 			resumeOnce.Do(func() { close(resume) })
 			select {
 			case <-finished:
@@ -535,7 +561,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 					}
 				}
 				if scenario.publishFailure {
-					if err := os.Remove(publicationTemp); err != nil {
+					if _, err := admin.ExecContext(context.WithoutCancel(t.Context()), "GRANT INSERT ON hosted_runtime_publications TO detent_platform_v2"); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -565,6 +591,17 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 		})
 	}
 
+	for _, id := range []string{"org_alpha", "org_beta"} {
+		restartRuntime(id)
+	}
+
+	before := f.service.currentRuntime()
+	f.service.runtime.Store(nil)
+	f.service.config.StateDir = t.TempDir()
+	if restored, err := f.service.loadRuntime(t.Context()); err != nil || restored == nil || restored.Revision != before.Revision || !reflect.DeepEqual(restored.Update, before.Update) {
+		t.Fatalf("entry lost published runtime after cache reset: %v", err)
+	}
+
 }
 
 func TestPlatformEntitlementsRESTAndMCPWithoutRestart(t *testing.T) {
@@ -574,7 +611,7 @@ func TestPlatformEntitlementsRESTAndMCPWithoutRestart(t *testing.T) {
 			f := newEntryFixture(t)
 			const token = "runtime-entitlement-admin-0123456789abcdef"
 			entitlementFixture(t, f, token)
-			f.service.config.Allocation = &AllocationConfig{EntitlementAdminToken: []byte(token)}
+			f.service.config.Allocation = &AllocationConfig{EntitlementAdminToken: []byte(token), Launcher: &silentLauncher{running: map[string]bool{}}}
 			organization, err := f.service.registry.Organization(t.Context(), "org_alpha")
 			if err != nil {
 				t.Fatal(err)
