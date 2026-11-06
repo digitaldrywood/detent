@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"maps"
 	"reflect"
 	"sync"
 	"time"
@@ -119,6 +120,7 @@ func (s *Service) prepareBoardPage(ctx context.Context, scope nativeScope, recor
 		}
 		changes, supported = s.prepareBoardChangeRows(ctx, scope, valid)
 	}
+	prepared = maps.Clone(prepared)
 	return prepareBoardRecordPage(ctx, records, func(ctx context.Context, row viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
 		value := prepared[row.WorkItemID]
 		card := value.card

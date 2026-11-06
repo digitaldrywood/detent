@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -78,6 +79,44 @@ func TestBoardRecordPreparationBoundsWorkersAndPreservesErrors(t *testing.T) {
 			p.close()
 			if active.Load() != 0 || maximum.Load() > 8 {
 				t.Fatalf("unjoined or excessive workers: active%d max%d", active.Load(), maximum.Load())
+			}
+		})
+	}
+}
+
+func TestBoardPagePreparationDoesNotReadSharedCacheInWorkers(t *testing.T) {
+	for _, projected := range []bool{false, true} {
+		name := "hydrated"
+		if projected {
+			name = "projected"
+		}
+		t.Run(name, func(t *testing.T) {
+			service := &Service{}
+			row := viewstore.BoardRecord{WorkItemID: "wi_example"}
+			records := []viewstore.BoardRecord{row}
+			prepared := map[tracker.NativeWorkItemID]boardPreparedRecord{
+				row.WorkItemID: {
+					record: row,
+					card: tracker.NativeBoardCard{Issue: tracker.NativeIssue{
+						NativeReference: tracker.NativeReference{WorkItemID: row.WorkItemID, Number: 1},
+					}},
+				},
+			}
+			ctx := t.Context()
+			var first *boardRecordPreparation
+			if projected {
+				first = service.prepareProjectedBoardPage(ctx, nativeScope{}, records, false, prepared)
+			} else {
+				first = service.prepareBoardPage(ctx, nativeScope{}, records, time.Time{}, false, prepared)
+			}
+			t.Cleanup(first.close)
+			second := service.prepareProjectedBoardPage(t.Context(), nativeScope{}, records, false, prepared)
+			t.Cleanup(second.close)
+			for _, page := range []*boardRecordPreparation{first, second} {
+				card, err := page.card(t.Context(), 0)
+				if err != nil || card.Issue.WorkItemID != row.WorkItemID || card.Issue.Number != 1 {
+					t.Fatalf("cached card: %+v, error: %v", card, err)
+				}
 			}
 		})
 	}

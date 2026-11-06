@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"maps"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -74,6 +75,7 @@ func (s *Service) prepareProjectedBoardPage(ctx context.Context, scope nativeSco
 		}
 		old.close()
 	}
+	prepared = maps.Clone(prepared)
 	return prepareBoardRecordPage(ctx, records, func(_ context.Context, row viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
 		value := prepared[row.WorkItemID]
 		return value.card, value.err
