@@ -458,3 +458,58 @@ func TestEntryDSNRejectsAmbientCredentialDiscovery(t *testing.T) {
 		t.Fatalf("ambient DSN authority=%v", err)
 	}
 }
+
+func TestEntryAuthStoreFailures(t *testing.T) {
+	f := newEntryFixture(t)
+	b := newBrowser(t, f.service.Handler())
+	b.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	a := f.service.auth
+	var hash, binding string
+	if err := a.store.reader.QueryRowContext(t.Context(), "SELECT session_hash,binding FROM platform.authorizations WHERE organization_id='org_alpha'").Scan(&hash, &binding); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		read func(string, string) error
+	}{
+		{"session", func(hash, _ string) error { _, err := a.session(t.Context(), hash); return err }},
+		{"authorization", func(hash, _ string) error {
+			_, err := a.authorization(t.Context(), accountSession{Hash: hash, Subject: "user_alice"}, "org_alpha")
+			return err
+		}},
+		{"binding", func(_, binding string) error { _, err := a.authorizationByBinding(t.Context(), binding); return err }},
+		{"token rotation", func(_, binding string) error { return a.storeTokens(t.Context(), binding, auth.HostedTokens{}) }},
+		{"support transaction", func(hash, _ string) error { _, err := a.consumeSupportTransaction(t.Context(), hash); return err }},
+	}
+	for _, test := range cases {
+		t.Run(test.name+" missing", func(t *testing.T) {
+			if err := test.read("missing_session", "missing_binding"); !errors.Is(err, errNoSession) {
+				t.Fatalf("missing credential = %v, want no session", err)
+			}
+		})
+	}
+	var err error
+	a.keys, err = hubsecrets.FromEnvironment(entrySecretEnvironment(1, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := a.sealToken("provider-access", binding, "example_access")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.keys, err = hubsecrets.FromEnvironment(entrySecretEnvironment(2, 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.openToken("provider-access", binding, sealed); !errors.Is(err, hubsecrets.ErrUnavailable) {
+		t.Errorf("missing decryption key = %v, want unavailable", err)
+	}
+	f.service.config.Storage.PostgresPool.Close()
+	for _, test := range cases {
+		t.Run(test.name+" outage", func(t *testing.T) {
+			if err := test.read(hash, binding); err == nil || errors.Is(err, errNoSession) {
+				t.Fatalf("storage outage = %v, want operational error", err)
+			}
+		})
+	}
+}

@@ -42,7 +42,7 @@ func (s *Service) administrationAuthority(next echo.HandlerFunc) echo.HandlerFun
 		}
 		session, err := s.session(c)
 		if err != nil {
-			return c.NoContent(http.StatusUnauthorized)
+			return c.NoContent(entryAuthStatus(err, http.StatusUnauthorized))
 		}
 		identity := operatortool.Identity{PrincipalID: session.Subject, OrganizationID: "account:" + session.Subject, CredentialID: session.Hash, SessionID: session.Hash}
 		connection := operatortool.Connection{Identity: identity, DashboardURL: s.config.PublicURL, Resolve: func(ctx context.Context) (operatortool.Authority, error) {
@@ -64,10 +64,16 @@ func (s *Service) administrationAuthority(next echo.HandlerFunc) echo.HandlerFun
 
 func (s *Service) currentAdministrationSession(ctx context.Context, id operatortool.Identity) (accountSession, error) {
 	session, err := s.auth.session(ctx, id.SessionID)
+	if err != nil && entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+		return accountSession{}, err
+	}
 	if err != nil || session.Subject != id.PrincipalID || session.Hash != id.CredentialID {
 		return accountSession{}, operatortool.ErrAccessDenied
 	}
 	current, err := s.config.Provider.CurrentSession(ctx, session.Identity)
+	if err != nil && entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+		return accountSession{}, err
+	}
 	if err != nil || current.Subject != session.Subject || current.SessionID != session.Identity.SessionID || current.SupportActor != session.Identity.SupportActor || !current.ExpiresAt.After(s.config.now()) {
 		return accountSession{}, operatortool.ErrAccessDenied
 	}
@@ -81,8 +87,11 @@ func (a entryAdministration) Authorize(ctx context.Context, name string, in oper
 		return err
 	}
 	if platformMemberOperation(name) {
-		role := s.sessionPlatformRole(ctx, session)
-		if role == "" || name != platformMemberList && role != "admin" {
+		role, err := s.readPlatformRole(ctx, session.Email)
+		if err != nil {
+			return err
+		}
+		if session.Identity.SupportActor != "" || role == "" || name != platformMemberList && role != "admin" {
 			return operatortool.ErrAccessDenied
 		}
 		return nil
@@ -103,7 +112,11 @@ func (a entryAdministration) Authorize(ctx context.Context, name string, in oper
 	case operatortool.OrganizationSession, operatortool.OrganizationList, operatortool.SessionLogout:
 		return nil
 	case operatortool.SupportStart:
-		if !s.supportActor(ctx, session.Email) || session.Identity.SupportActor != "" {
+		role, err := s.readPlatformRole(ctx, session.Email)
+		if err != nil {
+			return err
+		}
+		if role != "admin" && role != "support" || session.Identity.SupportActor != "" {
 			return operatortool.ErrAccessDenied
 		}
 		if in.OrganizationID != "" {
@@ -123,6 +136,9 @@ func (a entryAdministration) Authorize(ctx context.Context, name string, in oper
 		if resource != "" {
 			var owner string
 			err = s.registry.store.db.QueryRowContext(ctx, "SELECT creator_subject FROM platform.organizations WHERE id=$1", resource).Scan(&owner)
+			if err != nil && entryAuthStatus(err, http.StatusForbidden) == http.StatusServiceUnavailable {
+				return err
+			}
 			if err != nil || owner != session.Subject {
 				return operatortool.ErrAccessDenied
 			}
@@ -138,6 +154,8 @@ func (a entryAdministration) Authorize(ctx context.Context, name string, in oper
 				if choice.Role == "owner" {
 					if org, err := s.readyOrganization(ctx, choice.ID); err == nil && org.Managed {
 						return nil
+					} else if err != nil && entryAuthStatus(err, http.StatusForbidden) == http.StatusServiceUnavailable {
+						return err
 					}
 				}
 			}
@@ -145,6 +163,9 @@ func (a entryAdministration) Authorize(ctx context.Context, name string, in oper
 		}
 		_, err = s.ownerOrganizationFor(ctx, session, in.OrganizationID)
 		if err != nil {
+			if entryAuthStatus(err, http.StatusForbidden) == http.StatusServiceUnavailable {
+				return err
+			}
 			return operatortool.ErrAccessDenied
 		}
 		return nil
@@ -185,6 +206,9 @@ func (s *Service) switchOrganizationFor(ctx context.Context, session accountSess
 
 func (s *Service) invitedOrganizationFor(ctx context.Context, session accountSession, id string) (Organization, auth.Invitation, error) {
 	invitation, err := auth.LookupInvitationID(ctx, s.config.Provider, id)
+	if err != nil && entryAuthStatus(err, http.StatusForbidden) == http.StatusServiceUnavailable {
+		return Organization{}, auth.Invitation{}, err
+	}
 	if err != nil || auth.InvitationProblem(invitation, session.Subject, session.Email, s.config.now()) != "" {
 		return Organization{}, auth.Invitation{}, operatortool.ErrAccessDenied
 	}

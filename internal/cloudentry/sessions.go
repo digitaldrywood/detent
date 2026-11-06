@@ -119,6 +119,9 @@ func (a *authStore) openToken(purpose, binding, sealed string) (string, error) {
 			return "", errNoSession
 		}
 		plain, err := a.keys.Open(envelope, entrySecretAAD(purpose, binding))
+		if errors.Is(err, hubsecrets.ErrUnavailable) {
+			return "", err
+		}
 		if err != nil {
 			return "", errNoSession
 		}
@@ -155,7 +158,10 @@ func (a *authStore) storeTokens(ctx context.Context, binding string, tokens auth
 
 func (a *authStore) authorizationByBinding(ctx context.Context, binding string) (authorization, error) {
 	items, err := postgresAuthorizations(ctx, a.store.db, authorizationSelector{Binding: binding, Kind: lookupBinding})
-	if err != nil || len(items) != 1 {
+	if err != nil {
+		return authorization{}, err
+	}
+	if len(items) != 1 {
 		return authorization{}, errNoSession
 	}
 	return items[0], nil
@@ -204,7 +210,10 @@ func (a *authStore) createSession(ctx context.Context, hash, csrfSecret string, 
 
 func (a *authStore) session(ctx context.Context, hash string) (accountSession, error) {
 	session, expiry, err := a.storedSession(ctx, hash)
-	if err != nil || !expiry.After(a.now()) {
+	if err != nil {
+		return accountSession{}, err
+	}
+	if !expiry.After(a.now()) {
 		return accountSession{}, errNoSession
 	}
 	return session, nil
@@ -224,7 +233,10 @@ type queryer interface {
 
 func (a *authStore) authorization(ctx context.Context, session accountSession, organization string) (authorization, error) {
 	items, err := postgresAuthorizations(ctx, a.store.db, authorizationSelector{Kind: lookupSessionOrganization, SessionHash: session.Hash, Organization: organization})
-	if err != nil || len(items) != 1 || !items[0].Identity.ExpiresAt.After(a.now()) {
+	if err != nil {
+		return authorization{}, err
+	}
+	if len(items) != 1 || !items[0].Identity.ExpiresAt.After(a.now()) {
 		return authorization{}, errNoSession
 	}
 	item := items[0]
@@ -240,7 +252,7 @@ func (a *authStore) revokeAuthorization(ctx context.Context, binding string) err
 }
 
 func (a *authStore) revokeSession(ctx context.Context, hash string) (_ []authorization, resultErr error) {
-	return a.postgresRevokeSession(ctx, hash)
+	return a.postgresRevokeSession(ctx, hash, false)
 }
 
 type loginTransaction struct {

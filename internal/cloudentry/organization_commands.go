@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"net/http"
 	"strings"
 	"time"
 
@@ -40,15 +41,27 @@ func (s *Service) createOrganizationFor(ctx context.Context, session accountSess
 
 func (s *Service) ownerOrganizationFor(ctx context.Context, session accountSession, id string) (Organization, error) {
 	organization, err := s.readyOrganization(ctx, id)
-	if err != nil || !organization.Managed {
+	if err != nil {
+		return Organization{}, err
+	}
+	if !organization.Managed {
 		return Organization{}, ErrOrganizationNotFound
 	}
 	authorized, err := s.auth.authorization(ctx, session, id)
-	if err != nil || authorized.Support {
+	if err != nil {
+		return Organization{}, err
+	}
+	if authorized.Support {
 		return Organization{}, errNoSession
 	}
 	current, err := s.config.Provider.CurrentSession(ctx, authorized.Identity)
-	if err != nil || current.Subject != session.Subject || current.OrganizationID != organization.ProviderID || !current.ExpiresAt.After(s.config.now()) {
+	if err != nil {
+		if entryAuthStatus(err, http.StatusUnauthorized) != http.StatusServiceUnavailable {
+			return Organization{}, errNoSession
+		}
+		return Organization{}, err
+	}
+	if current.Subject != session.Subject || current.OrganizationID != organization.ProviderID || !current.ExpiresAt.After(s.config.now()) {
 		return Organization{}, errNoSession
 	}
 	memberships, err := s.config.Provider.Memberships(ctx, session.Subject, organization.ProviderID)
@@ -89,11 +102,20 @@ func (s *Service) deleteOrganizationFor(ctx context.Context, session accountSess
 // it is never a generic URL or HTTP forwarding operation.
 func (s *Service) joinOrganizationFor(ctx context.Context, session accountSession, reference string) (Organization, error) {
 	invitation, err := auth.LookupInvitationID(ctx, s.config.Provider, reference)
-	if err != nil || !strings.EqualFold(invitation.Email, session.Email) || !invitation.ExpiresAt.After(s.config.now()) || session.Identity.SupportActor != "" {
+	if err != nil {
+		if entryAuthStatus(err, http.StatusForbidden) != http.StatusServiceUnavailable {
+			return Organization{}, operatortool.ErrAccessDenied
+		}
+		return Organization{}, err
+	}
+	if !strings.EqualFold(invitation.Email, session.Email) || !invitation.ExpiresAt.After(s.config.now()) || session.Identity.SupportActor != "" {
 		return Organization{}, operatortool.ErrAccessDenied
 	}
 	organization, err := s.registry.ByProvider(ctx, invitation.OrganizationID)
-	if err != nil || organization.State != "ready" {
+	if err != nil {
+		return Organization{}, err
+	}
+	if organization.State != "ready" {
 		return Organization{}, ErrOrganizationNotFound
 	}
 	if err := s.acceptInvitationID(ctx, organization, session.Subject, session.Email, session.Identity.SessionID, reference); err != nil {

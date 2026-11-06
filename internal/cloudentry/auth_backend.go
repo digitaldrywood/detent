@@ -4,15 +4,35 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/http"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func entryAuthStatus(err error, denied int) int {
+	if errors.Is(err, tenantauth.ErrUnavailable) || errors.Is(err, hubsecrets.ErrUnavailable) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable || auth.HostedIdentityReason(err) == auth.HostedReasonProviderInvalid {
+		return http.StatusServiceUnavailable
+	}
+	var refusal *apikey.Refusal
+	if err == nil || errors.Is(err, errNoSession) || errors.Is(err, platformstore.ErrNoSession) || errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrOrganizationNotFound) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, auth.ErrAccessExpired) || errors.Is(err, tenantauth.ErrDenied) || errors.Is(err, cloudassert.ErrInvalid) || errors.Is(err, operatortool.ErrAccessDenied) || errors.As(err, &refusal) {
+		return denied
+	}
+	return http.StatusServiceUnavailable
+}
+
 func entryAuthError(err error) error {
-	if errors.Is(err, platformstore.ErrNoSession) {
+	if err != nil && entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+		return err
+	}
+	if errors.Is(err, platformstore.ErrNoSession) || errors.Is(err, sql.ErrNoRows) {
 		return errNoSession
 	}
 	return err
@@ -89,7 +109,7 @@ func postgresAuthorizations(ctx context.Context, query queryer, selector authori
 func (a *authStore) postgresSession(ctx context.Context, hash string) (accountSession, time.Time, error) {
 	item, err := a.store.db.postgres.StoredSession(ctx, hash)
 	if err != nil {
-		return accountSession{}, time.Time{}, errNoSession
+		return accountSession{}, time.Time{}, entryAuthError(err)
 	}
 	return accountSession{Hash: item.Hash, Subject: item.Subject, Email: item.Email, CSRFSecret: item.CSRFSecret, Identity: item.Identity}, item.ExpiresAt, nil
 }
@@ -103,10 +123,20 @@ func (a *authStore) postgresConsumeLogin(ctx context.Context, hash, id string) (
 	return loginTransaction{ID: item.ID, State: item.State, Verifier: item.Verifier, Organization: item.OrganizationID, ReturnPath: item.ReturnPath, InvitationToken: item.InvitationToken, InvitationOrganization: item.InvitationOrganization, SupportActor: item.SupportActor, SupportSession: item.SupportSession, SupportReason: item.SupportReason}, entryAuthError(err)
 }
 
-func (a *authStore) postgresRevokeSession(ctx context.Context, hash string) ([]authorization, error) {
+func (a *authStore) postgresRevokeSession(ctx context.Context, hash string, preserveAuthorizations bool) ([]authorization, error) {
 	items, err := postgresAuthorizations(ctx, a.store.db, authorizationSelector{Kind: lookupSession, SessionHash: hash})
 	if err != nil {
 		return nil, err
+	}
+	if preserveAuthorizations {
+		for _, item := range items {
+			if item.Support || !item.Identity.ExpiresAt.After(a.now()) {
+				continue
+			}
+			if _, err := a.tokens(item); err != nil && entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
+				return nil, err
+			}
+		}
 	}
 	return items, a.store.db.postgres.RevokeSession(ctx, hash)
 }
@@ -115,7 +145,7 @@ func (a *authStore) postgresStoreTokens(ctx context.Context, binding string, tok
 	var hash, organization string
 	err := a.store.reader.QueryRowContext(ctx, "SELECT session_hash,organization_id FROM platform.authorizations WHERE binding=$1 AND revoked_at IS NULL", binding).Scan(&hash, &organization)
 	if err != nil {
-		return errNoSession
+		return entryAuthError(err)
 	}
 	previous, err := a.store.db.postgres.Tokens(ctx, hash, tracker.OrganizationID(organization), binding)
 	if err != nil {
