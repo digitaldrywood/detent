@@ -25,6 +25,11 @@ func TestHealthEndpoint(t *testing.T) {
 		Version:      "v-test",
 	})
 
+	schemaVersion, err := postgres.LatestSchemaVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	tests := []struct {
 		name       string
 		path       string
@@ -39,7 +44,7 @@ func TestHealthEndpoint(t *testing.T) {
 			wantStatus: http.StatusOK,
 			wantBody: healthResponse{
 				Status:              "ok",
-				SchemaVersion:       service.database.schemaVersion,
+				SchemaVersion:       schemaVersion,
 				SchemaFingerprint:   service.database.schemaFingerprint,
 				HubSchemaApplicable: true,
 				SchemaFactsComplete: true,
