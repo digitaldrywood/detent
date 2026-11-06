@@ -2067,6 +2067,9 @@ type NativeWorkItemPageProgress struct {
 	CursorGeneration    int64
 	ExaminedAt          time.Time
 	PublicationRevision int64
+	BackfillPhase       int16
+	BackfillIssueID     int64
+	BackfillCommentID   string
 }
 
 type OnboardingIssueIntake struct {
