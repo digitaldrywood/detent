@@ -12,6 +12,10 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -45,6 +49,10 @@ func readGitHubBatch(ctx context.Context, query nativeQueryer, scope nativeScope
 
 func githubBatchResponse(ctx context.Context, query nativeQueryer, scope nativeScope, batch *tracker.GitHubBatch) (githubBatchView, error) {
 	project, err := readNativeProject(ctx, query, scope)
+	return projectGitHubBatchView(project.States, batch), err
+}
+
+func projectGitHubBatchView(states []tracker.NativeState, batch *tracker.GitHubBatch) githubBatchView {
 	progress := githubBatchProgress{}
 	if batch != nil {
 		progress.Discovered, progress.Total = len(batch.Page.Issues), batch.Page.Total
@@ -70,7 +78,7 @@ func githubBatchResponse(ctx context.Context, query nativeQueryer, scope nativeS
 		}
 		batch = &copy
 	}
-	return githubBatchView{Batch: batch, Lanes: project.States, Progress: progress}, err
+	return githubBatchView{Batch: batch, Lanes: states, Progress: progress}
 }
 
 func saveGitHubBatch(ctx context.Context, tx *sql.Tx, scope nativeScope, batch *tracker.GitHubBatch) error {
@@ -96,11 +104,47 @@ func (s *Service) getGitHubBatch(c echo.Context) error {
 func (s *Service) projectGitHubBatch(ctx context.Context, scope nativeScope) (githubBatchView, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	batch, err := readGitHubBatch(ctx, s.database.reader, scope)
+	if s.config.TenantRepository == nil {
+		return githubBatchView{}, ErrHostedDatabaseBinding
+	}
+	var project projectstore.Record
+	var record projectstore.IntakeBatch
+	found := false
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		var err error
+		project, err = r.ProjectRecord(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		reader, ok := r.(projectstore.IntakeBatchReader)
+		if !ok {
+			return ErrHostedDatabaseBinding
+		}
+		record, err = reader.ProjectIntakeBatch(ctx, scope.project)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		found = err == nil
+		return err
+	})
+	if err != nil {
+		return githubBatchView{}, projectRecordError(err)
+	}
+	if !found {
+		return projectGitHubBatchView(project.States, nil), nil
+	}
+	raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, record.Payload)
 	if err != nil {
 		return githubBatchView{}, err
 	}
-	return githubBatchResponse(ctx, s.database.reader, scope, batch)
+	var batch tracker.GitHubBatch
+	if json.Unmarshal(raw, &batch) != nil || record.ProjectID != scope.project || record.Payload.OrganizationID != scope.organization || batch.ID != record.ID || batch.Revision != record.Revision || batch.Status != record.Status || batch.HubOwned != record.HubOwned {
+		return githubBatchView{}, eventstore.ErrInvalidRecord
+	}
+	return projectGitHubBatchView(project.States, &batch), nil
 }
 
 func intakeInvalid(message string) error {
