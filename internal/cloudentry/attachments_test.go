@@ -534,7 +534,12 @@ func TestAttachmentRoutesDisabled(t *testing.T) {
 
 	t.Parallel()
 	f := newEntryFixture(t)
-	r := attachmentRequest(t, newBrowser(t, f.service.Handler()), http.MethodPost, "/organizations/org_alpha/api/v2/projects/prj_any/attachments", bytes.NewReader(nil), nil)
+	f.service.attachments = nil
+	alice := newBrowser(t, f.service.Handler())
+	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	_, body := alice.get("/organizations/org_alpha/app/bootstrap")
+	project := attachmentProject(t, alice, "org_alpha")
+	r := attachmentRequest(t, alice, http.MethodPost, "/organizations/org_alpha/api/v2/projects/"+project+"/attachments", bytes.NewReader(nil), map[string]string{"X-CSRF-Token": csrfFrom(t, body)})
 	if r.Code != 503 || !strings.Contains(r.Body.String(), "attachments_not_configured") {
 		t.Fatalf("response=%d %s", r.Code, r.Body.String())
 	}

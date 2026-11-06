@@ -214,8 +214,8 @@ func TestPlatformAICreditsRESTAndMCP(t *testing.T) {
 			}
 			owner := newBrowser(t, f.service.Handler())
 			owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-			response, body := owner.get("/organizations/org_alpha/organization/billing")
-			if response.StatusCode != http.StatusOK || !strings.Contains(body, "complimentary") || !strings.Contains(body, "admin@example.test") || !strings.Contains(body, "design partner") || !strings.Contains(body, "$15.750000 USD") {
+			response, body := owner.get("/api/v2/organizations/org_alpha/billing/credits/transactions")
+			if response.StatusCode != http.StatusOK || !strings.Contains(body, "complimentary") || !strings.Contains(body, "admin@example.test") || !strings.Contains(body, "design partner") || !strings.Contains(body, `"balance_micros":15750000`) {
 				t.Fatalf("billing history=%d %s", response.StatusCode, body)
 			}
 		})
