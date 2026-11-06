@@ -35,9 +35,8 @@ func newRuntimePostgresService(t *testing.T, plans HostedPlansConfig, billing bo
 		}
 	}
 	s := &Service{database: d, config: cfg, echo: echo.New(), secretRewrapReady: make(chan struct{})}
-	s.echo.Use(s.refreshHostedRuntime)
-	s.echo.GET("/api/v2/organizations/:organization/entitlements/runtime", s.readHostedRuntime)
-	s.echo.POST("/api/v2/organizations/:organization/entitlements/runtime", s.reloadHostedRuntime)
+	s.echo.GET("/api/v2/organizations/:organization/entitlements/runtime", s.readHostedRuntime, s.refreshHostedRuntime)
+	s.echo.POST("/api/v2/organizations/:organization/entitlements/runtime", s.reloadHostedRuntime, s.refreshHostedRuntime)
 	return s, admin
 }
 

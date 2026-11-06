@@ -110,11 +110,10 @@ func (s *Service) registerPostgresRoutes(e *echo.Echo) {
 			e.Pre(s.hostedSharedEntry)
 		}
 		e.Use(s.hostedBoundary)
-		e.Use(s.refreshHostedRuntime)
-		e.GET("/api/v2/organizations/:organization/entitlements/runtime", s.readHostedRuntime)
-		e.POST("/api/v2/organizations/:organization/entitlements/runtime", s.reloadHostedRuntime)
-		e.GET("/api/v2/organizations/:organization/entitlements", s.hostedPlanReport)
-		e.POST("/api/v2/organizations/:organization/entitlements", s.updateHostedPlan)
+		e.GET("/api/v2/organizations/:organization/entitlements/runtime", s.readHostedRuntime, s.refreshHostedRuntime)
+		e.POST("/api/v2/organizations/:organization/entitlements/runtime", s.reloadHostedRuntime, s.refreshHostedRuntime)
+		e.GET("/api/v2/organizations/:organization/entitlements", s.hostedPlanReport, s.refreshHostedRuntime)
+		e.POST("/api/v2/organizations/:organization/entitlements", s.updateHostedPlan, s.refreshHostedRuntime)
 		e.POST("/api/v2/organizations/:organization/artifact-allowances/:service", s.hostedArtifactAllowances)
 	}
 	e.GET("/health", s.health, s.requireAPIScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin))

@@ -198,16 +198,16 @@ func notificationLine(value string) string {
 	return strings.Join(strings.Fields(value), " ")
 }
 
-func (s *Service) platformNotificationPlan(price string) string {
+func (s *Service) platformNotificationPlan(ctx context.Context, price string) string {
 	plan := "free"
 	runtime := s.config.Runtime
-	if current := s.currentRuntime(); current != nil {
+	if current := s.currentRuntime(ctx); current != nil {
 		runtime = &current.Update
 	}
 	if runtime != nil && runtime.Plans != nil && runtime.Plans.Base.ID != "" {
 		plan = runtime.Plans.Base.ID
 	}
-	for _, configured := range s.allocationPrices() {
+	for _, configured := range s.allocationPrices(ctx) {
 		if configured.PriceID == price {
 			return configured.Plan.ID
 		}

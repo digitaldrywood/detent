@@ -64,11 +64,12 @@ func (s *Service) readHostedRuntime(c echo.Context) error {
 	if !s.entitlementAdministrator(c) || c.Param("organization") != s.config.Hosted.OrganizationID {
 		return s.hostedJSONError(c, http.StatusForbidden, "Entitlement administrator access is required")
 	}
-	s.runtimeMu.Lock()
-	defer s.runtimeMu.Unlock()
-	update := HostedRuntimeUpdate{Plans: s.database.plans()}
-	if billing := s.hostedBillingConfig(); billing != nil {
-		update.Prices = billing.Prices
+	var update HostedRuntimeUpdate
+	if state := s.database.runtimeState(); state != nil {
+		update.Plans = &state.Plans
+		if state.Billing != nil {
+			update.Prices = state.Billing.Prices
+		}
 	}
 	return c.JSON(http.StatusOK, update)
 }

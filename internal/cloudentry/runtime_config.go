@@ -25,8 +25,8 @@ type entryRuntime struct {
 	Revision  string
 }
 
-func (s *Service) allocationPrices() []hubserver.HostedBillingPrice {
-	if state := s.currentRuntime(); state != nil {
+func (s *Service) allocationPrices(ctx context.Context) []hubserver.HostedBillingPrice {
+	if state := s.currentRuntime(ctx); state != nil {
 		return state.Prices
 	}
 	if s.config.Allocation == nil {
@@ -174,8 +174,8 @@ func (s *Service) loadRuntime(ctx context.Context) (*entryRuntime, error) {
 	return state, nil
 }
 
-func (s *Service) currentRuntime() *entryRuntime {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func (s *Service) currentRuntime(ctx context.Context) *entryRuntime {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	state, err := s.loadRuntime(ctx)
 	if err != nil {

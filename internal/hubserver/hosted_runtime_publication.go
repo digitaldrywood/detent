@@ -29,8 +29,7 @@ func (d *database) refreshRuntime(ctx context.Context) error {
 	if d.billingRepository == nil {
 		return nil
 	}
-	d.runtimeReadMu.Lock()
-	defer d.runtimeReadMu.Unlock()
+	current := d.hostedRuntime.Load()
 	var revision billingstore.RuntimeRevision
 	err := d.readBillingTenant(ctx, func(r tenantstore.Reader) error { var err error; revision, err = r.CurrentRuntime(ctx); return err })
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -39,36 +38,45 @@ func (d *database) refreshRuntime(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if current := d.hostedRuntime.Load(); current != nil && current.Revision == revision.ID {
+	if current != nil && current.Revision == revision.ID {
 		return nil
 	}
-	raw, err := d.billingAuditStore.ReadDetail(ctx, string(d.hostedOrganization), revision.Reference.ArchiveReference())
-	if err != nil {
-		return err
-	}
-	var update HostedRuntimeUpdate
-	if err := json.Unmarshal(raw, &update); err != nil {
-		return err
-	}
-	if update.Plans == nil {
-		return workItemStorageUnavailable()
-	}
-	state := &hostedRuntimeConfig{Revision: revision.ID, Plans: *update.Plans}
-	if d.runtimeBilling != nil {
-		next := *d.runtimeBilling
-		next.Prices = update.Prices
-		state.Billing = &next
-	}
-	d.hostedRuntime.Store(state)
-	return nil
+	_, err, _ = d.runtimeLoads.Do(revision.ID, func() (any, error) {
+		if d.hostedRuntime.Load() != current {
+			return struct{}{}, nil
+		}
+		raw, err := d.billingAuditStore.ReadDetail(ctx, string(d.hostedOrganization), revision.Reference.ArchiveReference())
+		if err != nil {
+			return nil, err
+		}
+		var update HostedRuntimeUpdate
+		if err := json.Unmarshal(raw, &update); err != nil {
+			return nil, err
+		}
+		if update.Plans == nil {
+			return nil, workItemStorageUnavailable()
+		}
+		state := &hostedRuntimeConfig{Revision: revision.ID, Plans: *update.Plans}
+		if d.runtimeBilling != nil {
+			next := *d.runtimeBilling
+			next.Prices = update.Prices
+			state.Billing = &next
+		}
+		d.hostedRuntime.CompareAndSwap(current, state)
+		return struct{}{}, nil
+	})
+	return err
 }
 
 func (s *Service) refreshHostedRuntime(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
+		if !s.entitlementAdministrator(c) || c.Param("organization") != s.config.Hosted.OrganizationID {
+			return next(c)
+		}
 		ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 		defer cancel()
 		if err := s.database.refreshRuntime(ctx); err != nil {
-			return s.nativeAPIError(c, err)
+			s.config.Logger.WarnContext(ctx, "hosted runtime refresh failed; retaining last snapshot", "error", err)
 		}
 		return next(c)
 	}

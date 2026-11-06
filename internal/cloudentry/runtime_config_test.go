@@ -390,7 +390,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 				t.Fatalf("reload failure was not reported: %v", err)
 			}
 			f.service.config.transport = original
-			if f.service.currentRuntime() != entryBefore {
+			if f.service.currentRuntime(t.Context()) != entryBefore {
 				t.Fatal("failed reload published new tenant launch settings")
 			}
 			for _, id := range []string{"org_alpha", "org_beta"} {
@@ -595,7 +595,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 		restartRuntime(id)
 	}
 
-	before := f.service.currentRuntime()
+	before := f.service.currentRuntime(t.Context())
 	f.service.runtime.Store(nil)
 	f.service.config.StateDir = t.TempDir()
 	if restored, err := f.service.loadRuntime(t.Context()); err != nil || restored == nil || restored.Revision != before.Revision || !reflect.DeepEqual(restored.Update, before.Update) {

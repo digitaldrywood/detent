@@ -37,6 +37,7 @@ func (r *Repository) PublishRuntime(ctx context.Context, revision, issuer, key s
 		if err != nil {
 			return err
 		}
+		slices.Sort(locked)
 		if !slices.Equal(locked, targets) {
 			return corestore.ErrRevisionConflict
 		}

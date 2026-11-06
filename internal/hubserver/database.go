@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/shirou/gopsutil/v4/process"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -68,7 +69,7 @@ type database struct {
 	schemaFingerprint      string
 	hostedOrganization     tracker.OrganizationID
 	hostedRuntime          atomic.Pointer[hostedRuntimeConfig]
-	runtimeReadMu          sync.Mutex
+	runtimeLoads           singleflight.Group
 	runtimeBilling         *HostedBillingConfig
 	logger                 *slog.Logger
 	hostedBilling          bool

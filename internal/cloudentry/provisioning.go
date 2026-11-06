@@ -480,7 +480,7 @@ func (s *Service) recordIntent(ctx context.Context, session accountSession, key,
 	bypass := s.entitlementAdministrator(ctx, session)
 	plan := ""
 	if s.notifications != nil {
-		plan = s.platformNotificationPlan(price)
+		plan = s.platformNotificationPlan(ctx, price)
 	}
 	tx, err := s.registry.store.db.BeginTx(ctx, nil)
 	if err != nil {

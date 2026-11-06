@@ -22,7 +22,7 @@ func (s *Service) createOrganizationFor(ctx context.Context, session accountSess
 	if name == "" || len(name) > 120 || len(key) < 16 || len(key) > 128 || !safeID(key) {
 		return "", operatortool.ErrInvalidArguments
 	}
-	if price != "" && !s.creationPriceAllowed(price) {
+	if price != "" && !s.creationPriceAllowed(ctx, price) {
 		return "", operatortool.ErrInvalidArguments
 	}
 	intent := name
