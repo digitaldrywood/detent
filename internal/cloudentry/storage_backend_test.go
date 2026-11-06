@@ -107,78 +107,81 @@ func entryPostgresConfig(t *testing.T, databases ...*sql.DB) func(*Config) {
 
 func newPostgresTenantEntryFixture(t *testing.T, configureEntry ...func(*Config)) entryFixture {
 	t.Helper()
-	return newEntryFixtureWithConfig(t, slog.New(slog.DiscardHandler), configureEntry, func(cfg *hubserver.Config) {
-		keys, err := hubsecrets.FromEnvironment(entrySecretEnvironment(1, 1))
-		if err != nil {
-			t.Fatal(err)
+	return newEntryFixtureWithConfig(t, slog.New(slog.DiscardHandler), configureEntry)
+}
+
+func configurePostgresTenant(t *testing.T, cfg *hubserver.Config) {
+	t.Helper()
+	keys, err := hubsecrets.FromEnvironment(entrySecretEnvironment(1, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.SecretKeys = keys
+	admin := entryPostgresDatabase(t)
+	name, password := "example_"+strings.ReplaceAll(uuid.NewString(), "-", ""), uuid.NewString()
+	quoted := pq.QuoteIdentifier(name)
+	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(password)+" IN ROLE "+postgres.RuntimeRoleName); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		deadline, _ := t.Deadline()
+		ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
+		defer cancel()
+		if _, err := admin.ExecContext(ctx, "DROP OWNED BY "+quoted); err != nil {
+			t.Error(err)
 		}
-		cfg.SecretKeys = keys
-		admin := entryPostgresDatabase(t)
-		name, password := "example_"+strings.ReplaceAll(uuid.NewString(), "-", ""), uuid.NewString()
-		quoted := pq.QuoteIdentifier(name)
-		if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(password)+" IN ROLE "+postgres.RuntimeRoleName); err != nil {
-			t.Fatal(err)
+		if _, err := admin.ExecContext(ctx, "DROP ROLE "+quoted); err != nil {
+			t.Error(err)
 		}
-		t.Cleanup(func() {
-			deadline, _ := t.Deadline()
-			ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
-			defer cancel()
-			if _, err := admin.ExecContext(ctx, "DROP OWNED BY "+quoted); err != nil {
-				t.Error(err)
-			}
-			if _, err := admin.ExecContext(ctx, "DROP ROLE "+quoted); err != nil {
-				t.Error(err)
-			}
-		})
-		pool := entryPostgresTemplate.OpenRole(t, admin, name, password)
-		repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := repository.Close(); err != nil {
-				t.Error(err)
-			}
-		})
-		organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
-		now := time.Now().UTC()
-		cursorEnvelope, err := keys.Seal(bytes.Repeat([]byte{1}, 32), accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: string(organization), CreatedAt: now}); err != nil {
-				return err
-			}
-			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: cfg.Hosted.WorkOSOrganizationID, AllocationGeneration: 1}); err != nil {
-				return err
-			}
-			if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: cursorEnvelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: cursorEnvelope.Version, RecordedAt: now}); err != nil {
-				return err
-			}
-			return nil
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if err := repository.Close(); err != nil {
-			t.Fatal(err)
-		}
-		connection, err := pq.NewConfig(os.Getenv(pgtest.Environment))
-		if err != nil {
-			t.Fatal("invalid PostgreSQL fixture configuration")
-		}
-		if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&connection.Database); err != nil {
-			t.Fatal(err)
-		}
-		connection = pq.Config{Host: connection.Host, Port: connection.Port, Database: connection.Database, SSLMode: pq.SSLModeDisable, User: name, Password: password}
-		if connection.Host == "localhost" {
-			connection.Host = "127.0.0.1"
-		}
-		cfg.DatabaseBackend = hubserver.DatabasePostgres
-		cfg.DatabasePath = ""
-		cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1}}
-		cfg.RunDetails = tenantDetailFixture{&conversationArchiveFixture{}}
 	})
+	pool := entryPostgresTemplate.OpenRole(t, admin, name, password)
+	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
+	now := time.Now().UTC()
+	cursorEnvelope, err := keys.Seal(bytes.Repeat([]byte{1}, 32), accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: string(organization), CreatedAt: now}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: cfg.Hosted.WorkOSOrganizationID, AllocationGeneration: 1}); err != nil {
+			return err
+		}
+		if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: cursorEnvelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: cursorEnvelope.Version, RecordedAt: now}); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Close(); err != nil {
+		t.Fatal(err)
+	}
+	connection, err := pq.NewConfig(os.Getenv(pgtest.Environment))
+	if err != nil {
+		t.Fatal("invalid PostgreSQL fixture configuration")
+	}
+	if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&connection.Database); err != nil {
+		t.Fatal(err)
+	}
+	connection = pq.Config{Host: connection.Host, Port: connection.Port, Database: connection.Database, SSLMode: pq.SSLModeDisable, User: name, Password: password}
+	if connection.Host == "localhost" {
+		connection.Host = "127.0.0.1"
+	}
+	cfg.DatabaseBackend = hubserver.DatabasePostgres
+	cfg.DatabasePath = ""
+	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1}}
+	cfg.RunDetails = tenantDetailFixture{&conversationArchiveFixture{}}
 }
 
 type tenantDetailFixture struct {

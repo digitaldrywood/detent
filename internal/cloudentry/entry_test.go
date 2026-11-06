@@ -446,9 +446,8 @@ func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id,
 	for _, apply := range configure {
 		apply(&fixture.config)
 	}
-	if fixture.config.DatabaseBackend != hubserver.DatabasePostgres && fixture.config.DatabasePath == "" {
-		fixture.config.DatabasePath = hubDatabasePath(t)
-		fixture.path = fixture.config.DatabasePath
+	if fixture.config.DatabaseBackend != hubserver.DatabasePostgres {
+		configurePostgresTenant(t, &fixture.config)
 	}
 	shared, err := hubserver.Open(t.Context(), fixture.config)
 	if err != nil {
