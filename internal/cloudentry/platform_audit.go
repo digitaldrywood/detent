@@ -254,4 +254,4 @@ CASE WHEN event='support_requested' THEN coalesce(reason,'') WHEN event='ai_cred
 WHERE event<>'operator_administration'`
 const postgresEntitlementAuditEvents = `SELECT organization_id || ':' || idempotency_key AS id,recorded_at,organization_id,staff_email AS actor,
 CASE action WHEN 'grant' THEN 'plan_granted' WHEN 'create_plan' THEN 'plan_created' WHEN 'base' THEN 'plan_base_changed' WHEN 'subscription' THEN 'plan_subscription_changed' WHEN 'end_subscription' THEN 'plan_subscription_ended' ELSE 'plan_revoked' END AS event,
-plan_id || ' v' || plan_version || CASE WHEN expires_at IS NULL THEN '' ELSE ' until ' || expires_at::text END || ' · ' || reason AS detail FROM entitlement_changes`
+plan_id || ' v' || plan_version || CASE WHEN expires_at IS NULL THEN '' ELSE ' until ' || rtrim(rtrim(to_char(expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), '0'), '.') || 'Z' END || ' · ' || reason AS detail FROM entitlement_changes`
