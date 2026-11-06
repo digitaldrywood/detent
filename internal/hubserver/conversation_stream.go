@@ -184,7 +184,7 @@ func (s *Service) reauthorizeConversationStream(c echo.Context, scope *nativeSco
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
 	if scope.credential.Hosted != nil {
-		credential, _, err := s.hostedCredential(ctx, c)
+		credential, _, err := s.authenticateAPIRequestContext(readCtx, c)
 		if err != nil {
 			return conversationRecord{}, err
 		}
