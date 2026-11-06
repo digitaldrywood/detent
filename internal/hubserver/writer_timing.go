@@ -436,7 +436,6 @@ func (s *Service) logWriterWaits() {
 	}
 	serving, background := s.database.postgres.WorkloadCapacities()
 	s.config.Logger.Info("hub PostgreSQL pool waits", "waits", waits, "wait_ms", waited.Milliseconds(), "in_use", stats.InUse, "max_open", stats.MaxOpenConnections, "serving_capacity", serving, "background_capacity", background, "interval_s", (now-last)/int64(time.Second))
-	return
 }
 
 func (c *timedConn) notifyCommit() {

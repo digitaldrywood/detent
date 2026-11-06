@@ -8,7 +8,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *session) ReadMonthlyCosts(ctx context.Context, q billingstore.MonthlyCostQuery) (billingstore.MonthlyCostSnapshot, error) {
@@ -41,7 +40,7 @@ func (s *session) ReadMonthlyCosts(ctx context.Context, q billingstore.MonthlyCo
 		return out, reportstore.ErrPopulationExceeded
 	}
 	for _, r := range usage {
-		u := billingstore.ConversationUsage{OrganizationID: r.OrganizationID, ProjectID: tracker.ProjectID(r.ProjectID), ConversationID: r.ConversationID, TurnID: r.TurnID, Provider: r.Provider, Model: r.Model, OccurredAt: time.UnixMicro(r.OccurredAt).UTC(), Input: r.Input, CachedInput: r.CachedInput, Output: r.Output, ReasoningOutput: r.ReasoningOutput, Outcome: r.Outcome}
+		u := billingstore.ConversationUsage{OrganizationID: r.OrganizationID, ProjectID: r.ProjectID, ConversationID: r.ConversationID, TurnID: r.TurnID, Provider: r.Provider, Model: r.Model, OccurredAt: time.UnixMicro(r.OccurredAt).UTC(), Input: r.Input, CachedInput: r.CachedInput, Output: r.Output, ReasoningOutput: r.ReasoningOutput, Outcome: r.Outcome}
 		if r.PriceID.Valid {
 			u.PriceID = &r.PriceID.Int64
 		}

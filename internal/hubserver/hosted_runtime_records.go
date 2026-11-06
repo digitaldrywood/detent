@@ -8,10 +8,11 @@ import (
 	"errors"
 	"reflect"
 
+	"github.com/google/uuid"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/google/uuid"
 )
 
 func (d *database) applyRuntimeRecords(ctx context.Context, plans HostedPlansConfig, prices []HostedBillingPrice, actor, reason, stage string, validate bool) error {
