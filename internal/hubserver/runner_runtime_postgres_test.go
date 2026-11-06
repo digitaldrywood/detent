@@ -32,6 +32,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/runnersession"
@@ -674,50 +675,141 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 }
 
 func TestPostgresRunnerSessionMutationOrdersLocksWithLeaseRenewal(t *testing.T) {
+	for _, name := range []string{"session", "progress", "progress with another runner"} {
+		t.Run(name, func(t *testing.T) {
+			f := newRunnerPGFixture(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var mutate func() error
+			if name == "session" {
+				native, sessionContext := f.client(t, 0)
+				sessions := api.NewRunnerSessions(native)
+				id, err := sessions.StartSession(sessionContext, store.SessionStart{IssueID: string(f.leases[0].WorkItemID), StartedAt: time.Now().UTC(), Model: "example-model"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				mutate = func() error {
+					return sessions.UpdateSessionWorkerProcess(sessionContext, id, store.WorkerProcessRegistration{CleanupRoot: "/example/workspace", CleanupPath: "/example/workspace/scratch"})
+				}
+			} else {
+				index := 0
+				if name == "progress with another runner" {
+					index = 1
+				}
+				credential, status, err := f.service.authenticateAccessHash(ctx, apikey.HashToken(f.tokens[index]), "", "")
+				if err != nil || status != http.StatusOK {
+					t.Fatalf("authenticate: status=%d err=%v", status, err)
+				}
+				owner := nativeProgressOwner{service: f.service, scope: nativeScope{organization: "org_startup", project: "prj_runner", credential: credential}, request: progresscheck.Request{IssueID: string(f.leases[0].WorkItemID), PolicyID: f.policy.PolicyID, Instance: string(f.bindings[0].MachineID)}, leaseID: f.leases[0].ID, fencingToken: f.leases[0].FencingToken}
+				mutate = func() error {
+					return f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error { return owner.validateProgressLeaseWriter(ctx, w) })
+				}
+			}
+			check := func(err error) {
+				t.Helper()
+				if name == "progress with another runner" {
+					var refusal *nativeError
+					if !errors.As(err, &refusal) || refusal.Code != "unauthorized" {
+						t.Fatalf("mismatched runner error=%v", err)
+					}
+				} else if err != nil {
+					t.Fatalf("mutation refused after renewal: %v", err)
+				}
+			}
+			renewal, err := f.admin.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = renewal.Rollback() })
+			var runnerID string
+			if err := renewal.QueryRowContext(ctx, `SELECT runner_id FROM runner_identities WHERE organization_id='org_startup' AND runner_id=$1 FOR UPDATE`, f.bindings[0].RunnerID).Scan(&runnerID); err != nil {
+				t.Fatal(err)
+			}
+			result := make(chan error, 1)
+			done := make(chan struct{})
+			go func() { defer close(done); result <- mutate() }()
+			t.Cleanup(func() { cancel(); _ = renewal.Rollback(); <-done })
+			for {
+				var waiting bool
+				if err := f.admin.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%runner_identities%')`).Scan(&waiting); err != nil {
+					t.Fatal(err)
+				}
+				if waiting {
+					break
+				}
+				select {
+				case err := <-result:
+					t.Fatalf("mutation finished while runner identity locked: %v", err)
+				default:
+				}
+			}
+			if _, err := renewal.ExecContext(ctx, `SELECT lease_id FROM leases WHERE organization_id='org_startup' AND lease_id=$1 FOR UPDATE`, string(f.leases[0].ID)); err != nil {
+				t.Fatalf("renewal lock order deadlocked with mutation: %v", err)
+			}
+			if err := renewal.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			check(<-result)
+			check(mutate())
+		})
+	}
+}
+
+type runnerSessionClockReader interface{ runnersession.Reader }
+
+type runnerSessionFaultReader struct {
+	tenantstore.Reader
+	runnerSessionClockReader
+	attemptError error
+	policyError  error
+}
+
+func (r runnerSessionFaultReader) RunnerSessionTime(ctx context.Context) (time.Time, error) {
+	return r.Reader.(runnersession.Reader).RunnerSessionTime(ctx)
+}
+
+func (r runnerSessionFaultReader) LatestAttempt(ctx context.Context, id int64) (leasestore.Attempt, error) {
+	if r.attemptError != nil {
+		return leasestore.Attempt{}, r.attemptError
+	}
+	return r.Reader.LatestAttempt(ctx, id)
+}
+
+func (r runnerSessionFaultReader) ProjectPolicy(ctx context.Context, id tracker.ProjectID) (policystore.Revision, error) {
+	if r.policyError != nil {
+		return policystore.Revision{}, r.policyError
+	}
+	return r.Reader.ProjectPolicy(ctx, id)
+}
+
+func TestPostgresRunnerSessionFencePreservesStorageErrors(t *testing.T) {
 	f := newRunnerPGFixture(t)
-	native, ctx := f.client(t, 0)
-	sessions := api.NewRunnerSessions(native)
-	id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(f.leases[0].WorkItemID), StartedAt: time.Now().UTC(), Model: "example-model"})
-	if err != nil {
-		t.Fatal(err)
+	credential, status, err := f.service.authenticateAccessHash(t.Context(), apikey.HashToken(f.tokens[0]), "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("authenticate: status=%d err=%v", status, err)
 	}
-	renewal, err := f.admin.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = renewal.Rollback() })
-	var runnerID string
-	if err := renewal.QueryRowContext(t.Context(), `SELECT runner_id FROM runner_identities WHERE organization_id='org_startup' AND runner_id=$1 FOR UPDATE`, f.bindings[0].RunnerID).Scan(&runnerID); err != nil {
-		t.Fatal(err)
-	}
-	result := make(chan error, 1)
-	go func() {
-		result <- sessions.UpdateSessionWorkerProcess(ctx, id, store.WorkerProcessRegistration{CleanupRoot: "/example/workspace", CleanupPath: "/example/workspace/scratch"})
-	}()
-	for {
-		var waiting bool
-		if err := f.admin.QueryRowContext(t.Context(), `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%runner_identities%')`).Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		if waiting {
-			break
-		}
-		select {
-		case err := <-result:
-			t.Fatalf("session mutation finished while the runner identity was locked: %v", err)
-		default:
-		}
-	}
-	if _, err := renewal.ExecContext(t.Context(), `SELECT lease_id FROM leases WHERE organization_id='org_startup' AND lease_id=$1 FOR UPDATE`, string(f.leases[0].ID)); err != nil {
-		t.Fatalf("renewal lock order deadlocked with session mutation: %v", err)
-	}
-	if err := renewal.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-result; err != nil {
-		t.Fatalf("session mutation refused after concurrent renewal: %v", err)
-	}
-	if err := sessions.UpdateSessionWorkerProcess(ctx, id, store.WorkerProcessRegistration{CleanupRoot: "/example/workspace", CleanupPath: "/example/workspace/scratch"}); err != nil {
-		t.Fatalf("session mutation refused after renewal: %v", err)
+	scope := nativeScope{organization: "org_startup", project: "prj_runner", credential: credential}
+	request := runnersession.Mutation{LeaseID: f.leases[0].ID, FencingToken: f.leases[0].FencingToken}
+	for _, test := range []struct {
+		name                  string
+		attempt, policy, want error
+	}{
+		{"attempt storage", corestore.ErrSerializationFailure, nil, corestore.ErrSerializationFailure},
+		{"policy storage", nil, corestore.ErrSerializationFailure, corestore.ErrSerializationFailure},
+		{"attempt missing", corestore.ErrNotFound, nil, tracker.ErrStaleFencingToken},
+		{"policy missing", nil, corestore.ErrNotFound, tracker.ErrStaleFencingToken},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+				_, _, err := f.service.runnerSessionFence(t.Context(), runnerSessionFaultReader{Reader: r, runnerSessionClockReader: r.(runnersession.Reader), attemptError: test.attempt, policyError: test.policy}, scope, request, string(f.leases[0].WorkItemID), false)
+				if !errors.Is(err, test.want) {
+					t.Errorf("fence error=%v want=%v", err, test.want)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

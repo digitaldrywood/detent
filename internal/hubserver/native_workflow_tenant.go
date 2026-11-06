@@ -332,6 +332,10 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 				if !ok {
 					return workItemStorageUnavailable()
 				}
+				identity, err := w.RunnerForLease(ctx, string(request.LeaseID))
+				if err != nil {
+					return err
+				}
 				lease, err := locker.LockLease(ctx, string(request.LeaseID))
 				if err != nil {
 					return err
@@ -340,12 +344,11 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 					return tracker.ErrStaleFencingToken
 				}
 				credential, err := w.AccessCredential(ctx, scope.credential.ID)
+				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
 				if err != nil || credential.OrganizationID != scope.organization || credential.Scope != string(apiScopeWorker) || credential.Kind != "service" {
 					return runnerUnauthorized()
-				}
-				identity, err := w.RunnerForLease(ctx, lease.LeaseID)
-				if err != nil {
-					return err
 				}
 				currentTime := s.config.now().UTC()
 				if !lease.ExpiresAt.After(currentTime) || !credential.Valid(scope.credential.Hash, currentTime) {

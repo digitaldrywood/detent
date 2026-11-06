@@ -286,6 +286,17 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 		if item.Archived || plan.replay == nil && (item.Revision != plan.candidate.Revision || item.DispatchGeneration != plan.item.DispatchGeneration) {
 			return corestore.ErrRevisionConflict
 		}
+		replayLease, replayErr := w.ActiveLeaseForIssue(ctx, item.ID)
+		if replayErr != nil && !errors.Is(replayErr, corestore.ErrNotFound) {
+			return replayErr
+		}
+		var replayOwner runnerstore.Identity
+		if replayErr == nil && replayLease.MachineID == string(identity.MachineID) && replayLease.SessionID == request.SessionID {
+			replayOwner, err = w.RunnerForLease(ctx, replayLease.LeaseID)
+			if err != nil {
+				return err
+			}
+		}
 		if plan.replay == nil {
 			latest, err := w.LatestAttempt(ctx, item.ID)
 			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
@@ -405,15 +416,14 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			return corestore.ErrRevisionConflict
 		}
 		if lease.LeaseID != leaseID {
-			owner, err := w.RunnerForLease(ctx, lease.LeaseID)
-			if err != nil {
-				return err
+			if replayLease.LeaseID != lease.LeaseID || replayOwner.RunnerID != identity.RunnerID {
+				return tracker.ErrLeaseConflict
 			}
 			pinned, err := w.LeasePolicy(ctx, tracker.LeaseID(lease.LeaseID))
 			if err != nil {
 				return err
 			}
-			if owner.RunnerID != identity.RunnerID || pinned.PolicyID != plan.policy.PolicyID {
+			if pinned.PolicyID != plan.policy.PolicyID {
 				return tracker.ErrLeaseConflict
 			}
 			reservation, foundReservation, err := readTenantProviderReservation(ctx, w, tracker.LeaseID(lease.LeaseID))

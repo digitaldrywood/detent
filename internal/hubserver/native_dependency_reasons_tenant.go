@@ -206,16 +206,16 @@ func (s *Service) authorizeDependencyReasonLease(ctx context.Context, w tenantst
 	if !ok {
 		return workItemStorageUnavailable()
 	}
+	assigned, err := w.RunnerForLease(ctx, string(command.LeaseID))
+	if err != nil {
+		return err
+	}
 	lease, err := locker.LockLease(ctx, string(command.LeaseID))
 	if err != nil {
 		return err
 	}
 	if lease.OrganizationID != scope.organization || lease.IssueID != anchor.ID || lease.FencingToken != int64(command.FencingToken) || lease.ReleasedAt != nil || lease.RenewedAt.After(now) || !lease.ExpiresAt.After(now) {
 		return tracker.ErrStaleFencingToken
-	}
-	assigned, err := w.RunnerForLease(ctx, lease.LeaseID)
-	if err != nil {
-		return err
 	}
 	if !runnerIdentityMatchesHeldLease(assigned, scope.organization, identity.RunnerID, credential.ID, identity.MachineID, now) || !slices.Contains(identity.Operations, runnerauth.Claim) {
 		return runnerUnauthorized()

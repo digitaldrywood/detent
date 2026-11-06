@@ -128,6 +128,9 @@ func (s *Service) authorizeArtifactUploadTenant(ctx context.Context, scope nativ
 		if item.Archived {
 			return nativeNotFound()
 		}
+		if err := s.authorizeDependencyReasonLease(ctx, w, scope, item, command, pinned, requirements, s.config.now().UTC()); err != nil {
+			return err
+		}
 		locker, ok := w.(leasestore.FencedLeaseLocker)
 		if !ok {
 			return workItemStorageUnavailable()
@@ -136,9 +139,6 @@ func (s *Service) authorizeArtifactUploadTenant(ctx context.Context, scope nativ
 			return err
 		}
 
-		if err := s.authorizeDependencyReasonLease(ctx, w, scope, item, command, pinned, requirements, s.config.now().UTC()); err != nil {
-			return err
-		}
 		attempt, err := w.Attempt(ctx, reservation.AttemptID)
 		if err != nil {
 			return err

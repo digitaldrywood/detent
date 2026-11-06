@@ -109,11 +109,11 @@ func (s *Service) attachmentWriteAuthority(ctx context.Context, w tenantstore.Wr
 	if !ok {
 		return item, workItemStorageUnavailable()
 	}
-	lease, err := locker.LockLease(ctx, string(evidence.LeaseID))
+	owner, err := w.RunnerForLease(ctx, string(evidence.LeaseID))
 	if err != nil {
 		return item, err
 	}
-	owner, err := w.RunnerForLease(ctx, lease.LeaseID)
+	lease, err := locker.LockLease(ctx, string(evidence.LeaseID))
 	if err != nil {
 		return item, err
 	}
@@ -565,15 +565,15 @@ func (s *Service) authorizeAttachmentCommentLease(ctx context.Context, w tenants
 	if !ok {
 		return workItemStorageUnavailable()
 	}
+	identity, err := w.RunnerForLease(ctx, string(command.LeaseID))
+	if err != nil {
+		return err
+	}
 	lease, err := locker.LockLease(ctx, string(command.LeaseID))
 	if err != nil {
 		return err
 	}
 	credential, err := w.AccessCredential(ctx, scope.credential.ID)
-	if err != nil {
-		return err
-	}
-	identity, err := w.RunnerForLease(ctx, lease.LeaseID)
 	if err != nil {
 		return err
 	}

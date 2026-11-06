@@ -114,6 +114,9 @@ func (s *Service) recheckChangeVersionRun(ctx context.Context, w tenantstore.Wri
 	if !ok {
 		return nativeRunEventStorageUnavailable()
 	}
+	if _, err := w.RunnerForLease(ctx, prepared.lease.LeaseID); err != nil {
+		return err
+	}
 	lease, err := locker.LockLease(ctx, prepared.lease.LeaseID)
 	if err != nil {
 		return err

@@ -63,11 +63,11 @@ func (o nativeProgressOwner) validateProgressLeaseWriter(ctx context.Context, wr
 	if !ok {
 		return workItemStorageUnavailable()
 	}
-	lease, err := locker.LockLease(ctx, string(o.leaseID))
+	assigned, err := writer.RunnerForLease(ctx, string(o.leaseID))
 	if err != nil {
 		return err
 	}
-	assigned, err := writer.RunnerForLease(ctx, string(o.leaseID))
+	lease, err := locker.LockLease(ctx, string(o.leaseID))
 	if err != nil {
 		return err
 	}

@@ -178,6 +178,9 @@ func (s *Service) runnerSessionFence(ctx context.Context, r tenantstore.Reader, 
 		return leasestore.Attempt{}, policystore.Revision{}, tracker.ErrStaleFencingToken
 	}
 	attempt, err := r.LatestAttempt(ctx, item.ID)
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		return leasestore.Attempt{}, policystore.Revision{}, err
+	}
 	if err != nil || attempt.LeaseID != lease.LeaseID || attempt.Status != "running" {
 		return leasestore.Attempt{}, policystore.Revision{}, tracker.ErrStaleFencingToken
 	}
@@ -186,6 +189,9 @@ func (s *Service) runnerSessionFence(ctx context.Context, r tenantstore.Reader, 
 		return attempt, policystore.Revision{}, err
 	}
 	current, err := r.ProjectPolicy(ctx, scope.project)
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		return attempt, current, err
+	}
 	if err != nil || current.PolicyID != bound.PolicyID {
 		return attempt, current, tracker.ErrStaleFencingToken
 	}

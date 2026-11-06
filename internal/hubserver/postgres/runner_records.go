@@ -1188,6 +1188,9 @@ func (s *session) AssignRunnerLease(ctx context.Context, row runnerstore.LeaseAs
 	if err := s.checkOrganization(row.OrganizationID); err != nil {
 		return err
 	}
+	if _, err := s.runnerIdentityRow(ctx, `runner_id=$2`, row.RunnerID); err != nil {
+		return err
+	}
 	var machineID string
 	err := s.db.QueryRowContext(ctx, `SELECT l.machine_id FROM leases l WHERE l.organization_id=$1 AND l.lease_id=$2 AND l.released_at IS NULL FOR UPDATE`, row.OrganizationID, row.LeaseID).Scan(&machineID)
 	if err != nil {

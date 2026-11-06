@@ -207,7 +207,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 		}
 	})
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
-	clock := &leaseTestClock{value: time.Now().UTC()}
+	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	participant := &nativeRunEventParticipantFixture{}
 	details := &memoryRunDetails{}
 	service := openPostgresHubTestService(t, repository, Config{
