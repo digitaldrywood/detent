@@ -28,6 +28,7 @@ const (
 	threadReadRequestID     = 7
 	accountReadRequestID    = 8
 	rateLimitsReadRequestID = 9
+	finalTurnStartRequestID = 10
 	methodNotFoundCode      = -32601
 	chromeDevToolsServer    = "chrome-devtools"
 	mcpToolApprovalKind     = "mcp_tool_call"
@@ -578,7 +579,11 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 
 	elicitationState := newMCPElicitationState(req.MCPElicitationPolicy, onUpdate)
 	for turnIndex := range 2 {
-		turn, err := s.startTurn(ctx, transport, req, threadID, elicitationState, onUpdate)
+		startID := turnStartRequestID
+		if turnIndex > 0 {
+			startID = finalTurnStartRequestID
+		}
+		turn, err := s.startTurn(ctx, transport, startID, req, threadID, elicitationState, onUpdate)
 		if err != nil {
 			return RunTurnResult{}, err
 		}
@@ -1135,6 +1140,7 @@ type startTurnResult struct {
 func (s *AppServer) startTurn(
 	ctx context.Context,
 	transport Transport,
+	startID int,
 	req RunTurnRequest,
 	threadID string,
 	elicitationState *mcpElicitationState,
@@ -1164,7 +1170,7 @@ func (s *AppServer) startTurn(
 		params["effort"] = req.ReasoningEffort
 	}
 
-	if err := sendRequest(ctx, transport, turnStartRequestID, "turn/start", params); err != nil {
+	if err := sendRequest(ctx, transport, startID, "turn/start", params); err != nil {
 		return startTurnResult{}, err
 	}
 
@@ -1182,7 +1188,7 @@ func (s *AppServer) startTurn(
 		return onUpdate(update)
 	}
 
-	result, err := s.awaitResponse(ctx, transport, turnStartRequestID, threadID, req.ToolHandler, elicitationState, trackTurnStarted)
+	result, err := s.awaitResponse(ctx, transport, startID, threadID, req.ToolHandler, elicitationState, trackTurnStarted)
 	if err != nil {
 		return startTurnResult{}, err
 	}
@@ -1301,7 +1307,7 @@ func (s *AppServer) awaitResponse(
 			return msg.Result, nil
 		}
 
-		if requestID == turnStartRequestID {
+		if requestID == turnStartRequestID || requestID == finalTurnStartRequestID {
 			if msg.Method == "turn/started" {
 				update, ok, err := updateFromMessage(msg)
 				if err != nil {
@@ -1309,6 +1315,12 @@ func (s *AppServer) awaitResponse(
 				}
 				if ok && (update.ThreadID == "" || update.ThreadID == threadID) {
 					turnID = update.TurnID
+					if turnID != "" {
+						if err := emitUpdate(update, onUpdate); err != nil {
+							return nil, err
+						}
+						return json.Marshal(map[string]any{"turn": map[string]string{"id": turnID}})
+					}
 				}
 			}
 			if failure := earlyTurnFailure(msg, threadID, turnID); failure != nil {
@@ -1354,6 +1366,10 @@ func (s *AppServer) streamTurn(
 		msg, err := receiveTurnMessage(ctx, transport, turnTimeout, stallTimeout, s.timeoutContext)
 		if err != nil {
 			return fmt.Errorf("stream turn: %w", err)
+		}
+
+		if failure := earlyTurnFailure(msg, threadID, turnID); failure != nil && (msg.Method != "turn/completed" || failure.ProviderCode != "other") {
+			return failure
 		}
 
 		if err := elicitationState.observe(msg); err != nil {
@@ -2741,7 +2757,7 @@ func requestName(id int) string {
 		return "initialize"
 	case threadStartRequestID:
 		return "thread/start"
-	case turnStartRequestID:
+	case turnStartRequestID, finalTurnStartRequestID:
 		return "turn/start"
 	case threadResumeRequestID:
 		return "thread/resume"

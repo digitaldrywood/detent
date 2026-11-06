@@ -38,53 +38,100 @@ func TestAppServerEarlyTurnRejection(t *testing.T) {
 		{"other turn", "turn/completed", `{"threadId":"thread-1","turn":{"id":"stale-turn","status":"failed","error":{"codexErrorInfo":"usageLimitExceeded"}}}`, "", true},
 		{"other thread", "turn/completed", `{"threadId":"other","turn":{"status":"failed","error":{"codexErrorInfo":"usageLimitExceeded"}}}`, "", true},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				transport := newBlockingAppServerTransport([]Message{{Method: tt.method, Params: json.RawMessage(tt.params)}})
-				if tt.name == "other turn" {
-					transport.received = append([]Message{{Method: "turn/started", Params: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1"}}`)}}, transport.received...)
-				}
-				if tt.ignored {
-					transport.received = append(transport.received, Message{ID: requestID(turnStartRequestID), Result: json.RawMessage(`{"turn":{"id":"turn-1"}}`)})
-				}
-				server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Minute))
-				if err != nil {
-					t.Fatal(err)
-				}
-				started := time.Now()
-				_, err = server.startTurn(t.Context(), transport, RunTurnRequest{}, "thread-1", nil, func(update Update) error {
-					if strings.Contains(string(update.Payload), "private-prompt") {
-						t.Error("private rejection emitted")
+		for _, streaming := range []bool{false, true} {
+			if streaming && (tt.ignored || tt.method == "turn/completed" && tt.code == "other") {
+				continue
+			}
+			t.Run(tt.name+"/stream="+strconv.FormatBool(streaming), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					transport := newBlockingAppServerTransport([]Message{{Method: tt.method, Params: json.RawMessage(tt.params)}})
+					if tt.name == "other turn" {
+						transport.received = append([]Message{{Method: "turn/started", Params: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1"}}`)}}, transport.received...)
 					}
-					return nil
-				})
-				if tt.ignored {
+					if tt.ignored {
+						transport.received = append(transport.received, Message{ID: requestID(turnStartRequestID), Result: json.RawMessage(`{"turn":{"id":"turn-1"}}`)})
+					}
+					server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Minute))
 					if err != nil {
 						t.Fatal(err)
 					}
-					return
-				}
-				var failed *TurnFailedError
-				if !errors.As(err, &failed) || time.Since(started) != 0 {
-					t.Fatalf("rejection = %v after %s; want prompt typed failure", err, time.Since(started))
-				}
-				failure := failed.NativeTerminalFailure()
-				if failure.ProviderCode != tt.code || failure.ErrorClass != "provider_refusal" || failure.Attribution != "instance" {
-					t.Fatalf("failure = %+v", failure)
-				}
-				details, ok := ClassifyCapacityError(err, nil, time.Now())
-				if !ok || details.Kind != tt.code {
-					t.Fatalf("capacity = %+v, %v", details, ok)
-				}
-				if tt.code == "usage_limit_exceeded" && details.Type != backendcapacity.ErrorTypeUsageLimit {
-					t.Fatalf("capacity = %+v", details)
-				}
-				raw, _ := json.Marshal(failure)
-				if strings.Contains(err.Error()+details.Trigger+string(raw)+failed.BackendErrorMessage()+failed.BackendErrorBody(), "private-prompt") {
-					t.Fatal("private rejection retained")
-				}
+					started := time.Now()
+					observe := func(update Update) error {
+						if strings.Contains(string(update.Payload), "private-prompt") {
+							t.Error("private rejection emitted")
+						}
+						return nil
+					}
+					if streaming {
+						err = server.streamTurn(t.Context(), transport, "thread-1", "turn-1", time.Minute, 0, nil, nil, observe)
+					} else {
+						_, err = server.startTurn(t.Context(), transport, turnStartRequestID, RunTurnRequest{}, "thread-1", nil, observe)
+					}
+					if tt.ignored {
+						if err != nil {
+							t.Fatal(err)
+						}
+						return
+					}
+					var failed *TurnFailedError
+					if !errors.As(err, &failed) || time.Since(started) != 0 {
+						t.Fatalf("rejection = %v after %s; want prompt typed failure", err, time.Since(started))
+					}
+					failure := failed.NativeTerminalFailure()
+					if failure.ProviderCode != tt.code || failure.ErrorClass != "provider_refusal" || failure.Attribution != "instance" {
+						t.Fatalf("failure = %+v", failure)
+					}
+					details, ok := ClassifyCapacityError(err, nil, time.Now())
+					if !ok || details.Kind != tt.code {
+						t.Fatalf("capacity = %+v, %v", details, ok)
+					}
+					if tt.code == "usage_limit_exceeded" && details.Type != backendcapacity.ErrorTypeUsageLimit {
+						t.Fatalf("capacity = %+v", details)
+					}
+					raw, _ := json.Marshal(failure)
+					if strings.Contains(err.Error()+details.Trigger+string(raw)+failed.BackendErrorMessage()+failed.BackendErrorBody(), "private-prompt") {
+						t.Fatal("private rejection retained")
+					}
+				})
 			})
+		}
+	}
+}
+
+func TestAppServerTurnStartedAcknowledgesStart(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		transport := newBlockingAppServerTransport([]Message{
+			notificationMessage(t, "turn/started", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"inProgress"}}`),
 		})
+		server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		started := time.Now()
+		turn, err := server.startTurn(t.Context(), transport, turnStartRequestID, RunTurnRequest{}, "thread-1", nil, nil)
+		if err != nil || turn.ID != "turn-1" || !turn.StartedEmitted || time.Since(started) != 0 {
+			t.Fatalf("start = %+v, %v after %s", turn, err, time.Since(started))
+		}
+	})
+}
+
+func TestAppServerLateStartResponseDoesNotAcknowledgeNextTurn(t *testing.T) {
+	transport := newFakeAppServerTransport([]Message{
+		responseMessage(t, 1, `{"userAgent":"codex-cli/test"}`),
+		responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
+		notificationMessage(t, "turn/started", `{"threadId":"thread-1","turn":{"id":"turn-1"}}`),
+		notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+		responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+		responseMessage(t, 10, `{"turn":{"id":"turn-2"}}`),
+		notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-2","status":"completed"}}`),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := server.RunTurn(t.Context(), RunTurnRequest{Model: "example-model", FinalPrompt: func() string { return "Finish" }}, nil)
+	if err != nil || result.TurnID != "turn-2" {
+		t.Fatalf("final turn = %+v, %v", result, err)
 	}
 }
 
@@ -151,7 +198,7 @@ func TestAppServerStartupFailuresIdentifyStageAndDeadline(t *testing.T) {
 			return err
 		}},
 		{name: "turn start", stage: "turn/start", run: func(server *AppServer, transport Transport) error {
-			_, err := server.startTurn(t.Context(), transport, RunTurnRequest{}, "thread-1", nil, nil)
+			_, err := server.startTurn(t.Context(), transport, turnStartRequestID, RunTurnRequest{}, "thread-1", nil, nil)
 			return err
 		}},
 	}

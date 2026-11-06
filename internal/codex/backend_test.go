@@ -786,7 +786,7 @@ func TestInvestigationExhaustsToolBudgetWithinOneTurn(t *testing.T) {
 			if test.fallback {
 				transport.received = append(transport.received[:len(transport.received)-2],
 					notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
-					responseMessage(t, 3, `{"turn":{"id":"turn-2"}}`),
+					responseMessage(t, finalTurnStartRequestID, `{"turn":{"id":"turn-2"}}`),
 					serverRequestMessage(t, 93, "item/tool/call", `{"tool":"work_item","arguments":{}}`),
 					notificationMessage(t, "item/agentMessage/delta", `{"threadId":"thread-1","turnId":"turn-2","itemId":"final","delta":`+string(encoded)+`}`),
 					notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-2","status":"completed"}}`),
@@ -933,7 +933,7 @@ func TestProgressRunnerAnswersEveryExhaustedCodexCall(t *testing.T) {
 			}
 			messages = append(messages,
 				notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
-				responseMessage(t, 3, `{"turn":{"id":"turn-2"}}`),
+				responseMessage(t, finalTurnStartRequestID, `{"turn":{"id":"turn-2"}}`),
 				serverRequestMessage(t, 90+calls, "item/tool/call", `{"tool":"work_item","arguments":{"project_id":"project","reference":"issue"}}`),
 				notificationMessage(t, "item/agentMessage/delta", `{"threadId":"thread-1","turnId":"turn-2","itemId":"final","delta":"{\"outcome\":\"reroute\",\"step\":\"implement\",\"reason\":\"Repair the assertion\",\"diagnosis\":\"failed: assertion failure\",\"instruction\":\"Repair the failing assertion\",\"evidence\":[\"failed\"]}"}`),
 				notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-2","status":"completed"}}`),
