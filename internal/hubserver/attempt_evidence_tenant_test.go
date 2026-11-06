@@ -50,8 +50,8 @@ func TestPostgresAttemptEvidencePreflightChecksRunningFencedOwner(t *testing.T) 
 	}
 	service.localOrganization = string(organization.ID)
 	projectPath := "/api/v2/organizations/" + string(organization.ID) + "/projects"
-	projectResponse := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{"idempotency_key": "evidence-project", "name": "Example project", "states": nativeFixtureStates()})
-	requireNativeStatus(t, projectResponse, http.StatusOK)
+	projectResponse := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{"idempotency_key": "evidence-project", "name": "Example project", "grant_access": true, "states": nativeFixtureStates()})
+	requireNativeStatus(t, projectResponse, http.StatusCreated)
 	var project tracker.NativeProject
 	decodeHubResponse(t, projectResponse, &project)
 	descriptor := hubTestPolicy()

@@ -94,7 +94,7 @@ func (r nativePreviewCountingReader) ClaimPreviewPlanRows(ctx context.Context, p
 
 func TestNativeClaimUsesHeartbeatTimeAtWriteValidation(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	clock := &leaseTestClock{value: time.Now().UTC()}
+	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	service := openPostgresHubTestService(t, repository, Config{
 		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, Clock: clock.Now,
 		SecretKeys: secretTestKeys(t, "1", "1"),
@@ -106,8 +106,8 @@ func TestNativeClaimUsesHeartbeatTimeAtWriteValidation(t *testing.T) {
 	}
 	seedPostgresHubAdmin(t, repository, service, organization)
 	projectPath := "/api/v2/organizations/" + string(organization.ID) + "/projects"
-	projectResponse := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{"idempotency_key": "heartbeat-race-project", "name": "Example project", "states": nativeFixtureStates()})
-	requireNativeStatus(t, projectResponse, http.StatusOK)
+	projectResponse := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{"idempotency_key": "heartbeat-race-project", "name": "Example project", "grant_access": true, "states": nativeFixtureStates()})
+	requireNativeStatus(t, projectResponse, http.StatusCreated)
 	var project tracker.NativeProject
 	decodeHubResponse(t, projectResponse, &project)
 	descriptor := hubTestPolicy()
@@ -220,8 +220,8 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	}
 	seedPostgresHubAdmin(t, repository, service, organization)
 	projectPath := "/api/v2/organizations/" + string(organization.ID) + "/projects"
-	projectResponse := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Example project", "states": nativeFixtureStates()})
-	requireNativeStatus(t, projectResponse, http.StatusOK)
+	projectResponse := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Example project", "grant_access": true, "states": nativeFixtureStates()})
+	requireNativeStatus(t, projectResponse, http.StatusCreated)
 	var project tracker.NativeProject
 	decodeHubResponse(t, projectResponse, &project)
 	descriptor := hubTestPolicy()
@@ -988,7 +988,7 @@ func TestTenantClaimUsesConcurrencyNotSubscriptionQuotaState(t *testing.T) {
 
 func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	clock := &leaseTestClock{value: time.Now().UTC()}
+	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	var logs bytes.Buffer
 	service := openPostgresHubTestService(t, repository, Config{
 		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, Clock: clock.Now, SecretKeys: secretTestKeys(t, "1", "1"),
@@ -1003,8 +1003,8 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 			}
 			seedPostgresHubAdmin(t, repository, service, organization)
 			projectPath := "/api/v2/organizations/" + string(organization.ID) + "/projects"
-			projectResponse := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{"idempotency_key": "contract-scan-project", "name": "Example project", "states": nativeFixtureStates()})
-			requireNativeStatus(t, projectResponse, http.StatusOK)
+			projectResponse := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{"idempotency_key": "contract-scan-project", "name": "Example project", "grant_access": true, "states": nativeFixtureStates()})
+			requireNativeStatus(t, projectResponse, http.StatusCreated)
 			var project tracker.NativeProject
 			decodeHubResponse(t, projectResponse, &project)
 			descriptor := hubTestPolicy()
@@ -1071,7 +1071,7 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 			if !errors.Is(err, ErrNoClaimableWork) {
 				t.Errorf("invalid-only scan error = %v, want no claimable work", err)
 			}
-			for _, field := range []string{string(organization.ID), string(project.ID), string(issue.WorkItemID), runnerID, "issue_contract_unsatisfied"} {
+			for _, field := range []string{string(organization.ID), string(project.ID), string(issue.WorkItemID), `"runner_id":"[redacted]"`, "issue_contract_unsatisfied"} {
 				if !strings.Contains(logs.String(), field) {
 					t.Errorf("refusal evidence missing %q: %s", field, logs.String())
 				}

@@ -31,8 +31,8 @@ func TestSpriteCostRecordsUsePostgresAndReplayImport(t *testing.T) {
 		}
 		seedPostgresHubAdmin(t, repository, service, org)
 		base := "/api/v2/organizations/" + string(org.ID) + "/projects"
-		created := performHubAPIRequest(t, service, http.MethodPost, base, testHubAdminToken, map[string]any{"idempotency_key": "create", "name": "Example project", "states": nativeFixtureStates()})
-		requireNativeStatus(t, created, http.StatusOK)
+		created := performHubAPIRequest(t, service, http.MethodPost, base, testHubAdminToken, map[string]any{"idempotency_key": "create", "name": "Example project", "grant_access": true, "states": nativeFixtureStates()})
+		requireNativeStatus(t, created, http.StatusCreated)
 		var project tracker.NativeProject
 		decodeHubResponse(t, created, &project)
 		base += "/" + string(project.ID) + "/usage/sprites"

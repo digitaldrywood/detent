@@ -28,8 +28,8 @@ func TestConversationUsageAndCreditsCommitTogetherInPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 		seedPostgresHubAdmin(t, repository, service, org)
-		response := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(org.ID)+"/projects", testHubAdminToken, map[string]any{"idempotency_key": "create", "name": "Example project", "states": nativeFixtureStates()})
-		requireNativeStatus(t, response, http.StatusOK)
+		response := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(org.ID)+"/projects", testHubAdminToken, map[string]any{"idempotency_key": "create", "name": "Example project", "grant_access": true, "states": nativeFixtureStates()})
+		requireNativeStatus(t, response, http.StatusCreated)
 		var project tracker.NativeProject
 		decodeHubResponse(t, response, &project)
 		const conversationID = "conv_0123456789abcdef0123456789abcdef"

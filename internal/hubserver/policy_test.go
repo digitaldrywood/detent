@@ -45,8 +45,8 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 	}
 	seedPostgresHubAdmin(t, repository, service, organization)
 	projectsPath := "/api/v2/organizations/" + string(organization.ID) + "/projects"
-	response := performHubAPIRequest(t, service, http.MethodPost, projectsPath, testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Example project", "states": nativeFixtureStates()})
-	requireNativeStatus(t, response, http.StatusOK)
+	response := performHubAPIRequest(t, service, http.MethodPost, projectsPath, testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Example project", "grant_access": true, "states": nativeFixtureStates()})
+	requireNativeStatus(t, response, http.StatusCreated)
 	var project tracker.NativeProject
 	decodeHubResponse(t, response, &project)
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
@@ -252,8 +252,8 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 	}
 	seedPostgresHubAdmin(t, repository, service, other)
 	otherProjects := "/api/v2/organizations/" + string(other.ID) + "/projects"
-	otherResponse := performHubAPIRequest(t, service, http.MethodPost, otherProjects, testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Other example project", "states": nativeFixtureStates()})
-	requireNativeStatus(t, otherResponse, http.StatusOK)
+	otherResponse := performHubAPIRequest(t, service, http.MethodPost, otherProjects, testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Other example project", "grant_access": true, "states": nativeFixtureStates()})
+	requireNativeStatus(t, otherResponse, http.StatusCreated)
 	var otherProject tracker.NativeProject
 	decodeHubResponse(t, otherResponse, &otherProject)
 	otherBase := otherProjects + "/" + string(otherProject.ID)
@@ -287,6 +287,7 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 				project      tracker.ProjectID
 				base         string
 			}{{organization.ID, project.ID, base}, {other.ID, otherProject.ID, otherBase}} {
+				selectPostgresHubTestOrganization(service, target.organization)
 				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, "/api/v2/organizations/"+string(target.organization)+"/skew-operator", testHubAdminToken, nil), http.StatusOK)
 				ctx := operatortool.BindConnection(context.WithoutCancel(<-capturedSkew), "skew-"+string(target.organization), "policy fixture")
 				if err := (hubProjectExecutor{service}).OpenConnection(ctx); err != nil {
@@ -348,6 +349,7 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 			}
 		})
 	}
+	selectPostgresHubTestOrganization(service, organization.ID)
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.RevokeAccessCredential(t.Context(), "credential_example_a", now)
 	}); err != nil {
@@ -505,8 +507,8 @@ func TestPostgresProjectPolicyApprovalRejectsDemotedHostedAdmin(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedPostgresHubAdmin(t, repository, service, organization)
-	response := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization.ID)+"/projects", testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Example project", "states": nativeFixtureStates()})
-	requireNativeStatus(t, response, http.StatusOK)
+	response := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization.ID)+"/projects", testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Example project", "grant_access": true, "states": nativeFixtureStates()})
+	requireNativeStatus(t, response, http.StatusCreated)
 	var project tracker.NativeProject
 	decodeHubResponse(t, response, &project)
 	now := service.config.now().UTC()
@@ -801,7 +803,7 @@ func assertPostgresPolicyObservationOrdering(t *testing.T, service *Service, rep
 		service.config.TenantRepository = originalRepository
 		service.config.now = originalClock
 	})
-	olderAt := originalClock().UTC().Add(time.Second)
+	olderAt := originalClock().UTC().Truncate(time.Microsecond).Add(time.Second)
 	newerAt := olderAt.Add(time.Second)
 	service.config.now = func() time.Time { return olderAt }
 	olderContext := context.WithValue(t.Context(), postgresPolicyObservationGateKey{}, true)
@@ -2163,8 +2165,8 @@ func TestPostgresObservedPolicyPreservesHubTriageAndOccupiedWorkflow(t *testing.
 		} {
 			t.Run(fmt.Sprintf("organization_%d/%s", orgIndex, test.name), func(t *testing.T) {
 				path := "/api/v2/organizations/" + string(organization.ID) + "/projects"
-				response := performHubAPIRequest(t, service, http.MethodPost, path, testHubAdminToken, map[string]any{"idempotency_key": test.name, "name": test.name, "states": original.Workflow.States})
-				requireNativeStatus(t, response, http.StatusOK)
+				response := performHubAPIRequest(t, service, http.MethodPost, path, testHubAdminToken, map[string]any{"idempotency_key": test.name, "name": test.name, "grant_access": true, "states": original.Workflow.States})
+				requireNativeStatus(t, response, http.StatusCreated)
 				var project tracker.NativeProject
 				decodeHubResponse(t, response, &project)
 				base := path + "/" + string(project.ID)

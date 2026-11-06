@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/labstack/echo/v4"
@@ -17,6 +18,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -70,6 +73,13 @@ func projectRecordPostgresWithAdmin(t *testing.T, maxConnections int) (*postgres
 		}
 	})
 	admin := template.Database(t)
+	var databaseName string
+	if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&databaseName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pq.QuoteIdentifier(databaseName)+" CONNECTION LIMIT "+strconv.Itoa(maxConnections+1)); err != nil {
+		t.Fatal(err)
+	}
 	name, password := newNativeID("example"), newNativeID("password")
 	quoted := pq.QuoteIdentifier(name)
 	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(password)); err != nil {
@@ -106,21 +116,40 @@ func openPostgresHubTestService(t *testing.T, repository *postgres.Repository, c
 	t.Helper()
 	config.TenantRepository = repository
 	service := openTestService(t, config)
+	service.workerCancel()
+	<-service.workerDone
+	<-service.secretRewrapDone
+	if err := service.database.postgres.Close(); err != nil {
+		t.Fatal(err)
+	}
+	service.database.postgres = repository
+	service.requestMetrics.repository = repository
 	service.config.AccessRepository = repository
+	service.config.TenantRepository = repository
+	service.config.BillingRepository = repository
+	service.database.billingRepository = repository
+	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))
 	return service
 }
 
 func seedPostgresHubAdmin(t *testing.T, repository tenantstore.Repository, service *Service, organization nativeOrganization) {
 	t.Helper()
-	now := service.config.now().UTC()
+	now := service.config.now().UTC().Truncate(time.Microsecond)
 	err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization.ID, Name: organization.Name, Slug: organization.Slug, Local: true, CreatedAt: now}); err != nil {
+		existing, err := w.AccessOrganization(t.Context())
+		if errors.Is(err, corestore.ErrNotFound) {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization.ID, Name: organization.Name, Slug: organization.Slug, Local: true, CreatedAt: now}); err != nil {
+				return err
+			}
+		} else if err != nil {
 			return err
+		} else if existing.Name != organization.Name || existing.Slug != organization.Slug {
+			return errors.New("PostgreSQL fixture organization differs from existing row")
 		}
 		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization.ID, ProviderID: "provider_" + string(organization.ID)}); err != nil {
 			return err
 		}
-		return w.CreateAccessCredential(t.Context(), accessstore.Credential{
+		credential := accessstore.Credential{
 			OrganizationID: organization.ID,
 			ID:             "test_hub_admin",
 			Name:           "Hub test administrator",
@@ -131,10 +160,41 @@ func seedPostgresHubAdmin(t *testing.T, repository tenantstore.Repository, servi
 			KeyScope:       "admin",
 			ProjectAccess:  "all",
 			Kind:           "service",
-		})
+		}
+		if service.config.Hosted != nil {
+			credential.Kind = "personal"
+			credential.UserID = "user_" + string(organization.ID)
+			credential.MembershipID = "membership_" + string(organization.ID)
+		}
+		if err := w.CreateAccessCredential(t.Context(), credential); err != nil {
+			return err
+		}
+		if service.config.Hosted == nil {
+			return nil
+		}
+		return w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization.ID, UserID: "user_" + string(organization.ID), Email: string(organization.ID) + "@example.test", MembershipID: "membership_" + string(organization.ID), Role: "owner", Active: true, PrincipalID: "test_hub_admin", CreatedAt: now, UpdatedAt: now})
 	})
 	if err != nil {
 		t.Fatalf("seed PostgreSQL Hub administrator: %v", err)
+	}
+	if service.config.Hosted == nil {
+		return
+	}
+	provider := service.config.Hosted.Provider.(*hostedSecurityProvider)
+	provider.mu.Lock()
+	membership := auth.Membership{ID: "membership_" + string(organization.ID), UserID: "user_" + string(organization.ID), OrganizationID: "provider_" + string(organization.ID), Status: "active"}
+	membership.Role.Slug = "owner"
+	provider.members[membership.ID] = membership
+	provider.mu.Unlock()
+	selectPostgresHubTestOrganization(service, organization.ID)
+}
+
+func selectPostgresHubTestOrganization(service *Service, organization tracker.OrganizationID) {
+	service.config.Hosted.OrganizationID = string(organization)
+	service.config.Hosted.WorkOSOrganizationID = "provider_" + string(organization)
+	service.database.hostedOrganization = organization
+	if service.requestMetrics != nil {
+		service.requestMetrics.organization = organization
 	}
 }
 
@@ -517,6 +577,12 @@ func TestPostgresProjectCreationSerializesWithAdministratorPromotion(t *testing.
 		})
 	}()
 	testenv.WaitUntil(t, t.Context(), func() error {
+		select {
+		case err := <-promoteDone:
+			promoteJoined = true
+			t.Fatalf("administrator promotion exited before the organization lock: %v", err)
+		default:
+		}
 		var waiting bool
 		if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%FOR NO KEY UPDATE%')`).Scan(&waiting); err != nil {
 			return err

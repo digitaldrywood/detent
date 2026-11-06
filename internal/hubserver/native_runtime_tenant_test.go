@@ -23,7 +23,7 @@ import (
 
 func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	clock := &leaseTestClock{value: time.Now().UTC()}
+	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	service := openPostgresHubTestService(t, repository, Config{
 		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, Clock: clock.Now,
 		NativeRunEvents: tenantNativeRunEventParticipant{}, SecretKeys: secretTestKeys(t, "1", "1"),
@@ -36,9 +36,9 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 	seedPostgresHubAdmin(t, repository, service, organization)
 	projectPath := "/api/v2/organizations/" + string(organization.ID) + "/projects"
 	projectResponse := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{
-		"idempotency_key": "runtime-project", "name": "Example project", "states": nativeFixtureStates(),
+		"idempotency_key": "runtime-project", "name": "Example project", "grant_access": true, "states": nativeFixtureStates(),
 	})
-	requireNativeStatus(t, projectResponse, http.StatusOK)
+	requireNativeStatus(t, projectResponse, http.StatusCreated)
 	var project tracker.NativeProject
 	decodeHubResponse(t, projectResponse, &project)
 	descriptor := hubTestPolicy()
