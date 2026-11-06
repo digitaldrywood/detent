@@ -61,6 +61,9 @@ func (e hostedOperatorExecutor) OpenConnection(ctx context.Context) error {
 }
 
 func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.Definition, error) {
+	if e.service.database.postgres != nil {
+		return e.service.entryKeyTools(ctx)
+	}
 	definitions, err := nativeOperatorExecutor(e).ListTools(ctx)
 	if err != nil {
 		return nil, err

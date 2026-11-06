@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -276,5 +277,27 @@ func TestPostgresSharedBillingRoutes(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestPostgresSharedMCPRoutes(t *testing.T) {
+	f := newSharedRouteFixture(t)
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"example-client","version":"1"}}}`
+	for org := range f.services {
+		claims := func(c *cloudassert.Claims) {
+			c.Kind = cloudassert.KindKey
+			c.ProviderOrganization = "provider_" + org
+			c.Key = &apikey.KeyAuthority{ID: "key_" + org, CredentialBinding: strings.Repeat("c", 64), Kind: "personal", Permission: apikey.ScopeRead, ProjectContext: apikey.ProjectContext{Access: "all"}}
+		}
+		response := f.request(t, org, "/organizations/"+org+"/mcp", body, claims)
+		if response.Code != http.StatusOK || response.Header().Get("Mcp-Session-Id") == "" {
+			t.Fatalf("%s allowed=%d %s", org, response.Code, response.Body)
+		}
+		for _, change := range []func(*cloudassert.Claims){func(c *cloudassert.Claims) { c.Audience = "org_foreign" }, func(c *cloudassert.Claims) { c.Subject = "foreign_owner" }} {
+			denied := f.request(t, org, "/organizations/"+org+"/mcp", body, func(c *cloudassert.Claims) { claims(c); change(c) })
+			if denied.Code != http.StatusUnauthorized && denied.Code != http.StatusForbidden {
+				t.Fatalf("%s refused=%d %s", org, denied.Code, denied.Body)
+			}
+		}
 	}
 }

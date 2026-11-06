@@ -32,7 +32,11 @@ func operatorAuthorizationError(err error) error {
 
 func (s *Service) registerOperatorTools(e *echo.Echo) {
 	// Hubs expose native work commands and hosted billing/usage operations.
-	s.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{s}, chat.WithClock(s.config.now), chat.WithSessionStore(operatorChatStore{s.database}, s.resolveOperatorChatAuthority))
+	options := []chat.Option{chat.WithClock(s.config.now)}
+	if s.database.postgres == nil {
+		options = append(options, chat.WithSessionStore(operatorChatStore{s.database}, s.resolveOperatorChatAuthority))
+	}
+	s.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{s}, options...)
 	s.administration = s.operatorAdministration()
 	s.administration.Chat = s.operatorChat
 	executor := hostedOperatorExecutor{s}

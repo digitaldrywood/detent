@@ -142,6 +142,7 @@ func (s *Service) registerPostgresRoutes(e *echo.Echo) {
 		e.POST("/internal/v1/github/repositories", s.hostedGitHubRepositories)
 	}
 	s.registerTeamThreadRoutes(e)
+	s.registerOperatorTools(e)
 	s.registerPostgresAppRoutes(e)
 }
 
