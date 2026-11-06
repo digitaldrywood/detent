@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -39,23 +38,15 @@ func TestPlatformMemberSeeding(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			registry, err := OpenRegistry(t.Context(), filepath.Join(t.TempDir(), "registry.db"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := registry.Close(); err != nil {
-					t.Error(err)
-				}
-			})
+			registry := openTestRegistry(t)
 			for email, role := range test.existing {
-				if _, err := registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?, 'existing','time','time')", email, role); err != nil {
+				if _, err := registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?, 'existing',?,?)", email, role, time.Now(), time.Now()); err != nil {
 					t.Fatal(err)
 				}
 			}
 			test.config.now = time.Now
 			test.config.Logger = slog.New(slog.DiscardHandler)
-			err = registry.seedPlatformMembers(t.Context(), test.config)
+			err := registry.seedPlatformMembers(t.Context(), test.config)
 			if (err != nil) != test.fail {
 				t.Fatalf("seed = %v", err)
 			}
@@ -128,7 +119,7 @@ func memberRequest(t *testing.T, b *browser, method, email string, body map[stri
 }
 
 func TestPlatformMembersAPI(t *testing.T) {
-	for _, backend := range []string{"sqlite", "postgres"} {
+	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) { testPlatformMembersAPI(t, entryBackendConfig(t, backend)) })
 	}
 }
@@ -153,18 +144,8 @@ func testPlatformMembersAPI(t *testing.T, configureStorage func(*Config)) {
 					t.Fatal(err)
 				}
 				session.Identity.SupportActor = "admin@example.test"
-				identityRaw, err := json.Marshal(session.Identity)
-				if err != nil {
+				if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE sessions SET support_actor=? WHERE token_hash=?", session.Identity.SupportActor, session.Hash); err != nil {
 					t.Fatal(err)
-				}
-				if f.service.auth.store.db.postgres != nil {
-					if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE sessions SET support_actor=? WHERE token_hash=?", session.Identity.SupportActor, session.Hash); err != nil {
-						t.Fatal(err)
-					}
-				} else {
-					if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE sessions SET identity_json=? WHERE token_hash=?", string(identityRaw), session.Hash); err != nil {
-						t.Fatal(err)
-					}
 				}
 			}
 			response, raw := b.get("/api/cloud/platform/members")

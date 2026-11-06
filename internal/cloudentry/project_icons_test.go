@@ -2,7 +2,6 @@ package cloudentry
 
 import (
 	"bytes"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -153,19 +152,11 @@ func TestProjectIconAttachmentLifecycle(t *testing.T) {
 			if got := attachmentRequest(t, alice, http.MethodDelete, first.Icon.URL, nil, map[string]string{"X-CSRF-Token": csrf}); got.Code != 404 {
 				t.Fatalf("active icon delete=%d %s", got.Code, got.Body.String())
 			}
-			db, err := sql.Open("sqlite", f.fixtures["org_alpha"].path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := db.Close(); err != nil {
-					t.Error(err)
-				}
-			})
+			db := f.fixtures["org_alpha"].database
 			used := func() int64 {
 				t.Helper()
 				var n int64
-				if err := db.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&n); err != nil {
+				if err := db.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE organization_id='org_alpha' AND name='collaboration_bytes'").Scan(&n); err != nil {
 					t.Fatal(err)
 				}
 				return n
@@ -209,7 +200,7 @@ func TestProjectIconAttachmentLifecycle(t *testing.T) {
 			}
 			if organizationLogo {
 				const exhaustedBytes = 1 << 40
-				if _, err := db.ExecContext(t.Context(), "UPDATE hosted_usage_counters SET value=? WHERE name='collaboration_bytes'", exhaustedBytes); err != nil {
+				if _, err := db.ExecContext(t.Context(), "UPDATE hosted_usage_counters SET value=$1 WHERE organization_id='org_alpha' AND name='collaboration_bytes'", exhaustedBytes); err != nil {
 					t.Fatal(err)
 				}
 				body, err := json.Marshal(map[string]any{"content_base64": buffer.Bytes(), "expected_revision": fmt.Sprint(integration.Revision), "idempotency_key": "quota-logo"})

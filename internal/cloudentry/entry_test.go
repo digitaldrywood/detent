@@ -14,10 +14,8 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,10 +27,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/policy"
-	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 const (
@@ -87,21 +85,6 @@ type fakeProvider struct {
 type fakeAccess struct {
 	access  auth.HostedAccess
 	expires time.Time
-}
-
-var hubDatabasePath = testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
-	return hubserver.Open(ctx, hubserver.Config{DatabasePath: path, GitHubDisabled: true, Logger: slog.New(slog.DiscardHandler)})
-})
-
-func copyTenantDatabaseTemplate(template, path string) error {
-	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	image, err := os.ReadFile(template)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, image, 0o600)
 }
 
 func newFakeProvider() *fakeProvider {
@@ -426,19 +409,18 @@ func (b *browser) login(target, code string) string {
 
 type tenantFixture struct {
 	id, provider string
-	path         string
+	database     *sql.DB
 	config       hubserver.Config
 	service      *hubserver.Service
 }
 
 func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id, providerID, owner, project string, configure ...func(*hubserver.Config)) (tenantFixture, http.Handler) {
 	t.Helper()
-	path := ""
 	plans := pilotPlans()
 	plans.Plans[0].Allowances["projects"] = 10
 	logger := slog.New(slog.DiscardHandler)
 	content := &conversationArchiveFixture{}
-	fixture := tenantFixture{id: id, provider: providerID, path: path, config: hubserver.Config{DatabasePath: path, GitHubDisabled: true, InitialAdminToken: []byte(testAdminKey), Logger: logger, Content: content.handleContent, Conversation: &hubserver.ConversationConfig{Enabled: true},
+	fixture := tenantFixture{id: id, provider: providerID, config: hubserver.Config{GitHubDisabled: true, InitialAdminToken: []byte(testAdminKey), Logger: logger, Content: content.handleContent, Conversation: &hubserver.ConversationConfig{Enabled: true},
 		Hosted: &hubserver.HostedConfig{Plans: plans, OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: testPublicURL, Provider: provider,
 			StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
 			SharedEntry: &hubserver.HostedSharedEntry{ArchiveContents: &conversationArchiveFixture{}, Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}},
@@ -447,7 +429,7 @@ func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id,
 		apply(&fixture.config)
 	}
 	if fixture.config.DatabaseBackend != hubserver.DatabasePostgres {
-		configurePostgresTenant(t, &fixture.config)
+		fixture.database = configurePostgresTenant(t, &fixture.config)
 	}
 	shared, err := hubserver.Open(t.Context(), fixture.config)
 	if err != nil {
@@ -532,6 +514,9 @@ func newEntryFixtureWithConfig(t *testing.T, logger *slog.Logger, configureEntry
 	for _, configure := range configureEntry {
 		configure(&cfg)
 	}
+	if cfg.Storage.Backend == "" {
+		entryPostgresConfig(t)(&cfg)
+	}
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -573,14 +558,14 @@ func csrfFrom(t *testing.T, body string) string {
 }
 
 func TestSharedEntryTwoOrganizationsOneOrigin(t *testing.T) {
-	for _, backend := range []string{"sqlite", "postgres"} {
+	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) { testSharedEntryTwoOrganizationsOneOrigin(t, entryBackendConfig(t, backend)) })
 	}
 }
 
 func testSharedEntryTwoOrganizationsOneOrigin(t *testing.T, configureStorage func(*Config)) {
 	if testing.Short() {
-		t.Skip("durable SQLite integration")
+		t.Skip("PostgreSQL integration")
 	}
 
 	t.Parallel()
@@ -710,7 +695,7 @@ func testSharedEntryTwoOrganizationsOneOrigin(t *testing.T, configureStorage fun
 
 func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 	if testing.Short() {
-		t.Skip("durable SQLite integration")
+		t.Skip("PostgreSQL integration")
 	}
 
 	t.Parallel()
@@ -824,7 +809,7 @@ func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 
 func TestSharedEntryBoundaries(t *testing.T) {
 	if testing.Short() {
-		t.Skip("durable SQLite integration")
+		t.Skip("PostgreSQL integration")
 	}
 
 	t.Parallel()
@@ -969,7 +954,7 @@ func entryTenantTransport(t *testing.T, handler http.Handler) (http.RoundTripper
 
 func TestSharedEntryLoginTransactions(t *testing.T) {
 	if testing.Short() {
-		t.Skip("durable SQLite integration")
+		t.Skip("PostgreSQL integration")
 	}
 
 	t.Parallel()
@@ -1205,7 +1190,7 @@ func stateOf(t *testing.T, response page) string {
 
 func TestSharedEntryInvitation(t *testing.T) {
 	if testing.Short() {
-		t.Skip("durable SQLite integration")
+		t.Skip("PostgreSQL integration")
 	}
 
 	t.Parallel()
@@ -1353,11 +1338,7 @@ func TestSharedEntryInvitation(t *testing.T) {
 
 func TestRegistryRegister(t *testing.T) {
 	t.Parallel()
-	registry, err := OpenRegistry(t.Context(), filepath.Join(t.TempDir(), "registry.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = registry.Close() })
+	registry := openTestRegistry(t)
 	base := Organization{ID: "org_a", ProviderID: "porg_a", Name: "A", Endpoint: testSocketEndpoint("a.sock"), Generation: 1}
 	tests := []struct {
 		name    string
@@ -1436,7 +1417,7 @@ func TestConfigRequiresLoopbackListener(t *testing.T) {
 		listen string
 		ok     bool
 	}{{"127.0.0.1:8017", true}, {"[::1]:8017", true}, {"localhost:8017", true}, {"0.0.0.0:8017", false}, {":8017", false}, {"10.0.0.5:8017", false}} {
-		config := Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: "https://hub.example.test", ListenAddress: test.listen, Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: newFakeProvider(), StateDir: "/state"}
+		config := Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: "https://hub.example.test", ListenAddress: test.listen, Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: newFakeProvider(), StateDir: "/state", Storage: StorageConfig{Backend: "postgres", PostgresDSN: "postgres://example.invalid/example", Pool: platformstore.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1}}}
 		if err := config.validate(); (err == nil) != test.ok {
 			t.Errorf("listen %q error = %v, want ok %v", test.listen, err, test.ok)
 		}
@@ -1444,14 +1425,14 @@ func TestConfigRequiresLoopbackListener(t *testing.T) {
 }
 
 func TestSharedEntrySupportAccess(t *testing.T) {
-	for _, backend := range []string{"sqlite", "postgres"} {
+	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) { testSharedEntrySupportAccess(t, entryBackendConfig(t, backend)) })
 	}
 }
 
 func testSharedEntrySupportAccess(t *testing.T, configureStorage func(*Config)) {
 	if testing.Short() {
-		t.Skip("durable SQLite integration")
+		t.Skip("PostgreSQL integration")
 	}
 
 	t.Parallel()
@@ -1509,53 +1490,6 @@ func testSharedEntrySupportAccess(t *testing.T, configureStorage func(*Config)) 
 			support.do(http.MethodPost, "/support/start", url.Values{"organization": {"org_alpha"}, "reason": {"customer-request"}, "csrf": {csrfFrom(t, page)}}, nil)
 			if response, _ := support.get("/auth/oidc/callback?code=" + url.QueryEscape(test.code)); response.StatusCode != http.StatusForbidden {
 				t.Fatalf("status = %d", response.StatusCode)
-			}
-		})
-	}
-}
-
-func TestStoreDSN(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	t.Parallel()
-	for _, tt := range []struct{ path, want, escaped string }{
-		{"/tmp/registry.db", "/tmp/registry.db", "/tmp/registry.db"},
-		{"/tmp/cloud entry/café #?%.db", "/tmp/cloud entry/café #?%.db", "/tmp/cloud%20entry/caf%C3%A9%20%23%3F%25.db"},
-		{"C:/entry/registry.db", "/C:/entry/registry.db", "/C:/entry/registry.db"},
-		{"c:/entry/a #?.db", "/c:/entry/a #?.db", "/c:/entry/a%20%23%3F.db"},
-		{"C:/cloud entry/数据库 %23.db", "/C:/cloud entry/数据库 %23.db", "/C:/cloud%20entry/%E6%95%B0%E6%8D%AE%E5%BA%93%20%2523.db"},
-	} {
-		t.Run(tt.path, func(t *testing.T) {
-			if tt.want != tt.path {
-				// The former URL construction makes the drive letter an authority.
-				// SQLite rejects it at the first query, before touching the file.
-				legacy := &url.URL{Scheme: "file", Path: tt.path}
-				db, err := sql.Open("sqlite", legacy.String())
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() {
-					if err := db.Close(); err != nil {
-						t.Error(err)
-					}
-				})
-				var applicationID int64
-				if err := db.QueryRowContext(t.Context(), "PRAGMA application_id").Scan(&applicationID); err == nil || !strings.Contains(err.Error(), "invalid uri authority: "+tt.path[:2]) {
-					t.Fatalf("legacy store query = %v; want invalid drive authority", err)
-				}
-			}
-			parsed, err := url.Parse(storeDSN(tt.path))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if parsed.Scheme != "file" || parsed.Host != "" || parsed.Path != tt.want || parsed.Fragment != "" || parsed.EscapedPath() != tt.escaped {
-				t.Fatalf("store URI = %v; want local path %q escaped as %q", parsed, tt.want, tt.escaped)
-			}
-			wantPragmas := []string{"busy_timeout(5000)", "foreign_keys(1)", "synchronous(FULL)"}
-			if len(parsed.Query()) != 2 || !slices.Equal(parsed.Query()["_pragma"], wantPragmas) || parsed.Query().Get("_txlock") != "immediate" {
-				t.Fatalf("pragmas = %v", parsed.Query())
 			}
 		})
 	}

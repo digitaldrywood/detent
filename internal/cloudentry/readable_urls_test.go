@@ -1,7 +1,6 @@
 package cloudentry
 
 import (
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,43 +11,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func TestSharedEntryReadableSlugMigration(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.ExecContext(t.Context(), "CREATE TABLE organizations(id TEXT PRIMARY KEY,name TEXT NOT NULL); INSERT INTO organizations VALUES('org_activity','Activity'),('org_api','API'),('org_unnamed','!!!')"); err != nil {
-		t.Fatal(err)
-	}
-	migration, err := migrationFiles.ReadFile("migrations/registry/20261007221000_migration.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	up, _, _ := strings.Cut(string(migration), "-- +goose Down")
-	if _, err := db.ExecContext(t.Context(), up); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO organizations(id,name) VALUES('org_new_activity','Activity'),('org_new_api','API'),('org_new_unnamed','!!!')"); err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct{ id, want string }{
-		{"org_activity", "activity-organization"},
-		{"org_api", "api-organization"},
-		{"org_new_activity", "activity-organization-2"},
-		{"org_new_api", "api-organization-2"},
-		{"org_unnamed", "organization-organization"},
-		{"org_new_unnamed", "organization-organization-2"},
-	} {
-		t.Run(test.id, func(t *testing.T) {
-			var slug string
-			if err := db.QueryRowContext(t.Context(), "SELECT slug FROM organizations WHERE id=?", test.id).Scan(&slug); err != nil || slug != test.want {
-				t.Fatalf("slug=%q want=%q err=%v", slug, test.want, err)
-			}
-		})
-	}
-}
 
 func TestSharedEntryReadableIssueURLs(t *testing.T) {
 	f := newEntryFixture(t)

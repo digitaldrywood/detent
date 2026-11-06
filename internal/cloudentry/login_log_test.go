@@ -49,9 +49,6 @@ func deniedRecords(t *testing.T, output string) []map[string]any {
 }
 
 func TestSharedEntryDenialLogging(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 
 	var output logBuffer
 	f := newEntryFixtureWithLogger(t, slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))

@@ -7,7 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -66,6 +69,16 @@ func entryPostgresDatabase(t *testing.T) *sql.DB {
 
 func entryPostgresConfig(t *testing.T, databases ...*sql.DB) func(*Config) {
 	t.Helper()
+	return entryPostgresStorageConfig(t, false, databases...)
+}
+
+func entryPostgresRestartConfig(t *testing.T) func(*Config) {
+	t.Helper()
+	return entryPostgresStorageConfig(t, true)
+}
+
+func entryPostgresStorageConfig(t *testing.T, restart bool, databases ...*sql.DB) func(*Config) {
+	t.Helper()
 	var admin *sql.DB
 	if len(databases) == 0 {
 		admin = entryPostgresDatabase(t)
@@ -95,8 +108,21 @@ func entryPostgresConfig(t *testing.T, databases ...*sql.DB) func(*Config) {
 	})
 	objects := newSpacesFixture(t, false)
 	return func(cfg *Config) {
-		pool := entryPostgresTemplate.OpenRole(t, admin, name, password)
-		cfg.Storage = StorageConfig{Backend: "postgres", PostgresPool: pool, Pool: platformstore.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1}}
+		cfg.Storage = StorageConfig{Backend: "postgres", Pool: platformstore.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1}}
+		if restart {
+			connection, err := pq.NewConfig(os.Getenv(pgtest.Environment))
+			if err != nil {
+				t.Fatal("invalid PostgreSQL fixture configuration")
+			}
+			var database string
+			if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&database); err != nil {
+				t.Fatal(err)
+			}
+			address := url.URL{Scheme: "postgres", User: url.UserPassword(name, password), Host: net.JoinHostPort(connection.Host, strconv.Itoa(int(connection.Port))), Path: "/" + database, RawQuery: "sslmode=disable"}
+			cfg.Storage.PostgresDSN = address.String()
+		} else {
+			cfg.Storage.PostgresPool = entryPostgresTemplate.OpenRole(t, admin, name, password)
+		}
 		if cfg.Attachments == nil {
 			config := objects.config()
 			config.Endpoint = "https://storage.example.test"
@@ -105,12 +131,34 @@ func entryPostgresConfig(t *testing.T, databases ...*sql.DB) func(*Config) {
 	}
 }
 
+func openTestRegistry(t *testing.T) *Registry {
+	t.Helper()
+	var logs lockedBuffer
+	cfg := secretEntryConfig(t, &logs)
+	cfg.now = time.Now
+	entryPostgresConfig(t)(&cfg)
+	keys, err := hubsecrets.FromEnvironment(cfg.LookupEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, storage, err := openEntryStores(t.Context(), cfg, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := errors.Join(registry.Close(), storage.Close()); err != nil {
+			t.Error(err)
+		}
+	})
+	return registry
+}
+
 func newPostgresTenantEntryFixture(t *testing.T, configureEntry ...func(*Config)) entryFixture {
 	t.Helper()
 	return newEntryFixtureWithConfig(t, slog.New(slog.DiscardHandler), configureEntry)
 }
 
-func configurePostgresTenant(t *testing.T, cfg *hubserver.Config) {
+func configurePostgresTenant(t *testing.T, cfg *hubserver.Config) *sql.DB {
 	t.Helper()
 	keys, err := hubsecrets.FromEnvironment(entrySecretEnvironment(1, 1))
 	if err != nil {
@@ -182,6 +230,40 @@ func configurePostgresTenant(t *testing.T, cfg *hubserver.Config) {
 	cfg.DatabasePath = ""
 	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1}}
 	cfg.RunDetails = tenantDetailFixture{&conversationArchiveFixture{}}
+	return admin
+}
+
+func tenantPostgresRepository(t *testing.T, fixture tenantFixture) *postgres.Repository {
+	t.Helper()
+	connector, err := pq.NewConnectorConfig(fixture.config.Postgres.Connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := postgres.NewRepository(t.Context(), sql.OpenDB(connector), fixture.config.Postgres.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return repository
+}
+
+func configurePostgresTenants(t *testing.T, databases map[string]*sql.DB) func(*hubserver.Config) {
+	t.Helper()
+	configurations := make(map[string]hubserver.Config)
+	return func(cfg *hubserver.Config) {
+		previous, ok := configurations[cfg.Hosted.OrganizationID]
+		if !ok {
+			databases[cfg.Hosted.OrganizationID] = configurePostgresTenant(t, cfg)
+			configurations[cfg.Hosted.OrganizationID] = *cfg
+			return
+		}
+		cfg.DatabaseBackend, cfg.Postgres = previous.DatabaseBackend, previous.Postgres
+		cfg.SecretKeys, cfg.RunDetails = previous.SecretKeys, previous.RunDetails
+	}
 }
 
 type tenantDetailFixture struct {
@@ -197,7 +279,7 @@ func (f tenantDetailFixture) ReadDetail(ctx context.Context, organization string
 }
 
 func TestEntryBackendPlatformOwners(t *testing.T) {
-	for _, backend := range []string{"sqlite", "postgres"} {
+	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			configure := entryBackendConfig(t, backend)
 			objects := newSpacesFixture(t, false)
@@ -305,17 +387,14 @@ func TestEntryPostgresLogin(t *testing.T) {
 	}
 	for _, name := range []string{"registry.db", "auth.db"} {
 		if _, err := os.Stat(f.service.config.StateDir + "/" + name); !os.IsNotExist(err) {
-			t.Fatalf("PostgreSQL entry created SQLite store %s: %v", name, err)
+			t.Fatalf("PostgreSQL entry created local store %s: %v", name, err)
 		}
 	}
 }
 
 func entryBackendConfig(t *testing.T, backend string) func(*Config) {
 	t.Helper()
-	if backend == "postgres" {
-		return entryPostgresConfig(t)
-	}
-	return func(*Config) {}
+	return entryPostgresConfig(t)
 }
 
 func TestEntryStorageSelectionFailsClosed(t *testing.T) {

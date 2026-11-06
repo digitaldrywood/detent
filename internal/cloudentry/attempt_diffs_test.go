@@ -3,7 +3,6 @@ package cloudentry
 import (
 	"bytes"
 	"crypto/ed25519"
-	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -17,156 +16,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/diffbody"
-	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type uncalledDiffMaintenanceStorage struct{ attachment.Storage }
-
-func TestDiffBodyMaintenanceSkipsPostgresTenants(t *testing.T) {
-	now := time.Now().UTC()
-	service := &Service{
-		config: Config{
-			Allocation: &AllocationConfig{TenantPostgres: true},
-			now:        func() time.Time { return now },
-		},
-		attachments: uncalledDiffMaintenanceStorage{},
-	}
-	service.maintainOrganizationDiffBodies(t.Context())
-	if !service.diffBodySweepAt.IsZero() {
-		t.Fatalf("PostgreSQL diff-body sweep was scheduled at %s", service.diffBodySweepAt)
-	}
-}
-
-func TestMigratedAttemptDiffReadsThroughEntry(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable tenant integration")
-	}
-	t.Parallel()
-	f := newEntryFixture(t)
-	store := newSpacesFixture(t, false)
-	storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.service.attachments = storage
-	alice := newBrowser(t, f.service.Handler())
-	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-	_, body := alice.get("/organizations/org_alpha/organization")
-	csrf := csrfFrom(t, body)
-	project := attachmentProject(t, alice, "org_alpha")
-	base := "/api/v2/organizations/org_alpha/projects/" + project
-	headers := map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf}
-	created := attachmentRequest(t, alice, http.MethodPost, base+"/work-items", strings.NewReader(`{"idempotency_key":"diff-item","title":"Diff migration","state":"Backlog"}`), headers)
-	if created.Code != http.StatusOK {
-		t.Fatalf("issue=%d %s", created.Code, created.Body.String())
-	}
-	var issue tracker.NativeIssue
-	if err := json.Unmarshal(created.Body.Bytes(), &issue); err != nil {
-		t.Fatal(err)
-	}
-	tenant := f.fixtures["org_alpha"]
-	if err := tenant.service.Close(); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", f.fixtures["org_alpha"].path+"?_pragma=foreign_keys(1)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	for _, file := range []struct{ id, attempt, created, patch string }{
-		{"diff_00000000000000000000000000000001", "attempt_00000000000000000000000000000001", time.Now().Add(-40 * 24 * time.Hour).UTC().Format(time.RFC3339Nano), "@@ old\n+summary survives\n"},
-		{"diff_00000000000000000000000000000002", "attempt_00000000000000000000000000000002", time.Now().UTC().Format(time.RFC3339Nano), strings.Repeat("@@ current\n+λ preserved\n", 4000)},
-	} {
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO attempt_diffs(id,attempt_id,organization_id,project_id,work_item_id,source,source_id,seq,base_sha,head_sha,producer_kind,producer_id,producer_runner_id,producer_lease_id,producer_fencing_token,file_count,patch_bytes,posted_bytes,created_at)
-VALUES (?,?,'org_alpha',?,?,'attempt','',2,'base','head','attempt',?,'runner_test','lease_test',1,1,?,?,?)`, file.id, file.attempt, project, issue.WorkItemID, file.attempt, len(file.patch), len(file.patch), file.created); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO attempt_diff_files(diff_id,position,path,status,additions,deletions,patch) VALUES (?,0,'main.go','modified',7,3,?)`, file.id, file.patch); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.ExecContext(t.Context(), `UPDATE attempt_diff_body_migration SET vacuum_pending=1`); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	shared, err := hubserver.Open(t.Context(), tenant.config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = shared.Close() })
-	f.tenants[testSocketEndpoint("alpha.sock")] = shared.Handler()
-	db, err = sql.Open("sqlite", tenant.path+"?mode=ro")
-	if err != nil {
-		t.Fatal(err)
-	}
-	organization, err := f.service.registry.Organization(t.Context(), "org_alpha")
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.service.attachments = nil
-	if _, err := f.service.maintainAttemptDiffBodies(t.Context(), organization); err == nil {
-		t.Fatal("migration cleared a body with unavailable storage")
-	}
-	var retained int
-	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM attempt_diff_files WHERE patch<>''`).Scan(&retained); err != nil || retained != 2 {
-		t.Fatalf("failed migration retained %d bodies: %v", retained, err)
-	}
-	f.service.attachments = storage
-	if _, err := f.service.maintainAttemptDiffBodies(t.Context(), organization); err != nil {
-		t.Fatal(err)
-	}
-	var inline int
-	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM attempt_diff_files WHERE patch<>''`).Scan(&inline); err != nil || inline != 0 {
-		t.Fatalf("remaining inline bodies=%d: %v", inline, err)
-	}
-	read := attachmentRequest(t, alice, http.MethodGet, base+"/attempts/attempt_00000000000000000000000000000001/diff", nil, nil)
-	var diff tracker.AttemptDiff
-	if read.Code != http.StatusOK || json.Unmarshal(read.Body.Bytes(), &diff) != nil || diff.Files[0].Patch != "@@ old\n+summary survives\n" {
-		t.Fatalf("migrated read=%d %s", read.Code, read.Body.String())
-	}
-	if _, err := f.service.maintainAttemptDiffBodies(t.Context(), organization); err != nil {
-		t.Fatal(err)
-	}
-	read = attachmentRequest(t, alice, http.MethodGet, base+"/attempts/attempt_00000000000000000000000000000001/diff", nil, nil)
-	if read.Code != http.StatusOK || json.Unmarshal(read.Body.Bytes(), &diff) != nil || diff.Files[0].Patch != "" || !diff.Files[0].PatchExpired || diff.Files[0].Additions != 7 || diff.Files[0].Deletions != 3 {
-		t.Fatalf("expired read=%d %s", read.Code, read.Body.String())
-	}
-	read = attachmentRequest(t, alice, http.MethodGet, base+"/work-items/"+string(issue.WorkItemID)+"/diff", nil, nil)
-	var current tracker.WorkItemDiff
-	if read.Code != http.StatusOK || json.Unmarshal(read.Body.Bytes(), &current) != nil || current.Diff.Files[0].Patch != strings.Repeat("@@ current\n+λ preserved\n", 4000) {
-		t.Fatalf("current read=%d %s", read.Code, read.Body.String())
-	}
-	keyRequest := `{"name":"diff-read","scope":"read","expires_days":1,"project_ids":["` + project + `"]}`
-	created = attachmentRequest(t, alice, http.MethodPost, "/api/v2/organizations/org_alpha/api-keys", strings.NewReader(keyRequest), headers)
-	var token struct {
-		Token string `json:"token"`
-	}
-	if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &token) != nil {
-		t.Fatalf("token=%d %s", created.Code, created.Body.String())
-	}
-	call := attachmentMCPClient(t, newBrowser(t, f.service.Handler()), token.Token, mcp.ProtocolVersion)
-	for _, name := range []string{operatortool.GetAttemptDiff, operatortool.GetWorkItemDiff} {
-		args := map[string]any{"project_id": project, "work_item_id": issue.WorkItemID}
-		if name == operatortool.GetAttemptDiff {
-			args["attempt_id"] = "attempt_00000000000000000000000000000002"
-		}
-		raw, failed := call(name, args)
-		var result operatortool.ChangeResult
-		if failed || json.Unmarshal(raw, &result) != nil || result.Diff == nil || result.Diff.Files[0].Patch != current.Diff.Files[0].Patch {
-			t.Fatalf("MCP %s=%s", name, raw)
-		}
-	}
-}
 
 func TestAttemptDiffObjectStorage(t *testing.T) {
 	t.Parallel()
@@ -344,24 +197,4 @@ func TestAttemptDiffObjectStorage(t *testing.T) {
 			}
 		})
 	}
-	t.Run("pending vacuum does not run online", func(t *testing.T) {
-		calls := 0
-		s.config.transport = func(Organization) (http.RoundTripper, error) {
-			return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				calls++
-				switch r.URL.Path {
-				case "/internal/v1/diff-bodies/batch":
-					if err := json.NewEncoder(w).Encode(diffbody.Batch{VacuumPending: true}); err != nil {
-						t.Error(err)
-					}
-				default:
-					t.Errorf("unexpected maintenance path %s", r.URL.Path)
-				}
-			})}, nil
-		}
-		active, err := s.maintainAttemptDiffBodies(t.Context(), organization)
-		if err != nil || active || calls != 1 {
-			t.Fatalf("pending maintenance active=%v calls=%d err=%v", active, calls, err)
-		}
-	})
 }

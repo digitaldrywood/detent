@@ -2,7 +2,6 @@ package cloudentry
 
 import (
 	"bytes"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -243,7 +242,7 @@ func TestOAuthDiscoveryAndRegistration(t *testing.T) {
 }
 
 func TestOAuthCodeExchangeAndRotation(t *testing.T) {
-	for _, backend := range []string{"sqlite", "postgres"} {
+	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) { testOAuthCodeExchangeAndRotation(t, entryBackendConfig(t, backend)) })
 	}
 }
@@ -297,16 +296,10 @@ func testOAuthCodeExchangeAndRotation(t *testing.T, configureStorage func(*Confi
 		}
 		refresh := url.Values{"client_id": {c.ID}, "client_secret": {c.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
 		restoreToken := f.service.config.generateToken
-		if f.service.auth.store.db.postgres != nil {
-			if _, err := f.service.auth.store.db.ExecContext(t.Context(), `INSERT INTO oauth_grants(id,client_id,owner_subject,owner_email,organization_id,permission,resource,created_at,access_hash) VALUES('example_collision',?,'user_alice','alice@example.test','org_beta','read',?,?,?)`, c.ID, testPublicURL+"/mcp", f.service.config.now(), apikey.HashToken(oauthAccessPrefix+"example_collision")); err != nil {
-				t.Fatal(err)
-			}
-			f.service.config.generateToken = func() (string, error) { return "example_collision", nil }
-		} else {
-			if _, err := f.service.auth.store.db.ExecContext(t.Context(), `CREATE TRIGGER fail_spent_refresh_insert BEFORE INSERT ON oauth_spent_refresh_tokens BEGIN SELECT RAISE(ABORT,'injected insert failure'); END`); err != nil {
-				t.Fatal(err)
-			}
+		if _, err := f.service.auth.store.db.ExecContext(t.Context(), `INSERT INTO oauth_grants(id,client_id,owner_subject,owner_email,organization_id,permission,resource,created_at,access_hash) VALUES('example_collision',?,'user_alice','alice@example.test','org_beta','read',?,?,?)`, c.ID, testPublicURL+"/mcp", f.service.config.now(), apikey.HashToken(oauthAccessPrefix+"example_collision")); err != nil {
+			t.Fatal(err)
 		}
+		f.service.config.generateToken = func() (string, error) { return "example_collision", nil }
 		if response := owner.do(http.MethodPost, "/oauth/token", refresh, nil); response.StatusCode < 400 {
 			t.Fatal("rotation succeeded without retaining spent token")
 		}
@@ -314,14 +307,8 @@ func testOAuthCodeExchangeAndRotation(t *testing.T, configureStorage func(*Confi
 			t.Fatalf("failed rotation changed current token: %v", err)
 		}
 		f.service.config.generateToken = restoreToken
-		if f.service.auth.store.db.postgres != nil {
-			if _, err := f.service.auth.store.db.ExecContext(t.Context(), "DELETE FROM oauth_grants WHERE id='example_collision' AND organization_id='org_beta'"); err != nil {
-				t.Fatal(err)
-			}
-		} else {
-			if _, err := f.service.auth.store.db.ExecContext(t.Context(), "DROP TRIGGER fail_spent_refresh_insert"); err != nil {
-				t.Fatal(err)
-			}
+		if _, err := f.service.auth.store.db.ExecContext(t.Context(), "DELETE FROM oauth_grants WHERE id='example_collision' AND organization_id='org_beta'"); err != nil {
+			t.Fatal(err)
 		}
 		rotated := exchangeTestOAuth(t, owner, refresh)
 		if token.RefreshToken == rotated.RefreshToken || token.AccessToken == rotated.AccessToken {
@@ -638,13 +625,9 @@ func TestOAuthReporterAuthorityAndRevocation(t *testing.T) {
 			if err := json.Unmarshal(raw, &envelope); err != nil {
 				t.Fatal(err)
 			}
-			db, err := sql.Open("sqlite", storeDSN(f.fixtures["org_alpha"].path))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
+			db := f.fixtures["org_alpha"].database
 			var principal string
-			if err := db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id=?", "user_alice").Scan(&principal); err != nil {
+			if err := db.QueryRowContext(t.Context(), "SELECT principal_id FROM public.hosted_members WHERE organization_id='org_alpha' AND user_id=$1", "user_alice").Scan(&principal); err != nil {
 				t.Fatal(err)
 			}
 			if failed || envelope.Data.Actor.Kind != "human" || envelope.Data.Actor.PrincipalID != principal || !strings.HasPrefix(envelope.Data.Actor.ViaKey, "oauth_grant_") || envelope.Data.State != "Triage" {
@@ -667,16 +650,12 @@ func TestOAuthReporterAuthorityAndRevocation(t *testing.T) {
 			}
 			foreign := newBrowser(t, proxy)
 			foreign.login("/organizations/org_beta/organization", "user_bob:porg_beta")
-			beta, err := sql.Open("sqlite", storeDSN(f.fixtures["org_beta"].path))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer beta.Close()
+			beta := f.fixtures["org_beta"].database
 			otherPrincipal := "hosted_" + apikey.HashToken("user_bob")[:32]
-			if _, err := beta.ExecContext(t.Context(), `INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) SELECT ?,?,?, '','operator',1,created_at,updated_at FROM hosted_members WHERE user_id=?`, otherPrincipal, otherPrincipal, apikey.HashToken("user_bob_principal"), "user_alice"); err != nil {
+			if _, err := beta.ExecContext(t.Context(), `INSERT INTO public.api_tokens(organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) SELECT organization_id,$1,$2,$3,'','operator',true,created_at,updated_at FROM public.hosted_members WHERE organization_id='org_beta' AND user_id=$4`, otherPrincipal, otherPrincipal, apikey.HashToken("user_bob_principal"), "user_alice"); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := beta.ExecContext(t.Context(), `INSERT INTO hosted_members(user_id,email,membership_id,role,active,principal_id,created_at,updated_at) SELECT ?,?,?,?,1,?,created_at,updated_at FROM hosted_members WHERE user_id=?`, "user_bob", "bob@example.test", "om_user_bob_porg_beta", "member", otherPrincipal, "user_alice"); err != nil {
+			if _, err := beta.ExecContext(t.Context(), `INSERT INTO public.hosted_members(organization_id,user_id,email,membership_id,role,active,principal_id,notify_issues,created_at,updated_at) SELECT organization_id,$1,$2,$3,$4,true,$5,true,created_at,updated_at FROM public.hosted_members WHERE organization_id='org_beta' AND user_id=$6`, "user_bob", "bob@example.test", "om_user_bob_porg_beta", "member", otherPrincipal, "user_alice"); err != nil {
 				t.Fatal(err)
 			}
 			foreignToken := exchangeTestOAuth(t, foreign, approveTestOAuth(t, foreign, client, "org_beta"))
@@ -737,12 +716,8 @@ func TestOAuthCurrentAuthority(t *testing.T) {
 				f.provider.mu.Unlock()
 			case "project grant removed":
 				tenant := f.fixtures["org_alpha"]
-				db, err := sql.Open("sqlite", storeDSN(tenant.path))
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer db.Close()
-				if _, err = db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id='user_alice' AND project_id=?", project); err != nil {
+				db := tenant.database
+				if _, err := db.ExecContext(t.Context(), "DELETE FROM public.hosted_project_grants WHERE organization_id='org_alpha' AND user_id='user_alice' AND project_id=$1", project); err != nil {
 					t.Fatal(err)
 				}
 			case "role downgraded":

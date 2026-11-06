@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -75,16 +76,16 @@ type runnerV0172Heartbeat struct {
 }
 
 type pilotTenantLauncher struct {
-	databaseTemplate string
-	provider         *fakeProvider
-	billing          billing.Provider
-	version          string
-	mu               sync.Mutex
-	running          map[string]func()
-	transports       map[string]*http.Transport
-	useUnix          bool
-	specs            map[string]TenantSpec
-	starts           int
+	configureDatabase func(*hubserver.Config)
+	provider          *fakeProvider
+	billing           billing.Provider
+	version           string
+	mu                sync.Mutex
+	running           map[string]func()
+	transports        map[string]*http.Transport
+	useUnix           bool
+	specs             map[string]TenantSpec
+	starts            int
 }
 
 func pilotAdminToken(organization string) string {
@@ -101,12 +102,9 @@ func (l *pilotTenantLauncher) Start(_ context.Context, spec TenantSpec) error {
 	if err != nil {
 		return err
 	}
-	if err := copyTenantDatabaseTemplate(l.databaseTemplate, filepath.Join(spec.Directory, "hub.db")); err != nil {
-		return err
-	}
 	content := &conversationArchiveFixture{}
 	config := hubserver.Config{
-		DatabasePath: filepath.Join(spec.Directory, "hub.db"), GitHubDisabled: true, Version: l.version,
+		GitHubDisabled: true, Version: l.version,
 		InitialAdminToken: []byte(pilotAdminToken(spec.Organization.ID)), Logger: slog.New(slog.DiscardHandler),
 		Content: content.handleContent,
 		Hosted: &hubserver.HostedConfig{
@@ -122,6 +120,7 @@ func (l *pilotTenantLauncher) Start(_ context.Context, spec TenantSpec) error {
 		config.Hosted.Billing = &hubserver.HostedBillingConfig{Mode: "test", AccountID: "acct_fixture", CustomerID: "cus_fixture_" + spec.Organization.ID, PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_e2e_secret_value"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: l.billing,
 			Prices: []hubserver.HostedBillingPrice{{PriceID: "price_fixture_plus", Label: "Pilot plus", Plan: plans.Plans[len(plans.Plans)-1].PlanReference}}}
 	}
+	l.configureDatabase(&config)
 	if l.useUnix {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
@@ -445,11 +444,11 @@ func newSharedOriginPilotWith(t *testing.T, maxTenants, retryLimit int, client f
 	seed := make([]byte, ed25519.SeedSize)
 	seed[2] = 9
 	root := shortTempDir(t)
-	p := &sharedOriginPilot{provider: newFakeProvider(), state: t.TempDir(), roots: [2]string{filepath.Join(root, "t"), filepath.Join(root, "s")}, key: ed25519.NewKeyFromSeed(seed), handler: &swappableHandler{}, client: client, configure: configure}
+	p := &sharedOriginPilot{provider: newFakeProvider(), state: t.TempDir(), roots: [2]string{filepath.Join(root, "t"), filepath.Join(root, "s")}, key: ed25519.NewKeyFromSeed(seed), handler: &swappableHandler{}, client: client, configure: append([]func(*Config){entryPostgresConfig(t)}, configure...)}
 	for _, user := range []string{"member", "eve", "fay", "gus"} {
 		p.provider.users["user_"+user] = user + "@example.test"
 	}
-	p.launcher = &pilotTenantLauncher{databaseTemplate: hubDatabasePath(t), provider: p.provider, billing: billingProvider, running: map[string]func(){}, transports: map[string]*http.Transport{}, useUnix: socketFixtureFits(root), specs: map[string]TenantSpec{}}
+	p.launcher = &pilotTenantLauncher{configureDatabase: configurePostgresTenants(t, make(map[string]*sql.DB)), provider: p.provider, billing: billingProvider, running: map[string]func(){}, transports: map[string]*http.Transport{}, useUnix: socketFixtureFits(root), specs: map[string]TenantSpec{}}
 	p.server = httptest.NewUnstartedServer(p.handler)
 	p.base = "http://" + p.server.Listener.Addr().String()
 	p.open(t, maxTenants, retryLimit)

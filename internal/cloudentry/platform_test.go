@@ -5,7 +5,6 @@ package cloudentry
 import (
 	"context"
 	"crypto/ed25519"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -13,7 +12,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -75,9 +73,6 @@ func decodeJSON(t *testing.T, body string, target any) {
 }
 
 func TestPlatformAuthorization(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 
 	t.Parallel()
 	f := newEntryFixture(t)
@@ -141,9 +136,6 @@ func TestPlatformAuthorization(t *testing.T) {
 }
 
 func TestPlatformOrganizationsAndHealth(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 
 	t.Parallel()
 	f := newEntryFixture(t)
@@ -193,13 +185,7 @@ func TestPlatformOrganizationsAndHealth(t *testing.T) {
 		}
 	}
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "org_alpha"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "org_alpha", "hub.db"), []byte("database-fixture"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed = 1 WHERE id = 'org_alpha'"); err != nil {
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed = true WHERE id = 'org_alpha'"); err != nil {
 		t.Fatal(err)
 	}
 	now := f.service.config.now()
@@ -207,25 +193,14 @@ func TestPlatformOrganizationsAndHealth(t *testing.T) {
 		MinFreeDiskBytes: 4096, MinAvailableMemoryBytes: 8192,
 		Launcher: &ExecLauncher{health: map[string]*tenantProcessHealth{"org_alpha": {startedAt: now.Add(-time.Hour), observed: true, starts: []time.Time{now.Add(-time.Hour)}}}},
 	}
-	for _, test := range []struct {
-		suffix string
-		data   string
-		bytes  int64
-	}{{"", "", 16}, {"-wal", "wal", 19}, {"-shm", "shared-memory", 32}} {
-		if test.suffix != "" {
-			if err := os.WriteFile(filepath.Join(root, "org_alpha", "hub.db"+test.suffix), []byte(test.data), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
-		_, body = staff.get("/api/cloud/platform/health")
-		decodeJSON(t, body, &health)
-		if health.Admission == nil || health.Admission.MinFreeDiskBytes != 4096 || health.Admission.MinAvailableMemoryBytes != 8192 {
-			t.Fatalf("admission floors = %s", body)
-		}
-		for _, hub := range health.Hubs {
-			if hub.ID == "org_alpha" && (hub.UptimeSeconds == nil || *hub.UptimeSeconds < 3600 || hub.Restarts24h == nil || *hub.Restarts24h != 1 || hub.DatabaseBytes == nil || *hub.DatabaseBytes != test.bytes) {
-				t.Fatalf("managed tenant health after %q = %+v, want %d database bytes", test.suffix, hub, test.bytes)
-			}
+	_, body = staff.get("/api/cloud/platform/health")
+	decodeJSON(t, body, &health)
+	if health.Admission == nil || health.Admission.MinFreeDiskBytes != 4096 || health.Admission.MinAvailableMemoryBytes != 8192 {
+		t.Fatalf("admission floors = %s", body)
+	}
+	for _, hub := range health.Hubs {
+		if hub.ID == "org_alpha" && (hub.UptimeSeconds == nil || *hub.UptimeSeconds < 3600 || hub.Restarts24h == nil || *hub.Restarts24h != 1 || hub.DatabaseBytes != nil) {
+			t.Fatalf("managed tenant health = %+v", hub)
 		}
 	}
 	original := f.service.config.transport
@@ -255,9 +230,6 @@ func TestPlatformOrganizationsAndHealth(t *testing.T) {
 }
 
 func TestPlatformAllowlistAndAdmission(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite tenant provisioning integration")
-	}
 
 	t.Parallel()
 	f := newProvisioningFixture(t, 3, func(a *AllocationConfig) {
@@ -297,9 +269,6 @@ func TestPlatformAllowlistAndAdmission(t *testing.T) {
 }
 
 func TestPlatformStaffLanding(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 
 	t.Parallel()
 	f := newEntryFixture(t)
@@ -363,9 +332,6 @@ func TestPlatformStaffLanding(t *testing.T) {
 }
 
 func TestPlatformMembersCreateAndJoinOrganizations(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 
 	t.Parallel()
 	json := map[string]string{"Accept": "application/json"}
@@ -427,9 +393,6 @@ func TestPlatformMembersCreateAndJoinOrganizations(t *testing.T) {
 }
 
 func TestPlatformSupportStartRequiresCSRFAndReason(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 
 	t.Parallel()
 	f := newEntryFixture(t)
@@ -660,9 +623,9 @@ func TestPlatformAuditTimeline(t *testing.T) {
 		query string
 	}{
 		{false, "UPDATE organizations SET state='deleted' WHERE id='org_beta'"},
-		{true, `INSERT INTO audit(subject,organization_id,event,recorded_at) VALUES ('user_staff','','{"kind":"operator_administration","retry_identity":"private-replay","output":{"csrf":"private-token"}}','2026-10-01T12:00:01Z')`},
-		{true, "INSERT INTO audit(subject,organization_id,event,recorded_at) VALUES ('user_staff','org_alpha','support_requested:troubleshooting','2026-10-01T12:00:00.1Z'),('user_staff','org_alpha','support_started:troubleshooting','2026-10-01T12:00:00Z'),('missing_subject','org_beta','organization_deleted','2026-09-30T23:59:59.999999999Z'),('user_staff','','platform_opened','2026-10-01T12:00:00.000000001Z')"},
-		{false, "INSERT INTO entitlement_changes(organization_id,idempotency_key,action,grant_id,plan_id,plan_version,expires_at,reason,staff_email,staff_subject,recorded_at) VALUES ('org_alpha','grant_key','grant','comp_a','growth',1,'2026-12-31T23:59:59Z','pilot','staff@example.test','user_staff','2026-10-01T12:00:00.100000000Z'),('org_beta','revoke_key','revoke','comp_b','team',2,'','ended','billing@example.test','user_billing','2026-09-29T12:00:00Z')"},
+		{true, `INSERT INTO audit(subject,organization_id,event,reason,recorded_at) VALUES ('user_staff','','operator_administration','private-replay private-token','2026-10-01T12:00:01Z')`},
+		{true, "INSERT INTO audit(subject,organization_id,event,recorded_at) VALUES ('user_staff','org_alpha','support_requested:troubleshooting','2026-10-01T12:00:00.1Z'),('user_staff','org_alpha','support_started:troubleshooting','2026-10-01T12:00:00Z'),('missing_subject','org_beta','organization_deleted','2026-09-30T23:59:59.999999Z'),('user_staff','','platform_opened','2026-10-01T12:00:00.000001Z')"},
+		{false, "INSERT INTO entitlement_changes(organization_id,idempotency_key,action,grant_id,plan_id,plan_version,expires_at,reason,staff_email,staff_subject,recorded_at) VALUES ('org_alpha','grant_key','grant','comp_a','growth',1,'2026-12-31T23:59:59Z','pilot','staff@example.test','user_staff','2026-10-01T12:00:00.100000000Z'),('org_beta','revoke_key','revoke','comp_b','team',2,NULL,'ended','billing@example.test','user_billing','2026-09-29T12:00:00Z')"},
 		{false, "INSERT INTO organization_events(organization_id,event,generation,recorded_at) VALUES ('org_alpha','ready',1,'2026-10-01T12:00:00.1Z')"},
 		{false, "INSERT INTO platform_member_changes(email,action,previous_role,role,actor_email,actor_subject,reason,recorded_at) VALUES ('new@example.test','added','','support','staff@example.test','user_staff','new hire','2026-10-01T12:00:00.1Z'),('new@example.test','role_changed','support','viewer','staff@example.test','user_staff','read only','2026-09-28T12:00:00Z'),('old@example.test','removed','viewer','','staff@example.test','user_staff','left','2026-09-27T12:00:00Z'),('seed@example.test','seeded','','admin','bootstrap','','bootstrap','2026-09-26T12:00:00Z')"},
 	} {
@@ -705,7 +668,7 @@ func TestPlatformAuditTimeline(t *testing.T) {
 		{"from", "from=2026-10-01", all[:6]},
 		{"to", "to=2026-09-27", all[9:]},
 		{"combined", "tenant=org_alpha&actor=staff&event=plan_granted&from=2026-10-01&to=2026-10-01", []string{"plan_granted"}},
-		{"nanosecond boundary", "from=2026-10-01T12%3A00%3A00.000000001Z&to=2026-10-01T12%3A00%3A00.000000001Z", []string{"platform_opened"}},
+		{"microsecond boundary", "from=2026-10-01T12%3A00%3A00.000001Z&to=2026-10-01T12%3A00%3A00.000001Z", []string{"platform_opened"}},
 		{"empty", "tenant=unknown", []string{}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -860,7 +823,7 @@ func TestPlatformUsersSearch(t *testing.T) {
 		{"suffix", "user_suffix", "only@example.test.example.org", now, ""},
 		{"literal", "user_literal", "literal_%@example.test", now, ""},
 	} {
-		identity := auth.Identity{Subject: item.subject, Email: item.email, EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: item.subject, ExpiresAt: now.Add(time.Hour), SupportActor: item.support}}
+		identity := auth.Identity{Subject: item.subject, Email: item.email, EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: item.subject, SessionID: item.hash, CreatedAt: now, ExpiresAt: now.Add(time.Hour), SupportActor: item.support}}
 		if err := f.service.auth.createSession(t.Context(), item.hash, "csrf", identity); err != nil {
 			t.Fatal(err)
 		}
@@ -930,7 +893,7 @@ func TestPlatformUsersSearch(t *testing.T) {
 	}
 	for i := range 60 {
 		email := fmt.Sprintf("cap%02d@example.test", i)
-		identity := auth.Identity{Subject: email, Email: email, EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: email, ExpiresAt: now.Add(time.Hour)}}
+		identity := auth.Identity{Subject: email, Email: email, EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: email, SessionID: email, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}}
 		if err := f.service.auth.createSession(t.Context(), email, "csrf", identity); err != nil {
 			t.Fatal(err)
 		}
@@ -988,14 +951,10 @@ func TestPlatformUsersSearch(t *testing.T) {
 	if !ok {
 		t.Fatal("missing alpha tenant fixture")
 	}
-	db, err := sql.Open("sqlite", storeDSN(alpha.path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := alpha.database
 	for i := range 900 {
 		email := fmt.Sprintf("large%03d@example.test", i)
-		if _, err := db.ExecContext(t.Context(), "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at,expires_at) VALUES(?,?,'org_alpha','member',?,?)", email, email, formatTime(now), formatTime(now.Add(time.Hour))); err != nil {
+		if _, err := db.ExecContext(t.Context(), "INSERT INTO public.hosted_invitations(id,email,organization_id,role,accepted_user_id,created_at,expires_at) VALUES($1,$2,'org_alpha','member','',$3,$4)", email, email, formatTime(now), formatTime(now.Add(time.Hour))); err != nil {
 			t.Fatal(err)
 		}
 	}

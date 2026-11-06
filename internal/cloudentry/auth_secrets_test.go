@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -62,6 +63,9 @@ func openSecretEntry(t *testing.T, cfg Config) *Service {
 
 func addSecretAuthorization(t *testing.T, s *Service, name string, tokens auth.HostedTokens) authorization {
 	t.Helper()
+	if _, err := s.registry.Register(t.Context(), Organization{ID: "org_" + name, ProviderID: "provider_" + name, Name: name, Endpoint: "unix:" + filepath.Join(t.TempDir(), "tenant.sock"), Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
 	identity := auth.HostedIdentity{Subject: "user_" + name, OrganizationID: "provider_" + name, SessionID: "session_" + name, ExpiresAt: s.config.now().Add(time.Hour)}
 	if err := s.auth.createSession(t.Context(), "hash_"+name, "csrf_"+name, auth.Identity{Subject: identity.Subject, Email: name + "@example.test", Hosted: &identity}); err != nil {
 		t.Fatal(err)
@@ -79,7 +83,8 @@ func addSecretAuthorization(t *testing.T, s *Service, name string, tokens auth.H
 
 func secretEntryConfig(t *testing.T, logs *lockedBuffer) Config {
 	t.Helper()
-	return Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(bytes.Repeat([]byte{1}, 32)), Provider: newFakeProvider(), StateDir: t.TempDir(), Logger: slog.New(slog.NewJSONHandler(logs, nil)), LookupEnv: entrySecretEnvironment(0)}
+	cfg := Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(bytes.Repeat([]byte{1}, 32)), Provider: newFakeProvider(), StateDir: t.TempDir(), Logger: slog.New(slog.NewJSONHandler(logs, nil)), LookupEnv: entrySecretEnvironment(0)}
+	return cfg
 }
 
 func TestEntrySecretRestarts(t *testing.T) {
@@ -88,6 +93,7 @@ func TestEntrySecretRestarts(t *testing.T) {
 			t.Parallel()
 			var logs lockedBuffer
 			cfg := secretEntryConfig(t, &logs)
+			entryPostgresRestartConfig(t)(&cfg)
 			if !legacy {
 				cfg.LookupEnv = entrySecretEnvironment(1, 1)
 			}
@@ -216,6 +222,7 @@ func TestEntrySecretResealCASAndSkips(t *testing.T) {
 	t.Parallel()
 	var logs lockedBuffer
 	cfg := secretEntryConfig(t, &logs)
+	entryPostgresRestartConfig(t)(&cfg)
 	cfg.LookupEnv = entrySecretEnvironment(2, 1, 2)
 	s := openSecretEntry(t, cfg)
 	legacy := &Service{config: s.config, auth: &authStore{store: s.auth.store, now: s.auth.now, seal: s.auth.seal}}
@@ -346,6 +353,7 @@ func TestEntryOAuthKeyringState(t *testing.T) {
 	t.Parallel()
 	var logs lockedBuffer
 	cfg := secretEntryConfig(t, &logs)
+	entryPostgresRestartConfig(t)(&cfg)
 	cfg.LookupEnv = entrySecretEnvironment(1, 1)
 	s := openSecretEntry(t, cfg)
 	b := newBrowser(t, s.Handler())
@@ -440,6 +448,7 @@ func TestEntryRejectsMalformedKeyring(t *testing.T) {
 	t.Parallel()
 	var logs lockedBuffer
 	cfg := secretEntryConfig(t, &logs)
+	entryPostgresRestartConfig(t)(&cfg)
 	cfg.LookupEnv = func(string) string { return "invalid-key-material" }
 	if _, err := Open(context.Background(), cfg); err == nil || strings.Contains(err.Error(), "invalid-key-material") {
 		t.Fatal("malformed keyring not safely rejected", err)

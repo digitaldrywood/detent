@@ -3,7 +3,6 @@ package cloudentry
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -476,19 +475,11 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		db, err := sql.Open("sqlite", f.fixtures[org].path+"?_pragma=foreign_keys(1)")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := db.Close(); err != nil {
-				t.Error(err)
-			}
-		})
+		db := f.fixtures[org].database
 		usage := func() int64 {
 			t.Helper()
 			var used int64
-			if err := db.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&used); err != nil {
+			if err := db.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes'", org).Scan(&used); err != nil {
 				t.Fatal(err)
 			}
 			return used
@@ -625,7 +616,7 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 			t.Fatalf("missing item read=%d", missing.Code)
 		}
 		var archiveID string
-		if err := db.QueryRowContext(t.Context(), "SELECT id FROM attachments WHERE kind='archive'").Scan(&archiveID); err != nil {
+		if err := db.QueryRowContext(t.Context(), "SELECT id FROM attachments WHERE organization_id=$1 AND kind='archive'", org).Scan(&archiveID); err != nil {
 			t.Fatal(err)
 		}
 		for _, method := range []string{http.MethodGet, http.MethodDelete} {
@@ -634,7 +625,7 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 				t.Fatalf("archive reachable through attachment %s: %d", method, response.Code)
 			}
 		}
-		if _, err := db.ExecContext(t.Context(), "UPDATE attachments SET size=size+1 WHERE id=?", archiveID); err == nil {
+		if _, err := db.ExecContext(t.Context(), "UPDATE attachments SET size=size+1 WHERE organization_id=$1 AND id=$2", org, archiveID); err == nil {
 			t.Fatal("archive metadata is mutable")
 		}
 		if org == "org_alpha" {
@@ -655,7 +646,7 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 			}
 		}
 		for _, item := range items {
-			if _, err := db.ExecContext(t.Context(), `INSERT INTO issue_archive_sections(organization_id,project_id,work_item_id,archive_revision,section_id,attachment_id) SELECT organization_id,project_id,work_item_id,?, ?,attachment_id FROM attachment_archive_references WHERE organization_id=? AND project_id=? AND work_item_id=? AND attachment_id=?`, 1, "issue", org, project, item.WorkItemID, archiveID); err != nil {
+			if _, err := db.ExecContext(t.Context(), `INSERT INTO issue_archive_sections(organization_id,project_id,work_item_id,archive_revision,section_id,attachment_id) SELECT organization_id,project_id,work_item_id,$1,$2,attachment_id FROM attachment_archive_references WHERE organization_id=$3 AND project_id=$4 AND work_item_id=$5 AND attachment_id=$6`, 1, "issue", org, project, item.WorkItemID, archiveID); err != nil {
 				t.Fatal(err)
 			}
 			access := base + "/work-items/" + string(item.WorkItemID) + "/archives/" + ref.SHA256 + "/access"
@@ -676,7 +667,7 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 				}
 			}
 		}
-		if _, err := db.ExecContext(t.Context(), "DELETE FROM attachment_archive_references WHERE work_item_id=?", items[0].WorkItemID); err != nil {
+		if _, err := db.ExecContext(t.Context(), "DELETE FROM attachment_archive_references WHERE organization_id=$1 AND work_item_id=$2", org, items[0].WorkItemID); err != nil {
 			t.Fatal(err)
 		}
 		organization, err := f.service.readyOrganization(t.Context(), org)

@@ -44,9 +44,6 @@ func (p *fakeProvider) endSessions(user string) {
 }
 
 func TestSharedEntryAccessTokenVerification(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 
 	t.Parallel()
 	const target = "/api/v2/organizations/org_alpha/usage"
@@ -248,9 +245,6 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 }
 
 func TestSharedEntryProxyLogsLatencyWithoutIdentity(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 
 	t.Parallel()
 	var logs lockedBuffer

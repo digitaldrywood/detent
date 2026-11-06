@@ -1,52 +1,42 @@
 package cloudentry
 
 import (
-	"bytes"
 	"context"
-	"crypto/ed25519"
-	"database/sql"
-	"fmt"
-	"io/fs"
-	"log/slog"
-	"path/filepath"
+	"errors"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/pressly/goose/v3"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 )
 
 func TestOAuthClientMigrationAndBackfill(t *testing.T) {
 	ctx := t.Context()
-	path := filepath.Join(t.TempDir(), "auth.db")
-	db, err := sql.Open("sqlite", storeDSN(path))
+	admin := entryPostgresDatabase(t)
+	var logs lockedBuffer
+	cfg := secretEntryConfig(t, &logs)
+	cfg.now = time.Now
+	entryPostgresConfig(t, admin)(&cfg)
+	registry, storage, err := openEntryStores(ctx, cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
-	migrations, err := fs.Sub(migrationFiles, "migrations/auth")
+	t.Cleanup(func() {
+		if err := errors.Join(registry.Close(), storage.Close()); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := registry.Register(ctx, Organization{ID: "org_example", ProviderID: "porg_example", Name: "Example", State: "ready", Endpoint: "unix:" + t.TempDir() + "/hub.sock", Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	seal, err := newTokenSeal(cfg.SigningKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName("entry_schema_version"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.UpTo(ctx, 20261019161000); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA application_id=%d", authApplicationID)); err != nil {
-		t.Fatal(err)
-	}
-	seal, err := newTokenSeal(ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var logs bytes.Buffer
-	s := &Service{auth: &authStore{seal: seal}, config: Config{PublicURL: testPublicURL, Logger: slog.New(slog.NewJSONHandler(&logs, nil))}}
+	s := &Service{auth: &authStore{store: storage, seal: seal}, config: cfg}
+	db := storage.db
 	registration := oauthRegistration{Name: "Assistant", AuthMethod: "client_secret_post", SecretHash: apikey.HashToken("client-secret"), RedirectURIs: []string{"https://assistant.example.test/callback", "http://localhost:12345/callback"}}
 	ids := make([]string, 3)
 	for i := range ids {
@@ -66,29 +56,20 @@ func TestOAuthClientMigrationAndBackfill(t *testing.T) {
 		}{
 			{"INSERT INTO oauth_clients(id,name,auth_method,secret_hash,created_at) VALUES(?,?,?,?,?)", []any{id, registration.Name, registration.AuthMethod, registration.SecretHash, created}},
 			{"INSERT INTO oauth_grants(id,client_id,owner_subject,owner_email,organization_id,permission,resource,created_at,access_hash,access_expires_at) VALUES(?,?,?,?,?,?,?,?,?,?)", []any{"grant_" + id, id, "user_owner", "owner@example.test", "org_example", "write", testPublicURL + "/mcp", created, apikey.HashToken("access_" + id), "2026-11-01T00:00:00Z"}},
-			{"INSERT INTO oauth_refresh_tokens(token_hash,grant_id,expires_at) VALUES(?,?,?)", []any{apikey.HashToken("refresh_" + id), "grant_" + id, "2026-11-01T00:00:00Z"}},
+			{"INSERT INTO oauth_refresh_tokens(organization_id,token_hash,grant_id,expires_at) VALUES('org_example',?,?,?)", []any{apikey.HashToken("refresh_" + id), "grant_" + id, "2026-11-01T00:00:00Z"}},
 		} {
 			if _, err := db.ExecContext(ctx, statement.query, statement.args...); err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	storage, err := openStore(ctx, path, authApplicationID, "auth")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = storage.Close() })
-	s.auth.store = storage
 	for _, id := range append(slices.Clone(ids), broken) {
 		var accessHash, refreshHash string
 		if err := storage.reader.QueryRowContext(ctx, `SELECT g.access_hash,t.token_hash FROM oauth_grants g JOIN oauth_refresh_tokens t ON t.grant_id=g.id WHERE g.client_id=? AND g.revoked_at IS NULL`, id).Scan(&accessHash, &refreshHash); err != nil || accessHash != apikey.HashToken("access_"+id) || refreshHash != apikey.HashToken("refresh_"+id) {
 			t.Fatalf("live grant changed by migration: %v", err)
 		}
 	}
-	if _, err := storage.db.ExecContext(ctx, `CREATE TRIGGER fail_second_client BEFORE INSERT ON oauth_client_redirect_uris WHEN NEW.client_id=`+sqlLiteral(ids[1])+` AND NEW.position=1 BEGIN SELECT RAISE(ABORT,'injected insert failure'); END`); err != nil {
+	if _, err := admin.ExecContext(ctx, `CREATE FUNCTION public.fail_second_client() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected insert failure'; END $$; CREATE TRIGGER fail_second_client BEFORE INSERT ON platform.oauth_client_redirect_uris FOR EACH ROW WHEN (NEW.client_id=`+sqlLiteral(ids[1])+` AND NEW.position=1) EXECUTE FUNCTION public.fail_second_client()`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.backfillOAuthClients(ctx); err == nil {
@@ -112,7 +93,7 @@ func TestOAuthClientMigrationAndBackfill(t *testing.T) {
 			t.Fatal("backfill log exposed client data")
 		}
 	}
-	if _, err := storage.db.ExecContext(ctx, "DROP TRIGGER fail_second_client"); err != nil {
+	if _, err := admin.ExecContext(ctx, "DROP TRIGGER fail_second_client ON platform.oauth_client_redirect_uris"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.backfillOAuthClients(ctx); err != nil {
@@ -124,7 +105,7 @@ func TestOAuthClientMigrationAndBackfill(t *testing.T) {
 			t.Fatalf("backfilled registration differs: %v", err)
 		}
 	}
-	if _, err := storage.db.ExecContext(ctx, `CREATE TRIGGER refuse_backfill_rewrite BEFORE INSERT ON oauth_client_redirect_uris BEGIN SELECT RAISE(ABORT,'already filled'); END`); err != nil {
+	if _, err := admin.ExecContext(ctx, `CREATE TRIGGER refuse_backfill_rewrite BEFORE INSERT ON platform.oauth_client_redirect_uris FOR EACH ROW EXECUTE FUNCTION public.fail_second_client()`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.backfillOAuthClients(ctx); err != nil {

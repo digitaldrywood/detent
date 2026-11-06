@@ -18,9 +18,6 @@ func (platformTimeoutTransport) RoundTrip(request *http.Request) (*http.Response
 }
 
 func TestPlatformTenantDetail(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 	t.Parallel()
 	f := newEntryFixture(t)
 	endpoint := testSocketEndpoint("alpha.sock")
@@ -153,9 +150,6 @@ func TestPlatformTenantAICreditBalance(t *testing.T) {
 }
 
 func TestPlatformResumeProvisioning(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 	t.Parallel()
 	f := newEntryFixture(t)
 	f.service.config.Allocation = &AllocationConfig{}

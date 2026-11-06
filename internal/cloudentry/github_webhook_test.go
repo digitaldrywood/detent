@@ -60,16 +60,7 @@ func TestSharedEntryGitHubWebhookRouting(t *testing.T) {
 			f := newEntryFixture(t)
 			withDatabase := func(id string, operation func(*sql.DB)) {
 				t.Helper()
-				fixture := f.fixtures[id]
-				db, err := sql.Open("sqlite", fixture.path+"?_pragma=foreign_keys(1)")
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = db.Close() })
-				operation(db)
-				if err := db.Close(); err != nil {
-					t.Fatal(err)
-				}
+				operation(f.fixtures[id].database)
 			}
 			bind := func(id, binding string) {
 				t.Helper()
@@ -79,17 +70,11 @@ func TestSharedEntryGitHubWebhookRouting(t *testing.T) {
 				withDatabase(id, func(db *sql.DB) {
 					switch binding {
 					case "repository":
-						if _, err := db.ExecContext(t.Context(), `INSERT INTO repositories(github_node_id, github_owner, github_name, created_at, updated_at) VALUES ('R_repo', 'Acme', 'Orders', '2026-10-06T12:00:00Z', '2026-10-06T12:00:00Z')`); err != nil {
-							t.Fatal(err)
-						}
-						if _, err := db.ExecContext(t.Context(), "DELETE FROM projects WHERE repository_id = (SELECT id FROM repositories WHERE github_node_id = 'R_repo')"); err != nil {
-							t.Fatal(err)
-						}
-						if _, err := db.ExecContext(t.Context(), "UPDATE projects SET repository_id = (SELECT id FROM repositories WHERE github_node_id = 'R_repo') WHERE profile = 'native'"); err != nil {
+						if _, err := db.ExecContext(t.Context(), "UPDATE project_settings SET repository='Acme/Orders',repository_enabled=true WHERE organization_id=$1", id); err != nil {
 							t.Fatal(err)
 						}
 					case "checkout":
-						if _, err := db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = 'Acme/Orders' WHERE profile = 'native'"); err != nil {
+						if _, err := db.ExecContext(t.Context(), "UPDATE project_settings SET checkout_repository='Acme/Orders' WHERE organization_id=$1", id); err != nil {
 							t.Fatal(err)
 						}
 					}
@@ -227,8 +212,8 @@ func TestSharedEntryGitHubWebhookRouting(t *testing.T) {
 				withDatabase(id, func(db *sql.DB) {
 					if err := db.QueryRowContext(t.Context(), `SELECT
  (SELECT count(*) FROM github_webhook_inbox),
- (SELECT count(*) FROM issues WHERE native_id IS NOT NULL),
- COALESCE((SELECT max(redelivery_count) FROM github_webhook_inbox), 0)`).Scan(&inbox, &issues, &redeliveries); err != nil {
+ (SELECT count(*) FROM issues WHERE organization_id=$1 AND native_id IS NOT NULL),
+ COALESCE((SELECT max(redelivery_count) FROM github_webhook_inbox), 0)`, id).Scan(&inbox, &issues, &redeliveries); err != nil {
 						t.Fatal(err)
 					}
 				})

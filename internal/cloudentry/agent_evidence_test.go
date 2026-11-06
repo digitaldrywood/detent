@@ -37,9 +37,6 @@ import (
 )
 
 func TestNativeAgentEvidence(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 
 	f := newEntryFixture(t)
 	store := newSpacesFixture(t, false)

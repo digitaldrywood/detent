@@ -27,24 +27,28 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 const provisioningFixtureTimeout = 2 * time.Minute
 
 type processLauncher struct {
-	databaseTemplate string
-	billing          func() *hubserver.HostedBillingConfig
-	plans            *hubserver.HostedPlansConfig
-	provider         *fakeProvider
-	key              ed25519.PrivateKey
-	mu               sync.Mutex
-	running          map[string]func()
-	failures         map[string]error
-	transports       map[string]*http.Transport
-	useUnix          bool
-	starts           int
-	checks           map[string]func(context.Context) error
+	configureDatabase func(*hubserver.Config)
+	databases         map[string]*sql.DB
+	billing           func() *hubserver.HostedBillingConfig
+	plans             *hubserver.HostedPlansConfig
+	provider          *fakeProvider
+	key               ed25519.PrivateKey
+	mu                sync.Mutex
+	running           map[string]func()
+	failures          map[string]error
+	transports        map[string]*http.Transport
+	useUnix           bool
+	starts            int
+	checks            map[string]func(context.Context) error
 }
 
 func (l *processLauncher) Start(_ context.Context, spec TenantSpec) error {
@@ -57,11 +61,8 @@ func (l *processLauncher) Start(_ context.Context, spec TenantSpec) error {
 	if err != nil {
 		return err
 	}
-	if err := copyTenantDatabaseTemplate(l.databaseTemplate, filepath.Join(spec.Directory, "hub.db")); err != nil {
-		return err
-	}
 	config := hubserver.Config{
-		DatabasePath: filepath.Join(spec.Directory, "hub.db"), GitHubDisabled: true,
+		GitHubDisabled:    true,
 		InitialAdminToken: []byte(testAdminKey), Logger: slog.New(slog.DiscardHandler),
 		Hosted: &hubserver.HostedConfig{
 			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL, Provider: l.provider,
@@ -82,6 +83,7 @@ func (l *processLauncher) Start(_ context.Context, spec TenantSpec) error {
 		l.checks = make(map[string]func(context.Context) error)
 	}
 	l.checks[id] = spec.Check
+	l.configureDatabase(&config)
 	if l.useUnix {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
@@ -222,7 +224,7 @@ func newProvisioningFixture(t *testing.T, maxTenants int, mutate func(*Allocatio
 func newProvisioningFixtureWith(t *testing.T, maxTenants int, mutate func(*AllocationConfig), configure func(*provisioningFixture), configureEntry ...func(*Config)) *provisioningFixture {
 	t.Helper()
 	if testing.Short() {
-		t.Skip("SQLite tenant provisioning integration")
+		t.Skip("PostgreSQL tenant provisioning integration")
 	}
 
 	seed := make([]byte, ed25519.SeedSize)
@@ -232,12 +234,13 @@ func newProvisioningFixtureWith(t *testing.T, maxTenants int, mutate func(*Alloc
 	for _, user := range []string{"member", "eve", "fay"} {
 		f.provider.users["user_"+user] = user + "@example.test"
 	}
-	f.launcher = &processLauncher{databaseTemplate: hubDatabasePath(t), provider: f.provider, key: f.key, plans: capacityPlans(), running: map[string]func(){}, transports: map[string]*http.Transport{}, useUnix: socketFixtureFits(root)}
+	databases := make(map[string]*sql.DB)
+	f.launcher = &processLauncher{configureDatabase: configurePostgresTenants(t, databases), databases: databases, provider: f.provider, key: f.key, plans: capacityPlans(), running: map[string]func(){}, transports: map[string]*http.Transport{}, useUnix: socketFixtureFits(root)}
 	if configure != nil {
 		configure(f)
 	}
 	f.objects = newSpacesFixture(t, false)
-	f.configureEntry = configureEntry
+	f.configureEntry = append([]func(*Config){entryPostgresConfig(t)}, configureEntry...)
 	f.open(t, maxTenants, mutate)
 	return f
 }
@@ -308,7 +311,7 @@ func organizationFromLocation(t *testing.T, location string) string {
 }
 
 func TestProvisioningSelfServiceJourney(t *testing.T) {
-	for _, backend := range []string{"sqlite", "postgres"} {
+	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) { testProvisioningSelfServiceJourney(t, entryBackendConfig(t, backend)) })
 	}
 }
@@ -377,8 +380,9 @@ func testProvisioningSelfServiceJourney(t *testing.T, configureStorage func(*Con
 	if gone, _ := member.get("/organizations/" + id + "/organization"); gone.StatusCode != http.StatusNotFound {
 		t.Fatalf("deleted organization still routes: %d", gone.StatusCode)
 	}
-	if _, err := os.Stat(filepath.Join(f.roots[0], id, "hub.db")); err != nil {
-		t.Fatalf("deletion removed tenant data: %v", err)
+	var retained int
+	if err := f.launcher.databases[id].QueryRowContext(t.Context(), "SELECT count(*) FROM public.organizations WHERE organization_id=$1", id).Scan(&retained); err != nil || retained != 1 {
+		t.Fatalf("deletion retained tenant data = %d, %v", retained, err)
 	}
 	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state = 'ready' WHERE id = ?", id); err == nil {
 		t.Fatal("a deleted organization was resurrected")
@@ -702,7 +706,7 @@ func TestProvisioningPollsReuseProviderSessionVerification(t *testing.T) {
 
 func TestProvisioningRejectsIneligibleCreators(t *testing.T) {
 	if testing.Short() {
-		t.Skip("SQLite tenant provisioning integration")
+		t.Skip("PostgreSQL tenant provisioning integration")
 	}
 
 	t.Parallel()
@@ -892,47 +896,44 @@ func TestOwnerFreeAllowance(t *testing.T) {
 			t.Parallel()
 			f := newEntryFixture(t)
 			plans := hubserver.CheckoutHostedPlans(nil)
-			db, err := sql.Open("sqlite", storeDSN(f.fixtures["org_alpha"].path))
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = db.Close() })
-			for _, plan := range plans.Plans {
-				if plan.ID != "free" && plan.ID != "starter" {
-					continue
+			repository := tenantPostgresRepository(t, f.fixtures["org_alpha"])
+			if err := repository.WriteTenant(t.Context(), "org_alpha", corestore.Serving, func(w tenantstore.Writer) error {
+				for _, plan := range plans.Plans {
+					if plan.ID != "free" && plan.ID != "starter" {
+						continue
+					}
+					if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: "org_alpha", PlanReference: billingstore.PlanReference{ID: plan.ID, Version: plan.Version}, Name: plan.Name, Allowances: plan.Allowances, Features: plan.Features}); err != nil {
+						return err
+					}
 				}
-				raw, err := json.Marshal(plan)
+				assignment, err := w.BillingAssignment(t.Context())
 				if err != nil {
-					t.Fatal(err)
+					return err
 				}
-				if _, err := db.ExecContext(t.Context(), "INSERT INTO hosted_plans(id,version,record_json) VALUES(?,?,?)", plan.ID, plan.Version, string(raw)); err != nil {
-					t.Fatal(err)
+				revision := assignment.Revision
+				assignment.Base = billingstore.PlanReference{ID: test.base, Version: 1}
+				if test.subscribed {
+					assignment.Subscription = &billingstore.PlanReference{ID: "starter", Version: 1}
+					expiry := time.Now().Add(time.Hour)
+					assignment.ExpiresAt = &expiry
 				}
-			}
-			if _, err := db.ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET base_id=?,base_version=1", test.base); err != nil {
+				if err := w.SetBillingAssignment(t.Context(), assignment, revision); err != nil {
+					return err
+				}
+				if test.grant {
+					grant := billingstore.Grant{OrganizationID: "org_alpha", ID: "comp_starter", Plan: billingstore.PlanReference{ID: "starter", Version: 1}, Scope: []string{"projects", "native_execution"}, StartsAt: time.Now().Add(-time.Hour)}
+					if test.expired {
+						expiry := time.Now().Add(-time.Minute)
+						grant.ExpiresAt = &expiry
+					}
+					if test.featureOnly {
+						grant.Scope = []string{"model_choice"}
+					}
+					return w.CreateBillingGrant(t.Context(), grant)
+				}
+				return nil
+			}); err != nil {
 				t.Fatal(err)
-			}
-			if test.subscribed {
-				if _, err := db.ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET subscription_id='starter',subscription_version=1,subscription_expires_at=?", formatTime(time.Now().Add(time.Hour))); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if test.grant {
-				grant := hubserver.HostedGrant{ID: "comp_starter", Plan: hubserver.PlanReference{ID: "starter", Version: 1}, Scope: []string{"projects", "native_execution"}, StartsAt: time.Now().Add(-time.Hour)}
-				if test.expired {
-					expiry := time.Now().Add(-time.Minute)
-					grant.ExpiresAt = &expiry
-				}
-				if test.featureOnly {
-					grant.Scope = []string{"model_choice"}
-				}
-				raw, err := json.Marshal(grant)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := db.ExecContext(t.Context(), "INSERT INTO hosted_complimentary_grants(id,record_json) VALUES(?,?)", grant.ID, string(raw)); err != nil {
-					t.Fatal(err)
-				}
 			}
 			if test.deleted {
 				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='deleted' WHERE id='org_alpha'"); err != nil {

@@ -70,7 +70,7 @@ func TestAccessKeyActive(t *testing.T) {
 func TestAccessKeyCrossOrganizationMCP(t *testing.T) {
 	f := newEntryFixture(t)
 	for id, tenant := range f.fixtures {
-		if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=1 WHERE id=?", id); err != nil {
+		if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=true WHERE id=?", id); err != nil {
 			t.Fatal(err)
 		}
 		organization, err := f.service.registry.Organization(t.Context(), id)
@@ -236,15 +236,17 @@ func TestOrganizationKeyDiscoveryPagination(t *testing.T) {
 	owner := newBrowser(t, f.service.Handler())
 	owner.login("/organizations", "user_alice:")
 	key := createTestAccessKey(t, owner, "global", nil, "")
-	db := f.service.auth.store.db
 	for i := range 55 {
-		id := fmt.Sprintf("key_page_%03d", i)
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO access_keys SELECT ?,?,name,kind,owner_subject,owner_email,permission,access_context,organizations_json,service_organization_id,created_at,expires_at,revoked_at FROM access_keys WHERE id=?`, id, id, key.ID); err != nil {
+		copy := key
+		copy.ID = fmt.Sprintf("key_page_%03d", i)
+		copy.Hash = copy.ID
+		if i == 0 {
+			copy.AccessContext = "project"
+			copy.Organizations = []keyOrganization{{OrganizationID: "org_beta", ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{"prj_absent"}}}}
+		}
+		if err := f.service.auth.postgresCreateKey(t.Context(), copy); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if _, err := db.ExecContext(t.Context(), `UPDATE access_keys SET access_context='project',organizations_json='[{"organization_id":"org_beta","project_access":"project","project_ids":["prj_absent"]}]' WHERE id='key_page_000'`); err != nil {
-		t.Fatal(err)
 	}
 	transport := f.service.config.transport
 	serviceCalls := 0
@@ -253,12 +255,15 @@ func TestOrganizationKeyDiscoveryPagination(t *testing.T) {
 		return transport(org)
 	}
 	for _, test := range []struct {
-		name, owner, access, organizations string
+		name, owner, access string
+		organizations       []keyOrganization
 	}{
-		{"unrelated owner", "user_outside", "global", "not-json"},
-		{"other organization", key.Owner, "selected", `[{"organization_id":"org_alpha","project_access":"all","project_ids":[]}]`},
+		{"unrelated owner", "user_outside", "global", nil},
+		{"other organization", key.Owner, "selected", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "all"}}}},
 	} {
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO access_keys SELECT ?,?,name,kind,?,?,permission,?,?,service_organization_id,created_at,expires_at,revoked_at FROM access_keys WHERE id=?`, test.name, test.name, test.owner, key.OwnerEmail, test.access, test.organizations, key.ID); err != nil {
+		copy := key
+		copy.ID, copy.Hash, copy.Owner, copy.AccessContext, copy.Organizations = test.name, test.name, test.owner, test.access, test.organizations
+		if err := f.service.auth.postgresCreateKey(t.Context(), copy); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -428,14 +433,10 @@ func TestAccessKeyOrganizationControls(t *testing.T) {
 	if result, failed := call("list_projects", map[string]any{"organization_id": "org_alpha"}); failed {
 		t.Fatalf("block affected other org=%s", result)
 	}
-	db, err := sql.Open("sqlite", f.fixtures["org_beta"].path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := f.fixtures["org_beta"].database
 	for _, event := range []string{"key_call", "organization_key_policy_denied", "organization_key_blocked", "personal_key_blocked"} {
 		var count int
-		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE event=? AND mutation_json LIKE ?", event, "%"+key.ID+"%").Scan(&count); err != nil {
+		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM public.hosted_audit WHERE organization_id='org_beta' AND event=$1 AND key_id=$2", event, key.ID).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if event == "key_call" {
@@ -665,7 +666,7 @@ func TestAccessKeyMembershipAndPolicyMatrix(t *testing.T) {
 }
 
 func TestAccessKeyLifecycleAndREST(t *testing.T) {
-	for _, backend := range []string{"sqlite", "postgres"} {
+	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) { testAccessKeyLifecycleAndREST(t, entryBackendConfig(t, backend)) })
 	}
 }
@@ -818,7 +819,7 @@ func TestAccessKeyMemberSettingsIsolation(t *testing.T) {
 func TestAccessKeyMCPPreservesMoveItemRequestErrors(t *testing.T) {
 	f := newEntryFixture(t)
 	const org = "org_alpha"
-	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=1 WHERE id=?", org); err != nil {
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=true WHERE id=?", org); err != nil {
 		t.Fatal(err)
 	}
 	organization, err := f.service.registry.Organization(t.Context(), org)
@@ -909,7 +910,7 @@ func TestAccessKeyMutationAuditResponses(t *testing.T) {
 			t.Run(transport+"/"+failure, func(t *testing.T) {
 				f := newEntryFixture(t)
 				const org = "org_alpha"
-				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=1 WHERE id=?", org); err != nil {
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=true WHERE id=?", org); err != nil {
 					t.Fatal(err)
 				}
 				organization, err := f.service.registry.Organization(t.Context(), org)
@@ -922,19 +923,15 @@ func TestAccessKeyMutationAuditResponses(t *testing.T) {
 				owner := newBrowser(t, f.service.Handler())
 				owner.login("/organizations", "user_alice:")
 				client := newBrowser(t, f.service.Handler())
-				db, err := sql.Open("sqlite", storeDSN(f.fixtures[org].path))
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer db.Close()
+				db := f.fixtures[org].database
 				var project string
-				if err := db.QueryRowContext(t.Context(), "SELECT id FROM projects WHERE profile='native'").Scan(&project); err != nil {
+				if err := db.QueryRowContext(t.Context(), "SELECT id FROM public.projects WHERE organization_id='org_alpha' AND profile='native'").Scan(&project); err != nil {
 					t.Fatal(err)
 				}
 				key := createTestAccessKey(t, owner, "selected", []keyOrganization{{OrganizationID: org, ProjectContext: apikey.ProjectContext{Access: "selected", Projects: []string{project}}}}, "")
 				call := entryMCPClient(t, client, key.Token, mcp.ProtocolVersion, "/mcp")
 				approveEntryFixturePolicy(t, owner, org, project)
-				if _, err := db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=0 WHERE id=?", project); err != nil {
+				if _, err := db.ExecContext(t.Context(), "UPDATE public.project_settings SET duplicate_challenge=false WHERE organization_id='org_alpha' AND project_id=$1", project); err != nil {
 					t.Fatal(err)
 				}
 				var items [2]string
@@ -952,9 +949,9 @@ func TestAccessKeyMutationAuditResponses(t *testing.T) {
 				}
 				switch failure {
 				case "post-handler audit":
-					_, err = db.ExecContext(t.Context(), `CREATE TRIGGER reject_key_audit BEFORE UPDATE ON hosted_audit WHEN NEW.event='key_call' AND OLD.status=200 AND NEW.status=200 BEGIN SELECT RAISE(ABORT,'audit unavailable'); END`)
+					_, err = db.ExecContext(t.Context(), `CREATE FUNCTION public.reject_key_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit unavailable'; END $$; CREATE TRIGGER reject_key_audit BEFORE UPDATE ON public.hosted_audit FOR EACH ROW WHEN (NEW.event='key_call' AND OLD.status=200 AND NEW.status=200) EXECUTE FUNCTION public.reject_key_audit()`)
 				case "pre-handler audit":
-					_, err = db.ExecContext(t.Context(), `CREATE TRIGGER reject_key_audit BEFORE INSERT ON hosted_audit WHEN NEW.event='key_call' BEGIN SELECT RAISE(ABORT,'audit unavailable'); END`)
+					_, err = db.ExecContext(t.Context(), `CREATE FUNCTION public.reject_key_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit unavailable'; END $$; CREATE TRIGGER reject_key_audit BEFORE INSERT ON public.hosted_audit FOR EACH ROW WHEN (NEW.event='key_call') EXECUTE FUNCTION public.reject_key_audit()`)
 				case "service":
 					f.service.config.transport = func(Organization) (http.RoundTripper, error) {
 						return nil, errors.New("backend failure secret sentinel")
@@ -980,9 +977,9 @@ func TestAccessKeyMutationAuditResponses(t *testing.T) {
 					name, path, countSQL string
 					arguments, body      map[string]any
 				}{
-					{operatortool.FileIssue, base, "SELECT count(*) FROM issues WHERE title='Audited create'", map[string]any{"title": "Audited create", "description": issueContractTestSections}, map[string]any{"title": "Audited create", "body": issueContractTestSections}},
-					{operatortool.AddComment, base + "/" + items[0] + "/comments", "SELECT count(*) FROM native_comments WHERE body='Audited comment'", map[string]any{"identifier": items[0], "body": "Audited comment"}, map[string]any{"body": "Audited comment"}},
-					{operatortool.SetDependency, base + "/" + items[0] + "/dependencies", "SELECT count(*) FROM issue_dependencies", map[string]any{"identifier": items[0], "related": items[1], "operation": "add", "expected_revision": "1"}, map[string]any{"related_work_item_id": items[1], "operation": "add", "expected_revision": "1"}},
+					{operatortool.FileIssue, base, "SELECT count(*) FROM public.issues WHERE organization_id='org_alpha' AND title='Audited create'", map[string]any{"title": "Audited create", "description": issueContractTestSections}, map[string]any{"title": "Audited create", "body": issueContractTestSections}},
+					{operatortool.AddComment, base + "/" + items[0] + "/comments", "SELECT count(*) FROM public.native_comments WHERE organization_id='org_alpha'", map[string]any{"identifier": items[0], "body": "Audited comment"}, map[string]any{"body": "Audited comment"}},
+					{operatortool.SetDependency, base + "/" + items[0] + "/dependencies", "SELECT count(*) FROM public.issue_dependencies WHERE organization_id='org_alpha'", map[string]any{"identifier": items[0], "related": items[1], "operation": "add", "expected_revision": "1"}, map[string]any{"related_work_item_id": items[1], "operation": "add", "expected_revision": "1"}},
 				} {
 					t.Run(operation.name, func(t *testing.T) {
 						wantFailure := failure == "pre-handler audit" || failure == "service"
@@ -1027,13 +1024,9 @@ func TestAccessKeyMutationAuditResponses(t *testing.T) {
 				if failure == "service" {
 					return
 				}
-				other, err := sql.Open("sqlite", storeDSN(f.fixtures["org_beta"].path))
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer other.Close()
+				other := f.fixtures["org_beta"].database
 				var otherProject string
-				if err := other.QueryRowContext(t.Context(), "SELECT id FROM projects WHERE profile='native'").Scan(&otherProject); err != nil {
+				if err := other.QueryRowContext(t.Context(), "SELECT id FROM public.projects WHERE organization_id='org_beta' AND profile='native'").Scan(&otherProject); err != nil {
 					t.Fatal(err)
 				}
 				for _, denial := range []string{"cross-project", "invalid key", "revoked key"} {
@@ -1053,6 +1046,10 @@ func TestAccessKeyMutationAuditResponses(t *testing.T) {
 							if revoked.Code != http.StatusNoContent {
 								t.Fatalf("revoke=%d %s", revoked.Code, revoked.Body.String())
 							}
+						}
+						var previousComments int
+						if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM public.native_comments WHERE organization_id='org_alpha'").Scan(&previousComments); err != nil {
+							t.Fatal(err)
 						}
 						var raw []byte
 						if transport == "MCP" {
@@ -1075,10 +1072,10 @@ func TestAccessKeyMutationAuditResponses(t *testing.T) {
 							}
 						}
 						var count int
-						if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE body='Forbidden comment'").Scan(&count); err != nil || count != 0 {
+						if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM public.native_comments WHERE organization_id='org_alpha'").Scan(&count); err != nil || count != previousComments {
 							t.Fatalf("unauthorized comments=%d error=%v", count, err)
 						}
-						if err := other.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments").Scan(&count); err != nil || count != 0 {
+						if err := other.QueryRowContext(t.Context(), "SELECT count(*) FROM public.native_comments WHERE organization_id='org_beta'").Scan(&count); err != nil || count != 0 {
 							t.Fatalf("other project comments=%d error=%v", count, err)
 						}
 					})
