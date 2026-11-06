@@ -145,8 +145,7 @@ func operatorAuthorizationCause(err error) string {
 
 func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) error {
 	if errors.Is(err, tenantauth.ErrUnavailable) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderInvalid {
-		message := "Authorization is temporarily unavailable"
-		return s.refusedAPIError(c, http.StatusServiceUnavailable, "service_unavailable", message, apiErrorResponse{Code: "service_unavailable", Message: message}, append(attributes, "authorization_cause", operatorAuthorizationCause(err))...)
+		err = operatorAuthorizationError(err)
 	}
 	if errors.Is(err, corestore.ErrSerializationFailure) {
 		message := "Database transaction was aborted; retry the request"

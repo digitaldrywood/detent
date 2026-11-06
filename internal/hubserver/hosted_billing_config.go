@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -124,7 +125,7 @@ func (d *database) hostedBillingBinding(ctx context.Context, c *HostedBillingCon
 		result = account.Binding
 		return nil
 	})
-	if errors.Is(err, corestore.ErrNotFound) {
+	if errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, tenantauth.ErrUnavailable) {
 		return billing.Binding{}, errHostedBillingUnbound
 	}
 	return result, err

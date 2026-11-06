@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/readableurl"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -349,6 +350,9 @@ func (s *Service) hostedSharedBillingEvent(c echo.Context) error {
 		return s.invalidAPIRequest(c, errors.New("invalid billing event"))
 	}
 	binding, err := s.database.hostedBillingBinding(c.Request().Context(), cfg)
+	if err != nil && !errors.Is(err, errHostedBillingUnbound) {
+		return s.nativeAPIError(c, operatorAuthorizationError(err))
+	}
 	if err != nil || binding.CustomerID != request.CustomerID {
 		return s.refusedAPIError(c, http.StatusConflict, "customer_mismatch", "The event customer is not bound to this organization", apiErrorResponse{Code: "customer_mismatch", Message: "The event customer is not bound to this organization"})
 	}
@@ -429,11 +433,14 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 		}
 		return w.UpdateAccessOrganizationName(ctx, name)
 	})
+	if errors.Is(err, tenantauth.ErrUnavailable) {
+		return s.nativeAPIError(c, err)
+	}
 	if errors.Is(err, errHostedOwnerAlreadyBootstrapped) {
 		return s.refusedAPIError(c, http.StatusConflict, "already_bootstrapped", "This organization already has members", apiErrorResponse{Code: "already_bootstrapped", Message: "This organization already has members"})
 	}
 	if err != nil {
-		return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", err)
+		return s.nativeAPIError(c, operatorAuthorizationError(err))
 	}
 	return c.NoContent(http.StatusNoContent)
 }

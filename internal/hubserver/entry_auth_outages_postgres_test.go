@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -105,6 +106,7 @@ func TestPostgresEntryMembershipOutages(t *testing.T) {
 				}{
 					{"storage", errors.New("private-outage-sentinel"), http.StatusServiceUnavailable},
 					{"outage before denial", errors.Join(tenantauth.ErrUnavailable, accessstore.ErrDenied), http.StatusServiceUnavailable},
+					{"outage before operator denial", errors.Join(tenantauth.ErrUnavailable, operatortool.ErrAccessDenied), http.StatusServiceUnavailable},
 					{"missing", corestore.ErrNotFound, http.StatusForbidden},
 					{"denied", accessstore.ErrDenied, http.StatusForbidden},
 				} {
@@ -172,6 +174,8 @@ func TestPostgresOwnerBootstrapOutages(t *testing.T) {
 			{"tenant outage", "tenant", "owner", errors.New("private-outage-sentinel"), http.StatusServiceUnavailable},
 			{"provider outage", "provider", "owner", errors.New("private-outage-sentinel"), http.StatusServiceUnavailable},
 			{"provider unavailable identity", "provider", "owner", &auth.HostedIdentityError{Reason: auth.HostedReasonProviderUnavailable}, http.StatusServiceUnavailable},
+			{"bootstrap write outage", "write", "owner", errors.New("private-outage-sentinel"), http.StatusServiceUnavailable},
+			{"bootstrap outage before conflict", "write", "owner", errors.Join(tenantauth.ErrUnavailable, errHostedOwnerAlreadyBootstrapped), http.StatusServiceUnavailable},
 			{"missing membership", "", "", nil, http.StatusForbidden},
 			{"wrong role", "", "member", nil, http.StatusForbidden},
 			{"owner", "", "owner", nil, http.StatusNoContent},
@@ -179,6 +183,11 @@ func TestPostgresOwnerBootstrapOutages(t *testing.T) {
 			t.Run(org+"/"+test.name, func(t *testing.T) {
 				service.config.AccessRepository = entryAuthFaultRepository{Repository: repository, stage: test.stage, err: test.err}
 				defer func() { service.config.AccessRepository = repository }()
+				tenantRepository := service.config.TenantRepository
+				if test.stage == "write" {
+					service.config.TenantRepository = entryAuthFaultRepository{Repository: tenantRepository, stage: test.stage, err: test.err}
+					defer func() { service.config.TenantRepository = tenantRepository }()
+				}
 				provider.membershipErr = nil
 				if test.stage == "provider" {
 					provider.membershipErr = test.err

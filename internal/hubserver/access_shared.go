@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
 )
 
@@ -37,7 +38,7 @@ func (s *Service) sharedAccessSession(ctx context.Context, c echo.Context, claim
 		missingSession = errors.Is(err, corestore.ErrNotFound)
 		return err
 	})
-	if missingSession {
+	if missingSession && errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 		row = accessstore.Session{OrganizationID: s.accessOrganization(), Hash: claims.Binding, Email: claims.Email, Subject: identity.Subject, ProviderOrganizationID: identity.OrganizationID, SessionID: identity.SessionID, IdentityCreatedAt: identity.CreatedAt, IdentityExpiresAt: identity.ExpiresAt, SupportActor: identity.SupportActor, SupportReason: identity.SupportReason, CreatedAt: now, ExpiresAt: identity.ExpiresAt}
 		err = s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
 			tenant, err := w.AccessTenant(ctx)
@@ -55,10 +56,10 @@ func (s *Service) sharedAccessSession(ctx context.Context, c echo.Context, claim
 		})
 	}
 	if err != nil {
-		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, auth.ErrInvalidSession) {
-			return auth.Session{}, "", auth.ErrInvalidSession
+		if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+			return auth.Session{}, "", classified
 		}
-		return auth.Session{}, "", errors.Join(tenantauth.ErrUnavailable, err)
+		return auth.Session{}, "", auth.ErrInvalidSession
 	}
 	session := auth.Session{Email: row.Email, ExpiresAt: row.ExpiresAt, Identity: &auth.HostedIdentity{Subject: row.Subject, OrganizationID: row.ProviderOrganizationID, SessionID: row.SessionID, CreatedAt: row.IdentityCreatedAt, ExpiresAt: row.IdentityExpiresAt, SupportActor: row.SupportActor, SupportReason: row.SupportReason}}
 	if row.RevokedAt != nil || !session.ExpiresAt.After(now) || !session.Identity.ExpiresAt.After(now) || !sharedSessionMatches(session, identity, claims.Email) {
@@ -81,7 +82,9 @@ func (s *Service) storeAccessMember(ctx context.Context, w tenantstore.Writer, i
 	}
 	principal := "hosted_" + apikey.HashToken(identity.Subject)[:32]
 	now := s.config.now()
-	if _, err := w.AccessCredential(ctx, principal); errors.Is(err, corestore.ErrNotFound) {
+	if _, err := w.AccessCredential(ctx, principal); errors.Is(err, tenantauth.ErrUnavailable) {
+		return err
+	} else if errors.Is(err, corestore.ErrNotFound) {
 		token, err := s.config.generateToken()
 		if err != nil {
 			return err
@@ -94,6 +97,9 @@ func (s *Service) storeAccessMember(ctx context.Context, w tenantstore.Writer, i
 		return err
 	}
 	member, err := w.AccessMember(ctx, identity.Subject)
+	if errors.Is(err, tenantauth.ErrUnavailable) {
+		return err
+	}
 	if errors.Is(err, corestore.ErrNotFound) {
 		if err := w.CreateAccessMember(ctx, accessstore.Member{OrganizationID: s.accessOrganization(), UserID: identity.Subject, Email: strings.ToLower(identity.Email), MembershipID: membership.ID, Role: membership.Role.Slug, Active: true, PrincipalID: principal, CreatedAt: now, UpdatedAt: now, NotifyIssues: true}); err != nil {
 			return err
@@ -133,7 +139,11 @@ func (s *Service) entryAccessKeyCredential(ctx context.Context, claims cloudasse
 	}
 	if _, scoped := entryBoardCredential(ctx); !scoped && claims.Key.Kind == "service" {
 		if err := s.ensureEntryServicePrincipal(ctx, claims); err != nil {
-			return apiCredential{}, http.StatusForbidden, operatorAuthorizationError(err)
+			err = operatorAuthorizationError(err)
+			if !errors.Is(err, operatortool.ErrAccessDenied) {
+				return apiCredential{}, http.StatusServiceUnavailable, err
+			}
+			return apiCredential{}, http.StatusForbidden, err
 		}
 	}
 	err := s.accessRead(ctx, s.accessOrganization(), func(w tenantstore.Reader) error {
@@ -172,11 +182,12 @@ func (s *Service) entryAccessKeyCredential(ctx context.Context, claims cloudasse
 		credential.ID, credential.Hash, credential.HostedPrincipal = principal.ID, principal.Hash, principal.ID
 		return nil
 	})
-	if errors.Is(err, corestore.ErrNotFound) && claims.Key.Kind == "service" {
-		return apiCredential{}, http.StatusForbidden, err
-	}
 	if err != nil {
-		return apiCredential{}, http.StatusForbidden, operatorAuthorizationError(err)
+		err = operatorAuthorizationError(err)
+		if !errors.Is(err, operatortool.ErrAccessDenied) {
+			return apiCredential{}, http.StatusServiceUnavailable, err
+		}
+		return apiCredential{}, http.StatusForbidden, err
 	}
 	return credential, http.StatusOK, nil
 }
@@ -187,7 +198,7 @@ func (s *Service) ensureEntryServicePrincipal(ctx context.Context, claims clouda
 		_, err := r.AccessCredential(ctx, id)
 		return err
 	})
-	if !errors.Is(err, corestore.ErrNotFound) {
+	if !errors.Is(err, corestore.ErrNotFound) || !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 		return err
 	}
 	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {

@@ -77,6 +77,9 @@ func (s *Service) authorizeAccessScope(ctx context.Context, r accessstore.Reader
 func (s *Service) accessWebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
 	var row accessstore.Session
 	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error { var err error; row, err = r.AccessSession(ctx, hash); return err })
+	if errors.Is(err, tenantauth.ErrUnavailable) {
+		return auth.Session{}, err
+	}
 	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
 		return auth.Session{}, auth.ErrInvalidSession
 	}

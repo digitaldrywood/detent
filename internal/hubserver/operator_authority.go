@@ -40,20 +40,22 @@ type operatorAuthorizationFailure struct {
 	kind  error
 }
 
-func (e *operatorAuthorizationFailure) Error() string        { return e.kind.Error() }
-func (e *operatorAuthorizationFailure) Unwrap() error        { return e.cause }
-func (e *operatorAuthorizationFailure) Is(target error) bool { return errors.Is(e.kind, target) }
+func (e *operatorAuthorizationFailure) Error() string { return e.kind.Error() }
+func (e *operatorAuthorizationFailure) Unwrap() error { return e.kind }
+func (e *operatorAuthorizationFailure) Is(target error) bool {
+	return errors.Is(e.kind, target) || target == tenantauth.ErrUnavailable && (errors.Is(e.kind, operatortool.ErrServiceUnavailable) || errors.Is(e.kind, operatortool.ErrProviderUnavailable))
+}
 
 func operatorAuthorizationError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, tenantauth.ErrUnavailable) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderInvalid {
-		return &operatorAuthorizationFailure{cause: err, kind: operatortool.ErrServiceUnavailable}
-	}
 	var failure *operatorAuthorizationFailure
 	if errors.As(err, &failure) {
 		return failure
+	}
+	if errors.Is(err, tenantauth.ErrUnavailable) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderInvalid {
+		return &operatorAuthorizationFailure{cause: err, kind: operatortool.ErrServiceUnavailable}
 	}
 	var denied *operatortool.AuthorizationError
 	if errors.As(err, &denied) && denied.Cause != nil {
