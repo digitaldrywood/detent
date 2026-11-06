@@ -2,9 +2,10 @@ package releaseauditstore
 
 import (
 	"context"
+	"time"
+
 	"github.com/digitaldrywood/detent/internal/releaseaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"time"
 )
 
 type Reader interface {
