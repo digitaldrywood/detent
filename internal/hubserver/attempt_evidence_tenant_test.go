@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -33,10 +34,55 @@ func TestPostgresAttemptEvidencePreflightChecksRunningFencedOwner(t *testing.T) 
 		SecretKeys: secretTestKeys(t, "1", "1"),
 	})
 	service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
-	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
-	if err != nil {
-		t.Fatal(err)
+	hosted, runtime := service.config.Hosted, service.database.hostedRuntime.Load()
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log(operationLog.String())
+		}
+	})
+	usage := make(map[tracker.OrganizationID]int64)
+	tests := []struct {
+		name         string
+		full         bool
+		organization nativeOrganization
+	}{
+		{name: "full allowance", full: true},
+		{name: "available allowance"},
 	}
+	for i := range tests {
+		organization := nativeOrganization{ID: tracker.OrganizationID(newNativeID("org")), Name: "Example organization"}
+		organization.Slug = strings.ReplaceAll(string(organization.ID), "_", "-")
+		if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization.ID, Name: organization.Name, Slug: organization.Slug, CreatedAt: time.Now().UTC()})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		tests[i].organization = organization
+		usage[organization.ID] = 0
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service.config.Hosted = hosted
+			service.database.hostedRuntime.Store(runtime)
+			usage[test.organization.ID] = testPostgresAttemptEvidence(t, service, admin, clock, test.organization, test.full)
+			for organization, want := range usage {
+				if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+					got, err := r.CollaborationBytes(t.Context())
+					if err == nil && got != want {
+						t.Errorf("organization %s usage=%d, want %d", organization, got, want)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func testPostgresAttemptEvidence(t *testing.T, service *Service, admin *sql.DB, clock *leaseTestClock, organization nativeOrganization, full bool) int64 {
+	t.Helper()
+	repository := service.config.TenantRepository
 	seedPostgresHubAdmin(t, repository, service, organization)
 	cursorKey := bytes.Repeat([]byte{0x31}, 32)
 	cursorEnvelope, err := service.config.SecretKeys.Seal(cursorKey, accessstore.SecretAAD(organization.ID, "", accessstore.NativeCursorKeyKind))
@@ -73,11 +119,11 @@ func TestPostgresAttemptEvidencePreflightChecksRunningFencedOwner(t *testing.T) 
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, issueResponse, &issue)
 	startedAt := clock.Now().UTC()
-	const runnerID = "runner_evidence"
-	const machineID = "machine_evidence"
-	const credentialID = "credential_evidence"
-	const enrollmentID = "enrollment_evidence"
-	const secret = "example_runner_evidence_secret"
+	runnerID := "runner_evidence_" + string(organization.ID)
+	machineID := tracker.MachineID("machine_evidence_" + string(organization.ID))
+	credentialID := "credential_evidence_" + string(organization.ID)
+	enrollmentID := "enrollment_evidence_" + string(organization.ID)
+	secret := "example_runner_evidence_secret_" + string(organization.ID)
 	tokenHash := apikey.HashToken(secret)
 	expires := startedAt.Add(time.Hour)
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
@@ -93,7 +139,7 @@ func TestPostgresAttemptEvidencePreflightChecksRunningFencedOwner(t *testing.T) 
 		if err := w.RedeemRunnerEnrollment(t.Context(), enrollmentID, runnerID, machineID, startedAt); err != nil {
 			return err
 		}
-		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: machineID, Hostname: "example-host", Capacity: 2, Version: "example"}); err != nil {
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: string(machineID), Hostname: "example-host", Capacity: 2, Version: "example"}); err != nil {
 			return err
 		}
 		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: runnerID, MachineID: machineID, TokenID: credentialID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Collaborate, runnerauth.Events}, DisplayName: "Example runner", CapacityLimit: 2, ReportedCapacity: 2, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: startedAt, ExpiresAt: expires, LastHeartbeatAt: startedAt}); err != nil {
@@ -116,7 +162,7 @@ func TestPostgresAttemptEvidencePreflightChecksRunningFencedOwner(t *testing.T) 
 			if err != nil {
 				return err
 			}
-			lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: row.ID, ExpectedRevision: row.Revision, MachineID: machineID, SessionID: session, LeaseID: session + "-lease", TTL: 5 * time.Minute})
+			lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: row.ID, ExpectedRevision: row.Revision, MachineID: string(machineID), SessionID: session, LeaseID: session + "-lease", TTL: 5 * time.Minute})
 			if err != nil {
 				return err
 			}
@@ -302,9 +348,6 @@ func TestPostgresAttemptEvidencePreflightChecksRunningFencedOwner(t *testing.T) 
 		requireNativeStatus(t, refused, http.StatusUnprocessableEntity)
 	}
 	publishedEvidence := performHubAPIRequest(t, service, http.MethodPost, evidencePath, secret, evidenceUpload)
-	if publishedEvidence.Code != http.StatusCreated {
-		t.Log(operationLog.String())
-	}
 	requireNativeStatus(t, publishedEvidence, http.StatusCreated)
 	var evidenceMetadata attachment.Metadata
 	decodeHubResponse(t, publishedEvidence, &evidenceMetadata)
@@ -413,9 +456,38 @@ func TestPostgresAttemptEvidencePreflightChecksRunningFencedOwner(t *testing.T) 
 	finished.Data.Outcome, finished.Data.CompletionBody = "failed", "Completed evidence review"
 	finished.PriorEvents = []tracker.NativeRunEvent{observation}
 	var completionUsage int64
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		used, err := w.CollaborationBytes(t.Context())
+		if err != nil {
+			return err
+		}
+		completionUsage = used
+		if full {
+			completionUsage = 1 << 20
+			_, err = w.AdjustCollaborationBytes(t.Context(), completionUsage-used, completionUsage)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if full {
+		commentInput.IdempotencyKey = "quota-exhausted-comment"
+		refused := performHubAPIRequest(t, service, http.MethodPost, commentPath, secret, commentInput)
+		requireNativeStatus(t, refused, http.StatusTooManyRequests)
+		refusedUpload := performHubAPIRequest(t, service, http.MethodPost, metadataPath+"/check", secret, map[string]any{"size": 1})
+		requireNativeStatus(t, refusedUpload, http.StatusTooManyRequests)
+	}
+	eventsPath := itemsPath + "/" + string(issue.WorkItemID) + "/events"
+	var completionResponse []byte
+	var chargedUsage int64
 	for replay := range 2 {
-		response := performHubAPIRequest(t, service, http.MethodPost, itemsPath+"/"+string(issue.WorkItemID)+"/events", secret, finished)
+		response := performHubAPIRequest(t, service, http.MethodPost, eventsPath, secret, finished)
 		requireNativeStatus(t, response, http.StatusOK)
+		if replay == 0 {
+			completionResponse = bytes.Clone(response.Body.Bytes())
+		} else if !bytes.Equal(completionResponse, response.Body.Bytes()) {
+			t.Fatal("completion replay changed response")
+		}
 		comments := performHubAPIRequest(t, service, http.MethodGet, commentPath, secret, nil)
 		requireNativeStatus(t, comments, http.StatusOK)
 		var page tracker.Page[tracker.NativeComment]
@@ -430,13 +502,50 @@ func TestPostgresAttemptEvidencePreflightChecksRunningFencedOwner(t *testing.T) 
 			t.Fatalf("completion comments after replay %d: %d", replay, found)
 		}
 		if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-			used, err := r.CollaborationBytes(t.Context())
-			if replay == 0 {
-				completionUsage = used
-			} else if used != completionUsage {
-				t.Error("completion replay charged twice")
+			attempt, err := r.Attempt(t.Context(), input.AttemptID)
+			if err != nil {
+				return err
 			}
-			return err
+			if attempt.Status != "failed" || attempt.Sequence != finished.Data.Sequence {
+				t.Fatalf("completion did not finish attempt: status=%s sequence=%d", attempt.Status, attempt.Sequence)
+			}
+			receipt, err := r.Receipt(t.Context(), credentialID, http.MethodPost+" "+eventsPath, finished.IdempotencyKey)
+			if err != nil {
+				return err
+			}
+			raw, err := eventstore.NewContent(service.runDetailStore()).Receipt(t.Context(), receipt)
+			if err != nil {
+				return err
+			}
+			if !bytes.Equal(raw, completionResponse) {
+				t.Error("completion receipt differs from committed response")
+			}
+			events, err := r.Events(t.Context(), project.ID, issue.WorkItemID, 0, 100)
+			if err != nil {
+				return err
+			}
+			finishedCount := 0
+			for _, event := range events {
+				if event.Type == "run.finished" && event.AttemptID == input.AttemptID {
+					finishedCount++
+				}
+			}
+			if finishedCount != 1 {
+				t.Errorf("completion event count=%d, want 1", finishedCount)
+			}
+			used, err := r.CollaborationBytes(t.Context())
+			if err != nil {
+				return err
+			}
+			if replay == 0 {
+				if used <= completionUsage {
+					t.Errorf("completion was not charged to collaboration bytes: got %d, before %d", used, completionUsage)
+				}
+				chargedUsage = used
+			} else if used != chargedUsage {
+				t.Errorf("completion replay changed collaboration bytes: got %d, want %d", used, chargedUsage)
+			}
+			return nil
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -453,4 +562,5 @@ func TestPostgresAttemptEvidencePreflightChecksRunningFencedOwner(t *testing.T) 
 	commentInput.IdempotencyKey = "released-screenshot"
 	releasedComment := performHubAPIRequest(t, service, http.MethodPost, commentPath, secret, commentInput)
 	requireNativeStatus(t, releasedComment, http.StatusConflict)
+	return chargedUsage
 }

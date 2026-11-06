@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -56,16 +57,8 @@ func (s *Service) checkAttachmentEvidenceTenant(ctx context.Context, scope nativ
 }
 
 func (s *Service) publishEvidenceCompletion(ctx context.Context, w tenantstore.Writer, publication attachmentEvidencePublication) error {
-	limit, err := s.attachmentQuotaLimit(ctx, w)
-	if err != nil {
+	if _, err := w.AdjustCollaborationBytes(ctx, publication.bytes, math.MaxInt64); err != nil {
 		return err
-	}
-	usage, err := w.AdjustCollaborationBytes(ctx, publication.bytes, limit)
-	if err != nil {
-		return err
-	}
-	if !usage.Allowed {
-		return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
 	}
 	if err := writeWorkItemRecord(ctx, w, publication.plan, publication.fields); err != nil {
 		return err
