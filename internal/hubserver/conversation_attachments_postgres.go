@@ -349,7 +349,11 @@ func (c *conversationService) sweepAttachmentsPG(ctx context.Context) (int, erro
 			if !ok {
 				return conversationContentUnavailable()
 			}
-			if _, err := owner.LockAttachmentConversation(ctx, candidate.ProjectID, candidate.ConversationID); err != nil {
+			maintenance, ok := w.(conversationstore.AttachmentMaintenanceWriter)
+			if !ok {
+				return conversationContentUnavailable()
+			}
+			if _, err := maintenance.LockRetainedAttachmentConversation(ctx, candidate.ProjectID, candidate.ConversationID); err != nil {
 				if errors.Is(err, corestore.ErrNotFound) {
 					return nil
 				}

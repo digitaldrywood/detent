@@ -507,6 +507,7 @@ type Conversation struct {
 	Archived               bool
 	ContentAttachmentID    string
 	ConversionState        int16
+	DeletedAt              *time.Time
 }
 
 type ConversationAttachment struct {

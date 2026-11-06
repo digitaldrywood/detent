@@ -25,27 +25,27 @@ var _ conversationstore.Reader = (*session)(nil)
 var _ conversationstore.Writer = (*session)(nil)
 
 func (s *session) Conversation(ctx context.Context, project tracker.ProjectID, id string) (conversationstore.Conversation, error) {
-	return scanPGConversation(s.db.QueryRowContext(ctx, conversationSelect+` WHERE organization_id=$1 AND project_id=$2 AND id=$3`, s.organization, project, id))
+	return scanPGConversation(s.db.QueryRowContext(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND project_id=$2 AND id=$3`, s.organization, project, id))
 }
 
 func (s *session) LockConversation(ctx context.Context, project tracker.ProjectID, id string) (conversationstore.Conversation, error) {
-	return scanPGConversation(s.db.QueryRowContext(ctx, conversationSelect+` WHERE organization_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE OF c`, s.organization, project, id))
+	return scanPGConversation(s.db.QueryRowContext(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE OF c`, s.organization, project, id))
 }
 
 func (s *session) ConversationByID(ctx context.Context, id string) (conversationstore.Conversation, error) {
-	return scanPGConversation(s.db.QueryRowContext(ctx, conversationSelect+` WHERE organization_id=$1 AND id=$2`, s.organization, id))
+	return scanPGConversation(s.db.QueryRowContext(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND id=$2`, s.organization, id))
 }
 
 func (s *session) ConversationByExecutionLease(ctx context.Context, leaseID string) (conversationstore.Conversation, error) {
-	return scanPGConversation(s.db.QueryRowContext(ctx, conversationSelect+` WHERE organization_id=$1 AND execution_lease_id=$2`, s.organization, leaseID))
+	return scanPGConversation(s.db.QueryRowContext(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND execution_lease_id=$2`, s.organization, leaseID))
 }
 
 func (s *session) ConversationByWorkItem(ctx context.Context, project tracker.ProjectID, item string) (conversationstore.Conversation, error) {
-	return scanPGConversation(s.db.QueryRowContext(ctx, conversationSelect+` WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3`, s.organization, project, item))
+	return scanPGConversation(s.db.QueryRowContext(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND project_id=$2 AND work_item_id=$3`, s.organization, project, item))
 }
 
 func (s *session) ConversationByCreationKey(ctx context.Context, principal, key string) (conversationstore.Conversation, error) {
-	return scanPGConversation(s.db.QueryRowContext(ctx, conversationSelect+` WHERE organization_id=$1 AND owner_principal_id=$2 AND creation_key=$3`, s.organization, principal, key))
+	return scanPGConversation(s.db.QueryRowContext(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND owner_principal_id=$2 AND creation_key=$3`, s.organization, principal, key))
 }
 
 const conversationSelect = `SELECT c.organization_id,c.project_id,c.id,c.creation_key,c.creation_hash,c.owner_principal_id,c.owner_subject,c.origin,c.title,c.visibility,c.status,
@@ -111,7 +111,7 @@ func (s *session) Conversations(ctx context.Context, filter conversationstore.Co
 		return conversationstore.ConversationPage{}, corestore.ErrInvalidPage
 	}
 	args := []any{s.organization}
-	where := ` WHERE c.organization_id=$1 AND c.origin='user' AND c.archived=false AND (c.visibility='shared' OR c.owner_principal_id=$2) AND (c.read_audience='' OR c.read_audience=$3)`
+	where := ` WHERE c.deleted_at IS NULL AND c.organization_id=$1 AND c.origin='user' AND c.archived=false AND (c.visibility='shared' OR c.owner_principal_id=$2) AND (c.read_audience='' OR c.read_audience=$3)`
 	args = append(args, filter.PrincipalID, filter.ReadAudience)
 	add := func(expression string, values ...any) { where += expression; args = append(args, values...) }
 	if filter.ProjectID != "" {
@@ -188,7 +188,7 @@ func (s *session) LifecycleConversations(ctx context.Context, filter conversatio
 	if err := checkPage(filter.Limit); err != nil {
 		return conversationstore.ConversationPage{}, err
 	}
-	where := ` WHERE c.organization_id=$1`
+	where := ` WHERE c.deleted_at IS NULL AND c.organization_id=$1`
 	args := []any{s.organization}
 	switch filter.Kind {
 	case conversationstore.LifecycleRestart:
@@ -236,7 +236,7 @@ func (s *session) PendingConversations(ctx context.Context, afterID string, limi
 	if err := checkPage(limit); err != nil {
 		return conversationstore.PendingConversationPage{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT c.id,c.work_item_id IS NOT NULL FROM conversations c WHERE c.organization_id=$1 AND c.id>$2 AND EXISTS (SELECT 1 FROM conversation_messages m WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id AND m.role='user' AND m.delivery IN ('saved','queued')) ORDER BY c.id LIMIT $3`, s.organization, afterID, limit+1)
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id,c.work_item_id IS NOT NULL FROM conversations c WHERE c.deleted_at IS NULL AND c.organization_id=$1 AND c.id>$2 AND EXISTS (SELECT 1 FROM conversation_messages m WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id AND m.role='user' AND m.delivery IN ('saved','queued')) ORDER BY c.id LIMIT $3`, s.organization, afterID, limit+1)
 	if err != nil {
 		return conversationstore.PendingConversationPage{}, mapError(ctx, err)
 	}

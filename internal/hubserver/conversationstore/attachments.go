@@ -23,3 +23,7 @@ type AttachmentWriter interface {
 	CreateConversationAttachment(context.Context, Attachment, ContentObject) error
 	DeleteConversationAttachment(context.Context, tracker.ProjectID, string, string, time.Time) error
 }
+
+type AttachmentMaintenanceWriter interface {
+	LockRetainedAttachmentConversation(context.Context, tracker.ProjectID, string) (Conversation, error)
+}

@@ -132,16 +132,24 @@ func (s *session) reclaimSharedConversationAttachment(ctx context.Context, proje
 }
 
 func (s *session) AttachmentConversation(ctx context.Context, project tracker.ProjectID, id string) (conversationstore.Conversation, error) {
-	return s.attachmentConversation(ctx, project, id, "")
+	return s.attachmentConversation(ctx, project, id, "", false)
 }
 
 func (s *session) LockAttachmentConversation(ctx context.Context, project tracker.ProjectID, id string) (conversationstore.Conversation, error) {
-	return s.attachmentConversation(ctx, project, id, " FOR UPDATE")
+	return s.attachmentConversation(ctx, project, id, " FOR UPDATE", false)
 }
 
-func (s *session) attachmentConversation(ctx context.Context, project tracker.ProjectID, id, lock string) (conversationstore.Conversation, error) {
+func (s *session) LockRetainedAttachmentConversation(ctx context.Context, project tracker.ProjectID, id string) (conversationstore.Conversation, error) {
+	return s.attachmentConversation(ctx, project, id, " FOR UPDATE", true)
+}
+
+func (s *session) attachmentConversation(ctx context.Context, project tracker.ProjectID, id, lock string, includeDeleted bool) (conversationstore.Conversation, error) {
 	var c conversationstore.Conversation
-	err := s.db.QueryRowContext(ctx, `SELECT organization_id,project_id,id,owner_principal_id,visibility,read_audience,coalesce(work_item_id,''),archived FROM conversations WHERE organization_id=$1 AND project_id=$2 AND id=$3`+lock, s.organization, project, id).Scan(&c.OrganizationID, &c.ProjectID, &c.ID, &c.OwnerPrincipalID, &c.Visibility, &c.ReadAudience, &c.WorkItemID, &c.Archived)
+	visibility := " AND deleted_at IS NULL"
+	if includeDeleted {
+		visibility = ""
+	}
+	err := s.db.QueryRowContext(ctx, `SELECT organization_id,project_id,id,owner_principal_id,visibility,read_audience,coalesce(work_item_id,''),archived FROM conversations WHERE organization_id=$1 AND project_id=$2 AND id=$3`+visibility+lock, s.organization, project, id).Scan(&c.OrganizationID, &c.ProjectID, &c.ID, &c.OwnerPrincipalID, &c.Visibility, &c.ReadAudience, &c.WorkItemID, &c.Archived)
 	return c, mapError(ctx, err)
 }
 
