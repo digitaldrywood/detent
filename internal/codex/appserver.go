@@ -577,13 +577,19 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 		}
 	}
 
+	turnTransport := transport
+	if req.ToolHandler != nil {
+		tools := newToolTransport(ctx, transport, req.ToolHandler, s.logger)
+		defer func() { err = tools.finish(err) }()
+		turnTransport = tools
+	}
 	elicitationState := newMCPElicitationState(req.MCPElicitationPolicy, onUpdate)
 	for turnIndex := range 2 {
 		startID := turnStartRequestID
 		if turnIndex > 0 {
 			startID = finalTurnStartRequestID
 		}
-		turn, err := s.startTurn(ctx, transport, startID, req, threadID, elicitationState, onUpdate)
+		turn, err := s.startTurn(ctx, turnTransport, startID, req, threadID, elicitationState, onUpdate)
 		if err != nil {
 			return RunTurnResult{}, err
 		}
@@ -629,7 +635,7 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 				turnTimeout = remaining
 			}
 		}
-		if err := s.streamTurn(ctx, transport, threadID, turnID, turnTimeout, req.StallTimeout, req.ToolHandler, elicitationState, onUpdate); err != nil {
+		if err := s.streamTurn(ctx, turnTransport, threadID, turnID, turnTimeout, req.StallTimeout, req.ToolHandler, elicitationState, onUpdate); err != nil {
 			return RunTurnResult{}, err
 		}
 

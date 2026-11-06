@@ -798,6 +798,82 @@ func TestAppServerRunTurnRequiresSubscriptionAuthenticationInSameTransport(t *te
 	}
 }
 
+func TestAppServerPreservesToolFailure(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		t.Run(strconv.FormatBool(failed), func(t *testing.T) {
+			transport := newFakeAppServerTransport([]Message{
+				responseMessage(t, 1, `{"userAgent":"codex-cli/test"}`),
+				responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
+				responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+				serverRequestMessage(t, 99, "item/tool/call", `{"tool":"get_change","arguments":{}}`),
+				notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+			})
+			if failed {
+				transport.received[4] = notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed"}}`)
+			}
+			server, err := NewAppServer(staticTransportFactory{transport: transport})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cause := errors.New("private tool credential failure")
+			_, err = server.RunTurn(t.Context(), RunTurnRequest{Model: "example-model", ToolHandler: func(context.Context, DynamicToolCall) (DynamicToolResult, error) {
+				return DynamicToolResult{}, cause
+			}}, nil)
+			if !failed {
+				if err != nil {
+					t.Fatalf("recovered tool failure failed turn: %v", err)
+				}
+				return
+			}
+			var tool *ToolError
+			var provider *TurnFailedError
+			if !errors.As(err, &tool) || !errors.Is(err, cause) || !errors.As(err, &provider) {
+				t.Fatalf("lost typed causes: %v", err)
+			}
+			joined := errors.Join(tool, &StartupError{Err: context.DeadlineExceeded})
+			if details, ok := ClassifyCapacityError(joined, nil, time.Now()); ok {
+				t.Fatalf("tool failure classified as capacity: %+v", details)
+			}
+			failure := tool.NativeTerminalFailure().Public()
+			if failure.ErrorClass != "tool_error" || failure.Attribution != "instance" || failure.Operation != "item/tool/call" || strings.Contains(err.Error(), "private") {
+				t.Fatalf("failure = %+v, %v", failure, err)
+			}
+		})
+	}
+}
+
+func TestAppServerToolDoesNotBlockProtocol(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		transport := newFakeAppServerTransport([]Message{
+			responseMessage(t, 1, `{"userAgent":"codex-cli/test"}`),
+			responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
+			serverRequestMessage(t, 99, "item/tool/call", `{"tool":"get_change","arguments":{}}`),
+			notificationMessage(t, "turn/started", `{"threadId":"thread-1","turn":{"id":"turn-1"}}`),
+			notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+		})
+		transport.allowPendingTools = true
+		server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		toolStopped := make(chan struct{})
+		started := time.Now()
+		_, err = server.RunTurn(t.Context(), RunTurnRequest{Model: "example-model", ToolHandler: func(ctx context.Context, _ DynamicToolCall) (DynamicToolResult, error) {
+			defer close(toolStopped)
+			<-ctx.Done()
+			return DynamicToolResult{}, ctx.Err()
+		}}, nil)
+		if err != nil || time.Since(started) != 0 {
+			t.Fatalf("turn = %v after %s", err, time.Since(started))
+		}
+		select {
+		case <-toolStopped:
+		default:
+			t.Fatal("tool not joined")
+		}
+	})
+}
+
 func TestAppServerRunTurnExecutesDynamicToolRequest(t *testing.T) {
 	t.Parallel()
 	transport := newFakeAppServerTransport([]Message{
@@ -2620,9 +2696,12 @@ func (f staticTransportFactory) NewTransport(context.Context) (Transport, error)
 }
 
 type fakeAppServerTransport struct {
-	received        []Message
-	sent            []Message
-	processIdentity string
+	mu                sync.Mutex
+	pending           map[string]chan struct{}
+	allowPendingTools bool
+	received          []Message
+	sent              []Message
+	processIdentity   string
 }
 
 func newFakeAppServerTransport(received []Message) *fakeAppServerTransport {
@@ -2630,16 +2709,44 @@ func newFakeAppServerTransport(received []Message) *fakeAppServerTransport {
 }
 
 func (t *fakeAppServerTransport) Send(_ context.Context, msg Message) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if done := t.pending[string(msg.ID)]; done != nil && msg.Method == "" {
+		close(done)
+		delete(t.pending, string(msg.ID))
+	}
 	t.sent = append(t.sent, msg)
 	return nil
 }
 
-func (t *fakeAppServerTransport) Receive(context.Context) (Message, error) {
+func (t *fakeAppServerTransport) Receive(ctx context.Context) (Message, error) {
+	t.mu.Lock()
 	if len(t.received) == 0 {
+		t.mu.Unlock()
 		return Message{}, io.EOF
 	}
 	msg := t.received[0]
 	t.received = t.received[1:]
+	if msg.Method == "item/tool/call" && len(msg.ID) > 0 {
+		if t.pending == nil {
+			t.pending = make(map[string]chan struct{})
+		}
+		t.pending[string(msg.ID)] = make(chan struct{})
+	}
+	var pending []chan struct{}
+	if msg.Method == "turn/completed" && !t.allowPendingTools {
+		for _, done := range t.pending {
+			pending = append(pending, done)
+		}
+	}
+	t.mu.Unlock()
+	for _, done := range pending {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return Message{}, ctx.Err()
+		}
+	}
 	return msg, nil
 }
 
