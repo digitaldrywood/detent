@@ -28,11 +28,18 @@ func (s *Service) MaintainWorkItemPage(ctx context.Context, organization tracker
 	if err := hubmaintenance.RequireAllowance(ctx, string(organization), hubmaintenance.ByteLimit); err != nil {
 		return false, err
 	}
+	if _, ok := s.runDetailStore().(*hubmaintenance.Details); !ok {
+		return false, errors.New("maintenance requires byte-limited payload storage")
+	}
+	ctx = context.WithValue(ctx, detailBatchContextKey{}, nil)
+	ctx = context.WithValue(ctx, changeContentKey{}, nil)
+	ctx = context.WithValue(ctx, runDetailContextKey{}, nil)
 	var candidate viewstore.PageCandidate
 	var item corestore.WorkItem
 	var comment corestore.Comment
 	var version eventstore.CollaborationVersion
 	var browserPath string
+	var relations corestore.RelationshipPage
 	missing := false
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		reader, ok := r.(viewstore.WorkItemPageReader)
@@ -50,6 +57,13 @@ func (s *Service) MaintainWorkItemPage(ctx context.Context, organization tracker
 			return nil
 		}
 		if err != nil {
+			return err
+		}
+		if candidate.Kind == "relationships" {
+			if candidate.Cleaning {
+				return nil
+			}
+			relations, err = r.Relationships(ctx, candidate.ProjectID, candidate.WorkItemID, candidate.After, corestore.MaxPageSize)
 			return err
 		}
 		if candidate.Kind == "item" {
@@ -95,6 +109,25 @@ func (s *Service) MaintainWorkItemPage(ctx context.Context, organization tracker
 	}
 	if err != nil {
 		return false, err
+	}
+
+	if candidate.Kind == "relationships" {
+		records := make([]viewstore.RelationshipPageRecord, 0, len(relations.Items))
+		for _, relation := range relations.Items {
+			browserURL := ""
+			if relation.OrganizationSlug != "" && relation.ProjectSlug != "" {
+				browserURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: issueBrowserPath(relation.OrganizationSlug, relation.ProjectSlug, relation.Number)}).WebURL
+			}
+			records = append(records, viewstore.RelationshipPageRecord{Relationship: relation, WebURL: browserURL, Identifier: string(relation.RelatedProjectID) + "#" + strconv.Itoa(relation.Number)})
+		}
+		err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+			writer, ok := w.(viewstore.RelationshipPageWriter)
+			if !ok {
+				return workItemStorageUnavailable()
+			}
+			return writer.PublishRelationshipPage(ctx, candidate, records, relations.Next)
+		})
+		return err == nil, err
 	}
 	var itemPage *viewstore.ItemPageRecord
 	var commentPage *viewstore.CommentPageRecord

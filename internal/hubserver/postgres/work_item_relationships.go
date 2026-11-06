@@ -2,8 +2,9 @@ package postgres
 
 import (
 	"context"
-	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"

@@ -48,8 +48,8 @@ func (s *session) NextWorkItemPageCandidate(ctx context.Context) (viewstore.Page
  (SELECT d.* FROM native_work_item_page_dirty d,position p WHERE d.organization_id=$1 AND d.generation>p.generation ORDER BY d.generation LIMIT 1)
  UNION ALL
  (SELECT d.* FROM native_work_item_page_dirty d,position p WHERE d.organization_id=$1 AND d.generation<=p.generation ORDER BY d.generation LIMIT 1)
- ) SELECT candidates.project_id,candidates.work_item_id,candidates.record_id,candidates.kind,candidates.generation,candidates.source_at FROM candidates,position
- ORDER BY (candidates.generation>position.generation) DESC,candidates.generation LIMIT 1`, s.organization).Scan(&row.ProjectID, &row.WorkItemID, &row.RecordID, &row.Kind, &row.Generation, &row.SourceAt)
+ ) SELECT candidates.project_id,candidates.work_item_id,candidates.record_id,candidates.kind,candidates.generation,candidates.source_at,candidates.after_type,candidates.after_direction,candidates.after_project,candidates.after_item,candidates.propagate,candidates.cleaning FROM candidates,position
+ ORDER BY (candidates.generation>position.generation) DESC,candidates.generation LIMIT 1`, s.organization).Scan(&row.ProjectID, &row.WorkItemID, &row.RecordID, &row.Kind, &row.Generation, &row.SourceAt, &row.After.Type, &row.After.Direction, &row.After.RelatedProjectID, &row.After.RelatedWorkItemID, &row.Propagate, &row.Cleaning)
 	return row, mapError(ctx, err)
 }
 
@@ -90,6 +90,9 @@ func (s *session) PublishWorkItemPage(ctx context.Context, candidate viewstore.P
 		if err := s.putItemPage(ctx, *item); err != nil {
 			return err
 		}
+		if err := s.QueueRelationshipPage(ctx, candidate.ProjectID, candidate.WorkItemID, true); err != nil {
+			return err
+		}
 	} else if comment != nil {
 		if err := s.putCommentPage(ctx, *comment); err != nil {
 			return err
@@ -110,5 +113,33 @@ func (s *session) PublishWorkItemPage(ctx context.Context, candidate viewstore.P
 		}
 	}
 	_, err = s.db.Exec(ctx, `DELETE FROM native_work_item_page_dirty WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND record_id=$4 AND kind=$5 AND generation=$6`, s.organization, candidate.ProjectID, candidate.WorkItemID, candidate.RecordID, candidate.Kind, candidate.Generation)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	return s.advanceWorkItemPageProjectionRevision(ctx)
+}
+
+func (s *session) WorkItemReferenceRecords(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) ([]tracker.ExternalReference, error) {
+	var providers, kinds, ids, urls, repositories []string
+	var numbers []int
+	err := s.db.QueryRow(ctx, `SELECT reference_providers,reference_kinds,reference_ids,reference_urls,reference_repositories,reference_numbers FROM native_work_item_pages WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3`, s.organization, project, item).Scan(&providers, &kinds, &ids, &urls, &repositories, &numbers)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	references := make([]tracker.ExternalReference, len(providers))
+	for i, provider := range providers {
+		references[i] = tracker.ExternalReference{Provider: provider, Kind: kinds[i], ID: ids[i], URL: urls[i], Repository: repositories[i], Number: numbers[i]}
+	}
+	return references, nil
+}
+
+func (s *session) WorkItemPageProjectionRevision(ctx context.Context) (int64, error) {
+	var revision int64
+	err := s.db.QueryRow(ctx, `SELECT COALESCE((SELECT publication_revision FROM native_work_item_page_progress WHERE organization_id=$1),0)`, s.organization).Scan(&revision)
+	return revision, mapError(ctx, err)
+}
+func (s *session) advanceWorkItemPageProjectionRevision(ctx context.Context) error {
+	_, err := s.db.Exec(ctx, `INSERT INTO native_work_item_page_progress(organization_id,publication_revision) VALUES($1,1)
+ ON CONFLICT(organization_id) DO UPDATE SET publication_revision=native_work_item_page_progress.publication_revision+1`, s.organization)
 	return mapError(ctx, err)
 }

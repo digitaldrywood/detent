@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -41,7 +42,7 @@ func scanItemPage(row interface{ Scan(...any) error }) (viewstore.ItemPageRecord
 	for i, provider := range providers {
 		value.ExternalReferences = append(value.ExternalReferences, tracker.ExternalReference{Provider: provider, Kind: kinds[i], ID: ids[i], URL: urls[i], Repository: repositories[i], Number: numbers[i]})
 	}
-	value.OmittedFields = []string{"change_sequence", "relationships", "linked_source.snapshot"}
+	value.OmittedFields = []string{"change_sequence", "dependencies", "blockers", "dependents", "related", "dependency_ready", "blocked_reason", "unblocks_reason", "linked_source.snapshot"}
 	value.Dependencies = []tracker.NativeWorkItemID{}
 	value.Blockers = []tracker.NativeDependency{}
 	value.Dependents = []tracker.NativeDependency{}
