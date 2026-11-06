@@ -33,17 +33,22 @@ func (e hubProjectExecutor) monthlyUsageCosts(ctx context.Context, arguments jso
 	}
 	projects := []string{request.ProjectID}
 	if request.Scope == "organization" {
-		if !canManageProjectSecrets(scope.credential) || scope.credential.Hosted != nil && !e.service.hostedAllUsageGrants(ctx, scope.credential) {
+		if !canManageProjectSecrets(scope.credential) {
 			return operatortool.Result{}, operatortool.ErrAccessDenied
+		}
+		if scope.credential.Hosted != nil {
+			if err := e.service.requireHostedUsageGrants(ctx, scope.credential); err != nil {
+				return operatortool.Result{}, operatorAuthorizationError(err)
+			}
 		}
 		projects = nil
 	} else {
 		scope.project = tracker.ProjectID(request.ProjectID)
 		if err := e.service.requireHostedProject(ctx, nil, scope, false); err != nil {
-			return operatortool.Result{}, operatortool.ErrAccessDenied
+			return operatortool.Result{}, operatorAuthorizationError(err)
 		}
 		if err := e.service.database.authorizeNativeProject(ctx, scope); err != nil {
-			return operatortool.Result{}, operatortool.ErrAccessDenied
+			return operatortool.Result{}, operatorAuthorizationError(err)
 		}
 	}
 	report, err := e.service.database.monthlyCosts(ctx, string(scope.organization), request.Scope, projects, window, e.service.config.now())
