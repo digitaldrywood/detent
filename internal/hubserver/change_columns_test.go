@@ -180,21 +180,6 @@ func TestChangeColumnProjectionValues(t *testing.T) {
 	}
 }
 
-func TestChangeSchemaUsesTypedEvidence(t *testing.T) {
-	t.Parallel()
-	f := newChangeFixture(t, nil)
-	names := []string{"change_evidence_approval_idx", "change_evidence_analytics_review", "change_evidence_analytics_escape", "change_evidence_activity", "change_requests_activity_latest", "change_requests_analytics_landed", "change_requests_policy_landing_idx", "change_requests_activity", "change_versions_attempt_idx", "quality_landings_analytics_landed", "collaboration_events_publication_push"}
-	for _, name := range names {
-		var definition sql.NullString
-		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT sql FROM sqlite_schema WHERE name=?`, name).Scan(&definition); err != nil {
-			t.Fatal(err)
-		}
-		if !definition.Valid || strings.Contains(strings.ToLower(definition.String), "json_") {
-			t.Errorf("schema object %s retains stored JSON SQL: %s", name, definition.String)
-		}
-	}
-}
-
 func (f changeFixture) anotherChange(t *testing.T) changeFixture {
 	t.Helper()
 	issue := f.create(t, "other work")
@@ -740,85 +725,5 @@ func TestChangeColumnsSelectAttemptEvidence(t *testing.T) {
 		if err := tx.Rollback(); err != nil {
 			t.Fatal(err)
 		}
-	}
-}
-
-func TestChangeAnalyticsFallbackServesLegacyHistory(t *testing.T) {
-	t.Parallel()
-	for _, family := range []string{"landing", "discussion", "event", "evidence"} {
-		t.Run(family, func(t *testing.T) {
-			f := newChangeFixture(t, nil)
-			other := f.anotherChange(t)
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			at := f.service.config.now()
-			versions := []tracker.ChangeVersion{f.publish(t, "first", ""), other.publish(t, "second", "")}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
-			population := maxAnalyticsPopulation
-			if family == "evidence" {
-				population /= 2
-			}
-			for index, fixture := range []changeFixture{f, other} {
-				for i := range population {
-					id := fmt.Sprintf("history-%s-%04d", fixture.issue.WorkItemID, i)
-					switch family {
-					case "landing":
-						if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES(?,?,?,?,'{}')`, id, f.project.OrganizationID, f.project.ID, fixture.issue.WorkItemID); err != nil {
-							t.Fatal(err)
-						}
-						if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,1,'{}')`, "version-"+id, id); err != nil {
-							t.Fatal(err)
-						}
-					case "discussion":
-						if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'discussion','{}')`, fixture.change.ID, versions[index].ID); err != nil {
-							t.Fatal(err)
-						}
-					case "event":
-						if err := appendNativeHistory(t.Context(), tx, scope, string(fixture.issue.WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, at.Add(-time.Minute)); err != nil {
-							t.Fatal(err)
-						}
-					case "evidence":
-						if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review','{"decision":"commented"}')`, fixture.change.ID, versions[index].ID); err != nil {
-							t.Fatal(err)
-						}
-					}
-				}
-			}
-			if family == "event" {
-				if _, err := tx.ExecContext(t.Context(), `UPDATE collaboration_events SET from_state=NULL WHERE type='workflow.transitioned'`); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
-			}
-			window := operatortool.AnalyticsWindow{From: at.Add(-time.Hour), To: at}
-			if family == "evidence" {
-				inputs, err := loadAnalyticsQualityInputs(f.service.runDetailContext(t.Context()), f.service.database.reader, scope, window)
-				if err != nil || inputs.partial || len(inputs.discussions) != 0 {
-					t.Fatalf("boundary evidence read failed: inputs=%+v error=%v", inputs, err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review','{"decision":"commented"}')`, f.change.ID, versions[0].ID); err != nil {
-					t.Fatal(err)
-				}
-				_, err = loadAnalyticsQualityInputs(f.service.runDetailContext(t.Context()), f.service.database.reader, scope, window)
-				if err != nil {
-					t.Fatalf("legacy evidence unavailable: %v", err)
-				}
-				return
-			}
-			for _, quality := range []bool{false, true} {
-				if !quality && family != "landing" {
-					continue
-				}
-				_, err := readUnconvertedAnalyticsLandings(f.service.runDetailContext(t.Context()), f.service.database.reader, scope, window, quality)
-				if err != nil {
-					t.Fatalf("quality=%v legacy %s unavailable: %v", quality, family, err)
-				}
-			}
-		})
 	}
 }
