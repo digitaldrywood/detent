@@ -141,3 +141,38 @@ SELECT routing_revision FROM machines WHERE organization_id=$1 AND id=$2 FOR UPD
 UPDATE machines SET display_name=sqlc.arg(display_name),capacity=sqlc.arg(capacity)::bigint,routing_revision=routing_revision+1,updated_at=clock_timestamp()
 WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id) AND routing_revision=sqlc.arg(expected_revision)::bigint
 RETURNING routing_revision;
+
+-- name: MutateLeaseCommand :one
+WITH owner AS MATERIALIZED (
+ SELECT r.runner_id FROM runner_identities r
+ JOIN runner_lease_assignments a ON a.organization_id=r.organization_id AND a.runner_id=r.runner_id
+ WHERE a.organization_id=sqlc.arg(organization_id) AND a.lease_id=sqlc.arg(lease_id)
+ FOR UPDATE OF r
+), locked AS MATERIALIZED (
+ SELECT l.* FROM leases l CROSS JOIN (SELECT count(*) FROM owner) ownership
+ WHERE l.organization_id=sqlc.arg(organization_id) AND l.lease_id=sqlc.arg(lease_id)
+ FOR UPDATE OF l
+), at AS MATERIALIZED (
+ SELECT clock_timestamp() AS now FROM locked
+), changed AS (
+ UPDATE leases l SET
+ renewed_at=CASE WHEN sqlc.arg(operation)::text='renew' THEN at.now ELSE l.renewed_at END,
+ expires_at=CASE WHEN sqlc.arg(operation)::text='renew' THEN at.now+sqlc.arg(ttl_us)::bigint*interval '1 microsecond' ELSE l.expires_at END,
+ landing_capacity=CASE WHEN sqlc.arg(operation)::text='renew' AND sqlc.arg(landing_capacity)::bigint>0 THEN sqlc.arg(landing_capacity)::bigint ELSE l.landing_capacity END,
+ released_at=CASE WHEN sqlc.arg(operation)::text='renew' THEN l.released_at ELSE at.now END,
+ release_reason=CASE WHEN sqlc.arg(operation)::text='renew' THEN l.release_reason WHEN sqlc.arg(operation)::text='expire' THEN 'expired' ELSE sqlc.arg(reason)::text END
+ FROM locked,at
+ WHERE l.organization_id=locked.organization_id AND l.lease_id=locked.lease_id
+ AND locked.fencing_token=sqlc.arg(fencing_token)::bigint AND locked.released_at IS NULL
+ AND CASE WHEN sqlc.arg(operation)::text='expire' THEN locked.expires_at<=at.now ELSE locked.expires_at>at.now END
+ RETURNING l.*
+), cancelled AS (
+ UPDATE native_attempts a SET status='cancelled',sequence=sequence+1,updated_at=c.released_at
+ FROM changed c WHERE a.organization_id=c.organization_id AND a.lease_id=c.lease_id AND a.fencing_token=c.fencing_token
+ AND a.status='running' AND sqlc.arg(operation)::text<>'renew'
+), heartbeat AS (
+ UPDATE machines m SET last_heartbeat_at=greatest(m.last_heartbeat_at,at.now),updated_at=greatest(m.updated_at,at.now)
+ FROM changed c,at WHERE m.organization_id=c.organization_id AND m.id=c.machine_id AND sqlc.arg(operation)::text<>'expire'
+)
+SELECT changed.*,true AS applied FROM changed
+UNION ALL SELECT locked.*,false AS applied FROM locked WHERE NOT EXISTS (SELECT 1 FROM changed);

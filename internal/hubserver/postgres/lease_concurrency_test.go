@@ -2,13 +2,18 @@ package postgres_test
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
+	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestLeaseCompetingLifecycleTransactions(t *testing.T) {
@@ -180,4 +185,120 @@ func TestLeaseHeartbeatDoesNotRegressWhileWaiting(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLeaseMutationsUseOneStatement(t *testing.T) {
+	admin := template.Database(t)
+	repository, pool := repositoryFor(t, admin, smallPool())
+	counter := &reportCountingTracer{}
+	traced := tracedFeaturePool(t, pool, counter)
+	config := traced.Config()
+	var exchanges atomic.Int64
+	dial := config.ConnConfig.DialFunc
+	config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := dial(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &leaseWireConn{Conn: conn, exchanges: &exchanges, startup: true}, nil
+	}
+	measured, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(measured.Close)
+	counted, err := postgres.NewRepository(t.Context(), measured, smallPool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := counted.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedLeaseFamily(t, repository, org)
+		for _, operation := range []string{"renew", "release", "expire"} {
+			t.Run(string(org)+"/"+operation, func(t *testing.T) {
+				request := leaseClaim(1)
+				request.LeaseID, request.SessionID = operation, operation
+				lease := claimLease(t, repository, org, request)
+				recordLeaseAttempt(t, repository, org, attemptEvent(lease))
+				if operation == "expire" {
+					expireLeaseFixture(t, admin, org, lease.LeaseID)
+				}
+				counter.count.Store(0)
+				exchanges.Store(0)
+				err := counted.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+					switch operation {
+					case "renew":
+						_, err := w.Renew(t.Context(), leaseFence(lease), time.Hour)
+						return err
+					case "release":
+						_, err := w.Release(t.Context(), leaseFence(lease), "released")
+						return err
+					default:
+						_, err := w.Expire(t.Context(), leaseFence(lease))
+						return err
+					}
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := exchanges.Load(); got != 3 {
+					t.Errorf("wire exchanges = %d, want 3 including BEGIN/bind/COMMIT", got)
+				}
+				t.Logf("statements=%d exchanges=%d", counter.count.Load()+2, exchanges.Load())
+				if got := counter.count.Load(); got != 2 {
+					t.Errorf("statements including tenant binding = %d, want 2", got)
+				}
+				if operation == "renew" {
+					if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+						_, err := w.Release(t.Context(), leaseFence(lease), "released")
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
+
+type leaseWireConn struct {
+	net.Conn
+	exchanges *atomic.Int64
+	pending   []byte
+	startup   bool
+}
+
+func (c *leaseWireConn) Write(value []byte) (int, error) {
+	n, err := c.Conn.Write(value)
+	c.pending = append(c.pending, value[:n]...)
+	for {
+		if c.startup {
+			if len(c.pending) < 4 {
+				break
+			}
+			size := int(binary.BigEndian.Uint32(c.pending[:4]))
+			if len(c.pending) < size {
+				break
+			}
+			c.pending = c.pending[size:]
+			c.startup = false
+			continue
+		}
+		if len(c.pending) < 5 {
+			break
+		}
+		size := 1 + int(binary.BigEndian.Uint32(c.pending[1:5]))
+		if len(c.pending) < size {
+			break
+		}
+		if c.pending[0] == 'S' || c.pending[0] == 'Q' {
+			c.exchanges.Add(1)
+		}
+		c.pending = c.pending[size:]
+	}
+	return n, err
 }

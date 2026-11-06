@@ -133,7 +133,7 @@ func TestPostgresLeaseReleaseRetriesAbortedTransaction(t *testing.T) {
 		default:
 		}
 		var waiting bool
-		if err := f.admin.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%machines%')`, pid).Scan(&waiting); err != nil {
+		if err := f.admin.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)) AND (query LIKE '%machines%' OR query LIKE '%MutateLeaseCommand%'))`, pid).Scan(&waiting); err != nil {
 			return err
 		}
 		if !waiting {

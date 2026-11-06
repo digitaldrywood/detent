@@ -248,24 +248,6 @@ func (s *session) Claim(ctx context.Context, request leasestore.Claim) (leasesto
 	return leasestore.Lease(row), s.heartbeat(ctx, row.MachineID, now)
 }
 
-func (s *session) lockFence(ctx context.Context, fence leasestore.Fence) (pgquery.Lease, time.Time, error) {
-	if strings.TrimSpace(fence.LeaseID) == "" || fence.FencingToken <= 0 {
-		return pgquery.Lease{}, time.Time{}, tracker.ErrInvalidLeaseRequest
-	}
-	row, err := s.queries.LockLease(ctx, pgquery.LockLeaseParams{OrganizationID: s.organization, LeaseID: fence.LeaseID})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return row, time.Time{}, tracker.ErrLeaseNotFound
-	}
-	if err != nil {
-		return row, time.Time{}, mapError(ctx, err)
-	}
-	if row.FencingToken != fence.FencingToken || row.ReleasedAt != nil {
-		return row, time.Time{}, tracker.ErrStaleFencingToken
-	}
-	now, err := s.queries.LeaseTime(ctx)
-	return row, now, mapError(ctx, err)
-}
-
 func (s *session) LockLease(ctx context.Context, leaseID string) (leasestore.Lease, error) {
 	if strings.TrimSpace(leaseID) == "" {
 		return leasestore.Lease{}, tracker.ErrLeaseNotFound
@@ -296,42 +278,41 @@ func (s *session) RenewWithLandingCapacity(ctx context.Context, fence leasestore
 	if landingCapacity < 0 {
 		return leasestore.Lease{}, tracker.ErrInvalidLeaseRequest
 	}
-	_, now, err := s.lockFence(ctx, fence)
-	if err != nil {
-		return leasestore.Lease{}, err
-	}
-	row, err := s.queries.RenewLease(ctx, pgquery.RenewLeaseParams{
-		OrganizationID: s.organization, LeaseID: fence.LeaseID, FencingToken: fence.FencingToken, Now: now, ExpiresAt: now.Add(ttl), LandingCapacity: landingCapacity,
-	})
-	if err != nil {
-		return leasestore.Lease{}, leaseMutationError(ctx, err)
-	}
-	return leasestore.Lease(row), s.heartbeat(ctx, row.MachineID, now)
+	return s.mutateLease(ctx, fence, "renew", ttl, landingCapacity, "")
 }
 
 func (s *session) Release(ctx context.Context, fence leasestore.Fence, reason string) (leasestore.Lease, error) {
-	_, now, err := s.lockFence(ctx, fence)
-	if err != nil {
-		return leasestore.Lease{}, err
-	}
-	row, err := s.queries.ReleaseLease(ctx, pgquery.ReleaseLeaseParams{
-		OrganizationID: s.organization, LeaseID: fence.LeaseID, FencingToken: fence.FencingToken, Now: now, Reason: reason,
-	})
-	if err != nil {
-		return leasestore.Lease{}, leaseMutationError(ctx, err)
-	}
-	if err := s.cancelAttempt(ctx, row, now); err != nil {
-		return leasestore.Lease{}, err
-	}
-	return leasestore.Lease(row), s.heartbeat(ctx, row.MachineID, now)
+	return s.mutateLease(ctx, fence, "release", 0, 0, reason)
 }
 
 func (s *session) Expire(ctx context.Context, fence leasestore.Fence) (leasestore.Lease, error) {
-	row, now, err := s.lockFence(ctx, fence)
-	if err != nil {
-		return leasestore.Lease{}, err
+	return s.mutateLease(ctx, fence, "expire", 0, 0, "expired")
+}
+
+func (s *session) mutateLease(ctx context.Context, fence leasestore.Fence, operation string, ttl time.Duration, landingCapacity int64, reason string) (leasestore.Lease, error) {
+	if strings.TrimSpace(fence.LeaseID) == "" || fence.FencingToken <= 0 {
+		return leasestore.Lease{}, tracker.ErrInvalidLeaseRequest
 	}
-	return s.expire(ctx, row, now)
+	row, err := s.queries.MutateLeaseCommand(ctx, pgquery.MutateLeaseCommandParams{
+		OrganizationID: s.organization, LeaseID: fence.LeaseID, FencingToken: fence.FencingToken,
+		Operation: operation, TtlUs: ttl.Microseconds(), LandingCapacity: landingCapacity, Reason: reason,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return leasestore.Lease{}, tracker.ErrLeaseNotFound
+	}
+	if err != nil {
+		return leasestore.Lease{}, mapError(ctx, err)
+	}
+	if !row.Applied {
+		return leasestore.Lease{}, tracker.ErrStaleFencingToken
+	}
+	return leasestore.Lease{
+		OrganizationID: row.OrganizationID, LeaseID: row.LeaseID, FencingToken: row.FencingToken,
+		IssueID: row.IssueID, MachineID: row.MachineID, SessionID: row.SessionID,
+		WorkItemRevision: row.WorkItemRevision, LandingCapacity: row.LandingCapacity,
+		AcquiredAt: row.AcquiredAt, RenewedAt: row.RenewedAt, ExpiresAt: row.ExpiresAt,
+		ReleasedAt: row.ReleasedAt, ReleaseReason: row.ReleaseReason,
+	}, nil
 }
 
 func (s *session) expire(ctx context.Context, row pgquery.Lease, now time.Time) (leasestore.Lease, error) {
