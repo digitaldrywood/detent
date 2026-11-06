@@ -486,7 +486,6 @@ func (s *Service) acceptHostedSharedInvitation(c echo.Context) error {
 		return s.invalidAPIRequest(c, errors.New("invalid invitation"))
 	}
 	identity := auth.Identity{Subject: claims.Subject, Email: claims.Email, EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: claims.Subject, SessionID: claims.ProviderSession}}
-	s.hostedMutationMu.Lock()
 	var err error
 	if request.InvitationID != "" && request.Token == "" {
 		err = s.acceptHostedInvitationIDFor(c.Request().Context(), identity, request.InvitationID)
@@ -495,7 +494,9 @@ func (s *Service) acceptHostedSharedInvitation(c echo.Context) error {
 	} else {
 		err = auth.ErrHostedIdentity
 	}
-	s.hostedMutationMu.Unlock()
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, operatorAuthorizationError(err))
+	}
 	if err != nil {
 		return s.refusedAPIError(c, http.StatusForbidden, "invitation_unavailable", "This invitation is expired, already used, or intended for another account or organization", apiErrorResponse{Code: "invitation_unavailable", Message: "This invitation is expired, already used, or intended for another account or organization"})
 	}

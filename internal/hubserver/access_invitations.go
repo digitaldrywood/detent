@@ -2,11 +2,14 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -22,7 +25,7 @@ func (s *Service) acceptAccessInvitation(ctx context.Context, identity auth.Iden
 		invitation, err = s.config.Hosted.Provider.Invitation(ctx, token)
 	}
 	if err != nil {
-		return auth.ErrHostedIdentity
+		return operatorAuthorizationError(err)
 	}
 	var stored accessstore.Invitation
 	err = s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
@@ -52,7 +55,16 @@ func (s *Service) acceptAccessInvitation(ctx context.Context, identity auth.Iden
 			err = s.config.Hosted.Provider.AcceptInvitation(ctx, token, identity.Subject)
 		}
 		if err != nil {
-			return auth.ErrHostedIdentity
+			if errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+				return err
+			}
+			current, lookupErr := auth.LookupInvitationID(ctx, s.config.Hosted.Provider, invitation.ID)
+			if lookupErr != nil || current.State == "pending" {
+				return errors.Join(tenantauth.ErrUnavailable, err, lookupErr)
+			}
+			if current.ID != invitation.ID || current.OrganizationID != invitation.OrganizationID || !strings.EqualFold(current.Email, invitation.Email) || current.State != "accepted" || current.AcceptedUserID != identity.Subject {
+				return auth.ErrHostedIdentity
+			}
 		}
 	} else if invitation.State != "accepted" || invitation.AcceptedUserID != identity.Subject {
 		return auth.ErrHostedIdentity
@@ -60,7 +72,10 @@ func (s *Service) acceptAccessInvitation(ctx context.Context, identity auth.Iden
 	memberIdentity := *identity.Hosted
 	memberIdentity.OrganizationID = invitation.OrganizationID
 	membership, err := s.hostedMembership(ctx, &memberIdentity)
-	if err != nil || membership.Role.Slug != stored.Role {
+	if err != nil {
+		return err
+	}
+	if membership.Role.Slug != stored.Role {
 		return auth.ErrHostedIdentity
 	}
 	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
