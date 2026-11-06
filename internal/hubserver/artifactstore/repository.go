@@ -59,6 +59,7 @@ type Writer interface {
 	CreateArtifactReadGrant(context.Context, ReadGrant, time.Time) error
 	PruneExpiredArtifactReadGrants(context.Context, time.Time, int) (int64, error)
 	BindArtifactService(context.Context, tracker.ProjectID, artifact.Binding) error
+	RecordHostedArtifactUsage(context.Context, string, string, artifact.Usage, time.Time, int64) error
 	Reader
 	AppendArtifactReference(context.Context, artifact.Reference) (artifact.Reference, error)
 	AuthorizeArtifactUpload(context.Context, artifact.Reservation, time.Time) error

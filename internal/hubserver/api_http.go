@@ -112,6 +112,7 @@ func (s *Service) registerPostgresRoutes(e *echo.Echo) {
 		e.Use(s.hostedBoundary)
 		e.GET("/api/v2/organizations/:organization/entitlements", s.hostedPlanReport)
 		e.POST("/api/v2/organizations/:organization/entitlements", s.updateHostedPlan)
+		e.POST("/api/v2/organizations/:organization/artifact-allowances/:service", s.hostedArtifactAllowances)
 	}
 	e.GET("/health", s.health, s.requireAPIScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin))
 	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(detent.StaticFS()))))
