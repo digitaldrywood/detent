@@ -86,6 +86,11 @@ func (s *session) ReplaceBoardItem(ctx context.Context, u viewstore.BoardUpdate)
 		}
 	}
 	same := sameBoardContent(previous, next)
+	if !same {
+		if err := s.replaceBoardSummary(ctx, previous, next); err != nil {
+			return err
+		}
+	}
 	if !same && previous != nil {
 		result, err := s.db.Exec(ctx, "UPDATE native_board_counts SET total=total-1 WHERE organization_id=$1 AND project_id=$2 AND archived=$3 AND state=$4 AND total>0", s.organization, u.ProjectID, previous.Archived, previous.Position.State)
 		if err != nil {
@@ -152,7 +157,15 @@ func sameBoardContent(a, b *viewstore.BoardRecord) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
+	if !sameBoardPageContent(a, b) {
+		return false
+	}
 	left, right := *a, *b
+	left.PageIssue, right.PageIssue = nil, nil
+	left.ListIssue, right.ListIssue = nil, nil
+	left.ReporterRelations, right.ReporterRelations = nil, nil
+	left.ProjectedAt, right.ProjectedAt = time.Time{}, time.Time{}
+	left.RefreshAfter, right.RefreshAfter = nil, nil
 	left.SourceRevision, left.SourceEventSequence, left.SourceProjectRevision = 0, 0, 0
 	right.SourceRevision, right.SourceEventSequence, right.SourceProjectRevision = 0, 0, 0
 	for _, record := range []*viewstore.BoardRecord{&left, &right} {
@@ -176,6 +189,12 @@ func (s *session) putBoardItem(ctx context.Context, b viewstore.BoardRecord, num
 		s.organization, b.ProjectID, b.WorkItemID, b.SourceRevision, b.SourceEventSequence, b.SourceProjectRevision, b.Position.State, b.Archived, b.Terminal, b.Running, b.Dispatchable, b.Position.Lane, b.Position.Priority, b.Position.ActivityMissing, b.Position.Activity, b.Position.Identifier, b.ClosedAt, b.ExpiresAt, b.ExecutionFence, b.ActorPrincipalID, b.IssueType, b.VerificationState, b.Priority, b.CreatedAt, b.UpdatedAt, b.Payload.Key, b.Payload.SHA256, b.Payload.CompressedSize, b.Payload.UncompressedSize, number)
 	if err != nil {
 		return mapError(ctx, err)
+	}
+	if _, err := s.db.Exec(ctx, "UPDATE native_board_items SET page_window_mask=$4,page_refresh_after=$5,page_list_bytes=$6 WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", s.organization, b.ProjectID, b.WorkItemID, b.WindowMask, b.RefreshAfter, b.ListBytes); err != nil {
+		return mapError(ctx, err)
+	}
+	if err := s.putBoardPage(ctx, b); err != nil {
+		return err
 	}
 	if err := s.putBoardDisplay(ctx, b); err != nil {
 		return err

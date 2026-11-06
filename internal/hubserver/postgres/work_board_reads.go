@@ -16,11 +16,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const boardColumns = `b.organization_id,b.project_id,b.work_item_id,b.source_revision,b.source_event_sequence,b.source_project_revision,
+var boardColumns = `b.organization_id,b.project_id,b.work_item_id,b.source_revision,b.source_event_sequence,b.source_project_revision,
 b.state,b.archived,b.terminal,b.running,b.dispatchable,b.lane_rank,b.priority_rank,b.activity_missing,b.activity_at,b.identifier,b.closed_at,b.expires_at,b.execution_fence,
 b.actor_principal_id,b.issue_type,b.verification_state,b.priority,b.created_at,b.updated_at,b.payload_object_key,b.payload_sha256,b.payload_bytes,b.payload_content_bytes,
 ARRAY(SELECT value FROM native_board_filter_values f WHERE f.organization_id=b.organization_id AND f.project_id=b.project_id AND f.work_item_id=b.work_item_id AND f.kind='label' ORDER BY value),
-ARRAY(SELECT value FROM native_board_filter_values f WHERE f.organization_id=b.organization_id AND f.project_id=b.project_id AND f.work_item_id=b.work_item_id AND f.kind='assignee' ORDER BY value),` + boardDisplayColumns
+ARRAY(SELECT value FROM native_board_filter_values f WHERE f.organization_id=b.organization_id AND f.project_id=b.project_id AND f.work_item_id=b.work_item_id AND f.kind='assignee' ORDER BY value),` + boardDisplayColumns + "," + boardPageColumns + "," + boardListColumns + ",b.page_list_bytes,b.page_window_mask,b.page_refresh_after"
 
 func scanBoard(row interface{ Scan(...any) error }, extra ...any) (viewstore.BoardRecord, error) {
 	var b viewstore.BoardRecord
@@ -30,10 +30,18 @@ func scanBoard(row interface{ Scan(...any) error }, extra ...any) (viewstore.Boa
 		&b.Position.State, &b.Archived, &b.Terminal, &b.Running, &b.Dispatchable, &b.Position.Lane, &b.Position.Priority, &b.Position.ActivityMissing, &b.Position.Activity, &b.Position.Identifier, &b.ClosedAt, &b.ExpiresAt, &b.ExecutionFence,
 		&b.ActorPrincipalID, &b.IssueType, &b.VerificationState, &b.Priority, &b.CreatedAt, &b.UpdatedAt, &key, &digest, &size, &content, &b.Labels, &b.Assignees}
 	display, finish := boardDisplayTargets(&b.Display)
+	page, finishPage := boardPageTargets(&b)
 	targets = append(targets, display...)
+	list, finishList := boardListTargets(&b)
+	targets = append(targets, page...)
+	targets = append(targets, list...)
+	targets = append(targets, &b.ListBytes)
+	targets = append(targets, &b.WindowMask, &b.RefreshAfter)
 	targets = append(targets, extra...)
 	err := row.Scan(targets...)
 	finish()
+	finishPage()
+	finishList()
 	b.Payload = eventstore.Reference(key, digest, size, content)
 	return b, err
 }
@@ -44,11 +52,13 @@ func (s *session) NextBoardCandidate(ctx context.Context, after tracker.NativeWo
 		skipped[index] = string(id)
 	}
 	var candidate viewstore.BoardCandidate
-	err := s.db.QueryRow(ctx, `SELECT coalesce(stale.project_id,candidates.project_id),candidates.work_item_id FROM (
+	err := s.db.QueryRow(ctx, `SELECT coalesce(stale.project_id,candidates.project_id),candidates.work_item_id,dirty.queued_at FROM (
  (SELECT project_id,work_item_id,0 AS priority FROM native_board_dirty WHERE organization_id=$1 AND work_item_id>$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
  UNION ALL (SELECT project_id,work_item_id,1 AS priority FROM native_board_dirty WHERE organization_id=$1 AND work_item_id<=$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
  UNION ALL (SELECT project_id,work_item_id,2 AS priority FROM native_board_items WHERE organization_id=$1 AND NOT card_display_ready AND work_item_id>$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
  UNION ALL (SELECT project_id,work_item_id,3 AS priority FROM native_board_items WHERE organization_id=$1 AND NOT card_display_ready AND work_item_id<=$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
+ UNION ALL (SELECT project_id,work_item_id,2 AS priority FROM native_board_items WHERE organization_id=$1 AND NOT page_ready AND work_item_id>$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
+ UNION ALL (SELECT project_id,work_item_id,3 AS priority FROM native_board_items WHERE organization_id=$1 AND NOT page_ready AND work_item_id<=$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
  UNION ALL (SELECT project_id,native_id AS work_item_id,4 AS priority FROM issues WHERE organization_id=$1 AND native_id>$2 AND native_id<>ALL($3::text[]) ORDER BY native_id LIMIT 1)
  UNION ALL (SELECT project_id,work_item_id,4 AS priority FROM native_board_items WHERE organization_id=$1 AND work_item_id>$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
  UNION ALL (SELECT project_id,native_id AS work_item_id,5 AS priority FROM issues WHERE organization_id=$1 AND native_id<=$2 AND native_id<>ALL($3::text[]) ORDER BY native_id LIMIT 1)
@@ -57,7 +67,8 @@ func (s *session) NextBoardCandidate(ctx context.Context, after tracker.NativeWo
  LEFT JOIN native_board_items stale ON stale.organization_id=$1 AND stale.work_item_id=candidates.work_item_id
   AND stale.project_id<>candidates.project_id
   AND EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=$1 AND i.project_id=candidates.project_id AND i.native_id=candidates.work_item_id)
- ORDER BY candidates.priority,candidates.work_item_id LIMIT 1`, s.organization, after, skipped).Scan(&candidate.ProjectID, &candidate.WorkItemID)
+ LEFT JOIN native_board_dirty dirty ON dirty.organization_id=$1 AND dirty.project_id=coalesce(stale.project_id,candidates.project_id) AND dirty.work_item_id=candidates.work_item_id
+ ORDER BY candidates.priority,candidates.work_item_id LIMIT 1`, s.organization, after, skipped).Scan(&candidate.ProjectID, &candidate.WorkItemID, &candidate.QueuedAt)
 	return candidate, mapError(ctx, err)
 }
 
