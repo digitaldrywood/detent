@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -162,7 +161,7 @@ func TestCloudReloadSignupAllowlist(t *testing.T) {
 			if launches, stops, running := launcher.counts(); launches != 0 || stops != 0 || running != 2 {
 				t.Errorf("reload changed tenant processes: launches=%d stops=%d running=%d", launches, stops, running)
 			}
-			response, body := alice.get("/organizations/org_alpha/organization")
+			response, body := alice.get("/organizations/org_alpha/app/bootstrap")
 			if response.StatusCode != http.StatusOK || !strings.Contains(body, "Alpha secret project") {
 				t.Errorf("existing organization session = %d %s", response.StatusCode, body)
 			}
@@ -181,17 +180,12 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 		}
 	}
 	entitlementFixture(t, f, token)
-	for _, tenant := range f.fixtures {
-		if err := f.service.linkRuntimePublication(filepath.Dir(tenant.config.DatabasePath)); err != nil {
-			t.Fatal(err)
-		}
-	}
 	allocation := &AllocationConfig{TenantRoot: t.TempDir(), SocketRoot: t.TempDir(), MaxTenants: 2, MaxConcurrent: 1, RetryLimit: 5, Launcher: &ExecLauncher{}, EntitlementAdminToken: []byte(token)}
 	f.service.config.Allocation = allocation
 	f.service.config.ConfigureRuntime = func(update hubserver.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error) {
 		return func(TenantSpec) ([]byte, error) { return json.Marshal(update) }
 	}
-	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=1"); err != nil {
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=true"); err != nil {
 		t.Fatal(err)
 	}
 	type reading struct {

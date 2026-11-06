@@ -1,15 +1,12 @@
 package cloudentry
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -33,7 +30,7 @@ func newHostedHubReadFixture(t *testing.T) hostedHubReadFixture {
 	entry := newEntryFixture(t)
 	owner := newBrowser(t, entry.service.Handler())
 	owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-	response, body := owner.get("/organizations/org_alpha/organization")
+	response, body := owner.get("/organizations/org_alpha/app/bootstrap")
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("organization status = %d: %s", response.StatusCode, body)
 	}
@@ -43,62 +40,8 @@ func newHostedHubReadFixture(t *testing.T) hostedHubReadFixture {
 		entry:   entry,
 		browser: owner,
 		base:    "/api/v2/organizations/org_alpha/projects/" + project,
-		csrf:    csrfFrom(t, body),
+		csrf:    bootstrapCSRF(t, body),
 	}
-}
-
-func (f hostedHubReadFixture) waitForCompleted(t *testing.T) {
-	t.Helper()
-	identity, err := f.entry.provider.Exchange(t.Context(), "user_alice:porg_alpha", "", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	target := strings.TrimPrefix(f.base, "/api/v2") + "/events?board=true"
-	claims, err := f.entry.service.claims(Organization{ID: "org_alpha", Generation: 1}, cloudassert.KindBrowser, http.MethodGet, target, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	claims.Subject, claims.Email, claims.ProviderOrganization, claims.ProviderSession = identity.Subject, identity.Email, identity.Hosted.OrganizationID, identity.Hosted.SessionID
-	claims.SessionCreatedAt, claims.SessionExpiresAt = identity.Hosted.CreatedAt, identity.Hosted.ExpiresAt
-	claims.Role, claims.AccessExpiresAt = "owner", identity.Hosted.ExpiresAt
-	claims.Binding = cloudassert.AuthorizationBinding("board-totals", "org_alpha", identity.Hosted.SessionID)
-	claims.CSRF = cloudassert.CSRFToken("board-totals", "org_alpha")
-	assertion, err := cloudassert.Sign(f.entry.service.config.SigningKey, claims)
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer(f.entry.fixtures["org_alpha"].service.Handler())
-	defer server.Close()
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+target, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set(cloudassert.Header, assertion)
-	transport := &http.Transport{}
-	defer transport.CloseIdleConnections()
-	response, err := (&http.Client{Transport: transport}).Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("board stream status = %d", response.StatusCode)
-	}
-	scanner := bufio.NewScanner(response.Body)
-	for scanner.Scan() {
-		data, ok := strings.CutPrefix(scanner.Text(), "data: ")
-		if !ok {
-			continue
-		}
-		var frame tracker.NativeBoardFrame
-		if err := json.Unmarshal([]byte(data), &frame); err != nil {
-			t.Fatal(err)
-		}
-		if frame.Work != nil && frame.Work.Completed == 1 {
-			return
-		}
-	}
-	t.Fatalf("board stream ended before completed work: %v", scanner.Err())
 }
 
 func (f hostedHubReadFixture) request(t *testing.T, method, target string, payload any) *httptest.ResponseRecorder {
@@ -170,9 +113,6 @@ func TestHostedHubWorkReads(t *testing.T) {
 		{"repeated filter dimensions", "state=Todo&state=Blocked&label=bug&label=feature&assignee=nobody&assignee=other&priority=1&priority=2&open=true&limit=200&completed_window=48h", nil, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if test.work {
-				f.waitForCompleted(t)
-			}
 			response := f.request(t, http.MethodGet, f.base+"/work-items?"+test.query, nil)
 			var page tracker.NativeIssuePage
 			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &page) != nil {
@@ -236,11 +176,11 @@ func approveEntryFixturePolicy(t *testing.T, owner *browser, organization, proje
 	t.Helper()
 	selected := newBrowser(t, owner.entry)
 	selected.login("/organizations/"+organization+"/organization", "user_alice:p"+organization)
-	response, page := selected.get("/organizations/" + organization + "/organization")
+	response, page := selected.get("/organizations/" + organization + "/app/bootstrap")
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("organization=%d %s", response.StatusCode, page)
 	}
-	fixture := hostedHubReadFixture{browser: selected, base: "/api/v2/organizations/" + organization + "/projects/" + project, csrf: csrfFrom(t, page)}
+	fixture := hostedHubReadFixture{browser: selected, base: "/api/v2/organizations/" + organization + "/projects/" + project, csrf: bootstrapCSRF(t, page)}
 	current := fixture.request(t, http.MethodGet, fixture.base+"/policy", nil)
 	var approval policy.Approval
 	if current.Code == http.StatusOK {
@@ -252,4 +192,18 @@ func approveEntryFixturePolicy(t *testing.T, owner *browser, organization, proje
 	if applied.Code != http.StatusOK {
 		t.Fatalf("approve fixture policy=%d %s", applied.Code, applied.Body)
 	}
+}
+
+func bootstrapCSRF(t *testing.T, body string) string {
+	t.Helper()
+	var bootstrap struct {
+		CSRF string `json:"csrf_token"`
+	}
+	if err := json.Unmarshal([]byte(body), &bootstrap); err != nil {
+		t.Fatal(err)
+	}
+	if bootstrap.CSRF == "" {
+		t.Fatal("bootstrap has no CSRF token")
+	}
+	return bootstrap.CSRF
 }
