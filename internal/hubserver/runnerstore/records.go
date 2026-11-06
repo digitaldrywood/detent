@@ -359,6 +359,7 @@ type Writer interface {
 	AssignRunnerLease(context.Context, LeaseAssignment) error
 	UpdateRunnerIdentity(context.Context, Identity) error
 	UpdateRunnerRouting(context.Context, int64, Identity) error
+	UpdateRunnerHost(context.Context, string, runnerauth.HostChange) (int64, error)
 	RemoveRunnerIdentity(context.Context, string, time.Time) error
 	RecordRunnerIdentityEvent(context.Context, Event) error
 	RequestRunnerRepositories(context.Context, string, string) error

@@ -133,3 +133,11 @@ INSERT INTO machines (organization_id,id,hostname,display_name,capacity,version,
 VALUES ($1,$2,$3,$4,$5,$6,clock_timestamp(),clock_timestamp(),clock_timestamp(),$7)
 ON CONFLICT (organization_id,id) DO UPDATE SET hostname=EXCLUDED.hostname,display_name=EXCLUDED.display_name,capacity=EXCLUDED.capacity,version=EXCLUDED.version,last_heartbeat_at=greatest(machines.last_heartbeat_at,EXCLUDED.last_heartbeat_at),updated_at=greatest(machines.updated_at,EXCLUDED.updated_at)
 WHERE machines.registration_token_id=EXCLUDED.registration_token_id;
+
+-- name: LockRunnerHostRevision :one
+SELECT routing_revision FROM machines WHERE organization_id=$1 AND id=$2 FOR UPDATE;
+
+-- name: UpdateRunnerHostRouting :one
+UPDATE machines SET display_name=sqlc.arg(display_name),capacity=sqlc.arg(capacity)::bigint,routing_revision=routing_revision+1,updated_at=clock_timestamp()
+WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id) AND routing_revision=sqlc.arg(expected_revision)::bigint
+RETURNING routing_revision;

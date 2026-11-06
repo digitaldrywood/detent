@@ -651,6 +651,22 @@ func (q *Queries) LockLease(ctx context.Context, arg LockLeaseParams) (Lease, er
 	return i, err
 }
 
+const lockRunnerHostRevision = `-- name: LockRunnerHostRevision :one
+SELECT routing_revision FROM machines WHERE organization_id=$1 AND id=$2 FOR UPDATE
+`
+
+type LockRunnerHostRevisionParams struct {
+	OrganizationID tracker.OrganizationID
+	ID             string
+}
+
+func (q *Queries) LockRunnerHostRevision(ctx context.Context, arg LockRunnerHostRevisionParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, lockRunnerHostRevision, arg.OrganizationID, arg.ID)
+	var routing_revision int64
+	err := row.Scan(&routing_revision)
+	return routing_revision, err
+}
+
 const pageIssueAttempts = `-- name: PageIssueAttempts :many
 SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded FROM native_attempts
 WHERE organization_id=$1 AND issue_id=$2
@@ -1019,4 +1035,31 @@ func (q *Queries) UpdateLeaseLandingCapacity(ctx context.Context, arg UpdateLeas
 		&i.ReleaseReason,
 	)
 	return i, err
+}
+
+const updateRunnerHostRouting = `-- name: UpdateRunnerHostRouting :one
+UPDATE machines SET display_name=$1,capacity=$2::bigint,routing_revision=routing_revision+1,updated_at=clock_timestamp()
+WHERE organization_id=$3 AND id=$4 AND routing_revision=$5::bigint
+RETURNING routing_revision
+`
+
+type UpdateRunnerHostRoutingParams struct {
+	DisplayName      string
+	Capacity         int64
+	OrganizationID   tracker.OrganizationID
+	ID               string
+	ExpectedRevision int64
+}
+
+func (q *Queries) UpdateRunnerHostRouting(ctx context.Context, arg UpdateRunnerHostRoutingParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, updateRunnerHostRouting,
+		arg.DisplayName,
+		arg.Capacity,
+		arg.OrganizationID,
+		arg.ID,
+		arg.ExpectedRevision,
+	)
+	var routing_revision int64
+	err := row.Scan(&routing_revision)
+	return routing_revision, err
 }

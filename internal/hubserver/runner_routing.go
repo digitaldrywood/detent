@@ -688,20 +688,63 @@ func (s *Service) updateRunnerHostCommand(ctx context.Context, scope nativeScope
 	if change.DisplayName == "" || len(change.DisplayName) > 200 || strings.ContainsAny(change.DisplayName, "\r\n\x00") || change.Capacity < 0 || change.Capacity > 10000 {
 		return nil, nativePublicInvalid("Host name and a capacity between 0 and 10000 are required")
 	}
-	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, _ time.Time) (any, error) {
-		var revision int64
-		if err := tx.QueryRowContext(ctx, "SELECT routing_revision FROM machines WHERE organization_id = ? AND id = ?", string(scope.organization), resource).Scan(&revision); err != nil {
-			return nil, err
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.requireRunnerAdministrationTenant(ctx, w, scope); err != nil {
+			return err
 		}
-		if revision != change.ExpectedRevision {
-			return nil, nativeConflict(tracker.Revision(revision))
+		revision, err := w.UpdateRunnerHost(ctx, resource, change)
+		if errors.Is(err, corestore.ErrRevisionConflict) {
+			return nativeConflict(tracker.Revision(revision))
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE machines SET display_name = ?, capacity = ?, routing_revision = routing_revision + 1 WHERE id = ?", change.DisplayName, change.Capacity, resource); err != nil {
-			return nil, err
+		if err != nil {
+			return err
 		}
-		change.ExpectedRevision++
-		return change, nil
+		change.ExpectedRevision = revision
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	if s.notifications != nil {
+		s.notifications.notify(dispatchNotificationKey(scope.organization))
+	}
+	return change, nil
+}
+
+func (s *Service) requireRunnerAdministrationTenant(ctx context.Context, reader tenantstore.Reader, scope nativeScope) error {
+	credential := scope.credential
+	if credential.Runner.RunnerID != "" || credential.Hosted == nil && (credential.NativeOnly || credential.Scope != apiScopeAdmin) {
+		return accessstore.ErrDenied
+	}
+	if err := s.authorizeAccessScope(ctx, reader, scope, true); err != nil {
+		return err
+	}
+	if credential.Hosted == nil {
+		return nil
+	}
+	if !credential.Hosted.ExpiresAt.After(s.config.now()) || credential.Hosted.SupportActor != "" {
+		return accessstore.ErrDenied
+	}
+	if credential.EntryKey != nil && !credential.EntryKey.Valid() {
+		return accessstore.ErrDenied
+	}
+	if credential.EntryKey == nil || credential.EntryKey.Kind != "service" {
+		member, err := reader.AccessMember(ctx, credential.Hosted.Subject)
+		if err != nil {
+			return err
+		}
+		credential.HostedRole = lesserHostedRole(member.Role, credential.HostedRole)
+	}
+	allowed, err := s.appAllRunnerGrantsWith(ctx, reader, credential, nil)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return accessstore.ErrDenied
+	}
+	return nil
 }
 
 func runnerFromRoutingRecord(record runnerstore.RoutingRecord, now time.Time, urgent runnerstore.UrgentUpdate) runnerauth.Runner {
@@ -890,17 +933,12 @@ func (s *Service) validateRunnerLease(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	if s.config.TenantRepository != nil {
-		runner, err := s.validateRunnerLeaseTenant(c.Request().Context(), nativeRequestScope(c), tracker.LeaseID(c.Param("lease")), request.FencingToken)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		c.Response().Header().Set("Cache-Control", "no-store")
-		return c.JSON(http.StatusOK, runner)
+	runner, err := s.validateRunnerLeaseTenant(c.Request().Context(), nativeRequestScope(c), tracker.LeaseID(c.Param("lease")), request.FencingToken)
+	if err != nil {
+		return s.nativeAPIError(c, err)
 	}
-	return s.runnerReadTransaction(c, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
-		return validateRunnerLeaseTx(ctx, tx, nativeRequestScope(c), tracker.LeaseID(c.Param("lease")), request.FencingToken, now)
-	})
+	c.Response().Header().Set("Cache-Control", "no-store")
+	return c.JSON(http.StatusOK, runner)
 }
 
 func validateRunnerLeaseTx(ctx context.Context, tx *sql.Tx, scope nativeScope, id tracker.LeaseID, fencing tracker.FencingToken, now time.Time) (runnerauth.Runner, error) {

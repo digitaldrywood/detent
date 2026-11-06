@@ -767,3 +767,69 @@ func (w routingAuditFailureWriter) RecordAccessAudit(context.Context, accessstor
 	*w.attempts++
 	return 0, artifact.ErrStorage
 }
+
+func TestPostgresRunnerHostChangeWithoutLegacyDatabase(t *testing.T) {
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
+	now := time.Now().UTC()
+	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, now: func() time.Time { return now }}}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: strings.ReplaceAll(string(org), "_", "-"), CreatedAt: now}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "admin", Name: "Example admin", Hash: apikey.HashToken(string(org)), Scope: "admin", CreatedAt: now.Add(-time.Hour), UpdatedAt: now, ProjectAccess: "all", Kind: "service"}); err != nil {
+				return err
+			}
+			for _, id := range []string{"machine_one", "machine_two"} {
+				if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: org, ID: id, Hostname: "example", DisplayName: "Original", Capacity: 5, Version: "example"}); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(org), func(t *testing.T) {
+			scope := nativeScope{organization: org, credential: apiCredential{ID: "admin", Hash: apikey.HashToken(string(org)), Scope: apiScopeAdmin}}
+			for _, tc := range []struct {
+				name, machine, token string
+				revision             int64
+				capacity             int
+				wantError            bool
+			}{
+				{"first", "machine_one", string(org), 1, 7, false},
+				{"stale", "machine_one", string(org), 1, 9, true},
+				{"second", "machine_two", string(org), 1, 7, false},
+				{"foreign credential", "machine_one", "foreign", 2, 9, true},
+				{"missing", "missing", string(org), 1, 9, true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					scope.credential.Hash = apikey.HashToken(tc.token)
+					value, err := service.updateRunnerHostCommand(t.Context(), scope, tc.machine, runnerauth.HostChange{ExpectedRevision: tc.revision, DisplayName: " Updated ", Capacity: tc.capacity})
+					if (err != nil) != tc.wantError {
+						t.Fatalf("value=%+v error=%v", value, err)
+					}
+					if !tc.wantError {
+						got := value.(runnerauth.HostChange)
+						if got.ExpectedRevision != 2 || got.DisplayName != "Updated" || got.Capacity != 7 {
+							t.Fatalf("change=%+v", got)
+						}
+					}
+				})
+			}
+			for _, machine := range []string{"machine_one", "machine_two"} {
+				var name string
+				var capacity, revision int64
+				if err := admin.QueryRowContext(t.Context(), "SELECT display_name,capacity,routing_revision FROM machines WHERE organization_id=$1 AND id=$2", org, machine).Scan(&name, &capacity, &revision); err != nil {
+					t.Fatal(err)
+				}
+				if name != "Updated" || capacity != 7 || revision != 2 {
+					t.Fatalf("machine=%s name=%s capacity=%d revision=%d", machine, name, capacity, revision)
+				}
+			}
+		})
+	}
+}

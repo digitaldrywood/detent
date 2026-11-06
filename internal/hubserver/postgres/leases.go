@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -376,4 +377,19 @@ func (s *session) RegisterOwnedMachine(ctx context.Context, machine leasestore.M
 		return corestore.ErrNotFound
 	}
 	return nil
+}
+
+func (s *session) UpdateRunnerHost(ctx context.Context, id string, change runnerauth.HostChange) (int64, error) {
+	revision, err := s.queries.LockRunnerHostRevision(ctx, pgquery.LockRunnerHostRevisionParams{OrganizationID: s.organization, ID: id})
+	if err != nil {
+		return 0, mapError(ctx, err)
+	}
+	if revision != change.ExpectedRevision {
+		return revision, corestore.ErrRevisionConflict
+	}
+	updated, err := s.queries.UpdateRunnerHostRouting(ctx, pgquery.UpdateRunnerHostRoutingParams{OrganizationID: s.organization, ID: id, ExpectedRevision: change.ExpectedRevision, DisplayName: change.DisplayName, Capacity: int64(change.Capacity)})
+	if errors.Is(err, sql.ErrNoRows) {
+		return revision, corestore.ErrRevisionConflict
+	}
+	return updated, mapError(ctx, err)
 }
