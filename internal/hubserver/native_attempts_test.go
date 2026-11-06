@@ -16,13 +16,21 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -59,53 +67,98 @@ func nativeTestCheckpoint() *tracker.NativeCheckpoint {
 	return &tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "dirty", ExternalEffect: "none", EffectState: "none"}
 }
 
+func nativeAttemptTestDatabase(t *testing.T, f nativeFixture) *sql.DB {
+	t.Helper()
+	admin, ok := projectRecordDatabases.Load(f.service.config.TenantRepository)
+	if !ok {
+		t.Fatal("native attempt fixture has no isolated PostgreSQL database")
+	}
+	return admin.(*sql.DB)
+}
+
+func nativeAttemptListingPayload(t *testing.T, f nativeFixture, id string, raw []byte) {
+	t.Helper()
+	organization := f.project.OrganizationID
+	ref, err := f.service.runDetailStore().StoreDetail(t.Context(), string(organization), raw)
+	if err != nil {
+		t.Fatalf("store listing payload: %v", err)
+	}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization, ID: newNativeID("archive"), Reference: ref, CreatedAt: f.service.config.now().UTC()})
+		return err
+	}); err != nil {
+		t.Fatalf("register listing payload: %v", err)
+	}
+	if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key=$1 WHERE organization_id=$2 AND id=$3", ref.Key, organization, id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func nativeAttemptListingScope(t *testing.T, f nativeFixture) nativeScope {
+	t.Helper()
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("authenticate listing fixture: status=%d error=%v", status, err)
+	}
+	return nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+}
+
 func nativeAttemptListingFixture(t *testing.T, count, bodyBytes int) (nativeFixture, tracker.NativeIssue, []tracker.NativeRunData) {
 	t.Helper()
-	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	var frozen atomic.Pointer[time.Time]
+	f := newDefaultNativeFixture(t, Config{RunDetails: &memoryRunDetails{}, now: func() time.Time {
+		if now := frozen.Load(); now != nil {
+			return *now
+		}
+		return time.Now().UTC()
+	}})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "attempt listing")
-	worker := f.worker(t, "listing worker")
-	lease := claimNativeAttempt(t, f, worker, "listing-machine", "listing-session", issue.WorkItemID)
-	start := nativeStartedEvent(lease)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, start), http.StatusOK)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+	runner.enroll(t)
+	worker := runner.redemption.Credential
 	var records []tracker.NativeRunData
 	for index := range count {
-		data := start.Data
-		data.CompletionBody = strings.Repeat("x", bodyBytes)
-		if index > 0 {
-			data.LeaseID = tracker.LeaseID(fmt.Sprintf("lease_listing_%d", index))
-			result, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO leases
- (lease_id, issue_id, machine_id, session_id, expires_at, acquired_at, renewed_at, released_at, created_at, updated_at)
- SELECT ?, issue_id, machine_id, ?, expires_at, acquired_at, renewed_at, released_at, created_at, updated_at FROM leases WHERE lease_id = ?`, data.LeaseID, fmt.Sprintf("listing-session-%d", index), lease.ID)
+		var claimed leasestore.Lease
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			item, err := w.WorkItem(t.Context(), issue.ProjectID, issue.WorkItemID)
 			if err != nil {
-				t.Fatal(err)
+				return fmt.Errorf("read listing work item %s: %w", issue.WorkItemID, err)
 			}
-			fence, err := result.LastInsertId()
+			claimed, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(runner.binding.MachineID), SessionID: fmt.Sprintf("listing-session-%d", index), LeaseID: newNativeID("lease"), TTL: time.Hour})
 			if err != nil {
-				t.Fatal(err)
+				return fmt.Errorf("claim work item: %w", err)
 			}
-			data.FencingToken = tracker.FencingToken(fence)
-			data.AttemptID = fmt.Sprintf("attempt_listing_%d", index)
-			data.RunID = fmt.Sprintf("run_listing_%d", index)
+			now := f.service.config.now().UTC()
+			if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: issue.OrganizationID, LeaseID: claimed.LeaseID, RunnerID: runner.binding.RunnerID, AssignedAt: now}); err != nil {
+				return fmt.Errorf("assign listing runner: %w", err)
+			}
+			if err := w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, LeaseID: tracker.LeaseID(claimed.LeaseID), PolicyID: hubTestPolicy().ID, BoundAt: now}); err != nil {
+				return fmt.Errorf("bind listing policy: %w", err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("claim listing lease %d: %v", index, err)
 		}
-		encoded, err := json.Marshal(data)
+		lease := tracker.NativeLease{ID: tracker.LeaseID(claimed.LeaseID), WorkItemID: issue.WorkItemID, MachineID: runner.binding.MachineID, SessionID: claimed.SessionID, FencingToken: tracker.FencingToken(claimed.FencingToken), PolicyID: hubTestPolicy().ID, ExpiresAt: claimed.ExpiresAt}
+		start := nativeStartedEvent(lease)
+		start.IdempotencyKey = fmt.Sprintf("listing-start-%d", index)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, start), http.StatusOK)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+		attempt, err := f.service.readNativeAttemptTenant(t.Context(), nativeAttemptListingScope(t, f), string(issue.WorkItemID), start.Data.AttemptID)
+		if err != nil {
+			t.Fatalf("read released listing attempt %d: %v", index, err)
+		}
+		attempt.CompletionBody = strings.Repeat("x", bodyBytes)
+		encoded, err := json.Marshal(attempt.NativeRunData)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if index == 0 {
-			_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET payload_object_key='',data_json = ? WHERE id = ?`, string(encoded), data.AttemptID)
-		} else {
-			_, err = f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_attempts
- (id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, checkpoint_json, artifact_ids_json, started_at, updated_at, work_item_revision, dispatch_generation)
- SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status, ?, checkpoint_json, artifact_ids_json, started_at, updated_at, work_item_revision, dispatch_generation FROM native_attempts WHERE id = ?`, data.AttemptID, data.LeaseID, data.FencingToken, data.RunID, string(encoded), start.Data.AttemptID)
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		records = append(records, data)
+		nativeAttemptListingPayload(t, f, attempt.AttemptID, encoded)
+		records = append(records, attempt.NativeRunData)
 	}
+	now := time.Now().UTC()
+	frozen.Store(&now)
 	return f, issue, records
 }
 
@@ -122,9 +175,7 @@ func TestNativeAttemptsSkipUnusedHydration(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f, issue, records := nativeAttemptListingFixture(t, 4, test.bodyBytes)
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = '{"attempt_id":42}' WHERE id = ?`, records[test.corrupt].AttemptID); err != nil {
-				t.Fatal(err)
-			}
+			nativeAttemptListingPayload(t, f, records[test.corrupt].AttemptID, []byte(`{"attempt_id":42}`))
 			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"/attempts?view=detail&limit="+strconv.Itoa(test.limit), f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			var page tracker.Page[tracker.NativeAttempt]
@@ -185,7 +236,7 @@ func legacyNativeAttemptPage(attempts []tracker.NativeAttempt, limit, budget int
 
 func TestNativeAttemptPageByteBoundaryEquivalence(t *testing.T) {
 	f, issue, records := nativeAttemptListingFixture(t, 5, 0)
-	scope := nativeScope{organization: issue.OrganizationID, project: issue.ProjectID}
+	scope := nativeAttemptListingScope(t, f)
 	path := f.base + "/work-items/" + string(issue.WorkItemID) + "/attempts"
 	base, err := f.service.readAttempts(t.Context(), scope, string(issue.WorkItemID), url.Values{"view": {"detail"}, "limit": {"100"}})
 	if err != nil {
@@ -203,6 +254,11 @@ func TestNativeAttemptPageByteBoundaryEquivalence(t *testing.T) {
 				budget = operatortool.WorkHistoryPageBytes
 			}
 			ordered := append([]tracker.NativeAttempt(nil), base.Items...)
+			if view == "recorded_blockers" {
+				for index := range ordered {
+					ordered[index].Unavailable = []string{"evidence"}
+				}
+			}
 			if direction == "newest" {
 				for left, right := 0, len(ordered)-1; left < right; left, right = left+1, right-1 {
 					ordered[left], ordered[right] = ordered[right], ordered[left]
@@ -229,9 +285,7 @@ func TestNativeAttemptPageByteBoundaryEquivalence(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET payload_object_key='',data_json = ? WHERE id = ?`, string(encoded), record.AttemptID); err != nil {
-						t.Fatal(err)
-					}
+					nativeAttemptListingPayload(t, f, record.AttemptID, encoded)
 				}
 				for index := range ordered {
 					ordered[index].CompletionBody = body
@@ -299,7 +353,7 @@ func TestNativeAttemptPageEncodesEachReturnedRecordOnce(t *testing.T) {
 				counts[attempt.AttemptID]++
 				return json.Marshal(attempt)
 			}
-			got, err := f.service.readNativeAttemptPage(t.Context(), nativeScope{organization: issue.OrganizationID, project: issue.ProjectID}, string(issue.WorkItemID), url.Values{"view": {"detail"}, "limit": {strconv.Itoa(test.limit)}}, marshal)
+			got, err := f.service.readNativeAttemptPage(t.Context(), nativeAttemptListingScope(t, f), string(issue.WorkItemID), url.Values{"view": {"detail"}, "limit": {strconv.Itoa(test.limit)}}, marshal)
 			if err != nil || len(got.Items) != test.want || len(counts) != test.considered {
 				t.Fatalf("items=%d encodes=%v error=%v", len(got.Items), counts, err)
 			}
