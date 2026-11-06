@@ -8,6 +8,11 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type healthEmailSenderFunc func(context.Context, auth.EmailMessage) error
@@ -18,10 +23,23 @@ func (f healthEmailSenderFunc) SendEmail(ctx context.Context, message auth.Email
 
 func TestHealthEmailTemplate(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
-	issue := f.create(t, "email subject")
-	s := f.service
-	s.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID), PublicURL: "https://cloud.example.test", SharedEntry: &HostedSharedEntry{}}
+	storage := projectRecordPostgres(t)
+	now := time.Now().UTC()
+	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: tracker.NativeWorkItemID("wi_" + strings.Repeat("a", 32)), Number: 1}}
+	s := &Service{database: &database{}, config: Config{TenantRepository: storage, AccessRepository: storage, now: func() time.Time { return now }, Hosted: &HostedConfig{OrganizationID: string(issue.OrganizationID), PublicURL: "https://cloud.example.test", SharedEntry: &HostedSharedEntry{}}}}
+	if err := storage.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: issue.OrganizationID, Name: "Local organization", Slug: "local-organization", CreatedAt: now}); err != nil {
+			return err
+		}
+		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: issue.OrganizationID, ID: issue.ProjectID, Name: "Native", Slug: "native", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+			return err
+		}
+		_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, NativeID: issue.WorkItemID, Number: 1, Title: "Email subject"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	for _, test := range []struct{ kind, path, state string }{
 		{"work_item", "/local-organization/native/issues/1", "opened"},
 		{"runner", "/fleet", "opened"},

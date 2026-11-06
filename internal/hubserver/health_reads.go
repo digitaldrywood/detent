@@ -2,16 +2,17 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"net/http"
-	"slices"
 	"strconv"
 	"time"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 type healthFindingsPage struct {
@@ -69,140 +70,74 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 			return page, nativePublicInvalid("invalid findings cursor")
 		}
 	}
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return page, err
+	if s.config.TenantRepository == nil {
+		return page, workItemStorageUnavailable()
 	}
-	defer tx.Rollback()
-	page.ChangeSequence, _, err = readDashboardWatermark(ctx, tx, scope)
-	if err != nil {
-		return page, err
+	var sinceAt *time.Time
+	if since != "" {
+		at, _ := time.Parse(time.RFC3339Nano, since)
+		sinceAt = &at
 	}
-	if _, err := readNativeProject(ctx, tx, scope); err != nil {
-		return page, err
-	}
-	var query nativeQueryer = tx
+	reporter := ""
 	if scope.credential.HostedRole == "reporter" {
-		prepared, prepareErr := prepareNativePageQuery(ctx, tx, scope, "", "native_issue_actors")
-		if prepareErr != nil {
-			return page, prepareErr
+		reporter = scope.actor().PrincipalID
+		if reporter == "" {
+			return page, corestore.ErrNotFound
 		}
-		query = prepared
 	}
-	resolved := state == "resolved"
-	args := []any{scope.organization, state, resolved, scope.project, state, since, since, since, after}
-
-	visibility := ""
-	if scope.credential.HostedRole == "reporter" {
-		condition, visibilityArgs := scope.issueVisibilitySQL("i")
-		visibility = " AND EXISTS(SELECT 1 FROM health_finding_issues fi JOIN issues i ON i.native_id=fi.work_item_id WHERE fi.finding_id=health_findings.id AND i.organization_id=? AND i.project_id=? AND (" + condition + "))"
-		args = append(args, scope.organization, scope.project)
-		args = append(args, visibilityArgs...)
-	}
-	args = append(args, healthReadLimit+1)
-	rows, err := query.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json,email_unavailable,slack_unavailable_at,slack_status_code,projects_json,projects_projected FROM health_findings
- WHERE organization_id=? AND (?='all' OR (resolved_at IS NOT NULL)=?) AND (projects_projected IS NULL OR EXISTS(SELECT 1 FROM health_finding_projects fp WHERE fp.finding_id=health_findings.id AND fp.project_id=?))
- AND ((?='all' AND resolved_at IS NULL) OR ?='' OR julianday(last_seen_at)>=julianday(?) OR julianday(resolved_at)>=julianday(?)) AND rowid>?`+visibility+` ORDER BY rowid LIMIT ?`, args...)
-	if err != nil {
-		return page, err
-	}
-	defer rows.Close()
-	var last int64
-	count := 0
-	for rows.Next() {
-		var f healthFinding
-		var rowid int64
-		var subject, opened, seen, evidence string
-		var ended, slackFailed sql.NullString
-		var slackStatus sql.NullInt64
-		var projects string
-		var projected sql.NullInt64
-		if err := rows.Scan(&rowid, &f.ID, &f.Fingerprint, &f.Signal, &f.Class, &subject, &opened, &seen, &ended, &f.Severity, &f.Summary, &f.NextAction, &evidence, &f.EmailUnavailable, &slackFailed, &slackStatus, &projects, &projected); err != nil {
-			return page, err
-		}
-		count++
-		if count > healthReadLimit {
-			return page, errHealthReadLimit
-		}
-		if !projected.Valid {
-			var ids []string
-			if err := json.Unmarshal([]byte(projects), &ids); err != nil {
-				return page, err
-			}
-			if !slices.Contains(ids, string(scope.project)) {
-				continue
-			}
-		}
-		links, err := readHealthFindingLinks(ctx, query, scope, f.ID)
+	var records healthstore.Page
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		project, err := r.Project(ctx, scope.project)
 		if err != nil {
-			return page, err
+			return err
 		}
-		f.Issues = links
-		if scope.credential.HostedRole == "reporter" && len(links) == 0 {
-			continue
+		if project.DeletedAt != nil {
+			return corestore.ErrNotFound
 		}
-		if len(links) > 0 {
-			f.FiledBy = "health_detector"
+		page.ChangeSequence, err = r.ProjectEventSequence(ctx, scope.project)
+		if err != nil {
+			return err
 		}
-
-		if len(page.Items) == limit {
-			page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(last, 10)))
+		owner, ok := r.(healthstore.Reader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		records, err = owner.HealthFindings(ctx, scope.project, state, sinceAt, after, reporter, limit+1)
+		return err
+	})
+	if err != nil {
+		return page, err
+	}
+	for i, row := range records.Findings {
+		if i == limit {
+			page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(records.Findings[i-1].Sequence, 10)))
 			break
 		}
-		if err := json.Unmarshal([]byte(subject), &f.Subject); err != nil {
-			return page, err
-		}
-		if err := json.Unmarshal([]byte(evidence), &f.Evidence); err != nil {
-			return page, err
-		}
-		if f.OpenedAt, err = parseTimeValue(opened); err != nil {
-			return page, err
-		}
-		if f.LastSeenAt, err = parseTimeValue(seen); err != nil {
-			return page, err
-		}
-		if ended.Valid {
-			at, err := parseTimeValue(ended.String)
+		f := healthFinding{ID: row.ID, Fingerprint: row.Fingerprint, Signal: row.Signal, Class: row.Class, Subject: healthSubject{Kind: row.SubjectKind, ID: row.SubjectID}, OpenedAt: row.OpenedAt, LastSeenAt: row.LastSeenAt, ResolvedAt: row.ResolvedAt, Severity: row.Severity, Summary: row.Summary, NextAction: row.NextAction, EmailUnavailable: row.EmailUnavailable}
+		if row.Evidence.Key != "" {
+			raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.organization), row.Evidence)
 			if err != nil {
 				return page, err
 			}
-			f.ResolvedAt = &at
+			if err := json.Unmarshal(raw, &f.Evidence); err != nil {
+				return page, err
+			}
 		}
 		f.Evidence = scopeHealthEvidence(f.Evidence, scope.project)
-		if slackFailed.Valid {
-			at, err := parseTimeValue(slackFailed.String)
-			if err != nil {
-				return page, err
-			}
-			f.SlackUnavailable = &healthSlackFailure{Code: "slack_unavailable", StatusCode: int(slackStatus.Int64), At: at}
+		for _, link := range row.Issues {
+			f.Issues = append(f.Issues, healthFindingIssue{ProjectID: link.ProjectID, WorkItemID: link.WorkItemID})
+		}
+		if len(f.Issues) > 0 {
+			f.FiledBy = "health_detector"
+		}
+		if row.SlackUnavailableAt != nil {
+			f.SlackUnavailable = &healthSlackFailure{Code: "slack_unavailable", StatusCode: row.SlackStatusCode, At: *row.SlackUnavailableAt}
 		}
 		page.Items = append(page.Items, f)
-		last = rowid
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return page, err
+	for _, gap := range records.Baselines {
+		page.BaselineUnavailable = append(page.BaselineUnavailable, healthBaselineUnavailable{Project: string(gap.ProjectID), Signal: gap.Signal, Lane: gap.Lane})
 	}
-	var tick, unavailable string
-	err = tx.QueryRowContext(ctx, "SELECT last_tick_at,baseline_unavailable_json FROM health_detector_ticks WHERE organization_id=?", scope.organization).Scan(&tick, &unavailable)
-	if errors.Is(err, sql.ErrNoRows) {
-		return page, nil
-	}
-	if err != nil {
-		return page, err
-	}
-	at, err := parseTimeValue(tick)
-	if err != nil {
-		return page, err
-	}
-	var gaps []healthBaselineUnavailable
-	if err := json.Unmarshal([]byte(unavailable), &gaps); err != nil {
-		return page, err
-	}
-	for _, gap := range gaps {
-		if gap.Project == string(scope.project) {
-			page.BaselineUnavailable = append(page.BaselineUnavailable, gap)
-		}
-	}
-	page.LastTickAt = &at
+	page.LastTickAt = records.LastTickAt
 	return page, nil
 }
