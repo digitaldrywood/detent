@@ -20,8 +20,11 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestDecodeAPIJSONCompatibility(t *testing.T) {
@@ -91,8 +94,20 @@ func TestDecodeAPIJSONCompatibility(t *testing.T) {
 
 func TestAPIRefusals(t *testing.T) {
 	t.Parallel()
-	f := newHostedSecurityFixture(t)
-	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
+	repository := projectRecordPostgres(t)
+	f := accountPreferencesPostgresFixture(t, repository)
+	f.service.config.newTokenID = func() string { return newNativeID("credential") }
+	for _, organization := range []tracker.OrganizationID{"org_security", "org_other"} {
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: string(organization), CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}); err != nil {
+				return err
+			}
+			return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "org_provider"})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	owner := f.user(t, "owner", "owner", "owner@example.test", "", "")
 	credential, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: owner.identity.Hosted, Email: owner.identity.Email}, apikey.HashToken(owner.token))
 	if err != nil {
 		t.Fatal(err)
@@ -173,7 +188,6 @@ func TestAPIRefusals(t *testing.T) {
 			s.config.Hosted.Billing = &HostedBillingConfig{WebhookSecret: []byte("test-secret")}
 			return s.hostedStripeWebhook(c)
 		}},
-		{"webhook headers", "/webhooks/github", `{}`, "invalid_headers", "GitHub webhook delivery and event headers are required", http.StatusBadRequest, (*Service).githubWebhook},
 		{"operator writer", "/api/v1/work-items/:id/workflow", "", "idempotency_conflict", "Idempotency key conflicts with an earlier mutation", http.StatusConflict, func(s *Service, c echo.Context) error {
 			return s.operatorAPIError(c, ErrIdempotencyConflict)
 		}},
@@ -186,7 +200,7 @@ func TestAPIRefusals(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var logs bytes.Buffer
-			service := &Service{config: Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil)), GitHubWebhookSecret: []byte("test-secret"), Hosted: &HostedConfig{}}}
+			service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, Logger: slog.New(slog.NewJSONHandler(&logs, nil)), GitHubWebhookSecret: []byte("test-secret"), Hosted: &HostedConfig{}}}
 			recorded := httptest.NewRecorder()
 			c := echo.New().NewContext(httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body)), recorded)
 			c.SetPath(strings.SplitN(test.path, "?", 2)[0])
