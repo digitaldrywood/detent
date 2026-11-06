@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/readableurl"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/update"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -534,6 +535,9 @@ func (s *Service) appBootstrapPayload(c echo.Context) error {
 	}
 	credential, status, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
+		if status >= http.StatusInternalServerError {
+			return s.nativeAPIError(c, errors.Join(tenantauth.ErrUnavailable, err))
+		}
 		if status == http.StatusForbidden {
 			return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", appBootstrapRefusal{Code: "forbidden", Message: "This account has no access to this organization", Details: appBootstrapRefusalDetails{Organization: s.config.Hosted.OrganizationID, CSRFToken: s.hostedPageCSRF(c)}})
 		}

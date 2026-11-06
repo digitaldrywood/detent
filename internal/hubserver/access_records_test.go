@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/platformusers"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -387,8 +389,8 @@ func TestSharedAccessSessionReadsExistingBindingWithoutWriting(t *testing.T) {
 		t.Fatal(err)
 	}
 	counted.reads, counted.writes = 0, 0
-	if _, _, err := service.sharedAccessSession(t.Context(), c, claims); err == nil {
-		t.Fatal("revoked binding authenticated")
+	if _, _, err := service.sharedAccessSession(t.Context(), c, claims); !errors.Is(err, auth.ErrInvalidSession) || errors.Is(err, tenantauth.ErrUnavailable) {
+		t.Fatalf("revoked binding error=%v, want invalid session without unavailable", err)
 	}
 	if counted.reads != 1 || counted.writes != 0 {
 		t.Fatalf("revoked binding repository calls = reads %d, writes %d; want reads 1, writes 0", counted.reads, counted.writes)
@@ -397,16 +399,95 @@ func TestSharedAccessSessionReadsExistingBindingWithoutWriting(t *testing.T) {
 
 type countingTenantRepository struct {
 	tenantstore.Repository
-	reads  int
-	writes int
+	reads   int
+	writes  int
+	readErr error
 }
 
 func (r *countingTenantRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
 	r.reads++
+	if r.readErr != nil {
+		return r.readErr
+	}
 	return r.Repository.ReadTenant(ctx, organization, workload, read)
 }
 
 func (r *countingTenantRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
 	r.writes++
 	return r.Repository.WriteTenant(ctx, organization, workload, write)
+}
+
+func TestSharedAccessSessionLookupFailureIsUnavailable(t *testing.T) {
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	organizations := []tracker.OrganizationID{"org_first", "org_second"}
+	for _, org := range organizations {
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: now}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "provider_" + string(org)}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "principal", Name: "Example", Hash: "principal_hash", Scope: "operator", NativeOnly: true, ProjectAccess: "selected", Kind: "personal", CreatedAt: now, UpdatedAt: now}); err != nil {
+				return err
+			}
+			return w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: org, UserID: "user_example", Email: "member@example.test", MembershipID: "membership_example", Role: "admin", Active: true, PrincipalID: "principal", CreatedAt: now, UpdatedAt: now})
+		}); err != nil {
+			t.Fatalf("shared session fixture: %v cause=%v", err, errors.Unwrap(err))
+		}
+	}
+	for _, operation := range []string{"SELECT ON hosted_tenant", "SELECT ON hosted_sessions", "INSERT ON hosted_sessions", "SELECT ON hosted_members", "SELECT ON api_tokens"} {
+		t.Run(operation, func(t *testing.T) {
+			if _, err := admin.ExecContext(t.Context(), "REVOKE "+operation+" FROM detent_runtime_v2"); err != nil {
+				t.Fatal(err)
+			}
+			for _, org := range organizations {
+				service := &Service{config: Config{AccessRepository: repository, Hosted: &HostedConfig{OrganizationID: string(org), SharedEntry: &HostedSharedEntry{}}, Logger: slog.Default(), now: func() time.Time { return now }}}
+				claims := cloudassert.Claims{Kind: cloudassert.KindBrowser, Audience: string(org), Subject: "user_example", ProviderOrganization: "provider_" + string(org), ProviderSession: "session_example", SessionCreatedAt: now, SessionExpiresAt: now.Add(time.Hour), AccessExpiresAt: now.Add(time.Hour), Email: "member@example.test", Role: "admin", Binding: "binding_example"}
+				c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), httptest.NewRecorder())
+				_, _, err := service.sharedAccessSession(t.Context(), c, claims)
+				if operation != "SELECT ON hosted_members" && operation != "SELECT ON api_tokens" && (!errors.Is(err, tenantauth.ErrUnavailable) || errors.Is(err, auth.ErrInvalidSession)) {
+					t.Errorf("tenant %s lookup error=%v, want unavailable without invalid session", org, err)
+				}
+				for _, endpoint := range []struct {
+					path   string
+					handle echo.HandlerFunc
+				}{
+					{"/app/bootstrap", service.appBootstrapPayload},
+					{nativeBase + "/work-items", service.requireAPIScope(apiScopeOperator)(func(c echo.Context) error { return c.NoContent(http.StatusOK) })},
+				} {
+					response := httptest.NewRecorder()
+					c = echo.New().NewContext(httptest.NewRequest(http.MethodGet, endpoint.path, nil), response)
+					c.SetPath(endpoint.path)
+					c.Set(hostedSharedClaimsKey, claims)
+					if err := endpoint.handle(c); err != nil {
+						t.Fatal(err)
+					}
+					if response.Code != http.StatusServiceUnavailable {
+						t.Errorf("tenant %s path %s status=%d, want 503", org, endpoint.path, response.Code)
+					}
+				}
+			}
+			if _, err := admin.ExecContext(t.Context(), "GRANT "+operation+" TO detent_runtime_v2"); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestBootstrapLookupFailureIsUnavailable(t *testing.T) {
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	repository := &countingTenantRepository{readErr: errors.New("storage unavailable")}
+	service := &Service{config: Config{AccessRepository: repository, Hosted: &HostedConfig{OrganizationID: "org_example", SharedEntry: &HostedSharedEntry{}}, Logger: slog.Default(), now: func() time.Time { return now }}}
+	claims := cloudassert.Claims{Kind: cloudassert.KindBrowser, Audience: "org_example", Subject: "user_example", ProviderOrganization: "provider_example", ProviderSession: "session_example", SessionCreatedAt: now, SessionExpiresAt: now.Add(time.Hour), AccessExpiresAt: now.Add(time.Hour), Email: "member@example.test", Role: "admin", Binding: "binding_example"}
+	response := httptest.NewRecorder()
+	c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/app/bootstrap", nil), response)
+	c.Set(hostedSharedClaimsKey, claims)
+	if err := service.appBootstrapPayload(c); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("bootstrap status=%d, want 503", response.Code)
+	}
 }

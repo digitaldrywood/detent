@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -130,6 +131,7 @@ func operatorAuthorizationCause(err error) string {
 		{sql.ErrConnDone, "connection_closed"},
 		{driver.ErrBadConn, "bad_connection"},
 		{accessstore.ErrDenied, "access_denied"},
+		{auth.ErrInvalidSession, "invalid_session"},
 		{auth.ErrHostedIdentity, "hosted_identity"},
 		{operatortool.ErrAccessDenied, "operator_access_denied"},
 		{sql.ErrNoRows, "not_found"},
@@ -142,6 +144,10 @@ func operatorAuthorizationCause(err error) string {
 }
 
 func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) error {
+	if errors.Is(err, tenantauth.ErrUnavailable) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderInvalid {
+		message := "Authorization is temporarily unavailable"
+		return s.refusedAPIError(c, http.StatusServiceUnavailable, "service_unavailable", message, apiErrorResponse{Code: "service_unavailable", Message: message}, append(attributes, "authorization_cause", operatorAuthorizationCause(err))...)
+	}
 	if errors.Is(err, corestore.ErrSerializationFailure) {
 		message := "Database transaction was aborted; retry the request"
 		s.config.Logger.Error(message, append([]any{"error", err}, postgresErrorAttributes(err)...)...)
@@ -201,7 +207,7 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 		return s.refusedAPIError(c, http.StatusForbidden, "access_denied", message, apiErrorResponse{Code: "access_denied", Message: message}, attributes...)
 	}
 	if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, auth.ErrInvalidSession) {
-		return s.refusedAPIError(c, http.StatusForbidden, "access_denied", "Access is no longer available", apiErrorResponse{Code: "access_denied", Message: "Access is no longer available"})
+		return s.refusedAPIError(c, http.StatusForbidden, "access_denied", "Access is no longer available", apiErrorResponse{Code: "access_denied", Message: "Access is no longer available"}, append(attributes, "authorization_cause", operatorAuthorizationCause(err), "hosted_reason", auth.HostedIdentityReason(err))...)
 	}
 	var limit *hostedLimitError
 	if errors.As(err, &limit) {
