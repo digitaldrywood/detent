@@ -15,6 +15,10 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -219,110 +223,132 @@ func TestMonthlyCostsMCPBounds(t *testing.T) {
 	}
 }
 
+func newCostLedgerTestService(t *testing.T, now time.Time) *Service {
+	t.Helper()
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }})
+	for _, organization := range []tracker.OrganizationID{"org", "other-org"} {
+		err := service.database.billingRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: string(organization), Slug: string(organization), CreatedAt: now}); err != nil {
+				return err
+			}
+			for _, project := range []tracker.ProjectID{"original", "replacement", "one", "two"} {
+				if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: organization, ID: project, Name: string(project), Profile: "native"}); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return service
+}
+
+func recordPostgresTestCost(t *testing.T, d *database, organization, project string, observation costObservation, now time.Time) (bool, error) {
+	t.Helper()
+	if err := normalizeCostObservation(&observation, now); err != nil {
+		return false, err
+	}
+	raw, err := json.Marshal(observation)
+	if err != nil {
+		return false, err
+	}
+	ref, err := d.billingAuditStore.StoreDetail(t.Context(), organization, raw)
+	if err != nil {
+		return false, err
+	}
+	var changed bool
+	err = d.billingRepository.WriteTenant(t.Context(), tracker.OrganizationID(organization), corestore.Serving, func(w tenantstore.Writer) error {
+		var err error
+		changed, err = w.RecordBillingCost(t.Context(), billingstore.CostObservation{OrganizationID: tracker.OrganizationID(organization), ProjectID: tracker.ProjectID(project), Observation: observation, Reference: billingstore.AuditReferenceFromArchive(ref), ReceivedAt: now})
+		return err
+	})
+	return changed, err
+}
+
 func TestCostLedgerReplay(t *testing.T) {
 	t.Parallel()
 	from := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	to, now := from.Add(time.Hour), from.Add(2*time.Hour)
-	s := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
-	o := costTestObservation("storage_cold", from, to)
-	for _, test := range []struct {
-		name    string
-		project string
-		mutate  func(*costObservation)
-		changed bool
-		wantErr bool
-	}{
-		{name: "initial storage observation", project: "original", changed: true},
-		{name: "retry has no extra charge", project: "original"},
-		{name: "source cannot move to another project", project: "replacement", wantErr: true},
-		{name: "same revision cannot change content", project: "original", mutate: func(o *costObservation) { o.Coverage = "partial" }, wantErr: true},
-		{name: "revision correction replaces quantity", project: "original", mutate: func(o *costObservation) { q := 1.0; o.Quantity, o.Revision = &q, 2 }, changed: true},
-		{name: "late earlier revision cannot resurrect old cost", project: "original"},
-		{name: "new source for same interval is not additive", project: "original", mutate: func(o *costObservation) { o.SourceID = "invoice-alias" }, wantErr: true},
-		{name: "overlapping observation is rejected", project: "original", mutate: func(o *costObservation) { o.From = o.From.Add(time.Minute) }, wantErr: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			entry := o
-			if test.mutate != nil {
-				test.mutate(&entry)
+	s := newCostLedgerTestService(t, now)
+	for _, organization := range []string{"org", "other-org"} {
+		t.Run(organization, func(t *testing.T) {
+			o := costTestObservation("storage_cold", from, to)
+			for _, test := range []struct {
+				name    string
+				project string
+				mutate  func(*costObservation)
+				changed bool
+				wantErr bool
+			}{
+				{name: "initial storage observation", project: "original", changed: true},
+				{name: "retry has no extra charge", project: "original"},
+				{name: "source cannot move to another project", project: "replacement", wantErr: true},
+				{name: "same revision cannot change content", project: "original", mutate: func(o *costObservation) { o.Coverage = "partial" }, wantErr: true},
+				{name: "revision correction replaces quantity", project: "original", mutate: func(o *costObservation) { q := 1.0; o.Quantity, o.Revision = &q, 2 }, changed: true},
+				{name: "late earlier revision cannot resurrect old cost", project: "original"},
+				{name: "new source for same interval is not additive", project: "original", mutate: func(o *costObservation) { o.SourceID = "invoice-alias" }, wantErr: true},
+				{name: "overlapping observation is rejected", project: "original", mutate: func(o *costObservation) { o.From = o.From.Add(time.Minute) }, wantErr: true},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					entry := o
+					if test.mutate != nil {
+						test.mutate(&entry)
+					}
+					changed, err := recordPostgresTestCost(t, s.database, organization, test.project, entry, now)
+					if (err != nil) != test.wantErr || changed != test.changed {
+						t.Fatalf("changed=%t error=%v", changed, err)
+					}
+				})
 			}
-			changed, err := recordTestCost(t, s.database.db, "org", test.project, entry, now)
-			if (err != nil) != test.wantErr || changed != test.changed {
-				t.Fatalf("changed=%t error=%v", changed, err)
+			before, err := s.database.monthlyCosts(t.Context(), organization, "organization", nil, usageWindow{From: from, To: from.AddDate(0, 1, 0)}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if *before.Totals[0].KnownMicros != 10_000 || before.Sources[0].Revision != 2 || before.Sources[0].ProjectID != "original" {
+				t.Fatalf("correction was counted twice or misattributed: %+v", before)
+			}
+			if err := s.database.Close(); err != nil {
+				t.Fatal(err)
+			}
+			cfg := s.config
+			cfg.BillingRepository = nil
+			s.database, err = openDatabase(t.Context(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if changed, err := recordPostgresTestCost(t, s.database, organization, "original", o, now); err != nil || changed {
+				t.Fatalf("replay after restart changed ledger: %t %v", changed, err)
+			}
+			corrected := o
+			q := 1.0
+			corrected.Quantity, corrected.Revision = &q, 2
+			if changed, err := recordPostgresTestCost(t, s.database, organization, "original", corrected, now); err != nil || changed {
+				t.Fatalf("correction retry after restart changed ledger: %t %v", changed, err)
+			}
+			after, err := s.database.monthlyCosts(t.Context(), organization, "organization", nil, before.Period, now)
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("restart totals changed: before=%+v after=%+v error=%v", before, after, err)
+			}
+			voided := corrected
+			voided.Voided, voided.Revision = true, 3
+			if changed, err := recordPostgresTestCost(t, s.database, organization, "original", voided, now); err != nil || !changed {
+				t.Fatalf("void original period: %t %v", changed, err)
+			}
+			replacement := corrected
+			replacement.To, replacement.ObservedAt, replacement.Revision = to.Add(time.Minute), to.Add(time.Minute), 1
+			if changed, err := recordPostgresTestCost(t, s.database, organization, "original", replacement, now); err != nil || !changed {
+				t.Fatalf("replace corrected interval: %t %v", changed, err)
+			}
+			if changed, err := recordPostgresTestCost(t, s.database, organization, "original", corrected, now); err != nil || changed {
+				t.Fatalf("old period resurrected after void: %t %v", changed, err)
+			}
+			final, err := s.database.monthlyCosts(t.Context(), organization, "organization", nil, before.Period, now)
+			if err != nil || len(final.Sources) != 1 || *final.Totals[0].KnownMicros != 10_000 || final.Sources[0].To != replacement.To {
+				t.Fatalf("period correction double counted: %+v %v", final, err)
 			}
 		})
-	}
-	before, err := s.database.monthlyCosts(t.Context(), "org", "organization", nil, usageWindow{From: from, To: from.AddDate(0, 1, 0)}, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if *before.Totals[0].KnownMicros != 10_000 || before.Sources[0].Revision != 2 || before.Sources[0].ProjectID != "original" {
-		t.Fatalf("correction was counted twice or misattributed: %+v", before)
-	}
-	if err := s.database.Close(); err != nil {
-		t.Fatal(err)
-	}
-	s.database, err = openDatabase(t.Context(), s.config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if changed, err := recordTestCost(t, s.database.db, "org", "original", o, now); err != nil || changed {
-		t.Fatalf("replay after restart changed ledger: %t %v", changed, err)
-	}
-	corrected := o
-	q := 1.0
-	corrected.Quantity, corrected.Revision = &q, 2
-	if changed, err := recordTestCost(t, s.database.db, "org", "original", corrected, now); err != nil || changed {
-		t.Fatalf("correction retry after restart changed ledger: %t %v", changed, err)
-	}
-	after, err := s.database.monthlyCosts(t.Context(), "org", "organization", nil, before.Period, now)
-	if err != nil || !reflect.DeepEqual(before, after) {
-		t.Fatalf("restart totals changed: before=%+v after=%+v error=%v", before, after, err)
-	}
-	rawVoided := corrected
-	rawVoided.Voided = true
-	payload, err := json.Marshal(rawVoided)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.database.db.ExecContext(t.Context(), `UPDATE usage_cost_observations SET observation_json=? WHERE revision=2`, string(payload)); err != nil {
-		t.Fatal(err)
-	}
-	overlapping := corrected
-	overlapping.SourceID = "other-source"
-	if _, err := recordTestCost(t, s.database.db, "org", "original", overlapping, now); err == nil {
-		t.Fatal("typed active observation was ignored because its payload was voided")
-	}
-	typed, err := readCostObservations(t.Context(), s.database.reader, "org", nil, usageWindow{From: from, To: to})
-	if err != nil || len(typed) != 1 {
-		t.Fatalf("typed observation disappeared from report: %v %v", typed, err)
-	}
-	payload, err = json.Marshal(corrected)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.database.db.ExecContext(t.Context(), `UPDATE usage_cost_observations SET observation_json=? WHERE revision=2`, string(payload)); err != nil {
-		t.Fatal(err)
-	}
-	voided := corrected
-	voided.Voided, voided.Revision = true, 3
-	if changed, err := recordTestCost(t, s.database.db, "org", "original", voided, now); err != nil || !changed {
-		t.Fatalf("void original period: %t %v", changed, err)
-	}
-	if _, err := s.database.db.ExecContext(t.Context(), `UPDATE usage_cost_observations SET voided=NULL WHERE revision=3`); err != nil {
-		t.Fatal(err)
-	}
-	replacement := corrected
-	replacement.To, replacement.ObservedAt, replacement.Revision = to.Add(time.Minute), to.Add(time.Minute), 1
-	if changed, err := recordTestCost(t, s.database.db, "org", "original", replacement, now); err != nil || !changed {
-		t.Fatalf("replace corrected interval: %t %v", changed, err)
-	}
-	if changed, err := recordTestCost(t, s.database.db, "org", "original", corrected, now); err != nil || changed {
-		t.Fatalf("old period resurrected after void: %t %v", changed, err)
-	}
-	final, err := s.database.monthlyCosts(t.Context(), "org", "organization", nil, before.Period, now)
-	if err != nil || len(final.Sources) != 1 || *final.Totals[0].KnownMicros != 10_000 || final.Sources[0].To != replacement.To {
-		t.Fatalf("period correction double counted: %+v %v", final, err)
 	}
 }
 
@@ -540,7 +566,7 @@ func TestCostLedgerScopeIsolation(t *testing.T) {
 	t.Parallel()
 	from := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	to := from.AddDate(0, 1, 0)
-	s := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return to }})
+	s := newCostLedgerTestService(t, to)
 	for index, scope := range []struct {
 		organization, project, account, currency, bucket string
 	}{
@@ -555,7 +581,7 @@ func TestCostLedgerScopeIsolation(t *testing.T) {
 		o.SourceID += scope.bucket
 		q := float64(index + 1)
 		o.Quantity = &q
-		if _, err := recordTestCost(t, s.database.db, scope.organization, scope.project, o, to); err != nil {
+		if _, err := recordPostgresTestCost(t, s.database, scope.organization, scope.project, o, to); err != nil {
 			t.Fatal(err)
 		}
 	}
