@@ -66,6 +66,9 @@ func (s *Service) startGitHubImportRecord(ctx context.Context, scope nativeScope
 		next.Revision++
 	}
 	return s.importRecordMutation(ctx, scope, operation, request.Mutation, request, importJobResponse(next), func(w tenantstore.Writer) error {
+		if err := s.database.requireHostedFeatureRecord(ctx, w, "github_integration", s.config.now()); err != nil {
+			return err
+		}
 		latest, err := w.ProjectRecord(ctx, scope.project)
 		if err != nil {
 			return err
