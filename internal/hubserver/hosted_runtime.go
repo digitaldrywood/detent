@@ -161,36 +161,18 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 	} else if len(update.Prices) != 0 {
 		return nativePublicInvalid("Enabling billing requires a restart")
 	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	actor := s.config.Hosted.EntitlementAdministrator
 	if update.StageID != "" {
 		if _, err := uuid.Parse(update.StageID); err != nil || !s.hostedShared() {
 			return nativePublicInvalid("Runtime preparation requires a shared entry and a publication identity")
 		}
 	}
-	if err := s.database.seedHostedPlans(ctx, tx, plans, actor, update.Reason, update.StageID); err != nil {
-		return err
-	}
-	if err := seedHostedBillingPrices(ctx, tx, update.Prices); err != nil {
-		return err
-	}
 	update.Plans = &plans
+	if err := s.database.applyRuntimeRecords(ctx, plans, update.Prices, actor, update.Reason, update.StageID, update.ValidateOnly); err != nil {
+		return err
+	}
 	if update.ValidateOnly {
-		return tx.Rollback()
-	}
-	command := hostedPlanCommand{ID: "reload_" + uuid.NewString(), Action: "reload", Reason: update.Reason}
-	if update.StageID != "" {
-		command.Action = "prepare_reload"
-	}
-	if err := s.database.auditHostedPlanCommand(ctx, tx, actor, command, s.config.now()); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
+		return nil
 	}
 	if update.StageID == "" {
 		state := &hostedRuntimeConfig{Plans: plans, Billing: config}
