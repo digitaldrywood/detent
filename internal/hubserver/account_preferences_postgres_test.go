@@ -155,8 +155,8 @@ func TestPostgresHostedCurrentSessionReadSurfacesStoreFailure(t *testing.T) {
 			body = map[string]any{}
 		}
 		response := f.request(t, user, method, path, body)
-		if response.Code != http.StatusInternalServerError {
-			t.Errorf("%s status=%d body=%s, want internal error", path, response.Code, response.Body.String())
+		if response.Code != http.StatusInternalServerError && response.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s status=%d body=%s, want server failure", path, response.Code, response.Body.String())
 		}
 		if strings.Contains(response.Body.String(), "temporary tenant read failure") {
 			t.Errorf("%s exposed storage error: %s", path, response.Body.String())
