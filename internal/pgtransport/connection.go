@@ -101,6 +101,9 @@ func ParsePoolConfig(dsn string) (*pgxpool.Config, error) {
 	default:
 		return nil, ErrConnectionConfig
 	}
+	if query.Get("sslmode") == "require" && query.Get("sslrootcert") != "" {
+		return nil, ErrConnectionConfig
+	}
 	query.Set("passfile", os.DevNull)
 	for _, key := range []string{"sslcert", "sslkey", "sslrootcert"} {
 		if _, present := query[key]; !present {
