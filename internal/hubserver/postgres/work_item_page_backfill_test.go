@@ -2,11 +2,12 @@ package postgres_test
 
 import (
 	"context"
-	"github.com/pressly/goose/v3"
 	"log/slog"
 	"os"
 	"testing"
 	"testing/fstest"
+
+	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
