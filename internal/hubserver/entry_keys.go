@@ -268,6 +268,9 @@ func (s *Service) entryKeyAdmin(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusForbidden, "Organization administrator service access is required")
 	}
 	member, err := s.activeAccessMember(ctx, claims.Subject)
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, operatorAuthorizationError(err))
+	}
 	role := member.Role
 	if err != nil || role != "owner" && role != "admin" {
 		return s.hostedJSONError(c, http.StatusForbidden, "Active organization administrator membership is required")
@@ -449,6 +452,9 @@ func (s *Service) entryKeyContext(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusForbidden, "Shared service identity is required to read key context")
 	}
 	member, err := s.activeAccessMember(c.Request().Context(), claims.Subject)
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, operatorAuthorizationError(err))
+	}
 	local := member.Role
 	if err != nil || !auth.ValidOrganizationRole(local) || !auth.ValidOrganizationRole(claims.Role) {
 		return s.hostedJSONError(c, http.StatusForbidden, "Active organization membership and a valid role are required")

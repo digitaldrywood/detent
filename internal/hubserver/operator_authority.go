@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -46,6 +47,9 @@ func (e *operatorAuthorizationFailure) Is(target error) bool { return errors.Is(
 func operatorAuthorizationError(err error) error {
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, tenantauth.ErrUnavailable) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderInvalid {
+		return &operatorAuthorizationFailure{cause: err, kind: operatortool.ErrServiceUnavailable}
 	}
 	var failure *operatorAuthorizationFailure
 	if errors.As(err, &failure) {

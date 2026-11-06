@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -247,9 +248,8 @@ func (s *Service) reauthorizeConversationStream(c echo.Context, scope *nativeSco
 // the client may reconnect.
 func conversationStreamCloseReason(err error) string {
 	var native *nativeError
-	var membershipLookup *hostedMembershipLookupError
 	switch {
-	case errors.As(err, &membershipLookup):
+	case errors.Is(err, tenantauth.ErrUnavailable):
 		return conversationClosedServerError
 	case errors.As(err, &native):
 		return conversationClosedAccessRevoked

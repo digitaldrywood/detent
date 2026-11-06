@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/readableurl"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -389,10 +390,16 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 	provider, err := s.hostedProviderOrganization(ctx)
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, operatorAuthorizationError(err))
+	}
 	if err != nil || provider == "" {
 		return s.refusedAPIError(c, http.StatusConflict, "unallocated", "The tenant has no provider organization", apiErrorResponse{Code: "unallocated", Message: "The tenant has no provider organization"})
 	}
 	membership, err := s.hostedMembership(ctx, &auth.HostedIdentity{Subject: claims.Subject, OrganizationID: provider})
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, operatorAuthorizationError(err))
+	}
 	if err != nil || membership.Role.Slug != "owner" {
 		return s.refusedAPIError(c, http.StatusForbidden, "owner_unverified", "The provider does not report this identity as an owner", apiErrorResponse{Code: "owner_unverified", Message: "The provider does not report this identity as an owner"})
 	}

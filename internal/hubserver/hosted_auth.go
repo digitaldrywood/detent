@@ -29,18 +29,6 @@ import (
 
 const hostedCookie = "detent_hosted_session"
 
-type hostedMembershipLookupError struct {
-	err error
-}
-
-func (e *hostedMembershipLookupError) Error() string {
-	return "lookup hosted memberships: " + e.err.Error()
-}
-
-func (e *hostedMembershipLookupError) Unwrap() error {
-	return e.err
-}
-
 func (s *Service) CreateWebSession(ctx context.Context, record auth.SessionRecord) error {
 	return s.createAccessWebSession(ctx, record)
 }
@@ -92,7 +80,7 @@ func (s *Service) hostedMembership(ctx context.Context, identity *auth.HostedIde
 	}
 	memberships, err := s.config.Hosted.Provider.Memberships(ctx, identity.Subject, identity.OrganizationID)
 	if err != nil {
-		return auth.Membership{}, &hostedMembershipLookupError{err: err}
+		return auth.Membership{}, errors.Join(tenantauth.ErrUnavailable, err)
 	}
 	for _, membership := range memberships {
 		if membership.UserID == identity.Subject && membership.OrganizationID == identity.OrganizationID && membership.Status == "active" && auth.ValidOrganizationRole(membership.Role.Slug) {
@@ -224,12 +212,8 @@ func lesserHostedRole(a, b string) string {
 func (s *Service) hostedSessionCredential(ctx context.Context, session auth.Session, hash string) (apiCredential, int, error) {
 	membership, err := s.hostedMembership(ctx, session.Identity)
 	if err != nil {
-		if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+		if errors.Is(err, tenantauth.ErrUnavailable) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
 			return apiCredential{}, http.StatusServiceUnavailable, err
-		}
-		var lookup *hostedMembershipLookupError
-		if errors.As(err, &lookup) {
-			return apiCredential{}, http.StatusInternalServerError, err
 		}
 		return apiCredential{}, http.StatusForbidden, err
 	}

@@ -75,7 +75,7 @@ func newSharedRouteFixture(t *testing.T, configure ...func(*Config)) sharedRoute
 	return result
 }
 
-func (f sharedRouteFixture) request(t *testing.T, org, path, body string, mutate func(*cloudassert.Claims)) *httptest.ResponseRecorder {
+func (f sharedRouteFixture) request(t *testing.T, org, path, body string, mutate func(*cloudassert.Claims), headers ...map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	id, err := cloudassert.NewID()
 	if err != nil {
@@ -89,9 +89,14 @@ func (f sharedRouteFixture) request(t *testing.T, org, path, body string, mutate
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	request := httptest.NewRequest(claims.Method, path, strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(cloudassert.Header, assertion)
+	for _, values := range headers {
+		for name, value := range values {
+			request.Header.Set(name, value)
+		}
+	}
 	response := httptest.NewRecorder()
 	f.services[org].Handler().ServeHTTP(response, request)
 	return response
