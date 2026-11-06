@@ -10,12 +10,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/readableurl"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func projectSettings(row pgquery.ProjectSetting) projectstore.Settings {
-	result := projectstore.Settings{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, Revision: row.Revision, Intake: row.Intake, Projection: row.Projection, RepositoryEnabled: row.RepositoryEnabled, Repository: row.Repository, CheckoutRepository: row.CheckoutRepository, AgingEnabled: row.AgingEnabled, DuplicateChallenge: row.DuplicateChallenge, WorkflowKey: row.WorkflowKey, WorkflowSHA256: row.WorkflowSha256, WorkflowBytes: row.WorkflowBytes, WorkflowContentBytes: row.WorkflowContentBytes, RequireVisualAttachments: row.RequireVisualAttachments, ModelRevision: row.ModelRevision, ModelKey: row.ModelKey, ModelSHA256: row.ModelSha256, ModelBytes: row.ModelBytes, ModelContentBytes: row.ModelContentBytes}
+	result := projectstore.Settings{Icon: projecticon.Icon{Kind: row.IconKind, Name: row.IconName, Color: row.IconColor, Emoji: row.IconEmoji, ImageKey: row.IconImageKey, ImageSHA256: row.IconImageSha256}, OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, Revision: row.Revision, Intake: row.Intake, Projection: row.Projection, RepositoryEnabled: row.RepositoryEnabled, Repository: row.Repository, CheckoutRepository: row.CheckoutRepository, AgingEnabled: row.AgingEnabled, DuplicateChallenge: row.DuplicateChallenge, WorkflowKey: row.WorkflowKey, WorkflowSHA256: row.WorkflowSha256, WorkflowBytes: row.WorkflowBytes, WorkflowContentBytes: row.WorkflowContentBytes, RequireVisualAttachments: row.RequireVisualAttachments, ModelRevision: row.ModelRevision, ModelKey: row.ModelKey, ModelSHA256: row.ModelSha256, ModelBytes: row.ModelBytes, ModelContentBytes: row.ModelContentBytes}
 	if row.ArchiveCompletedAfterDays.Valid {
 		result.ArchiveCompletedAfterDays = new(row.ArchiveCompletedAfterDays.Int64)
 	}
@@ -336,4 +337,16 @@ func (s *session) UpdateProjectSlug(ctx context.Context, id tracker.ProjectID, e
 	}
 	rows, err := s.queries.SetProjectSlug(ctx, pgquery.SetProjectSlugParams{OrganizationID: s.organization, ID: id, Slug: slug})
 	return affected(ctx, rows, err)
+}
+
+func (s *session) UpdateProjectIcon(ctx context.Context, project tracker.ProjectID, revision int64, icon projecticon.Icon) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE project_settings SET icon_kind=$4,icon_name=$5,icon_color=$6,icon_emoji=$7,icon_image_key=$8,icon_image_sha256=$9,revision=revision+1 WHERE organization_id=$1 AND project_id=$2 AND revision=$3`, s.organization, project, revision, icon.Kind, icon.Name, icon.Color, icon.Emoji, icon.ImageKey, icon.ImageSHA256)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	n, err := result.RowsAffected()
+	if err == nil && n == 0 {
+		return corestore.ErrRevisionConflict
+	}
+	return err
 }

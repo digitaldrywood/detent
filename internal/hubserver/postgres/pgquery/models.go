@@ -2350,6 +2350,12 @@ type ProjectSetting struct {
 	WorkflowSha256            string
 	WorkflowBytes             int64
 	WorkflowContentBytes      int64
+	IconKind                  string
+	IconName                  string
+	IconColor                 string
+	IconEmoji                 string
+	IconImageKey              string
+	IconImageSha256           string
 }
 
 type ProjectSlug struct {

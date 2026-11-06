@@ -65,7 +65,7 @@ func (s *Service) startGitHubImportRecord(ctx context.Context, scope nativeScope
 		next.EditSequence, next.RetryAfter, next.Gaps = 0, nil, []string{}
 		next.Revision++
 	}
-	return s.importRecordMutation(ctx, scope, operation, request.Mutation, request, importJobResponse(next), func(w tenantstore.Writer) error {
+	return s.tenantReceiptMutation(ctx, scope, operation, request.Mutation, request, importJobResponse(next), func(w tenantstore.Writer) error {
 		if err := s.database.requireHostedFeatureRecord(ctx, w, "github_integration", s.config.now()); err != nil {
 			return err
 		}
@@ -98,7 +98,7 @@ func (s *Service) startGitHubImportRecord(ctx context.Context, scope nativeScope
 	})
 }
 
-func (s *Service) importRecordMutation(ctx context.Context, scope nativeScope, operation string, command tracker.Mutation, input, value any, apply func(tenantstore.Writer) error) (json.RawMessage, error) {
+func (s *Service) tenantReceiptMutation(ctx context.Context, scope nativeScope, operation string, command tracker.Mutation, input, value any, apply func(tenantstore.Writer) error) (json.RawMessage, error) {
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
 		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}

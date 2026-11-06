@@ -876,7 +876,7 @@ func (s *Service) hostedReadableProjectsPostgres(ctx context.Context, credential
 			count = pageSize
 		}
 		for i, record := range records {
-			project := appBootstrapProject{ID: string(record.Core.ID), Name: record.Core.Name, Slug: record.Core.Slug, Profile: record.Core.Profile, States: record.States, CanWrite: rows[i].CanWrite, CanManageRunners: rows[i].ManageRunner}
+			project := appBootstrapProject{Icon: projectIntegrationRecord(record).Icon, ID: string(record.Core.ID), Name: record.Core.Name, Slug: record.Core.Slug, Profile: record.Core.Profile, States: record.States, CanWrite: rows[i].CanWrite, CanManageRunners: rows[i].ManageRunner}
 			viewer := credential.HostedRole == "viewer"
 			if credential.EntryKey != nil {
 				project.CanWrite = project.CanWrite && hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeWrite)

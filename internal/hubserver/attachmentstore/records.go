@@ -45,6 +45,7 @@ type LockingReader interface {
 type Writer interface {
 	Reader
 	CreateAttachment(context.Context, Record) error
+	DeleteIconAttachment(context.Context, tracker.ProjectID, string, time.Time) error
 	BindAttachment(context.Context, Reference) error
 }
 

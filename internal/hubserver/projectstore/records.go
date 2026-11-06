@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/onboarding"
+	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/readableurl"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -19,6 +20,7 @@ var ErrStateInUse = errors.New("workflow states are used by work items")
 var ErrInvalidOnboardingProgress = errors.New("project onboarding progress is invalid")
 
 type Settings struct {
+	Icon                      projecticon.Icon
 	OrganizationID            tracker.OrganizationID
 	ProjectID                 tracker.ProjectID
 	Revision                  int64
@@ -75,6 +77,7 @@ type Writer interface {
 	CreateProjectRecord(context.Context, Record) (Record, error)
 	UpdateProjectRecord(context.Context, Record) (Record, error)
 	RetireProject(context.Context, tracker.ProjectID, int64, time.Time) error
+	UpdateProjectIcon(context.Context, tracker.ProjectID, int64, projecticon.Icon) error
 	UpdateProjectContent(context.Context, tracker.ProjectID, int64, bool) error
 	UpdateProjectModel(context.Context, Settings) error
 	RequireProjectIdle(context.Context, tracker.ProjectID, time.Time) error

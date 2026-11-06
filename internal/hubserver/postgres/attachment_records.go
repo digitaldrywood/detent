@@ -224,3 +224,8 @@ func (s *session) ExpireAttachment(ctx context.Context, project tracker.ProjectI
 	}
 	return expired, mapError(ctx, err)
 }
+
+func (s *session) DeleteIconAttachment(ctx context.Context, project tracker.ProjectID, id string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE attachments SET deleted_at=COALESCE(deleted_at,$4) WHERE organization_id=$1 AND project_id=$2 AND id=$3 AND kind='attachment' AND retention_class='organization' AND name IN ('project-icon.png','organization-logo.png')`, s.organization, project, id, at)
+	return mapError(ctx, err)
+}

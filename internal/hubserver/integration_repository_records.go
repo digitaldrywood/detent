@@ -56,7 +56,7 @@ func (s *Service) bindCheckoutRecordCommand(ctx context.Context, scope nativeSco
 		value = projectIntegrationRecord(planned)
 		value.Revision++
 	}
-	return s.importRecordMutation(ctx, scope, options.OperationID, request.Mutation, request, value, func(w tenantstore.Writer) error {
+	return s.tenantReceiptMutation(ctx, scope, options.OperationID, request.Mutation, request, value, func(w tenantstore.Writer) error {
 		latest, err := w.ProjectRecord(ctx, scope.project)
 		if err != nil {
 			return err
