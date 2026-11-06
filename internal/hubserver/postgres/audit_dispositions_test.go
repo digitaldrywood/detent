@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -70,6 +71,17 @@ func TestAuditDispositionWritesPreserveReadableSession(t *testing.T) {
 				t.Fatalf("independent session: %v", err)
 			}
 			if err := repository.ReadRecords(t.Context(), organization, corestore.Serving, func(r eventstore.Reader) error {
+				reader, ok := r.(tenantstore.ClaimChangeRowsReader)
+				if !ok {
+					t.Fatal("missing batched claim change snapshot")
+				}
+				snapshot, err := reader.ClaimChangeRows(t.Context(), row.Project, []string{fixture.change.ID})
+				if err != nil {
+					return err
+				}
+				if got := len(snapshot[fixture.change.ID].AuditDispositions[1]); got != 200 {
+					t.Fatalf("snapshot dispositions=%d, want 200", got)
+				}
 				rows, err := r.(eventstore.AuditDispositionReader).AuditDispositions(t.Context(), row.Project, 1)
 				if err == nil && len(rows) != 200 {
 					t.Errorf("dispositions = %d, want 200", len(rows))
