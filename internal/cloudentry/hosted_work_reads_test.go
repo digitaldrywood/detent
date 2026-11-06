@@ -3,11 +3,13 @@ package cloudentry
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -102,6 +104,17 @@ func TestHostedHubWorkReads(t *testing.T) {
 		}
 		issues[state] = issue
 	}
+	testenv.WaitUntil(t, t.Context(), func() error {
+		response := f.request(t, http.MethodGet, f.base+"/work-items?limit=100&include=work&completed_window=48h", nil)
+		var page tracker.NativeIssuePage
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &page) != nil {
+			t.Fatalf("board projection=%d %s", response.Code, response.Body)
+		}
+		if page.Total != 3 || page.Work == nil || page.Work.Completed != 1 {
+			return fmt.Errorf("board projection has not published all three issues and the completion")
+		}
+		return nil
+	})
 	for _, test := range []struct {
 		name, query string
 		states      []string

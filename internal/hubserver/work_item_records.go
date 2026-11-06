@@ -109,6 +109,9 @@ func (s *Service) readWorkItem(ctx context.Context, scope nativeScope, id string
 	}
 	issue, err := s.hydrateWorkItemRecord(ctx, row, version)
 	if err == nil {
+		issue.WebURL, err = s.issueBrowserURL(ctx, string(row.NativeID))
+	}
+	if err == nil {
 		err = s.hydrateWorkItemRelationshipFacts(ctx, scope, &issue)
 	}
 	issue.OmittedFields = append(issue.OmittedFields, "change_sequence")
@@ -406,6 +409,9 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 				plan.issue.Terminal = state.Terminal
 			}
 		}
+		if plan.issue.Terminal {
+			plan.issue.ClosedAt = &now
+		}
 		plan.create = true
 		plan.eventType = "issue.created"
 	case workItemArchive:
@@ -664,7 +670,15 @@ func (s *Service) prepareWorkItemFields(ctx context.Context, organization tracke
 }
 
 func (s *Service) executeWorkItemRecordMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, commentID string) (json.RawMessage, error) {
-	return s.executeWorkItemRecordMutationWithConversationLink(ctx, scope, options, command, input, commentID, nil)
+	raw, err := s.executeWorkItemRecordMutationWithConversationLink(ctx, scope, options, command, input, commentID, nil)
+	if err != nil || commentID != "" {
+		return raw, err
+	}
+	var issue tracker.NativeIssue
+	if json.Unmarshal(raw, &issue) == nil && issue.WorkItemID != "" {
+		return s.nativeIssueJSON(ctx, scope, raw)
+	}
+	return raw, nil
 }
 
 func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, commentID string, link *conversationLinkMutation) (json.RawMessage, error) {
@@ -1232,6 +1246,10 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 				}
 			}
 			return nil, projectRecordError(err)
+		}
+		select {
+		case s.boardRefresh <- struct{}{}:
+		default:
 		}
 		return raw, nil
 	}

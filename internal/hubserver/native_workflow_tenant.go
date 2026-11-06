@@ -145,6 +145,13 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 		issue.UpdatedAt = now
 		issue.LastActivityAt = now
 		issue.Terminal = tenantProjectStateTerminal(project, request.State)
+		if issue.Terminal {
+			if issue.ClosedAt == nil {
+				issue.ClosedAt = &now
+			}
+		} else {
+			issue.ClosedAt = nil
+		}
 		if previousState != request.State && nativeDoneState(request.State) && nativeHumanFiled(issue) {
 			var workspace bool
 			if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {

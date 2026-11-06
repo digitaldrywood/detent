@@ -251,6 +251,13 @@ func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope nat
 	}
 	previous := issue.State
 	issue.State, issue.Revision, issue.UpdatedAt, issue.LastActivityAt, issue.Terminal = target, tracker.Revision(row.Revision+1), now, now, tenantProjectStateTerminal(project, target)
+	if issue.Terminal {
+		if issue.ClosedAt == nil {
+			issue.ClosedAt = &now
+		}
+	} else {
+		issue.ClosedAt = nil
+	}
 	p.request = tracker.Transition{State: target, ExpectedRevision: tracker.Revision(row.Revision), Reason: "user_requested"}
 	p.policy, p.policyFound, err = s.validateTenantTransitionIssueContract(ctx, scope, &issue, &project, previous, p.request, &p.stopState)
 	if err != nil {
