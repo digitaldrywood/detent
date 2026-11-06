@@ -58,7 +58,7 @@ func postgresAuthorizations(ctx context.Context, query queryer, where string, ar
 }
 
 func (a *authStore) postgresSession(ctx context.Context, hash string) (accountSession, time.Time, error) {
-	item, err := a.store.db.postgres.Session(ctx, hash)
+	item, err := a.store.db.postgres.StoredSession(ctx, hash)
 	if err != nil {
 		return accountSession{}, time.Time{}, errNoSession
 	}

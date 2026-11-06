@@ -39,10 +39,18 @@ func (r *Repository) CreateSession(ctx context.Context, s Session) error {
 }
 
 func (r *Repository) Session(ctx context.Context, hash string) (Session, error) {
+	result, err := r.StoredSession(ctx, hash)
+	if err == nil && !result.ExpiresAt.After(r.now()) {
+		return Session{}, ErrNoSession
+	}
+	return result, err
+}
+
+func (r *Repository) StoredSession(ctx context.Context, hash string) (Session, error) {
 	var result Session
 	err := r.transaction(ctx, corestore.Serving, true, func(tx *sql.Tx) error {
 		var err error
-		result, err = scanSession(tx.QueryRowContext(ctx, `SELECT `+sessionColumns+` FROM platform.sessions WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>$2`, hash, r.now()))
+		result, err = scanSession(tx.QueryRowContext(ctx, `SELECT `+sessionColumns+` FROM platform.sessions WHERE token_hash=$1 AND revoked_at IS NULL`, hash))
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) {

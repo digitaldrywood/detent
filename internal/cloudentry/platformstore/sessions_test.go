@@ -123,6 +123,10 @@ func TestExpiredSessionsAndAuthorizations(t *testing.T) {
 				t.Fatalf("boundary tokens: %v", err)
 			}
 			if target == "session" {
+				stored, err := r.StoredSession(t.Context(), s.Hash)
+				if err != nil || stored.Hash != s.Hash || stored.ExpiresAt.After(r.now()) {
+					t.Fatalf("expired stored session=%+v err=%v", stored, err)
+				}
 				if _, err := r.Session(t.Context(), s.Hash); !errors.Is(err, ErrNoSession) {
 					t.Fatal(err)
 				}
