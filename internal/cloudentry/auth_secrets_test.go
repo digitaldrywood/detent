@@ -78,7 +78,11 @@ func addSecretAuthorization(t *testing.T, s *Service, name string, tokens auth.H
 	if err != nil {
 		t.Fatal(err)
 	}
-	return item
+	stored, err := s.auth.authorizationByBinding(t.Context(), item.Binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stored
 }
 
 func secretEntryConfig(t *testing.T, logs *lockedBuffer) Config {
@@ -225,7 +229,7 @@ func TestEntrySecretResealCASAndSkips(t *testing.T) {
 	entryPostgresRestartConfig(t)(&cfg)
 	cfg.LookupEnv = entrySecretEnvironment(2, 1, 2)
 	s := openSecretEntry(t, cfg)
-	legacy := &Service{config: s.config, auth: &authStore{store: s.auth.store, now: s.auth.now, seal: s.auth.seal}}
+	legacy := &Service{config: s.config, registry: s.registry, auth: &authStore{store: s.auth.store, now: s.auth.now, seal: s.auth.seal}}
 	for _, owner := range []string{"first-user", "second-user"} {
 		if err := legacy.saveGitHubConnection(t.Context(), owner, &oauth2.Token{AccessToken: "github-" + owner}); err != nil {
 			t.Fatal(err)
@@ -235,6 +239,17 @@ func TestEntrySecretResealCASAndSkips(t *testing.T) {
 	items := map[string]authorization{}
 	for _, name := range []string{"refresh", "revoked", "empty", "partial", "broken", "healthy", "active"} {
 		items[name] = addSecretAuthorization(t, legacy, name, old)
+		access, err := legacy.auth.sealToken("provider-access", items[name].Binding, old.AccessToken)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refresh, err := legacy.auth.sealToken("provider-refresh", items[name].Binding, old.RefreshToken)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.auth.store.db.ExecContext(t.Context(), "UPDATE authorizations SET access_token=?,refresh_token=? WHERE binding=?", access, refresh, items[name].Binding); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, row := range []struct {
 		query string
