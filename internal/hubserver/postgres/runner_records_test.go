@@ -928,6 +928,9 @@ func TestRunnerHeartbeatObservationsAreTenantScoped(t *testing.T) {
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedRunnerIdentity(t, repository, organization, "runner_shared", "machine_shared", now, true)
 		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := seedCoreOrganization(ctx, w, organization); err != nil {
+				return err
+			}
 			if _, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "project_shared", Name: "Example", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}); err != nil {
 				return err
 			}

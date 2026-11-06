@@ -17,10 +17,16 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func rolePool(t *testing.T, admin *sql.DB, group, attributes string) *sql.DB {
+	t.Helper()
+	return rolePoolFromTemplate(t, template, admin, group, attributes)
+}
+
+func rolePoolFromTemplate(t *testing.T, owner *pgtest.Template, admin *sql.DB, group, attributes string) *sql.DB {
 	t.Helper()
 	admin.SetMaxIdleConns(1)
 	var database string
@@ -59,7 +65,7 @@ func rolePool(t *testing.T, admin *sql.DB, group, attributes string) *sql.DB {
 			t.Fatal(err)
 		}
 	}
-	return template.OpenRole(t, admin, name, password)
+	return owner.OpenRole(t, admin, name, password)
 }
 
 func runtimeFor(t *testing.T, reader, writer *sql.DB) *postgres.Runtime {

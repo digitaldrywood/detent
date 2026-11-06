@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -23,6 +24,9 @@ func TestProjectRecordsKeepTenantRevisionsAndClaims(t *testing.T) {
 	records := make(map[tracker.OrganizationID]projectstore.Record)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := seedCoreOrganization(ctx, w, org); err != nil {
+				return err
+			}
 			record, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "shared", Name: "Example", Profile: "native", RequireDependencies: true}, States: states})
 			if err != nil {
 				return err
@@ -256,6 +260,7 @@ func TestProjectRecordMutationRollsBackRelationships(t *testing.T) {
 	admin := template.Database(t)
 	repository, _ := repositoryFor(t, admin, smallPool())
 	ctx := t.Context()
+	seedTenantAccess(t, repository, "org")
 	var record projectstore.Record
 	if err := repository.WriteTenant(ctx, "org", corestore.Serving, func(w tenantstore.Writer) error {
 		var err error
@@ -298,6 +303,7 @@ func TestProjectWorkflowKeepsOccupiedStates(t *testing.T) {
 	admin := template.Database(t)
 	repository, _ := repositoryFor(t, admin, smallPool())
 	ctx := t.Context()
+	seedTenantAccess(t, repository, "org")
 	var record projectstore.Record
 	if err := repository.WriteTenant(ctx, "org", corestore.Serving, func(w tenantstore.Writer) error {
 		var err error
@@ -339,13 +345,10 @@ func TestProjectWorkflowKeepsOccupiedStates(t *testing.T) {
 }
 
 func TestProjectRecordMigrationKeepsExistingTenants(t *testing.T) {
-	admin := template.Database(t)
+	admin, fixture := migrationDatabaseAtVersion(t, 20261101001936)
 	admin.SetMaxOpenConns(1)
 	provider, err := migrationProvider(admin)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.DownTo(t.Context(), 20261101001936); err != nil {
 		t.Fatal(err)
 	}
 	for _, org := range []string{"org_first", "org_second"} {
@@ -362,7 +365,16 @@ func TestProjectRecordMigrationKeepsExistingTenants(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), "RESET ROLE"); err != nil {
 		t.Fatal(err)
 	}
-	repository, _ := repositoryFor(t, admin, smallPool())
+	pool := rolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
+	repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 			record, err := r.ProjectBySlug(t.Context(), "example")

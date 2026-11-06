@@ -28,7 +28,7 @@ func TestDailySummaryTimestampMigrationPreservesOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.DownTo(t.Context(), 20261106024239); err != nil {
+	if _, err := provider.ApplyVersion(t.Context(), 20261106024240, false); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
@@ -43,7 +43,7 @@ func TestDailySummaryTimestampMigrationPreservesOrdering(t *testing.T) {
 			}
 		}
 	}
-	if _, err := provider.Up(t.Context()); err != nil {
+	if _, err := provider.ApplyVersion(t.Context(), 20261106024240, true); err != nil {
 		t.Fatal(err)
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

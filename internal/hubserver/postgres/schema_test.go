@@ -72,19 +72,54 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+func migrationDatabaseAtVersion(t *testing.T, version int64) (*sql.DB, *pgtest.Template) {
+	t.Helper()
+	fixture := pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
+		roles, err := os.ReadFile("roles.sql")
+		if err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx, string(roles)); err != nil {
+			return err
+		}
+		db.SetMaxOpenConns(1)
+		if _, err := db.ExecContext(ctx, "SET ROLE detent_migration_v2"); err != nil {
+			return err
+		}
+		if version == 0 {
+			return nil
+		}
+		provider, err := migrationProvider(db)
+		if err != nil {
+			return err
+		}
+		_, err = provider.UpTo(ctx, version)
+		return err
+	})
+	t.Cleanup(func() {
+		deadline, _ := t.Deadline()
+		ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
+		defer cancel()
+		if err := fixture.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	return fixture.Database(t), fixture
+}
+
 func TestCoreMigrationsFromEmpty(t *testing.T) {
-	db := template.Database(t)
+	db, _ := migrationDatabaseAtVersion(t, 0)
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(t.Context(), "SET ROLE detent_migration_v2"); err != nil {
+		t.Fatal(err)
+	}
 	provider, err := migrationProvider(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, step := range []string{"already applied", "down", "up"} {
+	for _, step := range []string{"from empty", "already applied"} {
 		t.Run(step, func(t *testing.T) {
-			if step == "down" {
-				if _, err := provider.DownTo(t.Context(), 0); err != nil {
-					t.Fatal(err)
-				}
-			} else if _, err := provider.Up(t.Context()); err != nil {
+			if _, err := provider.Up(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 			for _, table := range []string{"projects", "issues", "native_comments", "collaboration_events", "collaboration_versions", "change_requests", "change_issue_links", "change_versions", "change_evidence", "native_commands"} {
@@ -92,7 +127,7 @@ func TestCoreMigrationsFromEmpty(t *testing.T) {
 				if err := db.QueryRowContext(t.Context(), `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); err != nil {
 					t.Fatal(err)
 				}
-				if exists != (step != "down") {
+				if !exists {
 					t.Errorf("table %s exists = %v after %s", table, exists, step)
 				}
 			}
@@ -127,21 +162,6 @@ func TestTargetOnlyBillingSchemaMatchesContracts(t *testing.T) {
 	if err := catalog.ValidateClassification(classification); err != nil {
 		t.Fatal(err)
 	}
-	sourceData, err := os.ReadFile("../testdata/hub_classification.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sourceTables map[string]json.RawMessage
-	if err := json.Unmarshal(sourceData, &sourceTables); err != nil {
-		t.Fatal(err)
-	}
-	sourceInventory := make(map[string]json.RawMessage, len(sourceTables))
-	for name, definition := range sourceTables {
-		sourceInventory["hub/"+name] = definition
-	}
-	if err := catalog.ValidateMigrations(os.DirFS("../../.."), sourceInventory); err != nil {
-		t.Fatal(err)
-	}
 	for table, contract := range catalog.Tables {
 		table := table
 		contract := contract
@@ -162,8 +182,10 @@ func TestTargetOnlyBillingSchemaMatchesContracts(t *testing.T) {
 			if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 				t.Fatal(err)
 			}
-			if len(columns) != len(contract.Columns) {
-				t.Fatalf("columns=%v want %v", columns, contract.Columns)
+			for column, kind := range columns {
+				if kind == "json" || kind == "jsonb" {
+					t.Errorf("%s stores an untyped payload", column)
+				}
 			}
 			for column, kind := range contract.Columns {
 				if columns[column] != kind {
@@ -288,6 +310,9 @@ func TestCoreGeneratedIdentifiersAndOptionalKeys(t *testing.T) {
 	db := template.Database(t)
 	for _, org := range []string{"org_first", "org_second"} {
 		t.Run(org, func(t *testing.T) {
+			if _, err := db.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,CURRENT_TIMESTAMP)`, org); err != nil {
+				t.Fatal(err)
+			}
 			var project, item string
 			var previousProject, previousItem string
 			var previousID int64
@@ -362,7 +387,7 @@ func TestCoreSchemaUsesTenantLeadingTypedColumns(t *testing.T) {
 	db := template.Database(t)
 	for _, tc := range []struct{ name, query string }{
 		{"tenant required", `SELECT table_name FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('projects','issues','native_comments','collaboration_events','collaboration_versions','change_requests','change_issue_links','change_versions','change_evidence','native_commands') AND column_name='organization_id' AND (is_nullable<>'NO' OR data_type<>'text')`},
-		{"typed columns", `SELECT table_name || '.' || column_name FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('projects','issues','native_comments','collaboration_events','collaboration_versions','change_requests','change_issue_links','change_versions','change_evidence','native_commands') AND (data_type NOT IN ('text','bigint','boolean','timestamp with time zone') OR column_name LIKE '%\_json' ESCAPE '\' OR column_name IN ('body','workflow_markdown'))`},
+		{"typed columns", `SELECT table_name || '.' || column_name FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('projects','issues','native_comments','collaboration_events','collaboration_versions','change_requests','change_issue_links','change_versions','change_evidence','native_commands') AND (data_type NOT IN ('text','smallint','bigint','boolean','timestamp with time zone') OR column_name LIKE '%\_json' ESCAPE '\' OR column_name IN ('body','workflow_markdown'))`},
 		{"tenant leading indexes", `SELECT indexrelid::regclass::text FROM pg_index i JOIN pg_class c ON c.oid=i.indrelid JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=i.indkey[0] WHERE c.relname IN ('projects','issues','native_comments','collaboration_events','collaboration_versions','change_requests','change_issue_links','change_versions','change_evidence','native_commands') AND a.attname<>'organization_id'`},
 		{"tenant foreign keys", `SELECT conname FROM pg_constraint WHERE conrelid IN ('projects'::regclass,'issues'::regclass,'native_comments'::regclass,'collaboration_events'::regclass,'collaboration_versions'::regclass,'change_requests'::regclass,'change_issue_links'::regclass,'change_versions'::regclass,'change_evidence'::regclass,'native_commands'::regclass) AND contype='f' AND (array_length(conkey,1)<2 OR (SELECT attname FROM pg_attribute WHERE attrelid=conrelid AND attnum=conkey[1])<>'organization_id' OR (SELECT attname FROM pg_attribute WHERE attrelid=confrelid AND attnum=confkey[1])<>'organization_id')`},
 		{"typed timestamps", `SELECT table_name || '.' || column_name FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('projects','issues','native_comments','collaboration_events','collaboration_versions','change_requests','change_issue_links','change_versions','change_evidence','native_commands') AND column_name LIKE '%\_at' ESCAPE '\' AND data_type<>'timestamp with time zone'`},

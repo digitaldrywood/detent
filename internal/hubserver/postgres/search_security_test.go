@@ -1012,7 +1012,7 @@ func TestSearchPendingUpdatesAvoidBulkPostings(t *testing.T) {
 				}
 				t.Logf("source update posting writes=%d with published rows=%d marker cap=%d", writes, published, markerCap)
 				advance(false)
-				if _, err := f.admin.ExecContext(t.Context(), `UPDATE issues SET archived=true,actor_principal_id='example-current-reporter' WHERE organization_id=$1 AND project_id='prj_first' AND native_id=$2`, org, document.WorkItemID); err != nil {
+				if _, err := tx.ExecContext(t.Context(), `UPDATE issues SET archived=true,actor_principal_id='example-current-reporter' WHERE organization_id=$1 AND project_id='prj_first' AND native_id=$2`, org, document.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 				advance(true)

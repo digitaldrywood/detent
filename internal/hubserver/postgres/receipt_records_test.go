@@ -330,7 +330,7 @@ func TestReceiptStateRollbackRefusesAcrossTenantRLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.Down(t.Context()); err == nil || !strings.Contains(err.Error(), "explicit retained-data migration") {
+	if _, err := provider.ApplyVersion(t.Context(), 20261103193325, false); err == nil || !strings.Contains(err.Error(), "explicit retained-data migration") {
 		t.Fatalf("rollback returned %v, want retained-data refusal", err)
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

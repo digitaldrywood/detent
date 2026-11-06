@@ -128,11 +128,17 @@ func seedHistory(t *testing.T, r *postgres.Repository, org tracker.OrganizationI
 		t.Fatal(err)
 	}
 	version := tracker.ChangeVersion{ID: "version_" + suffix, ChangeID: change.ID, Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head", BaseSHA: "base", MergeBaseSHA: "merge-base", Repository: "owner/repository", PolicyID: "policy", AttemptID: "attempt", External: &tracker.ChangeExternalReference{Provider: "example", ID: "external", URL: "https://example.com/change"}}, Actor: historyActor(), CreatedAt: historyAt()}
-	version.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: "base", HeadSHA: "head", BundleSHA256: artifact.Digest([]byte(string(org) + suffix)), DiffSHA256: artifact.Digest([]byte("diff")), Bytes: 123}
+	version.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: "base", HeadSHA: "head", BundleSHA256: artifact.Digest(bytes.Repeat([]byte(string(org)+suffix), 123)[:123]), DiffSHA256: artifact.Digest([]byte("diff")), Bytes: 123}
 	f.version, err = f.content.PrepareVersion(t.Context(), org, historyJSON(t, version))
 	if err != nil {
 		t.Fatal(err)
 	}
+	source, err := f.content.PrepareSourceBundle(t.Context(), org, bytes.Repeat([]byte(string(org)+suffix), 123)[:123])
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.version.SourceObjectKey, f.version.SourceSHA256 = source.Key, source.SHA256
+	f.version.SourceBytes, f.version.SourceContentBytes = source.CompressedSize, source.UncompressedSize
 	discussion := tracker.ChangeDiscussion{ID: "discussion_" + suffix, VersionID: version.ID, Body: "Evidence body", Actor: historyActor(), CreatedAt: historyAt(), Provenance: &tracker.Provenance{Provider: "example", ExternalID: "source_" + suffix, AuthorID: "author"}}
 	f.evidence, err = f.content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: change.ID, Kind: "discussion"}, historyJSON(t, discussion))
 	if err != nil {
@@ -209,7 +215,7 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 					if suffix == "second" {
 						after = "change_first"
 					}
-					if changes, err = reader.Changes(t.Context(), "prj_first", "wi_first_1", after, 1); err != nil {
+					if changes, err = reader.Changes(t.Context(), "prj_first", f.link.WorkItemID, after, 1); err != nil {
 						return err
 					}
 					if versions, err = reader.Versions(t.Context(), f.change.ID, 0, 1); err != nil {
@@ -262,7 +268,7 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 				if err != nil || version.External == nil || version.External.ID != "external" || version.AttemptID != "attempt" {
 					t.Fatalf("version payload=%+v error=%v", version, err)
 				}
-				wantSource := tracker.ChangeSource{Format: "git-bundle", BaseSHA: "base", HeadSHA: "head", BundleSHA256: artifact.Digest([]byte(string(org) + suffix)), DiffSHA256: artifact.Digest([]byte("diff")), Bytes: 123}
+				wantSource := tracker.ChangeSource{Format: "git-bundle", BaseSHA: "base", HeadSHA: "head", BundleSHA256: artifact.Digest(bytes.Repeat([]byte(string(org)+suffix), 123)[:123]), DiffSHA256: artifact.Digest([]byte("diff")), Bytes: 123}
 				if version.Source == nil || *version.Source != wantSource {
 					t.Fatalf("portable source manifest=%+v want=%+v", version.Source, wantSource)
 				}
@@ -997,7 +1003,7 @@ func TestEventChangeCommandReceiptContention(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			next, err := content.PrepareReceipt(t.Context(), first, []byte(`{"result":"later"}`))
+			next, err := content.PrepareReceipt(t.Context(), first, []byte(`{"result":"original"}`))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1618,13 +1624,13 @@ func TestMachineReviewMigrationRejectsAnIndexThatIncludesLandingRows(t *testing.
 	if _, err := admin.ExecContext(t.Context(), `SET ROLE detent_migration_v2`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.DownTo(t.Context(), 20261104090048); err != nil {
+	if _, err := provider.ApplyVersion(t.Context(), 20261104114549, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := admin.ExecContext(t.Context(), `CREATE INDEX change_current_machine_reviews_idx ON change_evidence(organization_id,change_id,version_id,review_kind,sequence DESC) WHERE kind='review'`); err != nil {
 		t.Fatal(err)
 	}
-	_, err = provider.Up(t.Context())
+	_, err = provider.ApplyVersion(t.Context(), 20261104114549, true)
 	var refused *pq.Error
 	if !errors.As(err, &refused) || refused.Code != "P0001" {
 		t.Fatalf("wrong machine review predicate was accepted: %v", err)
@@ -1632,17 +1638,17 @@ func TestMachineReviewMigrationRejectsAnIndexThatIncludesLandingRows(t *testing.
 	if _, err := admin.ExecContext(t.Context(), `DROP INDEX CONCURRENTLY change_current_machine_reviews_idx`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.Up(t.Context()); err != nil {
+	if _, err := provider.ApplyVersion(t.Context(), 20261104114549, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.DownTo(t.Context(), 20261104090048); err != nil {
+	if _, err := provider.ApplyVersion(t.Context(), 20261104114549, false); err != nil {
 		t.Fatal(err)
 	}
 	var exists bool
 	if err := admin.QueryRowContext(t.Context(), `SELECT to_regclass('public.change_current_machine_reviews_idx') IS NOT NULL`).Scan(&exists); err != nil || exists {
 		t.Fatalf("machine index rollback exists=%t error=%v", exists, err)
 	}
-	if _, err := provider.Up(t.Context()); err != nil {
+	if _, err := provider.ApplyVersion(t.Context(), 20261104114549, true); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1665,7 +1671,7 @@ func TestCurrentReviewMigrationPreservesSourceIdentityOnRetry(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), `CREATE UNIQUE INDEX change_evidence_source_identity_restore_idx ON change_evidence(organization_id,change_id,kind,source_key) NULLS NOT DISTINCT`); err != nil {
 		t.Fatal(err)
 	}
-	_, err = provider.DownTo(t.Context(), 20261104042809)
+	_, err = provider.ApplyVersion(t.Context(), 20261104090048, false)
 	var nullSemantics *pq.Error
 	if !errors.As(err, &nullSemantics) || nullSemantics.Code != "P0001" {
 		t.Fatalf("NULLS NOT DISTINCT restore index was not refused: %v", err)
@@ -1673,7 +1679,7 @@ func TestCurrentReviewMigrationPreservesSourceIdentityOnRetry(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), `DROP INDEX CONCURRENTLY change_evidence_source_identity_restore_idx`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.DownTo(t.Context(), 20261104042809); err != nil {
+	if _, err := provider.ApplyVersion(t.Context(), 20261104090048, false); err != nil {
 		t.Fatal(err)
 	}
 	check := func(phase int) {
@@ -1697,7 +1703,7 @@ func TestCurrentReviewMigrationPreservesSourceIdentityOnRetry(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), `CREATE UNIQUE INDEX change_evidence_source_identity_idx ON change_evidence(change_id,organization_id,kind,source_key) WHERE source_key IS NOT NULL`); err != nil {
 		t.Fatal(err)
 	}
-	_, err = provider.Up(t.Context())
+	_, err = provider.ApplyVersion(t.Context(), 20261104090048, true)
 	var refused *pq.Error
 	if !errors.As(err, &refused) || refused.Code != "P0001" {
 		t.Fatalf("wrong identity index was not refused by catalog validation: %v", err)
@@ -1709,15 +1715,15 @@ func TestCurrentReviewMigrationPreservesSourceIdentityOnRetry(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), `DROP INDEX CONCURRENTLY change_evidence_source_identity_idx`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.Up(t.Context()); err != nil {
+	if _, err := provider.ApplyVersion(t.Context(), 20261104090048, true); err != nil {
 		t.Fatal(err)
 	}
 	check(1)
-	if _, err := provider.DownTo(t.Context(), 20261104042809); err != nil {
+	if _, err := provider.ApplyVersion(t.Context(), 20261104090048, false); err != nil {
 		t.Fatal(err)
 	}
 	check(2)
-	if _, err := provider.Up(t.Context()); err != nil {
+	if _, err := provider.ApplyVersion(t.Context(), 20261104090048, true); err != nil {
 		t.Fatal(err)
 	}
 	check(3)

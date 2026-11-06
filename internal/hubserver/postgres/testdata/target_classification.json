@@ -308,5 +308,20 @@
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "runner_project_diagnostic_unavailable.organization_id; unavailable markers reference one tenant runner project snapshot"
+  },
+  "public/hosted_release_preferences": {
+    "ownership": "organization-owned",
+    "scope": "organization_id and user_id own the last observed release",
+    "inline_payloads": []
+  },
+  "public/daily_summary_preferences": {
+    "ownership": "organization-owned",
+    "scope": "organization_id and user_id own delivery preferences",
+    "inline_payloads": []
+  },
+  "public/daily_summary_receipts": {
+    "ownership": "organization-owned",
+    "scope": "organization_id, user_id and window_end identify each delivery receipt",
+    "inline_payloads": []
   }
 }

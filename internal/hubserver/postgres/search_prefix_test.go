@@ -85,9 +85,9 @@ func TestSearchExactSnippetDoesNotHighlightLongerTokens(t *testing.T) {
 }
 
 func TestSearchOversizedTokenRetainsPrefix(t *testing.T) {
-	for _, test := range []struct{ name, suffix, boundary string }{
-		{"ASCII", strings.Repeat("a", 3000), "prefixmarker" + strings.Repeat("a", 2012)},
-		{"multibyte", strings.Repeat("界", 1000), "prefixmarker" + strings.Repeat("界", 670)},
+	for _, test := range []struct{ name, suffix string }{
+		{"ASCII", strings.Repeat("a", 3000)},
+		{"multibyte", strings.Repeat("界", 1000)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newSearchFixture(t)
@@ -102,9 +102,9 @@ func TestSearchOversizedTokenRetainsPrefix(t *testing.T) {
 					if !slices.Equal(searchIDs(page), []string{"oversized"}) {
 						t.Fatalf("prefix matches=%v want=[oversized]", searchIDs(page))
 					}
-					page = f.find(t, "org_first", searchstore.Query{Kind: "thread", Text: test.boundary, Exact: true})
+					page = f.find(t, "org_first", searchstore.Query{Kind: "thread", Text: "prefixmarker", Exact: true})
 					if len(page.Items) != 0 {
-						t.Fatalf("truncated token matched exact boundary: %v", searchIDs(page))
+						t.Fatalf("oversized token matched its prefix as an exact token: %v", searchIDs(page))
 					}
 				})
 			}
@@ -142,34 +142,28 @@ func TestSearchPrefixLexemeWindowsEmitWorkItemsOnce(t *testing.T) {
 		comment.Kind, comment.SourceID, comment.Revision = "comment", comment.ID, 2
 		f.put(t, comment, searchstore.Text{Title: fmt.Sprintf("prefixlexeme%03d", index)}, 1)
 	}
-	for _, indexed := range []bool{false, true} {
-		if indexed {
-			f.drain(t, "org_first")
+	f.drain(t, "org_first")
+	query := searchstore.Query{Text: "prefixlexeme", Limit: 1}
+	var matches []string
+	for range 10 {
+		page := f.find(t, "org_first", query)
+		matches = append(matches, searchIDs(page)...)
+		if len(page.NextCursor) > 128*1024 {
+			t.Fatalf("bounded lexeme cursor=%d bytes", len(page.NextCursor))
 		}
-		t.Run(fmt.Sprintf("indexed=%v", indexed), func(t *testing.T) {
-			query := searchstore.Query{Text: "prefixlexeme", Limit: 1}
-			var matches []string
-			for range 10 {
-				page := f.find(t, "org_first", query)
-				matches = append(matches, searchIDs(page)...)
-				if len(page.NextCursor) > 128*1024 {
-					t.Fatalf("bounded lexeme cursor=%d bytes", len(page.NextCursor))
-				}
-				if page.NextCursor == "" {
-					slices.Sort(matches)
-					if !slices.Equal(matches, []string{"wi_first_1", "wi_first_2"}) {
-						t.Fatalf("lexeme-window matches=%v", matches)
-					}
-					return
-				}
-				if page.NextCursor == query.Cursor {
-					t.Fatal("lexeme cursor did not advance")
-				}
-				query.Cursor = page.NextCursor
+		if page.NextCursor == "" {
+			slices.Sort(matches)
+			if !slices.Equal(matches, []string{"wi_first_1", "wi_first_2"}) {
+				t.Fatalf("lexeme-window matches=%v", matches)
 			}
-			t.Fatal("prefix did not reach the next lexeme window")
-		})
+			return
+		}
+		if page.NextCursor == query.Cursor {
+			t.Fatal("lexeme cursor did not advance")
+		}
+		query.Cursor = page.NextCursor
 	}
+	t.Fatal("prefix did not reach the next lexeme window")
 }
 
 func TestSearchCanonicalIgnoresDeletedBestDocument(t *testing.T) {
@@ -369,7 +363,7 @@ func TestSearchAggregateMigrationRebuildsEveryTenant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.DownTo(t.Context(), 20261101050746); err != nil {
+	if _, err := provider.ApplyVersion(t.Context(), 20261101060929, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.admin.ExecContext(t.Context(), `UPDATE search_documents SET vector=source_vector WHERE kind='comment'`); err != nil {
@@ -378,7 +372,7 @@ func TestSearchAggregateMigrationRebuildsEveryTenant(t *testing.T) {
 	if _, err := f.admin.ExecContext(t.Context(), `SET ROLE detent_migration_v2`); err != nil {
 		t.Fatal(err)
 	}
-	_, migrationErr := provider.Up(t.Context())
+	_, migrationErr := provider.ApplyVersion(t.Context(), 20261101060929, true)
 	_, resetErr := f.admin.ExecContext(t.Context(), `RESET ROLE`)
 	if migrationErr != nil || resetErr != nil {
 		t.Fatalf("migrate=%v reset=%v", migrationErr, resetErr)

@@ -201,10 +201,7 @@ func TestOrganizationSchedulingRollbackRetainsAdoptedStateAcrossTenantRLS(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 20261104012900 {
-		t.Fatalf("schema version=%d want 20261104012900", version)
-	}
-	if _, err := provider.Down(ctx); err == nil || !strings.Contains(err.Error(), "organization scheduling revisions require an explicit retained-data migration") {
+	if _, err := provider.ApplyVersion(ctx, 20261104012900, false); err == nil || !strings.Contains(err.Error(), "organization scheduling revisions require an explicit retained-data migration") {
 		t.Errorf("rollback returned %v, want scheduling revision retained-data refusal", err)
 	}
 	if got, err := provider.GetDBVersion(ctx); err != nil || got != version {

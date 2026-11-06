@@ -191,7 +191,7 @@ func TestIssueDispatchRollbackRefusesAcrossTenantRLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.Down(t.Context()); err == nil || !strings.Contains(err.Error(), "dispatch requests require an explicit retained-data migration") {
+	if _, err := provider.ApplyVersion(t.Context(), 20261104025148, false); err == nil || !strings.Contains(err.Error(), "dispatch requests require an explicit retained-data migration") {
 		t.Fatalf("rollback returned %v, want retained-data refusal", err)
 	}
 	after, err := provider.GetDBVersion(t.Context())
