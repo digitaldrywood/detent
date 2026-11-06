@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -321,6 +322,9 @@ func (s *Service) editHostedInvitationJSON(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	credential, err := s.hostedAdministrator(c)
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, operatorAuthorizationError(err))
+	}
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "You cannot edit invitations")
 	}
@@ -345,6 +349,9 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	credential, err := s.hostedAdministrator(c)
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, operatorAuthorizationError(err))
+	}
 	if err != nil || !auth.ValidOrganizationRole(request.Role) || request.Role == "owner" && credential.HostedRole != "owner" {
 		return s.hostedJSONError(c, http.StatusForbidden, "You cannot invite a member with this role")
 	}
@@ -353,6 +360,8 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 		var application *nativeError
 		var limit *hostedLimitError
 		switch {
+		case errors.Is(err, tenantauth.ErrUnavailable):
+			return s.nativeAPIError(c, err)
 		case errors.As(err, &application):
 			return s.nativeAPIError(c, err)
 		case errors.Is(err, mutation.ErrConflict):
@@ -363,6 +372,8 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 			return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 		case errors.As(err, &limit):
 			return s.hostedJSONError(c, http.StatusTooManyRequests, limit.Error())
+		case errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied):
+			return s.nativeAPIError(c, operatorAuthorizationError(err))
 		default:
 			return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be sent")
 		}
@@ -399,6 +410,9 @@ func (s *Service) claimHostedOperation(ctx context.Context, command hostedComman
 
 func (s *Service) claimHostedCommand(c echo.Context, command hostedCommand, status int) (bool, error) {
 	claimed, response, err := s.claimHostedOperation(c.Request().Context(), command)
+	if errors.Is(err, tenantauth.ErrUnavailable) {
+		return false, s.nativeAPIError(c, err)
+	}
 	if errors.Is(err, mutation.ErrConflict) {
 		return false, s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: mutation.ErrConflict.Error(), status: http.StatusConflict})
 	}
@@ -432,10 +446,16 @@ func (s *Service) abandonHostedOperation(parent context.Context, command hostedC
 // keeps an owner.
 func (s *Service) revokeHostedMemberJSON(c echo.Context) error {
 	credential, err := s.hostedAdministrator(c)
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, operatorAuthorizationError(err))
+	}
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "You cannot remove organization members")
 	}
 	if err := s.removeHostedMemberFor(c.Request().Context(), credential, c.Param("member")); err != nil {
+		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return s.nativeAPIError(c, operatorAuthorizationError(err))
+		}
 		return s.hostedJSONError(c, http.StatusForbidden, "This member could not be removed; the organization must retain an owner")
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -454,6 +474,9 @@ func (s *Service) changeHostedRoleJSON(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	credential, err := s.hostedAdministrator(c)
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, operatorAuthorizationError(err))
+	}
 	if err != nil || !auth.ValidOrganizationRole(request.Role) || request.Role == "owner" && credential.HostedRole != "owner" {
 		return s.hostedJSONError(c, http.StatusForbidden, "You cannot assign this organization role")
 	}
@@ -462,6 +485,9 @@ func (s *Service) changeHostedRoleJSON(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if err != nil {
+		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return s.nativeAPIError(c, operatorAuthorizationError(err))
+		}
 		return s.hostedJSONError(c, http.StatusForbidden, "This role could not be changed")
 	}
 	return c.JSON(http.StatusOK, view)
@@ -485,6 +511,9 @@ func (s *Service) changeHostedGrantJSON(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	credential, err := s.hostedAdministrator(c)
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, operatorAuthorizationError(err))
+	}
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "You cannot manage project grants")
 	}
@@ -499,7 +528,7 @@ func (s *Service) changeHostedGrantJSON(c echo.Context) error {
 func (s *Service) hostedMemberByID(ctx context.Context, credential apiCredential, id string) (auth.Membership, error) {
 	memberships, err := s.config.Hosted.Provider.Memberships(ctx, "", credential.Hosted.OrganizationID)
 	if err != nil {
-		return auth.Membership{}, auth.ErrHostedIdentity
+		return auth.Membership{}, errors.Join(tenantauth.ErrUnavailable, err)
 	}
 	for _, member := range memberships {
 		if member.ID == id && member.OrganizationID == credential.Hosted.OrganizationID && member.Status == "active" {
@@ -606,12 +635,21 @@ func (s *Service) revokeHostedInvitationJSON(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	credential, err := s.hostedAdministrator(c)
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, operatorAuthorizationError(err))
+	}
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "You cannot revoke invitations")
 	}
 	if err := s.revokeHostedInvitationFor(c.Request().Context(), credential, c.Param("invitation")); err != nil {
+		if errors.Is(err, tenantauth.ErrUnavailable) {
+			return s.nativeAPIError(c, err)
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			return s.hostedJSONError(c, http.StatusNotFound, "This invitation is no longer pending")
+		}
+		if errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return s.hostedJSONError(c, http.StatusForbidden, "You cannot revoke invitations")
 		}
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be revoked. Try again.")
 	}
@@ -627,16 +665,25 @@ func (s *Service) resendHostedInvitationJSON(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	credential, err := s.hostedAdministrator(c)
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, operatorAuthorizationError(err))
+	}
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "You cannot resend invitations")
 	}
 	if err := s.resendHostedInvitationFor(c.Request().Context(), credential, c.Param("invitation")); err != nil {
+		if errors.Is(err, tenantauth.ErrUnavailable) {
+			return s.nativeAPIError(c, err)
+		}
 		var targetError *nativeError
 		if errors.As(err, &targetError) {
 			return s.nativeAPIError(c, err)
 		}
 		if errors.Is(err, sql.ErrNoRows) {
 			return s.hostedJSONError(c, http.StatusNotFound, "This invitation is no longer pending")
+		}
+		if errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return s.hostedJSONError(c, http.StatusForbidden, "You cannot resend invitations")
 		}
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be resent. Try again.")
 	}
@@ -645,6 +692,9 @@ func (s *Service) resendHostedInvitationJSON(c echo.Context) error {
 
 // hostedAPIError maps a credential failure onto the hosted JSON API error shape.
 func (s *Service) hostedAPIError(c echo.Context, err error) error {
+	if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, operatorAuthorizationError(err))
+	}
 	if errors.Is(err, auth.ErrInvalidSession) {
 		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}

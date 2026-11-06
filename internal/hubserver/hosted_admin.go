@@ -14,14 +14,22 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) hostedAdministrator(c echo.Context) (apiCredential, error) {
-	credential, _, err := s.hostedCredential(c.Request().Context(), c)
-	if err != nil || credential.HostedRole != "owner" && credential.HostedRole != "admin" {
+	credential, status, err := s.hostedCredential(c.Request().Context(), c)
+	if err != nil {
+		if status >= http.StatusInternalServerError {
+			return apiCredential{}, errors.Join(tenantauth.ErrUnavailable, err)
+		}
+		return apiCredential{}, err
+	}
+	if credential.HostedRole != "owner" && credential.HostedRole != "admin" {
 		return apiCredential{}, auth.ErrHostedIdentity
 	}
 	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "administration", c.Request().Method+" "+c.Path(), "", 0); err != nil {
@@ -32,7 +40,10 @@ func (s *Service) hostedAdministrator(c echo.Context) (apiCredential, error) {
 
 func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		credential, _, err := s.authenticateAPIRequest(c)
+		credential, status, err := s.authenticateAPIRequest(c)
+		if err != nil && status >= http.StatusInternalServerError {
+			return s.nativeAPIError(c, errors.Join(tenantauth.ErrUnavailable, err))
+		}
 		if err == nil && credential.HostedRole == "reporter" && !hostedReadRequest(c) {
 			return s.nativeAPIError(c, operatortool.ErrAccessDenied)
 		}
@@ -41,7 +52,13 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 		}
 		switch {
 		case c.Path() == "/api/v2/organizations/:organization/usage/monthly" && c.Request().Method == http.MethodGet:
-			if credential.HostedRole != "owner" && credential.HostedRole != "admin" || !s.hostedAllUsageGrants(c.Request().Context(), credential) {
+			if credential.HostedRole != "owner" && credential.HostedRole != "admin" {
+				return s.nativeAPIError(c, nativeNotFound())
+			}
+			if err := s.requireHostedUsageGrants(c.Request().Context(), credential); err != nil {
+				if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+					return s.nativeAPIError(c, operatorAuthorizationError(err))
+				}
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 		case c.Path() == "/api/v2/organizations/:organization/projects" && c.Request().Method == http.MethodPost:
@@ -61,6 +78,9 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 				return s.nativeAPIError(c, err)
 			}
 			if err := s.requireHostedRunnerProjects(c.Request().Context(), nil, credential, runnerManagementProjects(runner)); err != nil {
+				if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+					return s.nativeAPIError(c, operatorAuthorizationError(err))
+				}
 				if c.Request().Method == http.MethodGet {
 					return s.nativeAPIError(c, nativeNotFound())
 				}
@@ -69,6 +89,9 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 			credential.ManageRunners = true
 		case strings.HasPrefix(c.Path(), enrollmentBase) || strings.HasPrefix(c.Path(), runnerBase) || c.Path() == "/api/v2/organizations/:organization/machines/:machine/routing":
 			if err := s.requireHostedRunnerAdministration(c.Request().Context(), nil, credential); err != nil {
+				if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+					return s.nativeAPIError(c, operatorAuthorizationError(err))
+				}
 				return c.JSON(http.StatusNotFound, apiErrorResponse{Code: "not_found", Message: err.Error()})
 			}
 			credential.ManageRunners = true
@@ -83,11 +106,11 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 	}
 }
 
-func (s *Service) hostedAllUsageGrants(ctx context.Context, credential apiCredential) bool {
+func (s *Service) requireHostedUsageGrants(ctx context.Context, credential apiCredential) error {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if credential.Hosted == nil {
-		return false
+		return operatortool.ErrAccessDenied
 	}
 	var missing bool
 	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
@@ -95,7 +118,13 @@ func (s *Service) hostedAllUsageGrants(ctx context.Context, credential apiCreden
 		missing, err = r.AccessMissingUsageGrant(ctx, credential.Hosted.Subject)
 		return err
 	})
-	return err == nil && !missing
+	if err != nil {
+		return operatorAuthorizationError(err)
+	}
+	if missing {
+		return operatortool.ErrAccessDenied
+	}
+	return nil
 }
 
 func (s *Service) hostedAllRunnerGrants(ctx context.Context, credential apiCredential) bool {
@@ -224,6 +253,9 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
 	credential, err := s.hostedAdministrator(c)
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
+	}
 	role := c.FormValue("role")
 	if err != nil || !auth.ValidOrganizationRole(role) || role == "owner" && credential.HostedRole != "owner" {
 		return s.hostedError(c, http.StatusForbidden, "You cannot invite a member with this role")
@@ -233,6 +265,9 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 	}
 	if err := s.validateHostedInvitationGrants(readCtx, nil, credential, email, nil); err != nil {
+		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
+		}
 		return s.hostedError(c, http.StatusForbidden, "You cannot replace this member's project access")
 	}
 	_, err = s.reserveHostedInvitationSeatFor(ctx, credential, email)
@@ -253,7 +288,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 func (s *Service) hostedManagedMemberFor(ctx context.Context, credential apiCredential, id string, removingOwner bool) (auth.Membership, error) {
 	members, err := s.config.Hosted.Provider.Memberships(ctx, "", credential.Hosted.OrganizationID)
 	if err != nil {
-		return auth.Membership{}, auth.ErrHostedIdentity
+		return auth.Membership{}, errors.Join(tenantauth.ErrUnavailable, err)
 	}
 	var selected auth.Membership
 	owners := 0
@@ -276,10 +311,16 @@ func (s *Service) hostedManagedMemberFor(ctx context.Context, credential apiCred
 
 func (s *Service) revokeHostedMember(c echo.Context) error {
 	credential, err := s.hostedAdministrator(c)
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
+	}
 	if err != nil {
 		return s.hostedError(c, http.StatusForbidden, "You cannot remove organization members")
 	}
 	if err := s.removeHostedMemberFor(c.Request().Context(), credential, c.Param("member")); err != nil {
+		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
+		}
 		return s.hostedError(c, http.StatusForbidden, "This member could not be removed; the organization must retain an owner")
 	}
 
@@ -293,11 +334,17 @@ func (s *Service) revokeHostedMemberLocally(ctx context.Context, user string) (r
 
 func (s *Service) changeHostedRole(c echo.Context) error {
 	credential, err := s.hostedAdministrator(c)
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
+	}
 	role := c.FormValue("role")
 	if err != nil || !auth.ValidOrganizationRole(role) || role == "owner" && credential.HostedRole != "owner" {
 		return s.hostedError(c, http.StatusForbidden, "You cannot assign this organization role")
 	}
 	if _, err := s.changeHostedRoleFor(c.Request().Context(), credential, c.Param("member"), role); err != nil {
+		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
+		}
 		return s.hostedError(c, http.StatusForbidden, "This role could not be changed; the organization must retain an owner")
 	}
 
@@ -306,6 +353,9 @@ func (s *Service) changeHostedRole(c echo.Context) error {
 
 func (s *Service) changeHostedGrant(c echo.Context) error {
 	credential, err := s.hostedAdministrator(c)
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
+	}
 	if err != nil {
 		return s.hostedError(c, http.StatusForbidden, "You cannot manage project grants")
 	}
@@ -315,6 +365,9 @@ func (s *Service) changeHostedGrant(c echo.Context) error {
 	}
 	err = s.hostedGrant(c.Request().Context(), credential, user, project, hostedFormTrue(c, "write"), hostedFormTrue(c, "runner"), hostedFormTrue(c, "revoke"))
 	if err != nil {
+		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
+		}
 		return s.hostedError(c, http.StatusForbidden, "The project grant could not be changed")
 	}
 	return c.Redirect(http.StatusSeeOther, s.hostedPath("/organization"))
@@ -327,6 +380,9 @@ func (s *Service) hostedGrant(ctx context.Context, credential apiCredential, use
 
 func (s *Service) createHostedProject(c echo.Context) error {
 	credential, err := s.hostedAdministrator(c)
+	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
+	}
 	if err != nil {
 		return s.hostedError(c, http.StatusForbidden, "You cannot create projects")
 	}
@@ -336,11 +392,20 @@ func (s *Service) createHostedProject(c echo.Context) error {
 	}
 	project, err := s.createHostedProjectRecord(c.Request().Context(), credential, name, nil)
 	if err != nil {
+		if errors.Is(err, tenantauth.ErrUnavailable) {
+			return s.hostedError(c, http.StatusServiceUnavailable, "The project could not be created. Try again.")
+		}
 		var limit *hostedLimitError
 		if errors.As(err, &limit) {
 			return s.hostedError(c, http.StatusTooManyRequests, limit.Error())
 		}
-		return s.hostedError(c, http.StatusConflict, "The project could not be created; check that its name is unique")
+		if errors.Is(err, mutation.ErrConflict) {
+			return s.hostedError(c, http.StatusConflict, "The project could not be created; check that its name is unique")
+		}
+		if errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return s.hostedError(c, http.StatusForbidden, "You cannot create projects")
+		}
+		return s.hostedError(c, http.StatusServiceUnavailable, "The project could not be created. Try again.")
 	}
 	return c.Redirect(http.StatusSeeOther, s.hostedPath("/projects/"+project))
 }

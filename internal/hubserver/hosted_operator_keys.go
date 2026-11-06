@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -91,8 +93,14 @@ func (s *Service) hostedKeyBrowser(c echo.Context) (apiCredential, error) {
 	if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
 		return apiCredential{}, auth.ErrHostedIdentity
 	}
-	credential, _, err := s.hostedCredential(c.Request().Context(), c)
-	if err != nil || credential.Hosted == nil || credential.Hosted.SupportActor != "" {
+	credential, status, err := s.hostedCredential(c.Request().Context(), c)
+	if err != nil {
+		if status >= http.StatusInternalServerError {
+			return apiCredential{}, errors.Join(tenantauth.ErrUnavailable, err)
+		}
+		return apiCredential{}, err
+	}
+	if credential.Hosted == nil || credential.Hosted.SupportActor != "" {
 		return apiCredential{}, auth.ErrHostedIdentity
 	}
 	return s.hostedKeyCredentialFor(c.Request().Context(), credential)
@@ -137,6 +145,9 @@ type hostedAPIKey struct {
 func (s *Service) hostedAPIKeys(c echo.Context) error {
 	credential, err := s.hostedKeyBrowser(c)
 	if err != nil {
+		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return s.nativeAPIError(c, operatorAuthorizationError(err))
+		}
 		return s.hostedJSONError(c, http.StatusForbidden, "Sign in as an organization member to manage your API keys")
 	}
 	keys, err := s.hostedAPIKeysFor(c.Request().Context(), credential)
@@ -173,6 +184,9 @@ func (request hostedKeyRequest) validExpiry() bool {
 func (s *Service) createHostedAPIKey(c echo.Context) error {
 	credential, err := s.hostedKeyBrowser(c)
 	if err != nil {
+		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return s.nativeAPIError(c, operatorAuthorizationError(err))
+		}
 		return s.hostedJSONError(c, http.StatusForbidden, "Sign in as an organization member to create an API key")
 	}
 	var request hostedKeyRequest
@@ -249,6 +263,9 @@ func (s *Service) createHostedAPIKeyFor(ctx context.Context, credential apiCrede
 func (s *Service) revokeHostedAPIKey(c echo.Context) error {
 	credential, err := s.hostedKeyBrowser(c)
 	if err != nil {
+		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return s.nativeAPIError(c, operatorAuthorizationError(err))
+		}
 		return s.hostedJSONError(c, http.StatusForbidden, "Sign in to revoke your API key")
 	}
 	if err := s.revokeHostedAPIKeyFor(c.Request().Context(), credential, c.Param("key")); err != nil {
