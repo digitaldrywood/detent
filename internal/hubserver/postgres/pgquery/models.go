@@ -883,17 +883,17 @@ type DailySummaryPreference struct {
 	TimeZone       string
 	Weekdays       bool
 	Token          string
-	WindowEnd      int64
-	DueAt          int64
+	WindowEnd      time.Time
+	DueAt          time.Time
 }
 
 type DailySummaryReceipt struct {
 	OrganizationID tracker.OrganizationID
 	UserID         string
-	WindowEnd      int64
+	WindowEnd      time.Time
 	Status         string
 	Attempts       int32
-	RecordedAt     int64
+	RecordedAt     time.Time
 }
 
 type GithubImport struct {

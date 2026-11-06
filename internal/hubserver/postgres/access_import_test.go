@@ -272,14 +272,14 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 		}
 		var dailyEnabled, weekdays bool
 		var sendMinute int
-		var windowEnd, dueAt int64
-		if err := db.QueryRowContext(t.Context(), `SELECT enabled,send_minute,time_zone,weekdays,token,window_end,due_at FROM daily_summary_preferences WHERE organization_id=$1 AND user_id='user_first'`, organization).Scan(&dailyEnabled, &sendMinute, &timeZone, &weekdays, &unsubscribeToken, &windowEnd, &dueAt); err != nil || !dailyEnabled || sendMinute != 390 || timeZone != "America/Chicago" || !weekdays || unsubscribeToken != "unsub_"+string(organization) || windowEnd != 1790000000 || dueAt != 1790000300 {
-			t.Fatalf("tenant %s daily preference enabled=%t minute=%d zone=%q weekdays=%t token=%q window=%d due=%d err=%v", organization, dailyEnabled, sendMinute, timeZone, weekdays, unsubscribeToken, windowEnd, dueAt, err)
+		var windowEnd, dueAt time.Time
+		if err := db.QueryRowContext(t.Context(), `SELECT enabled,send_minute,time_zone,weekdays,token,window_end,due_at FROM daily_summary_preferences WHERE organization_id=$1 AND user_id='user_first'`, organization).Scan(&dailyEnabled, &sendMinute, &timeZone, &weekdays, &unsubscribeToken, &windowEnd, &dueAt); err != nil || !dailyEnabled || sendMinute != 390 || timeZone != "America/Chicago" || !weekdays || unsubscribeToken != "unsub_"+string(organization) || windowEnd.Unix() != 1790000000 || dueAt.Unix() != 1790000300 {
+			t.Fatalf("tenant %s daily preference enabled=%t minute=%d zone=%q weekdays=%t token=%q window=%v due=%v err=%v", organization, dailyEnabled, sendMinute, timeZone, weekdays, unsubscribeToken, windowEnd, dueAt, err)
 		}
 		var attempts int
-		var recordedAt int64
-		if err := db.QueryRowContext(t.Context(), `SELECT status,attempts,recorded_at FROM daily_summary_receipts WHERE organization_id=$1 AND user_id='user_first' AND window_end=1790000000`, organization).Scan(&receiptStatus, &attempts, &recordedAt); err != nil || receiptStatus != "sent" || attempts != 2 || recordedAt != 1790000001 {
-			t.Fatalf("tenant %s daily receipt status=%q attempts=%d recorded_at=%d err=%v", organization, receiptStatus, attempts, recordedAt, err)
+		var recordedAt time.Time
+		if err := db.QueryRowContext(t.Context(), `SELECT status,attempts,recorded_at FROM daily_summary_receipts WHERE organization_id=$1 AND user_id='user_first' AND window_end=$2`, organization, time.Unix(1790000000, 0).UTC()).Scan(&receiptStatus, &attempts, &recordedAt); err != nil || receiptStatus != "sent" || attempts != 2 || recordedAt.Unix() != 1790000001 {
+			t.Fatalf("tenant %s daily receipt status=%q attempts=%d recorded_at=%v err=%v", organization, receiptStatus, attempts, recordedAt, err)
 		}
 		var sessionSubject, providerOrganization, sessionID, sessionEmail string
 		var identityCreated, identityExpires time.Time

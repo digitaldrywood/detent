@@ -1171,7 +1171,7 @@
       "family": "delivery",
       "organization": "row",
       "columns": {
-        "due_at": {"source":"[8,\"due_at\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_preferences","column":"due_at","type":"bigint"}]},
+        "due_at": {"source":"[8,\"due_at\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"unix-seconds","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_preferences","column":"due_at","type":"timestamp with time zone"}]},
         "enabled": {"source":"[2,\"enabled\",\"INTEGER\",1,\"0\",0,0]","disposition":"column","codec":"bool01","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_preferences","column":"enabled","type":"boolean"}]},
         "organization_id": {"source":"[1,\"organization_id\",\"TEXT\",1,null,2,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
         "send_minute": {"source":"[3,\"send_minute\",\"INTEGER\",1,\"360\",0,0]","disposition":"column","codec":"int32","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_preferences","column":"send_minute","type":"integer"}]},
@@ -1179,7 +1179,7 @@
         "token": {"source":"[6,\"token\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.daily_summary_preferences","column":"token","type":"text"}]},
         "user_id": {"source":"[0,\"user_id\",\"TEXT\",1,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.daily_summary_preferences","column":"user_id","type":"text"}]},
         "weekdays": {"source":"[5,\"weekdays\",\"INTEGER\",1,\"0\",0,0]","disposition":"column","codec":"bool01","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_preferences","column":"weekdays","type":"boolean"}]},
-        "window_end": {"source":"[7,\"window_end\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_preferences","column":"window_end","type":"bigint"}]}
+        "window_end": {"source":"[7,\"window_end\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"unix-seconds","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_preferences","column":"window_end","type":"timestamp with time zone"}]}
       }
     },
     "hub/daily_summary_receipts": {
@@ -1190,10 +1190,10 @@
       "columns": {
         "attempts": {"source":"[4,\"attempts\",\"INTEGER\",1,\"1\",0,0]","disposition":"column","codec":"int32","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_receipts","column":"attempts","type":"integer"}]},
         "organization_id": {"source":"[1,\"organization_id\",\"TEXT\",1,null,2,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "recorded_at": {"source":"[5,\"recorded_at\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_receipts","column":"recorded_at","type":"bigint"}]},
+        "recorded_at": {"source":"[5,\"recorded_at\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"unix-seconds","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_receipts","column":"recorded_at","type":"timestamp with time zone"}]},
         "status": {"source":"[3,\"status\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.daily_summary_receipts","column":"status","type":"text"}]},
         "user_id": {"source":"[0,\"user_id\",\"TEXT\",1,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.daily_summary_receipts","column":"user_id","type":"text"}]},
-        "window_end": {"source":"[2,\"window_end\",\"INTEGER\",1,null,3,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_receipts","column":"window_end","type":"bigint"}]}
+        "window_end": {"source":"[2,\"window_end\",\"INTEGER\",1,null,3,0]","disposition":"column","codec":"unix-seconds","null":"reject","empty":"reject","targets":[{"table":"public.daily_summary_receipts","column":"window_end","type":"timestamp with time zone"}]}
       }
     },
     "hub/dashboard_delivery_authorization": {

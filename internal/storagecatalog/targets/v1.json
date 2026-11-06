@@ -1097,8 +1097,8 @@
         "time_zone": "text",
         "weekdays": "boolean",
         "token": "text",
-        "window_end": "bigint",
-        "due_at": "bigint"
+        "window_end": "timestamp with time zone",
+        "due_at": "timestamp with time zone"
       },
       "contract": "Preserve typed daily summary delivery preferences and unsubscribe capability per hosted member.",
       "family": "delivery",
@@ -1108,10 +1108,10 @@
       "columns": {
         "organization_id": "text",
         "user_id": "text",
-        "window_end": "bigint",
+        "window_end": "timestamp with time zone",
         "status": "text",
         "attempts": "integer",
-        "recorded_at": "bigint"
+        "recorded_at": "timestamp with time zone"
       },
       "contract": "Track the idempotent daily summary delivery outcome for each member and delivery window.",
       "family": "delivery",

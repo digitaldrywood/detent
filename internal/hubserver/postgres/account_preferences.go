@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
@@ -54,7 +55,8 @@ func (r *Repository) DailySummaryPreference(ctx context.Context, organization tr
 			return err
 		}
 		preference.Recipient = member.Email
-		err = s.db.QueryRowContext(ctx, `SELECT enabled,send_minute,time_zone,weekdays,window_end,token FROM daily_summary_preferences WHERE organization_id=$1 AND user_id=$2`, organization, user).Scan(&preference.Enabled, &preference.SendMinute, &preference.TimeZone, &preference.Weekdays, &preference.WindowEnd, &preference.Token)
+		var windowEnd time.Time
+		err = s.db.QueryRowContext(ctx, `SELECT enabled,send_minute,time_zone,weekdays,window_end,token FROM daily_summary_preferences WHERE organization_id=$1 AND user_id=$2`, organization, user).Scan(&preference.Enabled, &preference.SendMinute, &preference.TimeZone, &preference.Weekdays, &windowEnd, &preference.Token)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -62,6 +64,7 @@ func (r *Repository) DailySummaryPreference(ctx context.Context, organization tr
 			return mapError(ctx, err)
 		}
 		preference.Configured = true
+		preference.WindowEnd = windowEnd.Unix()
 		return nil
 	})
 	return preference, err
@@ -72,7 +75,7 @@ func (r *Repository) SetDailySummaryPreference(ctx context.Context, organization
 		if _, err := s.authorizeAccountPreference(ctx, user, membership, principal); err != nil {
 			return err
 		}
-		_, err := s.db.ExecContext(ctx, `INSERT INTO daily_summary_preferences (organization_id,user_id,enabled,send_minute,time_zone,weekdays,token,window_end,due_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (user_id,organization_id) DO UPDATE SET enabled=excluded.enabled,send_minute=excluded.send_minute,time_zone=excluded.time_zone,weekdays=excluded.weekdays,window_end=excluded.window_end,due_at=excluded.due_at`, organization, user, preference.Enabled, preference.SendMinute, preference.TimeZone, preference.Weekdays, token, preference.WindowEnd, dueAt)
+		_, err := s.db.ExecContext(ctx, `INSERT INTO daily_summary_preferences (organization_id,user_id,enabled,send_minute,time_zone,weekdays,token,window_end,due_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (user_id,organization_id) DO UPDATE SET enabled=excluded.enabled,send_minute=excluded.send_minute,time_zone=excluded.time_zone,weekdays=excluded.weekdays,window_end=excluded.window_end,due_at=excluded.due_at`, organization, user, preference.Enabled, preference.SendMinute, preference.TimeZone, preference.Weekdays, token, time.Unix(preference.WindowEnd, 0).UTC(), time.Unix(dueAt, 0).UTC())
 		return mapError(ctx, err)
 	})
 }
