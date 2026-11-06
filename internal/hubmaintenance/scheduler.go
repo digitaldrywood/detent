@@ -2,9 +2,10 @@ package hubmaintenance
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -78,13 +79,21 @@ func (s *Scheduler) Run(ctx context.Context, report func(error)) error {
 	}
 	defer s.running.Store(false)
 	for {
-		if err := s.wait(ctx, 900*time.Millisecond+time.Duration(rand.Int64N(int64(200*time.Millisecond)))); err != nil {
+		if err := s.wait(ctx, jitteredWake()); err != nil {
 			return err
 		}
 		if err := s.Tick(ctx); err != nil && ctx.Err() == nil && report != nil {
 			report(err)
 		}
 	}
+}
+
+func jitteredWake() time.Duration {
+	var value [8]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return time.Second
+	}
+	return 900*time.Millisecond + time.Duration(binary.LittleEndian.Uint64(value[:])%uint64(200*time.Millisecond))
 }
 
 func (s *Scheduler) Tick(ctx context.Context) error {
@@ -121,7 +130,8 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 					failures <- err
 					continue
 				}
-				if err := feature.Step(ctx, tenant, Budget{Items: 1, Bytes: feature.Bytes}); err != nil {
+				budget := Budget{Items: 1, Bytes: feature.Bytes}
+				if err := feature.Step(budget.Context(ctx, tenant), tenant, budget); err != nil {
 					failures <- fmt.Errorf("maintenance tenant %s feature %s: %w", tenant.Organization, feature.Name, err)
 				}
 			}

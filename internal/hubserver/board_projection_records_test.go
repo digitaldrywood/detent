@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -24,7 +25,7 @@ func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 1, 22, 0, 0, 0, time.UTC)
 	details := &memoryRunDetails{}
-	service := &Service{config: Config{TenantRepository: repository, RunDetails: details, now: func() time.Time { return now }}, localOrganization: "org_first"}
+	service := &Service{config: Config{TenantRepository: repository, RunDetails: hubmaintenance.LimitDetails(details), now: func() time.Time { return now }}, localOrganization: "org_first"}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), CreatedAt: now}); err != nil {
@@ -184,7 +185,14 @@ func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 	}
 	assertPage("org_second", 32)
 	service.localOrganization = "org_first"
-	next, processed, err := service.MaintainBoardRecord(t.Context(), "org_second", "")
+	tenant := hubmaintenance.Tenant{Organization: "org_second", Generation: 1}
+	ctx := (hubmaintenance.Budget{Items: 1, Bytes: 1}).Context(t.Context(), tenant)
+	if next, processed, err := service.MaintainBoardRecord(ctx, "org_second", ""); !errors.Is(err, hubmaintenance.ErrByteBudget) || !processed || next != "wi_32" {
+		t.Fatalf("payload byte limit: next=%s processed=%t err=%v", next, processed, err)
+	}
+	assertPage("org_second", 32)
+	ctx = (hubmaintenance.Budget{Items: 1, Bytes: hubmaintenance.ByteLimit}).Context(t.Context(), tenant)
+	next, processed, err := service.MaintainBoardRecord(ctx, "org_second", "")
 	if err != nil || !processed || next != "wi_32" {
 		t.Fatalf("one-item maintenance: next=%s processed=%t err=%v", next, processed, err)
 	}

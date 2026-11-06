@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -61,6 +62,12 @@ func (s *Service) maintainBoardRecords(ctx context.Context) error {
 }
 
 func (s *Service) MaintainBoardRecord(ctx context.Context, organization tracker.OrganizationID, after tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, error) {
+	if err := hubmaintenance.RequireBudget(ctx, string(organization)); err != nil {
+		return after, false, err
+	}
+	if _, ok := s.runDetailStore().(*hubmaintenance.Details); !ok {
+		return after, false, errors.New("maintenance requires byte-limited payload storage")
+	}
 	return s.maintainBoardRecord(ctx, organization, after)
 }
 
