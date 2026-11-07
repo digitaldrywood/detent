@@ -1803,9 +1803,8 @@ func newHostedWorkspaceFixture(t *testing.T) hostedSecurityFixture {
 	t.Helper()
 	provider := newHostedSecurityProvider()
 	service := openTestService(t, Config{
-		DatabasePath:   hostedTestDatabasePath(t),
-		GitHubDisabled: true,
-		Workspace:      &WorkspaceConfig{Enabled: true, Terminal: WorkspaceTerminalConfig{Enabled: true}},
+		DatabasePath: hostedTestDatabasePath(t),
+		Workspace:    &WorkspaceConfig{Enabled: true, Terminal: WorkspaceTerminalConfig{Enabled: true}},
 		Hosted: &HostedConfig{
 			OrganizationID:       "org_security",
 			WorkOSOrganizationID: "org_provider",

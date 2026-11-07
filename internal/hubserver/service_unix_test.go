@@ -42,7 +42,7 @@ func TestRunServesPrivateUnixSocket(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(ctx, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), ListenAddress: "unix:" + socket, GitHubDisabled: true})
+		done <- Run(ctx, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), ListenAddress: "unix:" + socket})
 	}()
 	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		var dialer net.Dialer

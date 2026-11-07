@@ -428,7 +428,7 @@ func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id,
 		}
 	})
 	content := &conversationArchiveFixture{}
-	fixture := tenantFixture{id: id, provider: providerID, config: hubserver.Config{GitHubDisabled: true, InitialAdminToken: []byte(testAdminKey), Logger: logger, Content: content.handleContent, Conversation: &hubserver.ConversationConfig{Enabled: true},
+	fixture := tenantFixture{id: id, provider: providerID, config: hubserver.Config{InitialAdminToken: []byte(testAdminKey), Logger: logger, Content: content.handleContent, Conversation: &hubserver.ConversationConfig{Enabled: true},
 		Hosted: &hubserver.HostedConfig{Plans: plans, OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: testPublicURL, Provider: provider,
 			StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
 			SharedEntry: &hubserver.HostedSharedEntry{ArchiveContents: &conversationArchiveFixture{}, Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}},

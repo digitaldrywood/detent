@@ -36,7 +36,7 @@ func hostedSharedKey(seed byte) ed25519.PrivateKey {
 
 func hostedSharedTestConfig(path string, provider auth.HostedProvider, key ed25519.PrivateKey, generation int64) Config {
 	legacyPlans := pilotHostedPlans()
-	return Config{DatabasePath: path, GitHubDisabled: true, Hosted: &HostedConfig{
+	return Config{DatabasePath: path, Hosted: &HostedConfig{
 		Plans: &legacyPlans, OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", BootstrapSubject: "user_owner",
 		PublicURL: "https://hub.example.test", StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, Provider: provider,
 		SharedEntry: &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: generation},
@@ -478,7 +478,7 @@ func TestHostedSharedBindingRequiresExplicitMigration(t *testing.T) {
 	key := hostedSharedKey(7)
 	provider := newHostedSecurityProvider()
 	originPath := hostedTestDatabasePath(t)
-	origin := Config{DatabasePath: originPath, GitHubDisabled: true, Hosted: &HostedConfig{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", BootstrapSubject: "user_owner", PublicURL: "https://hub.example.test", Provider: provider}}
+	origin := Config{DatabasePath: originPath, Hosted: &HostedConfig{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", BootstrapSubject: "user_owner", PublicURL: "https://hub.example.test", Provider: provider}}
 	service := openTestService(t, origin)
 	if err := service.Close(); err != nil {
 		t.Fatal(err)
@@ -500,7 +500,7 @@ func TestHostedSharedBindingRequiresExplicitMigration(t *testing.T) {
 	for name, cfg := range map[string]Config{
 		"origin reopen":    func() Config { c := origin; c.DatabasePath = sharedPath; return c }(),
 		"stale generation": hostedSharedTestConfig(sharedPath, provider, key, 2),
-		"local reopen":     {DatabasePath: sharedPath, GitHubDisabled: true},
+		"local reopen":     {DatabasePath: sharedPath},
 		"different shared host": func() Config {
 			c := hostedSharedTestConfig(sharedPath, provider, key, 1)
 			c.Hosted.PublicURL = "https://other.example.test"

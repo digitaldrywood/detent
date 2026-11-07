@@ -78,10 +78,10 @@ type Config struct {
 	Usage                          *UsageConfig
 	// Workspace enables workspace sessions and the relay.
 	// Nil means the surfaces stay disabled with their reason.
-	Workspace                  *WorkspaceConfig
-	GitHubRequestCounts        func() []GitHubRequestCount
-	GitHubAppInstallation      func(context.Context, string) (GitHubAppInstallation, error)
-	GitHubDisabled             bool
+	Workspace             *WorkspaceConfig
+	GitHubRequestCounts   func() []GitHubRequestCount
+	GitHubAppInstallation func(context.Context, string) (GitHubAppInstallation, error)
+
 	ImportBackend              ImportBackend
 	DatabasePath               string
 	DatabaseBackend            DatabaseBackend
@@ -147,12 +147,6 @@ func (c Config) normalized() Config {
 		c.Workspace = &normalized
 	}
 	if c.CredentialMaintenance {
-		c.GitHubDisabled = true
-	}
-	if c.DatabaseBackend == DatabasePostgres {
-		c.GitHubDisabled = true
-	}
-	if c.GitHubDisabled {
 		c.ImportBackend, c.OutboxBackend, c.ReconcileBackend = nil, nil, nil
 		c.GitHubWebhookSecret, c.GitHubRequestCounts = nil, nil
 		c.GitHubAppInstallation = nil

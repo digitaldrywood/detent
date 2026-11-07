@@ -159,15 +159,11 @@ func TestHubServeIdentityModes(t *testing.T) {
 		app         bool
 		name        string
 		hosted      bool
-		native      bool
-		wantMode    bool
 	}{
 		{name: "local compatibility"},
-		{name: "local native", native: true, wantMode: true},
-		{name: "hosted without GitHub flag", hosted: true, wantMode: true},
-		{name: "hosted credential maintenance", hosted: true, maintenance: true, wantMode: true},
+		{name: "hosted without GitHub flag", hosted: true},
+		{name: "hosted credential maintenance", hosted: true, maintenance: true},
 		{name: "hosted product GitHub App", hosted: true, app: true},
-		{name: "hosted product GitHub App explicitly disabled", hosted: true, app: true, native: true, wantMode: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -180,9 +176,6 @@ func TestHubServeIdentityModes(t *testing.T) {
 					t.Fatal(err)
 				}
 				args = append(args, "--hosted-config", path)
-			}
-			if test.native {
-				args = append(args, "--github-disabled")
 			}
 			if test.maintenance {
 				args = append(args, "--credential-maintenance")
@@ -207,8 +200,8 @@ func TestHubServeIdentityModes(t *testing.T) {
 				}
 			}, func(_ context.Context, cfg hubserver.Config) error {
 				called = true
-				if cfg.CredentialMaintenance != test.maintenance || cfg.GitHubDisabled != test.wantMode || (cfg.Hosted != nil) != test.hosted {
-					t.Errorf("mode = native %t, hosted %t", cfg.GitHubDisabled, cfg.Hosted != nil)
+				if cfg.CredentialMaintenance != test.maintenance || (cfg.Hosted != nil) != test.hosted {
+					t.Errorf("mode = maintenance %t, hosted %t", cfg.CredentialMaintenance, cfg.Hosted != nil)
 				}
 				return nil
 			})

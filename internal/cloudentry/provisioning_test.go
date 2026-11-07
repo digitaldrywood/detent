@@ -62,7 +62,6 @@ func (l *processLauncher) Start(_ context.Context, spec TenantSpec) error {
 		return err
 	}
 	config := hubserver.Config{
-		GitHubDisabled:    true,
 		InitialAdminToken: []byte(testAdminKey), Logger: slog.New(slog.DiscardHandler),
 		Hosted: &hubserver.HostedConfig{
 			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL, Provider: l.provider,

@@ -104,7 +104,7 @@ func (l *pilotTenantLauncher) Start(_ context.Context, spec TenantSpec) error {
 	}
 	content := &conversationArchiveFixture{}
 	config := hubserver.Config{
-		GitHubDisabled: true, Version: l.version,
+		Version:           l.version,
 		InitialAdminToken: []byte(pilotAdminToken(spec.Organization.ID)), Logger: slog.New(slog.DiscardHandler),
 		Content: content.handleContent,
 		Hosted: &hubserver.HostedConfig{

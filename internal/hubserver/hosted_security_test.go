@@ -286,8 +286,7 @@ func newHostedSecurityFixture(t *testing.T, configure ...func(*Config)) hostedSe
 	provider := newHostedSecurityProvider()
 	legacyPlans := pilotHostedPlans()
 	cfg := Config{
-		DatabasePath:   filepath.Join(t.TempDir(), "hosted.db"),
-		GitHubDisabled: true,
+		DatabasePath: filepath.Join(t.TempDir(), "hosted.db"),
 		Hosted: &HostedConfig{
 			Plans:                &legacyPlans,
 			OrganizationID:       "org_security",
@@ -1101,10 +1100,9 @@ func TestHostedSecurityLogsExcludeCustomerContent(t *testing.T) {
 	var logs bytes.Buffer
 	provider := newHostedSecurityProvider()
 	service, err := Open(t.Context(), Config{
-		DatabasePath:   hostedTestDatabasePath(t),
-		GitHubDisabled: true,
-		Logger:         slog.New(slog.NewTextHandler(&logs, nil)),
-		Hosted:         &HostedConfig{OrganizationID: "org_logs", WorkOSOrganizationID: "org_provider", PublicURL: "https://logs.example.test", Provider: provider},
+		DatabasePath: hostedTestDatabasePath(t),
+		Logger:       slog.New(slog.NewTextHandler(&logs, nil)),
+		Hosted:       &HostedConfig{OrganizationID: "org_logs", WorkOSOrganizationID: "org_provider", PublicURL: "https://logs.example.test", Provider: provider},
 	})
 	if err != nil {
 		t.Fatal(err)

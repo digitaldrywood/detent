@@ -78,7 +78,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						})}
 					}
 					if tool == "update_project_integration" && outcome != "transport unavailable" {
-						cfg.GitHubDisabled = false
+
 						cfg.ReconcileBackend = &scriptedReconcileBackend{}
 					}
 				}

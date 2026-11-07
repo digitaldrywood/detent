@@ -100,8 +100,7 @@ func TestSavedWorkViews(t *testing.T) {
 	otherRepository := projectRecordPostgres(t)
 	provider := newHostedSecurityProvider()
 	second := hostedSecurityFixture{provider: provider, service: openTestService(t, Config{
-		DatabasePath: hostedTestDatabasePath(t), GitHubDisabled: true,
-		TenantRepository: otherRepository, AccessRepository: otherRepository,
+		DatabasePath: hostedTestDatabasePath(t), TenantRepository: otherRepository, AccessRepository: otherRepository,
 		Hosted: &HostedConfig{OrganizationID: "org_other", WorkOSOrganizationID: "org_provider", PublicURL: "http://127.0.0.1:7777", Provider: provider},
 	})}
 	if err := otherRepository.WriteTenant(t.Context(), "org_other", corestore.Serving, func(w tenantstore.Writer) error {

@@ -109,7 +109,7 @@ func (s *Service) projectIntegration(ctx context.Context, scope nativeScope) (Pr
 			return result, err
 		}
 	}
-	available := !s.config.GitHubDisabled && s.config.ReconcileBackend != nil
+	available := s.config.ReconcileBackend != nil
 	result.GitHubTransportAvailable = &available
 	repository := result.CheckoutRepository
 	if repository == "" {

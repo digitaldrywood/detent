@@ -33,7 +33,7 @@ func newOperatorSecurityFixture(t *testing.T, configure ...func(*Config)) operat
 	t.Helper()
 	provider := newHostedSecurityProvider()
 	plans := pilotHostedPlans()
-	cfg := Config{GitHubDisabled: true, Hosted: &HostedConfig{Plans: &plans, OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", BootstrapSubject: "user_owner", PublicURL: "http://127.0.0.1:7777", StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, Provider: provider}}
+	cfg := Config{Hosted: &HostedConfig{Plans: &plans, OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", BootstrapSubject: "user_owner", PublicURL: "http://127.0.0.1:7777", StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, Provider: provider}}
 	for _, apply := range configure {
 		apply(&cfg)
 	}

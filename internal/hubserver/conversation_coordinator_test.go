@@ -142,7 +142,7 @@ type coordinatorFixture struct {
 func newCoordinatorFixture(t *testing.T, name string, contents ...*conversationContentFixture) *coordinatorFixture {
 	t.Helper()
 	backend := newFakeCoordinatorBackend()
-	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), GitHubDisabled: true, Conversation: &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir()}}
+	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Conversation: &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir()}}
 	config.Conversation.ArchiveContents = &conversationContentFixture{}
 	if len(contents) > 0 {
 		config.Conversation.ArchiveContents = contents[0]

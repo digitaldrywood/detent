@@ -176,7 +176,7 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 	if call.Name == "get_project_integration" || call.Name == "update_project_integration" {
 		project, err := s.readProjectRecord(ctx, scope)
 		current := projectIntegrationRecord(project)
-		available := !s.config.GitHubDisabled && s.config.ReconcileBackend != nil
+		available := s.config.ReconcileBackend != nil
 		current.GitHubTransportAvailable = &available
 		if err != nil {
 			return nil, err

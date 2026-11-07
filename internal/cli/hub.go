@@ -26,7 +26,7 @@ type hubRunFunc func(context.Context, hubserver.Config) error
 func newHubCommand(opts options) *cobra.Command {
 	run := func(ctx context.Context, cfg hubserver.Config) error {
 		slog.SetDefault(cfg.Logger)
-		if cfg.GitHubDisabled {
+		if cfg.CredentialMaintenance {
 			return hubserver.Run(ctx, cfg)
 		}
 		var transport *hubgithub.Transport
@@ -36,7 +36,7 @@ func newHubCommand(opts options) *cobra.Command {
 			cfg.GitHubAppInstallation = transport.AppInstallation
 		} else {
 			if cfg.Hosted != nil {
-				return errors.New("hosted GitHub intake requires the product GitHub App credentials")
+				return hubserver.Run(ctx, cfg)
 			}
 			token, err := opts.ghAuthToken(ctx)
 			if err != nil {
@@ -118,7 +118,6 @@ func newHubCommandWithRun(version string, lookupEnv func(string) string, run hub
 func newHubServeCommand(version, commit string, lookupEnv func(string) string, run hubRunFunc) *cobra.Command {
 	var hostedConfigPath string
 	var credentialMaintenance bool
-	var githubDisabled bool
 	var databasePath string
 	var listenAddress string
 	var tlsCertificateFile string
@@ -257,7 +256,6 @@ func newHubServeCommand(version, commit string, lookupEnv func(string) string, r
 				Usage:                      usage,
 				Workspace:                  workspaces,
 				CredentialMaintenance:      credentialMaintenance,
-				GitHubDisabled:             githubDisabled || hosted != nil && (lookupEnv("DETENT_HUB_GITHUB_APP_ID") == "" || lookupEnv("DETENT_HUB_GITHUB_APP_PRIVATE_KEY") == ""),
 				DatabasePath:               databasePath,
 				ListenAddress:              listenAddress,
 				TLSCertFile:                strings.TrimSpace(tlsCertificateFile),
@@ -283,7 +281,6 @@ func newHubServeCommand(version, commit string, lookupEnv func(string) string, r
 	cmd.Flags().BoolVar(&credentialMaintenance, "credential-maintenance", false, "serve only authenticated credential administration for the bound hosted tenant on private loopback")
 	cmd.Flags().StringVar(&databasePath, "database", "", "local filesystem path to the Hub SQLite database")
 	cmd.Flags().StringVar(&hostedConfigPath, "hosted-config", "", "hosted organization and WorkOS configuration file")
-	cmd.Flags().BoolVar(&githubDisabled, "github-disabled", false, "serve native collaboration without GitHub credentials or transport")
 	cmd.Flags().StringVar(&listenAddress, "listen", hubserver.DefaultListenAddress, "Hub listen address: host:port, or unix:/absolute/path in a private directory")
 	cmd.Flags().StringVar(&tlsCertificateFile, "tls-cert", "", "TLS certificate file")
 	cmd.Flags().StringVar(&tlsKeyFile, "tls-key", "", "TLS private key file")

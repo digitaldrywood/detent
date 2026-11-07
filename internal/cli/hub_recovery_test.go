@@ -67,7 +67,7 @@ func TestHubRecoveryCommands(t *testing.T) {
 
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "hub.db")
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: path, GitHubDisabled: true})
+	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: path})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestHubRecoveryCommands(t *testing.T) {
 			}
 		})
 	}
-	service, err = hubserver.Open(t.Context(), hubserver.Config{DatabasePath: restored, GitHubDisabled: true, InitialAdminToken: []byte(token)})
+	service, err = hubserver.Open(t.Context(), hubserver.Config{DatabasePath: restored, InitialAdminToken: []byte(token)})
 	if err != nil {
 		t.Fatalf("start restored Hub without an original bootstrap principal: %v", err)
 	}

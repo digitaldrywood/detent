@@ -25,5 +25,5 @@ func HandlerClient(handler http.Handler) *http.Client {
 }
 
 var DatabasePath = testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
-	return hubserver.Open(ctx, hubserver.Config{DatabasePath: path, GitHubDisabled: true, Logger: slog.New(slog.DiscardHandler)})
+	return hubserver.Open(ctx, hubserver.Config{DatabasePath: path, Logger: slog.New(slog.DiscardHandler)})
 })
