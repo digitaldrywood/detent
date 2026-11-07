@@ -3,7 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -83,43 +83,28 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 	}
 	var records healthstore.Page
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		project, err := r.Project(ctx, scope.project)
-		if err != nil {
-			return err
-		}
-		if project.DeletedAt != nil {
-			return corestore.ErrNotFound
-		}
-		page.ChangeSequence, err = r.ProjectEventSequence(ctx, scope.project)
-		if err != nil {
-			return err
-		}
 		owner, ok := r.(healthstore.Reader)
 		if !ok {
 			return workItemStorageUnavailable()
 		}
+		var err error
 		records, err = owner.HealthFindings(ctx, scope.project, state, sinceAt, after, reporter, limit+1)
 		return err
 	})
+	if errors.Is(err, healthstore.ErrPagePending) {
+		return page, &nativeError{Code: "not_ready", Message: "Health page is being prepared", status: http.StatusServiceUnavailable, publicMessage: true}
+	}
 	if err != nil {
 		return page, err
 	}
+	page.ChangeSequence = records.ChangeSequence
 	for i, row := range records.Findings {
 		if i == limit {
 			page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(records.Findings[i-1].Sequence, 10)))
 			break
 		}
 		f := healthFinding{ID: row.ID, Fingerprint: row.Fingerprint, Signal: row.Signal, Class: row.Class, Subject: healthSubject{Kind: row.SubjectKind, ID: row.SubjectID}, OpenedAt: row.OpenedAt, LastSeenAt: row.LastSeenAt, ResolvedAt: row.ResolvedAt, Severity: row.Severity, Summary: row.Summary, NextAction: row.NextAction, EmailUnavailable: row.EmailUnavailable}
-		if row.Evidence.Key != "" {
-			raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.organization), row.Evidence)
-			if err != nil {
-				return page, err
-			}
-			if err := json.Unmarshal(raw, &f.Evidence); err != nil {
-				return page, err
-			}
-		}
-		f.Evidence = scopeHealthEvidence(f.Evidence, scope.project)
+		f.Evidence = scopeHealthEvidence(row.DisplayEvidence, scope.project)
 		for _, link := range row.Issues {
 			f.Issues = append(f.Issues, healthFindingIssue{ProjectID: link.ProjectID, WorkItemID: link.WorkItemID})
 		}

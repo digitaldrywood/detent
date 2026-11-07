@@ -2,10 +2,11 @@ package postgres
 
 import (
 	"context"
+	"time"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
-	"time"
 )
 
 func (s *session) NextHealthPage(ctx context.Context) (healthstore.Finding, error) {
@@ -58,7 +59,11 @@ func (s *session) PublishHealthPage(ctx context.Context, r healthstore.Finding, 
 	}
 	tag, err := s.db.Exec(ctx, `UPDATE health_findings SET page_event_ids=$4,page_attempt_ids=$5,page_work_item_ids=$6,page_signatures=$7,page_reason=$8,page_count_keys=$9,page_count_values=$10,page_value_keys=$11,page_value_values=$12,page_queue_keys=$13,page_queue_depths=$14,page_queue_short=$15,page_queue_long=$16,page_queue_baseline=$17,page_productivity_from=$18,page_productivity_to=$19,page_failure_stage=$20,page_last_report_at=$21,page_last_run_url=$22,page_last_green_at=$23,page_cadence_seconds=$24,page_window_seconds=$25,page_checkpoint=$3,page_projected_at=clock_timestamp()
  WHERE organization_id=$1 AND id=$2 AND page_generation=$3`, s.organization, r.ID, r.Generation, e.EventIDs, e.AttemptIDs, e.WorkItemIDs, e.Signatures, e.Reason, countKeys, countValues, valueKeys, valueValues, queueKeys, queueDepths, queueShort, queueLong, queueBaseline, productivityFrom, productivityTo, failureStage, lastReportAt, lastRunURL, lastGreenAt, cadence, window)
-	return tag.RowsAffected() == 1, mapError(ctx, err)
+	if err != nil || tag.RowsAffected() != 1 {
+		return false, mapError(ctx, err)
+	}
+	_, err = s.db.Exec(ctx, `UPDATE health_finding_projects p SET page_sequence=f.sequence FROM health_findings f WHERE p.organization_id=$1 AND p.finding_id=$2 AND f.organization_id=p.organization_id AND f.id=p.finding_id AND p.page_sequence=0`, s.organization, r.ID)
+	return err == nil, mapError(ctx, err)
 }
 
 func (s *session) AdvanceHealthPage(ctx context.Context, r healthstore.Finding) error {

@@ -30,6 +30,20 @@ func TestHealthFindingsTenantVisibilityAndCursor(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		for range 2 {
+			err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+				owner := w.(healthstore.PageMaintainer)
+				candidate, err := owner.NextHealthPage(t.Context())
+				if err != nil {
+					return err
+				}
+				_, err = owner.PublishHealthPage(t.Context(), candidate, healthstore.Evidence{})
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
 		err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 			owner, ok := r.(healthstore.Reader)
 			if !ok {

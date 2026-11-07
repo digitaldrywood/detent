@@ -2,10 +2,11 @@ package hubserver
 
 import (
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 )
 
 // Seven days follow the project's workload; twenty samples keep sparse history quiet.

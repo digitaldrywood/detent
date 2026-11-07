@@ -1,8 +1,9 @@
 package postgres
 
 import (
-	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 )
 
 const healthPageColumns = `f.sequence,f.id,f.fingerprint,f.signal,f.class,f.subject_kind,f.subject_id,f.opened_at,f.last_seen_at,f.resolved_at,f.severity,f.summary,f.next_action,f.email_unavailable,f.slack_unavailable_at,f.slack_status_code,f.page_event_ids, f.page_attempt_ids, f.page_work_item_ids, f.page_signatures, f.page_reason, f.page_count_keys, f.page_count_values, f.page_value_keys, f.page_value_values, f.page_queue_keys, f.page_queue_depths, f.page_queue_short, f.page_queue_long, f.page_queue_baseline, f.page_productivity_from, f.page_productivity_to, f.page_failure_stage, f.page_last_report_at, f.page_last_run_url, f.page_last_green_at, f.page_cadence_seconds, f.page_window_seconds,f.page_generation,f.page_checkpoint`
