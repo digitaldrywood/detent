@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -20,6 +21,16 @@ const nativeBoardReplayLimit = 2048
 const nativeBoardTrimLimit = 32
 
 func (s *Service) maintainNativeBoard(ctx context.Context) {
+	if s.database.postgres != nil {
+		tenant := hubmaintenance.Tenant{Organization: s.appOrganizationID(), Generation: 1}
+		if s.config.Hosted != nil && s.config.Hosted.SharedEntry != nil {
+			tenant.Generation = s.config.Hosted.SharedEntry.Generation
+		}
+		budget := hubmaintenance.Budget{Items: 1, Bytes: hubmaintenance.ByteLimit}
+		if _, err := s.MaintainWorkItemPage(budget.Context(ctx, tenant), tracker.OrganizationID(tenant.Organization)); err != nil && !errors.Is(err, context.Canceled) {
+			s.config.Logger.ErrorContext(ctx, "refresh work item page", "error", err)
+		}
+	}
 	if err := s.maintainTeamUnread(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.ErrorContext(ctx, "refresh team unread summary", "error", err)
 	}
