@@ -45,7 +45,7 @@ func TestAttemptEvidenceIndexMigrationResumesAfterInterruption(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, rollbackState := range []string{"existing", "already dropped"} {
-				if _, err := provider.Up(t.Context()); err != nil {
+				if _, err := provider.ApplyVersion(t.Context(), version, true); err != nil {
 					t.Fatalf("resume Up from %s: %v", state, err)
 				}
 				var valid bool

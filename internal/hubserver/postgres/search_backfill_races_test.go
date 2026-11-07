@@ -73,7 +73,7 @@ func TestSearchBackfillRejectsChangedSources(t *testing.T) {
 }
 
 func TestSearchNativeIndexMigrationResumesAfterInterruption(t *testing.T) {
-	db, _ := migrationDatabaseAtVersion(t, 20261106214333)
+	db, _ := migrationDatabaseAtVersion(t, 20261107001658)
 	if _, err := db.ExecContext(t.Context(), `RESET ROLE;
  CREATE INDEX search_document_index_words_gin ON search_document_index USING gin(word_vector);
  UPDATE pg_index SET indisvalid=false WHERE indexrelid='search_document_index_words_gin'::regclass;
@@ -104,7 +104,7 @@ func TestSearchNativeSchemaRollbackRemovesBackfillCursors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.DownTo(t.Context(), 20261106123937); err != nil {
+	if _, err := provider.DownTo(t.Context(), 20261106233256); err != nil {
 		t.Fatal(err)
 	}
 	var enabled, forced bool
