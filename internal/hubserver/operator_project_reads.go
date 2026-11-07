@@ -83,7 +83,7 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}
 		var job GitHubImport
-		job, err = readGitHubImport(ctx, s.database.reader, scope, r.ImportID)
+		job, err = s.readGitHubImportRecord(ctx, scope, r.ImportID)
 		if job.LastError != "" {
 			job.LastError = "Import transport is unavailable"
 		}
@@ -539,7 +539,7 @@ func (s *Service) readProjectImportRecords(ctx context.Context, scope nativeScop
 	if r.ImportID == "" {
 		return result, operatortool.ErrInvalidArguments
 	}
-	if _, err := readGitHubImport(ctx, s.database.reader, scope, r.ImportID); err != nil {
+	if _, err := s.readGitHubImportRecord(ctx, scope, r.ImportID); err != nil {
 		return result, err
 	}
 	after := int64(0)
@@ -554,34 +554,24 @@ func (s *Service) readProjectImportRecords(ctx context.Context, scope nativeScop
 	if limit == 0 {
 		limit = 100
 	}
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT sequence,record_json,current_dependency FROM github_import_records WHERE import_id=? AND sequence>? ORDER BY sequence LIMIT ?", r.ImportID, after, limit+1)
+	rows, err := s.readGitHubImportRecords(ctx, scope, r.ImportID, after, limit)
 	if err != nil {
 		return result, err
 	}
-	defer rows.Close()
 	var last int64
-	for rows.Next() {
-		var sequence int64
-		var raw string
-		var current bool
-		if err := rows.Scan(&sequence, &raw, &current); err != nil {
-			return result, err
-		}
-		if len(result.Records) == limit {
+	for index, row := range rows {
+		if index == limit {
 			result.NextCursor = strconv.FormatInt(last, 10)
 			break
 		}
-		var record GitHubImportRecord
-		if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		record, err := s.decodeGitHubImportRecord(ctx, row)
+		if err != nil {
 			return result, err
 		}
-		if record.Kind == "dependency" {
-			record.CurrentDependency = &current
-		}
 		result.Records = append(result.Records, record)
-		last = sequence
+		last = row.Sequence
 	}
-	return result, rows.Err()
+	return result, nil
 }
 func (s *Service) projectRepositoryFreshness(ctx context.Context, scope nativeScope) (repositoryFreshnessResponse, error) {
 	record, err := s.readProjectRecord(ctx, scope)

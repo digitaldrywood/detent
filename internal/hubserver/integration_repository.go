@@ -39,5 +39,5 @@ func (s *Service) bindNativeRepositoryCommand(ctx context.Context, scope nativeS
 	if request.Source != "" {
 		return nil, nativePublicInvalid("Repository source is invalid")
 	}
-	return nil, nativePublicInvalid("GitHub repository transport is not configured")
+	return s.bindGitHubRepositoryRecordCommand(ctx, scope, options, request)
 }

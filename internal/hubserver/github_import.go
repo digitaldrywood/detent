@@ -168,11 +168,7 @@ func (s *Service) advanceGitHubImport(c echo.Context) error {
 	return c.JSONBlob(http.StatusOK, result)
 }
 func (s *Service) advanceGitHubImportCommand(ctx context.Context, scope nativeScope, id string, revision tracker.Revision, key string) (json.RawMessage, error) {
-	return nil, nativePublicInvalid("GitHub import transport is not configured")
-}
-
-func (s *Service) fetchImportPage(ctx context.Context, integration ProjectIntegration, job GitHubImport) (GitHubImportPage, error) {
-	return GitHubImportPage{}, nativePublicInvalid("GitHub import transport is not configured")
+	return s.advanceGitHubImportRecord(ctx, scope, id, revision, key)
 }
 
 func importGitHubComment(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, record GitHubImportRecord, now time.Time) error {
