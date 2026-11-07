@@ -396,6 +396,15 @@ func boardModelCard(scope nativeScope, row viewstore.BoardRecord) (tracker.Nativ
 		issue.Dependencies, issue.Blockers, issue.Dependents, issue.Related = facts.Dependencies, facts.Blockers, facts.Dependents, facts.Related
 		issue.DependencyReady, issue.BlockedReason, issue.UnblocksReason = facts.DependencyReady, facts.BlockedReason, facts.UnblocksReason
 	}
+	issue = boardIssueCollections(issue)
+	card := tracker.NativeBoardCard{Issue: issue, StatusLine: row.Display.StatusLine, Attempt: row.Display.Attempt, Execution: row.Display.Execution, Change: row.Display.Change}
+	if !scope.reporterOwns(tracker.Actor{PrincipalID: row.Display.ChangePrincipalID}) {
+		card.Change = nil
+	}
+	return card, nil
+}
+
+func boardIssueCollections(issue tracker.NativeIssue) tracker.NativeIssue {
 	for _, values := range []*[]string{&issue.Labels, &issue.Assignees} {
 		if *values == nil {
 			*values = []string{}
@@ -412,11 +421,7 @@ func boardModelCard(scope nativeScope, row viewstore.BoardRecord) (tracker.Nativ
 	if issue.ExternalReferences == nil {
 		issue.ExternalReferences = []tracker.ExternalReference{}
 	}
-	card := tracker.NativeBoardCard{Issue: issue, StatusLine: row.Display.StatusLine, Attempt: row.Display.Attempt, Execution: row.Display.Execution, Change: row.Display.Change}
-	if !scope.reporterOwns(tracker.Actor{PrincipalID: row.Display.ChangePrincipalID}) {
-		card.Change = nil
-	}
-	return card, nil
+	return issue
 }
 
 func laneSelected(state string, selection viewstore.BoardSelection, states []policy.State) bool {
