@@ -142,7 +142,7 @@ func TestConversationPostgresWorkerHandlersUseFencedTenantState(t *testing.T) {
 	originalClock := f.service.config.now
 	f.service.config.now = func() time.Time { return currentLease.RenewedAt.Add(-time.Second) }
 	futureRenewal := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-		_, _, err := f.service.authorizeConversationWorkerLeasePG(t.Context(), r, scope, string(issue.NativeID), identity, "run-pg-worker", false)
+		_, _, err := f.service.authorizeConversationWorkerLeasePG(t.Context(), r, scope, string(issue.NativeID), identity, "run-pg-worker", false, false)
 		return err
 	})
 	f.service.config.now = originalClock

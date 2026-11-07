@@ -46,7 +46,10 @@ func (s *Service) authorizeConversationWorkerPG(ctx context.Context, reader tena
 	if err := requireConversationRecordOwner(record, identity, allowReleased); err != nil {
 		return leasestore.Lease{}, err
 	}
-	lease, attempt, err := s.authorizeConversationWorkerLeasePG(ctx, reader, scope, record.WorkItemID, identity, runID, allowReleased)
+	if runID == "" {
+		runID = record.Execution.Owner.RunID
+	}
+	lease, attempt, err := s.authorizeConversationWorkerLeasePG(ctx, reader, scope, record.WorkItemID, identity, runID, allowReleased, record.Execution.Status == conversation.ExecutionStarting)
 	if err != nil {
 		return leasestore.Lease{}, err
 	}
@@ -56,7 +59,7 @@ func (s *Service) authorizeConversationWorkerPG(ctx context.Context, reader tena
 	return lease, nil
 }
 
-func (s *Service) authorizeConversationWorkerLeasePG(ctx context.Context, reader tenantstore.Reader, scope nativeScope, itemID string, identity conversationWorkerIdentity, runID string, allowReleased bool) (leasestore.Lease, leasestore.Attempt, error) {
+func (s *Service) authorizeConversationWorkerLeasePG(ctx context.Context, reader tenantstore.Reader, scope nativeScope, itemID string, identity conversationWorkerIdentity, runID string, allowReleased, allowUnstarted bool) (leasestore.Lease, leasestore.Attempt, error) {
 	if scope.credential.Scope != apiScopeWorker || scope.credential.Runner.RunnerID == "" || !scope.credential.Runner.Valid() || scope.credential.Runner.OrganizationID != scope.organization {
 		return leasestore.Lease{}, leasestore.Attempt{}, conversationWorkerAuthorityUnavailable()
 	}
@@ -93,15 +96,15 @@ func (s *Service) authorizeConversationWorkerLeasePG(ctx context.Context, reader
 		return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The lease is no longer current")
 	}
 	attempt, err := reader.Attempt(ctx, identity.AttemptID)
-	if errors.Is(err, corestore.ErrNotFound) && runID != "" && !allowReleased {
+	if errors.Is(err, corestore.ErrNotFound) && allowUnstarted && !allowReleased && validNativeID(runID, "run") && validNativeID(identity.AttemptID, "attempt") {
 		latest, latestErr := reader.LatestAttempt(ctx, item.ID)
-		if errors.Is(latestErr, corestore.ErrNotFound) || latestErr == nil && latest.LeaseID != lease.LeaseID {
-			return lease, leasestore.Attempt{}, nil
-		}
-		if latestErr != nil {
+		if latestErr != nil && !errors.Is(latestErr, corestore.ErrNotFound) {
 			return leasestore.Lease{}, leasestore.Attempt{}, latestErr
 		}
-		return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The lease is already owned by an attempt")
+		if latestErr == nil && latest.LeaseID == lease.LeaseID {
+			return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The lease is already bound to another attempt")
+		}
+		return lease, leasestore.Attempt{OrganizationID: scope.organization, ID: identity.AttemptID, IssueID: item.ID, LeaseID: lease.LeaseID, FencingToken: lease.FencingToken, RunID: runID, Status: "running"}, nil
 	}
 	if err != nil {
 		return leasestore.Lease{}, leasestore.Attempt{}, err

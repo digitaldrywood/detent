@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -48,7 +49,7 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 		if item.Archived {
 			return nativeNotFound()
 		}
-		if _, _, err := s.authorizeConversationWorkerLeasePG(ctx, reader, scope, itemID, request.conversationWorkerIdentity, request.RunID, false); err != nil {
+		if _, _, err := s.authorizeConversationWorkerLeasePG(ctx, reader, scope, itemID, request.conversationWorkerIdentity, request.RunID, false, true); err != nil {
 			return err
 		}
 		stored, err := reader.ConversationByWorkItem(ctx, scope.project, itemID)
@@ -124,7 +125,22 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 		if err := s.authorizeAccessScope(ctx, writer, scope, false); err != nil {
 			return err
 		}
-		if _, _, err := s.authorizeConversationWorkerLeasePG(ctx, writer, scope, itemID, request.conversationWorkerIdentity, request.RunID, false); err != nil {
+		if err := writer.LockWorkItemProject(ctx, scope.project); err != nil {
+			return err
+		}
+		if _, err := writer.LockWorkItem(ctx, scope.project, tracker.NativeWorkItemID(itemID)); err != nil {
+			return fmt.Errorf("lock bind item: %w", err)
+		}
+		locker, ok := writer.(interface {
+			LockLease(context.Context, string) (leasestore.Lease, error)
+		})
+		if !ok {
+			return conversationWorkerAuthorityUnavailable()
+		}
+		if _, err := locker.LockLease(ctx, string(request.LeaseID)); err != nil {
+			return fmt.Errorf("lock bind lease: %w", err)
+		}
+		if _, _, err := s.authorizeConversationWorkerLeasePG(ctx, writer, scope, itemID, request.conversationWorkerIdentity, request.RunID, false, true); err != nil {
 			return err
 		}
 		var stored conversationstore.Conversation
@@ -348,7 +364,7 @@ func (r *conversationWorkerRouter) unbindPostgres(e echo.Context, request conver
 			return fmt.Errorf("lock conversation for unbind: %w", err)
 		}
 		record = conversationRecordFromStore(stored)
-		if _, _, err := s.authorizeConversationWorkerLeasePG(ctx, writer, scope, itemID, request.conversationWorkerIdentity, "", true); err != nil {
+		if _, _, err := s.authorizeConversationWorkerLeasePG(ctx, writer, scope, itemID, request.conversationWorkerIdentity, "", true, false); err != nil {
 			return fmt.Errorf("verify worker lease for unbind: %w", err)
 		}
 		if err := requireConversationRecordOwner(record, request.conversationWorkerIdentity, true); err != nil {
