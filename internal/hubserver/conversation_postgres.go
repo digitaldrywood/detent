@@ -86,14 +86,25 @@ func (s *Service) authorizeConversationWorkerLeasePG(ctx context.Context, reader
 	if err != nil {
 		return leasestore.Lease{}, leasestore.Attempt{}, err
 	}
-	attempt, err := reader.Attempt(ctx, identity.AttemptID)
-	if errors.Is(err, corestore.ErrNotFound) && runID != "" && validNativeID(runID, "run") && validNativeID(identity.AttemptID, "attempt") {
-		attempt = leasestore.Attempt{OrganizationID: scope.organization, ID: identity.AttemptID, IssueID: item.ID, LeaseID: lease.LeaseID, FencingToken: lease.FencingToken, RunID: runID, Status: "running"}
-	} else if err != nil {
-		return leasestore.Lease{}, leasestore.Attempt{}, err
-	}
 	if lease.OrganizationID != scope.organization || lease.MachineID != string(scope.credential.Runner.MachineID) || lease.IssueID != item.ID || lease.FencingToken != int64(identity.FencingToken) {
 		return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The lease does not belong to this worker and work item")
+	}
+	if lease.RenewedAt.After(now) || !allowReleased && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now)) {
+		return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The lease is no longer current")
+	}
+	attempt, err := reader.Attempt(ctx, identity.AttemptID)
+	if errors.Is(err, corestore.ErrNotFound) && runID != "" && !allowReleased {
+		latest, latestErr := reader.LatestAttempt(ctx, item.ID)
+		if errors.Is(latestErr, corestore.ErrNotFound) || latestErr == nil && latest.LeaseID != lease.LeaseID {
+			return lease, leasestore.Attempt{}, nil
+		}
+		if latestErr != nil {
+			return leasestore.Lease{}, leasestore.Attempt{}, latestErr
+		}
+		return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The lease is already owned by an attempt")
+	}
+	if err != nil {
+		return leasestore.Lease{}, leasestore.Attempt{}, err
 	}
 	if attempt.OrganizationID != scope.organization || attempt.IssueID != item.ID || attempt.LeaseID != string(identity.LeaseID) || attempt.FencingToken != int64(identity.FencingToken) || (runID != "" && attempt.RunID != runID) {
 		return leasestore.Lease{}, leasestore.Attempt{}, conversationStale("The attempt is not the current work item owner")
