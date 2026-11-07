@@ -1,5 +1,8 @@
 {
   "tables": {
+    "project_onboarding_page_access": {"class": "hot_state"},
+    "project_onboarding_page_viewers": {"class": "hot_state"},
+    "project_onboarding_pages": {"class": "page_read_model", "scope": "project", "retention": "current onboarding view per authorized viewer; rebuilt by hubmaintenance; deleted with the project or expired audience"},
     "project_integration_page_progress": {"class": "hot_state"},
     "project_integration_pages": {"class": "page_read_model", "scope": "project", "retention": "current project integration; replay from project settings and immutable workflow"},
     "project_integration_page_states": {"class": "page_read_model", "scope": "project", "retention": "current integration workflow state display"},
