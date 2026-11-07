@@ -20,8 +20,11 @@ type boardRecordPreparation struct {
 	errors  []error
 }
 
+type boardRecordWorkerContextKey struct{}
+
 func prepareBoardRecordPage(ctx context.Context, records []viewstore.BoardRecord, prepare func(context.Context, viewstore.BoardRecord) (tracker.NativeBoardCard, error)) *boardRecordPreparation {
 	ctx, cancel := context.WithCancel(ctx)
+	workerContext, hasWorkerContext := ctx.Value(boardRecordWorkerContextKey{}).(func(context.Context) (context.Context, func()))
 	p := &boardRecordPreparation{cancel: cancel, ready: make([]chan struct{}, len(records)), cards: make([]tracker.NativeBoardCard, len(records)), errors: make([]error, len(records))}
 	for index := range p.ready {
 		p.ready[index] = make(chan struct{})
@@ -30,6 +33,12 @@ func prepareBoardRecordPage(ctx context.Context, records []viewstore.BoardRecord
 	next := 0
 	for range min(8, len(records)) {
 		p.workers.Go(func() {
+			workerCtx := ctx
+			if hasWorkerContext {
+				var finish func()
+				workerCtx, finish = workerContext(ctx)
+				defer finish()
+			}
 			for {
 				mu.Lock()
 				if ctx.Err() != nil || next == len(records) {
@@ -39,7 +48,7 @@ func prepareBoardRecordPage(ctx context.Context, records []viewstore.BoardRecord
 				index := next
 				next++
 				mu.Unlock()
-				p.cards[index], p.errors[index] = prepare(ctx, records[index])
+				p.cards[index], p.errors[index] = prepare(workerCtx, records[index])
 				close(p.ready[index])
 			}
 		})

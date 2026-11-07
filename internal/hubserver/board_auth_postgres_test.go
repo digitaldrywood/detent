@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,9 +21,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -150,8 +155,17 @@ func TestPostgresBrowserWorkListConcurrentRequests(t *testing.T) {
 				}
 			}
 			scope := nativeScope{organization: org, project: project.Core.ID, credential: apiCredential{ID: "principal", Hash: "principal_hash", SessionHash: claims.Binding, Scope: apiScopeOperator, NativeOnly: true, Hosted: &auth.HostedIdentity{Subject: claims.Subject}, HostedRole: claims.Role, HostedMembership: "membership_example"}}
+			barrier := &boardSessionBarrier{firstInside: make(chan struct{}), secondDone: make(chan struct{})}
+			t.Cleanup(barrier.release)
+			tenantRepository := service.config.TenantRepository
+			service.config.TenantRepository = boardSessionRepository{Repository: tenantRepository, barrier: barrier}
 			if err := repository.ReadRequest(t.Context(), org, func(ctx context.Context) error {
-				preparation := service.prepareBoardPage(ctx, scope, records, now, true, map[tracker.NativeWorkItemID]boardPreparedRecord{})
+				prepared := service.hydrateBoardRecords(ctx, scope, records)
+				ctx = context.WithValue(ctx, boardRecordWorkerContextKey{}, func(ctx context.Context) (context.Context, func()) {
+					barrier.workers.Add(1)
+					return context.WithValue(ctx, boardSessionWorkerKey{}, true), barrier.release
+				})
+				preparation := service.prepareBoardPage(ctx, scope, records, now, true, prepared)
 				defer preparation.close()
 				for index := range records {
 					card, err := preparation.card(ctx, index)
@@ -164,8 +178,16 @@ func TestPostgresBrowserWorkListConcurrentRequests(t *testing.T) {
 				}
 				return nil
 			}); err != nil {
-				t.Fatal(err)
+				t.Errorf("shared-request card preparation: %v", err)
 			}
+			service.config.TenantRepository = tenantRepository
+			if got := barrier.workers.Load(); got != 2 {
+				t.Errorf("instrumented card workers=%d, want 2", got)
+			}
+			if got := barrier.calls.Load(); got != 0 {
+				t.Errorf("card workers made %d session database calls; overlapping open results=%t", got, barrier.overlap.Load())
+			}
+			t.Logf("tenant=%s instrumented_workers=%d worker_session_calls=%d overlapping_open_results=%t", org, barrier.workers.Load(), barrier.calls.Load(), barrier.overlap.Load())
 			start := make(chan struct{})
 			results := make(chan *httptest.ResponseRecorder, 20)
 			var workers sync.WaitGroup
@@ -201,4 +223,74 @@ func TestPostgresBrowserWorkListConcurrentRequests(t *testing.T) {
 			}
 		})
 	}
+}
+
+type boardSessionWorkerKey struct{}
+
+type boardSessionBarrier struct {
+	firstInside chan struct{}
+	secondDone  chan struct{}
+	finish      sync.Once
+	workers     atomic.Int32
+	calls       atomic.Int32
+	overlap     atomic.Bool
+}
+
+func (b *boardSessionBarrier) release() { b.finish.Do(func() { close(b.secondDone) }) }
+
+type boardSessionRepository struct {
+	tenantstore.Repository
+	barrier *boardSessionBarrier
+}
+
+func (r boardSessionRepository) ReadTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	if worker, _ := ctx.Value(boardSessionWorkerKey{}).(bool); !worker {
+		return r.Repository.ReadTenant(ctx, org, workload, read)
+	}
+	return r.Repository.ReadTenant(ctx, org, workload, func(reader tenantstore.Reader) error {
+		audit, ok := reader.(eventstore.AuditDispositionReader)
+		if !ok {
+			return fmt.Errorf("fixture reader lacks audit dispositions")
+		}
+		return read(boardSessionReader{Reader: reader, AuditDispositionReader: audit, barrier: r.barrier})
+	})
+}
+
+type boardSessionReader struct {
+	tenantstore.Reader
+	eventstore.AuditDispositionReader
+	barrier *boardSessionBarrier
+}
+
+func (r boardSessionReader) AuthorizeAccess(ctx context.Context, authority accessstore.Authority, now time.Time) (accessstore.Member, error) {
+	b := r.barrier
+	switch b.calls.Add(1) {
+	case 1:
+		var held sync.Once
+		ctx = postgres.WithTransactionTiming(ctx, nil, func(_ time.Time, query string) {
+			if !strings.Contains(query, "FROM hosted_sessions") {
+				return
+			}
+			held.Do(func() {
+				close(b.firstInside)
+				select {
+				case <-b.secondDone:
+				case <-ctx.Done():
+				}
+			})
+		})
+	case 2:
+		defer b.release()
+		select {
+		case <-b.firstInside:
+		case <-b.secondDone:
+			return accessstore.Member{}, fmt.Errorf("first card worker ended before opening its session query")
+		case <-ctx.Done():
+			return accessstore.Member{}, ctx.Err()
+		}
+		row, err := r.Reader.AuthorizeAccess(ctx, authority, now)
+		b.overlap.Store(errors.Is(err, pgtransport.ErrOpenResults))
+		return row, err
+	}
+	return r.Reader.AuthorizeAccess(ctx, authority, now)
 }
