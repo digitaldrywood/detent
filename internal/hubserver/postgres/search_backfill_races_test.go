@@ -96,7 +96,7 @@ func TestSearchNativeIndexMigrationResumesAfterInterruption(t *testing.T) {
 }
 
 func TestSearchNativeSchemaRollbackRemovesBackfillCursors(t *testing.T) {
-	db := template.Database(t)
+	db, _ := migrationDatabaseAtVersion(t, 20261107001703)
 	if _, err := db.ExecContext(t.Context(), `INSERT INTO storage_conversion_cursors(organization_id,family) VALUES('org_first','search'),('org_second','search'); SET ROLE detent_migration_v2`); err != nil {
 		t.Fatal(err)
 	}

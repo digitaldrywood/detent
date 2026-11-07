@@ -10,6 +10,7 @@ import (
 )
 
 func TestShellPageIndexesBuildOnlineAndRecoverInvalidAttempts(t *testing.T) {
+	const migrationVersion = 20261107060935
 	db, _ := migrationDatabaseAtVersion(t, 20261107051229)
 	db.SetMaxOpenConns(1)
 	seedCore(t, db)
@@ -35,7 +36,7 @@ func TestShellPageIndexesBuildOnlineAndRecoverInvalidAttempts(t *testing.T) {
 	if _, err := db.ExecContext(t.Context(), "SET ROLE detent_migration_v2"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.Up(t.Context()); err != nil {
+	if _, err := provider.UpTo(t.Context(), migrationVersion); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(t.Context(), "RESET ROLE"); err != nil {
@@ -77,14 +78,14 @@ func TestShellPageIndexesBuildOnlineAndRecoverInvalidAttempts(t *testing.T) {
 		}
 	}
 	assertIndexes(t)
-	if applied, err := provider.Up(t.Context()); err != nil || len(applied) != 0 {
+	if applied, err := provider.UpTo(t.Context(), migrationVersion); err != nil || len(applied) != 0 {
 		t.Fatalf("repeat versioned Up applied=%d error=%v", len(applied), err)
 	}
 	if _, err := provider.Down(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	assertIndexes(t)
-	if _, err := provider.Up(t.Context()); err != nil {
+	if _, err := provider.UpTo(t.Context(), migrationVersion); err != nil {
 		t.Fatal(err)
 	}
 	assertIndexes(t)

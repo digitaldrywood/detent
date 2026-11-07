@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -140,15 +141,21 @@ func TestWorkItemDeletionRetainsHistoryAndReceipts(t *testing.T) {
 
 func TestWorkItemDeletionRetainsMigratedIdentities(t *testing.T) {
 	const migrationVersion = 20261107060339
-	admin := template.Database(t)
+	admin, fixture := migrationDatabaseAtVersion(t, migrationVersion-1)
 	provider, err := migrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.DownTo(t.Context(), migrationVersion-1); err != nil {
+	pool := rolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
+	repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
+	if err != nil {
 		t.Fatal(err)
 	}
-	repository, _ := repositoryFor(t, admin, smallPool())
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedRepository(t, repository, org)
 	}
@@ -370,15 +377,21 @@ func TestWorkItemDeletionRemovesOnlyLiveAttachmentReferences(t *testing.T) {
 
 func TestRetainedIdentityMigrationIncludesConcurrentIssueCreation(t *testing.T) {
 	const migrationVersion = 20261107060339
-	admin := template.Database(t)
+	admin, fixture := migrationDatabaseAtVersion(t, migrationVersion-1)
 	provider, err := migrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.DownTo(t.Context(), migrationVersion-1); err != nil {
+	pool := rolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
+	repository, err := postgres.NewRepository(t.Context(), pool, smallPool())
+	if err != nil {
 		t.Fatal(err)
 	}
-	repository, _ := repositoryFor(t, admin, smallPool())
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	admin.SetMaxOpenConns(2)
 	seedRepository(t, repository, "org_first")
 	inserted, release := make(chan struct{}), make(chan struct{})
