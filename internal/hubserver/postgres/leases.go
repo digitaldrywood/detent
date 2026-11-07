@@ -251,6 +251,18 @@ func (s *session) Claim(ctx context.Context, request leasestore.Claim) (leasesto
 	return leasestore.Lease(row), s.heartbeat(ctx, row.MachineID, now)
 }
 
+func (s *session) AdvanceLeaseWorkItemRevision(ctx context.Context, fence leasestore.Fence, issueID, previous, next int64) error {
+	if fence.LeaseID == "" || fence.FencingToken <= 0 || issueID <= 0 || previous <= 0 || next <= previous || next != previous+1 {
+		return tracker.ErrInvalidLeaseRequest
+	}
+	_, err := s.db.Exec(ctx, `UPDATE leases SET work_item_revision=$6
+ WHERE organization_id=$1 AND lease_id=$2 AND fencing_token=$3 AND issue_id=$4
+ AND work_item_revision=$5 AND released_at IS NULL AND expires_at>clock_timestamp()
+ AND NOT EXISTS (SELECT 1 FROM native_attempts WHERE organization_id=$1 AND lease_id=$2)`,
+		s.organization, fence.LeaseID, fence.FencingToken, issueID, previous, next)
+	return mapError(ctx, err)
+}
+
 func (s *session) LockLease(ctx context.Context, leaseID string) (leasestore.Lease, error) {
 	if strings.TrimSpace(leaseID) == "" {
 		return leasestore.Lease{}, tracker.ErrLeaseNotFound

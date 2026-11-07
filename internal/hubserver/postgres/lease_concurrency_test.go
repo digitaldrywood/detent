@@ -227,12 +227,14 @@ func TestLeaseMutationsUseOneStatement(t *testing.T) {
         SELECT $1,'history_'||n,2,'machine_2','history_'||n,1,now()-interval '2 hours',now()-interval '2 hours',now()-interval '1 hour',now()-interval '1 hour','expired' FROM generate_series(1,$2::integer) n`, org, historySize); err != nil {
 			t.Fatal(err)
 		}
-		for _, operation := range []string{"renew", "release", "expire"} {
+		for _, operation := range []string{"renew", "release", "expire", "revision"} {
 			t.Run(string(org)+"/"+operation, func(t *testing.T) {
 				request := leaseClaim(1)
 				request.LeaseID, request.SessionID = operation, operation
 				lease := claimLease(t, repository, org, request)
-				recordLeaseAttempt(t, repository, org, attemptEvent(lease))
+				if operation != "revision" {
+					recordLeaseAttempt(t, repository, org, attemptEvent(lease))
+				}
 				if operation == "expire" {
 					expireLeaseFixture(t, admin, org, lease.LeaseID)
 				}
@@ -243,6 +245,8 @@ func TestLeaseMutationsUseOneStatement(t *testing.T) {
 					case "renew":
 						_, err := w.Renew(t.Context(), leaseFence(lease), time.Hour)
 						return err
+					case "revision":
+						return w.AdvanceLeaseWorkItemRevision(t.Context(), leaseFence(lease), lease.IssueID, 1, 2)
 					case "release":
 						_, err := w.Release(t.Context(), leaseFence(lease), "released")
 						return err
@@ -261,7 +265,47 @@ func TestLeaseMutationsUseOneStatement(t *testing.T) {
 				if got := counter.count.Load(); got != 2 {
 					t.Errorf("statements including tenant binding = %d, want 2", got)
 				}
-				if operation == "renew" {
+				if operation == "revision" {
+					if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+						for _, mismatch := range []struct {
+							fence                 leasestore.Fence
+							issue, previous, next int64
+						}{
+							{leaseFence(lease), lease.IssueID, 3, 4},
+							{leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken + 1}, lease.IssueID, 2, 3},
+							{leaseFence(lease), 2, 2, 3},
+						} {
+							if err := w.AdvanceLeaseWorkItemRevision(t.Context(), mismatch.fence, mismatch.issue, mismatch.previous, mismatch.next); err != nil {
+								return err
+							}
+						}
+						if err := w.AdvanceLeaseWorkItemRevision(t.Context(), leaseFence(lease), lease.IssueID, 2, 4); !errors.Is(err, tracker.ErrInvalidLeaseRequest) {
+							t.Errorf("revision jump=%v", err)
+						}
+						current, err := w.Lease(t.Context(), lease.LeaseID)
+						if err == nil && (current.WorkItemRevision != 2 || current.FencingToken != lease.FencingToken) {
+							t.Errorf("revision advancement lost fence: %+v", current)
+						}
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					lease.WorkItemRevision = 2
+					recordLeaseAttempt(t, repository, org, attemptEvent(lease))
+					if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+						if err := w.AdvanceLeaseWorkItemRevision(t.Context(), leaseFence(lease), lease.IssueID, 2, 3); err != nil {
+							return err
+						}
+						current, err := w.Lease(t.Context(), lease.LeaseID)
+						if err == nil && current.WorkItemRevision != 2 {
+							t.Errorf("started attempt revision changed: %+v", current)
+						}
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if operation == "renew" || operation == "revision" {
 					if err := repository.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
 						_, err := w.Release(t.Context(), leaseFence(lease), "released")
 						return err

@@ -404,6 +404,11 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 			if err := writeWorkItemRecord(ctx, w, plan, fields); err != nil {
 				return err
 			}
+			if !human {
+				if err := w.AdvanceLeaseWorkItemRevision(ctx, leasestore.Fence{LeaseID: string(request.LeaseID), FencingToken: int64(request.FencingToken)}, locked.ID, locked.Revision, int64(issue.Revision)); err != nil {
+					return err
+				}
+			}
 			if human && previousState != request.State && dispatchableProjectState(currentProject, request.State) {
 				if s.config.ConversationDispatch == nil {
 					return conversationDispatchUnavailable()

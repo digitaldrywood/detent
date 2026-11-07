@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -21,6 +22,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -723,5 +726,166 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	var logs bytes.Buffer
+	service := openPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
+	service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
+	for _, name := range []string{"First example organization", "Second example organization"} {
+		organization, err := service.createNativeOrganizationFor(t.Context(), name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Run(string(organization.ID), func(t *testing.T) {
+			seedPostgresHubAdmin(t, repository, service, organization)
+			service.localOrganization = string(organization.ID)
+			projectPath := "/api/v2/organizations/" + string(organization.ID) + "/projects"
+			response := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{"idempotency_key": "fence-project", "name": "Example project", "grant_access": true, "states": nativeFixtureStates()})
+			requireNativeStatus(t, response, http.StatusCreated)
+			var project tracker.NativeProject
+			decodeHubResponse(t, response, &project)
+			base := projectPath + "/" + string(project.ID)
+			now := service.config.now().UTC().Truncate(time.Microsecond)
+			expires := now.Add(time.Hour)
+			policy, err := eventstore.NewContent(service.runDetailStore()).PrepareProjectPolicy(t.Context(), organization.ID, hubTestPolicy())
+			if err != nil {
+				t.Fatal(err)
+			}
+			policy.ProjectID, policy.ApprovedBy, policy.ApprovedAt = project.ID, "test_hub_admin", now
+			binding := runnerauth.NewBinding()
+			token := "example_runner_" + string(organization.ID)
+			credential := "credential_" + binding.RunnerID
+			enrollment := "enrollment_" + binding.RunnerID
+			hash := apikey.HashToken(token)
+			operations := []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}
+			err = repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.ApproveProjectPolicy(t.Context(), policy, ""); err != nil {
+					return err
+				}
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: credential, Name: "Example runner", Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: credential, ProjectID: project.ID}); err != nil {
+					return err
+				}
+				if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization.ID, ID: enrollment, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenHash: apikey.HashToken("example_enrollment_" + binding.RunnerID), Scope: "projects", ProjectIDs: []tracker.ProjectID{project.ID}, Operations: operations, CreatedAt: now, ExpiresAt: expires, CreatedBy: "test_hub_admin"}); err != nil {
+					return err
+				}
+				if err := w.RedeemRunnerEnrollment(t.Context(), enrollment, binding.RunnerID, binding.MachineID, now); err != nil {
+					return err
+				}
+				if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: string(binding.MachineID), Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
+					return err
+				}
+				if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenID: credential, EnrollmentID: enrollment, Scope: "projects", State: "active", Operations: operations, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
+					return err
+				}
+				return w.UpdateRunnerCapacityConfig(t.Context(), binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: now})
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, scenario := range []string{"renew only", "dispatch start", "intervening edit"} {
+				t.Run(scenario, func(t *testing.T) {
+					response := performHubAPIRequest(t, service, http.MethodPost, base+"/work-items", testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: scenario}, Title: "Example issue", Body: workItemRecordBody, State: "Todo"})
+					requireNativeStatus(t, response, http.StatusOK)
+					var issue tracker.NativeIssue
+					decodeHubResponse(t, response, &issue)
+					path := base + "/work-items/" + string(issue.WorkItemID)
+					claim := tracker.NativeClaim{PolicyID: policy.PolicyID, WorkItemID: issue.WorkItemID, MachineID: binding.MachineID, SessionID: newNativeID("session"), TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}
+					response = performHubAPIRequest(t, service, http.MethodPost, base+"/claims", token, claim)
+					requireNativeStatus(t, response, http.StatusOK)
+					var lease tracker.NativeLease
+					decodeHubResponse(t, response, &lease)
+					for range 2 {
+						response = performHubAPIRequest(t, service, http.MethodPost, base+"/leases/"+string(lease.ID)+"/renew", token, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 300})
+						requireNativeStatus(t, response, http.StatusOK)
+						var renewed tracker.NativeLease
+						decodeHubResponse(t, response, &renewed)
+						if renewed.FencingToken != lease.FencingToken {
+							t.Fatal("renew changed the acquisition fence")
+						}
+					}
+					if scenario == "intervening edit" {
+						issue.Revision++
+						issue.Title = "Updated example issue"
+						raw, err := json.Marshal(issue)
+						if err != nil {
+							t.Fatal(err)
+						}
+						version, err := eventstore.NewContent(service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: organization.ID, ProjectID: project.ID, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(issue.Revision)}, raw)
+						if err != nil {
+							t.Fatal(err)
+						}
+						document, err := searchstore.NewContent(service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: organization.ID, ProjectID: project.ID, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: now}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+							item, err := w.WorkItem(t.Context(), project.ID, issue.WorkItemID)
+							if err != nil {
+								return err
+							}
+							item.Title = issue.Title
+							if _, err = w.UpdateWorkItem(t.Context(), item); err != nil {
+								return err
+							}
+							if _, err = w.CreateCollaborationVersion(t.Context(), version); err != nil {
+								return err
+							}
+							return w.PutSearch(t.Context(), document, int64(issue.Revision)-1)
+						}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if scenario != "renew only" {
+						transition := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "dispatch-start", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ExpectedRevision: issue.Revision, State: "In Progress", Reason: "worker_progress", ReasonDetail: "dispatch start"}
+						response = performHubAPIRequest(t, service, http.MethodPost, path+"/workflow", token, transition)
+						requireNativeStatus(t, response, http.StatusOK)
+						replay := performHubAPIRequest(t, service, http.MethodPost, path+"/workflow", token, transition)
+						requireNativeStatus(t, replay, http.StatusOK)
+						if !bytes.Equal(response.Body.Bytes(), replay.Body.Bytes()) {
+							t.Fatal("workflow replay changed response")
+						}
+					}
+					start := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "first-event"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: policy.PolicyID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "example-backend", Model: "example-model"}}}
+					stale := start
+					stale.IdempotencyKey = "stale-event"
+					stale.Data.FencingToken++
+					response = performHubAPIRequest(t, service, http.MethodPost, path+"/events", token, stale)
+					requireNativeStatus(t, response, http.StatusConflict)
+					if !strings.Contains(response.Body.String(), "stale_fencing_token") {
+						t.Fatalf("stale refusal=%s", response.Body.String())
+					}
+					logs.Reset()
+					response = performHubAPIRequest(t, service, http.MethodPost, path+"/events", token, start)
+					want := http.StatusOK
+					if scenario == "intervening edit" {
+						want = http.StatusConflict
+						if !strings.Contains(response.Body.String(), "stale_fencing_token") || !strings.Contains(logs.String(), `"fence_check":"dispatch_revision"`) {
+							t.Errorf("unrelated edit lost revision fence: body=%s logs=%s", response.Body.String(), logs.String())
+						}
+					}
+					if response.Code != want {
+						t.Errorf("first event after %s status=%d want=%d body=%s logs=%s", scenario, response.Code, want, response.Body.String(), logs.String())
+					}
+					if scenario == "dispatch start" && response.Code == http.StatusOK {
+						next := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "after-start", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ExpectedRevision: issue.Revision + 1, State: "Todo", Reason: "worker_progress"}
+						requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/workflow", token, next), http.StatusOK)
+					}
+					response = performHubAPIRequest(t, service, http.MethodPost, base+"/leases/"+string(lease.ID)+"/release", token, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"})
+					requireNativeStatus(t, response, http.StatusNoContent)
+					start.IdempotencyKey = "released-event"
+					response = performHubAPIRequest(t, service, http.MethodPost, path+"/events", token, start)
+					requireNativeStatus(t, response, http.StatusConflict)
+					if !strings.Contains(response.Body.String(), "stale_fencing_token") {
+						t.Fatalf("released lease refusal=%s", response.Body.String())
+					}
+				})
+			}
+		})
 	}
 }
