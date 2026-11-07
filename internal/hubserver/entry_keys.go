@@ -154,6 +154,12 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 		return false, err
 	}
 	switch name {
+	case operatortool.Activity, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting:
+		definitions, err := (hubFleetExecutor{service: s}).ListTools(ctx)
+		return entryKeyHasDefinition(definitions, name), err
+	case "project_setup", "get_onboarding", "get_git_hub_batch", "get_project_integration", "rename_project", "update_project_integration", operatortool.GetProjectModelSelection, operatortool.UpdateProjectModelSelection, operatortool.RunnerProjectDiagnostics:
+		definitions, err := (hubProjectExecutor{service: s}).ListTools(ctx)
+		return entryKeyHasDefinition(definitions, name), err
 	case operatortool.WorkList, operatortool.WorkItem, operatortool.HealthFindings, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.WorkBulkExport, operatortool.BoardActivity:
 		_, found := entryKeyDefinition(operatortool.WorkReadCatalog(), name)
 		return found && catalog.credential.HostedRole != "account", nil
@@ -239,6 +245,8 @@ func entryKeyToolSupported(name string) bool {
 		return true
 	}
 	switch name {
+	case "project_setup", "get_onboarding", "get_git_hub_batch", "get_project_integration", "rename_project", "update_project_integration", operatortool.GetProjectModelSelection, operatortool.UpdateProjectModelSelection, operatortool.RunnerProjectDiagnostics, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting, operatortool.Activity:
+		return true
 	case operatortool.EditComment, operatortool.RestoreItem, operatortool.HealthFindings, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.WorkBulkExport, operatortool.BoardActivity:
 		return true
 	case "list_projects", "get_native_project", "get_project_policy", operatortool.WorkList, operatortool.WorkItem, operatortool.AppUpdates, operatortool.AppBootstrapPayload, operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.SetDependency, operatortool.ListComments, operatortool.ListChanges, operatortool.CreateChange, operatortool.PublishChangeVersion, operatortool.ReviewChange, "list_threads", "get_thread", "create_thread", "post_to_thread", "resolve_thread":
@@ -487,5 +495,5 @@ func entryKeyWorkspaceTool(name string) bool {
 	if _, err := operatortool.WorkspaceDefinition(name); err != nil {
 		return false
 	}
-	return strings.Contains(name, "conversation") || name == "list_work_item_references"
+	return strings.Contains(name, "conversation") || name == "list_work_item_references" || name == "list_project_actions" || name == "create_project_action" || name == "patch_project_action" || name == "delete_project_action"
 }
