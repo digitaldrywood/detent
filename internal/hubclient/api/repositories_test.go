@@ -1,18 +1,22 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -84,7 +88,15 @@ func TestRunnerRepositoryList(t *testing.T) {
 
 func TestRepositoryDiscoveryIsNotStarvedByGitHubIntake(t *testing.T) {
 	t.Parallel()
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken), GitHubDisabled: true, Content: newHubContentStore()})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 10*time.Second)
+		defer cancel()
+		if err := testsupport.CloseDispatchPostgres(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	config := testsupport.DispatchPostgresConfig(t, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Content: newHubContentStore(), RunDetails: &repodiscDetails{}})
+	service, err := hubserver.Open(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,19 +121,15 @@ func TestRepositoryDiscoveryIsNotStarvedByGitHubIntake(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var organizations tracker.Page[struct {
-		ID tracker.OrganizationID `json:"organization_id"`
-	}]
-	request(t, http.MethodGet, "/api/v2/organizations", nil, &organizations)
-	organization := organizations.Items[0].ID
+	organization := tracker.OrganizationID(config.Hosted.OrganizationID)
 	base := "/api/v2/organizations/" + string(organization)
-	createProject := func(name string) tracker.NativeProject {
+	createProject := func(t *testing.T, name string) tracker.NativeProject {
 		t.Helper()
 		var project tracker.NativeProject
-		request(t, http.MethodPost, base+"/projects", map[string]any{"name": name, "idempotency_key": name, "states": hubserver.HostedProjectStates()}, &project)
+		request(t, http.MethodPost, base+"/projects", map[string]any{"name": name, "idempotency_key": name, "states": hubserver.HostedProjectStates(), "grant_access": true}, &project)
 		return project
 	}
-	existing := createProject("existing")
+	existing := createProject(t, "existing")
 	path := filepath.Join(t.TempDir(), "private", "identity.json")
 	file, err := runnerauth.Initialize(path, admin.baseURL.String())
 	if err != nil {
@@ -147,49 +155,92 @@ func TestRepositoryDiscoveryIsNotStarvedByGitHubIntake(t *testing.T) {
 		t.Fatal(err)
 	}
 	repository := "example-org/example-project"
-	var integration hubserver.ProjectIntegration
-	request(t, http.MethodPost, native.base()+"/onboarding/repository", map[string]any{"idempotency_key": "bind", "expected_revision": "1", "repository": repository, "source": "runner_checkout"}, &integration)
-	request(t, http.MethodPut, native.base()+"/integration", map[string]any{"idempotency_key": "manual", "expected_revision": fmt.Sprint(integration.Revision), "intake": "manual", "projection": "disabled"}, nil)
 	machine := Machine{ID: file.Identity.MachineID, Hostname: "example-host", DisplayName: "Example runner", Capacity: 1, Version: "test", CheckoutRepository: &repository}
 	if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
 		t.Fatal(err)
 	}
-	request(t, http.MethodPost, native.base()+"/onboarding/issue-intake", tracker.GitHubBatchCommand{Mutation: tracker.Mutation{IdempotencyKey: "discover"}, Action: "discover", RunnerID: file.Identity.RunnerID}, nil)
-	created := createProject("new-project")
-	setupPath := base + "/projects/" + string(created.ID) + "/onboarding"
+	var intake struct {
+		Batch *tracker.GitHubBatch `json:"batch"`
+	}
+	request(t, http.MethodGet, native.base()+"/onboarding/issue-intake", nil, &intake)
+	if intake.Batch != nil {
+		t.Fatalf("unexpected intake batch=%+v", intake.Batch)
+	}
+	readList := func(t *testing.T, setupPath string) *runnerauth.RepositoryList {
+		t.Helper()
+		var setup onboarding.Project
+		request(t, http.MethodGet, setupPath, nil, &setup)
+		for _, runner := range setup.Runners {
+			if runner.Runner.RunnerID == file.Identity.RunnerID && runner.RepositoryList != nil {
+				return runner.RepositoryList
+			}
+		}
+		t.Fatal("runner repository list missing from new project setup")
+		return nil
+	}
+	t.Run("pending onboarding response", func(t *testing.T) {
+		created := createProject(t, "pending onboarding response")
+		setupPath := base + "/projects/" + string(created.ID) + "/onboarding"
+		var command struct {
+			RequestID string `json:"request_id"`
+		}
+		request(t, http.MethodPost, setupPath+"/repositories", map[string]any{"idempotency_key": t.Name(), "runner_id": file.Identity.RunnerID}, &command)
+		started, proceed, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		release := sync.OnceFunc(func() { close(proceed) })
+		var heartbeatErr error
+		native.repositoryCommand = func(ctx context.Context, args ...string) ([]byte, error) {
+			if args[0] == "auth" {
+				return nil, nil
+			}
+			close(started)
+			select {
+			case <-proceed:
+				return []byte(`[]`), nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		t.Cleanup(func() { release(); <-finished })
+		go func() {
+			heartbeatErr = native.HeartbeatMachine(t.Context(), machine)
+			close(finished)
+		}()
+		select {
+		case <-started:
+		case <-finished:
+			t.Fatalf("heartbeat ended before repository listing: %v", heartbeatErr)
+		}
+		if list := readList(t, setupPath); !list.Pending || list.RequestID != command.RequestID {
+			t.Fatalf("pending list=%+v", list)
+		}
+		release()
+		<-finished
+		if heartbeatErr != nil {
+			t.Fatal(heartbeatErr)
+		}
+	})
 	intakeFailure := errors.New("intake unavailable")
 	for _, test := range []struct {
 		name             string
+		injectIntake     bool
 		intakeError      error
 		listingError     bool
 		unavailableReads bool
 	}{
-		{name: "pending intake"},
-		{name: "failed intake", intakeError: intakeFailure},
+		{name: "disabled PostgreSQL intake"},
+		{name: "injected pending intake", injectIntake: true},
+		{name: "injected failed intake", injectIntake: true, intakeError: intakeFailure},
 		{name: "failed listing", listingError: true},
 		{name: "unavailable project events and activity", unavailableReads: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			created := createProject(t, test.name)
+			setupPath := base + "/projects/" + string(created.ID) + "/onboarding"
 			var command struct {
 				RequestID string `json:"request_id"`
 			}
 			request(t, http.MethodPost, setupPath+"/repositories", map[string]any{"idempotency_key": test.name, "runner_id": file.Identity.RunnerID}, &command)
-			readList := func() *runnerauth.RepositoryList {
-				t.Helper()
-				var setup onboarding.Project
-				request(t, http.MethodGet, setupPath, nil, &setup)
-				for _, runner := range setup.Runners {
-					if runner.Runner.RunnerID == file.Identity.RunnerID && runner.RepositoryList != nil {
-						return runner.RepositoryList
-					}
-				}
-				t.Fatal("runner repository list missing from new project setup")
-				return nil
-			}
-			if list := readList(); !list.Pending || list.RequestID != command.RequestID {
-				t.Fatalf("pending list=%+v", list)
-			}
-			intakes, listings := 0, 0
+			intakes, listings, heartbeats := 0, 0, 0
 			native.githubBatch = func(_ context.Context, task tracker.GitHubBatchTask) error {
 				if task.ProjectID != existing.ID || task.Discovery == nil {
 					t.Fatalf("intake task=%+v", task)
@@ -207,24 +258,47 @@ func TestRepositoryDiscoveryIsNotStarvedByGitHubIntake(t *testing.T) {
 				}
 				return []byte(`[{"owner":{"login":"example-org"},"name":"example-project","private":true}]`), nil
 			}
-			if test.unavailableReads {
-				httpClient.Transport = executionRoundTrip(func(r *http.Request) (*http.Response, error) {
-					if r.Method == http.MethodGet && (r.URL.Path == base+"/projects/"+string(created.ID) || strings.HasSuffix(r.URL.Path, "/events") || r.URL.Path == base+"/activity") {
-						recorder := httptest.NewRecorder()
-						status := http.StatusBadGateway
-						if r.URL.Path == base+"/activity" {
-							status = http.StatusInternalServerError
-						}
-						recorder.WriteHeader(status)
-						return recorder.Result(), nil
+			httpClient.Transport = executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				if test.unavailableReads && r.Method == http.MethodGet && (r.URL.Path == base+"/projects/"+string(created.ID) || strings.HasSuffix(r.URL.Path, "/events") || r.URL.Path == base+"/activity") {
+					recorder := httptest.NewRecorder()
+					status := http.StatusBadGateway
+					if r.URL.Path == base+"/activity" {
+						status = http.StatusInternalServerError
 					}
-					return transport.RoundTrip(r)
-				})
-				client.httpClient.Transport = httpClient.Transport
-				t.Cleanup(func() {
-					httpClient.Transport = transport
-					client.httpClient.Transport = transport
-				})
+					recorder.WriteHeader(status)
+					return recorder.Result(), nil
+				}
+				response, err := transport.RoundTrip(r)
+				if err != nil || r.Method != http.MethodPost || r.URL.Path != native.base()+"/machines/"+string(machine.ID)+"/heartbeat" || response.StatusCode != http.StatusOK {
+					return response, err
+				}
+				defer response.Body.Close()
+				var snapshot runnerauth.RoutingSnapshot
+				if err := json.NewDecoder(response.Body).Decode(&snapshot); err != nil {
+					return nil, err
+				}
+				if snapshot.GitHubIntake != nil || snapshot.RepositoryListRequest != command.RequestID {
+					t.Fatalf("PostgreSQL heartbeat intake=%+v repository request=%q want=%q", snapshot.GitHubIntake, snapshot.RepositoryListRequest, command.RequestID)
+				}
+				heartbeats++
+				if test.injectIntake {
+					snapshot.GitHubIntake = &tracker.GitHubBatchTask{ProjectID: existing.ID, Discovery: &tracker.GitHubDiscovery{Repository: repository}}
+				}
+				raw, err := json.Marshal(snapshot)
+				if err != nil {
+					return nil, err
+				}
+				response.Body = io.NopCloser(bytes.NewReader(raw))
+				response.ContentLength = int64(len(raw))
+				response.Header.Set("Content-Length", fmt.Sprint(len(raw)))
+				return response, nil
+			})
+			client.httpClient.Transport = httpClient.Transport
+			t.Cleanup(func() {
+				httpClient.Transport = transport
+				client.httpClient.Transport = transport
+			})
+			if test.unavailableReads {
 				for _, read := range []struct {
 					path   string
 					status int
@@ -244,10 +318,14 @@ func TestRepositoryDiscoveryIsNotStarvedByGitHubIntake(t *testing.T) {
 			if err := native.HeartbeatMachine(t.Context(), machine); !errors.Is(err, test.intakeError) {
 				t.Fatalf("heartbeat error=%v want=%v", err, test.intakeError)
 			}
-			if intakes != 1 || listings != 1 {
-				t.Fatalf("repository discovery skipped: intake calls=%d listing calls=%d", intakes, listings)
+			wantIntakes := 0
+			if test.injectIntake {
+				wantIntakes = 1
 			}
-			list := readList()
+			if intakes != wantIntakes || listings != 1 || heartbeats != 1 {
+				t.Fatalf("repository discovery skipped: intake calls=%d want=%d listing calls=%d heartbeats=%d", intakes, wantIntakes, listings, heartbeats)
+			}
+			list := readList(t, setupPath)
 			if list.Pending || list.RequestID != command.RequestID || list.ListedAt == "" {
 				t.Fatalf("repository result not served to new project: %+v", list)
 			}
