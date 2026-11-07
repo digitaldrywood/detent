@@ -144,8 +144,13 @@ func operatorAuthorizationCause(err error) string {
 }
 
 func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) error {
-	if errors.Is(err, tenantauth.ErrUnavailable) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderInvalid {
-		err = operatorAuthorizationError(err)
+	var deniedAuthorization *operatortool.AuthorizationError
+	authorizationFailure := errors.As(err, &deniedAuthorization)
+	authorizationUnavailable := errors.Is(err, tenantauth.ErrUnavailable) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderInvalid
+	if authorizationUnavailable || authorizationFailure || auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable || errors.Is(err, operatortool.ErrProviderUnavailable) {
+		if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+			err = classified
+		}
 	}
 	if errors.Is(err, corestore.ErrSerializationFailure) {
 		message := "Database transaction was aborted; retry the request"
@@ -169,24 +174,26 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 		}{"archive_" + archive.Archive.Availability, archive.Archive})
 	}
 	var authorization *operatorAuthorizationFailure
-	var deniedAuthorization *operatortool.AuthorizationError
-	if errors.As(err, &deniedAuthorization) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable || errors.Is(err, operatortool.ErrProviderUnavailable) {
-		if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
-			err = classified
-		}
-	}
 	if errors.As(err, &authorization) {
 		code := "service_unavailable"
+		message := authorization.Error()
 		if errors.Is(authorization, operatortool.ErrProviderUnavailable) {
 			code = auth.HostedReasonProviderUnavailable
+		} else if authorizationUnavailable {
+			message = "Authorization is temporarily unavailable"
 		}
-		attrs := []any{"error", authorization, "authorization_cause", operatorAuthorizationCause(authorization.cause), "cause_class", fmt.Sprintf("%T", authorization.cause)}
+		cause := authorization.cause
+		if deniedAuthorization != nil && deniedAuthorization.Cause != nil {
+			cause = deniedAuthorization.Cause
+		}
+		attrs := []any{"error", authorization, "authorization_cause", operatorAuthorizationCause(cause), "cause_class", fmt.Sprintf("%T", cause)}
 		if deniedAuthorization != nil {
 			attrs = append(attrs, "authorization_stage", deniedAuthorization.Stage)
 		}
-		attrs = append(attrs, postgresErrorAttributes(authorization.cause)...)
+		attrs = append(attrs, attributes...)
+		attrs = append(attrs, postgresErrorAttributes(cause)...)
 		s.config.Logger.Error("operator authorization unavailable", attrs...)
-		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: code, Message: authorization.Error()})
+		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: code, Message: message})
 	}
 	var export *operatortool.WorkBulkExportItemError
 	if errors.As(err, &export) {

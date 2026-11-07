@@ -384,6 +384,7 @@ func TestNativeAPIError(t *testing.T) {
 		{"expired session", "access_denied", "Access is no longer available", "WARN", auth.ErrInvalidSession, http.StatusForbidden},
 		{"session lookup outage", "service_unavailable", "Authorization is temporarily unavailable", "ERROR", errors.Join(tenantauth.ErrUnavailable, auth.ErrInvalidSession), http.StatusServiceUnavailable},
 		{"invalid provider response", "service_unavailable", "Authorization is temporarily unavailable", "ERROR", &auth.HostedIdentityError{Reason: auth.HostedReasonProviderInvalid}, http.StatusServiceUnavailable},
+		{"joined authorization outage", "service_unavailable", "Authorization is temporarily unavailable", "ERROR", errors.Join(tenantauth.ErrUnavailable, &operatortool.AuthorizationError{Stage: "resolve", Cause: auth.ErrInvalidSession}), http.StatusServiceUnavailable},
 		{"allowance", "allowance_exhausted", "Hosted active_runners allowance reached (2 of 2). Existing data, reading, export and billing remain available.", "WARN", &hostedLimitError{Resource: "active_runners", Allowance: 2, Consumption: 2}, http.StatusTooManyRequests},
 		{"request refusal", "invalid_request", "A project is required", "WARN", &operatortool.RequestError{Code: "invalid_request", Message: "A project is required"}, http.StatusUnprocessableEntity},
 		{"private validation", "invalid_request", "Unprocessable Entity: invalid request", "WARN", nativeInvalid("private-context"), http.StatusUnprocessableEntity},
@@ -416,7 +417,7 @@ func TestNativeAPIError(t *testing.T) {
 					c.SetParamNames("organization", "project", "runner")
 					c.SetParamValues("private-organization", "private-project", "runner_example")
 					c.Set("native_scope", nativeScope{organization: "org_example", project: "prj_example"})
-					if err := service.nativeAPIError(c, fmt.Errorf("private-context: %w", test.err)); err != nil {
+					if err := service.nativeAPIError(c, fmt.Errorf("private-context: %w", test.err), "operation", "example_lookup"); err != nil {
 						t.Fatal(err)
 					}
 					failure := requireNativeCode(t, recorded, test.status, test.code)
@@ -445,6 +446,13 @@ func TestNativeAPIError(t *testing.T) {
 					}
 					if test.name == "expired session" && entry["authorization_cause"] != "invalid_session" {
 						t.Fatalf("denial class = %v, want invalid_session", entry["authorization_cause"])
+					}
+					if test.name == "joined authorization outage" {
+						for key, want := range map[string]any{"authorization_stage": "resolve", "authorization_cause": "invalid_session", "operation": "example_lookup"} {
+							if entry[key] != want {
+								t.Errorf("outage diagnostic %s = %v, want %v", key, entry[key], want)
+							}
+						}
 					}
 					if test.level == "WARN" || test.name == "service unavailable" {
 						fields := map[string]any{"refusal_code": test.code, "route": nativeBase + "/runners/:runner", "organization_id": "org_example", "project_id": "prj_example", "method": http.MethodDelete}
