@@ -244,6 +244,9 @@ func TestBoardSearchEmptyDocumentsReturnsTitleBodyMatches(t *testing.T) {
 	if _, err := f.admin.ExecContext(ctx, `UPDATE native_work_item_pages SET body=$1`, "bodyuniquemarker %_\\marker Café\nfingerprint: example-key\n"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := f.admin.ExecContext(ctx, `UPDATE native_board_items SET page_title='Example ÉCOLE'`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.admin.ExecContext(ctx, "UPDATE issues SET actor_principal_id='another-owner' WHERE native_id='wi_first_1'"); err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +255,7 @@ func TestBoardSearchEmptyDocumentsReturnsTitleBodyMatches(t *testing.T) {
 			for _, query := range []struct {
 				text string
 				want int
-			}{{"Example", 2}, {"bodyuniquemarker", 2}, {"unmatched bodyuniq", 2}, {"%_\\marker", 2}, {"CAFÉ", 2}, {"absentuniqueterm", 0}, {"%%_", 0}, {"2", 1}} {
+			}{{"Example", 2}, {"bodyuniquemarker", 2}, {"unmatched bodyuniq", 2}, {"%_\\marker", 2}, {"CAFÉ", 2}, {"café", 2}, {"cafe", 0}, {"école", 2}, {"ÉCOLE", 2}, {"ecole", 0}, {"absentuniqueterm", 0}, {"%%_", 0}, {"2", 1}} {
 				selection := viewstore.BoardSelection{ProjectID: "prj_first", SearchText: query.text, SearchRanked: true, Limit: 200, Reporter: reporter, ReporterPrincipalID: "example"}
 				want := query.want
 				if reporter && want == 2 {
@@ -318,40 +321,67 @@ func TestBoardSearchEmptyIndexUsesTenantIndexes(t *testing.T) {
 	if _, err := f.admin.ExecContext(ctx, "DELETE FROM search_documents"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.admin.ExecContext(ctx, `UPDATE native_work_item_pages SET body='needlebody' WHERE work_item_id='wi_first_2'`); err != nil {
+	if _, err := f.admin.ExecContext(ctx, `UPDATE native_work_item_pages SET body='Café needlebody' WHERE work_item_id='wi_first_2'`); err != nil {
 		t.Fatal(err)
 	}
-	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		if _, err := f.admin.ExecContext(ctx, `INSERT INTO issues(organization_id,project_id,native_id,number,title,actor_kind,actor_principal_id,workflow_state_name)
-SELECT $1,'prj_first','wi_plan_'||n,n+10,'Unrelated title','human','example','Todo' FROM generate_series(1,1200) n`, org); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := f.admin.ExecContext(ctx, `UPDATE native_board_items SET page_title='ÉCOLE' WHERE work_item_id='wi_first_2'`); err != nil {
+		t.Fatal(err)
+	}
+	counts := new(pageWireCounts)
+	measured := pageMeasuredRepository(t, tracedFeaturePool(t, f.pool, &boardQueryTracer{}), counts)
+	previous := 0
+	for _, scale := range []int{2, 50} {
+		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+			if _, err := f.admin.ExecContext(ctx, `INSERT INTO issues(organization_id,project_id,native_id,number,title,actor_kind,actor_principal_id,workflow_state_name)
+SELECT $1,'prj_first','wi_plan_'||n,n+10,'Unrelated title','human','example','Todo' FROM generate_series($2::integer,$3::integer) n`, org, previous+1, scale*24); err != nil {
+				t.Fatal(err)
+			}
 
-		if _, err := f.admin.ExecContext(ctx, `INSERT INTO native_board_items(organization_id,project_id,work_item_id,source_revision,source_event_sequence,source_project_revision,state,archived,terminal,running,dispatchable,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,execution_fence,actor_principal_id,issue_type,verification_state,priority,created_at,updated_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,page_title,page_body)
+			if _, err := f.admin.ExecContext(ctx, `INSERT INTO native_board_items(organization_id,project_id,work_item_id,source_revision,source_event_sequence,source_project_revision,state,archived,terminal,running,dispatchable,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,execution_fence,actor_principal_id,issue_type,verification_state,priority,created_at,updated_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,page_title,page_body)
 SELECT organization_id,project_id,'wi_plan_'||n,source_revision,source_event_sequence,source_project_revision,state,archived,terminal,running,dispatchable,lane_rank,priority_rank,activity_missing,activity_at,'plan#'||n,closed_at,expires_at,execution_fence,actor_principal_id,issue_type,verification_state,priority,created_at,updated_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,'Unrelated title','Unrelated body'
-FROM native_board_items CROSS JOIN generate_series(1,1200) n WHERE organization_id=$1 AND work_item_id='wi_first_1'`, org); err != nil {
-			t.Fatal(err)
+FROM native_board_items CROSS JOIN generate_series($2::integer,$3::integer) n WHERE organization_id=$1 AND work_item_id='wi_first_1'`, org, previous+1, scale*24); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
+				for n := previous + 1; n <= scale*24; n++ {
+					issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "prj_first", WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_plan_%d", n)), Revision: 1, Number: n + 10}, Title: "Unrelated title", Body: "Unrelated body", State: "Todo", CreatedAt: historyAt(), UpdatedAt: historyAt(), Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}}
+					if err := publishSearchBody(ctx, f, w, issue); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
 		}
-		if err := f.repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
-			for n := 1; n <= 1200; n++ {
-				issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "prj_first", WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_plan_%d", n)), Revision: 1, Number: n + 10}, Title: "Unrelated title", Body: "Unrelated body", State: "Todo", CreatedAt: historyAt(), UpdatedAt: historyAt(), Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}}
-				if err := publishSearchBody(ctx, f, w, issue); err != nil {
-					return err
+		for _, table := range []string{"native_work_item_pages", "issues", "native_board_items"} {
+			if _, err := f.admin.ExecContext(ctx, "VACUUM (ANALYZE) "+table); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+			for _, reporter := range []bool{false, true} {
+				for _, query := range []string{"needlebody", "CAFÉ", "école"} {
+					counts.reset()
+					err := measured.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+						rows, err := r.BoardPage(ctx, viewstore.BoardSelection{ProjectID: "prj_first", SearchText: query, Limit: 200, Reporter: reporter, ReporterPrincipalID: "example"})
+						if err == nil && (len(rows) != 1 || rows[0].OrganizationID != org || rows[0].WorkItemID != "wi_first_2") {
+							t.Errorf("indexed fallback rows=%+v", rows)
+						}
+						return err
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					statements, exchanges := counts.read()
+					t.Logf("tenant=%s scale=%d reporter=%t query=%q statements=%d exchanges=%d", org, scale, reporter, query, statements, exchanges)
+					if statements != 6 || exchanges != 5 {
+						t.Fatalf("statements=%d exchanges=%d, want 6/5", statements, exchanges)
+					}
 				}
 			}
-			return nil
-		}); err != nil {
-			t.Fatal(err)
 		}
-	}
-	if _, err := f.admin.ExecContext(ctx, "VACUUM (ANALYZE) native_work_item_pages"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.admin.ExecContext(ctx, "ANALYZE issues"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.admin.ExecContext(ctx, "VACUUM (ANALYZE) native_board_items"); err != nil {
-		t.Fatal(err)
+		previous = scale * 24
 	}
 	probe := &boardQueryTracer{}
 	counted, err := postgres.NewRepository(ctx, tracedFeaturePool(t, f.pool, probe), smallPool())
@@ -368,39 +398,44 @@ FROM native_board_items CROSS JOIN generate_series(1,1200) n WHERE organization_
 		t.Fatal(err)
 	}
 	statement = strings.NewReplacer("$1", "$1::text", "$2", "$2::text[]", "$3", "$3::boolean", "$4", "$4::text", "$5", "$5::boolean").Replace(statement)
-	for _, reporter := range []bool{false, true} {
-		selection := viewstore.BoardSelection{ProjectID: "prj_first", SearchText: "needlebody", Limit: 200, Reporter: reporter, ReporterPrincipalID: "example"}
-		if err := counted.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
-			rows, err := r.BoardPage(ctx, selection)
-			if err == nil && len(rows) != 1 {
-				t.Errorf("indexed fallback rows=%d", len(rows))
+	for _, query := range []struct {
+		text     string
+		patterns []string
+	}{{"needlebody", []string{"%needlebody%"}}, {"CAFÉ", []string{"%CAFÉ%", "%cafe%"}}, {"école", []string{"%école%", "%ecole%"}}} {
+		for _, reporter := range []bool{false, true} {
+			selection := viewstore.BoardSelection{ProjectID: "prj_first", SearchText: query.text, Limit: 200, Reporter: reporter, ReporterPrincipalID: "example"}
+			if err := counted.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+				rows, err := r.BoardPage(ctx, selection)
+				if err == nil && len(rows) != 1 {
+					t.Errorf("indexed fallback rows=%d", len(rows))
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
 			}
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
-		tx, err := f.admin.BeginTx(ctx, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err = tx.ExecContext(ctx, "SET LOCAL ROLE detent_search_reader_v2"); err != nil {
-			t.Fatal(err)
-		}
-		if _, err = tx.ExecContext(ctx, "SELECT set_config('detent.organization_id','org_first',true)"); err != nil {
-			t.Fatal(err)
-		}
-		var plan []byte
-		err = tx.QueryRowContext(ctx, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement, "prj_first", []string{"%needlebody%"}, reporter, "example", false).Scan(&plan)
-		if rollbackErr := tx.Rollback(); rollbackErr != nil {
-			t.Fatal(rollbackErr)
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("reporter=%t plan=%s", reporter, plan)
-		for _, index := range []string{"native_work_item_search_body", "native_board_search_title"} {
-			if !strings.Contains(string(plan), index) {
-				t.Fatalf("fallback did not use text index %s: %s", index, plan)
+			tx, err := f.admin.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = tx.ExecContext(ctx, "SET LOCAL ROLE detent_search_reader_v2"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = tx.ExecContext(ctx, "SELECT set_config('detent.organization_id','org_first',true)"); err != nil {
+				t.Fatal(err)
+			}
+			var plan []byte
+			err = tx.QueryRowContext(ctx, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+statement, "prj_first", query.patterns, reporter, "example", false).Scan(&plan)
+			if rollbackErr := tx.Rollback(); rollbackErr != nil {
+				t.Fatal(rollbackErr)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("query=%q reporter=%t plan=%s", query.text, reporter, plan)
+			for _, index := range []string{"native_work_item_search_body_unicode", "native_board_search_title_unicode"} {
+				if !strings.Contains(string(plan), index) {
+					t.Fatalf("fallback did not use text index %s: %s", index, plan)
+				}
 			}
 		}
 	}

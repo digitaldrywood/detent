@@ -271,7 +271,7 @@ BEGIN
   AND EXISTS(SELECT 1 FROM public.issues i
    WHERE i.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND i.project_id=$1
     AND i.native_id=b.work_item_id AND (NOT $3 OR (NULLIF($4,'') IS NOT NULL AND i.actor_principal_id=$4)))
-  AND b.page_title ILIKE ANY($2) AND NOT $5
+  AND b.page_title COLLATE pg_catalog.pg_c_utf8 ILIKE ANY($2) AND NOT $5
  UNION
  SELECT b.work_item_id FROM public.native_work_item_pages b
  WHERE b.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND b.project_id=$1
@@ -280,7 +280,7 @@ BEGIN
   AND EXISTS(SELECT 1 FROM public.issues i
    WHERE i.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND i.project_id=$1
     AND i.native_id=b.work_item_id AND (NOT $3 OR (NULLIF($4,'') IS NOT NULL AND i.actor_principal_id=$4)))
-  AND b.body ILIKE ANY($2)
+  AND b.body COLLATE pg_catalog.pg_c_utf8 ILIKE ANY($2)
  $board_search$;
  PERFORM set_config('check_function_bodies',function_checking,true);
  ALTER FUNCTION public.board_search_candidates(text,text[],boolean,text,boolean) OWNER TO detent_search_reader_v2;
