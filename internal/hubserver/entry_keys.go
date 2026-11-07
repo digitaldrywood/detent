@@ -119,6 +119,7 @@ func (s *Service) entryKeyTools(ctx context.Context) ([]operatortool.Definition,
 		}
 		definitions = append(definitions, administration...)
 	}
+	definitions = append(definitions, s.entryKeyBillingTools(ctx)...)
 	supported := make([]operatortool.Definition, 0)
 	seen := make(map[string]bool)
 	for _, definition := range definitions {
@@ -128,6 +129,29 @@ func (s *Service) entryKeyTools(ctx context.Context) ([]operatortool.Definition,
 		}
 	}
 	return supported, nil
+}
+
+func (s *Service) entryKeyBillingTools(ctx context.Context) []operatortool.Definition {
+	definitions := []operatortool.Definition{}
+	for _, definition := range operatortool.BillingCatalog() {
+		if !entryKeyToolSupported(definition.Name) {
+			continue
+		}
+		if _, err := s.catalogBillingCredential(ctx, "billing", !definition.Annotations.ReadOnly); err != nil {
+			continue
+		}
+		if (definition.Name == operatortool.CreditCheckout || definition.Name == operatortool.CreditAutoFund) && !s.creditAvailable() {
+			continue
+		}
+		if cfg := s.hostedBillingConfig(); definition.Name == operatortool.CreditCheckout && cfg != nil && cfg.CheckoutDisabled {
+			continue
+		}
+		if !definition.Annotations.ReadOnly && s.hostedBillingConfig() == nil {
+			continue
+		}
+		definitions = append(definitions, definition)
+	}
+	return definitions
 }
 
 func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool, error) {
@@ -175,6 +199,8 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 	case "set_project_icon", "set_organization_logo", "approve_project_policy", "start_git_hub_import", "bind_native_repository", "import_sprite_usage", "monthly_usage_costs", "project_setup", "get_onboarding", "get_git_hub_batch", "get_project_integration", "rename_project", "update_project_integration", operatortool.GetProjectModelSelection, operatortool.UpdateProjectModelSelection, operatortool.RunnerProjectDiagnostics:
 		definitions, err := (hubProjectExecutor{service: s}).ListTools(ctx)
 		return entryKeyHasDefinition(definitions, name), err
+	case operatortool.BillingStatus, operatortool.BillingExport, operatortool.BillingCheckout, operatortool.BillingPortal, operatortool.CreditCheckout, operatortool.CreditAutoFund:
+		return entryKeyHasDefinition(s.entryKeyBillingTools(ctx), name), nil
 	case operatortool.WorkList, operatortool.WorkItem, operatortool.HealthFindings, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.WorkBulkExport, operatortool.BoardActivity, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt, operatortool.GitHubScopeTimings:
 		_, found := entryKeyDefinition(operatortool.WorkReadCatalog(), name)
 		return found && catalog.credential.HostedRole != "account", nil
@@ -263,6 +289,8 @@ func entryKeyToolSupported(name string) bool {
 	case operatortool.OrganizationSession, operatortool.MembershipList, operatortool.InvitationSend, operatortool.InvitationEdit, operatortool.InvitationResend, operatortool.MemberRole, operatortool.MemberGrant:
 		return true
 	case operatortool.WorkAttemptReceipt, operatortool.GitHubScopeTimings, operatortool.BoardSessionHistory, operatortool.ExplainItem, operatortool.CreateRunnerEnrollment, operatortool.MarkUrgentRunnerUpdate, operatortool.TransferItem:
+		return true
+	case operatortool.BillingStatus, operatortool.BillingExport, operatortool.BillingCheckout, operatortool.BillingPortal, operatortool.CreditCheckout, operatortool.CreditAutoFund:
 		return true
 	case "set_project_icon", "set_organization_logo", "approve_project_policy", "start_git_hub_import", "bind_native_repository", "import_sprite_usage", "monthly_usage_costs", "project_setup", "get_onboarding", "get_git_hub_batch", "get_project_integration", "rename_project", "update_project_integration", operatortool.GetProjectModelSelection, operatortool.UpdateProjectModelSelection, operatortool.RunnerProjectDiagnostics, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting, operatortool.Activity:
 		return true
