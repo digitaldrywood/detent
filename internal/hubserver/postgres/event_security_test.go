@@ -86,12 +86,18 @@ func TestEventChangeRowSecurity(t *testing.T) {
 			if err := admin.QueryRowContext(t.Context(), `SELECT string_agg(quote_ident(column_name),',' ORDER BY ordinal_position) FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name<>'organization_id'`, table).Scan(&columns); err != nil {
 				t.Fatal(err)
 			}
-			tx := tenantTx(t, runtime, pool, "org_first")
-			selected := strings.ReplaceAll(columns, "payload_object_key", "replace(payload_object_key,'org_first','org_foreign')")
-			_, err := tx.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s(organization_id,%s) SELECT 'org_foreign',%s FROM %s LIMIT 1", table, columns, selected, table))
-			requireSQLState(t, err, "42501")
-			if err := tx.Rollback(t.Context()); err != nil {
-				t.Fatal(err)
+			state := "42501"
+			switch table {
+			case "collaboration_events", "collaboration_versions", "change_requests", "change_issue_links":
+				state = "23503"
+			}
+			for _, target := range []string{"org_second", "org_foreign"} {
+				t.Run("insert/"+target, func(t *testing.T) {
+					tx := tenantTx(t, runtime, pool, "org_first")
+					selected := strings.ReplaceAll(columns, "payload_object_key", "replace(payload_object_key,'org_first',$1)")
+					_, err := tx.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s(organization_id,%s) SELECT $1,%s FROM %s LIMIT 1", table, columns, selected, table), target)
+					requireSQLState(t, err, state)
+				})
 			}
 			for _, statement := range []string{"UPDATE " + table + " SET organization_id='org_first' WHERE organization_id='org_second'", "DELETE FROM " + table + " WHERE organization_id='org_second'"} {
 				tx := tenantTx(t, runtime, pool, "org_first")

@@ -307,7 +307,7 @@ func TestCoreConstraintsRejectInvalidWrites(t *testing.T) {
 		state string
 	}{
 		{"project requires tenant", `UPDATE projects SET organization_id=NULL WHERE organization_id='org_first'`, "23502"},
-		{"item requires tenant", `UPDATE issues SET organization_id=NULL WHERE organization_id='org_first'`, "23502"},
+		{"item requires tenant", `UPDATE issues SET organization_id=NULL WHERE organization_id='org_first'`, "23514"},
 		{"comment requires tenant", `UPDATE native_comments SET organization_id=NULL WHERE organization_id='org_first'`, "23502"},
 		{"project primary key", `UPDATE projects SET id='prj_shared' WHERE organization_id='org_first' AND id='prj_other'`, "23505"},
 		{"project name", `UPDATE projects SET name='shared' WHERE organization_id='org_first' AND id='prj_other'`, "23505"},
@@ -316,7 +316,7 @@ func TestCoreConstraintsRejectInvalidWrites(t *testing.T) {
 		{"item creation time immutable", `UPDATE issues SET created_at=created_at+INTERVAL '1 second' WHERE organization_id='org_first' AND id=42`, "23514"},
 		{"comment record identity immutable", `UPDATE native_comments SET record_id=record_id+100 WHERE organization_id='org_first' AND id='comment_other'`, "23514"},
 		{"comment creation time immutable", `UPDATE native_comments SET created_at=created_at+INTERVAL '1 second' WHERE organization_id='org_first' AND id='comment_other'`, "23514"},
-		{"native identifier", `UPDATE issues SET native_id='wi_shared' WHERE organization_id='org_first' AND id=42`, "23505"},
+		{"native identifier", `UPDATE issues SET native_id='wi_shared' WHERE organization_id='org_first' AND id=42`, "23514"},
 		{"project item number", `INSERT INTO issues (organization_id,native_id,project_id,number,title) VALUES ('org_first','wi_duplicate','prj_shared',1,'Example')`, "23505"},
 		{"project source key", `INSERT INTO issues (organization_id,native_id,project_id,number,title,native_source_key) VALUES ('org_first','wi_duplicate','prj_shared',2,'Example','source_shared')`, "23505"},
 		{"comment primary key", `UPDATE native_comments SET id='comment_shared' WHERE organization_id='org_first' AND id='comment_other'`, "23505"},
@@ -390,16 +390,16 @@ func TestCoreForeignKeysDenyOtherTenants(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, tc := range []struct{ name, query string }{
-		{"item insert", `INSERT INTO issues (organization_id,native_id,project_id,number,title) VALUES ('org_first','wi_invalid','prj_private',2,'Example')`},
-		{"item update", `UPDATE issues SET project_id='prj_private' WHERE organization_id='org_first' AND native_id='wi_other'`},
-		{"comment insert", `INSERT INTO native_comments (organization_id,id,project_id,work_item_id,sequence,body_object_key,actor_kind,actor_principal_id) VALUES ('org_first','comment_invalid','prj_private','wi_private',1,'example/body','human','example')`},
-		{"comment update", `UPDATE native_comments SET project_id='prj_private',work_item_id='wi_private' WHERE organization_id='org_first' AND id='comment_shared'`},
-		{"comment on shared project", `INSERT INTO native_comments (organization_id,id,project_id,work_item_id,sequence,body_object_key,actor_kind,actor_principal_id) VALUES ('org_first','comment_invalid','prj_shared','wi_private_shared',1,'example/body','human','example')`},
+	for _, tc := range []struct{ name, query, state string }{
+		{"item insert", `INSERT INTO issues (organization_id,native_id,project_id,number,title) VALUES ('org_first','wi_invalid','prj_private',2,'Example')`, "23503"},
+		{"item update", `UPDATE issues SET project_id='prj_private' WHERE organization_id='org_first' AND native_id='wi_other'`, "23514"},
+		{"comment insert", `INSERT INTO native_comments (organization_id,id,project_id,work_item_id,sequence,body_object_key,actor_kind,actor_principal_id) VALUES ('org_first','comment_invalid','prj_private','wi_private',1,'example/body','human','example')`, "23503"},
+		{"comment update", `UPDATE native_comments SET project_id='prj_private',work_item_id='wi_private' WHERE organization_id='org_first' AND id='comment_shared'`, "23503"},
+		{"comment on shared project", `INSERT INTO native_comments (organization_id,id,project_id,work_item_id,sequence,body_object_key,actor_kind,actor_principal_id) VALUES ('org_first','comment_invalid','prj_shared','wi_private_shared',1,'example/body','human','example')`, "23503"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := db.ExecContext(t.Context(), tc.query)
-			requireSQLState(t, err, "23503")
+			requireSQLState(t, err, tc.state)
 		})
 	}
 }

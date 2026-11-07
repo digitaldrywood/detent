@@ -54,17 +54,23 @@ func TestLeaseFamilyRowSecurity(t *testing.T) {
 					}
 				})
 			}
+			state := "42501"
+			switch tc.table {
+			case "leases", "native_attempt_runs", "native_attempts":
+				state = "23503"
+			}
 			for _, operation := range []string{"insert", "move"} {
-				t.Run(operation, func(t *testing.T) {
-					tx := tenantTx(t, runtime, pool, "org_first")
-					defer tx.Rollback(t.Context())
-					query := "UPDATE " + tc.table + " SET organization_id='org_foreign'"
-					if operation == "insert" {
-						query = fmt.Sprintf("INSERT INTO %s(organization_id,%s) SELECT 'org_foreign',%s FROM %s LIMIT 1", tc.table, tc.columns, tc.columns, tc.table)
-					}
-					_, err := tx.Exec(t.Context(), query)
-					requireSQLState(t, err, "42501")
-				})
+				for _, target := range []string{"org_second", "org_foreign"} {
+					t.Run(operation+"/"+target, func(t *testing.T) {
+						tx := tenantTx(t, runtime, pool, "org_first")
+						query := "UPDATE " + tc.table + " SET organization_id=$1"
+						if operation == "insert" {
+							query = fmt.Sprintf("INSERT INTO %s(organization_id,%s) SELECT $1,%s FROM %s LIMIT 1", tc.table, tc.columns, tc.columns, tc.table)
+						}
+						_, err := tx.Exec(t.Context(), query, target)
+						requireSQLState(t, err, state)
+					})
+				}
 			}
 			var owner string
 			if err := admin.QueryRowContext(t.Context(), `SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid=$1::regclass`, tc.table).Scan(&owner); err != nil || owner != "detent_migration_v2" {

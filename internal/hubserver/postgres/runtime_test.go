@@ -195,8 +195,61 @@ func TestCoreRowSecurity(t *testing.T) {
 func TestCoreRowSecurityRejectsCrossTenantWrites(t *testing.T) {
 	admin := template.Database(t)
 	seedCore(t, admin)
+	for _, organization := range []string{"org_first", "org_second"} {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO issues (organization_id,id,native_id,project_id,number,title) VALUES ($1,43,'wi_retained','prj_shared',3,'Example')`, organization); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `DELETE FROM issues WHERE organization_id=$1 AND id=43`, organization); err != nil {
+			t.Fatal(err)
+		}
+	}
 	pool := rolePool(t, admin, "detent_runtime_v2", "")
 	runtime := runtimeFor(t, pool, pool)
+	for _, organization := range []string{"", "org_unknown", "org_first", "org_second"} {
+		for _, identity := range []struct {
+			name     string
+			id       int64
+			nativeID string
+		}{
+			{"absent", 99, "wi_absent"},
+			{"live numeric identifier", 41, "wi_absent"},
+			{"live native identifier", 99, "wi_shared"},
+			{"retained numeric identifier", 43, "wi_absent"},
+			{"retained native identifier", 99, "wi_retained"},
+		} {
+			t.Run("identity existence/"+organization+"/"+identity.name, func(t *testing.T) {
+				target := "org_first"
+				if organization == target {
+					target = "org_second"
+				}
+				tx := tenantTx(t, runtime, pool, organization)
+				_, err := tx.Exec(t.Context(), `INSERT INTO issues (organization_id,id,native_id,project_id,number,title) VALUES ($1,$2,$3,'prj_shared',99,'Example')`, target, identity.id, identity.nativeID)
+				requireSQLState(t, err, "42501")
+			})
+		}
+	}
+	for _, organization := range []string{"org_first", "org_second"} {
+		for _, tc := range []struct {
+			name       string
+			query      string
+			identities int
+		}{
+			{"same statement child", `WITH item AS (INSERT INTO issues (organization_id,id,native_id,project_id,number,title) VALUES ($1,99,'wi_new','prj_shared',99,'Example') RETURNING organization_id,id) INSERT INTO native_attempt_runs (organization_id,run_id,issue_id) SELECT organization_id,'run_new',id FROM item`, 4},
+			{"conflict ignored", `INSERT INTO issues (organization_id,id,native_id,project_id,number,title) VALUES ($1,41,'wi_shared','prj_shared',1,'Example') ON CONFLICT (organization_id,id) DO NOTHING`, 3},
+			{"conflict updated", `INSERT INTO issues (organization_id,id,native_id,project_id,number,title) VALUES ($1,41,'wi_shared','prj_shared',1,'Example') ON CONFLICT (organization_id,id) DO UPDATE SET title=EXCLUDED.title`, 3},
+		} {
+			t.Run("authorized identity/"+organization+"/"+tc.name, func(t *testing.T) {
+				tx := tenantTx(t, runtime, pool, organization)
+				if _, err := tx.Exec(t.Context(), tc.query, organization); err != nil {
+					t.Fatal(err)
+				}
+				var count int
+				if err := tx.QueryRow(t.Context(), `SELECT count(*) FROM work_item_identities`).Scan(&count); err != nil || count != tc.identities {
+					t.Fatalf("captured identities=%d, want %d: %v", count, tc.identities, err)
+				}
+			})
+		}
+	}
 	for _, tc := range []struct {
 		table  string
 		insert string
@@ -248,7 +301,11 @@ func TestCoreRowSecurityRejectsCrossTenantWrites(t *testing.T) {
 						case "move tenant":
 							result, err := tx.Exec(t.Context(), "UPDATE "+pgx.Identifier{tc.table}.Sanitize()+" SET organization_id=$1", target)
 							if organization == "org_first" || organization == "org_second" {
-								requireSQLState(t, err, "42501")
+								state := "42501"
+								if tc.table == "issues" {
+									state = "23514"
+								}
+								requireSQLState(t, err, state)
 							} else if err != nil {
 								t.Fatal(err)
 							} else if affected := result.RowsAffected(); affected != 0 {
