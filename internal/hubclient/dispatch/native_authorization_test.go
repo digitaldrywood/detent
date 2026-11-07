@@ -1,35 +1,46 @@
 package dispatch
 
 import (
-	"path/filepath"
+	"net/http"
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestNativeOwnerNegotiatesCapabilities(t *testing.T) {
+	h := newNativeChangeHub(t, true)
+	for _, test := range []struct {
+		name   string
+		client *NativeClient
+	}{
+		{name: "owner", client: h.admin},
+		{name: "runner", client: h.native},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			supported, err := test.client.HubFeature(t.Context(), tracker.NativeRuntimeEvidenceCapability)
+			if err != nil || !supported {
+				t.Fatalf("native capability negotiation: supported=%t error=%v", supported, err)
+			}
+		})
+	}
+	if err := fixtureRunnerRequest(t, h.admin.Transport(), "unknown-token", http.MethodGet, "/api/v2/capabilities", nil, nil); err == nil {
+		t.Fatal("capabilities accepted an unknown credential")
+	}
+}
+
 func TestNativeComposedAuthorizationClaimAndExecution(t *testing.T) {
 	h := newNativeChangeHub(t)
-	identityPath := filepath.Join(t.TempDir(), "private", "identity.json")
-	file, err := runnerauth.Initialize(identityPath, fixtureClient(h.admin.Transport()).baseURL.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	enrollment, err := h.admin.Transport().CreateRunnerEnrollment(t.Context(), h.organization, runnerauth.EnrollmentRequest{Binding: file.Identity.Binding, ProjectIDs: []tracker.ProjectID{h.project}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 60})
+	identityPath := h.native.Transport().IdentityFile()
+	file, err := runnerauth.Load(identityPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	machine := h.scheduler.machine
-	machine.ID = file.Identity.MachineID
 	machine.DisplayName = "Selective runner"
-	machine.BackendIsolation = isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}
-	if _, err := EnrollRunner(t.Context(), identityPath, h.organization, enrollment.Token, machine); err != nil {
-		t.Fatal(err)
-	}
 	client, err := newTestClient(t, Config{URL: file.HubURL, IdentityFile: identityPath})
 	if err != nil {
 		t.Fatal(err)
@@ -66,17 +77,14 @@ func TestNativeComposedAuthorizationClaimAndExecution(t *testing.T) {
 	for i, test := range []struct {
 		title    string
 		labels   []string
-		priority string
+		priority int
 	}{
-		{"Unrelated higher priority", []string{"ready"}, "0"},
-		{"Excluded higher priority", []string{"ready", "canary", "manual"}, "0"},
-		{"Unlabeled higher priority", nil, "0"},
-		{"Authorized target", []string{"ready", "canary"}, "2"},
+		{"Unrelated higher priority", []string{"ready"}, 0},
+		{"Excluded higher priority", []string{"ready", "canary", "manual"}, 0},
+		{"Unlabeled higher priority", nil, 0},
+		{"Authorized target", []string{"ready", "canary"}, 2},
 	} {
-		issue := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: test.title, Body: "Change the README." + issueContractTestSections, Labels: test.labels, State: "Todo"})
-		if err = h.connector.SetField(t.Context(), string(issue.WorkItemID), "priority", test.priority); err != nil {
-			t.Fatal(err)
-		}
+		issue := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: test.title, Body: "Change the README." + issueContractTestSections, Labels: test.labels, State: "Todo", Priority: new(test.priority)})
 		ids[i] = string(issue.WorkItemID)
 	}
 	hint, err := selector.NativeFilterHint(selector.Selector{And: []selector.Selector{{Labels: selector.Labels{Include: []string{"ready"}}}, {Labels: selector.Labels{Include: []string{"canary"}, Exclude: []string{"manual"}}}}}, selector.Context{})

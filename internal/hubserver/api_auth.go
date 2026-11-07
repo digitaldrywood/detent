@@ -111,7 +111,7 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 				if credential.Hosted == nil && credential.Runner.RunnerID == "" && c.Path() != "/health" && !s.hostedArtifactPublisher(c, credential) && !s.hostedChangeCheckPrincipal(c, credential) {
 					return s.nativeAPIError(c, nativeNotFound())
 				}
-				hostedRoute := strings.HasPrefix(c.Path(), nativeBase) || c.Path() == nativeOrganizationIssuePath && hostedReadRequest(c)
+				hostedRoute := strings.HasPrefix(c.Path(), nativeBase) || c.Path() == "/api/v2/capabilities" || c.Path() == nativeOrganizationIssuePath && hostedReadRequest(c)
 				if credential.Hosted != nil && (!hostedRoute || strings.HasSuffix(c.Path(), "/checks") || strings.Contains(c.Path(), "/imports")) {
 					return s.nativeAPIError(c, nativeNotFound())
 				}

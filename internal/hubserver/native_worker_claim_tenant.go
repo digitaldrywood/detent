@@ -487,6 +487,9 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			if err != nil {
 				return err
 			}
+			if err := runnerVersionError(minimumRunnerVersion(s.config.Version), machine.Version); err != nil {
+				return err
+			}
 			exposure.SpriteInfrastructure = machine.SpriteName != "" && machine.SpriteName == machine.Hostname
 			machineUsed, err := w.Usage(ctx, machine.ID)
 			if err != nil {

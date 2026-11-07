@@ -41,9 +41,40 @@ func (s *acceptedDispatchScheduling) FetchCandidateIssues(context.Context, orche
 }
 
 type refusedDispatchAttempts struct {
-	store.WorkAttemptStore
 	beforeStart func()
 	starts      atomic.Int64
+}
+
+func (*refusedDispatchAttempts) WorkAttempt(context.Context, int64) (store.WorkAttempt, error) {
+	return store.WorkAttempt{}, errors.New("attempt was not started")
+}
+
+func (*refusedDispatchAttempts) RecordWorkAttemptHeartbeat(context.Context, store.WorkAttemptHeartbeat) error {
+	return errors.New("attempt was not started")
+}
+
+func (*refusedDispatchAttempts) CompleteWorkAttempt(context.Context, store.WorkAttemptCompletion) error {
+	return errors.New("attempt was not started")
+}
+
+func (*refusedDispatchAttempts) ListActiveWorkAttempts(context.Context, store.WorkAttemptQuery) ([]store.WorkAttempt, error) {
+	return nil, nil
+}
+
+func (*refusedDispatchAttempts) ListRecentTerminalWorkAttempts(context.Context, store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
+	return nil, nil
+}
+
+func (*refusedDispatchAttempts) TimeoutExpiredWorkAttempts(context.Context, store.WorkAttemptTimeout) ([]store.WorkAttempt, error) {
+	return nil, nil
+}
+
+func (*refusedDispatchAttempts) RecordSchedulerDecision(context.Context, store.SchedulerDecision) (int64, error) {
+	return 0, nil
+}
+
+func (*refusedDispatchAttempts) ListRecentSchedulerDecisions(context.Context, store.SchedulerDecisionQuery) ([]store.SchedulerDecision, error) {
+	return nil, nil
 }
 
 func (s *refusedDispatchAttempts) StartWorkAttempt(context.Context, store.WorkAttemptStart) (int64, error) {
@@ -129,16 +160,7 @@ func TestNativeAcceptedClaimDispatchRefusals(t *testing.T) {
 				}
 				return h.failChanges.RoundTrip(request)
 			}))
-			runtimeStore, err := store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := runtimeStore.Close(); err != nil {
-					t.Error(err)
-				}
-			})
-			attempts := &refusedDispatchAttempts{WorkAttemptStore: runtimeStore, beforeStart: func() {
+			attempts := &refusedDispatchAttempts{beforeStart: func() {
 				h.scheduler.mu.Lock()
 				defer h.scheduler.mu.Unlock()
 				if execution := h.scheduler.nativeClaims[issue.ID].execution; execution == nil || execution.CompletionData().Identity != nil {
