@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubclient/nativechange"
@@ -228,10 +230,11 @@ func fixtureEnableEnrollment(t testing.TB, h *nativeChangeHub) {
 	original := fixtureClient(h.native.Transport())
 	config := original.config
 	path := filepath.Join(t.TempDir(), "private", "identity.json")
-	file, err := runnerauth.Initialize(path, config.URL)
+	credential, err := apikey.GenerateToken()
 	if err != nil {
 		t.Fatal(err)
 	}
+	file := runnerauth.File{Schema: 1, HubURL: strings.TrimRight(config.URL, "/"), Identity: runnerauth.Identity{Binding: runnerauth.NewBinding()}, Credential: credential}
 	enrollment, err := h.admin.Transport().CreateRunnerEnrollment(t.Context(), h.organization, runnerauth.EnrollmentRequest{Binding: file.Identity.Binding, ProjectIDs: []tracker.ProjectID{h.project}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}, TTLSeconds: 60})
 	if err != nil {
 		t.Fatal(err)
@@ -241,7 +244,14 @@ func fixtureEnableEnrollment(t testing.TB, h *nativeChangeHub) {
 	if err := fixtureRunnerRequest(t, h.admin.Transport(), enrollment.Token, http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/runner-enrollments/redeem", redemption, &file.Identity); err != nil {
 		t.Fatal(err)
 	}
-	if err := runnerauth.Save(path, file); err != nil {
+	encoded, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	config.IdentityFile = path

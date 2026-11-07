@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -27,6 +29,8 @@ func TestNativeAdmissionBatch(t *testing.T) {
 	}
 
 	t.Parallel()
+	database := testsupport.DispatchPostgresDatabase(t)
+	base := hubserver.Config{Clock: time.Now, Conversation: &hubserver.ConversationConfig{Enabled: true}, RunDetails: &archivedRunDetails{}, Content: newHubContentStore()}
 	for _, test := range []struct {
 		name             string
 		slots            int
@@ -110,7 +114,8 @@ func TestNativeAdmissionBatch(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true}}, true)
+			config := testsupport.DispatchPostgresOrganizationConfig(t, base, database)
+			h := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true}}, true, false, config)
 			fixtureCapacity(t, h, 6)
 			if test.missingIsolation {
 				fixtureEnableEnrollment(t, h)

@@ -62,10 +62,13 @@ var dispatchPostgresTemplate = pgtest.NewTemplate(func(ctx context.Context, db *
 	return err
 })
 
-type dispatchHostedProvider struct{ auth.HostedProvider }
+type dispatchHostedProvider struct {
+	auth.HostedProvider
+	member auth.Membership
+}
 
-func (dispatchHostedProvider) Memberships(context.Context, string, string) ([]auth.Membership, error) {
-	member := auth.Membership{ID: "membership_example", UserID: "user_example", OrganizationID: "provider_example", Status: "active"}
+func (p dispatchHostedProvider) Memberships(context.Context, string, string) ([]auth.Membership, error) {
+	member := p.member
 	member.Role.Slug = "owner"
 	return []auth.Membership{member}, nil
 }
@@ -73,7 +76,35 @@ func (dispatchHostedProvider) Memberships(context.Context, string, string) ([]au
 var dispatchPostgresFixtures = make(chan struct{}, 4)
 var dispatchPostgresAdmins sync.Map
 
+func DispatchPostgresDatabase(t *testing.T) *sql.DB {
+	t.Helper()
+	admin := dispatchPostgresTemplate.Database(t)
+	connection := dispatchPostgresTemplate.Connection(t, admin, "", "")
+	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{connection.Database}.Sanitize()+" CONNECTION LIMIT 16"); err != nil {
+		t.Fatal(err)
+	}
+	dispatchPostgresAdmins.Store(connection.Database, admin)
+	t.Cleanup(func() { dispatchPostgresAdmins.Delete(connection.Database) })
+	return admin
+}
+
+func DispatchPostgresOrganizationConfig(t *testing.T, cfg hubserver.Config, admin *sql.DB) hubserver.Config {
+	t.Helper()
+	token, err := apikey.GenerateToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.InitialAdminToken = []byte(token)
+	organization := "org_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	return dispatchPostgresConfig(t, cfg, admin, organization)
+}
+
 func DispatchPostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Config {
+	t.Helper()
+	return dispatchPostgresConfig(t, cfg, nil, "org_example")
+}
+
+func dispatchPostgresConfig(t *testing.T, cfg hubserver.Config, admin *sql.DB, organization string) hubserver.Config {
 	t.Helper()
 	select {
 	case dispatchPostgresFixtures <- struct{}{}:
@@ -81,13 +112,22 @@ func DispatchPostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Config
 	case <-t.Context().Done():
 		t.Fatal(t.Context().Err())
 	}
-	admin := dispatchPostgresTemplate.Database(t)
-	connection := dispatchPostgresTemplate.Connection(t, admin, "", "")
-	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{connection.Database}.Sanitize()+" CONNECTION LIMIT 6"); err != nil {
-		t.Fatal(err)
+	if admin == nil {
+		admin = dispatchPostgresTemplate.Database(t)
+		connection := dispatchPostgresTemplate.Connection(t, admin, "", "")
+		if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{connection.Database}.Sanitize()+" CONNECTION LIMIT 6"); err != nil {
+			t.Fatal(err)
+		}
+		dispatchPostgresAdmins.Store(connection.Database, admin)
+		t.Cleanup(func() { dispatchPostgresAdmins.Delete(connection.Database) })
 	}
-	dispatchPostgresAdmins.Store(connection.Database, admin)
-	t.Cleanup(func() { dispatchPostgresAdmins.Delete(connection.Database) })
+	connection := dispatchPostgresTemplate.Connection(t, admin, "", "")
+	provider, user, membership, principal, slug, hubID := "provider_example", "user_example", "membership_example", "example_admin", "example", "hub_"+strings.Repeat("a", 32)
+	email := "owner@example.test"
+	if organization != "org_example" {
+		provider, user, membership, principal, slug, hubID = "provider_"+organization, "user_"+organization, "membership_"+organization, "admin_"+organization, organization, "hub_"+strings.TrimPrefix(organization, "org_")
+		email = "owner+" + organization + "@example.test"
+	}
 	connection.User = "example_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	connection.Password = uuid.NewString()
 	role := pgx.Identifier{connection.User}.Sanitize()
@@ -103,7 +143,7 @@ func DispatchPostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Config
 	})
 	cfg.DatabaseBackend, cfg.DatabasePath = hubserver.DatabasePostgres, ""
 	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}, LeaseClock: cfg.Clock}
-	cfg.Hosted = &hubserver.HostedConfig{OrganizationID: "org_example", WorkOSOrganizationID: "provider_example", PublicURL: "https://hub.example.test", Provider: dispatchHostedProvider{}}
+	cfg.Hosted = &hubserver.HostedConfig{OrganizationID: organization, WorkOSOrganizationID: provider, PublicURL: "https://hub.example.test", Provider: dispatchHostedProvider{member: auth.Membership{ID: membership, UserID: user, OrganizationID: provider, Status: "active"}}}
 	encoded, err := json.Marshal(map[string]string{"1": base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x35}, 32))})
 	if err != nil {
 		t.Fatal(err)
@@ -129,27 +169,27 @@ func DispatchPostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Config
 	if cfg.Clock != nil {
 		now = cfg.Clock().UTC()
 	}
-	envelope, err := cfg.SecretKeys.Seal(bytes.Repeat([]byte{0x5a}, 32), accessstore.SecretAAD("org_example", "", accessstore.NativeCursorKeyKind))
+	envelope, err := cfg.SecretKeys.Seal(bytes.Repeat([]byte{0x5a}, 32), accessstore.SecretAAD(tracker.OrganizationID(organization), "", accessstore.NativeCursorKeyKind))
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = repository.WriteTenant(t.Context(), "org_example", corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_example", Name: "Example", Slug: "example", CreatedAt: now}); err != nil {
+	err = repository.WriteTenant(t.Context(), tracker.OrganizationID(organization), corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: tracker.OrganizationID(organization), Name: "Example", Slug: slug, CreatedAt: now}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: "org_example", ProviderID: "provider_example", AllocationGeneration: 1}); err != nil {
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: tracker.OrganizationID(organization), ProviderID: provider, AllocationGeneration: 1}); err != nil {
 			return err
 		}
-		if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: "org_example", ID: "hub_" + strings.Repeat("a", 32), CursorKey: bytes.Repeat([]byte{0x5a}, 32)}); err != nil {
+		if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: tracker.OrganizationID(organization), ID: hubID, CursorKey: bytes.Repeat([]byte{0x5a}, 32)}); err != nil {
 			return err
 		}
-		if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: "org_example", Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: "org_example", Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "import", KeyVersion: envelope.Version, RecordedAt: now}); err != nil {
+		if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: tracker.OrganizationID(organization), Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: tracker.OrganizationID(organization), Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "import", KeyVersion: envelope.Version, RecordedAt: now}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_example", ID: "example_admin", Name: "Example administrator", Hash: apikey.HashToken(string(cfg.InitialAdminToken)), Scope: "operator", KeyScope: "admin", ProjectAccess: "all", Kind: "personal", UserID: "user_example", MembershipID: "membership_example", NativeOnly: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: tracker.OrganizationID(organization), ID: principal, Name: "Example administrator", Hash: apikey.HashToken(string(cfg.InitialAdminToken)), Scope: "operator", KeyScope: "admin", ProjectAccess: "all", Kind: "personal", UserID: user, MembershipID: membership, NativeOnly: true, CreatedAt: now, UpdatedAt: now}); err != nil {
 			return err
 		}
-		return w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: "org_example", UserID: "user_example", Email: "owner@example.test", MembershipID: "membership_example", Role: "owner", Active: true, PrincipalID: "example_admin", CreatedAt: now, UpdatedAt: now})
+		return w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: tracker.OrganizationID(organization), UserID: user, Email: email, MembershipID: membership, Role: "owner", Active: true, PrincipalID: principal, CreatedAt: now, UpdatedAt: now})
 	})
 	closeErr := repository.Close()
 	if err != nil || closeErr != nil {

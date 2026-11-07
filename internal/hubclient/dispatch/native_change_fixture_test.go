@@ -235,7 +235,9 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if config.RunDetails == nil {
 		config.RunDetails = &archivedRunDetails{}
 	}
-	config = dispatchPostgresConfig(t, config)
+	if config.Postgres == nil {
+		config = dispatchPostgresConfig(t, config)
+	}
 	config.RunDetails = hubmaintenance.LimitDetails(config.RunDetails)
 	service, err := hubserver.Open(t.Context(), config)
 	if err != nil {
@@ -268,7 +270,8 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		t.Cleanup(server.Close)
 		serverURL, httpClient = server.URL, server.Client()
 	}
-	admin, err := newTestClient(t, Config{URL: serverURL, TokenSource: func() string { return nativeChangeAdminToken }, HTTPClient: httpClient})
+	adminToken := string(config.InitialAdminToken)
+	admin, err := newTestClient(t, Config{URL: serverURL, TokenSource: func() string { return adminToken }, HTTPClient: httpClient})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +298,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		})
 	}
 
-	token := nativeChangeAdminToken
+	token := adminToken
 	if h.admin, err = admin.Native(h.organization, h.project); err != nil {
 		t.Fatal(err)
 	}
