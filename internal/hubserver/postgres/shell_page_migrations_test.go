@@ -12,14 +12,14 @@ import (
 )
 
 func TestShellPageMigrationsResumeInterruptedDDL(t *testing.T) {
-	_, fixture := migrationDatabaseAtVersion(t, 20261107004848)
+	_, fixture := migrationDatabaseAtVersion(t, 20261107062507)
 	for _, tc := range []struct {
 		file    string
 		indexes []string
 	}{
-		{"20261107010000_health_page_evidence.sql", []string{"health_page_pending"}},
-		{"20261107010001_health_project_page_order.sql", []string{"health_project_page_order", "health_project_page_cold"}},
-		{"20261107051906_project_page_read_model.sql", []string{"project_page_active"}},
+		{"20261107062508_health_page_evidence.sql", []string{"health_page_pending"}},
+		{"20261107062509_health_project_page_order.sql", []string{"health_project_page_order", "health_project_page_cold"}},
+		{"20261107062510_project_page_read_model.sql", []string{"project_page_active"}},
 	} {
 		t.Run(tc.file, func(t *testing.T) {
 			db := fixture.Database(t)
