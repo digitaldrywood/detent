@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -512,10 +514,16 @@ func BenchmarkOrganizationProductivity(b *testing.B) {
 func TestOrganizationProductivityTenant(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	foreign := newNativeFixture(t, f.service, f.project.OrganizationID+"_second", "foreign")
-	f.create(t, "readable")
-	foreign.create(t, "foreign sentinel")
+	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	for _, fixture := range []nativeFixture{f, foreign} {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), fixture.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: fixture.project.OrganizationID, ProjectID: fixture.project.ID, NativeID: tracker.NativeWorkItemID("wi_" + string(fixture.project.ID)), Number: 1, Title: fixture.project.Name, CreatedAt: now})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
-	now := f.service.config.now()
 	report, err := f.service.readOrganizationProductivityPostgres(t.Context(), apiCredential{Scope: apiScopeAdmin}, []string{string(f.project.ID), string(foreign.project.ID)}, operatortool.AnalyticsWindow{From: now.Add(-24 * time.Hour), To: now.Add(time.Hour)}, reportsFilter{})
 	if err != nil {
 		t.Fatal(err)
