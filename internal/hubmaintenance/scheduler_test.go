@@ -35,7 +35,7 @@ func TestBusyAndFailingTenantsCannotStarveCircularTraversal(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		visits[tenant.Organization]++
-		if budget.Items != 1 || tenant.Generation != 1 {
+		if budget.Items != ItemLimit || tenant.Generation != 1 {
 			t.Errorf("invalid visit: %+v %+v", tenant, budget)
 		}
 		if tenant.Organization == "org_00000" {
