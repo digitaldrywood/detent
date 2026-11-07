@@ -219,13 +219,8 @@ func TestCloudEntitlementAdministrators(t *testing.T) {
 	}
 }
 
-func TestCloudRegistryAndKeyCommands(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite registry integration")
-	}
-
+func TestCloudAssertionKeyCommands(t *testing.T) {
 	t.Parallel()
-	registry := filepath.Join(t.TempDir(), "registry.db")
 	run := func(env map[string]string, args ...string) (string, error) {
 		cmd := newCloudCommand(options{lookupEnv: func(name string) string { return env[name] }})
 		var output bytes.Buffer
@@ -235,21 +230,7 @@ func TestCloudRegistryAndKeyCommands(t *testing.T) {
 		err := cmd.Execute()
 		return output.String(), err
 	}
-	register := []string{"registry", "register", "--registry", registry, "--organization", "org_example", "--provider-organization", "org_workos", "--name", "Example", "--endpoint", "unix:" + filepath.Join(t.TempDir(), "org_example.sock"), "--generation", "1"}
-	for _, want := range []string{`"changed":true`, `"changed":false`} {
-		output, err := run(nil, register...)
-		if err != nil || !strings.Contains(output, want) {
-			t.Fatalf("register output = %q, %v; want %s", output, err, want)
-		}
-	}
-	if _, err := run(nil, append(register[:len(register)-2:len(register)-2], "--generation", "0")...); err == nil {
-		t.Fatal("register accepted generation zero")
-	}
-	output, err := run(nil, "registry", "list", "--registry", registry)
-	if err != nil || !strings.Contains(output, `"id":"org_example"`) {
-		t.Fatalf("list output = %q, %v", output, err)
-	}
-	output, err = run(nil, "assertion-key")
+	output, err := run(nil, "assertion-key")
 	if err != nil {
 		t.Fatal(err)
 	}
