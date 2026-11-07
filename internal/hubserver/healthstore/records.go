@@ -2,6 +2,7 @@ package healthstore
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -9,7 +10,11 @@ import (
 )
 
 type Finding struct {
+	OrganizationID                 tracker.OrganizationID
 	Sequence                       int64
+	Generation                     int64
+	SourceAt                       time.Time
+	DisplayEvidence                Evidence
 	ID, Fingerprint, Signal, Class string
 	SubjectKind, SubjectID         string
 	OpenedAt, LastSeenAt           time.Time
@@ -34,12 +39,21 @@ type Baseline struct {
 }
 
 type Page struct {
-	Findings   []Finding
-	Baselines  []Baseline
-	LastTickAt *time.Time
+	ChangeSequence int64
+	Findings       []Finding
+	Baselines      []Baseline
+	LastTickAt     *time.Time
 }
 
 type Reader interface {
 	HealthFindings(context.Context, tracker.ProjectID, string, *time.Time, int64, string, int) (Page, error)
 	HealthSummaryFindings(context.Context, int) ([]Finding, error)
 }
+
+type PageMaintainer interface {
+	NextHealthPage(context.Context) (Finding, error)
+	PublishHealthPage(context.Context, Finding, Evidence) (bool, error)
+	AdvanceHealthPage(context.Context, Finding) error
+}
+
+var ErrPagePending = errors.New("health page projection pending")

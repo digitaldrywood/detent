@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -29,26 +30,8 @@ type healthSubject struct {
 	ID   string `json:"id"`
 }
 
-type healthEvidence struct {
-	Productivity        *healthProductivityEvidence    `json:"productivity,omitempty"`
-	ScheduledValidation *healthScheduledEvidence       `json:"scheduled_validation,omitempty"`
-	EventIDs            []string                       `json:"event_ids,omitempty"`
-	AttemptIDs          []string                       `json:"attempt_ids,omitempty"`
-	WorkItemIDs         []string                       `json:"work_item_ids,omitempty"`
-	Counts              map[string]int                 `json:"counts,omitempty"`
-	Values              map[string]float64             `json:"values,omitempty"`
-	Queues              map[string]healthQueueEvidence `json:"queues,omitempty"`
-	Signatures          []string                       `json:"signatures,omitempty"`
-	Reason              string                         `json:"reason,omitempty"`
-}
-
-type healthScheduledEvidence struct {
-	LastReportAt   time.Time  `json:"last_report_at"`
-	LastRunURL     string     `json:"last_run_url"`
-	LastGreenAt    *time.Time `json:"last_green_at,omitempty"`
-	CadenceSeconds int        `json:"cadence_seconds"`
-	WindowSeconds  int        `json:"window_seconds"`
-}
+type healthEvidence = healthstore.Evidence
+type healthScheduledEvidence = healthstore.ScheduledEvidence
 
 type healthScheduledValidation struct {
 	FirstReport time.Time

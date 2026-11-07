@@ -8,14 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type healthProductivityEvidence struct {
-	WindowFrom         time.Time `json:"window_from"`
-	WindowTo           time.Time `json:"window_to"`
-	LatestFailureStage string    `json:"latest_failure_stage"`
-}
+type healthProductivityEvidence = healthstore.ProductivityEvidence
 
 func healthFailureStage(stage string) string {
 	switch stage {

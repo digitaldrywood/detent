@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 	"slices"
 	"strings"
 	"time"
@@ -67,12 +68,7 @@ type healthRateProject struct {
 	ResidencePartial bool
 }
 
-type healthQueueEvidence struct {
-	QueueDepth  int     `json:"queue_depth"`
-	ShortP50    float64 `json:"todo_p50_seconds_1h"`
-	LongP50     float64 `json:"todo_p50_seconds_6h"`
-	BaselineP90 float64 `json:"baseline_p90_seconds"`
-}
+type healthQueueEvidence = healthstore.QueueEvidence
 
 type healthBaselineUnavailable struct {
 	Project string `json:"project_id"`
