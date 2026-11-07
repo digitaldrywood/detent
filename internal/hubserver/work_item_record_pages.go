@@ -160,7 +160,7 @@ func (s *Service) workItemResource(ctx context.Context, scope nativeScope, id st
 		}
 	}
 	if err == nil && include {
-		err = s.hydrateNativeIssueChangeRecord(ctx, scope, &issue)
+		err = s.readNativeIssueChangePage(ctx, scope, &issue)
 	}
 	return issue, err
 }

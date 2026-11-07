@@ -104,7 +104,7 @@ func TestBoardSearchFallbackHasFixedSQLBudget(t *testing.T) {
 				now := service.config.now().UTC().Truncate(time.Microsecond)
 				for seeded := 1; seeded <= size; seeded++ {
 					id := tracker.NativeWorkItemID(fmt.Sprintf("wi_search_%04d", seeded))
-					issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: scope.project, WorkItemID: id, Number: seeded, Revision: 1}, Title: "Release audit credential", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: now, UpdatedAt: now}
+					issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: scope.project, WorkItemID: id, Number: seeded, Revision: 1}, Change: &tracker.NativeIssueChange{Connector: tracker.NativeChangeConnectorNone, ChangeID: "change_" + string(id), HeadSHA: strings.Repeat("a", 40)}, Title: "Release audit credential", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: now, UpdatedAt: now}
 					payload, err := viewstore.NewContent(details).PrepareBoard(t.Context(), tracker.NativeBoardCard{Issue: issue})
 					if err != nil {
 						t.Fatal(err)
@@ -125,7 +125,7 @@ func TestBoardSearchFallbackHasFixedSQLBudget(t *testing.T) {
 						if err := w.PutSearch(t.Context(), document, 0); err != nil {
 							return err
 						}
-						row := viewstore.BoardRecord{OrganizationID: org, ProjectID: scope.project, WorkItemID: id, SourceRevision: item.Revision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("%s#%04d", scope.project, seeded)}, CreatedAt: now, UpdatedAt: now, Payload: payload, ActorPrincipalID: "example", PageIssue: &issue, ListIssue: &issue, ListBytes: 1024, ProjectedAt: now, ReporterRelations: &viewstore.BoardReporterRelations{}, Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Number: seeded, Actor: issue.Actor}}
+						row := viewstore.BoardRecord{OrganizationID: org, ProjectID: scope.project, WorkItemID: id, SourceRevision: item.Revision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("%s#%04d", scope.project, seeded)}, CreatedAt: now, UpdatedAt: now, Payload: payload, ActorPrincipalID: "example", PageIssue: &issue, ListIssue: &issue, ListBytes: 1024, ProjectedAt: now, ReporterRelations: &viewstore.BoardReporterRelations{}, Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Number: seeded, Actor: issue.Actor, ChangePrincipalID: "example"}}
 						return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: scope.project, WorkItemID: id, ExpectedRevision: item.Revision, Current: &row})
 					}); err != nil {
 						t.Fatal(err)
@@ -155,6 +155,26 @@ func TestBoardSearchFallbackHasFixedSQLBudget(t *testing.T) {
 					if role == "reporter" {
 						selected.credential.HostedRole, selected.credential.HostedPrincipal = role, "example"
 					}
+					t.Run(fmt.Sprintf("%s/%s/change", org, role), func(t *testing.T) {
+						if err := measured.Ping(t.Context()); err != nil {
+							t.Fatal(err)
+						}
+						issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: scope.project, WorkItemID: "wi_search_0002", Revision: 1}}
+						wire.reset()
+						err := service.readNativeIssueChangePage(t.Context(), selected, &issue)
+						exchanges, statements := wire.stop()
+						if err != nil || issue.Change == nil || issue.Change.ChangeID != "change_wi_search_0002" || issue.Change.HeadSHA != strings.Repeat("a", 40) {
+							t.Fatalf("projected Change = %+v, error = %v", issue.Change, err)
+						}
+						cost := [2]int{exchanges, statements}
+						if exchanges > 3 || statements > 4 {
+							t.Errorf("Change read cost=%v", cost)
+						}
+						if expected, ok := expectedCounts["change"]; ok && expected != cost {
+							t.Errorf("Change SQL/wire cost varies by size or tenant: got %v want %v", cost, expected)
+						}
+						expectedCounts["change"] = cost
+					})
 					for _, include := range []string{"summary", "board", "work"} {
 						for _, filter := range []struct {
 							name, key, value string

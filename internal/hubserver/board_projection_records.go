@@ -341,6 +341,14 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 		record := boardProjectionRecord(snapshot, card)
 		record.ProjectedAt = now
 		issue.WebURL = issueBrowserPath(snapshot.organizationSlug, snapshot.project.Core.Slug, issue.Number)
+		if snapshot.change != nil || snapshot.project.Settings.RepositoryEnabled {
+			step = "issue_change"
+			if err := s.prepareNativeIssueChangeRecord(ctx, snapshot, &issue); err != nil {
+				return err
+			}
+		} else {
+			issue.Change = &tracker.NativeIssueChange{Connector: tracker.NativeChangeConnectorNone}
+		}
 		projected, reporter, err := s.boardProjectedRelationshipIssues(ctx, organization, candidate.ProjectID, issue)
 		if err != nil {
 			return err

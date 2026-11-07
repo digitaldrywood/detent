@@ -16,6 +16,7 @@ func boundBoardProjection(projected tracker.NativeIssue, reporter viewstore.Boar
 	}
 	board = list
 	board.Provenance = projected.Provenance
+	board.Change = projected.Change
 	board.OmittedFields = slices.DeleteFunc(slices.Clone(board.OmittedFields), func(field string) bool { return field == "provenance" })
 	list = operatortool.NativeListIssue(board)
 	boundedReporter = reporter

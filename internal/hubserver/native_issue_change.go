@@ -9,9 +9,8 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -185,80 +184,85 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.st
 	return revision, nil
 }
 
-func (s *Service) hydrateNativeIssueChangeRecord(ctx context.Context, scope nativeScope, issue *tracker.NativeIssue) error {
-	binding, _, err := s.projectConnector(ctx, nil, scope)
-	if err != nil {
-		return err
-	}
+func (s *Service) prepareNativeIssueChangeRecord(ctx context.Context, snapshot boardProjectionSnapshot, issue *tracker.NativeIssue) error {
 	change := &tracker.NativeIssueChange{Connector: tracker.NativeChangeConnectorNone}
-	if binding != nil {
+	if snapshot.project.Settings.RepositoryEnabled {
 		change.Connector = tracker.NativeChangeConnectorGitHub
 	}
 	issue.Change = change
-	var latest eventstore.Change
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		var err error
-		latest, err = r.LatestChange(ctx, scope.project, issue.WorkItemID)
-		return err
-	})
-	if errors.Is(err, corestore.ErrNotFound) {
+	if snapshot.change == nil {
 		return nil
 	}
-	if err != nil {
-		return err
-	}
-	result, err := s.readBoundedChangeRecord(ctx, scope, operatortool.ChangeArguments{ItemID: string(issue.WorkItemID), ChangeID: latest.ID, Section: "current"}, operatortool.ChangeResult{})
-	if err != nil {
-		return err
-	}
-	detail := result.Detail
-	change.ChangeID, change.State = detail.Change.ID, "open"
-	if detail.Change.CurrentLanding() != nil {
+	change.ChangeID, change.State = snapshot.change.ID, "open"
+	if snapshot.change.LandedVersionID != nil && snapshot.change.CurrentVersionID != nil && *snapshot.change.LandedVersionID == *snapshot.change.CurrentVersionID {
 		change.State = "closed"
 	}
-	for _, version := range detail.Versions {
-		if version.ID != detail.Change.CurrentVersion {
-			continue
+	version := snapshot.changeVersion
+	if version == nil {
+		return nil
+	}
+	change.HeadSHA = version.HeadSHA
+	external := tracker.ChangeExternalReference{Provider: version.ExternalProvider, ID: version.ExternalID, URL: version.ExternalURL}
+	err := s.config.TenantRepository.ReadTenant(ctx, snapshot.item.OrganizationID, corestore.Background, func(r tenantstore.Reader) error {
+		publication, err := r.PRPublication(ctx, version.ID)
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
 		}
-		change.HeadSHA = version.HeadSHA
-		if version.External != nil {
-			change.URL, change.Number = version.External.URL, externalPullRequestNumber(*version.External)
-			if version.External.Provider == "github" {
-				change.Connector = tracker.NativeChangeConnectorGitHub
-			}
-			if change.Number > 0 {
-				issue.PullRequest = &tracker.NativePullRequest{Number: change.Number, URL: change.URL}
-			}
+		if err == nil && publication.ChangeID == version.ChangeID && publication.HeadSHA == version.HeadSHA && publication.Repository == version.Repository && publication.PolicyID == version.PolicyRevisionID && publication.SourceAttemptID == version.AttemptID {
+			external = publication.External
 		}
-		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			row, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
-			if err != nil {
-				return err
-			}
-			attempt, err := r.LatestAttempt(ctx, row.ID)
-			if errors.Is(err, corestore.ErrNotFound) {
-				return nil
-			}
-			if err != nil {
-				return err
-			}
-			if attempt.Status == "succeeded" {
-				diff, err := r.LatestAttemptDiff(ctx, scope.project, attempt.ID, "attempt")
-				if errors.Is(err, corestore.ErrNotFound) {
-					return nil
-				}
-				if err != nil {
-					return err
-				}
-				if diff.HeadSHA == version.HeadSHA {
-					change.Revision = tracker.Revision(attempt.WorkItemRevision)
-				}
-			}
+		attempt, err := r.LatestAttempt(ctx, snapshot.item.ID)
+		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
-		})
+		}
 		if err != nil {
 			return err
 		}
+		if attempt.Status != "succeeded" {
+			return nil
+		}
+		diff, err := r.LatestAttemptDiff(ctx, snapshot.item.ProjectID, attempt.ID, "attempt")
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if diff.HeadSHA == version.HeadSHA && diff.Generation.Seq == attempt.Sequence && diff.FileCount > 0 {
+			change.Revision = tracker.Revision(attempt.WorkItemRevision)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	change.URL, change.Number = external.URL, externalPullRequestNumber(external)
+	if external.Provider == "github" {
+		change.Connector = tracker.NativeChangeConnectorGitHub
+	}
+	if change.Number > 0 {
+		issue.PullRequest = &tracker.NativePullRequest{Number: change.Number, URL: change.URL}
 	}
 	return nil
+}
+
+func (s *Service) readNativeIssueChangePage(ctx context.Context, scope nativeScope, issue *tracker.NativeIssue) error {
+	return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		reader, ok := r.(viewstore.BoardReader)
+		if !ok {
+			return workItemStorageUnavailable()
+		}
+		page, err := reader.BoardItem(ctx, scope.project, issue.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if page.PageIssue == nil || page.SourceRevision != int64(issue.Revision) {
+			return workItemStorageUnavailable()
+		}
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: page.Display.ChangePrincipalID}) {
+			return nil
+		}
+		issue.Change, issue.PullRequest = page.PageIssue.Change, page.PageIssue.PullRequest
+		return nil
+	})
 }
