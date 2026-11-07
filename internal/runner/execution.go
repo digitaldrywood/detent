@@ -1002,7 +1002,7 @@ func (r *Runner) lookupNativeResumeState(ctx context.Context, req RunRequest, ru
 	}
 	resumeStore, ok := r.store.(store.AgentResumeStore)
 	if !ok {
-		return store.AgentResumeState{}, ErrNativeRecoveryRequired
+		return store.AgentResumeState{}, nil
 	}
 	identity := previous.Identity
 	model := identity.Model
@@ -1048,6 +1048,9 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 	}
 	if checkpoint.UncertainForgeEffect() {
 		return "fresh_checkout", "publication_reconciliation_required"
+	}
+	if current != nil && current.Version.ID != "" && current.Version.Source != nil && current.Version.Source.Validate(current.Version.BaseSHA, current.Version.HeadSHA, current.Bundle) == nil && !checkpoint.GitRef() {
+		return "fresh_checkout", "verified_hub_source"
 	}
 	if current != nil && current.Version.ID != "" && local != nil && local.HeadSHA == current.Version.HeadSHA && checkpoint.HeadSHA != current.Version.HeadSHA &&
 		len(local.TrackedPaths) == 0 && len(local.UntrackedPaths) == 0 &&
