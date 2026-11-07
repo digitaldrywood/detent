@@ -108,6 +108,14 @@ func (s *Service) creditPack(id string) (HostedCreditPack, bool) {
 	return HostedCreditPack{}, false
 }
 
+func (s *Service) registerHostedCreditWriteRoutes(e *echo.Echo) {
+	e.POST("/organization/billing/credits/checkout", s.hostedCreditCheckout)
+	e.POST("/organization/billing/credits/auto-fund", s.hostedCreditAutoFund)
+	e.POST(hostedOrganizationBase+"/billing/credits/checkout", s.hostedCreditCheckout)
+	e.PUT(hostedOrganizationBase+"/billing/credits/auto-fund", s.hostedCreditAutoFund)
+	e.POST("/webhooks/stripe", s.hostedStripeWebhook)
+}
+
 func (s *Service) hostedCreditCheckout(c echo.Context) error {
 	api := hostedBillingAPI(c)
 	if _, err := s.hostedBillingOwner(c.Request().Context(), c); err != nil {

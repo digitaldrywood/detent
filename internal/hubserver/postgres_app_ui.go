@@ -53,6 +53,7 @@ func (s *Service) registerPostgresAppRoutes(e *echo.Echo) {
 		s.registerOrganizationBudgetReadRoutes(e)
 		s.registerMonthlyBudgetWriteRoutes(e)
 		s.registerHostedCreditReadRoutes(e)
+		s.registerHostedCreditWriteRoutes(e)
 		e.GET("/daily-summary/unsubscribe", s.unsubscribeDailySummary)
 		if s.config.Hosted.SharedEntry != nil {
 			e.POST("/internal/v1/daily-summary/unsubscribe", s.unsubscribeDailySummary)
