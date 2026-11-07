@@ -61,6 +61,10 @@ func TestNativeClaimsDoNotWaitForPolicyApproval(t *testing.T) {
 					}
 				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/policy/observed"):
 					w.WriteHeader(http.StatusNoContent)
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/routing"):
+					if err := json.NewEncoder(w).Encode(runnerauth.Runner{Binding: identity.Identity.Binding, OrganizationID: "org_test", Routing: runnerauth.Routing{CapacityLimit: 1}, ReportedCapacity: 1, HostCapacity: 1}); err != nil {
+						t.Fatal(err)
+					}
 				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/policy"):
 					if approved {
 						if err := json.NewEncoder(w).Encode(policy.Approval{Policy: selected}); err != nil {

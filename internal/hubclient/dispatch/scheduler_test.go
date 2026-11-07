@@ -133,6 +133,8 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": features})
 		case r.URL.Path == "/api/v2/organizations/org_test/projects/prj_test":
 			_ = json.NewEncoder(w).Encode(tracker.NativeProject{Profile: "native"})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/routing"):
+			_ = json.NewEncoder(w).Encode(runnerauth.Runner{Routing: snapshot.Routing, ReportedCapacity: 3, HostCapacity: 3})
 		case strings.HasSuffix(r.URL.Path, "/policy"):
 			_ = json.NewEncoder(w).Encode(policy.Approval{Policy: clientTestPolicy()})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v2/organizations/org_test/projects/prj_test/policy/observed":
