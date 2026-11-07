@@ -535,7 +535,7 @@ func (s *Service) readAttachmentRecordWith(ctx context.Context, r tenantstore.Re
 }
 
 func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope nativeScope, plan workItemRecordPlan) ([]string, error) {
-	if !plan.create {
+	if plan.existing {
 		return nil, nil
 	}
 	body := plan.comment.Body
@@ -554,6 +554,22 @@ func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope
 	ids = slices.Compact(ids)
 	if len(ids) > 200 {
 		return nil, nativePublicInvalid("Work item attachment references exceed the write bound")
+	}
+	if !plan.create {
+		previous, err := cloudContentAttachmentReferences(plan.previousContent, scope)
+		if err != nil {
+			return nil, err
+		}
+		previousIDs := make(map[string]bool, len(previous))
+		for _, reference := range previous {
+			previousIDs[reference.ID] = true
+		}
+		for _, id := range ids {
+			if !previousIDs[id] {
+				return nil, workItemStorageUnavailable()
+			}
+		}
+		return nil, nil
 	}
 	for _, id := range ids {
 		if _, err := s.readAttachmentRecordTenant(ctx, scope, id); err != nil {
