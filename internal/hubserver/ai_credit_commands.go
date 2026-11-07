@@ -91,6 +91,16 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 		}
 		session, err = provider.CreditCheckout(ctx, billing.CreditRequest{CheckoutRequest: billing.CheckoutRequest{Binding: binding, PriceID: purchase.PriceID, IdempotencyKey: key, ReturnURL: s.hostedBillingReturn(true), ExpiresAt: purchase.CreatedAt.Truncate(time.Second).Add(time.Hour)}, USDCents: purchase.USDCents})
 		if err != nil {
+			var failure *billing.StripeError
+			if errors.As(err, &failure) && failure.StatusCode >= 400 && failure.StatusCode < 500 && failure.StatusCode != http.StatusConflict && failure.Type != "idempotency_error" {
+				if failure.Method == http.MethodPost && failure.Path == "checkout/sessions" {
+					err = errors.Join(err, s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+						_, err := writer.MarkBillingCreditPurchaseFailed(ctx, purchase.Key)
+						return err
+					}))
+				}
+				return billingDestination{}, checkoutProviderFailure("", fmt.Errorf("create credit checkout: %w", err))
+			}
 			return billingDestination{}, errors.Join(billingFailure(http.StatusServiceUnavailable, "Credit checkout is temporarily unavailable; retry the same purchase"), fmt.Errorf("create credit checkout: %w", err))
 		}
 		if err := s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
