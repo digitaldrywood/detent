@@ -80,6 +80,7 @@ func run() int {
 		for _, key := range []string{arg(4), os.Getenv("SMOKE_RUNNER_CREDENTIAL_ENV")} {
 			if secret := os.Getenv(key); secret != "" {
 				detail = strings.ReplaceAll(detail, secret, "[REDACTED]")
+				row.Name = strings.ReplaceAll(row.Name, secret, "[REDACTED]")
 			}
 		}
 		detail = strings.Join(strings.Fields(detail), " ")
