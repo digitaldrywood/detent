@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -294,6 +295,21 @@ func TestBoardSearchFallbackReturnsHTTPAndMCPMatches(t *testing.T) {
 					break
 				}
 			}
+			originalOrganization := service.localOrganization
+			service.localOrganization = string(org)
+			for step := 0; step < 32; step++ {
+				service.maintainNativeBoard(t.Context())
+			}
+			service.localOrganization = originalOrganization
+			if err := service.config.TenantRepository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				page, err := r.(viewstore.WorkItemPageReader).WorkItemDetailPage(t.Context(), f.project.ID, first.WorkItemID)
+				if err == nil && !strings.Contains(page.Value.Body, "bodyuniquemarker") {
+					return errors.New("maintenance did not publish searchable body")
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
 			credential, _, err := service.authenticateTenantAPIHash(t.Context(), org, apikey.HashToken(f.token), "", "")
 			if err != nil {
 				t.Fatal(err)
@@ -374,6 +390,39 @@ func TestBoardSearchFallbackReturnsHTTPAndMCPMatches(t *testing.T) {
 					}
 				}
 			}
+			for _, state := range []string{"partial search documents", "empty search documents"} {
+				t.Run(state, func(t *testing.T) {
+					value, ok := projectRecordDatabases.Load(service.database.postgres)
+					if !ok {
+						t.Fatal("missing fixture administrator")
+					}
+					if _, err := value.(*sql.DB).ExecContext(t.Context(), "DELETE FROM search_documents WHERE organization_id=$1 AND ($2 OR work_item_id=$3)", org, state == "empty search documents", first.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+					for _, query := range []string{"release", "release audit resume credential", "bodyuniquemarker"} {
+						response := performHubAPIRequest(t, service, http.MethodGet, f.base+"/work-items?"+url.Values{"q": {query}, "include": {"summary"}, "limit": {"5"}}.Encode(), f.token, nil)
+						requireNativeStatus(t, response, http.StatusOK)
+						var page tracker.NativeIssuePage
+						decodeHubResponse(t, response, &page)
+						want := 2
+						if query == "bodyuniquemarker" {
+							want = 1
+						}
+						if len(page.Items) != want {
+							t.Errorf("empty-index query %q returned %d items, want %d", query, len(page.Items), want)
+						}
+						raw := hostedContextData(t, send("tools/call", operatortool.WorkList, map[string]any{"project_id": f.project.ID, "query": query, "include": []string{"summary"}, "limit": 5}), false)
+						var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
+						if err := json.Unmarshal(raw, &result); err != nil {
+							t.Fatal(err)
+						}
+						if len(result.Data.Items) != want {
+							t.Errorf("empty-index MCP query %q returned %d items, want %d", query, len(result.Data.Items), want)
+						}
+					}
+				})
+			}
+
 		})
 	}
 }
