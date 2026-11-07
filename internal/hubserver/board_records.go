@@ -264,7 +264,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 	}
 	page.Total = -1
 	if (includeBoard || includeWork) && (!legacy || selection.Summary) {
-		page.Work = &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{}, Lanes: []tracker.NativeWorkLane{}, AsOf: s.config.now()}
+		page.Work = &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{}, Lanes: []tracker.NativeWorkLane{}, ShippedWindows: []tracker.NativeShippedWindow{}, AsOf: s.config.now()}
 	}
 	if selection.Summary {
 		page.Total = 0
@@ -395,6 +395,22 @@ func boardModelCard(scope nativeScope, row viewstore.BoardRecord) (tracker.Nativ
 		issue.ReporterStatus = facts.ReporterStatus
 		issue.Dependencies, issue.Blockers, issue.Dependents, issue.Related = facts.Dependencies, facts.Blockers, facts.Dependents, facts.Related
 		issue.DependencyReady, issue.BlockedReason, issue.UnblocksReason = facts.DependencyReady, facts.BlockedReason, facts.UnblocksReason
+	}
+	for _, values := range []*[]string{&issue.Labels, &issue.Assignees} {
+		if *values == nil {
+			*values = []string{}
+		}
+	}
+	if issue.Dependencies == nil {
+		issue.Dependencies = []tracker.NativeWorkItemID{}
+	}
+	for _, values := range []*[]tracker.NativeDependency{&issue.Blockers, &issue.Dependents, &issue.Related} {
+		if *values == nil {
+			*values = []tracker.NativeDependency{}
+		}
+	}
+	if issue.ExternalReferences == nil {
+		issue.ExternalReferences = []tracker.ExternalReference{}
 	}
 	card := tracker.NativeBoardCard{Issue: issue, StatusLine: row.Display.StatusLine, Attempt: row.Display.Attempt, Execution: row.Display.Execution, Change: row.Display.Change}
 	if !scope.reporterOwns(tracker.Actor{PrincipalID: row.Display.ChangePrincipalID}) {
