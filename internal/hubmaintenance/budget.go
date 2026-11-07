@@ -118,6 +118,20 @@ func (s *Details) ReadDetail(ctx context.Context, organization string, ref attac
 	return raw, err
 }
 
+func (s *Details) ReadCanonicalDetail(ctx context.Context, organization, project, key string) ([]byte, error) {
+	owner, ok := s.store.(attachment.CanonicalDetailStore)
+	if !ok {
+		return nil, artifact.ErrIntegrity
+	}
+	if err := attachment.ValidateCanonicalDetailKey(organization, project, key); err != nil {
+		return nil, err
+	}
+	if err := charge(ctx, organization, 2*attachment.MaxArchiveBytes); err != nil {
+		return nil, err
+	}
+	return owner.ReadCanonicalDetail(ctx, organization, project, key)
+}
+
 func (s *Details) StoreDetail(ctx context.Context, organization string, raw []byte) (attachment.ArchiveReference, error) {
 	if s.store == nil {
 		return attachment.ArchiveReference{}, artifact.ErrStorage

@@ -566,6 +566,8 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 			NativeRunEvents: participant, SecretKeys: keys,
 		},
 	}
+	service.config.DatabaseBackend = DatabasePostgres
+	service.config = service.config.normalized()
 	service.ready.Store(true)
 	service.registerNativeRoutes(service.echo)
 	wrapped := &attemptSnapshotRepository{Repository: repository, SnapshotRepository: repository}
@@ -755,6 +757,9 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 						} else {
 							if detailErr != nil || pageErr != nil || len(page.Items) != 1 {
 								t.Fatalf("canonical read: detail=%v page=%v", detailErr, pageErr)
+							}
+							if !test.register && details.reads-reads != 2 {
+								t.Fatalf("canonical owner reads = %d, want 2", details.reads-reads)
 							}
 							for _, got := range []tracker.NativeAttempt{detail, page.Items[0]} {
 								if got.Sequence != test.sequence || got.AttemptID != original.ID || got.RunID != original.RunID || got.LeaseID != tracker.LeaseID(lease.LeaseID) || got.FencingToken != tracker.FencingToken(lease.FencingToken) {
