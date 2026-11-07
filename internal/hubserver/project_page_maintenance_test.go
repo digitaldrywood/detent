@@ -91,6 +91,7 @@ func TestProjectPageSchedulerAndLiveRoute(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
+				var sourceModel *config.ModelSelection
 				read := func(project tracker.ProjectID) tracker.NativeProject {
 					t.Helper()
 					response := performHubAPIRequest(t, service, http.MethodGet, fixture.base, testHubAdminToken, nil)
@@ -104,9 +105,44 @@ func TestProjectPageSchedulerAndLiveRoute(t *testing.T) {
 					if err := json.Unmarshal(got.ModelSelection, &model); err != nil {
 						t.Fatal(err)
 					}
-					if !reflect.DeepEqual(model, config.ResolveCloudModelSelection(inherited, override)) {
-						t.Fatalf("model lost nested fields: %+v", model)
+					if model.NormalModel == nil || *model.NormalModel != string(org) || model.ComplexModel == nil || *model.ComplexModel != "example-complex" || model.BackendKinds == nil || len(*model.BackendKinds) != 0 {
+						t.Fatal("model lost tenant selection or explicit empty override")
 					}
+					for name, want := range inherited.Levels {
+						if !reflect.DeepEqual(model.Levels[name], want) {
+							t.Fatalf("model lost level %s", name)
+						}
+					}
+					for name, want := range inherited.Stages {
+						if !reflect.DeepEqual(model.Stages[name], want) {
+							t.Fatalf("model lost stage %s", name)
+						}
+					}
+					if model.Rules == nil {
+						t.Fatal("model lost rules")
+					}
+					for _, want := range *inherited.Rules {
+						found := false
+						for _, rule := range *model.Rules {
+							if rule.Name == want.Name && reflect.DeepEqual(rule, want) {
+								found = true
+								break
+							}
+						}
+						if !found {
+							t.Fatalf("model lost nested rule %s", want.Name)
+						}
+					}
+					normal, plan := model.Levels["normal"], model.Stages["plan"]
+					if normal.Model == nil || *normal.Model != "normal" || normal.Effort == nil || *normal.Effort != "high" || plan.Model == nil || *plan.Model != "complex" || plan.Effort == nil || *plan.Effort != "low" {
+						t.Fatal("model lost inherited organization defaults")
+					}
+					if sourceModel == nil {
+						sourceModel = &model
+					} else if !reflect.DeepEqual(model, *sourceModel) {
+						t.Fatal("projected model differs from source-backed model")
+					}
+
 					return got
 				}
 				service.config.TenantRepository, service.config.AccessRepository = original, original
