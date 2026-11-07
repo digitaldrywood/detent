@@ -168,6 +168,64 @@ func nativeAttemptListingFixture(t *testing.T, count, bodyBytes int) (nativeFixt
 	return f, issue, records
 }
 
+func TestNativeAttemptNotFoundAcrossTenants(t *testing.T) {
+	service := newPostgresNativeService(t, Config{RunDetails: &verifiedAttemptDetails{}})
+	fixtures := []nativeFixture{
+		newNativeFixture(t, service, "org_first", "first"),
+		newNativeFixture(t, service, "org_first_second", "second"),
+	}
+	var issues []tracker.NativeIssue
+	var attempts []string
+	for index, f := range fixtures {
+		service.localOrganization = string(f.project.OrganizationID)
+		approveHubTestPolicy(t, service, f.base+"/policy", hubTestPolicy())
+		issue := f.create(t, "attempt lookup")
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"/attempts", f.token, nil), http.StatusOK)
+		runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+		runner.enroll(t)
+		lease := nativeAttemptFixtureLease(t, runner, issue, fmt.Sprintf("lookup-%d", index))
+		start := nativeStartedEvent(lease)
+		ref, err := service.runDetailStore().StoreDetail(t.Context(), string(f.project.OrganizationID), []byte(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: start.Data.AttemptID, RunID: start.Data.RunID,
+				Fence: leasestore.Fence{LeaseID: string(lease.ID), FencingToken: int64(lease.FencingToken)}, Sequence: 1, Status: "running", PayloadObjectKey: ref.Key, PayloadReference: ref})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		issues = append(issues, issue)
+		attempts = append(attempts, start.Data.AttemptID)
+	}
+	for index, f := range fixtures {
+		t.Run(string(f.project.OrganizationID), func(t *testing.T) {
+			service.localOrganization = string(f.project.OrganizationID)
+			item := f.base + "/work-items/" + string(issues[index].WorkItemID)
+			foreign := 1 - index
+			for _, test := range []struct{ name, path string }{
+				{"missing item", f.base + "/work-items/wi_missing/attempts"},
+				{"missing attempt", item + "/attempts/attempt_missing"},
+				{"foreign item", f.base + "/work-items/" + string(issues[foreign].WorkItemID) + "/attempts"},
+				{"foreign attempt", item + "/attempts/" + attempts[foreign]},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					requireNativeCode(t, performHubAPIRequest(t, service, http.MethodGet, test.path, f.token, nil), http.StatusNotFound, "not_found")
+				})
+			}
+			for _, test := range []struct{ name, suffix string }{
+				{"missing event page", "/attempts"},
+				{"missing event detail", "/attempts/" + attempts[index]},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					requireNativeCode(t, performHubAPIRequest(t, service, http.MethodGet, item+test.suffix, f.token, nil), http.StatusNotFound, "not_found")
+				})
+			}
+		})
+	}
+}
+
 func TestNativeAttemptsSkipUnusedHydration(t *testing.T) {
 	for _, test := range []struct {
 		name      string
