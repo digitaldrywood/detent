@@ -445,14 +445,14 @@ export class BoardRead {
     if (this.revoked || !this.scope.includes(projectId)) return;
     if (frame.gap || this.entries.some((entry) => entry.project.project_id === projectId &&
       entry.grantVersion !== undefined && frame.grant_version !== undefined && entry.grantVersion !== frame.grant_version)) {
-      this.reload(); return;
+      (this.queries.get(projectId)?.refresh ?? this.reload)(); return;
     }
     if (this.controller !== null && !replay) {
       this.frames.set(projectId, [...(this.frames.get(projectId) ?? []), frame]);
       return;
     }
     if (this.view.q.length > 0 && frame.sequence > (this.entries.find((entry) => entry.project.project_id === projectId)?.sequence ?? 0)) {
-      this.reload();
+      (this.queries.get(projectId)?.refresh ?? this.reload)();
       return;
     }
     this.entries = this.entries.map((entry) => {
@@ -631,7 +631,7 @@ export class BoardRead {
         for (const [id, snapshot] of snapshots) snapshot.complete(this.sequence(id));
       } catch (cause) {
         if (signal.aborted || generation !== this.generation) return;
-        for (const snapshot of snapshots.values()) snapshot.complete();
+        for (const snapshot of snapshots.values()) snapshot.fail();
         if (!rejectUnauthorized(this.owner, cause)) this.publish({ ...this.state, loading: false, backlogLoading: false, refreshing: false,
           error: cause instanceof Error ? cause.message : String(cause) });
       } finally {
