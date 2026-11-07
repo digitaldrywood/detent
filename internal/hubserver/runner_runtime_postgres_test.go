@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -809,6 +810,112 @@ func TestPostgresRunnerSessionFencePreservesStorageErrors(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestPostgresRunnerSessionMetadataCoalescing(t *testing.T) {
+	f := newRunnerPGFixture(t)
+	for index := range f.leases {
+		t.Run(strconv.Itoa(index), func(t *testing.T) {
+			requests, loseNext := 0, false
+			client, err := api.New(api.Config{URL: "http://hub.test", TokenSource: func() string { return f.tokens[index] }, HTTPClient: &http.Client{Transport: progressPublicationTransport(func(request *http.Request) (*http.Response, error) {
+				requests++
+				response := httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(response, request)
+				if loseNext && request.Method == http.MethodPost {
+					loseNext = false
+					if response.Code != http.StatusOK {
+						t.Fatalf("lost write did not commit: %d %s", response.Code, response.Body.String())
+					}
+					return nil, io.ErrUnexpectedEOF
+				}
+				return response.Result(), nil
+			})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_startup", "prj_runner")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := api.WithMutationAuthority(t.Context(), native.Scope(), f.leases[index], nil)
+			sessions := api.NewRunnerSessions(native)
+			id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(f.leases[index].WorkItemID), StartedAt: time.Now().UTC(), Model: "example-model"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			provider := store.SessionProviderIdentity{ThreadID: "example-thread", SessionID: "example-session"}
+			process := store.WorkerProcessRegistration{WorkerProcessIdentity: store.WorkerProcessIdentity{PID: 12345, GroupID: 12345, StartedAt: time.Now().UTC().Truncate(time.Microsecond)}, CleanupRoot: "/example/workspace", CleanupPath: "/example/workspace/scratch"}
+			update := func(ctx context.Context) error {
+				if err := sessions.UpdateSessionWorkerProcess(ctx, id, process); err != nil {
+					return err
+				}
+				return sessions.UpdateSessionProviderIdentity(ctx, id, provider)
+			}
+			read := func() runnersession.Snapshot {
+				var snapshot runnersession.Snapshot
+				if err := client.Request(ctx, http.MethodGet, native.Scope()+"/runner-sessions/"+strconv.FormatInt(id, 10), nil, &snapshot); err != nil {
+					t.Fatal(err)
+				}
+				return snapshot
+			}
+			check := func(snapshot runnersession.Snapshot) {
+				if snapshot.Provider != provider || snapshot.Worker == nil || snapshot.Worker.PID != process.PID || snapshot.Worker.CleanupPath != process.CleanupPath {
+					t.Fatalf("Hub metadata differs from the requested value: %+v", snapshot)
+				}
+			}
+			if err := update(ctx); err != nil {
+				t.Fatal(err)
+			}
+			for _, events := range []int{2, 50} {
+				requests = 0
+				for range events {
+					if err := update(ctx); err != nil {
+						t.Fatal(err)
+					}
+				}
+				t.Logf("events=%d requests=%d", events, requests)
+				if requests != 0 {
+					t.Fatalf("unchanged metadata consumed %d requests", requests)
+				}
+			}
+			if err := update(t.Context()); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+				t.Fatalf("cached metadata bypassed authority: %v", err)
+			}
+			canceled, cancel := context.WithCancel(ctx)
+			cancel()
+			if err := update(canceled); !errors.Is(err, context.Canceled) {
+				t.Fatalf("cached metadata ignored cancellation: %v", err)
+			}
+			stale := f.leases[index]
+			stale.FencingToken++
+			if err := update(api.WithMutationAuthority(t.Context(), native.Scope(), stale, nil)); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+				t.Fatalf("cached metadata bypassed fencing: %v", err)
+			}
+			for _, kind := range []string{"worker", "provider"} {
+				originalProcess, originalProvider := process, provider
+				if kind == "worker" {
+					process.PID++
+					process.CleanupPath += "-changed"
+				} else {
+					provider.SessionID += "-changed"
+				}
+				loseNext = true
+				if err := update(ctx); !errors.Is(err, api.ErrUnavailable) {
+					t.Fatalf("%s committed write did not lose response: %v", kind, err)
+				}
+				check(read())
+				process, provider = originalProcess, originalProvider
+				requests = 0
+				if err := update(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if requests == 0 {
+					t.Fatalf("%s stale acknowledgement hid A after B committed with lost response", kind)
+				}
+				check(read())
 			}
 		})
 	}
