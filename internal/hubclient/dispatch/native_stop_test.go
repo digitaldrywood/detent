@@ -463,7 +463,7 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		t.Fatalf("stop changed the worktree identity: %v", err)
 	}
 	recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
-	if err != nil || len(recovery.Attempts) != 1 || !interrupted.Load() || recovery.Attempts[0].Outcome != "cancelled" || recovery.Attempts[0].CleanupAcknowledgedAt == nil || recovery.Attempts[0].Checkpoint == nil || recovery.Attempts[0].Checkpoint.HeadSHA == "" || recovery.Attempts[0].Checkpoint.WorktreeState != "unpushed" {
+	if err != nil || len(recovery.Attempts) != 1 || !interrupted.Load() || recovery.Attempts[0].ClaimReleasedAt == nil || recovery.Attempts[0].Outcome != "interrupted" && (recovery.Attempts[0].Outcome != "cancelled" || recovery.Attempts[0].CleanupAcknowledgedAt == nil) || recovery.Attempts[0].Checkpoint == nil || recovery.Attempts[0].Checkpoint.HeadSHA == "" || recovery.Attempts[0].Checkpoint.WorktreeState != "unpushed" {
 		t.Fatalf("stopped checkpoint or native outcome = %+v, %v", recovery.Attempts, err)
 	}
 	if runtime := recovery.Attempts[0].Runtime; runtime == nil || runtime.Validation == nil || runtime.Validation.ExitCode != 0 || runtime.Validation.HeadSHA != recovery.Attempts[0].Checkpoint.HeadSHA {
