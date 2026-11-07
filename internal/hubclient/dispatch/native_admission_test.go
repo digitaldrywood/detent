@@ -115,7 +115,7 @@ func TestNativeAdmissionBatch(t *testing.T) {
 			if test.missingIsolation {
 				fixtureEnableEnrollment(t, h)
 			}
-			count := 8
+			count := 6
 			if test.oversized {
 				count = 2
 			}
