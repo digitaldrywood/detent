@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -87,6 +89,7 @@ func TestPostgresBrowserWorkListConcurrentRequests(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
+			records := []viewstore.BoardRecord{}
 			for index := range 2 {
 				id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index))
 				changeID, versionID := fmt.Sprintf("change_%03d", index), fmt.Sprintf("version_%03d", index)
@@ -113,12 +116,14 @@ func TestPostgresBrowserWorkListConcurrentRequests(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				payload, err := viewstore.NewContent(service.config.RunDetails).PrepareBoard(t.Context(), tracker.NativeBoardCard{Issue: issue, Change: &tracker.NativeBoardChange{ID: changeID, Title: "Example"}})
+				card := tracker.NativeBoardCard{Issue: issue, Change: &tracker.NativeBoardChange{ID: changeID, Title: "Example", Status: "draft"}}
+				payload, err := viewstore.NewContent(service.config.RunDetails).PrepareBoard(t.Context(), card)
 				if err != nil {
 					t.Fatal(err)
 				}
 				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-					if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: project.Core.ID, NativeID: id, Number: int64(index + 1), Title: issue.Title, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State}); err != nil {
+					item, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: project.Core.ID, NativeID: id, Number: int64(index + 1), Title: issue.Title, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State})
+					if err != nil {
 						return err
 					}
 					if _, err := w.CreateCollaborationVersion(t.Context(), collaboration); err != nil {
@@ -136,11 +141,30 @@ func TestPostgresBrowserWorkListConcurrentRequests(t *testing.T) {
 					if _, err := w.AppendEvidence(t.Context(), evidence); err != nil {
 						return err
 					}
-					board := viewstore.BoardRecord{OrganizationID: org, ProjectID: project.Core.ID, WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("example#%03d", index)}, ActorPrincipalID: issue.Actor.PrincipalID, CreatedAt: now, UpdatedAt: now, Payload: payload}
-					return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: project.Core.ID, WorkItemID: id, ExpectedRevision: 1, ExpectedProjectRevision: project.Core.ContentSettingsRevision, Current: &board})
+					board := viewstore.BoardRecord{OrganizationID: org, ProjectID: project.Core.ID, WorkItemID: id, SourceRevision: item.Revision, SourceEventSequence: item.EventSequence, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("example#%03d", index)}, ActorPrincipalID: issue.Actor.PrincipalID, CreatedAt: now, UpdatedAt: now, Payload: payload,
+						PageIssue: &issue, ListIssue: &issue, ListBytes: 1024, ProjectedAt: now, ReporterRelations: &viewstore.BoardReporterRelations{}, Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Number: issue.Number, Actor: issue.Actor, Change: card.Change, ChangePrincipalID: issue.Actor.PrincipalID}}
+					records = append(records, board)
+					return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: project.Core.ID, WorkItemID: id, ExpectedRevision: item.Revision, ExpectedEventSequence: item.EventSequence, ExpectedProjectRevision: project.Core.ContentSettingsRevision, Current: &board})
 				}); err != nil {
 					t.Fatal(err)
 				}
+			}
+			scope := nativeScope{organization: org, project: project.Core.ID, credential: apiCredential{ID: "principal", Hash: "principal_hash", SessionHash: claims.Binding, Scope: apiScopeOperator, NativeOnly: true, Hosted: &auth.HostedIdentity{Subject: claims.Subject}, HostedRole: claims.Role, HostedMembership: "membership_example"}}
+			if err := repository.ReadRequest(t.Context(), org, func(ctx context.Context) error {
+				preparation := service.prepareBoardPage(ctx, scope, records, now, true, map[tracker.NativeWorkItemID]boardPreparedRecord{})
+				defer preparation.close()
+				for index := range records {
+					card, err := preparation.card(ctx, index)
+					if err != nil {
+						return err
+					}
+					if card.Issue.OrganizationID != org || card.Change == nil || card.Change.Status == "" {
+						return fmt.Errorf("incomplete fallback card for tenant %s", org)
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
 			}
 			start := make(chan struct{})
 			results := make(chan *httptest.ResponseRecorder, 20)
