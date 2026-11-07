@@ -119,3 +119,15 @@ func (s *session) DiscardOnboardingPage(ctx context.Context, c projectstore.Onbo
 	_, err := s.db.Exec(ctx, `DELETE FROM project_onboarding_page_viewers WHERE organization_id=$1 AND project_id=$2 AND viewer_key=$3 AND generation=$4`, s.organization, c.ProjectID, c.ViewerKey, c.Generation)
 	return mapError(ctx, err)
 }
+
+func (s *session) InvalidateOnboardingPage(ctx context.Context, project tracker.ProjectID, viewer string) error {
+	var current tracker.ProjectID
+	if err := s.db.QueryRow(ctx, `SELECT id FROM projects WHERE organization_id=$1 AND id=$2 AND deleted_at IS NULL FOR KEY SHARE`, s.organization, project).Scan(&current); err != nil {
+		return mapError(ctx, err)
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE project_onboarding_page_viewers SET generation=DEFAULT WHERE organization_id=$1 AND project_id=$2 AND viewer_key=$3`, s.organization, project, viewer); err != nil {
+		return mapError(ctx, err)
+	}
+	_, err := s.db.Exec(ctx, `DELETE FROM project_onboarding_pages WHERE organization_id=$1 AND project_id=$2 AND viewer_key=$3`, s.organization, project, viewer)
+	return mapError(ctx, err)
+}

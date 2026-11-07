@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 )
@@ -35,6 +36,10 @@ func (s *Service) saveOnboardingProgressRecord(c echo.Context, request saveOnboa
 		return s.nativeAPIError(c, nativePublicInvalid("An idempotency key of at most 128 bytes and a nonnegative revision are required"))
 	}
 	scope := nativeRequestScope(c)
+	_, viewerKey, err := onboardingViewer(scope.credential)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
@@ -77,6 +82,13 @@ func (s *Service) saveOnboardingProgressRecord(c echo.Context, request saveOnboa
 			return nil
 		}
 		if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		writer, ok := w.(projectstore.OnboardingPageWriter)
+		if !ok {
+			return errors.New("onboarding page storage unavailable")
+		}
+		if err := writer.InvalidateOnboardingPage(ctx, scope.project, viewerKey); err != nil {
 			return err
 		}
 		if err := w.SaveProjectOnboardingProgress(ctx, scope.project, progress, request.Progress.Revision); err != nil {

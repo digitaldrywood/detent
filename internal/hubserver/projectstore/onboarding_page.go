@@ -34,4 +34,5 @@ type OnboardingPageWriter interface {
 	ClaimOnboardingPage(context.Context) (OnboardingCandidate, error)
 	PublishOnboardingPage(context.Context, OnboardingCandidate, onboarding.Project, time.Time) error
 	DiscardOnboardingPage(context.Context, OnboardingCandidate) error
+	InvalidateOnboardingPage(context.Context, tracker.ProjectID, string) error
 }

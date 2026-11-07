@@ -249,3 +249,77 @@ func TestOnboardingColdFallbackSurvivesPreparationFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestOnboardingPageKeepsSavedProgressCurrent(t *testing.T) {
+	service := newPostgresNativeService(t, Config{})
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+		t.Run(string(organization), func(t *testing.T) {
+			fixture := newNativeFixture(t, service, organization, "Example")
+			tenant := hubmaintenance.Tenant{Organization: string(organization), Generation: 1}
+			prepare := func(token string) {
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/onboarding", token, nil), http.StatusOK)
+				ctx := (hubmaintenance.Budget{Items: 1, Bytes: integrationPageMaintenanceBytes}).Context(t.Context(), tenant)
+				if err := service.OnboardingPageMaintenanceFeature().Step(ctx, tenant, hubmaintenance.Budget{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			prepare(fixture.token)
+			prepare(testHubAdminToken)
+			credential, _, err := service.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(fixture.token), "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, key, err := onboardingViewer(credential)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var candidate projectstore.OnboardingCandidate
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Background, func(w tenantstore.Writer) error {
+				var err error
+				candidate, err = w.(projectstore.OnboardingPageWriter).ClaimOnboardingPage(t.Context())
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if candidate.ViewerKey != key {
+				t.Fatal("claim did not select the older actor view")
+			}
+			var stale onboarding.Project
+			if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				stale, err = r.(projectstore.OnboardingPageReader).OnboardingPage(t.Context(), fixture.project.ID, key)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			response := performHubAPIRequest(t, service, http.MethodPut, fixture.base+"/onboarding", fixture.token, map[string]any{"idempotency_key": "example-progress", "progress": onboarding.Progress{Repository: "existing", Artifacts: "local"}})
+			requireNativeStatus(t, response, http.StatusOK)
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Background, func(w tenantstore.Writer) error {
+				return w.(projectstore.OnboardingPageWriter).PublishOnboardingPage(t.Context(), candidate, stale, service.config.now())
+			}); !errors.Is(err, corestore.ErrRevisionConflict) {
+				t.Errorf("saved progress accepted an older projection: %v", err)
+			}
+			response = performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/onboarding", fixture.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page onboarding.Project
+			decodeHubResponse(t, response, &page)
+			if page.Progress.Revision != 1 || page.Progress.Artifacts != "local" {
+				t.Errorf("saved progress disappeared on the next read: %+v", page.Progress)
+			}
+			admin, _, err := service.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(testHubAdminToken), "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, adminKey, err := onboardingViewer(admin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+				_, err := r.(projectstore.OnboardingPageReader).OnboardingPage(t.Context(), fixture.project.ID, adminKey)
+				return err
+			}); err != nil {
+				t.Fatalf("saving one actor rebuilt another viewer: %v", err)
+			}
+		})
+	}
+}
