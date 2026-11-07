@@ -8,9 +8,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *session) WithRunnerEventFacts(ctx context.Context, command eventstore.RunCommand, use func(tenantstore.Writer) error) error {
@@ -33,6 +33,9 @@ func (s *session) WithRunnerEventFacts(ctx context.Context, command eventstore.R
 	}
 
 	f.command.WorkItem = f.item.value.NativeID
+	if f.command.AttemptID == "" {
+		f.command.AttemptID = f.attempt.value.ID
+	}
 	if err := use(f); err != nil {
 		return err
 	}
@@ -46,7 +49,7 @@ func (f *runnerEventSession) queueRunFence() {
 			return err
 		}
 		if !valid {
-			return tracker.ErrStaleFencingToken
+			return &leasestore.FenceError{Check: "attempt_live_lease"}
 		}
 		return nil
 	})

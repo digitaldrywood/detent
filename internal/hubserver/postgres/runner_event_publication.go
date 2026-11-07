@@ -15,7 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (f *runnerEventSession) RecordAttemptEvent(ctx context.Context, e leasestore.AttemptEvent) (leasestore.Attempt, bool, error) {
@@ -35,7 +34,7 @@ func (f *runnerEventSession) RecordAttemptEvent(ctx context.Context, e leasestor
 		return leasestore.Attempt{}, false, f.lease.err
 	}
 	if l.LeaseID != e.Fence.LeaseID || l.FencingToken != e.Fence.FencingToken || l.ReleasedAt != nil || !l.ExpiresAt.After(f.now) {
-		return leasestore.Attempt{}, false, tracker.ErrStaleFencingToken
+		return leasestore.Attempt{}, false, &leasestore.FenceError{Check: "attempt_locked_identity"}
 	}
 	encoded, err := json.Marshal(e)
 	if err != nil {
@@ -101,10 +100,7 @@ func (f *runnerEventSession) RecordAttemptEvent(ctx context.Context, e leasestor
 		}
 	}
 	if len(e.Usage) > 0 {
-		if err := f.flushRunEvents(ctx); err != nil {
-			return leasestore.Attempt{}, false, err
-		}
-		if err := f.session.recordRunnerTokenUsage(ctx, attemptFromPG(old), e.Usage); err != nil {
+		if err := f.queueRunnerTokenUsage(attemptFromPG(old), e.Usage); err != nil {
 			return leasestore.Attempt{}, false, err
 		}
 	} else {
