@@ -450,6 +450,9 @@ func TestChangeReviewPolicyUsesSelectedTenantPolicyAndReceipt(t *testing.T) {
 func TestApprovedChangeReviewRejectsPolicyChangedAfterPreflight(t *testing.T) {
 	repository, f, owner, _ := newChangePolicyPostgresFixtureWithAdmin(t, 3)
 	service := f.service
+	if err := service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	organization, project := tracker.OrganizationID("org_security"), f.project
 	itemResponse := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "policy-race-item"}, Title: "Policy race issue", Body: workItemRecordBody, State: "Todo"})
 	requireNativeStatus(t, itemResponse, http.StatusOK)
