@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -82,6 +83,7 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 		}
 	}
 	var records healthstore.Page
+	projected := true
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(healthstore.Reader)
 		if !ok {
@@ -89,11 +91,16 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 		}
 		var err error
 		records, err = owner.HealthFindings(ctx, scope.project, state, sinceAt, after, reporter, limit+1)
+		if errors.Is(err, healthstore.ErrPagePending) {
+			fallback, ok := r.(healthstore.FallbackReader)
+			if !ok {
+				return workItemStorageUnavailable()
+			}
+			projected = false
+			records, err = fallback.LegacyHealthFindings(ctx, scope.project, state, sinceAt, after, reporter, limit+1)
+		}
 		return err
 	})
-	if errors.Is(err, healthstore.ErrPagePending) {
-		return page, &nativeError{Code: "not_ready", Message: "Health page is being prepared", status: http.StatusServiceUnavailable, publicMessage: true}
-	}
 	if err != nil {
 		return page, err
 	}
@@ -104,7 +111,17 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 			break
 		}
 		f := healthFinding{ID: row.ID, Fingerprint: row.Fingerprint, Signal: row.Signal, Class: row.Class, Subject: healthSubject{Kind: row.SubjectKind, ID: row.SubjectID}, OpenedAt: row.OpenedAt, LastSeenAt: row.LastSeenAt, ResolvedAt: row.ResolvedAt, Severity: row.Severity, Summary: row.Summary, NextAction: row.NextAction, EmailUnavailable: row.EmailUnavailable}
-		f.Evidence = scopeHealthEvidence(row.DisplayEvidence, scope.project)
+		f.Evidence = row.DisplayEvidence
+		if !projected && row.Evidence.Key != "" {
+			raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.organization), row.Evidence)
+			if err != nil {
+				return page, err
+			}
+			if err := json.Unmarshal(raw, &f.Evidence); err != nil {
+				return page, err
+			}
+		}
+		f.Evidence = scopeHealthEvidence(f.Evidence, scope.project)
 		for _, link := range row.Issues {
 			f.Issues = append(f.Issues, healthFindingIssue{ProjectID: link.ProjectID, WorkItemID: link.WorkItemID})
 		}

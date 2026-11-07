@@ -50,6 +50,10 @@ type Reader interface {
 	HealthSummaryFindings(context.Context, int) ([]Finding, error)
 }
 
+type FallbackReader interface {
+	LegacyHealthFindings(context.Context, tracker.ProjectID, string, *time.Time, int64, string, int) (Page, error)
+}
+
 type PageMaintainer interface {
 	NextHealthPage(context.Context) (Finding, error)
 	PublishHealthPage(context.Context, Finding, Evidence) (bool, error)
