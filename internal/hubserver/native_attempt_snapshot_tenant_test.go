@@ -231,7 +231,7 @@ func (r *attemptSnapshotRepository) wrap(ctx context.Context, read func(tenantst
 	return func(reader tenantstore.Reader) error {
 		r.active++
 		defer func() { r.active-- }()
-		return read(attemptSnapshotReader{Reader: reader, owner: r, CheckpointAttemptReader: reader.(leasestore.CheckpointAttemptReader)})
+		return read(attemptSnapshotReader{Reader: reader, owner: r, CheckpointAttemptReader: reader.(leasestore.CheckpointAttemptReader), WorkItemRelationshipBatchReader: reader.(tenantstore.WorkItemRelationshipBatchReader)})
 	}
 }
 
@@ -246,6 +246,7 @@ func (r *attemptSnapshotRepository) ReadTenantSnapshot(ctx context.Context, org 
 type attemptSnapshotReader struct {
 	tenantstore.Reader
 	leasestore.CheckpointAttemptReader
+	tenantstore.WorkItemRelationshipBatchReader
 	owner *attemptSnapshotRepository
 }
 
@@ -428,19 +429,34 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			for _, view := range []string{"single", "detail", "recovery"} {
-				t.Run(view, func(t *testing.T) {
-					var value tracker.NativeAttempt
-					var err error
-					if view == "single" {
-						value, err = service.readNativeAttemptTenant(t.Context(), scope, string(issue.WorkItemID), attempt.ID)
-					} else {
-						var page nativeAttemptPage
-						page, err = service.readNativeAttemptPageTenant(t.Context(), scope, string(issue.WorkItemID), url.Values{"view": {view}}, json.Marshal)
-						if err == nil && len(page.Items) == 1 {
-							value = page.Items[0]
-						}
+			read := func(ctx context.Context, view string) (tracker.NativeAttempt, error) {
+				switch view {
+				case "single":
+					return service.readNativeAttemptTenant(ctx, scope, string(issue.WorkItemID), attempt.ID)
+				case "initial recovery":
+					recovery, err := service.readNativeRecoveryTenant(ctx, scope, string(issue.WorkItemID))
+					if err != nil || len(recovery.Attempts) != 1 {
+						return tracker.NativeAttempt{}, errors.Join(err, fmt.Errorf("recovery attempts = %d", len(recovery.Attempts)))
 					}
+					return recovery.Attempts[0], nil
+				case "selected recovery":
+					snapshot, err := service.readNativeRecoveryAttemptSnapshot(ctx, scope, string(issue.WorkItemID), lease.IssueID, attempt.ID)
+					if err != nil {
+						return tracker.NativeAttempt{}, err
+					}
+					return service.hydrateNativeAttemptTenant(ctx, snapshot, service.config.now())
+				default:
+					page, err := service.readNativeAttemptPageTenant(ctx, scope, string(issue.WorkItemID), url.Values{"view": {view}}, json.Marshal)
+					if err != nil || len(page.Items) != 1 {
+						return tracker.NativeAttempt{}, errors.Join(err, fmt.Errorf("attempt page count = %d", len(page.Items)))
+					}
+					return page.Items[0], nil
+				}
+			}
+			views := []string{"single", "detail", "recovery", "initial recovery", "selected recovery"}
+			for _, view := range views {
+				t.Run(view, func(t *testing.T) {
+					value, err := read(t.Context(), view)
 					if err != nil {
 						t.Fatalf("hydrate imported attempt 43 with terminal history 42: %v", err)
 					}
@@ -510,25 +526,17 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 							t.Fatal(err)
 						}
 						reads := details.reads
-						for _, view := range []string{"single", "detail", "recovery"} {
-							var got tracker.NativeAttempt
-							var readErr error
-							if view == "single" {
-								got, readErr = service.readNativeAttemptTenant(ctx, scope, string(issue.WorkItemID), attempt.ID)
-							} else {
-								page, pageErr := service.readNativeAttemptPageTenant(ctx, scope, string(issue.WorkItemID), url.Values{"view": {view}}, json.Marshal)
-								readErr = pageErr
-								if len(page.Items) == 1 {
-									got = page.Items[0]
+						for _, view := range views {
+							t.Run(view, func(t *testing.T) {
+								got, readErr := read(ctx, view)
+								if scenario == "valid" {
+									if readErr != nil || got.Sequence != 43 || got.Outcome != corrected.Outcome || got.AttemptID != attempt.ID {
+										t.Fatalf("%s canonical recovery: %+v %v", view, got, readErr)
+									}
+								} else if !errors.Is(readErr, artifact.ErrIntegrity) {
+									t.Fatalf("%s accepted invalid canonical object: %v", view, readErr)
 								}
-							}
-							if scenario == "valid" {
-								if readErr != nil || got.Sequence != 43 || got.Outcome != corrected.Outcome || got.AttemptID != attempt.ID {
-									t.Fatalf("%s canonical recovery: %+v %v", view, got, readErr)
-								}
-							} else if !errors.Is(readErr, artifact.ErrIntegrity) {
-								t.Fatalf("%s accepted invalid canonical object: %v", view, readErr)
-							}
+							})
 						}
 						if (scenario == "foreign key" || scenario == "malformed key") && reads != details.reads {
 							t.Fatal("invalid key reached object store")
@@ -1112,8 +1120,11 @@ func (s *verifiedAttemptDetails) ReadCanonicalDetail(ctx context.Context, org, p
 			return nil, err
 		}
 	}
+	s.mu.Lock()
 	s.reads++
 	raw, ok := s.data[key]
+	raw = bytes.Clone(raw)
+	s.mu.Unlock()
 	if !ok {
 		return nil, artifact.ErrMissing
 	}
