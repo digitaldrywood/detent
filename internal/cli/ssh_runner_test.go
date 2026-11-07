@@ -317,6 +317,8 @@ func TestSSHLocalTargetIntegration(t *testing.T) {
 
 func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, producerFailure ...bool) {
 	t.Helper()
+	t.Setenv("GOTOOLCHAIN", "local")
+	t.Setenv("PATH", filepath.Join(runtime.GOROOT(), "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	root := t.TempDir()
