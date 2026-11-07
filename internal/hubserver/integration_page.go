@@ -106,6 +106,7 @@ func (s *Service) MaintainIntegrationPage(ctx context.Context, organization trac
 
 func (s *Service) getProjectIntegrationPage(c echo.Context) error {
 	var value ProjectIntegration
+	var cold bool
 	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization"))}
 	err := s.readWorkItemPageSnapshot(c.Request().Context(), scope, func(ctx context.Context) error {
 		if err := s.resolveNativeRequestScope(ctx, c); err != nil {
@@ -115,21 +116,25 @@ func (s *Service) getProjectIntegrationPage(c echo.Context) error {
 		scope := nativeRequestScope(c)
 		value, err = s.readIntegrationPage(ctx, scope)
 		if errors.Is(err, corestore.ErrNotFound) {
-			var record projectstore.Record
-			record, err = s.readProjectRecord(ctx, scope)
-			if err == nil {
-				value = projectIntegrationRecord(record)
-				value.WorkflowMarkdown, err = s.projectRecordWorkflow(ctx, record)
-			}
+			cold = true
+			return nil
 		}
 		return err
 	})
+	if err == nil && cold {
+		var record projectstore.Record
+		record, err = s.readProjectRecord(c.Request().Context(), nativeRequestScope(c))
+		if err == nil {
+			value = projectIntegrationRecord(record)
+			value.WorkflowMarkdown, err = s.projectRecordWorkflow(c.Request().Context(), record)
+		}
+	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
 	scope = nativeRequestScope(c)
-	if scope.credential.Hosted != nil {
+	if scope.credential.Hosted != nil && (!hostedReadRequest(c) || scope.credential.Hosted.SupportActor != "") {
 		if err := s.hostedAudit(c.Request().Context(), scope.credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0); err != nil {
 			return s.nativeAPIError(c, err)
 		}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -120,7 +121,12 @@ func TestEntryKeyCurrentAuthority(t *testing.T) {
 }
 
 func TestPostgresNativeSupportReadAudit(t *testing.T) {
-	f := newEntryKeyFixture(t)
+	f := newEntryKeyFixture(t, func(cfg *Config) {
+		cfg.runMaintenance = func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+	})
 	user := f.user(t, "owner")
 	for _, organization := range []string{"org_security", "org_other"} {
 		t.Run(organization, func(t *testing.T) {
@@ -132,6 +138,8 @@ func TestPostgresNativeSupportReadAudit(t *testing.T) {
 				hosted.OrganizationID, hosted.WorkOSOrganizationID = organization, "provider_"+organization
 				hosted.SharedEntry = &entry
 				cfg.Hosted, cfg.SecretKeys = &hosted, f.service.config.SecretKeys
+				cfg.RunDetails = f.service.config.RunDetails
+				cfg.runMaintenance = f.service.config.runMaintenance
 				var err error
 				service, err = Open(t.Context(), cfg)
 				if err != nil {
@@ -148,9 +156,10 @@ func TestPostgresNativeSupportReadAudit(t *testing.T) {
 			client.service = service
 			target := "/api/v2/organizations/" + organization + "/projects/" + string(f.project)
 			key := apikey.KeyAuthority{ID: "key_read", Kind: "personal", Permission: apikey.ScopeRead, ProjectContext: apikey.ProjectContext{Access: "all"}}
-			read := func(kind, method string) *httptest.ResponseRecorder {
+			routes := []struct{ method, suffix string }{{http.MethodGet, ""}, {http.MethodHead, ""}, {http.MethodGet, "/integration"}, {http.MethodGet, "/onboarding"}}
+			read := func(kind, method, suffix string) *httptest.ResponseRecorder {
 				t.Helper()
-				return client.serve(t, hostedSharedRequest{kind: kind, method: method, target: target, mutate: func(claims *cloudassert.Claims) {
+				return client.serve(t, hostedSharedRequest{kind: kind, method: method, target: target + suffix, mutate: func(claims *cloudassert.Claims) {
 					claims.Audience, claims.Subject, claims.ProviderOrganization, claims.Role = organization, user.identity.Subject, "provider_"+organization, "owner"
 					if kind == cloudassert.KindKey {
 						claims.Key = &key
@@ -164,18 +173,19 @@ func TestPostgresNativeSupportReadAudit(t *testing.T) {
 					claims.SupportActor, claims.SupportReason = "support@example.test", "customer-request"
 				}})
 			}
-			for _, method := range []string{http.MethodGet, http.MethodHead} {
-				t.Run(method, func(t *testing.T) {
+			for _, route := range routes {
+				method, suffix := route.method, route.suffix
+				t.Run(method+suffix, func(t *testing.T) {
 					for range 3 {
-						requireNativeStatus(t, read(cloudassert.KindKey, method), http.StatusOK)
-						requireNativeStatus(t, read(cloudassert.KindBrowser, method), http.StatusOK)
+						requireNativeStatus(t, read(cloudassert.KindKey, method, suffix), http.StatusOK)
+						requireNativeStatus(t, read(cloudassert.KindBrowser, method, suffix), http.StatusOK)
 					}
 					var ordinary, support, attributed int
 					if err := f.admin.QueryRowContext(t.Context(), `SELECT
 						count(*) FILTER (WHERE session_id=$2 AND event IN ('action','key_call')),
 						count(*) FILTER (WHERE session_id='session_support' AND event='action' AND route=$3),
 						count(*) FILTER (WHERE session_id='session_support' AND event='action' AND route=$3 AND actual_actor='support@example.test' AND effective_user=$4 AND reason='customer-request' AND project_id=$5)
-						FROM hosted_audit WHERE organization_id=$1`, organization, key.ID, method+" "+nativeBase, user.identity.Subject, f.project).Scan(&ordinary, &support, &attributed); err != nil {
+						FROM hosted_audit WHERE organization_id=$1`, organization, key.ID, method+" "+nativeBase+suffix, user.identity.Subject, f.project).Scan(&ordinary, &support, &attributed); err != nil {
 						t.Fatal(err)
 					}
 					if ordinary != 0 || support != 3 || attributed != 3 {
@@ -183,12 +193,28 @@ func TestPostgresNativeSupportReadAudit(t *testing.T) {
 					}
 				})
 			}
+
+			tenant := hubmaintenance.Tenant{Organization: organization, Generation: service.config.Hosted.SharedEntry.Generation}
+			for range 4 {
+				ctx := (hubmaintenance.Budget{Items: 1, Bytes: integrationPageMaintenanceBytes}).Context(t.Context(), tenant)
+				if err := service.OnboardingPageMaintenanceFeature().Step(ctx, tenant, hubmaintenance.Budget{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var viewers, pages int
+			if err := f.admin.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM project_onboarding_page_viewers WHERE organization_id=$1 AND project_id=$2),(SELECT count(*) FROM project_onboarding_pages WHERE organization_id=$1 AND project_id=$2)`, organization, f.project).Scan(&viewers, &pages); err != nil {
+				t.Fatal(err)
+			}
+			if viewers != 2 || pages != 2 {
+				t.Errorf("hosted onboarding viewers=%d ready=%d want=2/2", viewers, pages)
+			}
 			f.exec(t, `CREATE OR REPLACE FUNCTION reject_support_audit_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit unavailable'; END $$`)
 			f.exec(t, "CREATE TRIGGER reject_support_audit BEFORE INSERT ON hosted_audit FOR EACH ROW WHEN (NEW.organization_id='"+organization+"' AND NEW.event='action') EXECUTE FUNCTION reject_support_audit_write()")
-			for _, method := range []string{http.MethodGet, http.MethodHead} {
-				t.Run("audit unavailable/"+method, func(t *testing.T) {
-					requireNativeStatus(t, read(cloudassert.KindKey, method), http.StatusOK)
-					refused := read(cloudassert.KindBrowser, method)
+			for _, route := range routes {
+				method, suffix := route.method, route.suffix
+				t.Run("audit unavailable/"+method+suffix, func(t *testing.T) {
+					requireNativeStatus(t, read(cloudassert.KindKey, method, suffix), http.StatusOK)
+					refused := read(cloudassert.KindBrowser, method, suffix)
 					if refused.Code != http.StatusInternalServerError {
 						t.Errorf("support read=%d, want %d", refused.Code, http.StatusInternalServerError)
 					}

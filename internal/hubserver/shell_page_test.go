@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -78,7 +79,22 @@ func TestIntegrationPageDoesNotReadObjects(t *testing.T) {
 				t.Fatal(err)
 			}
 			if size == 2 {
+				probe := &shellSnapshotRepository{Repository: original, RequestReader: original}
+				service.config.TenantRepository = probe
+				coldObjects := 0
+				details.beforeRead = func(context.Context) error {
+					coldObjects++
+					if probe.active.Load() != 0 {
+						t.Error("cold integration holds a request snapshot during object I/O")
+					}
+					return nil
+				}
 				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/integration", fixture.token, nil), http.StatusOK)
+				if coldObjects != 1 {
+					t.Errorf("cold fallback object reads=%d want=1", coldObjects)
+				}
+				service.config.TenantRepository = original
+				details.beforeRead = nil
 			}
 			previousHosted := service.config.Hosted
 			service.config.Hosted = &HostedConfig{OrganizationID: string(organization)}
@@ -213,4 +229,16 @@ func TestOnboardingPageDoesNotReadObjects(t *testing.T) {
 			}
 		}
 	}
+}
+
+type shellSnapshotRepository struct {
+	tenantstore.Repository
+	tenantstore.RequestReader
+	active atomic.Int32
+}
+
+func (r *shellSnapshotRepository) ReadRequest(ctx context.Context, organization tracker.OrganizationID, read func(context.Context) error) error {
+	r.active.Add(1)
+	defer r.active.Add(-1)
+	return r.RequestReader.ReadRequest(ctx, organization, read)
 }
