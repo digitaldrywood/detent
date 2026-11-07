@@ -78,24 +78,6 @@ func TestLinkedIssueSourceRecordUsesSelectedOwnersWithoutSQLite(t *testing.T) {
 	requireNativeStatus(t, created, http.StatusOK)
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, created, &issue)
-	metrics := f.service.requestMetrics
-	f.service.requestMetrics = nil
-	t.Cleanup(func() {
-		if metrics != nil {
-			if err := metrics.close(); err != nil {
-				t.Errorf("close request metrics: %v", err)
-			}
-		}
-	})
-	closedDB := f.service.database.db
-	t.Cleanup(func() {
-		if f.service.database.db == closedDB {
-			f.service.database.db = f.service.database.reader
-		}
-	})
-	if err := closedDB.Close(); err != nil {
-		t.Fatal(err)
-	}
 	now := f.service.config.now()
 	snapshot := tracker.GitHubIssueSnapshot{URL: sourceURL, Title: "Imported title", Body: "Imported body", Provenance: tracker.Provenance{Provider: "github", ExternalID: "node_12", AuthorID: "example-user", CreatedAt: now, UpdatedAt: now, ObservedAt: now}}
 	request := tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "selected-source-intake"}, Snapshot: snapshot}

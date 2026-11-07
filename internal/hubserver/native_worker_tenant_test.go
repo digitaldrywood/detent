@@ -171,6 +171,10 @@ func TestLeaseCommandLocksRunnerBeforeFence(t *testing.T) {
 			if _, err := blocker.ExecContext(ctx, `SELECT runner_id FROM runner_identities WHERE organization_id='org_startup' AND runner_id=$1 FOR UPDATE`, f.bindings[0].RunnerID); err != nil {
 				t.Fatal(err)
 			}
+			var blockerPID int
+			if err := blocker.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&blockerPID); err != nil {
+				t.Fatal(err)
+			}
 			result := make(chan error, 1)
 			done := make(chan struct{})
 			go func() {
@@ -202,7 +206,7 @@ func TestLeaseCommandLocksRunnerBeforeFence(t *testing.T) {
 				default:
 				}
 				var waiting bool
-				if err := f.admin.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%LockLeaseMutationRunner%')`).Scan(&waiting); err != nil {
+				if err := f.admin.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)))`, blockerPID).Scan(&waiting); err != nil {
 					return err
 				}
 				if !waiting {

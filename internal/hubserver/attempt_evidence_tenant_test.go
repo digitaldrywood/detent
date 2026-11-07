@@ -118,9 +118,12 @@ func testPostgresAttemptEvidence(t *testing.T, service *Service, admin *sql.DB, 
 	requireNativeStatus(t, issueResponse, http.StatusOK)
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, issueResponse, &issue)
-	startedAt := clock.Now().UTC()
-	runnerID := "runner_evidence_" + string(organization.ID)
-	machineID := tracker.MachineID("machine_evidence_" + string(organization.ID))
+	var startedAt time.Time
+	if err := admin.QueryRowContext(t.Context(), `SELECT clock_timestamp()`).Scan(&startedAt); err != nil {
+		t.Fatal(err)
+	}
+	binding := runnerauth.NewBinding()
+	runnerID, machineID := binding.RunnerID, binding.MachineID
 	credentialID := "credential_evidence_" + string(organization.ID)
 	enrollmentID := "enrollment_evidence_" + string(organization.ID)
 	secret := "example_runner_evidence_secret_" + string(organization.ID)
