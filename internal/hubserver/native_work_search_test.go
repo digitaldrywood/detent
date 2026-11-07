@@ -256,10 +256,11 @@ func seedPostgresSearchIssue(t *testing.T, f postgresWorkViewFixture, number int
 }
 
 func TestBoardSearchFallbackReturnsHTTPAndMCPMatches(t *testing.T) {
-	service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}})
+	details := &memoryRunDetails{}
+	service := newPostgresNativeService(t, Config{RunDetails: details})
 	for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
 		t.Run(string(org), func(t *testing.T) {
-			service.config.RunDetails.(*memoryRunDetails).beforeRead = nil
+			details.beforeRead = nil
 			f := newNativeFixture(t, service, org, "Example search")
 			response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "first"}, Title: "Release audit resume credential", Body: "\nfingerprint: example-key\nbodyuniquemarker\n" + issueContractTestSections, State: "Todo"})
 			requireNativeStatus(t, response, http.StatusOK)
@@ -310,7 +311,7 @@ func TestBoardSearchFallbackReturnsHTTPAndMCPMatches(t *testing.T) {
 				t.Fatal(err)
 			}
 			send := hostedContextProtocol(t, service, ctx, "http")
-			service.config.RunDetails.(*memoryRunDetails).beforeRead = func(context.Context) error { return errors.New("search read an object") }
+			details.beforeRead = func(context.Context) error { return errors.New("search read an object") }
 			for _, test := range []struct {
 				query, fingerprint string
 				want               []tracker.NativeWorkItemID
