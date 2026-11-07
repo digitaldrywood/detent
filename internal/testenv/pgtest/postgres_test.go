@@ -997,3 +997,76 @@ func TestOwnerMigrationFailureKeepsBinaryLifetime(t *testing.T) {
 		t.Fatalf("retry on the original server: %v", err)
 	}
 }
+
+func TestSharedBinaryClusterSupportsFullTemplatePools(t *testing.T) {
+	ctx, cancel := testContext(t)
+	defer cancel()
+	const templateCount = 16
+	templates := make([]*Template, templateCount)
+	for i := range templates {
+		p := NewTemplate(migrateFixture)
+		templates[i] = p
+		t.Cleanup(func() {
+			if err := p.Close(ctx); err != nil {
+				t.Error(err)
+			}
+		})
+		if err := p.initialize(ctx, "binary"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hold := make(chan struct{})
+	var release sync.Once
+	var workers sync.WaitGroup
+	var connected atomic.Int32
+	results := make(chan error, templateCount)
+	t.Cleanup(func() { release.Do(func() { close(hold) }); workers.Wait() })
+	for i, p := range templates {
+		workers.Go(func() {
+			var connections []*sql.Conn
+			var cleanups []func(context.Context) error
+			defer func() {
+				for _, connection := range connections {
+					if err := connection.Close(); err != nil {
+						t.Error(err)
+					}
+				}
+				for _, cleanup := range cleanups {
+					if err := cleanup(ctx); err != nil {
+						t.Error(err)
+					}
+				}
+			}()
+			err := func() error {
+				for owner := range fixtureLimit {
+					db, cleanup, err := p.clone(ctx, fmt.Sprintf("owner-%d", owner), func(context.Context, *sql.DB) error { return nil })
+					if err != nil {
+						return fmt.Errorf("template %d owner %d: %w", i, owner, err)
+					}
+					cleanups = append(cleanups, cleanup)
+					for range connectionLimit {
+						connection, err := db.Conn(ctx)
+						if err != nil {
+							return fmt.Errorf("template %d owner %d pool: %w", i, owner, err)
+						}
+						connections = append(connections, connection)
+						connected.Add(1)
+					}
+				}
+				return nil
+			}()
+			results <- err
+			<-hold
+		})
+	}
+	for range templateCount {
+		if err := <-results; err != nil {
+			t.Error(err)
+		}
+	}
+	if got, want := connected.Load(), int32(templateCount*fixtureLimit*connectionLimit); got != want {
+		t.Errorf("held connections=%d, want %d", got, want)
+	}
+	release.Do(func() { close(hold) })
+	workers.Wait()
+}

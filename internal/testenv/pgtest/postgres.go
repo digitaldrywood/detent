@@ -34,6 +34,10 @@ import (
 const Environment = "DETENT_TEST_POSTGRES"
 const fixtureLimit = 4
 const connectionLimit = 2
+const adminConnectionLimit = 1
+const binaryTemplateCapacity = 16
+const binaryConnectionHeadroom = binaryTemplateCapacity * (fixtureLimit + adminConnectionLimit)
+const binaryConnectionLimit = binaryTemplateCapacity*(fixtureLimit*connectionLimit+adminConnectionLimit) + binaryConnectionHeadroom
 
 var errNotConfigured = errors.New("PostgreSQL 17 or 18 fixtures require DETENT_TEST_POSTGRES=binary or a disposable local postgres:// URL")
 
@@ -465,8 +469,8 @@ func openServer(ctx context.Context, selection string) (_ *server, resultErr err
 	if err != nil {
 		return nil, err
 	}
-	s.admin.SetMaxOpenConns(1)
-	s.admin.SetMaxIdleConns(1)
+	s.admin.SetMaxOpenConns(adminConnectionLimit)
+	s.admin.SetMaxIdleConns(adminConnectionLimit)
 	var version int
 	if err := s.admin.QueryRowContext(ctx, "SHOW server_version_num").Scan(&version); err != nil {
 		s.admin.Close()
@@ -524,7 +528,8 @@ kill -TERM "$watchdog" 2>/dev/null
 wait "$watchdog" 2>/dev/null
 exit "$status"
 `
-	cmd := exec.CommandContext(processCtx, "/bin/sh", "-c", supervise, "pgtest", "postgres", "-D", "data", "-h", "", "-k", ".", "-c", "lc_messages=C", "-c", "max_connections=16", "-c", "logging_collector=off", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off")
+	cmd := exec.CommandContext(processCtx, "/bin/sh", "-c", supervise, "pgtest", "postgres", "-D", "data", "-h", "", "-k", ".", "-c", "lc_messages=C", "-c", "logging_collector=off", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off")
+	cmd.Args = append(cmd.Args, "-c", "max_connections="+strconv.Itoa(binaryConnectionLimit))
 	cmd.Dir = dir
 	cmd.Env = init.Env
 	cmd.Stdin = lifetime
