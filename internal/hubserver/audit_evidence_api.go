@@ -172,17 +172,17 @@ func (s *Service) readAuditDisposition(ctx context.Context, scope nativeScope, r
 	return value, nil
 }
 
-func (s *Service) prepareValidatorAuditDispositions(ctx context.Context, scope nativeScope, changeID string, run securityaudit.Run, facts ...*tenantstore.BoardChangeRows) ([]securityaudit.Disposition, []eventstore.AuditDisposition, error) {
-	return s.prepareValidatorAuditDispositionsFor(ctx, scope, changeID, run, corestore.Serving, facts...)
+func (s *Service) prepareValidatorAuditDispositions(ctx context.Context, scope nativeScope, changeID string, run securityaudit.Run) ([]securityaudit.Disposition, []eventstore.AuditDisposition, error) {
+	return s.prepareValidatorAuditDispositionsFor(ctx, scope, changeID, run, corestore.Serving, nil)
 }
 
-func (s *Service) prepareValidatorAuditDispositionsFor(ctx context.Context, scope nativeScope, changeID string, run securityaudit.Run, workload corestore.Workload, facts ...*tenantstore.BoardChangeRows) ([]securityaudit.Disposition, []eventstore.AuditDisposition, error) {
+func (s *Service) prepareValidatorAuditDispositionsFor(ctx context.Context, scope nativeScope, changeID string, run securityaudit.Run, workload corestore.Workload, facts *tenantstore.BoardChangeRows) ([]securityaudit.Disposition, []eventstore.AuditDisposition, error) {
 	var rows []eventstore.AuditDisposition
 	var sources []eventstore.Evidence
 	var err error
-	if len(facts) > 0 && facts[0] != nil && facts[0].AuditDispositions != nil {
+	if facts != nil && facts.AuditDispositions != nil {
 		var covered bool
-		rows, covered = facts[0].AuditDispositions[run.ID]
+		rows, covered = facts.AuditDispositions[run.ID]
 		if !covered {
 			return nil, nil, corestore.ErrRevisionConflict
 		}
@@ -194,7 +194,7 @@ func (s *Service) prepareValidatorAuditDispositionsFor(ctx context.Context, scop
 				return nil, nil, corestore.ErrRevisionConflict
 			}
 			found := false
-			for _, source := range facts[0].Evidence {
+			for _, source := range facts.Evidence {
 				if source.Sequence == row.ReviewSequence && source.Kind == "review" {
 					sources = append(sources, source)
 					found = true
@@ -284,11 +284,11 @@ func lockValidatorAuditDispositions(ctx context.Context, r tenantstore.Reader, s
 	return nil
 }
 
-func (s *Service) summarizeChangeWithAuditDispositions(ctx context.Context, scope nativeScope, detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool, facts ...*tenantstore.BoardChangeRows) (tracker.ChangeSummary, error) {
-	return s.summarizeChangeWithAuditDispositionsFor(ctx, scope, detail, policyID, reviewPolicyID, now, priorApproval, corestore.Serving, facts...)
+func (s *Service) summarizeChangeWithAuditDispositions(ctx context.Context, scope nativeScope, detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool) (tracker.ChangeSummary, error) {
+	return s.summarizeChangeWithAuditDispositionsFor(ctx, scope, detail, policyID, reviewPolicyID, now, priorApproval, corestore.Serving, nil)
 }
 
-func (s *Service) summarizeChangeWithAuditDispositionsFor(ctx context.Context, scope nativeScope, detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool, workload corestore.Workload, facts ...*tenantstore.BoardChangeRows) (tracker.ChangeSummary, error) {
+func (s *Service) summarizeChangeWithAuditDispositionsFor(ctx context.Context, scope nativeScope, detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool, workload corestore.Workload, facts *tenantstore.BoardChangeRows) (tracker.ChangeSummary, error) {
 	dispositions := make(map[int64][]securityaudit.Disposition)
 	for _, review := range detail.Reviews {
 		if review.VersionID != detail.Change.CurrentVersion || review.SecurityAudit == nil {
@@ -298,7 +298,7 @@ func (s *Service) summarizeChangeWithAuditDispositionsFor(ctx context.Context, s
 		if _, exists := dispositions[run.ID]; exists {
 			continue
 		}
-		values, _, err := s.prepareValidatorAuditDispositionsFor(ctx, scope, detail.Change.ID, run, workload, facts...)
+		values, _, err := s.prepareValidatorAuditDispositionsFor(ctx, scope, detail.Change.ID, run, workload, facts)
 		if err != nil {
 			return tracker.ChangeSummary{}, err
 		}

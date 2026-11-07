@@ -26,6 +26,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type claimAuditWorkloadRepository struct {
+	tenantstore.Repository
+	workloads []corestore.Workload
+}
+
+func (r *claimAuditWorkloadRepository) ReadTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	r.workloads = append(r.workloads, workload)
+	return r.Repository.ReadTenant(ctx, org, workload, read)
+}
+
 func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
@@ -187,6 +197,52 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 			detail, err := service.nativeClaimCurrentChangeDetail(t.Context(), scope, scan.plans[0], now)
 			if err != nil || !reflect.DeepEqual(detail, expected) {
 				t.Fatalf("snapshot changed validated detail: %v", err)
+			}
+			if index == 49 {
+				func() {
+					original := service.config.TenantRepository
+					counter := &claimAuditWorkloadRepository{Repository: repository}
+					service.config.TenantRepository = counter
+					defer func() { service.config.TenantRepository = original }()
+					for _, tc := range []struct {
+						name                          string
+						workload                      corestore.Workload
+						captured, credential, allowed bool
+					}{
+						{"background_projection", corestore.Background, false, false, true},
+						{"serving_authorized", corestore.Serving, false, true, true},
+						{"serving_denied", corestore.Serving, false, false, false},
+						{"captured_claim", corestore.Serving, true, true, true},
+					} {
+						t.Run(string(org)+"/"+tc.name, func(t *testing.T) {
+							plan := scan.plans[0]
+							facts := *plan.changeFacts
+							if !tc.captured {
+								facts.AuditDispositions = nil
+							}
+							hydrateScope := scope
+							if !tc.credential {
+								hydrateScope.credential = apiCredential{}
+							}
+							counter.workloads = nil
+							got, err := service.hydrateCurrentChangeDetailWithFacts(t.Context(), hydrateScope, plan.candidate.WorkItemID, plan.changeRecord, &plan.changeVersion, plan.changePolicy, now, &facts, nil, tc.workload)
+							if tc.allowed {
+								if err != nil || !reflect.DeepEqual(got, expected) {
+									t.Errorf("workload-aware detail differs: %v", err)
+								}
+							} else if err == nil {
+								t.Error("serving hydration bypassed credential authorization")
+							}
+							if tc.captured {
+								if len(counter.workloads) != 0 {
+									t.Errorf("captured claim opened %d read transactions", len(counter.workloads))
+								}
+							} else if !reflect.DeepEqual(counter.workloads, []corestore.Workload{tc.workload}) {
+								t.Errorf("audit workloads=%v want %v", counter.workloads, tc.workload)
+							}
+						})
+					}
+				}()
 			}
 			t.Logf("tenant=%s candidates=%d statements=%d exchanges=%d", org, index+1, statements, got)
 			if baselineExchanges == 0 {
