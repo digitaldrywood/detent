@@ -127,7 +127,7 @@ type NativeIssue struct {
 	Dependencies       []NativeWorkItemID  `json:"dependencies"`
 	Blockers           []NativeDependency  `json:"blockers"`
 	Dependents         []NativeDependency  `json:"dependents"`
-	Related            []NativeDependency  `json:"related,omitempty"`
+	Related            []NativeDependency  `json:"related,omitzero"`
 	DependencyReady    bool                `json:"dependency_ready"`
 	BlockedReason      DependencyReason    `json:"blocked_reason"`
 	UnblocksReason     DependencyReason    `json:"unblocks_reason"`
@@ -490,7 +490,7 @@ type NativeIssuePage struct {
 	Page[NativeIssue]
 	Total        int                `json:"total"`
 	Work         *NativeWorkSummary `json:"work,omitempty"`
-	Cards        []NativeBoardCard  `json:"cards,omitempty"`
+	Cards        []NativeBoardCard  `json:"cards,omitzero"`
 	Sequence     int64              `json:"sequence,omitempty"`
 	GrantVersion string             `json:"grant_version,omitempty"`
 }
@@ -498,7 +498,7 @@ type NativeIssuePage struct {
 type NativeWorkSummary struct {
 	Completed      int                   `json:"completed"`
 	Cancelled      int                   `json:"cancelled"`
-	ShippedWindows []NativeShippedWindow `json:"shipped_windows,omitempty"`
+	ShippedWindows []NativeShippedWindow `json:"shipped_windows,omitzero"`
 	Items          []NativeIssue         `json:"items"`
 	Lanes          []NativeWorkLane      `json:"lanes"`
 	Truncated      bool                  `json:"truncated"`

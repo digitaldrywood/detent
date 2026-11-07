@@ -9,6 +9,7 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 
 import { FIXTURE_SCHEMAS } from "./fixtures.ts";
+import { WorkItemPage } from "./work.ts";
 
 const directory = fileURLToPath(new URL("./fixtures", import.meta.url));
 const files = readdirSync(directory)
@@ -16,6 +17,16 @@ const files = readdirSync(directory)
   .toSorted();
 
 describe("contract fixtures", () => {
+  const boardDirectory = process.env.DETENT_TEST_BOARD_CONTRACT_DIR;
+  it.runIf(boardDirectory)("decodes PostgreSQL board handler payloads", () => {
+    const payloads = readdirSync(boardDirectory!).filter((name) => name.endsWith(".json"));
+    expect(payloads.length).toBeGreaterThan(0);
+    for (const name of payloads) {
+      const raw: unknown = JSON.parse(readFileSync(join(boardDirectory!, name), "utf8"));
+      expect(() => Schema.decodeUnknownSync(WorkItemPage)(raw), name).not.toThrow();
+    }
+  });
+
   it("binds every fixture file to a schema", () => {
     expect(files).toEqual(Object.keys(FIXTURE_SCHEMAS).toSorted());
   });

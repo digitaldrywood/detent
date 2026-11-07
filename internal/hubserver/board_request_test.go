@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,6 +28,44 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestBoardModelCardPreservesCollections(t *testing.T) {
+	for _, role := range []string{"operator", "reporter"} {
+		for _, populated := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/populated=%t", role, populated), func(t *testing.T) {
+				issue := tracker.NativeIssue{}
+				if populated {
+					issue.Labels, issue.Assignees = []string{"example"}, []string{"owner"}
+					issue.Dependencies = []tracker.NativeWorkItemID{"wi_dependency"}
+					issue.Blockers = []tracker.NativeDependency{{ID: "wi_dependency"}}
+					issue.Dependents, issue.Related = issue.Blockers, issue.Blockers
+					issue.ExternalReferences = []tracker.ExternalReference{{Provider: "github", ID: "1"}}
+				}
+				reporter := &viewstore.BoardReporterRelations{Dependencies: issue.Dependencies, Blockers: issue.Blockers, Dependents: issue.Dependents, Related: issue.Related}
+				card, err := boardModelCard(nativeScope{credential: apiCredential{HostedRole: role}}, viewstore.BoardRecord{PageIssue: &issue, ReporterRelations: reporter})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if populated && !reflect.DeepEqual(card.Issue, issue) {
+					t.Fatal("populated collections changed")
+				}
+				raw, err := json.Marshal(card.Issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &fields); err != nil {
+					t.Fatal(err)
+				}
+				for _, field := range []string{"labels", "assignees", "dependencies", "blockers", "dependents", "related", "external_references"} {
+					if len(fields[field]) == 0 || fields[field][0] != '[' {
+						t.Errorf("%s is not an array: %s", field, fields[field])
+					}
+				}
+			})
+		}
+	}
+}
 
 func TestBoardSearchFallbackHasFixedSQLBudget(t *testing.T) {
 	details := &memoryRunDetails{}
@@ -189,7 +229,7 @@ func TestBoardRequestHasFixedSQLBudget(t *testing.T) {
 					t.Fatal(err)
 				}
 				err = repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
-					item, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: scope.project, NativeID: id, Number: int64(seeded), Title: "Example", WorkflowStateName: new("Todo")})
+					item, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: scope.project, NativeID: id, Number: int64(seeded), Title: "Example", WorkflowStateName: new("Todo"), ActorKind: new("human"), ActorPrincipalID: new("example")})
 					if err != nil {
 						return err
 					}
@@ -203,7 +243,7 @@ func TestBoardRequestHasFixedSQLBudget(t *testing.T) {
 			service.config.TenantRepository = measured
 			service.config.AccessRepository = measured
 			for _, limit := range []int{1, 10, 200} {
-				for _, include := range []string{"board", "work"} {
+				for _, include := range []string{"board", "work", "summary", ""} {
 					t.Run(fmt.Sprintf("%s/%d/%d/%s", org, size, limit, include), func(t *testing.T) {
 						details.beforeRead = func(context.Context) error { return errors.New("page request read an object") }
 						statements := []string{}
@@ -212,10 +252,7 @@ func TestBoardRequestHasFixedSQLBudget(t *testing.T) {
 							t.Fatal(err)
 						}
 						wire.reset()
-						page, err := service.readBoardRecords(ctx, scope, url.Values{"include": {include}, "limit": {fmt.Sprint(limit)}})
-						if err != nil {
-							t.Fatal(err)
-						}
+						page := boardHandlerArrayContract(t, service, ctx, scope, url.Values{"include": {include}, "limit": {fmt.Sprint(limit)}})
 						if len(page.Items) == 0 || len(page.Items) > min(limit, size) || page.Total != -1 {
 							t.Fatalf("items=%d total=%d", len(page.Items), page.Total)
 						}
@@ -232,6 +269,13 @@ func TestBoardRequestHasFixedSQLBudget(t *testing.T) {
 							t.Errorf("wire exchanges=%d statements=%d", exchanges, actualStatements)
 						}
 						t.Logf("wire exchanges=%d statements=%d", exchanges, actualStatements)
+						reporter := scope
+						reporter.credential.HostedRole, reporter.credential.HostedPrincipal = "reporter", "example"
+						reporterPage := boardHandlerArrayContract(t, service, t.Context(), reporter, url.Values{"include": {include}, "limit": {fmt.Sprint(limit)}})
+						if len(reporterPage.Items) != len(page.Items) {
+							t.Fatal("reporter lost owned items")
+						}
+						boardHandlerArrayContract(t, service, t.Context(), scope, url.Values{"include": {include}, "state": {"Backlog"}})
 						key := fmt.Sprintf("%s/%d", include, limit)
 						if expected, ok := expectedCounts[key]; ok {
 							if expected != [2]int{exchanges, actualStatements} {
@@ -326,6 +370,70 @@ func TestBoardRequestHasFixedSQLBudget(t *testing.T) {
 			}
 		}
 	}
+}
+
+func boardHandlerArrayContract(t *testing.T, service *Service, ctx context.Context, scope nativeScope, params url.Values) tracker.NativeIssuePage {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "/work-items?"+params.Encode(), nil).WithContext(ctx)
+	recorder := httptest.NewRecorder()
+	c := echo.New().NewContext(request, recorder)
+	c.Set("native_scope", scope)
+	if err := service.listNativeIssues(c); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("board handler status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var page tracker.NativeIssuePage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Items == nil || params.Get("include") == "board" && page.Cards == nil {
+		t.Fatal("empty page collections must be arrays")
+	}
+	if params.Get("include") == "board" || params.Get("include") == "work" {
+		if page.Work == nil || page.Work.Items == nil || page.Work.Lanes == nil || page.Work.ShippedWindows == nil {
+			t.Fatal("empty work summary collections must be arrays")
+		}
+	}
+	var check func(json.RawMessage)
+	check = func(raw json.RawMessage) {
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &object); err != nil {
+			t.Fatal(err)
+		}
+		if _, issue := object["work_item_id"]; issue {
+			for _, field := range []string{"labels", "assignees", "dependencies", "blockers", "dependents", "related", "external_references"} {
+				if string(object[field]) != "[]" {
+					t.Errorf("%s must be [], got %s", field, object[field])
+				}
+			}
+		}
+		for _, field := range []string{"items", "cards", "lanes", "shipped_windows"} {
+			if value, exists := object[field]; exists {
+				var values []json.RawMessage
+				if err := json.Unmarshal(value, &values); err != nil || values == nil {
+					t.Fatalf("%s must be an array, got %s", field, value)
+				}
+				for _, item := range values {
+					check(item)
+				}
+			}
+		}
+		for _, field := range []string{"issue", "work"} {
+			if value, exists := object[field]; exists {
+				check(value)
+			}
+		}
+	}
+	check(recorder.Body.Bytes())
+	if directory := os.Getenv("DETENT_TEST_BOARD_CONTRACT_DIR"); directory != "" {
+		name := fmt.Sprintf("%s-%s-%s-%s-%s.json", scope.organization, scope.credential.HostedRole, params.Get("include"), params.Get("limit"), params.Get("state"))
+		if err := os.WriteFile(filepath.Join(directory, name), recorder.Body.Bytes(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return page
 }
 
 func boardPartBudget(t *testing.T, service *Service, measured *postgres.Repository, wire *boardWire, details *memoryRunDetails, scope nativeScope, size int, part string, expectedCounts map[string][2]int) {
