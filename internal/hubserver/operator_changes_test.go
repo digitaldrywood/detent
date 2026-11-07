@@ -26,6 +26,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -43,12 +44,12 @@ import (
 
 func changeOperatorContext(t *testing.T, s *Service, token, organization string) context.Context {
 	t.Helper()
-	credential, _, err := s.authenticateAPIToken(t.Context(), token, "", "")
+	credential, _, err := s.authenticateTenantAPIHash(t.Context(), tracker.OrganizationID(organization), apikey.HashToken(token), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	connection := operatortool.Connection{ID: "test-connection", Client: "test-client", Identity: operatorIdentity(credential, organization), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
-		current, _, err := s.authenticateAPIToken(ctx, token, "", "")
+		current, _, err := s.authenticateTenantAPIHash(ctx, tracker.OrganizationID(organization), apikey.HashToken(token), "", "")
 		if err != nil {
 			return operatortool.Authority{}, err
 		}
@@ -301,7 +302,7 @@ func TestOperatorMutationRefusalPrecedence(t *testing.T) {
 // Catches discovery bypass reaching foreign nested resources, stale review
 // identities, and replay repeating discussion effects after reconnect.
 func TestOperatorChangeCommands(t *testing.T) {
-	f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}))
+	f := newChangeFixture(t, nil)
 	version := f.publish(t, "v1", "")
 	bundle := seedReviewBundle(t, f, version, time.Now().Add(time.Hour))
 	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))

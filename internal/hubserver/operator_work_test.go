@@ -24,6 +24,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -944,12 +947,14 @@ func TestSafeNativeWorkError(t *testing.T) {
 		name    string
 		request tracker.CreateIssue
 		worker  bool
-		setup   string
+		setup   func(*projectstore.Record)
 		message string
 	}{
 		{name: "Triage", request: tracker.CreateIssue{State: "Triage"}, message: "Triage is reserved for linked GitHub issue intake"},
-		{name: "Triage with Backlog", request: tracker.CreateIssue{State: "Triage"}, setup: `UPDATE projects SET states_json=json_insert(states_json, '$[#]', json('{"name":"Backlog"}')) WHERE id=?`, message: "Triage is reserved for linked GitHub issue intake; use Backlog for drafts"},
-		{name: "worker Triage with restricted Backlog", worker: true, request: tracker.CreateIssue{State: "Triage"}, setup: `UPDATE projects SET states_json=json_insert(states_json, '$[#]', json('{"name":"Backlog","operator_only":true}')) WHERE id=?`, message: "Triage is reserved for linked GitHub issue intake"},
+		{name: "Triage with Backlog", request: tracker.CreateIssue{State: "Triage"}, setup: func(p *projectstore.Record) { p.States = append(p.States, tracker.NativeState{Name: "Backlog"}) }, message: "Triage is reserved for linked GitHub issue intake; use Backlog for drafts"},
+		{name: "worker Triage with restricted Backlog", worker: true, request: tracker.CreateIssue{State: "Triage"}, setup: func(p *projectstore.Record) {
+			p.States = append(p.States, tracker.NativeState{Name: "Backlog", OperatorOnly: true})
+		}, message: "Triage is reserved for linked GitHub issue intake"},
 		{name: "title", request: tracker.CreateIssue{Title: strings.Repeat("x", 501)}, message: "Title must contain 1 to 500 bytes and body at most 256 KiB"},
 		{name: "priority", request: tracker.CreateIssue{Priority: new(4)}, message: "Priority must be between 0 and 3"},
 		{name: "label count", request: tracker.CreateIssue{Labels: make([]string, 101)}, message: "At most 100 labels or assignees are supported"},
@@ -958,24 +963,37 @@ func TestSafeNativeWorkError(t *testing.T) {
 		{name: "import provider", request: tracker.CreateIssue{Provenance: &tracker.Provenance{Provider: "unknown"}}, message: "Import source is invalid"},
 		{name: "import author", request: tracker.CreateIssue{Provenance: &tracker.Provenance{Provider: "github"}}, message: "Import source and author are invalid"},
 		{name: "import time", request: tracker.CreateIssue{Provenance: &tracker.Provenance{Provider: "github", ExternalID: "issue", AuthorID: "author"}}, message: "Import timestamps are invalid"},
-		{name: "compatibility project", setup: "UPDATE projects SET profile='github_compatible' WHERE id=?", message: "Compatibility project content is externally owned"},
+		{name: "compatibility project", setup: func(p *projectstore.Record) { p.Core.Profile = "github_compatible" }, message: "Compatibility project content is externally owned"},
 		{name: "unknown lane", request: tracker.CreateIssue{State: "Unknown"}, message: "Workflow state does not exist"},
-		{name: "operator lane", worker: true, setup: "UPDATE projects SET states_json=(SELECT json_set(states_json, '$[' || s.key || '].operator_only', json('true')) FROM json_each(states_json) s WHERE json_extract(s.value, '$.name')='Todo') WHERE id=?", message: "Workflow target requires an operator"},
+		{name: "operator lane", worker: true, setup: func(p *projectstore.Record) {
+			for i := range p.States {
+				if p.States[i].Name == "Todo" {
+					p.States[i].OperatorOnly = true
+				}
+			}
+		}, message: "Workflow target requires an operator"},
 		{name: "reserved label", request: tracker.CreateIssue{Labels: []string{workspaceItemLabel}}, message: "Label detent:workspace is reserved"},
 		{name: "linked provenance", request: tracker.CreateIssue{GitHubIssueURL: "https://github.com/example-org/example-project/issues/1", Provenance: &validSource}, message: "Linked issues obtain provenance during runner intake"},
 		{name: "linked repository required", request: tracker.CreateIssue{GitHubIssueURL: "https://github.com/example-org/example-project/issues/1"}, message: linkedIssueRepositoryRequired},
-		{name: "linked repository mismatch", setup: "UPDATE projects SET checkout_repository='example-org/other-project' WHERE id=?", request: tracker.CreateIssue{GitHubIssueURL: "https://github.com/example-org/example-project/issues/1"}, message: linkedIssueRepositoryMismatch},
+		{name: "linked repository mismatch", setup: func(p *projectstore.Record) { p.Settings.CheckoutRepository = "example-org/other-project" }, request: tracker.CreateIssue{GitHubIssueURL: "https://github.com/example-org/example-project/issues/1"}, message: linkedIssueRepositoryMismatch},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
+			project := projectstore.Record{Core: corestore.Project{OrganizationID: scope.organization, ID: tracker.ProjectID(newNativeID("prj")), Name: "Validation example " + test.name, Profile: "native"}, States: nativeFixtureStates()}
+			if test.setup != nil {
+				test.setup(&project)
 			}
-			defer tx.Rollback()
-			if test.setup != "" {
-				if _, err := tx.ExecContext(t.Context(), test.setup, f.project.ID); err != nil {
-					t.Fatal(err)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				stored, err := w.CreateProjectRecord(t.Context(), project)
+				if err != nil {
+					return err
 				}
+				if project.Settings.CheckoutRepository != "" {
+					stored.Settings.CheckoutRepository = project.Settings.CheckoutRepository
+					_, err = w.UpdateProjectRecord(t.Context(), stored)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
 			}
 			request := test.request
 			if request.Title == "" {
@@ -988,14 +1006,15 @@ func TestSafeNativeWorkError(t *testing.T) {
 				request.State = "Todo"
 			}
 			caller := scope
+			caller.project = project.Core.ID
 			if test.worker {
 				caller.credential.Scope = apiScopeWorker
 			}
-			_, cause := createNativeIssueTx(t.Context(), tx, caller, request, now)
-			err = safeNativeWorkError(cause)
+			_, cause := f.service.loadWorkItemPlan(t.Context(), caller, "", "", request)
+			err := safeNativeWorkError(cause)
 			var refusal *operatortool.RequestError
 			if !errors.As(err, &refusal) || refusal.Code != "invalid_request" || refusal.Message != test.message || errors.Is(err, operatortool.ErrSnapshotUnavailable) {
-				t.Fatalf("refusal=%v, want invalid_request: %s", err, test.message)
+				t.Fatalf("refusal=%#v, want invalid_request: %s", err, test.message)
 			}
 			response := httptest.NewRecorder()
 			context := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/work-items", nil), response)
@@ -1008,7 +1027,8 @@ func TestSafeNativeWorkError(t *testing.T) {
 			}
 		})
 	}
-	_, sqlFailure := f.service.database.db.ExecContext(t.Context(), "SELECT missing_private_column FROM issues")
+	admin := nativeAttemptTestDatabase(t, f)
+	_, sqlFailure := admin.ExecContext(t.Context(), "SELECT missing_private_column FROM issues")
 	if sqlFailure == nil {
 		t.Fatal("expected SQL diagnostic")
 	}

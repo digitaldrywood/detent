@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -183,6 +184,7 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 		expectedByID[item.WorkItemID] = item
 	}
 
+	operatorRefreshSearch(t, f)
 	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 	var firstCursor string
 	var baseline []byte
@@ -379,7 +381,7 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 		t.Fatal("original list cursor is incompatible with summary projection")
 	}
 	credential := operatortool.ConnectionIdentity(ctx).PrincipalID
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=? WHERE id=?", formatHubTime(f.service.config.now()), credential); err != nil {
+	if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=$1 WHERE organization_id=$2 AND id=$3", f.service.config.now(), f.project.OrganizationID, credential); err != nil {
 		t.Fatal(err)
 	}
 	for _, transport := range []string{"stdio", "http"} {
@@ -1394,4 +1396,18 @@ func TestOperatorArchivedWorkReads(t *testing.T) {
 	if pages != 2 || !reflect.DeepEqual(events, want.Data.Items) {
 		t.Fatal("section pagination changed history records or anchors")
 	}
+}
+
+func operatorRefreshSearch(t *testing.T, f nativeFixture) {
+	t.Helper()
+	for range 128 {
+		more, err := searchstore.NewContent(f.service.runDetailStore()).RefreshOne(t.Context(), tenantSearchRepository{f.service.config.TenantRepository}, f.project.OrganizationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !more {
+			return
+		}
+	}
+	t.Fatal("operator search fixture refresh did not finish")
 }
