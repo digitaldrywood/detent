@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/scenariotest"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -44,22 +45,24 @@ func TestMain(m *testing.M) {
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
 	}
-	scratch, err := os.MkdirTemp("", "detent-hubclient-test-")
+	scratch, err := os.MkdirTemp("", "")
 	if err != nil {
 		panic(err)
 	}
 	nativeChangeFixtureRoot = scratch
-	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
-		if err := os.Setenv(key, scratch); err != nil {
-			panic(err)
-		}
-	}
+
 	for key, value := range map[string]string{"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "Test User", "GIT_AUTHOR_EMAIL": "test@example.com", "GIT_COMMITTER_NAME": "Test User", "GIT_COMMITTER_EMAIL": "test@example.com"} {
 		if err := os.Setenv(key, value); err != nil {
 			panic(err)
 		}
 	}
 	code := m.Run()
+	cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	if err := testsupport.CloseDispatchPostgres(cleanup); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = 1
+	}
+	cancel()
 	if err := os.RemoveAll(scratch); err != nil {
 		panic(err)
 	}

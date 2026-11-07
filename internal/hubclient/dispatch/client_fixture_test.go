@@ -133,9 +133,22 @@ func fixtureConnector(native *NativeClient) *NativeConnector {
 }
 
 func newTestScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
+	if config.Machine.DisplayName == "" {
+		config.Machine.DisplayName = config.Machine.Hostname
+	}
 	config.ExecutionFactory = nativechange.NewExecution
 	config.CompletionRestorer = nativechange.RestoreCompletion
-	scheduler, err := NewScheduler(client, config)
+	var scheduler *Scheduler
+	if config.CapacityConfiguration == nil && client.Enrolled() {
+		config.CapacityConfiguration = func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig {
+			scheduler.mu.Lock()
+			capacity := max(1, scheduler.machine.Capacity)
+			scheduler.mu.Unlock()
+			return &runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: capacity, ClientLimit: capacity, RuntimeLimit: capacity, ObservedAt: scheduler.now()}
+		}
+	}
+	var err error
+	scheduler, err = NewScheduler(client, config)
 	if err == nil {
 		schedulerFixtures.Store(scheduler, config)
 	}
@@ -247,8 +260,30 @@ func fixtureEnableEnrollment(t testing.TB, h *nativeChangeHub) {
 	schedulerConfig.Machine = h.scheduler.machine
 	schedulerConfig.Machine.ID = file.Identity.MachineID
 	schedulerConfig.Machine.BackendIsolation = report
+	schedulerConfig.Machine.DisplayName = redemption.DisplayName
 	h.scheduler, err = newTestScheduler(client, schedulerConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func fixtureCapacity(t testing.TB, h *nativeChangeHub, capacity int) {
+	t.Helper()
+	file, err := runnerauth.Load(h.native.Transport().IdentityFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v2/organizations/" + string(h.organization) + "/runners/" + file.Identity.RunnerID + "/routing"
+	var current runnerauth.Runner
+	if err := h.admin.Transport().Request(t.Context(), http.MethodGet, path, nil, &current); err != nil {
+		t.Fatal(err)
+	}
+	current.Routing.CapacityLimit = capacity
+	if err := h.admin.Transport().Request(t.Context(), http.MethodPut, path, runnerauth.RoutingChange{ExpectedRevision: current.Revision, Routing: current.Routing}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.admin.Transport().Request(t.Context(), http.MethodPut, "/api/v2/organizations/"+string(h.organization)+"/machines/"+string(file.Identity.MachineID)+"/routing", runnerauth.HostChange{ExpectedRevision: current.HostRevision, DisplayName: current.HostDisplayName, Capacity: capacity}, nil); err != nil {
+		t.Fatal(err)
+	}
+	h.scheduler.machine.Capacity = capacity
 }

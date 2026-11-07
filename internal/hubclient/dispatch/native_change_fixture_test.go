@@ -25,12 +25,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -41,17 +45,18 @@ func TestMain(m *testing.M) {
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
 	}
-	scratch, err := os.MkdirTemp("", "detent-hubclient-test-")
+	scratch, err := os.MkdirTemp("", "")
 	if err != nil {
 		panic(err)
 	}
 	nativeChangeFixtureRoot = scratch
-	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
-		if err := os.Setenv(key, scratch); err != nil {
-			panic(err)
-		}
-	}
 	code := m.Run()
+	cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	if err := testsupport.CloseDispatchPostgres(cleanup); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = 1
+	}
+	cancel()
 	if err := os.RemoveAll(scratch); err != nil {
 		panic(err)
 	}
@@ -60,15 +65,14 @@ func TestMain(m *testing.M) {
 
 const nativeChangeAdminToken = "native-change-admin"
 
-var nativeRuntimeDatabasePath = testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
-	return store.Open(ctx, store.Config{Path: path})
-})
-
 // nativeChangeHub is a real hub with a native project whose workflow has a
 // review lane, and a worker client and scheduler that claim from it.
 type nativeChangeHub struct {
 	leaseHolds      atomic.Int64
-	reopen          func(func(string) error)
+	seed            func(func(tenantstore.Writer) error)
+	projectBoard    func()
+	content         *eventstore.Content
+	search          *searchstore.Content
 	sourceDirectory string
 	review          string
 	organization    tracker.OrganizationID
@@ -79,7 +83,6 @@ type nativeChangeHub struct {
 	connector       *NativeConnector
 	scheduler       *Scheduler
 	failChanges     *changeFailingTransport
-	otherWorker     func(*testing.T) *NativeClient
 }
 
 func (h *nativeChangeHub) leaseHold(context.Context) (func(), error) {
@@ -183,7 +186,7 @@ func newNativeChangeHubTransport(t *testing.T, review string, states []tracker.N
 
 func newNativeChangeHubDependencies(t *testing.T, review string, states []tracker.NativeState, inMemory, requireDependencies bool, repositoryBackend ...hubserver.ReconcileBackend) *nativeChangeHub {
 	t.Helper()
-	config := hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}}
+	config := hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}}
 	return newNativeChangeHubConfigured(t, review, states, inMemory, requireDependencies, config, repositoryBackend...)
 }
 
@@ -232,6 +235,8 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if config.RunDetails == nil {
 		config.RunDetails = &archivedRunDetails{}
 	}
+	config = dispatchPostgresConfig(t, config)
+	config.RunDetails = hubmaintenance.LimitDetails(config.RunDetails)
 	service, err := hubserver.Open(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
@@ -267,81 +272,63 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if err != nil {
 		t.Fatal(err)
 	}
-	var organizations tracker.Page[struct {
-		ID tracker.OrganizationID `json:"organization_id"`
-	}]
-	if err := admin.Request(t.Context(), http.MethodGet, "/api/v2/organizations", nil, &organizations); err != nil {
-		t.Fatal(err)
+	h := &nativeChangeHub{content: eventstore.NewContent(config.RunDetails), search: searchstore.NewContent(config.RunDetails), review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), descriptor: clientTestPolicy()}
+	h.projectBoard = func() {
+		var cursor tracker.NativeWorkItemID
+		for range 128 {
+			ctx := (hubmaintenance.Budget{Items: 1, Bytes: hubserver.BoardMaintenanceBytes}).Context(t.Context(), hubmaintenance.Tenant{Organization: string(h.organization), Generation: 1})
+			next, processed, err := service.MaintainBoardRecord(ctx, h.organization, cursor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !processed || cursor != "" && next <= cursor {
+				for range 512 {
+					ctx := (hubmaintenance.Budget{Items: 1, Bytes: hubmaintenance.ByteLimit}).Context(t.Context(), hubmaintenance.Tenant{Organization: string(h.organization), Generation: 1})
+					processed, err := service.MaintainWorkItemPage(ctx, h.organization)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !processed {
+						testsupport.DispatchRefreshSearch(t, config)
+						return
+					}
+				}
+				t.Fatal("work item projection exceeded fixture work bound")
+			}
+			cursor = next
+		}
+		t.Fatal("board projection exceeded fixture work bound")
 	}
-	h := &nativeChangeHub{review: review, organization: organizations.Items[0].ID, descriptor: clientTestPolicy()}
-	reopens := 0
-	h.reopen = func(seed func(string) error) {
-		t.Helper()
-		requests.Lock()
-		defer requests.Unlock()
-		if err := service.Close(); err != nil {
-			t.Fatalf("close fixture before seed: %v", err)
-		}
-		reopens++
-		seedPath := filepath.Join(filepath.Dir(config.DatabasePath), fmt.Sprintf("seed-%d.db", reopens))
-		if err := hubserver.BackupDatabase(t.Context(), config.DatabasePath, seedPath); err != nil {
-			t.Fatalf("snapshot stopped fixture: %v", err)
-		}
-		if err := seed(seedPath); err != nil {
-			t.Fatalf("seed stopped fixture: %v", err)
-		}
-		config.DatabasePath = seedPath
-		service, err = hubserver.Open(t.Context(), config)
-		if err != nil {
-			t.Fatalf("reopen seeded fixture: %v", err)
-		}
+	h.seed = func(write func(tenantstore.Writer) error) {
+		dispatchWriteFixture(t, config, write)
 	}
 	var project tracker.NativeProject
-	body := map[string]any{"name": "native-change", "idempotency_key": "project-native-change", "states": states, "require_dependencies": requireDependencies}
+	body := map[string]any{"name": "native-change", "idempotency_key": "project-native-change", "states": states, "grant_access": true}
 	if err := admin.Request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/projects", body, &project); err != nil {
 		t.Fatal(err)
 	}
 	h.project = project.ID
-	var token struct {
-		ID    string `json:"id"`
-		Token string `json:"token"`
+	if requireDependencies {
+		h.seed(func(w tenantstore.Writer) error {
+			record, err := w.ProjectRecord(t.Context(), h.project)
+			if err != nil {
+				return err
+			}
+			record.Core.RequireDependencies = true
+			_, err = w.UpdateProjectRecord(t.Context(), record)
+			return err
+		})
 	}
-	if err := admin.Request(t.Context(), http.MethodPost, "/api/v1/tokens", map[string]string{"name": "native-change-worker", "scope": "worker"}, &token); err != nil {
-		t.Fatal(err)
-	}
-	if err := admin.Request(t.Context(), http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", map[string]any{"organization_id": h.organization, "project_id": h.project}, nil); err != nil {
-		t.Fatal(err)
-	}
+
+	token := nativeChangeAdminToken
 	if h.admin, err = admin.Native(h.organization, h.project); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{Policy: h.descriptor}); err != nil {
 		t.Fatal(err)
 	}
-	h.otherWorker = func(t *testing.T) *NativeClient {
-		t.Helper()
-		var other struct {
-			ID    string `json:"id"`
-			Token string `json:"token"`
-		}
-		if err := admin.Request(t.Context(), http.MethodPost, "/api/v1/tokens", map[string]string{"name": "native-change-other-worker", "scope": "worker"}, &other); err != nil {
-			t.Fatal(err)
-		}
-		if err := admin.Request(t.Context(), http.MethodPost, "/api/v2/tokens/"+other.ID+"/grants", map[string]any{"organization_id": h.organization, "project_id": h.project}, nil); err != nil {
-			t.Fatal(err)
-		}
-		client, err := newTestClient(t, Config{URL: serverURL, TokenSource: func() string { return other.Token }, HTTPClient: httpClient})
-		if err != nil {
-			t.Fatal(err)
-		}
-		native, err := client.Native(h.organization, h.project)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return native
-	}
 	h.failChanges = &changeFailingTransport{next: httpClient.Transport}
-	worker, err := newTestClient(t, Config{URL: serverURL, TokenSource: func() string { return token.Token }, HTTPClient: &http.Client{Transport: h.failChanges}})
+	worker, err := newTestClient(t, Config{URL: serverURL, TokenSource: func() string { return token }, HTTPClient: &http.Client{Transport: h.failChanges}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,6 +348,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if err != nil {
 		t.Fatal(err)
 	}
+	fixtureEnableEnrollment(t, h)
 	return h
 }
 
@@ -368,14 +356,11 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 // orchestrator's dispatch leaves a native item it runs.
 func (h *nativeChangeHub) createInProgress(t *testing.T, title string) connector.Issue {
 	t.Helper()
-	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: title, Body: "Change the README." + issueContractTestSections})
+	issue, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: title, Body: "Change the README." + issueContractTestSections, State: "In Progress"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "In Progress"); err != nil {
-		t.Fatal(err)
-	}
-	return issue
+	return issueFromNative(issue)
 }
 
 // claim fetches the only candidate and adopts it, as dispatch does.
@@ -383,6 +368,8 @@ func (h *nativeChangeHub) claim(t *testing.T, issueID string) connector.Issue {
 	t.Helper()
 	candidates := h.candidates(t)
 	if len(candidates) != 1 || candidates[0].ID != issueID {
+		evidence, evidenceErr := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issueID), "")
+		t.Logf("claim admission: %+v, %v", evidence, evidenceErr)
 		t.Fatalf("candidates = %#v, want %s", candidates, issueID)
 	}
 	claim, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now())
@@ -853,10 +840,6 @@ func nativeChangeGitWithContext(ctx context.Context, t *testing.T, dir string, a
 
 func isolateNativeChangeGit(t *testing.T) {
 	t.Helper()
-	scratch := t.TempDir()
-	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
-		t.Setenv(key, scratch)
-	}
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_AUTHOR_NAME", "Test User")
