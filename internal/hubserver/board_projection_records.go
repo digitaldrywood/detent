@@ -258,6 +258,7 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 	if err != nil {
 		return err
 	}
+	var runtimeSummary *leasestore.AttemptEvent
 	update := viewstore.BoardUpdate{ProjectID: candidate.ProjectID, WorkItemID: candidate.WorkItemID, ExpectedRevision: snapshot.item.Revision, ExpectedEventSequence: snapshot.item.EventSequence, ExpectedProjectRevision: snapshot.project.Core.ContentSettingsRevision}
 	if snapshot.item.ID != 0 && snapshot.project.Core.DeletedAt == nil && snapshot.project.Core.Profile == "native" {
 		step = "issue_payload"
@@ -274,6 +275,13 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 				return err
 			}
 			if attempt != nil {
+				if historical.attempt.Status == "running" && historical.attempt.RuntimeSummarySequence != historical.attempt.Sequence {
+					runtimeSummary = &leasestore.AttemptEvent{ID: historical.attempt.ID, Sequence: historical.attempt.Sequence}
+					if attempt.Runtime != nil {
+						heartbeat := attempt.Runtime.HeartbeatAt
+						runtimeSummary.RuntimeHeartbeatAt = &heartbeat
+					}
+				}
 				latest = attempt
 				card.Attempt = &tracker.NativeBoardAttempt{Count: int(snapshot.attemptCount), ID: attempt.AttemptID, Status: attempt.Status, RunnerID: attempt.RunnerID, MachineID: string(attempt.MachineID), Identity: nativeAttemptDisplayIdentity(*attempt), StartedAt: attempt.StartedAt, ExpiresAt: attempt.LeaseExpiresAt}
 			} else {
@@ -364,7 +372,14 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 		update.Current = &record
 	}
 	step = "replace_board_item"
-	err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error { return w.ReplaceBoardItem(ctx, update) })
+	err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+		if runtimeSummary != nil {
+			if err := w.SetAttemptRuntimeHeartbeat(ctx, runtimeSummary.ID, runtimeSummary.Sequence, runtimeSummary.RuntimeHeartbeatAt); err != nil {
+				return err
+			}
+		}
+		return w.ReplaceBoardItem(ctx, update)
+	})
 	if err == nil && update.Current != nil && candidate.QueuedAt != nil && s.config.Logger != nil {
 		s.config.Logger.Info("board projection checkpoint", "organization_id", organization, "project_id", candidate.ProjectID, "work_item_id", candidate.WorkItemID, "source_revision", snapshot.item.Revision, "source_event_sequence", snapshot.item.EventSequence, "projected_at", now, "projection_lag", max(time.Duration(0), now.Sub(*candidate.QueuedAt)))
 	}

@@ -229,11 +229,6 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope ` + nativeLandingCapacityJo
 	if err := rows.Close(); err != nil {
 		return r, err
 	}
-	if display {
-		if err := appendRunnerRuntimeProblems(ctx, db, &r, now); err != nil {
-			return r, err
-		}
-	}
 	if len(reports) > 0 {
 		snapshot, err := readProviderCapacitySnapshot(ctx, db, organization, now)
 		if err != nil {
@@ -783,6 +778,7 @@ func runnerFromRoutingRecord(record runnerstore.RoutingRecord, now time.Time, ur
 		}
 		lease.Lease.ProviderReservation = lease.Reservation
 		runner.Leases = append(runner.Leases, lease.Lease)
+		appendRunnerRuntimeProblems(&runner, lease, now)
 	}
 	runner.HostUsed, runner.Used = len(hostSlots), len(runnerSlots)
 	return runner

@@ -231,7 +231,7 @@ func (s *boardHistoricalDetailStore) ReadDetail(ctx context.Context, organizatio
 }
 
 func TestBoardProjectionRetainsCoreWhenHistoricalAttemptUnavailable(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	details := &boardHistoricalDetailStore{memoryRunDetails: &memoryRunDetails{}, historical: map[string]bool{}}
 	service := &Service{config: Config{TenantRepository: repository, RunDetails: details, now: func() time.Time { return now }}}
@@ -243,10 +243,11 @@ func TestBoardProjectionRetainsCoreWhenHistoricalAttemptUnavailable(t *testing.T
 			t.Fatal(err)
 		}
 		for index, test := range []struct {
-			name                                     string
-			active, missingRow, missingCore, corrupt bool
-			want                                     error
+			name                                               string
+			active, missingRow, missingCore, corrupt, backfill bool
+			want                                               error
 		}{
+			{name: "active_legacy_runtime_summary", active: true, backfill: true},
 			{name: "historical_missing_row", missingRow: true},
 			{name: "historical_missing_object"},
 			{name: "active_missing_row", active: true, missingRow: true, want: corestore.ErrNotFound},
@@ -303,6 +304,12 @@ func TestBoardProjectionRetainsCoreWhenHistoricalAttemptUnavailable(t *testing.T
 				}
 				if !test.missingRow {
 					value := tracker.CollaborationEvent{ID: "event_" + test.name, OrganizationID: organization, ProjectID: project, AggregateType: "issue", AggregateID: itemID, Type: "run.observed", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: now, Data: tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: attemptID, RunID: "run_" + test.name, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, MachineID: tracker.MachineID(lease.MachineID)}}}
+					if test.backfill {
+						value.Data.Run.Runtime = &tracker.NativeRuntimeObservation{HeartbeatAt: now.Add(-time.Hour), Phase: "implementation"}
+						if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET runtime_summary_sequence=NULL WHERE organization_id=$1 AND id=$2`, organization, attemptID); err != nil {
+							t.Fatal(err)
+						}
+					}
 					raw, err := json.Marshal(value)
 					if err != nil {
 						t.Fatal(err)
@@ -318,7 +325,7 @@ func TestBoardProjectionRetainsCoreWhenHistoricalAttemptUnavailable(t *testing.T
 					details.mu.Lock()
 					if test.corrupt {
 						details.data[event.PayloadObjectKey] = []byte(`{}`)
-					} else {
+					} else if !test.backfill {
 						delete(details.data, event.PayloadObjectKey)
 					}
 					details.mu.Unlock()
@@ -335,6 +342,18 @@ func TestBoardProjectionRetainsCoreWhenHistoricalAttemptUnavailable(t *testing.T
 				}
 				if !errors.Is(err, test.want) {
 					t.Fatalf("projection error=%v, want %v", err, test.want)
+				}
+				if test.backfill {
+					if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+						got, err := r.Attempt(t.Context(), attemptID)
+						if err == nil && (got.RuntimeSummarySequence != 1 || got.RuntimeHeartbeatAt == nil || !got.RuntimeHeartbeatAt.Equal(now.Add(-time.Hour))) {
+							t.Fatalf("runtime backfill=%+v", got)
+						}
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					return
 				}
 				if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 					rows, err := r.BoardPage(t.Context(), viewstore.BoardSelection{ProjectID: project, Limit: 10})

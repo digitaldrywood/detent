@@ -64,6 +64,7 @@ type Writer interface {
 	Expire(context.Context, Fence) (Lease, error)
 	RecordAttempt(context.Context, AttemptEvent) (Attempt, error)
 	RecordAttemptEvent(context.Context, AttemptEvent) (Attempt, bool, error)
+	SetAttemptRuntimeHeartbeat(context.Context, string, int64, *time.Time) error
 	CreateAttemptDiff(context.Context, AttemptDiff) error
 	LockAttemptDiffGeneration(context.Context, string, string, string, string, string) (int64, error)
 }
@@ -122,22 +123,24 @@ type Lease struct {
 }
 
 type Attempt struct {
-	CleanupAcknowledgedAt *time.Time
-	OrganizationID        tracker.OrganizationID
-	ID                    string
-	IssueID               int64
-	LeaseID               string
-	FencingToken          int64
-	RunID                 string
-	Sequence              int64
-	Status                string
-	WorkItemRevision      int64
-	DispatchGeneration    int64
-	PayloadObjectKey      string
-	CheckpointObjectKey   *string
-	ArtifactsObjectKey    *string
-	StartedAt             time.Time
-	UpdatedAt             time.Time
+	RuntimeHeartbeatAt     *time.Time
+	RuntimeSummarySequence int64
+	CleanupAcknowledgedAt  *time.Time
+	OrganizationID         tracker.OrganizationID
+	ID                     string
+	IssueID                int64
+	LeaseID                string
+	FencingToken           int64
+	RunID                  string
+	Sequence               int64
+	Status                 string
+	WorkItemRevision       int64
+	DispatchGeneration     int64
+	PayloadObjectKey       string
+	CheckpointObjectKey    *string
+	ArtifactsObjectKey     *string
+	StartedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 type AttemptCursor struct {
@@ -173,6 +176,7 @@ type AttemptDiff struct {
 }
 
 type AttemptEvent struct {
+	RuntimeHeartbeatAt  *time.Time                  `json:"-"`
 	CheckpointReference attachment.ArchiveReference `json:"-"`
 	Termination         bool                        `json:"termination,omitempty"`
 	PayloadReference    attachment.ArchiveReference `json:"-"`

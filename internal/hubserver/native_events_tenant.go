@@ -392,6 +392,10 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			RunID: event.Data.RunID, Sequence: event.Data.Sequence, Status: status,
 			DispatchGeneration: 0, PayloadObjectKey: ref.Key, PayloadReference: ref, UsageCorrection: i == len(events)-1 && usageCorrection, Termination: termination,
 		}
+		if event.Data.Runtime != nil {
+			heartbeat := event.Data.Runtime.HeartbeatAt
+			attemptEvent.RuntimeHeartbeatAt = &heartbeat
+		}
 		if event.Data.Sequence == 1 && event.Type == "run.started" && batchStartIndex == i {
 			attemptEvent.StartedAt = event.OccurredAt
 		}

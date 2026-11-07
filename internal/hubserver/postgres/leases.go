@@ -101,14 +101,18 @@ func (s *session) Attempt(ctx context.Context, id string) (leasestore.Attempt, e
 }
 
 func attemptFromPG(row pgquery.NativeAttempt) leasestore.Attempt {
-	return leasestore.Attempt{
+	result := leasestore.Attempt{
 		OrganizationID: row.OrganizationID, ID: row.ID, IssueID: row.IssueID, LeaseID: row.LeaseID,
 		FencingToken: row.FencingToken, RunID: row.RunID, Sequence: row.Sequence, Status: row.Status,
 		WorkItemRevision: row.WorkItemRevision, DispatchGeneration: row.DispatchGeneration,
 		PayloadObjectKey: row.PayloadObjectKey, CheckpointObjectKey: row.CheckpointObjectKey,
 		ArtifactsObjectKey: row.ArtifactsObjectKey, CleanupAcknowledgedAt: row.CleanupAcknowledgedAt,
-		StartedAt: row.StartedAt.Add(time.Duration(row.StartedAtSubmicroNs)), UpdatedAt: row.UpdatedAt,
+		StartedAt: row.StartedAt.Add(time.Duration(row.StartedAtSubmicroNs)), UpdatedAt: row.UpdatedAt, RuntimeHeartbeatAt: row.RuntimeHeartbeatAt,
 	}
+	if row.RuntimeSummarySequence.Valid {
+		result.RuntimeSummarySequence = row.RuntimeSummarySequence.Int64
+	}
+	return result
 }
 
 func (s *session) LatestAttempt(ctx context.Context, issueID int64) (leasestore.Attempt, error) {

@@ -451,8 +451,9 @@ func TestLeaseAttemptLifecycle(t *testing.T) {
 					t.Fatalf("claim replay changed ownership: %+v, first %+v", replay, lease)
 				}
 				event := attemptEvent(lease)
+				event.RuntimeHeartbeatAt = new(lease.RenewedAt.Add(-time.Minute))
 				start := recordLeaseAttempt(t, r, org, event)
-				if start.Sequence != 1 || start.Status != "running" || start.WorkItemRevision != lease.WorkItemRevision {
+				if start.Sequence != 1 || start.Status != "running" || start.WorkItemRevision != lease.WorkItemRevision || start.RuntimeSummarySequence != 1 || start.RuntimeHeartbeatAt == nil || !start.RuntimeHeartbeatAt.Equal(*event.RuntimeHeartbeatAt) {
 					t.Fatalf("start = %+v", start)
 				}
 				legacy := struct {
@@ -479,9 +480,46 @@ func TestLeaseAttemptLifecycle(t *testing.T) {
 				if replay := recordLeaseAttempt(t, r, org, event); replay.ID != start.ID || replay.Sequence != start.Sequence || replay.FencingToken != start.FencingToken {
 					t.Fatalf("legacy receipt replay changed attempt: %+v", replay)
 				}
+				if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET runtime_heartbeat_at=NULL,runtime_summary_sequence=NULL WHERE organization_id=$1 AND id=$2`, org, event.ID); err != nil {
+					t.Fatal(err)
+				}
+				for _, sequence := range []int64{2, 1} {
+					if err := r.WriteLeases(t.Context(), org, corestore.Background, func(w leasestore.Writer) error {
+						return w.SetAttemptRuntimeHeartbeat(t.Context(), event.ID, sequence, event.RuntimeHeartbeatAt)
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if err := r.ReadLeases(t.Context(), org, corestore.Serving, func(reader leasestore.Reader) error {
+						got, err := reader.Attempt(t.Context(), event.ID)
+						if err == nil && ((got.RuntimeHeartbeatAt != nil) != (sequence == 1) || sequence == 1 && (got.RuntimeSummarySequence != 1 || !got.RuntimeHeartbeatAt.Equal(*event.RuntimeHeartbeatAt))) {
+							t.Fatalf("backfill sequence %d: %+v", sequence, got)
+						}
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
 				event.Sequence, event.PayloadObjectKey = 2, "example/checkpoint"
 				event.CheckpointObjectKey, event.ArtifactsObjectKey = new("example/checkpoint"), new("example/artifacts")
-				recordLeaseAttempt(t, r, org, event)
+				event.RuntimeHeartbeatAt = nil
+				updated := recordLeaseAttempt(t, r, org, event)
+				if updated.RuntimeHeartbeatAt != nil || updated.RuntimeSummarySequence != 2 {
+					t.Fatalf("runtime summary survived absent runtime: %+v", updated)
+				}
+				if err := r.WriteLeases(t.Context(), org, corestore.Background, func(w leasestore.Writer) error {
+					return w.SetAttemptRuntimeHeartbeat(t.Context(), event.ID, 1, start.RuntimeHeartbeatAt)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := r.ReadLeases(t.Context(), org, corestore.Serving, func(reader leasestore.Reader) error {
+					got, err := reader.Attempt(t.Context(), event.ID)
+					if err == nil && (got.RuntimeHeartbeatAt != nil || got.RuntimeSummarySequence != 2) {
+						t.Fatalf("stale backfill replaced current summary: %+v", got)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
 				event.Sequence, event.Status, event.PayloadObjectKey = 3, "succeeded", "example/finish"
 				event.CheckpointObjectKey, event.ArtifactsObjectKey = nil, nil
 				finished := recordLeaseAttempt(t, r, org, event)

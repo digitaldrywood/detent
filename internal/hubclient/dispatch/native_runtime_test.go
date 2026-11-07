@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -140,12 +141,9 @@ func TestNativeRuntimeHeartbeatDuringQuietCommand(t *testing.T) {
 				if err := h.admin.Transport().Request(t.Context(), http.MethodGet, "/api/v2/organizations/"+string(h.organization)+"/runners/"+file.Identity.RunnerID+"/routing", nil, &view); err != nil {
 					t.Fatal(err)
 				}
-				wantHealth := "online"
-				if expired {
-					wantHealth = "offline"
-				}
-				if view.Health != wantHealth {
-					t.Fatalf("runner health=%s problems=%+v want %s", view.Health, view.Problems, wantHealth)
+				found := slices.ContainsFunc(view.Problems, func(p runnerauth.Problem) bool { return p.Code == "runtime_expired" })
+				if found != expired || (view.Health == "needs_attention") != expired {
+					t.Fatalf("runner health=%s problems=%+v want expired=%v", view.Health, view.Problems, expired)
 				}
 			}
 			for elapsed := 50 * time.Second; elapsed <= 3*ttl; elapsed += 50 * time.Second {

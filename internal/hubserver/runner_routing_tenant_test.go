@@ -113,6 +113,106 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 	now = asOf.Add(time.Second)
 	e := echo.New()
 	service.registerPostgresRoutes(e)
+	t.Run("expired runtime", func(t *testing.T) {
+		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				for _, id := range []string{"one", "two"} {
+					lease, err := w.Lease(t.Context(), "lease_"+id)
+					if err != nil {
+						return err
+					}
+					if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "attempt_" + id, RunID: "run_" + id, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, Sequence: 1, Status: "running", PayloadObjectKey: "example/payload", RuntimeHeartbeatAt: new(now.Add(-90 * time.Second))}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Minute)
+			defer cancel()
+			if _, err := admin.ExecContext(ctx, `DELETE FROM native_attempt_events WHERE organization_id IN ('org_first','org_second')`); err != nil {
+				t.Error(err)
+			}
+			if _, err := admin.ExecContext(ctx, `DELETE FROM native_attempts WHERE organization_id IN ('org_first','org_second')`); err != nil {
+				t.Error(err)
+			}
+			if _, err := admin.ExecContext(ctx, `UPDATE leases SET renewed_at=$1,expires_at=$2,released_at=NULL WHERE organization_id IN ('org_first','org_second')`, asOf, asOf.Add(time.Hour)); err != nil {
+				t.Error(err)
+			}
+		})
+		for _, test := range []struct {
+			name                                                     string
+			age                                                      time.Duration
+			missing, released, expired, terminal, unrenewed, unknown bool
+			want                                                     bool
+		}{
+			{name: "fresh", age: 90*time.Second - time.Microsecond},
+			{name: "expiry boundary", age: 90 * time.Second, want: true},
+			{name: "stale", age: 10 * time.Minute, want: true},
+			{name: "no runtime", missing: true},
+			{name: "released lease", age: 10 * time.Minute, released: true},
+			{name: "expired lease", age: 10 * time.Minute, expired: true},
+			{name: "terminal attempt", age: 10 * time.Minute, terminal: true},
+			{name: "no renewal after runtime", age: 90 * time.Second, unrenewed: true},
+			{name: "unknown legacy summary", age: 10 * time.Minute, unknown: true},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				heartbeat := now.Add(-test.age)
+				var runtime *time.Time
+				if !test.missing {
+					runtime = &heartbeat
+				}
+				renewed, expires := now, now.Add(90*time.Second)
+				if test.unrenewed {
+					renewed, expires = heartbeat, heartbeat.Add(time.Hour)
+				}
+				if test.expired {
+					renewed, expires = now.Add(-90*time.Second), now
+				}
+				var released *time.Time
+				if test.released {
+					released = &now
+				}
+				status := "running"
+				if test.terminal {
+					status = "succeeded"
+				}
+				if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET acquired_at=LEAST(acquired_at,$1),renewed_at=$1,expires_at=$2,released_at=$3 WHERE organization_id IN ('org_first','org_second')`, renewed, expires, released); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET runtime_heartbeat_at=$1,runtime_summary_sequence=CASE WHEN $2 THEN NULL ELSE sequence END,status=$3 WHERE organization_id IN ('org_first','org_second')`, runtime, test.unknown, status); err != nil {
+					t.Fatal(err)
+				}
+				for _, org := range []string{"org_first", "org_second"} {
+					for _, id := range []string{"one", "two"} {
+						req := httptest.NewRequest(http.MethodGet, "/api/v2/organizations/"+org+"/runners/runner_"+id+"/routing", nil)
+						req.Header.Set(echo.HeaderAuthorization, "Bearer "+org+"_admin")
+						rec := httptest.NewRecorder()
+						e.ServeHTTP(rec, req)
+						if rec.Code != http.StatusOK {
+							t.Fatalf("routing status=%d body=%s", rec.Code, rec.Body.String())
+						}
+						var got runnerauth.Runner
+						if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+							t.Fatal(err)
+						}
+						if (len(got.Problems) == 1) != test.want || (got.Health == "needs_attention") != test.want {
+							t.Fatalf("%s/%s health=%s problems=%+v want runtime warning=%t", org, id, got.Health, got.Problems, test.want)
+						}
+						if test.want {
+							p := got.Problems[0]
+							if p.Code != "runtime_expired" || p.Subject != "attempt_"+id || p.ProjectID != "project_"+id || !p.FirstSeen.Equal(heartbeat.Add(90*time.Second)) || !p.ReportedAt.Equal(now) {
+								t.Fatalf("runtime problem=%+v", p)
+							}
+						}
+					}
+				}
+			})
+		}
+	})
 	t.Run("capacity", func(t *testing.T) {
 		for _, org := range []string{"org_first", "org_second"} {
 			t.Run(org, func(t *testing.T) {

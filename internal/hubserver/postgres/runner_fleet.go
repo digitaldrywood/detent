@@ -133,9 +133,10 @@ func (s *session) fleetLeases(ctx context.Context, now time.Time, limit int, mac
 		selector = " AND l.machine_id=ANY($4)"
 		args = append(args, machines)
 	}
-	rows, err := s.db.Query(ctx, `SELECT coalesce(r.runner_id,''),l.machine_id,l.session_id,l.landing_capacity,l.lease_id,l.fencing_token,i.native_id,i.title,i.project_id,l.expires_at,coalesce(i.actor_principal_id,''),coalesce(p.requirement_role,''),coalesce(p.requirement_backend,''),coalesce(p.requirement_model,''),coalesce(p.provider,''),coalesce(p.backend,''),coalesce(p.account_alias,''),coalesce(p.shared_account_alias,''),coalesce(p.billing,''),coalesce(p.max_concurrent,0),coalesce(p.availability,''),p.observed_at,p.reset_at,coalesce(p.reason,''),coalesce(policy.policy_id,''),coalesce(current_policy.policy_id,'')
+	rows, err := s.db.Query(ctx, `SELECT coalesce(r.runner_id,''),l.machine_id,l.session_id,l.landing_capacity,l.lease_id,l.fencing_token,i.native_id,i.title,i.project_id,l.expires_at,coalesce(i.actor_principal_id,''),coalesce(p.requirement_role,''),coalesce(p.requirement_backend,''),coalesce(p.requirement_model,''),coalesce(p.provider,''),coalesce(p.backend,''),coalesce(p.account_alias,''),coalesce(p.shared_account_alias,''),coalesce(p.billing,''),coalesce(p.max_concurrent,0),coalesce(p.availability,''),p.observed_at,p.reset_at,coalesce(p.reason,''),coalesce(policy.policy_id,''),coalesce(current_policy.policy_id,''),l.renewed_at,coalesce(runtime.id,''),runtime.runtime_heartbeat_at
 FROM leases l JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
 LEFT JOIN runner_lease_assignments r ON r.organization_id=l.organization_id AND r.lease_id=l.lease_id
+LEFT JOIN native_attempts runtime ON runtime.organization_id=l.organization_id AND runtime.lease_id=l.lease_id AND runtime.fencing_token=l.fencing_token AND runtime.status='running' AND runtime.runtime_summary_sequence=runtime.sequence
 LEFT JOIN provider_reservations p ON p.organization_id=l.organization_id AND p.lease_id=l.lease_id
 LEFT JOIN lease_policy_bindings binding ON binding.organization_id=l.organization_id AND binding.lease_id=l.lease_id
 LEFT JOIN policy_revisions policy ON policy.organization_id=binding.organization_id AND policy.project_id=binding.project_id AND policy.policy_id=binding.policy_id
@@ -151,7 +152,7 @@ WHERE l.organization_id=$1 AND l.released_at IS NULL AND l.renewed_at<=$2 AND l.
 		var row runnerstore.FleetLease
 		var reservation providercapacity.Reservation
 		var observed, reset pgtype.Timestamptz
-		if err := rows.Scan(&row.RunnerID, &row.MachineID, &row.SessionID, &row.LandingCapacity, &row.Lease.ID, &row.Lease.FencingToken, &row.Lease.WorkItemID, &row.Lease.Title, &row.Lease.ProjectID, &row.Lease.ExpiresAt, &row.ActorPrincipalID, &reservation.Role, &reservation.Backend, &reservation.Model, &reservation.Report.Provider, &reservation.Report.Backend, &reservation.Report.AccountAlias, &reservation.Report.SharedAccountAlias, &reservation.Report.Billing, &reservation.Report.MaxConcurrent, &reservation.Report.Availability, &observed, &reset, &reservation.Reason, &row.PolicyID, &row.CurrentPolicyID); err != nil {
+		if err := rows.Scan(&row.RunnerID, &row.MachineID, &row.SessionID, &row.LandingCapacity, &row.Lease.ID, &row.Lease.FencingToken, &row.Lease.WorkItemID, &row.Lease.Title, &row.Lease.ProjectID, &row.Lease.ExpiresAt, &row.ActorPrincipalID, &reservation.Role, &reservation.Backend, &reservation.Model, &reservation.Report.Provider, &reservation.Report.Backend, &reservation.Report.AccountAlias, &reservation.Report.SharedAccountAlias, &reservation.Report.Billing, &reservation.Report.MaxConcurrent, &reservation.Report.Availability, &observed, &reset, &reservation.Reason, &row.PolicyID, &row.CurrentPolicyID, &row.RenewedAt, &row.RuntimeAttemptID, &row.RuntimeHeartbeatAt); err != nil {
 			return nil, mapError(ctx, err)
 		}
 		if observed.Valid {

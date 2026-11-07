@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
@@ -106,14 +107,14 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 			OrganizationID: s.organization, ID: event.ID, IssueID: lease.IssueID, LeaseID: lease.LeaseID,
 			FencingToken: lease.FencingToken, RunID: event.RunID, Status: event.Status, WorkItemRevision: lease.WorkItemRevision,
 			DispatchGeneration: event.DispatchGeneration, PayloadObjectKey: event.PayloadObjectKey,
-			CheckpointObjectKey: event.CheckpointObjectKey, ArtifactsObjectKey: event.ArtifactsObjectKey,
+			CheckpointObjectKey: event.CheckpointObjectKey, ArtifactsObjectKey: event.ArtifactsObjectKey, RuntimeHeartbeatAt: event.RuntimeHeartbeatAt,
 			StartedAt: startedAt, StartedAtSubmicroNs: int16(startedAtSubmicro), Now: now,
 		})
 	} else {
 		row, err = s.queries.AdvanceLeaseAttempt(ctx, pgquery.AdvanceLeaseAttemptParams{
 			OrganizationID: s.organization, ID: event.ID, LeaseID: lease.LeaseID, FencingToken: lease.FencingToken,
 			RunID: event.RunID, NextSequence: event.Sequence, Status: event.Status, DispatchGeneration: event.DispatchGeneration,
-			PayloadObjectKey: event.PayloadObjectKey, CheckpointObjectKey: event.CheckpointObjectKey, ArtifactsObjectKey: event.ArtifactsObjectKey,
+			PayloadObjectKey: event.PayloadObjectKey, CheckpointObjectKey: event.CheckpointObjectKey, ArtifactsObjectKey: event.ArtifactsObjectKey, RuntimeHeartbeatAt: event.RuntimeHeartbeatAt,
 			UsageCorrection: event.UsageCorrection, Termination: event.Termination, Now: &now,
 		})
 	}
@@ -150,4 +151,8 @@ func (s *session) registerAttemptPayload(ctx context.Context, event leasestore.A
 		}
 	}
 	return nil
+}
+
+func (s *session) SetAttemptRuntimeHeartbeat(ctx context.Context, id string, sequence int64, heartbeat *time.Time) error {
+	return mapError(ctx, s.queries.SetAttemptRuntimeHeartbeat(ctx, pgquery.SetAttemptRuntimeHeartbeatParams{OrganizationID: s.organization, ID: id, Sequence: pgtype.Int8{Int64: sequence, Valid: true}, RuntimeHeartbeatAt: heartbeat}))
 }

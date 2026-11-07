@@ -19,15 +19,18 @@ type FleetName struct {
 }
 
 type FleetLease struct {
-	PolicyID         string
-	CurrentPolicyID  string
-	RunnerID         string
-	MachineID        tracker.MachineID
-	SessionID        string
-	LandingCapacity  int64
-	Lease            runnerauth.RunnerLease
-	ActorPrincipalID string
-	Reservation      *providercapacity.Reservation
+	RuntimeAttemptID   string
+	RuntimeHeartbeatAt *time.Time
+	RenewedAt          time.Time
+	PolicyID           string
+	CurrentPolicyID    string
+	RunnerID           string
+	MachineID          tracker.MachineID
+	SessionID          string
+	LandingCapacity    int64
+	Lease              runnerauth.RunnerLease
+	ActorPrincipalID   string
+	Reservation        *providercapacity.Reservation
 }
 
 type FleetRecord struct {

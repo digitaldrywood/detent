@@ -1668,24 +1668,26 @@ type MonthlyBudgetPolicy struct {
 }
 
 type NativeAttempt struct {
-	OrganizationID        tracker.OrganizationID
-	ID                    string
-	IssueID               int64
-	LeaseID               string
-	FencingToken          int64
-	RunID                 string
-	Sequence              int64
-	Status                string
-	WorkItemRevision      int64
-	DispatchGeneration    int64
-	PayloadObjectKey      string
-	CheckpointObjectKey   *string
-	ArtifactsObjectKey    *string
-	StartedAt             time.Time
-	UpdatedAt             time.Time
-	StartedAtSubmicroNs   int16
-	RunnerTokensRecorded  bool
-	CleanupAcknowledgedAt *time.Time
+	OrganizationID         tracker.OrganizationID
+	ID                     string
+	IssueID                int64
+	LeaseID                string
+	FencingToken           int64
+	RunID                  string
+	Sequence               int64
+	Status                 string
+	WorkItemRevision       int64
+	DispatchGeneration     int64
+	PayloadObjectKey       string
+	CheckpointObjectKey    *string
+	ArtifactsObjectKey     *string
+	StartedAt              time.Time
+	UpdatedAt              time.Time
+	StartedAtSubmicroNs    int16
+	RunnerTokensRecorded   bool
+	CleanupAcknowledgedAt  *time.Time
+	RuntimeHeartbeatAt     *time.Time
+	RuntimeSummarySequence pgtype.Int8
 }
 
 type NativeAttemptEvent struct {

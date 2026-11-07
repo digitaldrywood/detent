@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
@@ -72,14 +73,16 @@ func (f *runnerEventSession) RecordAttemptEvent(ctx context.Context, e leasestor
 		if err := q.BindAttemptRun(ctx, pgquery.BindAttemptRunParams{OrganizationID: f.session.organization, RunID: e.RunID, IssueID: l.IssueID}); err != nil {
 			return leasestore.Attempt{}, false, err
 		}
-		if _, err := q.InsertLeaseAttempt(ctx, pgquery.InsertLeaseAttemptParams{OrganizationID: f.session.organization, ID: e.ID, IssueID: l.IssueID, LeaseID: l.LeaseID, FencingToken: l.FencingToken, RunID: e.RunID, Status: e.Status, WorkItemRevision: l.WorkItemRevision, DispatchGeneration: e.DispatchGeneration, PayloadObjectKey: e.PayloadObjectKey, CheckpointObjectKey: e.CheckpointObjectKey, ArtifactsObjectKey: e.ArtifactsObjectKey, StartedAt: old.StartedAt, StartedAtSubmicroNs: old.StartedAtSubmicroNs, Now: f.now}); err != nil {
+		if _, err := q.InsertLeaseAttempt(ctx, pgquery.InsertLeaseAttemptParams{OrganizationID: f.session.organization, ID: e.ID, IssueID: l.IssueID, LeaseID: l.LeaseID, FencingToken: l.FencingToken, RunID: e.RunID, Status: e.Status, WorkItemRevision: l.WorkItemRevision, DispatchGeneration: e.DispatchGeneration, PayloadObjectKey: e.PayloadObjectKey, CheckpointObjectKey: e.CheckpointObjectKey, ArtifactsObjectKey: e.ArtifactsObjectKey, RuntimeHeartbeatAt: e.RuntimeHeartbeatAt, StartedAt: old.StartedAt, StartedAtSubmicroNs: old.StartedAtSubmicroNs, Now: f.now}); err != nil {
 			return leasestore.Attempt{}, false, err
 		}
 	} else {
-		if _, err := q.AdvanceLeaseAttempt(ctx, pgquery.AdvanceLeaseAttemptParams{OrganizationID: f.session.organization, ID: e.ID, LeaseID: l.LeaseID, FencingToken: l.FencingToken, RunID: e.RunID, NextSequence: e.Sequence, Status: e.Status, DispatchGeneration: e.DispatchGeneration, PayloadObjectKey: e.PayloadObjectKey, CheckpointObjectKey: e.CheckpointObjectKey, ArtifactsObjectKey: e.ArtifactsObjectKey, UsageCorrection: e.UsageCorrection, Now: &f.now}); err != nil {
+		if _, err := q.AdvanceLeaseAttempt(ctx, pgquery.AdvanceLeaseAttemptParams{OrganizationID: f.session.organization, ID: e.ID, LeaseID: l.LeaseID, FencingToken: l.FencingToken, RunID: e.RunID, NextSequence: e.Sequence, Status: e.Status, DispatchGeneration: e.DispatchGeneration, PayloadObjectKey: e.PayloadObjectKey, CheckpointObjectKey: e.CheckpointObjectKey, ArtifactsObjectKey: e.ArtifactsObjectKey, RuntimeHeartbeatAt: e.RuntimeHeartbeatAt, UsageCorrection: e.UsageCorrection, Now: &f.now}); err != nil {
 			return leasestore.Attempt{}, false, err
 		}
 	}
+	old.RuntimeHeartbeatAt = e.RuntimeHeartbeatAt
+	old.RuntimeSummarySequence = pgtype.Int8{Int64: e.Sequence, Valid: true}
 	old.Sequence = e.Sequence
 	old.PayloadObjectKey = e.PayloadObjectKey
 	if !e.UsageCorrection {
