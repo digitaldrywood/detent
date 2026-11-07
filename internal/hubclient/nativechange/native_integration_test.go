@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -33,13 +34,11 @@ func (t nativeOnlyTransport) RoundTrip(request *http.Request) (*http.Response, e
 }
 
 func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 
 	t.Parallel()
 	const admin = "native-integration-admin"
-	service, err := hubserver.Open(t.Context(), testsupport.NativeChangePostgresConfig(t, hubserver.Config{Content: newHubContentStore(), RunDetails: &archivedRunDetails{}, DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(admin)}))
+	cfg := testsupport.NativeChangePostgresConfig(t, hubserver.Config{Clock: time.Now, Content: newHubContentStore(), RunDetails: &archivedRunDetails{}, DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(admin)})
+	service, err := hubserver.Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,34 +47,26 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	server := httptest.NewServer(service.Handler())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/work-items") {
+			if err := testsupport.NativeChangeRefreshBoard(r.Context(), service, tracker.OrganizationID(cfg.Hosted.OrganizationID)); err != nil {
+				t.Errorf("refresh fixture board: %v", err)
+				http.Error(w, "fixture board unavailable", 500)
+				return
+			}
+		}
+		service.Handler().ServeHTTP(w, r)
+	}))
 	t.Cleanup(server.Close)
 	client, err := newTestClient(t, Config{URL: server.URL, TokenSource: func() string { return admin }, HTTPClient: server.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var organizations tracker.Page[struct {
-		ID tracker.OrganizationID `json:"organization_id"`
-	}]
-	if err := client.Request(t.Context(), http.MethodGet, "/api/v2/organizations", nil, &organizations); err != nil {
-		t.Fatal(err)
-	}
-	organization := organizations.Items[0].ID
-	var project tracker.NativeProject
+	organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
 	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true}}
-	if err := client.Request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", map[string]any{"name": "native", "idempotency_key": "project", "states": states, "require_dependencies": false}, &project); err != nil {
-		t.Fatal(err)
-	}
-	var token struct {
-		ID    string `json:"id"`
-		Token string `json:"token"`
-	}
-	if err := client.Request(t.Context(), http.MethodPost, "/api/v1/tokens", map[string]string{"name": "native-worker", "scope": "worker"}, &token); err != nil {
-		t.Fatal(err)
-	}
-	if err := client.Request(t.Context(), http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", map[string]any{"organization_id": organization, "project_id": project.ID}, nil); err != nil {
-		t.Fatal(err)
-	}
+	project := testsupport.NativeChangeProject(t, cfg, states, false)
+	workerToken := testsupport.NativeChangeWorker(t, cfg, project.ID, testsupport.NativeChangeMachineID)
+
 	descriptor := clientTestPolicy()
 	adminNative, err := client.Native(organization, project.ID)
 	if err != nil {
@@ -88,7 +79,7 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workerClient, err := newTestClient(t, Config{URL: server.URL, TokenSource: func() string { return token.Token }, HTTPClient: &http.Client{Transport: nativeOnlyTransport{next: server.Client().Transport, host: parsed.Host}}})
+	workerClient, err := newTestClient(t, Config{URL: server.URL, TokenSource: func() string { return workerToken }, HTTPClient: &http.Client{Transport: nativeOnlyTransport{next: server.Client().Transport, host: parsed.Host}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,31 +91,26 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := strings.Repeat("Complete worker context.\n", 60) + issueContractTestSections
-	issue, err := conn.CreateIssue(t.Context(), connector.IssueDraft{Title: "Native work", Body: body, Labels: []string{"native"}})
+	ownerConnector, err := NewNativeConnector(adminNative)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for index := range 23 {
-		if err := conn.CreateComment(t.Context(), issue.ID, fmt.Sprintf("Discussion %d", index)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	comments, err := conn.FetchIssueComments(t.Context(), issue)
-	if err != nil || len(comments) != 23 {
-		t.Fatalf("comments = %d, error = %v", len(comments), err)
-	}
-	if err := conn.UpdateIssueComment(t.Context(), issue.ID, comments[0].ID, "Updated discussion"); err != nil {
+	body := strings.Repeat("Complete worker context.\n", 60) + issueContractTestSections
+	issue, err := ownerConnector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Native work", Body: body, Labels: []string{"native"}})
+	if err != nil {
 		t.Fatal(err)
 	}
+
 	for _, test := range []struct {
 		name string
 		run  func(context.Context) error
 	}{
-		{"assignee", func(ctx context.Context) error { return conn.SetAssignee(ctx, issue.ID, "worker") }},
-		{"title", func(ctx context.Context) error { return conn.SetField(ctx, issue.ID, "title", "Updated work") }},
-		{"priority", func(ctx context.Context) error { return conn.SetField(ctx, issue.ID, "priority", "1") }},
-		{"body", func(ctx context.Context) error { return conn.UpdateIssueBody(ctx, issue.ID, body+"Edited") }},
+		{"assignee", func(ctx context.Context) error { return ownerConnector.SetAssignee(ctx, issue.ID, "worker") }},
+		{"title", func(ctx context.Context) error {
+			return ownerConnector.SetField(ctx, issue.ID, "title", "Updated work")
+		}},
+		{"priority", func(ctx context.Context) error { return ownerConnector.SetField(ctx, issue.ID, "priority", "1") }},
+		{"body", func(ctx context.Context) error { return ownerConnector.UpdateIssueBody(ctx, issue.ID, body+"Edited") }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if err := test.run(t.Context()); err != nil {
@@ -132,11 +118,11 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 			}
 		})
 	}
-	blocker, err := conn.CreateIssue(t.Context(), connector.IssueDraft{Title: "Blocker", Body: "blocking" + issueContractTestSections})
+	blocker, err := ownerConnector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Blocker", Body: "blocking" + issueContractTestSections})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.AddIssueDependency(t.Context(), issue.ID, blocker.ID); err != nil {
+	if err := ownerConnector.AddIssueDependency(t.Context(), issue.ID, blocker.ID); err != nil {
 		t.Fatal(err)
 	}
 	nativeIssue, err := native.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
@@ -148,20 +134,24 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 		t.Fatalf("disabled readiness still blocked: %#v, error = %v", dispatchIssue, err)
 	}
 	staleTitle := "stale edit"
-	_, err = native.UpdateIssue(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.UpdateIssue{Mutation: nativeMutationKey(), ExpectedRevision: 1, Title: &staleTitle})
+	_, err = adminNative.UpdateIssue(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.UpdateIssue{Mutation: nativeMutationKey(), ExpectedRevision: 1, Title: &staleTitle})
 	var conflict *APIError
 	if !errors.As(err, &conflict) || conflict.Status != http.StatusConflict || conflict.CurrentRevision != nativeIssue.Revision {
 		t.Fatalf("typed conflict = %#v, error = %v", conflict, err)
 	}
-	if err := conn.RemoveIssueDependency(t.Context(), issue.ID, blocker.ID); err != nil {
+	if err := ownerConnector.RemoveIssueDependency(t.Context(), issue.ID, blocker.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.UpdateIssueState(t.Context(), blocker.ID, "Done"); err != nil {
+	blockerNow, err := adminNative.Issue(t.Context(), tracker.NativeWorkItemID(blocker.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adminNative.Transition(t.Context(), blockerNow.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: blockerNow.Revision, State: "Done", Reason: "user_requested"}); err != nil {
 		t.Fatal(err)
 	}
 	confirmIssueContract(t, adminNative, issue.ID)
 	scheduler, err := newTestScheduler(workerClient, SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"local": project.ID},
-		Machine: Machine{ID: "machine-native", Hostname: "host", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+		Machine: Machine{ID: testsupport.NativeChangeMachineID, Hostname: "host", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,10 +167,32 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 		t.Fatalf("candidate = %#v", candidates[0])
 	}
 	claim, err := scheduler.AdoptClaim(t.Context(), candidates[0], time.Now())
-	if err != nil || claim.Owner != "machine-native" {
+	if err != nil || claim.Owner != string(testsupport.NativeChangeMachineID) {
 		t.Fatalf("claim = %#v, error = %v", claim, err)
 	}
-	exerciseNativeExecution(t, scheduler, native, issue.ID)
+	conn = provided.(*NativeConnector)
+	exerciseNativeExecution(t, scheduler, native, issue.ID, func(ctx context.Context) {
+		for index := range 23 {
+			if err := conn.CreateComment(ctx, issue.ID, fmt.Sprintf("Discussion %d", index)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		comments, err := conn.FetchIssueComments(t.Context(), issue)
+		if err != nil || len(comments) != 23 {
+			t.Fatalf("comments = %d, error = %v", len(comments), err)
+		}
+		if err := conn.UpdateIssueComment(ctx, issue.ID, comments[len(comments)-1].ID, "Updated discussion"); err != nil {
+			t.Fatal(err)
+		}
+
+		recovery, err := native.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		scheduler.RunExecution(issue.ID).(*nativeExecution).recovery.Store(&recovery)
+
+	})
+
 	if _, err := scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -194,10 +206,11 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 	if err := conn.UpdateIssueState(t.Context(), issue.ID, "Done"); err != nil {
 		t.Fatal(err)
 	}
+	schedulerLease := scheduler.RunExecution(issue.ID).(*nativeExecution).claim.lease
 	if err := scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.CreateComment(t.Context(), issue.ID, "stale worker comment"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+	if err := conn.CreateComment(api.WithMutationAuthority(t.Context(), native.Scope(), schedulerLease, nil), issue.ID, "stale worker comment"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 		t.Fatalf("released worker mutation = %v, want permanent authority loss", err)
 	}
 	events, err := conn.FetchIssueEvents(t.Context(), issue)
