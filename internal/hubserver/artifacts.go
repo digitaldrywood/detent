@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -240,6 +241,23 @@ func (s *Service) hostedArtifactReader(c echo.Context, principal, sessionHash st
 	ctx := c.Request().Context()
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
+	if sessionHash == "" {
+		scope := nativeRequestScope(c)
+		var stored accessstore.Credential
+		err := s.config.TenantRepository.ReadTenant(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			stored, err = r.AccessCredential(readCtx, principal)
+			return err
+		})
+		if err != nil {
+			return apiCredential{}, err
+		}
+		credential, _, err := s.authenticateTenantAPIHash(readCtx, scope.organization, stored.Hash, "", "")
+		if err != nil || credential.ID != principal {
+			return apiCredential{}, auth.ErrHostedIdentity
+		}
+		return credential, nil
+	}
 	session, err := s.WebSession(ctx, sessionHash, s.config.now())
 	if err != nil {
 		return apiCredential{}, err
