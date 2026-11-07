@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -36,7 +37,8 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 
 	const adminToken = "runner-client-test-admin"
 	const hubURL = "https://runner-hub.example.test"
-	service, err := hubserver.Open(t.Context(), hubserver.Config{Content: newHubContentStore(), RunDetails: &archivedRunDetails{}, DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(adminToken), Version: "v1.2.4"})
+	hubConfig := dispatchPostgresConfig(t, hubserver.Config{Content: newHubContentStore(), RunDetails: &archivedRunDetails{}, InitialAdminToken: []byte(adminToken), Version: "v1.2.4"})
+	service, err := hubserver.Open(t.Context(), hubConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,20 +100,23 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var organizations tracker.Page[struct {
-		ID tracker.OrganizationID `json:"organization_id"`
-	}]
-	if err := admin.Request(t.Context(), http.MethodGet, "/api/v2/organizations", nil, &organizations); err != nil {
-		t.Fatal(err)
-	}
-	organization := organizations.Items[0].ID
+	organization := tracker.OrganizationID("org_example")
 	var project tracker.NativeProject
-	if err := admin.Request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", map[string]any{"name": "runners", "idempotency_key": "runners", "require_dependencies": true, "states": []tracker.NativeState{
+	if err := admin.Request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", map[string]any{"name": "runners", "idempotency_key": "runners", "grant_access": true, "states": []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"Blocked"}},
 		{Name: "Blocked", Transitions: []string{"Todo"}},
 	}}, &project); err != nil {
 		t.Fatal(err)
 	}
+	dispatchWriteFixture(t, hubConfig, func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), project.ID)
+		if err != nil {
+			return err
+		}
+		record.Core.RequireDependencies = true
+		_, err = w.UpdateProjectRecord(t.Context(), record)
+		return err
+	})
 	path := filepath.Join(t.TempDir(), "private", "identity.json")
 	file, err := runnerauth.Initialize(path, hubURL)
 	if err != nil {
@@ -603,6 +608,12 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	}
 	resumedCandidates, err := resumedScheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "native", Policy: descriptor})
 	if err != nil || len(resumedCandidates) != 1 || resumedCandidates[0].ID != string(issue.WorkItemID) {
+		var owner runnerauth.Runner
+		readErr := admin.Request(t.Context(), http.MethodGet, "/api/v2/organizations/"+string(organization)+"/runners/"+file.Identity.RunnerID+"/routing", nil, &owner)
+		t.Logf("reconnect slots=%+v routing read=%v", restarted.ClaimSlots(), readErr)
+		for _, held := range owner.Leases {
+			t.Logf("held lease=%s project=%s policy=%s exclusions=%+v", held.ID, held.ProjectID, held.Policy.ID, held.Exclusions)
+		}
 		t.Fatalf("incomplete interruption did not reconnect: candidates=%+v error=%v", resumedCandidates, err)
 	}
 	if _, err := resumedScheduler.AdoptClaim(t.Context(), resumedCandidates[0], time.Now()); err != nil {

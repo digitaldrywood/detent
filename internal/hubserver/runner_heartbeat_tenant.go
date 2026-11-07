@@ -274,20 +274,19 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 			if err != nil {
 				return err
 			}
-			if !allowed {
-				return nativeNotFound()
-			}
-			policyID := ""
-			policy, err := w.ProjectPolicy(ctx, projectID)
-			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-				return err
-			}
-			if err == nil {
-				policyID = policy.PolicyID
-			}
-			heartbeatChanges, err = readHeartbeatChangesTenant(ctx, w, nativeScope{organization: identity.OrganizationID, project: projectID, credential: credential}, changeCursor, changeKey, changeReset, changeDigest, policyID, receivedAt)
-			if err != nil {
-				return err
+			if allowed {
+				policyID := ""
+				policy, err := w.ProjectPolicy(ctx, projectID)
+				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
+				if err == nil {
+					policyID = policy.PolicyID
+				}
+				heartbeatChanges, err = readHeartbeatChangesTenant(ctx, w, nativeScope{organization: identity.OrganizationID, project: projectID, credential: credential}, changeCursor, changeKey, changeReset, changeDigest, policyID, receivedAt)
+				if err != nil {
+					return err
+				}
 			}
 		}
 		problems, err := w.RunnerProblems(ctx, identity.RunnerID)
@@ -337,6 +336,22 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 			return nativeRunEventStorageUnavailable()
 		}
 		snapshot = runnerauth.RoutingSnapshot{RunnerID: identity.RunnerID, Revision: identity.Revision, Routing: routing}
+		assigned, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, projectID, receivedAt)
+		if err != nil {
+			return err
+		}
+		if assigned {
+			claimReader, ok := w.(runnerstore.ClaimStateReader)
+			if !ok {
+				return nativeRunEventStorageUnavailable()
+			}
+			claims, err := claimReader.RunnerClaimState(ctx, identity.RunnerID, projectID, "", 100, receivedAt)
+			if err != nil {
+				return err
+			}
+			claims.State.ReleasedExecutions = claims.Candidates
+			snapshot.ClaimState = &claims.State
+		}
 		snapshot.HostMetricsAcknowledged = acknowledgments
 		snapshot.Changes = heartbeatChanges
 		if updateReleasePublished {

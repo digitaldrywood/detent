@@ -19,6 +19,8 @@ type FleetName struct {
 }
 
 type FleetLease struct {
+	PolicyID         string
+	CurrentPolicyID  string
 	RunnerID         string
 	MachineID        tracker.MachineID
 	SessionID        string

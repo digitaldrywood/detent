@@ -730,7 +730,7 @@ func (s *Service) requireRunnerAdministrationTenant(ctx context.Context, reader 
 	if credential.Hosted == nil {
 		return nil
 	}
-	if !credential.Hosted.ExpiresAt.After(s.config.now()) || credential.Hosted.SupportActor != "" {
+	if !credential.Hosted.ExpiresAt.IsZero() && !credential.Hosted.ExpiresAt.After(s.config.now()) || credential.Hosted.SupportActor != "" {
 		return accessstore.ErrDenied
 	}
 	if credential.EntryKey != nil && !credential.EntryKey.Valid() {
@@ -777,6 +777,10 @@ func runnerFromRoutingRecord(record runnerstore.RoutingRecord, now time.Time, ur
 			runner.ProjectUsed[lease.Lease.ProjectID]++
 		}
 		runnerSlots[key] = true
+		lease.Lease.Policy.ID = lease.PolicyID
+		if lease.PolicyID == "" || lease.CurrentPolicyID == "" {
+			lease.Lease.Exclusions = append(lease.Lease.Exclusions, runnerauth.Exclusion{Code: "policy_mismatch", Message: "This run's pinned policy is missing or revoked"})
+		}
 		lease.Lease.ProviderReservation = lease.Reservation
 		runner.Leases = append(runner.Leases, lease.Lease)
 	}
