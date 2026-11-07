@@ -141,6 +141,13 @@ func (s *session) registerAttemptPayload(ctx context.Context, event leasestore.A
 	if err != nil {
 		return mapError(ctx, err)
 	}
-	_, err = s.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: s.organization, ID: "archive_" + event.PayloadReference.SHA256, Reference: event.PayloadReference, CreatedAt: now})
-	return err
+	for _, ref := range []attachment.ArchiveReference{event.PayloadReference, event.CheckpointReference} {
+		if ref == (attachment.ArchiveReference{}) {
+			continue
+		}
+		if _, err := s.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: s.organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: now}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

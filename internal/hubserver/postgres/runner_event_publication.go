@@ -94,8 +94,11 @@ func (f *runnerEventSession) RecordAttemptEvent(ctx context.Context, e leasestor
 	}
 	f.attempt = runFact[pgquery.NativeAttempt]{value: old}
 	f.latest = f.attempt
-	if e.PayloadReference != (attachment.ArchiveReference{}) {
-		if _, err := f.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: f.session.organization, ID: "archive_" + e.PayloadReference.SHA256, Reference: e.PayloadReference, CreatedAt: f.now}); err != nil {
+	for _, ref := range []attachment.ArchiveReference{e.PayloadReference, e.CheckpointReference} {
+		if ref == (attachment.ArchiveReference{}) {
+			continue
+		}
+		if _, err := f.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: f.session.organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: f.now}); err != nil {
 			return leasestore.Attempt{}, false, err
 		}
 	}

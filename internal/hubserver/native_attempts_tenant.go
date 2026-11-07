@@ -24,13 +24,14 @@ import (
 )
 
 type tenantAttemptSnapshot struct {
-	recoverPayload bool
-	payload        *attachment.ArchiveReference
-	attempt        leasestore.Attempt
-	lease          leasestore.Lease
-	event          eventstore.Event
-	evidence       bool
-	evidenceRows   []attachmentstore.Record
+	checkpointPayload *attachment.ArchiveReference
+	recoverPayload    bool
+	payload           *attachment.ArchiveReference
+	attempt           leasestore.Attempt
+	lease             leasestore.Lease
+	event             eventstore.Event
+	evidence          bool
+	evidenceRows      []attachmentstore.Record
 }
 
 func (s *Service) readNativeAttemptTenant(ctx context.Context, scope nativeScope, item, id string) (tracker.NativeAttempt, error) {
@@ -266,11 +267,17 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 	lease := snapshot.lease
 	var checkpoint *tracker.NativeCheckpoint
 	if attempt.CheckpointObjectKey != nil {
-		owner, ok := s.runDetailStore().(attachment.CanonicalDetailStore)
-		if !ok {
-			return tracker.NativeAttempt{}, nativeRunEventStorageUnavailable()
+		var raw []byte
+		var err error
+		if snapshot.checkpointPayload != nil {
+			raw, err = s.runDetailStore().ReadDetail(ctx, string(attempt.OrganizationID), *snapshot.checkpointPayload)
+		} else {
+			owner, ok := s.runDetailStore().(attachment.CanonicalDetailStore)
+			if !ok {
+				return tracker.NativeAttempt{}, nativeRunEventStorageUnavailable()
+			}
+			raw, err = owner.ReadCanonicalDetail(ctx, string(attempt.OrganizationID), string(snapshot.event.ProjectID), *attempt.CheckpointObjectKey)
 		}
-		raw, err := owner.ReadCanonicalDetail(ctx, string(attempt.OrganizationID), string(snapshot.event.ProjectID), *attempt.CheckpointObjectKey)
 		if err != nil {
 			return tracker.NativeAttempt{}, errors.Join(artifact.ErrIntegrity, err)
 		}
@@ -404,6 +411,31 @@ type attemptArchiveReader interface {
 }
 
 func readTenantAttemptPayload(ctx context.Context, r tenantstore.Reader, snapshot *tenantAttemptSnapshot) error {
+	if err := readTenantAttemptRunPayload(ctx, r, snapshot); err != nil {
+		return err
+	}
+	if snapshot.attempt.CheckpointObjectKey == nil {
+		return nil
+	}
+	reader, ok := r.(attemptArchiveReader)
+	if !ok {
+		return nativeRunEventStorageUnavailable()
+	}
+	object, err := reader.ArchiveObjectByKey(ctx, *snapshot.attempt.CheckpointObjectKey)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if object.OrganizationID != snapshot.attempt.OrganizationID || object.Reference.Key != *snapshot.attempt.CheckpointObjectKey || object.Reference.Validate(string(snapshot.attempt.OrganizationID)) != nil {
+		return artifact.ErrIntegrity
+	}
+	snapshot.checkpointPayload = &object.Reference
+	return nil
+}
+
+func readTenantAttemptRunPayload(ctx context.Context, r tenantstore.Reader, snapshot *tenantAttemptSnapshot) error {
 	reader, ok := r.(attemptArchiveReader)
 	if !ok {
 		return nativeRunEventStorageUnavailable()

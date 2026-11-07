@@ -408,6 +408,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 				return nil, err
 			}
 			attemptEvent.CheckpointObjectKey = &checkpointRef.Key
+			attemptEvent.CheckpointReference = checkpointRef
 		}
 		if len(event.Data.ArtifactIDs) > 0 {
 			artifacts, err := json.Marshal(event.Data.ArtifactIDs)
