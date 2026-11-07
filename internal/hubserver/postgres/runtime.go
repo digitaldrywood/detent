@@ -60,6 +60,18 @@ func NewRuntime(ctx context.Context, reader, writer *pgxpool.Pool) (*Runtime, er
 				AND NOT EXISTS (SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a
 					WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE')
 			)
+			AND NOT pg_has_role(session_user,'detent_search_reader_v2','MEMBER')
+			AND EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname='detent_search_reader_v2'
+			 AND NOT (r.rolcanlogin OR r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication OR r.rolbypassrls)
+			 AND NOT pg_has_role(r.oid,'detent_runtime_v2','MEMBER') AND NOT pg_has_role(r.oid,'detent_platform_v2','MEMBER')
+			 AND NOT pg_has_role(r.oid,'detent_migration_v2','MEMBER')
+			 AND NOT EXISTS(SELECT 1 FROM pg_roles member WHERE member.rolcanlogin AND NOT (member.rolsuper OR member.rolcreaterole) AND pg_has_role(member.oid,r.oid,'MEMBER')))
+			AND EXISTS (SELECT 1 FROM pg_proc p WHERE p.oid='public.board_search_candidates(text,text[],boolean,text,boolean)'::regprocedure
+			 AND p.proowner='detent_search_reader_v2'::regrole AND p.prosecdef AND p.provolatile='s'
+			 AND p.proconfig=ARRAY['search_path=pg_catalog'] AND has_function_privilege(current_user,p.oid,'EXECUTE')
+			 AND NOT has_function_privilege('detent_platform_v2',p.oid,'EXECUTE')
+			 AND NOT has_function_privilege('detent_migration_v2',p.oid,'EXECUTE')
+			 AND NOT EXISTS(SELECT 1 FROM aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 AND a.privilege_type='EXECUTE'))
 			AND NOT EXISTS (
 				SELECT 1 FROM pg_class c
 				WHERE c.oid IN (
