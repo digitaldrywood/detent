@@ -38,22 +38,28 @@ func classify(r result) string {
 }
 
 func failed(value any, board bool) bool {
-	switch v := value.(type) {
-	case map[string]any:
-		if v["isError"] == true || v["error"] != nil {
+	if v, ok := value.(map[string]any); ok {
+		if v["isError"] == true || v["error"] != nil || failed(v["result"], false) || failed(v["structuredContent"], false) {
 			return true
 		}
+	}
+	return board && projectionPending(value)
+}
+
+func projectionPending(value any) bool {
+	switch v := value.(type) {
+	case map[string]any:
 		for key, child := range v {
-			if board && (key == "projection_pending" && child == true || (key == "code" || key == "status") && strings.Contains(fmt.Sprint(child), "pending")) {
+			if key == "projection_pending" && child == true || (key == "code" || key == "status") && strings.Contains(fmt.Sprint(child), "pending") {
 				return true
 			}
-			if failed(child, board) {
+			if projectionPending(child) {
 				return true
 			}
 		}
 	case []any:
 		for _, child := range v {
-			if failed(child, board) {
+			if projectionPending(child) {
 				return true
 			}
 		}

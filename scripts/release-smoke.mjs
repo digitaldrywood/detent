@@ -97,7 +97,7 @@ async function browserChecks(item, change) {
       const listener = request => { if (/\/(work-items|board\/counts|board\/status)(\?|$)/.test(request.url())) requests.push(request.url()); };
       page.on('request', listener);
       const responseListener = response => {
-        if (response.url().includes(root) && response.status() >= 400) responses.push(response.text().catch(() => '').then(body => failures.push(`HTTP ${response.status()}: ${body.slice(0, 200)}`)));
+        if (response.url().includes(root) && response.status() >= 400) responses.push(response.text().catch(() => '').then(body => failures.push(`HTTP ${response.status()}: ${clean(body).slice(0, 200)}`)));
       };
       page.on('response', responseListener);
       const loaded = page.waitForResponse(response => response.url().includes(`${root}/board/counts`) && response.status() === 200, { timeout: 15000 });
@@ -131,7 +131,7 @@ async function browserChecks(item, change) {
         const [, response] = await Promise.all([loaded, page.goto(new URL(`/organizations/${enc(org)}/work/i/${enc(id)}${query}`, base).href, { waitUntil: 'load', timeout: 15000 })]);
         await page.waitForLoadState('networkidle', { timeout: 15000 });
         const text = await page.locator('main, [role="main"]').first().innerText();
-        rows.push({ name, status: response.status(), expected: 200, ms: Date.now() - start, error: /Unavailable|unexpected payload|Expected array|Sign in/.test(text) ? clean(text.slice(0, 200)) : '' });
+        rows.push({ name, status: response.status(), expected: 200, ms: Date.now() - start, error: /Unavailable|unexpected payload|Expected array|Sign in/.test(text) ? clean(text).slice(0, 200) : '' });
       });
     }
   } finally { await browser.close(); }
