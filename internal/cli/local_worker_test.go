@@ -37,6 +37,7 @@ import (
 	provenance "github.com/digitaldrywood/detent/internal/releaseprovenance"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
@@ -368,7 +369,14 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("Linux and macOS execution fixture")
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	for _, scenario := range []string{"coexistence", "failures", "authority"} {
+		t.Run(scenario, func(t *testing.T) { testLocalWorkerScenario(t, scenario) })
+	}
+}
+
+func testLocalWorkerScenario(t *testing.T, scenario string) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 	defer cancel()
 	scheduler, native, connection, workflow, create, revoke := localWorkerHub(t)
 	scratch := t.TempDir()
@@ -584,60 +592,70 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 		}
 		release(w)
 	}
-	a := start("Compile parser", "1.0.0", runnerpkg.RunModeImplement)
-	publish("1.0.1")
-	b := start("Render invoice", "1.0.1", runnerpkg.RunModeImplement)
-	finish(b, false)
-	applyPolicy("Apply the current review instructions.")
-	continuePhase(b)
-	c := start("Archive inventory", "1.0.1", runnerpkg.RunModeImplement)
-	if alive, err := procgroup.Alive(a.identity); err != nil || !alive {
-		t.Fatalf("compatible update interrupted A: %t %v", alive, err)
+	if scenario != "authority" {
+		a := start("Compile parser", "1.0.0", runnerpkg.RunModeImplement)
+		if scenario == "coexistence" {
+			publish("1.0.1")
+			b := start("Render invoice", "1.0.1", runnerpkg.RunModeImplement)
+			finish(b, false)
+			applyPolicy("Apply the current review instructions.")
+			continuePhase(b)
+			c := start("Archive inventory", "1.0.1", runnerpkg.RunModeImplement)
+			if alive, err := procgroup.Alive(a.identity); err != nil || !alive {
+				t.Fatalf("compatible update interrupted A: %t %v", alive, err)
+			}
+			finish(c, true)
+			publish("1.0.2")
+			applyPolicy("Apply the updated validation instructions.")
+			d := start("Validate manifest", "1.0.2", runnerpkg.RunModeImplement)
+			finish(d, false)
+			publish("1.0.3")
+			continuePhase(d)
+			e := start("Index catalog", "1.0.3", runnerpkg.RunModeImplement)
+			finish(e, true)
+		} else {
+			publish("1.0.3")
+		}
+		if scenario == "failures" {
+			for _, failure := range []struct{ name, mode string }{{"Parse grammar", "startup_exit"}, {"Export report", "delivery_exit"}, {"Resolve translations", "policy_mismatch"}} {
+				failed := start(failure.name, "1.0.3", failure.mode)
+				failed.finish()
+				select {
+				case completion := <-failed.result:
+					if completion.Err == nil {
+						t.Fatal("unexpected worker exit appeared successful")
+					}
+					if decision, ok := runnerpkg.FailureDecision(completion.Err); !ok || decision.Outcome != "instance" {
+						t.Fatalf("%s failure lost caller attribution: %+v", failure.mode, decision)
+					}
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+				if err := connection.UpdateIssueState(ctx, failed.issue.ID, "Done"); err != nil {
+					t.Fatal(err)
+				}
+				if err := scheduler.ReleaseClaim(ctx, failed.issue.ID, "failed"); err != nil {
+					t.Fatal(err)
+				}
+				evidence, err := clihangRuntimeEvidence(ctx, native, tracker.NativeWorkItemID(failed.issue.ID))
+				if err != nil || evidence.Attempt == nil || evidence.Attempt.Outcome == "succeeded" || evidence.Attempt.TerminalFailure == nil || evidence.Attempt.TerminalFailure.Attribution != "instance" {
+					t.Fatalf("worker failure lost instance attribution: %+v %v", evidence.Attempt, err)
+				}
+				if alive, err := procgroup.Alive(a.identity); err != nil || !alive {
+					t.Fatalf("failed worker interrupted A: %t %v", alive, err)
+				}
+			}
+		}
+		if _, err := os.Stat(a.binary); err != nil {
+			t.Fatalf("old artifact removed before final owner exited: %v", err)
+		}
+		finish(a, true)
+		if _, err := os.Stat(a.binary); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("obsolete artifact retained after final owner exited: %v", err)
+		}
+		return
 	}
-	finish(c, true)
-	publish("1.0.2")
-	applyPolicy("Apply the updated validation instructions.")
-	d := start("Validate manifest", "1.0.2", runnerpkg.RunModeImplement)
-	finish(d, false)
 	publish("1.0.3")
-	continuePhase(d)
-	e := start("Index catalog", "1.0.3", runnerpkg.RunModeImplement)
-	finish(e, true)
-	for _, failure := range []struct{ name, mode string }{{"Parse grammar", "startup_exit"}, {"Export report", "delivery_exit"}, {"Resolve translations", "policy_mismatch"}} {
-		failed := start(failure.name, "1.0.3", failure.mode)
-		failed.finish()
-		select {
-		case completion := <-failed.result:
-			if completion.Err == nil {
-				t.Fatal("unexpected worker exit appeared successful")
-			}
-			if decision, ok := runnerpkg.FailureDecision(completion.Err); !ok || decision.Outcome != "instance" {
-				t.Fatalf("%s failure lost caller attribution: %+v", failure.mode, decision)
-			}
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		}
-		if err := connection.UpdateIssueState(ctx, failed.issue.ID, "Done"); err != nil {
-			t.Fatal(err)
-		}
-		if err := scheduler.ReleaseClaim(ctx, failed.issue.ID, "failed"); err != nil {
-			t.Fatal(err)
-		}
-		evidence, err := clihangRuntimeEvidence(ctx, native, tracker.NativeWorkItemID(failed.issue.ID))
-		if err != nil || evidence.Attempt == nil || evidence.Attempt.Outcome == "succeeded" || evidence.Attempt.TerminalFailure == nil || evidence.Attempt.TerminalFailure.Attribution != "instance" {
-			t.Fatalf("worker failure lost instance attribution: %+v %v", evidence.Attempt, err)
-		}
-		if alive, err := procgroup.Alive(a.identity); err != nil || !alive {
-			t.Fatalf("failed worker interrupted A: %t %v", alive, err)
-		}
-	}
-	if _, err := os.Stat(a.binary); err != nil {
-		t.Fatalf("old artifact removed before final owner exited: %v", err)
-	}
-	finish(a, true)
-	if _, err := os.Stat(a.binary); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("obsolete artifact retained after final owner exited: %v", err)
-	}
 	lost := start("Summarize documents", "1.0.3", runnerpkg.RunModeImplement)
 	runnerClient, ok := scheduler.NativeClient("local")
 	if !ok {
