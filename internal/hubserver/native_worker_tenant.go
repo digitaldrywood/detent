@@ -197,40 +197,46 @@ func (s *Service) releaseNativeLeaseTenant(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	err = s.config.TenantRepository.WriteTenant(c.Request().Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	command := eventstore.RunCommand{Project: scope.project, LeaseID: leaseID, Operation: "release"}
+	if prepared.attempt.ID != "" {
+		command.WorkItem, command.AttemptID = prepared.workItem.NativeID, prepared.attempt.ID
+		command.Sequences = []int64{prepared.attempt.Sequence + 1}
+		command.EventIDs = []string{prepared.history.ID}
+	}
+	err = s.writeNativeRunCommand(c.Request().Context(), scope, command, func(ctx context.Context, w tenantstore.Writer) error {
 		reader := s.nativeLeaseReader(w, scope)
-		if _, err := reader.RunnerForLease(c.Request().Context(), leaseID); err != nil {
+		if _, err := reader.RunnerForLease(ctx, leaseID); err != nil {
 			return err
 		}
-		if err := w.LockWorkItemProject(c.Request().Context(), scope.project); err != nil {
+		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
 			return err
 		}
-		lease, err := reader.Lease(c.Request().Context(), leaseID)
+		lease, err := reader.Lease(ctx, leaseID)
 		if err != nil {
 			return err
 		}
-		item, err := reader.WorkItemByID(c.Request().Context(), scope.project, lease.IssueID)
+		item, err := reader.WorkItemByID(ctx, scope.project, lease.IssueID)
 		if err != nil {
 			return err
 		}
-		lockedItem, err := w.LockWorkItem(c.Request().Context(), scope.project, item.NativeID)
+		lockedItem, err := w.LockWorkItem(ctx, scope.project, item.NativeID)
 		if err != nil {
 			return err
 		}
 		reader.item = &lockedItem
 		authority := NativeLeaseAuthority{Scope: scope, Lease: lease, Request: request, Operation: "release"}
-		if err := s.config.NativeRunEvents.ValidateNativeLeaseMutation(c.Request().Context(), reader, &authority); err != nil {
+		if err := s.config.NativeRunEvents.ValidateNativeLeaseMutation(ctx, reader, &authority); err != nil {
 			return err
 		}
 		if prepared.attempt.ID != "" {
-			attempt, err := w.LatestAttempt(c.Request().Context(), lease.IssueID)
+			attempt, err := w.LatestAttempt(ctx, lease.IssueID)
 			if err != nil {
 				return err
 			}
 			if attempt.ID != prepared.attempt.ID || attempt.LeaseID != prepared.attempt.LeaseID || attempt.FencingToken != prepared.attempt.FencingToken || attempt.Sequence != prepared.attempt.Sequence || attempt.Status != "running" {
 				return leasestore.ErrAttemptConflict
 			}
-			workItem, err := w.WorkItem(c.Request().Context(), scope.project, prepared.workItem.NativeID)
+			workItem, err := w.WorkItem(ctx, scope.project, prepared.workItem.NativeID)
 			if err != nil {
 				return err
 			}
@@ -240,32 +246,32 @@ func (s *Service) releaseNativeLeaseTenant(c echo.Context) error {
 			attemptEvent := leasestore.AttemptEvent{ID: attempt.ID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: attempt.RunID,
 				Sequence: attempt.Sequence + 1, Status: "cancelled", DispatchGeneration: attempt.DispatchGeneration, PayloadObjectKey: prepared.payloadObjectKey}
 			runAuthority := NativeRunEventAuthority{Scope: scope, OrganizationID: scope.organization, ProjectID: scope.project, WorkItem: workItem, Lease: lease, Event: prepared.event}
-			if err := s.config.NativeRunEvents.ValidateNativeRunEvent(c.Request().Context(), w, &runAuthority); err != nil {
+			if err := s.config.NativeRunEvents.ValidateNativeRunEvent(ctx, w, &runAuthority); err != nil {
 				return err
 			}
 			attemptEvent.DispatchGeneration = runAuthority.DispatchGeneration
-			stored, duplicate, err := w.RecordAttemptEvent(c.Request().Context(), attemptEvent)
+			stored, duplicate, err := w.RecordAttemptEvent(ctx, attemptEvent)
 			if err != nil {
 				return err
 			}
 			if duplicate || stored.ID != attempt.ID || stored.Sequence != attemptEvent.Sequence || stored.Status != "cancelled" {
 				return leasestore.ErrAttemptConflict
 			}
-			if _, err := w.AppendEvent(c.Request().Context(), prepared.history); err != nil {
+			if _, err := w.AppendEvent(ctx, prepared.history); err != nil {
 				return err
 			}
-			if err := s.config.NativeRunEvents.ApplyNativeRunEvent(c.Request().Context(), w, runAuthority); err != nil {
+			if err := s.config.NativeRunEvents.ApplyNativeRunEvent(ctx, w, runAuthority); err != nil {
 				return err
 			}
 		}
-		if _, err := w.Release(c.Request().Context(), leasestore.Fence{LeaseID: leaseID, FencingToken: int64(request.FencingToken)}, request.Reason); err != nil {
+		if _, err := w.Release(ctx, leasestore.Fence{LeaseID: leaseID, FencingToken: int64(request.FencingToken)}, request.Reason); err != nil {
 			return err
 		}
-		if err := s.config.NativeRunEvents.ApplyNativeLeaseMutation(c.Request().Context(), w, authority); err != nil {
+		if err := s.config.NativeRunEvents.ApplyNativeLeaseMutation(ctx, w, authority); err != nil {
 			return err
 		}
 		if s.conversations != nil {
-			return s.conversations.leaseReleasedTenant(c.Request().Context(), w, leaseID, authority.Lease.FencingToken, request.Reason)
+			return s.conversations.leaseReleasedTenant(ctx, w, leaseID, authority.Lease.FencingToken, request.Reason)
 		}
 		return nil
 	})
@@ -289,7 +295,7 @@ func (s *Service) prepareLeaseCancellationTenant(ctx context.Context, scope nati
 	var attempt leasestore.Attempt
 	var event eventstore.Event
 	var workItem corestore.WorkItem
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.readNativeRunCommand(ctx, scope, eventstore.RunCommand{Project: scope.project, LeaseID: leaseID}, func(ctx context.Context, r tenantstore.Reader) error {
 		r = s.nativeLeaseReader(r, scope)
 		var err error
 		lease, err = r.Lease(ctx, leaseID)
