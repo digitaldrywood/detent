@@ -1225,22 +1225,23 @@ func TestAttemptHydrationIntegrityStages(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		stage string
+		field string
 		edit  func(*tracker.CollaborationEvent, *tenantAttemptSnapshot, *memoryRunDetails)
 	}{
 		{name: "missing run", stage: "hydrate attempt run", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) { v.Data.Run = nil }},
-		{name: "run id", stage: "hydrate attempt identity", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
+		{name: "run id", stage: "hydrate attempt identity", field: "run_id", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
 			v.Data.Run.RunID = "private-run"
 		}},
-		{name: "attempt id", stage: "hydrate attempt identity", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
+		{name: "attempt id", stage: "hydrate attempt identity", field: "attempt_id", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
 			v.Data.Run.AttemptID = "private-attempt"
 		}},
-		{name: "lease id", stage: "hydrate attempt identity", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
+		{name: "lease id", stage: "hydrate attempt identity", field: "lease_id", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
 			v.Data.Run.LeaseID = "private-lease"
 		}},
-		{name: "fence", stage: "hydrate attempt identity", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
+		{name: "fence", stage: "hydrate attempt identity", field: "fencing_token", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
 			v.Data.Run.FencingToken++
 		}},
-		{name: "sequence", stage: "hydrate attempt identity", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
+		{name: "sequence", stage: "hydrate attempt identity", field: "sequence", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
 			v.Data.Run.Sequence++
 		}},
 		{name: "attachment evidence", stage: "hydrate attempt evidence", edit: func(_ *tracker.CollaborationEvent, s *tenantAttemptSnapshot, _ *memoryRunDetails) {
@@ -1303,6 +1304,9 @@ func TestAttemptHydrationIntegrityStages(t *testing.T) {
 				t.Fatal("integrity failure returned an attempt")
 			}
 			wantError := test.stage + ": " + artifact.ErrIntegrity.Error()
+			if test.field != "" {
+				wantError += ": " + test.field
+			}
 			if test.name == "read" {
 				wantError += "\nread archive: " + artifact.ErrIntegrity.Error()
 			}
