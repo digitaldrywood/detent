@@ -122,7 +122,7 @@ func TestPostgresEntryKeyBillingCatalog(t *testing.T) {
 			if len(provider.checkouts) != 1 || len(provider.portals) != 1 || len(provider.creditCheckouts) != 1 {
 				t.Fatalf("billing retries repeated provider writes: checkout=%d portal=%d credit=%d", len(provider.checkouts), len(provider.portals), len(provider.creditCheckouts))
 			}
-			if provider.checkouts[0].OrganizationID != org || provider.portals[0].OrganizationID != org || provider.creditCheckouts[0].Binding.OrganizationID != org {
+			if provider.checkouts[0].OrganizationID != org || provider.portals[0].OrganizationID != org || provider.creditCheckouts[0].OrganizationID != org {
 				t.Fatal("billing provider received another tenant's binding")
 			}
 			if err := service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {

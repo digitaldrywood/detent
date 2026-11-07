@@ -24,6 +24,7 @@ type entryKeyReadCounter struct {
 type entryKeyReadCountingReader struct {
 	tenantstore.Reader
 	accessstore.ProjectAccessPageReader
+	tenantstore.WorkItemRelationshipBatchReader
 }
 
 func (r entryKeyReadCountingReader) ProjectAccessPage(ctx context.Context, filter accessstore.ProjectAccessFilter) ([]accessstore.ProjectAccess, error) {
@@ -40,7 +41,7 @@ func (r *entryKeyReadCountingRepository) ReadTenant(ctx context.Context, organiz
 		if !ok {
 			return read(reader)
 		}
-		return read(entryKeyReadCountingReader{Reader: reader, ProjectAccessPageReader: pageReader})
+		return read(entryKeyReadCountingReader{Reader: reader, ProjectAccessPageReader: pageReader, WorkItemRelationshipBatchReader: reader.(tenantstore.WorkItemRelationshipBatchReader)})
 	})
 }
 

@@ -264,7 +264,7 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 	}
 	foreignOrganizationItem := call(operatortool.WorkItem, map[string]any{"project_id": "project_org_other", "reference": "wi_foreign"}, nil)
 	requireNativeStatus(t, foreignOrganizationItem, http.StatusForbidden)
-	unavailableTool := call(operatortool.WorkHistory, map[string]any{"project_id": "project_org_startup", "reference": "wi_own"}, nil)
+	unavailableTool := call(operatortool.WorkPRComments, map[string]any{"project_id": "project_org_startup", "reference": "wi_own"}, nil)
 	requireNativeStatus(t, unavailableTool, http.StatusForbidden)
 	if !strings.Contains(unavailableTool.Body.String(), "tool_unavailable") {
 		t.Fatalf("unsupported tool response = %s", unavailableTool.Body.String())
