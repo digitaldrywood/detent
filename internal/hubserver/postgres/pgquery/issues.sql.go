@@ -778,8 +778,23 @@ func (q *Queries) ScanWorkItems(ctx context.Context, arg ScanWorkItemsParams) ([
 }
 
 const updateWorkItem = `-- name: UpdateWorkItem :one
+WITH previous AS MATERIALIZED (
+    SELECT id,archived,workflow_state_name FROM issues
+    WHERE organization_id=$17 AND project_id=$18
+      AND native_id=$19 AND revision=$20
+    FOR UPDATE
+), invalidated_admission AS (
+    DELETE FROM monthly_budget_admissions a USING previous i
+    WHERE a.organization_id=$17 AND a.issue_id=i.id
+      AND (i.archived OR $15 OR EXISTS (
+          SELECT 1 FROM project_workflow_states w
+          WHERE w.organization_id=$17 AND w.project_id=$18
+            AND w.name IN (i.workflow_state_name,$16)
+            AND (w.terminal OR lower(w.name) IN ('blocked','backlog','cancelled'))
+      ))
+)
 UPDATE issues SET
-    last_activity_at=greatest(last_activity_at,COALESCE($1::timestamptz,last_activity_at)),
+    last_activity_at=greatest(issues.last_activity_at,COALESCE($1::timestamptz,issues.last_activity_at)),
     number=$2,
     event_sequence=$3,
     native_source_key=$4,
@@ -795,10 +810,11 @@ UPDATE issues SET
     provenance_external_id=$14,
     archived=$15,
     workflow_state_name=$16,
-    revision=revision+1,
+    revision=issues.revision+1,
     updated_at=CURRENT_TIMESTAMP,
     native_updated_at=CURRENT_TIMESTAMP
-WHERE organization_id=$17 AND project_id=$18 AND native_id=$19 AND revision=$20 RETURNING organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id
+FROM previous
+WHERE issues.id=previous.id AND issues.organization_id=$17 AND issues.project_id=$18 AND issues.native_id=$19 AND issues.revision=$20 RETURNING issues.organization_id, issues.id, issues.native_id, issues.project_id, issues.number, issues.revision, issues.event_sequence, issues.native_source_key, issues.title, issues.body_object_key, issues.issue_contract_object_key, issues.report_context_object_key, issues.actor_kind, issues.actor_principal_id, issues.provenance_provider, issues.provenance_external_id, issues.archived, issues.created_at, issues.updated_at, issues.native_created_at, issues.native_updated_at, issues.workflow_state_name, issues.last_activity_at, issues.issue_type, issues.priority, issues.dispatch_generation, issues.dispatch_requested_at, issues.recovery_runner_id, issues.recovery_version_id
 `
 
 type UpdateWorkItemParams struct {
