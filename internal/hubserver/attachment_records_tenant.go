@@ -261,13 +261,18 @@ func (s *Service) prepareEvidenceComment(ctx context.Context, scope nativeScope,
 	if err != nil {
 		return result, err
 	}
-	issue, err := s.hydrateWorkItemRecord(ctx, row, version)
+	return s.prepareEvidenceCommentRecord(ctx, scope, row, version, body, offset)
+}
+
+func (s *Service) prepareEvidenceCommentRecord(ctx context.Context, scope nativeScope, row corestore.WorkItem, version eventstore.CollaborationVersion, body string, offset int64) (attachmentEvidencePublication, error) {
+	result := attachmentEvidencePublication{}
+	issue, err := s.hydrateCanonicalWorkItemRecord(ctx, row, version)
 	if err != nil {
 		return result, err
 	}
 	row.EventSequence += offset
 	at := s.config.now().UTC().Truncate(time.Microsecond)
-	comment := tracker.NativeComment{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, ID: newNativeID("cmt"), Revision: 1, Sequence: row.EventSequence + 1, Body: body, Actor: scope.actor(), CreatedAt: at, UpdatedAt: at}
+	comment := tracker.NativeComment{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: row.NativeID, ID: newNativeID("cmt"), Revision: 1, Sequence: row.EventSequence + 1, Body: body, Actor: scope.actor(), CreatedAt: at, UpdatedAt: at}
 	result.plan = workItemRecordPlan{current: row, issue: issue, comment: comment, create: true, eventType: "comment.created"}
 	result.fields, err = s.prepareWorkItemFields(ctx, scope.organization, result.plan)
 	if err != nil {
@@ -278,12 +283,12 @@ func (s *Service) prepareEvidenceComment(ctx context.Context, scope nativeScope,
 		return result, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	result.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, RecordID: comment.ID, Revision: 1}, raw)
+	result.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: row.NativeID, RecordID: comment.ID, Revision: 1}, raw)
 	if err != nil {
 		return result, err
 	}
 	data := tracker.CollaborationData{Revision: 1, CommentID: comment.ID}
-	event := tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: item, Type: "comment.created", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: at, Data: data}
+	event := tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: row.NativeID, Type: "comment.created", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: at, Data: data}
 	eventRaw, err := json.Marshal(event)
 	if err != nil {
 		return result, err
@@ -301,7 +306,7 @@ func (s *Service) prepareEvidenceComment(ctx context.Context, scope nativeScope,
 		return result, err
 	}
 	result.bytes = int64(len(comment.Body) + len(raw) + len(dataRaw) + len(actorRaw))
-	result.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, ID: "comment:" + comment.ID, SourceID: comment.ID, Kind: "comment", Scope: "issue", Revision: 1, UpdatedAt: at}, searchstore.Text{Body: comment.Body})
+	result.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: row.NativeID, ID: "comment:" + comment.ID, SourceID: comment.ID, Kind: "comment", Scope: "issue", Revision: 1, UpdatedAt: at}, searchstore.Text{Body: comment.Body})
 	return result, err
 }
 func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.UploadRequest) error {

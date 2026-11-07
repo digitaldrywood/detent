@@ -130,6 +130,8 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 	var usageFacts runnerUsageFacts
 	var usageFactsFound bool
 	var replay eventstore.Receipt
+	var completionVersion eventstore.CollaborationVersion
+	var completionEvidence, completionSnapshot bool
 	var replayed bool
 	var replaySnapshot *nativeRunReplaySnapshot
 	command := eventstore.RunCommand{Project: scope.project, WorkItem: tracker.NativeWorkItemID(item), LeaseID: string(request.Data.LeaseID), AttemptID: request.Data.AttemptID, ActorID: actorID, Operation: operation, Key: request.IdempotencyKey, Completion: request.Type == "run.finished" && request.Data.CompletionBody != ""}
@@ -140,6 +142,18 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 	if err := s.readNativeRunCommand(ctx, scope, command, func(ctx context.Context, r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
+		}
+		if command.Completion {
+			if reader, ok := r.(interface {
+				RunnerCompletionFacts() (eventstore.CollaborationVersion, bool, error)
+			}); ok {
+				var err error
+				completionVersion, completionEvidence, err = reader.RunnerCompletionFacts()
+				if err != nil {
+					return err
+				}
+				completionSnapshot = true
+			}
 		}
 		project, err := r.Project(ctx, scope.project)
 		if err != nil {
@@ -427,14 +441,16 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			preparedEvent.previousAttempt, preparedEvent.previousEvent = previousAttempt, previousRunEvent
 		}
 		if event.Type == "run.finished" && !attemptEvent.UsageCorrection && event.Data.CompletionBody != "" {
-			var hasEvidence bool
-			err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-				rows, err := r.AttachmentEvidence(ctx, scope.project, tracker.NativeWorkItemID(item), event.Data.AttemptID, 1)
-				hasEvidence = len(rows) != 0
-				return err
-			})
-			if err != nil {
-				return nil, err
+			hasEvidence := completionEvidence
+			if !completionSnapshot {
+				err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					rows, err := r.AttachmentEvidence(ctx, scope.project, tracker.NativeWorkItemID(item), event.Data.AttemptID, 1)
+					hasEvidence = len(rows) != 0
+					return err
+				})
+				if err != nil {
+					return nil, err
+				}
 			}
 			if hasEvidence {
 				var offset int64
@@ -443,7 +459,13 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 						offset++
 					}
 				}
-				publication, err := s.prepareEvidenceComment(ctx, scope, tracker.NativeWorkItemID(item), event.Data.CompletionBody, offset)
+				var publication attachmentEvidencePublication
+				var err error
+				if completionSnapshot {
+					publication, err = s.prepareEvidenceCommentRecord(ctx, scope, workItem, completionVersion, event.Data.CompletionBody, offset)
+				} else {
+					publication, err = s.prepareEvidenceComment(ctx, scope, tracker.NativeWorkItemID(item), event.Data.CompletionBody, offset)
+				}
 				if err != nil {
 					return nil, err
 				}

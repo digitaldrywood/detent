@@ -3,21 +3,17 @@ package postgres
 import (
 	"context"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
-func (f *runnerEventSession) WithRunEventParticipant(ctx context.Context, apply func(tenantstore.Writer) error) error {
-	if err := f.flushRunEvents(ctx); err != nil {
-		return err
+func (f *runnerEventSession) WithRunEventParticipant(_ context.Context, apply func(tenantstore.Writer) error) error {
+	return apply(f)
+}
+
+func (f *runnerEventSession) RunnerCompletionFacts() (eventstore.CollaborationVersion, bool, error) {
+	if !f.hasEvidence {
+		return eventstore.CollaborationVersion{}, false, nil
 	}
-	if err := apply(f.Writer); err != nil {
-		return err
-	}
-	item, err := f.Writer.WorkItem(ctx, f.command.Project, f.command.WorkItem)
-	if err != nil {
-		return err
-	}
-	f.item = runFact[pgquery.Issue]{value: pgquery.Issue(item)}
-	return nil
+	return eventstore.CollaborationVersion(f.completionVersion.value), true, f.completionVersion.err
 }

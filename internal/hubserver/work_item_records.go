@@ -80,6 +80,20 @@ func stringValue(value *string) string {
 }
 
 func (s *Service) hydrateWorkItemRecord(ctx context.Context, row corestore.WorkItem, version eventstore.CollaborationVersion) (tracker.NativeIssue, error) {
+	issue, err := s.hydrateCanonicalWorkItemRecord(ctx, row, version)
+	if err != nil {
+		return issue, err
+	}
+	if source, found, err := s.readLinkedIssueSourceRecord(ctx, row.OrganizationID, row.ProjectID, row.NativeID); err != nil {
+		return issue, err
+	} else if found {
+		issue.LinkedSource = &source
+		issue.ExternalReferences = append(issue.ExternalReferences, tracker.GitHubIssueSourceReference(source.URL, source.URL))
+	}
+	return s.nativeIssueResponse(issue), nil
+}
+
+func (s *Service) hydrateCanonicalWorkItemRecord(ctx context.Context, row corestore.WorkItem, version eventstore.CollaborationVersion) (tracker.NativeIssue, error) {
 	var issue tracker.NativeIssue
 	if version.OrganizationID != row.OrganizationID || version.ProjectID != row.ProjectID || version.WorkItemID != row.NativeID || version.RecordID != string(row.NativeID) || version.Revision != row.Revision {
 		return issue, artifact.ErrIntegrity
@@ -93,13 +107,7 @@ func (s *Service) hydrateWorkItemRecord(ctx context.Context, row corestore.WorkI
 	}
 	issue.ChangeSequence = 0
 	issue.LastActivityAt = row.LastActivityAt
-	if source, found, err := s.readLinkedIssueSourceRecord(ctx, row.OrganizationID, row.ProjectID, row.NativeID); err != nil {
-		return issue, err
-	} else if found {
-		issue.LinkedSource = &source
-		issue.ExternalReferences = append(issue.ExternalReferences, tracker.GitHubIssueSourceReference(source.URL, source.URL))
-	}
-	return s.nativeIssueResponse(issue), nil
+	return issue, nil
 }
 
 func (s *Service) readWorkItem(ctx context.Context, scope nativeScope, id string) (tracker.NativeIssue, error) {

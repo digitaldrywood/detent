@@ -16,7 +16,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -175,16 +174,12 @@ func TestRunnerEventSubmissionWireBudget(t *testing.T) {
 						mutation.ExpectedRevision = session.Revision
 						mutation.Progress = &store.SessionProgress{LastProgressAt: time.Now().UTC()}
 					}
-					httpRequest := newHubAPIRequest(t, http.MethodPost, "/", fixture.tokens[index], mutation).WithContext(ctx)
+					httpRequest := newHubAPIRequest(t, http.MethodPost, fmt.Sprintf("/api/v2/organizations/%s/projects/prj_runner/runner-sessions", org), fixture.tokens[index], mutation).WithContext(ctx)
 					response := httptest.NewRecorder()
-					c := echo.New().NewContext(httpRequest, response)
-					c.Set("native_scope", scope)
 					wire.Lock()
 					wire.statements, wire.exchanges, wire.transactions = 0, 0, 0
 					wire.Unlock()
-					if err := fixture.service.mutateRunnerSession(c); err != nil {
-						t.Fatal(err)
-					}
+					fixture.service.Handler().ServeHTTP(response, httpRequest)
 					if response.Code != http.StatusOK {
 						t.Logf("session diagnostics: %s", apiLog.String())
 					}

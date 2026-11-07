@@ -33,26 +33,28 @@ func queueRunFact[T any](b *pgx.Batch, fact *runFact[T], query string, args ...a
 
 type runnerEventSession struct {
 	tenantstore.Writer
-	sessions        runnersession.Writer
-	session         *session
-	command         eventstore.RunCommand
-	project         runFact[pgquery.Project]
-	item            runFact[pgquery.Issue]
-	lease           runFact[pgquery.Lease]
-	attempt         runFact[pgquery.NativeAttempt]
-	latest          runFact[pgquery.NativeAttempt]
-	machine         runFact[pgquery.Machine]
-	policy          runFact[pgquery.PolicyGetProjectCurrentRow]
-	pinned          runFact[policystore.LeasePolicy]
-	receipt         runFact[eventstore.Receipt]
-	latestEvent     runFact[pgquery.CollaborationEvent]
-	events          map[string]eventstore.Event
-	pending         *pgx.Batch
-	attemptReceipts map[int64]string
-	runnerAllowed   bool
-	owner           string
-	now             time.Time
-	sessionRecord   runFact[runnersession.Record]
+	sessions          runnersession.Writer
+	session           *session
+	command           eventstore.RunCommand
+	project           runFact[pgquery.Project]
+	item              runFact[pgquery.Issue]
+	lease             runFact[pgquery.Lease]
+	attempt           runFact[pgquery.NativeAttempt]
+	latest            runFact[pgquery.NativeAttempt]
+	machine           runFact[pgquery.Machine]
+	policy            runFact[pgquery.PolicyGetProjectCurrentRow]
+	pinned            runFact[policystore.LeasePolicy]
+	receipt           runFact[eventstore.Receipt]
+	latestEvent       runFact[pgquery.CollaborationEvent]
+	events            map[string]eventstore.Event
+	pending           *pgx.Batch
+	attemptReceipts   map[int64]string
+	runnerAllowed     bool
+	owner             string
+	now               time.Time
+	sessionRecord     runFact[runnersession.Record]
+	completionVersion runFact[pgquery.CollaborationVersion]
+	hasEvidence       bool
 }
 
 func newRunnerEventFacts(s *session, writer tenantstore.Writer, c eventstore.RunCommand) (*runnerEventSession, *pgx.Batch) {
@@ -70,15 +72,15 @@ func newRunnerEventFacts(s *session, writer tenantstore.Writer, c eventstore.Run
 	if !s.readOnly {
 		lock = " FOR UPDATE"
 	}
-	queueRunFact(b, &f.item, `SELECT * FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=COALESCE(NULLIF($3,''),(SELECT issue_id FROM runner_sessions WHERE organization_id=$1 AND project_id=$2 AND id=$4))`+lock, s.organization, c.Project, c.WorkItem, c.SessionID)
+	queueRunFact(b, &f.item, `SELECT * FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=COALESCE(NULLIF($3,''),(SELECT issue_id FROM runner_sessions WHERE organization_id=$1 AND project_id=$2 AND id=$4),(SELECT i.native_id FROM issues i JOIN leases l ON l.organization_id=i.organization_id AND l.issue_id=i.id WHERE l.organization_id=$1 AND l.lease_id=$5 AND i.project_id=$2))`+lock, s.organization, c.Project, c.WorkItem, c.SessionID, c.LeaseID)
 	queueRunFact(b, &f.lease, `SELECT * FROM leases WHERE organization_id=$1 AND lease_id=$2`+lock, s.organization, c.LeaseID)
 	b.Queue(`SELECT clock_timestamp()`).QueryRow(func(row pgx.Row) error { return row.Scan(&f.now) })
-	queueRunFact(b, &f.attempt, `SELECT * FROM native_attempts WHERE organization_id=$1 AND id=$2`, s.organization, c.AttemptID)
-	queueRunFact(b, &f.latest, `SELECT a.* FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE a.organization_id=$1 AND i.project_id=$2 AND i.native_id=COALESCE(NULLIF($3,''),(SELECT issue_id FROM runner_sessions WHERE organization_id=$1 AND project_id=$2 AND id=$4)) ORDER BY a.fencing_token DESC LIMIT 1`, s.organization, c.Project, c.WorkItem, c.SessionID)
+	queueRunFact(b, &f.attempt, `SELECT * FROM native_attempts WHERE organization_id=$1 AND id=COALESCE(NULLIF($2,''),(SELECT id FROM native_attempts WHERE organization_id=$1 AND lease_id=$3 ORDER BY fencing_token DESC LIMIT 1))`, s.organization, c.AttemptID, c.LeaseID)
+	queueRunFact(b, &f.latest, `SELECT a.* FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE a.organization_id=$1 AND i.project_id=$2 AND i.native_id=COALESCE(NULLIF($3,''),(SELECT issue_id FROM runner_sessions WHERE organization_id=$1 AND project_id=$2 AND id=$4),(SELECT i.native_id FROM issues i JOIN leases l ON l.organization_id=i.organization_id AND l.issue_id=i.id WHERE l.organization_id=$1 AND l.lease_id=$5 AND i.project_id=$2)) ORDER BY a.fencing_token DESC LIMIT 1`, s.organization, c.Project, c.WorkItem, c.SessionID, c.LeaseID)
 	queueRunFact(b, &f.machine, `SELECT m.* FROM machines m JOIN leases l ON l.organization_id=m.organization_id AND l.machine_id=m.id WHERE l.organization_id=$1 AND l.lease_id=$2`, s.organization, c.LeaseID)
 	queueRunFact(b, &f.pinned, `SELECT organization_id,project_id,lease_id,policy_id,bound_at FROM lease_policy_bindings WHERE organization_id=$1 AND lease_id=$2`, s.organization, c.LeaseID)
 	queueRunFact(b, &f.policy, `SELECT r.organization_id,r.project_id,r.policy_id,COALESCE(a.approved_by,r.approved_by) AS approved_by,COALESCE(a.approved_at,r.approved_at) AS approved_at,r.payload_object_key,r.payload_sha256,r.payload_bytes,r.payload_content_bytes,r.gate_github_pull_request FROM project_policies p JOIN policy_revisions r ON r.organization_id=p.organization_id AND r.project_id=p.project_id AND r.policy_id=p.policy_id LEFT JOIN policy_revision_approvals a ON a.organization_id=r.organization_id AND a.project_id=r.project_id AND a.policy_id=r.policy_id WHERE p.organization_id=$1 AND p.project_id=$2`, s.organization, c.Project)
-	queueRunFact(b, &f.latestEvent, `SELECT * FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND attempt_id=$3 AND attempt_id<>'' ORDER BY sequence DESC LIMIT 1`, s.organization, c.Project, c.AttemptID)
+	queueRunFact(b, &f.latestEvent, `SELECT * FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND attempt_id=COALESCE(NULLIF($3,''),(SELECT id FROM native_attempts WHERE organization_id=$1 AND lease_id=$4 ORDER BY fencing_token DESC LIMIT 1)) AND attempt_id<>'' ORDER BY sequence DESC LIMIT 1`, s.organization, c.Project, c.AttemptID, c.LeaseID)
 	b.Queue(`SELECT requested.organization_id,requested.actor_id,requested.operation,requested.command_key,COALESCE(c.request_hash,state.request_hash),COALESCE(c.created_at,state.created_at),COALESCE(c.payload_object_key,''),COALESCE(c.payload_sha256,''),COALESCE(c.payload_bytes,0),COALESCE(c.payload_content_bytes,0),COALESCE(state.response_claimed,false),COALESCE(state.response_pending,false),COALESCE(state.response_request_id,''),COALESCE(state.response_expired,false),COALESCE(state.response_replay_until_ns,0),COALESCE(state.response_reconciliation_hash,'')
 FROM (SELECT $1::text organization_id,$2::text actor_id,$3::text operation,$4::text command_key) requested
 LEFT JOIN native_commands c USING(organization_id,actor_id,operation,command_key)
@@ -138,6 +140,10 @@ AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.orga
 		}
 		return err
 	})
+	if c.Completion {
+		queueRunFact(b, &f.completionVersion, `SELECT v.* FROM collaboration_versions v JOIN issues i ON i.organization_id=v.organization_id AND i.project_id=v.project_id AND i.native_id=v.work_item_id AND v.record_id=i.native_id AND v.revision=i.revision WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3`, s.organization, c.Project, c.WorkItem)
+		b.Queue(`SELECT EXISTS(SELECT 1 FROM attachments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND evidence_attempt_id=$4)`, s.organization, c.Project, c.WorkItem, c.AttemptID).QueryRow(func(row pgx.Row) error { return row.Scan(&f.hasEvidence) })
+	}
 	if c.SessionID > 0 {
 		b.Queue(`SELECT `+runnerSessionColumns+` FROM runner_sessions WHERE organization_id=$1 AND project_id=$2 AND id=$3`, s.organization, c.Project, c.SessionID).QueryRow(func(row pgx.Row) error {
 			f.sessionRecord.value, f.sessionRecord.err = scanRunnerSession(row)
