@@ -14,7 +14,14 @@ import (
 )
 
 func (s *session) WithRunnerEventFacts(ctx context.Context, command eventstore.RunCommand, use func(tenantstore.Writer) error) error {
-	f, b := newRunnerEventFacts(s, s, command)
+	f, facts := newRunnerEventFacts(s, s, command)
+	b := new(pgx.Batch)
+	if !s.readOnly {
+		b.Queue(`SELECT r.runner_id FROM runner_identities r
+JOIN runner_lease_assignments a ON a.organization_id=r.organization_id AND a.runner_id=r.runner_id
+WHERE a.organization_id=$1 AND a.lease_id=$2 FOR UPDATE OF r`, s.organization, command.LeaseID)
+	}
+	b.QueuedQueries = append(b.QueuedQueries, facts.QueuedQueries...)
 	db, ok := s.db.(timedQueries)
 	if !ok {
 		return corestore.ErrInvalidPage

@@ -41,6 +41,9 @@ func (s *Service) writeNativeRunCommand(ctx context.Context, scope nativeScope, 
 		return repository.WriteRunnerEventCommand(ctx, scope.organization, scope.credential.ID, scope.credential.Runner.RunnerID, command, write)
 	}
 	return s.writeNativeClaimCommand(ctx, scope, func(ctx context.Context, w tenantstore.Writer) error {
+		if _, err := w.RunnerIdentityByCredential(ctx, scope.credential.ID); err != nil {
+			return err
+		}
 		if command.Operation != "" {
 			switch s.config.NativeRunEvents.(type) {
 			case tenantNativeRunEventParticipant, *tenantNativeRunEventParticipant:
