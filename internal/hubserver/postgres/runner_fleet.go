@@ -220,10 +220,21 @@ func (s *session) fleetRecordProviderViews(ctx context.Context, record runnersto
 }
 
 func (s *session) RunnerRoutingRecords(ctx context.Context, limit, offset int, now time.Time) ([]runnerstore.RoutingRecord, error) {
+	return s.runnerRoutingRecords(ctx, "", limit, offset, now)
+}
+
+func (s *session) RunnerProjectRoutingRecords(ctx context.Context, project tracker.ProjectID, limit, offset int, now time.Time) ([]runnerstore.RoutingRecord, error) {
+	if project == "" {
+		return nil, corestore.ErrInvalidPage
+	}
+	return s.runnerRoutingRecords(ctx, project, limit, offset, now)
+}
+
+func (s *session) runnerRoutingRecords(ctx context.Context, project tracker.ProjectID, limit, offset int, now time.Time) ([]runnerstore.RoutingRecord, error) {
 	if limit < 1 || limit > 201 || offset < 0 || offset > 100000 || now.IsZero() {
 		return nil, corestore.ErrInvalidPage
 	}
-	records, err := s.selectedFleetRecords(ctx, "", "", limit, true, "", offset)
+	records, err := s.selectedFleetRecords(ctx, project, "", limit, true, "", offset)
 	if err != nil || len(records) == 0 {
 		return []runnerstore.RoutingRecord{}, err
 	}

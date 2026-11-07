@@ -12,6 +12,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -42,17 +45,69 @@ type coordinatorRunnerChange struct {
 }
 
 func (s *Service) coordinatorRunner(ctx context.Context, scope nativeScope, id string) (runnerauth.Runner, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	var visible bool
-	err := s.database.reader.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runner_identities r WHERE r.organization_id=? AND r.id=? AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?)))`, scope.organization, id, scope.project).Scan(&visible)
+	runners, err := s.coordinatorRunners(ctx, scope, coordinatorRunnerArguments{RunnerID: id})
 	if err != nil {
 		return runnerauth.Runner{}, err
 	}
-	if !visible {
+	if len(runners) != 1 {
 		return runnerauth.Runner{}, nativeNotFound()
 	}
-	return readRunnerWithClock(ctx, s.database.reader, scope.organization, id, s.config.now)
+	return runners[0], nil
+}
+
+func (s *Service) coordinatorRunners(ctx context.Context, scope nativeScope, args coordinatorRunnerArguments) ([]runnerauth.Runner, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return nil, nativeRunEventStorageUnavailable()
+	}
+	runners := []runnerauth.Runner{}
+	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		now := s.config.now()
+		var records []runnerstore.RoutingRecord
+		if args.RunnerID != "" {
+			reader, ok := r.(runnerstore.RoutingReader)
+			if !ok {
+				return nativeRunEventStorageUnavailable()
+			}
+			record, err := reader.RunnerRoutingRecord(ctx, args.RunnerID, now)
+			if err != nil {
+				return err
+			}
+			records = []runnerstore.RoutingRecord{record}
+		} else {
+			reader, ok := r.(runnerstore.RoutingPageReader)
+			if !ok {
+				return nativeRunEventStorageUnavailable()
+			}
+			limit := args.Limit
+			if limit == 0 {
+				limit = 20
+			}
+			var err error
+			records, err = reader.RunnerProjectRoutingRecords(ctx, scope.project, limit, args.Offset, now)
+			if err != nil {
+				return err
+			}
+		}
+		urgent, err := r.RunnerUrgentUpdate(ctx)
+		if err != nil {
+			return err
+		}
+		for _, record := range records {
+			runner := runnerFromRoutingRecord(record, now, urgent)
+			if !runner.AllowsProject(scope.project) {
+				return nativeNotFound()
+			}
+			runners = append(runners, runner)
+		}
+		return nil
+	})
+	return runners, projectRecordError(err)
 }
 
 func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
@@ -117,39 +172,12 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 		}
 		return t.submitCoordinatorAction(ctx, record, call, chat.Action{Kind: chat.ActionKind(call.Name), Title: title, Description: description, ProjectID: string(record.ProjectID), Arguments: raw, Material: true})
 	}
-	ids := []string{args.RunnerID}
-	if args.RunnerID == "" {
-		limit := args.Limit
-		if limit == 0 {
-			limit = 20
-		}
-		readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
-		defer cancelRead()
-		rows, err := s.database.reader.QueryContext(readCtx, `SELECT r.id FROM runner_identities r WHERE r.organization_id=? AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?)) ORDER BY r.id LIMIT ? OFFSET ?`, scope.organization, scope.project, limit, args.Offset)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		ids = nil
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				return nil, err
-			}
-			ids = append(ids, id)
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return nil, err
-		}
+	runners, err := s.coordinatorRunners(ctx, scope, args)
+	if err != nil {
+		return nil, err
 	}
-	views := make([]map[string]any, 0, len(ids))
-	for _, id := range ids {
-		r, err := s.coordinatorRunner(ctx, scope, id)
-		if err != nil {
-			return nil, err
-		}
+	views := make([]map[string]any, 0, len(runners))
+	for _, r := range runners {
 		problems := slices.DeleteFunc(slices.Clone(r.Problems), func(p runnerauth.Problem) bool { return p.ProjectID != "" && p.ProjectID != string(scope.project) })
 		views = append(views, map[string]any{"runner_id": r.RunnerID, "display_name": r.DisplayName, "revision": r.Revision, "scope": r.Scope, "isolation_tier": r.IsolationTier, "backend_isolation": r.BackendIsolation, "problems": problems, "health": r.Health, "connection_health": r.ConnectionHealth, "last_heartbeat_at": r.LastHeartbeatAt})
 	}

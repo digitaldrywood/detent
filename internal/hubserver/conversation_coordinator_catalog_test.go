@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -174,6 +175,22 @@ func TestCoordinatorTurnOutlivesSharedBrowserAccessToken(t *testing.T) {
 			cfg.Conversation = &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir(), ArchiveContents: &conversationContentFixture{}}
 			service := openTestService(t, cfg)
 			native := newNativeFixture(t, service, "", "Example project")
+			seedStartupOrganization(t, service.database.postgres, "org_other")
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_other", corestore.Serving, func(w tenantstore.Writer) error {
+				_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_other", ID: native.project.ID, Name: "Example other project", Profile: "native"}, States: native.project.States})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_other", corestore.Serving, func(r tenantstore.Reader) error {
+				project, err := r.ProjectRecord(t.Context(), native.project.ID)
+				if err == nil && (project.Core.OrganizationID != "org_other" || project.Core.Name != "Example other project") {
+					return fmt.Errorf("other tenant project was not isolated")
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
 			f := hostedSharedFixture{hostedSecurityFixture: hostedSecurityFixture{service: native.service, provider: provider, project: native.project.ID, base: native.base}, key: key}
 			owner := f.member(t, "owner", "owner", "")
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), native.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {

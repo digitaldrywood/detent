@@ -59,6 +59,7 @@ type RoutingRecord struct {
 
 type RoutingPageReader interface {
 	RunnerRoutingRecords(context.Context, int, int, time.Time) ([]RoutingRecord, error)
+	RunnerProjectRoutingRecords(context.Context, tracker.ProjectID, int, int, time.Time) ([]RoutingRecord, error)
 }
 
 type RoutingReader interface {

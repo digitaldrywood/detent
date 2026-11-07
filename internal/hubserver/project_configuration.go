@@ -23,6 +23,9 @@ func (e hubProjectExecutor) localProjectConfiguration(ctx context.Context, name 
 }
 
 func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, name string, args operatortool.LocalProjectArguments, preview bool) (operatortool.Result, error) {
+	if e.service.database.reader == nil {
+		return operatortool.Result{}, errProjectServiceUnavailable
+	}
 	ctx = e.service.contentContext(ctx)
 	return prepareContentMutation(ctx, e.service.database.reader, func() (operatortool.Result, error) {
 		return e.commitProjectConfiguration(ctx, name, args, preview)

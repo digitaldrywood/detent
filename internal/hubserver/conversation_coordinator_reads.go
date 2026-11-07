@@ -96,7 +96,7 @@ func (t *coordinatorToolset) screenRead(ctx context.Context, record conversation
 	if err != nil {
 		return nil, err
 	}
-	if err := t.coordinator.service.authorizeRead(ctx, s.database.reader, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, record); err != nil {
+	if err := t.coordinator.authorizeRecord(ctx, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, record, false); err != nil {
 		return nil, fmt.Errorf("you don't have access to this conversation's stored answers: equal screen access is required: %w", operatortool.ErrAccessDenied)
 	}
 	var fields map[string]json.RawMessage
