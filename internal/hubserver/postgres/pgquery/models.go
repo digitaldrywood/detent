@@ -3050,6 +3050,64 @@ type ProjectEventCursor struct {
 	NotificationCheckedAt time.Time
 }
 
+type ProjectIntegrationPage struct {
+	OrganizationID            tracker.OrganizationID
+	ProjectID                 tracker.ProjectID
+	Name                      string
+	Profile                   string
+	Revision                  int64
+	Intake                    string
+	Projection                string
+	RepositoryEnabled         bool
+	ManualImportEnabled       bool
+	Repository                string
+	CheckoutRepository        string
+	AgingEnabled              bool
+	DuplicateChallenge        bool
+	ArchiveCompletedAfterDays pgtype.Int4
+	ArchiveCancelledAfterDays pgtype.Int4
+	WorkflowSource            string
+	WorkflowSourceRevision    string
+	WorkflowMarkdown          string
+	HasIcon                   bool
+	IconKind                  string
+	IconName                  string
+	IconColor                 string
+	IconEmoji                 string
+	IconImageKey              string
+	IconImageSha256           string
+	IconUrl                   string
+	AuthorityKeys             []string
+	AuthorityValues           []string
+	SourceGeneration          int64
+	SourceAt                  time.Time
+	ProjectedAt               time.Time
+}
+
+type ProjectIntegrationPageDirty struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Generation     pgtype.Int8
+	SourceAt       time.Time
+	AttemptedAt    time.Time
+}
+
+type ProjectIntegrationPageState struct {
+	OrganizationID     tracker.OrganizationID
+	ProjectID          tracker.ProjectID
+	StatePosition      int32
+	TransitionPosition int32
+	Name               string
+	Terminal           bool
+	Dispatchable       bool
+	OperatorOnly       bool
+	Target             *string
+	SourceGeneration   int64
+	SourceAt           time.Time
+	ProjectedAt        time.Time
+	Revision           int64
+}
+
 type ProjectOnboarding struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
