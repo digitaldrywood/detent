@@ -233,6 +233,9 @@ func TestBoardProjectionDeletedChangeAndRealErrorsPostgres(t *testing.T) {
 					if err == nil && test.name == "deleted" && card.Display.ChangePrincipalID != "" {
 						t.Errorf("deleted Change principal retained: %s", card.Display.ChangePrincipalID)
 					}
+					if err == nil && (card.PageIssue == nil || card.ListIssue == nil || card.ReporterRelations == nil || !card.ProjectedAt.Equal(now)) {
+						t.Error("refreshed card is missing the new read models")
+					}
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -258,7 +261,28 @@ func TestBoardProjectionDeletedChangeAndRealErrorsPostgres(t *testing.T) {
 						t.Fatalf("settled card read failure was masked: %v", err)
 					}
 					mutating.boardError = nil
+					for _, invalidation := range []string{"page_ready=false", "list_ready=false", "page_refresh_after=now()"} {
+						if _, err := admin.ExecContext(t.Context(), "UPDATE native_board_items SET "+invalidation+" WHERE organization_id=$1 AND work_item_id=$2", org, id); err != nil {
+							t.Fatal(err)
+						}
+						if _, _, err := service.maintainBoardRecord(t.Context(), org, id); err != nil {
+							t.Fatal(err)
+						}
+						writes++
+						if mutating.writes != writes {
+							t.Errorf("card with %s was skipped", invalidation)
+						}
+					}
 					if _, err := admin.ExecContext(t.Context(), "INSERT INTO native_board_dirty(organization_id,project_id,work_item_id) VALUES($1,'example',$2)", org, id); err != nil {
+						t.Fatal(err)
+					}
+					if err := repository.ReadTenant(t.Context(), org, corestore.Background, func(r tenantstore.Reader) error {
+						candidate, err := r.NextBoardCandidate(t.Context(), id)
+						if err == nil && (candidate.WorkItemID != id || !candidate.Required || candidate.QueuedAt == nil) {
+							t.Errorf("dirty candidate lost priority or queue time: %+v", candidate)
+						}
+						return err
+					}); err != nil {
 						t.Fatal(err)
 					}
 					if _, _, err := service.maintainBoardRecord(t.Context(), org, id); err != nil {

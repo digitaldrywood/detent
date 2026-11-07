@@ -115,7 +115,7 @@ func boardRecordSettled(ctx context.Context, r tenantstore.Reader, candidate vie
 	if errors.Is(err, corestore.ErrNotFound) {
 		return false, nil
 	}
-	if err != nil || !card.Display.Ready || card.Display.Change != nil || card.Display.Attempt != nil || card.Display.Execution != nil || card.ExpiresAt != nil {
+	if err != nil || !card.Display.Ready || card.PageIssue == nil || card.ListIssue == nil || card.RefreshAfter != nil || card.Display.Change != nil || card.Display.Attempt != nil || card.Display.Execution != nil || card.ExpiresAt != nil {
 		return false, err
 	}
 	item, err := r.WorkItem(ctx, candidate.ProjectID, candidate.WorkItemID)
