@@ -112,6 +112,13 @@ func (s *Service) entryKeyTools(ctx context.Context) ([]operatortool.Definition,
 			definitions = append(definitions, definition)
 		}
 	}
+	if s.administration != nil {
+		administration, err := s.administrationCatalog(ctx)
+		if err != nil {
+			return nil, err
+		}
+		definitions = append(definitions, administration...)
+	}
 	supported := make([]operatortool.Definition, 0)
 	seen := make(map[string]bool)
 	for _, definition := range definitions {
@@ -154,6 +161,12 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 		return false, err
 	}
 	switch name {
+	case operatortool.OrganizationSession, operatortool.MembershipList, operatortool.InvitationSend, operatortool.InvitationEdit, operatortool.InvitationResend, operatortool.MemberRole, operatortool.MemberGrant:
+		if s.administration == nil {
+			return false, nil
+		}
+		definitions, err := s.administrationCatalog(ctx)
+		return entryKeyHasDefinition(definitions, name), err
 	case operatortool.ExplainItem:
 		return catalog.credential.HostedRole != "account", nil
 	case operatortool.Activity, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting, operatortool.CreateRunnerEnrollment, operatortool.MarkUrgentRunnerUpdate:
@@ -247,6 +260,8 @@ func entryKeyToolSupported(name string) bool {
 		return true
 	}
 	switch name {
+	case operatortool.OrganizationSession, operatortool.MembershipList, operatortool.InvitationSend, operatortool.InvitationEdit, operatortool.InvitationResend, operatortool.MemberRole, operatortool.MemberGrant:
+		return true
 	case operatortool.WorkAttemptReceipt, operatortool.GitHubScopeTimings, operatortool.BoardSessionHistory, operatortool.ExplainItem, operatortool.CreateRunnerEnrollment, operatortool.MarkUrgentRunnerUpdate, operatortool.TransferItem:
 		return true
 	case "set_project_icon", "set_organization_logo", "approve_project_policy", "start_git_hub_import", "bind_native_repository", "import_sprite_usage", "monthly_usage_costs", "project_setup", "get_onboarding", "get_git_hub_batch", "get_project_integration", "rename_project", "update_project_integration", operatortool.GetProjectModelSelection, operatortool.UpdateProjectModelSelection, operatortool.RunnerProjectDiagnostics, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting, operatortool.Activity:
