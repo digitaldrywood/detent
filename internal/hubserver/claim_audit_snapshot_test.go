@@ -14,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -224,6 +226,56 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 		}
 		if _, err := service.readNativeClaimPlan(t.Context(), scope, request, now); !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Fatalf("foreign audit disposition outside candidate page: %v", err)
+		}
+
+		for index, tc := range []struct {
+			name       string
+			reviewKind string
+			corrupt    func(*eventstore.Evidence)
+		}{
+			{"kind", "implementation", func(row *eventstore.Evidence) { row.ReviewKind = "human" }},
+			{"landing", "security_audit", func(row *eventstore.Evidence) { row.ReviewLanding = true }},
+			{"session_id", "validator", func(row *eventstore.Evidence) { row.ReviewSessionID++ }},
+			{"session_machine", "implementation", func(row *eventstore.Evidence) { row.ReviewSessionMachine = "machine_other" }},
+		} {
+			t.Run(string(org)+"/typed_"+tc.name, func(t *testing.T) {
+				changeID, versionID := fmt.Sprintf("change_%03d", index), fmt.Sprintf("version_%03d", index)
+				sessionID := int64(800 + index)
+				review := tracker.ChangeReview{ID: "provenance_" + tc.name, VersionID: versionID, Decision: "approved", CreatedAt: now, SessionMachineID: "machine_expected"}
+				switch tc.reviewKind {
+				case "implementation":
+					review.ImplementationReview = &gate.ValidatorResult{SessionID: sessionID, VersionID: versionID}
+				case "validator":
+					review.Validator = &gate.ValidatorResult{SessionID: sessionID, VersionID: versionID}
+				case "security_audit":
+					review.SecurityAudit = &tracker.SecurityAuditReview{SessionID: sessionID, VersionID: versionID, Run: securityaudit.Run{ID: sessionID, ProjectID: "example"}}
+				}
+				raw, err := json.Marshal(review)
+				if err != nil {
+					t.Fatal(err)
+				}
+				evidence, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: changeID, Kind: "review"}, raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				tc.corrupt(&evidence)
+				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(t.Context(), evidence); return err }); err != nil {
+					t.Fatal(err)
+				}
+				request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index)), WorkflowStates: []string{"Merging"}}
+				plan, err := service.readNativeClaimPlanRows(t.Context(), scope, request, now, nil, nil, nativeClaimPlan{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				scalar := plan
+				scalar.changeFacts = nil
+				if _, err := service.hydrateNativeClaimPlan(t.Context(), scope, request, now, scalar, &descriptor); !errors.Is(err, artifact.ErrIntegrity) {
+					t.Errorf("scalar accepted typed %s mismatch: %v", tc.name, err)
+				}
+				if _, err := service.hydrateNativeClaimPlan(t.Context(), scope, request, now, plan, &descriptor); !errors.Is(err, artifact.ErrIntegrity) {
+					t.Errorf("batch accepted typed %s mismatch: %v", tc.name, err)
+				}
+			})
 		}
 
 	}
