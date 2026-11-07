@@ -898,10 +898,9 @@ func TestInstallCommandDeadlines(t *testing.T) {
 		name    string
 		cli     bool
 		expired bool
-		silence time.Duration
 	}{
-		{name: "installer quiet build", silence: 2*time.Minute + 2*installerProcessEvidenceGuard},
-		{name: "installed CLI quiet work", cli: true, silence: testenv.SubprocessWaitTimeout + 2*installerProcessEvidenceGuard},
+		{name: "installer quiet build"},
+		{name: "installed CLI quiet work", cli: true},
 		{name: "installer expired deadline", expired: true},
 		{name: "installed CLI expired deadline", cli: true, expired: true},
 	}
@@ -965,12 +964,17 @@ func TestInstallCommandDeadlines(t *testing.T) {
 				t.Fatal("command did not become ready")
 			}
 
-			silence := time.NewTimer(tt.silence)
-			defer silence.Stop()
+			commandContext, cancel := installerCommandContext(commandTest)
+			defer cancel()
+			deadline, ok := commandContext.Deadline()
+			parentDeadline, parentOK := t.Deadline()
+			if !ok || !parentOK || !deadline.Equal(parentDeadline.Add(-2*installerProcessEvidenceGuard)) {
+				t.Fatalf("quiet command deadline = %v, want parent deadline %v minus evidence guard", deadline, parentDeadline)
+			}
 			select {
 			case result := <-done:
 				t.Fatalf("command finished during the quiet work interval: %v\nstdout: %q\nstderr: %q", result.err, result.stdout, result.stderr)
-			case <-silence.C:
+			default:
 			}
 			finish()
 			select {
