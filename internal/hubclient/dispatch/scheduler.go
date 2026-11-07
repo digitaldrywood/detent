@@ -356,6 +356,9 @@ func (s *Scheduler) RenewClaim(ctx context.Context, issueID string, _ time.Time)
 		}
 		return s.renewNativeClaim(ctx, issueID, native, 0)
 	}
+	if strings.HasPrefix(issueID, "wi_") {
+		return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
+	}
 	if err := s.ensureMachine(ctx); err != nil {
 		return orchestrator.Claimed{}, err
 	}

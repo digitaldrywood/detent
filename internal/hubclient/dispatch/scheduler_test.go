@@ -24,6 +24,32 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestForgottenNativeClaimHeartbeatAvoidsLegacyRegistration(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(server.Close)
+	client, err := newTestClient(t, Config{URL: server.URL, TokenSource: func() string { return "example-token" }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler, err := newTestScheduler(client, SchedulerConfig{Machine: Machine{ID: "example-machine", Hostname: "example", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, renew := range []func(context.Context, string, time.Time) (orchestrator.Claimed, error){scheduler.RenewClaim, scheduler.RenewClaimHeartbeat} {
+		if _, err := renew(t.Context(), "wi_forgotten", time.Now()); !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+			t.Errorf("forgotten native claim = %v, want claim lost", err)
+		}
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("forgotten native claim sent %d legacy requests", requests.Load())
+	}
+}
+
 func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 	if testing.Short() {
 		t.Skip("real-time lifecycle and timeout integration")
