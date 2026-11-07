@@ -46,6 +46,7 @@ type Settings struct {
 }
 
 type Record struct {
+	Page     *Page
 	Core     corestore.Project
 	Settings Settings
 	States   []tracker.NativeState
