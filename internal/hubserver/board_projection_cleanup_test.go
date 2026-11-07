@@ -22,7 +22,7 @@ func TestBoardProjectionDropsObsoleteCardsPostgres(t *testing.T) {
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	var logs bytes.Buffer
-	service := &Service{config: Config{TenantRepository: repository, RunDetails: &memoryRunDetails{}, Logger: slog.New(slog.NewJSONHandler(&logs, nil)), now: func() time.Time { return now }}}
+	service := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: repository, RunDetails: &memoryRunDetails{}, Logger: slog.New(slog.NewJSONHandler(&logs, nil)), now: func() time.Time { return now }}}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {
 			service.localOrganization, service.boardRefreshCursor = string(org), ""
