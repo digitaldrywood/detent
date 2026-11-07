@@ -47,7 +47,7 @@ func (o *Orchestrator) prepareRetryProgress(ctx context.Context, run *RunRequest
 	defer cancel()
 	request, owner, err := source.RetryProgress(checkCtx, run.Issue)
 	if err != nil {
-		return o.continueRetryWithoutProgress(ctx, run, false, err)
+		return o.continueRetryWithoutProgress(ctx, run, err)
 	}
 	backend := &retryProgressBackend{runner: o.progressRunner, run: *run}
 	defer func() {
@@ -59,7 +59,7 @@ func (o *Orchestrator) prepareRetryProgress(ctx context.Context, run *RunRequest
 	}()
 	record, checked, err := progresscheck.Check(checkCtx, request, backend, owner)
 	if err != nil {
-		return o.continueRetryWithoutProgress(ctx, run, backend.called, err)
+		return o.continueRetryWithoutProgress(ctx, run, err)
 	}
 	if !checked {
 		return nil
@@ -74,11 +74,11 @@ func (o *Orchestrator) prepareRetryProgress(ctx context.Context, run *RunRequest
 		case RunModeImplement, RunModeMerge:
 			run.Mode = record.Decision.Step
 		default:
-			return o.continueRetryWithoutProgress(ctx, run, backend.called, errors.New("progress decision cannot be dispatched"))
+			return o.continueRetryWithoutProgress(ctx, run, errors.New("progress decision cannot be dispatched"))
 		}
 	case progresscheck.SystemDefect:
 	default:
-		return o.continueRetryWithoutProgress(ctx, run, backend.called, errors.New("progress decision cannot be dispatched"))
+		return o.continueRetryWithoutProgress(ctx, run, errors.New("progress decision cannot be dispatched"))
 	}
 	run.ProgressDecision = record
 	run.PriorAttempt.Source = "Progress check comment " + record.CommentID
@@ -102,7 +102,7 @@ func (o *Orchestrator) prepareRetryProgress(ctx context.Context, run *RunRequest
 	return nil
 }
 
-func (o *Orchestrator) continueRetryWithoutProgress(ctx context.Context, run *RunRequest, called bool, failure error) error {
+func (o *Orchestrator) continueRetryWithoutProgress(ctx context.Context, run *RunRequest, failure error) error {
 	run.ProgressDecision = progresscheck.Record{}
 	reason := "Progress check unavailable: " + failure.Error()
 	run.PriorAttempt.Reason = strings.TrimSpace(run.PriorAttempt.Reason + "\n" + reason)
@@ -113,9 +113,6 @@ func (o *Orchestrator) continueRetryWithoutProgress(ctx context.Context, run *Ru
 		if err != nil && o.logger != nil {
 			o.logger.Warn("record progress check failure", "issue_id", run.Issue.ID, "error", err)
 		}
-	}
-	if called {
-		return o.readmitRetryProgress(ctx, run)
 	}
 	return nil
 }
