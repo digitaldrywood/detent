@@ -2,11 +2,12 @@ package postgres_test
 
 import (
 	"errors"
+	"testing"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"testing"
 )
 
 func TestHealthPageRejectsStaleEvidence(t *testing.T) {
