@@ -196,7 +196,7 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 	case operatortool.Activity, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting, operatortool.CreateRunnerEnrollment, operatortool.MarkUrgentRunnerUpdate:
 		definitions, err := (hubFleetExecutor{service: s}).ListTools(ctx)
 		return entryKeyHasDefinition(definitions, name), err
-	case "set_project_icon", "set_organization_logo", "approve_project_policy", "start_git_hub_import", "bind_native_repository", "import_sprite_usage", "monthly_usage_costs", "project_setup", "get_onboarding", "get_git_hub_batch", "get_project_integration", "rename_project", "update_project_integration", operatortool.GetProjectModelSelection, operatortool.UpdateProjectModelSelection, operatortool.RunnerProjectDiagnostics:
+	case "set_project_icon", "set_organization_logo", "approve_project_policy", "import_sprite_usage", "monthly_usage_costs", "project_setup", "get_onboarding", "get_git_hub_batch", "get_project_integration", "rename_project", "update_project_integration", operatortool.GetProjectModelSelection, operatortool.UpdateProjectModelSelection, operatortool.RunnerProjectDiagnostics:
 		definitions, err := (hubProjectExecutor{service: s}).ListTools(ctx)
 		return entryKeyHasDefinition(definitions, name), err
 	case operatortool.BillingStatus, operatortool.BillingExport, operatortool.BillingCheckout, operatortool.BillingPortal, operatortool.CreditCheckout, operatortool.CreditAutoFund:
@@ -292,7 +292,7 @@ func entryKeyToolSupported(name string) bool {
 		return true
 	case operatortool.BillingStatus, operatortool.BillingExport, operatortool.BillingCheckout, operatortool.BillingPortal, operatortool.CreditCheckout, operatortool.CreditAutoFund:
 		return true
-	case "set_project_icon", "set_organization_logo", "approve_project_policy", "start_git_hub_import", "bind_native_repository", "import_sprite_usage", "monthly_usage_costs", "project_setup", "get_onboarding", "get_git_hub_batch", "get_project_integration", "rename_project", "update_project_integration", operatortool.GetProjectModelSelection, operatortool.UpdateProjectModelSelection, operatortool.RunnerProjectDiagnostics, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting, operatortool.Activity:
+	case "set_project_icon", "set_organization_logo", "approve_project_policy", "import_sprite_usage", "monthly_usage_costs", "project_setup", "get_onboarding", "get_git_hub_batch", "get_project_integration", "rename_project", "update_project_integration", operatortool.GetProjectModelSelection, operatortool.UpdateProjectModelSelection, operatortool.RunnerProjectDiagnostics, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting, operatortool.Activity:
 		return true
 	case operatortool.EditComment, operatortool.RestoreItem, operatortool.HealthFindings, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.WorkBulkExport, operatortool.BoardActivity:
 		return true

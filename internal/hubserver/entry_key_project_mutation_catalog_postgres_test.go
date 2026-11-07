@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -83,6 +84,23 @@ func TestPostgresEntryKeyProjectMutationCatalog(t *testing.T) {
 			for _, definition := range definitions {
 				available[definition.Name] = true
 			}
+			for _, test := range []struct{ name, input string }{
+				{"start_git_hub_import", `{"issue_number":1}`},
+				{"bind_native_repository", `{"expected_revision":"2","repository":"example-org/example-project"}`},
+				{"bind_native_repository", `{"expected_revision":"2","repository":"example-org/example-project","source":"runner_checkout"}`},
+			} {
+				t.Run("unavailable/"+test.name, func(t *testing.T) {
+					if available[test.name] {
+						t.Errorf("partial tool remains in supported catalog: %s", test.name)
+					}
+					body := fmt.Sprintf(`{"name":%q,"connection_id":%q,"arguments":{"project_id":%q,"request_id":%q,"input":%s}}`, test.name, org+"_partial", project, org+"_partial_"+test.name, test.input)
+					response := f.request(t, org, "/internal/v1/keys/call", body, keyClaims)
+					requireNativeStatus(t, response, http.StatusForbidden)
+					if !strings.Contains(response.Body.String(), `"code":"tool_unavailable"`) {
+						t.Fatalf("partial tool did not refuse before execution: %s", response.Body)
+					}
+				})
+			}
 			from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 			observation := costTestObservation("cpu", from, from.Add(time.Hour))
 			observation.ResourceID, observation.SourceID = org+"_sprite", org+"_meter"
@@ -95,9 +113,7 @@ func TestPostgresEntryKeyProjectMutationCatalog(t *testing.T) {
 			}{
 				{"set_project_icon", fmt.Sprintf(`{"organization_id":%q,"project_id":%q,"request_id":%q,"expected_revision":"2","icon":{"kind":"emoji","emoji":"🚀"}}`, org, project, org+"_icon"), `"emoji":"🚀"`},
 				{"set_organization_logo", fmt.Sprintf(`{"organization_id":%q,"request_id":%q,"expected_revision":"1","remove":true}`, org, org+"_logo"), `"revision":"2"`},
-				{"bind_native_repository", fmt.Sprintf(`{"project_id":%q,"request_id":%q,"input":{"expected_revision":"3","repository":"example-org/example-project","source":"runner_checkout"}}`, project, org+"_bind"), `"checkout_repository":"example-org/example-project"`},
 				{"approve_project_policy", fmt.Sprintf(`{"project_id":%q,"request_id":%q,"input":%s}`, project, org+"_policy", policyInput), descriptor.ID},
-				{"start_git_hub_import", fmt.Sprintf(`{"project_id":%q,"request_id":%q,"input":{"issue_number":1}}`, project, org+"_import"), `"status":"pending"`},
 				{"import_sprite_usage", fmt.Sprintf(`{"project_id":%q,"request_id":%q,"input":%s}`, project, org+"_usage", usageInput), `"recorded":1`},
 			} {
 				t.Run(test.name, func(t *testing.T) {
@@ -139,10 +155,10 @@ func TestPostgresEntryKeyProjectMutationCatalog(t *testing.T) {
 					return err
 				}
 				job, err := r.(projectstore.GitHubImportReader).GitHubImportForIssue(t.Context(), tracker.ProjectID(project), 1)
-				if err != nil {
-					return err
+				if !errors.Is(err, corestore.ErrNotFound) {
+					t.Fatalf("unsupported import created a job: job=%+v err=%v", job, err)
 				}
-				if record.Settings.Icon.Emoji != "🚀" || record.Settings.CheckoutRepository != "example-org/example-project" || logo.Revision != 2 || logo.ImageKey != "" || approval.PolicyID != descriptor.ID || job.Revision != 1 || job.Status != "pending" {
+				if record.Settings.Icon.Emoji != "🚀" || record.Settings.CheckoutRepository != "" || logo.Revision != 2 || logo.ImageKey != "" || approval.PolicyID != descriptor.ID {
 					t.Fatalf("project mutations not saved: record=%+v logo=%+v approval=%+v import=%+v", record, logo, approval, job)
 				}
 				return nil
