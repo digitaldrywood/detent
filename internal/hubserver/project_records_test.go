@@ -47,7 +47,7 @@ func projectRecordPostgres(t *testing.T) *postgres.Repository {
 	return repository
 }
 
-func projectRecordPostgresWithAdmin(t *testing.T, maxConnections int) (*postgres.Repository, *sql.DB) {
+func projectRecordPostgresWithAdmin(t *testing.T, maxConnections int, configure ...func(*pgxpool.Config)) (*postgres.Repository, *sql.DB) {
 	t.Helper()
 	template := pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 		roles, err := os.ReadFile("postgres/roles.sql")
@@ -109,6 +109,9 @@ func projectRecordPostgresWithAdmin(t *testing.T, maxConnections int) (*postgres
 	}
 	native := template.NativeConfig(t, admin, name, password)
 	native.MaxConns = int32(maxConnections)
+	for _, option := range configure {
+		option(native)
+	}
 	pool, err := pgxpool.NewWithConfig(t.Context(), native)
 	if err != nil {
 		t.Fatal(err)
