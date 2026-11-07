@@ -17,15 +17,41 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 type RunnerSessions struct {
 	*NativeClient
-	mu        sync.Mutex
-	workersMu sync.Mutex
-	keys      map[int64]string
-	workers   map[int64]store.WorkerProcessRegistration
+	mu           sync.Mutex
+	workersMu    sync.Mutex
+	keys         map[int64]string
+	workers      map[int64]store.WorkerProcessRegistration
+	acknowledged map[int64]acknowledgedSessionMetadata
+}
+
+type acknowledgedSessionMetadata struct {
+	leaseID      tracker.LeaseID
+	fencingToken tracker.FencingToken
+	provider     store.SessionProviderIdentity
+	worker       *store.WorkerProcessRegistration
+	processKey   string
+}
+
+func (m acknowledgedSessionMetadata) matches(request runnersession.Mutation, authority nativeMutationAuthority) bool {
+	if m.leaseID != authority.lease.ID || m.fencingToken != authority.lease.FencingToken {
+		return false
+	}
+	if request.Start != nil || request.Finish != nil || request.Identity != nil || request.Resume != nil || request.Progress != nil || request.Phase != nil || request.Profile != nil || request.Usage != nil || request.Reaped != nil {
+		return false
+	}
+	if provider := request.Provider; provider != nil && request.Worker == nil {
+		return (provider.ThreadID == "" || provider.ThreadID == m.provider.ThreadID) && (provider.SessionID == "" || provider.SessionID == m.provider.SessionID)
+	}
+	if worker := request.Worker; worker != nil && request.Provider == nil && m.worker != nil && m.processKey == request.ProcessKey {
+		return worker.PID == m.worker.PID && worker.GroupID == m.worker.GroupID && worker.StartedAt.Equal(m.worker.StartedAt) && worker.CleanupRoot == m.worker.CleanupRoot && worker.CleanupPath == m.worker.CleanupPath
+	}
+	return false
 }
 
 var _ runner.SessionStore = (*RunnerSessions)(nil)
@@ -65,6 +91,13 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 	if !ok || authority.scope != s.base() || authority.lease.ID == "" {
 		return runnersession.Snapshot{}, runner.ErrExecutionAuthorityUnavailable
 	}
+	if err := nativeEffectError(ctx); err != nil {
+		return runnersession.Snapshot{}, err
+	}
+	metadata := s.acknowledged[request.SessionID]
+	if metadata.matches(request, authority) {
+		return runnersession.Snapshot{}, nil
+	}
 	request.Key = uuid.NewString()
 	request.LeaseID, request.FencingToken = authority.lease.ID, authority.lease.FencingToken
 	if request.SessionID > 0 {
@@ -79,6 +112,26 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 	var api *APIError
 	if errors.As(err, &api) && (api.Status == http.StatusUnauthorized || api.Status == http.StatusForbidden || api.Code == "stale_fencing_token" || api.Code == "policy_mismatch") {
 		err = errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+	}
+	if err == nil {
+		if request.Finish != nil || request.Reaped != nil {
+			delete(s.acknowledged, request.SessionID)
+		} else if request.Provider != nil || request.Worker != nil {
+			if metadata.leaseID != authority.lease.ID || metadata.fencingToken != authority.lease.FencingToken {
+				metadata = acknowledgedSessionMetadata{leaseID: authority.lease.ID, fencingToken: authority.lease.FencingToken}
+			}
+			if request.Provider != nil {
+				metadata.provider = result.Provider
+			}
+			if request.Worker != nil {
+				worker := *request.Worker
+				metadata.worker, metadata.processKey = &worker, request.ProcessKey
+			}
+			if s.acknowledged == nil {
+				s.acknowledged = make(map[int64]acknowledgedSessionMetadata)
+			}
+			s.acknowledged[request.SessionID] = metadata
+		}
 	}
 	return result, err
 }

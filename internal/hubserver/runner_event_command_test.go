@@ -18,11 +18,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -295,4 +297,115 @@ func newRunnerEventWireFixtures(t *testing.T) (runnerPGFixture, runnerPGFixture,
 	first.service = localService
 	second := seedRunnerEventTenant(t, localService, f, "org_second")
 	return first, second, repository, wire, apiLog
+}
+
+func TestRunnerSessionRepeatedMetadataStaysWithinBudget(t *testing.T) {
+	first, second, _, wire, _ := newRunnerEventWireFixtures(t)
+	for index, fixture := range []runnerPGFixture{first, second} {
+		organization := []string{"org_startup", "org_second"}[index]
+		t.Run(organization, func(t *testing.T) {
+			requests := 0
+			rejectNext := false
+			client, err := api.New(api.Config{URL: "http://hub.test", TokenSource: func() string { return fixture.tokens[0] }, HTTPClient: &http.Client{Transport: progressPublicationTransport(func(request *http.Request) (*http.Response, error) {
+				requests++
+				response := httptest.NewRecorder()
+				if rejectNext && request.Method == http.MethodPost {
+					rejectNext = false
+					response.WriteHeader(http.StatusServiceUnavailable)
+					return response.Result(), nil
+				}
+				fixture.service.Handler().ServeHTTP(response, request.WithContext(context.WithValue(request.Context(), claimRequestTraceKey{}, true)))
+				return response.Result(), nil
+			})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native(tracker.OrganizationID(organization), "prj_runner")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := api.WithMutationAuthority(t.Context(), native.Scope(), fixture.leases[0], nil)
+			sessions := api.NewRunnerSessions(native)
+			id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(fixture.leases[0].WorkItemID), StartedAt: time.Now().UTC(), Model: "example-model"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			provider := store.SessionProviderIdentity{ThreadID: "example-thread", SessionID: "example-session"}
+			process := store.WorkerProcessRegistration{WorkerProcessIdentity: store.WorkerProcessIdentity{PID: 12345, GroupID: 12345, StartedAt: time.Now().UTC().Truncate(time.Microsecond)}, CleanupRoot: "/example/workspace", CleanupPath: "/example/workspace/scratch"}
+			update := func(ctx context.Context) error {
+				if err := sessions.UpdateSessionWorkerProcess(ctx, id, process); err != nil {
+					return err
+				}
+				return sessions.UpdateSessionProviderIdentity(ctx, id, provider)
+			}
+			if err := update(ctx); err != nil {
+				t.Fatal(err)
+			}
+			for _, events := range []int{2, 50} {
+				requests = 0
+				wire.Lock()
+				wire.statements, wire.exchanges = 0, 0
+				wire.Unlock()
+				for range events {
+					if err := update(ctx); err != nil {
+						t.Fatal(err)
+					}
+				}
+				wire.Lock()
+				statements, exchanges := wire.statements, wire.exchanges
+				wire.Unlock()
+				t.Logf("events=%d requests=%d statements=%d exchanges=%d", events, requests, statements, exchanges)
+				if requests != 0 || statements != 0 || exchanges != 0 {
+					t.Fatalf("unchanged metadata consumed budget: requests=%d statements=%d exchanges=%d", requests, statements, exchanges)
+				}
+			}
+			if err := update(t.Context()); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+				t.Fatalf("cached metadata bypassed execution authority: %v", err)
+			}
+			canceled, cancel := context.WithCancel(ctx)
+			cancel()
+			if err := update(canceled); !errors.Is(err, context.Canceled) {
+				t.Fatalf("cached metadata ignored cancellation: %v", err)
+			}
+			stale := fixture.leases[0]
+			stale.FencingToken++
+			if err := update(api.WithMutationAuthority(t.Context(), native.Scope(), stale, nil)); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+				t.Fatalf("cached metadata bypassed fencing: %v", err)
+			}
+			requests = 0
+			if err := sessions.UpdateSessionProviderIdentity(ctx, id, store.SessionProviderIdentity{ThreadID: provider.ThreadID}); err != nil {
+				t.Fatal(err)
+			}
+			if requests != 0 {
+				t.Fatalf("partial unchanged provider identity consumed %d requests", requests)
+			}
+			for _, kind := range []string{"worker", "provider"} {
+				if kind == "worker" {
+					process.PID++
+				} else {
+					provider.SessionID += "-changed"
+				}
+				rejectNext = true
+				if err := update(ctx); err == nil {
+					t.Fatalf("%s refusal was hidden", kind)
+				}
+				if err := update(ctx); err != nil {
+					t.Fatalf("%s update was lost after refusal: %v", kind, err)
+				}
+			}
+			provider.SessionID = "example-next-session"
+			process.PID++
+			process.CleanupPath += "-next"
+			if err := update(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var persisted runnersession.Snapshot
+			if err := client.Request(ctx, http.MethodGet, native.Scope()+"/runner-sessions/"+fmt.Sprint(id), nil, &persisted); err != nil {
+				t.Fatal(err)
+			}
+			if persisted.Provider != provider || persisted.Worker == nil || persisted.Worker.PID != process.PID || persisted.Worker.CleanupPath != process.CleanupPath {
+				t.Fatalf("changed metadata was lost: %+v", persisted)
+			}
+		})
+	}
 }
