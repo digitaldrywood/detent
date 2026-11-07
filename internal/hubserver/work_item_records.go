@@ -566,7 +566,7 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 		plan.create = true
 		plan.eventType = "comment.created"
 	case tracker.UpdateComment:
-		if scope.credential.Scope == apiScopeWorker && plan.comment.Actor.PrincipalID != scope.credential.ID {
+		if scope.credential.Scope == apiScopeWorker && plan.comment.Actor.PrincipalID != scope.actor().PrincipalID {
 			return plan, nativeNotFound()
 		}
 		if scope.credential.Hosted != nil && plan.comment.Actor.PrincipalID != scope.actor().PrincipalID {
@@ -695,11 +695,12 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 	}
 	if scope.credential.Scope == apiScopeWorker {
 		_, comment := input.(tracker.CreateComment)
+		_, editComment := input.(tracker.UpdateComment)
 		_, edit := input.(tracker.UpdateIssue)
 		request, defect := input.(tracker.CreateIssue)
 		origin, machine := issueorigin.Parse(request.Body)
 		workerReport := defect && machine && origin.Kind == "worker" && request.State == "Backlog"
-		if (!comment && !edit && !workerReport && (!defect || !nativeProgressActor(scope) || scope.progressOrigin == nil)) || link != nil {
+		if (!comment && !editComment && !edit && !workerReport && (!defect || !nativeProgressActor(scope) || scope.progressOrigin == nil)) || link != nil {
 			return nil, workItemStorageUnavailable()
 		}
 		if _, err := s.validateRunnerLeaseTenant(ctx, scope, command.LeaseID, command.FencingToken); err != nil {
