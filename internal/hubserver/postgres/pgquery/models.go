@@ -4685,6 +4685,13 @@ type TokenGrant struct {
 	ProjectID      tracker.ProjectID
 }
 
+type WorkItemIdentity struct {
+	OrganizationID tracker.OrganizationID
+	ID             int64
+	ProjectID      tracker.ProjectID
+	NativeID       string
+}
+
 type WorkspaceItem struct {
 	OrganizationID tracker.OrganizationID
 	WorkItemID     string
