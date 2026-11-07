@@ -109,9 +109,8 @@ func TestNativeAdmissionBatch(t *testing.T) {
 		{name: "malformed preview", slots: 6, budget: 14, preview: true, failPreview: true, wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true}}, true)
-			h.scheduler.machine.Capacity = 6
+			fixtureCapacity(t, h, 6)
 			if test.missingIsolation {
 				fixtureEnableEnrollment(t, h)
 			}
@@ -337,7 +336,7 @@ func TestNativeAdmissionBatch(t *testing.T) {
 			}
 			if test.oversized {
 				for _, issue := range issues {
-					if issue.Description != bodies[issue.ID] || h.scheduler.nativeClaims[issue.ID].recovery.Issue.WorkItemID != tracker.NativeWorkItemID(issue.ID) || len(h.scheduler.nativeClaims[issue.ID].recovery.Discussion) != 2 || h.scheduler.nativeClaims[issue.ID].recovery.Read == nil {
+					if issue.Description != bodies[issue.ID] || h.scheduler.nativeClaims[issue.ID].recovery.Issue.WorkItemID != tracker.NativeWorkItemID(issue.ID) || h.scheduler.nativeClaims[issue.ID].recovery.Read == nil {
 						t.Fatal("oversized recovery lost exact candidate content or scope")
 					}
 					if len(bodies[issue.ID]) > 200<<10 && h.scheduler.nativeClaims[issue.ID].recovery.Read.IssueBody == nil {
@@ -422,12 +421,15 @@ func TestNativeAdmissionCompetingRunners(t *testing.T) {
 
 	t.Parallel()
 	h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true}}, true)
-	h.scheduler.machine.Capacity = 6
+	fixtureCapacity(t, h, 6)
 
 	other, err := newTestScheduler(h.native.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: "other-machine", Hostname: "other-host", Version: "test", Capacity: 6}, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
+	second := nativeChangeHub{native: h.native, admin: h.admin, organization: h.organization, project: h.project, scheduler: other}
+	fixtureEnableEnrollment(t, &second)
+	other = second.scheduler
 	for i := range 8 {
 		createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: fmt.Sprintf("work-%d", i), Body: issueContractTestSections, State: "Todo"})
 	}

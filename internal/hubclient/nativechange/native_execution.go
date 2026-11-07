@@ -678,7 +678,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 		localAttemptStarted = e.diagnostic.LocalAttemptID > 0 && e.diagnostic.Generation > 0
 		e.diagnosticMu.Unlock()
 	}
-	if e.preparedOutcome == "" && e.data.Identity == nil && e.data.Outcome == "" && localAttemptStarted {
+	if e.preparedOutcome == "" && e.data.Outcome == "" && (e.data.Identity == nil && localAttemptStarted || e.data.Identity != nil && (reason == "dispatch_deferred" || reason == "provider_capacity_unavailable")) {
 		e.preparedOutcome = "cancelled"
 		if e.data.Runtime != nil {
 			observation := *e.data.Runtime
