@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -70,6 +71,7 @@ func (dispatchHostedProvider) Memberships(context.Context, string, string) ([]au
 }
 
 var dispatchPostgresFixtures = make(chan struct{}, 4)
+var dispatchPostgresAdmins sync.Map
 
 func DispatchPostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Config {
 	t.Helper()
@@ -84,6 +86,11 @@ func DispatchPostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Config
 	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{connection.Database}.Sanitize()+" CONNECTION LIMIT 6"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{connection.Database}.Sanitize()+" SET synchronous_commit = off"); err != nil {
+		t.Fatal(err)
+	}
+	dispatchPostgresAdmins.Store(connection.Database, admin)
+	t.Cleanup(func() { dispatchPostgresAdmins.Delete(connection.Database) })
 	connection.User = "example_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	connection.Password = uuid.NewString()
 	role := pgx.Identifier{connection.User}.Sanitize()
@@ -235,6 +242,13 @@ func DispatchRefreshProjections(t *testing.T, cfg hubserver.Config, service *hub
 			t.Fatal(err)
 		}
 		if !processed {
+			admin, ok := dispatchPostgresAdmins.Load(cfg.Postgres.Connection.Database)
+			if !ok {
+				t.Fatal("PostgreSQL fixture owner is unavailable")
+			}
+			if _, err := admin.(*sql.DB).ExecContext(t.Context(), "ANALYZE issues,search_documents,search_postings,search_scope_documents,native_board_items,native_work_item_pages"); err != nil {
+				t.Fatal(err)
+			}
 			return
 		}
 	}
