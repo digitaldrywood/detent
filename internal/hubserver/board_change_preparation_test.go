@@ -677,6 +677,94 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			}
 		}
 
+		checkedDescriptor := descriptor
+		checkedDescriptor.Gates.RequiredChecks = 2
+		checkedDescriptor = checkedDescriptor.WithID()
+		checkedPolicy, err := content.PrepareProjectPolicy(t.Context(), org, checkedDescriptor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkedPolicy.ProjectID, checkedPolicy.ApprovedBy, checkedPolicy.ApprovedAt = "example", "test_hub_admin", now
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.ApproveProjectPolicy(t.Context(), checkedPolicy, descriptor.ID)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		t.Run(string(org)+"/missing review policy with two required checks", func(t *testing.T) {
+			var rows currentChangePolicyRows
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				var err error
+				rows, err = readChangeSummaryPolicyRows(t.Context(), r, scope)
+				return err
+			}); err != nil || rows.hasReview {
+				t.Fatalf("missing review policy fixture: hasReview=%v error=%v", rows.hasReview, err)
+			}
+			authority := tenantChangeVersionAuthority{repository: repository, content: content}
+			_, err := authority.Prepare(t.Context(), scope, tracker.ChangeRequest{OrganizationID: org, ProjectID: scope.project}, tracker.PublishChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{PolicyID: checkedDescriptor.ID}}, now)
+			var refusal *nativeError
+			if !errors.As(err, &refusal) || refusal.status != http.StatusConflict {
+				t.Fatalf("publication without required checks accepted: %v", err)
+			}
+			service.database.now = func() time.Time { return now }
+			input := changeTestInput()
+			input.PolicyID = checkedDescriptor.ID
+			_, err = service.publishChangeVersionRecordCommand(t.Context(), scope, "wi_001", "change_001", "publish_version", tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "missing-check-policy"}, ExpectedVersionID: "version_001", ChangeVersionInput: input})
+			if !errors.As(err, &refusal) || refusal.status != http.StatusConflict {
+				t.Fatalf("publish command without required checks accepted: %v", err)
+			}
+			for index := range 2 {
+				id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index))
+				if err := service.refreshBoardRecord(t.Context(), org, viewstore.BoardCandidate{ProjectID: scope.project, WorkItemID: id}, now); err != nil {
+					t.Fatalf("missing review policy prevents backfill: %v", err)
+				}
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					row, err := r.BoardItem(t.Context(), scope.project, id)
+					if err == nil && (row.OrganizationID != org || !row.Display.Ready || row.PageIssue == nil || row.ListIssue == nil) {
+						t.Errorf("incomplete scoped card/page/list projection: %+v", row)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			page, err := service.readBoardRecords(t.Context(), scope, url.Values{"include": {"board"}})
+			if err != nil || page.ProjectionPending || len(page.Cards) != 2 {
+				t.Fatalf("missing-policy board: cards=%d pending=%v error=%v", len(page.Cards), page.ProjectionPending, err)
+			}
+			for _, card := range page.Cards {
+				if card.Issue.OrganizationID != org || card.Change == nil || card.Change.Status != "stale_policy" {
+					t.Errorf("missing policy lost unmet requirements: %+v", card.Change)
+				}
+			}
+			listed, err := service.readIssuesProjection(t.Context(), scope, url.Values{"state": {"Todo"}, "include": {"summary"}}, true)
+			if err != nil || len(listed.Items) != 2 {
+				t.Fatalf("missing-policy list: items=%d error=%v", len(listed.Items), err)
+			}
+			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				counts, err := r.(interface {
+					BoardSummaryModel(context.Context, viewstore.BoardSelection) ([]viewstore.BoardSummaryRecord, error)
+				}).BoardSummaryModel(t.Context(), viewstore.BoardSelection{ProjectID: scope.project})
+				if err == nil {
+					var total int64
+					for _, row := range counts {
+						if row.Kind == "total" {
+							total += row.Total
+						}
+					}
+					if total != 2 {
+						t.Errorf("missing-policy projected total=%d want=2", total)
+					}
+				}
+				return err
+			}); err != nil {
+				t.Fatalf("missing-policy counts projection: %v", err)
+			}
+			summary, err := service.selectedCurrentChangeSummary(t.Context(), scope, "wi_001", "change_001", now)
+			if err != nil || summary.Status != "stale_policy" || summary.Checks != "not_required" {
+				t.Fatalf("missing-policy change summary=%+v error=%v", summary, err)
+			}
+		})
+
 		rules := defaultChangeReviewPolicy(descriptor)
 		review, err := content.PrepareReviewPolicy(t.Context(), eventstore.ReviewPolicy{OrganizationID: org, ProjectID: "example", PolicyRevisionID: descriptor.ID, Revision: 1, UpdatedBy: "test_hub_admin", UpdatedAt: now}, rules)
 		if err != nil {
@@ -694,7 +782,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			if err := w.SetReviewPolicy(t.Context(), review, ""); err != nil {
 				return err
 			}
-			return w.ApproveProjectPolicy(t.Context(), nextPolicy, descriptor.ID)
+			return w.ApproveProjectPolicy(t.Context(), nextPolicy, checkedDescriptor.ID)
 		}); err != nil {
 			t.Fatal(err)
 		}

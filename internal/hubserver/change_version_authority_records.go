@@ -118,10 +118,10 @@ func hydrateCurrentChangeVersionApproval(ctx context.Context, content *eventstor
 }
 
 func hydrateChangeSummaryPolicy(ctx context.Context, content *eventstore.Content, scope nativeScope, rows currentChangePolicyRows) (ChangeVersionApproval, error) {
-	if !rows.hasReview || rows.Review.PolicyRevisionID == rows.Project.PolicyID {
+	if rows.hasReview && rows.Review.PolicyRevisionID == rows.Project.PolicyID {
 		return hydrateCurrentChangeVersionApproval(ctx, content, scope, rows, "")
 	}
-	if rows.Project.OrganizationID != scope.organization || rows.Project.ProjectID != scope.project || rows.Review.OrganizationID != scope.organization || rows.Review.ProjectID != scope.project {
+	if rows.Project.OrganizationID != scope.organization || rows.Project.ProjectID != scope.project || rows.hasReview && (rows.Review.OrganizationID != scope.organization || rows.Review.ProjectID != scope.project) {
 		return ChangeVersionApproval{}, corestore.ErrTenantMismatch
 	}
 	descriptor, err := content.ProjectPolicy(ctx, rows.Project)
@@ -131,9 +131,12 @@ func hydrateChangeSummaryPolicy(ctx context.Context, content *eventstore.Content
 	if err := descriptor.Validate(); err != nil || descriptor.ID != rows.Project.PolicyID {
 		return ChangeVersionApproval{}, eventstore.ErrInvalidRecord
 	}
-	rules, err := content.ReviewPolicy(ctx, rows.Review)
-	if err != nil {
-		return ChangeVersionApproval{}, err
+	rules := defaultChangeReviewPolicy(descriptor)
+	if rows.hasReview {
+		rules, err = content.ReviewPolicy(ctx, rows.Review)
+		if err != nil {
+			return ChangeVersionApproval{}, err
+		}
 	}
 	return ChangeVersionApproval{Policy: descriptor, ReviewPolicy: rules}, nil
 }
