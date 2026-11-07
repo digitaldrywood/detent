@@ -86,9 +86,6 @@ func DispatchPostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Config
 	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{connection.Database}.Sanitize()+" CONNECTION LIMIT 6"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{connection.Database}.Sanitize()+" SET synchronous_commit = off"); err != nil {
-		t.Fatal(err)
-	}
 	dispatchPostgresAdmins.Store(connection.Database, admin)
 	t.Cleanup(func() { dispatchPostgresAdmins.Delete(connection.Database) })
 	connection.User = "example_" + strings.ReplaceAll(uuid.NewString(), "-", "")
