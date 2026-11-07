@@ -15,7 +15,7 @@ import (
 )
 
 func (c *NativeClient) RefreshDependencyReasons(ctx context.Context, source tracker.NativeWorkItemID, generate runner.DependencyReasonGenerator, touched ...tracker.NativeWorkItemID) error {
-	issue, err := c.Issue(ctx, source)
+	issue, err := c.dependencyReasonIssue(ctx, source)
 	if err != nil {
 		return err
 	}
@@ -31,7 +31,7 @@ func (c *NativeClient) RefreshDependencyReasons(ctx context.Context, source trac
 	for _, id := range slices.Sorted(maps.Keys(targets)) {
 		for _, kind := range []string{"blocked", "unblocks"} {
 			for {
-				current, err := c.Issue(ctx, id)
+				current, err := c.dependencyReasonIssue(ctx, id)
 				if HubErrorCode(err) == "not_found" && id != source {
 					break
 				}
@@ -97,4 +97,30 @@ func (c *NativeClient) RefreshDependencyReasons(ctx context.Context, source trac
 		}
 	}
 	return nil
+}
+
+func (c *NativeClient) dependencyReasonIssue(ctx context.Context, id tracker.NativeWorkItemID) (tracker.NativeIssue, error) {
+	issue, err := c.Issue(ctx, id)
+	if err != nil {
+		return issue, err
+	}
+	if !slices.ContainsFunc(issue.OmittedFields, func(field string) bool {
+		return field == "blocked_reason" || field == "unblocks_reason" || field == "blockers" || field == "dependents"
+	}) {
+		return issue, nil
+	}
+	path, err := NativeItemPath(id)
+	if err != nil {
+		return issue, err
+	}
+	var recovery tracker.NativeRecovery
+	if err := c.client.request(ctx, http.MethodGet, c.base()+path+"/recovery", nil, &recovery); err != nil {
+		return issue, err
+	}
+	if recovery.Issue.WorkItemID != id || recovery.Issue.ProjectID != c.project || recovery.Issue.OrganizationID != c.organization {
+		return issue, errors.New("dependency recovery does not match the requested work item")
+	}
+	issue.Dependencies, issue.Blockers, issue.Dependents = recovery.Issue.Dependencies, recovery.Issue.Blockers, recovery.Issue.Dependents
+	issue.BlockedReason, issue.UnblocksReason = recovery.Issue.BlockedReason, recovery.Issue.UnblocksReason
+	return issue, nil
 }

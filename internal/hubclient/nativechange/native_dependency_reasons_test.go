@@ -12,92 +12,108 @@ import (
 
 func TestNativeDependencyReasonRefresh(t *testing.T) {
 	t.Parallel()
-	hub := newNativeChangeHub(t, true)
-	first, second := hub.createInProgress(t, "First feature"), hub.createInProgress(t, "Shared foundation")
-	dependent, err := hub.native.Issue(t.Context(), tracker.NativeWorkItemID(first.ID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	blocker := tracker.NativeWorkItemID(second.ID)
-	calls := 0
-	generate := func(_ context.Context, prompt string) (string, error) {
-		calls++
-		if !strings.Contains(prompt, "First feature") || !strings.Contains(prompt, "Shared foundation") {
-			t.Fatalf("reason prompt omitted authorized issue context")
+	for _, sourceFirst := range []bool{true, false} {
+		name := "source_first"
+		if !sourceFirst {
+			name = "target_first"
 		}
-		return "Waits for the shared foundation.", nil
-	}
-	ctx := runner.WithDependencyReasonGenerator(t.Context(), generate)
-	changed, err := hub.admin.Dependency(ctx, dependent.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: dependent.Revision, RelatedWorkItemID: blocker, Operation: "add"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []tracker.NativeWorkItemID{dependent.WorkItemID, blocker} {
-		issue, err := hub.native.Issue(ctx, id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if issue.BlockedReason.Basis != issue.BlockedReason.CurrentBasis || issue.UnblocksReason.Basis != issue.UnblocksReason.CurrentBasis {
-			t.Fatalf("neighbor not refreshed: %+v", issue)
-		}
-	}
-	if calls != 2 {
-		t.Fatalf("generated %d sentences, want two stale edge directions", calls)
-	}
-	if err := hub.admin.RefreshDependencyReasons(ctx, dependent.WorkItemID, generate); err != nil {
-		t.Fatal(err)
-	}
-	if calls != 2 {
-		t.Fatalf("current bases regenerated: %d calls", calls)
-	}
-	if _, err := hub.admin.Dependency(ctx, dependent.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: changed.Revision, RelatedWorkItemID: blocker, Operation: "remove"}); err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []tracker.NativeWorkItemID{dependent.WorkItemID, blocker} {
-		issue, err := hub.native.Issue(ctx, id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if issue.BlockedReason.Text != "" || issue.UnblocksReason.Text != "" || issue.BlockedReason.Basis != issue.BlockedReason.CurrentBasis || issue.UnblocksReason.Basis != issue.UnblocksReason.CurrentBasis {
-			t.Fatalf("removed edge reason retained: %+v", issue)
-		}
-	}
-	if calls != 2 {
-		t.Fatalf("empty edges called model: %d", calls)
-	}
-	current, err := hub.native.Issue(ctx, dependent.WorkItemID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raceCalls := 0
-	racing := runner.WithDependencyReasonGenerator(t.Context(), func(ctx context.Context, prompt string) (string, error) {
-		raceCalls++
-		if strings.Contains(prompt, "explaining blocked:") {
-			issue, err := hub.native.Issue(ctx, dependent.WorkItemID)
+		t.Run(name, func(t *testing.T) {
+			hub := newNativeChangeHub(t, true)
+			dependencyIssue := func(ctx context.Context, id tracker.NativeWorkItemID) (tracker.NativeIssue, error) {
+				recovery, err := hub.native.Recovery(ctx, id)
+				return recovery.Issue, err
+			}
+			first, second := hub.createInProgress(t, "First feature"), hub.createInProgress(t, "Shared foundation")
+			if (first.ID < second.ID) != sourceFirst {
+				first, second = second, first
+			}
+			dependent, err := hub.native.Issue(t.Context(), tracker.NativeWorkItemID(first.ID))
 			if err != nil {
-				return "", err
+				t.Fatal(err)
 			}
-			path, err := nativeItemPath(dependent.WorkItemID)
+			blocker := tracker.NativeWorkItemID(second.ID)
+			calls := 0
+			generate := func(_ context.Context, prompt string) (string, error) {
+				calls++
+				if !strings.Contains(prompt, "First feature") || !strings.Contains(prompt, "Shared foundation") {
+					t.Fatalf("reason prompt omitted authorized issue context")
+				}
+				return "Waits for the shared foundation.", nil
+			}
+			ctx := runner.WithDependencyReasonGenerator(t.Context(), generate)
+			changed, err := hub.admin.Dependency(ctx, dependent.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: dependent.Revision, RelatedWorkItemID: blocker, Operation: "add"})
 			if err != nil {
-				return "", err
+				t.Fatal(err)
 			}
-			request := tracker.UpdateDependencyReason{Mutation: nativeMutationKey(), WorkItemID: dependent.WorkItemID, Kind: "blocked", Text: "Uses the first accepted sentence.", Basis: issue.BlockedReason.CurrentBasis, ExpectedRevision: issue.BlockedReason.Revision}
-			var result tracker.DependencyReason
-			if err := hub.admin.Transport().Request(ctx, http.MethodPost, hub.native.Scope()+path+"/dependency-reasons", request, &result); err != nil {
-				return "", err
+			for _, id := range []tracker.NativeWorkItemID{dependent.WorkItemID, blocker} {
+				issue, err := dependencyIssue(ctx, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if issue.BlockedReason.Basis != issue.BlockedReason.CurrentBasis || issue.UnblocksReason.Basis != issue.UnblocksReason.CurrentBasis {
+					t.Fatalf("neighbor not refreshed: %+v", issue)
+				}
 			}
-		}
-		return "Uses the competing generated sentence.", nil
-	})
-	if _, err := hub.admin.Dependency(racing, dependent.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, RelatedWorkItemID: blocker, Operation: "add"}); err != nil {
-		t.Fatal(err)
-	}
-	current, err = hub.native.Issue(ctx, dependent.WorkItemID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if current.BlockedReason.Text != "Uses the first accepted sentence." || raceCalls != 2 {
-		t.Fatalf("competing writer did not converge: %+v, generations=%d", current.BlockedReason, raceCalls)
+			if calls != 2 {
+				t.Fatalf("generated %d sentences, want two stale edge directions", calls)
+			}
+			if err := hub.admin.RefreshDependencyReasons(ctx, dependent.WorkItemID, generate); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 2 {
+				t.Fatalf("current bases regenerated: %d calls", calls)
+			}
+			if _, err := hub.admin.Dependency(ctx, dependent.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: changed.Revision, RelatedWorkItemID: blocker, Operation: "remove"}); err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range []tracker.NativeWorkItemID{dependent.WorkItemID, blocker} {
+				issue, err := dependencyIssue(ctx, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if issue.BlockedReason.Text != "" || issue.UnblocksReason.Text != "" || issue.BlockedReason.Basis != issue.BlockedReason.CurrentBasis || issue.UnblocksReason.Basis != issue.UnblocksReason.CurrentBasis {
+					t.Fatalf("removed edge reason retained: %+v", issue)
+				}
+			}
+			if calls != 2 {
+				t.Fatalf("empty edges called model: %d", calls)
+			}
+			current, err := dependencyIssue(ctx, dependent.WorkItemID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raceCalls := 0
+			racing := runner.WithDependencyReasonGenerator(t.Context(), func(ctx context.Context, prompt string) (string, error) {
+				raceCalls++
+				if strings.Contains(prompt, "explaining blocked:") {
+					issue, err := dependencyIssue(ctx, dependent.WorkItemID)
+					if err != nil {
+						return "", err
+					}
+					path, err := nativeItemPath(dependent.WorkItemID)
+					if err != nil {
+						return "", err
+					}
+					request := tracker.UpdateDependencyReason{Mutation: nativeMutationKey(), WorkItemID: dependent.WorkItemID, Kind: "blocked", Text: "Uses the first accepted sentence.", Basis: issue.BlockedReason.CurrentBasis, ExpectedRevision: issue.BlockedReason.Revision}
+					var result tracker.DependencyReason
+					if err := hub.admin.Transport().Request(ctx, http.MethodPost, hub.native.Scope()+path+"/dependency-reasons", request, &result); err != nil {
+						return "", err
+					}
+				}
+				return "Uses the competing generated sentence.", nil
+			})
+			if _, err := hub.admin.Dependency(racing, dependent.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, RelatedWorkItemID: blocker, Operation: "add"}); err != nil {
+				t.Fatal(err)
+			}
+			current, err = dependencyIssue(ctx, dependent.WorkItemID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current.BlockedReason.Text != "Uses the first accepted sentence." || raceCalls != 2 {
+				inverse, inverseErr := dependencyIssue(ctx, blocker)
+				t.Fatalf("competing writer did not converge: %+v, generations=%d inverse=%+v links=%+v error=%v", current.BlockedReason, raceCalls, inverse.UnblocksReason, inverse.Dependents, inverseErr)
+			}
+		})
 	}
 }
 
