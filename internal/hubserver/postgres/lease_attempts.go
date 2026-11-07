@@ -15,7 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *session) RecordAttempt(ctx context.Context, event leasestore.AttemptEvent) (leasestore.Attempt, error) {
@@ -50,7 +49,7 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 		return leasestore.Attempt{}, false, mapError(ctx, err)
 	}
 	if identity.FencingToken != event.Fence.FencingToken {
-		return leasestore.Attempt{}, false, tracker.ErrStaleFencingToken
+		return leasestore.Attempt{}, false, &leasestore.FenceError{Check: "attempt_token"}
 	}
 	if err := s.lockAttemptScope(ctx, identity.IssueID); err != nil {
 		return leasestore.Attempt{}, false, err
@@ -60,7 +59,7 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 		return leasestore.Attempt{}, false, mapError(ctx, err)
 	}
 	if lease.FencingToken != event.Fence.FencingToken || lease.IssueID != identity.IssueID {
-		return leasestore.Attempt{}, false, tracker.ErrStaleFencingToken
+		return leasestore.Attempt{}, false, &leasestore.FenceError{Check: "attempt_locked_identity"}
 	}
 	encoded, err := json.Marshal(event)
 	if err != nil {
@@ -87,7 +86,7 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 		return leasestore.Attempt{}, false, mapError(ctx, err)
 	}
 	if lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
-		return leasestore.Attempt{}, false, tracker.ErrStaleFencingToken
+		return leasestore.Attempt{}, false, &leasestore.FenceError{Check: "attempt_live_lease"}
 	}
 	var row pgquery.NativeAttempt
 	if event.Sequence == 1 {

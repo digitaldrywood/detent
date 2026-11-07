@@ -155,7 +155,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			return err
 		}
 		if lease.IssueID != workItem.ID || lease.FencingToken != int64(request.Data.FencingToken) || lease.MachineID == "" || lease.SessionID == "" {
-			return tracker.ErrStaleFencingToken
+			return &leasestore.FenceError{Check: "snapshot_identity"}
 		}
 		replay, err = r.Receipt(ctx, actorID, operation, request.IdempotencyKey)
 		if err == nil {
@@ -488,7 +488,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			return err
 		}
 		if workItem.ID != prepared[0].authority.WorkItem.ID || lease.IssueID != workItem.ID || lease.MachineID != prepared[0].authority.Lease.MachineID || lease.SessionID != prepared[0].authority.Lease.SessionID {
-			return tracker.ErrStaleFencingToken
+			return &leasestore.FenceError{Check: "mutation_identity"}
 		}
 		for _, event := range prepared {
 			authority := event.authority

@@ -13,6 +13,18 @@ import (
 
 var ErrAttemptConflict = fmt.Errorf("attempt identity or sequence has changed: %w", mutation.ErrConflict)
 
+type FenceError struct {
+	Check string
+}
+
+func (e *FenceError) Error() string {
+	return tracker.ErrStaleFencingToken.Error()
+}
+
+func (e *FenceError) Unwrap() error {
+	return tracker.ErrStaleFencingToken
+}
+
 type Repository interface {
 	ReadLeases(context.Context, tracker.OrganizationID, corestore.Workload, func(Reader) error) error
 	WriteLeases(context.Context, tracker.OrganizationID, corestore.Workload, func(Writer) error) error
@@ -45,6 +57,7 @@ type Writer interface {
 	RegisterMachine(context.Context, Machine) error
 	HeartbeatMachine(context.Context, Machine, time.Time) error
 	Claim(context.Context, Claim) (Lease, error)
+	AdvanceLeaseWorkItemRevision(context.Context, Fence, int64, int64, int64) error
 	Renew(context.Context, Fence, time.Duration) (Lease, error)
 	RenewWithLandingCapacity(context.Context, Fence, time.Duration, int64) (Lease, error)
 	Release(context.Context, Fence, string) (Lease, error)

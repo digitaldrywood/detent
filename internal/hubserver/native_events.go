@@ -13,6 +13,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -294,6 +295,10 @@ func (s *Service) invalidNativeEventRequest(c echo.Context, err error) error {
 }
 
 func (s *Service) nativeRunEventError(c echo.Context, request tracker.NativeRunEvent, err error) error {
+	var fence *leasestore.FenceError
+	if errors.As(err, &fence) {
+		return s.refusedAPIError(c, http.StatusConflict, "stale_fencing_token", "Lease fencing token is stale", apiErrorResponse{Code: "stale_fencing_token", Message: "Lease fencing token is stale"}, "fence_check", fence.Check)
+	}
 	var attributes []any
 	var failure *nativeError
 	if errors.As(err, &failure) && failure.status == http.StatusUnprocessableEntity {
