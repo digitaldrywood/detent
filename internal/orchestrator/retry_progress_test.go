@@ -21,14 +21,15 @@ import (
 
 type progressScheduling struct {
 	hubSchedulingSource
-	request        progresscheck.Request
-	records        map[string]progresscheck.Record
-	comments       int
-	defects        map[string]string
-	admissions     int
-	admissionError error
-	requestError   error
-	missingOwner   bool
+	request          progresscheck.Request
+	records          map[string]progresscheck.Record
+	comments         int
+	defects          map[string]string
+	admissions       int
+	admissionError   error
+	requestError     error
+	publicationError error
+	missingOwner     bool
 }
 
 type progressExecution struct {
@@ -83,6 +84,9 @@ func (s *progressScheduling) Load(_ context.Context, _, _, id string) (progressc
 	return r, ok, nil
 }
 func (s *progressScheduling) Publish(_ context.Context, r progresscheck.Record) (progresscheck.Record, error) {
+	if s.publicationError != nil {
+		return progresscheck.Record{}, s.publicationError
+	}
 	if old, ok := s.records[r.RequestID]; ok {
 		return old, nil
 	}
@@ -223,15 +227,16 @@ func TestEmptyLandingProgressCompletesOrImplements(t *testing.T) {
 func TestRetryProgressDispatch(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name         string
-		decision     progresscheck.Decision
-		source       string
-		outcome      string
-		want         string
-		err          error
-		reason       string
-		requestError error
-		missingOwner bool
+		name             string
+		decision         progresscheck.Decision
+		source           string
+		outcome          string
+		want             string
+		err              error
+		reason           string
+		requestError     error
+		publicationError error
+		missingOwner     bool
 	}{
 		{name: "changed source dispatches same step", source: "new-head", decision: progresscheck.Decision{Outcome: progresscheck.Progressing, Diagnosis: "attempt-2" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Convergence: "The failing validation now has a matching successful command receipt after the assertion was repaired", Reason: "Source changed", Evidence: []string{"attempt-2"}}, want: RunModeImplement},
 		{name: "1748 unchanged 422 refusal reroutes to the audit pipeline", decision: progresscheck.Decision{Outcome: progresscheck.Reroute, Step: RunModeMerge, Diagnosis: "attempt-1" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Run the merge pipeline to produce the missing audit receipt", Evidence: []string{"attempt-1", "attempt-2"}}, want: RunModeMerge},
@@ -242,6 +247,7 @@ func TestRetryProgressDispatch(t *testing.T) {
 		{name: "invalid decision permits ordinary retry", decision: progresscheck.Decision{Outcome: progresscheck.Progressing, Step: RunModeMerge, Reason: "Continue", Evidence: []string{"unavailable"}}, reason: "progress decision cites unavailable evidence", want: RunModeImplement},
 		{name: "missing owner permits ordinary retry", missingOwner: true, reason: "progress check requires backend and tracker owner", want: RunModeImplement},
 		{name: "evidence failure permits ordinary retry", requestError: errors.New("progress evidence unavailable"), reason: "progress evidence unavailable", want: RunModeImplement},
+		{name: "publication 500 preserves live attempt", decision: progresscheck.Decision{Outcome: progresscheck.Reroute, Step: RunModeImplement, Diagnosis: "attempt-2 retains a failed validation", Instruction: "Repair and verify the failing validation", Reason: "Repair validation", Evidence: []string{"attempt-2"}}, publicationError: errors.New("hub unavailable, 500 native_operation_failed"), reason: "hub unavailable, 500 native_operation_failed", want: RunModeImplement},
 		{name: "progressing ignores suggested step", decision: progresscheck.Decision{Outcome: progresscheck.Progressing, Step: RunModeMerge, Diagnosis: "attempt-2" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Convergence: "The failing validation now has a matching successful command receipt after the assertion was repaired", Reason: "Continue", Evidence: []string{"attempt-2"}}, want: RunModeImplement},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -251,7 +257,7 @@ func TestRetryProgressDispatch(t *testing.T) {
 				source := &progressScheduling{request: progresscheck.Request{ProjectID: "example-project", IssueID: issue.ID, PolicyID: "policy", EvidenceRevision: "1", SourceSHA: "head", BaseSHA: "base", AvailableSteps: []string{RunModeImplement, RunModePlan, RunModeMerge}, Attempts: []progresscheck.Attempt{
 					{ID: "attempt-1", Step: "publication", Outcome: "failed", SourceSHA: "head", BaseSHA: "base", Error: "422: landing requires security audit evidence for its exact base and head"},
 					{ID: "attempt-2", Step: "publication", Outcome: "failed", SourceSHA: "head", BaseSHA: "base", Error: "422: landing requires security audit evidence for its exact base and head"},
-				}}, records: map[string]progresscheck.Record{}, defects: map[string]string{}, requestError: tt.requestError, missingOwner: tt.missingOwner}
+				}}, records: map[string]progresscheck.Record{}, defects: map[string]string{}, requestError: tt.requestError, publicationError: tt.publicationError, missingOwner: tt.missingOwner}
 				if tt.source != "" {
 					source.request.SourceSHA = tt.source
 				}
@@ -274,15 +280,13 @@ func TestRetryProgressDispatch(t *testing.T) {
 					t.Fatalf("failed progress check retained its execution: outcome=%s", execution.finished)
 				}
 				if tt.reason != "" {
-					wantAdmissions, wantFinished := 1, "cancelled"
 					if tt.missingOwner || tt.requestError != nil {
-						wantAdmissions, wantFinished = 0, ""
 						if checker.calls != 0 {
 							t.Fatal("unavailable progress dependency started a provider")
 						}
 					}
-					if req.ProgressDecision.RequestID != "" || len(execution.observations) != 1 || execution.observations[0].Recovery == nil || !strings.Contains(execution.observations[0].Recovery.Reason, tt.reason) || strings.Count(req.PriorAttempt.Reason, tt.reason) != 1 || source.comments != 0 || source.admissions != wantAdmissions || execution.finished != wantFinished {
-						t.Fatalf("advisory failure missing: request=%+v observations=%+v admissions=%d", req, execution.observations, source.admissions)
+					if req.Execution != execution || req.ProgressDecision.RequestID != "" || len(execution.observations) != 1 || execution.observations[0].Recovery == nil || !strings.Contains(execution.observations[0].Recovery.Reason, tt.reason) || strings.Count(req.PriorAttempt.Reason, tt.reason) != 1 || source.comments != 0 || source.admissions != 0 || execution.finished != "" {
+						t.Fatalf("advisory failure: same execution=%v decision=%s observations=%d reason=%q admissions=%d outcome=%s", req.Execution == execution, req.ProgressDecision.RequestID, len(execution.observations), req.PriorAttempt.Reason, source.admissions, execution.finished)
 					}
 				}
 				if tt.reason == "" {
@@ -313,7 +317,7 @@ func TestRetryProgressDispatch(t *testing.T) {
 					if tt.want != "" && request.Mode != tt.want {
 						t.Fatalf("dispatched mode=%q want %q", request.Mode, tt.want)
 					}
-					if tt.decision.Outcome == progresscheck.Reroute && (request.ProgressDecision.Decision.Step != tt.want || !strings.Contains(request.PriorAttempt.Reason, tt.decision.Reason) || !strings.Contains(request.PriorAttempt.Reason, tt.decision.Diagnosis) || !strings.Contains(request.PriorAttempt.Reason, tt.decision.Instruction)) {
+					if tt.reason == "" && tt.decision.Outcome == progresscheck.Reroute && (request.ProgressDecision.Decision.Step != tt.want || !strings.Contains(request.PriorAttempt.Reason, tt.decision.Reason) || !strings.Contains(request.PriorAttempt.Reason, tt.decision.Diagnosis) || !strings.Contains(request.PriorAttempt.Reason, tt.decision.Instruction)) {
 						t.Fatalf("reroute feedback missing: %+v", request.PriorAttempt)
 					}
 				}
