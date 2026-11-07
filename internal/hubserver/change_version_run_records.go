@@ -100,7 +100,7 @@ func (s *Service) prepareChangeVersionRun(ctx context.Context, scope nativeScope
 	}
 	prepared.sessionID = nativeImplementingSession(*payload.Data.Run)
 	prepared.machineID = string(payload.Data.Run.MachineID)
-	if payload.Data.Run.Identity == nil || payload.Data.Run.Identity.Role != "code" && payload.Data.Run.Identity.Role != "rework" || prepared.machineID != prepared.lease.MachineID {
+	if payload.Data.Run.Identity == nil || payload.Data.Run.Identity.Role != "code" && payload.Data.Run.Identity.Role != "rework" && payload.Data.Run.Identity.Role != "merge" || prepared.machineID != prepared.lease.MachineID {
 		return nil, nativeExecutionConflict("Version source must retain its coding session and machine attribution")
 	}
 	return prepared, nil
