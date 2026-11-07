@@ -42,6 +42,7 @@ func (s *Service) authenticateTenantAPIHash(ctx context.Context, organization tr
 	runnerAuthority, runnerAuthorityAvailable := s.config.TenantRepository.(interface {
 		ReadRunnerAuthority(context.Context, tenantauth.RequestIdentity, func() time.Time) (tenantauth.Scope, int, error)
 	})
+	runnerAuthorityAvailable = runnerAuthorityAvailable && ctx.Value(runnerEventAuthorityKey{}) == true
 	var requestCapacity *int
 	if authorityAvailable || runnerAuthorityAvailable {
 		var scope tenantauth.Scope

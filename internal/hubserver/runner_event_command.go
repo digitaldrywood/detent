@@ -58,11 +58,14 @@ func (s *Service) writeNativeRunCommand(ctx context.Context, scope nativeScope, 
 	})
 }
 
+type runnerEventAuthorityKey struct{}
+
+func runnerEventCommandRoute(c echo.Context) bool {
+	return c.Request().Method == http.MethodPost && (c.Path() == nativeBase+"/work-items/:item/events" || c.Path() == nativeBase+"/runner-sessions" || c.Path() == nativeBase+"/leases/:lease/release")
+}
+
 func (s *Service) runnerEventCommandScope(c echo.Context, scope nativeScope) bool {
-	if c.Request().Method != http.MethodPost || scope.credential.Runner.RunnerID == "" || scope.credential.EntryKey != nil {
-		return false
-	}
-	if c.Path() != nativeBase+"/work-items/:item/events" && c.Path() != nativeBase+"/runner-sessions" && c.Path() != nativeBase+"/leases/:lease/release" {
+	if !runnerEventCommandRoute(c) || scope.credential.Runner.RunnerID == "" || scope.credential.EntryKey != nil {
 		return false
 	}
 	switch s.config.NativeRunEvents.(type) {

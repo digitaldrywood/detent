@@ -184,6 +184,9 @@ func (s *Service) authenticateAPIRequestContext(ctx context.Context, c echo.Cont
 		if hinted := strings.TrimSpace(c.Request().Header.Get("X-Detent-Organization")); hinted != "" && hinted != organization {
 			return apiCredential{}, http.StatusUnauthorized, fmt.Errorf("%w: organization scope does not match request", operatortool.ErrAccessDenied)
 		}
+		if runnerEventCommandRoute(c) {
+			ctx = context.WithValue(ctx, runnerEventAuthorityKey{}, true)
+		}
 		return s.authenticateTenantAPIHash(ctx, tracker.OrganizationID(organization), apikey.HashToken(token), renewalRunner, renewalOrganization)
 	}
 	return s.authenticateAPIToken(ctx, token, renewalRunner, renewalOrganization)
