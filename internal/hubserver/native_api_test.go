@@ -397,6 +397,8 @@ func TestNativeAPIError(t *testing.T) {
 		{"invalid claim", "invalid_request", "Request is invalid", "WARN", tracker.ErrInvalidClaimRequest, http.StatusUnprocessableEntity},
 		{"revision conflict", "revision_conflict", "Resource has changed", "WARN", nativeConflict(7), http.StatusConflict},
 		{"not found", "not_found", "Resource was not found", "", sql.ErrNoRows, http.StatusNotFound},
+		{"domain not found", "not_found", "Resource was not found", "", corestore.ErrNotFound, http.StatusNotFound},
+		{"authorization missing resource", "access_denied", "operator access is unavailable", "WARN", &operatortool.AuthorizationError{Stage: "check", Cause: corestore.ErrNotFound}, http.StatusForbidden},
 		{"search refresh pending", "not_ready", "Search index refresh is pending", "", searchstore.ErrIndexPending, http.StatusServiceUnavailable},
 		{"service unavailable", "storage_owner_unavailable", "Dependency is temporarily unavailable", "ERROR", &nativeError{Code: "storage_owner_unavailable", Message: "Dependency is temporarily unavailable", status: http.StatusServiceUnavailable, publicMessage: true, logAttributes: []any{"private_detail", "private-context"}}, http.StatusServiceUnavailable},
 		{"internal error", "native_operation_failed", "Native operation could not be completed", "ERROR", errors.New("database unavailable"), http.StatusInternalServerError},
