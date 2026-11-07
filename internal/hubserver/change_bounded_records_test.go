@@ -74,7 +74,7 @@ func TestPostgresBoundedChangeReadRechecksRoleAfterHydration(t *testing.T) {
 	requireNativeStatus(t, created, http.StatusOK)
 	var change tracker.ChangeRequest
 	decodeHubResponse(t, created, &change)
-	details := f.service.config.RunDetails.(*memoryRunDetails)
+	details := f.details
 	key := seedChangeReadCredential(t, repository, f.project)
 	var keyRevoked bool
 	details.beforeRead = func(ctx context.Context) error {
@@ -536,7 +536,7 @@ func TestPostgresBoundedChangeRuntimeRecovery(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			recoveryContent := boundedChangeSpool(t, f.service.runDetailStore().(*memoryRunDetails))
+			recoveryContent := boundedChangeSpool(t, f.details)
 			backfiller := repository.(*postgres.Repository)
 			total, err := backfiller.BackfillChangeRecoveryProjections(t.Context(), "org_security", recoveryContent, 7)
 			if err != nil || total != 7 {

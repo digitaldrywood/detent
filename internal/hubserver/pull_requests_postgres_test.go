@@ -188,7 +188,7 @@ func newExportPostgresFixture(t *testing.T) (tenantstore.Repository, hostedSecur
 			t.Error(err)
 		}
 	})
-	f := hostedSecurityFixture{service: service, provider: cfg.Hosted.Provider.(*hostedSecurityProvider), project: project, base: "/api/v2/organizations/org_security/projects/" + string(project)}
+	f := hostedSecurityFixture{details: cfg.RunDetails.(*memoryRunDetails), service: service, provider: cfg.Hosted.Provider.(*hostedSecurityProvider), project: project, base: "/api/v2/organizations/org_security/projects/" + string(project)}
 	owner := f.user(t, "review_admin", "owner", "review-admin@example.test", "", "")
 	repository := service.config.TenantRepository
 	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {

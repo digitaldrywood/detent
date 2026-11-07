@@ -58,7 +58,7 @@ func TestNativeWorkSearch(t *testing.T) {
 	at := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
 	first := seedPostgresSearchIssue(t, f, 1, "Repository association deadlocks", "Unicorns decorate mock fixture data", at)
 	second := seedPostgresSearchIssue(t, f, 2, "Repository association", "Other content", at)
-	for _, mode := range []string{"pending", "indexed"} {
+	for _, mode := range []string{"fallback", "indexed"} {
 		if mode == "indexed" {
 			for {
 				more, err := searchstore.NewContent(f.service.runDetailStore()).RefreshOne(t.Context(), tenantSearchRepository{f.repository}, "org_security")
@@ -72,24 +72,15 @@ func TestNativeWorkSearch(t *testing.T) {
 		}
 		for _, test := range []struct {
 			name, query, include string
-			want                 tracker.NativeWorkItemID
+			want, fallback       tracker.NativeWorkItemID
 		}{
-			{"title rank", "repository association deadlocks", "summary", first},
-			{"body substring", "corns decor", "summary", first},
-			{"number", "#2", "summary", second},
-			{"work projection", "unicorn", "work", first},
+			{"title rank", "repository association deadlocks", "summary", first, second},
+			{"body substring", "corns decor", "summary", first, ""},
+			{"number", "#2", "summary", second, second},
+			{"work projection", "unicorn", "work", first, ""},
 		} {
 			t.Run(mode+"/"+test.name, func(t *testing.T) {
 				response := f.request(t, user, http.MethodGet, f.base+"/work-items?"+url.Values{"q": {test.query}, "include": {test.include}, "limit": {"1"}}.Encode(), nil)
-				if mode == "pending" {
-					requireNativeStatus(t, response, http.StatusServiceUnavailable)
-					var failure apiErrorResponse
-					decodeHubResponse(t, response, &failure)
-					if failure.Code != "not_ready" {
-						t.Fatalf("pending search code=%q", failure.Code)
-					}
-					return
-				}
 				requireNativeStatus(t, response, http.StatusOK)
 				var page tracker.NativeIssuePage
 				decodeHubResponse(t, response, &page)
@@ -99,6 +90,18 @@ func TestNativeWorkSearch(t *testing.T) {
 						t.Fatal("work projection missing")
 					}
 					items = page.Work.Items
+				}
+				if page.ProjectionPending {
+					t.Fatal("search remained pending")
+				}
+				if mode == "fallback" {
+					if test.fallback == "" {
+						if len(items) != 0 {
+							t.Fatalf("unindexed body search results=%+v", items)
+						}
+						return
+					}
+					test.want = test.fallback
 				}
 				if len(items) != 1 || items[0].WorkItemID != test.want || items[0].Snippet == "" {
 					t.Fatalf("search results=%+v", items)

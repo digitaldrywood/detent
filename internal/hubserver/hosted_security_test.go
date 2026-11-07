@@ -203,6 +203,7 @@ type hostedSecurityUser struct {
 }
 
 type hostedSecurityFixture struct {
+	details  *memoryRunDetails
 	service  *Service
 	provider *hostedSecurityProvider
 	project  tracker.ProjectID
@@ -303,10 +304,11 @@ func newHostedSecurityFixture(t *testing.T, configure ...func(*Config)) hostedSe
 		apply(&cfg)
 	}
 	seedHostedSecurityDatabaseTemplate(t, cfg)
+	details, _ := cfg.RunDetails.(*memoryRunDetails)
 	service := openTestService(t, cfg)
 	project := tracker.ProjectID("prj_security")
 	seedNativeFixturePolicy(t, service, "org_security/"+string(project))
-	return hostedSecurityFixture{service: service, provider: provider, project: project, base: "/api/v2/organizations/org_security/projects/" + string(project)}
+	return hostedSecurityFixture{details: details, service: service, provider: provider, project: project, base: "/api/v2/organizations/org_security/projects/" + string(project)}
 }
 
 func seedHostedSecurityProject(ctx context.Context, db *sql.DB, organization string) error {

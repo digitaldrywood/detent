@@ -271,7 +271,7 @@ func TestPostgresOperatorReadsRejectRoleChanges(t *testing.T) {
 				}}, nil
 			}})
 			changed := false
-			details := f.service.config.RunDetails.(*memoryRunDetails)
+			details := f.details
 			details.beforeRead = func(ctx context.Context) error {
 				details.beforeRead = nil
 				changed = true

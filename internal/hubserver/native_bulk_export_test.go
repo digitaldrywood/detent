@@ -105,7 +105,7 @@ func TestPostgresBulkExport(t *testing.T) {
 			}
 			break
 		}
-		store := f.service.config.RunDetails.(*memoryRunDetails)
+		store := f.details
 		store.mu.Lock()
 		payload := store.data[key]
 		delete(store.data, key)
