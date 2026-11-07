@@ -264,13 +264,29 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 	}
 	attempt := snapshot.attempt
 	lease := snapshot.lease
+	var checkpoint *tracker.NativeCheckpoint
+	if attempt.CheckpointObjectKey != nil {
+		owner, ok := s.runDetailStore().(attachment.CanonicalDetailStore)
+		if !ok {
+			return tracker.NativeAttempt{}, nativeRunEventStorageUnavailable()
+		}
+		raw, err := owner.ReadCanonicalDetail(ctx, string(attempt.OrganizationID), string(snapshot.event.ProjectID), *attempt.CheckpointObjectKey)
+		if err != nil {
+			return tracker.NativeAttempt{}, errors.Join(artifact.ErrIntegrity, err)
+		}
+		var retained checkpointPayload
+		if json.Unmarshal(raw, &retained) != nil || retained.Checkpoint == nil {
+			return tracker.NativeAttempt{}, artifact.ErrIntegrity
+		}
+		checkpoint = retained.Checkpoint
+	}
 	if err := nativeAttemptRunMismatch(snapshot, run); err != nil {
 		return tracker.NativeAttempt{}, fmt.Errorf("hydrate attempt identity: %w", err)
 	}
 	result := tracker.NativeAttempt{NativeRunData: run, Status: attempt.Status, StartedAt: attempt.StartedAt, UpdatedAt: attempt.UpdatedAt,
 		WorkItemRevision: tracker.Revision(attempt.WorkItemRevision), DispatchGeneration: attempt.DispatchGeneration,
 		LeaseRenewedAt: lease.RenewedAt, LeaseExpiresAt: lease.ExpiresAt, Current: lease.ReleasedAt == nil && !now.Before(lease.RenewedAt) && now.Before(lease.ExpiresAt),
-		Checkpoint: run.Handoff, RuntimeFreshness: "unavailable",
+		Checkpoint: checkpoint, RuntimeFreshness: "unavailable",
 		TerminalFailureAvailability: "unavailable", FinalizationAvailability: "unavailable", Unavailable: []string{"evidence"}}
 	if snapshot.evidence {
 		var evidence []tracker.NativeEvidence
@@ -294,6 +310,7 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 		result.Unavailable = slices.DeleteFunc(result.Unavailable, func(value string) bool { return value == "evidence" })
 	}
 	result.ArtifactIDs = run.ArtifactIDs
+	result.CleanupAcknowledgedAt = attempt.CleanupAcknowledgedAt
 	if lease.ReleasedAt != nil {
 		released := *lease.ReleasedAt
 		result.ClaimReleasedAt = &released

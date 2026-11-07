@@ -59,7 +59,7 @@ func (p tenantNativeRunEventParticipant) validateRunEventOwner(ctx context.Conte
 		return err
 	}
 	now := p.service.config.now().UTC()
-	if lease.IssueID != item.ID || lease.FencingToken != authority.Lease.FencingToken || lease.MachineID != authority.Lease.MachineID || lease.SessionID != authority.Lease.SessionID || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
+	if lease.IssueID != item.ID || lease.FencingToken != authority.Lease.FencingToken || lease.MachineID != authority.Lease.MachineID || lease.SessionID != authority.Lease.SessionID || !authority.Termination && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now)) || authority.Termination && lease.ReleasedAt == nil {
 		return &leasestore.FenceError{Check: "lease_current"}
 	}
 	if event.Data.MachineID != tracker.MachineID(lease.MachineID) || event.Data.SessionID != lease.SessionID || !human && event.Data.RunnerID != authority.Scope.credential.Runner.RunnerID {
@@ -138,7 +138,9 @@ func (p tenantNativeRunEventParticipant) validateNativeRunEvent(ctx context.Cont
 			return leasestore.ErrAttemptConflict
 		}
 		if attempt.Status != "running" {
-			if !authority.UsageCorrection || event.Type != "run.finished" || attempt.Status != event.Data.Outcome {
+			reconnecting := attempt.Status == "interrupted" && event.Type == "run.observed" && event.Data.Outcome == "" && event.Data.Runtime != nil && event.Data.Runtime.LocalAttemptID == 0 && event.Data.Runtime.Generation == 0
+			terminating := authority.Termination && event.Type == "run.finished" && event.Data.Outcome == "cancelled" && (attempt.Status == "interrupted" || attempt.Status == "cancelled")
+			if !terminating && !reconnecting && (!authority.UsageCorrection || event.Type != "run.finished" || attempt.Status != event.Data.Outcome) {
 				return leasestore.ErrAttemptConflict
 			}
 		}

@@ -39,7 +39,7 @@ func (s *session) HeartbeatMachine(ctx context.Context, machine leasestore.Machi
 	if err := s.checkOrganization(machine.OrganizationID); err != nil {
 		return err
 	}
-	result, err := s.db.Exec(ctx, `UPDATE machines SET display_name=$3,capacity=$4,version=$5,last_heartbeat_at=greatest(last_heartbeat_at,$6),updated_at=greatest(updated_at,$6),sprite_name=CASE WHEN $7<>'' THEN $7 ELSE sprite_name END WHERE organization_id=$1 AND id=$2`, machine.OrganizationID, machine.ID, machine.DisplayName, machine.Capacity, machine.Version, at, machine.SpriteName)
+	result, err := s.db.Exec(ctx, `UPDATE machines SET version=$3,last_heartbeat_at=greatest(last_heartbeat_at,$4),updated_at=greatest(updated_at,$4),sprite_name=CASE WHEN $5<>'' THEN $5 ELSE sprite_name END WHERE organization_id=$1 AND id=$2`, machine.OrganizationID, machine.ID, machine.Version, at, machine.SpriteName)
 	return updateOwned(ctx, result, err)
 }
 
@@ -99,8 +99,8 @@ func attemptFromPG(row pgquery.NativeAttempt) leasestore.Attempt {
 		FencingToken: row.FencingToken, RunID: row.RunID, Sequence: row.Sequence, Status: row.Status,
 		WorkItemRevision: row.WorkItemRevision, DispatchGeneration: row.DispatchGeneration,
 		PayloadObjectKey: row.PayloadObjectKey, CheckpointObjectKey: row.CheckpointObjectKey,
-		ArtifactsObjectKey: row.ArtifactsObjectKey,
-		StartedAt:          row.StartedAt.Add(time.Duration(row.StartedAtSubmicroNs)), UpdatedAt: row.UpdatedAt,
+		ArtifactsObjectKey: row.ArtifactsObjectKey, CleanupAcknowledgedAt: row.CleanupAcknowledgedAt,
+		StartedAt: row.StartedAt.Add(time.Duration(row.StartedAtSubmicroNs)), UpdatedAt: row.UpdatedAt,
 	}
 }
 
@@ -308,9 +308,14 @@ func (s *session) mutateLease(ctx context.Context, fence leasestore.Fence, opera
 	if strings.TrimSpace(fence.LeaseID) == "" || fence.FencingToken <= 0 {
 		return leasestore.Lease{}, tracker.ErrInvalidLeaseRequest
 	}
+	var clock *time.Time
+	if s.leaseClock != nil {
+		clock = new(s.leaseClock().UTC())
+	}
 	row, err := s.queries.MutateLeaseCommand(ctx, pgquery.MutateLeaseCommandParams{
 		OrganizationID: s.organization, LeaseID: fence.LeaseID, FencingToken: fence.FencingToken,
 		Operation: operation, TtlUs: ttl.Microseconds(), LandingCapacity: landingCapacity, Reason: reason,
+		LeaseClock: clock,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return leasestore.Lease{}, tracker.ErrLeaseNotFound

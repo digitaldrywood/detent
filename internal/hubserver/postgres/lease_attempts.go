@@ -85,7 +85,7 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 	if err != nil {
 		return leasestore.Attempt{}, false, mapError(ctx, err)
 	}
-	if lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
+	if event.Termination && (lease.ReleasedAt == nil || event.Sequence <= 1 || event.Status != "cancelled") || !event.Termination && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now)) {
 		return leasestore.Attempt{}, false, &leasestore.FenceError{Check: "attempt_live_lease"}
 	}
 	var row pgquery.NativeAttempt
@@ -114,7 +114,7 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 			OrganizationID: s.organization, ID: event.ID, LeaseID: lease.LeaseID, FencingToken: lease.FencingToken,
 			RunID: event.RunID, NextSequence: event.Sequence, Status: event.Status, DispatchGeneration: event.DispatchGeneration,
 			PayloadObjectKey: event.PayloadObjectKey, CheckpointObjectKey: event.CheckpointObjectKey, ArtifactsObjectKey: event.ArtifactsObjectKey,
-			UsageCorrection: event.UsageCorrection, Now: now,
+			UsageCorrection: event.UsageCorrection, Termination: event.Termination, Now: &now,
 		})
 	}
 	if errors.Is(err, pgx.ErrNoRows) {

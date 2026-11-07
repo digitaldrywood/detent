@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -37,7 +38,11 @@ func (f *runnerEventSession) LeaseMutationIdentity(ctx context.Context, id strin
 
 func (f *runnerEventSession) Release(ctx context.Context, fence leasestore.Fence, reason string) (leasestore.Lease, error) {
 	queue := runEventReleaseQueue{runEventQueue{f.pending}, f}
-	_, err := pgquery.New(queue).MutateLeaseCommand(ctx, pgquery.MutateLeaseCommandParams{OrganizationID: f.session.organization, LeaseID: fence.LeaseID, FencingToken: fence.FencingToken, Operation: "release", Reason: reason})
+	var clock *time.Time
+	if f.session.leaseClock != nil {
+		clock = new(f.session.leaseClock().UTC())
+	}
+	_, err := pgquery.New(queue).MutateLeaseCommand(ctx, pgquery.MutateLeaseCommandParams{OrganizationID: f.session.organization, LeaseID: fence.LeaseID, FencingToken: fence.FencingToken, Operation: "release", Reason: reason, LeaseClock: clock})
 	if err != nil {
 		return leasestore.Lease{}, err
 	}

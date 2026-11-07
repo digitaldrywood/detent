@@ -122,21 +122,22 @@ type Lease struct {
 }
 
 type Attempt struct {
-	OrganizationID      tracker.OrganizationID
-	ID                  string
-	IssueID             int64
-	LeaseID             string
-	FencingToken        int64
-	RunID               string
-	Sequence            int64
-	Status              string
-	WorkItemRevision    int64
-	DispatchGeneration  int64
-	PayloadObjectKey    string
-	CheckpointObjectKey *string
-	ArtifactsObjectKey  *string
-	StartedAt           time.Time
-	UpdatedAt           time.Time
+	CleanupAcknowledgedAt *time.Time
+	OrganizationID        tracker.OrganizationID
+	ID                    string
+	IssueID               int64
+	LeaseID               string
+	FencingToken          int64
+	RunID                 string
+	Sequence              int64
+	Status                string
+	WorkItemRevision      int64
+	DispatchGeneration    int64
+	PayloadObjectKey      string
+	CheckpointObjectKey   *string
+	ArtifactsObjectKey    *string
+	StartedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 type AttemptCursor struct {
@@ -172,6 +173,7 @@ type AttemptDiff struct {
 }
 
 type AttemptEvent struct {
+	Termination         bool
 	PayloadReference    attachment.ArchiveReference `json:"-"`
 	Usage               []tracker.NativeUsage       `json:"-"`
 	ID                  string

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,6 +23,7 @@ import (
 type Config struct {
 	Connection pgtransport.Connection
 	Pool       PoolConfig
+	LeaseClock func() time.Time
 }
 
 var ErrConnectionConfig = errors.New("PostgreSQL requires an explicit host, port, database, user and TLS mode without session overrides or credential discovery")
@@ -43,6 +45,7 @@ func Open(ctx context.Context, cfg Config, migrations fs.FS) (*Repository, error
 	}
 	repository, err := NewRepository(ctx, pool, cfg.Pool)
 	if err == nil {
+		repository.leaseClock = cfg.LeaseClock
 		err = validateNativeSchema(ctx, pool, migrations)
 	}
 	if err == nil {

@@ -25,6 +25,7 @@ type PoolConfig struct {
 }
 
 type Repository struct {
+	leaseClock func() time.Time
 	pool       *pgxpool.Pool
 	runtime    *Runtime
 	serving    chan struct{}
@@ -131,7 +132,7 @@ func (r *Repository) transactionIsolation(ctx context.Context, organization trac
 	err = func() error {
 		defer finishCallback()
 		db := timedQueries{DBTX: tx}
-		return run(&session{organization: organization, queries: pgquery.New(db), db: db, readOnly: readOnly})
+		return run(&session{organization: organization, queries: pgquery.New(db), db: db, readOnly: readOnly, leaseClock: r.leaseClock})
 	}()
 	if err != nil {
 		return mapError(ctx, err)
@@ -173,6 +174,7 @@ type projectAccessKey struct {
 }
 
 type session struct {
+	leaseClock         func() time.Time
 	searchDeadline     time.Time
 	searchAdmitted     bool
 	searchFallback     map[tracker.ProjectID]bool

@@ -98,6 +98,7 @@ VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,sqlc.arg(started_at),sqlc.arg(s
 
 -- name: AdvanceLeaseAttempt :one
 UPDATE native_attempts SET sequence=sqlc.arg(next_sequence),
+cleanup_acknowledged_at=CASE WHEN sqlc.arg(termination)::boolean THEN sqlc.arg(now) ELSE cleanup_acknowledged_at END,
 status=CASE WHEN sqlc.arg(usage_correction)::boolean THEN status ELSE sqlc.arg(status) END,
 payload_object_key=sqlc.arg(payload_object_key),
 checkpoint_object_key=COALESCE(sqlc.narg(checkpoint_object_key),checkpoint_object_key),
@@ -106,7 +107,7 @@ updated_at=CASE WHEN sqlc.arg(usage_correction)::boolean THEN updated_at ELSE sq
 WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id) AND lease_id=sqlc.arg(lease_id)
 AND fencing_token=sqlc.arg(fencing_token)::bigint AND run_id=sqlc.arg(run_id)
 AND dispatch_generation=sqlc.arg(dispatch_generation) AND sequence=sqlc.arg(next_sequence)-1
-AND (status='running' OR sqlc.arg(usage_correction)::boolean AND status=sqlc.arg(status))
+AND (status='running' OR status='interrupted' AND sqlc.arg(status)='running' OR sqlc.arg(usage_correction)::boolean AND status=sqlc.arg(status) OR sqlc.arg(termination)::boolean AND status IN ('interrupted','cancelled') AND sqlc.arg(status)='cancelled')
 RETURNING *;
 
 -- name: InsertAttemptReceipt :exec
@@ -135,7 +136,7 @@ WITH locked AS MATERIALIZED (
  WHERE l.organization_id=sqlc.arg(organization_id) AND l.lease_id=sqlc.arg(lease_id)
  FOR UPDATE OF l
 ), at AS MATERIALIZED (
- SELECT clock_timestamp() AS now FROM locked
+ SELECT COALESCE(sqlc.narg(lease_clock)::timestamptz,clock_timestamp()) AS now FROM locked
 ), changed AS (
  UPDATE leases l SET
  renewed_at=CASE WHEN sqlc.arg(operation)::text='renew' THEN at.now ELSE l.renewed_at END,

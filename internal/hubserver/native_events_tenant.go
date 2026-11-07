@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 )
 
 type NativeRunEventAuthority struct {
+	Termination        bool
 	Scope              nativeScope
 	OrganizationID     tracker.OrganizationID
 	ProjectID          tracker.ProjectID
@@ -259,6 +261,18 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 	if err != nil {
 		return nil, err
 	}
+	termination := lease.ReleasedAt != nil && request.Type == "run.finished" && request.Data.Outcome == "cancelled"
+	if termination {
+		identity := tracker.NativeRunData{AttemptID: request.Data.AttemptID, RunID: request.Data.RunID, LeaseID: request.Data.LeaseID, FencingToken: request.Data.FencingToken, PolicyID: request.Data.PolicyID, Identity: request.Data.Identity, MachineID: request.Data.MachineID, SessionID: request.Data.SessionID, RunnerID: request.Data.RunnerID, Sequence: request.Data.Sequence, Outcome: "cancelled"}
+		if previousAttempt.CleanupAcknowledgedAt != nil || !reflect.DeepEqual(request.Data, identity) || hasPriorEvents || cleanupData == nil || cleanupData.Identity == nil || request.Data.Identity == nil || *cleanupData.Identity != *request.Data.Identity || cleanupData.PolicyID != request.Data.PolicyID || request.Data.Sequence != cleanupData.Sequence+1 || previousAttempt.Status != "interrupted" && previousAttempt.Status != "cancelled" {
+			return nil, leasestore.ErrAttemptConflict
+		}
+		retained := *cleanupData
+		retained.Sequence, retained.Outcome = request.Data.Sequence, "cancelled"
+		request.Data = retained
+		events[len(events)-1] = request
+		previousRunEventFound = false
+	}
 	var previousRunData *tracker.NativeRunData
 	if previousRunEventFound {
 		previous, err := content.Event(ctx, previousRunEvent)
@@ -376,7 +390,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			ID:    event.Data.AttemptID,
 			Fence: leasestore.Fence{LeaseID: string(event.Data.LeaseID), FencingToken: int64(event.Data.FencingToken)},
 			RunID: event.Data.RunID, Sequence: event.Data.Sequence, Status: status,
-			DispatchGeneration: 0, PayloadObjectKey: ref.Key, PayloadReference: ref, UsageCorrection: i == len(events)-1 && usageCorrection,
+			DispatchGeneration: 0, PayloadObjectKey: ref.Key, PayloadReference: ref, UsageCorrection: i == len(events)-1 && usageCorrection, Termination: termination,
 		}
 		if event.Data.Sequence == 1 && event.Type == "run.started" && batchStartIndex == i {
 			attemptEvent.StartedAt = event.OccurredAt
@@ -426,7 +440,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		if err != nil {
 			return nil, err
 		}
-		authority := NativeRunEventAuthority{Scope: scope, OrganizationID: scope.organization, ProjectID: scope.project, WorkItem: workItem, Lease: lease, UsageCorrection: attemptEvent.UsageCorrection, Event: event}
+		authority := NativeRunEventAuthority{Termination: termination, Scope: scope, OrganizationID: scope.organization, ProjectID: scope.project, WorkItem: workItem, Lease: lease, UsageCorrection: attemptEvent.UsageCorrection, Event: event}
 		if i == len(events)-1 && usageFactsFound {
 			facts := usageFacts
 			authority.UsageFacts = &facts
@@ -440,7 +454,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		if i == len(events)-1 && usageCorrection {
 			preparedEvent.previousAttempt, preparedEvent.previousEvent = previousAttempt, previousRunEvent
 		}
-		if event.Type == "run.finished" && !attemptEvent.UsageCorrection && event.Data.CompletionBody != "" {
+		if !termination && event.Type == "run.finished" && !attemptEvent.UsageCorrection && event.Data.CompletionBody != "" {
 			hasEvidence := completionEvidence
 			if !completionSnapshot {
 				err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -486,7 +500,13 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 	if err != nil {
 		return nil, err
 	}
-	err = s.writeNativeRunCommand(ctx, scope, command, func(ctx context.Context, w tenantstore.Writer) error {
+	writeCommand := s.writeNativeRunCommand
+	if termination {
+		writeCommand = func(ctx context.Context, scope nativeScope, command eventstore.RunCommand, write func(context.Context, tenantstore.Writer) error) error {
+			return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return write(ctx, w) })
+		}
+	}
+	err = writeCommand(ctx, scope, command, func(ctx context.Context, w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
