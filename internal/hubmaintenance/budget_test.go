@@ -105,3 +105,53 @@ func TestPayloadBudgetRejectsBeforeIOAndCannotCrossTenant(t *testing.T) {
 		})
 	}
 }
+
+func TestDetailBatchPreservesOwnerAndBudget(t *testing.T) {
+	organization := "org_example"
+	key, err := attachment.ArchiveKey(organization, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := []attachment.ArchiveReference{{Key: key, SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", CompressedSize: 1, UncompressedSize: 7, Codec: "gzip", SchemaVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention}}
+	for _, test := range []struct {
+		name      string
+		bytes     int64
+		wantError bool
+	}{
+		{"request", 0, false},
+		{"maintenance", 8, false},
+		{"insufficient budget", 7, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			storage := &batchDetailCounter{}
+			owner, ok := attachment.DetailStore(LimitDetails(storage)).(attachment.DetailBatchStore)
+			if !ok {
+				t.Fatal("limiter removed batch reads")
+			}
+			ctx := t.Context()
+			if test.bytes > 0 {
+				ctx = (Budget{Items: 1, Bytes: test.bytes}).Context(ctx, Tenant{Organization: organization, Generation: 1})
+			}
+			rows, err := owner.ReadDetails(ctx, organization, refs)
+			if test.wantError {
+				if !errors.Is(err, ErrByteBudget) || storage.batches != 0 {
+					t.Fatalf("refused batch: calls=%d error=%v", storage.batches, err)
+				}
+				return
+			}
+			if err != nil || storage.batches != 1 || len(rows) != 1 || string(rows[0].Data) != "example" {
+				t.Fatalf("batch: calls=%d rows=%v error=%v", storage.batches, rows, err)
+			}
+		})
+	}
+}
+
+type batchDetailCounter struct {
+	detailCounter
+	batches int
+}
+
+func (s *batchDetailCounter) ReadDetails(_ context.Context, _ string, refs []attachment.ArchiveReference) ([]attachment.DetailReadResult, error) {
+	s.batches++
+	return []attachment.DetailReadResult{{Reference: refs[0], Data: []byte("example")}}, nil
+}
