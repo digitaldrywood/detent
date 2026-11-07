@@ -94,6 +94,7 @@ describe("the Work snapshot ordering", () => {
   it.each([
     { mode: "omitted", canceled: false }, { mode: "project-403", canceled: false },
     { mode: "omitted", canceled: true }, { mode: "project-403", canceled: true },
+    { mode: "counts-403", canceled: false }, { mode: "counts-without-callback", canceled: false },
   ])("evicts only the denied project after bootstrap success ($mode, canceled $canceled)", async ({ mode, canceled }) => {
     const source = workPaginationFixture();
     await source.control();
@@ -107,10 +108,12 @@ describe("the Work snapshot ordering", () => {
     let refuse = false;
     const fetch: FetchLike = async (input, init) => {
       if (input.endsWith("/app/bootstrap")) { probes++; return probe.promise; }
-      if (refuse && input.includes("/projects/proj_alpha")) return Response.json({ code: "access_denied" }, { status: 403 });
+      if (refuse && input.includes("/projects/proj_alpha") &&
+        (!mode.startsWith("counts-") || !input.includes("/work-items"))) return Response.json({ code: "access_denied" }, { status: 403 });
       return source.fetch(input, init);
     };
-    const http = makeWorkHttp({ ...source.client.http, fetch, onAuthorizationRejected: rejected });
+    const http = makeWorkHttp({ ...source.client.http, fetch,
+      ...(mode === "counts-without-callback" ? {} : { onAuthorizationRejected: rejected }) });
     const reads = ["proj_alpha", "proj_beta"].map((id) => getBoardRead(source.client, http, id, DEFAULT_VIEW_STATE));
     let pending = Promise.allSettled<unknown>([]);
     try {
@@ -128,8 +131,11 @@ describe("the Work snapshot ordering", () => {
         projects: source.client.bootstrap.projects.filter((project) => mode !== "omitted" || project.id !== "proj_alpha") }));
       await pending;
       await expect.poll(() => reads[0]!.snapshot().refreshing).toBe(false);
-      expect(rejected).toHaveBeenCalledTimes(1);
-      expect(rejected).toHaveBeenCalledWith("proj_alpha");
+      if (mode === "counts-without-callback") expect(rejected).not.toHaveBeenCalled();
+      else {
+        expect(rejected).toHaveBeenCalledTimes(1);
+        expect(rejected).toHaveBeenCalledWith("proj_alpha");
+      }
       expect(reads[0]!.snapshot().items).toHaveLength(0);
       expect(reads[1]!.snapshot().items).toBe(allowed);
       expect(writes.mock.calls.at(-1)?.[0]).toBeNull();
@@ -151,6 +157,7 @@ describe("the Work snapshot ordering", () => {
     { mode: "without-callback", denied: ["proj_alpha"] },
     { mode: "without-callback", denied: ["proj_alpha", "proj_beta"] },
     { mode: "project-401", denied: ["proj_alpha", "proj_beta"] },
+    { mode: "counts-without-callback", denied: ["proj_alpha", "proj_beta"] },
     { mode: "bootstrap-503", denied: [] },
     { mode: "bootstrap-network", denied: [] },
     { mode: "bootstrap-invalid", denied: [] },
@@ -179,6 +186,8 @@ describe("the Work snapshot ordering", () => {
         return Response.json({ projects: source.client.bootstrap.projects.filter((project) =>
           mode === "omitted" || mode === "without-callback" ? !denied.includes(project.id) : mode !== "mixed" || project.id !== "proj_alpha") });
       }
+      if (refuse && url.pathname.endsWith("/board/counts")) return Response.json({}, { status: mode === "counts-without-callback" ? 403 : 503 });
+      if (refuse && mode !== "counts-without-callback" && url.pathname.endsWith("/work-items")) return Response.json({ code: "access_denied" }, { status: 403 });
       if (refuse && url.pathname.endsWith("/work-board")) {
         expect(url.searchParams.getAll("project")).toEqual(projects);
         return Response.json({ code: "access_denied" }, { status: 403 });
@@ -187,13 +196,13 @@ describe("the Work snapshot ordering", () => {
       if (refuse && projectId !== undefined) {
         checks.push(projectId);
         const status = mode === "project-401" && projectId === "proj_beta" ? 401
-          : mode === "project-503" ? 503 : (mode === "project-403" || mode === "mixed") && denied.includes(projectId) ? 403 : 200;
+          : mode === "project-503" ? 503 : (mode === "project-403" || mode === "mixed" || mode === "counts-without-callback") && denied.includes(projectId) ? 403 : 200;
         if (status !== 200) return Response.json({}, { status });
       }
       return source.fetch(input, init);
     };
     const http = makeWorkHttp({ ...source.client.http, fetch,
-      ...(mode === "without-callback" ? {} : { onAuthorizationRejected: rejected }) });
+      ...((mode === "without-callback" || mode === "counts-without-callback") ? {} : { onAuthorizationRejected: rejected }) });
     const aggregate = getBoardRead(source.client, http, null, DEFAULT_VIEW_STATE, projects, true);
     const alternate = getBoardRead(source.client, http, null, { ...DEFAULT_VIEW_STATE, view: "list", tab: "all" }, projects, true);
     const singles = projects.map((id) => getBoardRead(source.client, http, id, DEFAULT_VIEW_STATE));
@@ -223,7 +232,7 @@ describe("the Work snapshot ordering", () => {
       }
       if (denied.length > 0) {
         expect(writes.mock.calls.at(-1)?.[0]).toBeNull();
-        if (mode !== "without-callback") {
+        if (mode !== "without-callback" && mode !== "counts-without-callback") {
           expect(rejected.mock.calls).toEqual(mode === "project-401" ? [[undefined]] : denied.map((id) => [id]));
         }
       } else {

@@ -15,6 +15,7 @@ export function workPaginationFixture() {
     const url = new URL(input, "http://fixture.test");
     if (url.pathname.endsWith("/fleet")) return Response.json(fleet);
     requests.push({ url, signal: init?.signal ?? undefined });
+    if (url.pathname.endsWith("/app/bootstrap")) return Response.json({ projects });
     if (hold !== undefined && url.pathname.endsWith("/work-items") && url.searchParams.has("cursor")) {
       const deferred = hold;
       hold = undefined;

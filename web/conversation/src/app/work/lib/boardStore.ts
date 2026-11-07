@@ -53,8 +53,12 @@ async function pooled<A, B>(inputs: readonly A[], work: (input: A) => Promise<B>
   return results;
 }
 
-function unauthorized(cause: unknown): boolean {
-  return typeof cause === "object" && cause !== null && "authorizationConfirmed" in cause && cause.authorizationConfirmed === true;
+function rejectUnauthorized(owner: string, cause: unknown): boolean {
+  if (!(typeof cause === "object" && cause !== null && "authorizationConfirmed" in cause && cause.authorizationConfirmed === true)) return false;
+  for (const projectId of cause instanceof WorkApiError ? cause.authorizationProjects ?? [undefined] : [undefined]) {
+    rejectBoardCache(owner, projectId);
+  }
+  return true;
 }
 
 function newer(a: string | null, b: string | null): boolean {
@@ -540,7 +544,8 @@ export class BoardRead {
       backlogLoading: continuing && this.view.view === "board", refreshing: true, error: null });
     if (!this.state.resolved) void this.restore(generation);
     this.countController?.abort();
-    this.countController = controller;
+    const countController = new AbortController();
+    this.countController = countController;
     const counts = new Map<string, readonly BoardCount[]>();
     let cardsReady = false;
     const withCounts = (entry: Loaded): Loaded => {
@@ -559,9 +564,9 @@ export class BoardRead {
     const supportsCounts = this.view.q.length === 0 && this.view.type.length === 0 && this.view.label.length === 0 &&
       this.view.assignee.length === 0 && this.view.priority.length === 0 && this.view.createdBy === undefined &&
       !this.view.completedFrom && !this.view.completedTo;
-    if (supportsCounts) void pooled(this.scope.filter((id) => targets === undefined || targets.has(id)), async (id) => {
+    void (supportsCounts ? pooled(this.scope.filter((id) => targets === undefined || targets.has(id)), async (id) => {
       try {
-        const rows = await this.http.getBoardCounts({ projectId: id, archived: this.view.archived === true, signal });
+        const rows = await this.http.getBoardCounts({ projectId: id, archived: this.view.archived === true, signal: countController.signal });
         if (signal.aborted || generation !== this.generation || this.revoked) return;
         this.countsPending.delete(id);
         counts.set(id, rows);
@@ -570,6 +575,7 @@ export class BoardRead {
         this.publish({ ...this.build(this.entries, this.state.asOf ?? Date.now()), refreshing: this.state.refreshing, backlogLoading: this.state.backlogLoading });
         this.persist();
       } catch (cause) {
+        if (rejectUnauthorized(this.owner, cause)) return;
         if (signal.aborted || generation !== this.generation || this.revoked) return;
         if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "not_ready") {
           this.countsPending.add(id);
@@ -577,6 +583,8 @@ export class BoardRead {
           if (cardsReady) this.publish(this.build(this.entries, this.state.asOf ?? Date.now()));
         }
       }
+    }) : Promise.resolve()).finally(() => {
+      if (this.countController === countController) this.countController = null;
     });
     void (async () => {
       try {
@@ -584,7 +592,10 @@ export class BoardRead {
           if (!continuing && prior.length === 0 && this.entries.length > 0) prior = this.entries;
           const previous = prior.find((entry) => entry.project.project_id === id);
           if (targets !== undefined && !targets.has(id) && previous !== undefined) return previous;
-          const entry = await this.loadProject(id, signal, previous, continuing);
+          const entry = await this.loadProject(id, signal, previous, continuing).catch((cause: unknown) => {
+            rejectUnauthorized(this.owner, cause);
+            throw cause;
+          });
           const issues = entry.issues;
           let changed = false;
           const previousItems = new Map(this.entries.flatMap((entry) => entry.issues).map((issue) => [issue.work_item_id, issue]));
@@ -621,11 +632,7 @@ export class BoardRead {
       } catch (cause) {
         if (signal.aborted || generation !== this.generation) return;
         for (const snapshot of snapshots.values()) snapshot.complete();
-        if (unauthorized(cause)) {
-          for (const projectId of cause instanceof WorkApiError ? cause.authorizationProjects ?? [undefined] : [undefined]) {
-            rejectBoardCache(this.owner, projectId);
-          }
-        } else this.publish({ ...this.state, loading: false, backlogLoading: false, refreshing: false,
+        if (!rejectUnauthorized(this.owner, cause)) this.publish({ ...this.state, loading: false, backlogLoading: false, refreshing: false,
           error: cause instanceof Error ? cause.message : String(cause) });
       } finally {
         if (generation !== this.generation) return;
