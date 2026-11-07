@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
@@ -43,6 +45,20 @@ func (s *Service) accessAuthority(scope nativeScope, write bool) accessstore.Aut
 }
 
 func (s *Service) authorizeAccessScope(ctx context.Context, r accessstore.Reader, scope nativeScope, write bool) error {
+	if scope.integrationRepository != "" {
+		reader, ok := r.(projectstore.Reader)
+		if !ok {
+			return accessstore.ErrDenied
+		}
+		project, err := reader.ProjectRecord(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if project.Core.DeletedAt != nil || project.Core.Profile != "native" || !strings.EqualFold(project.Settings.Repository, scope.integrationRepository) && !strings.EqualFold(project.Settings.CheckoutRepository, scope.integrationRepository) {
+			return accessstore.ErrDenied
+		}
+		return nil
+	}
 	if s.config.Hosted != nil && scope.organization != s.accessOrganization() {
 		return auth.ErrHostedIdentity
 	}

@@ -352,7 +352,7 @@ func validateWorkItemRecordCreateInput(ctx context.Context, scope nativeScope, p
 		return err
 	}
 	state := request.State
-	if request.GitHubIssueURL != "" {
+	if request.GitHubIssueURL != "" && (scope.integrationRepository == "" || request.State == "") {
 		state = "Triage"
 	}
 	if state == "" {
@@ -382,7 +382,7 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 	switch request := input.(type) {
 	case tracker.CreateIssue:
 		state := request.State
-		if request.GitHubIssueURL != "" {
+		if request.GitHubIssueURL != "" && (scope.integrationRepository == "" || request.State == "") {
 			state = "Triage"
 		}
 		if state == "" {
@@ -403,6 +403,9 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 			plan.linkedSource = &eventstore.LinkedSource{OrganizationID: scope.organization, ProjectID: scope.project, URL: canonical, TitleSupplied: request.Title != "", BodySupplied: request.Body != ""}
 		}
 		plan.issue = tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Number: plan.issue.Number, Revision: 1, Profile: "native"}, Type: request.Type, ReportContext: request.ReportContext, Title: title, Body: request.Body, State: state, Priority: request.Priority, Labels: request.Labels, Assignees: request.Assignees, Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now, UpdatedAt: now, LastActivityAt: now, Dependencies: []tracker.NativeWorkItemID{}, Blockers: []tracker.NativeDependency{}, Dependents: []tracker.NativeDependency{}, IgnoreDependencies: !plan.project.Core.RequireDependencies, DependencyReady: true, IssueContract: &issuecontract.State{}}
+		if err := s.applyScheduledRepairRecord(ctx, scope, &plan.issue); err != nil {
+			return plan, err
+		}
 		if plan.issue.Actor.Kind == "human" && scope.credential.HostedRole != "reporter" && request.Provenance == nil {
 			plan.issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(request.Body)
 		}

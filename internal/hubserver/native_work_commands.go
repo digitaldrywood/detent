@@ -24,6 +24,12 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 	if request.ScheduledFailure != nil {
 		return s.attributeScheduledFailure(ctx, scope, request)
 	}
+	if origin, ok := issueorigin.Parse(request.Body); ok && origin.Kind == "doctor" && origin.Instance == "github-actions" {
+		scope.scheduledRepair = s.observeScheduledRepair(ctx, scope, request)
+		if scope.scheduledRepair == nil {
+			return nil, nativePublicInvalid("Scheduled report is not authorized by the approved workflow")
+		}
+	}
 	scope.action = operatortool.FileIssue
 	operation := "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items"
 	if request.ChallengeToken != "" {

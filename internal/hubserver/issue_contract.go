@@ -283,7 +283,8 @@ func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope nati
 	if snapshot.Provenance.Provider != "github" || snapshot.Provenance.AuthorID != "github-actions[bot]" || strings.Contains(strings.ToLower(snapshot.Body), "detent:no-dispatch") || s.config.ImportBackend == nil {
 		return result
 	}
-	approval, found, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
+	approval, err := s.readTenantProjectPolicy(ctx, scope.organization, scope.project)
+	found := approval.Policy.ID != ""
 	if err != nil || !found || approval.Policy.Authored == nil {
 		return result
 	}
@@ -300,7 +301,7 @@ func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope nati
 	}
 	evidence := gate.ParseScheduledEvidence(snapshot.Body)
 	_, sourceRepository, _, err := tracker.ParseGitHubIssueURL(snapshot.URL)
-	repository, repoErr := policyRepository(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
+	repository, repoErr := s.scheduledRepository(ctx, scope)
 	result.importReason = "Scheduled CI import requires a verified failed job from the configured repository CI workflow"
 	if err != nil || repoErr != nil || len(evidence) != 1 || !strings.EqualFold(repository, sourceRepository) || !strings.EqualFold(repository, evidence[0].Repository) || !scheduledRepairOriginMatches(origin.Source, evidence[0]) {
 		return result
@@ -326,7 +327,8 @@ func (s *Service) observeScheduledRepair(ctx context.Context, scope nativeScope,
 	if len(evidence) != 1 || !scheduledRepairOriginMatches(origin.Source, evidence[0]) {
 		return nil
 	}
-	approval, found, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
+	approval, err := s.readTenantProjectPolicy(ctx, scope.organization, scope.project)
+	found := approval.Policy.ID != ""
 	if err != nil || !found || approval.Policy.Authored == nil {
 		return nil
 	}
@@ -334,7 +336,7 @@ func (s *Service) observeScheduledRepair(ctx context.Context, scope nativeScope,
 	if err != nil || contract.ScheduledRepairBody() == "" {
 		return nil
 	}
-	repository, err := policyRepository(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
+	repository, err := s.scheduledRepository(ctx, scope)
 	if err != nil || !strings.EqualFold(repository, evidence[0].Repository) {
 		return nil
 	}

@@ -330,7 +330,7 @@ func jsonEqual(left, right json.RawMessage) bool {
 }
 
 func (s *Service) ProcessOutbox(ctx context.Context) (bool, error) {
-	return false, ErrOutboxDisabled
+	return s.processGitHubOutboundRecord(ctx)
 }
 
 func (s *Service) claimOutbox(ctx context.Context) (result OutboxItem, found bool, resultErr error) {
@@ -393,7 +393,7 @@ func (w *outboxWorker) run(ctx context.Context) {
 	ticker := time.NewTicker(w.service.config.OutboxPollInterval)
 	defer ticker.Stop()
 	for {
-		for {
+		for range 64 {
 			var github func(context.Context) (bool, error)
 			if w.service.config.OutboxBackend != nil {
 				github = w.service.ProcessOutbox

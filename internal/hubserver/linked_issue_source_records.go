@@ -88,55 +88,60 @@ type linkedIssueCommentPlan struct {
 }
 
 func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHubIntake) error {
-	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
-	scope := nativeRequestScope(c)
-	itemID := tracker.NativeWorkItemID(c.Param("item"))
+	raw, err := s.applyLinkedIssueRecord(c.Request().Context(), nativeRequestScope(c), tracker.NativeWorkItemID(c.Param("item")), c.Request().Method+" "+c.Request().URL.EscapedPath(), request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, raw)
+}
+
+func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope, itemID tracker.NativeWorkItemID, operation string, request tracker.GitHubIntake) (json.RawMessage, error) {
+	ctx = isolateContentContext(s.runDetailContext(ctx))
 	if scope.credential.Scope != apiScopeWorker && scope.credential.Scope != apiScopeAdmin && scope.credential.Scope != apiScopeOperator {
-		return s.nativeAPIError(c, nativeNotFound())
+		return nil, nativeNotFound()
 	}
 	if s.config.AccessRepository == nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
+		return nil, workItemStorageUnavailable()
 	}
 	if scope.credential.Scope != apiScopeWorker {
 		scope.requireHostedAdmin = true
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return s.nativeAPIError(c, nativePublicInvalid("An idempotency key of at most 128 bytes is required"))
+		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	hash, err := nativeCommandHash(request)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
 	receipt, found, err := s.workItemRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	if found {
 		value, err := content.Receipt(ctx, receipt)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
-		return c.JSONBlob(http.StatusOK, value)
+		return value, nil
 	}
 	canonical, _, _, err := tracker.ParseGitHubIssueURL(request.Snapshot.URL)
 	if err != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("Intake source URL is invalid"))
+		return nil, nativePublicInvalid("Intake source URL is invalid")
 	}
 	if err := validateNativeContent(request.Snapshot.Title, request.Snapshot.Body, nil, nil, nil); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if err := validateImportProvenance(&request.Snapshot.Provenance); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	seen := make(map[string]bool, len(request.Snapshot.Comments))
 	for _, comment := range request.Snapshot.Comments {
 		if err := validateImportProvenance(&comment.Provenance); err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		if len(comment.Body) > 64<<10 || seen[comment.Provenance.ExternalID] {
-			return s.nativeAPIError(c, nativePublicInvalid("Intake discussion contains an oversized or duplicate comment"))
+			return nil, nativePublicInvalid("Intake discussion contains an oversized or duplicate comment")
 		}
 		seen[comment.Provenance.ExternalID] = true
 	}
@@ -169,21 +174,21 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 		return nil
 	})
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return nil, projectRecordError(err)
 	}
 	issue, err := s.hydrateWorkItemRecord(ctx, row, version)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if issue.LinkedSource == nil || issue.LinkedSource.URL != canonical {
-		return s.nativeAPIError(c, nativePublicInvalid("Intake source does not match the linked issue"))
+		return nil, nativePublicInvalid("Intake source does not match the linked issue")
 	}
 	originalIssue := issue
 	stale := false
 	if source.SnapshotObjectKey != "" {
 		old, err := content.LinkedIssueSnapshot(ctx, scope.organization, eventstore.Reference(source.SnapshotObjectKey, source.SnapshotSHA256, source.SnapshotBytes, source.SnapshotContentBytes))
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		stale = !request.Snapshot.Provenance.UpdatedAt.After(old.Provenance.UpdatedAt)
 	}
@@ -199,6 +204,9 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 		issue.UpdatedAt = payloadTimestamp(ctx, now)
 		issue.Revision++
 		issue.LinkedSource = &tracker.LinkedIssueSource{URL: canonical, Status: "complete"}
+		if err := s.applyScheduledRepairRecord(ctx, scope, &issue); err != nil {
+			return nil, err
+		}
 	}
 	snapshot := request.Snapshot
 	snapshot.URL = canonical
@@ -213,7 +221,7 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 			continue
 		}
 		if !errors.Is(lookupErr, corestore.ErrNotFound) {
-			return s.nativeAPIError(c, projectRecordError(lookupErr))
+			return nil, projectRecordError(lookupErr)
 		}
 		commentID := payloadNativeID(ctx, "cmt")
 		comment := tracker.NativeComment{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: itemID, ID: commentID, Revision: 1, Body: imported.Body, Actor: *nativeIntegrationActor("github"), Provenance: &imported.Provenance, CreatedAt: imported.Provenance.CreatedAt, UpdatedAt: imported.Provenance.UpdatedAt}
@@ -227,29 +235,29 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 		comment.Sequence = row.EventSequence + 1 + int64(len(newComments))
 		commentRaw, err := json.Marshal(comment)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		bodyRaw, err := json.Marshal(comment.Body)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		bodyKey, err := s.prepareWorkItemField(ctx, scope.organization, bodyRaw)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		provider, externalID := imported.Provenance.Provider, imported.Provenance.ExternalID
 		commentPlan := linkedIssueCommentPlan{comment: comment, row: corestore.Comment{OrganizationID: scope.organization, ID: commentID, ProjectID: scope.project, WorkItemID: itemID, Revision: 1, Sequence: comment.Sequence, BodyObjectKey: bodyKey, ActorKind: "integration", ActorPrincipalID: "github", ProvenanceProvider: &provider, ProvenanceExternalID: &externalID, SourceKey: &key, CreatedAt: comment.CreatedAt, UpdatedAt: comment.UpdatedAt}}
 		commentPlan.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: itemID, RecordID: commentID, Revision: 1}, commentRaw)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		eventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: itemID, ID: payloadNativeID(ctx, "evt"), Type: "comment.created", SchemaVersion: 1, Actor: comment.Actor, RecordedAt: comment.CreatedAt, Data: tracker.CollaborationData{CommentID: commentID}})
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		commentPlan.event, err = content.PrepareEvent(ctx, scope.organization, eventRaw)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		newComments = append(newComments, commentPlan)
 	}
@@ -258,7 +266,7 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 	if !stale {
 		snapshotRef, err = content.PrepareLinkedIssueSnapshot(ctx, scope.organization, snapshot)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 	}
 	var issuePlan workItemRecordPlan
@@ -270,30 +278,30 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 		issue.LinkedSource.Snapshot = &snapshot
 		issueRaw, err := json.Marshal(issue)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		issuePlan = workItemRecordPlan{project: project, current: row, issue: issue, fields: []string{"source_intake"}, eventType: "github.imported"}
 		fields, err = s.prepareWorkItemFields(ctx, scope.organization, issuePlan)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		issueVersion, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: itemID, RecordID: string(itemID), Revision: int64(issue.Revision)}, issueRaw)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		issueEventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: itemID, ID: payloadNativeID(ctx, "evt"), Type: "github.imported", SchemaVersion: 1, Actor: *nativeIntegrationActor("github"), RecordedAt: issue.UpdatedAt, Data: tracker.CollaborationData{Revision: issue.Revision, Operation: "source_intake", Reason: canonical}})
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		issueEvent, err = content.PrepareEvent(ctx, scope.organization, issueEventRaw)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 	}
 	if !stale {
 		searchDocument, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: itemID, ID: "issue:" + string(itemID), SourceID: string(itemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 	}
 	if stale {
@@ -301,19 +309,29 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 	}
 	response, err := json.Marshal(scope.reporterIssue(issue))
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	receipt, err = content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now}, response)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if s.database.plans() != nil && s.database.billingRepository == nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
+		return nil, workItemStorageUnavailable()
 	}
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
+	}
+	var summary *projectstore.GitHubOutbound
+	if !stale {
+		summary, err = s.prepareGitHubSummaryRecord(ctx, scope, issue)
+		if err != nil {
+			return nil, err
+		}
 	}
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.requireGitHubPolicyRecord(ctx, w, scope); err != nil {
+			return err
+		}
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
@@ -398,11 +416,16 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 				return err
 			}
 		}
+		if summary != nil {
+			if err := w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(ctx, *summary); err != nil {
+				return err
+			}
+		}
 		_, err = w.PutReceipt(ctx, receipt)
 		return err
 	})
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return nil, projectRecordError(err)
 	}
-	return c.JSONBlob(http.StatusOK, response)
+	return response, nil
 }

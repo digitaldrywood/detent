@@ -41,6 +41,7 @@ const nativeBase = "/api/v2/organizations/:organization/projects/:project"
 const nativeOrganizationIssuePath = "/api/v2/organizations/:organization/work-items/:item"
 
 type nativeScope struct {
+	integrationRepository string
 	duplicateSearch       *nativeDuplicateSearch
 	action                string
 	actionItem            string
