@@ -2759,7 +2759,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	h.scheduler, err = newTestScheduler(worker, SchedulerConfig{
 		OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project},
 		Machine:           Machine{ID: testsupport.NativeChangeMachineID, Hostname: "host", Capacity: 1, Version: "test"},
-		HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second,
+		HeartbeatInterval: time.Nanosecond, LeaseTTL: 90 * time.Second,
 		LeaseHold: h.leaseHold,
 		Now:       config.Clock,
 	})

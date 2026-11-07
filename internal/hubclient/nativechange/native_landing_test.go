@@ -36,8 +36,6 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 			setup.Context = t.Context()
 			execution := scenariotest.Underlying(setup.Execution).(*nativeExecution)
 			execution.data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: time.Now().Add(-11 * time.Minute)}
-			now := time.Now()
-			scenariotest.SetSchedulerNow(setup.Scheduler, now)
 			original := setup.Requests.Load()
 			func() {
 				setup.Requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
@@ -47,14 +45,15 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 				if err := setup.Scheduler.ReleaseClaim(t.Context(), setup.Issue.ID, "completed"); !nativeTransportUnavailable(err) {
 					t.Fatalf("completion outage = %v", err)
 				}
-				now = now.Add(2 * time.Minute)
-				scenariotest.SetSchedulerNow(setup.Scheduler, now)
+				if execution.completionOutageDeadline.IsZero() {
+					t.Fatal("completion outage did not establish its deadline")
+				}
+				execution.completionOutageDeadline = execution.completionOutageDeadline.Add(-2 * time.Minute)
 				setup.Requests.Store(original)
 			}()
-			if _, err := setup.Scheduler.RenewClaim(t.Context(), setup.Issue.ID, now); err != nil {
+			if _, err := setup.Scheduler.RenewClaim(t.Context(), setup.Issue.ID, time.Now()); err != nil {
 				t.Fatalf("outage discarded published completion: %v", err)
 			}
-			scenariotest.SetSchedulerNow(setup.Scheduler, time.Time{})
 
 		})
 	})
