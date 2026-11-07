@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,7 +18,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/multitracer"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -40,6 +44,33 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type entryKeyBoardTraceContext struct{}
+
+type entryKeyBoardTrace struct{}
+
+func (entryKeyBoardTrace) record(ctx context.Context, query string) {
+	if timing, ok := ctx.Value(entryKeyBoardTraceContext{}).(*requestTiming); ok && timing.trace != nil {
+		timing.trace(query, nil)
+	}
+}
+
+func (trace entryKeyBoardTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	trace.record(ctx, data.SQL)
+	return ctx
+}
+
+func (entryKeyBoardTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (entryKeyBoardTrace) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	return ctx
+}
+
+func (trace entryKeyBoardTrace) TraceBatchQuery(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
+	trace.record(ctx, data.SQL)
+}
+
+func (entryKeyBoardTrace) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
 func TestPostgresEntryKeyMoveItem(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
@@ -174,7 +205,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		req.Header.Set(cloudassert.Header, assertion)
 		response := httptest.NewRecorder()
 		if requestTrace != nil {
-			req = req.WithContext(withRequestTiming(req.Context(), requestTrace))
+			req = req.WithContext(context.WithValue(req.Context(), entryKeyBoardTraceContext{}, requestTrace))
 		}
 		target.Handler().ServeHTTP(response, req)
 		return response
@@ -323,7 +354,41 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 			}
 		})
 		other.config.Hosted.SharedEntry.verifier.Now = cfg.now
+		poolConfig := postgresStartupTemplate.NativeConfig(t, admin, connection.User, connection.Password)
+		poolConfig.MaxConns = int32(cfg.Postgres.Pool.MaxConnections)
+		poolConfig.ConnConfig.Tracer = multitracer.New(poolConfig.ConnConfig.Tracer, entryKeyBoardTrace{})
+		wire := &boardWire{}
+		dial := poolConfig.ConnConfig.DialFunc
+		poolConfig.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+			conn, err := dial(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			return &boardWireConn{Conn: conn, wire: wire, startup: true}, nil
+		}
+		pool, err := pgxpool.NewWithConfig(t.Context(), poolConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		measured, err := postgres.NewRepository(t.Context(), pool, cfg.Postgres.Pool)
+		if err != nil {
+			pool.Close()
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := measured.Close(); err != nil {
+				t.Error(err)
+			}
+		})
 		targets := []*Service{service, other}
+		for _, target := range targets {
+			originalTenant, originalAccess := target.config.TenantRepository, target.config.AccessRepository
+			target.config.TenantRepository, target.config.AccessRepository = measured, measured
+			t.Cleanup(func() {
+				target.config.TenantRepository, target.config.AccessRepository = originalTenant, originalAccess
+			})
+		}
+		expectedCosts := map[string][2]int{}
 		for _, target := range targets {
 			prepareReadProject(tracker.OrganizationID(target.config.Hosted.OrganizationID), "project_scale")
 		}
@@ -332,9 +397,14 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 			for _, target := range targets {
 				org := tracker.OrganizationID(target.config.Hosted.OrganizationID)
 				var project projectstore.Record
+				var organization accessstore.Organization
 				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 					var err error
 					project, err = r.ProjectRecord(t.Context(), "project_scale")
+					if err != nil {
+						return err
+					}
+					organization, err = r.AccessOrganization(t.Context())
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -354,7 +424,12 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					record := viewstore.BoardRecord{Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Number: issue.Number, Actor: tracker.Actor{Kind: issue.Actor.Kind}}, OrganizationID: org, ProjectID: "project_scale", WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("example#%06d", issue.Number)}, ActorPrincipalID: issue.Actor.PrincipalID, CreatedAt: clock, UpdatedAt: clock, Payload: payload}
+					issue.WebURL = target.nativeIssueResponse(tracker.NativeIssue{WebURL: issueBrowserPath(organization.Slug, project.Core.Slug, issue.Number)}).WebURL
+					board, list, relations, listBytes, err := boundBoardProjection(issue, viewstore.BoardReporterRelations{DependencyReady: true})
+					if err != nil {
+						t.Fatal(err)
+					}
+					record := viewstore.BoardRecord{PageIssue: &board, ListIssue: &list, ReporterRelations: &relations, ListBytes: listBytes, ProjectedAt: clock, Dispatchable: true, Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Number: issue.Number, Actor: tracker.Actor{Kind: issue.Actor.Kind}}, OrganizationID: org, ProjectID: "project_scale", WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("example#%06d", issue.Number)}, ActorPrincipalID: issue.Actor.PrincipalID, CreatedAt: clock, UpdatedAt: clock, Payload: payload}
 					if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 						if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "project_scale", NativeID: id, Number: int64(issue.Number), Title: issue.Title, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, WorkflowStateName: &issue.State}); err != nil {
 							return err
@@ -370,6 +445,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 				details := &boardDetailBatchCounter{DetailStore: target.runDetailStore()}
 				originalDetails := target.config.RunDetails
 				target.config.RunDetails = details
+				requireNativeStatus(t, requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": "project_scale", "limit": 50}, "connection_id": "board_warmup"}), http.StatusOK)
 				for sample := range 6 {
 					var mu sync.Mutex
 					statements := []string{}
@@ -379,7 +455,9 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 						statements = append(statements, strings.Join(strings.Fields(query), " "))
 					}}
 					started := time.Now()
+					wire.reset()
 					response := requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": "project_scale", "limit": 50}, "connection_id": "board_scale"})
+					exchanges, wireStatements := wire.stop()
 					elapsed := time.Since(started)
 					timingHeader := requestTrace.header(time.Now())
 					requestTrace = nil
@@ -404,7 +482,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 					for index, query := range statements {
 						if strings.HasPrefix(query, "BEGIN") {
 							begins++
-							if query != "BEGIN READ ONLY" {
+							if !strings.HasSuffix(query, " READ ONLY") {
 								t.Errorf("board opened write transaction: %s", query)
 							}
 						}
@@ -412,10 +490,15 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 							t.Logf("BOARD4 SQL %d %s", index+1, query)
 						}
 					}
-					t.Logf("BOARD4 size=%d tenant=%s sample=%d duration=%s queries=%d transactions=%d timing=%s", size, org, sample, elapsed, len(statements), begins, timingHeader)
-					if begins != 1 || len(statements) > 20 {
-						t.Errorf("board request used %d queries and %d transactions; budget 20 queries and 1 transaction", len(statements), begins)
+					t.Logf("BOARD4 size=%d tenant=%s sample=%d duration=%s queries=%d transactions=%d exchanges=%d timing=%s", size, org, sample, elapsed, len(statements), begins, exchanges, timingHeader)
+					if begins != 1 || len(statements) > 20 || wireStatements != len(statements) {
+						t.Errorf("board request queries=%d wire statements=%d exchanges=%d transactions=%d; budget 20 queries and 1 transaction", len(statements), wireStatements, exchanges, begins)
 					}
+					cost := [2]int{wireStatements, exchanges}
+					if expected, ok := expectedCosts["list:"+string(org)]; ok && expected != cost {
+						t.Fatalf("list cost changed: statements/exchanges=%v want=%v", cost, expected)
+					}
+					expectedCosts["list:"+string(org)] = cost
 				}
 				claims, err := resolver(string(org))(t.Context(), entryauthority.Origin{KeyID: "key_owner", CredentialBinding: strings.Repeat("a", 64), Subject: "owner", Issuer: "entry", Generation: 1})
 				if err != nil {
@@ -432,10 +515,15 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 						statements++
 						if strings.HasPrefix(query, "BEGIN") {
 							begins++
+							if !strings.HasSuffix(query, " READ ONLY") {
+								t.Errorf("full board opened write transaction: %s", query)
+							}
 						}
 					}}
-					ctx := postgres.WithTransactionTiming(withRequestTiming(t.Context(), timing), timing.span, func(started time.Time, query string) { timing.statement(started, query, nil) })
+					ctx := context.WithValue(t.Context(), entryKeyBoardTraceContext{}, timing)
+					wire.reset()
 					page, err := target.readBoardRecords(ctx, scope, url.Values{"include": {"board"}, "limit": {"2000"}})
+					exchanges, wireStatements := wire.stop()
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -450,10 +538,15 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 					if _, err := json.Marshal(page); err != nil {
 						t.Fatal(err)
 					}
-					t.Logf("BOARD4 full-board size=%d tenant=%s sample=%d duration=%s queries=%d transactions=%d", size, org, sample, time.Since(timing.start), statements, begins)
-					if statements > 50 || begins != 1 || details.scalar.Load() != 0 || details.batches.Load() != 0 {
-						t.Fatalf("full board queries=%d transactions=%d scalar=%d batches=%d", statements, begins, details.scalar.Load(), details.batches.Load())
+					t.Logf("BOARD4 full-board size=%d tenant=%s sample=%d duration=%s queries=%d transactions=%d exchanges=%d", size, org, sample, time.Since(timing.start), statements, begins, exchanges)
+					if statements > 50 || begins != 1 || wireStatements != statements || details.scalar.Load() != 0 || details.batches.Load() != 0 {
+						t.Fatalf("full board queries=%d wire statements=%d exchanges=%d transactions=%d scalar=%d batches=%d", statements, wireStatements, exchanges, begins, details.scalar.Load(), details.batches.Load())
 					}
+					cost := [2]int{wireStatements, exchanges}
+					if expected, ok := expectedCosts["board:"+string(org)]; ok && expected != cost {
+						t.Fatalf("board cost changed: statements/exchanges=%v want=%v", cost, expected)
+					}
+					expectedCosts["board:"+string(org)] = cost
 				}
 				target.config.RunDetails = originalDetails
 				revoked = true

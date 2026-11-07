@@ -27,10 +27,10 @@ func TestEntryKeyCurrentAuthority(t *testing.T) {
 				for _, member := range []bool{true, false} {
 					name := fmt.Sprintf("%s/%s/%s/member=%v", kind, access, role, member)
 					t.Run(name, func(t *testing.T) {
-						f := newHostedSharedFixture(t)
-						user := f.user(t, "key_owner", role, "key-owner@example.test", "write", "")
+						f := newEntryKeyFixture(t)
+						user := f.user(t, role)
 						if !member {
-							operatorSQL(t, f.hostedSecurityFixture, "UPDATE hosted_members SET active=0 WHERE user_id=?", user.identity.Subject)
+							f.exec(t, "UPDATE hosted_members SET active=false WHERE organization_id='org_security' AND user_id=$1", user.identity.Subject)
 						}
 						projects := []string(nil)
 						if access != "all" {
@@ -38,7 +38,7 @@ func TestEntryKeyCurrentAuthority(t *testing.T) {
 						}
 						key := apikey.KeyAuthority{ID: "key_matrix", Kind: kind, Permission: apikey.ScopeWrite, ProjectContext: apikey.ProjectContext{Access: access, Projects: projects}}
 						mutate := func(claims *cloudassert.Claims) {
-							claims.Key, claims.Subject, claims.ProviderOrganization, claims.Role = &key, user.identity.Subject, "org_provider", role
+							claims.Key, claims.Subject, claims.ProviderOrganization, claims.Role = &key, user.identity.Subject, "provider_org_security", role
 							if kind == "service" {
 								claims.Subject, claims.Role = "service:"+key.ID, "admin"
 							}
@@ -67,7 +67,7 @@ func TestEntryKeyCurrentAuthority(t *testing.T) {
 						if kind == "personal" && !member {
 							wantWrite = http.StatusForbidden
 						} else if kind == "personal" && role == "viewer" {
-							wantWrite = http.StatusNotFound
+							wantWrite = http.StatusForbidden
 						}
 						if write.Code != wantWrite {
 							t.Fatalf("write=%d want=%d %s", write.Code, wantWrite, write.Body.String())
@@ -83,7 +83,7 @@ func TestEntryKeyCurrentAuthority(t *testing.T) {
 							if err != nil || len(visible) != 1 || visible[0].ID != string(f.project) {
 								t.Fatalf("live key projects=%v error=%v", visible, err)
 							}
-							operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET deleted_at='2026-10-09T00:00:00Z' WHERE id=?", f.project)
+							f.exec(t, "UPDATE projects SET deleted_at='2026-10-09T00:00:00Z' WHERE organization_id='org_security' AND id=$1", f.project)
 							denied := f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, target: f.base + "/work-items", mutate: mutate})
 							if denied.Code != http.StatusNotFound {
 								t.Fatalf("deleted project read=%d %s", denied.Code, denied.Body.String())
@@ -92,12 +92,12 @@ func TestEntryKeyCurrentAuthority(t *testing.T) {
 							if err != nil || len(visible) != 0 {
 								t.Fatalf("deleted key projects=%v error=%v", visible, err)
 							}
-							operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET deleted_at=NULL WHERE id=?", f.project)
+							f.exec(t, "UPDATE projects SET deleted_at=NULL WHERE organization_id='org_security' AND id=$1", f.project)
 						}
 						if kind == "personal" && member {
-							operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM hosted_project_grants WHERE user_id=?", user.identity.Subject)
+							f.exec(t, "DELETE FROM hosted_project_grants WHERE organization_id='org_security' AND user_id=$1", user.identity.Subject)
 							denied := f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, target: f.base + "/work-items", mutate: mutate})
-							if denied.Code != http.StatusNotFound {
+							if denied.Code != http.StatusForbidden || !strings.Contains(denied.Body.String(), "access_denied") {
 								t.Fatalf("removed grant=%d %s", denied.Code, denied.Body.String())
 							}
 						}
@@ -105,11 +105,12 @@ func TestEntryKeyCurrentAuthority(t *testing.T) {
 							key.Projects = []string{"prj_other"}
 							denied := f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, target: f.base + "/work-items", mutate: mutate})
 							if kind == "service" || member {
-								if denied.Code != http.StatusForbidden || !strings.Contains(denied.Body.String(), "key_project_denied") {
+								if denied.Code != http.StatusForbidden || !strings.Contains(denied.Body.String(), "access_denied") {
 									t.Fatalf("scope refusal=%d %s", denied.Code, denied.Body.String())
 								}
 							}
 						}
+						f.assertOtherTenant(t)
 					})
 				}
 			}
@@ -118,11 +119,11 @@ func TestEntryKeyCurrentAuthority(t *testing.T) {
 }
 
 func TestEntryKeyCallReportsMoveItemRequestErrors(t *testing.T) {
-	f := newHostedSharedFixture(t)
-	user := f.user(t, "key_owner", "owner", "key-owner@example.test", "write", "")
+	f := newEntryKeyFixture(t)
+	user := f.user(t, "owner")
 	key := apikey.KeyAuthority{ID: "key_move", Kind: "personal", Permission: apikey.ScopeWrite, ProjectContext: apikey.ProjectContext{Access: "all"}}
 	mutate := func(claims *cloudassert.Claims) {
-		claims.Key, claims.Subject, claims.ProviderOrganization, claims.Role = &key, user.identity.Subject, "org_provider", "owner"
+		claims.Key, claims.Subject, claims.ProviderOrganization, claims.Role = &key, user.identity.Subject, "provider_org_security", "owner"
 	}
 	created := f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, method: http.MethodPost, target: f.base + "/work-items", body: "{\"body\":\"\\n## Acceptance criteria\\nComplete the requested work.\\n## Must not break\\nExisting behavior.\\n## How we know it worked\\nRun the project checks.\",\"idempotency_key\":\"move-errors\",\"state\":\"Todo\",\"title\":\"Move error reporting\"}", mutate: mutate})
 	requireNativeStatus(t, created, http.StatusOK)
@@ -131,7 +132,7 @@ func TestEntryKeyCallReportsMoveItemRequestErrors(t *testing.T) {
 	auditCount := func() int {
 		t.Helper()
 		var count int
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id=?", key.ID).Scan(&count); err != nil {
+		if err := f.admin.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE organization_id='org_security' AND session_id=$1", key.ID).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		return count
@@ -145,9 +146,13 @@ func TestEntryKeyCallReportsMoveItemRequestErrors(t *testing.T) {
 	}
 	requireNativeStatus(t, f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, method: http.MethodPost, target: "/internal/v1/keys/call", body: string(encodedRead), mutate: mutate}), http.StatusOK)
 	if auditCount() != beforeRead {
-		t.Fatal("successful reads wrote audit rows")
+		var events string
+		if err := f.admin.QueryRowContext(t.Context(), "SELECT string_agg(event || ':' || route, ', ' ORDER BY id) FROM hosted_audit WHERE organization_id='org_security' AND session_id=$1", key.ID).Scan(&events); err != nil {
+			t.Fatal(err)
+		}
+		t.Fatalf("successful reads wrote audit rows: before=%d after=%d events=%s", beforeRead, auditCount(), events)
 	}
-	operatorSQL(t, f.hostedSecurityFixture, "UPDATE hosted_members SET active=0 WHERE user_id=?", user.identity.Subject)
+	f.exec(t, "UPDATE hosted_members SET active=false WHERE organization_id='org_security' AND user_id=$1", user.identity.Subject)
 	beforeCatalog := auditCount()
 	requireNativeStatus(t, f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, method: http.MethodPost, target: "/internal/v1/keys/catalog", mutate: mutate}), http.StatusForbidden)
 	if auditCount() != beforeCatalog+1 {
@@ -155,13 +160,13 @@ func TestEntryKeyCallReportsMoveItemRequestErrors(t *testing.T) {
 	}
 	var catalogOperation string
 	var catalogStatus int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT route,status FROM hosted_audit WHERE session_id=? ORDER BY id DESC LIMIT 1", key.ID).Scan(&catalogOperation, &catalogStatus); err != nil {
+	if err := f.admin.QueryRowContext(t.Context(), "SELECT route,status FROM hosted_audit WHERE organization_id='org_security' AND session_id=$1 ORDER BY id DESC LIMIT 1", key.ID).Scan(&catalogOperation, &catalogStatus); err != nil {
 		t.Fatal(err)
 	}
 	if catalogOperation != "POST /internal/v1/keys/catalog" || catalogStatus != http.StatusForbidden {
 		t.Fatalf("catalog audit operation=%s status=%d", catalogOperation, catalogStatus)
 	}
-	operatorSQL(t, f.hostedSecurityFixture, "UPDATE hosted_members SET active=1 WHERE user_id=?", user.identity.Subject)
+	f.exec(t, "UPDATE hosted_members SET active=true WHERE organization_id='org_security' AND user_id=$1", user.identity.Subject)
 	move := func(requestID string, arguments map[string]any) *httptest.ResponseRecorder {
 		t.Helper()
 		arguments["project_id"], arguments["identifier"], arguments["request_id"] = f.project, issue.WorkItemID, requestID
@@ -202,7 +207,7 @@ func TestEntryKeyCallReportsMoveItemRequestErrors(t *testing.T) {
 	}
 	var operation, resource string
 	var status int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT route,json_extract(mutation_json,'$.resource'),status FROM hosted_audit WHERE session_id=? ORDER BY id DESC LIMIT 1", key.ID).Scan(&operation, &resource, &status); err != nil {
+	if err := f.admin.QueryRowContext(t.Context(), "SELECT route,resource,status FROM hosted_audit WHERE organization_id='org_security' AND session_id=$1 ORDER BY id DESC LIMIT 1", key.ID).Scan(&operation, &resource, &status); err != nil {
 		t.Fatal(err)
 	}
 	if operation != operatortool.MoveItem || resource != string(issue.WorkItemID) || status != http.StatusOK {
@@ -245,11 +250,11 @@ func TestEntryKeyMutationAuditCommit(t *testing.T) {
 		for _, failure := range []string{"cancel response", "reject audit insert", "reject audit update", "reject completed audit"} {
 			t.Run(transport+"/"+failure, func(t *testing.T) {
 				var logs hostedLogBuffer
-				f := newHostedSharedFixture(t, func(cfg *Config) {
+				f := newEntryKeyFixture(t, func(cfg *Config) {
 					cfg.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
 				})
-				user := f.user(t, "key_owner", "owner", "key-owner@example.test", "write", "")
-				operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET duplicate_challenge=0 WHERE id=?", f.project)
+				user := f.user(t, "owner")
+				f.exec(t, "UPDATE project_settings SET duplicate_challenge=false WHERE organization_id='org_security' AND project_id=$1", f.project)
 				for i := range 2 {
 					key := apikey.KeyAuthority{ID: fmt.Sprintf("key_audit_%d", i), Kind: "personal", Permission: apikey.ScopeWrite, ProjectContext: apikey.ProjectContext{Access: "all"}}
 					title := fmt.Sprintf("Audited mutation %d", i)
@@ -267,9 +272,9 @@ func TestEntryKeyMutationAuditCommit(t *testing.T) {
 					if i == 0 {
 						switch failure {
 						case "reject audit insert":
-							operatorSQL(t, f.hostedSecurityFixture, `CREATE TRIGGER reject_key_audit BEFORE INSERT ON hosted_audit WHEN NEW.event='key_call' BEGIN SELECT RAISE(ABORT,'audit unavailable'); END`)
+							f.rejectAudit(t, "INSERT", "")
 						case "reject audit update":
-							operatorSQL(t, f.hostedSecurityFixture, `CREATE TRIGGER reject_key_audit BEFORE UPDATE ON hosted_audit WHEN NEW.event='key_call' AND NEW.status=200 BEGIN SELECT RAISE(ABORT,'audit unavailable'); END`)
+							f.rejectAudit(t, "UPDATE", " AND NEW.status=200")
 						}
 					}
 					ctx, cancel := context.WithCancel(t.Context())
@@ -277,7 +282,7 @@ func TestEntryKeyMutationAuditCommit(t *testing.T) {
 					request := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(body)).WithContext(ctx)
 					request.Header.Set("Content-Type", "application/json")
 					claims := f.claims(nil, cloudassert.KindKey, http.MethodPost, request.URL.RequestURI(), body)
-					claims.Key, claims.Subject, claims.ProviderOrganization, claims.Role = &key, user.identity.Subject, "org_provider", "owner"
+					claims.Key, claims.Subject, claims.ProviderOrganization, claims.Role = &key, user.identity.Subject, "provider_org_security", "owner"
 					assertion, err := cloudassert.Sign(f.key, claims)
 					if err != nil {
 						t.Fatal(err)
@@ -288,7 +293,7 @@ func TestEntryKeyMutationAuditCommit(t *testing.T) {
 					if failure == "cancel response" {
 						writer.beforeWrite = func() {
 							var count int
-							if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id=? AND event='key_call' AND status=200", key.ID).Scan(&count); err != nil {
+							if err := f.admin.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE organization_id='org_security' AND session_id=$1 AND event='key_call' AND status=200", key.ID).Scan(&count); err != nil {
 								t.Fatal(err)
 							}
 							if count != 1 {
@@ -299,16 +304,16 @@ func TestEntryKeyMutationAuditCommit(t *testing.T) {
 					}
 					if failure == "reject completed audit" {
 						writer.beforeWrite = func() {
-							operatorSQL(t, f.hostedSecurityFixture, `CREATE TRIGGER reject_key_audit BEFORE UPDATE ON hosted_audit WHEN NEW.event='key_call' BEGIN SELECT RAISE(ABORT,'audit unavailable'); END`)
+							f.rejectAudit(t, "UPDATE", "")
 						}
 					}
 					auditStartedAt := f.service.config.now().UnixNano()
 					f.service.Handler().ServeHTTP(writer, request)
 					var items, audits int
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE title=?", title).Scan(&items); err != nil {
+					if err := f.admin.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id='org_security' AND title=$1", title).Scan(&items); err != nil {
 						t.Fatal(err)
 					}
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id=? AND event='key_call' AND recorded_at_ns BETWEEN ? AND ?", key.ID, auditStartedAt, f.service.config.now().UnixNano()).Scan(&audits); err != nil {
+					if err := f.admin.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE organization_id='org_security' AND session_id=$1 AND event='key_call' AND recorded_at_ns BETWEEN $2 AND $3", key.ID, auditStartedAt, f.service.config.now().UnixNano()).Scan(&audits); err != nil {
 						t.Fatal(err)
 					}
 					wantItems, wantAudits := 0, 1
@@ -336,15 +341,15 @@ func TestEntryKeyMutationAuditCommit(t *testing.T) {
 								t.Fatal("audit failure log exposed request content")
 							}
 						}
-						operatorSQL(t, f.hostedSecurityFixture, "DROP TRIGGER reject_key_audit")
+						f.exec(t, "DROP TRIGGER reject_key_audit ON hosted_audit")
 						replay := f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, method: http.MethodPost, target: target, body: string(body), mutate: func(claims *cloudassert.Claims) {
-							claims.Key, claims.Subject, claims.ProviderOrganization, claims.Role = &key, user.identity.Subject, "org_provider", "owner"
+							claims.Key, claims.Subject, claims.ProviderOrganization, claims.Role = &key, user.identity.Subject, "provider_org_security", "owner"
 						}})
 						requireNativeStatus(t, replay, http.StatusOK)
 						if !json.Valid(replay.Body.Bytes()) {
 							t.Fatalf("replay response is not one JSON document: %s", replay.Body.String())
 						}
-						if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE title=?", title).Scan(&items); err != nil || items != 1 {
+						if err := f.admin.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id='org_security' AND title=$1", title).Scan(&items); err != nil || items != 1 {
 							t.Fatalf("replay items=%d error=%v", items, err)
 						}
 					}
@@ -367,14 +372,14 @@ func TestEntryKeyAuditPreservesHandlerErrors(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var logs hostedLogBuffer
-			f := newHostedSharedFixture(t, func(cfg *Config) {
+			f := newEntryKeyFixture(t, func(cfg *Config) {
 				cfg.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
 			})
-			operatorSQL(t, f.hostedSecurityFixture, `CREATE TRIGGER reject_key_audit BEFORE UPDATE ON hosted_audit WHEN NEW.event='key_call' BEGIN SELECT RAISE(ABORT,'audit unavailable'); END`)
+			f.rejectAudit(t, "UPDATE", "")
 			request := httptest.NewRequest(http.MethodPost, f.base+"/work-items", nil)
 			claims := f.claims(nil, cloudassert.KindKey, http.MethodPost, request.URL.RequestURI(), nil)
 			claims.Key = &apikey.KeyAuthority{ID: "key_error", Kind: "service", Permission: apikey.ScopeWrite, ProjectContext: apikey.ProjectContext{Access: "all"}}
-			claims.Subject, claims.ProviderOrganization, claims.Role = "service:key_error", "org_provider", "admin"
+			claims.Subject, claims.ProviderOrganization, claims.Role = "service:key_error", "provider_org_security", "admin"
 			assertion, err := cloudassert.Sign(f.key, claims)
 			if err != nil {
 				t.Fatal(err)
