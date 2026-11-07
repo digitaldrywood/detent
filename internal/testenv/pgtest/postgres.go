@@ -8,6 +8,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -50,7 +51,7 @@ type Template struct {
 type server struct {
 	config *pgtransport.Connection
 	admin  *sql.DB
-	stop   func() error
+	stop   func(context.Context) error
 	mu     sync.Mutex
 	owned  map[string]struct{}
 }
@@ -270,6 +271,8 @@ func (p *Template) Close(ctx context.Context) error {
 	if p.server == nil {
 		return nil
 	}
+	ctx, cancel := cleanupContext(ctx)
+	defer cancel()
 	var err error
 	p.server.mu.Lock()
 	names := make([]string, 0, len(p.server.owned))
@@ -286,7 +289,7 @@ func (p *Template) Close(ctx context.Context) error {
 		err = errors.Join(err, p.server.drop(ctx, p.name))
 		p.name = ""
 	}
-	err = errors.Join(err, p.server.admin.Close(), p.server.stop())
+	err = errors.Join(err, p.server.admin.Close(), p.server.stop(ctx))
 	p.server = nil
 	return err
 }
@@ -401,7 +404,7 @@ func openServer(ctx context.Context, selection string) (_ *server, resultErr err
 	if selection == "" {
 		return nil, errNotConfigured
 	}
-	stop := func() error { return nil }
+	stop := func(context.Context) error { return nil }
 	if selection == "binary" {
 		var err error
 		selection, stop, err = startBinary(ctx)
@@ -411,7 +414,7 @@ func openServer(ctx context.Context, selection string) (_ *server, resultErr err
 	}
 	defer func() {
 		if resultErr != nil {
-			resultErr = errors.Join(resultErr, stop())
+			resultErr = errors.Join(resultErr, stop(ctx))
 		}
 	}()
 	config, err := connectionConfig(selection)
@@ -438,7 +441,7 @@ func openServer(ctx context.Context, selection string) (_ *server, resultErr err
 	return s, nil
 }
 
-func startBinary(ctx context.Context) (_ string, _ func() error, resultErr error) {
+func startBinary(ctx context.Context) (_ string, _ func(context.Context) error, resultErr error) {
 	dir, err := os.MkdirTemp("", "pg-")
 	if err != nil {
 		return "", nil, err
@@ -455,7 +458,7 @@ func startBinary(ctx context.Context) (_ string, _ func() error, resultErr error
 	if output, err := init.CombinedOutput(); err != nil {
 		return "", nil, fmt.Errorf("initialize disposable PostgreSQL: %w: %s", err, output)
 	}
-	processCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	processCtx, cancel := cleanupContext(ctx)
 	cmd := exec.CommandContext(processCtx, "postgres", "-D", "data", "-h", "", "-k", ".", "-c", "lc_messages=C", "-c", "max_connections=16", "-c", "logging_collector=off")
 	cmd.Dir = dir
 	cmd.Env = init.Env
@@ -472,19 +475,21 @@ func startBinary(ctx context.Context) (_ string, _ func() error, resultErr error
 	ready := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		scanner := bufio.NewScanner(stderr)
-		var once sync.Once
-		for scanner.Scan() {
-			if strings.Contains(scanner.Text(), "database system is ready to accept connections") {
-				once.Do(func() { close(ready) })
-			}
-		}
-		done <- errors.Join(scanner.Err(), cmd.Wait())
+		done <- errors.Join(drainStderr(stderr, ready), cmd.Wait())
 	}()
-	stop := func() error {
+	stop := func(ctx context.Context) error {
+		ctx, finish := cleanupContext(ctx)
+		defer finish()
 		cancel()
-		<-done
-		return os.RemoveAll(dir)
+		select {
+		case <-done:
+			return os.RemoveAll(dir)
+		case <-ctx.Done():
+			err := procgroup.TerminateTree(cmd, procgroup.GroupID(cmd))
+			err = errors.Join(err, stderr.Close())
+			<-done
+			return errors.Join(ctx.Err(), err, os.RemoveAll(dir))
+		}
 	}
 	select {
 	case <-ready:
@@ -493,7 +498,28 @@ func startBinary(ctx context.Context) (_ string, _ func() error, resultErr error
 		cancel()
 		return "", nil, fmt.Errorf("disposable PostgreSQL exited before readiness: %w", err)
 	case <-ctx.Done():
-		return "", nil, errors.Join(ctx.Err(), stop())
+		return "", nil, errors.Join(ctx.Err(), stop(ctx))
+	}
+}
+
+func drainStderr(stderr io.Reader, ready chan struct{}) error {
+	reader := bufio.NewReader(stderr)
+	for {
+		line, err := reader.ReadSlice('\n')
+		if bytes.Contains(line, []byte("database system is ready to accept connections")) {
+			close(ready)
+			_, err := io.Copy(io.Discard, reader)
+			return err
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 	}
 }
 

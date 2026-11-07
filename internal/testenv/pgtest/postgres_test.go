@@ -388,6 +388,89 @@ func TestBinarySetupFailureCleanup(t *testing.T) {
 	}
 }
 
+func TestBinaryStderrDrainsOversizedRecords(t *testing.T) {
+	const readiness = "database system is ready to accept connections\n"
+	oversized := strings.Repeat("x", 2*bufio.MaxScanTokenSize) + "\n"
+	for _, tc := range []struct {
+		name, output string
+	}{
+		{name: "before readiness", output: oversized + readiness},
+		{name: "after readiness", output: readiness + strings.Repeat(oversized, 16) + readiness},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stderr := strings.NewReader(tc.output)
+			ready := make(chan struct{})
+			if err := drainStderr(stderr, ready); err != nil {
+				t.Fatalf("drain server stderr: %v", err)
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("server stderr has %d unread bytes", stderr.Len())
+			}
+			select {
+			case <-ready:
+			default:
+				t.Fatal("server readiness was not reported")
+			}
+		})
+	}
+}
+
+func TestBinaryStderrFloodAndCleanup(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		expired bool
+	}{
+		{name: "canceled caller"},
+		{name: "expired deadline", expired: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, finish := testContext(t)
+			defer finish()
+			p := NewTemplate(migrateFixture)
+			if err := p.initialize(ctx, "binary"); err != nil {
+				t.Fatal(err)
+			}
+			dir := filepath.Dir(p.server.config.Host)
+			t.Cleanup(func() {
+				if p.server != nil {
+					if err := p.Close(ctx); err != nil {
+						t.Error(err)
+					}
+				}
+			})
+			if _, err := p.server.admin.ExecContext(ctx, `DO $$ BEGIN
+				FOR i IN 1..16 LOOP RAISE LOG '%', repeat('x', 131072); END LOOP;
+			END $$; CHECKPOINT`); err != nil {
+				t.Fatalf("server stalled while writing stderr: %v", err)
+			}
+			name, err := p.server.create(ctx, p.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := p.server.drop(ctx, name); err != nil {
+				t.Fatalf("drop after stderr flood: %v", err)
+			}
+			closeCtx, cancel := context.WithCancel(ctx)
+			if tc.expired {
+				cancel()
+				closeCtx, cancel = context.WithDeadline(ctx, time.Time{})
+			}
+			cancel()
+			err = p.Close(closeCtx)
+			if tc.expired {
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("expired cleanup error = %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("canceled caller prevented cleanup: %v", err)
+			}
+			if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("server cleanup left cluster files: %v", err)
+			}
+		})
+	}
+}
+
 func TestPostgresFailedSetupCleanup(t *testing.T) {
 	processTemplate.Database(t)
 	selection := serverSelection(processTemplate.server)
