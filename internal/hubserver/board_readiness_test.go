@@ -99,13 +99,13 @@ func TestBoardReadinessBeforeAndDuringBackfill(t *testing.T) {
 					t.Fatal(err)
 				}
 				var envelope struct {
-					Pending bool   `json:"projection_pending"`
-					Code    string `json:"code"`
+					Pending bool              `json:"projection_pending"`
+					Rows    []json.RawMessage `json:"rows"`
 				}
 				if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
 					t.Errorf("missing counts readiness envelope: %v", err)
 				}
-				if pending && (recorder.Code != http.StatusServiceUnavailable || !envelope.Pending || envelope.Code != "not_ready") {
+				if pending && (recorder.Code != http.StatusOK || !envelope.Pending || envelope.Rows == nil || len(envelope.Rows) != 0) {
 					t.Errorf("pending HTTP=%d %s", recorder.Code, recorder.Body.String())
 				}
 			}

@@ -111,11 +111,7 @@ func (s *Service) boardModelEndpoint(c echo.Context, status bool) error {
 		err = read(ctx)
 	}
 	if errors.Is(err, searchstore.ErrIndexPending) && !status {
-		return c.JSON(http.StatusServiceUnavailable, struct {
-			ProjectionPending bool   `json:"projection_pending"`
-			Code              string `json:"code"`
-			Message           string `json:"message"`
-		}{true, "not_ready", "Board projection is pending"})
+		return c.JSON(http.StatusOK, viewstore.BoardSummaryPage{ProjectionPending: true, Rows: []viewstore.BoardSummaryRecord{}})
 	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
