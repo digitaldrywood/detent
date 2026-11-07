@@ -42,6 +42,7 @@ func boundBoardProjection(projected tracker.NativeIssue, reporter viewstore.Boar
 	reporterIssue.Dependencies, reporterIssue.Blockers, reporterIssue.Dependents, reporterIssue.Related = boundedReporter.Dependencies, boundedReporter.Blockers, boundedReporter.Dependents, boundedReporter.Related
 	reporterIssue.DependencyReady, reporterIssue.BlockedReason, reporterIssue.UnblocksReason = boundedReporter.DependencyReady, boundedReporter.BlockedReason, boundedReporter.UnblocksReason
 	for _, issue := range []tracker.NativeIssue{list, reporterIssue} {
+		issue = boardIssueCollections(issue)
 		var raw []byte
 		raw, err = json.Marshal(operatortool.NativeItemPage(string(projected.ProjectID), tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{issue}}))
 		if err != nil {
