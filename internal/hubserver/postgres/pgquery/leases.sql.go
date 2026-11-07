@@ -15,26 +15,28 @@ import (
 
 const advanceLeaseAttempt = `-- name: AdvanceLeaseAttempt :one
 UPDATE native_attempts SET sequence=$1,
-status=CASE WHEN $2::boolean THEN status ELSE $3 END,
-payload_object_key=$4,
-checkpoint_object_key=COALESCE($5,checkpoint_object_key),
-artifacts_object_key=COALESCE($6,artifacts_object_key),
-updated_at=CASE WHEN $2::boolean THEN updated_at ELSE $7 END
-WHERE organization_id=$8 AND id=$9 AND lease_id=$10
-AND fencing_token=$11::bigint AND run_id=$12
-AND dispatch_generation=$13 AND sequence=$1-1
-AND (status='running' OR $2::boolean AND status=$3)
-RETURNING organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded
+cleanup_acknowledged_at=CASE WHEN $2::boolean THEN $3 ELSE cleanup_acknowledged_at END,
+status=CASE WHEN $4::boolean THEN status ELSE $5 END,
+payload_object_key=$6,
+checkpoint_object_key=COALESCE($7,checkpoint_object_key),
+artifacts_object_key=COALESCE($8,artifacts_object_key),
+updated_at=CASE WHEN $4::boolean THEN updated_at ELSE $3 END
+WHERE organization_id=$9 AND id=$10 AND lease_id=$11
+AND fencing_token=$12::bigint AND run_id=$13
+AND dispatch_generation=$14 AND sequence=$1-1
+AND (status='running' OR status='interrupted' AND $5='running' OR $4::boolean AND status=$5 OR $2::boolean AND status IN ('interrupted','cancelled') AND $5='cancelled')
+RETURNING organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at
 `
 
 type AdvanceLeaseAttemptParams struct {
 	NextSequence        int64
+	Termination         bool
+	Now                 *time.Time
 	UsageCorrection     bool
 	Status              string
 	PayloadObjectKey    string
 	CheckpointObjectKey *string
 	ArtifactsObjectKey  *string
-	Now                 time.Time
 	OrganizationID      tracker.OrganizationID
 	ID                  string
 	LeaseID             string
@@ -46,12 +48,13 @@ type AdvanceLeaseAttemptParams struct {
 func (q *Queries) AdvanceLeaseAttempt(ctx context.Context, arg AdvanceLeaseAttemptParams) (NativeAttempt, error) {
 	row := q.db.QueryRow(ctx, advanceLeaseAttempt,
 		arg.NextSequence,
+		arg.Termination,
+		arg.Now,
 		arg.UsageCorrection,
 		arg.Status,
 		arg.PayloadObjectKey,
 		arg.CheckpointObjectKey,
 		arg.ArtifactsObjectKey,
-		arg.Now,
 		arg.OrganizationID,
 		arg.ID,
 		arg.LeaseID,
@@ -78,6 +81,7 @@ func (q *Queries) AdvanceLeaseAttempt(ctx context.Context, arg AdvanceLeaseAttem
 		&i.UpdatedAt,
 		&i.StartedAtSubmicroNs,
 		&i.RunnerTokensRecorded,
+		&i.CleanupAcknowledgedAt,
 	)
 	return i, err
 }
@@ -208,7 +212,7 @@ func (q *Queries) GetAttemptReceipt(ctx context.Context, arg GetAttemptReceiptPa
 }
 
 const getLatestIssueAttempt = `-- name: GetLatestIssueAttempt :one
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded FROM native_attempts WHERE organization_id=$1 AND issue_id=$2 ORDER BY fencing_token DESC LIMIT 1
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at FROM native_attempts WHERE organization_id=$1 AND issue_id=$2 ORDER BY fencing_token DESC LIMIT 1
 `
 
 type GetLatestIssueAttemptParams struct {
@@ -237,15 +241,16 @@ func (q *Queries) GetLatestIssueAttempt(ctx context.Context, arg GetLatestIssueA
 		&i.UpdatedAt,
 		&i.StartedAtSubmicroNs,
 		&i.RunnerTokensRecorded,
+		&i.CleanupAcknowledgedAt,
 	)
 	return i, err
 }
 
 const getLatestIssueAttemptsByIssues = `-- name: GetLatestIssueAttemptsByIssues :many
-SELECT latest.organization_id, latest.id, latest.issue_id, latest.lease_id, latest.fencing_token, latest.run_id, latest.sequence, latest.status, latest.work_item_revision, latest.dispatch_generation, latest.payload_object_key, latest.checkpoint_object_key, latest.artifacts_object_key, latest.started_at, latest.updated_at, latest.started_at_submicro_ns, latest.runner_tokens_recorded
+SELECT latest.organization_id, latest.id, latest.issue_id, latest.lease_id, latest.fencing_token, latest.run_id, latest.sequence, latest.status, latest.work_item_revision, latest.dispatch_generation, latest.payload_object_key, latest.checkpoint_object_key, latest.artifacts_object_key, latest.started_at, latest.updated_at, latest.started_at_submicro_ns, latest.runner_tokens_recorded, latest.cleanup_acknowledged_at
 FROM unnest($1::bigint[]) AS requested(issue_id)
 CROSS JOIN LATERAL (
-  SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded FROM native_attempts
+  SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at FROM native_attempts
   WHERE organization_id=$2 AND issue_id=requested.issue_id
   ORDER BY fencing_token DESC
   LIMIT 1
@@ -284,6 +289,7 @@ func (q *Queries) GetLatestIssueAttemptsByIssues(ctx context.Context, arg GetLat
 			&i.UpdatedAt,
 			&i.StartedAtSubmicroNs,
 			&i.RunnerTokensRecorded,
+			&i.CleanupAcknowledgedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -326,7 +332,7 @@ func (q *Queries) GetLease(ctx context.Context, arg GetLeaseParams) (Lease, erro
 }
 
 const getLeaseAttempt = `-- name: GetLeaseAttempt :one
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded FROM native_attempts WHERE organization_id=$1 AND id=$2
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at FROM native_attempts WHERE organization_id=$1 AND id=$2
 `
 
 type GetLeaseAttemptParams struct {
@@ -355,6 +361,7 @@ func (q *Queries) GetLeaseAttempt(ctx context.Context, arg GetLeaseAttemptParams
 		&i.UpdatedAt,
 		&i.StartedAtSubmicroNs,
 		&i.RunnerTokensRecorded,
+		&i.CleanupAcknowledgedAt,
 	)
 	return i, err
 }
@@ -445,7 +452,7 @@ func (q *Queries) InsertLease(ctx context.Context, arg InsertLeaseParams) (Lease
 
 const insertLeaseAttempt = `-- name: InsertLeaseAttempt :one
 INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded
+VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at
 `
 
 type InsertLeaseAttemptParams struct {
@@ -503,6 +510,7 @@ func (q *Queries) InsertLeaseAttempt(ctx context.Context, arg InsertLeaseAttempt
 		&i.UpdatedAt,
 		&i.StartedAtSubmicroNs,
 		&i.RunnerTokensRecorded,
+		&i.CleanupAcknowledgedAt,
 	)
 	return i, err
 }
@@ -913,19 +921,19 @@ WITH locked AS MATERIALIZED (
  WHERE l.organization_id=$1 AND l.lease_id=$2
  FOR UPDATE OF l
 ), at AS MATERIALIZED (
- SELECT clock_timestamp() AS now FROM locked
+ SELECT COALESCE($3::timestamptz,clock_timestamp()) AS now FROM locked
 ), changed AS (
  UPDATE leases l SET
- renewed_at=CASE WHEN $3::text='renew' THEN at.now ELSE l.renewed_at END,
- expires_at=CASE WHEN $3::text='renew' THEN at.now+$4::bigint*interval '1 microsecond' ELSE l.expires_at END,
- landing_capacity=CASE WHEN $3::text='renew' AND $5::bigint>0 THEN $5::bigint ELSE l.landing_capacity END,
- released_at=CASE WHEN $3::text='renew' THEN l.released_at ELSE at.now END,
- release_reason=CASE WHEN $3::text='renew' THEN l.release_reason WHEN $3::text='expire' THEN 'expired' ELSE $6::text END
+ renewed_at=CASE WHEN $4::text='renew' THEN at.now ELSE l.renewed_at END,
+ expires_at=CASE WHEN $4::text='renew' THEN at.now+$5::bigint*interval '1 microsecond' ELSE l.expires_at END,
+ landing_capacity=CASE WHEN $4::text='renew' AND $6::bigint>0 THEN $6::bigint ELSE l.landing_capacity END,
+ released_at=CASE WHEN $4::text='renew' THEN l.released_at ELSE at.now END,
+ release_reason=CASE WHEN $4::text='renew' THEN l.release_reason WHEN $4::text='expire' THEN 'expired' ELSE $7::text END
  FROM locked,at
  WHERE l.organization_id=locked.organization_id AND l.lease_id=locked.lease_id
- AND locked.fencing_token=$7::bigint AND locked.released_at IS NULL
- AND CASE WHEN $3::text='expire' THEN locked.expires_at<=at.now ELSE locked.expires_at>at.now END
- AND ($3::text<>'renew' OR NOT EXISTS (
+ AND locked.fencing_token=$8::bigint AND locked.released_at IS NULL
+ AND CASE WHEN $4::text='expire' THEN locked.expires_at<=at.now ELSE locked.expires_at>at.now END
+ AND ($4::text<>'renew' OR NOT EXISTS (
   SELECT 1 FROM issues i
   JOIN project_workflow_states s ON s.organization_id=i.organization_id AND s.project_id=i.project_id AND s.name=i.workflow_state_name
   WHERE i.organization_id=locked.organization_id AND i.id=locked.issue_id AND s.terminal
@@ -939,10 +947,10 @@ WITH locked AS MATERIALIZED (
 ), cancelled AS (
  UPDATE native_attempts a SET status='cancelled',sequence=sequence+1,updated_at=c.released_at
  FROM changed c WHERE a.organization_id=c.organization_id AND a.lease_id=c.lease_id AND a.fencing_token=c.fencing_token
- AND a.status='running' AND $3::text<>'renew'
+ AND a.status='running' AND $4::text<>'renew'
 ), heartbeat AS (
  UPDATE machines m SET last_heartbeat_at=greatest(m.last_heartbeat_at,at.now),updated_at=greatest(m.updated_at,at.now)
- FROM changed c,at WHERE m.organization_id=c.organization_id AND m.id=c.machine_id AND $3::text<>'expire'
+ FROM changed c,at WHERE m.organization_id=c.organization_id AND m.id=c.machine_id AND $4::text<>'expire'
 )
 SELECT changed.organization_id, changed.lease_id, changed.fencing_token, changed.issue_id, changed.machine_id, changed.session_id, changed.work_item_revision, changed.landing_capacity, changed.acquired_at, changed.renewed_at, changed.expires_at, changed.released_at, changed.release_reason,true AS applied FROM changed
 UNION ALL SELECT locked.organization_id, locked.lease_id, locked.fencing_token, locked.issue_id, locked.machine_id, locked.session_id, locked.work_item_revision, locked.landing_capacity, locked.acquired_at, locked.renewed_at, locked.expires_at, locked.released_at, locked.release_reason,false AS applied FROM locked WHERE NOT EXISTS (SELECT 1 FROM changed)
@@ -951,6 +959,7 @@ UNION ALL SELECT locked.organization_id, locked.lease_id, locked.fencing_token, 
 type MutateLeaseCommandParams struct {
 	OrganizationID  tracker.OrganizationID
 	LeaseID         string
+	LeaseClock      *time.Time
 	Operation       string
 	TtlUs           int64
 	LandingCapacity int64
@@ -979,6 +988,7 @@ func (q *Queries) MutateLeaseCommand(ctx context.Context, arg MutateLeaseCommand
 	row := q.db.QueryRow(ctx, mutateLeaseCommand,
 		arg.OrganizationID,
 		arg.LeaseID,
+		arg.LeaseClock,
 		arg.Operation,
 		arg.TtlUs,
 		arg.LandingCapacity,
@@ -1006,7 +1016,7 @@ func (q *Queries) MutateLeaseCommand(ctx context.Context, arg MutateLeaseCommand
 }
 
 const pageIssueAttempts = `-- name: PageIssueAttempts :many
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded FROM native_attempts
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at FROM native_attempts
 WHERE organization_id=$1 AND issue_id=$2
 AND ($3::bigint=0 OR fencing_token<$3::bigint)
 ORDER BY fencing_token DESC LIMIT $4
@@ -1051,6 +1061,7 @@ func (q *Queries) PageIssueAttempts(ctx context.Context, arg PageIssueAttemptsPa
 			&i.UpdatedAt,
 			&i.StartedAtSubmicroNs,
 			&i.RunnerTokensRecorded,
+			&i.CleanupAcknowledgedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1063,7 +1074,7 @@ func (q *Queries) PageIssueAttempts(ctx context.Context, arg PageIssueAttemptsPa
 }
 
 const pageIssueAttemptsOldest = `-- name: PageIssueAttemptsOldest :many
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded FROM native_attempts
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at FROM native_attempts
 WHERE organization_id=$1 AND issue_id=$2
 AND ($3::bigint=0 OR fencing_token>$3::bigint)
 ORDER BY fencing_token LIMIT $4
@@ -1108,6 +1119,7 @@ func (q *Queries) PageIssueAttemptsOldest(ctx context.Context, arg PageIssueAtte
 			&i.UpdatedAt,
 			&i.StartedAtSubmicroNs,
 			&i.RunnerTokensRecorded,
+			&i.CleanupAcknowledgedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1120,7 +1132,7 @@ func (q *Queries) PageIssueAttemptsOldest(ctx context.Context, arg PageIssueAtte
 }
 
 const pageIssueCheckpointAttempts = `-- name: PageIssueCheckpointAttempts :many
-SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded FROM native_attempts
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at FROM native_attempts
 WHERE organization_id=$1 AND issue_id=$2
 AND checkpoint_object_key IS NOT NULL
 AND ($3::bigint=0 OR fencing_token<$3::bigint)
@@ -1166,6 +1178,7 @@ func (q *Queries) PageIssueCheckpointAttempts(ctx context.Context, arg PageIssue
 			&i.UpdatedAt,
 			&i.StartedAtSubmicroNs,
 			&i.RunnerTokensRecorded,
+			&i.CleanupAcknowledgedAt,
 		); err != nil {
 			return nil, err
 		}
