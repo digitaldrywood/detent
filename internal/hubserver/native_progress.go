@@ -279,7 +279,7 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 		candidate.DefectIssueID = "pending"
 	}
 	if err := candidate.ValidatePublication(o.request); err != nil {
-		return progresscheck.Record{}, err
+		return progresscheck.Record{}, nativeInvalid(err.Error())
 	}
 	var startingSequence int64
 	if o.guardRevision != nil {
