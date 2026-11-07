@@ -511,18 +511,12 @@ func BenchmarkOrganizationProductivity(b *testing.B) {
 
 func TestOrganizationProductivityTenant(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO organizations(id,name,local,created_at) VALUES('org_productivity_foreign','Foreign',0,?)", formatHubTime(f.service.config.now())); err != nil {
-		t.Fatal(err)
-	}
-	foreign := newNativeFixture(t, f.service, "org_productivity_foreign", "foreign")
+	foreign := newNativeFixture(t, f.service, f.project.OrganizationID+"_second", "foreign")
 	f.create(t, "readable")
 	foreign.create(t, "foreign sentinel")
-	for _, fixture := range []nativeFixture{f, foreign} {
-		rebuildTestAnalyticsRollups(t, f.service, nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID})
-	}
 	f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 	now := f.service.config.now()
-	report, err := f.service.readOrganizationProductivity(t.Context(), []string{string(f.project.ID), string(foreign.project.ID)}, operatortool.AnalyticsWindow{From: now.Add(-24 * time.Hour), To: now.Add(time.Hour)}, reportsFilter{})
+	report, err := f.service.readOrganizationProductivityPostgres(t.Context(), apiCredential{Scope: apiScopeAdmin}, []string{string(f.project.ID), string(foreign.project.ID)}, operatortool.AnalyticsWindow{From: now.Add(-24 * time.Hour), To: now.Add(time.Hour)}, reportsFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
