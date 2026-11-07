@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -121,6 +122,9 @@ type Config struct {
 func (c Config) normalized() Config {
 	if c.RunDetails == nil && c.Hosted != nil && c.Hosted.SharedEntry != nil {
 		c.RunDetails = c.Hosted.SharedEntry.RunDetails
+	}
+	if c.DatabaseBackend == DatabasePostgres && c.RunDetails != nil {
+		c.RunDetails = hubmaintenance.LimitDetails(c.RunDetails)
 	}
 	if c.runnerReleaseSignatureVerifier == nil {
 		c.runnerReleaseSignatureVerifier = update.VerifyChecksumSignature
