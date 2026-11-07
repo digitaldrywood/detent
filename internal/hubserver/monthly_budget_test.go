@@ -226,6 +226,107 @@ func TestMonthlyBudgetAdmission(t *testing.T) {
 	}
 }
 
+func TestMonthlyBudgetHistoricalAdmissionsCannotFundNewClaims(t *testing.T) {
+	for _, organization := range []bool{true, false} {
+		for _, archived := range []bool{false, true} {
+			t.Run(fmt.Sprintf("organization=%t/archived=%t", organization, archived), func(t *testing.T) {
+				now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+				first := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+				first.service.registerCostUsageRoutes(first.service.echo)
+				second := newNativeFixture(t, first.service, first.project.OrganizationID+"_second", "Example second project")
+				for i, f := range []nativeFixture{first, second} {
+					t.Run(fmt.Sprint("tenant-", i), func(t *testing.T) {
+						monthlyPolicyFixture(t, f, false)
+						r := placementFixtureRunner(t, f, fmt.Sprint("example-budget-", i), "budget", true, 2, "test-model", "gpt-6.1-sol")
+						if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+							return w.UpdateRunnerCapacityConfig(t.Context(), r.binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: now})
+						}); err != nil {
+							t.Fatal(err)
+						}
+						setMonthlyBudgetFixture(t, f, organization, budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64(20000))})
+						claim := func(issue tracker.NativeIssue, session string) tracker.NativeLease {
+							t.Helper()
+							response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, session+fmt.Sprint(i)))
+							requireNativeStatus(t, response, http.StatusOK)
+							var lease tracker.NativeLease
+							decodeHubResponse(t, response, &lease)
+							return lease
+						}
+						release := func(lease tracker.NativeLease) {
+							t.Helper()
+							requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+						}
+						issue := f.create(t, "Example completed work")
+						lease := claim(issue, "first")
+						active := f.createIndependent(t, "Example ongoing work")
+						activeLease := claim(active, "active")
+						observation := costTestObservation("cpu", now.Add(-time.Hour), now)
+						observation.AmountMicros, observation.Quantity = new(int64(30000)), new(3.0)
+						if _, err := recordPostgresTestCost(t, f.service.database, string(f.project.OrganizationID), string(f.project.ID), observation, now); err != nil {
+							t.Fatal(err)
+						}
+						if replay := claim(active, "active"); replay.ID != activeLease.ID || replay.FencingToken != activeLease.FencingToken {
+							t.Fatalf("drain replay changed lease: got %+v, want %+v", replay, activeLease)
+						}
+						release(lease)
+						for _, state := range []string{"Done", "Todo"} {
+							path := f.base + "/work-items/" + string(issue.WorkItemID)
+							var request any = tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "move-" + state}, ExpectedRevision: issue.Revision, State: state, Reason: "user_requested"}
+							path += "/workflow"
+							if archived {
+								action := "archive"
+								if state == "Todo" {
+									action = "restore"
+								}
+								path = f.base + "/work-items/" + string(issue.WorkItemID) + "/" + action
+								request = archiveRequest(issue, action)
+							}
+							response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, request)
+							requireNativeStatus(t, response, http.StatusOK)
+							decodeHubResponse(t, response, &issue)
+						}
+						release(activeLease)
+						continued := claim(active, "continue")
+						if continued.ID == activeLease.ID || continued.FencingToken <= activeLease.FencingToken {
+							t.Fatalf("active continuation lost fencing: before=%+v after=%+v", activeLease, continued)
+						}
+						release(continued)
+						response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "reopened"+fmt.Sprint(i)))
+						requireNativeStatus(t, response, http.StatusConflict)
+						var refusal struct {
+							apiErrorResponse
+							Details struct {
+								Budget budget.MonthlyDecision `json:"monthly_budget"`
+							} `json:"details"`
+						}
+						decodeHubResponse(t, response, &refusal)
+						if refusal.Code != "provider_capacity" || refusal.Details.Budget.Allowed || len(refusal.Details.Budget.Exhausted) != 1 {
+							t.Fatalf("budget refusal=%+v", refusal)
+						}
+						wantScope := "project"
+						if organization {
+							wantScope = "organization"
+						}
+						exhausted := refusal.Details.Budget.Exhausted[0]
+						if exhausted.Scope != wantScope || exhausted.Bucket != budget.SpriteInfrastructure || exhausted.CurrentMicros != 30000 || exhausted.CapMicros != 20000 {
+							t.Fatalf("budget exhaustion=%+v", exhausted)
+						}
+						var leases, admissions int
+						if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM leases WHERE organization_id=$1),(SELECT count(*) FROM monthly_budget_admissions WHERE organization_id=$1)`, f.project.OrganizationID).Scan(&leases, &admissions); err != nil {
+							t.Fatal(err)
+						}
+						if leases != 3 || admissions != 1 {
+							t.Fatalf("refused claim changed lifecycle: leases=%d admissions=%d, want 3 and 1", leases, admissions)
+						}
+						setMonthlyBudgetFixture(t, f, organization, budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64(30001))})
+						release(claim(issue, "recovered"))
+					})
+				}
+			})
+		}
+	}
+}
+
 func TestMonthlyBudgetDrainLifecycle(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
