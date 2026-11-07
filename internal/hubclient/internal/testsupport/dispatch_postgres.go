@@ -243,7 +243,11 @@ func DispatchRefreshProjections(t *testing.T, cfg hubserver.Config, service *hub
 			if !ok {
 				t.Fatal("PostgreSQL fixture owner is unavailable")
 			}
-			if _, err := admin.(*sql.DB).ExecContext(t.Context(), "ANALYZE issues,search_documents,search_postings,search_scope_documents,native_board_items,native_work_item_pages"); err != nil {
+			database, ok := admin.(*sql.DB)
+			if !ok {
+				t.Fatal("PostgreSQL fixture owner has an invalid type")
+			}
+			if _, err := database.ExecContext(t.Context(), "ANALYZE issues,search_documents,search_postings,search_scope_documents,native_board_items,native_work_item_pages"); err != nil {
 				t.Fatal(err)
 			}
 			return
