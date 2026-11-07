@@ -3,6 +3,7 @@ package hubserver
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -30,7 +32,7 @@ func sourceTransferPostgresFixture(t *testing.T) *Service {
 	t.Helper()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	details := &memoryRunDetails{}
+	details := &verifiedAttemptDetails{}
 	var logs bytes.Buffer
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -186,12 +188,27 @@ func seedSourceTransferAttempt(t *testing.T, s *Service, org tracker.Organizatio
 		if err != nil {
 			return err
 		}
-		run := tracker.NativeRunData{AttemptID: "attempt", RunID: "run", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), MachineID: "machine", Sequence: 1, Outcome: "succeeded"}
-		event, err := content.PrepareEvent(t.Context(), org, marshal(tracker.CollaborationEvent{ID: "event", OrganizationID: org, ProjectID: "project", AggregateID: "item", Type: "run.finished", Actor: tracker.Actor{Kind: "machine", PrincipalID: "machine"}, SchemaVersion: 1, RecordedAt: now, Data: tracker.CollaborationData{Run: &run}}))
+		run := tracker.NativeRunData{AttemptID: "attempt", RunID: "run", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), MachineID: "machine", Sequence: 1}
+		event, err := content.PrepareEvent(t.Context(), org, marshal(tracker.CollaborationEvent{ID: "event", OrganizationID: org, ProjectID: "project", AggregateID: "item", Type: "run.observed", Actor: tracker.Actor{Kind: "machine", PrincipalID: "machine"}, SchemaVersion: 1, RecordedAt: now, Data: tracker.CollaborationData{Run: &run}}))
 		if err != nil {
 			return err
 		}
-		if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "attempt", Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: "run", Sequence: 1, Status: "succeeded", StartedAt: now, PayloadObjectKey: event.PayloadObjectKey}); err != nil {
+		canonical, err := s.runDetailStore().StoreDetail(t.Context(), string(org), marshal(run))
+		if err != nil {
+			return err
+		}
+		if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "attempt", Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: "run", Sequence: 1, Status: "running", StartedAt: now, PayloadObjectKey: canonical.Key}); err != nil {
+			return err
+		}
+		run.Sequence, run.Outcome = 2, "succeeded"
+		if org == "org_second" {
+			run.Outcome = "failed"
+		}
+		canonical, err = s.runDetailStore().StoreDetail(t.Context(), string(org), marshal(run))
+		if err != nil {
+			return err
+		}
+		if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "attempt", Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: "run", Sequence: 2, Status: run.Outcome, PayloadObjectKey: canonical.Key}); err != nil {
 			return err
 		}
 		if _, err := w.AppendEvent(t.Context(), event); err != nil {
@@ -248,6 +265,47 @@ func TestPostgresSourceTransferCommitsAndReplays(t *testing.T) {
 			}
 			path := "/api/v2/organizations/" + string(org) + "/projects/project/work-items/item/source-recovery"
 			request := sourceTransferRequest{Mutation: tracker.Mutation{IdempotencyKey: "transfer"}, ExpectedRevision: 1, VersionID: "version", DestinationRunnerID: "destination"}
+			var canonicalKey string
+			if err := s.config.TenantRepository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				attempt, err := r.Attempt(t.Context(), "attempt")
+				if err != nil {
+					return err
+				}
+				canonicalKey = attempt.PayloadObjectKey
+				if _, err := r.(attemptArchiveReader).ArchiveObjectByKey(t.Context(), canonicalKey); !errors.Is(err, corestore.ErrNotFound) {
+					t.Fatalf("fixture must lack archive metadata: %v", err)
+				}
+				id := newRunDetailReference(attachment.ArchiveReference{Key: canonicalKey}, string(org), "").AttachmentID
+				if _, err := r.Attachment(t.Context(), "project", id); !errors.Is(err, corestore.ErrNotFound) {
+					t.Fatalf("fixture must lack attachment metadata: %v", err)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			details := s.config.RunDetails.(*verifiedAttemptDetails)
+			for _, scenario := range []string{"missing", "corrupt"} {
+				t.Run(scenario, func(t *testing.T) {
+					original := details.data[canonicalKey]
+					t.Cleanup(func() { details.data[canonicalKey] = original })
+					delete(details.data, canonicalKey)
+					if scenario == "corrupt" {
+						details.data[canonicalKey] = []byte(`{"sequence":2}`)
+					}
+					refused := request
+					refused.IdempotencyKey = scenario
+					requireNativeStatus(t, performHubAPIRequest(t, s, http.MethodPost, path, string(org)+"_token", refused), http.StatusInternalServerError)
+					if err := s.config.TenantRepository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+						row, err := r.WorkItem(t.Context(), "project", "item")
+						if err == nil && (row.Revision != 1 || row.DispatchGeneration != 0 || row.RecoveryRunnerID != "" || row.RecoveryVersionID != "") {
+							t.Errorf("refused transfer changed work item: %+v", row)
+						}
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
 			responses := make([]*httptest.ResponseRecorder, 2)
 			var requests sync.WaitGroup
 			for i := range responses {
@@ -272,6 +330,9 @@ func TestPostgresSourceTransferCommitsAndReplays(t *testing.T) {
 			decodeHubResponse(t, recoveryResponse, &recovered)
 			if recovered.SourceVersionID != "version" {
 				t.Fatalf("continuation source = %q", recovered.SourceVersionID)
+			}
+			if len(recovered.Attempts) != 1 || recovered.Attempts[0].Sequence != 2 || recovered.Attempts[0].Outcome == "" {
+				t.Fatalf("continuation lost canonical attempt: %+v", recovered.Attempts)
 			}
 			replay := performHubAPIRequest(t, s, http.MethodPost, path, string(org)+"_token", request)
 			requireNativeStatus(t, replay, http.StatusOK)

@@ -279,11 +279,18 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 				return err
 			}
 		}
-		snapshots = make([]tenantAttemptSnapshot, 0, len(wantedAttempts))
+		selectedAttempts := make([]leasestore.Attempt, 0, len(wantedAttempts))
 		for _, attempt := range attemptPage.Items {
-			if _, wanted := wantedAttempts[attempt.ID]; !wanted {
-				continue
+			if _, wanted := wantedAttempts[attempt.ID]; wanted {
+				selectedAttempts = append(selectedAttempts, attempt)
 			}
+		}
+		r, err = readAttemptMetadataSnapshot(ctx, r, scope, item, selectedAttempts, false)
+		if err != nil {
+			return err
+		}
+		snapshots = make([]tenantAttemptSnapshot, 0, len(selectedAttempts))
+		for _, attempt := range selectedAttempts {
 			if attempt.IssueID != row.ID {
 				return corestore.ErrNotFound
 			}
@@ -301,7 +308,11 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 			if event.WorkItemID != row.NativeID {
 				return corestore.ErrNotFound
 			}
-			snapshots = append(snapshots, tenantAttemptSnapshot{attempt: attempt, lease: lease, event: event})
+			snapshot := tenantAttemptSnapshot{attempt: attempt, lease: lease, event: event}
+			if err := readTenantAttemptPayload(ctx, r, &snapshot); err != nil {
+				return err
+			}
+			snapshots = append(snapshots, snapshot)
 		}
 		projectSequence, err = r.ProjectEventSequence(ctx, scope.project)
 		if err != nil {
@@ -832,6 +843,10 @@ func (s *Service) readNativeRecoveryAttemptSnapshot(ctx context.Context, scope n
 		if snapshot.attempt.IssueID != issueID {
 			return corestore.ErrNotFound
 		}
+		r, err = readAttemptMetadataSnapshot(ctx, r, scope, item, []leasestore.Attempt{snapshot.attempt}, false)
+		if err != nil {
+			return err
+		}
 		snapshot.lease, err = r.Lease(ctx, snapshot.attempt.LeaseID)
 		if err != nil {
 			return err
@@ -843,7 +858,10 @@ func (s *Service) readNativeRecoveryAttemptSnapshot(ctx context.Context, scope n
 		if err == nil && (snapshot.event.WorkItemID != tracker.NativeWorkItemID(item) || snapshot.event.AttemptID != attemptID) {
 			return corestore.ErrNotFound
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		return readTenantAttemptPayload(ctx, r, &snapshot)
 	})
 	if err != nil {
 		return tenantAttemptSnapshot{}, projectRecordError(err)
