@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -302,6 +304,14 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			return leasestore.Lease{}, providerWait("provider_candidate_changed", "Work item changed after local model selection; refresh before claiming")
 		}
 	}
+	runnerAPI := true
+	if plan.descriptor.Configuration != nil {
+		workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(scope.project), plan.descriptor)
+		if err != nil {
+			return leasestore.Lease{}, err
+		}
+		runnerAPI = workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered
+	}
 	var lease leasestore.Lease
 	err := s.writeNativeClaimCommand(ctx, scope, func(ctx context.Context, w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
@@ -458,6 +468,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 				return ErrNoClaimableWork
 			}
 		}
+		exposure := budget.CostExposure{RunnerAPI: !workspaceItem && runnerAPI}
 		if plan.replay == nil {
 			capacity := min(identity.CapacityLimit, identity.ReportedCapacity, int64(identity.CapacityConfig.LocalLimit), int64(identity.CapacityConfig.ClientLimit), int64(identity.CapacityConfig.RuntimeLimit))
 			projectCapacity, projectCapacityConfigured := identity.ProjectCapacityLimits[scope.project]
@@ -476,6 +487,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			if err != nil {
 				return err
 			}
+			exposure.SpriteInfrastructure = machine.SpriteName != "" && machine.SpriteName == machine.Hostname
 			machineUsed, err := w.Usage(ctx, machine.ID)
 			if err != nil {
 				return err
@@ -489,6 +501,19 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			}
 			if runnerUsed >= int64(availableCapacity) || projectCapacityConfigured && projectUsed >= int64(projectCapacity) {
 				return ErrNoClaimableWork
+			}
+		} else {
+			monthlyLease, err := w.BillingMonthlyLease(ctx, tracker.LeaseID(plan.replay.LeaseID))
+			if err == nil {
+				exposure = budget.CostExposure{LunaAPI: monthlyLease.LunaAPI, RunnerAPI: monthlyLease.RunnerAPI, SpriteInfrastructure: monthlyLease.SpriteInfrastructure}
+			} else if errors.Is(err, corestore.ErrNotFound) {
+				machine, err := w.Machine(ctx, string(identity.MachineID))
+				if err != nil {
+					return err
+				}
+				exposure.SpriteInfrastructure = machine.SpriteName != "" && machine.SpriteName == machine.Hostname
+			} else {
+				return err
 			}
 		}
 		var selectedReservation *providercapacity.Reservation
@@ -546,16 +571,29 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 				}
 			}
 		}
-		organizationBudget, err := w.BillingMonthlyPolicy(ctx, "")
+		input, err := readBillingMonthlyBudgetInput(ctx, w, scope, authoritativeNow)
+		if err != nil {
+			return err
+		}
+		_, err = w.BillingMonthlyAdmission(ctx, tracker.WorkItemID(item.ID))
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		projectBudget, err := w.BillingMonthlyPolicy(ctx, scope.project)
-		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		input.Exposure, input.Admitted = exposure, err == nil
+		decision, err := billingstore.EvaluateMonthlyBudget(input)
+		if err != nil {
 			return err
 		}
-		if organizationBudget.Policy.Enabled || projectBudget.Policy.Enabled {
-			return ErrBillingBudgetUnavailable
+		if !decision.Allowed {
+			return &nativeError{Code: "provider_capacity", Message: monthlyBudgetRefusal(decision), status: http.StatusConflict, Details: map[string]any{"monthly_budget": decision}}
+		}
+		if lease.LeaseID == leaseID {
+			if err := w.RecordBillingMonthlyAdmission(ctx, billingstore.MonthlyAdmission{OrganizationID: scope.organization, IssueID: tracker.WorkItemID(item.ID), AdmittedAt: authoritativeNow}); err != nil {
+				return err
+			}
+			if err := w.RecordBillingMonthlyLease(ctx, billingstore.MonthlyLease{OrganizationID: scope.organization, LeaseID: tracker.LeaseID(lease.LeaseID), LunaAPI: exposure.LunaAPI, RunnerAPI: exposure.RunnerAPI, SpriteInfrastructure: exposure.SpriteInfrastructure}); err != nil {
+				return err
+			}
 		}
 		if cursor != nil {
 			written, err := w.PutSelectionCursor(ctx, *cursor, cursor.Revision)
