@@ -11,37 +11,11 @@ import (
 	"github.com/labstack/echo/v4"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
-	"github.com/digitaldrywood/detent/internal/projecticon"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type ProjectIntegration struct {
-	Icon                      *projecticon.Icon     `json:"project_icon"`
-	AgingEnabled              bool                  `json:"aging_enabled"`
-	Name                      string                `json:"name"`
-	DuplicateChallenge        bool                  `json:"duplicate_challenge"`
-	ArchiveCompletedAfterDays *int                  `json:"archive_completed_after_days"`
-	ArchiveCancelledAfterDays *int                  `json:"archive_cancelled_after_days"`
-	WorkflowSource            string                `json:"workflow_source,omitempty"`
-	WorkflowSourceRevision    string                `json:"workflow_source_revision,omitempty"`
-	WorkflowMarkdown          string                `json:"workflow_markdown,omitempty"`
-	States                    []tracker.NativeState `json:"states,omitempty"`
-	Profile                   string                `json:"profile"`
-	Revision                  tracker.Revision      `json:"revision,string"`
-	Intake                    string                `json:"intake"`
-	ManualImportEnabled       bool                  `json:"manual_import_enabled"`
-	Projection                string                `json:"projection"`
-	RepositoryEnabled         bool                  `json:"repository_enabled"`
-	GitHubTransportAvailable  *bool                 `json:"github_transport_available,omitempty"`
-	GitHubAppSlug             string                `json:"github_app_slug,omitempty"`
-	GitHubAppInstallURL       string                `json:"github_app_install_url,omitempty"`
-	GitHubAppInstalled        *bool                 `json:"github_app_installed,omitempty"`
-	Repository                string                `json:"repository,omitempty"`
-	CheckoutVerified          bool                  `json:"checkout_verified"`
-	CheckoutRepository        string                `json:"checkout_repository,omitempty"`
-	Authority                 map[string]string     `json:"authority"`
-	RepositoryID              int64                 `json:"-"`
-}
+type ProjectIntegration = projectstore.Integration
 
 type GitHubAppInstallation struct {
 	Slug       string

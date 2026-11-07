@@ -11,6 +11,7 @@ import (
 )
 
 type tableLifecycle struct {
+	Scope     string `json:"scope,omitempty"`
 	Class     string `json:"class"`
 	Retention string `json:"retention,omitempty"`
 }
@@ -93,7 +94,14 @@ func checkTableLifecycles(schema map[string][]string, policy tableLifecyclePolic
 		}
 		if lifecycle.Class == "page_read_model" {
 			missing := []string{}
-			for _, required := range []string{"organization_id", "project_id", "work_item_id", "revision", "source_generation", "source_at", "projected_at"} {
+			requiredColumns := []string{"organization_id", "project_id", "revision", "source_generation", "source_at", "projected_at"}
+			if lifecycle.Scope != "project" {
+				requiredColumns = append(requiredColumns, "work_item_id")
+			}
+			if lifecycle.Scope != "" && lifecycle.Scope != "project" {
+				problems = append(problems, table+": unknown page scope "+lifecycle.Scope)
+			}
+			for _, required := range requiredColumns {
 				if !slices.Contains(columns, required) {
 					missing = append(missing, required)
 				}
@@ -171,6 +179,14 @@ func TestTableLifecycleViolations(t *testing.T) {
 		{name: "existing debt cannot cover another column", statement: `ALTER TABLE native_attempts ADD COLUMN extra_json TEXT`, want: "native_attempts.extra_json: inline history payload"},
 
 		{name: "page model rejects serialized payload", statement: `ALTER TABLE native_work_item_pages ADD COLUMN extra_json TEXT`, want: "native_work_item_pages.extra_json: inline history payload"},
+		{name: "project page scope", statement: `CREATE TABLE example_project_page(organization_id TEXT,project_id TEXT,revision BIGINT,source_generation BIGINT,source_at TIMESTAMPTZ,projected_at TIMESTAMPTZ,body TEXT)`, mutate: func(p tableLifecyclePolicy) {
+			p.Tables["example_project_page"] = tableLifecycle{Class: "page_read_model", Scope: "project", Retention: "current project display"}
+		}},
+		{name: "unknown page scope", mutate: func(p tableLifecyclePolicy) {
+			v := p.Tables["native_work_item_pages"]
+			v.Scope = "unknown"
+			p.Tables["native_work_item_pages"] = v
+		}, want: "native_work_item_pages: unknown page scope"},
 		{name: "page model requires checkpoint", statement: `ALTER TABLE native_work_item_pages DROP COLUMN source_generation`, want: "native_work_item_pages: page read model is missing source_generation"},
 		{name: "history cannot become page content", mutate: func(p tableLifecyclePolicy) {
 			p.Tables["native_attempt_events"] = tableLifecycle{Class: "page_read_model", Retention: "current page"}
