@@ -33,7 +33,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -62,6 +61,10 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		code = 1
 	}
+	if err := testsupport.CloseNativeChangePostgres(cleanup); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = 1
+	}
 	cancel()
 	if err := os.RemoveAll(scratch); err != nil {
 		panic(err)
@@ -70,10 +73,6 @@ func TestMain(m *testing.M) {
 }
 
 const nativeChangeAdminToken = "native-change-admin"
-
-var nativeRuntimeDatabasePath = testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
-	return store.Open(ctx, store.Config{Path: path})
-})
 
 // nativeChangeHub is a real hub with a native project whose workflow has a
 // review lane, and a worker client and scheduler that claim from it.
@@ -244,6 +243,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if config.RunDetails == nil {
 		config.RunDetails = &archivedRunDetails{}
 	}
+	config = testsupport.NativeChangePostgresConfig(t, config)
 	service, err := hubserver.Open(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -38,7 +39,7 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 
 	t.Parallel()
 	const admin = "native-integration-admin"
-	service, err := hubserver.Open(t.Context(), hubserver.Config{Content: newHubContentStore(), RunDetails: &archivedRunDetails{}, DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(admin)})
+	service, err := hubserver.Open(t.Context(), testsupport.NativeChangePostgresConfig(t, hubserver.Config{Content: newHubContentStore(), RunDetails: &archivedRunDetails{}, DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(admin)}))
 	if err != nil {
 		t.Fatal(err)
 	}

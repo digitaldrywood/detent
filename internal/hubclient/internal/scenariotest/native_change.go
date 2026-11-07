@@ -2648,7 +2648,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if config.RunDetails == nil {
 		config.RunDetails = &archivedRunDetails{}
 	}
-	config = testsupport.DispatchPostgresConfig(t, config)
+	config = testsupport.NativeChangePostgresConfig(t, config)
 	service, err := hubserver.Open(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)

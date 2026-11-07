@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -22,7 +23,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -236,15 +236,7 @@ func TestNativeSecurityAuditRetainsProviderReservation(t *testing.T) {
 	cfg.Agents.ModelSelection.ComplexModel = new("complex-model")
 	cfg.Agents.Backends = []config.AgentBackend{{ID: "audit", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-audit"}}
 	cfg.Agents.Routes = []config.AgentRoute{{Name: "audit", Role: runner.RoleSecurityAudit, Backend: "audit", Model: "audit-model", Default: true}}
-	sessions, err := store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := sessions.Close(); err != nil {
-			t.Error(err)
-		}
-	})
+	sessions := api.NewRunnerSessions(h.native)
 	agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: &providerPreviewWorkspace{}, AgentBackends: map[string]runner.AgentBackend{"audit": backend}, Store: sessions, SecurityAuditRoot: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)

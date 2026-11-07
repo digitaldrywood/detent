@@ -29,7 +29,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -124,15 +123,7 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessions, err := store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := sessions.Close(); err != nil {
-			t.Error(err)
-		}
-	})
+	sessions := api.NewRunnerSessions(h.native)
 	provider := NewReviewAgent()
 	agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource,
 		Store: sessions, ProjectID: "local", Workspace: backend, AgentBackend: provider,
