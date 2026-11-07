@@ -344,8 +344,8 @@ func (s *session) CollaborationVersions(ctx context.Context, keys []eventstore.C
 	if len(keys) == 0 {
 		return []eventstore.CollaborationVersion{}, nil
 	}
-	if len(keys) > 64 {
-		return nil, corestore.ErrInvalidPage
+	if err := checkPage(len(keys)); err != nil {
+		return nil, err
 	}
 	ids := make([]string, len(keys))
 	revisions := make([]int64, len(keys))

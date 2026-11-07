@@ -5,15 +5,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -57,7 +62,18 @@ func (r commentPageCountingReader) CollaborationVersions(ctx context.Context, ke
 }
 
 func TestCommentPageUsesSetBasedVersions(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	var exchanges atomic.Int64
+	baselineCost := [2]int64{}
+	repository, _ := projectRecordPostgresWithAdmin(t, 3, func(config *pgxpool.Config) {
+		dial := config.ConnConfig.DialFunc
+		config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+			conn, err := dial(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			return &nativeLeaseWireConn{Conn: conn, exchanges: &exchanges, startup: true}, nil
+		}
+	})
 	objects := &pageObjectProbe{DetailStore: &memoryRunDetails{}, t: t, repository: repository}
 	service := openLocalPostgresHubTestService(t, repository, Config{RunDetails: hubmaintenance.LimitDetails(objects)})
 	service.echo.GET(nativeBase+"/work-items/:item/relationships", service.GetWorkItemRelationships, service.requireNativeScope(apiScopeWorker, apiScopeOperator))
@@ -103,7 +119,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 		path += "/" + string(issue.WorkItemID) + "/comments"
 		var firstComment, secondComment tracker.NativeComment
 		seeded := 0
-		for _, size := range []int{2, 50} {
+		for _, size := range []int{2, 50, 201} {
 			service.config.TenantRepository = repository
 			objects.forbidden = false
 			for index := seeded; index < size; index++ {
@@ -120,6 +136,102 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPatch, path+"/"+firstComment.ID, testHubAdminToken, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "edit-first"}, ExpectedRevision: 1, Body: "Edited comment"}), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPatch, path+"/"+secondComment.ID, testHubAdminToken, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "delete-second"}, ExpectedRevision: 1, Deleted: true}), http.StatusOK)
 			}
+
+			countedSource := &commentPageCountingRepository{Repository: repository}
+			service.config.TenantRepository = countedSource
+			costLimits := []int{1}
+			if size == 201 {
+				costLimits = append(costLimits, 100, 200)
+			}
+			for _, limit := range costLimits {
+				params := url.Values{"limit": {strconv.Itoa(limit)}}
+				scope := nativeScope{organization: org.ID, project: project.ID}
+				if _, err := service.readCommentSourceRecords(t.Context(), scope, string(issue.WorkItemID), params); err != nil {
+					t.Fatal(err)
+				}
+				countedSource.singles, countedSource.batches = 0, 0
+				statements := int64(0)
+				ctx := postgres.WithTransactionTiming(t.Context(), nil, func(time.Time, string) { statements++ })
+				exchanges.Store(0)
+				if _, err := service.readCommentSourceRecords(ctx, scope, string(issue.WorkItemID), params); err != nil {
+					t.Fatal(err)
+				}
+				cost := [2]int64{statements, exchanges.Load()}
+				if cost[0] == 0 || cost[1] == 0 || countedSource.singles != 0 || countedSource.batches != 1 {
+					t.Fatalf("source reader cost=%v singles=%d batches=%d", cost, countedSource.singles, countedSource.batches)
+				}
+				if baselineCost == ([2]int64{}) {
+					baselineCost = cost
+				} else if cost != baselineCost {
+					t.Fatalf("source reader cost grew: got=%v want=%v", cost, baselineCost)
+				}
+				t.Logf("source reader tenant=%s history=%d limit=%d SQL=%d exchanges=%d", org.ID, size, limit, cost[0], cost[1])
+			}
+			for _, limit := range []int{1, 64, 65, 100, 200} {
+				for _, direction := range []string{"oldest", "newest"} {
+					params := url.Values{"limit": {strconv.Itoa(limit)}, "direction": {direction}}
+					seen := map[string]bool{}
+					for pageNumber := 0; pageNumber <= size/limit; pageNumber++ {
+						countedSource.singles, countedSource.batches = 0, 0
+						response := performHubAPIRequest(t, service, http.MethodGet, path+"?"+params.Encode(), testHubAdminToken, nil)
+						if response.Code != http.StatusOK {
+							t.Fatalf("source HTTP size=%d limit=%d direction=%s: status=%d body=%s", size, limit, direction, response.Code, response.Body.String())
+						}
+						var page tracker.Page[tracker.NativeComment]
+						decodeHubResponse(t, response, &page)
+						if len(page.Items) != min(limit, size-len(seen)) {
+							t.Fatalf("source page rows=%d size=%d limit=%d seen=%d", len(page.Items), size, limit, len(seen))
+						}
+						if countedSource.singles > 1 || countedSource.batches != 1 {
+							t.Fatalf("source single versions=%d batches=%d, want <=1/1", countedSource.singles, countedSource.batches)
+						}
+						for _, comment := range page.Items {
+							want := len(seen)
+							if direction == "newest" {
+								want = size - 1 - want
+							}
+							body := fmt.Sprintf("Comment %d", want)
+							if size >= 50 && want == 0 {
+								body = "Edited comment"
+							} else if size >= 50 && want == 1 {
+								body = ""
+							}
+							if seen[comment.ID] || comment.Body != body || comment.OrganizationID != org.ID || comment.ProjectID != project.ID || comment.WorkItemID != issue.WorkItemID {
+								t.Fatalf("invalid source comment at index %d: %+v", len(seen), comment)
+							}
+							seen[comment.ID] = true
+						}
+						if page.NextCursor == "" {
+							break
+						}
+						params.Set("cursor", page.NextCursor)
+					}
+					if len(seen) != size {
+						t.Fatalf("source cursor omitted comments: got=%d want=%d", len(seen), size)
+					}
+				}
+			}
+			if size == 201 {
+				var version eventstore.CollaborationVersion
+				if err := repository.ReadTenant(t.Context(), org.ID, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					version, err = r.CollaborationVersion(t.Context(), firstComment.ID, 2)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				details := objects.DetailStore.(*memoryRunDetails)
+				original := details.data[version.PayloadObjectKey]
+				details.data[version.PayloadObjectKey] = []byte("{}")
+				_, err := service.readCommentSourceRecords(t.Context(), nativeScope{organization: org.ID, project: project.ID}, string(issue.WorkItemID), url.Values{"limit": {"200"}})
+				if !errors.Is(err, artifact.ErrIntegrity) {
+					t.Fatalf("corrupt comment payload must fail closed: %v", err)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, path+"?limit=200", testHubAdminToken, nil), http.StatusInternalServerError)
+				details.data[version.PayloadObjectKey] = original
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, path+"?limit=201", testHubAdminToken, nil), http.StatusUnprocessableEntity)
+			}
+			service.config.TenantRepository = repository
 
 			scope := nativeScope{organization: org.ID, project: project.ID}
 			if size == 2 {
@@ -151,13 +263,13 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for steps := 0; steps < 256; steps++ {
+			for steps := 0; steps < 512; steps++ {
 				if err := scheduler.Tick(t.Context()); err != nil {
 					t.Fatal(err)
 				}
 
 				partial, partialErr := service.readCommentPageModel(t.Context(), scope, string(issue.WorkItemID), url.Values{"limit": {"50"}})
-				if partialErr == nil && len(partial.Items) != size {
+				if partialErr == nil && len(partial.Items) != min(50, size) {
 					t.Fatalf("partial projection returned complete success: %d/%d", len(partial.Items), size)
 				}
 				if partialErr != nil && (!errors.As(partialErr, &publicErr) || publicErr.Code != "not_ready") {
@@ -173,7 +285,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if steps == 255 {
+				if steps == 511 {
 					t.Fatal("page projector did not drain bounded fixture")
 				}
 			}
@@ -197,7 +309,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 			}
 			counted := &commentPageCountingRepository{Repository: repository}
 			service.config.TenantRepository = counted
-			for _, limit := range []int{1, 2, 50} {
+			for _, limit := range []int{1, 2, 50, 100, 200} {
 				durations := []time.Duration{}
 				for _, direction := range []string{"oldest", "newest"} {
 					for sample := 0; sample < 10; sample++ {
@@ -232,7 +344,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 								want = size - 1 - index
 							}
 							body := fmt.Sprintf("Comment %d", want)
-							if size == 50 && want < 2 {
+							if size >= 50 && want < 2 {
 								if comment.Revision != 2 || comment.EditedBy == nil {
 									t.Fatalf("projected edit metadata=%+v", comment)
 								}
