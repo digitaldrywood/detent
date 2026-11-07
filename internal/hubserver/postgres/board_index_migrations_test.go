@@ -13,14 +13,14 @@ import (
 func TestBoardIndexesBuildOnlineAndRecoverInvalidAttempts(t *testing.T) {
 	db, _ := migrationDatabaseAtVersion(t, 20261107004841)
 	seedCore(t, db)
-	indexes := []string{"native_board_page_pending_idx", "native_board_page_refresh_due", "native_board_dirty_oldest", "native_board_list_pending_idx"}
+	indexes := []string{"native_board_page_pending_idx", "native_board_page_refresh_due", "native_board_dirty_oldest", "native_board_list_pending_idx", "native_board_search_title_unicode", "native_work_item_search_body_unicode"}
 	_, err := db.ExecContext(t.Context(), `CREATE TABLE board_index_locks(name text,mode text);
  CREATE FUNCTION capture_board_index_locks() RETURNS event_trigger LANGUAGE plpgsql AS $$
  BEGIN
  INSERT INTO board_index_locks SELECT c.relname,l.mode FROM pg_event_trigger_ddl_commands() d
  JOIN pg_class c ON c.oid=d.objid JOIN pg_index i ON i.indexrelid=c.oid
  JOIN pg_locks l ON l.relation=i.indrelid AND l.pid=pg_backend_pid()
- WHERE c.relname IN ('native_board_page_pending_idx','native_board_page_refresh_due','native_board_dirty_oldest','native_board_list_pending_idx');
+ WHERE c.relname IN ('native_board_page_pending_idx','native_board_page_refresh_due','native_board_dirty_oldest','native_board_list_pending_idx','native_board_search_title_unicode','native_work_item_search_body_unicode');
  END; $$;
  CREATE EVENT TRIGGER board_index_locks ON ddl_command_end WHEN TAG IN ('CREATE INDEX') EXECUTE FUNCTION capture_board_index_locks();`)
 	if err != nil {
