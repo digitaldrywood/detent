@@ -98,6 +98,73 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 				probe.forbidden = false
 
 			}
+
+			service.config.TenantRepository = original
+			service.config.AccessRepository = original
+			probe.forbidden = false
+			if _, err := admin.ExecContext(t.Context(), `UPDATE health_findings SET resolved_at=CASE WHEN id IN('finding_5','finding_9','finding_50') THEN NULL ELSE now() END WHERE organization_id=$1`, org); err != nil {
+				t.Fatal(err)
+			}
+			for _, mode := range []string{"ready", "cold"} {
+				if mode == "cold" {
+					if _, err := admin.ExecContext(t.Context(), `UPDATE health_finding_projects SET page_sequence=0 WHERE organization_id=$1`, org); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := admin.ExecContext(t.Context(), `UPDATE health_findings SET page_checkpoint=0 WHERE organization_id=$1`, org); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for _, state := range []string{"open", "all"} {
+					t.Run(mode+"/cursor/"+state, func(t *testing.T) {
+						var ids []string
+						cursor := ""
+						emptyContinuation := false
+						for windows := 0; ; windows++ {
+							if windows > 50 {
+								t.Fatal("health cursor did not terminate")
+							}
+							path := fixture.base + "/health/findings?state=" + state + "&limit=2"
+							if cursor != "" {
+								path += "&cursor=" + cursor
+							}
+							response := performHubAPIRequest(t, service, http.MethodGet, path, testHubAdminToken, nil)
+							requireNativeStatus(t, response, http.StatusOK)
+							var page healthFindingsPage
+							decodeHubResponse(t, response, &page)
+							if len(page.Items) > 2 {
+								t.Fatalf("page exceeds requested limit: %d", len(page.Items))
+							}
+							for _, item := range page.Items {
+								ids = append(ids, item.ID)
+							}
+							if page.NextCursor == "" {
+								break
+							}
+							if page.NextCursor == cursor {
+								t.Fatal("health cursor repeated")
+							}
+							if len(page.Items) == 0 {
+								emptyContinuation = true
+							}
+							cursor = page.NextCursor
+						}
+						if state == "open" {
+							if !slices.Equal(ids, []string{"finding_5", "finding_9", "finding_50"}) || !emptyContinuation {
+								t.Fatalf("sparse cursor matches=%v empty continuation=%v", ids, emptyContinuation)
+							}
+						} else {
+							unique := map[string]bool{}
+							for _, id := range ids {
+								unique[id] = true
+							}
+							if len(ids) != 50 || len(unique) != 50 {
+								t.Fatalf("dense cursor findings=%d unique=%d", len(ids), len(unique))
+							}
+						}
+					})
+				}
+			}
+
 		})
 	}
 }

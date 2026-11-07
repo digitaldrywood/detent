@@ -1720,7 +1720,10 @@ They accept `state=open|resolved` (default `open`), an RFC3339 `since`, and
 `cursor`/`limit` paging (at most 100 findings). `since` includes findings seen
 or resolved at or after that time. The response includes `items`, an optional
 `next_cursor`, and the tenant detector's `last_tick_at` (null before its first
-successful evaluation).
+successful evaluation). Pages examine a bounded sequence window before applying
+filters, so a page may contain fewer than `limit` findings or no findings and
+still have a `next_cursor`. Continue until `next_cursor` is absent to exhaust
+the matching findings.
 The HTTP endpoint additionally accepts `state=all`: open findings are always
 included, while `since` filters only resolved findings. Live consumers can share
 one read for open findings and recent resolutions.

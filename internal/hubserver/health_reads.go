@@ -105,6 +105,9 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 		return page, err
 	}
 	page.ChangeSequence = records.ChangeSequence
+	if records.NextSequence > 0 {
+		page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(records.NextSequence, 10)))
+	}
 	for i, row := range records.Findings {
 		if i == limit {
 			page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(records.Findings[i-1].Sequence, 10)))
