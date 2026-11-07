@@ -8,17 +8,19 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class ReleaseSmokeTest(unittest.TestCase):
-    def test_browser_samples_redact_credentials_before_truncation(self):
+    def test_reports_omit_browser_sessions_and_unknown_response_secrets(self):
         result = subprocess.run(
             ["node", "--experimental-vm-modules", "--input-type=module"],
             cwd=ROOT, capture_output=True, text=True, timeout=30, input=r"""
 import fs from 'node:fs';
 import vm from 'node:vm';
-const secrets = ['FAKE_BEARER_CREDENTIAL_1234567890', 'FAKE_RUNNER_CREDENTIAL_1234567890'];
+const secrets = ['FAKE_BEARER_CREDENTIAL_1234567890', 'FAKE_RUNNER_CREDENTIAL_1234567890',
+  'FAKE_BROWSER_COOKIE_1234567890', 'FAKE_LOCAL_STORAGE_1234567890', 'FAKE_UNKNOWN_RESPONSE_TOKEN', 'FAKE_SHORT'];
 const results = [];
 for (const secret of secrets) {
+ for (const offset of [0, 190]) {
   const listeners = new Map();
-  const body = 'Unavailable ' + 'x'.repeat(178) + secret;
+  const body = 'x'.repeat(offset) + secret + ' Unavailable';
   let currentURL;
   const response = (url, status) => ({ url: () => url, status: () => status, text: async () => body });
   const page = {
@@ -47,9 +49,9 @@ for (const secret of secrets) {
     argv: ['node', 'release-smoke', 'https://example.test', 'example-org', 'example-project', 'TEST_TOKEN', 'invalid argument'],
     env: { TEST_TOKEN: secrets[0], TEST_RUNNER: secrets[1], SMOKE_RUNNER_CREDENTIAL_ENV: 'TEST_RUNNER', SMOKE_BROWSER_STATE: 'fake-state' },
     stdout: { write: () => {} },
-  } });
+  }, fetch: async () => ({ status: 200, text: async () => JSON.stringify({ error: secret }) }), AbortSignal });
   const source = fs.readFileSync('scripts/release-smoke.mjs', 'utf8');
-  const smoke = new vm.SourceTextModule(source + '\nexport { browserChecks, rows };', {
+  const smoke = new vm.SourceTextModule(source + '\nexport { browserChecks, rows, request, step, tool, main };', {
     context, importModuleDynamically: async name => {
       if (name !== '@playwright/test') throw new Error('unexpected import');
       return playwright;
@@ -61,20 +63,57 @@ for (const secret of secrets) {
   });
   await smoke.evaluate();
   await smoke.namespace.browserChecks('example-item', { work_item_id: 'example-item', change_id: 'example-change' });
-  results.push(smoke.namespace.rows.filter(row => row.name.startsWith('browser board load ') || row.name.endsWith('detail page')));
+  await smoke.namespace.request('board counts', '/board/counts', { board: true });
+  await smoke.namespace.step('MCP session', async () => { throw new Error(secret); });
+  context.fetch = async () => ({ status: 200, text: async () => secret });
+  await smoke.namespace.step('board status', () => smoke.namespace.request('board status', '/board/status', { board: true }));
+  context.fetch = async () => ({ status: 200, text: async () => JSON.stringify({ result: { structuredContent: { data: { token: secret } } } }) });
+  await smoke.namespace.tool('work_item');
+  const summaries = [];
+  for (const [body, board] of [
+    [{ items: [{ data: { terminal_failure: { error: secret }, finalization: { error: secret } } }] }, false],
+    [{ result: { structuredContent: { data: { terminal_failure: { error: secret } } } } }, false],
+    [{ result: { isError: true, content: [{ type: 'text', text: secret }] } }, false],
+    [{ result: { structuredContent: { error: secret } } }, false],
+    [{ data: { rows: [{ status: 'projection_pending', token: secret }] } }, true],
+    [{ rows: [{ error: secret }], projection_pending: false }, true],
+  ]) {
+    context.fetch = async () => ({ status: 200, text: async () => JSON.stringify(body) });
+    const { row } = await smoke.namespace.request('board counts', '/board/counts', { board });
+    summaries.push(JSON.parse(row.body));
+  }
+  context.process.argv.pop();
+  context.fetch = async () => ({ status: 200, text: async () => JSON.stringify({ states: [{ name: secret }] }) });
+  await smoke.namespace.main();
+  page.goto = async () => { throw new Error(secret); };
+  await smoke.namespace.step('browser journeys', () => smoke.namespace.browserChecks('example-item', { work_item_id: 'example-item', change_id: 'example-change' }));
+  results.push({ rows: smoke.namespace.rows, summaries });
+ }
 }
 console.log(JSON.stringify(results));
 """,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        for credential_rows in json.loads(result.stdout):
-            self.assertEqual(len(credential_rows), 5)
-            for row in credential_rows:
+        self.assertNotIn("FAKE_", result.stdout)
+        for report in json.loads(result.stdout):
+            rows = report["rows"]
+            browser_rows = [row for row in rows if row["name"].startswith("browser board load ") or row["name"].endswith("detail page")]
+            self.assertEqual(len(browser_rows), 10)
+            for row in browser_rows:
                 with self.subTest(check=row["name"]):
-                    self.assertNotIn("FAKE_", row["error"])
-                    self.assertIn("[REDACTED]", row["error"])
-                    for sample in row["error"].split("; "):
-                        self.assertLessEqual(len(sample), 210)
+                    self.assertTrue(row["error"])
+                    self.assertLessEqual(len(row["error"]), 240)
+            self.assertTrue(next(row for row in rows if row["name"] == "MCP session")["error"])
+            self.assertTrue(next(row for row in rows if row["name"] == "board status")["error"])
+            self.assertTrue(next(row for row in rows if row["name"] == "browser journeys")["error"])
+            self.assertEqual(report["summaries"], [
+                {"error": None, "projection_pending": False},
+                {"error": None, "projection_pending": False},
+                {"error": True, "projection_pending": False},
+                {"error": True, "projection_pending": False},
+                {"error": None, "projection_pending": True},
+                {"error": None, "projection_pending": False},
+            ])
 
 
 if __name__ == "__main__":

@@ -2,16 +2,25 @@ import { randomUUID } from 'node:crypto';
 
 const rows = [], [base, org, project, credentialEnv] = process.argv.slice(2);
 const token = process.env[credentialEnv], runnerToken = process.env[process.env.SMOKE_RUNNER_CREDENTIAL_ENV];
-const secrets = [token, runnerToken].filter(Boolean);
-const clean = value => secrets.reduce((text, secret) => text.replaceAll(secret, '[REDACTED]'), String(value));
 const fail = message => { throw new Error(message); };
 const enc = encodeURIComponent, run = `release-smoke-${randomUUID()}`;
 let session = '', protocol = '2025-06-18', sequence = 0;
 const api = `/api/v2/organizations/${enc(org)}`, root = `${api}/projects/${enc(project)}`;
+function responseSummary(body, board = false) {
+  if (!body) return '';
+  let value;
+  try { value = JSON.parse(body); }
+  catch { return 'invalid JSON'; }
+  const failed = value => value !== null && typeof value === 'object' &&
+    (value.isError === true || value.error != null || failed(value.result) || failed(value.structuredContent));
+  const pending = value => value !== null && typeof value === 'object' && Object.entries(value).some(([key, child]) =>
+    key === 'projection_pending' && child === true || ['code', 'status'].includes(key) && JSON.stringify(child)?.includes('pending') || pending(child));
+  return JSON.stringify({ error: failed(value) ? true : null, projection_pending: board && pending(value) });
+}
 async function step(name, action) {
   const start = Date.now();
   try { return await action(); }
-  catch (error) { rows.push({ name, error: clean(error.message), ms: Date.now() - start }); }
+  catch { rows.push({ name, error: 'journey failed', ms: Date.now() - start }); }
 }
 async function request(name, path, { method = 'GET', payload, expected = 200, board = false, credential = token, headers = {} } = {}) {
   const start = Date.now(), row = { name, expected, board };
@@ -22,11 +31,11 @@ async function request(name, path, { method = 'GET', payload, expected = 200, bo
       ...(payload === undefined ? {} : { body: JSON.stringify(payload) }) });
     row.status = response.status;
     const body = await response.text();
-    row.body = clean(body);
+    row.body = responseSummary(body, board);
     if (body.length > 8 * 1024 * 1024) fail('response exceeded 8 MiB');
     if (response.status !== expected) fail(`expected HTTP ${expected}`);
     return { value: body ? JSON.parse(body) : null, response, row };
-  } catch (error) { row.error = clean(error.message); throw error; }
+  } catch (error) { row.error = 'request failed'; throw error; }
   finally { row.ms = Date.now() - start; }
 }
 async function rpc(method, params, name = method, notification = false) {
@@ -47,7 +56,7 @@ async function tool(name, args = {}, label = name) {
   if (!result || result.isError) fail('MCP isError or absent result');
   const content = result.structuredContent ?? JSON.parse(result.content?.find(block => block.type === 'text')?.text ?? 'null');
   if (content == null) fail('MCP omitted application result');
-  row.body = clean(JSON.stringify({ ...result, structuredContent: content }));
+  row.body = responseSummary(JSON.stringify({ ...result, structuredContent: content }));
   return content.data ?? content;
 }
 async function lifecycle() {
@@ -60,7 +69,7 @@ async function lifecycle() {
     if (issue.challenge_token) {
       const numbers = issue.possible_duplicates?.map(candidate => candidate.number);
       if (!numbers?.length) fail('duplicate challenge omitted candidates');
-      for (const number of numbers) await tool('work_item', { reference: `${project}#${number}` }, `duplicate candidate ${number}`);
+      for (const number of numbers) await tool('work_item', { reference: `${project}#${number}` }, 'duplicate candidate');
       issue = await tool('file_issue', { ...draft, challenge_token: issue.challenge_token, not_duplicate_of: numbers }, 'file_issue confirmed disposable run');
     }
     disposableID = issue.work_item_id;
@@ -91,13 +100,13 @@ async function browserChecks(item, change) {
     const context = await browser.newContext({ storageState: process.env.SMOKE_BROWSER_STATE });
     const page = await context.newPage();
     const boardURL = new URL(`/organizations/${enc(org)}/work/p/${enc(project)}`, base);
-    const counts = [], failures = [], responses = [];
+    const counts = [], failures = [];
     for (let load = 1; load <= 3; load++) {
       const start = Date.now(), requests = [];
       const listener = request => { if (/\/(work-items|board\/counts|board\/status)(\?|$)/.test(request.url())) requests.push(request.url()); };
       page.on('request', listener);
       const responseListener = response => {
-        if (response.url().includes(root) && response.status() >= 400) responses.push(response.text().catch(() => '').then(body => failures.push(`HTTP ${response.status()}: ${clean(body).slice(0, 200)}`)));
+        if (response.url().includes(root) && response.status() >= 400) failures.push(`board request HTTP ${response.status()}`);
       };
       page.on('response', responseListener);
       const loaded = page.waitForResponse(response => response.url().includes(`${root}/board/counts`) && response.status() === 200, { timeout: 15000 });
@@ -110,17 +119,16 @@ async function browserChecks(item, change) {
         return performance.now() - window.smokeQuietSince >= 3000;
       }, null, { timeout: 15000 });
       page.off('request', listener); page.off('response', responseListener);
-      await Promise.all(responses);
       counts.push(requests.length);
       if (/Unavailable|unexpected payload|Expected array|Access to the board|Sign in/.test(await page.locator('main, [role="main"]').first().innerText())) failures.push('board rendered an error');
       if (new Set(requests).size !== requests.length) failures.push('board endpoint repeated within one load');
       rows.push({ name: `browser board load ${load}`, status: 200, expected: 200, ms: Date.now() - start, note: `${requests.length} board requests`,
-        error: !requests.length || failures.length ? clean(failures.join('; ') || 'no board requests observed') : '' });
+        error: !requests.length || failures.length ? failures.join('; ') || 'no board requests observed' : '' });
     }
     rows.push({ name: 'board request count stable', status: 200, expected: 200, note: counts.join('/'), error: new Set(counts).size === 1 ? '' : 'request count changed between three loads' });
     for (const [name, path] of [['activity', `${api}/activity`], ['diagnostics', `${api}/diagnostics`]]) {
       const start = Date.now(), response = await context.request.get(new URL(path, base).href, { maxRedirects: 0, timeout: 15000 });
-      rows.push({ name, status: response.status(), expected: 200, ms: Date.now() - start, body: clean(await response.text()) });
+      rows.push({ name, status: response.status(), expected: 200, ms: Date.now() - start, body: responseSummary(await response.text()) });
     }
     for (const [name, id, query] of [['issue detail page', item, ''], ['Change detail page', change?.work_item_id, `/changes/${enc(change?.change_id)}`]]) {
       await step(name, async () => {
@@ -131,7 +139,7 @@ async function browserChecks(item, change) {
         const [, response] = await Promise.all([loaded, page.goto(new URL(`/organizations/${enc(org)}/work/i/${enc(id)}${query}`, base).href, { waitUntil: 'load', timeout: 15000 })]);
         await page.waitForLoadState('networkidle', { timeout: 15000 });
         const text = await page.locator('main, [role="main"]').first().innerText();
-        rows.push({ name, status: response.status(), expected: 200, ms: Date.now() - start, error: /Unavailable|unexpected payload|Expected array|Sign in/.test(text) ? clean(text).slice(0, 200) : '' });
+        rows.push({ name, status: response.status(), expected: 200, ms: Date.now() - start, error: /Unavailable|unexpected payload|Expected array|Sign in/.test(text) ? 'page rendered an error' : '' });
       });
     }
   } finally { await browser.close(); }
@@ -144,7 +152,7 @@ async function main() {
   await step('board API', async () => {
     const { value: config } = await request('project lanes', root);
     if (!config.states?.length) fail('project omitted configured lanes');
-    for (const state of config.states) await step(`lane ${state.name}`, () => request(`lane ${state.name}`, `${root}/work-items?state=${enc(state.name)}&include=board&limit=50`, { board: true }));
+    for (const state of config.states) await step('project lane', () => request('project lane', `${root}/work-items?state=${enc(state.name)}&include=board&limit=50`, { board: true }));
     for (const part of ['counts', 'status']) await step(`board ${part}`, () => request(`board ${part}`, `${root}/board/${part}`, { board: true }));
   });
   let items = [], change, item;
