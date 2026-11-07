@@ -458,19 +458,52 @@ func startBinary(ctx context.Context) (_ string, _ func(context.Context) error, 
 	if output, err := init.CombinedOutput(); err != nil {
 		return "", nil, fmt.Errorf("initialize disposable PostgreSQL: %w: %s", err, output)
 	}
+	lifetime, owner, err := os.Pipe()
+	if err != nil {
+		return "", nil, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, lifetime.Close()) }()
 	processCtx, cancel := cleanupContext(ctx)
-	cmd := exec.CommandContext(processCtx, "postgres", "-D", "data", "-h", "", "-k", ".", "-c", "lc_messages=C", "-c", "max_connections=16", "-c", "logging_collector=off")
+	const supervise = `
+exec 3<&0
+"$@" < /dev/null 3<&- &
+postmaster=$!
+(
+	while IFS= read -r mode; do
+		if [ "$mode" = fast ]; then
+			kill -INT "$postmaster" 2>/dev/null
+		fi
+	done
+	kill -TERM "$postmaster" 2>/dev/null
+	kill -QUIT "$postmaster" 2>/dev/null
+) <&3 3<&- &
+watchdog=$!
+exec 3<&-
+wait "$postmaster"
+status=$?
+kill -TERM "$watchdog" 2>/dev/null
+wait "$watchdog" 2>/dev/null
+exit "$status"
+`
+	cmd := exec.CommandContext(processCtx, "/bin/sh", "-c", supervise, "pgtest", "postgres", "-D", "data", "-h", "", "-k", ".", "-c", "lc_messages=C", "-c", "max_connections=16", "-c", "logging_collector=off")
 	cmd.Dir = dir
 	cmd.Env = init.Env
+	cmd.Stdin = lifetime
 	procgroup.Configure(processCtx, cmd)
+	cmd.Cancel = func() error {
+		if err := owner.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+			return err
+		}
+		return nil
+	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		cancel()
-		return "", nil, err
+		return "", nil, errors.Join(err, owner.Close())
 	}
 	if err := cmd.Start(); err != nil {
 		cancel()
-		return "", nil, err
+		return "", nil, errors.Join(err, owner.Close())
 	}
 	ready := make(chan struct{})
 	done := make(chan error, 1)
@@ -480,15 +513,15 @@ func startBinary(ctx context.Context) (_ string, _ func(context.Context) error, 
 	stop := func(ctx context.Context) error {
 		ctx, finish := cleanupContext(ctx)
 		defer finish()
-		cancel()
+		defer cancel()
+		_, writeErr := io.WriteString(owner, "fast\n")
 		select {
-		case <-done:
-			return os.RemoveAll(dir)
+		case err := <-done:
+			return errors.Join(writeErr, owner.Close(), err, os.RemoveAll(dir))
 		case <-ctx.Done():
-			err := procgroup.TerminateTree(cmd, procgroup.GroupID(cmd))
-			err = errors.Join(err, stderr.Close())
+			cancel()
 			<-done
-			return errors.Join(ctx.Err(), err, os.RemoveAll(dir))
+			return errors.Join(ctx.Err(), os.RemoveAll(dir))
 		}
 	}
 	select {
@@ -496,7 +529,7 @@ func startBinary(ctx context.Context) (_ string, _ func(context.Context) error, 
 		return "postgres://detent_test@127.0.0.1:5432/postgres?host=" + url.QueryEscape(filepath.Join(dir, "data")), stop, nil
 	case err := <-done:
 		cancel()
-		return "", nil, fmt.Errorf("disposable PostgreSQL exited before readiness: %w", err)
+		return "", nil, errors.Join(fmt.Errorf("disposable PostgreSQL exited before readiness: %w", err), owner.Close())
 	case <-ctx.Done():
 		return "", nil, errors.Join(ctx.Err(), stop(ctx))
 	}

@@ -22,7 +22,11 @@ Select the server explicitly with `DETENT_TEST_POSTGRES`:
 
 - `binary`: run `initdb` and `postgres` from PATH. Use PostgreSQL 17 or 18 binaries.
   The cluster lives under `TMPDIR`, listens only on a unique Unix socket, and is
-  stopped and removed by `template.Close`. This mode requires Unix socket support.
+  stopped and removed by `template.Close`. A shell supervisor owns the postmaster
+  and reads a lifetime pipe whose only writer is the test binary. Normal close
+  requests fast shutdown; EOF after an abrupt exit requests immediate shutdown.
+  The supervisor waits for the postmaster to release its IPC resources. This
+  mode requires Unix sockets and `/bin/sh`.
 - `postgres://example:fake@127.0.0.1:55432/postgres`: attach to a disposable local
   PostgreSQL 17 or 18, including a container published on a loopback port. Supply an
   explicit port and a role permitted to create databases. IPv6 loopback and
@@ -59,6 +63,20 @@ Failed migration and fixture setup close their connection pools and drop their
 databases, preserving the primary error. Cleanup detaches cancellation while
 retaining the test deadline. Process readiness and parallel test coordination
 use signals, without polling, sleeps, or fixture-specific timeouts.
+
+The lifetime pipe uses the operating system's [EOF semantics](https://man7.org/linux/man-pages/man7/pipe.7.html)
+and Go's [file-backed subprocess input](https://pkg.go.dev/os/exec#Cmd) so a killed
+test binary closes the writer without running Go cleanup. The supervisor uses
+an explicitly saved descriptor for the watcher's input because asynchronous
+shell commands can [replace standard input with `/dev/null`](https://www.gnu.org/software/bash/manual/html_node/Lists.html).
+The extra descriptor is closed in the postmaster and after watcher setup.
+The supervisor uses
+PostgreSQL's [documented shutdown signals](https://www.postgresql.org/docs/17/server-shutdown.html),
+never SIGKILL. Its abrupt-exit path sends SIGTERM before SIGQUIT so termination
+also works before PostgreSQL replaces the signal dispositions inherited from
+the shell. PostgreSQL's default memory settings are retained: even anonymous
+`mmap` requires a small [System V segment](https://www.postgresql.org/docs/17/kernel-resources.html#SYSVIPC),
+so correct shutdown remains necessary.
 
 `template.OpenRole(t, fixture, role, password)` opens a separately authenticated
 single-connection pool to an owned fixture database, using only the template's
