@@ -243,7 +243,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 			work = &value
 		}
 		snapshot, err = model.BoardModelPages(ctx, selection, work, s.accessAuthority(scope, false))
-		if legacy && snapshot.Pending && err == nil {
+		if legacy && snapshot.Pending && err == nil && selection.SearchText == "" {
 			return searchstore.ErrIndexPending
 		}
 		if err != nil {

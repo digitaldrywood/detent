@@ -11,9 +11,12 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'detent_platform_v2') THEN
         CREATE ROLE detent_platform_v2 NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'detent_search_reader_v2') THEN
+        CREATE ROLE detent_search_reader_v2 NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+    END IF;
     IF EXISTS (
         SELECT 1 FROM pg_roles
-        WHERE rolname IN ('detent_migration_v2', 'detent_runtime_v2', 'detent_platform_v2')
+        WHERE rolname IN ('detent_migration_v2', 'detent_runtime_v2', 'detent_platform_v2', 'detent_search_reader_v2')
         AND (rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls)
     ) THEN
         RAISE EXCEPTION 'Detent group roles must be unprivileged and unable to log in';
@@ -23,7 +26,9 @@ BEGIN
         OR pg_has_role('detent_platform_v2', 'detent_migration_v2', 'MEMBER')
         OR pg_has_role('detent_platform_v2', 'detent_runtime_v2', 'MEMBER')
         OR pg_has_role('detent_migration_v2', 'detent_runtime_v2', 'MEMBER')
-        OR pg_has_role('detent_migration_v2', 'detent_platform_v2', 'MEMBER') THEN
+        OR pg_has_role('detent_migration_v2', 'detent_platform_v2', 'MEMBER')
+        OR EXISTS(SELECT 1 FROM pg_roles r WHERE r.rolname IN ('detent_runtime_v2','detent_platform_v2','detent_migration_v2')
+            AND (pg_has_role(r.oid,'detent_search_reader_v2','MEMBER') OR pg_has_role('detent_search_reader_v2',r.oid,'MEMBER'))) THEN
         RAISE EXCEPTION 'Detent database roles must have separate authority';
     END IF;
 END
@@ -251,3 +256,35 @@ $search$;
 ALTER FUNCTION public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[]) OWNER TO detent_platform_v2;
 REVOKE ALL ON FUNCTION public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[]) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[]) TO detent_runtime_v2;
+
+GRANT USAGE ON SCHEMA public TO detent_search_reader_v2;
+DO $board_search_provision$
+DECLARE function_checking text:=current_setting('check_function_bodies');
+BEGIN
+ PERFORM set_config('check_function_bodies','off',true);
+ CREATE OR REPLACE FUNCTION public.board_search_candidates(project_id text,patterns text[],reporter boolean,principal_id text,body_only boolean)
+ RETURNS TABLE(work_item_id text) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $board_search$
+ SELECT b.work_item_id FROM public.native_board_items b
+ WHERE b.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND b.project_id=$1
+  AND $3 IS NOT NULL AND $5 IS NOT NULL AND cardinality($2) BETWEEN 1 AND 9
+  AND NOT EXISTS(SELECT 1 FROM unnest($2) pattern WHERE octet_length(pattern)>1026)
+  AND EXISTS(SELECT 1 FROM public.issues i
+   WHERE i.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND i.project_id=$1
+    AND i.native_id=b.work_item_id AND (NOT $3 OR (NULLIF($4,'') IS NOT NULL AND i.actor_principal_id=$4)))
+  AND b.page_title ILIKE ANY($2) AND NOT $5
+ UNION
+ SELECT b.work_item_id FROM public.native_work_item_pages b
+ WHERE b.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND b.project_id=$1
+  AND $3 IS NOT NULL AND $5 IS NOT NULL AND cardinality($2) BETWEEN 1 AND 9
+  AND NOT EXISTS(SELECT 1 FROM unnest($2) pattern WHERE octet_length(pattern)>1026)
+  AND EXISTS(SELECT 1 FROM public.issues i
+   WHERE i.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND i.project_id=$1
+    AND i.native_id=b.work_item_id AND (NOT $3 OR (NULLIF($4,'') IS NOT NULL AND i.actor_principal_id=$4)))
+  AND b.body ILIKE ANY($2)
+ $board_search$;
+ PERFORM set_config('check_function_bodies',function_checking,true);
+ ALTER FUNCTION public.board_search_candidates(text,text[],boolean,text,boolean) OWNER TO detent_search_reader_v2;
+ REVOKE ALL ON FUNCTION public.board_search_candidates(text,text[],boolean,text,boolean) FROM PUBLIC,detent_platform_v2,detent_migration_v2;
+ GRANT EXECUTE ON FUNCTION public.board_search_candidates(text,text[],boolean,text,boolean) TO detent_runtime_v2;
+END
+$board_search_provision$;

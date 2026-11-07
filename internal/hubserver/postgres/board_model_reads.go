@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const boardModelDisplayColumns = `b.card_display_ready,b.card_display_exact,b.card_provenance_provider IS NOT NULL,coalesce(b.card_provenance_provider,''),coalesce(b.card_provenance_external_id,''),coalesce(b.card_provenance_author_id,''),coalesce(b.card_provenance_author_display_name,''),coalesce(b.card_provenance_created_at,'0001-01-01 00:00:00+00'::timestamptz),coalesce(b.card_provenance_updated_at,'0001-01-01 00:00:00+00'::timestamptz),coalesce(b.card_provenance_observed_at,'0001-01-01 00:00:00+00'::timestamptz),coalesce(b.card_change_principal_id,''),coalesce(b.card_title,''),coalesce(b.card_actor_kind,''),coalesce(b.card_actor_via_key,''),coalesce(b.card_actor_display_name,''),coalesce(b.card_actor_agent,''),coalesce(b.card_reason,''),coalesce(b.card_status_line,''),coalesce(b.card_attempt_id,''),coalesce(b.card_attempt_count,0),coalesce(b.card_attempt_status,''),coalesce(b.card_attempt_runner_id,''),coalesce(b.card_attempt_machine_id,''),coalesce(b.card_attempt_started_at,'0001-01-01 00:00:00+00'::timestamptz),coalesce(b.card_attempt_expires_at,'0001-01-01 00:00:00+00'::timestamptz),coalesce(b.card_execution_id,''),coalesce(b.card_execution_running,false),coalesce(b.card_execution_stage,''),coalesce(b.card_execution_runner_id,''),b.card_execution_started_at,coalesce(b.card_execution_expires_at,'0001-01-01 00:00:00+00'::timestamptz),coalesce(b.card_change_id,''),coalesce(b.card_change_title,''),coalesce(b.card_change_status,''),coalesce(b.card_change_external_provider,''),coalesce(b.card_change_external_id,''),coalesce(b.card_change_external_url,''),coalesce(b.card_attempt_identity_role,''),coalesce(b.card_attempt_identity_backend,''),coalesce(b.card_attempt_identity_model,''),coalesce(b.card_attempt_identity_effort,''),coalesce(b.card_execution_identity_role,''),coalesce(b.card_execution_identity_backend,''),coalesce(b.card_execution_identity_model,''),coalesce(b.card_execution_identity_effort,''),coalesce(b.issue_number,0)`
@@ -229,12 +230,20 @@ func (s *session) boardSearchModelPages(ctx context.Context, selection viewstore
 	if _, _, err := boardWhere(s.organization, selection); err != nil {
 		return result, err
 	}
-	var pending, numberPending bool
+	var numberPending bool
 	batch.Queue(boardModelMetadataSQL, s.organization, selection.ProjectID).QueryRow(func(row pgx.Row) error {
 		return row.Scan(&result.Sequence, &result.Pending, &result.OldestPendingAt)
 	})
-	batch.Queue(boardSearchPendingSQL, s.organization, selection.ProjectID, selection.Archived, selection.Reporter, selection.ReporterPrincipalID).QueryRow(func(row pgx.Row) error {
-		return row.Scan(&pending)
+	batch.Queue(boardSearchFallbackSQL, s.organization, selection.ProjectID).QueryRow(func(row pgx.Row) error {
+		var fallback bool
+		if err := row.Scan(&fallback); err != nil {
+			return err
+		}
+		if s.searchFallback == nil {
+			s.searchFallback = make(map[tracker.ProjectID]bool)
+		}
+		s.searchFallback[selection.ProjectID] = fallback
+		return nil
 	})
 	if work != nil && !work.SearchRanked {
 		batch.Queue(boardWorkOrderPendingSQL, s.organization, selection.ProjectID).QueryRow(func(row pgx.Row) error {
@@ -243,9 +252,6 @@ func (s *session) boardSearchModelPages(ctx context.Context, selection viewstore
 	}
 	if err := s.readBoardModelBatch(ctx, batch); err != nil {
 		return result, err
-	}
-	if pending {
-		return result, searchstore.ErrIndexPending
 	}
 	result.Records, err = s.boardPage(ctx, selection, true, nil)
 	if err != nil {
