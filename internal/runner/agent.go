@@ -1620,10 +1620,15 @@ func buildRunPrompt(workflow config.Workflow, req *RunRequest, mode string, prom
 		return "", err
 	}
 	prompt += recoveryPrompt
-	if reworkPrecheck.Status != "" {
-		prompt += "\n\nThe runner owns native rebase preparation and finalization. Resolve source conflicts in this worktree and stage the resolved files with git add. Do not run rebase, rebase --continue, branch/ref updates, or signing workarounds. During a paused rebase, leave the resolved index for the runner to finalize; leave additional changes staged for the runner when no rebase is paused.\n" + reworkPrecheck.Message
-	}
+	prompt = appendReworkPreparation(prompt, reworkPrecheck)
 	return prompt, nil
+}
+
+func appendReworkPreparation(prompt string, preparation workspace.MergePrepareResult) string {
+	if preparation.Status != "" {
+		prompt += "\n\nThe runner owns native rebase preparation and finalization. Resolve source conflicts in this worktree and stage the resolved files with git add. Do not run rebase, rebase --continue, branch/ref updates, or signing workarounds. During a paused rebase, leave the resolved index for the runner to finalize; leave additional changes staged for the runner when no rebase is paused.\n" + preparation.Message
+	}
+	return prompt
 }
 
 // recoverRunChangeSource recovers the reviewed Change source a native run
@@ -2512,6 +2517,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			turnPrompt = appendFollowupsBlock(turnPrompt, followups)
 			turnPrompt = appendNativeCompletionContract(turnPrompt)
 		}
+		turnPrompt = appendReworkPreparation(turnPrompt, reworkPrecheck)
 	}
 	var extraWritableRoots []string
 	if req.Admission == nil {

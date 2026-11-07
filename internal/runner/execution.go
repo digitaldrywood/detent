@@ -997,8 +997,11 @@ func (r *Runner) nativeSessionResumeState(ctx context.Context, req RunRequest, r
 }
 
 func (r *Runner) lookupNativeResumeState(ctx context.Context, req RunRequest, runtime agentRuntime, previous *tracker.NativeAttempt) (store.AgentResumeState, error) {
+	if previous.Identity == nil {
+		return store.AgentResumeState{}, nil
+	}
 	resumeStore, ok := r.store.(store.AgentResumeStore)
-	if !ok || previous.Identity == nil {
+	if !ok {
 		return store.AgentResumeState{}, ErrNativeRecoveryRequired
 	}
 	identity := previous.Identity

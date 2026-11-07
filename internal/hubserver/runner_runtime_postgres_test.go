@@ -637,6 +637,42 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 		if err := restarted.FinishSession(restartedCtx, id, store.SessionFinish{CompletedAt: started.Add(time.Second), FinalState: "completed", ProviderThreadID: provider.ThreadID, ProviderSessionID: provider.SessionID}); err != nil {
 			t.Fatal(err)
 		}
+		for _, test := range []struct {
+			name   string
+			parent int64
+			turns  int64
+		}{
+			{name: "fresh startup"},
+			{name: "resumed failure", parent: id, turns: 1},
+		} {
+			t.Run(fmt.Sprintf("runner_%d/%s", index, test.name), func(t *testing.T) {
+				nextStart := start
+				nextStart.ResumedFromSessionID = test.parent
+				if test.parent > 0 {
+					nextStart.ProviderThreadID, nextStart.ProviderSessionID = provider.ThreadID, provider.SessionID
+					nextStart.OrphanRecoveryOutcome = store.OrphanRecoveryResumed
+				}
+				nextID, err := restarted.StartSession(restartedCtx, nextStart)
+				if err != nil {
+					t.Fatal(err)
+				}
+				finish := store.SessionFinish{CompletedAt: started.Add(2 * time.Second), FinalState: "failed", Turns: test.turns, ResumedFromSessionID: test.parent}
+				if err := restarted.FinishSession(restartedCtx, nextID, finish); err != nil {
+					t.Fatal(err)
+				}
+				reader, readCtx := f.client(t, index)
+				var snapshot runnersession.Snapshot
+				if err := reader.Transport().Request(readCtx, http.MethodGet, reader.Scope()+"/runner-sessions/"+strconv.FormatInt(nextID, 10), nil, &snapshot); err != nil {
+					t.Fatal(err)
+				}
+				if snapshot.Start.ResumedFromSessionID != test.parent || snapshot.Resume.ResumedFromSessionID != test.parent || snapshot.Finish == nil || snapshot.Finish.Turns != test.turns || snapshot.Finish.FinalState != "failed" {
+					t.Fatalf("Hub restart lost session provenance or actual turns: %+v", snapshot)
+				}
+				if snapshot.Provider.ThreadID != nextStart.ProviderThreadID || snapshot.Provider.SessionID != nextStart.ProviderSessionID {
+					t.Fatalf("Hub restart mixed fresh and resumed provider identities: %+v", snapshot.Provider)
+				}
+			})
+		}
 		var history []runnersession.History
 		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
