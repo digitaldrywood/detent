@@ -56,7 +56,8 @@ func (s *changeReadInterceptionStore) ReadDetail(ctx context.Context, organizati
 }
 
 func TestPostgresBoundedChangeReadRechecksRoleAfterHydration(t *testing.T) {
-	repository, f, owner, _ := newChangePolicyPostgresFixtureWithAdmin(t, 3)
+	details := &memoryRunDetails{}
+	repository, f, owner, _ := newChangePolicyPostgresFixtureWithDetails(t, 3, details)
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +75,6 @@ func TestPostgresBoundedChangeReadRechecksRoleAfterHydration(t *testing.T) {
 	requireNativeStatus(t, created, http.StatusOK)
 	var change tracker.ChangeRequest
 	decodeHubResponse(t, created, &change)
-	details := f.service.config.RunDetails.(*memoryRunDetails)
 	key := seedChangeReadCredential(t, repository, f.project)
 	var keyRevoked bool
 	details.beforeRead = func(ctx context.Context) error {
@@ -172,7 +172,8 @@ func TestPostgresBoundedChangeReadRechecksRoleAfterHydration(t *testing.T) {
 }
 
 func TestPostgresBoundedChangeRuntimeRecovery(t *testing.T) {
-	repository, f, owner, admin := newChangePolicyPostgresFixtureWithAdmin(t, 3)
+	details := &memoryRunDetails{}
+	repository, f, owner, admin := newChangePolicyPostgresFixtureWithDetails(t, 3, details)
 	server := httptest.NewServer(f.service.Handler())
 	t.Cleanup(server.Close)
 	key := seedChangeReadCredential(t, repository, f.project)
@@ -536,7 +537,7 @@ func TestPostgresBoundedChangeRuntimeRecovery(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			recoveryContent := boundedChangeSpool(t, f.service.runDetailStore().(*memoryRunDetails))
+			recoveryContent := boundedChangeSpool(t, details)
 			backfiller := repository.(*postgres.Repository)
 			total, err := backfiller.BackfillChangeRecoveryProjections(t.Context(), "org_security", recoveryContent, 7)
 			if err != nil || total != 7 {

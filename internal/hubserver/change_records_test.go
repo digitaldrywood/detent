@@ -562,8 +562,12 @@ func newChangePolicyPostgresFixture(t *testing.T) (tenantstore.Repository, hoste
 
 func newChangePolicyPostgresFixtureWithAdmin(t *testing.T, maxConnections int) (tenantstore.Repository, hostedSecurityFixture, hostedSecurityUser, *sql.DB) {
 	t.Helper()
+	return newChangePolicyPostgresFixtureWithDetails(t, maxConnections, &memoryRunDetails{})
+}
+
+func newChangePolicyPostgresFixtureWithDetails(t *testing.T, maxConnections int, details *memoryRunDetails) (tenantstore.Repository, hostedSecurityFixture, hostedSecurityUser, *sql.DB) {
+	t.Helper()
 	repository, admin := projectRecordPostgresWithAdmin(t, maxConnections)
-	details := &memoryRunDetails{}
 	projectID := tracker.ProjectID("prj_security")
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	descriptor := hubTestPolicy()
@@ -598,12 +602,26 @@ func newChangePolicyPostgresFixtureWithAdmin(t *testing.T, maxConnections int) (
 	}); err != nil {
 		t.Fatal(err)
 	}
-	f := newHostedSecurityFixture(t, func(cfg *Config) {
-		cfg.AccessRepository = repository
-		cfg.BillingRepository = repository
-		cfg.TenantRepository = repository
-		cfg.RunDetails = details
+	provider := newHostedSecurityProvider()
+	plans := pilotHostedPlans()
+	service := openTestService(t, Config{
+		AccessRepository:  repository,
+		BillingRepository: repository,
+		TenantRepository:  repository,
+		RunDetails:        details,
+		GitHubDisabled:    true,
+		Hosted: &HostedConfig{
+			Plans:                &plans,
+			OrganizationID:       "org_security",
+			WorkOSOrganizationID: "org_provider",
+			BootstrapSubject:     "user_owner",
+			PublicURL:            "http://127.0.0.1:7777",
+			StaffEmails:          []string{"staff@example.test", "support@example.test"},
+			SupportActors:        []string{"support@example.test"},
+			Provider:             provider,
+		},
 	})
+	f := hostedSecurityFixture{service: service, provider: provider, project: projectID, base: "/api/v2/organizations/org_security/projects/" + string(projectID)}
 	owner := f.user(t, "review_admin", "owner", "review-admin@example.test", "", "")
 	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 		member, err := w.AccessMember(t.Context(), owner.identity.Subject)
