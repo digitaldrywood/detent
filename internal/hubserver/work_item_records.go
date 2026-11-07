@@ -366,7 +366,9 @@ func validateWorkItemRecordCreateInput(ctx context.Context, scope nativeScope, p
 		}
 		return nil
 	}
-	return validateNativeIssueState(scope, tracker.NativeProject{Profile: project.Core.Profile, States: project.States}, state, nativeProgressActor(scope))
+	origin, machine := issueorigin.Parse(request.Body)
+	workerReport := machine && origin.Kind == "worker" && state == "Backlog" && scope.credential.Runner.RunnerID != "" && request.LeaseID != ""
+	return validateNativeIssueState(scope, tracker.NativeProject{Profile: project.Core.Profile, States: project.States}, state, nativeProgressActor(scope) || workerReport)
 }
 
 func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, plan workItemRecordPlan, input any) (workItemRecordPlan, error) {
@@ -693,8 +695,11 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 	}
 	if scope.credential.Scope == apiScopeWorker {
 		_, comment := input.(tracker.CreateComment)
-		_, defect := input.(tracker.CreateIssue)
-		if (!comment && !(defect && nativeProgressActor(scope) && scope.progressOrigin != nil)) || link != nil {
+		_, edit := input.(tracker.UpdateIssue)
+		request, defect := input.(tracker.CreateIssue)
+		origin, machine := issueorigin.Parse(request.Body)
+		workerReport := defect && machine && origin.Kind == "worker" && request.State == "Backlog"
+		if (!comment && !edit && !workerReport && (!defect || !nativeProgressActor(scope) || scope.progressOrigin == nil)) || link != nil {
 			return nil, workItemStorageUnavailable()
 		}
 		if _, err := s.validateRunnerLeaseTenant(ctx, scope, command.LeaseID, command.FencingToken); err != nil {
@@ -1117,12 +1122,47 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 					}
 				}
 			}
-			if _, defect := input.(tracker.CreateIssue); defect && scope.credential.Scope == apiScopeWorker {
-				origin := scope.progressOrigin
-				if !nativeProgressActor(scope) || origin == nil || origin.service != s || origin.scope.organization != scope.organization || origin.scope.project != scope.project || origin.scope.credential.ID != scope.credential.ID || origin.leaseID != command.LeaseID || origin.fencingToken != command.FencingToken {
-					return runnerUnauthorized()
+			if request, defect := input.(tracker.CreateIssue); defect && scope.credential.Scope == apiScopeWorker {
+				if nativeProgressActor(scope) && scope.progressOrigin != nil {
+					origin := scope.progressOrigin
+					if origin.service != s || origin.scope.organization != scope.organization || origin.scope.project != scope.project || origin.scope.credential.ID != scope.credential.ID || origin.leaseID != command.LeaseID || origin.fencingToken != command.FencingToken {
+						return runnerUnauthorized()
+					}
+					if err := origin.validateProgressLeaseWriter(ctx, w); err != nil {
+						return err
+					}
+				} else {
+					origin, machine := issueorigin.Parse(request.Body)
+					if !machine || origin.Kind != "worker" || request.State != "Backlog" {
+						return runnerUnauthorized()
+					}
+					lease, err := w.Lease(ctx, string(command.LeaseID))
+					if err != nil {
+						return err
+					}
+					item, err := w.WorkItemByID(ctx, scope.project, lease.IssueID)
+					if err != nil {
+						return err
+					}
+					if err := s.authorizeAttachmentCommentLease(ctx, w, scope, item, command); err != nil {
+						return err
+					}
 				}
-				if err := origin.validateProgressLeaseWriter(ctx, w); err != nil {
+			}
+			if _, edit := input.(tracker.UpdateIssue); edit && scope.credential.Scope == apiScopeWorker {
+				authorityItem := plan.current
+				origin, machine := issueorigin.Parse(plan.issue.Body)
+				if machine && origin.Kind == "worker" && plan.issue.State == "Backlog" && stringValue(plan.current.ActorPrincipalID) == scope.actor().PrincipalID {
+					lease, err := w.Lease(ctx, string(command.LeaseID))
+					if err != nil {
+						return err
+					}
+					authorityItem, err = w.WorkItemByID(ctx, scope.project, lease.IssueID)
+					if err != nil {
+						return err
+					}
+				}
+				if err := s.authorizeAttachmentCommentLease(ctx, w, scope, authorityItem, command); err != nil {
 					return err
 				}
 			}

@@ -14,8 +14,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -49,7 +49,7 @@ func (s *Service) readLinkedIssueSourceRecord(ctx context.Context, organization 
 	return *result, true, nil
 }
 
-func requireLinkedIssueLease(ctx context.Context, r leasestore.Reader, scope nativeScope, item corestore.WorkItem, mutation tracker.Mutation, now time.Time) error {
+func requireLinkedIssueLease(ctx context.Context, r tenantstore.Reader, scope nativeScope, item corestore.WorkItem, mutation tracker.Mutation, now time.Time) error {
 	if mutation.LeaseID == "" || mutation.FencingToken <= 0 {
 		return tracker.ErrStaleFencingToken
 	}
@@ -63,7 +63,21 @@ func requireLinkedIssueLease(ctx context.Context, r leasestore.Reader, scope nat
 	if scope.credential.Runner.RunnerID == "" || string(scope.credential.Runner.MachineID) != lease.MachineID {
 		return nativeNotFound()
 	}
-	return workItemStorageUnavailable()
+	identity, err := r.RunnerForLease(ctx, string(mutation.LeaseID))
+	if err != nil {
+		return err
+	}
+	if identity.RunnerID != scope.credential.Runner.RunnerID || identity.TokenID != scope.credential.ID {
+		return nativeNotFound()
+	}
+	allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return nativeNotFound()
+	}
+	return nil
 }
 
 type linkedIssueCommentPlan struct {
@@ -79,9 +93,6 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 	itemID := tracker.NativeWorkItemID(c.Param("item"))
 	if scope.credential.Scope != apiScopeWorker && scope.credential.Scope != apiScopeAdmin && scope.credential.Scope != apiScopeOperator {
 		return s.nativeAPIError(c, nativeNotFound())
-	}
-	if scope.credential.Scope == apiScopeWorker && s.config.TenantRepository != nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
 	}
 	if s.config.AccessRepository == nil {
 		return s.nativeAPIError(c, workItemStorageUnavailable())
@@ -133,10 +144,7 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 	var project projectstore.Record
 	var version eventstore.CollaborationVersion
 	var source eventstore.LinkedSource
-	now, err := s.database.currentTime()
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
+	now := s.config.now().UTC()
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		row, err = r.WorkItem(ctx, scope.project, itemID)
@@ -257,6 +265,7 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 	var fields workItemRecordFields
 	var issueVersion eventstore.CollaborationVersion
 	var issueEvent eventstore.Event
+	var searchDocument searchstore.Document
 	if !stale {
 		issue.LinkedSource.Snapshot = &snapshot
 		issueRaw, err := json.Marshal(issue)
@@ -277,6 +286,12 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 			return s.nativeAPIError(c, err)
 		}
 		issueEvent, err = content.PrepareEvent(ctx, scope.organization, issueEventRaw)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
+	if !stale {
+		searchDocument, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: itemID, ID: "issue:" + string(itemID), SourceID: string(itemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
@@ -371,6 +386,9 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 		}
 		if !stale {
 			if err := writeWorkItemRecord(ctx, w, issuePlan, fields); err != nil {
+				return err
+			}
+			if err := w.PutSearch(ctx, searchDocument, row.Revision); err != nil {
 				return err
 			}
 			if _, err := w.CreateCollaborationVersion(ctx, issueVersion); err != nil {

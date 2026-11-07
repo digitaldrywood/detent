@@ -463,6 +463,12 @@ func (c *NativeConnector) findIntakeIssue(ctx context.Context, match func(tracke
 			return issuefiling.Issue{}, false, err
 		}
 		for _, issue := range page.Items {
+			if issue.Body == "" && !issue.Archived {
+				issue, err = c.client.Issue(ctx, issue.WorkItemID)
+				if err != nil {
+					return issuefiling.Issue{}, false, err
+				}
+			}
 			if issue.Archived || !match(issue) {
 				continue
 			}
@@ -502,7 +508,11 @@ func (c *NativeConnector) UpdateIntakeIssue(ctx context.Context, id string, draf
 		}
 	}
 	body := issueorigin.Preserve(draft.Body, issue.Body)
-	updated, err := c.client.UpdateIssue(ctx, issue.WorkItemID, tracker.UpdateIssue{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: issue.Revision, Title: &draft.Title, Body: &body, Labels: &labels})
+	mutation := nativeMutationKeyForContext(ctx)
+	if authority, ok := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority); ok && authority.scope == c.client.base() {
+		mutation.LeaseID, mutation.FencingToken = authority.lease.ID, authority.lease.FencingToken
+	}
+	updated, err := c.client.UpdateIssue(ctx, issue.WorkItemID, tracker.UpdateIssue{Mutation: mutation, ExpectedRevision: issue.Revision, Title: &draft.Title, Body: &body, Labels: &labels})
 	return nativeIntakeIssue(IssueFromNative(updated)), err
 }
 

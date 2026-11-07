@@ -2,7 +2,6 @@ package dispatch
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -17,6 +16,9 @@ import (
 
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/issuefiling"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -75,7 +77,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 		t.Fatal("native worker has no existing machine intake owner")
 	}
 	h.native = native
-	h.scheduler, err = newTestScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+	h.scheduler, err = newTestScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,6 +123,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil || !result.Success {
 		t.Fatalf("worker filing = %+v, %v", result, err)
 	}
+	h.projectBoard()
 	created, matched, err := store.FindIntakeIssue(t.Context(), "<!-- acceptance-owner -->")
 	if err != nil || !matched || created.ID == "" {
 		t.Fatalf("worker follow-up = %#v, error = %v", created, err)
@@ -154,6 +157,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil || !reused.Reused || reused.ID != created.ID {
 		t.Fatalf("same fingerprint = %#v, %v", reused, err)
 	}
+	h.projectBoard()
 	comments, err := native.Comments(t.Context(), tracker.NativeWorkItemID(created.ID), "")
 	if err != nil || len(comments.Items) != 1 || !strings.Contains(comments.Items[0].Body, "## New machine occurrence") {
 		t.Fatalf("occurrence = %#v, %v", comments, err)
@@ -162,6 +166,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.projectBoard()
 	updatedOrigin, stamped := issueorigin.Parse(updated.Body)
 	if !stamped || updatedOrigin.Source != strconv.FormatInt(workerRequest.WorkAttemptID, 10) || updatedOrigin.Fingerprint != origin.Fingerprint {
 		t.Fatalf("origin replaced: %#v", updatedOrigin)
@@ -212,6 +217,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 			t.Fatalf("intake replay = %#v, %v", replayed, err)
 		}
 	}
+	h.projectBoard()
 	comments, err = native.Comments(t.Context(), tracker.NativeWorkItemID(created.ID), "")
 	if err != nil || len(comments.Items) != 2 {
 		t.Fatalf("intake replay repeated occurrence: %#v, %v", comments, err)
@@ -240,6 +246,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.projectBoard()
 	t.Run("worker discovers and reuses held fingerprint", func(t *testing.T) {
 		args, err := json.Marshal(map[string]any{"project_id": h.project, "query": "pool-live-acceptance", "states": []string{"Backlog", "Blocked"}, "limit": 1})
 		if err != nil {
@@ -279,6 +286,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 		if err != nil || after.State != current.State || after.Revision != current.Revision || after.Priority == nil || *after.Priority != *current.Priority || after.Body != current.Body || after.Title != current.Title || !slices.Equal(after.Labels, current.Labels) || !slices.Equal(after.Assignees, current.Assignees) || after.Archived != current.Archived {
 			t.Fatalf("discovered fingerprint intake changed held owner: %#v, %v", after, err)
 		}
+		h.projectBoard()
 		afterComments, err := native.Comments(ctx, current.WorkItemID, "")
 		if err != nil || len(afterComments.Items) != len(beforeComments.Items)+1 {
 			t.Fatalf("discovered fingerprint occurrence = %#v, %v", afterComments, err)
@@ -314,6 +322,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			h.projectBoard()
 			draft.Priority = test.rank
 			reused, err := store.CreateIntakeIssue(ctx, draft)
 			if err != nil || !reused.Reused || reused.ID != created.ID {
@@ -362,8 +371,11 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 		})
 	}
 	candidates, err := conn.FetchCandidateIssues(t.Context())
-	if err != nil || len(candidates) != 1 || candidates[0].ID != source.ID {
+	if err != nil || len(candidates) != 0 {
 		t.Fatalf("priority admitted a Backlog or held follow-up: %#v, %v", candidates, err)
+	}
+	if _, err := native.Renew(t.Context(), claim.lease, 90); err != nil {
+		t.Fatalf("machine intake lost the executing source claim: %v", err)
 	}
 	for _, rank := range []int{-1, 0, 5} {
 		draft.Priority = &rank
@@ -373,7 +385,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	}
 	draft.Priority = new(2)
 	var foreignProject tracker.NativeProject
-	if err := h.admin.Transport().Request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/projects", map[string]any{"name": "foreign", "idempotency_key": "foreign-intake", "states": states}, &foreignProject); err != nil {
+	if err := h.admin.Transport().Request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/projects", map[string]any{"name": "foreign", "idempotency_key": "foreign-intake", "states": states, "grant_access": true}, &foreignProject); err != nil {
 		t.Fatal(err)
 	}
 	foreign, err := client.Native(h.organization, foreignProject.ID)
@@ -483,25 +495,29 @@ func (b intakeRepositoryBackend) FetchImportPage(_ context.Context, request hubs
 func newIntakeChangeHub(t *testing.T) *nativeChangeHub {
 	t.Helper()
 	h := newNativeChangeHubWithStates(t, "Human Review", hubserver.HostedProjectStates(), intakeRepositoryBackend{})
-	if err := h.admin.Transport().Request(t.Context(), http.MethodPost, h.admin.Scope()+"/onboarding/repository", map[string]any{"idempotency_key": "attach", "expected_revision": "1", "repository": "acme/orders"}, nil); err != nil {
-		t.Fatal(err)
-	}
+	h.seed(func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), h.project)
+		if err != nil {
+			return err
+		}
+		record.Settings.RepositoryEnabled = true
+		record.Settings.Repository = "acme/orders"
+		record.Settings.CheckoutRepository = "acme/orders"
+		_, err = w.UpdateProjectRecord(t.Context(), record)
+		return err
+	})
 	return h
 }
 
 func newLinkedChangeHub(t *testing.T) (*nativeChangeHub, tracker.NativeIssue) {
 	t.Helper()
-	h := newIntakeChangeHub(t)
-	issue, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), GitHubIssueURL: "https://github.com/acme/orders/issues/12", State: "In Progress"})
-	if err != nil {
+	h, issue := newPendingLinkedChangeHub(t)
+	h.scheduler.githubIntake = func(context.Context, string) (tracker.GitHubIssueSnapshot, error) { return intakeSnapshot(), nil }
+	h.claim(t, string(issue.WorkItemID))
+	if err := h.scheduler.ReleaseClaim(t.Context(), string(issue.WorkItemID), "released"); err != nil {
 		t.Fatal(err)
 	}
-	for _, state := range []string{"Todo", "In Progress"} {
-		if err := h.connector.UpdateIssueState(t.Context(), string(issue.WorkItemID), state); err != nil {
-			t.Fatal(err)
-		}
-	}
-	issue, err = h.admin.Issue(t.Context(), issue.WorkItemID)
+	issue, err := h.admin.Issue(t.Context(), issue.WorkItemID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -515,22 +531,38 @@ func newPendingLinkedChangeHub(t *testing.T) (*nativeChangeHub, tracker.NativeIs
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.reopen(func(path string) error {
-		db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_pragma=busy_timeout(5000)&_txlock=immediate")
+	updated := issue
+	updated.Revision++
+	raw, err := json.Marshal(updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, err := h.content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: h.organization, ProjectID: h.project, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(updated.Revision)}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	search, err := h.search.Prepare(t.Context(), searchstore.Document{OrganizationID: h.organization, ProjectID: h.project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(updated.Revision), UpdatedAt: updated.UpdatedAt}, searchstore.Text{Title: updated.Title, Body: updated.Body, Labels: updated.Labels})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.seed(func(w tenantstore.Writer) error {
+		record, err := w.WorkItem(t.Context(), h.project, issue.WorkItemID)
 		if err != nil {
 			return err
 		}
-		tx, err := db.BeginTx(t.Context(), nil)
-		if err != nil {
-			return errors.Join(err, db.Close())
+		source := "github:https://github.com/acme/orders/issues/12"
+		record.NativeSourceKey = &source
+		if _, err := w.UpdateWorkItem(t.Context(), record); err != nil {
+			return err
 		}
-		if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET native_source_key = ? WHERE native_id = ?", "github:https://github.com/acme/orders/issues/12", issue.WorkItemID); err != nil {
-			return errors.Join(err, tx.Rollback(), db.Close())
+		if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
+			return err
 		}
-		if _, err := tx.ExecContext(t.Context(), "INSERT INTO linked_issue_sources (work_item_id, source_url, title_supplied, body_supplied) VALUES (?, ?, 0, 0)", issue.WorkItemID, "https://github.com/acme/orders/issues/12"); err != nil {
-			return errors.Join(err, tx.Rollback(), db.Close())
+		if err := w.PutSearch(t.Context(), search, int64(issue.Revision)); err != nil {
+			return err
 		}
-		return errors.Join(tx.Commit(), db.Close())
+		_, err = w.CreateLinkedSource(t.Context(), eventstore.LinkedSource{OrganizationID: h.organization, ProjectID: h.project, WorkItemID: issue.WorkItemID, URL: "https://github.com/acme/orders/issues/12"})
+		return err
 	})
 	issue, err = h.admin.Issue(t.Context(), issue.WorkItemID)
 	if err != nil {
