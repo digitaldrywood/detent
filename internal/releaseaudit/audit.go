@@ -87,6 +87,7 @@ type Candidate struct {
 }
 
 type Snapshot struct {
+	ResumeKey      string            `json:"resume_key,omitempty"`
 	BaseCommit     string            `json:"base_commit,omitempty"`
 	Identity       Identity          `json:"identity"`
 	BundleCommit   string            `json:"bundle_commit"`
@@ -120,6 +121,8 @@ type Observation struct {
 }
 
 type Request struct {
+	ResumeKey string
+	Resume    *Snapshot
 	// BaseCommit declares a caller-verified incremental range ending at Identity.Commit.
 	// Empty means a full-source audit; excluded units then prevent completion.
 	BaseCommit string
@@ -162,12 +165,19 @@ func (s *Stage) Run(ctx context.Context, request Request) (result Snapshot, retu
 			return result, errors.New("release audit incremental scope requires a distinct pinned base commit")
 		}
 	}
+	if err := validateResume(request); err != nil {
+		return result, err
+	}
 	directory, err := os.MkdirTemp(request.Scratch, "release-audit-")
 	if err != nil {
 		return result, fmt.Errorf("prepare release audit scratch: %w", err)
 	}
-	e := &execution{stage: s, request: request, directory: directory, sessions: map[string]bool{}, state: Snapshot{BaseCommit: request.BaseCommit, Identity: request.Identity, BundleCommit: BundleCommit, BundleDigest: BundleDigest, Status: "incomplete", Allowance: request.Allowance, Ledger: json.RawMessage("[]"), Findings: []json.RawMessage{}, Candidates: []Candidate{}, Evidence: []Evidence{}, Infrastructure: []string{}}}
+	e := &execution{stage: s, request: request, directory: directory, sessions: map[string]bool{}, state: Snapshot{ResumeKey: request.ResumeKey, BaseCommit: request.BaseCommit, Identity: request.Identity, BundleCommit: BundleCommit, BundleDigest: BundleDigest, Status: "incomplete", Allowance: request.Allowance, Ledger: json.RawMessage("[]"), Findings: []json.RawMessage{}, Candidates: []Candidate{}, Evidence: []Evidence{}, Infrastructure: []string{}}}
+	ready := request.Resume == nil
 	defer func() {
+		if !ready {
+			return
+		}
 		finalizeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
 		infrastructure := false
@@ -197,35 +207,50 @@ func (s *Stage) Run(ctx context.Context, request Request) (result Snapshot, retu
 	if err := prepareBundle(filepath.Join(directory, "bundle")); err != nil {
 		return result, err
 	}
-	e.prior, err = s.records.Load(ctx, request.Identity.ProjectID)
-	if err != nil {
-		return result, fmt.Errorf("hydrate release audit history: %w", err)
-	}
-	for _, previous := range e.prior {
-		if previous.Identity.ProjectID != request.Identity.ProjectID {
-			return result, errors.New("release audit history belongs to another project")
-		}
-	}
-	if err := e.seedPrior(ctx); err != nil {
-		return result, err
-	}
-	if err := e.publish(ctx); err != nil {
-		return result, err
-	}
-	if request.Allowance.Invocations < 8 {
-		return result, ErrAllowance
-	}
-	for _, phase := range []string{"recon-architecture", "recon-surfaces", "recon-boundaries", "recon-prior-evidence"} {
-		if _, err := e.invoke(ctx, phase, e.prior); err != nil {
+	var response Response
+	if request.Resume != nil {
+		if err := e.restore(ctx, *request.Resume); err != nil {
 			return result, err
 		}
-	}
-	response, err := e.invoke(ctx, "recon-ledger", e.state.Evidence)
-	if err != nil {
-		return result, err
-	}
-	if err := e.acceptLedger(ctx, response.Output); err != nil {
-		return result, err
+		ready = true
+		response, err = e.invoke(ctx, "coverage-critic", e.state)
+		if err != nil {
+			return result, err
+		}
+		if err := e.acceptLedger(ctx, response.Output); err != nil {
+			return result, err
+		}
+	} else {
+		e.prior, err = s.records.Load(ctx, request.Identity.ProjectID)
+		if err != nil {
+			return result, fmt.Errorf("hydrate release audit history: %w", err)
+		}
+		for _, previous := range e.prior {
+			if previous.Identity.ProjectID != request.Identity.ProjectID {
+				return result, errors.New("release audit history belongs to another project")
+			}
+		}
+		if err := e.seedPrior(ctx); err != nil {
+			return result, err
+		}
+		if err := e.publish(ctx); err != nil {
+			return result, err
+		}
+		if request.Allowance.Invocations < 8 {
+			return result, ErrAllowance
+		}
+		for _, phase := range []string{"recon-architecture", "recon-surfaces", "recon-boundaries", "recon-prior-evidence"} {
+			if _, err := e.invoke(ctx, phase, e.prior); err != nil {
+				return result, err
+			}
+		}
+		response, err = e.invoke(ctx, "recon-ledger", e.state.Evidence)
+		if err != nil {
+			return result, err
+		}
+		if err := e.acceptLedger(ctx, response.Output); err != nil {
+			return result, err
+		}
 	}
 	for {
 		units, err := e.plannedUnits()
