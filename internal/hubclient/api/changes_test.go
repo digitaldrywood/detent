@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -408,6 +409,48 @@ func TestNativeRetainedChangeReviewBoundaries(t *testing.T) {
 			}
 			if err != nil || !reflect.DeepEqual(detail.Reviews, []tracker.ChangeReview{want}) {
 				t.Fatalf("complete fragments lost review: %v", err)
+			}
+		})
+	}
+}
+
+func TestCurrentChangeSelectsLatestCreated(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name    string
+		changes []tracker.ChangeRequest
+		want    string
+	}{
+		{name: "ID order differs from creation", changes: []tracker.ChangeRequest{{ID: "change_a", CreatedAt: at.Add(time.Second)}, {ID: "change_z", CreatedAt: at}}, want: "change_a"},
+		{name: "equal timestamps use stable identity", changes: []tracker.ChangeRequest{{ID: "change_z", CreatedAt: at}, {ID: "change_a", CreatedAt: at}}, want: "change_z"},
+		{name: "no changes"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client, err := New(Config{URL: "http://hub.example.test", TokenSource: func() string { return "example" }, HTTPClient: providerHandlerClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/changes") {
+					if err := json.NewEncoder(w).Encode(test.changes); err != nil {
+						t.Error(err)
+					}
+					return
+				}
+				if !strings.HasSuffix(r.URL.Path, "/changes/"+test.want) {
+					t.Errorf("selected older Change: %s", r.URL.Path)
+				}
+				if err := json.NewEncoder(w).Encode(operatortool.ChangeResult{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: "wi_example", Detail: &tracker.ChangeDetail{Change: tracker.ChangeRequest{ID: test.want, ProjectID: "prj_example", WorkItemID: "wi_example"}}, Read: &operatortool.ChangeRead{Sections: map[string]operatortool.ChangeReadPage{"versions": {Complete: true}, "reviews": {Complete: true}, "checks": {Complete: true}, "discussion": {Complete: true}}}}); err != nil {
+					t.Error(err)
+				}
+			}))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_example", "prj_example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			detail, err := native.CurrentChange(t.Context(), "wi_example")
+			if err != nil || detail.Change.ID != test.want {
+				t.Fatalf("current Change=%s, want %s, error=%v", detail.Change.ID, test.want, err)
 			}
 		})
 	}

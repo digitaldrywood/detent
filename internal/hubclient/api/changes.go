@@ -152,7 +152,13 @@ func (c *NativeClient) CurrentChange(ctx context.Context, item tracker.NativeWor
 	if len(changes) == 0 {
 		return tracker.ChangeDetail{}, nil
 	}
-	detail, err := c.RuntimeChange(ctx, item, changes[len(changes)-1].ID)
+	current := slices.MaxFunc(changes, func(a, b tracker.ChangeRequest) int {
+		if compared := a.CreatedAt.Compare(b.CreatedAt); compared != 0 {
+			return compared
+		}
+		return cmp.Compare(a.ID, b.ID)
+	})
+	detail, err := c.RuntimeChange(ctx, item, current.ID)
 	if err != nil {
 		return tracker.ChangeDetail{}, fmt.Errorf("read change: %w", err)
 	}
