@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -122,14 +123,14 @@ func TestBillingStatusCreditCursor(t *testing.T) {
 	t.Parallel()
 	for _, deployment := range []string{"shared", "dedicated"} {
 		t.Run(deployment, func(t *testing.T) {
-			f, ctx := newHostedKeyMCPFixture(t, deployment, "owner")
+			f, ctx := newOperatorKeyFixture(t, deployment, "owner")
 			d := f.service.database
 			d.aiCreditMode = billing.ModeTest
-			if _, err := d.db.ExecContext(t.Context(), `INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'test',123)`, d.hostedOrganization); err != nil {
+			if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES($1,'test',123)`, d.hostedOrganization); err != nil {
 				t.Fatal(err)
 			}
 			for index := range 3 {
-				if _, err := d.db.ExecContext(t.Context(), `INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,'test',?,123,'purchase',?)`, d.hostedOrganization, fmt.Sprintf("purchase-%d", index), int64(index+1)); err != nil {
+				if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES($1,'test',$2,123,'purchase',$3)`, d.hostedOrganization, fmt.Sprintf("purchase-%d", index), time.UnixMicro(int64(index+1)).UTC()); err != nil {
 					t.Fatal(err)
 				}
 			}
