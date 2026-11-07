@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -20,6 +21,15 @@ func TestAuditDispositionWritesPreserveReadableSession(t *testing.T) {
 		seedRepository(t, repository, organization)
 		t.Run(string(organization), func(t *testing.T) {
 			fixture := seedHistory(t, repository, organization, "audit")
+			second := fixture.evidence
+			second.Sequence, second.SourceKey = 0, nil
+			if err := repository.WriteRecords(t.Context(), organization, corestore.Serving, func(w eventstore.Writer) error {
+				var err error
+				second, err = w.AppendEvidence(t.Context(), second)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
 			row := eventstore.AuditDisposition{Organization: organization, Project: fixture.change.ProjectID, ChangeID: fixture.change.ID, ReviewSequence: fixture.evidence.Sequence, ActorID: "actor_first", RequestHash: "hash", Reference: eventstore.Reference("example/disposition", "digest", 1, 1), Disposition: securityaudit.Disposition{AuditRunID: 1, FindingID: "finding", Status: securityaudit.DispositionFalsePositive, RecordedAt: historyAt()}}
 			write := func(input eventstore.AuditDisposition) (eventstore.AuditDisposition, error) {
 				var got eventstore.AuditDisposition
@@ -32,6 +42,11 @@ func TestAuditDispositionWritesPreserveReadableSession(t *testing.T) {
 			}
 			var first eventstore.AuditDisposition
 			for index := range 200 {
+				row.ReviewSequence = fixture.evidence.Sequence
+				if index%2 == 0 {
+					row.ReviewSequence = second.Sequence
+				}
+				row.Disposition.RecordedAt = historyAt().Add(time.Duration((199-index)/2) * time.Second)
 				row.RequestKey = fmt.Sprint(index)
 				got, err := write(row)
 				if err != nil {
@@ -91,8 +106,26 @@ func TestAuditDispositionWritesPreserveReadableSession(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if !reflect.DeepEqual(batch[1], rows) || len(rows) != 200 || len(batch[2]) != 1 {
-					t.Fatal("batched disposition metadata differs from scalar")
+				if len(rows) != 200 || len(batch[2]) != 1 {
+					t.Fatal("disposition count differs from scalar")
+				}
+				if !rows[0].Disposition.RecordedAt.Equal(rows[1].Disposition.RecordedAt) || !rows[0].Disposition.RecordedAt.After(rows[2].Disposition.RecordedAt) {
+					t.Fatal("fixture must contain timestamp ties and reverse timestamp order")
+				}
+				for _, run := range []int64{1, 2} {
+					want := rows
+					if run == 2 {
+						want, err = r.(eventstore.AuditDispositionReader).AuditDispositions(t.Context(), row.Project, run)
+						if err != nil {
+							return err
+						}
+					}
+					if !reflect.DeepEqual(snapshot[fixture.change.ID].AuditDispositions[run], want) {
+						t.Errorf("snapshot disposition slice differs from scalar for run %d", run)
+					}
+					if !reflect.DeepEqual(batch[run], want) {
+						t.Errorf("legacy batch disposition slice differs from scalar for run %d", run)
+					}
 				}
 				if empty, covered := batch[404]; !covered || len(empty) != 0 {
 					t.Fatal("empty legacy audit run was not queried")

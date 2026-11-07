@@ -51,7 +51,7 @@ SELECT 2,COALESCE(d.change_id,''),$2,''::text,COALESCE(d.actor_id,''),false,fals
 FROM audit_runs r LEFT JOIN LATERAL (
  SELECT * FROM runner_audit_dispositions WHERE organization_id=$1 AND project_id=$2 AND audit_session_id=r.audit_session_id ORDER BY id LIMIT 201
 ) d ON true
-ORDER BY 1,2,8,20`, s.organization, project, ids, corestore.MaxPageSize+1)
+ORDER BY 1,20,2,8`, s.organization, project, ids, corestore.MaxPageSize+1)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
