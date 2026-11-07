@@ -105,7 +105,7 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 		t.Fatal(err)
 	}
 	organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
-	now := time.Now().UTC()
+	now := cfg.Clock().UTC()
 	err = repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example", Slug: "example", CreatedAt: now}); err != nil {
 			return err
@@ -126,8 +126,11 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "prj_example", Name: "Example project", Profile: "native", RequireDependencies: requireDependencies}, States: states}); err != nil {
 			return err
 		}
-		for _, credential := range []struct{ id, token, scope string }{{"example_admin", string(cfg.InitialAdminToken), "admin"}, {"example_worker", "example-worker", "worker"}, {"example_other", "example-other", "worker"}} {
+		for _, credential := range []struct{ id, token, scope string }{{"example_admin", string(cfg.InitialAdminToken), "admin"}, {"example_ci", "example-ci", "operator"}} {
 			row := accessstore.Credential{OrganizationID: organization, ID: credential.id, Name: credential.id, Hash: apikey.HashToken(credential.token), Scope: credential.scope, Kind: "personal", KeyScope: "admin", ProjectAccess: "all", UserID: "user_example", MembershipID: "membership_example", CreatedAt: now, UpdatedAt: now}
+			if credential.id == "example_ci" {
+				row.Kind, row.KeyScope, row.ProjectAccess, row.UserID, row.MembershipID = "service", "write", "selected", "", ""
+			}
 			if err := w.CreateAccessCredential(t.Context(), row); err != nil {
 				return err
 			}
@@ -144,4 +147,16 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+func hubclientSeedPostgres(t *testing.T, cfg hubserver.Config, organization tracker.OrganizationID, seed func(tenantstore.Writer) error) {
+	t.Helper()
+	repository, err := postgres.Open(t.Context(), *cfg.Postgres, os.DirFS("../../hubserver/postgres/migrations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = repository.WriteTenant(t.Context(), organization, corestore.Serving, seed)
+	if err := errors.Join(err, repository.Close()); err != nil {
+		t.Fatal(err)
+	}
 }

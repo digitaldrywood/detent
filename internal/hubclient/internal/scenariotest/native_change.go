@@ -22,7 +22,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -32,8 +31,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
-	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -140,7 +139,6 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
 	newTestClient := func(t testing.TB, config Config) (*Client, error) { return createTestClient(t, config, factories) }
 
-	isolateNativeChangeGit(t)
 	sourceSeed := nativeChangeSourceRepo(t)
 
 	for _, test := range scenarios {
@@ -241,7 +239,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				if err != nil {
 					t.Fatal(err)
 				}
-				machine := Machine{ID: file.Identity.MachineID, Hostname: "host", Capacity: 1, Version: "test", BackendIsolation: isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}}
+				machine := Machine{ID: file.Identity.MachineID, Hostname: "host", DisplayName: "Example runner", Capacity: 1, Version: "test", BackendIsolation: isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}}
 				var identity runnerauth.Identity
 				redemption := runnerauth.Redemption{Binding: file.Identity.Binding, Credential: file.Credential, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version, OS: runtime.GOOS, Architecture: runtime.GOARCH, IsolationTier: machine.IsolationTier, BackendIsolation: machine.BackendIsolation, SpriteName: runnerSpriteName(machine.Hostname)}
 				if err := fixtureRunnerRequest(t, enrollmentAdmin, enrollment.Token, http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/runner-enrollments/redeem", redemption, &identity); err != nil {
@@ -771,7 +769,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 							t.Fatal("worker did not retry the transport failure")
 						}
 					}
-					h.reopen(func(string) error { return nil })
+					h.restart()
 					h.failChanges.controlFailures.Store(0)
 					after := before
 					if err := h.admin.Transport().Request(ctx, http.MethodGet, h.admin.Scope()+"/work-items/"+issue.ID+"/conversation", nil, &after); err != nil {
@@ -1591,7 +1589,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				if test.PublicationFault == "foreign_source" || test.ForeignRunner {
 					machineID = "foreign-machine"
 				}
-				h.scheduler, err = newTestScheduler(h.scheduler.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: machineID, Hostname: "host", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
+				h.scheduler, err = newTestScheduler(h.scheduler.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: machineID, Hostname: "host", DisplayName: "Example runner", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1893,7 +1891,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				return
 			}
 			if test.Expired {
-				evidence, readErr := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+				evidence, readErr := h.latestRuntimeEvidence(t, tracker.NativeWorkItemID(issue.ID))
 				if !errors.Is(context.Cause(runCtx), context.DeadlineExceeded) || readErr != nil || evidence.Attempt == nil || evidence.Attempt.Status != "succeeded" {
 					t.Fatalf("completed turn lost after parent expiry: attempt=%+v error=%v", evidence.Attempt, readErr)
 				}
@@ -2020,7 +2018,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				result, err = agent.Run(t.Context(), runner.RunRequest{Execution: execution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
 			}
 			if !provider.bound && !test.SSH {
-				t.Fatal("native worker did not bind its conversation")
+				t.Fatalf("native worker did not bind its conversation: run error=%v", err)
 			}
 			if test.BrokenSigning {
 				signature, readErr := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "log", "-1", "--format=%G?").Output()
@@ -2220,7 +2218,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					t.Fatalf("runner lost refused publication result: %+v", change)
 				}
 				h.complete(t, issue.ID, change)
-				evidence, readErr := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+				evidence, readErr := h.latestRuntimeEvidence(t, tracker.NativeWorkItemID(issue.ID))
 				if readErr != nil || evidence.Attempt == nil || evidence.Attempt.Finalization == nil || evidence.Attempt.Finalization.VersionError != change.VersionError || evidence.Attempt.Finalization.VersionCode != change.VersionCode || evidence.Attempt.ClaimReleasedAt == nil {
 					t.Fatalf("publication refusal was omitted from the terminal receipt: %+v, %v", evidence.Attempt, readErr)
 				}
@@ -2440,7 +2438,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					}
 					stop()
 					item := tracker.NativeWorkItemID(issue.ID)
-					evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
+					evidence, err := h.latestRuntimeEvidence(t, item)
 					if err != nil || evidence.Attempt == nil || evidence.Attempt.Status != "succeeded" || evidence.Attempt.WorkItemRevision != 3 || evidence.Attempt.DispatchGeneration != 0 || evidence.Attempt.Checkpoint == nil || evidence.Attempt.Checkpoint.WorktreeState != "unpushed" || evidence.Attempt.Checkpoint.HeadSHA != target.HeadSHA || evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.Landing == nil || evidence.Attempt.Runtime.Landing.Landed || evidence.Attempt.Runtime.Landing.RefusalKind != workspace.LandRefusalBaseMoved || evidence.Change == nil || evidence.Change.Change.CurrentVersion != target.VersionID || evidence.Change.Change.Landed != nil || h.state(t, issue.ID) != "Merging" {
 						t.Fatalf("waiting attempt lost truthful revision3 landing evidence: %+v, %v", evidence, err)
 					}
@@ -2698,29 +2696,26 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		t.Fatal(err)
 	}
 	h := &nativeChangeHub{config: config, clock: config.Clock, review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), project: "prj_example", descriptor: clientTestPolicy()}
-	reopens := 0
-	h.reopen = func(seed func(string) error) {
+	h.restart = func() {
 		t.Helper()
 		requests.Lock()
 		defer requests.Unlock()
 		if err := service.Close(); err != nil {
-			t.Fatalf("close fixture before seed: %v", err)
+			t.Fatal(err)
 		}
-		reopens++
-		seedPath := filepath.Join(filepath.Dir(config.DatabasePath), fmt.Sprintf("seed-%d.db", reopens))
-		if err := hubserver.BackupDatabase(t.Context(), config.DatabasePath, seedPath); err != nil {
-			t.Fatalf("snapshot stopped fixture: %v", err)
-		}
-		if err := seed(seedPath); err != nil {
-			t.Fatalf("seed stopped fixture: %v", err)
-		}
-		config.DatabasePath = seedPath
 		service, err = hubserver.Open(t.Context(), config)
 		if err != nil {
-			t.Fatalf("reopen seeded fixture: %v", err)
+			t.Fatal(err)
 		}
 	}
-	h.seed = func(write func(tenantstore.Writer) error) { testsupport.DispatchWriteFixture(t, config, write) }
+	h.seed = func(seed func(tenantstore.Writer) error) {
+		t.Helper()
+		hubclientSeedPostgres(t, config, h.organization, seed)
+	}
+	h.prepareEvidence = func(row eventstore.Evidence, raw []byte) (eventstore.Evidence, error) {
+		return eventstore.NewContent(config.RunDetails).PrepareEvidence(t.Context(), row, raw)
+	}
+	h.reopen = func(func(string) error) { t.Fatal("obsolete SQLite fixture seed") }
 	if h.admin, err = admin.Native(h.organization, h.project); err != nil {
 		t.Fatal(err)
 	}
@@ -2779,7 +2774,9 @@ type nativeChangeHub struct {
 	leaseHolds      atomic.Int64
 	clock           func() time.Time
 	reopen          func(func(string) error)
+	restart         func()
 	seed            func(func(tenantstore.Writer) error)
+	prepareEvidence func(eventstore.Evidence, []byte) (eventstore.Evidence, error)
 	sourceDirectory string
 	review          string
 	organization    tracker.OrganizationID
@@ -3077,7 +3074,7 @@ func (h *nativeChangeHub) publicationCI(t *testing.T) *NativeClient {
 		t.Fatal(err)
 	}
 	rules.PolicyID = h.descriptor.ID
-	rules.RequiredChecks = []tracker.ChangeCheckSpec{{Name: "full-ci", PrincipalID: token.ID, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}
+	rules.RequiredChecks = []tracker.ChangeCheckSpec{{Name: "full-ci", PrincipalID: "example_ci", WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}
 	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), ExpectedID: rules.ID, Policy: rules}); err != nil {
 		t.Fatal(err)
 	}
@@ -3297,40 +3294,41 @@ func nativeChangeGitWithContext(ctx context.Context, t *testing.T, dir string, a
 
 func PublicationFixtureKeepsLeaseUntilHandoff(t *testing.T, factories Constructors) {
 	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		h := newScenarioHub(t, factories, true)
-		issue := h.createInProgress(t, "Publication handoff")
-		h.claim(t, issue.ID)
-		owner := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
-		stopGuard := func() {}
-		fixture := &nativePublicationFixtureExecution{ownedExecution: owner, keepGuard: func(stop func()) {
-			stopGuard = sync.OnceFunc(stop)
-			t.Cleanup(stopGuard)
-		}}
-		guarded, returned, err := fixture.Guard(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer returned()
-		if err := fixture.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
-			t.Fatal(err)
-		}
-		if err := fixture.Finish(guarded, "interrupted"); err != nil {
-			t.Fatal(err)
-		}
-		returned()
-		time.Sleep(2 * h.scheduler.LeaseDuration())
-		if guarded.Err() != nil {
-			t.Errorf("runner return stopped the publication guard: %v", context.Cause(guarded))
-		}
-		stopGuard()
-		if !errors.Is(guarded.Err(), context.Canceled) {
-			t.Fatalf("handoff left the old guard running: %v", guarded.Err())
-		}
-		if err := h.native.Release(t.Context(), owner.claim.lease, "released"); err != nil {
-			t.Fatalf("publication handoff lost its lease: %v", err)
-		}
-	})
+	h := newScenarioHub(t, factories, true)
+	issue := h.createInProgress(t, "Publication handoff")
+	h.claim(t, issue.ID)
+	owner := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
+	stopGuard := func() {}
+	fixture := &nativePublicationFixtureExecution{ownedExecution: owner, keepGuard: func(stop func()) {
+		stopGuard = sync.OnceFunc(stop)
+		t.Cleanup(stopGuard)
+	}}
+	guarded, returned, err := fixture.Guard(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer returned()
+	if err := fixture.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.Finish(guarded, "interrupted"); err != nil {
+		t.Fatal(err)
+	}
+	returned()
+	SetSchedulerNow(h.scheduler, time.Now().Add(2*h.scheduler.LeaseDuration()))
+	if err := fixture.Validate(guarded); err != nil {
+		t.Fatalf("publication guard did not retain renewable authority: %v", err)
+	}
+	if guarded.Err() != nil {
+		t.Errorf("runner return stopped the publication guard: %v", context.Cause(guarded))
+	}
+	stopGuard()
+	if !errors.Is(guarded.Err(), context.Canceled) {
+		t.Fatalf("handoff left the old guard running: %v", guarded.Err())
+	}
+	if err := h.native.Release(t.Context(), owner.claim.lease, "released"); err != nil {
+		t.Fatalf("publication handoff lost its lease: %v", err)
+	}
 }
 
 func (e *nativePublicationFixtureExecution) Guard(ctx context.Context) (context.Context, func(), error) {
