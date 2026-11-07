@@ -22,7 +22,7 @@ type byteBudget struct {
 
 func (b Budget) Context(ctx context.Context, tenant Tenant) context.Context {
 	remaining := b.Bytes
-	if b.Items != 1 || remaining <= 0 || remaining > ByteLimit || tenant.Organization == "" || tenant.Generation <= 0 {
+	if b.Items <= 0 || b.Items > ItemLimit || remaining <= 0 || remaining > ByteLimit || tenant.Organization == "" || tenant.Generation <= 0 {
 		remaining = 0
 	}
 	return context.WithValue(ctx, budgetKey{}, &byteBudget{tenant: tenant, allowance: remaining, remaining: remaining})

@@ -15,6 +15,7 @@ import (
 const (
 	TenantLimit = 32
 	WorkerLimit = 2
+	ItemLimit   = 64
 	ByteLimit   = 16 << 30
 )
 
@@ -130,7 +131,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 					failures <- err
 					continue
 				}
-				budget := Budget{Items: 1, Bytes: feature.Bytes}
+				budget := Budget{Items: ItemLimit, Bytes: feature.Bytes}
 				if err := feature.Step(budget.Context(ctx, tenant), tenant, budget); err != nil {
 					failures <- fmt.Errorf("maintenance tenant %s feature %s: %w", tenant.Organization, feature.Name, err)
 				}

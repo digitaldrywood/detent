@@ -27,28 +27,48 @@ func (s *detailCounter) ReadCanonicalDetail(context.Context, string, string, str
 
 func TestPayloadBudgetRejectsBeforeIOAndCannotCrossTenant(t *testing.T) {
 	tenant := Tenant{Organization: "org_first", Generation: 1}
-	ctx := (Budget{Items: 1, Bytes: 20}).Context(t.Context(), tenant)
-	storage := &detailCounter{}
-	details := LimitDetails(storage)
-	ref := attachment.ArchiveReference{CompressedSize: 3, UncompressedSize: 7}
-	if _, err := details.ReadDetail(ctx, tenant.Organization, ref); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := details.ReadDetail(ctx, tenant.Organization, ref); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := details.ReadDetail(ctx, tenant.Organization, ref); !errors.Is(err, ErrByteBudget) {
-		t.Fatalf("unbounded read: %v", err)
-	}
-	if _, err := details.StoreDetail(ctx, tenant.Organization, []byte("example")); !errors.Is(err, ErrByteBudget) {
-		t.Fatalf("unbounded write: %v", err)
-	}
-	ctx = (Budget{Items: 1, Bytes: 20}).Context(t.Context(), tenant)
-	if _, err := details.ReadDetail(ctx, "org_second", ref); err == nil {
-		t.Fatal("cross-tenant maintenance read accepted")
-	}
-	if storage.reads != 2 || storage.writes != 0 {
-		t.Fatalf("I/O after refusal: reads=%d writes=%d", storage.reads, storage.writes)
+	for _, test := range []struct {
+		name  string
+		items int
+		valid bool
+	}{
+		{"single", 1, true},
+		{"batch", 64, true},
+		{"empty", 0, false},
+		{"negative", -1, false},
+		{"oversized", 65, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := (Budget{Items: test.items, Bytes: 20}).Context(t.Context(), tenant)
+			storage := &detailCounter{}
+			details := LimitDetails(storage)
+			ref := attachment.ArchiveReference{CompressedSize: 3, UncompressedSize: 7}
+			if !test.valid {
+				if _, err := details.ReadDetail(ctx, tenant.Organization, ref); err == nil || storage.reads != 0 {
+					t.Fatalf("invalid item budget reached storage: reads=%d err=%v", storage.reads, err)
+				}
+				return
+			}
+			if _, err := details.ReadDetail(ctx, tenant.Organization, ref); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := details.ReadDetail(ctx, tenant.Organization, ref); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := details.ReadDetail(ctx, tenant.Organization, ref); !errors.Is(err, ErrByteBudget) {
+				t.Fatalf("unbounded read: %v", err)
+			}
+			if _, err := details.StoreDetail(ctx, tenant.Organization, []byte("example")); !errors.Is(err, ErrByteBudget) {
+				t.Fatalf("unbounded write: %v", err)
+			}
+			ctx = (Budget{Items: test.items, Bytes: 20}).Context(t.Context(), tenant)
+			if _, err := details.ReadDetail(ctx, "org_second", ref); err == nil {
+				t.Fatal("cross-tenant maintenance read accepted")
+			}
+			if storage.reads != 2 || storage.writes != 0 {
+				t.Fatalf("I/O after refusal: reads=%d writes=%d", storage.reads, storage.writes)
+			}
+		})
 	}
 	key, err := attachment.ArchiveKey(tenant.Organization, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	if err != nil {

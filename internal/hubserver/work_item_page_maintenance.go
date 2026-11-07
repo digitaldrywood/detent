@@ -15,12 +15,17 @@ import (
 )
 
 func (s *Service) WorkItemPageMaintenanceFeature() hubmaintenance.Feature {
-	return hubmaintenance.Feature{Name: "work-item-pages", Bytes: hubmaintenance.ByteLimit, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
+	return hubmaintenance.Feature{Name: "work-item-pages", Bytes: hubmaintenance.ByteLimit, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, budget hubmaintenance.Budget) error {
 		if err := hubmaintenance.RequireTenant(ctx, tenant); err != nil {
 			return err
 		}
-		_, err := s.MaintainWorkItemPage(ctx, tracker.OrganizationID(tenant.Organization))
-		return err
+		for range budget.Items {
+			worked, err := s.MaintainWorkItemPage(ctx, tracker.OrganizationID(tenant.Organization))
+			if err != nil || !worked {
+				return err
+			}
+		}
+		return nil
 	}}
 }
 
