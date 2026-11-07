@@ -12,7 +12,7 @@ import (
 )
 
 const projectIntakeBatch = `-- name: ProjectIntakeBatch :one
-SELECT organization_id, project_id, id, revision, batch_status, hub_owned, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes FROM onboarding_issue_intake WHERE organization_id=$1 AND project_id=$2
+SELECT organization_id, project_id, id, revision, batch_status, hub_owned, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, next_attempt_at, attempts FROM onboarding_issue_intake WHERE organization_id=$1 AND project_id=$2
 `
 
 type ProjectIntakeBatchParams struct {
@@ -34,6 +34,8 @@ func (q *Queries) ProjectIntakeBatch(ctx context.Context, arg ProjectIntakeBatch
 		&i.PayloadSHA256,
 		&i.PayloadBytes,
 		&i.PayloadContentBytes,
+		&i.NextAttemptAt,
+		&i.Attempts,
 	)
 	return i, err
 }
@@ -42,7 +44,7 @@ const saveProjectIntakeBatch = `-- name: SaveProjectIntakeBatch :execrows
 INSERT INTO onboarding_issue_intake(organization_id,project_id,id,revision,batch_status,hub_owned,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
 SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10
 WHERE $11::bigint=0 OR EXISTS(SELECT 1 FROM onboarding_issue_intake WHERE organization_id=$1 AND project_id=$2)
-ON CONFLICT(organization_id,project_id) DO UPDATE SET id=EXCLUDED.id,revision=EXCLUDED.revision,batch_status=EXCLUDED.batch_status,hub_owned=EXCLUDED.hub_owned,payload_object_key=EXCLUDED.payload_object_key,payload_sha256=EXCLUDED.payload_sha256,payload_bytes=EXCLUDED.payload_bytes,payload_content_bytes=EXCLUDED.payload_content_bytes
+ON CONFLICT(organization_id,project_id) DO UPDATE SET id=EXCLUDED.id,revision=EXCLUDED.revision,batch_status=EXCLUDED.batch_status,hub_owned=EXCLUDED.hub_owned,payload_object_key=EXCLUDED.payload_object_key,payload_sha256=EXCLUDED.payload_sha256,payload_bytes=EXCLUDED.payload_bytes,payload_content_bytes=EXCLUDED.payload_content_bytes,next_attempt_at=clock_timestamp(),attempts=0
 WHERE onboarding_issue_intake.revision=$11
 `
 

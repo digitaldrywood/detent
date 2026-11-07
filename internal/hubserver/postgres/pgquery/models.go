@@ -940,6 +940,57 @@ type GithubImportRecord struct {
 	PayloadContentBytes  int64
 }
 
+type GithubOutbound struct {
+	OrganizationID      tracker.OrganizationID
+	ProjectID           tracker.ProjectID
+	WorkItemID          string
+	ID                  int64
+	CommandKey          string
+	Repository          string
+	IssueNumber         int64
+	Kind                string
+	TargetNodeID        string
+	Status              string
+	Attempts            int64
+	LeaseID             string
+	NextAttemptAt       time.Time
+	CreatedAt           time.Time
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
+}
+
+type GithubReconciliation struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Repository     string
+	NodeID         string
+	AfterWorkItem  string
+	Revision       int64
+	Attempts       int64
+	NextAttemptAt  time.Time
+}
+
+type GithubWebhookReceipt struct {
+	OrganizationID      tracker.OrganizationID
+	DeliveryID          string
+	Repository          string
+	EventType           string
+	Action              string
+	PayloadDigest       string
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
+	ReceivedAt          time.Time
+	ExpiresAt           time.Time
+	Status              string
+	AfterProject        string
+	Attempts            int64
+	NextAttemptAt       time.Time
+}
+
 type GoTestReceipt struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
@@ -2579,6 +2630,8 @@ type OnboardingIssueIntake struct {
 	PayloadSHA256       string
 	PayloadBytes        int64
 	PayloadContentBytes int64
+	NextAttemptAt       time.Time
+	Attempts            int64
 }
 
 type OperatorChatSession struct {
