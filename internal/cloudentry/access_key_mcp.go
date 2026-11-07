@@ -23,6 +23,15 @@ type accessKeyConnection struct{ hash string }
 type accessKeyContext struct{}
 type accessKeyExecutor struct{ service *Service }
 
+type tenantPendingError struct {
+	status  int
+	refusal apikey.Refusal
+}
+
+func (e *tenantPendingError) Error() string { return e.refusal.Error() }
+
+func (e *tenantPendingError) Unwrap() error { return &e.refusal }
+
 func (s *Service) registerKeyMCP() {
 	s.keyMCP = mcp.NewHTTPHandler(accessKeyExecutor{s}, s.config.Build.Version, mcp.HTTPConfig{Logger: s.config.Logger, Principal: func(request *http.Request) operatortool.Identity {
 		return operatortool.ConnectionIdentity(request.Context())
@@ -98,7 +107,8 @@ func (s *Service) keyOrganizations(ctx context.Context, key accessKey) ([]Organi
 		}
 		if _, err := s.keyTenantCall(ctx, key, org, "/internal/v1/keys/catalog", struct{}{}); err != nil {
 			var refusal *apikey.Refusal
-			if !errors.Is(err, tenantauth.ErrUnavailable) && errors.As(err, &refusal) {
+			var pending *tenantPendingError
+			if !errors.As(err, &pending) && !errors.Is(err, tenantauth.ErrUnavailable) && errors.As(err, &refusal) {
 				continue
 			}
 			return nil, err
@@ -125,6 +135,10 @@ func (s *Service) keyTenantCall(ctx context.Context, key accessKey, org Organiza
 		return nil, err
 	}
 	if status >= http.StatusInternalServerError {
+		var refusal apikey.Refusal
+		if json.Unmarshal(raw, &refusal) == nil && (refusal.Code == "pending" || refusal.Code == "not_ready") {
+			return nil, &tenantPendingError{status: status, refusal: apikey.Refusal{Code: refusal.Code, Message: "The requested tenant data is not ready; retry this call"}}
+		}
 		return nil, tenantauth.ErrUnavailable
 	}
 	if status == http.StatusUnprocessableEntity {

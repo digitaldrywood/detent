@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
 )
@@ -64,6 +65,71 @@ func TestKeyAuthorityOutagesRemainRetryable(t *testing.T) {
 	var refusal *apikey.Refusal
 	if !errors.Is(err, tenantauth.ErrUnavailable) || errors.As(err, &refusal) {
 		t.Fatalf("tenant outage became a denial: %v", err)
+	}
+	for _, organization := range []string{"org_alpha", "org_beta"} {
+		t.Run(organization+"/tenant readiness", func(t *testing.T) {
+			transport := f.service.config.transport
+			t.Cleanup(func() { f.service.config.transport = transport })
+			org, err := f.service.readyOrganization(t.Context(), organization)
+			if err != nil {
+				t.Fatal(err)
+			}
+			token := "pending_" + organization
+			key := accessKey{ID: "key_pending_" + organization, Hash: apikey.HashToken(token), Name: "Example", Kind: "service", Owner: "owner", Permission: apikey.ScopeRead, AccessContext: "selected", ServiceOrganization: organization, Organizations: []keyOrganization{{OrganizationID: organization, ProjectContext: apikey.ProjectContext{Access: "all"}}}}
+			if err := f.service.auth.postgresCreateKey(t.Context(), key); err != nil {
+				t.Fatal(err)
+			}
+			personal := key
+			personal.ID, personal.Hash, personal.Kind, personal.Owner, personal.ServiceOrganization = key.ID+"_personal", key.Hash+"_personal", "personal", "user_alice", ""
+			personal.AccessContext, personal.Organizations = "global", nil
+			if err := f.service.auth.postgresCreateKey(t.Context(), personal); err != nil {
+				t.Fatal(err)
+			}
+			call := entryMCPClient(t, newBrowser(t, f.service.Handler()), token, mcp.ProtocolVersion, "/mcp")
+			for _, code := range []string{"pending", "not_ready", "unknown", "", "malformed"} {
+				t.Run(code, func(t *testing.T) {
+					f.service.config.transport = func(Organization) (http.RoundTripper, error) {
+						return handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+							w.WriteHeader(http.StatusServiceUnavailable)
+							if code == "malformed" {
+								if _, err := w.Write([]byte("{")); err != nil {
+									t.Error(err)
+								}
+								return
+							}
+							if err := json.NewEncoder(w).Encode(apikey.Refusal{Code: code, Message: "private tenant detail"}); err != nil {
+								t.Error(err)
+							}
+						})}, nil
+					}
+					_, err := f.service.keyTenantCall(t.Context(), key, org, "/internal/v1/keys/call", struct{}{})
+					if code == "unknown" || code == "" || code == "malformed" {
+						if !errors.Is(err, tenantauth.ErrUnavailable) || errors.As(err, &refusal) {
+							t.Fatalf("unrecognized tenant outage changed: %v", err)
+						}
+						return
+					}
+					if errors.Is(err, tenantauth.ErrUnavailable) || !errors.As(err, &refusal) || refusal.Code != code || !strings.Contains(refusal.Message, "retry") || strings.Contains(err.Error(), "private tenant detail") {
+						t.Fatalf("tenant readiness lost retry detail: %v", err)
+					}
+					if _, err := f.service.keyOrganizations(t.Context(), personal); !errors.As(err, &refusal) || refusal.Code != code {
+						t.Fatalf("pending catalog hid the organization: %v", err)
+					}
+					response := httptest.NewRecorder()
+					if err := keyError(echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), response), err); err != nil {
+						t.Fatal(err)
+					}
+					var detail apikey.Refusal
+					if response.Code != http.StatusServiceUnavailable || json.Unmarshal(response.Body.Bytes(), &detail) != nil || detail.Code != code || !strings.Contains(detail.Message, "retry") {
+						t.Fatalf("tenant readiness HTTP status=%d body=%s", response.Code, response.Body.String())
+					}
+					raw, failed := call(operatortool.WorkList, map[string]any{"organization_id": organization, "project_id": "prj_example", "query": "example"})
+					if !failed || json.Unmarshal(raw, &detail) != nil || detail.Code != code || !strings.Contains(detail.Message, "retry") || strings.Contains(string(raw), "private tenant detail") {
+						t.Fatalf("tenant readiness MCP failed=%v body=%s", failed, raw)
+					}
+				})
+			}
+		})
 	}
 	t.Run("attachment authority outage", func(t *testing.T) {
 		transport := f.service.config.transport
