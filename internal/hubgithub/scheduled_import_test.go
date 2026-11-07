@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -29,9 +30,6 @@ import (
 
 func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 	t.Parallel()
-	databasePath := testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
-		return hubserver.Open(ctx, hubserver.Config{DatabasePath: path, GitHubDisabled: true, Logger: slog.New(slog.DiscardHandler)})
-	})
 	const repository = "example-org/example-project"
 	const token = "isolated-scheduled-import-administrator-token"
 	const secret = "isolated-scheduled-import-webhook-secret"
@@ -108,7 +106,7 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 			if test.state == "Todo" {
 				client.steps = append(client.steps, restStep{method: http.MethodGet, path: path + "/jobs?per_page=100", response: map[string]any{"jobs": []map[string]any{{"id": 456, "run_id": 123, "name": "Verify", "head_sha": sha, "status": "completed", "conclusion": "failure", "started_at": "2026-10-01T00:00:00Z", "completed_at": "2026-10-01T00:01:00Z"}}}})
 			}
-			service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: databasePath(t), InitialAdminToken: []byte(token), GitHubWebhookSecret: []byte(secret), ImportBackend: NewImporter(client), ReconcileBackend: NewReconciler(client), Content: newContentStore(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			service, err := openGitHubService(t, hubserver.Config{InitialAdminToken: []byte(token), GitHubWebhookSecret: []byte(secret), ImportBackend: NewImporter(client), ReconcileBackend: NewReconciler(client), Content: newContentStore(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -128,7 +126,11 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 				request.Header.Set("Content-Type", "application/json")
 				response := httptest.NewRecorder()
 				service.Handler().ServeHTTP(response, request)
-				if response.Code != http.StatusOK {
+				expected := http.StatusOK
+				if method == http.MethodPost && strings.HasSuffix(path, "/projects") {
+					expected = http.StatusCreated
+				}
+				if response.Code != expected {
 					t.Fatalf("%s %s: %d %s", method, path, response.Code, response.Body.String())
 				}
 				if output != nil {
@@ -146,7 +148,7 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 			}
 			base := "/api/v2/organizations/" + string(organizations.Items[0].ID) + "/projects"
 			var project tracker.NativeProject
-			api(http.MethodPost, base, map[string]any{"idempotency_key": "project", "name": "Scheduled import fixture", "states": []tracker.NativeState{{Name: "Backlog"}, {Name: "Todo", Dispatchable: true}, {Name: "Done", Terminal: true}}}, &project)
+			api(http.MethodPost, base, map[string]any{"idempotency_key": "project", "name": "Scheduled import fixture", "grant_access": true, "states": []tracker.NativeState{{Name: "Backlog"}, {Name: "Todo", Dispatchable: true}, {Name: "Done", Terminal: true}}}, &project)
 			base += "/" + string(project.ID)
 			api(http.MethodPost, base+"/integration/repository", map[string]string{"idempotency_key": "bind", "expected_revision": "1", "repository": repository}, nil)
 			delegation := test.delegation
@@ -204,7 +206,17 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 				}
 			}
 			var issues tracker.Page[tracker.NativeIssue]
-			api(http.MethodGet, base+"/work-items", nil, &issues)
+			testenv.WaitUntil(t, t.Context(), func() error {
+				maintenanceContext := (hubmaintenance.Budget{Items: 1, Bytes: hubserver.BoardMaintenanceBytes}).Context(t.Context(), hubmaintenance.Tenant{Organization: "org_example", Generation: 1})
+				if _, _, err := service.MaintainBoardRecord(maintenanceContext, "org_example", ""); err != nil {
+					t.Fatal(err)
+				}
+				api(http.MethodGet, base+"/work-items", nil, &issues)
+				if len(issues.Items) == 0 {
+					return errors.New("waiting for imported issue projection")
+				}
+				return nil
+			})
 			if len(issues.Items) != 1 {
 				t.Fatalf("issues=%+v", issues.Items)
 			}

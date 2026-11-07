@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -132,7 +131,7 @@ func TestGitHubAppBatchImport385IssuesEndToEnd(t *testing.T) {
 	}))
 	t.Cleanup(source.Close)
 	transport := NewAppTransport(connectorgithub.InstallationTokenConfig{Endpoint: source.URL + "/graphql", AppID: "123", PrivateKey: privateKey, HTTPClient: source.Client()})
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(adminToken), ImportBackend: NewImporter(transport), ReconcileBackend: NewReconciler(transport), Content: newContentStore(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	service, err := openGitHubService(t, hubserver.Config{InitialAdminToken: []byte(adminToken), ImportBackend: NewImporter(transport), ReconcileBackend: NewReconciler(transport), Content: newContentStore(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +176,7 @@ func TestGitHubAppBatchImport385IssuesEndToEnd(t *testing.T) {
 	}
 	base := "/api/v2/organizations/" + string(organizations.Items[0].ID) + "/projects"
 	var project tracker.NativeProject
-	api(t.Context(), http.MethodPost, base, map[string]any{"idempotency_key": "project", "name": "Import acceptance fixture", "states": []tracker.NativeState{{Name: "Backlog", Transitions: []string{"Todo"}}, {Name: "Todo", Dispatchable: true, Transitions: []string{"Backlog", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Backlog"}}}}, &project, http.StatusOK)
+	api(t.Context(), http.MethodPost, base, map[string]any{"idempotency_key": "project", "name": "Import acceptance fixture", "grant_access": true, "states": []tracker.NativeState{{Name: "Backlog", Transitions: []string{"Todo"}}, {Name: "Todo", Dispatchable: true, Transitions: []string{"Backlog", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Backlog"}}}}, &project, http.StatusCreated)
 	base += "/" + string(project.ID)
 	api(t.Context(), http.MethodPost, base+"/integration/repository", map[string]any{"idempotency_key": "bind", "expected_revision": "1", "repository": repository}, nil, http.StatusOK)
 	var view struct {
