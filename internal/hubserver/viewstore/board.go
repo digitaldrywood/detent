@@ -121,6 +121,13 @@ type BoardSelection struct {
 	Limit               int
 }
 
+func (s BoardSelection) SupportsSummary() bool {
+	return s.SearchText == "" && s.Fingerprint == "" && s.ActorPrincipalID == "" &&
+		len(s.Types)+len(s.Verification)+len(s.Labels)+len(s.Assignees)+len(s.Priorities) == 0 &&
+		s.NativeCreatedAfter == nil && s.NativeCreatedBefore == nil && s.NativeUpdatedAfter == nil &&
+		s.CompletedFrom == nil && s.CompletedTo == nil
+}
+
 type BoardLane struct {
 	State   string
 	Total   int64

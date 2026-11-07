@@ -195,7 +195,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 	if !legacy {
 		limit = min(limit, 200)
 	}
-	selection.Summary = legacy
+	selection.Summary = legacy && selection.SupportsSummary()
 	selection.Limit = limit + 1
 	selection.Compact = includeSummary || includeWork
 	if position := cursor.Issues; position != nil {
@@ -262,10 +262,10 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 		page.Sequence = snapshot.Sequence
 	}
 	page.Total = -1
-	if includeBoard || includeWork {
+	if (includeBoard || includeWork) && (!legacy || selection.Summary) {
 		page.Work = &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{}, Lanes: []tracker.NativeWorkLane{}, AsOf: s.config.now()}
 	}
-	if legacy {
+	if selection.Summary {
 		page.Total = 0
 		windows := []tracker.NativeShippedWindow{{Window: "1h"}, {Window: "24h"}, {Window: "7d"}}
 		for _, summary := range snapshot.Summaries {

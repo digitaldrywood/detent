@@ -71,7 +71,7 @@ ON CONFLICT(organization_id,project_id,audience,archive_scope,exclude_workspace,
 }
 
 func (s *session) boardSummaryQuery(selection viewstore.BoardSelection) (string, []any, error) {
-	if selection.SearchText != "" || selection.Fingerprint != "" || selection.ActorPrincipalID != "" || len(selection.Types)+len(selection.Verification)+len(selection.Labels)+len(selection.Assignees)+len(selection.Priorities) > 0 || selection.NativeCreatedAfter != nil || selection.NativeCreatedBefore != nil || selection.NativeUpdatedAfter != nil || selection.CompletedFrom != nil || selection.CompletedTo != nil {
+	if !selection.SupportsSummary() {
 		return "", nil, corestore.ErrInvalidPage
 	}
 	archive := "all"

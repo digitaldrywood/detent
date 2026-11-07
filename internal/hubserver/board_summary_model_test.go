@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"testing"
 	"time"
@@ -38,7 +39,7 @@ func TestBoardSummaryProjectionReplaysAndExpiresWindowsPerTenant(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			project.States = append(project.States, tracker.NativeState{Name: "Cancelled", Terminal: true})
+			project.States = append(project.States, tracker.NativeState{Name: "Cancelled", Terminal: true}, tracker.NativeState{Name: "Backlog"})
 			_, err = w.UpdateProjectRecord(t.Context(), project)
 			return err
 		}); err != nil {
@@ -47,6 +48,10 @@ func TestBoardSummaryProjectionReplaysAndExpiresWindowsPerTenant(t *testing.T) {
 		for index, state := range []string{"Todo", "Done", "Cancelled"} {
 			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_summary_%d", index))
 			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: fixture.project.ID, WorkItemID: id, Number: index + 1, Revision: 1, Profile: "native"}, Title: "Example " + state, Body: "Example body", State: state, Terminal: state != "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "owner"}, CreatedAt: now.Add(-4 * time.Hour), UpdatedAt: now}
+			issue.Type = "change_request"
+			if state == "Todo" {
+				issue.Type, issue.Labels, issue.Assignees, issue.Priority = "bug", []string{"selected"}, []string{"selected"}, new(1)
+			}
 			if state == "Done" {
 				issue.ClosedAt = new(now.Add(-30 * time.Minute))
 			}
@@ -122,6 +127,69 @@ func TestBoardSummaryProjectionReplaysAndExpiresWindowsPerTenant(t *testing.T) {
 		}
 		if legacy.Work == nil || legacy.Work.Completed != 1 || legacy.Work.Cancelled != 1 || len(legacy.Work.Lanes) != 3 || len(legacy.Work.ShippedWindows) != 3 || legacy.Work.ShippedWindows[0].Shipped != 1 || legacy.Work.ShippedWindows[0].Cancelled != 0 {
 			t.Errorf("%s legacy windows=%+v", org, legacy.Work)
+		}
+
+		for _, test := range []struct {
+			name  string
+			state savedWorkState
+			want  tracker.NativeWorkItemID
+		}{
+			{"label", savedWorkState{Label: []string{"selected"}}, "wi_summary_0"},
+			{"type", savedWorkState{Type: []string{"bug"}}, "wi_summary_0"},
+			{"assignee", savedWorkState{Assignee: []string{"selected"}}, "wi_summary_0"},
+			{"priority", savedWorkState{Priority: []string{"1"}}, "wi_summary_0"},
+			{"created_by", savedWorkState{CreatedBy: "owner"}, "wi_summary_0"},
+			{"completed_from", savedWorkState{CompletedFrom: now.Add(-30 * time.Minute).Format(time.RFC3339Nano)}, "wi_summary_1"},
+			{"completed_to", savedWorkState{CompletedTo: now.Add(-30 * time.Minute).Format(time.RFC3339Nano)}, "wi_summary_2"},
+			{"completed_range", savedWorkState{CompletedFrom: now.Add(-30 * time.Minute).Format(time.RFC3339Nano), CompletedTo: now.Format(time.RFC3339Nano)}, "wi_summary_1"},
+			{"label_no_match", savedWorkState{Label: []string{"missing"}}, ""},
+			{"type_no_match", savedWorkState{Type: []string{"change_request"}}, ""},
+			{"assignee_no_match", savedWorkState{Assignee: []string{"missing"}}, ""},
+			{"priority_no_match", savedWorkState{Priority: []string{"3"}}, ""},
+			{"created_by_no_match", savedWorkState{CreatedBy: "other"}, ""},
+			{"completed_range_no_match", savedWorkState{CompletedFrom: now.Add(-2 * time.Hour).Format(time.RFC3339Nano), CompletedTo: now.Add(-time.Hour).Format(time.RFC3339Nano)}, ""},
+		} {
+			t.Run(string(org)+"/legacy/"+test.name, func(t *testing.T) {
+				state := test.state
+				state.View, state.Lanes, state.CompletedWindow = "board", []string{"Backlog", "Todo"}, "24h"
+				params := url.Values{"include": {"board"}, "state": {"Todo"}, "type": state.Type, "label": state.Label, "assignee": state.Assignee, "priority": state.Priority}
+				if state.CreatedBy != "" {
+					params.Set("created_by", state.CreatedBy)
+				}
+				if state.CompletedFrom != "" || state.CompletedTo != "" {
+					state.View, state.Tab, state.Sort = "list", "closed", "closed"
+					params.Del("state")
+					params.Set("open", "false")
+					params.Set("completed_from", state.CompletedFrom)
+					params.Set("completed_to", state.CompletedTo)
+				}
+				result, err := service.readWorkBoardProject(t.Context(), scope, state)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantCount := 0
+				if test.want != "" {
+					wantCount = 1
+				}
+				if len(result.Cards) != wantCount || len(result.Issues) != wantCount {
+					t.Fatalf("cards=%d issues=%d want=%d", len(result.Cards), len(result.Issues), wantCount)
+				}
+				for _, card := range result.Cards {
+					if card.Issue.WorkItemID != test.want || card.Issue.OrganizationID != org || card.Issue.ProjectID != scope.project {
+						t.Errorf("unexpected filtered card: %+v", card.Issue.NativeReference)
+					}
+				}
+				if result.Work != nil || state.View == "board" && result.BacklogTotal != -1 {
+					t.Errorf("unsupported filtered counts: work=%+v backlog=%d", result.Work, result.BacklogTotal)
+				}
+				page, err := service.readBoardRecordsFor(t.Context(), scope, params, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if page.Total != -1 || page.Work != nil || len(page.Cards) != wantCount {
+					t.Errorf("filtered page total=%d work=%+v cards=%d want=%d", page.Total, page.Work, len(page.Cards), wantCount)
+				}
+			})
 		}
 
 		if all.Shipped1h != 1 || all.Shipped24h != 1 || all.Shipped7d != 1 || all.Cancelled1h != 0 || all.Cancelled24h != 1 || all.Cancelled7d != 1 {
