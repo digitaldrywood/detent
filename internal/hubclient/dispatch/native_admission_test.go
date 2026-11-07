@@ -109,6 +109,7 @@ func TestNativeAdmissionBatch(t *testing.T) {
 		{name: "malformed preview", slots: 6, budget: 14, preview: true, failPreview: true, wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true}}, true)
 			fixtureCapacity(t, h, 6)
 			if test.missingIsolation {
@@ -344,10 +345,8 @@ func TestNativeAdmissionBatch(t *testing.T) {
 					}
 					seen := map[string]bool{}
 					cursor := ""
-					for pages := 0; ; pages++ {
-						if pages > 32 {
-							t.Fatal("discussion continuation did not terminate")
-						}
+					cursors := map[string]bool{}
+					for {
 						page, err := h.native.RecoveryEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), cursor)
 						if err != nil {
 							t.Fatal(err)
@@ -365,6 +364,10 @@ func TestNativeAdmissionBatch(t *testing.T) {
 							}
 							seen[comment.ID] = true
 						}
+						if page.NextCursor == "" || cursors[page.NextCursor] {
+							t.Fatal("discussion continuation did not advance")
+						}
+						cursors[page.NextCursor] = true
 						cursor = page.NextCursor
 					}
 					if len(seen) != 18 {

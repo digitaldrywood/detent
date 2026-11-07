@@ -20,6 +20,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -68,8 +69,16 @@ func (dispatchHostedProvider) Memberships(context.Context, string, string) ([]au
 	return []auth.Membership{member}, nil
 }
 
+var dispatchPostgresFixtures = make(chan struct{}, 4)
+
 func DispatchPostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Config {
 	t.Helper()
+	select {
+	case dispatchPostgresFixtures <- struct{}{}:
+		t.Cleanup(func() { <-dispatchPostgresFixtures })
+	case <-t.Context().Done():
+		t.Fatal(t.Context().Err())
+	}
 	admin := dispatchPostgresTemplate.Database(t)
 	connection := dispatchPostgresTemplate.Connection(t, admin, "", "")
 	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{connection.Database}.Sanitize()+" CONNECTION LIMIT 6"); err != nil {
@@ -163,7 +172,7 @@ func DispatchWriteFixture(t *testing.T, cfg hubserver.Config, write func(tenants
 
 func CloseDispatchPostgres(ctx context.Context) error { return dispatchPostgresTemplate.Close(ctx) }
 
-func DispatchRefreshSearch(t *testing.T, cfg hubserver.Config) {
+func DispatchRefreshProjections(t *testing.T, cfg hubserver.Config, service *hubserver.Service) {
 	t.Helper()
 	migrations, err := fs.Sub(dispatchPostgresFiles(), "migrations")
 	if err != nil {
@@ -178,6 +187,48 @@ func DispatchRefreshSearch(t *testing.T, cfg hubserver.Config) {
 			t.Error(err)
 		}
 	}()
+	organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
+	boardComplete := false
+	for range 128 {
+		required := false
+		err := repository.ReadTenant(t.Context(), organization, corestore.Background, func(r tenantstore.Reader) error {
+			candidate, err := r.NextBoardCandidate(t.Context(), "")
+			if errors.Is(err, corestore.ErrNotFound) {
+				return nil
+			}
+			required = candidate.Required
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !required {
+			boardComplete = true
+			break
+		}
+		ctx := (hubmaintenance.Budget{Items: 1, Bytes: hubserver.BoardMaintenanceBytes}).Context(t.Context(), hubmaintenance.Tenant{Organization: string(organization), Generation: 1})
+		if _, _, err := service.MaintainBoardRecord(ctx, organization, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !boardComplete {
+		t.Fatal("board projection exceeded fixture work bound")
+	}
+	pagesComplete := false
+	for range 512 {
+		ctx := (hubmaintenance.Budget{Items: 1, Bytes: hubmaintenance.ByteLimit}).Context(t.Context(), hubmaintenance.Tenant{Organization: string(organization), Generation: 1})
+		processed, err := service.MaintainWorkItemPage(ctx, organization)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !processed {
+			pagesComplete = true
+			break
+		}
+	}
+	if !pagesComplete {
+		t.Fatal("work item projection exceeded fixture work bound")
+	}
 	for range 512 {
 		processed, err := searchstore.NewContent(cfg.RunDetails).RefreshOne(t.Context(), repository, tracker.OrganizationID(cfg.Hosted.OrganizationID))
 		if err != nil {

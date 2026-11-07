@@ -273,32 +273,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		t.Fatal(err)
 	}
 	h := &nativeChangeHub{content: eventstore.NewContent(config.RunDetails), search: searchstore.NewContent(config.RunDetails), review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), descriptor: clientTestPolicy()}
-	h.projectBoard = func() {
-		var cursor tracker.NativeWorkItemID
-		for range 128 {
-			ctx := (hubmaintenance.Budget{Items: 1, Bytes: hubserver.BoardMaintenanceBytes}).Context(t.Context(), hubmaintenance.Tenant{Organization: string(h.organization), Generation: 1})
-			next, processed, err := service.MaintainBoardRecord(ctx, h.organization, cursor)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !processed || cursor != "" && next <= cursor {
-				for range 512 {
-					ctx := (hubmaintenance.Budget{Items: 1, Bytes: hubmaintenance.ByteLimit}).Context(t.Context(), hubmaintenance.Tenant{Organization: string(h.organization), Generation: 1})
-					processed, err := service.MaintainWorkItemPage(ctx, h.organization)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if !processed {
-						testsupport.DispatchRefreshSearch(t, config)
-						return
-					}
-				}
-				t.Fatal("work item projection exceeded fixture work bound")
-			}
-			cursor = next
-		}
-		t.Fatal("board projection exceeded fixture work bound")
-	}
+	h.projectBoard = func() { testsupport.DispatchRefreshProjections(t, config, service) }
 	h.seed = func(write func(tenantstore.Writer) error) {
 		dispatchWriteFixture(t, config, write)
 	}

@@ -49,6 +49,7 @@ func TestNativeStopDuringHostFinalization(t *testing.T) {
 	isolateNativeChangeGit(t)
 	for _, mode := range []string{"stop", "drain during validation", "drain during publication", "drain during validation with pending status", "drain during publication with pending status", "drain before dispatch with released status", "drain before dispatch with pending status"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			testNativeStopDuringHostFinalization(t, mode)
 		})
 	}

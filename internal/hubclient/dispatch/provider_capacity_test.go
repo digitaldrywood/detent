@@ -208,7 +208,7 @@ func TestProviderSchedulerEndToEnd(t *testing.T) {
 
 	t.Parallel()
 	for _, unavailable := range []string{"env-equivalent projects", "empty reports", "catalog failure", "intake off during admission", "fallback", "fail", "local wait", "bounded", "plain", "known waits", "six slots", "provider slots", "mixed providers", "provider hydration", "stage slots", "exhausted subscription", "revoked lease after quota reset"} {
-		t.Run(unavailable, func(t *testing.T) { testProviderSchedulerEndToEnd(t, unavailable) })
+		t.Run(unavailable, func(t *testing.T) { t.Parallel(); testProviderSchedulerEndToEnd(t, unavailable) })
 	}
 }
 
