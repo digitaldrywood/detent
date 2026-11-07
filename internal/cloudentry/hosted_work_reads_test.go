@@ -3,13 +3,15 @@ package cloudentry
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
+	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/policy"
-	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -29,7 +31,10 @@ type hostedHubReadFixture struct {
 
 func newHostedHubReadFixture(t *testing.T) hostedHubReadFixture {
 	t.Helper()
-	entry := newEntryFixture(t)
+	entry := newEntryFixtureWithLogger(t, slog.New(slog.DiscardHandler), func(cfg *hubserver.Config) {
+		configurePostgresTenant(t, cfg)
+		cfg.RunDetails = hubmaintenance.LimitDetails(cfg.RunDetails)
+	})
 	owner := newBrowser(t, entry.service.Handler())
 	owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 	response, body := owner.get("/organizations/org_alpha/app/bootstrap")
@@ -104,16 +109,31 @@ func TestHostedHubWorkReads(t *testing.T) {
 		}
 		issues[state] = issue
 	}
-	testenv.WaitUntil(t, t.Context(), func() error {
-		response := f.request(t, http.MethodGet, f.base+"/work-items?limit=100&include=work&completed_window=48h", nil)
-		var page tracker.NativeIssuePage
-		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &page) != nil {
-			t.Fatalf("board projection=%d %s", response.Code, response.Body)
+	tenant := hubmaintenance.Tenant{Organization: "org_alpha", Generation: 1}
+	var after tracker.NativeWorkItemID
+	for range len(issues) {
+		ctx := (hubmaintenance.Budget{Items: 1, Bytes: hubserver.BoardMaintenanceBytes}).Context(t.Context(), tenant)
+		next, processed, err := f.entry.fixtures[tenant.Organization].service.MaintainBoardRecord(ctx, tracker.OrganizationID(tenant.Organization), after)
+		if err != nil || !processed {
+			t.Fatalf("project fixture board after %s: processed=%t error=%v", after, processed, err)
 		}
-		if page.Total != 3 || page.Work == nil || page.Work.Completed != 1 {
-			return fmt.Errorf("board projection has not published all three issues and the completion")
+		after = next
+	}
+	t.Run("board totals", func(t *testing.T) {
+		response := f.request(t, http.MethodGet, f.base+"/board/counts", nil)
+		var page viewstore.BoardSummaryPage
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &page) != nil || page.ProjectionPending {
+			t.Fatalf("board counts=%d %s", response.Code, response.Body)
 		}
-		return nil
+		for _, row := range page.Rows {
+			if row.Kind == "total" {
+				if row.Total != 3 || row.Shipped24h != 1 {
+					t.Fatalf("board totals lost open or completed work: %s", response.Body)
+				}
+				return
+			}
+		}
+		t.Fatalf("board counts missing totals: %s", response.Body)
 	})
 	for _, test := range []struct {
 		name, query string
@@ -122,7 +142,7 @@ func TestHostedHubWorkReads(t *testing.T) {
 	}{
 		{"work-items list", "limit=100", []string{"Todo", "Blocked", "Done"}, false},
 		{"board lanes", "state=Todo&state=Blocked&state=In+Progress&state=Human+Review&state=Merging&state=Rework&open=true&limit=200&completed_window=48h", []string{"Todo", "Blocked"}, false},
-		{"board totals", "limit=1&completed_window=48h&include=work", []string{"Todo", "Blocked", "Done"}, true},
+		{"open work page", "limit=1&completed_window=48h&include=work", []string{"Todo", "Blocked"}, true},
 		{"repeated filter dimensions", "state=Todo&state=Blocked&label=bug&label=feature&assignee=nobody&assignee=other&priority=1&priority=2&open=true&limit=200&completed_window=48h", nil, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -131,12 +151,16 @@ func TestHostedHubWorkReads(t *testing.T) {
 			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &page) != nil {
 				t.Fatalf("read status = %d: %s", response.Code, response.Body)
 			}
-			if page.Total != len(test.states) {
-				t.Fatalf("total = %d, want %d: %s", page.Total, len(test.states), response.Body)
+			if page.Total != -1 || page.ProjectionPending {
+				t.Fatalf("list total or projection status: %s", response.Body)
 			}
 			if test.work {
-				if page.Work == nil || len(page.Work.Items) != 1 || !page.Work.Truncated || page.Work.Completed != 1 {
-					t.Fatalf("board totals lost open or completed work: %s", response.Body)
+				if page.Work == nil || len(page.Work.Items) != 1 || !page.Work.Truncated || page.NextCursor == "" || len(page.Items) != 1 {
+					t.Fatalf("open work page lost bounded pagination: %s", response.Body)
+				}
+				item := page.Work.Items[0]
+				if issue, ok := issues[item.State]; !ok || item.State == "Done" || item.WorkItemID != issue.WorkItemID || item.ProjectID != issue.ProjectID {
+					t.Fatalf("open work page returned an unexpected issue: %s", response.Body)
 				}
 				return
 			}
