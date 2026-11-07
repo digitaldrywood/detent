@@ -1,14 +1,18 @@
 package postgres_test
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -129,5 +133,161 @@ func TestWorkItemDeletionRetainsHistoryAndReceipts(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestWorkItemDeletionRetainsMigratedIdentities(t *testing.T) {
+	admin := template.Database(t)
+	provider, err := migrationProvider(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Down(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	repository, _ := repositoryFor(t, admin, smallPool())
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedRepository(t, repository, org)
+	}
+	if _, err := provider.Up(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		var count int
+		if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM work_item_identities WHERE organization_id=$1`, org).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 4 {
+			t.Fatalf("backfilled identities=%d", count)
+		}
+	}
+	if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error { return w.DeleteWorkItem(t.Context(), "prj_first", "wi_first_1") }); err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Down(t.Context())
+	requireSQLState(t, err, "23514")
+}
+
+func TestWorkItemDeletionRefusesActiveExecution(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedLeaseFamily(t, repository, org)
+		lease := claimLease(t, repository, org, leaseClaim(1))
+		remove := func() error {
+			return repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.DeleteWorkItem(t.Context(), "prj_1", "wi_1") })
+		}
+		requireSQLState(t, remove(), "23503")
+		expireLeaseFixture(t, admin, org, lease.LeaseID)
+		requireSQLState(t, remove(), "23503")
+		if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET acquired_at=$3::timestamptz,renewed_at=$3::timestamptz,expires_at=$3::timestamptz+interval '1 hour' WHERE organization_id=$1 AND lease_id=$2`, org, lease.LeaseID, lease.RenewedAt); err != nil {
+			t.Fatal(err)
+		}
+		recordLeaseAttempt(t, repository, org, attemptEvent(lease))
+		if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET released_at=renewed_at WHERE organization_id=$1 AND lease_id=$2`, org, lease.LeaseID); err != nil {
+			t.Fatal(err)
+		}
+		requireSQLState(t, remove(), "23503")
+		if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET status='cancelled' WHERE organization_id=$1`, org); err != nil {
+			t.Fatal(err)
+		}
+		if err := remove(); err != nil {
+			t.Fatal(err)
+		}
+		_, err := admin.ExecContext(t.Context(), `UPDATE leases SET released_at=NULL WHERE organization_id=$1`, org)
+		requireSQLState(t, err, "23503")
+		_, err = admin.ExecContext(t.Context(), `UPDATE native_attempts SET status='running' WHERE organization_id=$1`, org)
+		requireSQLState(t, err, "23503")
+		_, err = admin.ExecContext(t.Context(), `INSERT INTO native_attempts SELECT * FROM native_attempts WHERE organization_id=$1`, org)
+		requireSQLState(t, err, "23503")
+		var count int
+		if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM native_attempts WHERE organization_id=$1 AND status='cancelled'`, org).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatal("terminal attempt was lost")
+		}
+	}
+}
+
+func TestWorkItemDeletionOrdersConcurrentHistoryInsertion(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	admin.SetMaxOpenConns(2)
+	seedRepository(t, repository, "org_first")
+	seedHistory(t, repository, "org_first", "concurrent")
+	insert := `INSERT INTO collaboration_events (organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT organization_id,project_id,work_item_id,'concurrent_event',999,'issue.edited',1,actor_kind,actor_principal_id,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM collaboration_events WHERE organization_id='org_first' LIMIT 1`
+	tx, err := admin.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rollbackOnce sync.Once
+	t.Cleanup(func() {
+		rollbackOnce.Do(func() {
+			if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+				t.Error(err)
+			}
+		})
+	})
+	if _, err := tx.ExecContext(t.Context(), insert); err != nil {
+		t.Fatal(err)
+	}
+	deletion := startRepositoryTask(t, func(ctx context.Context) error {
+		return repository.WriteTenant(ctx, "org_first", corestore.Background, func(w tenantstore.Writer) error { return w.DeleteWorkItem(ctx, "prj_first", "wi_first_1") })
+	})
+	testenv.WaitUntil(t, t.Context(), func() error {
+		var waiting bool
+		if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock')`).Scan(&waiting); err != nil {
+			return err
+		}
+		if !waiting {
+			return errors.New("deletion is not waiting for the history insertion")
+		}
+		return nil
+	})
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := deletion.wait(t); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM collaboration_events WHERE organization_id='org_first'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("retained concurrent events=%d", count)
+	}
+}
+
+func TestRetainedWorkItemIdentitiesEnforceTenantReadOnlyAccess(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedRepository(t, repository, org)
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		tx, err := admin.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), `SET LOCAL ROLE detent_runtime_v2`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), `SELECT set_config('detent.organization_id',$1,true)`, org); err != nil {
+			t.Fatal(err)
+		}
+		var count int
+		if err := tx.QueryRowContext(t.Context(), `SELECT count(*) FROM work_item_identities WHERE native_id='wi_first_1'`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("tenant identity visibility=%d", count)
+		}
+		_, err = tx.ExecContext(t.Context(), `INSERT INTO work_item_identities VALUES($1,999,'prj_first','fabricated')`, org)
+		requireSQLState(t, err, "42501")
+		if err := tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

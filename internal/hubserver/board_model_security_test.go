@@ -168,7 +168,11 @@ func TestBoardModelRechecksCurrentRelationshipAuthority(t *testing.T) {
 			if _, err := service.readBoardRecords(t.Context(), scope, url.Values{"include": {"board"}}); !errors.Is(err, accessstore.ErrDenied) {
 				t.Errorf("deleted source error=%v, want denied", err)
 			}
-			if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error { _, err := createSource(w); return err }); err != nil {
+			movedID := tracker.NativeWorkItemID("wi_source_elsewhere")
+			if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+				_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: target.project.ID, NativeID: movedID, Number: 99, Title: "Example", WorkflowStateName: new("Todo"), ActorKind: new("human"), ActorPrincipalID: new("owner")})
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
@@ -180,8 +184,12 @@ func TestBoardModelRechecksCurrentRelationshipAuthority(t *testing.T) {
 			if !ok {
 				t.Fatal("missing isolated fixture database")
 			}
-			if _, err := raw.(*sql.DB).ExecContext(t.Context(), "UPDATE issues SET project_id=$3,number=99 WHERE organization_id=$1 AND native_id=$2", org, sourceID, target.project.ID); err != nil {
+			result, err := raw.(*sql.DB).ExecContext(t.Context(), "UPDATE native_board_items SET work_item_id=$3 WHERE organization_id=$1 AND project_id=$4 AND work_item_id=$2", org, sourceID, movedID, source.project.ID)
+			if err != nil {
 				t.Fatal(err)
+			}
+			if count, err := result.RowsAffected(); err != nil || count != 1 {
+				t.Fatalf("stale projection rekey count=%d error=%v", count, err)
 			}
 			if _, err := service.readBoardRecords(t.Context(), scope, url.Values{"include": {"board"}}); !errors.Is(err, accessstore.ErrDenied) {
 				t.Errorf("moved source error=%v, want denied", err)

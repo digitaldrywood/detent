@@ -72,14 +72,27 @@ func TestBoardProjectionDropsObsoleteCardsPostgres(t *testing.T) {
 				}
 			}
 			create("source", "wi_deleted", 1, false)
-			create("source", "wi_moved", 2, false)
+			create("source", "wi_stale_source", 2, false)
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.DeleteWorkItem(t.Context(), "source", "wi_deleted")
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := admin.ExecContext(t.Context(), "UPDATE issues SET project_id='target',number=1 WHERE organization_id=$1 AND native_id='wi_moved'", org); err != nil {
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.DeleteWorkItem(t.Context(), "source", "wi_stale_source"); err != nil {
+					return err
+				}
+				_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "target", NativeID: "wi_moved", Number: 1, Title: "Private example title", ActorKind: new("human"), ActorPrincipalID: new("example"), WorkflowStateName: new("Todo")})
+				return err
+			}); err != nil {
 				t.Fatal(err)
+			}
+			result, err := admin.ExecContext(t.Context(), "UPDATE native_board_items SET work_item_id='wi_moved' WHERE organization_id=$1 AND project_id='source' AND work_item_id='wi_stale_source'", org)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if count, err := result.RowsAffected(); err != nil || count != 1 {
+				t.Fatalf("stale projection rekey count=%d error=%v", count, err)
 			}
 			create("target", "wi_moved", 1, true)
 			for range 2 {
