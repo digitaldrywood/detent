@@ -74,16 +74,3 @@ func (d tenantDetailStore) ReadDetails(ctx context.Context, organization string,
 		return attachment.ReadArchive(ctx, storage, organization, ref)
 	})
 }
-
-func (d tenantDetailStore) ReadCanonicalDetail(ctx context.Context, organization, project, key string) ([]byte, error) {
-	if organization != d.allocation.ID || attachment.ValidateCanonicalDetailKey(organization, project, key) != nil {
-		return nil, attachment.ErrInvalid
-	}
-	unlock := d.service.attachmentLocks.lock(organization, false)
-	defer unlock()
-	storage, err := d.current(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return attachment.ReadCanonicalArchive(ctx, storage, organization, project, key)
-}

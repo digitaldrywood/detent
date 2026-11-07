@@ -73,25 +73,4 @@ func TestDetailBatchAuthorityBoundsScopeAndDeadline(t *testing.T) {
 	if store.calls.Load() != 1 {
 		t.Fatal("foreign batch reached allocation owner")
 	}
-	data, err = client.ReadCanonicalDetail(t.Context(), binding.Organization, "prj_example", ref.Key)
-	if err != nil || !bytes.Equal(data, store.data) || store.calls.Load() != 2 || store.deadline.After(time.Now().Add(budget)) {
-		t.Fatalf("canonical read lost content, deadline or owner: %v", err)
-	}
-	for _, request := range []DetailRequest{
-		{Organization: "org_foreign", Project: "prj_example", Key: ref.Key, Deadline: time.Now().Add(time.Hour)},
-		{Organization: binding.Organization, Project: "prj_example", Key: ref.Key + "/extra", Deadline: time.Now().Add(time.Hour)},
-	} {
-		if _, err := callAuthority[[]byte](t.Context(), client, "ReadCanonicalDetail", request); err == nil || store.calls.Load() != 2 {
-			t.Fatal("invalid canonical request reached allocation owner")
-		}
-	}
-}
-
-func (s *batchChannelDetails) ReadCanonicalDetail(ctx context.Context, organization, project, key string) ([]byte, error) {
-	s.calls.Add(1)
-	s.deadline, _ = ctx.Deadline()
-	if attachment.ValidateCanonicalDetailKey(organization, project, key) != nil || key != s.reference.Key {
-		return nil, artifact.ErrIntegrity
-	}
-	return bytes.Clone(s.data), nil
 }

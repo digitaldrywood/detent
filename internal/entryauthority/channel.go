@@ -81,18 +81,17 @@ type Archives struct {
 }
 
 type authorityServer struct {
-	icons               attachment.IconStore
-	binding             Binding
-	budget              time.Duration
-	resolve             func(Request) (cloudassert.Claims, error)
-	contents            attachment.ArchiveContentStore
-	storeDetail         func(DetailRequest) (attachment.ArchiveReference, error)
-	readCanonicalDetail func(DetailRequest) ([]byte, error)
-	readDetail          func(DetailRequest) ([]byte, error)
-	readDetails         func(DetailBatchRequest) ([]attachment.DetailReadResult, error)
-	contentContext      func(time.Time) (context.Context, context.CancelFunc)
-	archive             func(ArchiveRequest) (ArchiveResponse, error)
-	content             func(ContentRequest) ([]byte, error)
+	icons          attachment.IconStore
+	binding        Binding
+	budget         time.Duration
+	resolve        func(Request) (cloudassert.Claims, error)
+	contents       attachment.ArchiveContentStore
+	storeDetail    func(DetailRequest) (attachment.ArchiveReference, error)
+	readDetail     func(DetailRequest) ([]byte, error)
+	readDetails    func(DetailBatchRequest) ([]attachment.DetailReadResult, error)
+	contentContext func(time.Time) (context.Context, context.CancelFunc)
+	archive        func(ArchiveRequest) (ArchiveResponse, error)
+	content        func(ContentRequest) ([]byte, error)
 }
 
 func (s *authorityServer) Handshake(binding Binding, result *Handshake) error {
@@ -180,15 +179,6 @@ func Start(ctx context.Context, binding Binding, budget time.Duration, resolve R
 	}
 	if len(archives) == 1 && archives[0].Details != nil {
 		details := archives[0].Details
-		if recovery, ok := details.(attachment.CanonicalDetailStore); ok {
-			authority.readCanonicalDetail = func(request DetailRequest) ([]byte, error) {
-				lookup, stop := context.WithTimeout(ctx, budget)
-				defer stop()
-				lookup, end := context.WithDeadline(lookup, request.Deadline)
-				defer end()
-				return recovery.ReadCanonicalDetail(lookup, request.Organization, request.Project, request.Key)
-			}
-		}
 		authority.readDetails = func(request DetailBatchRequest) ([]attachment.DetailReadResult, error) {
 			lookup, stop := context.WithTimeout(ctx, budget)
 			defer stop()
@@ -381,8 +371,6 @@ func (c *Client) Content(ctx context.Context, request ContentRequest) ([]byte, e
 }
 
 type DetailRequest struct {
-	Project      string
-	Key          string
 	Organization string
 	Reference    attachment.ArchiveReference
 	Data         []byte
@@ -434,28 +422,5 @@ func (c *Client) ReadDetail(ctx context.Context, organization string, ref attach
 	defer cancel()
 	deadline, _ := ctx.Deadline()
 	data, err := callAuthority[[]byte](ctx, c, "ReadDetail", DetailRequest{Organization: organization, Reference: ref, Deadline: deadline})
-	return data, contentClientError(err)
-}
-
-func (s *authorityServer) ReadCanonicalDetail(request DetailRequest, result *[]byte) error {
-	if s.readCanonicalDetail == nil || request.Organization != s.binding.Organization || request.Deadline.IsZero() || attachment.ValidateCanonicalDetailKey(request.Organization, request.Project, request.Key) != nil {
-		return attachment.ErrInvalid
-	}
-	data, err := s.readCanonicalDetail(request)
-	if err != nil {
-		return artifactDetailError()
-	}
-	*result = data
-	return nil
-}
-
-func (c *Client) ReadCanonicalDetail(ctx context.Context, organization, project, key string) ([]byte, error) {
-	if organization != c.organization || attachment.ValidateCanonicalDetailKey(organization, project, key) != nil {
-		return nil, attachment.ErrInvalid
-	}
-	ctx, cancel := context.WithTimeout(ctx, c.budget)
-	defer cancel()
-	deadline, _ := ctx.Deadline()
-	data, err := callAuthority[[]byte](ctx, c, "ReadCanonicalDetail", DetailRequest{Organization: organization, Project: project, Key: key, Deadline: deadline})
 	return data, contentClientError(err)
 }
