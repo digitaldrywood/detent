@@ -78,6 +78,12 @@ func (s *session) BoardItem(ctx context.Context, project tracker.ProjectID, item
 }
 
 func (s *session) boardSelectionWhere(ctx context.Context, selection viewstore.BoardSelection) (string, []any, error) {
+	ctx, cancel, budgetErr := s.beginBoardSearch(ctx, selection)
+	defer cancel()
+	if budgetErr != nil {
+		return "", nil, budgetErr
+	}
+
 	where, args, err := boardWhere(s.organization, selection)
 	if err != nil || selection.SearchText == "" && selection.Fingerprint == "" {
 		return where, args, err
@@ -99,6 +105,8 @@ func boardWhere(org tracker.OrganizationID, f viewstore.BoardSelection) (string,
 	}
 	args := []any{org, f.ProjectID}
 	clauses := []string{"b.organization_id=$1", "b.project_id=$2"}
+	var searchClauses []int
+	var reporterPredicate string
 	if f.SearchText != "" {
 		query := searchstore.Query{Kind: "work", ProjectID: f.ProjectID, Text: f.SearchText, Limit: 1}
 		if err := query.Validate(); err != nil {
@@ -107,12 +115,13 @@ func boardWhere(org tracker.OrganizationID, f viewstore.BoardSelection) (string,
 		number, name := searchstore.Number(f.SearchText)
 		queryTerms := searchstore.LiteralQueryTerms(org, f.ProjectID, f.SearchText)
 		args = append(args, strings.Join(searchstore.Expressions(org, query), " | "), searchstore.LiteralHex(f.SearchText), number, searchstore.LiteralHex(name), queryTerms, len([]rune(f.SearchText)) <= 2)
+		searchClauses = append(searchClauses, len(clauses))
 		clauses = append(clauses, `EXISTS(SELECT 1 FROM search_documents d JOIN issues i ON i.organization_id=d.organization_id AND i.project_id=d.project_id AND i.native_id=d.work_item_id JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id WHERE d.organization_id=b.organization_id AND d.project_id=b.project_id AND d.work_item_id=b.work_item_id AND d.kind='issue' AND d.indexed_revision=d.revision AND NOT d.placeholder AND (
 d.vector @@ $3::tsquery
 OR ($5::bigint>0 AND i.number=$5 AND ($6='' OR $6 IN (encode(convert_to(translate(p.id,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'UTF8'),'hex'),encode(convert_to(translate(p.name,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'UTF8'),'hex'))))
 OR `+literalPostingMatch("d", "$7", "$8")+`
 OR position(decode($4,'hex') IN convert_to(translate(p.id||'#'||i.number::text,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'UTF8'))>0
-OR position(decode($4,'hex') IN convert_to(translate(p.name||'#'||i.number::text,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'UTF8'))>0))`)
+OR position(decode($4,'hex') IN convert_to(translate(p.name||'#'||i.number::text,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'UTF8'))>0) OFFSET 0)`)
 	}
 	add := func(column, operator string, value any) {
 		args = append(args, value)
@@ -137,7 +146,8 @@ OR position(decode($4,'hex') IN convert_to(translate(p.name||'#'||i.number::text
 			return "", nil, corestore.ErrNotFound
 		}
 		args = append(args, f.ReporterPrincipalID)
-		clauses = append(clauses, fmt.Sprintf("EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=b.organization_id AND i.project_id=b.project_id AND i.native_id=b.work_item_id AND i.actor_principal_id=$%d)", len(args)))
+		reporterPredicate = fmt.Sprintf("EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=b.organization_id AND i.project_id=b.project_id AND i.native_id=b.work_item_id AND i.actor_principal_id=$%d)", len(args))
+		clauses = append(clauses, reporterPredicate)
 	}
 	if f.ActorPrincipalID != "" {
 		add("b.actor_principal_id", "=", f.ActorPrincipalID)
@@ -162,7 +172,8 @@ OR position(decode($4,'hex') IN convert_to(translate(p.name||'#'||i.number::text
 		marker := "\nfingerprint: " + f.Fingerprint + "\n"
 		args = append(args, searchstore.LiteralQueryTerms(org, f.ProjectID, marker))
 		terms := fmt.Sprintf("$%d", len(args))
-		clauses = append(clauses, `EXISTS(SELECT 1 FROM search_documents d WHERE d.organization_id=b.organization_id AND d.project_id=b.project_id AND d.work_item_id=b.work_item_id AND d.kind='issue' AND d.indexed_revision=d.revision AND NOT d.placeholder AND `+literalPostingMatch("d", terms, "false")+`)`)
+		searchClauses = append(searchClauses, len(clauses))
+		clauses = append(clauses, `EXISTS(SELECT 1 FROM search_documents d WHERE d.organization_id=b.organization_id AND d.project_id=b.project_id AND d.work_item_id=b.work_item_id AND d.kind='issue' AND d.indexed_revision=d.revision AND NOT d.placeholder AND `+literalPostingMatch("d", terms, "false")+` OFFSET 0)`)
 	}
 	if f.Terminal != nil {
 		add("b.terminal", "=", *f.Terminal)
@@ -208,6 +219,11 @@ OR position(decode($4,'hex') IN convert_to(translate(p.name||'#'||i.number::text
 			add(field.column, field.operator, *field.at)
 		}
 	}
+	if f.Reporter {
+		for _, index := range searchClauses {
+			clauses[index] = "CASE WHEN " + reporterPredicate + " THEN " + clauses[index] + " ELSE false END"
+		}
+	}
 	return strings.Join(clauses, " AND "), args, nil
 }
 
@@ -229,6 +245,12 @@ func (s *session) BoardPage(ctx context.Context, f viewstore.BoardSelection) ([]
 }
 
 func (s *session) boardPage(ctx context.Context, f viewstore.BoardSelection, typed bool, workOrderReady *bool) ([]viewstore.BoardRecord, error) {
+	ctx, cancel, budgetErr := s.beginBoardSearch(ctx, f)
+	defer cancel()
+	if budgetErr != nil {
+		return nil, budgetErr
+	}
+
 	if typed {
 		if f.Limit < 1 || f.Limit > 2001 {
 			return nil, corestore.ErrInvalidPage
@@ -270,6 +292,10 @@ func (s *session) boardPage(ctx context.Context, f viewstore.BoardSelection, typ
 		numberArg, nameArg := len(args)-1, len(args)
 		exactProjection = fmt.Sprintf("CASE WHEN $%d>0 AND i.number=$%d AND ($%d='' OR lower($%d)=lower(i.project_id) OR lower($%d)=lower(p.name)) THEN true ELSE false END", numberArg, numberArg, nameArg, nameArg, nameArg)
 		rankProjection = fmt.Sprintf("coalesce((SELECT max(ts_rank_cd(d.vector,$%d::tsquery,32)) FROM search_documents d WHERE d.organization_id=b.organization_id AND d.project_id=b.project_id AND d.work_item_id=b.work_item_id AND d.kind='issue' AND d.indexed_revision=d.revision AND NOT d.placeholder AND d.vector @@ $%d::tsquery),0)::double precision", expressionArg, expressionArg)
+		if f.Reporter {
+			args = append(args, f.ReporterPrincipalID)
+			rankProjection = fmt.Sprintf("CASE WHEN i.actor_principal_id=$%d THEN (%s) ELSE 0::double precision END", len(args), rankProjection)
+		}
 		order = "issue_search_exact DESC,issue_search_rank DESC"
 		if f.WorkOrder {
 			order += ",b.running DESC,b.dispatchable DESC,i.number DESC"
@@ -364,6 +390,12 @@ func (s *session) boardPage(ctx context.Context, f viewstore.BoardSelection, typ
 }
 
 func (s *session) BoardLanes(ctx context.Context, f viewstore.BoardSelection, now time.Time) ([]viewstore.BoardLane, error) {
+	ctx, cancel, budgetErr := s.beginBoardSearch(ctx, f)
+	defer cancel()
+	if budgetErr != nil {
+		return nil, budgetErr
+	}
+
 	f.States = nil
 	f.Terminal = nil
 	where, args, err := s.boardSelectionWhere(ctx, f)
@@ -456,6 +488,12 @@ func (s *session) BoardDeltas(ctx context.Context, project tracker.ProjectID, af
 }
 
 func (s *session) BoardClosedWindows(ctx context.Context, selection viewstore.BoardSelection, starts []time.Time, until time.Time) ([]viewstore.BoardClosedCount, error) {
+	ctx, cancel, budgetErr := s.beginBoardSearch(ctx, selection)
+	defer cancel()
+	if budgetErr != nil {
+		return nil, budgetErr
+	}
+
 	if len(starts) == 0 || len(starts) > 3 || until.IsZero() {
 		return nil, corestore.ErrInvalidPage
 	}
