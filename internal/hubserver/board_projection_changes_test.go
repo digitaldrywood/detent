@@ -41,13 +41,14 @@ func (r *boardChangeMutationRepository) ReadTenant(ctx context.Context, org trac
 		return context.DeadlineExceeded
 	}
 	return r.Repository.ReadTenant(ctx, org, workload, func(reader tenantstore.Reader) error {
-		return read(boardChangeMutationReader{Reader: reader, AuditDispositionReader: reader.(eventstore.AuditDispositionReader), repository: r, organization: org})
+		return read(boardChangeMutationReader{Reader: reader, AuditDispositionReader: reader.(eventstore.AuditDispositionReader), WorkItemRelationshipBatchReader: reader.(tenantstore.WorkItemRelationshipBatchReader), repository: r, organization: org})
 	})
 }
 
 type boardChangeMutationReader struct {
 	tenantstore.Reader
 	eventstore.AuditDispositionReader
+	tenantstore.WorkItemRelationshipBatchReader
 	repository   *boardChangeMutationRepository
 	organization tracker.OrganizationID
 }
@@ -299,7 +300,7 @@ func TestBoardProjectionDeletedChangeAndRealErrorsPostgres(t *testing.T) {
 					}
 					t.Logf("size=%d statements=%d exchanges=%d", test.size, counts[0], counts[1])
 					scope := nativeScope{organization: org, project: "example"}
-					if _, _, err := service.prepareValidatorAuditDispositions(t.Context(), scope, changeID, securityaudit.Run{ID: 1}); !errors.Is(err, corestore.ErrNotFound) {
+					if _, _, err := service.prepareValidatorAuditDispositions(t.Context(), scope, changeID, securityaudit.Run{ID: 1}); !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, accessstore.ErrDenied) {
 						t.Fatalf("request with missing credentials was accepted: %v", err)
 					}
 				}
