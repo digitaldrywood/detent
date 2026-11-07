@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"net"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -111,35 +110,14 @@ func (w *boardWire) stop() (int, int) {
 
 func boardWireRepository(t *testing.T, admin *sql.DB, wire *boardWire) *postgres.Repository {
 	t.Helper()
-	var database string
-	if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&database); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{database}.Sanitize()+" CONNECTION LIMIT 10"); err != nil {
-		t.Fatal(err)
-	}
-	role, password := newNativeID("example"), newNativeID("password")
-	quoted := pgx.Identifier{role}.Sanitize()
-	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(password)); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
-		defer cancel()
-		if _, err := admin.ExecContext(ctx, "DROP OWNED BY "+quoted+"; DROP ROLE "+quoted); err != nil {
-			t.Error(err)
-		}
-	})
-	if _, err := admin.ExecContext(t.Context(), "GRANT detent_runtime_v2 TO "+quoted); err != nil {
-		t.Fatal(err)
-	}
-	config, err := pgxpool.ParseConfig(os.Getenv("DETENT_TEST_POSTGRES"))
+	connection := startupConnection(t, admin, postgres.RuntimeRoleName, "")
+	config, err := connection.PoolConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	config.ConnConfig.Database, config.ConnConfig.User, config.ConnConfig.Password = database, role, password
-	config.ConnConfig.TLSConfig = nil
-	config.ConnConfig.Fallbacks = nil
+	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{connection.Database}.Sanitize()+" CONNECTION LIMIT 10"); err != nil {
+		t.Fatal(err)
+	}
 	config.MaxConns = 4
 	pgtransport.Configure(config)
 	tables := []string{}
