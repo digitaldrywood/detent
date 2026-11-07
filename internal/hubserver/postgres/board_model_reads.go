@@ -219,11 +219,17 @@ const boardModelMetadataSQL = `SELECT coalesce((SELECT sequence FROM native_boar
 
 func (s *session) boardSearchModelPages(ctx context.Context, selection viewstore.BoardSelection, work *viewstore.BoardSelection) (viewstore.BoardModelPage, error) {
 	var result viewstore.BoardModelPage
+	batch := &pgx.Batch{}
+	ctx, cancel, err := s.beginBoardSearch(ctx, selection, batch)
+	defer cancel()
+	if err != nil {
+		return result, err
+	}
+
 	if _, _, err := boardWhere(s.organization, selection); err != nil {
 		return result, err
 	}
 	var pending, numberPending bool
-	batch := &pgx.Batch{}
 	batch.Queue(boardModelMetadataSQL, s.organization, selection.ProjectID).QueryRow(func(row pgx.Row) error {
 		return row.Scan(&result.Sequence, &result.Pending, &result.OldestPendingAt)
 	})
@@ -241,7 +247,6 @@ func (s *session) boardSearchModelPages(ctx context.Context, selection viewstore
 	if pending {
 		return result, searchstore.ErrIndexPending
 	}
-	var err error
 	result.Records, err = s.boardPage(ctx, selection, true, nil)
 	if err != nil {
 		return result, err
@@ -250,4 +255,47 @@ func (s *session) boardSearchModelPages(ctx context.Context, selection viewstore
 		result.WorkRecords, err = s.boardPage(ctx, *work, true, new(!numberPending))
 	}
 	return result, err
+}
+
+func (s *session) beginBoardSearch(ctx context.Context, selection viewstore.BoardSelection, batches ...*pgx.Batch) (context.Context, context.CancelFunc, error) {
+	if selection.SearchText == "" && selection.Fingerprint == "" {
+		return ctx, func() {}, nil
+	}
+	initial := s.searchDeadline.IsZero()
+	if initial {
+		s.searchDeadline = time.Now().Add(750 * time.Millisecond)
+		if deadline, ok := ctx.Deadline(); ok && deadline.Before(s.searchDeadline) {
+			s.searchDeadline = deadline
+		}
+	}
+	ctx, cancel := context.WithDeadline(ctx, s.searchDeadline)
+	if err := ctx.Err(); err != nil {
+		return ctx, cancel, err
+	}
+	if initial {
+		milliseconds := max(1, (time.Until(s.searchDeadline) - 25*time.Millisecond).Milliseconds())
+		const statement = `SELECT set_config('statement_timeout',$1,true) IS NOT NULL AND pg_try_advisory_xact_lock(hashtextextended('board-search:' || $2,0))`
+		if len(batches) > 0 {
+			batches[0].Queue(statement, fmt.Sprintf("%dms", milliseconds), s.organization).QueryRow(func(row pgx.Row) error {
+				if err := row.Scan(&s.searchAdmitted); err != nil {
+					return err
+				}
+				if !s.searchAdmitted {
+					return context.DeadlineExceeded
+				}
+				return nil
+			})
+			return ctx, cancel, nil
+		}
+		var admitted bool
+		err := s.db.QueryRow(ctx, statement, fmt.Sprintf("%dms", milliseconds), s.organization).Scan(&admitted)
+		if err != nil {
+			return ctx, cancel, mapError(ctx, err)
+		}
+		s.searchAdmitted = admitted
+	}
+	if !s.searchAdmitted {
+		return ctx, cancel, context.DeadlineExceeded
+	}
+	return ctx, cancel, nil
 }

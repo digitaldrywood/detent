@@ -173,6 +173,8 @@ type projectAccessKey struct {
 }
 
 type session struct {
+	searchDeadline     time.Time
+	searchAdmitted     bool
 	cacheMu            sync.Mutex
 	projectGrants      map[projectAccessKey]accessstore.ProjectGrant
 	tokenGrants        map[projectAccessKey]accessstore.TokenGrant
