@@ -38,7 +38,10 @@ func TestOrganizationModelRecordsWithoutSQLite(t *testing.T) {
 			if err != nil || initial.Revision != 0 || initial.Selection == nil {
 				t.Fatalf("initial selection = %+v, error = %v", initial, err)
 			}
-			request := cloudModelSelectionRequest{Mutation: tracker.Mutation{IdempotencyKey: "models"}, Selection: &config.ModelSelection{Enabled: new(org == "org_first"), Preset: new("sol_first")}}
+			if initial.Effective.Model("normal") != "gpt-6.1-sol" || initial.Effective.Stages["plan"].Effort == nil || *initial.Effective.Stages["plan"].Effort != "low" || initial.Effective.Stages["validator"].Effort == nil || *initial.Effective.Stages["validator"].Effort != "medium" {
+				t.Fatalf("organization defaults missing: %+v", initial.Effective)
+			}
+			request := cloudModelSelectionRequest{Mutation: tracker.Mutation{IdempotencyKey: "models"}, Selection: &config.ModelSelection{Enabled: new(org == "org_first"), Preset: new("sol_first"), NormalModel: new(string(org) + "-model")}}
 			raw, err := service.executeNativeMutation(t.Context(), scope, nativeCommandOptions{OperationID: "models"}, request.Mutation, request, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -73,6 +76,9 @@ func TestOrganizationModelRecordsWithoutSQLite(t *testing.T) {
 			inherited, err := service.projectRecordModel(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org}})
 			if err != nil || inherited.Effective.Enabled == nil || *inherited.Effective.Enabled != (org == "org_first") {
 				t.Fatalf("inherited model = %+v error=%v", inherited, err)
+			}
+			if inherited.Effective.Model("normal") != string(org)+"-model" || inherited.Effective.Stages["plan"].Effort == nil || *inherited.Effective.Stages["plan"].Effort != "low" || inherited.Effective.Stages["validator"].Effort == nil || *inherited.Effective.Stages["validator"].Effort != "medium" {
+				t.Fatalf("project inheritance missing: %+v", inherited.Effective)
 			}
 			var project projectstore.Record
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {

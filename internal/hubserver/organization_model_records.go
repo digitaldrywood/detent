@@ -28,17 +28,33 @@ func (s *Service) readOrganizationModels(ctx context.Context, organization track
 }
 
 func (s *Service) organizationModelsFromRecord(ctx context.Context, organization tracker.OrganizationID, row policystore.OrganizationModels) (cloudModelSelection, error) {
-	selection := config.ModelSelection{}
+	selection := organizationModelDefaults()
 	if row.Revision > 0 {
 		raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, eventstore.Receipt{OrganizationID: organization, PayloadObjectKey: row.Payload.Key, PayloadSHA256: row.Payload.SHA256, PayloadBytes: row.Payload.CompressedSize, PayloadContentBytes: row.Payload.UncompressedSize})
 		if err != nil {
 			return cloudModelSelection{}, err
 		}
+		selection = config.ModelSelection{}
 		if err := json.Unmarshal(raw, &selection); err != nil {
 			return cloudModelSelection{}, err
 		}
 	}
-	return cloudModelSelection{Revision: tracker.Revision(row.Revision), Selection: &selection, Effective: config.ResolveCloudModelSelection(selection, config.ModelSelection{})}, nil
+	effective := config.ResolveModelSelection(organizationModelDefaults(), selection)
+	return cloudModelSelection{Revision: tracker.Revision(row.Revision), Selection: &selection, Effective: config.ResolveCloudModelSelection(effective, config.ModelSelection{})}, nil
+}
+
+func organizationModelDefaults() config.ModelSelection {
+	selection := config.SolFirstModelSelection()
+	selection.Preset = nil
+	selection.NormalModel = new("gpt-6.1-sol")
+	selection.Levels = map[string]config.ModelSelectionDefaults{
+		"normal":       {Model: new("normal"), Effort: new("high")},
+		"complex":      {Model: new("normal"), Effort: new("high")},
+		"very_complex": {Model: new("complex"), Effort: new("medium")},
+	}
+	selection.Stages["plan"] = config.ModelSelectionStage{IssueComplexity: new(false), Model: new("complex"), Effort: new("low")}
+	selection.Stages["validator"] = config.ModelSelectionStage{IssueComplexity: new(false), Model: new("complex"), Effort: new("medium")}
+	return selection
 }
 
 func (s *Service) updateOrganizationModelRecord(ctx context.Context, scope nativeScope, operation string, request cloudModelSelectionRequest) (json.RawMessage, error) {
@@ -62,6 +78,7 @@ func (s *Service) updateOrganizationModelRecord(ctx context.Context, scope nativ
 	if len(effective.Validate()) > 0 {
 		return nil, nativePublicInvalid("Model selection is invalid")
 	}
+	effective = config.ResolveCloudModelSelection(config.ResolveModelSelection(organizationModelDefaults(), *request.Selection), config.ModelSelection{})
 	value := cloudModelSelection{Revision: request.ExpectedRevision + 1, Selection: request.Selection, Effective: effective}
 	raw, err := json.Marshal(value)
 	if err != nil {

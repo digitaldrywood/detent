@@ -145,11 +145,7 @@ func (s *Service) projectRecordModel(ctx context.Context, record projectstore.Re
 		}
 		result.Selection = &override
 	}
-	var organization workflowconfig.ModelSelection
-	if inherited.Selection != nil {
-		organization = *inherited.Selection
-	}
-	result.Effective = workflowconfig.ResolveCloudModelSelection(organization, override)
+	result.Effective = workflowconfig.ResolveCloudModelSelection(inherited.Effective, override)
 	return result, nil
 }
 
@@ -161,14 +157,11 @@ func (s *Service) planProjectRecordModel(ctx context.Context, record projectstor
 	if err != nil {
 		return record, nil, err
 	}
-	var organization, override workflowconfig.ModelSelection
-	if inherited.Selection != nil {
-		organization = *inherited.Selection
-	}
+	var override workflowconfig.ModelSelection
 	if request.Selection != nil {
 		override = *request.Selection
 	}
-	effective := workflowconfig.ResolveCloudModelSelection(organization, override)
+	effective := workflowconfig.ResolveCloudModelSelection(inherited.Effective, override)
 	if problems := effective.Validate(); len(problems) > 0 {
 		return record, nil, nativePublicInvalid(strings.Join(problems, "; "))
 	}
