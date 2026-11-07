@@ -124,14 +124,9 @@ func (f *runnerEventSession) Receipt(ctx context.Context, actor, operation, key 
 	return f.receipt.value, f.receipt.err
 }
 
-func (f *runnerEventSession) RunnerProjectAuthorized(_ context.Context, runner string, p tracker.ProjectID, now time.Time) (bool, error) {
+func (f *runnerEventSession) RunnerProjectAuthorized(_ context.Context, runner string, p tracker.ProjectID, _ time.Time) (bool, error) {
 	if runner != f.owner || p != f.command.Project {
 		return false, corestore.ErrTenantMismatch
-	}
-	if !f.now.Equal(now) && now.After(f.now) {
-		if !f.lease.value.ExpiresAt.After(now) {
-			return false, nil
-		}
 	}
 	return f.runnerAllowed, nil
 }

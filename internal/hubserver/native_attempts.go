@@ -202,6 +202,9 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 		*data.TerminalFailure = data.TerminalFailure.Public()
 		return nil
 	}
+	if eventType == "run.finished" && data.Identity == nil && data.Sequence > 1 && data.Outcome == "cancelled" && nativeTerminationData(data) {
+		return nil
+	}
 	if data.Sequence < 0 || data.Identity == nil || !validExecutionName(data.Identity.Role) || !validExecutionName(data.Identity.Backend) || !validExecutionName(data.Identity.Model) {
 		return nativeRejection(nativePublicInvalid("Ordered events require a positive sequence and bounded execution identity"), "execution_validation", "data")
 	}

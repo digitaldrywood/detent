@@ -321,6 +321,13 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 	if lease.ReleasedAt != nil {
 		released := *lease.ReleasedAt
 		result.ClaimReleasedAt = &released
+	} else if !lease.ExpiresAt.After(now) {
+		expired := lease.ExpiresAt
+		result.ClaimReleasedAt = &expired
+	}
+	if result.ClaimReleasedAt != nil && snapshot.event.Type == "run.finished" && run.Outcome == "cancelled" && !snapshot.event.RecordedAt.Before(*result.ClaimReleasedAt) {
+		acknowledged := snapshot.event.RecordedAt
+		result.CleanupAcknowledgedAt = &acknowledged
 	}
 	if result.TerminalFailure != nil {
 		failure := result.TerminalFailure.Public()

@@ -86,7 +86,10 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 	if err != nil {
 		return leasestore.Attempt{}, false, mapError(ctx, err)
 	}
-	if event.Termination && (lease.ReleasedAt == nil || event.Sequence <= 1 || event.Status != "cancelled") || !event.Termination && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now)) {
+	if event.Termination && (lease.ReleasedAt == nil && lease.ExpiresAt.After(now) || event.Sequence <= 1 || event.Status != "cancelled" || event.UsageCorrection) {
+		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
+	}
+	if !event.Termination && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now)) {
 		return leasestore.Attempt{}, false, &leasestore.FenceError{Check: "attempt_live_lease"}
 	}
 	var row pgquery.NativeAttempt

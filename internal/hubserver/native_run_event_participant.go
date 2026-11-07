@@ -31,8 +31,10 @@ func (p tenantNativeRunEventParticipant) validateRunEventOwner(ctx context.Conte
 	if human && (event.Type != "run.finished" || event.Data.Outcome != "cancelled" || event.Data.Sequence <= 1 || authority.UsageCorrection || authority.UsageFacts != nil || len(authority.UsageCosts) != 0) {
 		return tracker.ErrInvalidClaimRequest
 	}
-	if err := validateNativeRunEvent(event); err != nil {
-		return err
+	if !authority.Termination {
+		if err := validateNativeRunEvent(event); err != nil {
+			return err
+		}
 	}
 	if event.Data.Sequence <= 0 || event.Data.LeaseID != tracker.LeaseID(authority.Lease.LeaseID) || int64(event.Data.FencingToken) != authority.Lease.FencingToken {
 		return &leasestore.FenceError{Check: "event_fence"}
@@ -59,7 +61,7 @@ func (p tenantNativeRunEventParticipant) validateRunEventOwner(ctx context.Conte
 		return err
 	}
 	now := p.service.config.now().UTC()
-	if lease.IssueID != item.ID || lease.FencingToken != authority.Lease.FencingToken || lease.MachineID != authority.Lease.MachineID || lease.SessionID != authority.Lease.SessionID || !authority.Termination && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now)) || authority.Termination && lease.ReleasedAt == nil {
+	if lease.IssueID != item.ID || lease.FencingToken != authority.Lease.FencingToken || lease.MachineID != authority.Lease.MachineID || lease.SessionID != authority.Lease.SessionID || !authority.Termination && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now)) {
 		return &leasestore.FenceError{Check: "lease_current"}
 	}
 	if event.Data.MachineID != tracker.MachineID(lease.MachineID) || event.Data.SessionID != lease.SessionID || !human && event.Data.RunnerID != authority.Scope.credential.Runner.RunnerID {
@@ -216,7 +218,7 @@ func (p tenantNativeRunEventParticipant) validateNativeLeaseMutation(ctx context
 		return err
 	}
 	now := p.service.config.now().UTC()
-	if lease.IssueID != item.ID || lease.FencingToken != authority.Lease.FencingToken || lease.MachineID != authority.Lease.MachineID || lease.SessionID != authority.Lease.SessionID || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || int64(authority.Request.FencingToken) != lease.FencingToken {
+	if lease.IssueID != item.ID || lease.FencingToken != authority.Lease.FencingToken || lease.MachineID != authority.Lease.MachineID || lease.SessionID != authority.Lease.SessionID || (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now)) || int64(authority.Request.FencingToken) != lease.FencingToken {
 		return tracker.ErrStaleFencingToken
 	}
 	if human {

@@ -34,8 +34,11 @@ func (f *runnerEventSession) RecordAttemptEvent(ctx context.Context, e leasestor
 	if f.lease.err != nil {
 		return leasestore.Attempt{}, false, f.lease.err
 	}
-	if l.LeaseID != e.Fence.LeaseID || l.FencingToken != e.Fence.FencingToken || l.ReleasedAt != nil || !l.ExpiresAt.After(f.now) {
+	if l.LeaseID != e.Fence.LeaseID || l.FencingToken != e.Fence.FencingToken || !e.Termination && (l.ReleasedAt != nil || !l.ExpiresAt.After(f.now)) {
 		return leasestore.Attempt{}, false, &leasestore.FenceError{Check: "attempt_locked_identity"}
+	}
+	if e.Termination && (l.ReleasedAt == nil && l.ExpiresAt.After(f.now) || e.Sequence <= 1 || e.Status != "cancelled" || e.UsageCorrection) {
+		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
 	}
 	encoded, err := json.Marshal(e)
 	if err != nil {
@@ -54,7 +57,7 @@ func (f *runnerEventSession) RecordAttemptEvent(ctx context.Context, e leasestor
 		}
 		return attemptFromPG(f.attempt.value), true, f.attempt.err
 	}
-	f.queueRunFence()
+	f.queueRunFence(e.Termination)
 	old := f.attempt.value
 	if e.Sequence == 1 {
 		if f.attempt.err == nil || e.UsageCorrection {
@@ -65,7 +68,7 @@ func (f *runnerEventSession) RecordAttemptEvent(ctx context.Context, e leasestor
 			started = f.now
 		}
 		old = pgquery.NativeAttempt{OrganizationID: f.session.organization, ID: e.ID, IssueID: l.IssueID, LeaseID: l.LeaseID, FencingToken: l.FencingToken, RunID: e.RunID, WorkItemRevision: l.WorkItemRevision, DispatchGeneration: e.DispatchGeneration, StartedAt: pgtransport.Timestamp(started), StartedAtSubmicroNs: int16(started.Nanosecond() % 1000)}
-	} else if f.attempt.err != nil || old.ID != e.ID || old.LeaseID != l.LeaseID || old.FencingToken != l.FencingToken || old.RunID != e.RunID || old.DispatchGeneration != e.DispatchGeneration || old.Sequence != e.Sequence-1 || (old.Status != "running" && (old.Status != "interrupted" || e.Status != "running") && (!e.UsageCorrection || old.Status != e.Status)) {
+	} else if f.attempt.err != nil || old.ID != e.ID || old.LeaseID != l.LeaseID || old.FencingToken != l.FencingToken || old.RunID != e.RunID || old.DispatchGeneration != e.DispatchGeneration || old.Sequence != e.Sequence-1 || (old.Status != "running" && (old.Status != "interrupted" || e.Status != "running") && (!e.UsageCorrection || old.Status != e.Status) && (!e.Termination || old.Status != "cancelled" && old.Status != "interrupted")) {
 		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
 	}
 	q := pgquery.New(runEventQueue{f.pending})
@@ -77,7 +80,7 @@ func (f *runnerEventSession) RecordAttemptEvent(ctx context.Context, e leasestor
 			return leasestore.Attempt{}, false, err
 		}
 	} else {
-		if _, err := q.AdvanceLeaseAttempt(ctx, pgquery.AdvanceLeaseAttemptParams{OrganizationID: f.session.organization, ID: e.ID, LeaseID: l.LeaseID, FencingToken: l.FencingToken, RunID: e.RunID, NextSequence: e.Sequence, Status: e.Status, DispatchGeneration: e.DispatchGeneration, PayloadObjectKey: e.PayloadObjectKey, CheckpointObjectKey: e.CheckpointObjectKey, ArtifactsObjectKey: e.ArtifactsObjectKey, RuntimeHeartbeatAt: e.RuntimeHeartbeatAt, UsageCorrection: e.UsageCorrection, Now: &f.now}); err != nil {
+		if _, err := q.AdvanceLeaseAttempt(ctx, pgquery.AdvanceLeaseAttemptParams{OrganizationID: f.session.organization, ID: e.ID, LeaseID: l.LeaseID, FencingToken: l.FencingToken, RunID: e.RunID, NextSequence: e.Sequence, Status: e.Status, DispatchGeneration: e.DispatchGeneration, PayloadObjectKey: e.PayloadObjectKey, CheckpointObjectKey: e.CheckpointObjectKey, ArtifactsObjectKey: e.ArtifactsObjectKey, RuntimeHeartbeatAt: e.RuntimeHeartbeatAt, UsageCorrection: e.UsageCorrection, Termination: e.Termination, Now: &f.now}); err != nil {
 			return leasestore.Attempt{}, false, err
 		}
 	}

@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"errors"
+	"reflect"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -92,7 +93,11 @@ func preserveTenantRunCleanup(previous *tracker.NativeRunData, current *tracker.
 	if previous == nil || current.Sequence < previous.Sequence {
 		return nil
 	}
-	if current.AttemptID != previous.AttemptID || current.RunID != previous.RunID || current.LeaseID != previous.LeaseID || current.FencingToken != previous.FencingToken || current.Sequence != previous.Sequence && current.Sequence != previous.Sequence+1 || current.Identity == nil || previous.Identity == nil || *current.Identity != *previous.Identity {
+	identityMatches := current.Identity == nil && previous.Identity == nil
+	if current.Identity != nil && previous.Identity != nil {
+		identityMatches = *current.Identity == *previous.Identity
+	}
+	if current.AttemptID != previous.AttemptID || current.RunID != previous.RunID || current.LeaseID != previous.LeaseID || current.FencingToken != previous.FencingToken || current.Sequence != previous.Sequence && current.Sequence != previous.Sequence+1 || !identityMatches {
 		return leasestore.ErrAttemptConflict
 	}
 	if previous.Runtime == nil || previous.Runtime.WorkerLaunch == nil || previous.Runtime.WorkerLaunch.PID <= 0 || previous.Runtime.WorkerLaunch.ProcessStart.IsZero() {
@@ -112,4 +117,13 @@ func preserveTenantRunCleanup(previous *tracker.NativeRunData, current *tracker.
 	runtime.WorkerLaunch = &launch
 	current.Runtime = &runtime
 	return nil
+}
+
+func nativeTerminationData(data tracker.NativeRunData) bool {
+	identity := tracker.NativeRunData{AttemptID: data.AttemptID, RunID: data.RunID, LeaseID: data.LeaseID, FencingToken: data.FencingToken, PolicyID: data.PolicyID, Identity: data.Identity, MachineID: data.MachineID, SessionID: data.SessionID, RunnerID: data.RunnerID, Sequence: data.Sequence, Outcome: "cancelled"}
+	return reflect.DeepEqual(data, identity)
+}
+
+func nativeCleanupOwnerMatches(current, previous tracker.NativeRunData) bool {
+	return current.AttemptID == previous.AttemptID && current.RunID == previous.RunID && current.LeaseID == previous.LeaseID && current.FencingToken == previous.FencingToken && current.PolicyID == previous.PolicyID && reflect.DeepEqual(current.Identity, previous.Identity)
 }
