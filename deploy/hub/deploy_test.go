@@ -15,7 +15,10 @@ import (
 
 func TestPostgresCutoverReceiverInstallsAndInvokesExactPayload(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	serviceUser := ""
 	serviceUID := ""
 	serviceGID := ""
