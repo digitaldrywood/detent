@@ -2,8 +2,6 @@ package testsupport
 
 import (
 	"context"
-	"errors"
-	"io/fs"
 	"strings"
 	"testing"
 	"time"
@@ -12,17 +10,21 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+const NativeChangeMachineID tracker.MachineID = "machine_11111111111111111111111111111111"
+const NativeChangeOtherMachineID tracker.MachineID = "machine_22222222222222222222222222222222"
 
 type nativeChangeIdentityProvider struct{ auth.HostedProvider }
 
@@ -37,16 +39,11 @@ func (p nativeChangeIdentityProvider) Memberships(_ context.Context, user, organ
 
 func NativeChangeWrite(t *testing.T, cfg hubserver.Config, write func(tenantstore.Writer) error) {
 	t.Helper()
-	migrations, err := fs.Sub(nativeChangeSchema(), "migrations")
+	repository, err := nativeChangeRepository(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	repository, err := postgres.Open(t.Context(), *cfg.Postgres, migrations)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = repository.WriteTenant(t.Context(), tracker.OrganizationID(cfg.Hosted.OrganizationID), corestore.Serving, write)
-	if err := errors.Join(err, repository.Close()); err != nil {
+	if err := repository.WriteTenant(t.Context(), tracker.OrganizationID(cfg.Hosted.OrganizationID), corestore.Serving, write); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -54,7 +51,7 @@ func NativeChangeWrite(t *testing.T, cfg hubserver.Config, write func(tenantstor
 func NativeChangeProject(t *testing.T, cfg hubserver.Config, states []tracker.NativeState, dependencies bool) tracker.NativeProject {
 	t.Helper()
 	organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
-	id := tracker.ProjectID("prj_" + uuid.NewString())
+	id := tracker.ProjectID("prj_" + strings.ReplaceAll(uuid.NewString(), "-", ""))
 	var project projectstore.Record
 	NativeChangeWrite(t, cfg, func(w tenantstore.Writer) error {
 		var err error
@@ -73,17 +70,18 @@ func NativeChangeProject(t *testing.T, cfg hubserver.Config, states []tracker.Na
 func NativeChangeWorker(t *testing.T, cfg hubserver.Config, project tracker.ProjectID, machine tracker.MachineID) string {
 	t.Helper()
 	organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
-	id, token := "runner_"+uuid.NewString(), uuid.NewString()
+	id, token := "runner_"+strings.ReplaceAll(uuid.NewString(), "-", ""), uuid.NewString()
+	credentialID := "key_" + strings.TrimPrefix(id, "runner_")
 	now := cfg.Clock().UTC()
 	expires := now.Add(24 * time.Hour)
 	NativeChangeWrite(t, cfg, func(w tenantstore.Writer) error {
 		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: string(machine), Hostname: "host", Capacity: 1, Version: "test"}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: id, Name: "Example worker", Hash: apikey.HashToken(token), Scope: "worker", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: credentialID, Name: "Example worker", Hash: apikey.HashToken(token), Scope: "worker", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: id, ProjectID: project}); err != nil {
+		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: credentialID, ProjectID: project}); err != nil {
 			return err
 		}
 		enrollment := runnerstore.Enrollment{OrganizationID: organization, ID: "enrollment_" + id, RunnerID: id, MachineID: machine, TokenHash: apikey.HashToken("enrollment_" + id), Scope: "projects", ProjectIDs: []tracker.ProjectID{project}, Operations: []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "test_admin"}
@@ -93,10 +91,58 @@ func NativeChangeWorker(t *testing.T, cfg hubserver.Config, project tracker.Proj
 		if err := w.RedeemRunnerEnrollment(t.Context(), enrollment.ID, id, machine, now); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: id, MachineID: machine, TokenID: id, EnrollmentID: enrollment.ID, Scope: "projects", State: "active", Operations: enrollment.Operations, ProjectIDs: enrollment.ProjectIDs, CapacityLimit: 1, ReportedCapacity: 1, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
+		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: id, MachineID: machine, TokenID: credentialID, EnrollmentID: enrollment.ID, Scope: "projects", State: "active", Operations: enrollment.Operations, ProjectIDs: enrollment.ProjectIDs, CapacityLimit: 1, ReportedCapacity: 1, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
 			return err
 		}
 		return w.UpdateRunnerCapacityConfig(t.Context(), id, runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, ObservedAt: now})
 	})
 	return token
+}
+
+func NativeChangePublisher(t *testing.T, cfg hubserver.Config, project tracker.ProjectID) (string, string) {
+	return NativeChangeServiceCredential(t, cfg, project, "worker")
+}
+
+func NativeChangeServiceCredential(t *testing.T, cfg hubserver.Config, project tracker.ProjectID, scope string) (string, string) {
+	t.Helper()
+	id, token := "publisher_"+uuid.NewString(), uuid.NewString()
+	now := cfg.Clock().UTC()
+	NativeChangeWrite(t, cfg, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: tracker.OrganizationID(cfg.Hosted.OrganizationID), ID: id, Name: "Example publisher", Hash: apikey.HashToken(token), Scope: scope, NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
+			return err
+		}
+		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: tracker.OrganizationID(cfg.Hosted.OrganizationID), TokenID: id, ProjectID: project})
+	})
+	return id, token
+}
+
+func NativeChangeRefreshBoard(ctx context.Context, service *hubserver.Service, organization tracker.OrganizationID) error {
+	var after tracker.NativeWorkItemID
+	seen := map[tracker.NativeWorkItemID]bool{}
+	for {
+		budget := (hubmaintenance.Budget{Items: 1, Bytes: hubserver.BoardMaintenanceBytes}).Context(ctx, hubmaintenance.Tenant{Organization: string(organization), Generation: 1})
+		next, processed, err := service.MaintainBoardRecord(budget, organization, after)
+		if err != nil || !processed {
+			return err
+		}
+		if seen[next] {
+			return nil
+		}
+		seen[next] = true
+		after = next
+	}
+}
+
+func NativeChangeRefreshReviews(ctx context.Context, cfg hubserver.Config) error {
+	owner, err := nativeChangeRepository(cfg)
+	if err != nil {
+		return err
+	}
+
+	for {
+		count, err := owner.BackfillCurrentChangeReviews(ctx, tracker.OrganizationID(cfg.Hosted.OrganizationID), eventstore.NewContent(cfg.RunDetails), corestore.MaxPageSize)
+		if err != nil || count == 0 {
+			return err
+		}
+	}
 }

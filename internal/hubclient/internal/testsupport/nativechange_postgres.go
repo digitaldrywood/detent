@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -68,6 +69,9 @@ func NativeChangeDatabasePath(t testing.TB) string {
 	return filepath.Join(t.TempDir(), "unused.db")
 }
 
+var nativeChangeDatabases sync.Map
+var nativeChangeRepositories sync.Map
+
 func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Config {
 	t.Helper()
 	if cfg.Postgres != nil {
@@ -82,6 +86,8 @@ func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Co
 	if connection.Host == "." {
 		connection.Host = dataDirectory
 	}
+	nativeChangeDatabases.Store(connection.Database, admin)
+	t.Cleanup(func() { nativeChangeDatabases.Delete(connection.Database) })
 	name := pgx.Identifier{connection.User}.Sanitize()
 	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+name+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(connection.Password)+" IN ROLE detent_runtime_v2"); err != nil {
 		t.Fatal(err)
@@ -109,7 +115,7 @@ func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Co
 			t.Fatal(err)
 		}
 		provider = nativeChangeIdentityProvider{HostedProvider: provider}
-		cfg.Hosted = &hubserver.HostedConfig{OrganizationID: "org_example", WorkOSOrganizationID: "provider_example", PublicURL: "https://hub.example.test", Provider: provider}
+		cfg.Hosted = &hubserver.HostedConfig{OrganizationID: "org_11111111111111111111111111111111", WorkOSOrganizationID: "provider_example", PublicURL: "https://hub.example.test", Provider: provider}
 	}
 	migrations, err := fs.Sub(nativeChangeSchema(), "migrations")
 	if err != nil {
@@ -119,6 +125,13 @@ func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Co
 	if err != nil {
 		t.Fatal(err)
 	}
+	nativeChangeRepositories.Store(connection.Database, repository)
+	t.Cleanup(func() {
+		nativeChangeRepositories.Delete(connection.Database)
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	now := time.Now().UTC()
 	if cfg.Clock != nil {
 		now = cfg.Clock().UTC()
@@ -157,8 +170,28 @@ func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Co
 		}
 		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: now})
 	})
-	if err := errors.Join(err, repository.Close()); err != nil {
+	if err != nil {
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+func NativeChangeExpireLease(t *testing.T, cfg hubserver.Config, lease tracker.LeaseID) {
+	t.Helper()
+	value, ok := nativeChangeDatabases.Load(cfg.Postgres.Connection.Database)
+	if !ok {
+		t.Fatal("fixture database is unavailable")
+	}
+	_, err := value.(*sql.DB).ExecContext(t.Context(), `UPDATE leases SET acquired_at=clock_timestamp()-interval '3 hours',renewed_at=clock_timestamp()-interval '2 hours',expires_at=clock_timestamp()-interval '1 hour' WHERE organization_id=$1 AND lease_id=$2`, cfg.Hosted.OrganizationID, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func nativeChangeRepository(cfg hubserver.Config) (*postgres.Repository, error) {
+	value, ok := nativeChangeRepositories.Load(cfg.Postgres.Connection.Database)
+	if !ok {
+		return nil, errors.New("fixture repository is unavailable")
+	}
+	return value.(*postgres.Repository), nil
 }
