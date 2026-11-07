@@ -104,7 +104,7 @@ func TestBoardSearchFallbackHasFixedSQLBudget(t *testing.T) {
 				now := service.config.now().UTC().Truncate(time.Microsecond)
 				for seeded := 1; seeded <= size; seeded++ {
 					id := tracker.NativeWorkItemID(fmt.Sprintf("wi_search_%04d", seeded))
-					issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: scope.project, WorkItemID: id, Number: seeded, Revision: 1}, Change: &tracker.NativeIssueChange{Connector: tracker.NativeChangeConnectorNone, ChangeID: "change_" + string(id), HeadSHA: strings.Repeat("a", 40)}, Title: "Release audit credential", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: now, UpdatedAt: now}
+					issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: scope.project, WorkItemID: id, Number: seeded, Revision: 1}, Title: "Release audit credential", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: now, UpdatedAt: now}
 					payload, err := viewstore.NewContent(details).PrepareBoard(t.Context(), tracker.NativeBoardCard{Issue: issue})
 					if err != nil {
 						t.Fatal(err)
@@ -125,7 +125,7 @@ func TestBoardSearchFallbackHasFixedSQLBudget(t *testing.T) {
 						if err := w.PutSearch(t.Context(), document, 0); err != nil {
 							return err
 						}
-						row := viewstore.BoardRecord{OrganizationID: org, ProjectID: scope.project, WorkItemID: id, SourceRevision: item.Revision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("%s#%04d", scope.project, seeded)}, CreatedAt: now, UpdatedAt: now, Payload: payload, ActorPrincipalID: "example", PageIssue: &issue, ListIssue: &issue, ListBytes: 1024, ProjectedAt: now, ReporterRelations: &viewstore.BoardReporterRelations{}, Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Number: seeded, Actor: issue.Actor, ChangePrincipalID: "example"}}
+						row := viewstore.BoardRecord{OrganizationID: org, ProjectID: scope.project, WorkItemID: id, SourceRevision: item.Revision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("%s#%04d", scope.project, seeded)}, CreatedAt: now, UpdatedAt: now, Payload: payload, ActorPrincipalID: "example", PageIssue: &issue, ListIssue: &issue, ListBytes: 1024, ProjectedAt: now, ReporterRelations: &viewstore.BoardReporterRelations{}, Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Number: seeded, Actor: issue.Actor}}
 						return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: scope.project, WorkItemID: id, ExpectedRevision: item.Revision, Current: &row})
 					}); err != nil {
 						t.Fatal(err)
@@ -155,26 +155,6 @@ func TestBoardSearchFallbackHasFixedSQLBudget(t *testing.T) {
 					if role == "reporter" {
 						selected.credential.HostedRole, selected.credential.HostedPrincipal = role, "example"
 					}
-					t.Run(fmt.Sprintf("%s/%s/change", org, role), func(t *testing.T) {
-						if err := measured.Ping(t.Context()); err != nil {
-							t.Fatal(err)
-						}
-						issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: scope.project, WorkItemID: "wi_search_0002", Revision: 1}}
-						wire.reset()
-						err := service.readNativeIssueChangePage(t.Context(), selected, &issue)
-						exchanges, statements := wire.stop()
-						if err != nil || issue.Change == nil || issue.Change.ChangeID != "change_wi_search_0002" || issue.Change.HeadSHA != strings.Repeat("a", 40) {
-							t.Fatalf("projected Change = %+v, error = %v", issue.Change, err)
-						}
-						cost := [2]int{exchanges, statements}
-						if exchanges > 3 || statements > 4 {
-							t.Errorf("Change read cost=%v", cost)
-						}
-						if expected, ok := expectedCounts["change"]; ok && expected != cost {
-							t.Errorf("Change SQL/wire cost varies by size or tenant: got %v want %v", cost, expected)
-						}
-						expectedCounts["change"] = cost
-					})
 					for _, include := range []string{"summary", "board", "work"} {
 						for _, filter := range []struct {
 							name, key, value string
@@ -562,5 +542,80 @@ func boardPartBudget(t *testing.T, service *Service, measured *postgres.Reposito
 		if durations[(len(durations)-1)*95/100] > time.Second {
 			t.Error("page part latency exceeds p95=1s")
 		}
+	}
+}
+
+func TestNativeIssueChangePageHasFixedSQLBudget(t *testing.T) {
+	var expected [2]int
+	for _, size := range []int{2, 50} {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
+			details := &memoryRunDetails{}
+			service := newPostgresNativeService(t, Config{RunDetails: details})
+			original := service.database.postgres
+			value, ok := projectRecordDatabases.Load(original)
+			if !ok {
+				t.Fatal("fixture database is unavailable")
+			}
+			admin, ok := value.(*sql.DB)
+			if !ok {
+				t.Fatal("fixture database has an invalid type")
+			}
+			wire := &boardWire{}
+			measured := boardWireRepository(t, admin, wire)
+			t.Cleanup(func() { service.config.TenantRepository = original })
+			scopes := []nativeScope{}
+			for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+				fixture := newNativeFixture(t, service, org, "Example Change")
+				scope := nativeScope{organization: org, project: fixture.project.ID}
+				scopes = append(scopes, scope)
+				now := service.config.now().UTC().Truncate(time.Microsecond)
+				for number := 1; number <= size; number++ {
+					id := tracker.NativeWorkItemID(fmt.Sprintf("wi_change_%04d", number))
+					issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: scope.project, WorkItemID: id, Number: number, Revision: 1}, Title: "Example Change", State: "Todo", Change: &tracker.NativeIssueChange{Connector: tracker.NativeChangeConnectorNone, ChangeID: "change_" + string(org) + "_" + string(id), HeadSHA: strings.Repeat("a", 40)}}
+					payload, err := viewstore.NewContent(details).PrepareBoard(t.Context(), tracker.NativeBoardCard{Issue: issue})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := original.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+						item, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: scope.project, NativeID: id, Number: int64(number), Title: issue.Title, WorkflowStateName: new("Todo")})
+						if err != nil {
+							return err
+						}
+						row := viewstore.BoardRecord{OrganizationID: org, ProjectID: scope.project, WorkItemID: id, SourceRevision: item.Revision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("example#%d", number)}, CreatedAt: now, UpdatedAt: now, Payload: payload, PageIssue: &issue, ListIssue: &issue, ListBytes: 1024, ProjectedAt: now, ReporterRelations: &viewstore.BoardReporterRelations{}, Display: viewstore.BoardDisplay{Ready: true, Exact: true, ChangePrincipalID: "example"}}
+						return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: scope.project, WorkItemID: id, ExpectedRevision: item.Revision, Current: &row})
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			service.config.TenantRepository = measured
+			details.beforeRead = func(context.Context) error { return errors.New("Change page read an object") }
+			for _, scope := range scopes {
+				for _, role := range []string{"operator", "reporter"} {
+					t.Run(fmt.Sprintf("%s/%s", scope.organization, role), func(t *testing.T) {
+						selected := scope
+						selected.credential.HostedRole, selected.credential.HostedPrincipal = role, "example"
+						if err := measured.Ping(t.Context()); err != nil {
+							t.Fatal(err)
+						}
+						issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: "wi_change_0002", Revision: 1}}
+						wire.reset()
+						err := service.readNativeIssueChangePage(t.Context(), selected, &issue)
+						exchanges, statements := wire.stop()
+						if err != nil || issue.Change == nil || issue.Change.ChangeID != "change_"+string(scope.organization)+"_wi_change_0002" || issue.Change.HeadSHA != strings.Repeat("a", 40) {
+							t.Fatalf("projected Change=%+v, error=%v", issue.Change, err)
+						}
+						cost := [2]int{exchanges, statements}
+						if exchanges > 3 || statements > 4 {
+							t.Errorf("Change read cost=%v", cost)
+						}
+						if expected != [2]int{} && expected != cost {
+							t.Errorf("Change SQL/wire cost varies by size or tenant: got %v want %v", cost, expected)
+						}
+						expected = cost
+					})
+				}
+			}
+		})
 	}
 }
