@@ -154,16 +154,18 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 		return false, err
 	}
 	switch name {
-	case operatortool.Activity, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting:
+	case operatortool.ExplainItem:
+		return catalog.credential.HostedRole != "account", nil
+	case operatortool.Activity, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting, operatortool.CreateRunnerEnrollment, operatortool.MarkUrgentRunnerUpdate:
 		definitions, err := (hubFleetExecutor{service: s}).ListTools(ctx)
 		return entryKeyHasDefinition(definitions, name), err
 	case "project_setup", "get_onboarding", "get_git_hub_batch", "get_project_integration", "rename_project", "update_project_integration", operatortool.GetProjectModelSelection, operatortool.UpdateProjectModelSelection, operatortool.RunnerProjectDiagnostics:
 		definitions, err := (hubProjectExecutor{service: s}).ListTools(ctx)
 		return entryKeyHasDefinition(definitions, name), err
-	case operatortool.WorkList, operatortool.WorkItem, operatortool.HealthFindings, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.WorkBulkExport, operatortool.BoardActivity:
+	case operatortool.WorkList, operatortool.WorkItem, operatortool.HealthFindings, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.WorkBulkExport, operatortool.BoardActivity, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt, operatortool.GitHubScopeTimings:
 		_, found := entryKeyDefinition(operatortool.WorkReadCatalog(), name)
 		return found && catalog.credential.HostedRole != "account", nil
-	case operatortool.EditComment, operatortool.RestoreItem, operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.SetDependency:
+	case operatortool.EditComment, operatortool.RestoreItem, operatortool.TransferItem, operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.SetDependency:
 		definition, found := entryKeyDefinition(operatortool.CommandCatalog(), name)
 		if !found {
 			return false, nil
@@ -245,6 +247,8 @@ func entryKeyToolSupported(name string) bool {
 		return true
 	}
 	switch name {
+	case operatortool.WorkAttemptReceipt, operatortool.GitHubScopeTimings, operatortool.BoardSessionHistory, operatortool.ExplainItem, operatortool.CreateRunnerEnrollment, operatortool.MarkUrgentRunnerUpdate, operatortool.TransferItem:
+		return true
 	case "project_setup", "get_onboarding", "get_git_hub_batch", "get_project_integration", "rename_project", "update_project_integration", operatortool.GetProjectModelSelection, operatortool.UpdateProjectModelSelection, operatortool.RunnerProjectDiagnostics, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting, operatortool.Activity:
 		return true
 	case operatortool.EditComment, operatortool.RestoreItem, operatortool.HealthFindings, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.WorkBulkExport, operatortool.BoardActivity:
