@@ -30,7 +30,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/hubclient"
-	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -228,39 +227,13 @@ func (w localWorkerPolicyWatcher) Watch(context.Context) (<-chan configwatcher.U
 	return w.updates, nil
 }
 
-var localWorkerHubTemplate struct {
-	once sync.Once
-	data []byte
-	err  error
-}
-
-func localWorkerHub(t *testing.T, observe ...func(*http.Request)) (*hubclient.Scheduler, *hubclient.NativeClient, *hubclient.NativeConnector, config.Workflow, func(string) connector.Issue, func()) {
+func localWorkerHub(t *testing.T, observe ...func(*http.Request)) (*hubclient.Scheduler, *clihangNativeClient, *hubclient.NativeConnector, config.Workflow, func(string) connector.Issue, func()) {
 	return localWorkerHubFixture(t, nil, observe...)
 }
 
-func localWorkerHubFixture(t *testing.T, expose func(http.Handler, tracker.OrganizationID, tracker.ProjectID, string, config.Workflow), observe ...func(*http.Request)) (*hubclient.Scheduler, *hubclient.NativeClient, *hubclient.NativeConnector, config.Workflow, func(string) connector.Issue, func()) {
+func localWorkerHubFixture(t *testing.T, expose func(http.Handler, tracker.OrganizationID, tracker.ProjectID, string, config.Workflow), observe ...func(*http.Request)) (*hubclient.Scheduler, *clihangNativeClient, *hubclient.NativeConnector, config.Workflow, func(string) connector.Issue, func()) {
 	t.Helper()
 	const adminToken = "fixture-admin"
-	localWorkerHubTemplate.once.Do(func() {
-		path := filepath.Join(t.TempDir(), "template.db")
-		template, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: path, InitialAdminToken: []byte(adminToken)})
-		if err != nil {
-			localWorkerHubTemplate.err = err
-			return
-		}
-		if err := template.Close(); err != nil {
-			localWorkerHubTemplate.err = err
-			return
-		}
-		localWorkerHubTemplate.data, localWorkerHubTemplate.err = os.ReadFile(path)
-	})
-	if localWorkerHubTemplate.err != nil {
-		t.Fatal(localWorkerHubTemplate.err)
-	}
-	databasePath := filepath.Join(t.TempDir(), "hub.db")
-	if err := os.WriteFile(databasePath, localWorkerHubTemplate.data, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	var contentMu sync.Mutex
 	contentObjects := make(map[string][]byte)
 	content := func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
@@ -282,13 +255,13 @@ func localWorkerHubFixture(t *testing.T, expose func(http.Handler, tracker.Organ
 		}
 		return bytes.Clone(data), nil
 	}
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: databasePath, InitialAdminToken: []byte(adminToken), Content: content})
-	if err != nil {
-		t.Fatal(err)
-	}
+	service, revoke := clihangPostgresHub(t, adminToken, content)
+	var refusals []string
 	t.Cleanup(func() {
-		if err := service.Close(); err != nil {
-			t.Error(err)
+		if t.Failed() {
+			contentMu.Lock()
+			defer contentMu.Unlock()
+			t.Logf("fixture Hub refusals: %v", refusals)
 		}
 	})
 	httpClient := &http.Client{Transport: workerHubTransport(func(request *http.Request) (*http.Response, error) {
@@ -297,43 +270,15 @@ func localWorkerHubFixture(t *testing.T, expose func(http.Handler, tracker.Organ
 		}
 		recorder := httptest.NewRecorder()
 		service.Handler().ServeHTTP(recorder, request)
+		if recorder.Code >= http.StatusBadRequest {
+			contentMu.Lock()
+			refusals = append(refusals, fmt.Sprintf("%s %s: %d worker=%t", request.Method, request.URL.Path, recorder.Code, request.Header.Get("Authorization") == "Bearer "+adminToken+"-worker"))
+			contentMu.Unlock()
+		}
 		return recorder.Result(), nil
 	})}
-	request := func(method, path string, body, result any) {
-		t.Helper()
-		raw, err := json.Marshal(body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		req, err := http.NewRequestWithContext(t.Context(), method, "http://worker-hub.test"+path, bytes.NewReader(raw))
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set("Authorization", "Bearer "+adminToken)
-		req.Header.Set("Content-Type", "application/json")
-		response, err := httpClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer response.Body.Close()
-		if response.StatusCode >= 300 {
-			data, _ := io.ReadAll(response.Body)
-			t.Fatalf("fixture %s %s: %d %s", method, path, response.StatusCode, data)
-		}
-		if result != nil {
-			if err := json.NewDecoder(response.Body).Decode(result); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	var organizations tracker.Page[struct {
-		ID tracker.OrganizationID `json:"organization_id"`
-	}]
-	request(http.MethodGet, "/api/v2/organizations", nil, &organizations)
-	organization := organizations.Items[0].ID
-	var project tracker.NativeProject
-	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true}}
-	request(http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", map[string]any{"name": "worker-lifecycle", "idempotency_key": "worker-lifecycle", "states": states, "require_dependencies": false}, &project)
+	organization := tracker.OrganizationID("org_example")
+	project := tracker.NativeProject{ID: "prj_org_example"}
 	client, err := hubclient.New(hubclient.Config{URL: "http://worker-hub.test", TokenSource: func() string { return adminToken }, HTTPClient: httpClient})
 	if err != nil {
 		t.Fatal(err)
@@ -354,13 +299,7 @@ func localWorkerHubFixture(t *testing.T, expose func(http.Handler, tracker.Organ
 	if _, err := native.ApproveProjectPolicy(t.Context(), policy.Change{Policy: descriptor}); err != nil {
 		t.Fatal(err)
 	}
-	var token struct {
-		ID    string `json:"id"`
-		Token string `json:"token"`
-	}
-	request(http.MethodPost, "/api/v1/tokens", map[string]string{"name": "fixture-worker", "scope": "worker"}, &token)
-	request(http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", map[string]any{"organization_id": organization, "project_id": project.ID}, nil)
-	workerClient, err := hubclient.New(hubclient.Config{URL: "http://worker-hub.test", TokenSource: func() string { return token.Token }, HTTPClient: httpClient})
+	workerClient, err := hubclient.New(hubclient.Config{URL: "http://worker-hub.test", TokenSource: func() string { return adminToken + "-worker" }, HTTPClient: httpClient})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,12 +312,12 @@ func localWorkerHubFixture(t *testing.T, expose func(http.Handler, tracker.Organ
 		t.Fatal(err)
 	}
 	scheduler, err := hubclient.NewScheduler(workerClient, hubclient.SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"local": project.ID},
-		Machine: hubclient.Machine{ID: "fixture-machine", Hostname: "fixture-host", Capacity: 2, Version: "1.0.0"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
+		Machine: hubclient.Machine{ID: clihangBinding(organization).MachineID, Hostname: "fixture-host", Capacity: 2, Version: "1.0.0"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if expose != nil {
-		expose(service.Handler(), organization, project.ID, token.Token, workflow)
+		expose(service.Handler(), organization, project.ID, adminToken+"-worker", workflow)
 	}
 	create := func(name string) connector.Issue {
 		t.Helper()
@@ -419,14 +358,10 @@ func localWorkerHubFixture(t *testing.T, expose func(http.Handler, tracker.Organ
 		}
 		return connector.Issue{ID: string(issue.WorkItemID), Title: name, State: issue.State}
 	}
-	return scheduler, native, connection, workflow, create, func() { request(http.MethodDelete, "/api/v1/tokens/"+token.ID, nil, nil) }
+	return scheduler, &clihangNativeClient{NativeClient: workerNative, admin: native}, connection, workflow, create, revoke
 }
 
 func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
-	scratch := t.TempDir()
-	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
-		t.Setenv(name, scratch)
-	}
 	if testing.Short() {
 		t.Skip("process and Hub lifecycle integration")
 	}
@@ -436,6 +371,10 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
 	scheduler, native, connection, workflow, create, revoke := localWorkerHub(t)
+	scratch := t.TempDir()
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, scratch)
+	}
 	workflow.Config.Workspace.Root = t.TempDir()
 	descriptor := workflow.Config.Policy
 	artifacts, publish, cacheRoot := localWorkerArtifacts(t)
@@ -593,7 +532,7 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
 		}
-		evidence, err := native.RuntimeEvidence(ctx, tracker.NativeWorkItemID(issue.ID), "")
+		evidence, err := clihangRuntimeEvidence(ctx, native, tracker.NativeWorkItemID(issue.ID))
 		if err != nil || evidence.Attempt == nil || evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.WorkerLaunch == nil {
 			t.Fatalf("launch identity missing: %+v %v", evidence, err)
 		}
@@ -684,7 +623,7 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 		if err := scheduler.ReleaseClaim(ctx, failed.issue.ID, "failed"); err != nil {
 			t.Fatal(err)
 		}
-		evidence, err := native.RuntimeEvidence(ctx, tracker.NativeWorkItemID(failed.issue.ID), "")
+		evidence, err := clihangRuntimeEvidence(ctx, native, tracker.NativeWorkItemID(failed.issue.ID))
 		if err != nil || evidence.Attempt == nil || evidence.Attempt.Outcome == "succeeded" || evidence.Attempt.TerminalFailure == nil || evidence.Attempt.TerminalFailure.Attribution != "instance" {
 			t.Fatalf("worker failure lost instance attribution: %+v %v", evidence.Attempt, err)
 		}

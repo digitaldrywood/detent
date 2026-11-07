@@ -33,7 +33,6 @@ import (
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -46,7 +45,6 @@ type controllerFixture struct {
 	Project      tracker.ProjectID
 	Workflow     config.Workflow
 	Policy       policy.Descriptor
-	Database     string
 }
 
 func TestControllerRestartCancellationWaitsForRejection(t *testing.T) {
@@ -325,7 +323,7 @@ func TestControllerAdoptionPreservesWorkerAndClaimsOnNewBuild(t *testing.T) {
 	var hubServer *httptest.Server
 	_, native, _, _, create, _ := localWorkerHubFixture(t, func(handler http.Handler, organization tracker.OrganizationID, project tracker.ProjectID, token string, workflow config.Workflow) {
 		hubServer = httptest.NewServer(handler)
-		fixture = controllerFixture{URL: hubServer.URL, Token: token, Organization: organization, Project: project, Workflow: workflow, Policy: workflow.Config.Policy, Database: filepath.Join(t.TempDir(), "runtime.db")}
+		fixture = controllerFixture{URL: hubServer.URL, Token: token, Organization: organization, Project: project, Workflow: workflow, Policy: workflow.Config.Policy}
 	})
 	defer hubServer.Close()
 	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
@@ -425,7 +423,7 @@ func TestControllerAdoptionPreservesWorkerAndClaimsOnNewBuild(t *testing.T) {
 	if got := call(oldAddress, "/claim"); got != first.ID {
 		t.Fatalf("old controller claim = %q, want %q", got, first.ID)
 	}
-	initial, err := native.RuntimeEvidence(ctx, tracker.NativeWorkItemID(first.ID), "")
+	initial, err := clihangRuntimeEvidence(ctx, native, tracker.NativeWorkItemID(first.ID))
 	if err != nil || initial.Attempt == nil || initial.Attempt.Runtime == nil || initial.Attempt.Runtime.WorkerLaunch == nil {
 		t.Fatalf("old worker identity: %+v %v", initial, err)
 	}
@@ -570,7 +568,7 @@ func TestControllerAdoptionProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{OrganizationID: fixture.Organization, NativeProjects: map[string]tracker.ProjectID{"local": fixture.Project}, Machine: hubclient.Machine{ID: "fixture-machine", Hostname: "fixture-host", Capacity: 2, Version: version}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
+	source, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{OrganizationID: fixture.Organization, NativeProjects: map[string]tracker.ProjectID{"local": fixture.Project}, Machine: hubclient.Machine{ID: clihangBinding(fixture.Organization).MachineID, Hostname: "fixture-host", Capacity: 2, Version: version}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -584,19 +582,7 @@ func TestControllerAdoptionProcess(t *testing.T) {
 		resume := source.PauseController()
 		return func() { resume(); release() }
 	}
-	backend, err := store.Open(ctx, store.Config{Path: fixture.Database})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer backend.Close()
-	if _, err := startWorkerGeneration(ctx, backend, version, time.Now()); err != nil {
-		t.Fatal(err)
-	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer exitWorkerGeneration(backend, logger, time.Now())
-	if err := reapWorkerProcesses(ctx, backend, logger, "startup", procgroup.DefaultTerminationGrace, time.Now, nil); err != nil {
-		t.Fatal(err)
-	}
 	artifacts, publish, _ := localWorkerArtifacts(t)
 	publish("1.0.0")
 	prepared, err := artifacts.Acquire(ctx, workerProtocolPreflight)
@@ -660,11 +646,7 @@ func TestControllerAdoptionProcess(t *testing.T) {
 				return
 			}
 			issue = claim.Issue
-			attempt, err = backend.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: "local", IssueID: issue.ID, WorkerType: "agent", StartedAt: time.Now(), LeaseExpiresAt: time.Now().Add(time.Minute)})
-			if err != nil {
-				fail(err)
-				return
-			}
+			attempt++
 			request := runnerpkg.RunRequest{ProjectID: "local", Issue: issue, Policy: fixture.Workflow.Config.Policy, Execution: source.RunExecution(issue.ID), Mode: runnerpkg.RunModeImplement, WorkAttemptID: attempt, Generation: 1, DeferExecutionFinish: true, ProgressProbe: func(ctx context.Context) (string, error) {
 				close(ready)
 				select {
@@ -686,7 +668,8 @@ func TestControllerAdoptionProcess(t *testing.T) {
 			}
 		case "/renew":
 			if _, err := source.RenewClaim(ctx, issue.ID, time.Now()); err != nil {
-				fail(err)
+				current, readErr := native.Issue(ctx, tracker.NativeWorkItemID(issue.ID))
+				fail(fmt.Errorf("renew claim: %w; state=%s terminal=%t archived=%t dependency_ready=%t eligible=%v read_error=%v", err, current.State, current.Terminal, current.Archived, current.DependencyReady, current.SchedulingEligible, readErr))
 				return
 			}
 			fmt.Fprint(w, "renewed")
@@ -703,10 +686,6 @@ func TestControllerAdoptionProcess(t *testing.T) {
 				return
 			}
 			if err := source.ReleaseClaim(ctx, issue.ID, "completed"); err != nil {
-				fail(err)
-				return
-			}
-			if err := backend.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{AttemptID: attempt, TerminalState: store.WorkAttemptTerminalSuccess, CompletedAt: time.Now()}); err != nil {
 				fail(err)
 				return
 			}
