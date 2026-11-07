@@ -174,7 +174,7 @@ type AttemptDiff struct {
 
 type AttemptEvent struct {
 	CheckpointReference attachment.ArchiveReference `json:"-"`
-	Termination         bool
+	Termination         bool                        `json:"termination,omitempty"`
 	PayloadReference    attachment.ArchiveReference `json:"-"`
 	Usage               []tracker.NativeUsage       `json:"-"`
 	ID                  string

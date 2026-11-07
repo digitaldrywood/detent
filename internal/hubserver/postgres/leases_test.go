@@ -2,7 +2,10 @@ package postgres_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -434,7 +437,8 @@ func requireLeaseUsage(t *testing.T, r *postgres.Repository, org tracker.Organiz
 }
 
 func TestLeaseAttemptLifecycle(t *testing.T) {
-	r, _ := repositoryFor(t, template.Database(t), smallPool())
+	admin := template.Database(t)
+	r, _ := repositoryFor(t, admin, smallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedLeaseFamily(t, r, org)
 		for _, id := range []int64{1, 2} {
@@ -451,6 +455,30 @@ func TestLeaseAttemptLifecycle(t *testing.T) {
 				if start.Sequence != 1 || start.Status != "running" || start.WorkItemRevision != lease.WorkItemRevision {
 					t.Fatalf("start = %+v", start)
 				}
+				legacy := struct {
+					ID                  string
+					Fence               leasestore.Fence
+					RunID               string
+					Sequence            int64
+					Status              string
+					DispatchGeneration  int64
+					StartedAt           time.Time
+					PayloadObjectKey    string
+					CheckpointObjectKey *string
+					ArtifactsObjectKey  *string
+					UsageCorrection     bool
+				}{event.ID, event.Fence, event.RunID, event.Sequence, event.Status, event.DispatchGeneration, event.StartedAt, event.PayloadObjectKey, event.CheckpointObjectKey, event.ArtifactsObjectKey, event.UsageCorrection}
+				raw, err := json.Marshal(legacy)
+				if err != nil {
+					t.Fatal(err)
+				}
+				digest := sha256.Sum256(raw)
+				if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempt_events SET request_hash=$1 WHERE organization_id=$2 AND attempt_id=$3 AND sequence=$4", hex.EncodeToString(digest[:]), org, event.ID, event.Sequence); err != nil {
+					t.Fatal(err)
+				}
+				if replay := recordLeaseAttempt(t, r, org, event); replay.ID != start.ID || replay.Sequence != start.Sequence || replay.FencingToken != start.FencingToken {
+					t.Fatalf("legacy receipt replay changed attempt: %+v", replay)
+				}
 				event.Sequence, event.PayloadObjectKey = 2, "example/checkpoint"
 				event.CheckpointObjectKey, event.ArtifactsObjectKey = new("example/checkpoint"), new("example/artifacts")
 				recordLeaseAttempt(t, r, org, event)
@@ -461,7 +489,7 @@ func TestLeaseAttemptLifecycle(t *testing.T) {
 					t.Fatalf("finish lost checkpoint: %+v", finished)
 				}
 				requireLeaseUsage(t, r, org, lease.MachineID, 1)
-				err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
+				err = r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
 					renewed, err := w.RenewWithLandingCapacity(t.Context(), leaseFence(lease), 2*time.Hour, 3)
 					if err != nil {
 						return err
