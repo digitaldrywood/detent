@@ -172,10 +172,22 @@ func (p tenantNativeRunEventParticipant) validateNativeRunEvent(ctx context.Cont
 		}
 		authority.DispatchGeneration = attempt.DispatchGeneration
 	}
+	if !authority.Termination {
+		if err := p.service.validateTenantPRPublication(ctx, reader, authority); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 func (p tenantNativeRunEventParticipant) ApplyNativeRunEvent(ctx context.Context, writer tenantstore.Writer, authority NativeRunEventAuthority) error {
+	if !authority.Termination {
+		if publication := tenantRunPRPublication(authority.Event.Data); publication != nil {
+			if err := writer.PutPRPublication(ctx, tenantPRPublicationRecord(authority, *publication)); err != nil {
+				return err
+			}
+		}
+	}
 	if len(authority.UsageCosts) > 0 {
 		if _, err := writer.RecordBillingCosts(ctx, authority.UsageCosts); err != nil {
 			return err

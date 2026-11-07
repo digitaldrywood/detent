@@ -919,7 +919,7 @@ func (s *Service) selectedChangeDetail(ctx context.Context, scope nativeScope, i
 	content := eventstore.NewContent(s.runDetailStore())
 	result := tracker.ChangeDetail{Change: change}
 	for _, row := range versions {
-		version, err := content.Version(ctx, row)
+		version, err := s.hydrateChangeVersion(ctx, scope, tracker.NativeWorkItemID(item), row)
 		if err != nil {
 			return tracker.ChangeDetail{}, err
 		}
@@ -1042,7 +1042,7 @@ func (s *Service) hydrateCurrentChangeDetailWithFacts(ctx context.Context, scope
 		detail.Summary = changerequest.SummarizeCurrentVersion(detail, policyID, reviewID, now, false)
 		return detail, nil
 	}
-	version, err := content.Version(ctx, *versionRecord)
+	version, err := s.hydrateChangeVersion(ctx, scope, item, *versionRecord)
 	if err != nil {
 		return tracker.ChangeDetail{}, err
 	}

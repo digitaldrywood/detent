@@ -247,6 +247,7 @@ type LinkedSource struct {
 type Receipt = receiptstore.Record
 
 type Reader interface {
+	PRPublication(context.Context, string) (NativePRPublication, error)
 	ReleaseDelivery(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (ReleaseDelivery, error)
 	ReviewPolicy(context.Context, tracker.ProjectID) (ReviewPolicy, error)
 	LandingReceipt(context.Context, string) (LandingReceipt, error)
@@ -274,6 +275,7 @@ type Reader interface {
 	Links(context.Context, string, tracker.NativeWorkItemID, int) ([]Link, error)
 }
 type Writer interface {
+	PutPRPublication(context.Context, NativePRPublication) error
 	PutReceipt(context.Context, Receipt) (Receipt, error)
 	Reader
 	LockChange(context.Context, string) (Change, error)
@@ -307,4 +309,19 @@ type ChangeReviewEvidenceReader interface {
 
 type ValidatorReviewReader interface {
 	ValidatorReviewEvidence(context.Context, string, string, int64, tracker.MachineID, int64) ([]Evidence, bool, error)
+}
+
+type ChangeLandingReader interface {
+	LatestVersionLandingEvent(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, tracker.NativeChangeReference) (LandingObservation, error)
+}
+
+type LandingObservation struct {
+	FromState   string
+	Event       Event
+	TargetState string
+}
+
+type WorkflowTransitionReader interface {
+	LatestWorkflowTransition(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (Event, error)
+	LatestSchedulerDecision(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (Event, error)
 }

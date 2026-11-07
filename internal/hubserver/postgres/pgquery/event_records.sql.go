@@ -953,6 +953,36 @@ func (q *Queries) RecordGetLinkedIssueSourcesByWorkItems(ctx context.Context, ar
 	return items, nil
 }
 
+const recordGetPRPublication = `-- name: RecordGetPRPublication :one
+SELECT organization_id, version_id, change_id, repository, base_ref, branch, head_sha, policy_id, source_attempt_id, recorder_attempt_id, provider, external_id, external_url FROM native_pr_publications WHERE organization_id=$1 AND version_id=$2
+`
+
+type RecordGetPRPublicationParams struct {
+	OrganizationID tracker.OrganizationID
+	VersionID      string
+}
+
+func (q *Queries) RecordGetPRPublication(ctx context.Context, arg RecordGetPRPublicationParams) (NativePrPublication, error) {
+	row := q.db.QueryRow(ctx, recordGetPRPublication, arg.OrganizationID, arg.VersionID)
+	var i NativePrPublication
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.VersionID,
+		&i.ChangeID,
+		&i.Repository,
+		&i.BaseRef,
+		&i.Branch,
+		&i.HeadSHA,
+		&i.PolicyID,
+		&i.SourceAttemptID,
+		&i.RecorderAttemptID,
+		&i.Provider,
+		&i.ExternalID,
+		&i.ExternalURL,
+	)
+	return i, err
+}
+
 const recordGetReceipt = `-- name: RecordGetReceipt :one
 SELECT organization_id, actor_id, operation, command_key, request_hash, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes FROM native_commands WHERE organization_id=$1 AND actor_id=$2 AND operation=$3 AND command_key=$4
 `
@@ -1091,6 +1121,23 @@ func (q *Queries) RecordGetVersionByID(ctx context.Context, arg RecordGetVersion
 		&i.ImplementingMachineID,
 	)
 	return i, err
+}
+
+const recordGetVersionWorkItemID = `-- name: RecordGetVersionWorkItemID :one
+SELECT i.id FROM change_versions v JOIN change_requests c ON c.organization_id=v.organization_id AND c.id=v.change_id JOIN issues i ON i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id
+WHERE v.organization_id=$1 AND v.id=$2
+`
+
+type RecordGetVersionWorkItemIDParams struct {
+	OrganizationID tracker.OrganizationID
+	ID             string
+}
+
+func (q *Queries) RecordGetVersionWorkItemID(ctx context.Context, arg RecordGetVersionWorkItemIDParams) (int64, error) {
+	row := q.db.QueryRow(ctx, recordGetVersionWorkItemID, arg.OrganizationID, arg.ID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const recordInsertChange = `-- name: RecordInsertChange :one
@@ -2024,6 +2071,195 @@ func (q *Queries) RecordLatestRunEventsByAttempts(ctx context.Context, arg Recor
 	return items, nil
 }
 
+const recordLatestSchedulerDecision = `-- name: RecordLatestSchedulerDecision :one
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND type='scheduler.decision' ORDER BY sequence DESC LIMIT 1
+`
+
+type RecordLatestSchedulerDecisionParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     tracker.NativeWorkItemID
+}
+
+func (q *Queries) RecordLatestSchedulerDecision(ctx context.Context, arg RecordLatestSchedulerDecisionParams) (CollaborationEvent, error) {
+	row := q.db.QueryRow(ctx, recordLatestSchedulerDecision, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
+	var i CollaborationEvent
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.WorkItemID,
+		&i.ID,
+		&i.Sequence,
+		&i.Type,
+		&i.SchemaVersion,
+		&i.ActorKind,
+		&i.ActorPrincipalID,
+		&i.EventRevision,
+		&i.ChangeID,
+		&i.VersionID,
+		&i.HeadSHA,
+		&i.RunID,
+		&i.AttemptID,
+		&i.FromState,
+		&i.ToState,
+		&i.RecordedAt,
+		&i.PayloadObjectKey,
+		&i.PayloadSHA256,
+		&i.PayloadBytes,
+		&i.PayloadContentBytes,
+		&i.PayloadFormatVersion,
+		&i.LandingWaiting,
+		&i.LandingChangeID,
+		&i.LandingVersionID,
+		&i.LandingHeadSHA,
+		&i.ProjectSequence,
+		&i.PushKnown,
+		&i.PushChangeID,
+		&i.PushVersionID,
+		&i.PushHeadSha,
+		&i.PushExternalEffect,
+		&i.PushEffectState,
+	)
+	return i, err
+}
+
+const recordLatestVersionLandingEvent = `-- name: RecordLatestVersionLandingEvent :one
+SELECT e.organization_id, e.project_id, e.work_item_id, e.id, e.sequence, e.type, e.schema_version, e.actor_kind, e.actor_principal_id, e.event_revision, e.change_id, e.version_id, e.head_sha, e.run_id, e.attempt_id, e.from_state, e.to_state, e.recorded_at, e.payload_object_key, e.payload_sha256, e.payload_bytes, e.payload_content_bytes, e.payload_format_version, e.landing_waiting, e.landing_change_id, e.landing_version_id, e.landing_head_sha, e.project_sequence, e.push_known, e.push_change_id, e.push_version_id, e.push_head_sha, e.push_external_effect, e.push_effect_state,COALESCE(w.from_state,e.from_state)::text AS landing_from_state,COALESCE(w.to_state,'')::text AS landing_target_state
+FROM collaboration_events e
+LEFT JOIN LATERAL (
+ SELECT from_state,to_state FROM collaboration_events transition
+ WHERE transition.organization_id=e.organization_id AND transition.project_id=e.project_id AND transition.work_item_id=e.work_item_id
+ AND transition.type='workflow.transitioned' AND transition.change_id=e.landing_change_id AND transition.version_id=e.landing_version_id AND transition.head_sha=e.landing_head_sha
+ ORDER BY transition.sequence DESC LIMIT 1
+) w ON true
+WHERE e.organization_id=$1 AND e.project_id=$2
+ AND e.work_item_id=$3 AND e.landing_change_id=$4
+ AND e.landing_version_id=$5 AND e.landing_head_sha=$6
+ AND e.landing_version_id<>''
+ORDER BY e.sequence DESC LIMIT 1
+`
+
+type RecordLatestVersionLandingEventParams struct {
+	OrganizationID   tracker.OrganizationID
+	ProjectID        tracker.ProjectID
+	WorkItemID       tracker.NativeWorkItemID
+	LandingChangeID  string
+	LandingVersionID string
+	LandingHeadSHA   string
+}
+
+type RecordLatestVersionLandingEventRow struct {
+	CollaborationEvent CollaborationEvent
+	LandingFromState   string
+	LandingTargetState string
+}
+
+func (q *Queries) RecordLatestVersionLandingEvent(ctx context.Context, arg RecordLatestVersionLandingEventParams) (RecordLatestVersionLandingEventRow, error) {
+	row := q.db.QueryRow(ctx, recordLatestVersionLandingEvent,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.WorkItemID,
+		arg.LandingChangeID,
+		arg.LandingVersionID,
+		arg.LandingHeadSHA,
+	)
+	var i RecordLatestVersionLandingEventRow
+	err := row.Scan(
+		&i.CollaborationEvent.OrganizationID,
+		&i.CollaborationEvent.ProjectID,
+		&i.CollaborationEvent.WorkItemID,
+		&i.CollaborationEvent.ID,
+		&i.CollaborationEvent.Sequence,
+		&i.CollaborationEvent.Type,
+		&i.CollaborationEvent.SchemaVersion,
+		&i.CollaborationEvent.ActorKind,
+		&i.CollaborationEvent.ActorPrincipalID,
+		&i.CollaborationEvent.EventRevision,
+		&i.CollaborationEvent.ChangeID,
+		&i.CollaborationEvent.VersionID,
+		&i.CollaborationEvent.HeadSHA,
+		&i.CollaborationEvent.RunID,
+		&i.CollaborationEvent.AttemptID,
+		&i.CollaborationEvent.FromState,
+		&i.CollaborationEvent.ToState,
+		&i.CollaborationEvent.RecordedAt,
+		&i.CollaborationEvent.PayloadObjectKey,
+		&i.CollaborationEvent.PayloadSHA256,
+		&i.CollaborationEvent.PayloadBytes,
+		&i.CollaborationEvent.PayloadContentBytes,
+		&i.CollaborationEvent.PayloadFormatVersion,
+		&i.CollaborationEvent.LandingWaiting,
+		&i.CollaborationEvent.LandingChangeID,
+		&i.CollaborationEvent.LandingVersionID,
+		&i.CollaborationEvent.LandingHeadSHA,
+		&i.CollaborationEvent.ProjectSequence,
+		&i.CollaborationEvent.PushKnown,
+		&i.CollaborationEvent.PushChangeID,
+		&i.CollaborationEvent.PushVersionID,
+		&i.CollaborationEvent.PushHeadSha,
+		&i.CollaborationEvent.PushExternalEffect,
+		&i.CollaborationEvent.PushEffectState,
+		&i.LandingFromState,
+		&i.LandingTargetState,
+	)
+	return i, err
+}
+
+const recordLatestWorkflowTransition = `-- name: RecordLatestWorkflowTransition :one
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state FROM collaboration_events
+WHERE organization_id=$1 AND project_id=$2
+ AND work_item_id=$3 AND type='workflow.transitioned'
+ORDER BY sequence DESC LIMIT 1
+`
+
+type RecordLatestWorkflowTransitionParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     tracker.NativeWorkItemID
+}
+
+func (q *Queries) RecordLatestWorkflowTransition(ctx context.Context, arg RecordLatestWorkflowTransitionParams) (CollaborationEvent, error) {
+	row := q.db.QueryRow(ctx, recordLatestWorkflowTransition, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
+	var i CollaborationEvent
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.WorkItemID,
+		&i.ID,
+		&i.Sequence,
+		&i.Type,
+		&i.SchemaVersion,
+		&i.ActorKind,
+		&i.ActorPrincipalID,
+		&i.EventRevision,
+		&i.ChangeID,
+		&i.VersionID,
+		&i.HeadSHA,
+		&i.RunID,
+		&i.AttemptID,
+		&i.FromState,
+		&i.ToState,
+		&i.RecordedAt,
+		&i.PayloadObjectKey,
+		&i.PayloadSHA256,
+		&i.PayloadBytes,
+		&i.PayloadContentBytes,
+		&i.PayloadFormatVersion,
+		&i.LandingWaiting,
+		&i.LandingChangeID,
+		&i.LandingVersionID,
+		&i.LandingHeadSHA,
+		&i.ProjectSequence,
+		&i.PushKnown,
+		&i.PushChangeID,
+		&i.PushVersionID,
+		&i.PushHeadSha,
+		&i.PushExternalEffect,
+		&i.PushEffectState,
+	)
+	return i, err
+}
+
 const recordListChange = `-- name: RecordListChange :many
 SELECT c.organization_id, c.project_id, c.work_item_id, c.id, c.revision, c.title, c.current_version_id, c.evidence_sequence, c.created_at, c.updated_at, c.payload_object_key, c.payload_sha256, c.payload_bytes, c.payload_content_bytes, c.landed_version_id, c.landed_at, c.landed_head_sha, c.landed_merge_sha, c.landed_base_ref, c.review_summary_sequence, c.review_evidence_revision FROM change_requests c WHERE c.organization_id=$1 AND c.project_id=$2 AND c.id>$3
 AND EXISTS (SELECT 1 FROM change_issue_links l WHERE l.organization_id=c.organization_id AND l.project_id=c.project_id AND l.change_id=c.id AND l.work_item_id=$4)
@@ -2621,6 +2857,47 @@ func (q *Queries) RecordProjectPolicyLanding(ctx context.Context, arg RecordProj
 	var i RecordProjectPolicyLandingRow
 	err := row.Scan(&i.ChangeID, &i.ExternalURL, &i.ActorPrincipalID)
 	return i, err
+}
+
+const recordPutPRPublication = `-- name: RecordPutPRPublication :exec
+INSERT INTO native_pr_publications (organization_id,version_id,change_id,repository,base_ref,branch,head_sha,policy_id,source_attempt_id,recorder_attempt_id,provider,external_id,external_url)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+ON CONFLICT (organization_id,version_id) DO NOTHING
+`
+
+type RecordPutPRPublicationParams struct {
+	OrganizationID    tracker.OrganizationID
+	VersionID         string
+	ChangeID          string
+	Repository        string
+	BaseRef           string
+	Branch            string
+	HeadSHA           string
+	PolicyID          string
+	SourceAttemptID   *string
+	RecorderAttemptID string
+	Provider          string
+	ExternalID        string
+	ExternalURL       string
+}
+
+func (q *Queries) RecordPutPRPublication(ctx context.Context, arg RecordPutPRPublicationParams) error {
+	_, err := q.db.Exec(ctx, recordPutPRPublication,
+		arg.OrganizationID,
+		arg.VersionID,
+		arg.ChangeID,
+		arg.Repository,
+		arg.BaseRef,
+		arg.Branch,
+		arg.HeadSHA,
+		arg.PolicyID,
+		arg.SourceAttemptID,
+		arg.RecorderAttemptID,
+		arg.Provider,
+		arg.ExternalID,
+		arg.ExternalURL,
+	)
+	return err
 }
 
 const recordReplayOperation = `-- name: RecordReplayOperation :one

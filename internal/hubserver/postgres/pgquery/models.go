@@ -2409,7 +2409,7 @@ type NativePrPublication struct {
 	Branch            string
 	HeadSHA           string
 	PolicyID          string
-	SourceAttemptID   string
+	SourceAttemptID   *string
 	RecorderAttemptID string
 	Provider          string
 	ExternalID        string

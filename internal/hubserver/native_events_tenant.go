@@ -38,6 +38,7 @@ type NativeRunEventAuthority struct {
 	UsageCorrection    bool
 	ReplayPrefix       bool
 	Termination        bool
+	Publication        *preparedNativePRPublication
 	UsageCosts         []billingstore.CostObservation
 	UsageFacts         *runnerUsageFacts
 	Event              tracker.NativeRunEvent
@@ -339,6 +340,10 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		}
 		usageCorrection = true
 	}
+	landingState := ""
+	if cleanupPredecessor != nil {
+		landingState = cleanupPredecessor.event.FromState
+	}
 	for i, event := range events {
 		predecessor := cleanupData
 		if committed := committedCleanupData[event.Data.Sequence]; committed != nil {
@@ -439,6 +444,13 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			attemptEvent.ArtifactsObjectKey = &artifactRef.Key
 		}
 		dataRecord := tracker.CollaborationData{Run: &event.Data}
+		if landing := event.Data.Runtime; landing != nil && landing.Landing != nil {
+			dataRecord.FromState = valueOrEmpty(workItem.WorkflowStateName)
+			if cleanupPredecessor != nil && predecessor != nil && predecessor.Runtime != nil && sameNativeLandingObservation(predecessor.Runtime.Landing, landing.Landing) {
+				dataRecord.FromState = landingState
+			}
+			landingState = dataRecord.FromState
+		}
 
 		if event.Type == "run.finished" && !termination {
 			dataRecord.Revision = tracker.Revision(workItem.Revision)
@@ -465,6 +477,12 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 				return nil, err
 			}
 			authority.UsageCosts = costs
+		}
+		if !termination {
+			authority.Publication, err = s.prepareTenantPRPublication(ctx, &authority)
+			if err != nil {
+				return nil, err
+			}
 		}
 		preparedEvent := preparedNativeRunEvent{authority: authority, attempt: attemptEvent, history: history}
 		if i == len(events)-1 && usageCorrection {

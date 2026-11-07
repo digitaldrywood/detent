@@ -20,7 +20,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -155,12 +157,27 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	var landingAttempt leasestore.Attempt
+	if scope.credential.Scope == apiScopeWorker {
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			landingAttempt, _, err = s.runnerSessionFence(ctx, r, scope, runnersession.Mutation{LeaseID: request.LeaseID, FencingToken: request.FencingToken}, string(change.WorkItemID), false)
+			return err
+		})
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
 	var landingReceipt *eventstore.LandingReceipt
 	if request.Receipt != nil {
-		if version.AttemptID == "" {
+		if version.AttemptID == "" && landingAttempt.ID == "" {
 			return s.nativeAPIError(c, nativePublicInvalid("Landing receipts require the source attempt bound by the immutable version"))
 		}
-		record, err := content.PrepareLandingReceipt(ctx, eventstore.LandingReceipt{OrganizationID: scope.organization, AttemptID: version.AttemptID, VersionID: version.ID, Repository: version.Repository, BaseRef: request.BaseRef}, *request.Receipt)
+		receiptAttemptID := version.AttemptID
+		if landingAttempt.ID != "" {
+			receiptAttemptID = landingAttempt.ID
+		}
+		record, err := content.PrepareLandingReceipt(ctx, eventstore.LandingReceipt{OrganizationID: scope.organization, AttemptID: receiptAttemptID, VersionID: version.ID, Repository: version.Repository, BaseRef: request.BaseRef}, *request.Receipt)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
@@ -178,6 +195,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 	var nextIssue *tracker.NativeIssue
 	var nextItem *corestore.WorkItem
 	var nextItemVersion *eventstore.CollaborationVersion
+	var nextSearch *searchstore.Document
 	fromState := stringValue(itemRow.WorkflowStateName)
 	if !issue.Terminal {
 		projectWorkflow := tracker.NativeProject{States: project.States}
@@ -187,12 +205,16 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		}
 		updatedIssue := issue
 		updatedIssue.State = target
+		updatedIssue.Terminal = tenantProjectStateTerminal(project, target)
+		updatedIssue.ClosedAt = &now
 		updatedIssue.Revision++
 		updatedIssue.UpdatedAt = payloadTimestamp(ctx, now)
+		updatedIssue.LastActivityAt = updatedIssue.UpdatedAt
 		updatedRow := itemRow
 		updatedRow.WorkflowStateName = &target
-		updatedRow.LastActivityAt = payloadTimestamp(ctx, now)
-		updated := tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: change.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: payloadTimestamp(ctx, now), Data: tracker.CollaborationData{Revision: tracker.Revision(itemRow.Revision), FromState: fromState, ToState: target, Reason: "worker_progress"}}
+		updatedRow.LastActivityAt = updatedIssue.LastActivityAt
+		updatedRow.NativeUpdatedAt = updatedIssue.UpdatedAt
+		updated := tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: change.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: payloadTimestamp(ctx, now), Data: tracker.CollaborationData{Revision: tracker.Revision(itemRow.Revision), FromState: fromState, ToState: target, Reason: "worker_progress", Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}}}
 		raw, err := json.Marshal(updated)
 		if err != nil {
 			return s.nativeAPIError(c, err)
@@ -209,6 +231,12 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
+		document := searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: updatedIssue.WorkItemID, ID: "issue:" + string(updatedIssue.WorkItemID), SourceID: string(updatedIssue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(updatedIssue.Revision), UpdatedAt: updatedIssue.UpdatedAt}
+		document, err = searchstore.NewContent(s.runDetailStoreFor(ctx)).Prepare(ctx, document, searchstore.Text{Title: updatedIssue.Title, Body: updatedIssue.Body, Labels: updatedIssue.Labels})
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		nextSearch = &document
 		nextIssue, nextItem, nextItemVersion = &updatedIssue, &updatedRow, &itemVersion
 	}
 
@@ -272,8 +300,12 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 				if _, err := locker.LockLease(ctx, string(request.LeaseID)); err != nil {
 					return err
 				}
-				if err := requireLinkedIssueLease(ctx, w, scope, currentItem, request.Mutation, s.config.now().UTC()); err != nil {
+				current, _, err := s.runnerSessionFence(ctx, w, scope, runnersession.Mutation{LeaseID: request.LeaseID, FencingToken: request.FencingToken}, string(change.WorkItemID), true)
+				if err != nil {
 					return err
+				}
+				if current.ID != landingAttempt.ID {
+					return corestore.ErrRevisionConflict
 				}
 			}
 			if landingReceipt != nil {
@@ -296,6 +328,20 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 				if _, err := w.UpdateWorkItem(ctx, *nextItem); err != nil {
 					return err
 				}
+				if err := w.PutSearch(ctx, *nextSearch, itemRow.Revision); err != nil {
+					if !errors.Is(err, corestore.ErrNotFound) {
+						return err
+					}
+					if err := w.PutSearch(ctx, *nextSearch, 0); err != nil {
+						return err
+					}
+				}
+				if scope.credential.Scope == apiScopeWorker {
+					if err := w.AdvanceLeaseWorkItemRevision(ctx, leasestore.Fence{LeaseID: string(request.LeaseID), FencingToken: int64(request.FencingToken)}, itemRow.ID, itemRow.Revision, int64(nextIssue.Revision)); err != nil {
+						return err
+					}
+				}
+
 			}
 			_, err = w.PutReceipt(ctx, mutationReceipt)
 			return err

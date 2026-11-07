@@ -89,7 +89,6 @@ func (s *Service) readBoundedChangeRecord(ctx context.Context, scope nativeScope
 	if !validChangeReadSection(selection.Section) {
 		return result, operatortool.ErrInvalidArguments
 	}
-	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
 	detail := tracker.ChangeDetail{Change: change}
 	seenSources := map[string]bool{}
 	for _, item := range change.LinkedIssues {
@@ -110,7 +109,7 @@ func (s *Service) readBoundedChangeRecord(ctx context.Context, scope nativeScope
 	}
 
 	if selected.ID != "" && selection.Section != "versions" {
-		version, err := content.Version(ctx, selected)
+		version, err := s.hydrateChangeVersion(ctx, scope, tracker.NativeWorkItemID(args.ItemID), selected)
 		if err != nil {
 			return result, err
 		}
@@ -251,7 +250,7 @@ func (s *Service) readChangeRecordSection(ctx context.Context, scope nativeScope
 				cursor.After = sequence
 				continue
 			}
-			version, err := content.Version(ctx, row)
+			version, err := s.hydrateChangeVersion(ctx, scope, tracker.NativeWorkItemID(args.ItemID), row)
 			if err != nil {
 				return operatortool.ChangeReadPage{}, err
 			}

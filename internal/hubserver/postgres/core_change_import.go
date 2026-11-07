@@ -89,7 +89,7 @@ func (r *Repository) CoreNativePRPublication(ctx context.Context, organization t
 		if err := s.checkOrganization(organization); err != nil {
 			return err
 		}
-		err := s.db.QueryRow(ctx, `SELECT organization_id,version_id,change_id,repository,base_ref,branch,head_sha,policy_id,source_attempt_id,recorder_attempt_id,provider,external_id,external_url FROM native_pr_publications WHERE organization_id=$1 AND version_id=$2`, organization, versionID).Scan(&record.OrganizationID, &record.VersionID, &record.ChangeID, &record.Repository, &record.BaseRef, &record.Branch, &record.HeadSHA, &record.PolicyID, &record.SourceAttemptID, &record.RecorderAttemptID, &record.External.Provider, &record.External.ID, &record.External.URL)
+		err := s.db.QueryRow(ctx, `SELECT organization_id,version_id,change_id,repository,base_ref,branch,head_sha,policy_id,COALESCE(source_attempt_id,''),recorder_attempt_id,provider,external_id,external_url FROM native_pr_publications WHERE organization_id=$1 AND version_id=$2`, organization, versionID).Scan(&record.OrganizationID, &record.VersionID, &record.ChangeID, &record.Repository, &record.BaseRef, &record.Branch, &record.HeadSHA, &record.PolicyID, &record.SourceAttemptID, &record.RecorderAttemptID, &record.External.Provider, &record.External.ID, &record.External.URL)
 		return mapError(ctx, err)
 	})
 	return record, err

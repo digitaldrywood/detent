@@ -170,11 +170,15 @@ func (s *session) CreateLandingReceipt(ctx context.Context, record eventstore.La
 	if err := validRecordPayload(record.OrganizationID, record.PayloadObjectKey, record.PayloadSHA256, record.PayloadBytes, record.PayloadContentBytes); err != nil {
 		return eventstore.LandingReceipt{}, err
 	}
-	versionAttempt, err := s.queries.RecordGetVersionAttemptID(ctx, pgquery.RecordGetVersionAttemptIDParams{OrganizationID: s.organization, ID: record.VersionID})
+	versionItem, err := s.queries.RecordGetVersionWorkItemID(ctx, pgquery.RecordGetVersionWorkItemIDParams{OrganizationID: s.organization, ID: record.VersionID})
 	if err != nil {
 		return eventstore.LandingReceipt{}, mapError(ctx, err)
 	}
-	if versionAttempt != record.AttemptID {
+	landing, err := s.Attempt(ctx, record.AttemptID)
+	if err != nil {
+		return eventstore.LandingReceipt{}, err
+	}
+	if landing.IssueID != versionItem {
 		return eventstore.LandingReceipt{}, eventstore.ErrInvalidRecord
 	}
 	if (record.Repository == "") != (record.BaseRef == "") {
@@ -761,4 +765,49 @@ func (s *session) ValidatorReviewEvidence(ctx context.Context, change, version s
 		records[i] = evidenceRecord(pgquery.ChangeEvidence(row))
 	}
 	return records, true, nil
+}
+
+func (s *session) LatestVersionLandingEvent(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, ref tracker.NativeChangeReference) (eventstore.LandingObservation, error) {
+	row, err := s.queries.RecordLatestVersionLandingEvent(ctx, pgquery.RecordLatestVersionLandingEventParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item, LandingChangeID: ref.ChangeID, LandingVersionID: ref.VersionID, LandingHeadSHA: ref.HeadSHA})
+	return eventstore.LandingObservation{Event: eventRecord(row.CollaborationEvent), FromState: row.LandingFromState, TargetState: row.LandingTargetState}, mapError(ctx, err)
+}
+
+func (s *session) LatestWorkflowTransition(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (eventstore.Event, error) {
+	row, err := s.queries.RecordLatestWorkflowTransition(ctx, pgquery.RecordLatestWorkflowTransitionParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item})
+	return eventRecord(row), mapError(ctx, err)
+}
+
+func (s *session) PRPublication(ctx context.Context, version string) (eventstore.NativePRPublication, error) {
+	row, err := s.queries.RecordGetPRPublication(ctx, pgquery.RecordGetPRPublicationParams{OrganizationID: s.organization, VersionID: version})
+	if err != nil {
+		return eventstore.NativePRPublication{}, mapError(ctx, err)
+	}
+	return eventstore.NativePRPublication{OrganizationID: row.OrganizationID, VersionID: row.VersionID, ChangeID: row.ChangeID, Repository: row.Repository, BaseRef: row.BaseRef, Branch: row.Branch, HeadSHA: row.HeadSHA, PolicyID: row.PolicyID, SourceAttemptID: stringValue(row.SourceAttemptID), RecorderAttemptID: row.RecorderAttemptID, External: tracker.ChangeExternalReference{Provider: row.Provider, ID: row.ExternalID, URL: row.ExternalURL}}, nil
+}
+func (s *session) PutPRPublication(ctx context.Context, record eventstore.NativePRPublication) error {
+	if err := s.checkOrganization(record.OrganizationID); err != nil {
+		return err
+	}
+	var source *string
+	if record.SourceAttemptID != "" {
+		source = &record.SourceAttemptID
+	}
+	err := s.queries.RecordPutPRPublication(ctx, pgquery.RecordPutPRPublicationParams{OrganizationID: record.OrganizationID, VersionID: record.VersionID, ChangeID: record.ChangeID, Repository: record.Repository, BaseRef: record.BaseRef, Branch: record.Branch, HeadSHA: record.HeadSHA, PolicyID: record.PolicyID, SourceAttemptID: source, RecorderAttemptID: record.RecorderAttemptID, Provider: record.External.Provider, ExternalID: record.External.ID, ExternalURL: record.External.URL})
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	existing, err := s.PRPublication(ctx, record.VersionID)
+	if err != nil {
+		return err
+	}
+	existing.RecorderAttemptID = record.RecorderAttemptID
+	if existing != record {
+		return corestore.ErrRevisionConflict
+	}
+	return nil
+}
+
+func (s *session) LatestSchedulerDecision(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (eventstore.Event, error) {
+	row, err := s.queries.RecordLatestSchedulerDecision(ctx, pgquery.RecordLatestSchedulerDecisionParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item})
+	return eventRecord(row), mapError(ctx, err)
 }

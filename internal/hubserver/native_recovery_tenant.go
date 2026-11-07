@@ -766,7 +766,7 @@ func (s *Service) readRecoveryEvidenceRecordTenant(ctx context.Context, scope na
 				return artifact.ErrIntegrity
 			}
 			hydrate = func() ([]byte, error) {
-				value, err := content.Version(ctx, row)
+				value, err := s.hydrateChangeVersion(ctx, scope, item.NativeID, row)
 				if err != nil {
 					return nil, err
 				}

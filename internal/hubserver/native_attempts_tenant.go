@@ -349,6 +349,17 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 	if result.Status == "running" && !result.Current {
 		result.Status = "interrupted"
 	}
+	if result.Runtime != nil && result.Runtime.Landing != nil {
+		ref := result.Runtime.Landing
+		scope := nativeScope{organization: snapshot.attempt.OrganizationID, project: snapshot.event.ProjectID}
+		landing, owner, err := s.readNativeLandingObservation(ctx, scope, snapshot.event.WorkItemID, tracker.NativeChangeReference{ChangeID: ref.ChangeID, VersionID: ref.VersionID, HeadSHA: ref.HeadSHA})
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return tracker.NativeAttempt{}, err
+		}
+		if err == nil && owner == result.AttemptID {
+			result.Runtime.Landing = landing
+		}
+	}
 	return result, nil
 }
 

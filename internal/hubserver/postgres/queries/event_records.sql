@@ -370,3 +370,39 @@ WITH advanced_issue AS (
 )
 INSERT INTO collaboration_events (organization_id, project_id, work_item_id, id, sequence, project_sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state)
 VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id), sqlc.arg(id), (SELECT event_sequence FROM advanced_issue), (SELECT sequence FROM advanced_project), sqlc.arg(type), sqlc.arg(schema_version), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(event_revision), sqlc.arg(change_id), sqlc.arg(version_id), sqlc.arg(head_sha), sqlc.arg(landing_waiting), sqlc.arg(landing_change_id), sqlc.arg(landing_version_id), sqlc.arg(landing_head_sha), sqlc.arg(run_id), sqlc.arg(attempt_id), sqlc.arg(from_state), sqlc.arg(to_state), sqlc.arg(recorded_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version), sqlc.arg(push_known), sqlc.arg(push_change_id), sqlc.arg(push_version_id), sqlc.arg(push_head_sha), sqlc.arg(push_external_effect), sqlc.arg(push_effect_state)) RETURNING *;
+
+-- name: RecordLatestVersionLandingEvent :one
+SELECT sqlc.embed(e),COALESCE(w.from_state,e.from_state)::text AS landing_from_state,COALESCE(w.to_state,'')::text AS landing_target_state
+FROM collaboration_events e
+LEFT JOIN LATERAL (
+ SELECT from_state,to_state FROM collaboration_events transition
+ WHERE transition.organization_id=e.organization_id AND transition.project_id=e.project_id AND transition.work_item_id=e.work_item_id
+ AND transition.type='workflow.transitioned' AND transition.change_id=e.landing_change_id AND transition.version_id=e.landing_version_id AND transition.head_sha=e.landing_head_sha
+ ORDER BY transition.sequence DESC LIMIT 1
+) w ON true
+WHERE e.organization_id=sqlc.arg(organization_id) AND e.project_id=sqlc.arg(project_id)
+ AND e.work_item_id=sqlc.arg(work_item_id) AND e.landing_change_id=sqlc.arg(landing_change_id)
+ AND e.landing_version_id=sqlc.arg(landing_version_id) AND e.landing_head_sha=sqlc.arg(landing_head_sha)
+ AND e.landing_version_id<>''
+ORDER BY e.sequence DESC LIMIT 1;
+
+-- name: RecordLatestWorkflowTransition :one
+SELECT * FROM collaboration_events
+WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
+ AND work_item_id=sqlc.arg(work_item_id) AND type='workflow.transitioned'
+ORDER BY sequence DESC LIMIT 1;
+
+-- name: RecordGetPRPublication :one
+SELECT * FROM native_pr_publications WHERE organization_id=sqlc.arg(organization_id) AND version_id=sqlc.arg(version_id);
+
+-- name: RecordPutPRPublication :exec
+INSERT INTO native_pr_publications (organization_id,version_id,change_id,repository,base_ref,branch,head_sha,policy_id,source_attempt_id,recorder_attempt_id,provider,external_id,external_url)
+VALUES (sqlc.arg(organization_id),sqlc.arg(version_id),sqlc.arg(change_id),sqlc.arg(repository),sqlc.arg(base_ref),sqlc.arg(branch),sqlc.arg(head_sha),sqlc.arg(policy_id),sqlc.narg(source_attempt_id),sqlc.arg(recorder_attempt_id),sqlc.arg(provider),sqlc.arg(external_id),sqlc.arg(external_url))
+ON CONFLICT (organization_id,version_id) DO NOTHING;
+
+-- name: RecordLatestSchedulerDecision :one
+SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND type='scheduler.decision' ORDER BY sequence DESC LIMIT 1;
+
+-- name: RecordGetVersionWorkItemID :one
+SELECT i.id FROM change_versions v JOIN change_requests c ON c.organization_id=v.organization_id AND c.id=v.change_id JOIN issues i ON i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id
+WHERE v.organization_id=sqlc.arg(organization_id) AND v.id=sqlc.arg(id);
