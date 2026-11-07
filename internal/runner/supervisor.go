@@ -32,6 +32,7 @@ type SupervisorConfig struct {
 }
 
 type Supervisor struct {
+	dispatches            sync.WaitGroup
 	mu                    sync.RWMutex
 	backend               Backend
 	maxRetryBackoff       time.Duration
@@ -105,7 +106,9 @@ func (s *Supervisor) UpdateConfig(cfg SupervisorConfig) {
 
 func (s *Supervisor) Dispatch(ctx context.Context, request RunRequest, completions chan<- Completion) <-chan struct{} {
 	done := make(chan struct{})
+	s.dispatches.Add(1)
 	go func() {
+		defer s.dispatches.Done()
 		completion := s.Run(ctx, request)
 		close(done)
 		if completions == nil {
@@ -139,6 +142,10 @@ func (s *Supervisor) Dispatch(ctx context.Context, request RunRequest, completio
 		}
 	}()
 	return done
+}
+
+func (s *Supervisor) Wait() {
+	s.dispatches.Wait()
 }
 
 func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Completion) {

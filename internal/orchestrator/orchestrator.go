@@ -757,6 +757,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx, stopRun := context.WithCancel(ctx)
+	defer stopRun()
 	o.globalDispatchReady = make(chan struct{}, 1)
 	o.globalDispatchPending = make(map[string]pendingGlobalDispatch)
 	defer o.cancelPendingGlobalDispatches()
@@ -811,9 +813,12 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 
 	state := newState(o.cfg)
 	defer o.stopWorkspaceCleanup()
-	defer o.validatorWG.Wait()
-	defer o.securityAuditWG.Wait()
-	defer o.releaseRunningSlots(&state)
+	defer func() {
+		stopRun()
+		stopHeartbeats()
+		<-heartbeatsDone
+		o.releaseShutdownClaims(ctx, &state)
+	}()
 	o.startTick(&state, time.Now())
 	o.publishState(ctx, &state)
 	recoveryTiming := newRefreshTiming(o.logger, o.cfg.Project.ID, false)
@@ -1615,6 +1620,38 @@ func (o *Orchestrator) abandonClaim(ctx context.Context, issueID string) error {
 		return err
 	}
 	return nil
+}
+
+func (o *Orchestrator) releaseShutdownClaims(ctx context.Context, state *State) {
+	claims := make(map[string]struct{}, state.UnsettledWork())
+	for issueID := range state.Claimed {
+		claims[issueID] = struct{}{}
+	}
+	for issueID := range state.deferredCompletions {
+		claims[issueID] = struct{}{}
+	}
+	for issueID := range state.Running {
+		claims[issueID] = struct{}{}
+		cancelRunning(state, issueID, "orchestrator.shutdown")
+	}
+	for issueID, running := range state.Running {
+		if running.done == nil {
+			continue
+		}
+		<-running.done
+		o.heartbeats.remove(issueID)
+	}
+	o.supervisor.Wait()
+	o.releaseRunningSlots(state)
+	o.validatorWG.Wait()
+	o.securityAuditWG.Wait()
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), heartbeatOperationTimeout)
+	defer cancel()
+	for issueID := range claims {
+		if err := o.abandonClaim(ctx, issueID); err != nil {
+			o.logger.Warn("release shutdown claim failed", "issue_id", issueID, "error", err)
+		}
+	}
 }
 
 func (o *Orchestrator) cleanupDrainedRun(ctx context.Context, state *State, issueID string) {

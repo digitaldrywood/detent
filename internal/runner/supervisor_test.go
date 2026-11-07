@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
@@ -490,6 +491,27 @@ func TestSupervisorUpdateConfigChangesRetryDelay(t *testing.T) {
 	if got := supervisor.OverloadRetryDelay(); got != 30*time.Second {
 		t.Fatalf("OverloadRetryDelay() = %s, want 30s", got)
 	}
+}
+
+func TestSupervisorWaitJoinsCompletionDelivery(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		supervisor, err := NewSupervisor(staticBackend{}, SupervisorConfig{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		completions := make(chan Completion)
+		<-supervisor.Dispatch(t.Context(), RunRequest{}, completions)
+		joined := make(chan struct{})
+		go func() { supervisor.Wait(); close(joined) }()
+		synctest.Wait()
+		select {
+		case <-joined:
+			t.Error("supervisor joined before completion delivery exited")
+		default:
+		}
+		<-completions
+		<-joined
+	})
 }
 
 func TestSupervisorDispatchSendsCompletion(t *testing.T) {
