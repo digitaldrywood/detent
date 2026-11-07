@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func budgetClient(t *testing.T, respond func(call int, response *httptest.ResponseRecorder)) (*Client, *int) {
@@ -22,7 +23,7 @@ func budgetClient(t *testing.T, respond func(call int, response *httptest.Respon
 	var mutationBody []byte
 	client, err := New(Config{URL: "http://hub.test", TokenSource: func() string { return "token" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(r *http.Request) (*http.Response, error) {
 		calls++
-		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/runner-sessions") {
+		if r.Method == http.MethodPost && (strings.HasSuffix(r.URL.Path, "/runner-sessions") || strings.HasSuffix(r.URL.Path, "/events")) {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				t.Fatal(err)
@@ -64,6 +65,7 @@ func TestClientWaitsOutRequestBudgetRefusal(t *testing.T) {
 	}{
 		{"read", http.MethodGet, "/items", func() string { return "60" }, false},
 		{"session update", http.MethodPost, "/api/v2/organizations/org/projects/project/runner-sessions", func() string { return "60" }, false},
+		{"usage event", http.MethodPost, "/api/v2/organizations/org/projects/project/work-items/wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/events", func() string { return "60" }, false},
 		{"HTTP date", http.MethodGet, "/items", func() string { return time.Now().Add(time.Minute).UTC().Format(http.TimeFormat) }, false},
 		{"malformed header waits for the next minute", http.MethodGet, "/items", func() string { return "invalid" }, false},
 		{"missing header waits for the next minute", http.MethodGet, "/items", func() string { return "" }, false},
@@ -90,6 +92,8 @@ func TestClientWaitsOutRequestBudgetRefusal(t *testing.T) {
 					input := any(map[string]string{"k": "v"})
 					if strings.HasSuffix(test.path, "/runner-sessions") {
 						input = runnersession.Mutation{Key: "example-key", SessionID: 1, Provider: &store.SessionProviderIdentity{ThreadID: "example-thread"}}
+					} else if strings.HasSuffix(test.path, "/events") {
+						input = tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "attempt:1"}, Type: "run.observed", Data: tracker.NativeRunData{Usage: []tracker.NativeUsage{{Provider: "example", Model: "example-model", Input: 10}}}}
 					}
 					err = client.request(t.Context(), test.method, test.path, input, nil)
 				}
@@ -215,6 +219,10 @@ func TestClientDoesNotReplayMutationsAfterBudgetRefusal(t *testing.T) {
 		{"typed session on another route", http.MethodPost, "/items", runnersession.Mutation{SessionID: 1}},
 		{"streaming session POST", http.MethodPost, "/api/v2/organizations/org/projects/project/runner-sessions", strings.NewReader("stream")},
 		{"streaming POST", http.MethodPost, "/items", strings.NewReader("stream")},
+		{"unkeyed run event", http.MethodPost, "/projects/project/work-items/item/events", tracker.NativeRunEvent{Type: "run.observed"}},
+		{"run event on another route", http.MethodPost, "/items", tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "attempt:1"}}},
+		{"run event on another events route", http.MethodPost, "/conversation/events", tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "attempt:1"}}},
+		{"streaming run event", http.MethodPost, "/projects/project/work-items/item/events", strings.NewReader("stream")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {

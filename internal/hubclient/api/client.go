@@ -306,10 +306,15 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	_, sessionMutation := input.(runnersession.Mutation)
 	target, _, _ := strings.Cut(path, "?")
-	replaySessionMutation := sessionMutation && method == http.MethodPost && strings.HasSuffix(target, "/runner-sessions")
-	return c.withinRequestBudget(ctx, method, path, replaySessionMutation, func() error {
+	var replayMutation bool
+	switch request := input.(type) {
+	case runnersession.Mutation:
+		replayMutation = strings.HasSuffix(target, "/runner-sessions")
+	case tracker.NativeRunEvent:
+		replayMutation = request.IdempotencyKey != "" && strings.Contains(target, "/work-items/") && strings.HasSuffix(target, "/events")
+	}
+	return c.withinRequestBudget(ctx, method, path, replayMutation && method == http.MethodPost, func() error {
 		return c.requestOnce(ctx, timeout, method, path, headers, input, output)
 	})
 }

@@ -1,9 +1,18 @@
 package nativechange
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
 	"reflect"
+	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -138,4 +147,94 @@ func TestNativeExecutionRecordUsage(t *testing.T) {
 		t.Fatalf("earlier process usage changed to %+v, want %+v", *snapshot, first)
 	}
 
+}
+
+func TestNativeUsageBudgetRefusalKeepsTurnLive(t *testing.T) {
+	for _, batched := range []bool{false, true} {
+		name := "single event"
+		if batched {
+			name = "observation batch"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				now := time.Now()
+				ctx, cancel := context.WithCancelCause(t.Context())
+				defer cancel(nil)
+				var requests [][]byte
+				var accepted []tracker.NativeRunEvent
+				client, err := newTestClient(t, Config{URL: "http://hub.example.test", TokenSource: func() string { return "worker" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					body, err := io.ReadAll(request.Body)
+					if err != nil {
+						return nil, err
+					}
+					requests = append(requests, body)
+					var event tracker.NativeRunEvent
+					if err := json.Unmarshal(body, &event); err != nil {
+						return nil, err
+					}
+					if request.Method != http.MethodPost || !strings.HasSuffix(request.URL.Path, "/events") || len(event.Data.Usage) != 1 {
+						t.Fatal("usage did not reach the event publication boundary")
+					}
+					if ctx.Err() != nil {
+						t.Fatal("turn was cancelled during usage publication")
+					}
+					if len(requests) == 1 {
+						return &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": []string{"60"}}, Body: io.NopCloser(strings.NewReader(`{"code":"runner_request_budget"}`)), Request: request}, nil
+					}
+					accepted = append(accepted, event)
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"accepted":true}`)), Request: request}, nil
+				})}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_example", "prj_example")
+				if err != nil {
+					t.Fatal(err)
+				}
+				lease := tracker.NativeLease{RunDetailBatching: batched, WorkItemID: "wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ID: "lease", FencingToken: 1}
+				claim := nativeClaim{source: fixtureConnector(native), lease: lease, deadline: now.Add(time.Hour)}
+				scheduler, err := newTestScheduler(client, SchedulerConfig{Now: time.Now, HeartbeatInterval: time.Second, LeaseTTL: time.Hour, Machine: Machine{ID: "machine", Hostname: "host", Version: "test", Capacity: 1}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				fixtureInstallClaim(t, scheduler, claim, policy.Descriptor{}, "project")
+				execution := &nativeExecution{scheduler: authority(scheduler), claim: claim, runtimePublishedAt: now, cancel: cancel, data: tracker.NativeRunData{AttemptID: "attempt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", RunID: "run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", LeaseID: lease.ID, FencingToken: lease.FencingToken, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "example", Model: "example-model"}, Runtime: &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: now}}}
+				update := func(revision int64) {
+					err := execution.RecordUsage(ctx, tracker.NativeUsage{Provider: "example", Model: "example-model", SourceID: "session_1", Revision: revision, Input: revision * 10, Output: revision})
+					if err != nil {
+						cancel(err)
+						t.Fatalf("usage callback cancelled the live turn: %v", err)
+					}
+				}
+				count, batchSize := int64(1), int64(1)
+				if batched {
+					count, batchSize = 50, 8
+				}
+				for revision := int64(1); revision <= count; revision++ {
+					update(revision)
+					if batched && revision < 8 && len(requests) != 0 {
+						t.Fatal("changed usage bypassed observation batching")
+					}
+				}
+				if len(requests) != int(count/batchSize)+1 || !bytes.Equal(requests[0], requests[1]) || len(accepted) != int(count/batchSize) {
+					t.Fatalf("budget retry changed event identity or sent extra writes: requests=%d accepted=%d", len(requests), len(accepted))
+				}
+				if time.Since(now) != time.Minute || ctx.Err() != nil || execution.data.Outcome != "" {
+					t.Fatalf("budget refusal ended the live turn: elapsed=%s cause=%v", time.Since(now), context.Cause(ctx))
+				}
+				if len(accepted[0].PriorEvents) != int(batchSize)-1 || accepted[0].Data.Usage[0].Input != batchSize*10 || execution.data.Usage[0].Input != count*10 {
+					t.Fatalf("batch lost cumulative usage: %+v", accepted[0])
+				}
+				update(count + 1)
+				execution.storedSeq = execution.data.Sequence + 1
+				if err := execution.append(ctx, "run.checkpointed", "", &tracker.NativeCheckpoint{Resume: "fresh_checkout"}); err != nil {
+					t.Fatal(err)
+				}
+				last := accepted[len(accepted)-1]
+				if ctx.Err() != nil || last.Type != "run.checkpointed" || last.Data.Usage[0].Input != (count+1)*10 {
+					t.Fatalf("live turn could not checkpoint after refusal: %+v cause=%v", last, context.Cause(ctx))
+				}
+			})
+		})
+	}
 }

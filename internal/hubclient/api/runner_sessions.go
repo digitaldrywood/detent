@@ -110,6 +110,9 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 	var result runnersession.Snapshot
 	err := s.client.Request(ctx, http.MethodPost, s.base()+"/runner-sessions", request, &result)
 	var api *APIError
+	if err != nil && (!errors.As(err, &api) || api == nil || api.Status < 400 || api.Status >= 500) {
+		delete(s.acknowledged, request.SessionID)
+	}
 	if errors.As(err, &api) && (api.Status == http.StatusUnauthorized || api.Status == http.StatusForbidden || api.Code == "stale_fencing_token" || api.Code == "policy_mismatch") {
 		err = errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 	}

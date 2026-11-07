@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -306,6 +307,7 @@ func TestRunnerSessionRepeatedMetadataStaysWithinBudget(t *testing.T) {
 		t.Run(organization, func(t *testing.T) {
 			requests := 0
 			rejectNext := false
+			loseNext := false
 			client, err := api.New(api.Config{URL: "http://hub.test", TokenSource: func() string { return fixture.tokens[0] }, HTTPClient: &http.Client{Transport: progressPublicationTransport(func(request *http.Request) (*http.Response, error) {
 				requests++
 				response := httptest.NewRecorder()
@@ -315,6 +317,13 @@ func TestRunnerSessionRepeatedMetadataStaysWithinBudget(t *testing.T) {
 					return response.Result(), nil
 				}
 				fixture.service.Handler().ServeHTTP(response, request.WithContext(context.WithValue(request.Context(), claimRequestTraceKey{}, true)))
+				if loseNext && request.Method == http.MethodPost {
+					loseNext = false
+					if response.Code != http.StatusOK {
+						t.Fatalf("lost write did not commit: %d %s", response.Code, response.Body.String())
+					}
+					return nil, io.ErrUnexpectedEOF
+				}
 				return response.Result(), nil
 			})}})
 			if err != nil {
@@ -378,6 +387,39 @@ func TestRunnerSessionRepeatedMetadataStaysWithinBudget(t *testing.T) {
 			}
 			if requests != 0 {
 				t.Fatalf("partial unchanged provider identity consumed %d requests", requests)
+			}
+			for _, kind := range []string{"worker", "provider"} {
+				originalProcess, originalProvider := process, provider
+				if kind == "worker" {
+					process.PID++
+				} else {
+					provider.SessionID += "-uncertain"
+				}
+				loseNext = true
+				if err := update(ctx); !errors.Is(err, api.ErrUnavailable) {
+					t.Fatalf("%s committed write did not lose response: %v", kind, err)
+				}
+				var committed runnersession.Snapshot
+				if err := client.Request(ctx, http.MethodGet, native.Scope()+"/runner-sessions/"+fmt.Sprint(id), nil, &committed); err != nil {
+					t.Fatal(err)
+				}
+				if committed.Worker == nil || committed.Worker.PID != process.PID || committed.Provider != provider {
+					t.Fatalf("%s uncertain write was not committed: %+v", kind, committed)
+				}
+				process, provider = originalProcess, originalProvider
+				requests = 0
+				if err := update(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if requests == 0 {
+					t.Fatalf("%s stale acknowledgement hid the requested value after a committed write lost its response", kind)
+				}
+				if err := client.Request(ctx, http.MethodGet, native.Scope()+"/runner-sessions/"+fmt.Sprint(id), nil, &committed); err != nil {
+					t.Fatal(err)
+				}
+				if committed.Worker == nil || committed.Worker.PID != process.PID || committed.Provider != provider {
+					t.Fatalf("%s requested value did not reach the Hub: %+v", kind, committed)
+				}
 			}
 			for _, kind := range []string{"worker", "provider"} {
 				if kind == "worker" {

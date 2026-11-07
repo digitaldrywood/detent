@@ -11,8 +11,8 @@ import (
 
 const requestBudgetCode = "runner_request_budget"
 
-func (c *Client) withinRequestBudget(ctx context.Context, method, path string, replaySessionMutation bool, send func() error) error {
-	replayable := replaySessionMutation || method == http.MethodGet || method == http.MethodHead
+func (c *Client) withinRequestBudget(ctx context.Context, method, path string, replayMutation bool, send func() error) error {
+	replayable := replayMutation || method == http.MethodGet || method == http.MethodHead
 	for {
 		if err := c.waitRequestBudget(ctx, method, path); err != nil {
 			return err
