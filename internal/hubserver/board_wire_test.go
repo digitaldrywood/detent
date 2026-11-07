@@ -142,9 +142,7 @@ func boardWireRepository(t *testing.T, admin *sql.DB, wire *boardWire) *postgres
 	config.ConnConfig.TLSConfig = nil
 	config.ConnConfig.Fallbacks = nil
 	config.MaxConns = 4
-	if wire.pingEveryAcquire {
-		config.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return true }
-	}
+	config.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return wire.pingEveryAcquire }
 	pgtransport.Configure(config)
 	tables := []string{}
 	rows, err := admin.QueryContext(t.Context(), "SELECT relname FROM pg_class WHERE relnamespace='public'::regnamespace AND relrowsecurity")
