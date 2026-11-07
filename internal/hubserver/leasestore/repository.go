@@ -192,5 +192,4 @@ type AttemptEvent struct {
 	CheckpointObjectKey *string
 	ArtifactsObjectKey  *string
 	UsageCorrection     bool
-	Termination         bool `json:",omitempty"`
 }

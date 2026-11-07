@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"reflect"
 	"strconv"
 	"time"
 
@@ -37,7 +36,6 @@ type NativeRunEventAuthority struct {
 	DispatchGeneration int64
 	UsageCorrection    bool
 	ReplayPrefix       bool
-	Termination        bool
 	Publication        *preparedNativePRPublication
 	UsageCosts         []billingstore.CostObservation
 	UsageFacts         *runnerUsageFacts

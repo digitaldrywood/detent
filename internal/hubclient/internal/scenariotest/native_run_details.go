@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"strings"
 	"sync"
 
 	"github.com/digitaldrywood/detent/internal/artifact"

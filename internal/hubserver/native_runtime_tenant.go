@@ -39,7 +39,25 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 	if len(admission) > 1 {
 		return tracker.NativeRuntimeEvidence{}, nativeRunEventStorageUnavailable()
 	}
-	if attemptID != "" && !validNativeID(attemptID, "attempt") {
+	if attemptID == "" {
+		row, version, err := s.readWorkItemRecord(ctx, scope, item)
+		if err != nil {
+			return tracker.NativeRuntimeEvidence{}, err
+		}
+		issue, err := s.hydrateWorkItemRecord(ctx, row, version)
+		if err != nil {
+			return tracker.NativeRuntimeEvidence{}, err
+		}
+		evidence, _, _, err := s.readOperatorExplanation(ctx, scope, issue)
+		if err != nil {
+			return tracker.NativeRuntimeEvidence{}, err
+		}
+		if err := s.readRuntimeAdmissionTenant(ctx, scope, issue, &evidence, admission); err != nil {
+			return tracker.NativeRuntimeEvidence{}, err
+		}
+		return evidence, nil
+	}
+	if !validNativeID(attemptID, "attempt") {
 		if local, err := strconv.ParseInt(attemptID, 10, 64); err == nil && local > 0 {
 			return tracker.NativeRuntimeEvidence{}, nativeRunEventStorageUnavailable()
 		}
@@ -72,12 +90,7 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		if err != nil {
 			return err
 		}
-		var attempt leasestore.Attempt
-		if attemptID == "" {
-			attempt, err = r.LatestAttempt(ctx, row.ID)
-		} else {
-			attempt, err = r.Attempt(ctx, attemptID)
-		}
+		attempt, err := r.Attempt(ctx, attemptID)
 		if err != nil {
 			return err
 		}

@@ -57,10 +57,6 @@ func TestMain(m *testing.M) {
 	}
 	code := m.Run()
 	cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	if err := testsupport.CloseDispatchPostgres(cleanup); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		code = 1
-	}
 	if err := testsupport.CloseNativeChangePostgres(cleanup); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		code = 1
