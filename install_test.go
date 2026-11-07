@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -27,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
@@ -701,6 +703,32 @@ func TestFreshInstallExposesRunnerEnrollment(t *testing.T) {
 
 	tmp := t.TempDir()
 	root = isolatedInstallCheckout(t, root, filepath.Join(tmp, "checkout"))
+	assets := detent.StaticFS()
+	if err := fs.WalkDir(assets, ".", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(root, "static", filepath.FromSlash(path))
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		content, err := fs.ReadFile(assets, path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, content, 0o644)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	version, versionOK := gitOutput(t, root, "describe", "--tags", "--always")
+	commit, commitOK := gitOutput(t, root, "rev-parse", "HEAD")
+	if !versionOK || !commitOK {
+		t.Fatal("prepared checkout lacks build identity")
+	}
+	flags := fmt.Sprintf("-X main.version=%s -X main.commit=%s -X main.date=2000-01-01T00:00:00Z", version, commit)
+	if err := os.WriteFile(filepath.Join(root, "BUILD_LDFLAGS"), []byte(flags), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	installDir := filepath.Join(tmp, "bin")
 	stateDir := filepath.Join(tmp, "state")
 	env := append(os.Environ(),
