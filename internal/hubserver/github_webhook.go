@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -56,5 +55,5 @@ func (s *Service) hostedGitHubWebhook(c echo.Context) error {
 }
 
 func (s *Service) receiveGitHubWebhook(c echo.Context, verifiedByEntry bool) error {
-	return c.JSON(http.StatusGone, webhookErrorResponse{Code: "github_webhook_retired", Message: "GitHub webhook ingestion is retired"})
+	return s.receiveGitHubWebhookRecord(c, verifiedByEntry)
 }

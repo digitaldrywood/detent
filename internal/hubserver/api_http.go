@@ -106,6 +106,7 @@ func (s *Service) registerRoutes(e *echo.Echo) {
 }
 
 func (s *Service) registerPostgresRoutes(e *echo.Echo) {
+	e.POST("/api/v1/webhooks/github", s.githubWebhook)
 	if s.config.Hosted != nil {
 		if s.config.Hosted.SharedEntry != nil {
 			e.Pre(s.hostedSharedEntry)
