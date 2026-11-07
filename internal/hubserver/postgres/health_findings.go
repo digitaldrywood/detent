@@ -50,6 +50,10 @@ func (s *session) HealthSummaryFindings(ctx context.Context, limit int) ([]healt
 }
 
 func (s *session) HealthFindings(ctx context.Context, project tracker.ProjectID, state string, since *time.Time, after int64, reporter string, limit int) (healthstore.Page, error) {
+	return s.healthFindings(ctx, project, state, since, after, reporter, limit, true)
+}
+
+func (s *session) healthFindings(ctx context.Context, project tracker.ProjectID, state string, since *time.Time, after int64, reporter string, limit int, projected bool) (healthstore.Page, error) {
 	page := healthstore.Page{Findings: []healthstore.Finding{}, Baselines: []healthstore.Baseline{}}
 	if project == "" || limit < 1 || limit > 101 || after < 0 || (state != "all" && state != "open" && state != "resolved") {
 		return page, corestore.ErrInvalidPage
@@ -71,7 +75,7 @@ func (s *session) HealthFindings(ctx context.Context, project tracker.ProjectID,
 			header.Close()
 			return page, mapError(ctx, err)
 		}
-		if pending {
+		if pending && projected {
 			header.Close()
 			return page, healthstore.ErrPagePending
 		}
@@ -90,19 +94,35 @@ func (s *session) HealthFindings(ctx context.Context, project tracker.ProjectID,
 	if len(page.Baselines) > 10000 {
 		return page, corestore.ErrInvalidPage
 	}
-	rows, err := s.db.Query(ctx, `WITH selected AS MATERIALIZED (
- SELECT f.* FROM health_finding_projects p JOIN health_findings f ON f.organization_id=p.organization_id AND f.id=p.finding_id
- WHERE p.organization_id=$1 AND p.project_id=$2
+	candidates := `SELECT p.finding_id,p.page_sequence FROM health_finding_projects p
+ WHERE p.organization_id=$1 AND p.project_id=$2 AND p.page_sequence>$5
+ ORDER BY p.page_sequence LIMIT ($7::int+1)`
+	if !projected {
+		candidates = `SELECT id AS finding_id,sequence AS page_sequence FROM health_findings
+ WHERE organization_id=$1 AND sequence>$5 ORDER BY sequence LIMIT ($7::int+1)`
+	}
+	rows, err := s.db.Query(ctx, `WITH candidates AS MATERIALIZED (`+candidates+`
+ ), selected AS MATERIALIZED (
+ SELECT f.* FROM candidates p CROSS JOIN LATERAL (
+ SELECT * FROM health_findings WHERE organization_id=$1 AND id=p.finding_id OFFSET 0
+ ) f ORDER BY p.page_sequence LIMIT $7
+ ), links AS MATERIALIZED (
+ SELECT l.finding_id,l.work_item_id FROM selected f CROSS JOIN LATERAL (
+ SELECT finding_id,work_item_id FROM health_finding_issues
+ WHERE organization_id=$1 AND finding_id=f.id AND project_id=$2 ORDER BY work_item_id LIMIT 10001
+ ) l LIMIT 10001
+ ), authorized AS MATERIALIZED (
+ SELECT l.* FROM links l CROSS JOIN LATERAL (
+ SELECT actor_principal_id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=l.work_item_id OFFSET 0
+ ) i WHERE $6='' OR i.actor_principal_id=$6
+ ) SELECT `+healthPageColumns+`,l.work_item_id,
+ COALESCE(EXISTS(SELECT 1 FROM health_finding_projects p WHERE p.organization_id=$1 AND p.project_id=$2 AND p.finding_id=f.id OFFSET 0)
  AND ($3='all' OR (f.resolved_at IS NOT NULL)=($3='resolved'))
  AND (($3='all' AND f.resolved_at IS NULL) OR $4::timestamptz IS NULL OR f.last_seen_at>=$4 OR f.resolved_at>=$4)
- AND p.page_sequence>$5
- AND ($6='' OR EXISTS (SELECT 1 FROM health_finding_issues l JOIN issues i ON i.organization_id=l.organization_id AND i.project_id=l.project_id AND i.native_id=l.work_item_id
- WHERE l.organization_id=f.organization_id AND l.finding_id=f.id AND l.project_id=$2 AND i.actor_principal_id=$6))
- ORDER BY p.page_sequence LIMIT $7
- ) SELECT `+healthPageColumns+`,l.work_item_id FROM selected f
- LEFT JOIN (health_finding_issues l JOIN issues i ON i.organization_id=l.organization_id AND i.project_id=l.project_id AND i.native_id=l.work_item_id AND ($6='' OR i.actor_principal_id=$6))
- ON l.organization_id=f.organization_id AND l.finding_id=f.id AND l.project_id=$2
- ORDER BY f.sequence,l.work_item_id LIMIT 10001`, s.organization, project, state, since, after, reporter, limit)
+ AND ($6='' OR EXISTS(SELECT 1 FROM authorized a WHERE a.finding_id=f.id)),false),
+ (SELECT count(*)>10000 FROM links),(SELECT count(*)>$7 FROM candidates)
+ FROM selected f LEFT JOIN authorized l ON l.finding_id=f.id
+ ORDER BY f.sequence,l.work_item_id LIMIT 10102`, s.organization, project, state, since, after, reporter, limit)
 	if err != nil {
 		return page, mapError(ctx, err)
 	}
@@ -110,15 +130,25 @@ func (s *session) HealthFindings(ctx context.Context, project tracker.ProjectID,
 	count := 0
 	for rows.Next() {
 		count++
-		if count > 10000 {
+		if count > 10101 {
 			return page, corestore.ErrInvalidPage
 		}
 		var item *string
-		row, checkpoint, err := scanHealthPage(rows, &item)
+		var matches, overflow, more bool
+		row, checkpoint, err := scanHealthPage(rows, &item, &matches, &overflow, &more)
 		if err != nil {
 			return page, mapError(ctx, err)
 		}
-		if checkpoint != row.Generation {
+		if overflow {
+			return page, corestore.ErrInvalidPage
+		}
+		if more {
+			page.NextSequence = row.Sequence
+		}
+		if !matches {
+			continue
+		}
+		if projected && checkpoint != row.Generation {
 			return page, healthstore.ErrPagePending
 		}
 		if len(page.Findings) == 0 || page.Findings[len(page.Findings)-1].ID != row.ID {

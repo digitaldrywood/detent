@@ -39,6 +39,7 @@ type Baseline struct {
 }
 
 type Page struct {
+	NextSequence   int64
 	ChangeSequence int64
 	Findings       []Finding
 	Baselines      []Baseline
