@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -316,15 +317,13 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	sessionStore := &fakeSessionStore{sessionID: 42}
 	providerUsage := &ProviderUsage{}
-	now := newFakeClock(
-		startedAt,
-		startedAt,
-		startedAt.Add(time.Second),
-		startedAt.Add(2*time.Second),
-		startedAt.Add(3*time.Second),
-		completedAt,
-		completedAt,
-	)
+	var clock atomic.Int64
+	clock.Store(startedAt.UnixNano())
+	clocked := &clockedCodexClient{fakeCodexClient: codexClient, clock: &clock, completedAt: completedAt, events: map[AgentUpdateType]time.Time{
+		AgentUpdateMessageDelta: startedAt.Add(time.Second),
+		AgentUpdateTokenUsage:   startedAt.Add(3 * time.Second),
+		AgentUpdateRateLimits:   completedAt,
+	}}
 	prNumber := 133
 
 	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
@@ -345,7 +344,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 			Prompt: "Work on {{ issue.identifier }} attempt {{ attempt }}",
 		},
 		Workspace:    workspaceBackend,
-		AgentBackend: codexClient,
+		AgentBackend: clocked,
 		Store:        sessionStore,
 		Pricing: budget.PricingTable{
 			"gpt-5-codex-high": {
@@ -359,7 +358,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 				USDPerOutputToken:      0.00002,
 			},
 		},
-		Now: now.Now,
+		Now: func() time.Time { return time.Unix(0, clock.Load()).UTC() },
 	})
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
@@ -3097,8 +3096,8 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 		{name: "resumed again", workAttemptID: 4925, generation: 19, orphaned: true},
 		{name: "native initial", workAttemptID: 4898, generation: 17, native: true},
 		{name: "native resumed", workAttemptID: 4917, generation: 18, orphaned: true, native: true},
-		{name: "orphan without attempt ID is rejected", generation: 20, orphaned: true},
-		{name: "orphan without generation is rejected", workAttemptID: 4931, orphaned: true},
+		{name: "orphan without fenced execution and attempt ID is rejected", generation: 20, orphaned: true},
+		{name: "orphan without fenced execution and generation is rejected", workAttemptID: 4931, orphaned: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -3130,10 +3129,13 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 				}
 			}
 			completeIdentity := tt.workAttemptID > 0 && tt.generation > 0
-			_, err = runner.Run(context.Background(), req)
+			if tt.orphaned && completeIdentity {
+				req.Execution = prepareOrphanResumeExecution(t, runner, req.ResumeState)
+			}
+			_, err = runner.Run(t.Context(), req)
 			if tt.orphaned && !completeIdentity {
-				if err == nil || !strings.Contains(err.Error(), "completion attempt and generation") {
-					t.Fatalf("Run() error = %v, want missing completion identity", err)
+				if !errors.Is(err, ErrExecutionAuthorityUnavailable) {
+					t.Fatalf("Run() error = %v, want missing fenced execution", err)
 				}
 				if backend.request.Prompt != "" {
 					t.Fatal("orphaned session started a turn without completion identity")
@@ -3245,7 +3247,7 @@ func TestRunnerRunResumesOrphanedSessionWithRestartPrompt(t *testing.T) {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
 
-	_, err = runner.Run(context.Background(), RunRequest{
+	request := RunRequest{
 		Issue: connector.Issue{
 			ID:            "issue-1155",
 			Identifier:    "digitaldrywood/detent#1155",
@@ -3257,7 +3259,10 @@ func TestRunnerRunResumesOrphanedSessionWithRestartPrompt(t *testing.T) {
 		Generation:    1,
 		RetryMode:     RetryModeResume,
 		ResumeState:   resumeState,
-	})
+	}
+	request.Execution = prepareOrphanResumeExecution(t, runner, request.ResumeState)
+	_, err = runner.Run(t.Context(), request)
+
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -3313,7 +3318,7 @@ func TestRunnerRunOrphanResumePreflightFailureFallsBackFresh(t *testing.T) {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
 
-	_, err = runner.Run(context.Background(), RunRequest{
+	request := RunRequest{
 		Issue: connector.Issue{
 			ID:            "issue-1155",
 			Identifier:    "digitaldrywood/detent#1155",
@@ -3333,7 +3338,10 @@ func TestRunnerRunOrphanResumePreflightFailureFallsBackFresh(t *testing.T) {
 			AgentRole:        RoleCode,
 			Orphaned:         true,
 		},
-	})
+	}
+	request.Execution = prepareOrphanResumeExecution(t, runner, request.ResumeState)
+	_, err = runner.Run(t.Context(), request)
+
 	if err != nil {
 		t.Fatalf("Run() error = %v, want fresh fallback success", err)
 	}
@@ -3343,11 +3351,12 @@ func TestRunnerRunOrphanResumePreflightFailureFallsBackFresh(t *testing.T) {
 	if agentBackend.request.Prompt == orphanResumePrompt || !strings.Contains(agentBackend.request.Prompt, "Implement the issue") {
 		t.Fatalf("AgentTurnRequest.Prompt = %q, want full issue prompt", agentBackend.request.Prompt)
 	}
-	if sessionStore.started.ResumedFromSessionID != 0 || sessionStore.started.OrphanRecoveryOutcome != store.OrphanRecoveryFresh {
+	if sessionStore.started.ResumedFromSessionID != 0 || sessionStore.started.ProviderThreadID != "" {
 		t.Fatalf("SessionStart fallback metadata = %#v", sessionStore.started)
 	}
-	if sessionStore.started.OrphanRecoveryFallbackReason != "rollout file not found" {
-		t.Fatalf("SessionStart.OrphanRecoveryFallbackReason = %q", sessionStore.started.OrphanRecoveryFallbackReason)
+	decision := request.Execution.(*testExecution).runtime.Recovery
+	if decision == nil || decision.Action != "fresh_checkout" || decision.Reason != "session_restart_required" {
+		t.Fatalf("Hub resume fallback decision = %+v", decision)
 	}
 }
 
@@ -3380,7 +3389,7 @@ func TestRunnerRunOrphanResumeRPCFailureFallsBackWithFullPrompt(t *testing.T) {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
 
-	_, err = runner.Run(context.Background(), RunRequest{
+	request := RunRequest{
 		Issue:         connector.Issue{ID: "issue-1155", Identifier: "digitaldrywood/detent#1155", Title: "Resume orphaned session", ModelOverride: "gpt-5.6-codex"},
 		StartedAt:     startedAt,
 		WorkAttemptID: 1158,
@@ -3390,7 +3399,23 @@ func TestRunnerRunOrphanResumeRPCFailureFallsBackWithFullPrompt(t *testing.T) {
 			DetentSessionID: 1155, ProviderThreadID: "thread-old", RequestedModel: "gpt-5.6-codex",
 			AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: RoleCode, Orphaned: true,
 		},
-	})
+	}
+	request.Execution = prepareOrphanResumeExecution(t, runner, request.ResumeState)
+	_, err = runner.Run(t.Context(), request)
+	if err == nil || len(agentBackend.requests) != 1 {
+		t.Fatalf("failed native resume retried within its attempt: calls=%d error=%v", len(agentBackend.requests), err)
+	}
+	previous := request.Execution.(*testExecution)
+	if previous.checkpoint == nil || previous.checkpoint.Resume != "resume_session" {
+		t.Fatalf("failed resume lost its retained checkpoint: %+v", previous.checkpoint)
+	}
+	next := &testExecution{recovery: previous.recovery}
+	next.recovery.Lease.ID, next.recovery.Lease.FencingToken = "lease_next", 3
+	next.recovery.Attempts = []tracker.NativeAttempt{{Status: "failed", NativeRunData: tracker.NativeRunData{AttemptID: "attempt_failed_resume", MachineID: "machine"}, Checkpoint: previous.checkpoint}}
+	request.Execution, request.ResumeState, request.RetryMode = next, store.AgentResumeState{}, RetryModeFresh
+	request.RecoveryAttemptID = request.WorkAttemptID
+	request.WorkAttemptID, request.Generation = 1159, 4
+	_, err = runner.Run(t.Context(), request)
 	if err != nil {
 		t.Fatalf("Run() error = %v, want fresh fallback success", err)
 	}
@@ -3403,11 +3428,8 @@ func TestRunnerRunOrphanResumeRPCFailureFallsBackWithFullPrompt(t *testing.T) {
 	if agentBackend.requests[1].Prompt == orphanResumePrompt || !strings.Contains(agentBackend.requests[1].Prompt, "Implement the issue") {
 		t.Fatalf("fresh fallback prompt = %q, want full prompt", agentBackend.requests[1].Prompt)
 	}
-	if len(sessionStore.resumeUpdates) != 1 || sessionStore.resumeUpdates[0].OrphanRecoveryOutcome != store.OrphanRecoveryFresh || sessionStore.resumeUpdates[0].ResumedFromSessionID != 0 {
-		t.Fatalf("resume updates = %#v, want fresh fallback", sessionStore.resumeUpdates)
-	}
-	if sessionStore.resumeUpdates[0].OrphanRecoveryFallbackReason == "" {
-		t.Fatal("resume fallback reason is blank")
+	if sessionStore.startCalls != 2 || sessionStore.started.ResumedFromSessionID != 0 || sessionStore.finished.ResumedFromSessionID != 0 {
+		t.Fatalf("new Hub attempt inherited failed resume provenance: start=%+v finish=%+v", sessionStore.started, sessionStore.finished)
 	}
 }
 
@@ -8150,6 +8172,24 @@ func (b *fakeMergeWorkspaceBackend) PrepareMerge(
 		return b.prepareResults[index], b.prepareErr
 	}
 	return b.prepareResult, b.prepareErr
+}
+
+type clockedCodexClient struct {
+	*fakeCodexClient
+	clock       *atomic.Int64
+	completedAt time.Time
+	events      map[AgentUpdateType]time.Time
+}
+
+func (c *clockedCodexClient) RunTurn(ctx context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+	result, err := c.fakeCodexClient.RunTurn(ctx, req, func(event AgentUpdate) error {
+		if at, ok := c.events[event.Type]; ok {
+			c.clock.Store(at.UnixNano())
+		}
+		return update(event)
+	})
+	c.clock.Store(c.completedAt.UnixNano())
+	return result, err
 }
 
 type fakeCodexClient struct {

@@ -183,11 +183,14 @@ func TestNativeOrphanHandoffPreservesPlanOnly(t *testing.T) {
 			if planOnly {
 				mode, role = RunModePlan, RolePlan
 			}
-			_, err = run.Run(t.Context(), RunRequest{
+			request := RunRequest{
 				Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1", State: "In Progress", ModelOverride: "gpt-5.6-codex", Metadata: map[string]string{"hub_profile": "native", "hub_project_id": "prj_example"}},
 				Mode:  mode, WorkAttemptID: 12, Generation: 2, RetryMode: RetryModeResume,
 				ResumeState: store.AgentResumeState{DetentSessionID: 11, ProviderThreadID: "original-thread", RequestedModel: "gpt-5.6-codex", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: role, Orphaned: true},
-			})
+			}
+			request.Execution = prepareOrphanResumeExecution(t, run, request.ResumeState)
+			_, err = run.Run(t.Context(), request)
+
 			if err != nil {
 				t.Fatal(err)
 			}

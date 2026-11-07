@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type nativeResumeSessionStore struct {
@@ -47,4 +48,20 @@ func TestNativeSessionResumeUsesHubAttemptIdentity(t *testing.T) {
 			}
 		})
 	}
+}
+
+func prepareOrphanResumeExecution(t *testing.T, r *Runner, state store.AgentResumeState) *testExecution {
+	t.Helper()
+	sessions, ok := r.store.(*fakeSessionStore)
+	if !ok {
+		sessions = &fakeSessionStore{sessionID: state.DetentSessionID + 1}
+		r.store = sessions
+	}
+	sessions.resumeState = state
+	backend := r.workspace.(*fakeWorkspaceBackend)
+	backend.recoveryStates = []workspace.RecoveryState{{HeadSHA: "recorded-head", WorkspaceFingerprint: "recorded-digest"}}
+	return &testExecution{recovery: tracker.NativeRecovery{
+		Lease:    tracker.NativeLease{ID: "lease_current", MachineID: "machine", FencingToken: 2},
+		Attempts: []tracker.NativeAttempt{{Status: "failed", NativeRunData: tracker.NativeRunData{AttemptID: "attempt_previous", MachineID: "machine", Identity: &tracker.NativeExecutionIdentity{Role: state.AgentRole, Backend: state.AgentBackendID, Model: state.RequestedModel}}, Checkpoint: &tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "clean", HeadSHA: "recorded-head", WorkspaceDigest: "recorded-digest", ExternalEffect: "none", EffectState: "none"}}},
+	}}
 }

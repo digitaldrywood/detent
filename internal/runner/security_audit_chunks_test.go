@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type chunkAuditBackend struct {
@@ -268,7 +269,14 @@ func TestRunnerChunkedAudit(t *testing.T) {
 				}
 				if mode == "reported cost" {
 					var input, output, cost, reports int64
+					latest := make(map[string]tracker.NativeUsage)
 					for _, entry := range usageExecution.entries {
+						if entry.SourceID == "" || entry.Revision <= latest[entry.SourceID].Revision {
+							t.Fatalf("audit usage lost source identity or revision ordering: %+v", entry)
+						}
+						latest[entry.SourceID] = entry
+					}
+					for _, entry := range latest {
 						input += entry.Input
 						output += entry.Output
 						if entry.ReportedCostMicros != nil {
