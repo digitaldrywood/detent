@@ -172,7 +172,7 @@ func (s *Service) publishNativeProgress(c echo.Context) error {
 	}
 	id, err := request.ID()
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.nativeAPIError(c, nativeInvalid(err.Error()))
 	}
 	if id != input.RequestID {
 		return s.nativeAPIError(c, &nativeError{Code: "revision_conflict", status: http.StatusConflict})

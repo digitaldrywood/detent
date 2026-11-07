@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/labstack/echo/v4"
 )
@@ -81,6 +82,7 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 	var commentsTruncated bool
 	var snapshots []tenantAttemptSnapshot
 	var attemptPage leasestore.AttemptPage
+	var progressAttempts []leasestore.Attempt
 	var checkpointCandidates []checkpointAttemptCandidate
 	var checkpointPageTruncated bool
 	var landingReceipt eventstore.LandingReceipt
@@ -186,6 +188,18 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 			latestAttemptID = attemptPage.Items[0].ID
 		}
 		wantedAttempts := make(map[string]struct{}, claimPreparationLimit)
+		if excludeProgress {
+			for _, attempt := range attemptPage.Items {
+				if attempt.Status == "running" {
+					continue
+				}
+				wantedAttempts[attempt.ID] = struct{}{}
+				progressAttempts = append(progressAttempts, attempt)
+				if len(progressAttempts) == progresscheck.MaxAttempts {
+					break
+				}
+			}
+		}
 		if latestAttemptID != "" {
 			wantedAttempts[latestAttemptID] = struct{}{}
 		}
@@ -439,6 +453,12 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 	}
 	if len(snapshots) > 0 {
 		selected[snapshots[0].attempt.ID] = struct{}{}
+	}
+	if excludeProgress {
+		selected = make(map[string]struct{}, len(progressAttempts))
+		for _, attempt := range progressAttempts {
+			selected[attempt.ID] = struct{}{}
+		}
 	}
 	selectedIDs := make([]string, 0, len(selected))
 	for _, id := range []string{sourceAttemptID, changeAttemptID, landingAttemptID, checkpointAttemptID, latestAttemptID} {
