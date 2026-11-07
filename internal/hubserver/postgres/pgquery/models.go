@@ -3092,6 +3092,11 @@ type ProjectIntegrationPageDirty struct {
 	AttemptedAt    time.Time
 }
 
+type ProjectIntegrationPageProgress struct {
+	OrganizationID tracker.OrganizationID
+	AfterProjectID string
+}
+
 type ProjectIntegrationPageState struct {
 	OrganizationID     tracker.OrganizationID
 	ProjectID          tracker.ProjectID
