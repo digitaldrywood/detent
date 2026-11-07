@@ -996,6 +996,33 @@ type HealthFinding struct {
 	EmailUnavailable     bool
 	SlackUnavailableAt   *time.Time
 	SlackStatusCode      int32
+	PageEventIds         []string
+	PageAttemptIds       []string
+	PageWorkItemIds      []string
+	PageSignatures       []string
+	PageReason           string
+	PageCountKeys        []string
+	PageCountValues      []int64
+	PageValueKeys        []string
+	PageValueValues      []float64
+	PageQueueKeys        []string
+	PageQueueDepths      []int64
+	PageQueueShort       []float64
+	PageQueueLong        []float64
+	PageQueueBaseline    []float64
+	PageProductivityFrom *time.Time
+	PageProductivityTo   *time.Time
+	PageFailureStage     string
+	PageLastReportAt     *time.Time
+	PageLastRunUrl       string
+	PageLastGreenAt      *time.Time
+	PageCadenceSeconds   int64
+	PageWindowSeconds    int64
+	PageGeneration       int64
+	PageCheckpoint       int64
+	PageSourceAt         time.Time
+	PageProjectedAt      *time.Time
+	PageExaminedAt       time.Time
 }
 
 type HealthFindingIssue struct {
@@ -1009,6 +1036,7 @@ type HealthFindingProject struct {
 	OrganizationID tracker.OrganizationID
 	FindingID      string
 	ProjectID      tracker.ProjectID
+	PageSequence   int64
 }
 
 type HostedArtifactUsage struct {

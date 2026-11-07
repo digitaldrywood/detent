@@ -129,7 +129,7 @@ func (q *Queries) HealthFindingProjects(ctx context.Context, arg HealthFindingPr
 }
 
 const healthFindings = `-- name: HealthFindings :many
-SELECT f.organization_id, f.id, f.sequence, f.fingerprint, f.signal, f.class, f.subject_kind, f.subject_id, f.opened_at, f.last_seen_at, f.resolved_at, f.severity, f.summary, f.next_action, f.evidence_object_key, f.evidence_sha256, f.evidence_bytes, f.evidence_content_bytes, f.email_unavailable, f.slack_unavailable_at, f.slack_status_code FROM health_findings f
+SELECT f.organization_id, f.id, f.sequence, f.fingerprint, f.signal, f.class, f.subject_kind, f.subject_id, f.opened_at, f.last_seen_at, f.resolved_at, f.severity, f.summary, f.next_action, f.evidence_object_key, f.evidence_sha256, f.evidence_bytes, f.evidence_content_bytes, f.email_unavailable, f.slack_unavailable_at, f.slack_status_code, f.page_event_ids, f.page_attempt_ids, f.page_work_item_ids, f.page_signatures, f.page_reason, f.page_count_keys, f.page_count_values, f.page_value_keys, f.page_value_values, f.page_queue_keys, f.page_queue_depths, f.page_queue_short, f.page_queue_long, f.page_queue_baseline, f.page_productivity_from, f.page_productivity_to, f.page_failure_stage, f.page_last_report_at, f.page_last_run_url, f.page_last_green_at, f.page_cadence_seconds, f.page_window_seconds, f.page_generation, f.page_checkpoint, f.page_source_at, f.page_projected_at, f.page_examined_at FROM health_findings f
 WHERE f.organization_id=$1
  AND EXISTS (SELECT 1 FROM health_finding_projects p WHERE p.organization_id=f.organization_id AND p.finding_id=f.id AND p.project_id=$2)
  AND ($3::text='all' OR (f.resolved_at IS NOT NULL)=($3::text='resolved'))
@@ -188,6 +188,33 @@ func (q *Queries) HealthFindings(ctx context.Context, arg HealthFindingsParams) 
 			&i.EmailUnavailable,
 			&i.SlackUnavailableAt,
 			&i.SlackStatusCode,
+			&i.PageEventIds,
+			&i.PageAttemptIds,
+			&i.PageWorkItemIds,
+			&i.PageSignatures,
+			&i.PageReason,
+			&i.PageCountKeys,
+			&i.PageCountValues,
+			&i.PageValueKeys,
+			&i.PageValueValues,
+			&i.PageQueueKeys,
+			&i.PageQueueDepths,
+			&i.PageQueueShort,
+			&i.PageQueueLong,
+			&i.PageQueueBaseline,
+			&i.PageProductivityFrom,
+			&i.PageProductivityTo,
+			&i.PageFailureStage,
+			&i.PageLastReportAt,
+			&i.PageLastRunUrl,
+			&i.PageLastGreenAt,
+			&i.PageCadenceSeconds,
+			&i.PageWindowSeconds,
+			&i.PageGeneration,
+			&i.PageCheckpoint,
+			&i.PageSourceAt,
+			&i.PageProjectedAt,
+			&i.PageExaminedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -211,7 +238,7 @@ func (q *Queries) HealthLastTick(ctx context.Context, organizationID tracker.Org
 }
 
 const healthSummaryFindings = `-- name: HealthSummaryFindings :many
-SELECT organization_id, id, sequence, fingerprint, signal, class, subject_kind, subject_id, opened_at, last_seen_at, resolved_at, severity, summary, next_action, evidence_object_key, evidence_sha256, evidence_bytes, evidence_content_bytes, email_unavailable, slack_unavailable_at, slack_status_code FROM health_findings WHERE organization_id=$1 AND resolved_at IS NULL AND severity='attention'
+SELECT organization_id, id, sequence, fingerprint, signal, class, subject_kind, subject_id, opened_at, last_seen_at, resolved_at, severity, summary, next_action, evidence_object_key, evidence_sha256, evidence_bytes, evidence_content_bytes, email_unavailable, slack_unavailable_at, slack_status_code, page_event_ids, page_attempt_ids, page_work_item_ids, page_signatures, page_reason, page_count_keys, page_count_values, page_value_keys, page_value_values, page_queue_keys, page_queue_depths, page_queue_short, page_queue_long, page_queue_baseline, page_productivity_from, page_productivity_to, page_failure_stage, page_last_report_at, page_last_run_url, page_last_green_at, page_cadence_seconds, page_window_seconds, page_generation, page_checkpoint, page_source_at, page_projected_at, page_examined_at FROM health_findings WHERE organization_id=$1 AND resolved_at IS NULL AND severity='attention'
 ORDER BY opened_at,id LIMIT $2
 `
 
@@ -251,6 +278,33 @@ func (q *Queries) HealthSummaryFindings(ctx context.Context, arg HealthSummaryFi
 			&i.EmailUnavailable,
 			&i.SlackUnavailableAt,
 			&i.SlackStatusCode,
+			&i.PageEventIds,
+			&i.PageAttemptIds,
+			&i.PageWorkItemIds,
+			&i.PageSignatures,
+			&i.PageReason,
+			&i.PageCountKeys,
+			&i.PageCountValues,
+			&i.PageValueKeys,
+			&i.PageValueValues,
+			&i.PageQueueKeys,
+			&i.PageQueueDepths,
+			&i.PageQueueShort,
+			&i.PageQueueLong,
+			&i.PageQueueBaseline,
+			&i.PageProductivityFrom,
+			&i.PageProductivityTo,
+			&i.PageFailureStage,
+			&i.PageLastReportAt,
+			&i.PageLastRunUrl,
+			&i.PageLastGreenAt,
+			&i.PageCadenceSeconds,
+			&i.PageWindowSeconds,
+			&i.PageGeneration,
+			&i.PageCheckpoint,
+			&i.PageSourceAt,
+			&i.PageProjectedAt,
+			&i.PageExaminedAt,
 		); err != nil {
 			return nil, err
 		}
