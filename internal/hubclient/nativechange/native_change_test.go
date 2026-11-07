@@ -19,7 +19,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -29,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/scenariotest"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -77,9 +77,10 @@ const nativeChangeAdminToken = "native-change-admin"
 // nativeChangeHub is a real hub with a native project whose workflow has a
 // review lane, and a worker client and scheduler that claim from it.
 type nativeChangeHub struct {
+	config          hubserver.Config
 	leaseHolds      atomic.Int64
 	clock           func() time.Time
-	reopen          func(func(string) error)
+	reopen          func(func(tenantstore.Writer) error)
 	sourceDirectory string
 	review          string
 	organization    tracker.OrganizationID
@@ -252,6 +253,20 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	serve := func(w http.ResponseWriter, r *http.Request) {
 		requests.RLock()
 		defer requests.RUnlock()
+		if r.Method == http.MethodGet && (strings.HasSuffix(r.URL.Path, "/work-items") || r.URL.Query().Get("include") == "change") {
+			if err := testsupport.NativeChangeRefreshBoard(r.Context(), service, tracker.OrganizationID(config.Hosted.OrganizationID)); err != nil {
+				t.Errorf("refresh fixture board: %v", err)
+				http.Error(w, "fixture board unavailable", 500)
+				return
+			}
+		}
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reviews") {
+			if err := testsupport.NativeChangeRefreshReviews(r.Context(), config); err != nil {
+				t.Errorf("refresh fixture review evidence: %v", err)
+				http.Error(w, "fixture review evidence unavailable", 500)
+				return
+			}
+		}
 		service.Handler().ServeHTTP(w, r)
 	}
 	t.Cleanup(func() {
@@ -279,32 +294,24 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &nativeChangeHub{clock: config.Clock, review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), descriptor: clientTestPolicy()}
-	reopens := 0
-	h.reopen = func(seed func(string) error) {
+	h := &nativeChangeHub{config: config, clock: config.Clock, review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), descriptor: clientTestPolicy()}
+	h.reopen = func(seed func(tenantstore.Writer) error) {
 		t.Helper()
 		requests.Lock()
 		defer requests.Unlock()
 		if err := service.Close(); err != nil {
-			t.Fatalf("close fixture before seed: %v", err)
+			t.Fatal(err)
 		}
-		reopens++
-		seedPath := filepath.Join(filepath.Dir(config.DatabasePath), fmt.Sprintf("seed-%d.db", reopens))
-		if err := hubserver.BackupDatabase(t.Context(), config.DatabasePath, seedPath); err != nil {
-			t.Fatalf("snapshot stopped fixture: %v", err)
-		}
-		if err := seed(seedPath); err != nil {
-			t.Fatalf("seed stopped fixture: %v", err)
-		}
-		config.DatabasePath = seedPath
+		testsupport.NativeChangeWrite(t, config, seed)
 		service, err = hubserver.Open(t.Context(), config)
 		if err != nil {
-			t.Fatalf("reopen seeded fixture: %v", err)
+			t.Fatal(err)
 		}
 	}
+
 	project := testsupport.NativeChangeProject(t, config, states, requireDependencies)
 	h.project = project.ID
-	token := testsupport.NativeChangeWorker(t, config, project.ID, "machine-native-change")
+	token := testsupport.NativeChangeWorker(t, config, project.ID, testsupport.NativeChangeMachineID)
 	if h.admin, err = admin.Native(h.organization, h.project); err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +320,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	}
 	h.otherWorker = func(t *testing.T) *NativeClient {
 		t.Helper()
-		other := testsupport.NativeChangeWorker(t, config, project.ID, "machine-native-other")
+		other := testsupport.NativeChangeWorker(t, config, project.ID, testsupport.NativeChangeOtherMachineID)
 		client, err := newTestClient(t, Config{URL: serverURL, TokenSource: func() string { return other }, HTTPClient: httpClient})
 		if err != nil {
 			t.Fatal(err)
@@ -337,7 +344,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	}
 	h.scheduler, err = newTestScheduler(worker, SchedulerConfig{
 		OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project},
-		Machine:           Machine{ID: "machine-native-change", Hostname: "host", Capacity: 1, Version: "test"},
+		Machine:           Machine{ID: testsupport.NativeChangeMachineID, Hostname: "host", Capacity: 1, Version: "test"},
 		HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second,
 		LeaseHold: h.leaseHold,
 		Now:       time.Now,
@@ -364,8 +371,10 @@ func (h *nativeChangeHub) createInProgress(t *testing.T, title string) connector
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "In Progress", Reason: "user_requested"}); err != nil {
-		t.Fatal(err)
+	if current.State != "In Progress" {
+		if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "In Progress", Reason: "user_requested"}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return issue
 }
@@ -556,7 +565,7 @@ func TestNativeExecutionResumedVersionPublication(t *testing.T) {
 		t.Run(fmt.Sprintf("refusal=%t", refusal), func(t *testing.T) {
 			h := newNativeChangeHub(t, true)
 			var otherProject tracker.NativeProject
-			if err := h.admin.Transport().Request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/projects", map[string]any{"name": "another-project", "idempotency_key": "another-project", "states": []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}, &otherProject); err != nil {
+			if err := h.admin.Transport().Request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/projects", map[string]any{"name": "another-project", "grant_access": true, "idempotency_key": "another-project", "states": []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}, &otherProject); err != nil {
 				t.Fatal(err)
 			}
 			foreign, err := h.native.Transport().Native(h.organization, otherProject.ID)
@@ -727,160 +736,154 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 		{name: "completion after four minute outage", outage: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				h := newNativeChangeHub(t, true)
-				issue := h.createInProgress(t, "Native change")
-				candidate := h.claim(t, issue.ID)
-				if got := h.leaseHolds.Load(); got != 1 {
-					t.Fatalf("claim acquired %d fixture lease holds, want 1", got)
-				}
-				execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
-				originalTransport := fixtureClient(h.native.Transport()).requests.Load()
-				var offline atomic.Bool
-				if test.outage {
-					fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
-						if offline.Load() {
-							return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"tenant_unavailable"}`)), Request: request}, nil
-						}
-						return originalTransport.RoundTrip(request)
-					}))
-				}
-				guarded, stop, err := execution.Guard(t.Context())
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer stop()
-				execution.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("c"), "README.md"))
-				execution.SetRepository(nativeChangeRepository)
-				if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
-					t.Fatal(err)
-				}
-				checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unpushed", ExternalEffect: "none", EffectState: "none"}
-				if err := execution.Checkpoint(guarded, checkpoint); err != nil {
-					t.Fatal(err)
-				}
-				originalLease := execution.claim.lease
-				if test.restart {
-					if err := execution.PrepareFinish(guarded, "succeeded", "", nil); err != nil {
-						t.Fatal(err)
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Native change")
+			candidate := h.claim(t, issue.ID)
+			if got := h.leaseHolds.Load(); got != 1 {
+				t.Fatalf("claim acquired %d fixture lease holds, want 1", got)
+			}
+			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			originalTransport := fixtureClient(h.native.Transport()).requests.Load()
+			var offline atomic.Bool
+			if test.outage {
+				fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if offline.Load() {
+						return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"tenant_unavailable"}`)), Request: request}, nil
 					}
-				}
-				if test.outage {
-					offline.Store(true)
-					time.Sleep(2 * time.Minute)
-					synctest.Wait()
-				} else if test.ackLost {
-					var drop atomic.Bool
-					drop.Store(true)
-					fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
-						response, err := originalTransport.RoundTrip(request)
-						if err == nil && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/events") && drop.Swap(false) {
-							response.Body.Close()
-							return nil, errors.New("finished event acknowledgment lost")
-						}
-						return response, err
-					}))
-				} else {
-					h.failChanges.failEvents.Store(!test.version)
-					h.failChanges.failVersions.Store(test.version)
-				}
-				if !test.outage || test.completeDuring {
-					if err := execution.Finish(guarded, "succeeded"); err == nil || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-						t.Fatalf("unpublished finish = %v", err)
-					}
-					recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
-					wantOutcome := ""
-					if test.outage {
-						wantOutcome = "cancelled"
-					}
-					if test.ackLost {
-						wantOutcome = "succeeded"
-					}
-					if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Outcome != wantOutcome {
-						t.Fatalf("unpublished finish retired attempt: %+v, %v", recovery.Attempts, err)
-					}
-				}
-				if test.restart {
-					if execution.pending == nil || execution.pending.Type != "run.finished" {
-						t.Fatalf("finish transport failure did not retain terminal event: %+v", execution.pending)
-					}
-					pending, err := json.Marshal(execution.pending)
-					if err != nil {
-						t.Fatal(err)
-					}
-					saved := execution.CompletionState()
-					stop()
-					fixtureClient(h.native.Transport()).requests.Store(originalTransport)
-					h.failChanges.failEvents.Store(false)
-					machine := fixtureSchedulerMachine(h.scheduler)
-					h.scheduler, err = newTestScheduler(h.native.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
-					if err != nil {
-						t.Fatal(err)
-					}
-					if _, err := h.scheduler.RestoreCompletion(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, Repository: nativeChangeRepository}, candidate, saved); err != nil {
-						t.Fatal(err)
-					}
-					if got := h.leaseHolds.Load(); got != 2 {
-						t.Fatalf("completion restore acquired %d fixture lease holds, want 2", got)
-					}
-					execution = h.scheduler.RunExecution(issue.ID).(*nativeExecution)
-					restoredPending, err := json.Marshal(execution.pending)
-					if err != nil || string(restoredPending) != string(pending) || !sameCompletionLease(execution.claim.lease, originalLease) {
-						t.Fatalf("restoration changed pending finish or authority: want=%s got=%s error=%v", pending, restoredPending, err)
-					}
-					guarded = t.Context()
-				}
-				if test.outage {
-					time.Sleep(2 * time.Minute)
-					synctest.Wait()
-					if guarded.Err() != nil {
-						t.Fatalf("outage canceled worker: %v", context.Cause(guarded))
-					}
-					offline.Store(false)
-					time.Sleep(30 * time.Second)
-					synctest.Wait()
-				} else {
-					h.failChanges.failEvents.Store(false)
-					h.failChanges.failVersions.Store(false)
-				}
-				if test.outage {
-					if err := execution.Validate(guarded); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-						t.Fatalf("expired execution retained authority: %v", err)
-					}
-					recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
-					if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "cancelled" || recovery.Attempts[0].Checkpoint == nil || recovery.Attempts[0].Checkpoint.WorktreeState != "unpushed" {
-						t.Fatalf("expired execution lost recovery evidence: %+v, %v", recovery.Attempts, err)
-					}
-					replacement, err := h.native.Claim(t.Context(), tracker.NativeClaim{PolicyID: h.descriptor.ID, WorkItemID: tracker.NativeWorkItemID(issue.ID), MachineID: originalLease.MachineID, SessionID: "outage-retry", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
-					if err != nil || replacement.ID == originalLease.ID || replacement.FencingToken <= originalLease.FencingToken {
-						t.Fatalf("expired execution did not return to claim eligibility: %+v, %v", replacement, err)
-					}
-					return
-				}
-				if err := execution.Validate(guarded); err != nil {
-					t.Fatal(err)
-				}
+					return originalTransport.RoundTrip(request)
+				}))
+			}
+			guarded, stop, err := execution.Guard(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stop()
+			execution.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("c"), "README.md"))
+			execution.SetRepository(nativeChangeRepository)
+			if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unpushed", ExternalEffect: "none", EffectState: "none"}
+			if err := execution.Checkpoint(guarded, checkpoint); err != nil {
+				t.Fatal(err)
+			}
+			originalLease := execution.claim.lease
+			if test.restart {
 				if err := execution.PrepareFinish(guarded, "succeeded", "", nil); err != nil {
 					t.Fatal(err)
 				}
-				change := execution.NativeChange()
-				if change == nil || change.Error != "" || change.VersionError != "" || change.VersionID == "" {
-					t.Fatalf("reconnected publication = %+v", change)
+			}
+			if test.outage {
+				offline.Store(true)
+				fixtureSetNow(h.scheduler, h.scheduler.Now().Add(2*time.Minute))
+				testsupport.NativeChangeExpireLease(t, h.config, execution.claim.lease.ID)
+			} else if test.ackLost {
+				var drop atomic.Bool
+				drop.Store(true)
+				fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					response, err := originalTransport.RoundTrip(request)
+					if err == nil && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/events") && drop.Swap(false) {
+						response.Body.Close()
+						return nil, errors.New("finished event acknowledgment lost")
+					}
+					return response, err
+				}))
+			} else {
+				h.failChanges.failEvents.Store(!test.version)
+				h.failChanges.failVersions.Store(test.version)
+			}
+			if !test.outage || test.completeDuring {
+				if err := execution.Finish(guarded, "succeeded"); err == nil || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+					t.Fatalf("unpublished finish = %v", err)
 				}
-				h.complete(t, issue.ID, change)
 				recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
-				if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "succeeded" || recovery.Attempts[0].LeaseID != originalLease.ID || recovery.Attempts[0].FencingToken != originalLease.FencingToken || h.state(t, issue.ID) != "In Review" || len(h.candidates(t)) != 0 {
-					t.Fatalf("reconnect lost outcome or restarted attempt: %+v, %v", recovery.Attempts, err)
+				wantOutcome := ""
+				if test.ackLost {
+					wantOutcome = "succeeded"
 				}
-				changes := h.changes(t, issue.ID)
-				if len(changes) != 1 {
-					t.Fatalf("changes = %+v", changes)
+				if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Outcome != wantOutcome {
+					t.Fatalf("unpublished finish retired attempt: %+v, %v", recovery.Attempts, err)
 				}
-				detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), changes[0].ID)
-				if err != nil || len(detail.Versions) != 1 {
-					t.Fatalf("replay duplicated version: %+v, %v", detail.Versions, err)
+			}
+			if test.restart {
+				if execution.pending == nil || execution.pending.Type != "run.finished" {
+					t.Fatalf("finish transport failure did not retain terminal event: %+v", execution.pending)
 				}
-			})
+				pending, err := json.Marshal(execution.pending)
+				if err != nil {
+					t.Fatal(err)
+				}
+				saved := execution.CompletionState()
+				stop()
+				fixtureClient(h.native.Transport()).requests.Store(originalTransport)
+				h.failChanges.failEvents.Store(false)
+				machine := fixtureSchedulerMachine(h.scheduler)
+				h.scheduler, err = newTestScheduler(h.native.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.scheduler.RestoreCompletion(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, Repository: nativeChangeRepository}, candidate, saved); err != nil {
+					t.Fatal(err)
+				}
+				if got := h.leaseHolds.Load(); got != 2 {
+					t.Fatalf("completion restore acquired %d fixture lease holds, want 2", got)
+				}
+				execution = h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+				restoredPending, err := json.Marshal(execution.pending)
+				if err != nil || string(restoredPending) != string(pending) || !sameCompletionLease(execution.claim.lease, originalLease) {
+					t.Fatalf("restoration changed pending finish or authority: want=%s got=%s error=%v", pending, restoredPending, err)
+				}
+				guarded = t.Context()
+			}
+			if test.outage {
+				fixtureSetNow(h.scheduler, h.scheduler.Now().Add(2*time.Minute))
+				testsupport.NativeChangeExpireLease(t, h.config, execution.claim.lease.ID)
+				if guarded.Err() != nil {
+					t.Fatalf("outage canceled worker: %v", context.Cause(guarded))
+				}
+				offline.Store(false)
+				fixtureSetNow(h.scheduler, h.scheduler.Now().Add(30*time.Second))
+			} else {
+				h.failChanges.failEvents.Store(false)
+				h.failChanges.failVersions.Store(false)
+			}
+			if test.outage {
+				if err := execution.Validate(guarded); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+					t.Fatalf("expired execution retained authority: %v", err)
+				}
+				recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+				if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "interrupted" || recovery.Attempts[0].Checkpoint == nil || recovery.Attempts[0].Checkpoint.WorktreeState != "unpushed" {
+					t.Fatalf("expired execution lost recovery evidence: %+v, %v", recovery.Attempts, err)
+				}
+				replacement, err := h.native.Claim(t.Context(), tracker.NativeClaim{PolicyID: h.descriptor.ID, WorkItemID: tracker.NativeWorkItemID(issue.ID), MachineID: originalLease.MachineID, SessionID: "outage-retry", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+				if err != nil || replacement.ID == originalLease.ID || replacement.FencingToken <= originalLease.FencingToken {
+					t.Fatalf("expired execution did not return to claim eligibility: %+v, %v", replacement, err)
+				}
+				return
+			}
+			if err := execution.Validate(guarded); err != nil {
+				t.Fatal(err)
+			}
+			if err := execution.PrepareFinish(guarded, "succeeded", "", nil); err != nil {
+				t.Fatal(err)
+			}
+			change := execution.NativeChange()
+			if change == nil || change.Error != "" || change.VersionError != "" || change.VersionID == "" {
+				t.Fatalf("reconnected publication = %+v", change)
+			}
+			h.complete(t, issue.ID, change)
+			recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "succeeded" || recovery.Attempts[0].LeaseID != originalLease.ID || recovery.Attempts[0].FencingToken != originalLease.FencingToken || h.state(t, issue.ID) != "In Review" || len(h.candidates(t)) != 0 {
+				t.Fatalf("reconnect lost outcome or restarted attempt: %+v, %v", recovery.Attempts, err)
+			}
+			changes := h.changes(t, issue.ID)
+			if len(changes) != 1 {
+				t.Fatalf("changes = %+v", changes)
+			}
+			detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), changes[0].ID)
+			if err != nil || len(detail.Versions) != 1 {
+				t.Fatalf("replay duplicated version: %+v, %v", detail.Versions, err)
+			}
 		})
 	}
 }
@@ -1245,10 +1248,6 @@ func nativeChangeGitWithContext(ctx context.Context, t *testing.T, dir string, a
 
 func isolateNativeChangeGit(t *testing.T) {
 	t.Helper()
-	scratch := t.TempDir()
-	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
-		t.Setenv(key, scratch)
-	}
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_AUTHOR_NAME", "Test User")
@@ -1262,9 +1261,6 @@ func isolateNativeChangeGit(t *testing.T) {
 // version, not once the policy asks for more, and an error for a change the
 // item does not have.
 func TestNativeConnectorChangeReviewed(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 
 	t.Parallel()
 	h := newNativeChangeHub(t)
@@ -1351,5 +1347,16 @@ func TestHumanBlockedHoldOutranksRunnerLease(t *testing.T) {
 				t.Fatalf("state = %s, want %s", got, test.want)
 			}
 		})
+	}
+}
+
+func (h *nativeChangeHub) move(t *testing.T, item, state string) {
+	t.Helper()
+	issue, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(item))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.admin.Transition(t.Context(), issue.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: issue.Revision, State: state, Reason: "user_requested"}); err != nil {
+		t.Fatal(err)
 	}
 }
