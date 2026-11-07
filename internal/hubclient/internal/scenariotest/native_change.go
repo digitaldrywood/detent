@@ -140,10 +140,6 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
 	newTestClient := func(t testing.TB, config Config) (*Client, error) { return createTestClient(t, config, factories) }
 
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	isolateNativeChangeGit(t)
 	sourceSeed := nativeChangeSourceRepo(t)
 
@@ -1591,7 +1587,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				if err := h.native.Release(t.Context(), oldLease, "released"); err != nil {
 					t.Fatal(err)
 				}
-				machineID := tracker.MachineID("machine-native-change")
+				machineID := tracker.MachineID(testsupport.NativeChangeMachineID)
 				if test.PublicationFault == "foreign_source" || test.ForeignRunner {
 					machineID = "foreign-machine"
 				}
@@ -2064,6 +2060,9 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				currentFeedback.Discussion = slices.DeleteFunc(slices.Clone(expected.Discussion), func(d tracker.ChangeDiscussion) bool {
 					return d.VersionID != "" && d.VersionID != expected.Change.CurrentVersion
 				})
+				if len(currentFeedback.Reviews) == 0 {
+					currentFeedback.Reviews = nil
+				}
 				if len(currentFeedback.Checks) == 0 {
 					currentFeedback.Checks = nil
 				}
@@ -2657,6 +2656,20 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	serve := func(w http.ResponseWriter, r *http.Request) {
 		requests.RLock()
 		defer requests.RUnlock()
+		if r.Method == http.MethodGet && (strings.HasSuffix(r.URL.Path, "/work-items") || r.URL.Query().Get("include") == "change") {
+			if err := testsupport.NativeChangeRefreshBoard(r.Context(), service, tracker.OrganizationID(config.Hosted.OrganizationID)); err != nil {
+				t.Errorf("refresh fixture board: %v", err)
+				http.Error(w, "fixture board unavailable", 500)
+				return
+			}
+		}
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reviews") {
+			if err := testsupport.NativeChangeRefreshReviews(r.Context(), config); err != nil {
+				t.Errorf("refresh fixture review evidence: %v", err)
+				http.Error(w, "fixture review evidence unavailable", 500)
+				return
+			}
+		}
 		service.Handler().ServeHTTP(w, r)
 	}
 	t.Cleanup(func() {
@@ -2684,7 +2697,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &nativeChangeHub{clock: config.Clock, review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), descriptor: clientTestPolicy()}
+	h := &nativeChangeHub{config: config, clock: config.Clock, review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), descriptor: clientTestPolicy()}
 	h.seed = func(write func(tenantstore.Writer) error) {
 		testsupport.NativeChangeWrite(t, config, write)
 	}
@@ -2712,7 +2725,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	}
 	project := testsupport.NativeChangeProject(t, config, states, requireDependencies)
 	h.project = project.ID
-	token := testsupport.NativeChangeWorker(t, config, project.ID, "machine-native-change")
+	token := testsupport.NativeChangeWorker(t, config, project.ID, testsupport.NativeChangeMachineID)
 	if h.admin, err = admin.Native(h.organization, h.project); err != nil {
 		t.Fatal(err)
 	}
@@ -2721,7 +2734,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	}
 	h.otherWorker = func(t *testing.T) *NativeClient {
 		t.Helper()
-		other := testsupport.NativeChangeWorker(t, config, project.ID, "machine-native-other")
+		other := testsupport.NativeChangeWorker(t, config, project.ID, testsupport.NativeChangeOtherMachineID)
 		client, err := newTestClient(t, Config{URL: serverURL, TokenSource: func() string { return other }, HTTPClient: httpClient})
 		if err != nil {
 			t.Fatal(err)
@@ -2745,7 +2758,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	}
 	h.scheduler, err = newTestScheduler(worker, SchedulerConfig{
 		OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project},
-		Machine:           Machine{ID: "machine-native-change", Hostname: "host", Capacity: 1, Version: "test"},
+		Machine:           Machine{ID: testsupport.NativeChangeMachineID, Hostname: "host", Capacity: 1, Version: "test"},
 		HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second,
 		LeaseHold: h.leaseHold,
 		Now:       config.Clock,
@@ -2769,6 +2782,7 @@ func (h *nativeChangeHub) publish(t *testing.T, item tracker.NativeWorkItemID, c
 // nativeChangeHub is a real hub with a native project whose workflow has a
 // review lane, and a worker client and scheduler that claim from it.
 type nativeChangeHub struct {
+	config          hubserver.Config
 	leaseHolds      atomic.Int64
 	clock           func() time.Time
 	reopen          func(func(string) error)
@@ -3060,12 +3074,7 @@ func (h *nativeChangeHub) publicationCI(t *testing.T) *NativeClient {
 		ID    string `json:"id"`
 		Token string `json:"token"`
 	}
-	if err := h.admin.Transport().Request(t.Context(), http.MethodPost, "/api/v1/tokens", map[string]string{"name": "publication-fixture-ci", "scope": "operator"}, &token); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.admin.Transport().Request(t.Context(), http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", map[string]any{"organization_id": h.organization, "project_id": h.project}, nil); err != nil {
-		t.Fatal(err)
-	}
+	token.ID, token.Token = testsupport.NativeChangeServiceCredential(t, h.config, h.project, "operator")
 	client, err := createTestClient(t, Config{URL: fixtureClient(h.admin.Transport()).baseURL.String(), TokenSource: func() string { return token.Token }, HTTPClient: fixtureClient(h.admin.Transport()).httpClient})
 	if err != nil {
 		t.Fatal(err)

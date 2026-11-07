@@ -56,26 +56,24 @@ func (s *archivedRunDetails) StoreDetail(_ context.Context, organization string,
 	return ref, nil
 }
 
+type nativeArchiveStorage struct {
+	attachment.Storage
+	data []byte
+}
+
+func (s nativeArchiveStorage) Open(context.Context, string) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(s.data)), nil
+}
 func (s *archivedRunDetails) ReadCanonicalDetail(ctx context.Context, organization, project, key string) ([]byte, error) {
 	if err := attachment.ValidateCanonicalDetailKey(organization, project, key); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
-	compressed := bytes.Clone(s.archives[key])
+	compressed, ok := s.archives[key]
+	compressed = bytes.Clone(compressed)
 	s.mu.Unlock()
-	if artifact.Digest(compressed) != key[strings.LastIndex(key, "/")+1:] {
-		return nil, artifact.ErrIntegrity
+	if !ok {
+		return nil, artifact.ErrMissing
 	}
-	reader, err := gzip.NewReader(bytes.NewReader(compressed))
-	if err != nil {
-		return nil, err
-	}
-	data, err := io.ReadAll(io.LimitReader(reader, attachment.MaxArchiveBytes+1))
-	if err := errors.Join(err, reader.Close(), ctx.Err()); err != nil {
-		return nil, err
-	}
-	if len(data) > attachment.MaxArchiveBytes {
-		return nil, artifact.ErrIntegrity
-	}
-	return s.ReadDetail(ctx, organization, attachment.ArchiveReference{Key: key, SHA256: artifact.Digest(compressed), CompressedSize: int64(len(compressed)), UncompressedSize: int64(len(data)), Codec: "gzip", SchemaVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention})
+	return attachment.ReadCanonicalArchive(ctx, nativeArchiveStorage{data: compressed}, organization, project, key)
 }

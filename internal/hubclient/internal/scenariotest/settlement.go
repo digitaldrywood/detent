@@ -112,9 +112,6 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 	}
 
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 	t.Parallel()
 	base := nativeChangeFixtureHead("a")
 	head := nativeChangeFixtureHead("c")
@@ -149,7 +146,11 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 			}
 			issue := h.createInProgress(t, "Native change")
 			if test.ReleasedBlocked {
-				if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Todo"); err != nil {
+				current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Todo", Reason: "user_requested"}); err != nil {
 					t.Fatal(err)
 				}
 				confirmIssueContract(t, h.admin, issue.ID)
@@ -478,7 +479,11 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 									t.Fatal(err)
 								}
 								confirmIssueContract(t, h.admin, issue.ID)
-								if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "In Progress"); err != nil {
+								currentIssue, err = h.admin.Issue(t.Context(), item)
+								if err != nil {
+									t.Fatal(err)
+								}
+								if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: "In Progress", Reason: "user_requested"}); err != nil {
 									t.Fatal(err)
 								}
 							}
@@ -1557,6 +1562,14 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 						}
 						if retained.CompletionData().PolicyID != retained.claim.lease.PolicyID || retained.CompletionData().PolicyID == h.descriptor.ID || retained.CompletionSnapshot().Diff == nil || retained.CompletionSnapshot().Diff.HeadSHA != head {
 							t.Fatal("configuration change lost pinned execution source")
+						}
+						path, err := api.NativeAttemptDiffPath(retained.CompletionData().AttemptID)
+						if err != nil {
+							t.Fatal(err)
+						}
+						var diff tracker.AttemptDiff
+						if err := h.admin.Transport().Request(t.Context(), http.MethodGet, h.admin.Scope()+path, nil, &diff); err != nil || diff.HeadSHA != head || diff.Producer.LeaseID != retained.claim.lease.ID || diff.Producer.FencingToken != retained.claim.lease.FencingToken {
+							t.Fatalf("configuration change lost the Hub-owned source: %+v, %v", diff, err)
 						}
 						return
 					}

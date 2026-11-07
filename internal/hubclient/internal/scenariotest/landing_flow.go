@@ -36,9 +36,6 @@ import (
 func RunLandingScenarios(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
 	factories = nonBatchingConstructors(factories)
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 
 	t.Parallel()
 	for _, test := range []struct {
@@ -231,9 +228,6 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 func RunLinkedLandingScenarios(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
 	factories = nonBatchingConstructors(factories)
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 
 	t.Parallel()
 	for _, test := range []struct {
@@ -981,7 +975,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		t.Fatal(err)
 	}
 	if len(detail.Versions) != 1 || !reflect.DeepEqual(detail.Versions[0].Landing, evidence.Attempt.Runtime.Landing) || detail.Versions[0].Landing.FromState != landingState || detail.Versions[0].Landing.TargetState != "Done" || detail.Versions[0].PolicyID != publishedPolicyID || detail.Change.Landed == nil || !detail.Change.Landed.Rebased || detail.Change.Landed.MergeSHA != landed.MergeSHA || detail.Summary.Status != "landed" {
-		t.Fatalf("landed change = %#v, summary %#v", detail.Change.Landed, detail.Summary)
+		t.Fatalf("landed change = %#v, summary %#v, versions=%d landing=%+v runtime=%+v expected_state=%s", detail.Change.Landed, detail.Summary, len(detail.Versions), detail.Versions[0].Landing, evidence.Attempt.Runtime.Landing, landingState)
 	}
 	if otherMachine != "" {
 		testNativeLandingUsesCurrentMachine(t, h, item)
