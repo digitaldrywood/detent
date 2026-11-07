@@ -91,6 +91,9 @@ func PrepareVersion(ctx context.Context, reader VersionReader, host VersionAutho
 			return runner.NativeValidation{}, err
 		}
 		diff := &connector.ValidationDiff{Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Digest: policy.Digest(raw)}
+		if version.Source != nil {
+			diff.Digest = version.Source.DiffSHA256
+		}
 		var patch strings.Builder
 		complete := true
 		for _, file := range state.Diff.Files {
