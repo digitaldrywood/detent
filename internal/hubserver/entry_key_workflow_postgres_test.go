@@ -353,6 +353,9 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 				t.Error(err)
 			}
 		})
+		if err := other.stopGitHubWebhookMaintenance(); err != nil {
+			t.Fatal(err)
+		}
 		other.config.Hosted.SharedEntry.verifier.Now = cfg.now
 		poolConfig := postgresStartupTemplate.NativeConfig(t, admin, connection.User, connection.Password)
 		poolConfig.MaxConns = int32(cfg.Postgres.Pool.MaxConnections)
