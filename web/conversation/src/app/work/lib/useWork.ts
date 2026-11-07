@@ -21,7 +21,7 @@ export function workHttpFor(client: ReturnType<typeof useClient>): WorkHttp {
   if (http === undefined) {
     const owner = boardAccountKey(client);
     http = makeWorkHttp({ origin: client.http.origin, apiBase: client.http.apiBase, csrfToken: client.http.csrfToken,
-      onAuthorizationRejected: () => rejectBoardCache(owner), onConfirmed: (issue) => confirmWorkItem(issue, owner) });
+      onAuthorizationRejected: (projectId) => rejectBoardCache(owner, projectId), onConfirmed: (issue) => confirmWorkItem(issue, owner) });
     clients.set(client, http);
   }
   return http;

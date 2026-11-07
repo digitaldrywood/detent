@@ -55,6 +55,7 @@ import {
   WorkItemDiff,
 } from "../../../contracts/work.ts";
 import { hubPath } from "../../../runtime/basePath.ts";
+import { currentEpoch } from "../../lib/queryCache.ts";
 
 /**
  * A failed request.
@@ -66,6 +67,7 @@ import { hubPath } from "../../../runtime/basePath.ts";
  */
 export class WorkApiError extends Error {
   authorizationConfirmed = false;
+  authorizationProject: string | undefined;
   readonly status: number;
   readonly code: string;
   readonly currentRevision: string | null;
@@ -142,7 +144,7 @@ export interface WorkHttpOptions {
   readonly apiBase: string;
   readonly csrfToken: string;
   readonly fetch?: FetchLike;
-  readonly onAuthorizationRejected?: () => void;
+  readonly onAuthorizationRejected?: (projectId?: string) => void;
   readonly onConfirmed?: (issue: NativeIssue) => void;
 }
 
@@ -488,21 +490,54 @@ function actionFields(input: {
 
 export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   const doFetch: FetchLike = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
-  let authorizationCheck: Promise<{ denied: boolean; notified: boolean }> | undefined;
-  const confirmDenial = () => {
-    authorizationCheck ??= (async () => {
-      try {
-        const request = (path: string) => doFetch(`${options.origin}${hubPath(path)}`, {
-          credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" },
-        });
-        let response = await request("/app/bootstrap");
-        if (response.status === 404) response = await request("/chat/bootstrap");
-        return { denied: [401, 403].includes(response.status), notified: false };
-      } catch {
-        return { denied: false, notified: false };
+  const requestAuthorization = (path: string) => doFetch(`${options.origin}${path}`, {
+    credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" },
+  });
+  const checkAuthorization = async () => {
+    const owner = currentEpoch();
+    let denied = false;
+    let projects: readonly { readonly id: string }[] | undefined;
+    try {
+      let response = await requestAuthorization(hubPath("/app/bootstrap"));
+      if (response.status === 404) response = await requestAuthorization(hubPath("/chat/bootstrap"));
+      denied = [401, 403].includes(response.status);
+      if (response.ok) projects = Schema.decodeUnknownSync(Schema.Struct({ projects: Schema.Array(Schema.Struct({ id: Schema.String })) }))(await response.json()).projects;
+    } catch { projects = undefined; }
+    return { owner, denied, projects, checks: new Map<string, Promise<number>>(), notified: new Set<string>() };
+  };
+  let authorizationCheck: ReturnType<typeof checkAuthorization> | undefined;
+  let authorizationWaiters = 0;
+  const confirmDenial = async (target: string) => {
+    authorizationWaiters++;
+    try {
+      const confirmation = await (authorizationCheck ??= checkAuthorization());
+      let denied = confirmation.denied;
+      let projectId: string | undefined;
+      const match = new URL(target, globalThis.location?.origin ?? "http://localhost").pathname.match(/\/projects\/([^/]+)/);
+      if (!denied && confirmation.projects !== undefined && match !== null) {
+        projectId = decodeURIComponent(match[1]!);
+        if (!confirmation.projects.some((project) => project.id === projectId)) denied = true;
+        else {
+          let check = confirmation.checks.get(projectId);
+          if (check === undefined) {
+            check = requestAuthorization(projectBase(projectId)).then((response) => response.status, () => 0);
+            confirmation.checks.set(projectId, check);
+          }
+          const status = await check;
+          denied = [401, 403].includes(status);
+          if (status === 401) projectId = undefined;
+        }
       }
-    })().finally(() => { authorizationCheck = undefined; });
-    return authorizationCheck;
+      if (confirmation.owner !== currentEpoch()) return { denied: false, projectId: undefined };
+      if (denied && !confirmation.notified.has(projectId ?? "")) {
+        confirmation.notified.add(projectId ?? "");
+        invalidateArchiveAccess(target, 403);
+        options.onAuthorizationRejected?.(projectId);
+      }
+      return { denied, projectId };
+    } finally {
+      if (--authorizationWaiters === 0) authorizationCheck = undefined;
+    }
   };
   const projectBase = (projectId: string) =>
     `${options.apiBase}/projects/${encodeURIComponent(projectId)}`;
@@ -534,6 +569,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     signal?: AbortSignal,
     keepalive = false,
   ): Promise<A> {
+    const owner = currentEpoch();
     const headers: Record<string, string> = { Accept: "application/json", "X-Detent-Archive-Read": "1" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     if (MUTATIONS.has(method)) headers["X-CSRF-Token"] = options.csrfToken;
@@ -565,17 +601,11 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     }
     if (!response.ok) {
       const failure = errorFromBody(response.status, parsed);
-      if (!signal?.aborted && [401, 403].includes(response.status)) {
-        const confirmation = await confirmDenial();
+      if (!signal?.aborted && owner === currentEpoch() && [401, 403].includes(response.status)) {
+        const confirmation = await confirmDenial(target);
         failure.authorizationConfirmed = confirmation.denied;
-        if (failure.authorizationConfirmed && !signal?.aborted) {
-          invalidateArchiveAccess(target, response.status);
-          if (!confirmation.notified) {
-            confirmation.notified = true;
-            options.onAuthorizationRejected?.();
-          }
-        }
-      } else if (!signal?.aborted) invalidateArchiveAccess(target, response.status);
+        failure.authorizationProject = confirmation.projectId;
+      } else if (!signal?.aborted && owner === currentEpoch()) invalidateArchiveAccess(target, response.status);
       if (failure.code === "archive_unavailable") throw new ArchiveUnavailable("missing section");
       throw failure;
     }

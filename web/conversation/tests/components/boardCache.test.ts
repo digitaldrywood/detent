@@ -27,30 +27,115 @@ async function fixture() {
 }
 
 describe("the Work snapshot ordering", () => {
-  it.each([false, true])("shares denial confirmation and ignores canceled reads (aborted %s)", async (aborted) => {
+  it.each(["live", "all-canceled", "mixed", "account-switch", "new-login", "account-switch-live", "new-login-live"])("publishes shared denial for the current cache (%s)", async (mode) => {
     const source = workPaginationFixture();
+    await source.control();
+    const writes = vi.spyOn(disk, "updateBoardDisk").mockResolvedValue();
+    vi.spyOn(disk, "readBoardDisk").mockResolvedValue(null);
     const probe = deferred<Response>();
-    const controller = new AbortController();
-    const rejected = vi.fn();
+    const controllers = [new AbortController(), new AbortController()];
+    const owner = boardAccountKey(source.client);
+    const rejected = vi.fn((projectId?: string) => rejectBoardCache(owner, projectId));
+    let refuse = false;
     let probes = 0;
-    const fetch: FetchLike = async (input) => {
+    const fetch: FetchLike = async (input, init) => {
       if (input.endsWith("/app/bootstrap")) { probes++; return probe.promise; }
-      return Response.json({ code: "access_denied" }, { status: 403 });
+      return refuse ? Response.json({ code: "access_denied" }, { status: 403 }) : source.fetch(input, init);
     };
     const http = makeWorkHttp({ ...source.client.http, fetch, onAuthorizationRejected: rejected });
-    const pending = Promise.allSettled([http.getProject("proj_alpha", controller.signal), http.getProject("proj_beta", controller.signal)]);
+    const reads = ["proj_alpha", "proj_beta"].map((id) => getBoardRead(source.client, http, id, DEFAULT_VIEW_STATE));
+    let pending = Promise.allSettled<unknown>([]);
     try {
+      reads.forEach((read) => read.start());
+      await expect.poll(() => reads.every((read) => read.snapshot().resolved)).toBe(true);
+      expect(reads.every((read) => read.snapshot().items.length > 0)).toBe(true);
+      refuse = true;
+      pending = Promise.allSettled([http.getProject("proj_alpha", controllers[0]!.signal), http.getProject("proj_beta", controllers[1]!.signal)]);
       await expect.poll(() => probes).toBe(1);
       expect(rejected).not.toHaveBeenCalled();
-      if (aborted) controller.abort();
+      if (!mode.endsWith("live")) controllers[0]!.abort();
+      if (!mode.endsWith("live") && mode !== "mixed") controllers[1]!.abort();
+      const switched = mode.startsWith("account-switch") || mode.startsWith("new-login");
+      if (switched) {
+        clearBoardCache();
+        const client = mode.startsWith("new-login") ? source.client : { ...source.client,
+          bootstrap: { ...source.client.bootstrap, actor: { ...source.client.bootstrap.actor, principal_id: "another" } } };
+        refuse = false;
+        const next = getBoardRead(client, http, "proj_beta", DEFAULT_VIEW_STATE);
+        reads.push(next);
+        next.start();
+        await expect.poll(() => next.snapshot().resolved).toBe(true);
+      }
+      const before = writes.mock.calls.length;
+      setQueryData(["archive", "cached"], "protected");
       probe.resolve(Response.json({}, { status: 401 }));
       expect((await pending).every((result) => result.status === "rejected")).toBe(true);
       expect(probes).toBe(1);
-      expect(rejected).toHaveBeenCalledTimes(aborted ? 0 : 1);
+      expect(rejected).toHaveBeenCalledTimes(switched ? 0 : 1);
+      if (switched) {
+        expect(reads.at(-1)!.snapshot().items.length).toBeGreaterThan(0);
+        expect(writes.mock.calls).toHaveLength(before);
+        expect(getQueryData(["archive", "cached"])).toBe("protected");
+      } else {
+        expect(reads.every((read) => read.snapshot().items.length === 0)).toBe(true);
+        expect(writes.mock.calls.at(-1)?.[0]).toBeNull();
+        expect(getQueryData(["archive", "cached"])).toBeUndefined();
+      }
+    } finally {
+      controllers.forEach((controller) => controller.abort());
+      probe.resolve(Response.json({}, { status: 503 }));
+      await pending;
+      reads.forEach((read) => read.dispose());
+    }
+  });
+
+  it.each([
+    { mode: "omitted", canceled: false }, { mode: "project-403", canceled: false },
+    { mode: "omitted", canceled: true }, { mode: "project-403", canceled: true },
+  ])("evicts only the denied project after bootstrap success ($mode, canceled $canceled)", async ({ mode, canceled }) => {
+    const source = workPaginationFixture();
+    await source.control();
+    const writes = vi.spyOn(disk, "updateBoardDisk").mockResolvedValue();
+    vi.spyOn(disk, "readBoardDisk").mockResolvedValue(null);
+    const owner = boardAccountKey(source.client);
+    const rejected = vi.fn((projectId?: string) => rejectBoardCache(owner, projectId));
+    const probe = deferred<Response>();
+    const controller = new AbortController();
+    let probes = 0;
+    let refuse = false;
+    const fetch: FetchLike = async (input, init) => {
+      if (input.endsWith("/app/bootstrap")) { probes++; return probe.promise; }
+      if (refuse && input.includes("/projects/proj_alpha")) return Response.json({ code: "access_denied" }, { status: 403 });
+      return source.fetch(input, init);
+    };
+    const http = makeWorkHttp({ ...source.client.http, fetch, onAuthorizationRejected: rejected });
+    const reads = ["proj_alpha", "proj_beta"].map((id) => getBoardRead(source.client, http, id, DEFAULT_VIEW_STATE));
+    let pending = Promise.allSettled<unknown>([]);
+    try {
+      reads.forEach((read) => read.start());
+      await expect.poll(() => reads.every((read) => read.snapshot().resolved)).toBe(true);
+      const allowed = reads[1]!.snapshot().items;
+      expect(reads[0]!.snapshot().items.length).toBeGreaterThan(0);
+      expect(allowed.length).toBeGreaterThan(0);
+      refuse = true;
+      reads[0]!.reload();
+      pending = Promise.allSettled([http.getProject("proj_alpha", controller.signal)]);
+      await expect.poll(() => probes).toBe(1);
+      if (canceled) { reads[0]!.dispose(); controller.abort(); }
+      probe.resolve(Response.json({ ...source.client.bootstrap,
+        projects: source.client.bootstrap.projects.filter((project) => mode !== "omitted" || project.id !== "proj_alpha") }));
+      await pending;
+      await expect.poll(() => reads[0]!.snapshot().refreshing).toBe(false);
+      expect(rejected).toHaveBeenCalledTimes(1);
+      expect(rejected).toHaveBeenCalledWith("proj_alpha");
+      expect(reads[0]!.snapshot().items).toHaveLength(0);
+      expect(reads[1]!.snapshot().items).toBe(allowed);
+      expect(writes.mock.calls.at(-1)?.[0]).toBeNull();
     } finally {
       controller.abort();
       probe.resolve(Response.json({}, { status: 503 }));
       await pending;
+      reads.forEach((read) => read.dispose());
     }
   });
 
@@ -82,7 +167,7 @@ describe("the Work snapshot ordering", () => {
       expect(rejected).not.toHaveBeenCalled();
       expect(read.snapshot().items).toBe(items);
       expect(source.requests.some((request) => request.signal?.aborted)).toBe(false);
-      probe.resolve(Response.json({}, { status }));
+      probe.resolve(Response.json(source.client.bootstrap, { status }));
       await expect.poll(() => read.snapshot().refreshing).toBe(false);
       expect(probes).toBe(1);
       if ([401, 403].includes(status)) {

@@ -295,7 +295,7 @@ export function authorizeQueryCache(next: string): void {
   account = next;
 }
 
-function currentEpoch(): number {
+export function currentEpoch(): number {
   return epoch;
 }
 

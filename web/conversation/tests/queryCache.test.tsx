@@ -122,33 +122,41 @@ describe("a refused read", () => {
     const lateArchive = [...archive, "pending"];
     const late = fetchArchiveQuery(lateArchive, 1, () => pending.promise).then(() => null, (error: unknown) => error);
     const requests: string[] = [];
-    const http = makeWorkHttp({
-      origin: "", apiBase: "/api", csrfToken: "token",
-      fetch: async (input) => {
-        requests.push(String(input));
-        return Response.json({ code: "forbidden", message: "Forbidden" }, { status: String(input).endsWith("/projects/missing") ? 404 : status });
-      },
-      onAuthorizationRejected: () => rejectBoardCache("account-one"),
-    });
-    await expect(http.getProject("missing")).rejects.toMatchObject({ status: 404 });
-    expect(getQueryData(archive)).toBe("decoded archive");
-    const other = vi.fn(async () => "report");
-    function IssueProbe() {
-      const issue = useIssue(http, "wi_refused");
-      return <div data-testid="issue">{issue.error}</div>;
+    try {
+      const http = makeWorkHttp({
+        origin: "", apiBase: "/api", csrfToken: "token",
+        fetch: async (input) => {
+          requests.push(String(input));
+          return Response.json({ code: "forbidden", message: "Forbidden" }, { status: String(input).endsWith("/projects/missing") ? 404 : status });
+        },
+        onAuthorizationRejected: () => rejectBoardCache("account-one"),
+      });
+      await expect(http.getProject("missing")).rejects.toMatchObject({ status: 404 });
+      expect(getQueryData(archive)).toBe("decoded archive");
+      const other = vi.fn(async () => "report");
+      function IssueProbe() {
+        const issue = useIssue(http, "wi_refused");
+        return <div data-testid="issue">{issue.error}</div>;
+      }
+      render(<><IssueProbe /><Probe id="report" read={other} /></>);
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(requests.filter((request) => !request.endsWith("/app/bootstrap"))).toHaveLength(2);
+      expect(requests.filter((request) => request.endsWith("/app/bootstrap"))).toHaveLength(status === 404 ? 0 : 1);
+      expect(other).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("issue").textContent).toBe("Forbidden");
+      expect(screen.getByTestId("probe").textContent).toBe("report");
+      expect(getQueryData(archive)).toBeUndefined();
+      expect(getQueryData(otherArchive)).toBe(status === 404 ? "other archive" : undefined);
+      await act(async () => pending.resolve("late archive"));
+      expect(await late).toMatchObject({ message: "Archived detail is unavailable" });
+      expect(getQueryData(lateArchive)).toBeUndefined();
+    } finally {
+      cleanup();
+      pending.resolve("late archive");
+      await late;
+      clearBoardCache();
+      vi.restoreAllMocks();
     }
-    render(<><IssueProbe /><Probe id="report" read={other} /></>);
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
-    expect(requests).toHaveLength(2);
-    expect(other).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId("issue").textContent).toBe("Forbidden");
-    expect(screen.getByTestId("probe").textContent).toBe("report");
-    expect(getQueryData(archive)).toBeUndefined();
-    expect(getQueryData(otherArchive)).toBe(status === 404 ? "other archive" : undefined);
-    await act(async () => pending.resolve("late archive"));
-    expect(await late).toMatchObject({ message: "Archived detail is unavailable" });
-    expect(getQueryData(lateArchive)).toBeUndefined();
-    clearBoardCache();
   });
 });
 

@@ -7,7 +7,7 @@ import { authorizeQueryCache, clearQueryCache, invalidateQueries } from "../../l
 import { BOARD_CACHE_LIMIT, BOARD_CACHE_VERSION, readBoardDisk, updateBoardDisk } from "./boardDisk.ts";
 import { toBoardCardView, toLanes, toProjectView, toWorkItemView } from "./fromWire.ts";
 import type { Lane, ProjectView, ScopedWorkStats, ShippedCount, WorkItemView } from "./model.ts";
-import type { WorkHttp } from "./workHttp.ts";
+import { WorkApiError, type WorkHttp } from "./workHttp.ts";
 import { effectiveSort, tabMatches, tabQuery, type WorkViewState } from "./viewState.ts";
 
 export interface BoardData {
@@ -118,14 +118,16 @@ export function clearBoardCache(): void {
   void updateBoardDisk(null, undefined, () => epoch === current);
 }
 
-export function rejectBoardCache(owner: string | null = account): void {
+export function rejectBoardCache(owner: string | null = account, projectId?: string): void {
   if (owner !== account) return;
   epoch++;
   metadata.clear();
   knownStates.clear();
   confirmed.clear();
   facets.clear();
-  for (const board of boards.values()) board.revoke();
+  for (const board of boards.values()) {
+    if (projectId === undefined || board.scope.includes(projectId)) board.revoke();
+  }
   const current = epoch;
   void updateBoardDisk(null, undefined, () => epoch === current);
 }
@@ -574,7 +576,7 @@ export class BoardRead {
       } catch (cause) {
         if (signal.aborted || generation !== this.generation) return;
         for (const snapshot of snapshots.values()) snapshot.complete();
-        if (unauthorized(cause)) rejectBoardCache(this.owner);
+        if (unauthorized(cause)) rejectBoardCache(this.owner, cause instanceof WorkApiError ? cause.authorizationProject : undefined);
         else this.publish({ ...this.state, loading: false, backlogLoading: false, refreshing: false,
           error: cause instanceof Error ? cause.message : String(cause) });
       } finally {
