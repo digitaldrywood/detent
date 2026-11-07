@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -238,7 +239,7 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 		t.Fatalf("selected work_item availability = (%t, %v), unrelated tenant reads = %d; want available with no reads", available, err, counted.readCalls)
 	}
 	available, err = isolatedService.entryKeyToolAvailable(catalogContext, operatortool.FileIssue)
-	if err != nil || available || counted.readCalls != 0 {
+	if !errors.Is(err, operatortool.ErrAccessDenied) || available || counted.readCalls != 0 {
 		t.Fatalf("read-scoped FileIssue availability = (%t, %v), tenant reads = %d; want denied with no reads", available, err, counted.readCalls)
 	}
 	counted.readCalls = 0
