@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -61,6 +62,17 @@ func TestBoardModelCardPreservesCollections(t *testing.T) {
 					if len(fields[field]) == 0 || fields[field][0] != '[' {
 						t.Errorf("%s is not an array: %s", field, fields[field])
 					}
+				}
+				compact := operatortool.NativeItemPage("project_example", tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{card.Issue}})
+				raw, err = json.Marshal(compact.Items[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal(raw, &fields); err != nil {
+					t.Fatal(err)
+				}
+				if string(fields["external_references"]) != "[]" {
+					t.Errorf("work_list external_references must be [], got %s", fields["external_references"])
 				}
 			})
 		}
@@ -427,9 +439,17 @@ func boardHandlerArrayContract(t *testing.T, service *Service, ctx context.Conte
 		}
 	}
 	check(recorder.Body.Bytes())
+	operator, err := json.Marshal(operatortool.NativeWorkPageView(string(scope.project), page))
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(operator)
 	if directory := os.Getenv("DETENT_TEST_BOARD_CONTRACT_DIR"); directory != "" {
 		name := fmt.Sprintf("%s-%s-%s-%s-%s.json", scope.organization, scope.credential.HostedRole, params.Get("include"), params.Get("limit"), params.Get("state"))
 		if err := os.WriteFile(filepath.Join(directory, name), recorder.Body.Bytes(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, "operator-"+name), operator, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
