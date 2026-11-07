@@ -1,5 +1,6 @@
 {
   "tables": {
+    "project_integration_page_progress": {"class": "hot_state"},
     "project_integration_pages": {"class": "page_read_model", "scope": "project", "retention": "current project integration; replay from project settings and immutable workflow"},
     "project_integration_page_states": {"class": "page_read_model", "scope": "project", "retention": "current integration workflow state display"},
     "project_integration_page_dirty": {"class": "index"},

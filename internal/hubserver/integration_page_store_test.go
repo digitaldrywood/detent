@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -26,7 +27,7 @@ func TestIntegrationProjectionRejectsStaleSource(t *testing.T) {
 		var candidate projectstore.IntegrationCandidate
 		err := repository.WriteTenant(t.Context(), organization, corestore.Background, func(w tenantstore.Writer) error {
 			var err error
-			candidate, err = w.(projectstore.IntegrationPageWriter).ClaimIntegrationPage(t.Context(), service.config.now())
+			candidate, err = w.(projectstore.IntegrationPageWriter).ClaimIntegrationPage(t.Context())
 			return err
 		})
 		if err != nil {
@@ -57,7 +58,7 @@ func TestIntegrationProjectionRejectsStaleSource(t *testing.T) {
 		}
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Background, func(w tenantstore.Writer) error {
 			writer := w.(projectstore.IntegrationPageWriter)
-			latest, err := writer.ClaimIntegrationPage(t.Context(), service.config.now())
+			latest, err := writer.ClaimIntegrationPage(t.Context())
 			if err != nil {
 				return err
 			}
@@ -101,7 +102,7 @@ func TestIntegrationProjectionDoesNotDeadlockDeletion(t *testing.T) {
 	var candidate projectstore.IntegrationCandidate
 	if err := repository.WriteTenant(t.Context(), "org_first", corestore.Background, func(w tenantstore.Writer) error {
 		var err error
-		candidate, err = w.(projectstore.IntegrationPageWriter).ClaimIntegrationPage(t.Context(), service.config.now())
+		candidate, err = w.(projectstore.IntegrationPageWriter).ClaimIntegrationPage(t.Context())
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -149,5 +150,72 @@ func TestIntegrationProjectionDoesNotDeadlockDeletion(t *testing.T) {
 	completed = true
 	if err != nil {
 		t.Fatalf("publication after deletion: %v", err)
+	}
+}
+
+func TestIntegrationFailedCandidateDoesNotBlockBackfill(t *testing.T) {
+	service := newPostgresNativeService(t, Config{})
+	repository := service.database.postgres
+	value, _ := projectRecordDatabases.Load(repository)
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+		newNativeFixture(t, service, organization, "First example")
+		newNativeFixture(t, service, organization, "Second example")
+		if _, err := value.(*sql.DB).ExecContext(t.Context(), "DELETE FROM project_integration_page_dirty WHERE organization_id=$1", organization); err != nil {
+			t.Fatal(err)
+		}
+		seen := map[tracker.ProjectID]bool{}
+		for range 4 {
+			if err := repository.WriteTenant(t.Context(), organization, corestore.Background, func(w tenantstore.Writer) error {
+				candidate, err := w.(projectstore.IntegrationPageWriter).ClaimIntegrationPage(t.Context())
+				if err == nil {
+					seen[candidate.ProjectID] = true
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if len(seen) != 2 {
+			t.Errorf("failed candidate blocked backfill: discovered %d projects", len(seen))
+		}
+	}
+}
+
+func TestIntegrationBackfillPassesPublishedProject(t *testing.T) {
+	service := newPostgresNativeService(t, Config{RunDetails: hubmaintenance.LimitDetails(&memoryRunDetails{})})
+	repository := service.database.postgres
+	value, _ := projectRecordDatabases.Load(repository)
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			for _, id := range []tracker.ProjectID{"example_a", "example_z"} {
+				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: id, Name: string(id), Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		ctx := (hubmaintenance.Budget{Items: 1, Bytes: integrationPageMaintenanceBytes}).Context(t.Context(), hubmaintenance.Tenant{Organization: string(organization), Generation: 1})
+		if _, err := service.MaintainIntegrationPage(ctx, organization); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := value.(*sql.DB).ExecContext(t.Context(), "DELETE FROM project_integration_page_dirty WHERE organization_id=$1", organization); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := value.(*sql.DB).ExecContext(t.Context(), "UPDATE project_integration_page_progress SET after_project_id='' WHERE organization_id=$1", organization); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if _, err := service.MaintainIntegrationPage(ctx, organization); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+			_, err := r.(projectstore.IntegrationPageReader).IntegrationPage(t.Context(), "example_z")
+			return err
+		}); err != nil {
+			t.Fatalf("published project blocked next backfill: %v", err)
+		}
 	}
 }

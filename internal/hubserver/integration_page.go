@@ -8,12 +8,15 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+const integrationPageMaintenanceBytes = 2 * attachment.MaxArchiveBytes
 
 func (s *Service) readIntegrationPage(ctx context.Context, scope nativeScope) (ProjectIntegration, error) {
 	var result ProjectIntegration
@@ -38,7 +41,7 @@ func (s *Service) readIntegrationPage(ctx context.Context, scope nativeScope) (P
 }
 
 func (s *Service) IntegrationPageMaintenanceFeature() hubmaintenance.Feature {
-	return hubmaintenance.Feature{Name: "integration-pages", Bytes: hubmaintenance.ByteLimit, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
+	return hubmaintenance.Feature{Name: "integration-pages", Bytes: integrationPageMaintenanceBytes, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
 		if err := hubmaintenance.RequireTenant(ctx, tenant); err != nil {
 			return err
 		}
@@ -48,7 +51,7 @@ func (s *Service) IntegrationPageMaintenanceFeature() hubmaintenance.Feature {
 }
 
 func (s *Service) MaintainIntegrationPage(ctx context.Context, organization tracker.OrganizationID) (bool, error) {
-	if err := hubmaintenance.RequireAllowance(ctx, string(organization), hubmaintenance.ByteLimit); err != nil {
+	if err := hubmaintenance.RequireAllowance(ctx, string(organization), integrationPageMaintenanceBytes); err != nil {
 		return false, err
 	}
 	if _, ok := s.runDetailStore().(*hubmaintenance.Details); !ok {
@@ -61,14 +64,14 @@ func (s *Service) MaintainIntegrationPage(ctx context.Context, organization trac
 			return errors.New("integration page storage unavailable")
 		}
 		var err error
-		candidate, err = writer.ClaimIntegrationPage(ctx, s.config.now())
+		candidate, err = writer.ClaimIntegrationPage(ctx)
 		return err
 	})
-	if errors.Is(err, corestore.ErrNotFound) {
-		return false, nil
-	}
 	if err != nil {
 		return false, err
+	}
+	if candidate.ProjectID == "" {
+		return false, nil
 	}
 	var record projectstore.Record
 	err = s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {

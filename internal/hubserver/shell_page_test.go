@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -65,7 +66,10 @@ func TestIntegrationPageDoesNotReadObjects(t *testing.T) {
 				record.Settings.WorkflowBytes, record.Settings.WorkflowContentBytes = payload.PayloadBytes, payload.PayloadContentBytes
 				record.States = nil
 				for index := range size {
-					record.States = append(record.States, tracker.NativeState{Name: fmt.Sprintf("State %02d", index), Transitions: []string{"State 00"}})
+					record.States = append(record.States, tracker.NativeState{Name: fmt.Sprintf("State %02d", index), Dispatchable: index == 0, Terminal: index == size-1, OperatorOnly: index == size-1, Transitions: []string{}})
+					if index == 0 {
+						record.States[index].Transitions = []string{"State 00", "State 01"}
+					}
 				}
 				_, err = w.UpdateProjectRecord(t.Context(), record)
 				return err
@@ -76,7 +80,9 @@ func TestIntegrationPageDoesNotReadObjects(t *testing.T) {
 			if size == 2 {
 				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/integration", fixture.token, nil), http.StatusServiceUnavailable)
 			}
-			scheduler, err := hubmaintenance.New(maintenanceTenantRegistry{{Organization: string(organization), Generation: 1}}, []hubmaintenance.Feature{service.IntegrationPageMaintenanceFeature()})
+			pageFeature := service.IntegrationPageMaintenanceFeature()
+			pageFeature.Bytes = 2 * attachment.MaxArchiveBytes
+			scheduler, err := hubmaintenance.New(maintenanceTenantRegistry{{Organization: string(organization), Generation: 1}}, []hubmaintenance.Feature{pageFeature})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -97,6 +103,9 @@ func TestIntegrationPageDoesNotReadObjects(t *testing.T) {
 				decodeHubResponse(t, response, &result)
 				if result.WorkflowMarkdown != markdown || len(result.States) != size {
 					t.Errorf("tenant=%s size=%d wrong page: %+v", organization, size, result)
+				}
+				if len(result.States) == size && (!result.States[0].Dispatchable || !result.States[size-1].Terminal || !result.States[size-1].OperatorOnly || !slices.Equal(result.States[0].Transitions, []string{"State 00", "State 01"})) {
+					t.Errorf("workflow state flags or ordered transitions changed: %+v", result.States)
 				}
 				t.Logf("tenant=%s size=%d statements=%d exchanges=%d objects=%d", organization, size, statements, exchanges, objects)
 				if statements != 16 || exchanges != 13 {

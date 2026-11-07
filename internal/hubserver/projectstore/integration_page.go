@@ -47,6 +47,6 @@ type IntegrationPageReader interface {
 }
 
 type IntegrationPageWriter interface {
-	ClaimIntegrationPage(context.Context, time.Time) (IntegrationCandidate, error)
+	ClaimIntegrationPage(context.Context) (IntegrationCandidate, error)
 	PublishIntegrationPage(context.Context, IntegrationCandidate, *Integration, time.Time) error
 }
