@@ -356,6 +356,8 @@ func TestRunnerStartupIsolatesProjectPolicyFailure(t *testing.T) {
 				switch {
 				case strings.HasSuffix(r.URL.Path, "/runners/"+identity.RunnerID):
 					_ = json.NewEncoder(w).Encode(identity)
+				case strings.HasSuffix(r.URL.Path, "/runners/"+identity.RunnerID+"/routing"):
+					_ = json.NewEncoder(w).Encode(runnerauth.Runner{Binding: identity.Binding, OrganizationID: identity.OrganizationID, Routing: snapshot.Routing, HostCapacity: 2, ReportedCapacity: 2, ProjectUsed: map[tracker.ProjectID]int{}})
 				case strings.HasSuffix(r.URL.Path, "/capabilities"):
 					_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeLocalChecksCapability, tracker.NativeProviderCapacityCapability}})
 				case strings.HasSuffix(r.URL.Path, "/policy/observed"):
