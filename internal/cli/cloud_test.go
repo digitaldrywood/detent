@@ -179,7 +179,7 @@ func TestCloudEntitlementAdministrators(t *testing.T) {
 	t.Parallel()
 	seed := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
 	token := "entitlement-admin-token-0123456789abcdef"
-	base := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nplatform:\n  bootstrap_admin_email: operator@example.test\nstaff_emails: [ops@example.test, Plans@Example.test]\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\n"
+	base := clihangCloudPostgres + clihangCloudAttachments + "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nplatform:\n  bootstrap_admin_email: operator@example.test\nstaff_emails: [ops@example.test, Plans@Example.test]\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\n"
 	allocation := "allocation:\n  tenant_root: /var/lib/detent/tenants\n  socket_root: /run/detent/tenants\n  binary: /usr/local/bin/detent\n  max_tenants: 4\n  entitlement_administrator: pilot-operator\n  entitlement_admin_token_env: DETENT_ENTITLEMENT_ADMIN_TOKEN\n"
 	for _, test := range []struct {
 		name, body, wantError string
@@ -196,7 +196,7 @@ func TestCloudEntitlementAdministrators(t *testing.T) {
 				t.Fatal(err)
 			}
 			env := map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed, "DETENT_ENTITLEMENT_ADMIN_TOKEN": token}
-			config, err := readCloudConfig(path, func(name string) string { return env[name] })
+			config, err := readCloudConfig(path, clihangCloudLookup(env))
 			if test.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantError) {
 					t.Fatalf("error = %v, want %q", err, test.wantError)
@@ -269,14 +269,14 @@ func TestCloudRegistryAndKeyCommands(t *testing.T) {
 func TestCloudAllocationGeneratesTenantConfiguration(t *testing.T) {
 	t.Parallel()
 	seed := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
-	body := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nstaff_emails: [support@example.test]\nsupport_actors: [support@example.test]\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\nallocation:\n  tenant_root: /var/lib/detent/tenants\n  socket_root: /run/detent/tenants\n  binary: /usr/local/bin/detent\n  max_tenants: 4\n"
+	body := clihangCloudPostgres + "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nstaff_emails: [support@example.test]\nsupport_actors: [support@example.test]\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\nallocation:\n  tenant_root: /var/lib/detent/tenants\n  socket_root: /run/detent/tenants\n  binary: /usr/local/bin/detent\n  max_tenants: 4\n"
 	body += "attachments:\n  endpoint: https://nyc3.digitaloceanspaces.com\n  region: nyc3\n  bucket: detent-private-attachments\n"
 	path := filepath.Join(t.TempDir(), "cloud.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	env := map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed, "DETENT_ATTACHMENTS_ACCESS_KEY_ID": "spaces-key", "DETENT_ATTACHMENTS_SECRET_ACCESS_KEY": "spaces-secret"}
-	config, err := readCloudConfig(path, func(name string) string { return env[name] })
+	config, err := readCloudConfig(path, clihangCloudLookup(env))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func TestCloudAllocationGeneratesTenantConfiguration(t *testing.T) {
 		t.Fatalf("allocation = %+v", allocation)
 	}
 	launcher, ok := allocation.Launcher.(*cloudentry.ExecLauncher)
-	if !ok || launcher.Binary != "/usr/local/bin/detent" || len(launcher.Environment) != 1 || launcher.Environment[0] != "WORKOS_API_KEY=sk_test" {
+	if !ok || launcher.Binary != "/usr/local/bin/detent" || len(launcher.Environment) != 2 || launcher.Environment[0] != "WORKOS_API_KEY=sk_test" {
 		t.Fatalf("launcher = %+v", allocation.Launcher)
 	}
 	key, err := cloudassert.ParsePrivateKey(seed)
@@ -314,7 +314,7 @@ func TestCloudAllocationGeneratesTenantConfiguration(t *testing.T) {
 	if err := os.WriteFile(tenantPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tenant, enabled, err := readHostedConfig(tenantPath, func(name string) string { return env[name] })
+	tenant, enabled, err := readHostedConfig(tenantPath, clihangCloudLookup(env))
 	if err != nil {
 		t.Fatalf("generated tenant configuration is invalid: %v\n%s", err, raw)
 	}
@@ -400,7 +400,7 @@ func TestCloudAllocationGeneratesTenantConfiguration(t *testing.T) {
 func TestCloudBillingConfiguration(t *testing.T) {
 	t.Parallel()
 	seed := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
-	base := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\n"
+	base := clihangCloudPostgres + clihangCloudAttachments + "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\n"
 	allocation := "allocation:\n  tenant_root: /t\n  socket_root: /s\n  binary: /bin/detent\n  max_tenants: 2\n  entitlements:\n    base: {id: free, version: 1}\n    window_seconds: 3600\n    retention_windows: 24\n    connected_seconds: 90\n    invitation_seconds: 86400\n    plans:\n      - {id: free, version: 1, features: [collaboration], allowances: {projects: 3}}\n      - {id: team, version: 1, features: [collaboration], allowances: {projects: 30}}\n  billing:\n    mode: MODE\n    account_id: acct_fixture\n    portal_configuration_id: bpc_fixture\n    api_key_env: DETENT_STRIPE_TEST_KEY\n    webhook_secret_env: DETENT_STRIPE_TEST_WEBHOOK_SECRET\n    grace_seconds: 3600\n    reconcile_seconds: 120\n    credit_cost_multiplier: 2\n    prices:\n      - {price_id: price_team, label: Team, plan: {id: team, version: 1}}\n"
 	env := map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed, "DETENT_STRIPE_TEST_KEY": "sk_test_fixture_value", "DETENT_STRIPE_TEST_WEBHOOK_SECRET": "whsec_fixture_secret_value", "DETENT_STRIPE_LIVE_KEY": "sk_live_fixture_value"}
 	for _, test := range []struct {
@@ -419,7 +419,7 @@ func TestCloudBillingConfiguration(t *testing.T) {
 			if err := os.WriteFile(path, []byte(test.body), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			config, err := readCloudConfig(path, func(name string) string { return env[name] })
+			config, err := readCloudConfig(path, clihangCloudLookup(env))
 			if (err != nil) != test.wantError {
 				t.Fatalf("error = %v, want error %v", err, test.wantError)
 			}
@@ -439,14 +439,14 @@ func TestCloudBillingConfiguration(t *testing.T) {
 					t.Fatal("tenant configuration contains a secret")
 				}
 			}
-			if len(launcher.Environment) != 3 {
+			if len(launcher.Environment) != 4 {
 				t.Fatalf("tenant environment = %d entries", len(launcher.Environment))
 			}
 			tenantPath := filepath.Join(t.TempDir(), "tenant.yaml")
 			if err := os.WriteFile(tenantPath, raw, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			tenant, _, err := readHostedConfig(tenantPath, func(name string) string { return env[name] })
+			tenant, _, err := readHostedConfig(tenantPath, clihangCloudLookup(env))
 			if err != nil || tenant.Billing == nil || tenant.Billing.Mode != "test" || tenant.Billing.CustomerID != "" || tenant.Billing.CreditCostMultiplier != 2 {
 				t.Fatalf("tenant billing = %+v, %v\n%s", tenant, err, raw)
 			}
@@ -457,7 +457,7 @@ func TestCloudAllocationPassesEntitlementAdministration(t *testing.T) {
 	t.Parallel()
 	seed := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
 	token := "entitlement-operator-token-0123456789abcdef"
-	base := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\nallocation:\n  tenant_root: /var/lib/detent/tenants\n  socket_root: /run/detent/tenants\n  binary: /usr/local/bin/detent\n  max_tenants: 4\n  entitlements:\n    base: {id: pilot_free, version: 1}\n    window_seconds: 3600\n    retention_windows: 24\n    connected_seconds: 90\n    invitation_seconds: 86400\n    plans:\n      - {id: pilot_free, version: 1, features: [collaboration], allowances: {projects: 1}}\n"
+	base := clihangCloudPostgres + clihangCloudAttachments + "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\nallocation:\n  tenant_root: /var/lib/detent/tenants\n  socket_root: /run/detent/tenants\n  binary: /usr/local/bin/detent\n  max_tenants: 4\n  entitlements:\n    base: {id: pilot_free, version: 1}\n    window_seconds: 3600\n    retention_windows: 24\n    connected_seconds: 90\n    invitation_seconds: 86400\n    plans:\n      - {id: pilot_free, version: 1, features: [collaboration], allowances: {projects: 1}}\n"
 	administration := "  entitlement_administrator: pilot-operator\n  entitlement_admin_token_env: DETENT_ENTITLEMENT_TOKEN\n"
 	for _, test := range []struct {
 		name, body string
@@ -485,7 +485,7 @@ func TestCloudAllocationPassesEntitlementAdministration(t *testing.T) {
 			if err := os.WriteFile(path, []byte(test.body), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			config, err := readCloudConfig(path, func(name string) string { return env[name] })
+			config, err := readCloudConfig(path, clihangCloudLookup(env))
 			if (err != nil) != test.wantError {
 				t.Fatalf("error = %v, want error %v", err, test.wantError)
 			}
@@ -560,7 +560,7 @@ func TestSelfHostedIdentityNeverEnablesBilling(t *testing.T) {
 func TestCloudEmptyEntitlementsUseDefaultCatalog(t *testing.T) {
 	t.Parallel()
 	seed := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
-	base := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\nallocation:\n  tenant_root: /t\n  socket_root: /s\n  binary: /bin/detent\n  max_tenants: 2\n"
+	base := clihangCloudPostgres + clihangCloudAttachments + "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\nallocation:\n  tenant_root: /t\n  socket_root: /s\n  binary: /bin/detent\n  max_tenants: 2\n"
 	for _, test := range []struct{ name, body string }{
 		{name: "absent", body: base},
 		{name: "empty mapping", body: base + "  entitlements: {}\n"},
@@ -573,7 +573,7 @@ func TestCloudEmptyEntitlementsUseDefaultCatalog(t *testing.T) {
 			if err := os.WriteFile(path, []byte(test.body), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			config, err := readCloudConfig(path, func(name string) string { return env[name] })
+			config, err := readCloudConfig(path, clihangCloudLookup(env))
 			if err != nil {
 				t.Fatalf("readCloudConfig() error = %v", err)
 			}
@@ -585,7 +585,7 @@ func TestCloudEmptyEntitlementsUseDefaultCatalog(t *testing.T) {
 			if !strings.Contains(string(raw), "\nentitlements: null\n") {
 				t.Fatalf("generated tenant configuration overrides the default catalog:\n%s", raw)
 			}
-			tenant, err := parseHostedConfig(bytes.NewReader(raw), func(name string) string { return env[name] })
+			tenant, err := parseHostedConfig(bytes.NewReader(raw), clihangCloudLookup(env))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -634,7 +634,7 @@ func TestCloudReloadValidatesFileAndPreservesLaunchIdentity(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
 	path := filepath.Join(directory, "cloud.yaml")
-	body := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\nallocation:\n  tenant_root: /var/lib/detent/tenants\n  socket_root: /run/detent/tenants\n  binary: /usr/local/bin/detent\n  max_tenants: 4\n  entitlement_administrator: test-operator\n  entitlement_admin_token_env: ENTITLEMENT_TOKEN\n  entitlements:\n    base: {id: free_example, version: 1}\n    window_seconds: 3600\n    retention_windows: 24\n    connected_seconds: 90\n    invitation_seconds: 86400\n    plans:\n      - {id: free_example, version: 1, features: [collaboration], allowances: {projects: 1}}\n"
+	body := clihangCloudPostgres + clihangCloudAttachments + "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\nallocation:\n  tenant_root: /var/lib/detent/tenants\n  socket_root: /run/detent/tenants\n  binary: /usr/local/bin/detent\n  max_tenants: 4\n  entitlement_administrator: test-operator\n  entitlement_admin_token_env: ENTITLEMENT_TOKEN\n  entitlements:\n    base: {id: free_example, version: 1}\n    window_seconds: 3600\n    retention_windows: 24\n    connected_seconds: 90\n    invitation_seconds: 86400\n    plans:\n      - {id: free_example, version: 1, features: [collaboration], allowances: {projects: 1}}\n"
 	write := func(raw string) {
 		t.Helper()
 		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
@@ -643,7 +643,7 @@ func TestCloudReloadValidatesFileAndPreservesLaunchIdentity(t *testing.T) {
 	}
 	write(body)
 	env := map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=", "ENTITLEMENT_TOKEN": "entitlement-admin-token-0123456789abcdef"}
-	config, err := readCloudConfig(path, func(name string) string { return env[name] })
+	config, err := readCloudConfig(path, clihangCloudLookup(env))
 	if err != nil {
 		t.Fatal(err)
 	}
