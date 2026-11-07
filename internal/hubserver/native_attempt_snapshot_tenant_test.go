@@ -274,7 +274,7 @@ func (r attemptSnapshotReader) LatestRunEvent(ctx context.Context, project track
 }
 
 func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
-	repository, admin := projectRecordPostgresWithAdmin(t, 4)
+	repository, _ := projectRecordPostgresWithAdmin(t, 4)
 	serving, _ := repository.WorkloadCapacities()
 	if serving < 2 {
 		t.Fatal("fixture needs separate reader and writer serving slots")
@@ -291,8 +291,6 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 			NativeRunEvents: participant, SecretKeys: keys,
 		},
 	}
-	wrapped := &attemptSnapshotRepository{Repository: repository, SnapshotRepository: repository}
-	service.config.TenantRepository = wrapped
 	service.ready.Store(true)
 	service.registerNativeRoutes(service.echo)
 	for _, organizationName := range []string{"Example organization one", "Example organization two"} {
@@ -351,9 +349,6 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 
 			terminal := start.Data
 			terminal.Sequence, terminal.Outcome = 42, "succeeded"
-			if organizationName == "Example organization two" {
-				terminal.Outcome = "failed"
-			}
 			terminal.Usage = []tracker.NativeUsage{{Provider: "example", Model: "example-model", Input: 100, Output: 20}}
 			corrected := terminal
 			corrected.Sequence = 43
@@ -369,11 +364,9 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			observed := terminal
-			observed.Outcome = ""
 			historyRaw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: organization.ID, ProjectID: project.ID,
-				AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "run.observed", SchemaVersion: 1, RecordedAt: now,
-				Actor: tracker.Actor{Kind: "integration", PrincipalID: "example"}, Data: tracker.CollaborationData{Run: &observed}})
+				AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, RecordedAt: now,
+				Actor: tracker.Actor{Kind: "integration", PrincipalID: "example"}, Data: tracker.CollaborationData{Run: &terminal}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -396,7 +389,7 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 				t.Fatal(err)
 			}
 			attempt := leasestore.Attempt{OrganizationID: organization.ID, ID: corrected.AttemptID, IssueID: lease.IssueID,
-				LeaseID: lease.LeaseID, FencingToken: lease.FencingToken, RunID: corrected.RunID, Sequence: 43, Status: corrected.Outcome,
+				LeaseID: lease.LeaseID, FencingToken: lease.FencingToken, RunID: corrected.RunID, Sequence: 43, Status: "succeeded",
 				WorkItemRevision: lease.WorkItemRevision, PayloadObjectKey: ref.Key, StartedAt: now.Add(-time.Minute), UpdatedAt: now}
 			receipt, err := prepareCoreExecutionReceipt(t.Context(), content, organization.ID, strings.Repeat("a", 64), "core-attempt", attempt.ID, attempt)
 			if err != nil {
@@ -444,7 +437,7 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 					if err != nil {
 						t.Fatalf("hydrate imported attempt 43 with terminal history 42: %v", err)
 					}
-					if value.Sequence != 43 || value.Outcome != corrected.Outcome || value.Status != corrected.Outcome || value.AttemptID != attempt.ID || len(value.Usage) != 1 || value.Usage[0].Input != 120 || value.Usage[0].Output != 25 {
+					if value.Sequence != 43 || value.Outcome != "succeeded" || value.Status != "succeeded" || value.AttemptID != attempt.ID || len(value.Usage) != 1 || value.Usage[0].Input != 120 || value.Usage[0].Output != 25 {
 						t.Fatalf("canonical corrected attempt = %+v", value)
 					}
 				})
@@ -456,84 +449,6 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 				_, err := service.readNativeAttemptTenant(t.Context(), scope, string(issue.WorkItemID), attempt.ID)
 				if !errors.Is(err, artifact.ErrIntegrity) {
 					t.Fatalf("corrupt canonical payload fell back to history: %v", err)
-				}
-			})
-			t.Run("missing metadata", func(t *testing.T) {
-				if _, err := admin.ExecContext(t.Context(), "DELETE FROM attachment_archive_references WHERE organization_id=$1 AND attachment_id=$2", organization.ID, archive.ID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := admin.ExecContext(t.Context(), "DELETE FROM attachments WHERE organization_id=$1 AND id=$2", organization.ID, archive.ID); err != nil {
-					t.Fatal(err)
-				}
-				ctx := context.WithValue(t.Context(), attemptSnapshotContextKey{}, true)
-				details.beforeRead = func(context.Context) error {
-					if wrapped.active != 0 {
-						return errors.New("object read inside tenant snapshot")
-					}
-					return nil
-				}
-				defer func() { details.beforeRead = nil }()
-				for _, scenario := range []string{"valid", "missing", "corrupt", "wrong digest", "foreign key", "malformed key", "wrong identity"} {
-					t.Run(scenario, func(t *testing.T) {
-						original := details.data[ref.Key]
-						t.Cleanup(func() { details.data[ref.Key] = original })
-						key := ref.Key
-						switch scenario {
-						case "missing":
-							delete(details.data, key)
-						case "corrupt":
-							details.data[key] = []byte("invalid canonical content")
-						case "wrong digest":
-							key, err = attachment.ArchiveKey(string(organization.ID), strings.Repeat("a", 64))
-							details.data[key] = original
-						case "foreign key":
-							key, err = attachment.ArchiveKey("org_foreign", ref.SHA256)
-						case "malformed key":
-							key += "/extra"
-						case "wrong identity":
-							foreign := corrected
-							foreign.RunID = "run_foreign"
-							data, marshalErr := json.Marshal(foreign)
-							if marshalErr != nil {
-								t.Fatal(marshalErr)
-							}
-							other, storeErr := details.StoreDetail(ctx, string(organization.ID), data)
-							if storeErr != nil {
-								t.Fatal(storeErr)
-							}
-							key = other.Key
-						}
-						if err != nil {
-							t.Fatal(err)
-						}
-						if _, err := admin.ExecContext(ctx, "UPDATE native_attempts SET payload_object_key=$1 WHERE organization_id=$2 AND id=$3", key, organization.ID, attempt.ID); err != nil {
-							t.Fatal(err)
-						}
-						reads := details.reads
-						for _, view := range []string{"single", "detail", "recovery"} {
-							var got tracker.NativeAttempt
-							var readErr error
-							if view == "single" {
-								got, readErr = service.readNativeAttemptTenant(ctx, scope, string(issue.WorkItemID), attempt.ID)
-							} else {
-								page, pageErr := service.readNativeAttemptPageTenant(ctx, scope, string(issue.WorkItemID), url.Values{"view": {view}}, json.Marshal)
-								readErr = pageErr
-								if len(page.Items) == 1 {
-									got = page.Items[0]
-								}
-							}
-							if scenario == "valid" {
-								if readErr != nil || got.Sequence != 43 || got.Outcome != corrected.Outcome || got.AttemptID != attempt.ID {
-									t.Fatalf("%s canonical recovery: %+v %v", view, got, readErr)
-								}
-							} else if !errors.Is(readErr, artifact.ErrIntegrity) {
-								t.Fatalf("%s accepted invalid canonical object: %v", view, readErr)
-							}
-						}
-						if (scenario == "foreign key" || scenario == "malformed key") && reads != details.reads {
-							t.Fatal("invalid key reached object store")
-						}
-					})
 				}
 			})
 		})
@@ -674,8 +589,8 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 					wantErr  bool
 				}{
 					{"canonical outruns event", nil, true, 2, false},
-					{"metadata absent canonical mismatch", nil, false, 1, true},
-					{"metadata absent canonical matches", nil, false, 2, false},
+					{"absent matching event", nil, false, 1, false},
+					{"absent stale event", nil, false, 2, true},
 					{"tampered content", nil, true, 2, true},
 					{"wrong length", nil, true, 2, true},
 					{"foreign key", nil, false, 1, true},
@@ -1101,25 +1016,4 @@ func (r attemptSnapshotReader) Receipt(ctx context.Context, actor, operation, ke
 
 func (r attemptSnapshotReader) RunEvent(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, id string) (eventstore.Event, error) {
 	return r.Reader.(nativeRunEventReader).RunEvent(ctx, project, item, id)
-}
-
-func (s *verifiedAttemptDetails) ReadCanonicalDetail(ctx context.Context, org, project, key string) ([]byte, error) {
-	if err := attachment.ValidateCanonicalDetailKey(org, project, key); err != nil {
-		return nil, err
-	}
-	if s.beforeRead != nil {
-		if err := s.beforeRead(ctx); err != nil {
-			return nil, err
-		}
-	}
-	s.reads++
-	raw, ok := s.data[key]
-	if !ok {
-		return nil, artifact.ErrMissing
-	}
-	_, compressed, err := attachment.PrepareArchive(org, 1, bytes.NewReader(raw))
-	if err != nil {
-		return nil, err
-	}
-	return attachment.ReadCanonicalArchive(ctx, attemptArchiveStorage{data: compressed}, org, project, key)
 }

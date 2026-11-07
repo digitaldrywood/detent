@@ -24,13 +24,12 @@ import (
 )
 
 type tenantAttemptSnapshot struct {
-	recoverPayload bool
-	payload        *attachment.ArchiveReference
-	attempt        leasestore.Attempt
-	lease          leasestore.Lease
-	event          eventstore.Event
-	evidence       bool
-	evidenceRows   []attachmentstore.Record
+	payload      *attachment.ArchiveReference
+	attempt      leasestore.Attempt
+	lease        leasestore.Lease
+	event        eventstore.Event
+	evidence     bool
+	evidenceRows []attachmentstore.Record
 }
 
 func (s *Service) readNativeAttemptTenant(ctx context.Context, scope nativeScope, item, id string) (tracker.NativeAttempt, error) {
@@ -410,7 +409,6 @@ func readTenantAttemptAttachmentPayload(ctx context.Context, r tenantstore.Reade
 	id := newRunDetailReference(attachment.ArchiveReference{Key: attempt.PayloadObjectKey}, string(attempt.OrganizationID), "").AttachmentID
 	row, err := r.Attachment(ctx, snapshot.event.ProjectID, id)
 	if errors.Is(err, corestore.ErrNotFound) {
-		snapshot.recoverPayload = true
 		return nil
 	}
 	if err != nil {
@@ -429,7 +427,7 @@ func readTenantAttemptAttachmentPayload(ctx context.Context, r tenantstore.Reade
 }
 
 func (s *Service) readNativeAttemptRunTenant(ctx context.Context, snapshot tenantAttemptSnapshot) (tracker.NativeRunData, error) {
-	if snapshot.payload == nil && !snapshot.recoverPayload {
+	if snapshot.payload == nil {
 		value, err := eventstore.NewContent(s.runDetailStore()).Event(ctx, snapshot.event)
 		if err != nil {
 			return tracker.NativeRunData{}, err
@@ -439,22 +437,12 @@ func (s *Service) readNativeAttemptRunTenant(ctx context.Context, snapshot tenan
 		}
 		return *value.Data.Run, nil
 	}
-	var raw []byte
-	var err error
-	if snapshot.recoverPayload {
-		owner, ok := s.runDetailStore().(attachment.CanonicalDetailStore)
-		if !ok || snapshot.event.OrganizationID != snapshot.attempt.OrganizationID {
-			return tracker.NativeRunData{}, artifact.ErrIntegrity
-		}
-		raw, err = owner.ReadCanonicalDetail(ctx, string(snapshot.attempt.OrganizationID), string(snapshot.event.ProjectID), snapshot.attempt.PayloadObjectKey)
-	} else {
-		raw, err = s.runDetailStore().ReadDetail(ctx, string(snapshot.attempt.OrganizationID), *snapshot.payload)
-	}
+	raw, err := s.runDetailStore().ReadDetail(ctx, string(snapshot.attempt.OrganizationID), *snapshot.payload)
 	if err != nil {
 		return tracker.NativeRunData{}, errors.Join(artifact.ErrIntegrity, err)
 	}
 	var run tracker.NativeRunData
-	if snapshot.payload != nil && int64(len(raw)) != snapshot.payload.UncompressedSize || json.Unmarshal(raw, &run) != nil {
+	if int64(len(raw)) != snapshot.payload.UncompressedSize || json.Unmarshal(raw, &run) != nil {
 		return run, artifact.ErrIntegrity
 	}
 	return run, nil

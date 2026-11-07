@@ -61,13 +61,6 @@ func TestTenantDetailStoreWritesBeforeTenantHTTPStarts(t *testing.T) {
 		if _, err := owner.StoreDetail(t.Context(), "org_foreign", raw); !errors.Is(err, attachment.ErrInvalid) {
 			t.Fatal("foreign organization accepted")
 		}
-		decoded, err = owner.ReadCanonicalDetail(t.Context(), organization, "prj_example", first.Key)
-		if err != nil || !bytes.Equal(decoded, raw) {
-			t.Fatalf("canonical startup audit: %v", err)
-		}
-		if _, err := owner.ReadCanonicalDetail(t.Context(), "org_foreign", "prj_example", first.Key); !errors.Is(err, attachment.ErrInvalid) {
-			t.Fatal("foreign canonical read accepted")
-		}
 		rows, err := owner.ReadDetails(t.Context(), organization, []attachment.ArchiveReference{first, second})
 		if err != nil || len(rows) != 2 {
 			t.Fatalf("batch read: %v", err)
@@ -83,9 +76,6 @@ func TestTenantDetailStoreWritesBeforeTenantHTTPStarts(t *testing.T) {
 		}
 		stale := owner
 		stale.allocation.Generation++
-		if _, err := stale.ReadCanonicalDetail(t.Context(), organization, "prj_example", first.Key); !errors.Is(err, attachment.ErrInvalid) {
-			t.Fatal("stale canonical read accepted")
-		}
 		if _, err := stale.ReadDetails(t.Context(), organization, []attachment.ArchiveReference{first}); !errors.Is(err, attachment.ErrInvalid) {
 			t.Fatal("stale batch accepted")
 		}
