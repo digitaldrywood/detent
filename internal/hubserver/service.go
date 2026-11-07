@@ -272,17 +272,23 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if cfg.Conversation != nil && cfg.Conversation.Enabled && !cfg.CredentialMaintenance {
 		service.conversations = newConversationService(service, cfg.Conversation.normalized())
 	}
+	closeStartupDatabase := func(err error) error {
+		if service.conversations != nil {
+			service.conversations.stop()
+		}
+		return errors.Join(err, database.Close())
+	}
 	if cfg.Workspace != nil && cfg.Workspace.Enabled && database.postgres == nil && !cfg.CredentialMaintenance {
 		if err := cfg.Workspace.validate(); err != nil {
 			workerCancel()
 			reconcileCancel()
-			return nil, errors.Join(err, database.Close())
+			return nil, closeStartupDatabase(err)
 		}
 		service.workspaces = newWorkspaceService(service, *cfg.Workspace)
 		if err := service.workspaces.start(ctx); err != nil {
 			workerCancel()
 			reconcileCancel()
-			return nil, errors.Join(err, database.Close())
+			return nil, closeStartupDatabase(err)
 		}
 	}
 	e.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware)
@@ -291,7 +297,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		if err := service.conversations.start(ctx); err != nil {
 			workerCancel()
 			reconcileCancel()
-			return nil, errors.Join(err, database.Close())
+			return nil, closeStartupDatabase(err)
 		}
 	}
 	if cfg.Hosted != nil && !cfg.CredentialMaintenance {
@@ -299,9 +305,6 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		if err != nil {
 			workerCancel()
 			reconcileCancel()
-			if service.conversations != nil {
-				service.conversations.stop()
-			}
 			if service.workspaces != nil {
 				service.workspaces.StopContext(ctx)
 			}
@@ -309,7 +312,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 			if service.mcpHTTP != nil {
 				mcpErr = service.mcpHTTP.Shutdown(ctx)
 			}
-			return nil, errors.Join(err, mcpErr, database.Close())
+			return nil, closeStartupDatabase(errors.Join(err, mcpErr))
 		}
 	}
 	if cfg.SecretKeys != nil && !cfg.CredentialMaintenance {

@@ -1,10 +1,16 @@
 package dispatch
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"log/slog"
 	"net/http"
+	"runtime"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -164,5 +170,39 @@ func TestNativeComposedAuthorizationClaimAndExecution(t *testing.T) {
 	defer stop()
 	if err = execution.Start(guarded, tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type startupCancellationWriter struct{ cancel context.CancelFunc }
+
+func (w startupCancellationWriter) Write(data []byte) (int, error) {
+	if bytes.Contains(data, []byte("conversation.restart_normalized")) {
+		w.cancel()
+	}
+	return len(data), nil
+}
+
+func TestNativeConversationStartupFailureStopsWorkers(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	cfg := dispatchPostgresConfig(t, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Content: newHubContentStore(), RunDetails: &archivedRunDetails{}, Conversation: &hubserver.ConversationConfig{Enabled: true}, Logger: slog.New(slog.NewTextHandler(startupCancellationWriter{cancel}, nil))})
+	settleWorkers := func() int {
+		buffer := make([]byte, 1<<20)
+		return bytes.Count(buffer[:runtime.Stack(buffer, true)], []byte("(*conversationService).settleLoop("))
+	}
+	before := settleWorkers()
+	service, err := hubserver.Open(ctx, cfg)
+	if service != nil {
+		t.Cleanup(func() {
+			if err := service.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("startup cancellation: %v", err)
+	}
+	if after := settleWorkers(); after != before {
+		t.Fatalf("failed startup retained conversation workers: before=%d after=%d", before, after)
 	}
 }
