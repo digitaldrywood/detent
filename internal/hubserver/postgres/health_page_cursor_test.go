@@ -19,7 +19,10 @@ func TestHealthPageCursorPreservesMatchesAcrossEmptyWindows(t *testing.T) {
 	at := time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedRepository(t, repository, org)
-		if _, err := admin.ExecContext(t.Context(), `UPDATE issues SET actor_principal_id='other' WHERE organization_id=$1 AND project_id='prj_first' AND native_id='wi_first_2'`, org); err != nil {
+		if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+			_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "prj_first", NativeID: "wi_first_other", Number: 3, NativeSourceKey: new("source_other"), Title: "Example title", ActorKind: new("human"), ActorPrincipalID: new("other")})
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := admin.ExecContext(t.Context(), `INSERT INTO health_findings(organization_id,id,fingerprint,signal,class,subject_kind,subject_id,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_object_key,evidence_sha256,evidence_bytes,evidence_content_bytes,page_checkpoint)
@@ -29,7 +32,7 @@ func TestHealthPageCursorPreservesMatchesAcrossEmptyWindows(t *testing.T) {
 		if _, err := admin.ExecContext(t.Context(), `INSERT INTO health_finding_projects(organization_id,finding_id,project_id) SELECT organization_id,id,CASE WHEN id='finding_7' THEN 'prj_second' ELSE 'prj_first' END FROM health_findings WHERE organization_id=$1`, org); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := admin.ExecContext(t.Context(), `INSERT INTO health_finding_issues SELECT organization_id,finding_id,project_id,CASE WHEN finding_id='finding_4' THEN 'wi_first_2' WHEN project_id='prj_second' THEN 'wi_second_1' ELSE 'wi_first_1' END FROM health_finding_projects WHERE organization_id=$1`, org); err != nil {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO health_finding_issues SELECT organization_id,finding_id,project_id,CASE WHEN finding_id='finding_4' THEN 'wi_first_other' WHEN project_id='prj_second' THEN 'wi_second_1' ELSE 'wi_first_1' END FROM health_finding_projects WHERE organization_id=$1`, org); err != nil {
 			t.Fatal(err)
 		}
 		for _, mode := range []string{"ready", "cold"} {
