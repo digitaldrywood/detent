@@ -308,6 +308,7 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 					return corestore.ErrSerializationFailure
 				}
 			}
+			activeLease := false
 			if human {
 				currentSource, sourceErr := w.LinkedSource(ctx, scope.project, issue.WorkItemID)
 				if sourceErr == nil && (linkedSource == nil || !sameNativeClaimLinkedSource(currentSource, *linkedSource)) || (errors.Is(sourceErr, corestore.ErrNotFound) || errors.Is(sourceErr, sql.ErrNoRows)) && linkedSource != nil {
@@ -329,6 +330,7 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 						return tracker.ErrStaleFencingToken
 					}
 				}
+				activeLease = leaseErr == nil && lease.ReleasedAt == nil && lease.ExpiresAt.After(s.config.now().UTC()) && cancellation == nil
 				if leaseErr == nil && !unchanged {
 					if err := s.settleHumanWorkflowLease(ctx, w, scope, lease, request, cancellation, stopState); err != nil {
 						return err
@@ -409,7 +411,7 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 					return err
 				}
 			}
-			if human && previousState != request.State && dispatchableProjectState(currentProject, request.State) {
+			if human && !activeLease && previousState != request.State && dispatchableProjectState(currentProject, request.State) {
 				if s.config.ConversationDispatch == nil {
 					return conversationDispatchUnavailable()
 				}

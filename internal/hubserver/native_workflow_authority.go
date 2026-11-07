@@ -75,7 +75,7 @@ func (s *Service) settleHumanWorkflowLease(ctx context.Context, w tenantstore.Wr
 		return err
 	}
 	if request.State != "Cancelled" && !strings.EqualFold(request.State, "Blocked") && request.State != stopState {
-		return tracker.ErrLeaseConflict
+		return nil
 	}
 	leaseAuthority := NativeLeaseAuthority{Scope: scope, Lease: lease, Request: tracker.NativeLeaseMutation{FencingToken: tracker.FencingToken(lease.FencingToken), Reason: "cancelled", CancelAttempt: true}, Operation: "release"}
 	if err := (tenantNativeRunEventParticipant{service: s}).validateNativeLeaseMutation(ctx, w, &leaseAuthority, true); err != nil {
