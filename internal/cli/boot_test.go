@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -194,8 +195,16 @@ func TestMain(m *testing.M) {
 		}
 	}
 	defaultInspectCaches = func(context.Context) toolcache.Report { return toolcache.Report{} }
+	startedAt := time.Now()
 	exitCode := m.Run()
-	if err := clihangHubTemplate.Close(context.Background()); err != nil {
+	timeout, timeoutErr := time.ParseDuration(flag.Lookup("test.timeout").Value.String())
+	if timeoutErr != nil {
+		fmt.Fprintln(os.Stderr, "read CLI test deadline:", timeoutErr)
+		exitCode = 1
+	}
+	cleanupCtx, cancelCleanup := context.WithDeadline(context.Background(), startedAt.Add(timeout))
+	defer cancelCleanup()
+	if err := clihangHubTemplate.Close(cleanupCtx); err != nil {
 		fmt.Fprintln(os.Stderr, "close CLI PostgreSQL fixture:", err)
 		exitCode = 1
 	}
