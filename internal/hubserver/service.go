@@ -684,6 +684,7 @@ func (s *Service) newReadModelMaintenance() (*hubmaintenance.Scheduler, error) {
 	var after tracker.NativeWorkItemID
 	return hubmaintenance.New(hostedMaintenanceTenant{tenant}, []hubmaintenance.Feature{
 		s.WorkItemPageMaintenanceFeature(),
+		s.IntegrationPageMaintenanceFeature(),
 		{Name: "board", Bytes: BoardMaintenanceBytes, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
 			if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
 				return err

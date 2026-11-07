@@ -35,7 +35,7 @@ func (s *Service) readIntegrationPage(ctx context.Context, scope nativeScope) (P
 		})
 	})
 	if errors.Is(err, corestore.ErrNotFound) {
-		return result, &nativeError{Code: "not_ready", Message: "Project integration is being prepared", status: http.StatusServiceUnavailable, publicMessage: true}
+		return result, corestore.ErrNotFound
 	}
 	return result, projectRecordError(err)
 }
@@ -112,7 +112,16 @@ func (s *Service) getProjectIntegrationPage(c echo.Context) error {
 			return err
 		}
 		var err error
-		value, err = s.readIntegrationPage(ctx, nativeRequestScope(c))
+		scope := nativeRequestScope(c)
+		value, err = s.readIntegrationPage(ctx, scope)
+		if errors.Is(err, corestore.ErrNotFound) {
+			var record projectstore.Record
+			record, err = s.readProjectRecord(ctx, scope)
+			if err == nil {
+				value = projectIntegrationRecord(record)
+				value.WorkflowMarkdown, err = s.projectRecordWorkflow(ctx, record)
+			}
+		}
 		return err
 	})
 	if err != nil {

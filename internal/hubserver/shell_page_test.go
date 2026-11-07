@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -22,7 +21,6 @@ import (
 func TestIntegrationPageDoesNotReadObjects(t *testing.T) {
 	details := &memoryRunDetails{}
 	service := newPostgresNativeService(t, Config{RunDetails: hubmaintenance.LimitDetails(details)})
-	service.echo.GET(nativeBase+"/integration", service.getProjectIntegrationPage, service.requireAPIScope(apiScopeWorker, apiScopeOperator))
 	original := service.database.postgres
 	value, _ := projectRecordDatabases.Load(original)
 	wire := &boardWire{}
@@ -78,16 +76,19 @@ func TestIntegrationPageDoesNotReadObjects(t *testing.T) {
 				t.Fatal(err)
 			}
 			if size == 2 {
-				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/integration", fixture.token, nil), http.StatusServiceUnavailable)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/integration", fixture.token, nil), http.StatusOK)
 			}
-			pageFeature := service.IntegrationPageMaintenanceFeature()
-			pageFeature.Bytes = 2 * attachment.MaxArchiveBytes
-			scheduler, err := hubmaintenance.New(maintenanceTenantRegistry{{Organization: string(organization), Generation: 1}}, []hubmaintenance.Feature{pageFeature})
+			previousHosted := service.config.Hosted
+			service.config.Hosted = &HostedConfig{OrganizationID: string(organization)}
+			scheduler, err := service.newReadModelMaintenance()
+			service.config.Hosted = previousHosted
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := scheduler.Tick(t.Context()); err != nil {
-				t.Fatal(err)
+			for range 8 {
+				if err := scheduler.Tick(t.Context()); err != nil {
+					t.Fatal(err)
+				}
 			}
 			objects := 0
 			details.beforeRead = func(context.Context) error { objects++; return nil }

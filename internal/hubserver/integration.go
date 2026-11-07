@@ -355,7 +355,7 @@ func (s *Service) registerIntegrationRoutes(e *echo.Echo) {
 	read := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
 	operator := s.requireNativeScope(apiScopeOperator)
 	admin := s.requireNativeScope(apiScopeAdmin)
-	e.GET(nativeBase+"/integration", s.getProjectIntegration, read)
+	e.GET(nativeBase+"/integration", s.getProjectIntegrationPage, s.requireAPIScope(apiScopeWorker, apiScopeOperator))
 	e.PUT(nativeBase+"/integration", s.updateProjectIntegration, admin)
 	e.POST(nativeBase+"/integration/repository", s.bindNativeRepository, admin)
 	e.POST(nativeBase+"/integration/cutover", s.cutoverProject, admin)
