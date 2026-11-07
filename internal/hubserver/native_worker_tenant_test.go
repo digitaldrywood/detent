@@ -3,12 +3,14 @@ package hubserver
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,6 +23,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -115,6 +119,7 @@ func TestLeaseRenewalReturnsItsCommittedSnapshot(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
+
 			}
 			counter := &leaseTransactionCounter{Repository: measured}
 			service.config.TenantRepository = counter
@@ -151,6 +156,152 @@ func TestLeaseRenewalReturnsItsCommittedSnapshot(t *testing.T) {
 		})
 	}
 
+}
+
+func TestReviewTerminalLease(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		landed         bool
+		completed      bool
+		expired        bool
+		stale          bool
+		otherLeaseOnly bool
+		status         int
+	}{
+		{name: "terminal without landing", status: http.StatusConflict},
+		{name: "landed finalization", landed: true, status: http.StatusOK},
+		{name: "completed finalization", landed: true, completed: true, status: http.StatusConflict},
+		{name: "expired finalization", landed: true, expired: true, status: http.StatusConflict},
+		{name: "landed stale fence", landed: true, stale: true, status: http.StatusConflict},
+		{name: "other lease landing", landed: true, otherLeaseOnly: true, status: http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newRunnerPGFixture(t)
+			service := &Service{config: f.service.config, notifications: f.service.notifications, boardRefresh: f.service.boardRefresh}
+			service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
+			for index, lease := range f.leases {
+				credential, status, err := service.authenticateAccessHash(t.Context(), apikey.HashToken(f.tokens[index]), "", "")
+				if err != nil || status != http.StatusOK {
+					t.Fatalf("authentication: status=%d error=%v", status, err)
+				}
+				if test.landed && (!test.otherLeaseOnly || index == 0) {
+					now := time.Now().UTC().Truncate(time.Microsecond)
+					content := eventstore.NewContent(service.runDetailStore())
+					changeID, versionID := newNativeID("change"), newNativeID("version")
+					changeRaw, err := json.Marshal(tracker.ChangeRequest{ID: changeID, OrganizationID: "org_startup", ProjectID: "prj_runner", WorkItemID: lease.WorkItemID, Title: "Example", Revision: 1, CreatedAt: now, UpdatedAt: now})
+					if err != nil {
+						t.Fatal(err)
+					}
+					change, err := content.PrepareChange(t.Context(), "org_startup", changeRaw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					versionRaw, err := json.Marshal(tracker.ChangeVersion{ID: versionID, ChangeID: changeID, Number: 1, CreatedAt: now, ChangeVersionInput: tracker.ChangeVersionInput{Repository: "example-org/example-project", BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), AttemptID: f.data[index].AttemptID, PolicyID: f.policy.PolicyID}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					version, err := content.PrepareVersion(t.Context(), "org_startup", versionRaw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					receipt, err := content.PrepareLandingReceipt(t.Context(), eventstore.LandingReceipt{OrganizationID: "org_startup", AttemptID: f.data[index].AttemptID, VersionID: versionID, Repository: version.Repository, BaseRef: "develop"}, tracker.NativeLandingReceipt{Landed: true, ChangeID: changeID, VersionID: versionID, MergeSHA: strings.Repeat("c", 40), BaseRef: "develop"})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+						if _, err := w.CreateChange(t.Context(), change); err != nil {
+							return err
+						}
+						if _, err := w.CreateVersion(t.Context(), version); err != nil {
+							return err
+						}
+						_, err := w.CreateLandingReceipt(t.Context(), receipt)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := f.admin.ExecContext(t.Context(), "UPDATE issues SET workflow_state_name='Done' WHERE organization_id=$1 AND native_id=$2", "org_startup", string(lease.WorkItemID)); err != nil {
+					t.Fatal(err)
+				}
+				if test.completed {
+					if _, err := f.admin.ExecContext(t.Context(), "UPDATE native_attempts SET status='succeeded' WHERE organization_id=$1 AND id=$2", "org_startup", f.data[index].AttemptID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.expired {
+					if _, err := f.admin.ExecContext(t.Context(), "UPDATE leases SET acquired_at=clock_timestamp()-interval '2 hours',renewed_at=clock_timestamp()-interval '1 hour',expires_at=clock_timestamp()-interval '1 second' WHERE organization_id=$1 AND lease_id=$2", "org_startup", string(lease.ID)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var before leasestore.Lease
+				if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+					before, err = r.Lease(t.Context(), string(lease.ID))
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				response := httptest.NewRecorder()
+				fence := lease.FencingToken
+				if test.stale {
+					fence++
+				}
+				request := newHubAPIRequest(t, http.MethodPost, "/renew", f.tokens[index], tracker.NativeLeaseMutation{FencingToken: fence, TTLSeconds: 300})
+				c := echo.New().NewContext(request, response)
+				c.SetParamNames("lease")
+				c.SetParamValues(string(lease.ID))
+				c.Set("native_scope", nativeScope{organization: "org_startup", project: "prj_runner", credential: credential})
+				if err := service.renewNativeLeaseTenant(c); err != nil {
+					t.Fatal(err)
+				}
+				wantStatus := test.status
+				if test.otherLeaseOnly && index == 1 {
+					wantStatus = http.StatusConflict
+				}
+				requireNativeStatus(t, response, wantStatus)
+				if wantStatus == http.StatusOK {
+					var renewed tracker.NativeLease
+					decodeHubResponse(t, response, &renewed)
+					if renewed.ID != lease.ID || renewed.FencingToken != lease.FencingToken {
+						t.Fatalf("finalization replaced ownership: %+v", renewed)
+					}
+				} else if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+					after, err := r.Lease(t.Context(), string(lease.ID))
+					if err == nil && (!after.ExpiresAt.Equal(before.ExpiresAt) || !after.RenewedAt.Equal(before.RenewedAt)) {
+						t.Error("refused renewal extended the lease")
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if !test.expired && (!test.otherLeaseOnly || index == 1) {
+					response = httptest.NewRecorder()
+					request = newHubAPIRequest(t, http.MethodPost, "/release", f.tokens[index], tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "cancelled"})
+					c = echo.New().NewContext(request, response)
+					c.SetParamNames("lease")
+					c.SetParamValues(string(lease.ID))
+					c.Set("native_scope", nativeScope{organization: "org_startup", project: "prj_runner", credential: credential})
+					if err := service.releaseNativeLeaseTenant(c); err != nil {
+						t.Fatal(err)
+					}
+					requireNativeStatus(t, response, http.StatusNoContent)
+					if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+						attempt, err := r.Attempt(t.Context(), f.data[index].AttemptID)
+						want := "cancelled"
+						if test.completed {
+							want = "succeeded"
+						}
+						if err == nil && attempt.Status != want {
+							t.Errorf("terminal lease release left attempt %s, want %s", attempt.Status, want)
+						}
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+		})
+	}
 }
 
 func TestLeaseCommandLocksRunnerBeforeFence(t *testing.T) {
