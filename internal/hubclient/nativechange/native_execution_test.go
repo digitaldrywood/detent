@@ -19,6 +19,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -491,17 +493,17 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 		{name: "worker heartbeat stale", phase: "implementation", age: 90 * time.Second},
 		{name: "terminal work item", phase: "implementation", terminal: true},
 		{name: "terminal work item retains running worker cleanup", phase: "implementation", terminal: true, localWorker: true, wantRetained: true},
-		{name: "landing attempt finishes terminal item", phase: "merging", terminal: true, landed: true, wantRenewed: true},
+		{name: "landing receipt does not renew terminal item", phase: "merging", terminal: true, landed: true},
 		{name: "landing receipt does not renew dead worker", phase: "merging", terminal: true, landed: true, age: 90 * time.Second},
 		{name: "landing receipt does not renew mismatched process", phase: "merging", terminal: true, landed: true, localWorker: true, staleProcess: true, wantRetained: true},
-		{name: "recovered landing attempt finishes terminal item", phase: "merging", terminal: true, landed: true, recovered: true, wantRenewed: true},
+		{name: "recovered landing receipt does not renew terminal item", phase: "merging", terminal: true, landed: true, recovered: true},
 		{name: "recovered landing receipt does not renew stale worker", phase: "merging", terminal: true, landed: true, recovered: true, age: 90 * time.Second},
 		{name: "landing receipt preserves operator hold", phase: "merging", lane: "Blocked", landed: true},
 		{name: "recovered completed worker", phase: "completed", recovered: true},
 		{name: "recovered stale worker", phase: "implementation", age: 90 * time.Second, recovered: true},
 		{name: "recovered operator hold", phase: "implementation", lane: "Blocked", recovered: true},
-		{name: "recovered custom hold", phase: "implementation", lane: "Waiting", recovered: true},
-		{name: "recovered unmet dependency", phase: "implementation", dependency: true, recovered: true},
+		{name: "recovered machine wait retains ownership", phase: "implementation", lane: "Waiting", recovered: true, wantRenewed: true},
+		{name: "owned work survives new unmet dependency", phase: "implementation", dependency: true, recovered: true, wantRenewed: true},
 		{name: "recovered rework", phase: "implementation", lane: "Rework", recovered: true, wantRenewed: true},
 		{name: "live operator hold retains cleanup", phase: "implementation", lane: "Blocked", localWorker: true, wantRetained: true},
 		{name: "host finalization retains ownership", phase: "completed", age: 2 * time.Minute, pending: true, wantRenewed: true},
@@ -600,6 +602,7 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 				if test.exhausted {
 					now = now.Add(h.scheduler.LeaseDuration() + time.Second)
 					fixtureSetNow(h.scheduler, now)
+					testsupport.NativeChangeExpireLease(t, h.config, execution.claim.lease.ID)
 				}
 				fixtureClient(h.native.Transport()).requests.Store(original)
 				execution.change = nil
@@ -635,6 +638,13 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 				}
 			}
 			before := fixtureClaims(h.scheduler)[issue.ID].lease
+
+			var beforeHub leasestore.Lease
+			testsupport.NativeChangeWrite(t, h.config, func(w tenantstore.Writer) error {
+				var err error
+				beforeHub, err = w.Lease(t.Context(), string(before.ID))
+				return err
+			})
 			transport := fixtureClient(h.native.Transport()).requests.Load()
 			var renewals, releases int
 			fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
@@ -681,11 +691,41 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 					wantReleases = 1
 				}
 				wantRenewals := 0
-				if test.exhausted {
+				if test.exhausted || !test.staleProcess && test.age < 90*time.Second && (test.terminal || test.lane != "" || test.dependency) {
 					wantRenewals = 1
 				}
 				if renewals != wantRenewals || releases != wantReleases {
 					t.Fatalf("inactive lease received %d renewals and %d releases, want %d and %d", renewals, releases, wantRenewals, wantReleases)
+				}
+				testsupport.NativeChangeWrite(t, h.config, func(w tenantstore.Writer) error {
+					lease, err := w.Lease(t.Context(), string(before.ID))
+					if err != nil {
+						return err
+					}
+					if !lease.ExpiresAt.Equal(beforeHub.ExpiresAt) || !lease.RenewedAt.Equal(beforeHub.RenewedAt) {
+						t.Fatalf("inactive execution extended its Hub lease: before=%+v after=%+v", beforeHub, lease)
+					}
+					return nil
+				})
+				if test.landed && (execution.data.Runtime == nil || execution.data.Runtime.Landing == nil || !execution.data.Runtime.Landing.Landed) {
+					t.Fatal("rejected renewal lost the observed landing receipt")
+				}
+				if test.exhausted {
+					recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+					if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "interrupted" || recovery.Attempts[0].ClaimReleasedAt == nil {
+						t.Fatalf("expired completion did not return to Hub recovery: %+v, %v", recovery.Attempts, err)
+					}
+					fixtureSetNow(h.scheduler, time.Time{})
+					h.claim(t, issue.ID)
+					resumed := h.scheduler.RunExecution(issue.ID).(runner.ChangeSourceExecution)
+					recovered, err := resumed.RecoverChangeSource(t.Context())
+					if err != nil || outageSource == nil || recovered.Version.ID != outageSource.VersionID || recovered.Version.HeadSHA != nativeChangeFixtureHead("c") || len(recovered.Bundle) == 0 {
+						t.Fatalf("expired completion lost its published source: %+v, %v", recovered, err)
+					}
+					if err := recovered.Version.Source.Validate(recovered.Version.BaseSHA, recovered.Version.HeadSHA, recovered.Bundle); err != nil {
+						t.Fatal(err)
+					}
+					return
 				}
 				if test.wantFailure {
 					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "failed"); err != nil {
