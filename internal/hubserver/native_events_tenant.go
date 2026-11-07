@@ -478,11 +478,12 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			}
 			authority.UsageCosts = costs
 		}
-		if !termination {
-			authority.Publication, err = s.prepareTenantPRPublication(ctx, &authority)
+		if !termination && tenantRunPRPublication(event.Data) != nil {
+			publication, err := s.prepareTenantPRPublication(ctx, &authority)
 			if err != nil {
 				return nil, err
 			}
+			authority.Publication = &publication
 		}
 		preparedEvent := preparedNativeRunEvent{authority: authority, attempt: attemptEvent, history: history}
 		if i == len(events)-1 && usageCorrection {

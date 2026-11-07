@@ -3,9 +3,10 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"reflect"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
-	"reflect"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -34,16 +35,16 @@ type preparedNativePRPublication struct {
 	diff       leasestore.AttemptDiff
 }
 
-func (s *Service) prepareTenantPRPublication(ctx context.Context, authority *NativeRunEventAuthority) (*preparedNativePRPublication, error) {
+func (s *Service) prepareTenantPRPublication(ctx context.Context, authority *NativeRunEventAuthority) (preparedNativePRPublication, error) {
 	data := authority.Event.Data
 	publication := tenantRunPRPublication(data)
 	if data.Handoff != nil && data.Finalization != nil && data.Handoff.Publication != nil && data.Finalization.Publication != nil && !reflect.DeepEqual(data.Handoff.Publication, data.Finalization.Publication) {
-		return nil, nativeExecutionConflict("PR publication receipts disagree")
+		return preparedNativePRPublication{}, nativeExecutionConflict("PR publication receipts disagree")
 	}
 	if publication == nil {
-		return nil, nil
+		return preparedNativePRPublication{}, nil
 	}
-	prepared := &preparedNativePRPublication{}
+	prepared := preparedNativePRPublication{}
 	err := s.config.TenantRepository.ReadTenant(ctx, authority.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
 		var err error
 		prepared.change, err = reader.Change(ctx, publication.ChangeID)
@@ -69,35 +70,35 @@ func (s *Service) prepareTenantPRPublication(ctx context.Context, authority *Nat
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return preparedNativePRPublication{}, err
 	}
 	change := prepared.change
 	version, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).Version(ctx, prepared.version)
 	if err != nil {
-		return nil, err
+		return preparedNativePRPublication{}, err
 	}
 	if change.ProjectID != authority.ProjectID || change.WorkItemID != authority.WorkItem.NativeID || change.CurrentVersionID == nil || *change.CurrentVersionID != publication.VersionID || !version.Policy.Gates.GitHubPullRequest || !publication.Matches(publication.ChangeID, version) {
-		return nil, nativeExecutionConflict("PR publication no longer matches the current Change version or source")
+		return preparedNativePRPublication{}, nativeExecutionConflict("PR publication no longer matches the current Change version or source")
 	}
 	store, ok := s.runDetailStore().(attachment.CanonicalDetailStore)
 	if !ok {
-		return nil, nativeRunEventStorageUnavailable()
+		return preparedNativePRPublication{}, nativeRunEventStorageUnavailable()
 	}
 	raw, err := store.ReadCanonicalDetail(ctx, string(authority.OrganizationID), string(authority.ProjectID), prepared.checkpoint)
 	if err != nil {
-		return nil, err
+		return preparedNativePRPublication{}, err
 	}
 	var payload checkpointPayload
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return nil, err
+		return preparedNativePRPublication{}, err
 	}
 	checkpoint := payload.Checkpoint
 	if checkpoint == nil || checkpoint.ExternalEffect != "pr_create" || checkpoint.EffectState != "confirmed" || checkpoint.EffectID != publication.EffectID("pr_create") || checkpoint.Change == nil || *checkpoint.Change != publication.SourceVersion || checkpoint.HeadSHA != publication.HeadSHA {
-		return nil, nativeExecutionConflict("PR publication requires its exact confirmed checkpoint")
+		return preparedNativePRPublication{}, nativeExecutionConflict("PR publication requires its exact confirmed checkpoint")
 	}
 	diff := prepared.diff
 	if diff.WorkItemID != authority.WorkItem.NativeID || diff.Producer.LeaseID != data.LeaseID || diff.Producer.FencingToken != data.FencingToken || diff.HeadSHA != publication.HeadSHA {
-		return nil, corestore.ErrRevisionConflict
+		return preparedNativePRPublication{}, corestore.ErrRevisionConflict
 	}
 	return prepared, nil
 }
