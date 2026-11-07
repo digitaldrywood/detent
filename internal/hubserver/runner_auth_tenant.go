@@ -38,9 +38,21 @@ func (s *Service) authenticateTenantAPIHash(ctx context.Context, organization tr
 	var provider string
 	var runnerRenewal bool
 	var err error
-	if authority, ok := s.config.TenantRepository.(tenantauth.Reader); ok {
+	authority, authorityAvailable := s.config.TenantRepository.(tenantauth.Reader)
+	runnerAuthority, runnerAuthorityAvailable := s.config.TenantRepository.(interface {
+		ReadRunnerAuthority(context.Context, tenantauth.RequestIdentity, func() time.Time) (tenantauth.Scope, int, error)
+	})
+	var requestCapacity *int
+	if authorityAvailable || runnerAuthorityAvailable {
 		var scope tenantauth.Scope
-		scope, err = authority.ReadTenantAuthority(ctx, tenantauth.RequestIdentity{Organization: organization, CredentialHash: hash, RenewalRunner: renewalRunner, RenewalOrganization: tracker.OrganizationID(renewalOrganization)})
+		input := tenantauth.RequestIdentity{Organization: organization, CredentialHash: hash, RenewalRunner: renewalRunner, RenewalOrganization: tracker.OrganizationID(renewalOrganization)}
+		if authorityAvailable {
+			scope, err = authority.ReadTenantAuthority(ctx, input)
+		} else {
+			var capacity int
+			scope, capacity, err = runnerAuthority.ReadRunnerAuthority(ctx, input, s.config.now)
+			requestCapacity = &capacity
+		}
 		if err == nil {
 			principal := scope.Principal()
 			if scope.Organization() != organization || scope.ValidAt(s.config.now()) != nil {
@@ -95,7 +107,7 @@ func (s *Service) authenticateTenantAPIHash(ctx context.Context, organization tr
 		}
 		return apiCredential{}, http.StatusServiceUnavailable, err
 	}
-	credential := apiCredential{ID: token.ID, Name: token.Name, Scope: apiScope(token.Scope), Hash: hash, NativeOnly: token.NativeOnly, HostedMembership: token.MembershipID, HostedPrincipal: member.PrincipalID, HostedRole: member.Role, HostedKeyKind: token.Kind, HostedProjectAccess: hostedProjectAccess(token.ProjectAccess), Runner: runner, runnerRenewal: runnerRenewal}
+	credential := apiCredential{ID: token.ID, Name: token.Name, Scope: apiScope(token.Scope), Hash: hash, NativeOnly: token.NativeOnly, HostedMembership: token.MembershipID, HostedPrincipal: member.PrincipalID, HostedRole: member.Role, HostedKeyKind: token.Kind, HostedProjectAccess: hostedProjectAccess(token.ProjectAccess), Runner: runner, runnerRenewal: runnerRenewal, requestCapacity: requestCapacity}
 	if token.UserID != "" {
 		if s.config.Hosted == nil || provider == "" {
 			return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity

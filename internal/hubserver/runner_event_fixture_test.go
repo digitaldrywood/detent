@@ -3,6 +3,7 @@ package hubserver
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -119,4 +120,23 @@ func seedRunnerEventTenant(t *testing.T, service *Service, template runnerPGFixt
 		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, f.tokens[index], event), http.StatusOK)
 	}
 	return f
+}
+
+func seedRunnerCommandHistory(t *testing.T, fixture runnerPGFixture, org tracker.OrganizationID, index, history int) {
+	t.Helper()
+	lease := fixture.leases[index]
+	repository := fixture.service.config.TenantRepository
+	for i := 0; i < history; i++ {
+		raw, err := json.Marshal(tracker.CollaborationEvent{ID: fmt.Sprintf("history_%d_%d", index, i), OrganizationID: org, ProjectID: "prj_runner", AggregateType: "issue", AggregateID: lease.WorkItemID, Type: "issue.updated", SchemaVersion: 1, Actor: tracker.Actor{Kind: "token", PrincipalID: "example"}, RecordedAt: time.Now().UTC()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, err := eventstore.NewContent(fixture.service.runDetailStore()).PrepareEvent(t.Context(), org, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

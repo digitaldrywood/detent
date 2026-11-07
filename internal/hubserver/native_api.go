@@ -483,6 +483,13 @@ func (s *Service) resolveNativeRequestScope(readCtx context.Context, c echo.Cont
 		return nativeNotFound()
 	}
 	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
+	if s.runnerEventCommandScope(c, scope) {
+		if credential.Runner.OrganizationID != scope.organization {
+			return nativeNotFound()
+		}
+		c.Set("native_scope", scope)
+		return nil
+	}
 	if c.Path() == nativeOrganizationIssuePath {
 		var item corestore.WorkItem
 		err := s.config.TenantRepository.ReadTenant(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {

@@ -294,23 +294,28 @@ func (s *Service) admitRunnerRequest(c echo.Context, credential apiCredential) e
 	if s.config.TenantRepository == nil || m.organization == "" {
 		return s.nativeAPIError(c, ErrHostedDatabaseBinding)
 	}
-	var runnerCapacity int64
-	err := s.config.TenantRepository.ReadTenant(ctx, m.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		identity, err := reader.RunnerIdentity(ctx, credential.Runner.RunnerID)
+	if credential.requestCapacity != nil {
+		capacity = *credential.requestCapacity
+	} else {
+		var runnerCapacity int64
+		err := s.config.TenantRepository.ReadTenant(ctx, m.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			identity, err := reader.RunnerIdentity(ctx, credential.Runner.RunnerID)
+			if err != nil {
+				return err
+			}
+			machine, err := reader.Machine(ctx, string(identity.MachineID))
+			if err != nil {
+				return err
+			}
+			runnerCapacity = min(identity.CapacityLimit, machine.Capacity)
+			return nil
+		})
 		if err != nil {
-			return err
+			return s.nativeAPIError(c, err)
 		}
-		machine, err := reader.Machine(ctx, string(identity.MachineID))
-		if err != nil {
-			return err
-		}
-		runnerCapacity = min(identity.CapacityLimit, machine.Capacity)
-		return nil
-	})
-	if err != nil {
-		return s.nativeAPIError(c, err)
+		capacity = int(runnerCapacity)
+
 	}
-	capacity = int(runnerCapacity)
 
 	projects := make([]string, 0, len(credential.Runner.ProjectIDs))
 	for _, id := range credential.Runner.ProjectIDs {

@@ -30,57 +30,8 @@ import (
 )
 
 func TestRunnerEventSubmissionWireBudget(t *testing.T) {
-	f := newRunnerPGFixture(t)
-	config, err := f.service.config.Postgres.Connection.PoolConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	pgtransport.Configure(config)
-	config.MaxConns = 3
-	wire := new(heartbeatWire)
-	config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
-		conn, err := new(net.Dialer).DialContext(ctx, network, address)
-		if err != nil {
-			return nil, err
-		}
-		return &heartbeatConn{Conn: conn, wire: wire, startup: true}, nil
-	}
-	config.PrepareConn = func(ctx context.Context, conn *pgx.Conn) (bool, error) {
-		stream, ok := conn.PgConn().Conn().(*heartbeatConn)
-		if !ok {
-			return false, fmt.Errorf("missing wire wrapper: %T", conn.PgConn().Conn())
-		}
-		stream.wire = new(heartbeatWire)
-		if ctx.Value(claimRequestTraceKey{}) == true {
-			stream.wire = wire
-		}
-		return true, nil
-	}
-	pool, err := pgxpool.NewWithConfig(t.Context(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	repository, err := postgres.NewRepository(t.Context(), pool, f.service.config.Postgres.Pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := repository.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	original := f.service.database.postgres
-	t.Cleanup(func() { f.service.config.TenantRepository = original; f.service.database.postgres = original })
-	f.service.config.TenantRepository = repository
-	f.service.database.postgres = repository
-
-	var apiLog bytes.Buffer
-	localService := openLocalPostgresHubTestService(t, repository, Config{RunDetails: f.service.runDetailStore(), SecretKeys: secretTestKeys(t, "1", "1"), Logger: slog.New(slog.NewTextHandler(&apiLog, nil))})
-	first := f
-	first.service = localService
-	second := seedRunnerEventTenant(t, localService, f, "org_second")
-	if _, err := f.admin.ExecContext(t.Context(), `CREATE FUNCTION reject_run_command_receipt() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN IF NEW.command_key='rollback' THEN RAISE EXCEPTION 'fixture publication rejection'; END IF; RETURN NEW; END$$; CREATE TRIGGER reject_run_command_receipt BEFORE INSERT ON native_commands FOR EACH ROW EXECUTE FUNCTION reject_run_command_receipt()`); err != nil {
+	first, second, repository, wire, apiLog := newRunnerEventWireFixtures(t)
+	if _, err := first.admin.ExecContext(t.Context(), `CREATE FUNCTION reject_run_command_receipt() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN IF NEW.command_key='rollback' THEN RAISE EXCEPTION 'fixture publication rejection'; END IF; RETURN NEW; END$$; CREATE TRIGGER reject_run_command_receipt BEFORE INSERT ON native_commands FOR EACH ROW EXECUTE FUNCTION reject_run_command_receipt()`); err != nil {
 		t.Fatal(err)
 	}
 	bounds := map[string][2]int{}
@@ -182,6 +133,37 @@ func TestRunnerEventSubmissionWireBudget(t *testing.T) {
 						t.Errorf("batch exchanges=%d, single=%d", batchExchanges, exchanges)
 					}
 				}
+				for _, count := range []int{1, 8} {
+					batch := request
+					batch.IdempotencyKey = fmt.Sprintf("usage_%d_%d_%d", index, size, count)
+					batch.PriorEvents = nil
+					for i := 0; i < count; i++ {
+						data.Sequence++
+						data.Usage = []tracker.NativeUsage{{Provider: "example", Model: "example-model", Input: data.Sequence * 17, Output: data.Sequence * 3, BillingMode: "metered", Currency: "USD", To: time.Now().UTC()}}
+						next := request
+						next.IdempotencyKey = ""
+						next.Data = data
+						if i < count-1 {
+							batch.PriorEvents = append(batch.PriorEvents, next)
+						} else {
+							batch.Data = data
+						}
+					}
+					wire.Lock()
+					wire.statements, wire.exchanges, wire.transactions = 0, 0, 0
+					wire.Unlock()
+					if _, err := fixture.service.appendNativeRunEventTenant(ctx, scope, string(fixture.leases[index].WorkItemID), batch); err != nil {
+						t.Fatal(err)
+					}
+					wire.Lock()
+					statements, usageExchanges, transactions := wire.statements, wire.exchanges, wire.transactions
+					wire.Unlock()
+					t.Logf("tenant=%s history=%d usage=%d statements=%d exchanges=%d", org, size, count, statements, usageExchanges)
+					check(fmt.Sprintf("%s/%d/usage/%d", org, index, count), statements, usageExchanges, transactions)
+					if usageExchanges != exchanges {
+						t.Errorf("usage exchanges=%d single=%d", usageExchanges, exchanges)
+					}
+				}
 				start := runnersession.Mutation{Key: fmt.Sprintf("session_%d_%d", index, size), LeaseID: fixture.leases[index].ID, FencingToken: fixture.leases[index].FencingToken, ProcessKey: strings.Repeat("x", 32), Start: &store.SessionStart{IssueID: string(fixture.leases[index].WorkItemID), StartedAt: time.Now().UTC(), Model: "example-model"}}
 				var session runnersession.Snapshot
 				for _, kind := range []string{"start", "progress"} {
@@ -216,6 +198,24 @@ func TestRunnerEventSubmissionWireBudget(t *testing.T) {
 					t.Logf("tenant=%s history=%d session %s exchanges=%d", org, size, kind, sessionExchanges)
 					check(fmt.Sprintf("%s/%d/session/%s", org, index, kind), sessionStatements, sessionExchanges, sessionTransactions)
 				}
+				data.Usage = nil
+				data.Sequence++
+				httpEvent := request
+				httpEvent.IdempotencyKey = fmt.Sprintf("http_%d_%d", index, size)
+				httpEvent.Data = data
+				path := fmt.Sprintf("/api/v2/organizations/%s/projects/prj_runner/work-items/%s/events", org, fixture.leases[index].WorkItemID)
+				wire.Lock()
+				wire.statements, wire.exchanges, wire.transactions = 0, 0, 0
+				wire.Unlock()
+				response := httptest.NewRecorder()
+				httpRequest := newHubAPIRequest(t, http.MethodPost, path, fixture.tokens[index], httpEvent).WithContext(ctx)
+				fixture.service.Handler().ServeHTTP(response, httpRequest)
+				requireNativeStatus(t, response, http.StatusOK)
+				wire.Lock()
+				httpStatements, httpExchanges, httpTransactions := wire.statements, wire.exchanges, wire.transactions
+				wire.Unlock()
+				t.Logf("tenant=%s history=%d HTTP statements=%d exchanges=%d transactions=%d", org, size, httpStatements, httpExchanges, httpTransactions)
+				check(fmt.Sprintf("%s/%d/http", org, index), httpStatements, httpExchanges, httpTransactions)
 				fixture.data[index] = data
 			}
 			bad := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "rollback"}, Type: "run.observed", SchemaVersion: 1, Data: fixture.data[index]}
@@ -245,20 +245,59 @@ func TestRunnerEventSubmissionWireBudget(t *testing.T) {
 			}
 		}
 	}
-	data := f.data[0]
-	data.Sequence++
-	request := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "full_http"}, Type: "run.observed", SchemaVersion: 1, Data: data}
-	path := "/api/v2/organizations/org_startup/projects/prj_runner/work-items/" + string(f.leases[0].WorkItemID) + "/events"
-	wire.Lock()
-	wire.statements, wire.exchanges, wire.transactions = 0, 0, 0
-	wire.Unlock()
-	response := httptest.NewRecorder()
-	httpRequest := newHubAPIRequest(t, http.MethodPost, path, f.tokens[0], request).WithContext(context.WithValue(t.Context(), claimRequestTraceKey{}, true))
-	f.service.Handler().ServeHTTP(response, httpRequest)
-	requireNativeStatus(t, response, http.StatusOK)
-	wire.Lock()
-	statements, exchanges, transactions := wire.statements, wire.exchanges, wire.transactions
-	wire.Unlock()
-	t.Logf("full HTTP diagnostic: statements=%d exchanges=%d transactions=%d", statements, exchanges, transactions)
+}
 
+func newRunnerEventWireFixtures(t *testing.T) (runnerPGFixture, runnerPGFixture, *postgres.Repository, *heartbeatWire, *bytes.Buffer) {
+	t.Helper()
+	f := newRunnerPGFixture(t)
+	config, err := f.service.config.Postgres.Connection.PoolConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pgtransport.Configure(config)
+	config.MaxConns = 3
+	wire := new(heartbeatWire)
+	config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := new(net.Dialer).DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &heartbeatConn{Conn: conn, wire: wire, startup: true}, nil
+	}
+	config.PrepareConn = func(ctx context.Context, conn *pgx.Conn) (bool, error) {
+		stream, ok := conn.PgConn().Conn().(*heartbeatConn)
+		if !ok {
+			return false, fmt.Errorf("missing wire wrapper: %T", conn.PgConn().Conn())
+		}
+		stream.wire = new(heartbeatWire)
+		if ctx.Value(claimRequestTraceKey{}) == true {
+			stream.wire = wire
+		}
+		return true, nil
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository, err := postgres.NewRepository(t.Context(), pool, f.service.config.Postgres.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	original := f.service.database.postgres
+	t.Cleanup(func() { f.service.config.TenantRepository = original; f.service.database.postgres = original })
+	f.service.config.TenantRepository = repository
+	f.service.database.postgres = repository
+
+	apiLog := new(bytes.Buffer)
+	localService := openLocalPostgresHubTestService(t, repository, Config{RunDetails: f.service.runDetailStore(), SecretKeys: secretTestKeys(t, "1", "1"), Logger: slog.New(slog.NewTextHandler(apiLog, nil))})
+	first := f
+	first.service = localService
+	second := seedRunnerEventTenant(t, localService, f, "org_second")
+	return first, second, repository, wire, apiLog
 }

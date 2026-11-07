@@ -35,7 +35,11 @@ func (a *Authority) Resolve(ctx context.Context, input RequestIdentity) (Scope, 
 	return a.ReadTenantAuthority(ctx, input)
 }
 
-func (a *Authority) ReadTenantAuthority(ctx context.Context, input RequestIdentity) (result Scope, resultErr error) {
+func (a *Authority) ReadTenantAuthority(ctx context.Context, input RequestIdentity) (Scope, error) {
+	return a.ReadTenantAuthorityBatch(ctx, input, nil)
+}
+
+func (a *Authority) ReadTenantAuthorityBatch(ctx context.Context, input RequestIdentity, initial *pgx.Batch) (result Scope, resultErr error) {
 	if input.Organization == "" || input.CredentialHash == "" {
 		return Scope{}, ErrDenied
 	}
@@ -44,6 +48,9 @@ func (a *Authority) ReadTenantAuthority(ctx context.Context, input RequestIdenti
 	}
 	batch := &pgx.Batch{}
 	batch.Queue(authoritySQL, string(input.Organization), input.CredentialHash, runnerstore.MaxRunnerProjectList+1)
+	if initial != nil {
+		batch.QueuedQueries = append(batch.QueuedQueries, initial.QueuedQueries...)
+	}
 	tx, results, err := a.pools.BeginBatch(ctx, pgtransport.Scope{Organization: input.Organization}, pgtransport.Options{ReadOnly: true}, batch)
 	if err != nil {
 		return Scope{}, unavailable(err)

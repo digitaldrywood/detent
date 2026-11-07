@@ -52,7 +52,8 @@ type apiCredential struct {
 	Agent string
 	// runnerRenewal is set only for POST renewal of this bound identity.
 	// Expiry limits ordinary API use, but must not strand a stopped host.
-	runnerRenewal bool
+	runnerRenewal   bool
+	requestCapacity *int
 }
 
 type apiErrorResponse struct {
