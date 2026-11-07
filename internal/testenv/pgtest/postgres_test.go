@@ -392,15 +392,28 @@ func TestBinaryStderrDrainsOversizedRecords(t *testing.T) {
 	const readiness = "database system is ready to accept connections\n"
 	oversized := strings.Repeat("x", 2*bufio.MaxScanTokenSize) + "\n"
 	for _, tc := range []struct {
-		name, output string
+		name, output, failure string
 	}{
 		{name: "before readiness", output: oversized + readiness},
 		{name: "after readiness", output: readiness + strings.Repeat(oversized, 16) + readiness},
+		{name: "fatal before readiness", output: "FATAL: could not create shared memory segment: No space left on device\n", failure: "could not create shared memory segment: No space left on device"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stderr := strings.NewReader(tc.output)
 			ready := make(chan struct{})
-			if err := drainStderr(stderr, ready); err != nil {
+			err := drainStderr(stderr, ready)
+			if tc.failure != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.failure) {
+					t.Fatalf("startup failure=%v, want %s", err, tc.failure)
+				}
+				select {
+				case <-ready:
+					t.Fatal("failed server reported readiness")
+				default:
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("drain server stderr: %v", err)
 			}
 			if stderr.Len() != 0 {

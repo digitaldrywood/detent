@@ -581,8 +581,12 @@ exit "$status"
 
 func drainStderr(stderr io.Reader, ready chan struct{}) error {
 	reader := bufio.NewReader(stderr)
+	var startupFailure string
 	for {
 		line, err := reader.ReadSlice('\n')
+		if startupFailure == "" && (bytes.Contains(line, []byte("FATAL:")) || bytes.Contains(line, []byte("PANIC:"))) {
+			startupFailure = strings.TrimSpace(string(line[:min(len(line), 4096)]))
+		}
 		if bytes.Contains(line, []byte("database system is ready to accept connections")) {
 			close(ready)
 			_, err := io.Copy(io.Discard, reader)
@@ -592,6 +596,9 @@ func drainStderr(stderr io.Reader, ready chan struct{}) error {
 			continue
 		}
 		if errors.Is(err, io.EOF) {
+			if startupFailure != "" {
+				return errors.New(startupFailure)
+			}
 			return nil
 		}
 		if err != nil {
