@@ -14,14 +14,10 @@ import (
 )
 
 func (s *session) ProjectOnboardingProgress(ctx context.Context, project tracker.ProjectID) (onboarding.Progress, error) {
-	if _, err := s.Project(ctx, project); err != nil {
-		return onboarding.Progress{}, err
-	}
 	var result onboarding.Progress
-	err := s.db.QueryRow(ctx, `SELECT revision,repository,doctor,provider,artifacts,updated_at FROM project_onboarding WHERE organization_id=$1 AND project_id=$2`, s.organization, project).Scan(&result.Revision, &result.Repository, &result.Doctor, &result.Provider, &result.Artifacts, &result.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return result, nil
-	}
+	err := s.db.QueryRow(ctx, `SELECT COALESCE(o.revision,0),COALESCE(o.repository,''),COALESCE(o.doctor,false),COALESCE(o.provider,false),COALESCE(o.artifacts,''),COALESCE(o.updated_at,'')
+ FROM projects p LEFT JOIN project_onboarding o ON o.organization_id=p.organization_id AND o.project_id=p.id
+ WHERE p.organization_id=$1 AND p.id=$2`, s.organization, project).Scan(&result.Revision, &result.Repository, &result.Doctor, &result.Provider, &result.Artifacts, &result.UpdatedAt)
 	return result, mapError(ctx, err)
 }
 
