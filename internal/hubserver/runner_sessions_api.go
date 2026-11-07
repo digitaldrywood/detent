@@ -237,24 +237,29 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 		snapshot.Resume = store.SessionResumeState{ResumedFromSessionID: request.Start.ResumedFromSessionID, OrphanRecoveryOutcome: request.Start.OrphanRecoveryOutcome, OrphanRecoveryFallbackReason: request.Start.OrphanRecoveryFallbackReason}
 		snapshot.Provider = store.SessionProviderIdentity{ThreadID: request.Start.ProviderThreadID, SessionID: request.Start.ProviderSessionID}
 		snapshot.Authority = runnerSessionProcessAuthority(request.ProcessKey)
-	} else {
-		var err error
-		record, err = s.runnerSessionRead(ctx, scope, request.SessionID, nil)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		if request.ExpectedRevision != record.Revision {
-			return s.nativeAPIError(c, corestore.ErrRevisionConflict)
-		}
-		snapshot, err = s.readRunnerSessionPayload(ctx, record)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		record.Revision++
+
 	}
+	command := eventstore.RunCommand{Project: scope.project, WorkItem: tracker.NativeWorkItemID(record.IssueID), LeaseID: string(request.LeaseID), SessionID: request.SessionID}
 	var attempt leasestore.Attempt
 	var approved policystore.Revision
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.readNativeRunCommand(ctx, scope, command, func(ctx context.Context, r tenantstore.Reader) error {
+		if request.Start == nil {
+			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+				return err
+			}
+			reader, ok := r.(runnersession.Reader)
+			if !ok {
+				return nativeRunEventStorageUnavailable()
+			}
+			var err error
+			record, err = reader.RunnerSession(ctx, scope.project, request.SessionID)
+			if err != nil {
+				return err
+			}
+			if request.ExpectedRevision != record.Revision {
+				return corestore.ErrRevisionConflict
+			}
+		}
 		var err error
 		attempt, approved, err = s.runnerSessionFence(ctx, r, scope, request, record.IssueID, false)
 		return err
@@ -262,6 +267,15 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	command.WorkItem = tracker.NativeWorkItemID(record.IssueID)
+	if request.Start == nil {
+		snapshot, err = s.readRunnerSessionPayload(ctx, record)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		record.Revision++
+	}
+
 	if request.Start != nil {
 		record.AttemptID, record.PolicyID = attempt.ID, approved.PolicyID
 		snapshot.Policy, err = eventstore.NewContent(s.runDetailStore()).ProjectPolicy(ctx, approved)
@@ -365,7 +379,7 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 	if err := validateNativeDetailReference(ctx, s.runDetailStore(), scope.organization, historyRef, historyRaw); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.writeNativeRunCommand(ctx, scope, command, func(ctx context.Context, w tenantstore.Writer) error {
 		locked, policy, err := s.runnerSessionFence(ctx, w, scope, request, record.IssueID, true)
 		if err != nil {
 			return err

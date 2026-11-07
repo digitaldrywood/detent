@@ -131,11 +131,13 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 	var usageFactsFound bool
 	var replay eventstore.Receipt
 	var replayed bool
-	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
-	if !ok {
-		return nil, nativeRunEventStorageUnavailable()
+	var replaySnapshot *nativeRunReplaySnapshot
+	command := eventstore.RunCommand{Project: scope.project, WorkItem: tracker.NativeWorkItemID(item), LeaseID: string(request.Data.LeaseID), AttemptID: request.Data.AttemptID, ActorID: actorID, Operation: operation, Key: request.IdempotencyKey, Completion: request.Type == "run.finished" && request.Data.CompletionBody != ""}
+	for _, event := range events {
+		command.EventIDs = append(command.EventIDs, nativeAttemptHistoryID(event.Type, event.Data))
+		command.Sequences = append(command.Sequences, event.Data.Sequence)
 	}
-	if err := snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := s.readNativeRunCommand(ctx, scope, command, func(ctx context.Context, r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
@@ -163,7 +165,8 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 				return corestore.ErrRevisionConflict
 			}
 			replayed = true
-			return nil
+			replaySnapshot, err = readNativeRunReplaySnapshot(ctx, r, scope, item, events)
+			return err
 		}
 		if !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
 			return err
@@ -233,7 +236,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		return nil, err
 	}
 	if replayed {
-		if err := s.reconcileNativeRunEventReplay(ctx, scope, item, events, replay); err != nil {
+		if err := s.reconcileNativeRunEventReplay(ctx, scope, item, events, replay, replaySnapshot); err != nil {
 			return nil, err
 		}
 		return content.Receipt(ctx, replay)
@@ -461,7 +464,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 	if err != nil {
 		return nil, err
 	}
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.writeNativeRunCommand(ctx, scope, command, func(ctx context.Context, w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
@@ -527,10 +530,20 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 				continue
 			}
 			if event.completion != nil {
-				if err := s.publishEvidenceCompletion(ctx, w, *event.completion); err != nil {
+				apply := func(writer tenantstore.Writer) error {
+					return s.publishEvidenceCompletion(ctx, writer, *event.completion)
+				}
+				if participant, ok := w.(interface {
+					WithRunEventParticipant(context.Context, func(tenantstore.Writer) error) error
+				}); ok {
+					if err := participant.WithRunEventParticipant(ctx, apply); err != nil {
+						return err
+					}
+				} else if err := apply(w); err != nil {
 					return err
 				}
 			}
+
 			if _, err := w.AppendEvent(ctx, event.history); err != nil {
 				return err
 			}
@@ -622,39 +635,34 @@ type nativeRunEventReader interface {
 	RunEvent(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (eventstore.Event, error)
 }
 
-func (s *Service) reconcileNativeRunEventReplay(ctx context.Context, scope nativeScope, item string, events []tracker.NativeRunEvent, receipt eventstore.Receipt) error {
-	rows := make([]eventstore.Event, len(events))
-	attempts := make([]leasestore.Attempt, len(events))
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
+func (s *Service) reconcileNativeRunEventReplay(ctx context.Context, scope nativeScope, item string, events []tracker.NativeRunEvent, receipt eventstore.Receipt, snapshots ...*nativeRunReplaySnapshot) error {
+	var snapshot *nativeRunReplaySnapshot
+	if len(snapshots) > 0 {
+		snapshot = snapshots[0]
+	}
+	command := eventstore.RunCommand{Project: scope.project, WorkItem: tracker.NativeWorkItemID(item), ActorID: receipt.ActorID, Operation: receipt.Operation, Key: receipt.CommandKey}
+	if len(events) > 0 {
+		command.LeaseID = string(events[0].Data.LeaseID)
+		command.AttemptID = events[0].Data.AttemptID
+	}
+	for _, event := range events {
+		command.EventIDs = append(command.EventIDs, nativeAttemptHistoryID(event.Type, event.Data))
+		command.Sequences = append(command.Sequences, event.Data.Sequence)
+	}
+	if snapshot == nil {
+		if err := s.readNativeRunCommand(ctx, scope, command, func(ctx context.Context, r tenantstore.Reader) error {
+			if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
+				return err
+			}
+			var err error
+			snapshot, err = readNativeRunReplaySnapshot(ctx, r, scope, item, events)
+			return err
+		}); err != nil {
 			return err
 		}
-		reader, ok := r.(nativeRunEventReader)
-		if !ok {
-			return nativeRunEventStorageUnavailable()
-		}
-		for i, event := range events {
-			row, err := reader.RunEvent(ctx, scope.project, tracker.NativeWorkItemID(item), nativeAttemptHistoryID(event.Type, event.Data))
-			if err != nil {
-				return err
-			}
-			if row.OrganizationID != scope.organization || row.ProjectID != scope.project || row.WorkItemID != tracker.NativeWorkItemID(item) || row.Type != event.Type {
-				return artifact.ErrIntegrity
-			}
-			attempt, err := r.Attempt(ctx, event.Data.AttemptID)
-			if err != nil {
-				return err
-			}
-			if attempt.RunID != event.Data.RunID || attempt.LeaseID != string(event.Data.LeaseID) || attempt.FencingToken != int64(event.Data.FencingToken) || attempt.Sequence < event.Data.Sequence {
-				return artifact.ErrIntegrity
-			}
-			attempts[i] = attempt
-			rows[i] = row
-		}
-		return nil
-	}); err != nil {
-		return err
 	}
+	rows, attempts := snapshot.rows, snapshot.attempts
+
 	store := s.runDetailStore()
 	refs := make([]attachment.ArchiveReference, len(rows))
 	for i, row := range rows {
@@ -682,7 +690,7 @@ func (s *Service) reconcileNativeRunEventReplay(ctx context.Context, scope nativ
 		}
 		refs[i] = ref
 	}
-	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	return s.writeNativeRunCommand(ctx, scope, command, func(ctx context.Context, w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
