@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -40,7 +39,7 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 			now := time.Now()
 			scenariotest.SetSchedulerNow(setup.Scheduler, now)
 			original := setup.Requests.Load()
-			synctest.Test(t, func(t *testing.T) {
+			func() {
 				setup.Requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					return &http.Response{StatusCode: http.StatusBadGateway, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"unavailable"}`)), Request: request}, nil
 				}))
@@ -48,11 +47,10 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 				if err := setup.Scheduler.ReleaseClaim(t.Context(), setup.Issue.ID, "completed"); !nativeTransportUnavailable(err) {
 					t.Fatalf("completion outage = %v", err)
 				}
-				time.Sleep(2 * time.Minute)
 				now = now.Add(2 * time.Minute)
 				scenariotest.SetSchedulerNow(setup.Scheduler, now)
 				setup.Requests.Store(original)
-			})
+			}()
 			if _, err := setup.Scheduler.RenewClaim(t.Context(), setup.Issue.ID, now); err != nil {
 				t.Fatalf("outage discarded published completion: %v", err)
 			}

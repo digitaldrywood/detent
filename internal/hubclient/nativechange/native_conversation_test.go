@@ -51,9 +51,6 @@ type conversationHub struct {
 
 func newConversationHub(t *testing.T, timeouts ...time.Duration) (*conversationHub, *nativeExecution) {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("conversation HTTP listener and timeout integration")
-	}
 	hub := &conversationHub{t: t, bindStatus: http.StatusOK, controlsWake: make(chan struct{}, 16), hangEvents: make(chan struct{})}
 	server := httptest.NewServer(hub)
 	t.Cleanup(server.Close)

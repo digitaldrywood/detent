@@ -163,9 +163,6 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 }
 
 func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
 	t.Parallel()
 	for _, test := range []struct {
 		name        string
@@ -190,9 +187,7 @@ func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
 				}
 			}
 			issue := h.createInProgress(t, "Preserve conflicting published source")
-			if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Rework"); err != nil {
-				t.Fatal(err)
-			}
+			h.move(t, issue.ID, "Rework")
 			source := nativeChangeSourceRepo(t)
 			headAt := func(directory string) string {
 				t.Helper()
