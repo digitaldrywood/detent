@@ -865,3 +865,60 @@ func TestPostgresOwnership(t *testing.T) {
 		t.Fatalf("closing attached template damaged another owner's fixture: %v", err)
 	}
 }
+
+func TestBinaryDurabilitySettingsAndURLPreservation(t *testing.T) {
+	postgres, err := exec.LookPath("postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		attached bool
+		want     string
+	}{
+		{name: "disposable binary", want: "off"},
+		{name: "caller durable URL", attached: true, want: "on"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := testContext(t)
+			defer cancel()
+			selection := "binary"
+			if tc.attached {
+				bin := t.TempDir()
+				wrapper := "#!/bin/sh\nexec '" + strings.ReplaceAll(postgres, "'", "'\\''") + "' \"$@\" -c fsync=on -c synchronous_commit=on -c full_page_writes=on\n"
+				if err := os.WriteFile(filepath.Join(bin, "postgres"), []byte(wrapper), 0700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+				var stop func(context.Context) error
+				selection, stop, err = startBinary(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := stop(ctx); err != nil {
+						t.Error(err)
+					}
+				})
+			}
+			s, err := openServer(ctx, selection)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := errors.Join(s.admin.Close(), s.stop(ctx)); err != nil {
+					t.Error(err)
+				}
+			})
+			for _, setting := range []string{"fsync", "synchronous_commit", "full_page_writes"} {
+				var got string
+				if err := s.admin.QueryRowContext(ctx, "SHOW "+setting).Scan(&got); err != nil {
+					t.Fatal(err)
+				}
+				if got != tc.want {
+					t.Errorf("%s = %s, want %s", setting, got, tc.want)
+				}
+			}
+		})
+	}
+}

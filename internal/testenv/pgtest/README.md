@@ -26,7 +26,12 @@ Select the server explicitly with `DETENT_TEST_POSTGRES`:
   and reads a lifetime pipe whose only writer is the test binary. Normal close
   requests fast shutdown; EOF after an abrupt exit requests immediate shutdown.
   The supervisor waits for the postmaster to release its IPC resources. This
-  mode requires Unix sockets and `/bin/sh`.
+  mode requires Unix sockets and `/bin/sh`. It uses `fsync=off`,
+  `synchronous_commit=off` and `full_page_writes=off`, following PostgreSQL's
+  [non-durable settings](https://www.postgresql.org/docs/current/non-durability.html)
+  for disposable correctness tests. Crash-recovery and durability tests must use
+  a normally durable disposable URL server instead. URL attachment never changes
+  server durability settings.
 - `postgres://example:fake@127.0.0.1:55432/postgres`: attach to a disposable local
   PostgreSQL 17 or 18, including a container published on a loopback port. Supply an
   explicit port and a role permitted to create databases. IPv6 loopback and

@@ -485,7 +485,7 @@ kill -TERM "$watchdog" 2>/dev/null
 wait "$watchdog" 2>/dev/null
 exit "$status"
 `
-	cmd := exec.CommandContext(processCtx, "/bin/sh", "-c", supervise, "pgtest", "postgres", "-D", "data", "-h", "", "-k", ".", "-c", "lc_messages=C", "-c", "max_connections=16", "-c", "logging_collector=off")
+	cmd := exec.CommandContext(processCtx, "/bin/sh", "-c", supervise, "pgtest", "postgres", "-D", "data", "-h", "", "-k", ".", "-c", "lc_messages=C", "-c", "max_connections=16", "-c", "logging_collector=off", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off")
 	cmd.Dir = dir
 	cmd.Env = init.Env
 	cmd.Stdin = lifetime
