@@ -21,10 +21,138 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestBoardSearchFallbackHasFixedSQLBudget(t *testing.T) {
+	details := &memoryRunDetails{}
+	service := newPostgresNativeService(t, Config{RunDetails: details})
+	original := service.database.postgres
+	value, _ := projectRecordDatabases.Load(original)
+	wire := &boardWire{}
+	measured := boardWireRepository(t, value.(*sql.DB), wire)
+	t.Cleanup(func() { service.config.TenantRepository = original; service.config.AccessRepository = original })
+	expectedCounts := map[string][2]int{}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+		service.config.TenantRepository, service.config.AccessRepository = original, original
+		details.beforeRead = nil
+		fixture := newNativeFixture(t, service, org, "Example search")
+		service.localOrganization = string(org)
+		credential, _, err := service.authenticateTenantAPIHash(t.Context(), org, apikey.HashToken(fixture.token), "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		scope := nativeScope{organization: org, project: fixture.project.ID, credential: credential}
+		now := service.config.now().UTC().Truncate(time.Microsecond)
+		seeded := 0
+		for _, size := range []int{2, 50} {
+			service.config.TenantRepository, service.config.AccessRepository = original, original
+			details.beforeRead = nil
+			for seeded < size {
+				seeded++
+				id := tracker.NativeWorkItemID(fmt.Sprintf("wi_search_%04d", seeded))
+				issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: scope.project, WorkItemID: id, Number: seeded, Revision: 1}, Title: "Release audit credential", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: now, UpdatedAt: now}
+				payload, err := viewstore.NewContent(details).PrepareBoard(t.Context(), tracker.NativeBoardCard{Issue: issue})
+				if err != nil {
+					t.Fatal(err)
+				}
+				document, err := searchstore.NewContent(details).Prepare(t.Context(), searchstore.Document{OrganizationID: org, ProjectID: scope.project, WorkItemID: id, ID: "issue/" + string(id), SourceID: string(id), Kind: "issue", Scope: "issue", Revision: 1, UpdatedAt: now}, searchstore.Text{Title: issue.Title, Body: "Resume\nfingerprint: example-key\n"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := original.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+					principal := "example"
+					if seeded == 1 {
+						principal = "another-owner"
+					}
+					item, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: scope.project, NativeID: id, Number: int64(seeded), Title: issue.Title, WorkflowStateName: new("Todo"), ActorKind: new("human"), ActorPrincipalID: &principal})
+					if err != nil {
+						return err
+					}
+					if err := w.PutSearch(t.Context(), document, 0); err != nil {
+						return err
+					}
+					row := viewstore.BoardRecord{OrganizationID: org, ProjectID: scope.project, WorkItemID: id, SourceRevision: item.Revision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("%s#%04d", scope.project, seeded)}, CreatedAt: now, UpdatedAt: now, Payload: payload, ActorPrincipalID: "example", PageIssue: &issue, ListIssue: &issue, ListBytes: 1024, ProjectedAt: now, ReporterRelations: &viewstore.BoardReporterRelations{}, Display: viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Number: seeded, Actor: issue.Actor}}
+					return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: scope.project, WorkItemID: id, ExpectedRevision: item.Revision, Current: &row})
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for {
+				more, err := searchstore.NewContent(details).RefreshOne(t.Context(), tenantSearchRepository{original}, org)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !more {
+					break
+				}
+			}
+			service.config.TenantRepository, service.config.AccessRepository = measured, measured
+			details.beforeRead = func(context.Context) error { return errors.New("search page read an object") }
+			for _, role := range []string{"operator", "reporter"} {
+				selected := scope
+				if role == "reporter" {
+					selected.credential.HostedRole, selected.credential.HostedPrincipal = role, "example"
+				}
+				for _, include := range []string{"summary", "board", "work"} {
+					for _, filter := range []struct {
+						name, key, value string
+						match            bool
+					}{{"query", "q", "resume", true}, {"no query match", "q", "absentuniqueterm", false}, {"fingerprint", "fingerprint", "example-key", true}, {"no fingerprint match", "fingerprint", "absent-key", false}} {
+						key := role + "/" + include + "/" + filter.name
+						t.Run(fmt.Sprintf("%s/%d/%s", org, size, key), func(t *testing.T) {
+							if err := measured.Ping(t.Context()); err != nil {
+								t.Fatal(err)
+							}
+							wire.reset()
+							page, err := service.readBoardRecords(t.Context(), selected, url.Values{"include": {include}, "limit": {"200"}, filter.key: {filter.value}})
+							exchanges, statements := wire.stop()
+							if err != nil {
+								t.Fatal(err)
+							}
+							want := 0
+							if filter.match {
+								want = size
+								if role == "reporter" {
+									want--
+								}
+							}
+							if len(page.Items) != want {
+								t.Fatalf("items=%d want=%d", len(page.Items), want)
+							}
+							items := slices.Clone(page.Items)
+							if include == "work" {
+								if page.Work == nil || len(page.Work.Items) != want {
+									t.Fatalf("work page=%+v want=%d", page.Work, want)
+								}
+								items = append(items, page.Work.Items...)
+							}
+							for _, item := range items {
+								if item.OrganizationID != org || item.ProjectID != scope.project || role == "reporter" && item.WorkItemID == "wi_search_0001" {
+									t.Fatalf("search leaked unauthorized item: %+v", item)
+								}
+								if filter.key == "q" && !strings.Contains(strings.ToLower(item.Snippet), "credential") {
+									t.Fatalf("search snippet=%q", item.Snippet)
+								}
+							}
+							if exchanges > 9 || statements > 16 {
+								t.Errorf("wire exchanges=%d statements=%d", exchanges, statements)
+							}
+							if expected, ok := expectedCounts[key]; ok && expected != [2]int{exchanges, statements} {
+								t.Errorf("SQL/wire cost changed with data size or tenant: got %d/%d want %v", exchanges, statements, expected)
+							}
+							expectedCounts[key] = [2]int{exchanges, statements}
+							t.Logf("wire exchanges=%d statements=%d", exchanges, statements)
+						})
+					}
+				}
+			}
+		}
+	}
+}
 
 func TestBoardRequestHasFixedSQLBudget(t *testing.T) {
 	details := &memoryRunDetails{}
