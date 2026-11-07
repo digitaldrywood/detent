@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -52,7 +51,7 @@ func TestBindNativeRepositoryToolReceipts(t *testing.T) {
 			for _, name := range []string{"first-project", "second-project"} {
 				backend.steps = append(backend.steps, reconcileStep{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_" + name, Owner: "example-org", Name: name, UpdatedAt: time.Now().UTC()}}})
 			}
-			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), ReconcileBackend: backend})
+			service := newPostgresNativeService(t, Config{ReconcileBackend: backend})
 			first := newNativeFixture(t, service, "", "first-bind")
 			second := newNativeFixture(t, service, first.project.OrganizationID, "second-bind")
 			path := "/api/v2/organizations/" + string(first.project.OrganizationID) + "/mcp"
