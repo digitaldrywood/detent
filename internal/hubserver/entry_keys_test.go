@@ -329,6 +329,13 @@ func TestEntryKeyMutationAuditCommit(t *testing.T) {
 					if items != wantItems || audits != wantAudits {
 						t.Fatalf("items=%d audits=%d want items=%d audits=%d", items, audits, wantItems, wantAudits)
 					}
+					var successfulAudits int
+					if err := f.admin.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE organization_id='org_security' AND session_id=$1 AND event='key_call' AND status=200", key.ID).Scan(&successfulAudits); err != nil {
+						t.Fatal(err)
+					}
+					if successfulAudits != wantItems {
+						t.Fatalf("successful audits=%d want=%d", successfulAudits, wantItems)
+					}
 					if !json.Valid(recorder.Body.Bytes()) {
 						t.Fatalf("response is not one JSON document: %s", recorder.Body.String())
 					}

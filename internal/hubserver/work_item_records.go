@@ -1227,6 +1227,9 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 					return err
 				}
 			}
+			if err := s.recordEntryAccessKeyAuditWith(ctx, w, entryKeyAuditFrom(ctx), http.StatusOK); err != nil {
+				return err
+			}
 			_, err = w.PutReceipt(ctx, receipt)
 			return err
 		})
@@ -1286,7 +1289,13 @@ func (s *Service) workItemRecordReceipt(ctx context.Context, scope nativeScope, 
 			}
 			var err error
 			receipt, err = w.Receipt(ctx, scope.credential.ID, operation, key)
-			return err
+			if err != nil {
+				return err
+			}
+			if receipt.RequestHash == hash && !receipt.ResponseExpired && (receipt.ResponseReplayUntilNs == 0 || s.config.now().UnixNano() < receipt.ResponseReplayUntilNs) {
+				return s.recordEntryAccessKeyAuditWith(ctx, w, entryKeyAuditFrom(ctx), http.StatusOK)
+			}
+			return nil
 		})
 		if err != nil {
 			return receipt, false, err

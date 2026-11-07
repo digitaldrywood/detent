@@ -75,17 +75,27 @@ func (s *Service) logoutAccessSession(ctx context.Context, hash string, identity
 }
 
 func (s *Service) recordEntryAccessKeyAudit(ctx context.Context, audit *entryKeyAudit, status int) error {
+	if audit == nil || audit.readOnly() && status < http.StatusBadRequest {
+		return nil
+	}
+	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
+		return s.recordEntryAccessKeyAuditWith(ctx, w, audit, status)
+	})
+}
+
+func (s *Service) recordEntryAccessKeyAuditWith(ctx context.Context, w tenantstore.Writer, audit *entryKeyAudit, status int) error {
+	if audit == nil {
+		return nil
+	}
 	if audit.readOnly() && status < http.StatusBadRequest {
 		return nil
 	}
 	claims := audit.claims
 	now := s.config.now()
-	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
-		if audit.rowID != 0 {
-			return w.UpdateAccessKeyAudit(ctx, audit.rowID, claims.Key.ID, audit.operation, tracker.ProjectID(audit.project), audit.resource, status)
-		}
-		var err error
-		audit.rowID, err = w.RecordAccessAudit(ctx, accessstore.Audit{OrganizationID: s.accessOrganization(), SessionID: claims.Key.ID, ActualActor: claims.Subject, EffectiveUser: claims.Subject, Event: "key_call", Route: audit.operation, ProjectID: tracker.ProjectID(audit.project), Status: status, StartedAt: claims.IssuedAt, ExpiresAt: claims.ExpiresAt, RecordedAt: now, RecordedAtNS: now.UnixNano(), KeyID: claims.Key.ID, KeyKind: claims.Key.Kind, KeyOwner: claims.Subject, Resource: audit.resource})
-		return err
-	})
+	if audit.rowID != 0 {
+		return w.UpdateAccessKeyAudit(ctx, audit.rowID, claims.Key.ID, audit.operation, tracker.ProjectID(audit.project), audit.resource, status)
+	}
+	var err error
+	audit.rowID, err = w.RecordAccessAudit(ctx, accessstore.Audit{OrganizationID: s.accessOrganization(), SessionID: claims.Key.ID, ActualActor: claims.Subject, EffectiveUser: claims.Subject, Event: "key_call", Route: audit.operation, ProjectID: tracker.ProjectID(audit.project), Status: status, StartedAt: claims.IssuedAt, ExpiresAt: claims.ExpiresAt, RecordedAt: now, RecordedAtNS: now.UnixNano(), KeyID: claims.Key.ID, KeyKind: claims.Key.Kind, KeyOwner: claims.Subject, Resource: audit.resource})
+	return err
 }
