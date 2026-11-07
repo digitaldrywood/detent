@@ -953,6 +953,13 @@ func TestRunnerHeartbeatObservationsAreTenantScoped(t *testing.T) {
 			if err != nil {
 				return err
 			}
+			batch, err := r.(runnerstore.AdmissionReader).RunnerAdmissionObservations(ctx, "project_shared", []string{"runner_shared", "runner_missing"})
+			if err != nil {
+				return err
+			}
+			if len(batch) != 1 || batch["runner_shared"].Context.PolicyID != "policy_"+string(organization) || len(batch["runner_shared"].Context.WorkflowStates) != 1 || batch["runner_shared"].Context.WorkflowStates[0] != "Todo" {
+				t.Errorf("organization %s batched admission=%+v", organization, batch)
+			}
 			if len(metrics) != 1 || metrics[0].CPUBusySumPercent != float64(len(organization)) || admission.Context.PolicyID != "policy_"+string(organization) || len(admission.Context.WorkflowStates) != 1 || admission.Context.WorkflowStates[0] != "Todo" {
 				t.Errorf("organization %s metrics=%+v admission=%+v", organization, metrics, admission)
 			}

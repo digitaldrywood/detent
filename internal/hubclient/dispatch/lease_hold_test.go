@@ -108,7 +108,7 @@ func TestSchedulerLeaseHoldSpansCandidateFetch(t *testing.T) {
 			}))
 			request := orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, AdmissionLimit: 1, WorkflowStates: []string{"Todo", "In Progress"}}
 			issues, err := h.scheduler.FetchCandidateIssues(t.Context(), request)
-			if (err != nil) != test.hydrationFailure || claims.Load() == 0 {
+			if (err != nil) != test.hydrationFailure || !test.noWork && claims.Load() == 0 || test.noWork && claims.Load() != 0 {
 				t.Fatalf("fetch: issues=%+v error=%v claims=%d", issues, err, claims.Load())
 			}
 			if test.noWork || test.hydrationFailure {

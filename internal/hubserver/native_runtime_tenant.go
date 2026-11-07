@@ -31,11 +31,26 @@ type nativeRuntimeTenantSnapshot struct {
 }
 
 func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
-	if len(admission) != 0 {
+	if len(admission) > 1 {
 		return tracker.NativeRuntimeEvidence{}, nativeRunEventStorageUnavailable()
 	}
 	if attemptID == "" {
-		return tracker.NativeRuntimeEvidence{}, nativeRunEventStorageUnavailable()
+		row, version, err := s.readWorkItemRecord(ctx, scope, item)
+		if err != nil {
+			return tracker.NativeRuntimeEvidence{}, err
+		}
+		issue, err := s.hydrateWorkItemRecord(ctx, row, version)
+		if err != nil {
+			return tracker.NativeRuntimeEvidence{}, err
+		}
+		evidence, _, _, err := s.readOperatorExplanation(ctx, scope, issue)
+		if err != nil {
+			return tracker.NativeRuntimeEvidence{}, err
+		}
+		if err := s.readRuntimeAdmissionTenant(ctx, scope, issue, &evidence, admission); err != nil {
+			return tracker.NativeRuntimeEvidence{}, err
+		}
+		return evidence, nil
 	}
 	if !validNativeID(attemptID, "attempt") {
 		if local, err := strconv.ParseInt(attemptID, 10, 64); err == nil && local > 0 {

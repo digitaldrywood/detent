@@ -304,6 +304,10 @@ type ProjectWorkspaceAvailability struct {
 	Terminal  bool
 }
 
+type AdmissionReader interface {
+	RunnerAdmissionObservations(context.Context, tracker.ProjectID, []string) (map[string]tracker.NativeAdmissionObservation, error)
+}
+
 type ProjectWorkspaceReader interface {
 	ProjectWorkspaceAvailability(context.Context, []tracker.ProjectID, time.Time) ([]ProjectWorkspaceAvailability, error)
 }
