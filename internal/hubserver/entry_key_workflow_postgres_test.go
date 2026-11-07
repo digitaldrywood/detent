@@ -522,7 +522,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 					}}
 					ctx := context.WithValue(t.Context(), entryKeyBoardTraceContext{}, timing)
 					wire.reset()
-					page, err := target.readBoardRecords(ctx, scope, url.Values{"include": {"board"}, "limit": {"2000"}})
+					page, err := target.readBoardRecordsFor(ctx, scope, url.Values{"include": {"board"}, "limit": {"2000"}}, true)
 					exchanges, wireStatements := wire.stop()
 					if err != nil {
 						t.Fatal(err)
