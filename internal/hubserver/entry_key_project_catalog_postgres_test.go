@@ -26,12 +26,23 @@ import (
 )
 
 func TestPostgresEntryKeyProjectCatalog(t *testing.T) {
+	authorities := map[string]apikey.KeyAuthority{}
+	roles := map[string]string{}
 	f := newSharedRouteFixture(t, func(cfg *Config) {
 		plans := pilotHostedPlans()
 		cfg.Hosted.Plans = &plans
 		org := cfg.Hosted.OrganizationID
 		cfg.Hosted.SharedEntry.ResolveKey = func(_ context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
-			return cloudassert.Claims{Issuer: origin.Issuer, Generation: origin.Generation, Audience: org, ProviderOrganization: "provider_" + org, Subject: origin.Subject, Role: "owner", Kind: cloudassert.KindKey, ExpiresAt: time.Now().Add(time.Minute), Key: &apikey.KeyAuthority{ID: origin.KeyID, CredentialBinding: origin.CredentialBinding, Kind: "personal", Permission: apikey.ScopeAdmin, ProjectContext: apikey.ProjectContext{Access: "all"}}}, nil
+			key, ok := authorities[org]
+			if !ok {
+				key = apikey.KeyAuthority{Kind: "personal", Permission: apikey.ScopeAdmin, ProjectContext: apikey.ProjectContext{Access: "all"}}
+			}
+			key.ID, key.CredentialBinding = origin.KeyID, origin.CredentialBinding
+			role := roles[org]
+			if role == "" {
+				role = "owner"
+			}
+			return cloudassert.Claims{Issuer: origin.Issuer, Generation: origin.Generation, Audience: org, ProviderOrganization: "provider_" + org, Subject: origin.Subject, Role: role, Kind: cloudassert.KindKey, ExpiresAt: time.Now().Add(time.Minute), Key: &key}, nil
 		}
 	})
 	for _, org := range []string{"org_startup", "org_other"} {
@@ -112,6 +123,52 @@ func TestPostgresEntryKeyProjectCatalog(t *testing.T) {
 					}
 				})
 			}
+			t.Run("restricted_runner_administration", func(t *testing.T) {
+				defer delete(authorities, org)
+				defer delete(roles, org)
+				for _, role := range []string{"owner", "admin"} {
+					for _, restriction := range []struct {
+						name    string
+						context apikey.ProjectContext
+						blocked []string
+					}{
+						{"selected", apikey.ProjectContext{Access: "selected", Projects: []string{project}}, nil},
+						{"project", apikey.ProjectContext{Access: "project", Projects: []string{project}}, nil},
+						{"blocked", apikey.ProjectContext{Access: "all"}, []string{project}},
+					} {
+						t.Run(role+"/"+restriction.name, func(t *testing.T) {
+							key := apikey.KeyAuthority{ID: org + "_owner", CredentialBinding: strings.Repeat("d", 64), Kind: "personal", Permission: apikey.ScopeAdmin, ProjectContext: restriction.context, BlockedProjects: restriction.blocked}
+							authorities[org], roles[org] = key, role
+							restrictedClaims := func(c *cloudassert.Claims) {
+								keyClaims(c)
+								c.Key, c.Role = &key, role
+							}
+							catalog := f.request(t, org, "/internal/v1/keys/catalog", `{}`, restrictedClaims)
+							requireNativeStatus(t, catalog, http.StatusOK)
+							var definitions []operatortool.Definition
+							decodeHubResponse(t, catalog, &definitions)
+							for _, tool := range []struct{ name, arguments string }{
+								{operatortool.ListRunnerRouting, `{"limit":10}`},
+								{operatortool.GetRunnerUpdate, fmt.Sprintf(`{"runner_id":%q}`, runner)},
+								{operatortool.GetUrgentRunnerUpdate, `{}`},
+								{operatortool.GetRunnerCapacity, fmt.Sprintf(`{"runner_id":%q}`, runner)},
+								{operatortool.CreateRunnerEnrollment, `{"request_id":"restricted-enrollment","enrollment":{"scope":"organization","project_ids":[],"operations":["read"],"ttl_seconds":60}}`},
+								{operatortool.MarkUrgentRunnerUpdate, `{"request_id":"restricted-urgent","change":{"expected_revision":0,"version":"1.2.3"}}`},
+							} {
+								if entryKeyHasDefinition(definitions, tool.name) {
+									t.Errorf("restricted key exposes %s", tool.name)
+								}
+								body := fmt.Sprintf(`{"name":%q,"connection_id":%q,"arguments":%s}`, tool.name, org+"_restricted", tool.arguments)
+								response := f.request(t, org, "/internal/v1/keys/call", body, restrictedClaims)
+								requireNativeStatus(t, response, http.StatusForbidden)
+								if !strings.Contains(response.Body.String(), `"code":"tool_unavailable"`) || strings.Contains(response.Body.String(), runner) {
+									t.Fatalf("restricted runner call leaked data: %s", response.Body)
+								}
+							}
+						})
+					}
+				}
+			})
 			for _, test := range []struct {
 				name, input string
 			}{

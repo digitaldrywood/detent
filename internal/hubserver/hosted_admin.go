@@ -137,6 +137,9 @@ func (s *Service) hostedAllRunnerGrants(ctx context.Context, credential apiCrede
 }
 
 func (s *Service) requireHostedRunnerAdministration(ctx context.Context, query nativeQueryer, credential apiCredential) error {
+	if credential.EntryKey != nil && (credential.EntryKey.Access != "all" || len(credential.EntryKey.BlockedProjects) > 0) {
+		return operatortool.ErrAccessDenied
+	}
 	return s.requireHostedRunnerProjects(ctx, query, credential, nil)
 }
 
