@@ -153,13 +153,6 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 				bootstrap.HasUnread = s.releasesUnread(seen)
 			}
 		}
-		if err == nil && s.database.plans() != nil {
-			var entitlement HostedEntitlement
-			entitlement, err = s.database.hostedEntitlement(readCtx, nil, s.config.now())
-			if err == nil {
-				bootstrap.Plan = &appBootstrapPlan{ID: entitlement.EffectiveBase.ID, Name: entitlement.Name, Source: entitlement.Source, WindowEndsAt: entitlement.WindowEndsAt.UTC().Format(time.RFC3339)}
-			}
-		}
 		if err != nil {
 			return result, err
 		}

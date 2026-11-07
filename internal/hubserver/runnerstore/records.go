@@ -298,6 +298,16 @@ func (row ProjectObservation) Validate(attempts []ProjectDiagnosticAttempt) erro
 	return nil
 }
 
+type ProjectWorkspaceAvailability struct {
+	ProjectID tracker.ProjectID
+	Isolation string
+	Terminal  bool
+}
+
+type ProjectWorkspaceReader interface {
+	ProjectWorkspaceAvailability(context.Context, []tracker.ProjectID, time.Time) ([]ProjectWorkspaceAvailability, error)
+}
+
 type Reader interface {
 	RunnerEnrollmentByTokenHash(context.Context, string) (Enrollment, error)
 	RunnerEnrollment(context.Context, string) (Enrollment, error)

@@ -18,10 +18,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/readableurl"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 func (s *Service) registerPostgresAppRoutes(e *echo.Echo) {
@@ -161,6 +163,13 @@ func (s *Service) readPostgresAppBootstrap(ctx context.Context, credential apiCr
 		payload.Organization.Logo = &logo
 		payload.Organization.Name = organization.Name
 		payload.Organization.Slug = organization.Slug
+		if s.database.plans() != nil {
+			entitlement, err := s.database.hostedEntitlementRecord(ctx, r, s.config.now())
+			if err != nil {
+				return err
+			}
+			payload.Plan = &appBootstrapPlan{ID: entitlement.EffectiveBase.ID, Name: entitlement.Name, Source: entitlement.Source, WindowEndsAt: entitlement.WindowEndsAt.UTC().Format(time.RFC3339)}
+		}
 		return nil
 	}); err != nil {
 		return appBootstrap{}, fmt.Errorf("read PostgreSQL organization bootstrap: %w", err)
@@ -198,7 +207,7 @@ func (s *Service) readPostgresAppBootstrap(ctx context.Context, credential apiCr
 	}
 	payload.Capabilities.Coordinator = s.conversations != nil && s.conversations.coordinator != nil && s.conversations.coordinator.Available()
 	payload.Feature = s.appBootstrapFeature()
-	payload.Feature.Workspaces = false
+	payload.Feature.Workspaces = s.config.Workspace != nil && s.config.Workspace.Enabled && !s.config.CredentialMaintenance
 	payload.Preferences = s.postgresAppBootstrapPreferences()
 	return payload, nil
 }
@@ -208,6 +217,7 @@ func (s *Service) postgresAppProjects(ctx context.Context, credential apiCredent
 	filter := projectAccessFilter(credential, "", "", projectLimit)
 	var rows []accessstore.ProjectAccess
 	var records []projectstore.Record
+	var workspaceRows []runnerstore.ProjectWorkspaceAvailability
 	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
 		pageReader, ok := reader.(accessstore.ProjectAccessPageReader)
 		if !ok {
@@ -229,6 +239,18 @@ func (s *Service) postgresAppProjects(ctx context.Context, credential apiCredent
 			}
 			records = append(records, record)
 		}
+		if s.config.Workspace != nil && s.config.Workspace.Enabled && !s.config.CredentialMaintenance && credential.HostedRole != "viewer" {
+			workspaceReader, ok := reader.(runnerstore.ProjectWorkspaceReader)
+			if !ok {
+				return errors.New("project workspace reader is unavailable")
+			}
+			ids := make([]tracker.ProjectID, 0, len(rows))
+			for _, row := range rows {
+				ids = append(ids, row.ProjectID)
+			}
+			workspaceRows, err = workspaceReader.ProjectWorkspaceAvailability(ctx, ids, s.config.now())
+			return err
+		}
 		return nil
 	})
 	if err != nil {
@@ -244,6 +266,17 @@ func (s *Service) postgresAppProjects(ctx context.Context, credential apiCredent
 		}
 		project.CanWrite = project.CanWrite && !viewer
 		project.CanManageRunners = project.CanManageRunners && !viewer
+		for _, workspace := range workspaceRows {
+			if string(workspace.ProjectID) != project.ID || !project.CanWrite {
+				continue
+			}
+			project.Capabilities.Files, project.Capabilities.Exec = true, true
+			terminal := workspace.Terminal && project.CanManageRunners && s.config.Workspace.Terminal.Enabled && terminalIsolationAllowed([]string{workspacesession.CapabilityTerminal}, s.config.Workspace.Terminal.Isolation, workspace.Isolation)
+			if s.config.Workspace.Terminal.Isolation == workspacesession.IsolationUser && credential.HostedRole != "owner" && credential.HostedRole != "admin" {
+				terminal = false
+			}
+			project.Capabilities.Terminal = project.Capabilities.Terminal || terminal
+		}
 		projects = append(projects, project)
 	}
 	return projects, nil
