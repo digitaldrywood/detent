@@ -317,8 +317,12 @@ func TestSSHLocalTargetIntegration(t *testing.T) {
 
 func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, producerFailure ...bool) {
 	t.Helper()
+	goRoot, err := exec.CommandContext(t.Context(), "go", "env", "GOROOT").Output()
+	if err != nil {
+		t.Fatalf("resolve fixture Go toolchain: %v", err)
+	}
 	t.Setenv("GOTOOLCHAIN", "local")
-	t.Setenv("PATH", filepath.Join(runtime.GOROOT(), "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PATH", filepath.Join(strings.TrimSpace(string(goRoot)), "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	root := t.TempDir()
