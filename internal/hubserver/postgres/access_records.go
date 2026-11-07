@@ -542,6 +542,9 @@ func (s *session) AuthorizeAccess(ctx context.Context, authority accessstore.Aut
 }
 
 func accessAuthorizationError(err error) error {
+	if errors.Is(err, tenantauth.ErrUnavailable) {
+		return err
+	}
 	if errors.Is(err, corestore.ErrNotFound) {
 		return accessstore.ErrDenied
 	}
