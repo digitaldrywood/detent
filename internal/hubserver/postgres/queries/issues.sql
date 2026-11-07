@@ -90,8 +90,23 @@ VALUES (
 ) RETURNING *;
 
 -- name: UpdateWorkItem :one
+WITH previous AS MATERIALIZED (
+    SELECT id,archived,workflow_state_name FROM issues
+    WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
+      AND native_id=sqlc.arg(native_id) AND revision=sqlc.arg(expected_revision)
+    FOR UPDATE
+), invalidated_admission AS (
+    DELETE FROM monthly_budget_admissions a USING previous i
+    WHERE a.organization_id=sqlc.arg(organization_id) AND a.issue_id=i.id
+      AND (i.archived OR sqlc.arg(archived) OR EXISTS (
+          SELECT 1 FROM project_workflow_states w
+          WHERE w.organization_id=sqlc.arg(organization_id) AND w.project_id=sqlc.arg(project_id)
+            AND w.name IN (i.workflow_state_name,sqlc.narg(workflow_state_name))
+            AND (w.terminal OR lower(w.name) IN ('blocked','backlog','cancelled'))
+      ))
+)
 UPDATE issues SET
-    last_activity_at=greatest(last_activity_at,COALESCE(sqlc.narg(last_activity_at)::timestamptz,last_activity_at)),
+    last_activity_at=greatest(issues.last_activity_at,COALESCE(sqlc.narg(last_activity_at)::timestamptz,issues.last_activity_at)),
     number=sqlc.arg(number),
     event_sequence=sqlc.arg(event_sequence),
     native_source_key=sqlc.arg(native_source_key),
@@ -107,10 +122,11 @@ UPDATE issues SET
     provenance_external_id=sqlc.arg(provenance_external_id),
     archived=sqlc.arg(archived),
     workflow_state_name=sqlc.narg(workflow_state_name),
-    revision=revision+1,
+    revision=issues.revision+1,
     updated_at=CURRENT_TIMESTAMP,
     native_updated_at=CURRENT_TIMESTAMP
-WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND native_id=sqlc.arg(native_id) AND revision=sqlc.arg(expected_revision) RETURNING *;
+FROM previous
+WHERE issues.id=previous.id AND issues.organization_id=sqlc.arg(organization_id) AND issues.project_id=sqlc.arg(project_id) AND issues.native_id=sqlc.arg(native_id) AND issues.revision=sqlc.arg(expected_revision) RETURNING issues.*;
 
 -- name: DeleteWorkItem :execrows
 DELETE FROM issues
