@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -27,7 +28,11 @@ import (
 func TestPostgresOnboardingPreservesImportedProgressAndRetries(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
-	cfg.Postgres.Pool = postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1}
+	cfg.Postgres.Pool = postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1}
+	cfg.runMaintenance = func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+		<-ctx.Done()
+		return nil
+	}
 	const ownerToken = "example_onboarding_owner"
 	now := time.Now().UTC()
 	if _, err := cfg.Hosted.Provider.CreateMembership(t.Context(), "user_owner", "provider_org_startup", "owner"); err != nil {
@@ -202,18 +207,21 @@ type onboardingReplayRepository struct {
 }
 type onboardingReplayWriter struct {
 	tenantstore.Writer
+	projectstore.OnboardingPageWriter
 	repository *onboardingReplayRepository
 }
 
 func (r *onboardingReplayRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
-	return r.Repository.WriteTenant(ctx, organization, workload, func(w tenantstore.Writer) error { return write(onboardingReplayWriter{Writer: w, repository: r}) })
+	return r.Repository.WriteTenant(ctx, organization, workload, func(w tenantstore.Writer) error {
+		return write(onboardingReplayWriter{Writer: w, OnboardingPageWriter: w.(projectstore.OnboardingPageWriter), repository: r})
+	})
 }
-func (w onboardingReplayWriter) SaveProjectOnboardingProgress(ctx context.Context, project tracker.ProjectID, progress onboarding.Progress, expected tracker.Revision) error {
+func (w onboardingReplayWriter) InvalidateOnboardingPage(ctx context.Context, project tracker.ProjectID, viewer string) error {
 	w.repository.ready <- struct{}{}
 	select {
 	case <-w.repository.release:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return w.Writer.SaveProjectOnboardingProgress(ctx, project, progress, expected)
+	return w.OnboardingPageWriter.InvalidateOnboardingPage(ctx, project, viewer)
 }
