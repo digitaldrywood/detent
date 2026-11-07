@@ -23,6 +23,10 @@ interface ProjectStream {
 
 const streams = new WeakMap<object, Map<string, ProjectStream>>();
 
+function retryDelay(attempt: number): number {
+  return Math.min(30_000, 1000 * 2 ** Math.min(attempt, 5)) * (0.5 + Math.random() * 0.5);
+}
+
 function sequence(value: unknown): bigint | null {
   if (typeof value !== "string" && typeof value !== "number" && typeof value !== "bigint") return null;
   try { return /^\d+$/.test(String(value)) ? BigInt(value) : null; } catch { return null; }
@@ -56,8 +60,7 @@ function createStream(http: EventHttp, projectId: string): ProjectStream {
   const reconnect = () => {
     disconnect();
     if (stream.subscribers === 0 || document.visibilityState === "hidden") return;
-    const ceiling = Math.min(30_000, 1000 * 2 ** Math.min(stream.attempts++, 5));
-    stream.timer = setTimeout(stream.connect, ceiling * (0.5 + Math.random() * 0.5));
+    stream.timer = setTimeout(stream.connect, retryDelay(stream.attempts++));
   };
   stream.connect = () => {
     disconnect();
@@ -163,18 +166,27 @@ export function subscribeProjectQuery(http: EventHttp, projectId: string, option
   let watermark: bigint | null = null;
   let frames: Event[] = [];
   const revisions = new Map<string, bigint>();
-  let scheduled = false;
+  let failures = 0;
+  let scheduled: { timer?: ReturnType<typeof setTimeout> } | undefined;
   let restarting = false;
+  const cancelRefresh = () => {
+    clearTimeout(scheduled?.timer);
+    scheduled = undefined;
+  };
   const refresh = (restart = false) => {
     restarting ||= restart;
-    if (scheduled || !active) return;
-    scheduled = true;
-    queueMicrotask(() => {
-      scheduled = false;
+    if (scheduled !== undefined || !active) return;
+    const current: { timer?: ReturnType<typeof setTimeout> } = {};
+    scheduled = current;
+    const run = () => {
+      if (scheduled !== current) return;
+      scheduled = undefined;
       const run = restarting ? options.restart ?? options.refresh : options.refresh;
       restarting = false;
       if (active) run();
-    });
+    };
+    if (failures === 0) queueMicrotask(run);
+    else current.timer = setTimeout(run, retryDelay(failures - 1));
   };
   const apply = (event: Event) => {
     const cursor = sequence((event as MessageEvent).lastEventId);
@@ -212,27 +224,31 @@ export function subscribeProjectQuery(http: EventHttp, projectId: string, option
   return {
     refresh: () => refresh(),
     beginSnapshot() {
+      if (!restarting) cancelRefresh();
       const version = ++generation;
       loading = true;
       frames = [];
       let completed = false;
+      const complete = (value?: number | string | bigint, failed = false) => {
+        if (!active || version !== generation || completed) return;
+        completed = true;
+        failures = failed ? failures + 1 : 0;
+        watermark = sequence(value);
+        queryState.watermark = watermark;
+        queryState.pending = false;
+        stream?.resume();
+        loading = false;
+        const buffered = frames;
+        frames = [];
+        for (const frame of buffered) apply(frame);
+      };
       return {
         current: () => active && version === generation,
-        complete(value?: number | string | bigint) {
-          if (!active || version !== generation || completed) return;
-          completed = true;
-          watermark = sequence(value);
-          queryState.watermark = watermark;
-          queryState.pending = false;
-          stream?.resume();
-          loading = false;
-          const buffered = frames;
-          frames = [];
-          for (const frame of buffered) apply(frame);
-        },
+        complete: (value?: number | string | bigint) => complete(value),
+        fail: () => complete(undefined, true),
       };
     },
-    close() { active = false; generation++; frames = []; stream?.queries.delete(token); closeStream(); stream?.resume(); },
+    close() { active = false; generation++; cancelRefresh(); frames = []; stream?.queries.delete(token); closeStream(); stream?.resume(); },
   };
 }
 
@@ -260,7 +276,7 @@ export function observeProjectQuery<T>(http: EventHttp, projectId: string, optio
       options.apply(result.value);
       snapshot.complete(result.watermark);
     } catch (cause) {
-      if (snapshot.current()) { options.error?.(cause); snapshot.complete(); }
+      if (snapshot.current()) { options.error?.(cause); snapshot.fail(); }
     }
   };
   void load();

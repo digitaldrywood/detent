@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { subscribeProjectEvents } from "../src/app/work/lib/projectEvents.ts";
+import * as disk from "../src/app/work/lib/boardDisk.ts";
+import { clearBoardCache, getBoardRead } from "../src/app/work/lib/boardStore.ts";
+import { DEFAULT_VIEW_STATE } from "../src/app/work/lib/viewState.ts";
+import { makeWorkHttp } from "../src/app/work/lib/workHttp.ts";
+import { workPaginationFixture } from "./workPaginationFixture.ts";
 
 class Source extends EventTarget {
   static instances: Source[] = [];
@@ -15,6 +20,100 @@ const stops: (() => void)[] = [];
 beforeEach(() => { vi.useFakeTimers(); Source.instances = []; vi.stubGlobal("EventSource", Source); });
 afterEach(() => { stops.splice(0).forEach((stop) => stop()); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 const http = () => ({ eventsUrl: (id: string) => `/projects/${id}/events` });
+
+it.each(["null arrays", "unavailable"])("bounds board snapshot requests after %s and buffered event batches", async (failure) => {
+  vi.spyOn(Math, "random").mockReturnValue(0);
+  vi.spyOn(disk, "readBoardDisk").mockResolvedValue(null);
+  vi.spyOn(disk, "updateBoardDisk").mockResolvedValue();
+  const fixture = workPaginationFixture();
+  await fixture.control();
+  const pending: { resolve: (response: Response) => void; url: string }[] = [];
+  const client = makeWorkHttp({ ...fixture.client.http, fetch: (input, init) => {
+    if (!new URL(input, "http://fixture.test").pathname.endsWith("/work-items")) return fixture.fetch(input, init);
+    return new Promise<Response>((resolve) => pending.push({ resolve, url: input }));
+  } });
+  const counts = vi.spyOn(client, "getBoardCounts");
+  const projects = vi.spyOn(client, "getProject");
+  const read = getBoardRead(fixture.client, client, "proj_alpha", { ...DEFAULT_VIEW_STATE, lanes: ["Todo"] });
+  const stop = read.subscribe(() => {});
+  stops.push(stop);
+  let sequence = 0;
+  const batch = () => {
+    for (const type of ["work_item", "board", "lane"]) {
+      sequence++;
+      Source.instances[0]!.emit(type, JSON.stringify({ entity_id: "wi_example", entity_revision: sequence }), String(sequence));
+    }
+    sequence++;
+    Source.instances[0]!.emit("activity", JSON.stringify({ sequence, gap: true, deltas: [] }), String(sequence));
+  };
+  let valid: Record<string, unknown> = {};
+  try {
+    read.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pending).toHaveLength(1);
+    valid = { ...await (await fixture.fetch(pending[0]!.url)).json(), change_sequence: 1000, sequence: 1000 };
+    delete valid.next_cursor;
+    const invalid = structuredClone(valid);
+    (invalid.items as { external_references: unknown }[])[0]!.external_references = null;
+    const failedResponse = () => failure === "null arrays"
+      ? Response.json(invalid)
+      : Response.json({ code: "service_unavailable", message: "Temporary fixture failure" }, { status: 503 });
+    for (const [attempt, delay] of [500, 1000, 2000, 4000, 8000].entries()) {
+      batch();
+      pending[attempt]!.resolve(failedResponse());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(pending).toHaveLength(attempt + 1);
+      expect(read.snapshot().error).toContain(failure === "null arrays" ? "unexpected payload" : "Temporary fixture failure");
+      for (let eventBatch = 0; eventBatch < 10; eventBatch++) batch();
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      expect(pending).toHaveLength(attempt + 1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(pending).toHaveLength(attempt + 2);
+    }
+    batch();
+    pending[5]!.resolve(failedResponse());
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(pending).toHaveLength(6);
+    expect(read.snapshot().error).not.toBeNull();
+    expect(counts).toHaveBeenCalledTimes(6);
+    expect(projects).toHaveBeenCalledTimes(6);
+    await vi.advanceTimersByTimeAsync(12_499);
+    expect(pending).toHaveLength(6);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(pending).toHaveLength(7);
+    batch();
+    pending[6]!.resolve(Response.json(valid));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read.snapshot().error).toBeNull();
+    expect(read.snapshot().resolved).toBe(true);
+    expect(read.snapshot().items.length).toBeGreaterThan(0);
+    await vi.advanceTimersByTimeAsync(18_000);
+    expect(pending).toHaveLength(7);
+    expect(counts).toHaveBeenCalledTimes(7);
+    expect(projects).toHaveBeenCalledTimes(7);
+    sequence = 1000;
+    batch();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pending).toHaveLength(8);
+    pending[7]!.resolve(failedResponse());
+    await vi.advanceTimersByTimeAsync(0);
+    batch();
+    await vi.advanceTimersByTimeAsync(499);
+    expect(pending).toHaveLength(8);
+    stop();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(pending).toHaveLength(8);
+    expect(Source.instances).toHaveLength(1);
+    expect(Source.instances[0]!.close).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    stop();
+    clearBoardCache();
+    for (const request of pending) request.resolve(Response.json(valid ?? {}));
+    await vi.advanceTimersByTimeAsync(0);
+  }
+});
+
 it("closes native reconnect and resumes the shared cursor without refreshing subscribers", async () => {
   const client = http();
   const changed = vi.fn();
@@ -36,6 +135,45 @@ it("closes native reconnect and resumes the shared cursor without refreshing sub
 });
 
 import { observeProjectQuery, subscribeProjectQuery, PROJECT_SNAPSHOT_BUFFER } from "../src/app/work/lib/projectEvents.ts";
+
+it("leaves failures idle without events and cancels superseded refreshes", async () => {
+  const refresh = vi.fn();
+  const query = subscribeProjectQuery(http(), "p", { topics: ["work_item"], apply: () => query.refresh(), refresh });
+  stops.push(query.close);
+  query.beginSnapshot().fail();
+  await vi.advanceTimersByTimeAsync(18_000);
+  expect(refresh).not.toHaveBeenCalled();
+  Source.instances[0]!.emit("work_item", "{}", "1");
+  await vi.advanceTimersByTimeAsync(499);
+  expect(refresh).not.toHaveBeenCalled();
+  query.beginSnapshot().complete();
+  query.refresh();
+  query.beginSnapshot().complete();
+  query.refresh();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(refresh).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(refresh).toHaveBeenCalledOnce();
+});
+
+it("preserves a reset restart while a failed snapshot refresh is waiting", async () => {
+  vi.spyOn(Math, "random").mockReturnValue(0);
+  const refresh = vi.fn();
+  const restart = vi.fn();
+  const query = subscribeProjectQuery(http(), "p", { topics: ["work_item"], apply: () => query.refresh(), refresh, restart });
+  stops.push(query.close);
+  const snapshot = query.beginSnapshot();
+  Source.instances[0]!.emit("work_item", "{}", "1");
+  snapshot.fail();
+  Source.instances[0]!.emit("reset", "{}", "2");
+  query.beginSnapshot().complete(3);
+  await vi.advanceTimersByTimeAsync(499);
+  expect(restart).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(restart).toHaveBeenCalledOnce();
+  expect(refresh).not.toHaveBeenCalled();
+  expect(Source.instances.at(-1)!.url).toContain("since=3");
+});
 
 it("buffers above the snapshot watermark once and accepts sequence skips and entity revisions", async () => {
   const changed = vi.fn();
