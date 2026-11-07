@@ -3,9 +3,9 @@ package hubserver
 import (
 	"context"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/config"
 	"slices"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"

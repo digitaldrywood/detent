@@ -64,7 +64,7 @@ func (f *runnerEventSession) RecordAttemptEvent(ctx context.Context, e leasestor
 			started = f.now
 		}
 		old = pgquery.NativeAttempt{OrganizationID: f.session.organization, ID: e.ID, IssueID: l.IssueID, LeaseID: l.LeaseID, FencingToken: l.FencingToken, RunID: e.RunID, WorkItemRevision: l.WorkItemRevision, DispatchGeneration: e.DispatchGeneration, StartedAt: pgtransport.Timestamp(started), StartedAtSubmicroNs: int16(started.Nanosecond() % 1000)}
-	} else if f.attempt.err != nil || old.ID != e.ID || old.LeaseID != l.LeaseID || old.FencingToken != l.FencingToken || old.RunID != e.RunID || old.DispatchGeneration != e.DispatchGeneration || old.Sequence != e.Sequence-1 || (old.Status != "running" && !(old.Status == "interrupted" && e.Status == "running") && (!e.UsageCorrection || old.Status != e.Status)) {
+	} else if f.attempt.err != nil || old.ID != e.ID || old.LeaseID != l.LeaseID || old.FencingToken != l.FencingToken || old.RunID != e.RunID || old.DispatchGeneration != e.DispatchGeneration || old.Sequence != e.Sequence-1 || (old.Status != "running" && (old.Status != "interrupted" || e.Status != "running") && (!e.UsageCorrection || old.Status != e.Status)) {
 		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
 	}
 	q := pgquery.New(runEventQueue{f.pending})

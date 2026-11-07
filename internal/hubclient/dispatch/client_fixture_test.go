@@ -278,7 +278,7 @@ func fixtureCapacity(t testing.TB, h *nativeChangeHub, capacity int) {
 	if err := h.admin.Transport().Request(t.Context(), http.MethodGet, path, nil, &current); err != nil {
 		t.Fatal(err)
 	}
-	current.Routing.CapacityLimit = capacity
+	current.CapacityLimit = capacity
 	if err := h.admin.Transport().Request(t.Context(), http.MethodPut, path, runnerauth.RoutingChange{ExpectedRevision: current.Revision, Routing: current.Routing}, nil); err != nil {
 		t.Fatal(err)
 	}
