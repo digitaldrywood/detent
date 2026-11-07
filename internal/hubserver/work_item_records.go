@@ -147,6 +147,7 @@ type workItemRecordPlan struct {
 	relationshipType    string
 	relationshipOperate string
 	issue               tracker.NativeIssue
+	previousContent     string
 	linkedSource        *eventstore.LinkedSource
 	comment             tracker.NativeComment
 	commentRow          corestore.Comment
@@ -282,8 +283,10 @@ func (s *Service) loadWorkItemPlan(ctx context.Context, scope nativeScope, item,
 	}
 	if plan.commentRow.ID != "" {
 		plan.comment, err = s.hydrateCommentRecord(ctx, plan.commentRow, version)
+		plan.previousContent = plan.comment.Body
 	} else if plan.current.ID != 0 {
 		plan.issue, err = s.hydrateWorkItemRecord(ctx, plan.current, version)
+		plan.previousContent = plan.issue.Title + "\n" + plan.issue.Body
 	}
 	return plan, err
 }
@@ -586,18 +589,6 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 		plan.comment.EditedBy = &actor
 		plan.eventType = "comment.edited"
 	default:
-		return plan, workItemStorageUnavailable()
-	}
-	for _, body := range []string{plan.issue.Title, plan.issue.Body, plan.comment.Body} {
-		references, err := cloudContentAttachmentReferences(body, scope)
-		if err != nil {
-			return plan, err
-		}
-		if len(references) > 0 && !plan.create {
-			return plan, workItemStorageUnavailable()
-		}
-	}
-	if !plan.create && plan.comment.ID == "" && plan.project.Core.WorkflowSource != "" {
 		return plan, workItemStorageUnavailable()
 	}
 	return plan, nil

@@ -16,10 +16,12 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -117,8 +119,12 @@ func TestPostgresCookieIssueLifecycle(t *testing.T) {
 			t.Fatalf("opening after %s returned stale state", target)
 		}
 	}
-	patch := f.request(t, owner, http.MethodPatch, itemPath, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "cookie-unsupported-edit"}, ExpectedRevision: issue.Revision, Title: new("Example unsupported edit")})
-	requireNativeStatus(t, patch, http.StatusServiceUnavailable)
+	patch := f.request(t, owner, http.MethodPatch, itemPath, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "cookie-lifecycle-edit"}, ExpectedRevision: issue.Revision, Title: new("Example edited issue")})
+	requireNativeStatus(t, patch, http.StatusOK)
+	decodeHubResponse(t, patch, &opened)
+	if opened.Title != "Example edited issue" || opened.Revision != issue.Revision+1 || opened.Body != issue.Body {
+		t.Fatal("cookie edit lost canonical content or revision")
+	}
 }
 
 func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
@@ -589,7 +595,8 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 				t.Fatal(err)
 			}
 			service.config.Hosted.SharedEntry.verifier.Now = service.config.now
-			entryCall := func(path string, payload any) *httptest.ResponseRecorder {
+			entryPermission := apikey.ScopeWrite
+			entryCall := func(path string, payload any, statuses ...int) *httptest.ResponseRecorder {
 				t.Helper()
 				raw, err := json.Marshal(payload)
 				if err != nil {
@@ -600,7 +607,7 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				claims := cloudassert.Claims{Issuer: "entry", Audience: string(org), Generation: 1, Kind: cloudassert.KindKey, Method: http.MethodPost, Path: path, BodyDigest: cloudassert.BodyDigest(raw), IssuedAt: now, ExpiresAt: now.Add(20 * time.Second), ID: id, Subject: user, ProviderOrganization: "provider_" + string(org), Role: "owner", Key: &apikey.KeyAuthority{ID: "entry-key-" + string(org), Kind: "personal", Permission: apikey.ScopeWrite, ProjectContext: apikey.ProjectContext{Access: "selected", Projects: []string{string(project)}}}}
+				claims := cloudassert.Claims{Issuer: "entry", Audience: string(org), Generation: 1, Kind: cloudassert.KindKey, Method: http.MethodPost, Path: path, BodyDigest: cloudassert.BodyDigest(raw), IssuedAt: now, ExpiresAt: now.Add(20 * time.Second), ID: id, Subject: user, ProviderOrganization: "provider_" + string(org), Role: "owner", Key: &apikey.KeyAuthority{ID: "entry-key-" + string(org), Kind: "personal", Permission: entryPermission, ProjectContext: apikey.ProjectContext{Access: "selected", Projects: []string{string(project)}}}}
 				assertion, err := cloudassert.Sign(entrySigner, claims)
 				if err != nil {
 					t.Fatal(err)
@@ -609,7 +616,11 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 				req.Header.Set("Content-Type", "application/json")
 				out := httptest.NewRecorder()
 				service.echo.ServeHTTP(out, req)
-				if out.Code != http.StatusOK {
+				status := http.StatusOK
+				if len(statuses) > 0 {
+					status = statuses[0]
+				}
+				if out.Code != status {
 					t.Fatalf("entry path=%s status=%d body=%s", path, out.Code, out.Body.String())
 				}
 				return out
@@ -810,6 +821,164 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 				if !bytes.Equal(response, call(fallback, http.StatusOK)) || accounting() != before {
 					t.Fatal("pending-index replay added canonical writes")
 				}
+			})
+			t.Run("edit_item preserves workflow and attachment authority", func(t *testing.T) {
+				const attachmentID = "att_0123456789abcdef0123456789abcdef"
+				const deletedAttachmentID = "att_1123456789abcdef0123456789abcdef"
+				const foreignAttachmentID = "att_2123456789abcdef0123456789abcdef"
+				foreignCredentialID := "foreign-owner-" + string(foreignOrg)
+				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					for _, id := range []string{attachmentID, deletedAttachmentID} {
+						metadata := attachment.Metadata{ID: id, ProjectID: string(project), Uploader: credential, Name: "example.png", ContentType: "image/png", Size: 10, SHA256: strings.Repeat("a", 64), Width: 1, Height: 1, CreatedAt: now}
+						if id == deletedAttachmentID {
+							metadata.DeletedAt = new(now)
+						}
+						if err := w.CreateAttachment(t.Context(), attachmentstore.Record{OrganizationID: org, Kind: "attachment", Metadata: metadata}); err != nil {
+							return err
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := repository.WriteTenant(t.Context(), foreignOrg, corestore.Serving, func(w tenantstore.Writer) error {
+					if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: foreignOrg, ID: project, Name: "Example foreign project", Slug: "foreign-example", Profile: "native", CreatedAt: now}, States: states}); err != nil {
+						return fmt.Errorf("create foreign project: %w", err)
+					}
+					if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: foreignOrg, ID: foreignCredentialID, Name: "Example foreign owner", Hash: apikey.HashToken("foreign-token-" + string(foreignOrg)), Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, KeyScope: "write", ProjectAccess: "selected", Kind: "personal", UserID: "foreign-user-" + string(foreignOrg), MembershipID: "foreign-member-" + string(foreignOrg)}); err != nil {
+						return fmt.Errorf("create foreign uploader: %w", err)
+					}
+					if err := w.CreateAttachment(t.Context(), attachmentstore.Record{OrganizationID: foreignOrg, Kind: "attachment", Metadata: attachment.Metadata{ID: foreignAttachmentID, ProjectID: string(project), Uploader: foreignCredentialID, Name: "foreign.png", ContentType: "image/png", Size: 10, SHA256: strings.Repeat("b", 64), Width: 1, Height: 1, CreatedAt: now}}); err != nil {
+						return fmt.Errorf("create foreign attachment: %w", err)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				edit := func(key string, revision tracker.Revision, changes map[string]any, status int) []byte {
+					t.Helper()
+					arguments := map[string]any{"project_id": project, "identifier": issue.WorkItemID, "expected_revision": fmt.Sprint(revision), "request_id": key}
+					for name, value := range changes {
+						arguments[name] = value
+					}
+					return entryCall("/internal/v1/keys/call", map[string]any{"name": operatortool.EditItem, "connection_id": "example-connection", "arguments": arguments}, status).Body.Bytes()
+				}
+				read := func() tracker.NativeIssue {
+					t.Helper()
+					row, version, err := service.readWorkItemRecord(t.Context(), nativeScope{organization: org, project: project}, string(issue.WorkItemID))
+					if err != nil {
+						t.Fatal(err)
+					}
+					stored, err := service.hydrateWorkItemRecord(t.Context(), row, version)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return stored
+				}
+				current := read()
+				issue = current
+				issue.Body += "\n![Example](attachment:" + attachmentID + ")"
+				changeCandidate(false)
+				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.BindAttachment(t.Context(), attachmentstore.Reference{ProjectID: project, AttachmentID: attachmentID, WorkItemID: issue.WorkItemID})
+				}); err != nil {
+					t.Fatal(err)
+				}
+				current = read()
+				for index, changes := range []map[string]any{
+					{"title": "Example edited attachment issue", "priority": 2},
+					{"body": workItemRecordBody + "\nUpdated evidence.\n![Example](attachment:" + attachmentID + ")"},
+					{"priority": 1},
+				} {
+					key := fmt.Sprintf("edit-item-%d", index)
+					response := edit(key, current.Revision, changes, http.StatusOK)
+					next := read()
+					if next.Revision != current.Revision+1 || next.WorkItemID != current.WorkItemID || next.State != current.State {
+						t.Fatal("edit changed identity, workflow state or revision incorrectly")
+					}
+					if title, ok := changes["title"]; ok && next.Title != title {
+						t.Fatal("edit did not persist title")
+					}
+					if body, ok := changes["body"]; ok && next.Body != body {
+						t.Fatal("edit did not persist body")
+					}
+					if _, ok := changes["body"]; !ok && next.Body != current.Body {
+						t.Fatal("edit lost existing body or attachment references")
+					}
+					if priority, ok := changes["priority"]; ok && (next.Priority == nil || *next.Priority != priority) {
+						t.Fatal("edit did not persist priority")
+					}
+					before := accounting()
+					var outcomes [2]struct {
+						ResourceID tracker.NativeWorkItemID `json:"resource_id"`
+						Revision   tracker.Revision         `json:"revision,string"`
+						URL        string                   `json:"url"`
+						Data       json.RawMessage          `json:"data"`
+					}
+					for i, raw := range [][]byte{response, edit(key, current.Revision, changes, http.StatusOK)} {
+						if err := json.Unmarshal(raw, &outcomes[i]); err != nil {
+							t.Fatal(err)
+						}
+					}
+					original, replayed := outcomes[0], outcomes[1]
+					if original.ResourceID != next.WorkItemID || original.Revision != next.Revision || original.ResourceID != replayed.ResourceID || original.Revision != replayed.Revision || original.URL != replayed.URL || !bytes.Equal(original.Data, replayed.Data) {
+						t.Fatal("edit replay changed canonical resource or receipt payload")
+					}
+					if read().Revision != next.Revision || accounting() != before {
+						t.Fatal("edit replay changed persisted revision, accounting or event sequence")
+					}
+					current = next
+				}
+				unavailableReference := func(key string, id string) {
+					t.Helper()
+					response := edit(key, current.Revision, map[string]any{"body": workItemRecordBody + "\n![Example](attachment:" + id + ")"}, http.StatusUnprocessableEntity)
+					var refusal struct {
+						Code string `json:"code"`
+					}
+					if err := json.Unmarshal(response, &refusal); err != nil || refusal.Code != "not_ready" {
+						t.Fatal("new attachment reference lost its existing storage refusal")
+					}
+				}
+				before := accounting()
+				edit("edit-stale", current.Revision-1, map[string]any{"title": "Stale edit"}, http.StatusConflict)
+				edit("edit-invalid-contract", current.Revision, map[string]any{"body": "Missing required issue sections"}, http.StatusUnprocessableEntity)
+				unavailableReference("edit-deleted-attachment", deletedAttachmentID)
+				unavailableReference("edit-foreign-attachment", foreignAttachmentID)
+				entryPermission = apikey.ScopeRead
+				edit("edit-read-only", current.Revision, map[string]any{"title": "Unauthorized edit"}, http.StatusForbidden)
+				entryPermission = apikey.ScopeWrite
+				if read().Revision != current.Revision || accounting() != before {
+					t.Fatal("refused edit changed persisted state, accounting or event sequence")
+				}
+				edit("edit-remove-attachment", current.Revision, map[string]any{"body": workItemRecordBody + "\nUpdated issue without visual references."}, http.StatusOK)
+				current = read()
+				if current.Body != workItemRecordBody+"\nUpdated issue without visual references." {
+					t.Fatal("body edit did not remove visual references")
+				}
+				before = accounting()
+				unavailableReference("edit-new-attachment", attachmentID)
+				if read().Revision != current.Revision || accounting() != before {
+					t.Fatal("refused edit changed persisted state, accounting or event sequence")
+				}
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					references, err := r.AttachmentReferences(t.Context(), project, attachmentID, 10)
+					if err == nil && (len(references) != 1 || references[0].WorkItemID != issue.WorkItemID || references[0].CommentID != "") {
+						t.Fatal("edit did not bind attachment to its tenant's issue exactly once")
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := repository.ReadTenant(t.Context(), foreignOrg, corestore.Serving, func(r tenantstore.Reader) error {
+					references, err := r.AttachmentReferences(t.Context(), project, foreignAttachmentID, 10)
+					if err == nil && len(references) != 0 {
+						t.Fatal("refused edit bound another tenant's attachment")
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				issue = current
 			})
 			service.config.Hosted.SharedEntry = nil
 			var currentProject projectstore.Record
