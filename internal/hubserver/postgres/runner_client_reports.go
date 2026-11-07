@@ -136,7 +136,7 @@ func (s *session) runnerProviderReportRows(runnerID string, reports []providerca
 		if !report.ResetAt.IsZero() {
 			resetAt = report.ResetAt
 		}
-		reportRows = append(reportRows, []any{s.organization, runnerID, report.Backend, report.Provider, report.AccountAlias, report.SharedAccountAlias, report.Billing, report.MaxConcurrent, report.Availability, report.ObservedAt, resetAt})
+		reportRows = append(reportRows, []any{s.organization, runnerID, report.Backend, report.Provider, report.AccountAlias, report.SharedAccountAlias, report.BillingBasis(), report.MaxConcurrent, report.Availability, report.ObservedAt, resetAt})
 		details := make(map[string]providercapacity.ModelDetail, len(report.ModelDetails))
 		for _, detail := range report.ModelDetails {
 			details[detail.ID] = detail

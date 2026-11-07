@@ -4,12 +4,15 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -41,6 +44,51 @@ type providerBatchProbe struct {
 	statements int
 	mutations  int64
 	failTable  string
+}
+
+type providerWireCounts struct {
+	statements atomic.Int64
+	exchanges  atomic.Int64
+}
+
+type providerWireConn struct {
+	net.Conn
+	counts  *providerWireCounts
+	pending []byte
+	startup bool
+}
+
+func (c *providerWireConn) Write(value []byte) (int, error) {
+	n, err := c.Conn.Write(value)
+	c.pending = append(c.pending, value[:n]...)
+	for {
+		offset := 1
+		if c.startup {
+			offset = 0
+		}
+		if len(c.pending) < offset+4 {
+			break
+		}
+		size := offset + int(binary.BigEndian.Uint32(c.pending[offset:offset+4]))
+		if len(c.pending) < size {
+			break
+		}
+		if c.startup {
+			c.startup = false
+		} else {
+			switch c.pending[0] {
+			case 'E':
+				c.counts.statements.Add(1)
+			case 'S':
+				c.counts.exchanges.Add(1)
+			case 'Q':
+				c.counts.statements.Add(1)
+				c.counts.exchanges.Add(1)
+			}
+		}
+		c.pending = c.pending[size:]
+	}
+	return n, err
 }
 
 func (p *providerBatchProbe) Exec(ctx context.Context, query string, args ...any) (pgconn.CommandTag, error) {
@@ -118,6 +166,15 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 	}
 	native := fixture.NativeConfig(t, admin, name, password)
 	native.MaxConns = 3
+	counts := &providerWireCounts{}
+	dial := native.ConnConfig.DialFunc
+	native.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := dial(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &providerWireConn{Conn: conn, counts: counts, startup: true}, nil
+	}
 	pool, err := pgxpool.NewWithConfig(t.Context(), native)
 	if err != nil {
 		t.Fatal(err)
@@ -217,6 +274,95 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 		}
 	}
 	check(t)
+	for _, billing := range []string{"", "unknown", "subscription", "api_key"} {
+		t.Run("billing_"+billing, func(t *testing.T) {
+			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+				t.Run(string(org), func(t *testing.T) {
+					reports := batchProviderReports(now, 1, 2)
+					reports[0].Billing = billing
+					if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.ReplaceRunnerProviderReports(t.Context(), "runner_first", reports)
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if reports[0].Billing != billing {
+						t.Fatal("writer changed caller's report")
+					}
+					reports[0].Billing = reports[0].BillingBasis()
+					expected[string(org)+"runner_first"] = reports
+					check(t)
+				})
+			}
+		})
+	}
+	t.Run("omitted_billing_fixed_wire_cost", func(t *testing.T) {
+		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+			var firstStatements, firstExchanges int64
+			for _, size := range []int{2, 50} {
+				reports := batchProviderReports(now, 1, size)
+				reports[0].Billing = ""
+				reports[0].ObservedAt = now.Add(time.Duration(size) * time.Second)
+				counts.statements.Store(0)
+				counts.exchanges.Store(0)
+				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.ReplaceRunnerProviderReports(t.Context(), "runner_first", reports)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				statements, exchanges := counts.statements.Load(), counts.exchanges.Load()
+				t.Logf("org=%s models=%d statements=%d exchanges=%d", org, size, statements, exchanges)
+				if statements != 13 || exchanges != 12 || size == 50 && (statements != firstStatements || exchanges != firstExchanges) {
+					t.Fatalf("provider wire cost grew: %d/%d versus %d/%d", statements, exchanges, firstStatements, firstExchanges)
+				}
+				firstStatements, firstExchanges = statements, exchanges
+				counts.statements.Store(0)
+				counts.exchanges.Store(0)
+				if err := repository.transaction(t.Context(), org, corestore.Serving, false, func(s *session) error {
+					probe := &providerBatchProbe{DBTX: s.db}
+					s.db = probe
+					if err := s.ReplaceRunnerProviderReports(t.Context(), "runner_first", reports); err != nil {
+						return err
+					}
+					if probe.mutations != 0 {
+						t.Fatalf("omitted billing replay mutated %d rows", probe.mutations)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				t.Logf("org=%s models=%d replay statements=%d exchanges=%d", org, size, counts.statements.Load(), counts.exchanges.Load())
+				if counts.statements.Load() != 9 || counts.exchanges.Load() != 8 {
+					t.Fatalf("replay wire cost: %d/%d", counts.statements.Load(), counts.exchanges.Load())
+				}
+				reports[0].Billing = "unknown"
+				expected[string(org)+"runner_first"] = reports
+				check(t)
+			}
+		}
+	})
+	for _, tc := range []struct {
+		name   string
+		change func(*providercapacity.Report)
+	}{
+		{"billing", func(r *providercapacity.Report) { r.Billing = "invalid" }},
+		{"availability", func(r *providercapacity.Report) { r.Availability = "" }},
+		{"usage_kind", func(r *providercapacity.Report) { r.UsageWindows[0].Kind = "" }},
+		{"default_effort", func(r *providercapacity.Report) { r.ModelDetails[0].DefaultReasoningEffort = "unsupported" }},
+	} {
+		t.Run("reject_invalid_"+tc.name, func(t *testing.T) {
+			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+				reports := batchProviderReports(now, 1, 2)
+				tc.change(&reports[0])
+				err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.ReplaceRunnerProviderReports(t.Context(), "runner_first", reports)
+				})
+				if !errors.Is(err, runnerstore.ErrInvalidRecord) {
+					t.Fatalf("invalid report accepted: %v", err)
+				}
+			}
+			check(t)
+		})
+	}
 	t.Run("unchanged_report_does_not_mutate", func(t *testing.T) {
 		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 			if err := repository.transaction(t.Context(), org, corestore.Serving, false, func(s *session) error {

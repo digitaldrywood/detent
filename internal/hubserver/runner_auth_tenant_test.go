@@ -455,7 +455,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	}
 	path := "/api/v2/organizations/" + string(organization.ID) + "/projects/" + string(project.ID) + "/machines/machine_example/heartbeat"
 	clock.value = now.Add(time.Minute)
-	providerReport := providercapacity.Report{Provider: "openai", Backend: "native/codex", AccountAlias: "example", Billing: "subscription", Models: []string{"model-a"}, ModelDetails: []providercapacity.ModelDetail{{ID: "model-a", Label: "Model A", Provider: "openai", Default: true, ReasoningEfforts: []string{"low", "high"}, DefaultReasoningEffort: "high"}}, Availability: "available", ObservedAt: clock.value, UsageWindows: []providercapacity.UsageWindow{{Kind: "primary", ResetAt: clock.value.Add(time.Hour), ObservedAt: clock.value}}}
+	providerReport := providercapacity.Report{Provider: "openai", Backend: "native/codex", AccountAlias: "example", Models: []string{"model-a"}, ModelDetails: []providercapacity.ModelDetail{{ID: "model-a", Label: "Model A", Provider: "openai", Default: true, ReasoningEfforts: []string{"low", "high"}, DefaultReasoningEffort: "high"}}, Availability: "available", ObservedAt: clock.value, UsageWindows: []providercapacity.UsageWindow{{Kind: "primary", ResetAt: clock.value.Add(time.Hour), ObservedAt: clock.value}}}
 	capacityConfiguration := &runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 4, ClientLimit: 3, RuntimeLimit: 3, Manageable: true, ObservedAt: clock.value}
 	backendIsolation := isolation.Report{"example-project/codex": {isolation.Sandbox, isolation.NativeTrusted}}
 	localChecks := runnerauth.LocalChecks{CommitName: "Example Runner", CommitEmail: "runner@example.invalid", CommitSigning: "ssh", Setup: "passed", Checkout: "passed", Configuration: "passed", Doctor: "warning", Provider: "passed", ProviderKinds: []string{"codex"}, CheckoutAt: clock.value, ConfigurationAt: clock.value, DoctorAt: clock.value, ProviderAt: clock.value}
@@ -918,7 +918,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(providers) != 1 || providers[0].Provider != providerReport.Provider || providers[0].Backend != providerReport.Backend || providers[0].Models[0] != providerReport.Models[0] || len(providers[0].ModelDetails) != 1 || providers[0].ModelDetails[0].DefaultReasoningEffort != "high" || len(providers[0].UsageWindows) != 1 || providers[0].Billing != providerReport.Billing {
+	if len(providers) != 1 || providers[0].Provider != providerReport.Provider || providers[0].Backend != providerReport.Backend || providers[0].Models[0] != providerReport.Models[0] || len(providers[0].ModelDetails) != 1 || providers[0].ModelDetails[0].DefaultReasoningEffort != "high" || len(providers[0].UsageWindows) != 1 || providers[0].Billing != "unknown" {
 		t.Fatalf("persisted provider reports = %+v", providers)
 	}
 	clock.value = now.Add(2 * time.Minute)
