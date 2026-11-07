@@ -85,6 +85,10 @@ func (s *session) RecordBillingCost(ctx context.Context, record billingstore.Cos
 }
 
 func (s *session) RecordBillingCosts(ctx context.Context, records []billingstore.CostObservation) ([]bool, error) {
+	return s.recordBillingCosts(ctx, records, nil)
+}
+
+func (s *session) recordBillingCosts(ctx context.Context, records []billingstore.CostObservation, states map[string]*runnerCostState) ([]bool, error) {
 	if len(records) < 1 || len(records) > 128 {
 		return nil, billingstore.ErrInvalidUsage
 	}
@@ -110,7 +114,7 @@ func (s *session) RecordBillingCosts(ctx context.Context, records []billingstore
 		if record.Observation.AmountMicros != nil && !record.Observation.Voided {
 			amount = *record.Observation.AmountMicros
 		}
-		applied, changes, err := s.recordBillingCost(ctx, record, amount)
+		applied, changes, err := s.recordBillingCost(ctx, record, amount, states)
 		if err != nil {
 			return nil, err
 		}
@@ -169,7 +173,7 @@ func (s *session) validateBillingCost(record billingstore.CostObservation) error
 	return err
 }
 
-func (s *session) recordBillingCost(ctx context.Context, record billingstore.CostObservation, amount int64) (bool, []costMonthlyDelta, error) {
+func (s *session) recordBillingCost(ctx context.Context, record billingstore.CostObservation, amount int64, states map[string]*runnerCostState) (bool, []costMonthlyDelta, error) {
 	o := record.Observation
 	allocations, err := usagecost.AllocateMonths(amount, o.From, o.To)
 	if err != nil {
@@ -182,7 +186,15 @@ func (s *session) recordBillingCost(ctx context.Context, record billingstore.Cos
 	var previousHash, previousAttribution string
 	var previousAmount pgtype.Int8
 	var previousVoided bool
-	err = s.db.QueryRow(ctx, `SELECT revision,payload_hash,attribution_hash,amount_micros,voided FROM cost_sources WHERE organization_id=$1 AND source_key=$2 FOR UPDATE`, s.organization, key).Scan(&revision, &previousHash, &previousAttribution, &previousAmount, &previousVoided)
+	state, cached := states[key]
+	if cached {
+		revision, previousHash, previousAttribution, previousAmount, previousVoided = state.revision, state.hash, state.attribution, state.amount, state.voided
+		if !state.found {
+			err = pgx.ErrNoRows
+		}
+	} else {
+		err = s.db.QueryRow(ctx, `SELECT revision,payload_hash,attribution_hash,amount_micros,voided FROM cost_sources WHERE organization_id=$1 AND source_key=$2 FOR UPDATE`, s.organization, key).Scan(&revision, &previousHash, &previousAttribution, &previousAmount, &previousVoided)
+	}
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return false, nil, mapError(ctx, err)
 	}
@@ -201,7 +213,12 @@ func (s *session) recordBillingCost(ctx context.Context, record billingstore.Cos
 		}
 	}
 	var overlap bool
-	err = s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM cost_sources WHERE organization_id=$1 AND provider=$2 AND provider_account=$3 AND resource_id=$4 AND bucket=$5 AND metric=$6 AND NOT voided AND source_key<>$7 AND period_start<$8 AND period_end>$9)`, s.organization, o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, key, to, from).Scan(&overlap)
+	if cached {
+		overlap = state.overlap
+		err = nil
+	} else {
+		err = s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM cost_sources WHERE organization_id=$1 AND provider=$2 AND provider_account=$3 AND resource_id=$4 AND bucket=$5 AND metric=$6 AND NOT voided AND source_key<>$7 AND period_start<$8 AND period_end>$9)`, s.organization, o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, key, to, from).Scan(&overlap)
+	}
 	if err != nil {
 		return false, nil, mapError(ctx, err)
 	}
@@ -233,6 +250,13 @@ func (s *session) recordBillingCost(ctx context.Context, record billingstore.Cos
 	for i, allocation := range allocations {
 		for _, project := range projects {
 			deltas = append(deltas, costMonthlyDelta{project: project, month: allocation.Month, bucket: o.Bucket, currency: o.Currency, amount: allocation.Micros - previous[i].Micros})
+		}
+	}
+	if cached {
+		state.found, state.revision, state.hash, state.attribution, state.voided = true, o.Revision, record.Reference.SHA256, attribution, o.Voided
+		state.amount = pgtype.Int8{}
+		if o.AmountMicros != nil {
+			state.amount = pgtype.Int8{Int64: *o.AmountMicros, Valid: true}
 		}
 	}
 	return true, deltas, nil

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -35,6 +37,19 @@ func (b *reportBatch) source() string {
 }
 
 func (s *session) verifyReportBatch(ctx context.Context, b *reportBatch, query string, mismatch error) error {
+	if queue, ok := s.db.(runEventQueue); ok {
+		queue.batch.Queue(b.source()+query, b.args...).QueryRow(func(row pgx.Row) error {
+			var count int
+			if err := row.Scan(&count); err != nil {
+				return err
+			}
+			if count != len(b.rows) {
+				return mismatch
+			}
+			return nil
+		})
+		return nil
+	}
 	var count int
 	if err := s.db.QueryRow(ctx, b.source()+query, b.args...).Scan(&count); err != nil {
 		return mapError(ctx, err)
