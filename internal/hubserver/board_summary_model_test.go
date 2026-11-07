@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -360,7 +361,15 @@ func TestBoardCountsFenceOwnershipUntilProjection(t *testing.T) {
 			}
 			read("owner", true, 0)
 			read("other", true, 0)
-			httpRead(http.StatusServiceUnavailable)
+			pending := httptest.NewRecorder()
+			pendingContext := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/board/counts", nil), pending)
+			pendingContext.Set("native_scope", scope)
+			if err := service.boardModelCounts(pendingContext); err != nil {
+				t.Fatal(err)
+			}
+			if body := pending.Body.String(); pending.Code != http.StatusOK || !strings.Contains(body, `"projection_pending":true`) || !strings.Contains(body, `"rows":[]`) {
+				t.Errorf("pending counts status=%d body=%s", pending.Code, body)
+			}
 			issue.Actor.PrincipalID = "other"
 			publish(false)
 			read("owner", false, 0)
