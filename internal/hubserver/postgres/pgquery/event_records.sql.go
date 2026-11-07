@@ -13,6 +13,132 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const commandAppendRunEvent = `-- name: CommandAppendRunEvent :one
+WITH advanced_issue AS (
+ UPDATE issues SET event_sequence=event_sequence+1,
+ last_activity_at=greatest(last_activity_at,$21::timestamptz)
+ WHERE organization_id=$1 AND project_id=$2
+ AND native_id=$3 RETURNING event_sequence
+), advanced_project AS (
+ INSERT INTO project_event_cursors(organization_id,project_id,sequence)
+ VALUES($1,$2,1)
+ ON CONFLICT(organization_id,project_id) DO UPDATE SET sequence=project_event_cursors.sequence+1
+ RETURNING sequence
+)
+INSERT INTO collaboration_events (organization_id, project_id, work_item_id, id, sequence, project_sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state)
+VALUES ($1, $2, $3, $4, (SELECT event_sequence FROM advanced_issue), (SELECT sequence FROM advanced_project), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32) RETURNING organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state
+`
+
+type CommandAppendRunEventParams struct {
+	OrganizationID       tracker.OrganizationID
+	ProjectID            tracker.ProjectID
+	WorkItemID           tracker.NativeWorkItemID
+	ID                   string
+	Type                 string
+	SchemaVersion        int64
+	ActorKind            string
+	ActorPrincipalID     string
+	EventRevision        int64
+	ChangeID             string
+	VersionID            string
+	HeadSHA              string
+	LandingWaiting       bool
+	LandingChangeID      string
+	LandingVersionID     string
+	LandingHeadSHA       string
+	RunID                string
+	AttemptID            string
+	FromState            string
+	ToState              string
+	RecordedAt           time.Time
+	PayloadObjectKey     string
+	PayloadSHA256        string
+	PayloadBytes         int64
+	PayloadContentBytes  int64
+	PayloadFormatVersion int64
+	PushKnown            bool
+	PushChangeID         string
+	PushVersionID        string
+	PushHeadSha          string
+	PushExternalEffect   string
+	PushEffectState      string
+}
+
+func (q *Queries) CommandAppendRunEvent(ctx context.Context, arg CommandAppendRunEventParams) (CollaborationEvent, error) {
+	row := q.db.QueryRow(ctx, commandAppendRunEvent,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.WorkItemID,
+		arg.ID,
+		arg.Type,
+		arg.SchemaVersion,
+		arg.ActorKind,
+		arg.ActorPrincipalID,
+		arg.EventRevision,
+		arg.ChangeID,
+		arg.VersionID,
+		arg.HeadSHA,
+		arg.LandingWaiting,
+		arg.LandingChangeID,
+		arg.LandingVersionID,
+		arg.LandingHeadSHA,
+		arg.RunID,
+		arg.AttemptID,
+		arg.FromState,
+		arg.ToState,
+		arg.RecordedAt,
+		arg.PayloadObjectKey,
+		arg.PayloadSHA256,
+		arg.PayloadBytes,
+		arg.PayloadContentBytes,
+		arg.PayloadFormatVersion,
+		arg.PushKnown,
+		arg.PushChangeID,
+		arg.PushVersionID,
+		arg.PushHeadSha,
+		arg.PushExternalEffect,
+		arg.PushEffectState,
+	)
+	var i CollaborationEvent
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.WorkItemID,
+		&i.ID,
+		&i.Sequence,
+		&i.Type,
+		&i.SchemaVersion,
+		&i.ActorKind,
+		&i.ActorPrincipalID,
+		&i.EventRevision,
+		&i.ChangeID,
+		&i.VersionID,
+		&i.HeadSHA,
+		&i.RunID,
+		&i.AttemptID,
+		&i.FromState,
+		&i.ToState,
+		&i.RecordedAt,
+		&i.PayloadObjectKey,
+		&i.PayloadSHA256,
+		&i.PayloadBytes,
+		&i.PayloadContentBytes,
+		&i.PayloadFormatVersion,
+		&i.LandingWaiting,
+		&i.LandingChangeID,
+		&i.LandingVersionID,
+		&i.LandingHeadSHA,
+		&i.ProjectSequence,
+		&i.PushKnown,
+		&i.PushChangeID,
+		&i.PushVersionID,
+		&i.PushHeadSha,
+		&i.PushExternalEffect,
+		&i.PushEffectState,
+	)
+	return i, err
+}
+
 const recordAdvanceEvidence = `-- name: RecordAdvanceEvidence :one
 UPDATE change_requests SET evidence_sequence=greatest(evidence_sequence, $1::bigint) + CASE WHEN $1::bigint = 0 THEN 1 ELSE 0 END
 WHERE organization_id=$2 AND id=$3 RETURNING evidence_sequence
