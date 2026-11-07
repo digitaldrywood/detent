@@ -518,7 +518,7 @@ func NativeListIssue(issue tracker.NativeIssue) tracker.NativeIssue {
 	issue.Body = ""
 	issue.LinkedSource = nil
 	issue.Provenance = nil
-	issue.ExternalReferences = nil
+	issue.ExternalReferences = []tracker.ExternalReference{}
 	issue.Change = nil
 	issue.OmittedFields = slices.Clone(issue.OmittedFields)
 	for _, field := range []string{"body", "linked_source", "provenance", "external_references", "change"} {
