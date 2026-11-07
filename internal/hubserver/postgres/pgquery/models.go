@@ -2608,6 +2608,7 @@ type Organization struct {
 	LogoImageKey               string
 	LogoImageSha256            string
 	LogoRevision               int64
+	ModelPageSourceAt          time.Time
 }
 
 type OrganizationSecret struct {
@@ -3141,6 +3142,43 @@ type ProjectIntegrationPageState struct {
 	Revision           int64
 }
 
+type ProjectModelPagePart struct {
+	OrganizationID  tracker.OrganizationID
+	ProjectID       tracker.ProjectID
+	Ordinal         int64
+	Kind            *string
+	Name            *string
+	Parent          pgtype.Int8
+	Edge            *string
+	Model           *string
+	Effort          *string
+	Level           *string
+	DurationMs      pgtype.Int8
+	Tokens          pgtype.Int8
+	IssueComplexity pgtype.Bool
+	Enabled         pgtype.Bool
+	Preset          *string
+	NormalModel     *string
+	ComplexModel    *string
+	DefaultLevel    *string
+	Unavailable     *string
+	BackendKinds    []string
+	FallbackOrder   []string
+	LevelsPresent   pgtype.Bool
+	StagesPresent   pgtype.Bool
+	RulesPresent    pgtype.Bool
+	Disabled        pgtype.Bool
+	Roles           []string
+	Efforts         []string
+	Assignees       []string
+	Authors         []string
+	Priorities      []int32
+	IncludeLabels   []string
+	ExcludeLabels   []string
+	FieldNames      []string
+	FieldValues     []string
+}
+
 type ProjectOnboarding struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
@@ -3514,6 +3552,19 @@ type ProjectOnboardingPageViewer struct {
 	ViewerBlockedProjects []string
 }
 
+type ProjectPageReadModel struct {
+	OrganizationID       tracker.OrganizationID
+	ProjectID            tracker.ProjectID
+	Revision             int64
+	SourceGeneration     int64
+	OrganizationRevision int64
+	WorkflowSha256       string
+	ModelSha256          string
+	SourceAt             time.Time
+	ProjectedAt          time.Time
+	Body                 string
+}
+
 type ProjectPolicy struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
@@ -3586,6 +3637,7 @@ type ProjectSetting struct {
 	IconEmoji                 string
 	IconImageKey              string
 	IconImageSha256           string
+	PageSourceAt              time.Time
 }
 
 type ProjectSlug struct {

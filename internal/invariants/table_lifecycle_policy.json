@@ -7,6 +7,8 @@
     "project_integration_pages": {"class": "page_read_model", "scope": "project", "retention": "current project integration; replay from project settings and immutable workflow"},
     "project_integration_page_states": {"class": "page_read_model", "scope": "project", "retention": "current integration workflow state display"},
     "project_integration_page_dirty": {"class": "index"},
+    "project_page_read_model": {"class": "page_read_model", "scope": "project", "retention": "current project lifetime; rebuilt from workflow and model source revisions"},
+    "project_model_page_parts": {"class": "derived_with_retention", "retention": "current project model fields; replaced with parent page"},
     "native_relationship_pages": {"class": "derived_with_retention", "retention": "current published relationship generation; bounded cleanup retires previous generations"},
     "native_relationship_page_heads": {"class": "hot_state"},
     "native_work_item_pages": {"class": "page_read_model", "retention": "current work item lifetime; replay from immutable source versions"},
