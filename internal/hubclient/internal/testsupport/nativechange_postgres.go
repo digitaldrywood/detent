@@ -182,7 +182,11 @@ func NativeChangeExpireLease(t *testing.T, cfg hubserver.Config, lease tracker.L
 	if !ok {
 		t.Fatal("fixture database is unavailable")
 	}
-	_, err := value.(*sql.DB).ExecContext(t.Context(), `UPDATE leases SET acquired_at=clock_timestamp()-interval '3 hours',renewed_at=clock_timestamp()-interval '2 hours',expires_at=clock_timestamp()-interval '1 hour' WHERE organization_id=$1 AND lease_id=$2`, cfg.Hosted.OrganizationID, lease)
+	database, ok := value.(*sql.DB)
+	if !ok {
+		t.Fatal("fixture database has an invalid type")
+	}
+	_, err := database.ExecContext(t.Context(), `UPDATE leases SET acquired_at=clock_timestamp()-interval '3 hours',renewed_at=clock_timestamp()-interval '2 hours',expires_at=clock_timestamp()-interval '1 hour' WHERE organization_id=$1 AND lease_id=$2`, cfg.Hosted.OrganizationID, lease)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,5 +197,9 @@ func nativeChangeRepository(cfg hubserver.Config) (*postgres.Repository, error) 
 	if !ok {
 		return nil, errors.New("fixture repository is unavailable")
 	}
-	return value.(*postgres.Repository), nil
+	repository, ok := value.(*postgres.Repository)
+	if !ok {
+		return nil, errors.New("fixture repository has an invalid type")
+	}
+	return repository, nil
 }
