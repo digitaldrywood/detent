@@ -621,9 +621,9 @@ func (s *session) BoardAttemptCount(ctx context.Context, issueID int64) (int64, 
 	return count, mapError(ctx, err)
 }
 
-const boardCurrentSearchSQL = `EXISTS(SELECT 1 FROM search_documents d WHERE d.organization_id=b.organization_id AND d.project_id=b.project_id AND d.work_item_id=b.work_item_id AND d.kind='issue' AND d.indexed_revision=d.revision AND NOT d.placeholder AND EXISTS(SELECT 1 FROM search_postings p WHERE p.organization_id=d.organization_id AND p.document_id=d.id) OFFSET 0)`
+const boardCurrentSearchSQL = `EXISTS(SELECT 1 FROM search_documents d WHERE d.organization_id=b.organization_id AND d.project_id=b.project_id AND d.work_item_id=b.work_item_id AND d.kind='issue' AND d.indexed_revision=d.revision AND NOT d.placeholder AND EXISTS(SELECT 1 FROM search_postings p WHERE p.organization_id=d.organization_id AND p.document_id=d.id ORDER BY p.term,p.scope LIMIT 1 OFFSET 0) OFFSET 0)`
 
-const boardSearchFallbackSQL = `SELECT NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.organization_id=$1 AND d.project_id=$2 AND d.kind='issue' AND d.indexed_revision=d.revision AND NOT d.placeholder AND EXISTS(SELECT 1 FROM search_postings p WHERE p.organization_id=d.organization_id AND p.document_id=d.id) LIMIT 1)`
+const boardSearchFallbackSQL = `SELECT NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.organization_id=$1 AND d.project_id=$2 AND d.kind='issue' AND d.indexed_revision=d.revision AND NOT d.placeholder AND EXISTS(SELECT 1 FROM search_postings p WHERE p.organization_id=d.organization_id AND p.document_id=d.id ORDER BY p.term,p.scope LIMIT 1 OFFSET 0) LIMIT 1)`
 
 const boardWorkOrderPendingSQL = `SELECT EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND issue_number IS NULL)`
 

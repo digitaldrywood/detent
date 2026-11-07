@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -95,6 +96,76 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	t.Run("document readiness stops at one posting", func(t *testing.T) {
+		f := newBoardSearchFixture(t)
+		if _, err := f.admin.ExecContext(ctx, `INSERT INTO search_postings(organization_id,scope,term,document_id,impact,updated_at,updated_at_submicrosecond)
+ SELECT p.organization_id,p.scope,'example-'||n,p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM
+ (SELECT DISTINCT ON(organization_id,document_id) * FROM search_postings ORDER BY organization_id,document_id,term) p CROSS JOIN generate_series(1,6000) n`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.admin.ExecContext(ctx, "ANALYZE search_documents,search_postings,native_board_items,issues"); err != nil {
+			t.Fatal(err)
+		}
+		probe := &boardQueryTracer{}
+		counted, err := postgres.NewRepository(ctx, tracedFeaturePool(t, f.pool, probe), smallPool())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := counted.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+			if err := counted.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+				rows, err := r.BoardPage(ctx, selection)
+				if err == nil && (len(rows) != 1 || rows[0].OrganizationID != org) {
+					t.Fatalf("tenant %s dense page=%+v", org, rows)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			tx, err := f.admin.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback() }()
+			if _, err := tx.ExecContext(ctx, "SET LOCAL ROLE detent_runtime_v2"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.ExecContext(ctx, "SELECT set_config('detent.organization_id',$1,true)", org); err != nil {
+				t.Fatal(err)
+			}
+			var raw []byte
+			err = tx.QueryRowContext(ctx, "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+probe.page, probe.args...).Scan(&raw)
+			if rollbackErr := tx.Rollback(); rollbackErr != nil {
+				t.Fatal(rollbackErr)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var plans []struct{ Plan boardLanePlan }
+			if err := json.Unmarshal(raw, &plans); err != nil {
+				t.Fatal(err)
+			}
+			var visited float64
+			var inspect func(boardLanePlan)
+			inspect = func(node boardLanePlan) {
+				if node.Relation == "search_postings" || strings.HasPrefix(node.Index, "search_postings") {
+					visited += (node.Rows + node.Removed) * node.Loops
+				}
+				for _, child := range node.Plans {
+					inspect(child)
+				}
+			}
+			inspect(plans[0].Plan)
+			if visited > 100 {
+				t.Fatalf("tenant %s readiness scanned %.0f postings for two documents: %s", org, visited, raw)
+			}
+			t.Logf("tenant %s posting rows visited=%.0f", org, visited)
+		}
+	})
 	if _, err := f.admin.ExecContext(ctx, `UPDATE search_postings SET literal_positions=ARRAY(SELECT generate_series(1,80000,2)::bigint) WHERE organization_id='org_first' AND document_id='issue/wi_first_1' AND cardinality(literal_positions)>0`); err != nil {
 		t.Fatal(err)
 	}
