@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -30,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -127,6 +129,9 @@ func operatorAuthorizationCause(err error) string {
 	}{
 		{context.DeadlineExceeded, "deadline_exceeded"},
 		{context.Canceled, "cancelled"},
+		{pgtransport.ErrOpenResults, "open_results"},
+		{pgtransport.ErrUnbound, "unbound_transaction"},
+		{pgx.ErrTxClosed, "transaction_closed"},
 		{corestore.ErrSerializationFailure, "serialization_failure"},
 		{sql.ErrConnDone, "connection_closed"},
 		{driver.ErrBadConn, "bad_connection"},
@@ -186,7 +191,18 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 		if deniedAuthorization != nil && deniedAuthorization.Cause != nil {
 			cause = deniedAuthorization.Cause
 		}
-		attrs := []any{"error", authorization, "authorization_cause", operatorAuthorizationCause(cause), "cause_class", fmt.Sprintf("%T", cause)}
+		step := "native_authorization"
+		var lookup *accessstore.LookupError
+		if errors.As(cause, &lookup) {
+			step, cause = lookup.Step, lookup.Cause
+		}
+		causeClass := cause
+		for errors.Unwrap(causeClass) != nil {
+			causeClass = errors.Unwrap(causeClass)
+		}
+		scope := nativeRequestScope(c)
+		attrs := []any{"error", authorization, "authorization_cause", operatorAuthorizationCause(cause), "authorization_step", step, "cause_class", fmt.Sprintf("%T", causeClass),
+			"method", c.Request().Method, "route", c.Path(), "organization_id", string(scope.organization), "project_id", string(scope.project)}
 		if deniedAuthorization != nil {
 			attrs = append(attrs, "authorization_stage", deniedAuthorization.Stage)
 		}

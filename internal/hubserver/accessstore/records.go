@@ -15,6 +15,14 @@ var ErrTransactionRequired = errors.New("access mutation requires the shared ten
 
 var ErrDenied = errors.New("tenant access is unavailable or inactive")
 
+type LookupError struct {
+	Step  string
+	Cause error
+}
+
+func (e *LookupError) Error() string { return "access lookup failed" }
+func (e *LookupError) Unwrap() error { return e.Cause }
+
 var ErrSeatLimit = errors.New("hosted member allowance is exhausted")
 
 type Logo struct {

@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -28,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -383,6 +385,8 @@ func TestNativeAPIError(t *testing.T) {
 		{"aborted transaction", "service_unavailable", "Database transaction was aborted; retry the request", "ERROR", corestore.ErrSerializationFailure, http.StatusServiceUnavailable},
 		{"expired session", "access_denied", "Access is no longer available", "WARN", auth.ErrInvalidSession, http.StatusForbidden},
 		{"session lookup outage", "service_unavailable", "Authorization is temporarily unavailable", "ERROR", errors.Join(tenantauth.ErrUnavailable, auth.ErrInvalidSession), http.StatusServiceUnavailable},
+		{"overlapping session lookup", "service_unavailable", "Authorization is temporarily unavailable", "ERROR", errors.Join(tenantauth.ErrUnavailable, &accessstore.LookupError{Step: "session", Cause: fmt.Errorf("private-context: %w", pgtransport.ErrOpenResults)}), http.StatusServiceUnavailable},
+		{"grant storage lookup", "service_unavailable", "Authorization is temporarily unavailable", "ERROR", errors.Join(tenantauth.ErrUnavailable, &accessstore.LookupError{Step: "project_grant", Cause: fmt.Errorf("private-context: %w", &pgconn.PgError{Code: "42501", Message: "private-context", Detail: "query-secret"})}), http.StatusServiceUnavailable},
 		{"invalid provider response", "service_unavailable", "Authorization is temporarily unavailable", "ERROR", &auth.HostedIdentityError{Reason: auth.HostedReasonProviderInvalid}, http.StatusServiceUnavailable},
 		{"joined authorization outage", "service_unavailable", "Authorization is temporarily unavailable", "ERROR", errors.Join(tenantauth.ErrUnavailable, &operatortool.AuthorizationError{Stage: "resolve", Cause: auth.ErrInvalidSession}), http.StatusServiceUnavailable},
 		{"allowance", "allowance_exhausted", "Hosted active_runners allowance reached (2 of 2). Existing data, reading, export and billing remain available.", "WARN", &hostedLimitError{Resource: "active_runners", Allowance: 2, Consumption: 2}, http.StatusTooManyRequests},
@@ -446,6 +450,25 @@ func TestNativeAPIError(t *testing.T) {
 					}
 					if test.name == "expired session" && entry["authorization_cause"] != "invalid_session" {
 						t.Fatalf("denial class = %v, want invalid_session", entry["authorization_cause"])
+					}
+					if test.name == "overlapping session lookup" || test.name == "grant storage lookup" {
+						step, cause, class := "session", "open_results", "*errors.errorString"
+						if test.name == "grant storage lookup" {
+							step, cause, class = "project_grant", "unclassified", "*pgconn.PgError"
+							if entry["sqlstate"] != "42501" {
+								t.Errorf("SQLSTATE was lost: %v", entry)
+							}
+						}
+						for key, want := range map[string]any{"authorization_step": step, "authorization_cause": cause, "cause_class": class} {
+							if entry[key] != want {
+								t.Errorf("lookup diagnostic %s = %v, want %v", key, entry[key], want)
+							}
+						}
+						for _, private := range []string{"private-context", "query-secret", "header-secret", "body-secret"} {
+							if strings.Contains(logs.String(), private) || strings.Contains(recorded.Body.String(), private) {
+								t.Fatalf("private lookup content escaped: %s", private)
+							}
+						}
 					}
 					if test.name == "joined authorization outage" {
 						for key, want := range map[string]any{"authorization_stage": "resolve", "authorization_cause": "invalid_session", "operation": "example_lookup"} {

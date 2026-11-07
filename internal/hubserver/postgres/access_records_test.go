@@ -465,6 +465,11 @@ func TestAccessLookupFailureIsUnavailable(t *testing.T) {
 				if !errors.Is(err, tenantauth.ErrUnavailable) || errors.Is(err, accessstore.ErrDenied) {
 					t.Errorf("tenant %s lookup error=%v, want unavailable without denial", org, err)
 				}
+				steps := map[string]string{"api_tokens": "credential", "hosted_members": "member", "hosted_sessions": "session", "hosted_project_grants": "project_grant", "token_grants": "token_grant"}
+				var lookup *accessstore.LookupError
+				if !errors.As(err, &lookup) || lookup.Step != steps[table] {
+					t.Errorf("tenant %s missing lookup step %s: %v", org, steps[table], err)
+				}
 			}
 			if _, err := admin.ExecContext(t.Context(), "GRANT SELECT ON "+table+" TO detent_runtime_v2"); err != nil {
 				t.Fatal(err)

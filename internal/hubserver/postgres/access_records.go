@@ -78,7 +78,7 @@ func (s *session) UpdateAccessOrganizationName(ctx context.Context, name string)
 func (s *session) AccessTenant(ctx context.Context) (accessstore.Tenant, error) {
 	var row accessstore.Tenant
 	err := s.db.QueryRow(ctx, `SELECT organization_id,provider_id,bootstrap_subject,deployment,public_url,allocation_generation FROM hosted_tenant WHERE organization_id=$1`+s.accessLock(), s.organization).Scan(&row.OrganizationID, &row.ProviderID, &row.BootstrapSubject, &row.Deployment, &row.PublicURL, &row.AllocationGeneration)
-	return row, mapError(ctx, err)
+	return row, accessLookupError(ctx, "tenant", err)
 }
 
 func (s *session) CreateAccessTenant(ctx context.Context, row accessstore.Tenant) error {
@@ -100,7 +100,7 @@ func (s *session) AccessCredential(ctx context.Context, id string) (accessstore.
 	if err == nil && s.credentials != nil {
 		s.credentials[id] = row
 	}
-	return row, mapError(ctx, err)
+	return row, accessLookupError(ctx, "credential", err)
 }
 
 func (s *session) CreateAccessCredential(ctx context.Context, row accessstore.Credential) error {
@@ -122,7 +122,7 @@ func (s *session) AccessMember(ctx context.Context, user_id string) (accessstore
 	if err == nil && s.members != nil {
 		s.members[user_id] = row
 	}
-	return row, mapError(ctx, err)
+	return row, accessLookupError(ctx, "member", err)
 }
 
 func (s *session) CreateAccessMember(ctx context.Context, row accessstore.Member) error {
@@ -148,7 +148,7 @@ func (s *session) AccessProjectGrant(ctx context.Context, user_id string, projec
 	if err == nil && s.projectGrants != nil {
 		s.projectGrants[key] = row
 	}
-	return row, mapError(ctx, err)
+	return row, accessLookupError(ctx, "project_grant", err)
 }
 
 func (s *session) CreateAccessProjectGrant(ctx context.Context, row accessstore.ProjectGrant) error {
@@ -171,7 +171,7 @@ func (s *session) AccessTokenGrant(ctx context.Context, token_id string, project
 	if err == nil && s.tokenGrants != nil {
 		s.tokenGrants[key] = row
 	}
-	return row, mapError(ctx, err)
+	return row, accessLookupError(ctx, "token_grant", err)
 }
 
 func (s *session) CreateAccessTokenGrant(ctx context.Context, row accessstore.TokenGrant) error {
@@ -185,7 +185,7 @@ func (s *session) CreateAccessTokenGrant(ctx context.Context, row accessstore.To
 func (s *session) AccessSession(ctx context.Context, token_hash string) (accessstore.Session, error) {
 	var row accessstore.Session
 	err := s.db.QueryRow(ctx, `SELECT organization_id,token_hash,email,identity_subject,provider_organization_id,session_id,identity_created_at,identity_expires_at,support_actor,support_reason,created_at,expires_at,revoked_at FROM hosted_sessions WHERE organization_id=$1 AND token_hash=$2`+s.accessLock(), s.organization, token_hash).Scan(&row.OrganizationID, &row.Hash, &row.Email, &row.Subject, &row.ProviderOrganizationID, &row.SessionID, &row.IdentityCreatedAt, &row.IdentityExpiresAt, &row.SupportActor, &row.SupportReason, &row.CreatedAt, &row.ExpiresAt, &row.RevokedAt)
-	return row, mapError(ctx, err)
+	return row, accessLookupError(ctx, "session", err)
 }
 
 func (s *session) CreateAccessSession(ctx context.Context, row accessstore.Session) error {
@@ -541,6 +541,13 @@ func (s *session) AuthorizeAccess(ctx context.Context, authority accessstore.Aut
 	return member, nil
 }
 
+func accessLookupError(ctx context.Context, step string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &accessstore.LookupError{Step: step, Cause: mapError(ctx, err)}
+}
+
 func accessAuthorizationError(err error) error {
 	if errors.Is(err, tenantauth.ErrUnavailable) {
 		return err
@@ -566,7 +573,7 @@ func (s *session) EnsureAccessSession(ctx context.Context, row accessstore.Sessi
 		return err
 	}
 	_, err := s.db.Exec(ctx, `INSERT INTO hosted_sessions(organization_id,token_hash,email,identity_subject,provider_organization_id,session_id,identity_created_at,identity_expires_at,support_actor,support_reason,created_at,expires_at,revoked_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(organization_id,token_hash) DO NOTHING`, row.OrganizationID, row.Hash, row.Email, row.Subject, row.ProviderOrganizationID, row.SessionID, row.IdentityCreatedAt, row.IdentityExpiresAt, row.SupportActor, row.SupportReason, row.CreatedAt, row.ExpiresAt, row.RevokedAt)
-	return mapError(ctx, err)
+	return accessLookupError(ctx, "session_create", err)
 }
 
 func (s *session) ClearAccessMemberGrants(ctx context.Context, user string) error {
