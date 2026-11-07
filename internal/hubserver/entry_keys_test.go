@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -115,6 +116,86 @@ func TestEntryKeyCurrentAuthority(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestPostgresNativeSupportReadAudit(t *testing.T) {
+	f := newEntryKeyFixture(t)
+	user := f.user(t, "owner")
+	for _, organization := range []string{"org_security", "org_other"} {
+		t.Run(organization, func(t *testing.T) {
+			service := f.service
+			if organization != service.config.Hosted.OrganizationID {
+				cfg := startupConfig(startupConnection(t, f.admin, "detent_runtime_v2", ""))
+				hosted := *f.service.config.Hosted
+				entry := *hosted.SharedEntry
+				hosted.OrganizationID, hosted.WorkOSOrganizationID = organization, "provider_"+organization
+				hosted.SharedEntry = &entry
+				cfg.Hosted, cfg.SecretKeys = &hosted, f.service.config.SecretKeys
+				var err error
+				service, err = Open(t.Context(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := service.Close(); err != nil {
+						t.Error(err)
+					}
+				})
+			}
+			service.echo.HEAD(nativeBase, service.getNativeProject, service.requireNativeScope(apiScopeWorker, apiScopeOperator))
+			client := f.hostedSharedFixture
+			client.service = service
+			target := "/api/v2/organizations/" + organization + "/projects/" + string(f.project)
+			key := apikey.KeyAuthority{ID: "key_read", Kind: "personal", Permission: apikey.ScopeRead, ProjectContext: apikey.ProjectContext{Access: "all"}}
+			read := func(kind, method string) *httptest.ResponseRecorder {
+				t.Helper()
+				return client.serve(t, hostedSharedRequest{kind: kind, method: method, target: target, mutate: func(claims *cloudassert.Claims) {
+					claims.Audience, claims.Subject, claims.ProviderOrganization, claims.Role = organization, user.identity.Subject, "provider_"+organization, "owner"
+					if kind == cloudassert.KindKey {
+						claims.Key = &key
+						return
+					}
+					now := service.config.now()
+					claims.Email, claims.ProviderSession = user.identity.Email, "session_support"
+					claims.SessionCreatedAt, claims.SessionExpiresAt, claims.AccessExpiresAt = now, now.Add(time.Hour), now.Add(time.Minute)
+					claims.Binding = cloudassert.AuthorizationBinding("support", organization, claims.ProviderSession)
+					claims.CSRF = cloudassert.CSRFToken("support", organization)
+					claims.SupportActor, claims.SupportReason = "support@example.test", "customer-request"
+				}})
+			}
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				t.Run(method, func(t *testing.T) {
+					for range 3 {
+						requireNativeStatus(t, read(cloudassert.KindKey, method), http.StatusOK)
+						requireNativeStatus(t, read(cloudassert.KindBrowser, method), http.StatusOK)
+					}
+					var ordinary, support, attributed int
+					if err := f.admin.QueryRowContext(t.Context(), `SELECT
+						count(*) FILTER (WHERE session_id=$2 AND event IN ('action','key_call')),
+						count(*) FILTER (WHERE session_id='session_support' AND event='action' AND route=$3),
+						count(*) FILTER (WHERE session_id='session_support' AND event='action' AND route=$3 AND actual_actor='support@example.test' AND effective_user=$4 AND reason='customer-request' AND project_id=$5)
+						FROM hosted_audit WHERE organization_id=$1`, organization, key.ID, method+" "+nativeBase, user.identity.Subject, f.project).Scan(&ordinary, &support, &attributed); err != nil {
+						t.Fatal(err)
+					}
+					if ordinary != 0 || support != 3 || attributed != 3 {
+						t.Errorf("ordinary audits=%d support=%d attributed=%d, want 0/3/3", ordinary, support, attributed)
+					}
+				})
+			}
+			f.exec(t, `CREATE OR REPLACE FUNCTION reject_support_audit_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit unavailable'; END $$`)
+			f.exec(t, "CREATE TRIGGER reject_support_audit BEFORE INSERT ON hosted_audit FOR EACH ROW WHEN (NEW.organization_id='"+organization+"' AND NEW.event='action') EXECUTE FUNCTION reject_support_audit_write()")
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				t.Run("audit unavailable/"+method, func(t *testing.T) {
+					requireNativeStatus(t, read(cloudassert.KindKey, method), http.StatusOK)
+					refused := read(cloudassert.KindBrowser, method)
+					if refused.Code != http.StatusInternalServerError {
+						t.Errorf("support read=%d, want %d", refused.Code, http.StatusInternalServerError)
+					}
+				})
+			}
+			f.exec(t, "DROP TRIGGER reject_support_audit ON hosted_audit")
+		})
 	}
 }
 
