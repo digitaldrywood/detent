@@ -11,7 +11,7 @@ import (
 )
 
 func TestBoardIndexesBuildOnlineAndRecoverInvalidAttempts(t *testing.T) {
-	db, _ := migrationDatabaseAtVersion(t, 20261106215528)
+	db, _ := migrationDatabaseAtVersion(t, 20261107004841)
 	seedCore(t, db)
 	indexes := []string{"native_board_page_pending_idx", "native_board_page_refresh_due", "native_board_dirty_oldest", "native_board_list_pending_idx"}
 	_, err := db.ExecContext(t.Context(), `CREATE TABLE board_index_locks(name text,mode text);
