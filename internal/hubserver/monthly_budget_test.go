@@ -442,45 +442,43 @@ func TestMonthlyBudgetCorrectionsAndSettingsAuthority(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.April, 15, 12, 0, 0, 0, time.UTC)
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	f.service.registerCostUsageRoutes(f.service.echo)
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	o := costTestObservation("cpu", now.Add(-time.Hour), now)
-	if _, err := recordTestCost(t, f.service.database.db, string(scope.organization), string(scope.project), o, now); err != nil {
+	if _, err := recordPostgresTestCost(t, f.service.database, string(scope.organization), string(scope.project), o, now); err != nil {
 		t.Fatal(err)
 	}
 	setMonthlyBudgetFixture(t, f, true, budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64(20000)), TotalMicros: new(int64(20001))})
-	decision, err := checkMonthlyBudget(t.Context(), f.service.database.db, scope, budget.CostExposure{SpriteInfrastructure: true}, false, now)
+	decision, err := checkMonthlyBudget(t.Context(), nil, scope, budget.CostExposure{SpriteInfrastructure: true}, false, now, f.service.config.TenantRepository)
 	if err != nil || decision.Allowed || len(decision.Exhausted) != 1 {
-		t.Fatalf("decision=%+v err=%v", decision, err)
+		t.Fatalf("PostgreSQL monthly budget must evaluate recorded spend: decision=%+v err=%v", decision, err)
 	}
 	o.Revision = 2
 	o.AmountMicros = nil
 	o.Quantity = new(1.0)
-	if _, err := recordTestCost(t, f.service.database.db, string(scope.organization), string(scope.project), o, now); err != nil {
+	if _, err := recordPostgresTestCost(t, f.service.database, string(scope.organization), string(scope.project), o, now); err != nil {
 		t.Fatal(err)
 	}
-	decision, err = checkMonthlyBudget(t.Context(), f.service.database.db, scope, budget.CostExposure{SpriteInfrastructure: true}, false, now)
+	decision, err = checkMonthlyBudget(t.Context(), nil, scope, budget.CostExposure{SpriteInfrastructure: true}, false, now, f.service.config.TenantRepository)
 	if err != nil || !decision.Allowed {
 		t.Fatalf("correction=%+v err=%v", decision, err)
 	}
 	request := monthlyBudgetRequest{Mutation: tracker.Mutation{IdempotencyKey: "worker-settings"}, Policy: budget.MonthlyPolicy{Enabled: true}}
-	worker := f.worker(t, "budget-reader")
+	runner := prepareRunner(t, f, "read")
+	runner.enroll(t)
+	worker := runner.redemption.Credential
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/monthly-budget", worker, request), http.StatusForbidden)
 	request.ExpectedRevision = 0
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, "/api/v2/organizations/"+string(scope.organization)+"/monthly-budget", testHubAdminToken, request), http.StatusConflict)
 	var versions int
-	if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT count(*) FROM monthly_budget_policies`).Scan(&versions); err != nil {
+	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), `SELECT count(*) FROM monthly_budget_policies WHERE organization_id=$1`, scope.organization).Scan(&versions); err != nil {
 		t.Fatal(err)
 	}
 	if versions != 1 {
 		t.Fatalf("settings audit has %d versions", versions)
 	}
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
 	settingsErr := func() error {
-		_, err := updateMonthlyBudgetOperation(monthlyBudgetRequest{ExpectedRevision: 1, Policy: budget.MonthlyPolicy{Enabled: true, RunnerMicros: new(int64(-1))}})(context.Background(), tx, nativeScope{organization: scope.organization}, now)
+		_, err := updateMonthlyBudgetOperation(monthlyBudgetRequest{ExpectedRevision: 1, Policy: budget.MonthlyPolicy{Enabled: true, RunnerMicros: new(int64(-1))}})(t.Context(), nil, nativeScope{organization: scope.organization}, now)
 		return err
 	}()
 	var invalid *nativeError
