@@ -476,6 +476,11 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		if !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
+		if scope.credential.Runner.RunnerID != "" {
+			if _, err := w.RunnerIdentityByCredential(ctx, scope.credential.ID); err != nil {
+				return err
+			}
+		}
 		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
 			return err
 		}

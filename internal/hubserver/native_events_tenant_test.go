@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,7 +26,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -730,7 +733,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 }
 
 func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	repository, admin := projectRecordPostgresWithAdmin(t, 4)
 	var logs bytes.Buffer
 	service := openPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
 	service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
@@ -788,7 +791,7 @@ func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, scenario := range []string{"renew only", "dispatch start", "intervening edit"} {
+			for _, scenario := range []string{"renew only", "dispatch start", "intervening edit", "heartbeat contention"} {
 				t.Run(scenario, func(t *testing.T) {
 					response := performHubAPIRequest(t, service, http.MethodPost, base+"/work-items", testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: scenario}, Title: "Example issue", Body: workItemRecordBody, State: "Todo"})
 					requireNativeStatus(t, response, http.StatusOK)
@@ -841,7 +844,7 @@ func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
-					if scenario != "renew only" {
+					if scenario == "dispatch start" || scenario == "intervening edit" {
 						transition := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "dispatch-start", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ExpectedRevision: issue.Revision, State: "In Progress", Reason: "worker_progress", ReasonDetail: "dispatch start"}
 						response = performHubAPIRequest(t, service, http.MethodPost, path+"/workflow", token, transition)
 						requireNativeStatus(t, response, http.StatusOK)
@@ -861,6 +864,98 @@ func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
 						t.Fatalf("stale refusal=%s", response.Body.String())
 					}
 					logs.Reset()
+					if scenario == "heartbeat contention" {
+						requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/events", token, start), http.StatusOK)
+						start.Type, start.IdempotencyKey = "run.observed", "heartbeat-event"
+						start.Data.Sequence++
+						start.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: service.config.now().UTC()}
+						identity, status, err := service.authenticateTenantAPIHash(t.Context(), organization.ID, hash, "", "")
+						if err != nil || status != http.StatusOK {
+							t.Fatalf("runner authority status=%d error=%v", status, err)
+						}
+						ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
+						locked, release, eventDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+						heartbeatDone := make(chan error, 1)
+						var workers sync.WaitGroup
+						var releaseOnce sync.Once
+						t.Cleanup(func() { releaseOnce.Do(func() { close(release) }); cancel(); workers.Wait() })
+						workers.Go(func() {
+							heartbeatDone <- repository.WriteRunnerHeartbeat(ctx, organization.ID, credential, binding.RunnerID, func(ctx context.Context, w tenantstore.Writer) error {
+								if err := w.HeartbeatMachine(ctx, leasestore.Machine{OrganizationID: organization.ID, ID: string(binding.MachineID), DisplayName: "updated", Capacity: 1, Version: "test"}, now); err != nil {
+									return err
+								}
+								close(locked)
+								select {
+								case <-release:
+								case <-ctx.Done():
+									return ctx.Err()
+								}
+								return w.ReplaceRunnerProjectObservation(ctx, runnerstore.ProjectObservation{OrganizationID: organization.ID, RunnerID: binding.RunnerID, ProjectID: project.ID, ObservedAt: now, SnapshotDigest: strings.Repeat("a", 64)}, nil)
+							})
+						})
+						select {
+						case <-locked:
+						case err := <-heartbeatDone:
+							t.Fatalf("heartbeat ended before locking the machine: %v", err)
+						case <-ctx.Done():
+							t.Fatal(ctx.Err())
+						}
+						var heartbeatPID int
+						if err := admin.QueryRowContext(ctx, `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND state='idle in transaction' AND query LIKE 'UPDATE machines SET%'`).Scan(&heartbeatPID); err != nil {
+							t.Fatal(err)
+						}
+						var accepted json.RawMessage
+						var eventErr error
+						workers.Go(func() {
+							defer close(eventDone)
+							accepted, eventErr = service.appendNativeRunEventTenant(ctx, nativeScope{organization: organization.ID, project: project.ID, credential: identity}, string(issue.WorkItemID), start)
+						})
+						testenv.WaitUntil(t, ctx, func() error {
+							select {
+							case <-eventDone:
+								t.Fatalf("event ended before lock observation: %v", eventErr)
+							default:
+							}
+							var waiting bool
+							if err := admin.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)))`, heartbeatPID).Scan(&waiting); err != nil {
+								return err
+							}
+							if !waiting {
+								return errors.New("event has not reached the heartbeat runner lock")
+							}
+							return nil
+						})
+						releaseOnce.Do(func() { close(release) })
+						var heartbeatErr error
+						select {
+						case heartbeatErr = <-heartbeatDone:
+						case <-ctx.Done():
+							t.Fatal(ctx.Err())
+						}
+						select {
+						case <-eventDone:
+						case <-ctx.Done():
+							t.Fatal(ctx.Err())
+						}
+						if heartbeatErr != nil || eventErr != nil {
+							t.Fatalf("heartbeat SQLSTATE=%s error=%v; event SQLSTATE=%s error=%v", pgtransport.SQLState(heartbeatErr), heartbeatErr, pgtransport.SQLState(eventErr), eventErr)
+						}
+						if string(accepted) != `{"accepted":true}` {
+							t.Fatalf("event result=%s", accepted)
+						}
+						if err := repository.ReadTenant(ctx, organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+							attempt, err := r.Attempt(ctx, start.Data.AttemptID)
+							if err != nil {
+								return err
+							}
+							if attempt.Sequence != 2 {
+								return errors.New("live attempt did not advance to sequence 2")
+							}
+							return nil
+						}); err != nil {
+							t.Fatal(err)
+						}
+					}
 					response = performHubAPIRequest(t, service, http.MethodPost, path+"/events", token, start)
 					want := http.StatusOK
 					if scenario == "intervening edit" {
