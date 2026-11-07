@@ -103,6 +103,9 @@ func (s *session) boardModelQuery(f viewstore.BoardSelection, authority accessst
 var boardModelParameter = regexp.MustCompile(`\$[0-9]+`)
 
 func (s *session) BoardModelPages(ctx context.Context, selection viewstore.BoardSelection, work *viewstore.BoardSelection, authority accessstore.Authority) (result viewstore.BoardModelPage, resultErr error) {
+	if selection.SearchText != "" || selection.Fingerprint != "" {
+		return s.boardSearchModelPages(ctx, selection, work)
+	}
 	query, args, err := s.boardModelQuery(selection, authority)
 	if err != nil {
 		return result, err
@@ -130,7 +133,7 @@ func (s *session) BoardModelPages(ctx context.Context, selection viewstore.Board
 	}
 	query = "SELECT * FROM (" + query + ") ordered ORDER BY page_part," + mainOrder + ",CASE WHEN page_part=2 THEN running END DESC,CASE WHEN page_part=2 THEN dispatchable END DESC,CASE WHEN page_part=2 THEN issue_number END DESC,identifier"
 	batch := &pgx.Batch{}
-	metaSQL := `SELECT coalesce((SELECT sequence FROM native_board_sequences WHERE organization_id=$1 AND project_id=$2),0),EXISTS(SELECT 1 FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT page_ready) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT list_ready),(SELECT queued_at FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 ORDER BY queued_at LIMIT 1)`
+	metaSQL := boardModelMetadataSQL
 	if selection.Summary {
 		summarySQL, summaryArgs, err := s.boardSummaryQuery(selection)
 		if err != nil {
@@ -189,20 +192,62 @@ func (s *session) BoardModelPages(ctx context.Context, selection viewstore.Board
 		}
 		return rows.Err()
 	})
+	resultErr = s.readBoardModelBatch(ctx, batch)
+	return result, resultErr
+}
+
+func (s *session) readBoardModelBatch(ctx context.Context, batch *pgx.Batch) error {
 	timed, ok := s.db.(timedQueries)
 	if !ok {
-		return result, corestore.ErrInvalidPage
+		return corestore.ErrInvalidPage
 	}
 	sender, ok := timed.DBTX.(interface {
 		SendBatch(context.Context, *pgx.Batch) pgx.BatchResults
 	})
 	if !ok {
-		return result, corestore.ErrInvalidPage
+		return corestore.ErrInvalidPage
 	}
 	started := time.Now()
-	resultErr = sender.SendBatch(ctx, batch).Close()
+	err := sender.SendBatch(ctx, batch).Close()
 	for _, query := range batch.QueuedQueries {
 		observeStatement(ctx, started, query.SQL)
 	}
-	return result, mapError(ctx, resultErr)
+	return mapError(ctx, err)
+}
+
+const boardModelMetadataSQL = `SELECT coalesce((SELECT sequence FROM native_board_sequences WHERE organization_id=$1 AND project_id=$2),0),EXISTS(SELECT 1 FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT page_ready) OR EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND NOT list_ready),(SELECT queued_at FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 ORDER BY queued_at LIMIT 1)`
+
+func (s *session) boardSearchModelPages(ctx context.Context, selection viewstore.BoardSelection, work *viewstore.BoardSelection) (viewstore.BoardModelPage, error) {
+	var result viewstore.BoardModelPage
+	if _, _, err := boardWhere(s.organization, selection); err != nil {
+		return result, err
+	}
+	var pending, numberPending bool
+	batch := &pgx.Batch{}
+	batch.Queue(boardModelMetadataSQL, s.organization, selection.ProjectID).QueryRow(func(row pgx.Row) error {
+		return row.Scan(&result.Sequence, &result.Pending, &result.OldestPendingAt)
+	})
+	batch.Queue(boardSearchPendingSQL, s.organization, selection.ProjectID, selection.Archived, selection.Reporter, selection.ReporterPrincipalID).QueryRow(func(row pgx.Row) error {
+		return row.Scan(&pending)
+	})
+	if work != nil && !work.SearchRanked {
+		batch.Queue(boardWorkOrderPendingSQL, s.organization, selection.ProjectID).QueryRow(func(row pgx.Row) error {
+			return row.Scan(&numberPending)
+		})
+	}
+	if err := s.readBoardModelBatch(ctx, batch); err != nil {
+		return result, err
+	}
+	if pending {
+		return result, searchstore.ErrIndexPending
+	}
+	var err error
+	result.Records, err = s.boardPage(ctx, selection, true, nil)
+	if err != nil {
+		return result, err
+	}
+	if work != nil {
+		result.WorkRecords, err = s.boardPage(ctx, *work, true, new(!numberPending))
+	}
+	return result, err
 }
