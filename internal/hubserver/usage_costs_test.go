@@ -14,10 +14,10 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -388,14 +388,16 @@ func TestSpriteUsageAPI(t *testing.T) {
 	from := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	to, now := from.Add(time.Hour), from.Add(2*time.Hour)
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	f.service.registerCostUsageRoutes(f.service.echo)
 	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 	runner.enroll(t)
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_pools(organization_id,configured_by) SELECT ?,id FROM api_tokens WHERE token_hash=?`, f.project.OrganizationID, apikey.HashToken(testHubAdminToken)); err != nil {
+	membership := runnerstore.SpriteMembership{OrganizationID: f.project.OrganizationID, TokenProjectID: f.project.ID, Name: "worker", ProviderOrganization: "customer", EnrollmentID: runner.enrollment.ID, State: "enrolled", IdleSince: from, CreatedAt: from}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.CreateRunnerSpriteMembership(t.Context(), membership)
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,token_project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,?,?,?,'enrolled',?,?)`, f.project.OrganizationID, f.project.ID, "worker", "customer", runner.enrollment.ID, formatHubTime(from), formatHubTime(from)); err != nil {
-		t.Fatal(err)
-	}
+	admin := usagePostgresAdmin(t, f.service)
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other")
 	request := spriteUsageRequest{Mutation: tracker.Mutation{IdempotencyKey: "usage-import"}, Observations: []costObservation{costTestObservation("cpu", from, to), costTestObservation("storage_cold", from, to)}}
 	path := f.base + "/usage/sprites"
@@ -458,7 +460,7 @@ func TestSpriteUsageAPI(t *testing.T) {
 		{name: "own project", token: f.token, path: f.base + "/usage/monthly?month=2026-02", status: http.StatusOK, want: 40_000},
 		{name: "runner budget consumer reads project", token: runner.redemption.Credential, path: f.base + "/usage/monthly?month=2026-02", status: http.StatusOK, want: 40_000},
 		{name: "other project", token: other.token, path: other.base + "/usage/monthly?month=2026-02", status: http.StatusOK},
-		{name: "project grant cannot read sibling", token: other.token, path: f.base + "/usage/monthly?month=2026-02", status: http.StatusNotFound},
+		{name: "project grant cannot read sibling", token: other.token, path: f.base + "/usage/monthly?month=2026-02", status: http.StatusForbidden},
 		{name: "org total counts project once", token: testHubAdminToken, path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/usage/monthly?month=2026-02", status: http.StatusOK, want: 40_000},
 		{name: "operator cannot read org total", token: f.token, path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/usage/monthly?month=2026-02", status: http.StatusForbidden},
 		{name: "bad month", token: f.token, path: f.base + "/usage/monthly?month=2026-13", status: http.StatusUnprocessableEntity},
@@ -490,10 +492,13 @@ func TestSpriteUsageAPI(t *testing.T) {
 	request.Observations = []costObservation{next, conflict}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHubAdminToken, request), http.StatusConflict)
 	var count int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM usage_cost_observations WHERE metric='ram'").Scan(&count); err != nil || count != 0 {
+	if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM cost_sources WHERE organization_id=$1 AND metric='ram'", f.project.OrganizationID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("failed batch partially committed: count=%d error=%v", count, err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE organization_sprite_members SET state='deleted' WHERE organization_id=?", f.project.OrganizationID); err != nil {
+	membership.State = "deleted"
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.UpdateRunnerSpriteMembership(t.Context(), membership)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	window, _ := costMonth("2026-02", now)
@@ -501,7 +506,7 @@ func TestSpriteUsageAPI(t *testing.T) {
 	if err != nil || len(report.Sources) != 2 || report.Sources[0].ProjectID != string(f.project.ID) || *report.Totals[0].KnownMicros != 40_000 {
 		t.Fatalf("deleted Sprite attribution was lost: %+v %v", report, err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM organization_sprite_pools WHERE organization_id=?", f.project.OrganizationID); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "DELETE FROM runner_sprite_memberships WHERE organization_id=$1", f.project.OrganizationID); err != nil {
 		t.Fatal(err)
 	}
 	after, err := f.service.database.monthlyCosts(t.Context(), string(f.project.OrganizationID), "organization", nil, window, now)
@@ -615,34 +620,56 @@ func TestCostLedgerScopeIsolation(t *testing.T) {
 
 func TestSpriteCostInventory(t *testing.T) {
 	t.Parallel()
-	for _, typed := range []bool{false, true} {
-		t.Run(fmt.Sprintf("typed=%t", typed), func(t *testing.T) {
-			t.Parallel()
-			f, scope, runners := newSpriteWakeFixture(t, nil, true, time.Minute, "cost-sprite", "cost-local")
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE machines SET capabilities_json='{}',machine_facts_ready=NULL WHERE id=?`, runners[1].binding.MachineID); err != nil {
-				t.Fatal(err)
+	first := newDefaultNativeFixture(t, Config{})
+	second := newNativeFixture(t, first.service, first.project.OrganizationID+"_second", "inventory-second")
+	for _, f := range []nativeFixture{first, second} {
+		sprite := prepareRunnerForScope(t, f, "organization", runnerauth.Read, runnerauth.Heartbeat)
+		sprite.redemption.Hostname, sprite.redemption.SpriteName = "cost-sprite", "cost-sprite"
+		sprite.enroll(t)
+		local := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+		local.redemption.Hostname = "cost-local"
+		local.enroll(t)
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			identity, err := w.RunnerIdentity(t.Context(), sprite.binding.RunnerID)
+			if err != nil {
+				return err
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET scope='organization' WHERE id=?`, runners[0].binding.RunnerID); err != nil {
-				t.Fatal(err)
+			if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: identity.TokenID, ProjectID: f.project.ID}); err != nil {
+				return err
 			}
-			storeOrganizationSpritesSecret(t, f, spritesSecretSentinel)
-			setSpriteFactsFixtureMode(t, f, typed)
-			for _, test := range []struct {
-				name     string
-				projects []string
-				want     []costResource
-			}{
-				{"organization", nil, []costResource{{Provider: "fly_sprites", ProviderAccount: "detent-test", ResourceName: "cost-sprite"}, {ProjectID: string(scope.project), Provider: "fly_sprites", ProviderAccount: "detent-test", ResourceName: "cost-sprite"}}},
-				{"selected project", []string{string(scope.project)}, []costResource{{ProjectID: string(scope.project), Provider: "fly_sprites", ProviderAccount: "detent-test", ResourceName: "cost-sprite"}}},
-				{"ungranted project", []string{"prj_other"}, []costResource{}},
-			} {
-				t.Run(test.name, func(t *testing.T) {
-					got, err := readSpriteCostResources(t.Context(), f.service.database.reader, string(scope.organization), test.projects)
-					if err != nil || !reflect.DeepEqual(got, test.want) {
-						t.Fatalf("resources=%+v err=%v, want %+v", got, err, test.want)
-					}
-				})
+			for _, project := range []tracker.ProjectID{"", f.project.ID} {
+				envelope, err := f.service.config.SecretKeys.Seal([]byte(spritesSecretSentinel), accessstore.SecretAAD(f.project.OrganizationID, project, flySpritesToken))
+				if err != nil {
+					return err
+				}
+				secret := accessstore.Secret{OrganizationID: f.project.OrganizationID, ProjectID: project, Kind: flySpritesToken, OrganizationSlug: "example-account", Envelope: envelope, UpdatedAt: f.service.config.now()}
+				if err := w.StoreAccessSecret(t.Context(), secret, accessstore.SecretAudit{OrganizationID: secret.OrganizationID, ProjectID: project, Actor: "test_hub_admin", Kind: flySpritesToken, Event: "create", KeyVersion: envelope.Version, RecordedAt: secret.UpdatedAt}); err != nil {
+					return err
+				}
 			}
-		})
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		window, err := costMonth("", f.service.config.now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, test := range []struct {
+			name     string
+			projects []string
+			want     []costResource
+		}{
+			{"organization", nil, []costResource{{Provider: "fly_sprites", ProviderAccount: "example-account", ResourceName: "cost-sprite"}, {ProjectID: string(f.project.ID), Provider: "fly_sprites", ProviderAccount: "example-account", ResourceName: "cost-sprite"}}},
+			{"selected project", []string{string(f.project.ID)}, []costResource{{ProjectID: string(f.project.ID), Provider: "fly_sprites", ProviderAccount: "example-account", ResourceName: "cost-sprite"}}},
+			{"ungranted project", []string{"prj_other"}, []costResource{}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				_, got, _, err := f.service.database.monthlyCostRecords(t.Context(), string(f.project.OrganizationID), test.projects, window)
+				if err != nil || !reflect.DeepEqual(got, test.want) {
+					t.Fatalf("resources=%+v err=%v, want %+v", got, err, test.want)
+				}
+			})
+		}
 	}
 }
