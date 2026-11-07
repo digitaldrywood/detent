@@ -45,11 +45,7 @@ func TestPreflightCleanupFailurePrecedence(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				var logs bytes.Buffer
-				journal, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = journal.Close() })
+				journal := &localProcessSessions{processes: make(map[int64]store.WorkerProcess), reaped: make(map[int64]int)}
 				cacheRoot := t.TempDir()
 				cache, err := toolcache.NewManaged(t.Context(), cacheRoot, filepath.Join(cacheRoot, "runtime.db"))
 				if err != nil {
@@ -129,7 +125,9 @@ type cleanupFailureBackend struct {
 	t             *testing.T
 	failCleanup   bool
 	catalogCalled bool
-	journal       store.Store
+	journal       interface {
+		ListActiveWorkerProcesses(context.Context) ([]store.WorkerProcess, error)
+	}
 }
 
 func (b *cleanupFailureBackend) ListModels(ctx context.Context, process AgentProcessRequest) ([]AgentModel, error) {
@@ -137,7 +135,7 @@ func (b *cleanupFailureBackend) ListModels(ctx context.Context, process AgentPro
 	if b.journal != nil {
 		processes, err := b.journal.ListActiveWorkerProcesses(ctx)
 		if err != nil || len(processes) != 1 || processes[0].Role != store.WorkerProcessRoleHostValidation || processes[0].CleanupPath != process.TempDir {
-			b.t.Fatalf("preflight started without durable scratch reservation: %+v err=%v", processes, err)
+			b.t.Fatalf("preflight started without its session scratch reservation: %+v err=%v", processes, err)
 		}
 	}
 	if b.failCleanup {

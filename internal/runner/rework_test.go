@@ -868,14 +868,10 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					owner.recovery.Discussion = []tracker.NativeComment{{ID: "feedback_issue", Body: "The source has an actual defect; inspect it before acceptance.", Actor: tracker.Actor{Kind: "human", PrincipalID: "operator"}, CreatedAt: time.Unix(300, 0)}}
 				}
 				agent.reviewVerdict = test.reviewResume
-				db, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "sessions.db")})
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { db.Close() })
+				sessions := newNativeSessionOwner(runnerTestPolicy()).client("attempt_current")
 				cfg := config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "true", AutomatedReview: gate.AutomatedReviewRequired, Validator: gate.ValidatorConfig{Enabled: true}}, Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{{Name: "implementation", Role: RoleCode, Backend: "codex", Model: "review-model"}, {Name: "rework", Role: RoleRework, Backend: "codex", Model: "review-model"}, {Name: "acceptance", Role: RoleValidator, Backend: "codex", Model: "validator-model"}}}}
 				cfg.Gate.Validator.Enabled = !test.optionalAcceptance
-				r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg, Prompt: "Complete the source"}, Workspace: backend, AgentBackend: agent, Store: db})
+				r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg, Prompt: "Complete the source"}, Workspace: backend, AgentBackend: agent, Store: sessions})
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -18,15 +18,20 @@ type localProcessSessions struct {
 	fakeSessionStore
 	processes map[int64]store.WorkerProcess
 	reaped    map[int64]int
+	roles     map[int64]string
 }
 
-func (s *localProcessSessions) StartSession(context.Context, store.SessionStart) (int64, error) {
+func (s *localProcessSessions) StartSession(_ context.Context, start store.SessionStart) (int64, error) {
 	s.sessionID++
+	if s.roles == nil {
+		s.roles = make(map[int64]string)
+	}
+	s.roles[s.sessionID] = start.AgentRole
 	return s.sessionID, nil
 }
 
 func (s *localProcessSessions) UpdateSessionWorkerProcess(_ context.Context, id int64, process store.WorkerProcessRegistration) error {
-	s.processes[id] = store.WorkerProcess{SessionID: id, WorkerProcessIdentity: process.WorkerProcessIdentity, CleanupRoot: process.CleanupRoot, CleanupPath: process.CleanupPath}
+	s.processes[id] = store.WorkerProcess{Role: s.roles[id], SessionID: id, WorkerProcessIdentity: process.WorkerProcessIdentity, CleanupRoot: process.CleanupRoot, CleanupPath: process.CleanupPath}
 	return nil
 }
 
@@ -40,6 +45,7 @@ func (s *localProcessSessions) ListActiveWorkerProcesses(context.Context) ([]sto
 
 func (s *localProcessSessions) MarkSessionWorkerProcessReaped(_ context.Context, id int64, _ store.WorkerProcessReap) error {
 	s.reaped[id]++
+	delete(s.processes, id)
 	return nil
 }
 

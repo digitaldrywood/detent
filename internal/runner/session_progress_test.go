@@ -3,7 +3,6 @@ package runner
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,24 +11,16 @@ import (
 )
 
 func TestSessionProgressResume(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	at := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
-	path := filepath.Join(t.TempDir(), "progress.db")
-	db, err := store.Open(t.Context(), store.Config{Path: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	sessionID, err := db.StartSession(t.Context(), store.SessionStart{StartedAt: at})
+	owner := newNativeSessionOwner(runnerTestPolicy())
+	sessions := owner.client("attempt_first")
+	sessionID, err := sessions.StartSession(t.Context(), store.SessionStart{StartedAt: at})
 	if err != nil {
 		t.Fatal(err)
 	}
 	snapshot := sessionProgressSnapshot{LocalProgress: &workspace.LocalProgress{HeadSHA: "first", CommitFingerprint: "first-patch"}}
-	runner := &Runner{store: db}
+	runner := &Runner{store: sessions}
 	controller := &sessionBrakeController{lastProgressAt: at, journal: runner.sessionProgressJournal(sessionID, 0)}
 	if err := controller.observeSnapshotLocked(t.Context(), snapshot, at); err != nil {
 		t.Fatal(err)
@@ -38,20 +29,14 @@ func TestSessionProgressResume(t *testing.T) {
 	if err := controller.observeSnapshotLocked(t.Context(), snapshot, at.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	db, err = store.Open(t.Context(), store.Config{Path: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runner.store = db
+	sessions = owner.client("attempt_restarted")
+	runner.store = sessions
 	for _, name := range []string{"restart same session", "resume new session", "resume again"} {
 		t.Run(name, func(t *testing.T) {
 			resumeID := int64(0)
 			if name != "restart same session" {
 				resumeID = sessionID
-				sessionID, err = db.StartSession(t.Context(), store.SessionStart{StartedAt: at.Add(2 * time.Minute), ResumedFromSessionID: resumeID})
+				sessionID, err = sessions.StartSession(t.Context(), store.SessionStart{StartedAt: at.Add(2 * time.Minute), ResumedFromSessionID: resumeID})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -68,9 +53,9 @@ func TestSessionProgressResume(t *testing.T) {
 			if controller.breach != nil || !controller.lastProgressAt.Equal(at.Add(time.Minute)) {
 				t.Fatalf("restart recredited same head: last=%v breach=%v", controller.lastProgressAt, controller.breach)
 			}
-			got, err := db.(store.SessionProgressStore).SessionProgress(t.Context(), sessionID)
+			got, err := sessions.SessionProgress(t.Context(), sessionID)
 			if err != nil || got.HeadSHA != "second" || !got.LastProgressAt.Equal(at.Add(time.Minute)) {
-				t.Fatalf("durable progress = %+v, %v", got, err)
+				t.Fatalf("Hub session progress = %+v, %v", got, err)
 			}
 		})
 	}
