@@ -1,8 +1,12 @@
 package hubserver
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +15,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestPostgresRunnerSpendReporterVisibility(t *testing.T) {
@@ -36,8 +42,10 @@ func TestPostgresRunnerSpendReporterVisibility(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if err := seedRunnerSpendActor(t.Context(), f.admin, id, f.leases[index].WorkItemID); err != nil {
+			t.Fatal(err)
+		}
 		statements := []string{
-			`UPDATE issues SET actor_principal_id=$1 WHERE organization_id='org_startup' AND native_id=$2`,
 			`INSERT INTO runner_attempt_token_usage(organization_id,attempt_id,model,project_id,issue_id,usage_day,observed_at,input_tokens,cached_input_tokens,output_tokens) SELECT organization_id,id,'example-model','prj_runner',issue_id,'2026-11-05','2026-11-05T12:00:00Z',` + fmt.Sprint((index+1)*10) + `,2,3 FROM native_attempts WHERE organization_id='org_startup' AND issue_id=(SELECT id FROM issues WHERE organization_id='org_startup' AND native_id=$2) AND $1<>''`,
 			`INSERT INTO runner_issue_tokens SELECT organization_id,project_id,issue_id,model,input_tokens,cached_input_tokens,output_tokens,1 FROM runner_attempt_token_usage WHERE organization_id='org_startup' AND issue_id=(SELECT id FROM issues WHERE organization_id='org_startup' AND native_id=$2) AND $1<>''`,
 		}
@@ -117,5 +125,76 @@ func TestPostgresRunnerSpendReporterVisibility(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func seedRunnerSpendActor(ctx context.Context, admin *sql.DB, actor string, item tracker.NativeWorkItemID) error {
+	tx, err := admin.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT id FROM projects WHERE organization_id='org_startup' AND id='prj_runner' FOR UPDATE`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE issues SET actor_principal_id=$1 WHERE organization_id='org_startup' AND native_id=$2`, actor, item); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func TestRunnerSpendActorSeedLocksProjectBeforeIssue(t *testing.T) {
+	f := newRunnerPGFixture(t)
+	f.admin.SetMaxOpenConns(3)
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
+	defer cancel()
+	tx, err := f.admin.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workers sync.WaitGroup
+	t.Cleanup(func() { tx.Rollback(); cancel(); workers.Wait() })
+	var pid int
+	if err := tx.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT id FROM projects WHERE organization_id='org_startup' AND id='prj_runner' FOR UPDATE`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	workers.Go(func() { done <- seedRunnerSpendActor(ctx, f.admin, "example-reporter", f.leases[0].WorkItemID) })
+	testenv.WaitUntil(t, ctx, func() error {
+		select {
+		case err := <-done:
+			t.Fatalf("actor seed ended before lock observation: %v", err)
+		default:
+		}
+		var waiting bool
+		if err := f.admin.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)))`, pid).Scan(&waiting); err != nil {
+			return err
+		}
+		if !waiting {
+			return errors.New("actor seed has not reached the project lock")
+		}
+		return nil
+	})
+	if _, err := tx.ExecContext(ctx, `SELECT id FROM issues WHERE organization_id='org_startup' AND native_id=$1 FOR UPDATE`, f.leases[0].WorkItemID); err != nil {
+		t.Fatalf("board maintenance issue lock: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("actor seed: %v", err)
+	}
+	var actor string
+	if err := f.admin.QueryRowContext(ctx, `SELECT actor_principal_id FROM issues WHERE organization_id='org_startup' AND native_id=$1`, f.leases[0].WorkItemID).Scan(&actor); err != nil {
+		t.Fatal(err)
+	}
+	if actor != "example-reporter" {
+		t.Fatalf("actor=%q", actor)
 	}
 }
