@@ -376,7 +376,7 @@ func (s *session) boardPage(ctx context.Context, f viewstore.BoardSelection, typ
 	candidateSQL := ""
 	if f.SearchText != "" || f.Fingerprint != "" {
 		candidateSQL = "WITH search_candidates AS MATERIALIZED (SELECT b.organization_id,b.project_id,b.work_item_id FROM native_board_items b WHERE " + where + ") "
-		where = "true"
+		where = "b.organization_id=$1 AND b.project_id=$2"
 	}
 	if p := f.After; p != nil {
 		base := len(args)
