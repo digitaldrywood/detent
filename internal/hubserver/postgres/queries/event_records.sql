@@ -354,3 +354,19 @@ SELECT * FROM (SELECT * FROM implementation UNION SELECT * FROM reuse UNION SELE
 -- name: RecordUnprojectedChangePushes :many
 SELECT * FROM collaboration_events WHERE organization_id=$1 AND type='run.checkpointed' AND NOT push_known
 ORDER BY project_id,work_item_id,sequence DESC LIMIT $2;
+
+
+-- name: CommandAppendRunEvent :one
+WITH advanced_issue AS (
+ UPDATE issues SET event_sequence=event_sequence+1,
+ last_activity_at=greatest(last_activity_at,sqlc.arg(recorded_at)::timestamptz)
+ WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
+ AND native_id=sqlc.arg(work_item_id) RETURNING event_sequence
+), advanced_project AS (
+ INSERT INTO project_event_cursors(organization_id,project_id,sequence)
+ VALUES(sqlc.arg(organization_id),sqlc.arg(project_id),1)
+ ON CONFLICT(organization_id,project_id) DO UPDATE SET sequence=project_event_cursors.sequence+1
+ RETURNING sequence
+)
+INSERT INTO collaboration_events (organization_id, project_id, work_item_id, id, sequence, project_sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state)
+VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id), sqlc.arg(id), (SELECT event_sequence FROM advanced_issue), (SELECT sequence FROM advanced_project), sqlc.arg(type), sqlc.arg(schema_version), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(event_revision), sqlc.arg(change_id), sqlc.arg(version_id), sqlc.arg(head_sha), sqlc.arg(landing_waiting), sqlc.arg(landing_change_id), sqlc.arg(landing_version_id), sqlc.arg(landing_head_sha), sqlc.arg(run_id), sqlc.arg(attempt_id), sqlc.arg(from_state), sqlc.arg(to_state), sqlc.arg(recorded_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version), sqlc.arg(push_known), sqlc.arg(push_change_id), sqlc.arg(push_version_id), sqlc.arg(push_head_sha), sqlc.arg(push_external_effect), sqlc.arg(push_effect_state)) RETURNING *;
