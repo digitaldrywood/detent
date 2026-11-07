@@ -60,7 +60,7 @@ func TestHubCatalogProviderCalls(t *testing.T) {
 			{"viewer browser", "", "viewer", false},
 		} {
 			t.Run(deployment+"/"+test.name, func(t *testing.T) {
-				f, mcpCtx := newHostedKeyMCPFixture(t, deployment, test.role)
+				f, mcpCtx := newOperatorKeyFixture(t, deployment, test.role)
 				ctx := mcpCtx
 				credential, err := currentHubOperator(ctx)
 				if err != nil {
@@ -193,11 +193,11 @@ func TestHubCatalogProviderCalls(t *testing.T) {
 				if test.role == "member" || test.role == "viewer" {
 					for index, scenario := range []string{"current project access", "removed project grant", "revoked principal"} {
 						if index == 1 {
-							operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM hosted_project_grants WHERE user_id=?", f.user.identity.Subject)
+							operatorPostgresSQL(t, f.operatorSecurityFixture, "DELETE FROM hosted_project_grants WHERE user_id=$1", f.user.identity.Subject)
 						}
 						if index == 2 {
 							f.grant(t, f.user, true, false)
-							operatorSQL(t, f.hostedSecurityFixture, "UPDATE api_tokens SET revoked_at=? WHERE id=?", formatHubTime(time.Now()), credential.ID)
+							operatorPostgresSQL(t, f.operatorSecurityFixture, "UPDATE api_tokens SET revoked_at=$1 WHERE id=$2", formatHubTime(time.Now()), credential.ID)
 						}
 						arguments, err := json.Marshal(map[string]any{"project_id": string(f.project), "request_id": "catalog-parity-" + strconv.Itoa(index), "title": "Project member write", "description": "Current authority fixture" + issueContractTestSections, "state": "Todo"})
 						if err != nil {

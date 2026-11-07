@@ -47,7 +47,7 @@ func TestOperatorMembershipProviderAvailability(t *testing.T) {
 		{name: "revoked key with cached membership", cached: true, outage: true, revokedKey: true, wantError: operatortool.ErrAccessDenied, wantStatus: http.StatusUnauthorized},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newHostedSecurityFixture(t)
+			f := newOperatorSecurityFixture(t)
 			user := f.user(t, "operator", "owner", "operator@example.test", "write", "")
 			credential, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: user.identity.Hosted, Email: user.identity.Email}, apikey.HashToken(user.token))
 			if err != nil {
@@ -106,7 +106,7 @@ func TestOperatorMembershipProviderAvailability(t *testing.T) {
 			}
 			outage = test.outage
 			if test.revokedKey {
-				operatorSQL(t, f, "UPDATE api_tokens SET revoked_at=? WHERE token_hash=?", formatHubTime(time.Now()), apikey.HashToken(key.Token))
+				operatorPostgresSQL(t, f, "UPDATE api_tokens SET revoked_at=$1 WHERE token_hash=$2", formatHubTime(time.Now()), apikey.HashToken(key.Token))
 			}
 			for _, scope := range []apikey.Scope{apikey.ScopeRead, apikey.ScopeWrite, apikey.ScopeAdmin} {
 				_, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scope, ProjectID: string(f.project)})

@@ -37,7 +37,7 @@ func modelSelectionCall(t *testing.T, name, project, key string, input operatort
 func TestHostedModelSelectionTools(t *testing.T) {
 	for _, deployment := range []string{"dedicated", "shared"} {
 		t.Run(deployment, func(t *testing.T) {
-			f, ctx := newHostedKeyMCPFixture(t, deployment, "owner")
+			f, ctx := newOperatorKeyFixture(t, deployment, "owner")
 			executor := hostedOperatorExecutor{f.service}
 			definitions, err := executor.ListTools(ctx)
 			if err != nil {
@@ -162,7 +162,7 @@ func TestHostedModelSelectionTools(t *testing.T) {
 					t.Fatalf("invalid effective selection saved: %v", err)
 				}
 			}
-			operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM hosted_project_grants WHERE user_id=?", f.user.identity.Subject)
+			operatorPostgresSQL(t, f.operatorSecurityFixture, "DELETE FROM hosted_project_grants WHERE user_id=$1", f.user.identity.Subject)
 			for _, retryCtx := range []context.Context{ctx, operatortool.BindConnection(ctx, "revoked-replay", "test")} {
 				if _, err := executor.Execute(retryCtx, replayProjectCall); !errors.Is(err, operatortool.ErrAccessDenied) {
 					t.Fatalf("revoked replay=%v", err)
@@ -178,7 +178,7 @@ func TestHostedModelSelectionTools(t *testing.T) {
 			if err := f.provider.SetMembershipRole(t.Context(), "membership_"+f.user.identity.Subject, "member"); err != nil {
 				t.Fatal(err)
 			}
-			operatorSQL(t, f.hostedSecurityFixture, "UPDATE hosted_members SET role='member' WHERE user_id=?", f.user.identity.Subject)
+			operatorPostgresSQL(t, f.operatorSecurityFixture, "UPDATE hosted_members SET role='member' WHERE user_id=$1", f.user.identity.Subject)
 			if _, err := executor.Execute(ctx, replayOrganizationCall); !errors.Is(err, operatortool.ErrAccessDenied) {
 				t.Fatalf("downgraded organization replay=%v", err)
 			}
@@ -204,7 +204,7 @@ func TestModelSelectionToolAuthority(t *testing.T) {
 			{"admin key", "owner", apikey.ScopeAdmin, false, false, true, false, true},
 		} {
 			t.Run(deployment+"/"+test.name, func(t *testing.T) {
-				f, ctx := newHostedKeyMCPFixture(t, deployment, test.role)
+				f, ctx := newOperatorKeyFixture(t, deployment, test.role)
 				if test.key != "" {
 					issuer, err := currentHubOperator(ctx)
 					if err != nil {
@@ -240,7 +240,7 @@ func TestModelSelectionToolAuthority(t *testing.T) {
 					}
 				}
 				if test.removeGrant {
-					operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM hosted_project_grants WHERE user_id=?", f.user.identity.Subject)
+					operatorPostgresSQL(t, f.operatorSecurityFixture, "DELETE FROM hosted_project_grants WHERE user_id=$1", f.user.identity.Subject)
 				}
 				for _, operation := range []struct {
 					name, project string
@@ -251,7 +251,11 @@ func TestModelSelectionToolAuthority(t *testing.T) {
 					{operatortool.UpdateOrganizationModelSelection, "", false, test.organizationWrite},
 					{operatortool.UpdateProjectModelSelection, string(f.project), false, test.projectWrite},
 				} {
-					call := modelSelectionCall(t, operation.name, operation.project, operation.name, operatortool.ModelSelectionInput{ExpectedRevision: 1, Selection: &config.ModelSelection{Enabled: new(false)}})
+					input := operatortool.ModelSelectionInput{ExpectedRevision: 1, Selection: &config.ModelSelection{Enabled: new(false)}}
+					if operation.project == "" {
+						input.ExpectedRevision = 0
+					}
+					call := modelSelectionCall(t, operation.name, operation.project, operation.name, input)
 					if operation.read {
 						call.Arguments, _ = json.Marshal(operatortool.ModelSelectionReadRequest{ProjectID: operation.project})
 					}
