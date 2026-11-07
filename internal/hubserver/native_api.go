@@ -702,6 +702,9 @@ type nativeCommandOptions struct {
 // executeNativeMutation owns the shared transaction, current native authority,
 // hosted allowances, audit history and durable business replay for all callers.
 func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (result json.RawMessage, resultErr error) {
+	if request, ok := input.(tracker.GitHubBatchCommand); ok {
+		return s.commandGitHubBatchRecord(ctx, scope, options.OperationID, request)
+	}
 	if request, ok := input.(startGitHubImportRequest); ok {
 		return s.startGitHubImportRecord(ctx, scope, options.OperationID, request)
 	}
