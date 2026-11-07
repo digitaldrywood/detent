@@ -531,7 +531,8 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 				return nil, schedulingError(err)
 			}
 			limit = min(limit, owner.HostCapacity-owner.HostUsed, owner.RemainingCapacity(source.NativeClient().ProjectID()))
-			if limit <= 0 {
+			providersFull := s.providerReports != nil && !request.NativeLandingBatch && len(owner.ProviderCapacity) > 0 && !slices.ContainsFunc(owner.ProviderCapacity, providercapacity.View.Available)
+			if limit <= 0 || providersFull {
 				return nil, nil
 			}
 		}

@@ -42,6 +42,7 @@ func TestNativeRuntimeHeartbeatDuringQuietCommand(t *testing.T) {
 				{Name: "Done", Terminal: true},
 			}, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}, Clock: clock})
 			issue := h.createInProgress(t, "Quiet worker")
+			h.projectBoard()
 			fixtureClient(h.admin.Transport()).baseURL.Scheme = "https"
 			path := filepath.Join(t.TempDir(), "private", "identity.json")
 			file, err := runnerauth.Initialize(path, fixtureClient(h.admin.Transport()).baseURL.String())
@@ -151,7 +152,9 @@ func TestNativeRuntimeHeartbeatDuringQuietCommand(t *testing.T) {
 				now = at.Add(elapsed)
 				hubTime.Store(now.UnixNano())
 				if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, now); err != nil {
-					t.Fatal(err)
+					current, readErr := h.native.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+					alive, probeErr := procgroup.Alive(worker)
+					t.Fatalf("renew at %s: %v; state=%s eligible=%v dependencies=%t read=%v alive=%t probe=%v", elapsed, err, current.State, current.SchedulingEligible, current.DependencyReady, readErr, alive, probeErr)
 				}
 				assertRuntime(at.Add(elapsed/(ttl/3)*(ttl/3)), 1+int64(elapsed/(ttl/3)), false)
 			}
