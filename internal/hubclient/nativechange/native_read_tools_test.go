@@ -2,7 +2,6 @@ package nativechange
 
 import (
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -14,6 +13,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -22,9 +23,6 @@ import (
 )
 
 func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 	h := newNativeChangeHub(t, true)
 	cfg := config.Default()
 	cfg.Tracker.Kind = config.TrackerHubNative
@@ -116,19 +114,19 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 		}
 		wants[item] = evidence{change: change, versions: []tracker.ChangeVersion{old, current}, reviews: reviews, comment: comment, landing: landing}
 	}
-	h.reopen(func(path string) error {
-		db, err := sql.Open("sqlite", path)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
+	h.reopen(func(w tenantstore.Writer) error {
 		for _, want := range wants {
 			for _, review := range want.reviews {
 				raw, err := json.Marshal(review)
 				if err != nil {
 					return err
 				}
-				if _, err := db.ExecContext(t.Context(), "INSERT INTO change_evidence (change_id, version_id, kind, source_key, record_json) VALUES (?, ?, 'review', ?, ?)", want.change.ID, review.VersionID, review.ID, string(raw)); err != nil {
+				row, err := eventstore.NewContent(h.config.RunDetails).PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: h.organization, ChangeID: want.change.ID, Kind: "review"}, raw)
+				if err != nil {
+					return err
+				}
+				_, err = w.AppendEvidence(t.Context(), row)
+				if err != nil {
 					return err
 				}
 			}

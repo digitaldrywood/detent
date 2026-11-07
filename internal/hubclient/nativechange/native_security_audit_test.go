@@ -14,6 +14,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -166,6 +168,9 @@ func TestNativeSecurityAuditRetainsProviderReservation(t *testing.T) {
 	if err := fixtureRunnerRequest(t, h.admin.Transport(), enrollment.Token, http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/runner-enrollments/redeem", runnerauth.Redemption{BackendIsolation: machine.BackendIsolation, Binding: file.Identity.Binding, Credential: file.Credential, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version}, &identity); err != nil {
 		t.Fatal(err)
 	}
+	testsupport.NativeChangeWrite(t, h.config, func(w tenantstore.Writer) error {
+		return w.UpdateRunnerCapacityConfig(t.Context(), identity.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, ObservedAt: time.Now().UTC()})
+	})
 	file.Identity = identity
 	if err := runnerauth.Save(identityPath, file); err != nil {
 		t.Fatal(err)
@@ -196,6 +201,10 @@ func TestNativeSecurityAuditRetainsProviderReservation(t *testing.T) {
 	reservation := execution.ProviderCapacity()
 	if reservation == nil {
 		t.Fatal("audit has no provider reservation")
+	}
+	owner := h.scheduler.RunExecution(issue.ID)
+	if err := owner.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleSecurityAudit, Backend: "audit", Model: "audit-model"}); err != nil {
+		t.Fatal(err)
 	}
 	lease := execution.Recovery().Lease
 	competitor := h.createInProgress(t, "Waiting audit candidate")
@@ -241,15 +250,22 @@ func TestNativeSecurityAuditRetainsProviderReservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.Audit(t.Context(), runner.SecurityAuditRequest{Issue: candidates[0], Snapshot: securityaudit.Snapshot{ProjectID: string(h.project), IssueID: issue.ID, Repository: "owner/repository", BaseSHA: "base", HeadSHA: "head", Diff: "+change"}})
+	result, err := agent.Audit(sessions.BindExecution(t.Context(), h.scheduler.RunExecution(issue.ID)), runner.SecurityAuditRequest{Issue: candidates[0], Snapshot: securityaudit.Snapshot{ProjectID: string(h.project), IssueID: issue.ID, Repository: "owner/repository", BaseSHA: "base", HeadSHA: "head", Diff: "+change"}})
 	if err != nil || backend.calls != 2 || result.Verification == nil {
 		t.Fatalf("audit escalation: calls=%d result=%+v error=%v", backend.calls, result, err)
 	}
 	check()
-	if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "dispatch_deferred"); err != nil {
+	if err := owner.(runner.CompletionExecution).PrepareFinish(t.Context(), "succeeded", "", nil); err != nil {
 		t.Fatal(err)
 	}
-	if releases != 1 || len(fixtureClaims(h.scheduler)) != 0 {
+	if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+		t.Fatal(err)
+	}
+	current, readErr := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if current.Lease.ID != "" || len(fixtureClaims(h.scheduler)) != 0 {
 		t.Fatalf("stage completion did not release reservation: releases=%d held=%d", releases, len(fixtureClaims(h.scheduler)))
 	}
 	next, err := h.native.Claim(t.Context(), competingClaim)

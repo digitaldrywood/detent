@@ -416,3 +416,25 @@ func TestNativeOversizedStepReceipt(t *testing.T) {
 		})
 	}
 }
+
+type nativeArchiveStorage struct {
+	attachment.Storage
+	data []byte
+}
+
+func (s nativeArchiveStorage) Open(context.Context, string) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(s.data)), nil
+}
+func (s *archivedRunDetails) ReadCanonicalDetail(ctx context.Context, organization, project, key string) ([]byte, error) {
+	if err := attachment.ValidateCanonicalDetailKey(organization, project, key); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	compressed, ok := s.archives[key]
+	compressed = bytes.Clone(compressed)
+	s.mu.Unlock()
+	if !ok {
+		return nil, artifact.ErrMissing
+	}
+	return attachment.ReadCanonicalArchive(ctx, nativeArchiveStorage{data: compressed}, organization, project, key)
+}
