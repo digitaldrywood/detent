@@ -105,6 +105,7 @@
     "issue_relationships": {"class": "index"},
     "issue_subscriptions": {"class": "index"},
     "issues": {"class": "hot_state"},
+    "work_item_identities": {"class": "index", "retention": "retain immutable identity keys after live work item deletion; never reuse"},
     "leases": {"class": "hot_state"},
     "linked_issue_sources": {"class": "hot_state"},
     "machines": {"class": "hot_state"},
