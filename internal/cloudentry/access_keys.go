@@ -200,6 +200,10 @@ func keyError(c echo.Context, err error) error {
 	if errors.Is(err, tenantauth.ErrUnavailable) {
 		return c.JSON(http.StatusServiceUnavailable, apikey.Refusal{Code: "key_authority_unavailable", Message: "Key authorization is temporarily unavailable"})
 	}
+	var pending *tenantPendingError
+	if errors.As(err, &pending) {
+		return c.JSON(pending.status, &pending.refusal)
+	}
 	var refusal *apikey.Refusal
 	if errors.As(err, &refusal) {
 		return c.JSON(http.StatusForbidden, refusal)
