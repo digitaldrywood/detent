@@ -265,7 +265,7 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 				data := hostedContextData(t, call("tools/call", tool, itemArgs), false)
 				var result operatortool.WorkReadResult[tracker.NativeIssue]
 				if err := json.Unmarshal(data, &result); err != nil || result.Data.Body != needle+issueContractTestSections || len(result.Data.OmittedFields) != 0 {
-					t.Fatalf("%s lost full detail", tool)
+					t.Fatalf("%s lost full detail: body_bytes=%d want=%d omitted=%v parse_error=%v", tool, len(result.Data.Body), len(needle+issueContractTestSections), result.Data.OmittedFields, err)
 				}
 			}
 			for _, changes := range []map[string]any{
@@ -359,6 +359,9 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var original tracker.Page[tracker.NativeIssue]
 	decodeHubResponse(t, response, &original)
+	if len(original.Items) != 1 {
+		t.Fatalf("searched native list items=%d want=1", len(original.Items))
+	}
 	if original.Items[0].Body != expectedByID[original.Items[0].WorkItemID].Body || len(original.Items[0].OmittedFields) != 0 {
 		t.Fatal("original list resource lost its complete body")
 	}
