@@ -101,23 +101,23 @@ func TestHostedEventsReplay(t *testing.T) {
 	t.Parallel()
 	for _, header := range []bool{false, true} {
 		t.Run(fmt.Sprintf("last-event-id=%t", header), func(t *testing.T) {
-			f, user, d := controlledHostedDelivery(t, dashboardDeliveryConfig{pageSize: 1})
-			other := anotherHostedDeliveryProject(t, f, user)
-			before := hostedDeliveryHead(t, f)
-			first := appendHostedDeliveryLane(t, f, "first")
-			otherSeq := appendHostedDeliveryLane(t, other, "other")
-			second := appendHostedDeliveryLane(t, f, "second")
-			third := appendHostedDeliveryLane(t, f, "third")
+			f, user, d := controlledPostgresDelivery(t, dashboardDeliveryConfig{pageSize: 1})
+			other := dashboardPostgresProject(t, f, user)
+			before := dashboardPostgresHead(t, f)
+			first := dashboardPostgresAppend(t, f, "first")
+			otherSeq := dashboardPostgresAppend(t, other, "other")
+			second := dashboardPostgresAppend(t, f, "second")
+			third := dashboardPostgresAppend(t, f, "third")
 			stream := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(before, 10))
 			otherStream := openHostedTestStream(t, other, user, "?since=0")
 			pumpHostedDelivery(t, d)
 			for _, seq := range []int64{first, second, third} {
-				frame := readHostedCursorFrame(t, stream, "lane", seq)
+				frame := readHostedCursorFrame(t, stream, "work_item", seq)
 				if strings.Contains(frame.Data, "other") {
 					t.Fatal("cross-project content")
 				}
 			}
-			readHostedCursorFrame(t, otherStream, "lane", otherSeq)
+			readHostedCursorFrame(t, otherStream, "work_item", otherSeq)
 			query := "?since=" + strconv.FormatInt(first, 10)
 			last := ""
 			if header {
@@ -126,8 +126,8 @@ func TestHostedEventsReplay(t *testing.T) {
 			}
 			replay := openHostedTestCursorStream(t, f, user, query, last)
 			pumpHostedDelivery(t, d)
-			readHostedCursorFrame(t, replay, "lane", second)
-			readHostedCursorFrame(t, replay, "lane", third)
+			readHostedCursorFrame(t, replay, "work_item", second)
+			readHostedCursorFrame(t, replay, "work_item", third)
 			d.mu.Lock()
 			sub := d.subs.Back().Value.(*dashboardSubscription)
 			d.mu.Unlock()
@@ -143,16 +143,16 @@ func TestHostedEventsReset(t *testing.T) {
 	t.Parallel()
 	for _, test := range []string{"below floor", "ahead", "trim between pages"} {
 		t.Run(test, func(t *testing.T) {
-			f, user, d := controlledHostedDelivery(t, dashboardDeliveryConfig{pageSize: 1, budget: 1})
-			before := hostedDeliveryHead(t, f)
-			first := appendHostedDeliveryLane(t, f, "first")
-			head := appendHostedDeliveryLane(t, f, "second")
+			f, user, d := controlledPostgresDelivery(t, dashboardDeliveryConfig{pageSize: 1, budget: 1})
+			before := dashboardPostgresHead(t, f)
+			first := dashboardPostgresAppend(t, f, "first")
+			head := dashboardPostgresAppend(t, f, "second")
 			since := before
 			if test == "ahead" {
 				since = head + 1
 			}
 			if test == "below floor" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_board_sequences SET replay_floor=? WHERE project_id=?", first, f.project); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE native_board_sequences SET replay_floor=$1 WHERE organization_id='org_security' AND project_id=$2", first, f.project); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -160,11 +160,11 @@ func TestHostedEventsReset(t *testing.T) {
 			if test == "trim between pages" {
 				d.changed()
 				d.deliver(t.Context())
-				readHostedCursorFrame(t, stream, "lane", first)
-				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM native_board_deltas WHERE project_id=? AND sequence<=?", f.project, head); err != nil {
+				readHostedCursorFrame(t, stream, "work_item", first)
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM native_board_deltas WHERE organization_id='org_security' AND project_id=$1 AND sequence<=$2", f.project, head); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_board_sequences SET replay_floor=? WHERE project_id=?", head, f.project); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE native_board_sequences SET replay_floor=$1 WHERE organization_id='org_security' AND project_id=$2", head, f.project); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -404,15 +404,15 @@ func TestHostedEventsIdleHeartbeatReads(t *testing.T) {
 
 func TestHostedEventsSlowConsumerResumes(t *testing.T) {
 	t.Parallel()
-	f, user, d := controlledHostedDelivery(t, dashboardDeliveryConfig{queueSize: 2, pageSize: 1, budget: 1})
-	before := hostedDeliveryHead(t, f)
+	f, user, d := controlledPostgresDelivery(t, dashboardDeliveryConfig{queueSize: 2, pageSize: 1, budget: 1})
+	before := dashboardPostgresHead(t, f)
 	slow := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(before, 10))
 	d.mu.Lock()
 	sub := d.subs.Front().Value.(*dashboardSubscription)
 	d.mu.Unlock()
 	var sequences []int64
 	for i := range 6 {
-		sequences = append(sequences, appendHostedDeliveryLane(t, f, fmt.Sprintf("event-%d", i)))
+		sequences = append(sequences, dashboardPostgresAppend(t, f, fmt.Sprintf("event-%d", i)))
 	}
 	pumpHostedDelivery(t, d)
 	select {
@@ -427,73 +427,39 @@ func TestHostedEventsSlowConsumerResumes(t *testing.T) {
 	replay := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(before, 10))
 	pumpHostedDelivery(t, d)
 	for _, seq := range sequences {
-		readHostedCursorFrame(t, replay, "lane", seq)
+		readHostedCursorFrame(t, replay, "work_item", seq)
 	}
 	_ = slow
 }
 
 func TestHostedEventsTwoHubOwnersRecoverOtherWriter(t *testing.T) {
 	t.Parallel()
-	f, user, first := controlledHostedDelivery(t, dashboardDeliveryConfig{})
-	committed := make(chan struct{}, 1)
-	writer, err := openTimedWriter(sqliteWriterDSN(f.service.database.path, f.service.config.BusyTimeout, true), nil, committed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer writer.Close()
-	reader, err := openTimedReader(sqliteReaderDSN(f.service.database.path, f.service.config.BusyTimeout))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reader.Close()
-	secondService := &Service{config: f.service.config, echo: echo.New(), hostedSessions: f.service.hostedSessions, database: &database{db: writer, reader: reader, authReader: reader, dashboardCommitted: committed, now: f.service.config.now}, secretRewrapReady: make(chan struct{})}
+	f, user, first := controlledPostgresDelivery(t, dashboardDeliveryConfig{})
+	secondService := &Service{config: f.service.config, echo: echo.New(), hostedSessions: f.service.hostedSessions, database: &database{postgres: f.service.database.postgres, billingRepository: f.service.database.billingRepository, now: f.service.config.now}, secretRewrapReady: make(chan struct{})}
 	secondService.ready.Store(true)
 	second := newDashboardDelivery(secondService)
 	secondService.dashboard = second
 	secondService.echo.GET("/projects/:project/events", secondService.hostedEvents)
+	t.Cleanup(second.stop)
 	secondFixture := f
 	secondFixture.service = secondService
-	head := hostedDeliveryHead(t, f)
+	head := dashboardPostgresHead(t, f)
 	streamOne := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(head, 10))
 	streamTwo := openHostedTestStream(t, secondFixture, user, "?since="+strconv.FormatInt(head, 10))
 	pumpHostedDelivery(t, first)
 	pumpHostedDelivery(t, second)
-	oneConn, err := f.service.database.reader.Conn(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer oneConn.Close()
-	twoConn, err := reader.Conn(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer twoConn.Close()
-	for _, pair := range []struct {
-		owner *dashboardDelivery
-		conn  *sql.Conn
-	}{{first, oneConn}, {second, twoConn}} {
-		if err := pair.owner.recover(t.Context(), pair.conn); err != nil {
-			t.Fatal(err)
-		}
-		for pair.owner.remaining > 0 {
-			pair.owner.deliver(t.Context())
-		}
-	}
 	for i, source := range []hostedSecurityFixture{f, secondFixture} {
-		seq := appendHostedDeliveryLane(t, source, fmt.Sprintf("writer-%d", i))
-		for _, pair := range []struct {
-			owner *dashboardDelivery
-			conn  *sql.Conn
-		}{{first, oneConn}, {second, twoConn}} {
-			if err := pair.owner.recover(t.Context(), pair.conn); err != nil {
+		seq := dashboardPostgresAppend(t, source, fmt.Sprintf("writer-%d", i))
+		for _, owner := range []*dashboardDelivery{first, second} {
+			if err := owner.recover(t.Context(), nil); err != nil {
 				t.Fatal(err)
 			}
-			for pair.owner.remaining > 0 {
-				pair.owner.deliver(t.Context())
+			for owner.remaining > 0 {
+				owner.deliver(t.Context())
 			}
 		}
-		readHostedCursorFrame(t, streamOne, "lane", seq)
-		readHostedCursorFrame(t, streamTwo, "lane", seq)
+		readHostedCursorFrame(t, streamOne, "work_item", seq)
+		readHostedCursorFrame(t, streamTwo, "work_item", seq)
 	}
 }
 
@@ -736,9 +702,9 @@ func TestHostedEventsDeletedEntityVisibility(t *testing.T) {
 	t.Parallel()
 	for _, entity := range []string{"item", "project"} {
 		t.Run(entity, func(t *testing.T) {
-			f, user, d := controlledHostedDelivery(t, dashboardDeliveryConfig{})
-			item := f.seedIssue(t, 1)
-			before := hostedDeliveryHead(t, f)
+			f, user, d := controlledPostgresDelivery(t, dashboardDeliveryConfig{})
+			item := dashboardPostgresIssue(t, f, 1)
+			before := dashboardPostgresHead(t, f)
 			query := "?since=" + strconv.FormatInt(before, 10)
 			if entity == "item" {
 				query += "&work_item=" + string(item)
@@ -746,11 +712,11 @@ func TestHostedEventsDeletedEntityVisibility(t *testing.T) {
 			stream := openHostedTestStream(t, f, user, query)
 			pumpHostedDelivery(t, d)
 			if entity == "item" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM issues WHERE native_id=?", item); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM issues WHERE organization_id='org_security' AND native_id=$1", item); err != nil {
 					t.Fatal(err)
 				}
 			} else {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET deleted_at=? WHERE id=?", formatHubTime(f.service.config.now()), f.project); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE projects SET deleted_at=$1 WHERE organization_id='org_security' AND id=$2", f.service.config.now(), f.project); err != nil {
 					t.Fatal(err)
 				}
 			}
