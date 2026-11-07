@@ -64,7 +64,7 @@ func (s *Service) maintainBoardRecords(ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
-func (s *Service) MaintainBoardRecord(ctx context.Context, organization tracker.OrganizationID, after tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, error) {
+func (s *Service) MaintainBoardRecord(ctx context.Context, organization tracker.OrganizationID, after tracker.NativeWorkItemID, attempted ...tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, error) {
 	if err := hubmaintenance.RequireAllowance(ctx, string(organization), BoardMaintenanceBytes); err != nil {
 		return after, false, err
 	}
@@ -74,7 +74,7 @@ func (s *Service) MaintainBoardRecord(ctx context.Context, organization tracker.
 	ctx = context.WithValue(ctx, detailBatchContextKey{}, nil)
 	ctx = context.WithValue(ctx, changeContentKey{}, nil)
 	ctx = context.WithValue(ctx, runDetailContextKey{}, nil)
-	return s.maintainBoardRecord(ctx, organization, after)
+	return s.maintainBoardRecord(ctx, organization, after, attempted...)
 }
 
 func (s *Service) maintainBoardRecord(ctx context.Context, organization tracker.OrganizationID, after tracker.NativeWorkItemID, attempted ...tracker.NativeWorkItemID) (tracker.NativeWorkItemID, bool, error) {

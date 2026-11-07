@@ -118,17 +118,14 @@ func NativeChangeServiceCredential(t *testing.T, cfg hubserver.Config, project t
 
 func NativeChangeRefreshBoard(ctx context.Context, service *hubserver.Service, organization tracker.OrganizationID) error {
 	var after tracker.NativeWorkItemID
-	seen := map[tracker.NativeWorkItemID]bool{}
+	attempted := []tracker.NativeWorkItemID{}
 	for {
 		budget := (hubmaintenance.Budget{Items: 1, Bytes: hubserver.BoardMaintenanceBytes}).Context(ctx, hubmaintenance.Tenant{Organization: string(organization), Generation: 1})
-		next, processed, err := service.MaintainBoardRecord(budget, organization, after)
+		next, processed, err := service.MaintainBoardRecord(budget, organization, after, attempted...)
 		if err != nil || !processed {
 			return err
 		}
-		if seen[next] {
-			return nil
-		}
-		seen[next] = true
+		attempted = append(attempted, next)
 		after = next
 	}
 }
