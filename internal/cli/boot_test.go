@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -56,112 +57,106 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 			name = "enrolled runner with absent checkout"
 		}
 		t.Run(name, func(t *testing.T) {
-			observations := make(chan *runnerauth.UpdateObservation, 1)
-			var identity runnerauth.File
-			hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				var response any
-				switch {
-				case r.URL.Path == "/api/v2/capabilities":
-					response = map[string]any{"version": "dev", "protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeRunnerUpdateCapability, tracker.NativeProviderCapacityCapability}}
-				case strings.HasSuffix(r.URL.Path, "/runners/"+identity.Identity.RunnerID):
-					response = identity.Identity
-				case strings.HasSuffix(r.URL.Path, "/projects/prj_test"):
-					response = tracker.NativeProject{Profile: "native"}
-				case strings.HasSuffix(r.URL.Path, "/heartbeat"):
-					var report struct {
-						Update *runnerauth.UpdateObservation `json:"update"`
-					}
-					if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
-						t.Error(err)
-						w.WriteHeader(http.StatusBadRequest)
+			synctest.Test(t, func(t *testing.T) {
+				observations := make(chan *runnerauth.UpdateObservation, 1)
+				var identity runnerauth.File
+				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					var response any
+					switch {
+					case r.URL.Path == "/api/v2/capabilities":
+						response = map[string]any{"version": "dev", "protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeRunnerUpdateCapability, tracker.NativeProviderCapacityCapability}}
+					case strings.HasSuffix(r.URL.Path, "/runners/"+identity.Identity.RunnerID):
+						response = identity.Identity
+					case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/runners/"+identity.Identity.RunnerID+"/update/receipt"):
+						response = (*runnerauth.UpdateReceipt)(nil)
+					case strings.HasSuffix(r.URL.Path, "/projects/prj_test"):
+						response = tracker.NativeProject{Profile: "native"}
+					case strings.HasSuffix(r.URL.Path, "/heartbeat"):
+						var report struct {
+							Update *runnerauth.UpdateObservation `json:"update"`
+						}
+						if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
+							t.Error(err)
+							w.WriteHeader(http.StatusBadRequest)
+							return
+						}
+						select {
+						case observations <- report.Update:
+						default:
+						}
+						response = runnerauth.RoutingSnapshot{RunnerID: identity.Identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 1}.Normalized()}
+					default:
+						t.Errorf("unexpected Hub request: %s %s", r.Method, r.URL.Path)
+						w.WriteHeader(http.StatusNotFound)
 						return
 					}
-					select {
-					case observations <- report.Update:
-					default:
-					}
-					response = runnerauth.RoutingSnapshot{RunnerID: identity.Identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 1}.Normalized()}
-				default:
-					t.Errorf("unexpected Hub request: %s %s", r.Method, r.URL.Path)
-					w.WriteHeader(http.StatusNotFound)
-					return
-				}
-				if err := json.NewEncoder(w).Encode(response); err != nil {
-					t.Error(err)
-				}
-			}))
-			t.Cleanup(hub.Close)
-			root := t.TempDir()
-			var err error
-			identity, err = runnerauth.Initialize(filepath.Join(root, "private", "runner.json"), hub.URL)
-			if err != nil {
-				t.Fatal(err)
-			}
-			identity.Identity.OrganizationID = "org_test"
-			identity.Identity.ProjectIDs = []tracker.ProjectID{"prj_test"}
-			identity.Identity.ExpiresAt = time.Now().Add(24 * time.Hour)
-			if err := runnerauth.Save(filepath.Join(root, "private", "runner.json"), identity); err != nil {
-				t.Fatal(err)
-			}
-			port := 0
-			cfg := BootConfig{Mode: BootModeRunning, Version: "dev", Headless: true, Host: "127.0.0.1", Port: &port, Output: newBootOutput(), Shutdown: NewShutdownController(), Restart: NewRestartRequest()}
-			cfg.Global, err = globalconfig.Default()
-			if err != nil {
-				t.Fatal(err)
-			}
-			cfg.Global.Path = filepath.Join(root, "global.yaml")
-			cfg.Global.Client = globalconfig.HubClient{URL: hub.URL, IdentityFile: filepath.Join(root, "private", "runner.json"), OrganizationID: "org_test", NativeProjects: map[string]string{"test": "prj_test"}, ProviderCapacityFile: writeProviderCapacityFixture(t, root)}
-			if missingCheckout {
-				cfg.Global.Projects = []globalconfig.Project{{ID: "test", Workdir: filepath.Join(root, "missing"), Workflow: filepath.Join(root, "missing", "WORKFLOW.md"), Weight: 1, Priority: 3}}
-			}
-			if err := globalconfig.Write(cfg.Global.Path, cfg.Global, globalconfig.WithMissingProjectPaths()); err != nil {
-				t.Fatal(err)
-			}
-			home := t.TempDir()
-			for _, profile := range []string{workerCodexProfileDir, launchdCodexProfileDir} {
-				writeCodexLogFixture(t, home, profile, time.Now())
-			}
-			ctx, cancel := context.WithCancel(t.Context())
-			entered := make(chan struct{})
-			pruned := make(chan error, 1)
-			done := make(chan error, 1)
-			go func() {
-				done <- startRunningWithDependencies(ctx, cfg, startRunningDependencies{
-					startupMaintenance: func(ctx context.Context, _ globalconfig.Config, _ store.Store) func() {
-						return func() {
-							pruned <- pruneCodexLogs(ctx, home, time.Now(), codexLogSizeLimit, func(ctx context.Context) (bool, error) {
-								close(entered)
-								<-ctx.Done()
-								return false, ctx.Err()
-							})
-						}
-					},
-				})
-			}()
-			t.Cleanup(func() {
-				cancel()
-				select {
-				case err := <-done:
-					if err != nil && !errors.Is(err, context.Canceled) {
+					if err := json.NewEncoder(w).Encode(response); err != nil {
 						t.Error(err)
 					}
-				case <-time.After(10 * time.Second):
-					t.Error("headless runtime did not stop")
+				})
+				previousTransport := http.DefaultTransport
+				http.DefaultTransport = readinessRoundTripper(func(r *http.Request) (*http.Response, error) {
+					response := httptest.NewRecorder()
+					handler.ServeHTTP(response, r)
+					return response.Result(), nil
+				})
+				t.Cleanup(func() { http.DefaultTransport = previousTransport })
+				hubURL := "https://hub.example.test"
+				root := t.TempDir()
+				var err error
+				identity, err = runnerauth.Initialize(filepath.Join(root, "private", "runner.json"), hubURL)
+				if err != nil {
+					t.Fatal(err)
 				}
-				select {
-				case err := <-pruned:
-					if !errors.Is(err, context.Canceled) {
-						t.Errorf("retention result = %v, want cancellation", err)
+				identity.Identity.OrganizationID = "org_test"
+				identity.Identity.ProjectIDs = []tracker.ProjectID{"prj_test"}
+				identity.Identity.ExpiresAt = time.Now().Add(24 * time.Hour)
+				if err := runnerauth.Save(filepath.Join(root, "private", "runner.json"), identity); err != nil {
+					t.Fatal(err)
+				}
+				port := 0
+				cfg := BootConfig{Mode: BootModeRunning, Version: "dev", Headless: true, Host: "127.0.0.1", Port: &port, Output: newBootOutput(), Shutdown: NewShutdownController(), Restart: NewRestartRequest()}
+				cfg.Global, err = globalconfig.Default()
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg.Global.Path = filepath.Join(root, "global.yaml")
+				cfg.Global.Client = globalconfig.HubClient{URL: hubURL, IdentityFile: filepath.Join(root, "private", "runner.json"), OrganizationID: "org_test", NativeProjects: map[string]string{"test": "prj_test"}, ProviderCapacityFile: writeProviderCapacityFixture(t, root)}
+				if missingCheckout {
+					cfg.Global.Projects = []globalconfig.Project{{ID: "test", Workdir: filepath.Join(root, "missing"), Workflow: filepath.Join(root, "missing", "WORKFLOW.md"), Weight: 1, Priority: 3}}
+				}
+				if err := globalconfig.Write(cfg.Global.Path, cfg.Global, globalconfig.WithMissingProjectPaths()); err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				done := make(chan error, 1)
+				joined := false
+				go func() {
+					done <- startRunningWithDependencies(ctx, cfg, startRunningDependencies{})
+				}()
+				t.Cleanup(func() {
+					cancel()
+					if !joined {
+						err := <-done
+						if err != nil && !errors.Is(err, context.Canceled) {
+							t.Error(err)
+						}
 					}
-				default:
-					t.Error("headless runtime did not join retention")
+				})
+				waitCtx := testenv.WaitContext(t, ctx)
+				select {
+				case observed := <-observations:
+					if observed == nil || !observed.Supported || observed.Validate() != nil {
+						t.Fatalf("headless heartbeat update observation = %+v", observed)
+					}
+				case err := <-done:
+					joined = true
+					t.Fatalf("headless runtime stopped before its heartbeat: %v", err)
+				case <-waitCtx.Done():
+					t.Fatalf("headless heartbeat wait ended: %v", context.Cause(waitCtx))
 				}
 			})
-			<-entered
-			if observed := <-observations; observed == nil || !observed.Supported || observed.Validate() != nil {
-				t.Fatalf("headless heartbeat update observation = %+v", observed)
-			}
 		})
 	}
 }

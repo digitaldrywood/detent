@@ -42,6 +42,7 @@ func TestPruneCodexLogs(t *testing.T) {
 		{name: "live server preserves all", alive: true, limit: 1, rows: 3},
 		{name: "server starts during vacuum", startsDuringVacuum: true, limit: 1, rows: 2},
 		{name: "unknown process state preserves all", scanErr: errors.New("ps failed"), limit: 1, rows: 3},
+		{name: "canceled process scan preserves all", scanErr: context.Canceled, limit: 1, rows: 3},
 		{name: "above floor removed after vacuum", limit: 1, removed: true},
 		{name: "hard linked user database preserved", limit: 1, rows: 3, shared: true},
 	} {
