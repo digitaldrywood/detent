@@ -67,7 +67,7 @@ import { currentEpoch } from "../../lib/queryCache.ts";
  */
 export class WorkApiError extends Error {
   authorizationConfirmed = false;
-  authorizationProject: string | undefined;
+  authorizationProjects: readonly string[] | undefined;
   readonly status: number;
   readonly code: string;
   readonly currentRevision: string | null;
@@ -507,34 +507,39 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   };
   let authorizationCheck: ReturnType<typeof checkAuthorization> | undefined;
   let authorizationWaiters = 0;
-  const confirmDenial = async (target: string) => {
+  const confirmDenial = async (target: string, requestedProjects?: readonly string[]) => {
     authorizationWaiters++;
     try {
       const confirmation = await (authorizationCheck ??= checkAuthorization());
       let denied = confirmation.denied;
-      let projectId: string | undefined;
+      let projectIds: string[] | undefined;
       const match = new URL(target, globalThis.location?.origin ?? "http://localhost").pathname.match(/\/projects\/([^/]+)/);
-      if (!denied && confirmation.projects !== undefined && match !== null) {
-        projectId = decodeURIComponent(match[1]!);
-        if (!confirmation.projects.some((project) => project.id === projectId)) denied = true;
-        else {
+      const scope = requestedProjects ?? (match === null ? [] : [decodeURIComponent(match[1]!)]);
+      if (!denied && confirmation.projects !== undefined) {
+        const authorized = new Set(confirmation.projects.map((project) => project.id));
+        const statuses = await Promise.all([...new Set(scope)].map(async (projectId) => {
+          if (!authorized.has(projectId)) return { projectId, status: 403 };
           let check = confirmation.checks.get(projectId);
           if (check === undefined) {
             check = requestAuthorization(projectBase(projectId)).then((response) => response.status, () => 0);
             confirmation.checks.set(projectId, check);
           }
-          const status = await check;
-          denied = [401, 403].includes(status);
-          if (status === 401) projectId = undefined;
+          return { projectId, status: await check };
+        }));
+        if (statuses.some(({ status }) => status === 401)) denied = true;
+        else {
+          projectIds = statuses.filter(({ status }) => status === 403).map(({ projectId }) => projectId);
+          denied = projectIds.length > 0;
         }
       }
-      if (confirmation.owner !== currentEpoch()) return { denied: false, projectId: undefined };
-      if (denied && !confirmation.notified.has(projectId ?? "")) {
+      if (confirmation.owner !== currentEpoch()) return { denied: false, projectIds: undefined };
+      for (const projectId of denied ? projectIds ?? [undefined] : []) {
+        if (confirmation.notified.has(projectId ?? "")) continue;
         confirmation.notified.add(projectId ?? "");
         invalidateArchiveAccess(target, 403);
         options.onAuthorizationRejected?.(projectId);
       }
-      return { denied, projectId };
+      return { denied, projectIds };
     } finally {
       if (--authorizationWaiters === 0) authorizationCheck = undefined;
     }
@@ -568,6 +573,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     body?: unknown,
     signal?: AbortSignal,
     keepalive = false,
+    requestedProjects?: readonly string[],
   ): Promise<A> {
     const owner = currentEpoch();
     const headers: Record<string, string> = { Accept: "application/json", "X-Detent-Archive-Read": "1" };
@@ -602,9 +608,9 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     if (!response.ok) {
       const failure = errorFromBody(response.status, parsed);
       if (!signal?.aborted && owner === currentEpoch() && [401, 403].includes(response.status)) {
-        const confirmation = await confirmDenial(target);
+        const confirmation = await confirmDenial(target, requestedProjects);
         failure.authorizationConfirmed = confirmation.denied;
-        failure.authorizationProject = confirmation.projectId;
+        failure.authorizationProjects = confirmation.projectIds;
       } else if (!signal?.aborted && owner === currentEpoch()) invalidateArchiveAccess(target, response.status);
       if (failure.code === "archive_unavailable") throw new ArchiveUnavailable("missing section");
       throw failure;
@@ -682,7 +688,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   return {
     origin: options.origin,
     apiBase: options.apiBase,
-    readBoard: (projectIds, state, signal) => send(Schema.Array(LoadedSchema), "GET", url(`${options.apiBase}/work-board`, { project: projectIds, state: JSON.stringify({ ...state, priority: state.priority.map((name) => String(priorityValue(name) ?? name)) }) }), undefined, signal),
+    readBoard: (projectIds, state, signal) => send(Schema.Array(LoadedSchema), "GET", url(`${options.apiBase}/work-board`, { project: projectIds, state: JSON.stringify({ ...state, priority: state.priority.map((name) => String(priorityValue(name) ?? name)) }) }), undefined, signal, false, projectIds),
     listSavedViews: async (signal) => {
       const schema = Schema.Struct({ views: Schema.Array(SavedWorkView), next_cursor: Schema.optional(Schema.String) });
       const views: SavedView[] = [];

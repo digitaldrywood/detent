@@ -576,8 +576,11 @@ export class BoardRead {
       } catch (cause) {
         if (signal.aborted || generation !== this.generation) return;
         for (const snapshot of snapshots.values()) snapshot.complete();
-        if (unauthorized(cause)) rejectBoardCache(this.owner, cause instanceof WorkApiError ? cause.authorizationProject : undefined);
-        else this.publish({ ...this.state, loading: false, backlogLoading: false, refreshing: false,
+        if (unauthorized(cause)) {
+          for (const projectId of cause instanceof WorkApiError ? cause.authorizationProjects ?? [undefined] : [undefined]) {
+            rejectBoardCache(this.owner, projectId);
+          }
+        } else this.publish({ ...this.state, loading: false, backlogLoading: false, refreshing: false,
           error: cause instanceof Error ? cause.message : String(cause) });
       } finally {
         if (generation !== this.generation) return;
