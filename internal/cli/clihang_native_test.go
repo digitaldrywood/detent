@@ -11,7 +11,8 @@ import (
 
 type clihangNativeClient struct {
 	*hubclient.NativeClient
-	admin *hubclient.NativeClient
+	admin        *hubclient.NativeClient
+	projectPages func()
 }
 
 func clihangRuntimeEvidence(ctx context.Context, client *clihangNativeClient, item tracker.NativeWorkItemID) (tracker.NativeRuntimeEvidence, error) {

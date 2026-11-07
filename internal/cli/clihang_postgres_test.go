@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -215,7 +216,7 @@ func clihangPostgresHub(t *testing.T, token string, content entryauthority.Conte
 	}
 	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabaseBackend: hubserver.DatabasePostgres,
 		Postgres: &postgres.Config{Connection: connection, Pool: budgets}, SecretKeys: keys, Content: content,
-		RunDetails: &clihangDetails{data: make(map[string][]byte)}, Hosted: &hubserver.HostedConfig{
+		RunDetails: hubmaintenance.LimitDetails(&clihangDetails{data: make(map[string][]byte)}), Hosted: &hubserver.HostedConfig{
 			OrganizationID: "org_example", WorkOSOrganizationID: "provider_org_example", PublicURL: "https://hub.example.test", Provider: provider,
 		}})
 	if err != nil {

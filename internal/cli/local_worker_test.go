@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -359,7 +360,19 @@ func localWorkerHubFixture(t *testing.T, expose func(http.Handler, tracker.Organ
 		}
 		return connector.Issue{ID: string(issue.WorkItemID), Title: name, State: issue.State}
 	}
-	return scheduler, &clihangNativeClient{NativeClient: workerNative, admin: native}, connection, workflow, create, revoke
+	projectPages := func() {
+		for {
+			ctx := (hubmaintenance.Budget{Items: 1, Bytes: hubmaintenance.ByteLimit}).Context(t.Context(), hubmaintenance.Tenant{Organization: string(organization), Generation: 1})
+			worked, err := service.MaintainWorkItemPage(ctx, organization)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !worked {
+				return
+			}
+		}
+	}
+	return scheduler, &clihangNativeClient{NativeClient: workerNative, admin: native, projectPages: projectPages}, connection, workflow, create, revoke
 }
 
 func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {

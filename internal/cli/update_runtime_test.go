@@ -841,7 +841,7 @@ func TestExceptionalUpdateDrainStopsNativeClaims(t *testing.T) {
 			updateCtx, cancelUpdate := context.WithCancel(ctx)
 			defer cancelUpdate()
 			var claims atomic.Int64
-			native, _, connection, workflow, create, _ := localWorkerHub(t, func(r *http.Request) {
+			native, hub, connection, workflow, create, _ := localWorkerHub(t, func(r *http.Request) {
 				if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claims") {
 					claims.Add(1)
 				}
@@ -942,6 +942,7 @@ func TestExceptionalUpdateDrainStopsNativeClaims(t *testing.T) {
 			}
 			gate.SetProjects(candidates)
 			checkPaused()
+			hub.projectPages()
 			if _, err := native.RenewClaim(ctx, activeIssue.ID, time.Now()); err != nil {
 				t.Fatalf("drain lost active lease: %v", err)
 			}

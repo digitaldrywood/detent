@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -791,61 +790,21 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 	return s.nativeClaimActive(ctx, claim, true)
 }
 
-func (s *Scheduler) nativeClaimActive(ctx context.Context, claim nativeClaim, inspectIssue bool) (bool, error) {
+func (s *Scheduler) nativeClaimActive(ctx context.Context, claim nativeClaim, observeRuntime bool) (bool, error) {
 	var observation *tracker.NativeRuntimeObservation
 	localWorker := false
-	landed := false
 	if execution := claim.execution; execution != nil {
 		state, err := execution.ClaimState(ctx)
 		if err != nil || state.Override != 0 {
 			return state.Override > 0, err
 		}
-		localWorker, landed, observation = state.LocalWorker, state.Landed, state.Observation
+		localWorker, observation = state.LocalWorker, state.Observation
 	}
 	if observation == nil {
 		for _, attempt := range claim.recovery.Attempts {
 			if attempt.LeaseID == claim.lease.ID && attempt.FencingToken == claim.lease.FencingToken {
 				observation = attempt.Runtime
 				break
-			}
-		}
-	}
-	if inspectIssue {
-		issue, err := claim.source.NativeClient().Issue(ctx, claim.lease.WorkItemID)
-		if err != nil {
-			return false, err
-		}
-		landed = landed || observation != nil && observation.Landing != nil && observation.Landing.Landed
-		if issue.Terminal && !issue.Archived && !landed && claim.execution != nil {
-			var available bool
-			landed, available = claim.execution.LandedStatus()
-			if !available {
-				return true, nil
-			}
-		}
-		if !issue.Terminal || issue.Archived || !landed {
-			if issue.SchedulingEligible != nil {
-				if !*issue.SchedulingEligible {
-					return false, nil
-				}
-			} else {
-				if issue.Terminal || issue.Archived || !issue.DependencyReady {
-					return false, nil
-				}
-				project, err := claim.source.NativeClient().Project(ctx)
-				if err != nil {
-					return false, err
-				}
-				dispatchable := false
-				for _, state := range project.States {
-					if strings.EqualFold(state.Name, issue.State) {
-						dispatchable = state.Dispatchable && !state.Terminal && !state.OperatorOnly
-						break
-					}
-				}
-				if !dispatchable {
-					return false, nil
-				}
 			}
 		}
 	}
@@ -861,7 +820,7 @@ func (s *Scheduler) nativeClaimActive(ctx context.Context, claim nativeClaim, in
 		if err != nil {
 			return false, errors.Join(ErrUnavailable, err)
 		}
-		if alive && inspectIssue {
+		if alive && observeRuntime {
 			if err := claim.execution.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{HeartbeatAt: s.now().UTC()}); err != nil {
 				return false, err
 			}

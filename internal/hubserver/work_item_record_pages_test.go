@@ -234,6 +234,17 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 			service.config.TenantRepository = repository
 
 			scope := nativeScope{organization: org.ID, project: project.ID}
+			assertReadinessOmitted := func(issue tracker.NativeIssue) {
+				t.Helper()
+				if issue.DependencyReady || issue.SchedulingEligible != nil || !slices.Contains(issue.OmittedFields, "dependency_ready") || !slices.Contains(issue.OmittedFields, "scheduling_eligible") {
+					t.Fatalf("basic item read exposed scheduling readiness: ready=%t eligible=%v omitted=%v", issue.DependencyReady, issue.SchedulingEligible, issue.OmittedFields)
+				}
+			}
+			coldPage, err := service.workItemResource(t.Context(), scope, string(issue.WorkItemID), url.Values{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertReadinessOmitted(coldPage)
 			if size == 2 {
 				if got, err := service.workItemResource(t.Context(), scope, string(issue.WorkItemID), url.Values{}); err != nil || got.Body != workItemRecordBody {
 					t.Fatalf("cold detail: %v", err)
@@ -295,6 +306,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 			if err != nil || corePage.Body != workItemRecordBody || corePage.OrganizationID != org.ID || corePage.ProjectID != project.ID || corePage.WorkItemID != issue.WorkItemID {
 				t.Fatalf("typed item page: err=%v body=%q", err, corePage.Body)
 			}
+			assertReadinessOmitted(corePage)
 
 			for _, part := range []string{"", "/relationships", "/references"} {
 				durations := []time.Duration{}

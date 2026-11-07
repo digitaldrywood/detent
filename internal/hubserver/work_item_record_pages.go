@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -146,7 +147,16 @@ func (s *Service) workItemResource(ctx context.Context, scope nativeScope, id st
 		return err
 	})
 	if pageModelPending(err) {
-		return s.readWorkItemSourcePage(ctx, scope, id)
+		issue, err = s.readWorkItemSourcePage(ctx, scope, id)
+	}
+	if err == nil {
+		issue.DependencyReady = false
+		issue.SchedulingEligible = nil
+		for _, field := range []string{"dependency_ready", "scheduling_eligible"} {
+			if !slices.Contains(issue.OmittedFields, field) {
+				issue.OmittedFields = append(issue.OmittedFields, field)
+			}
+		}
 	}
 	return issue, err
 }

@@ -517,6 +517,7 @@ func TestControllerAdoptionPreservesWorkerAndClaimsOnNewBuild(t *testing.T) {
 	if alive, err := procgroup.Alive(identity); err != nil || !alive {
 		t.Fatalf("replacement killed old execution worker: %t %v", alive, err)
 	}
+	native.projectPages()
 	if got := call(oldAddress, "/renew"); got != "renewed" {
 		t.Fatalf("old attempt lease lost during handoff: %q", got)
 	}
