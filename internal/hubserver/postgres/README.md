@@ -1067,8 +1067,13 @@ platform or migration authority. It can read only the title/body keys and
 reporter ownership columns needed by the helper. The helper fixes its search
 path, derives the tenant from the bound transaction, checks authoritative issue
 ownership, and returns IDs. Runtime checks the role and function at startup;
-platform credentials cannot read bodies or execute this helper. Trigram indexes
-cover board titles and full bodies in `native_work_item_pages`. The existing
+platform credentials cannot read bodies or execute this helper. Multicolumn GIN trigram indexes
+cover board titles and full bodies in `native_work_item_pages`, combining
+organization and project equality with text matching in one index scan.
+PostgreSQL recommends [btree_gin](https://www.postgresql.org/docs/17/btree-gin.html)
+for combining scalar equality with GIN-indexable text rather than intersecting
+separate indexes. [pg_trgm](https://www.postgresql.org/docs/17/pgtrgm.html)
+supports substring ILIKE matching with exact heap rechecks. The existing
 work-item-page maintenance owner backfills and refreshes these bodies; board
 rows intentionally omit them. Provision roles before migrations and complete
 item-page backfill and body-only HTTP/MCP verification before treating an
