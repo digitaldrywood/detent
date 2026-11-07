@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -112,7 +113,7 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 			if index == 1 {
 				actor = "credential_second"
 			}
-			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: project, WorkItemID: tracker.NativeWorkItemID(item), Revision: 1, Number: index + 1}, Title: "Example issue", Actor: tracker.Actor{Kind: "human", PrincipalID: actor}}
+			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: project, WorkItemID: tracker.NativeWorkItemID(item), Profile: "native", Revision: 1, Number: index + 1}, Title: "Example issue", State: "Done", Archived: index == 1, CreatedAt: now, UpdatedAt: now, Actor: tracker.Actor{Kind: "human", PrincipalID: actor}}
 			raw, err := json.Marshal(issue)
 			if err != nil {
 				t.Fatal(err)
@@ -122,7 +123,7 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := store.postgres.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: project, NativeID: issue.WorkItemID, Number: int64(index + 1), Revision: 1, Title: issue.Title, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &actor}); err != nil {
+				if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: project, NativeID: issue.WorkItemID, Number: int64(index + 1), Revision: 1, EventSequence: 3, NativeCreatedAt: now, NativeUpdatedAt: now, Title: issue.Title, WorkflowStateName: &issue.State, Archived: issue.Archived, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &actor}); err != nil {
 					return err
 				}
 				_, err := w.CreateCollaborationVersion(t.Context(), version)
@@ -172,6 +173,23 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 			return w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: tracker.ProjectID("project_" + string(org)), WorkItemID: "wi_foreign", ChangeID: "change_wi_own_1", CreatedAt: now})
 		}); err != nil {
 			t.Fatal(err)
+		}
+	}
+	for _, org := range []tracker.OrganizationID{"org_startup", "org_other"} {
+		for _, item := range []string{"wi_own", "wi_foreign"} {
+			for _, id := range []string{item, "c_" + item + "_1", "c_" + item + "_2", "c_" + item + "_3"} {
+				kind := "comment"
+				if id == item {
+					kind = "issue"
+				}
+				document, err := searchstore.NewContent(cfg.RunDetails).Prepare(t.Context(), searchstore.Document{OrganizationID: org, ProjectID: tracker.ProjectID("project_" + string(org)), WorkItemID: tracker.NativeWorkItemID(item), ID: kind + ":" + id, SourceID: id, Kind: kind, Scope: "issue", Revision: 1, UpdatedAt: now}, searchstore.Text{Title: "Example issue"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.postgres.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.PutSearch(t.Context(), document, 0) }); err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
 	}
 	if err := store.Close(); err != nil {
@@ -277,6 +295,39 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 		service *Service
 	}{{"org_startup", firstService}, {"org_other", otherService}} {
 		service, currentOrganization = target.service, target.org
+		for _, name := range []string{operatortool.HealthFindings, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.WorkBulkExport, operatortool.BoardActivity} {
+			t.Run(target.org+"/"+name, func(t *testing.T) {
+				args := map[string]any{"project_id": "project_" + currentOrganization}
+				if name != operatortool.HealthFindings && name != operatortool.WorkConfig && name != operatortool.WorkBulkExport {
+					args["reference"] = "wi_own"
+				}
+				if name == operatortool.WorkVersion {
+					args["revision"] = 1
+				}
+				catalog := request("/internal/v1/keys/catalog", "first", "", map[string]any{}, nil)
+				requireNativeStatus(t, catalog, http.StatusOK)
+				var definitions []operatortool.Definition
+				decodeHubResponse(t, catalog, &definitions)
+				if !entryKeyHasDefinition(definitions, name) {
+					t.Errorf("%s missing from signed catalog", name)
+				}
+				response := call(name, args, nil)
+				if response.Code != http.StatusOK {
+					t.Fatalf("call status=%d body=%s", response.Code, response.Body)
+				}
+				other := "org_other"
+				if currentOrganization == other {
+					other = "org_startup"
+				}
+				if strings.Contains(response.Body.String(), other+" comment") {
+					t.Fatal("read leaked another tenant's content")
+				}
+				args["project_id"] = "project_" + other
+				if response := call(name, args, nil); response.Code == http.StatusOK {
+					t.Fatal("cross tenant read accepted")
+				}
+			})
+		}
 		t.Run(target.org+"/get_project_policy", func(t *testing.T) {
 			args := map[string]any{"project_id": "project_" + currentOrganization}
 			for _, role := range []string{"owner", "admin"} {
@@ -536,6 +587,52 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 	}
 	if after := snapshot(); !bytes.Equal(before, after) {
 		t.Fatal("API reads mutated canonical work, comments or Changes")
+	}
+	for _, target := range []struct {
+		org     string
+		service *Service
+	}{{"org_startup", firstService}, {"org_other", otherService}} {
+		service, currentOrganization = target.service, target.org
+		currentPermission = apikey.ScopeWrite
+		for _, name := range []string{operatortool.AddComment, operatortool.EditItem, operatortool.EditComment, operatortool.RestoreItem} {
+			t.Run(target.org+"/"+name, func(t *testing.T) {
+				args := map[string]any{"project_id": "project_" + currentOrganization, "identifier": "wi_own", "request_id": name, "expected_revision": "1"}
+				switch name {
+				case operatortool.AddComment:
+					delete(args, "expected_revision")
+					args["body"] = currentOrganization + " added comment"
+				case operatortool.EditItem:
+					args["title"] = currentOrganization + " updated title"
+				case operatortool.EditComment:
+					args["comment_id"], args["body"] = "c_wi_own_1", currentOrganization+" edited comment"
+				case operatortool.RestoreItem:
+					args["identifier"] = "wi_foreign"
+				}
+				catalog := request("/internal/v1/keys/catalog", "first", "", map[string]any{}, nil)
+				requireNativeStatus(t, catalog, http.StatusOK)
+				var definitions []operatortool.Definition
+				decodeHubResponse(t, catalog, &definitions)
+				if !entryKeyHasDefinition(definitions, name) {
+					t.Errorf("%s missing from signed catalog", name)
+				}
+				currentPermission = apikey.ScopeRead
+				requireNativeStatus(t, call(name, args, nil), http.StatusForbidden)
+				currentPermission = apikey.ScopeWrite
+				response := call(name, args, nil)
+				if response.Code != http.StatusOK {
+					t.Fatalf("call status=%d body=%s", response.Code, response.Body)
+				}
+				replay := call(name, args, nil)
+				requireNativeStatus(t, replay, http.StatusOK)
+				var originalResult, replayResult struct{ Data json.RawMessage }
+				decodeHubResponse(t, response, &originalResult)
+				decodeHubResponse(t, replay, &replayResult)
+				if !bytes.Equal(originalResult.Data, replayResult.Data) {
+					t.Fatal("mutation replay changed response")
+				}
+			})
+		}
+		currentPermission = apikey.ScopeRead
 	}
 	service, currentOrganization = firstService, "org_startup"
 	for _, scenario := range []string{"grant", "membership", "credential"} {
