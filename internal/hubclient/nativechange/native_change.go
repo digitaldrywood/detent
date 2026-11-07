@@ -279,6 +279,9 @@ func (a publicationAuthority) CheckSource(detail tracker.ChangeDetail, diff trac
 // the project's review policy already accepts it, which is what lets the
 // run's completion send the item straight to landing.
 func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID string, diff tracker.AttemptDiffRequest) (string, bool, error) {
+	if err := e.flushObservations(ctx); err != nil {
+		return "", false, err
+	}
 	client, item := e.claim.source.NativeClient(), e.claim.lease.WorkItemID
 	detail, err := client.RuntimeChange(ctx, item, changeID)
 	if err != nil {

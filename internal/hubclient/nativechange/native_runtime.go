@@ -170,13 +170,13 @@ func (e *nativeExecution) ObserveLanding(ctx context.Context, landing runner.Nat
 func (e *nativeExecution) FlushRuntime(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if err := e.flush(ctx); err != nil {
+	if err := e.flushObservations(ctx); err != nil {
 		return err
 	}
 	if !e.runtimeDirty || e.data.Identity == nil {
 		return nil
 	}
-	return e.append(ctx, "run.observed", "", nil)
+	return e.append(ctx, "run.observed", "", nil, true)
 }
 
 func (e *nativeExecution) RecordPipelineTiming(timing gate.PipelineTiming) {
