@@ -28,6 +28,16 @@ func (e *independentReviewExecution) Step(ctx context.Context, binding tracker.N
 }
 
 func TestIndependentFailureReviewResume(t *testing.T) {
+	repo := initRunnerSourceRepo(t)
+	base := strings.TrimSpace(runRunnerGit(t, repo, "rev-parse", "HEAD"))
+	attemptDiffFile(t, repo, "example.txt", "candidate\n")
+	runRunnerGit(t, repo, "add", "example.txt")
+	runRunnerGit(t, repo, "commit", "-m", "Candidate")
+	head := strings.TrimSpace(runRunnerGit(t, repo, "rev-parse", "HEAD"))
+	capture, err := workspace.CaptureChangeSource(t.Context(), repo, base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name                                                                   string
 		pending, unknown, refused, changedSource, changedPolicy, humanFeedback bool
@@ -42,16 +52,6 @@ func TestIndependentFailureReviewResume(t *testing.T) {
 		{name: "new human feedback requires implementation", humanFeedback: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			repo := initRunnerSourceRepo(t)
-			base := strings.TrimSpace(runRunnerGit(t, repo, "rev-parse", "HEAD"))
-			attemptDiffFile(t, repo, "example.txt", "candidate\n")
-			runRunnerGit(t, repo, "add", "example.txt")
-			runRunnerGit(t, repo, "commit", "-m", "Candidate")
-			head := strings.TrimSpace(runRunnerGit(t, repo, "rev-parse", "HEAD"))
-			capture, err := workspace.CaptureChangeSource(t.Context(), repo, base, head)
-			if err != nil {
-				t.Fatal(err)
-			}
 			now := time.Date(2026, 10, 27, 7, 0, 0, 0, time.UTC)
 			version := tracker.ChangeVersion{ID: "version_example", ChangeID: "change_example", ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: base, HeadSHA: head, RunID: "run_example", AttemptID: "attempt_example", PolicyID: "policy_example", Source: &capture.Source, Repository: "https://github.com/example-org/example-project"}}
 			version.Policy.ID = version.PolicyID
