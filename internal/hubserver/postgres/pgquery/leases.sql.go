@@ -925,6 +925,16 @@ WITH locked AS MATERIALIZED (
  WHERE l.organization_id=locked.organization_id AND l.lease_id=locked.lease_id
  AND locked.fencing_token=$7::bigint AND locked.released_at IS NULL
  AND CASE WHEN $3::text='expire' THEN locked.expires_at<=at.now ELSE locked.expires_at>at.now END
+ AND ($3::text<>'renew' OR NOT EXISTS (
+  SELECT 1 FROM issues i
+  JOIN project_workflow_states s ON s.organization_id=i.organization_id AND s.project_id=i.project_id AND s.name=i.workflow_state_name
+  WHERE i.organization_id=locked.organization_id AND i.id=locked.issue_id AND s.terminal
+ ) OR EXISTS (
+  SELECT 1 FROM native_attempts a
+  JOIN change_landing_receipts r ON r.organization_id=a.organization_id AND r.attempt_id=a.id
+  WHERE a.organization_id=locked.organization_id AND a.issue_id=locked.issue_id
+  AND a.lease_id=locked.lease_id AND a.fencing_token=locked.fencing_token AND a.status='running'
+ ))
  RETURNING l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason
 ), cancelled AS (
  UPDATE native_attempts a SET status='cancelled',sequence=sequence+1,updated_at=c.released_at
