@@ -19,11 +19,11 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -49,7 +49,6 @@ func TestNativeStopDuringHostFinalization(t *testing.T) {
 	isolateNativeChangeGit(t)
 	for _, mode := range []string{"stop", "drain during validation", "drain during publication", "drain during validation with pending status", "drain during publication with pending status", "drain before dispatch with released status", "drain before dispatch with pending status"} {
 		t.Run(mode, func(t *testing.T) {
-			t.Parallel()
 			testNativeStopDuringHostFinalization(t, mode)
 		})
 	}
@@ -180,7 +179,9 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	fixtureCapacity(t, h, 2)
 	statusDiscovery := strings.HasSuffix(mode, "with pending status")
+	var interrupted atomic.Bool
 	var blockDiscovery atomic.Bool
 	discoveryStarted := make(chan struct{}, 1)
 	discoveryRelease := make(chan struct{})
@@ -219,6 +220,22 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 			case <-publicationRelease:
 			}
 		}
+		if mode == "stop" && strings.HasSuffix(request.URL.Path, "/events") {
+			raw, err := io.ReadAll(request.Body)
+			if err != nil {
+				return nil, err
+			}
+			request.Body = io.NopCloser(strings.NewReader(string(raw)))
+			var event tracker.NativeRunEvent
+			if err := json.Unmarshal(raw, &event); err != nil {
+				return nil, err
+			}
+			response, err := transport.RoundTrip(request)
+			if err == nil && response.StatusCode == http.StatusOK && event.Type == "run.finished" && event.Data.Outcome == "interrupted" {
+				interrupted.Store(true)
+			}
+			return response, err
+		}
 		return transport.RoundTrip(request)
 	}))
 	source := nativeChangeSourceRepo(t)
@@ -252,20 +269,11 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		t.Fatal(err)
 	}
 	backend := &stoppedFinalizationWorkspace{LocalGit: local, started: make(chan workspace.Info, 1), resume: make(chan struct{})}
-	runtimeStore, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "runtime.db")})
+	agent, err := runner.NewRunner(runner.Dependencies{Store: api.NewRunnerSessions(h.native), ProcessSource: emptyProcessSource, ProjectID: "local", Workspace: backend, AgentBackend: &committingAgent{staged: true}, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "true"}}, Prompt: "Complete the issue"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if err := runtimeStore.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: runtimeStore, ProjectID: "local", Workspace: backend, AgentBackend: &committingAgent{staged: true}, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "true"}}, Prompt: "Complete the issue"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked", "In Review"}, TerminalStates: []string{"Done"}, StopRunTargetState: "Blocked"}, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: agent, WorkAttempts: runtimeStore, LaneLedger: runtimeStore, WorkflowMetrics: runtimeStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked", "In Review"}, TerminalStates: []string{"Done"}, StopRunTargetState: "Blocked"}, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: agent, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,6 +331,7 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		if statusDiscovery {
 			h.native.ApplyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "status-refresh", Claimable: true, Reset: true})
 		}
+
 		blockDiscovery.Store(true)
 		if _, err := orch.RequestRefresh(t.Context()); err != nil {
 			t.Fatal(err)
@@ -382,7 +391,7 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		attempt := recovery.Attempts[0]
 		version := detail.Versions[1]
 		if attempt.Outcome != "succeeded" || attempt.LeaseID != originalClaim.lease.ID || attempt.Checkpoint == nil || attempt.Checkpoint.HeadSHA == "" {
-			t.Fatalf("drain lost successful checkpoint or lease: %+v", attempt)
+			t.Fatalf("drain lost successful checkpoint or lease: %+v; failure=%+v", attempt, attempt.TerminalFailure)
 		}
 		if version.ID != detail.Change.CurrentVersion {
 			version = detail.Versions[0]
@@ -453,7 +462,7 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		t.Fatalf("stop changed the worktree identity: %v", err)
 	}
 	recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
-	if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Outcome != "interrupted" || recovery.Attempts[0].Checkpoint == nil || recovery.Attempts[0].Checkpoint.HeadSHA == "" || recovery.Attempts[0].Checkpoint.WorktreeState != "unpushed" {
+	if err != nil || len(recovery.Attempts) != 1 || !interrupted.Load() || recovery.Attempts[0].Outcome != "cancelled" || recovery.Attempts[0].CleanupAcknowledgedAt == nil || recovery.Attempts[0].Checkpoint == nil || recovery.Attempts[0].Checkpoint.HeadSHA == "" || recovery.Attempts[0].Checkpoint.WorktreeState != "unpushed" {
 		t.Fatalf("stopped checkpoint or native outcome = %+v, %v", recovery.Attempts, err)
 	}
 	if runtime := recovery.Attempts[0].Runtime; runtime == nil || runtime.Validation == nil || runtime.Validation.ExitCode != 0 || runtime.Validation.HeadSHA != recovery.Attempts[0].Checkpoint.HeadSHA {
@@ -584,7 +593,7 @@ func TestNativeStopEffectBoundary(t *testing.T) {
 				return publication, nil
 			})
 			if err := execution.PrepareFinish(finishCtx, "succeeded", "", nil); !errors.Is(err, runner.ErrOperatorStopped) {
-				t.Fatalf("stopped finalization = %v", err)
+				t.Fatalf("stopped finalization = %v; change=%+v", err, execution.(runner.ChangeExecution).NativeChange())
 			}
 			if _, err := execution.LandingTarget(finishCtx); !errors.Is(err, runner.ErrOperatorStopped) {
 				t.Fatalf("stopped landing authority = %v", err)
@@ -677,7 +686,7 @@ func TestNativeStopEffectBoundary(t *testing.T) {
 				}
 				detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), changes[0].ID)
 				if err != nil || len(detail.Versions) != 1 {
-					t.Fatalf("committed version was lost or duplicated: %+v, %v", detail.Versions, err)
+					t.Fatalf("committed version was lost or duplicated: %+v, %v; change=%+v", detail.Versions, err, execution.(runner.ChangeExecution).NativeChange())
 				}
 				if point == "version committed" && calls != 0 || point != "version committed" && calls != 1 {
 					t.Fatalf("publication calls after stop/retry = %d", calls)

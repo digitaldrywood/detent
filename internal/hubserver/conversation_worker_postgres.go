@@ -96,9 +96,12 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 		}
 		pendingContent[messageID] = payload
 	}
-	resume, err := s.conversationBindResumePG(ctx, scope, record, request, pendingCandidates)
-	if err != nil {
-		return s.nativeAPIError(e, conversationStaleExecutionError("bind", record.ID, err))
+	resume := conversationResumeResource{ThreadOrigin: conversation.ThreadOriginWorker}
+	if found {
+		resume, err = s.conversationBindResumePG(ctx, scope, record, request, pendingCandidates)
+		if err != nil {
+			return s.nativeAPIError(e, conversationStaleExecutionError("bind", record.ID, err))
+		}
 	}
 	initialRecord := record
 	execution := conversation.Execution{

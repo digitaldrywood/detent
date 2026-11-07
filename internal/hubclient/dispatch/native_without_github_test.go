@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -91,7 +92,7 @@ func TestNativeRunnerReachesHumanReviewWithoutGitHub(t *testing.T) {
 				Gate:        gate.Config{Run: "true"},
 			}.WithRuntimeGitHubToken("instance-canary")
 			agent := &environmentRecordingAgent{committingAgent: committingAgent{commit: true}}
-			run, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource,
+			run, err := runner.NewRunner(runner.Dependencies{Store: api.NewRunnerSessions(h.native), ProcessSource: emptyProcessSource,
 				Workflow:     config.Workflow{Config: cfg, Prompt: "Keep the Codex Workpad current and open a pull request."},
 				Workspace:    backend,
 				AgentBackend: agent,

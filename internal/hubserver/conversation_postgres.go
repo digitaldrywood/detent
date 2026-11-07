@@ -87,7 +87,9 @@ func (s *Service) authorizeConversationWorkerLeasePG(ctx context.Context, reader
 		return leasestore.Lease{}, leasestore.Attempt{}, err
 	}
 	attempt, err := reader.Attempt(ctx, identity.AttemptID)
-	if err != nil {
+	if errors.Is(err, corestore.ErrNotFound) && runID != "" && validNativeID(runID, "run") && validNativeID(identity.AttemptID, "attempt") {
+		attempt = leasestore.Attempt{OrganizationID: scope.organization, ID: identity.AttemptID, IssueID: item.ID, LeaseID: lease.LeaseID, FencingToken: lease.FencingToken, RunID: runID, Status: "running"}
+	} else if err != nil {
 		return leasestore.Lease{}, leasestore.Attempt{}, err
 	}
 	if lease.OrganizationID != scope.organization || lease.MachineID != string(scope.credential.Runner.MachineID) || lease.IssueID != item.ID || lease.FencingToken != int64(identity.FencingToken) {

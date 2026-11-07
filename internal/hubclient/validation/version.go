@@ -101,14 +101,16 @@ func PrepareVersion(ctx context.Context, reader VersionReader, host VersionAutho
 		if complete {
 			diff.Patch = patch.String()
 		}
-		if stage == "security_audit" && state.SourceRequired {
+		if state.SourceRequired && version.Source != nil {
 			if err := host.Retain(ctx, *state.Diff); err != nil {
 				return runner.NativeValidation{}, err
 			}
-			if host.Retained() == nil || host.Retained().Patch == "" && host.Retained().Source.DiffSHA256 != tracker.ChangeSourceDigest(nil) {
-				return runner.NativeValidation{}, errors.New("security audit retained source patch is unavailable")
+			capture := host.Retained()
+			if capture == nil || capture.Source.BaseSHA != version.BaseSHA || capture.Source.HeadSHA != version.HeadSHA || capture.Source.DiffSHA256 != version.Source.DiffSHA256 {
+				return runner.NativeValidation{}, errors.New("retained review source differs from the immutable version")
 			}
-			diff.Patch = host.Retained().Patch
+			diff.Patch = capture.Patch
+			diff.Digest = capture.Source.DiffSHA256
 		}
 		runtime, err := reader.RuntimeEvidence(ctx, state.Lease.WorkItemID, state.Data.AttemptID)
 		if err != nil {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -53,4 +54,28 @@ func (s *archivedRunDetails) StoreDetail(_ context.Context, organization string,
 	}
 	s.archives[ref.Key] = bytes.Clone(compressed)
 	return ref, nil
+}
+
+func (s *archivedRunDetails) ReadCanonicalDetail(ctx context.Context, organization, project, key string) ([]byte, error) {
+	if err := attachment.ValidateCanonicalDetailKey(organization, project, key); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	compressed := bytes.Clone(s.archives[key])
+	s.mu.Unlock()
+	if artifact.Digest(compressed) != key[strings.LastIndex(key, "/")+1:] {
+		return nil, artifact.ErrIntegrity
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, attachment.MaxArchiveBytes+1))
+	if err := errors.Join(err, reader.Close(), ctx.Err()); err != nil {
+		return nil, err
+	}
+	if len(data) > attachment.MaxArchiveBytes {
+		return nil, artifact.ErrIntegrity
+	}
+	return s.ReadDetail(ctx, organization, attachment.ArchiveReference{Key: key, SHA256: artifact.Digest(compressed), CompressedSize: int64(len(compressed)), UncompressedSize: int64(len(data)), Codec: "gzip", SchemaVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention})
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -210,16 +211,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		}
 		nextIssue, nextItem, nextItemVersion = &updatedIssue, &updatedRow, &itemVersion
 	}
-	var sourceRun *preparedChangeVersionRun
-	if version.AttemptID != "" {
-		sourceRun, err = s.prepareChangeVersionRun(ctx, scope, change, tracker.PublishChangeVersion{Mutation: request.Mutation, ChangeVersionInput: version.ChangeVersionInput})
-		if errors.Is(err, errNoChangeVersionRun) {
-			sourceRun, err = nil, nil
-		}
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-	}
+
 	changeRecord.Revision = changeRow.Revision
 	for {
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -272,8 +264,15 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 			if policyRows.Project.PolicyID != version.Policy.ID || policyRows.hasReview && policyRows.Review.ReviewPolicyID != version.ReviewPolicy.ID || !policyRows.hasReview && defaultChangeReviewPolicy(version.Policy).ID != version.ReviewPolicy.ID {
 				return policyMismatch("Current approved policy changed; the reviewed version must be republished")
 			}
-			if sourceRun != nil {
-				if err := s.recheckChangeVersionRun(ctx, w, sourceRun); err != nil {
+			if scope.credential.Scope == apiScopeWorker {
+				locker, ok := w.(leasestore.FencedLeaseLocker)
+				if !ok {
+					return nativeRunEventStorageUnavailable()
+				}
+				if _, err := locker.LockLease(ctx, string(request.LeaseID)); err != nil {
+					return err
+				}
+				if err := requireLinkedIssueLease(ctx, w, scope, currentItem, request.Mutation, s.config.now().UTC()); err != nil {
 					return err
 				}
 			}
