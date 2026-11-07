@@ -908,6 +908,85 @@ func TestDedicatedClaimRenewalPreservesFencingDuringReadmission(t *testing.T) {
 	}
 }
 
+func TestOwnedLeaseRenewalUsesHubFenceWithoutReadiness(t *testing.T) {
+	t.Parallel()
+	for _, readiness := range []struct {
+		name string
+		body string
+	}{
+		{name: "missing", body: `{}`},
+		{name: "nil", body: `{"state":"Todo","scheduling_eligible":null,"dependency_ready":false}`},
+		{name: "omitted", body: `{"dependency_ready":false,"omitted_fields":["dependency_ready"]}`},
+		{name: "ineligible", body: `{"scheduling_eligible":false,"dependency_ready":false}`},
+		{name: "terminal", body: `{"terminal":true,"scheduling_eligible":false}`},
+		{name: "archived", body: `{"archived":true}`},
+	} {
+		for _, status := range []int{http.StatusOK, http.StatusConflict} {
+			t.Run(readiness.name+"/"+strconv.Itoa(status), func(t *testing.T) {
+				descriptor := clientTestPolicy()
+				lease := tracker.NativeLease{ID: "lease_example", WorkItemID: "wi_example", FencingToken: 5, PolicyID: descriptor.ID, ServerTime: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}
+				var renewals, reads int
+				transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					code := http.StatusOK
+					body, err := json.Marshal(policy.Approval{Policy: descriptor})
+					if err != nil {
+						return nil, err
+					}
+					if request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/work-items/") {
+						reads++
+						body = []byte(readiness.body)
+					}
+					if strings.HasSuffix(request.URL.Path, "/renew") {
+						renewals++
+						var mutation tracker.NativeLeaseMutation
+						if err := json.NewDecoder(request.Body).Decode(&mutation); err != nil {
+							t.Fatal(err)
+						}
+						if request.Method != http.MethodPost || mutation.FencingToken != lease.FencingToken {
+							t.Fatalf("renewal did not preserve its fence: method=%s mutation=%+v", request.Method, mutation)
+						}
+						code = status
+						body, err = json.Marshal(lease)
+						if code == http.StatusConflict {
+							body = []byte(`{"code":"stale_fencing_token"}`)
+						}
+					}
+					return &http.Response{StatusCode: code, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: request}, err
+				})
+				client, err := newTestClient(t, Config{URL: "http://hub.example", TokenSource: func() string { return "example" }, HTTPClient: &http.Client{Transport: transport}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				scheduler, err := newTestScheduler(client, SchedulerConfig{Machine: Machine{ID: "machine_example", Hostname: "example", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_example", "prj_example")
+				if err != nil {
+					t.Fatal(err)
+				}
+				source := fixtureConnector(native)
+				scheduler.nativeProjects["example"] = source
+				scheduler.nativeHeartbeats[native.ProjectID()] = time.Now()
+				scheduler.nativeClaims["wi_example"] = nativeClaim{source: source, lease: lease}
+				scheduler.claims["wi_example"] = nativeTrackerLease(lease)
+				scheduler.claimPolicies["wi_example"] = claimPolicy{project: "example", descriptor: descriptor}
+				claimed, err := scheduler.RenewClaim(t.Context(), "wi_example", time.Now())
+				if renewals != 1 || reads != 0 {
+					t.Fatalf("readiness vetoed renewal: renewals=%d issue reads=%d error=%v", renewals, reads, err)
+				}
+				if status == http.StatusConflict {
+					if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+						t.Fatalf("Hub fence rejection retained ownership: %v", err)
+					}
+				} else if err != nil || !claimed.LeaseExpiresAt.Equal(lease.ExpiresAt) {
+					t.Fatalf("owned lease renewal failed: claim=%+v error=%v", claimed, err)
+				}
+			})
+		}
+	}
+}
+
 func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 	t.Parallel()
 	for _, operation := range []string{"renew", "renew_landed", "renew_availability", "release", "release_finish_lost", "release_finish_ack_retry", "lost", "lost_release"} {

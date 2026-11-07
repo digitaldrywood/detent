@@ -510,6 +510,13 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 	}
 	var refreshedSource tracker.NativeIssue
 	decodeHubResponse(t, performHubAPIRequest(t, service, http.MethodGet, itemPath, testHubAdminToken, nil), &refreshedSource)
+	if refreshedSource.DependencyReady || !slices.Contains(refreshedSource.OmittedFields, "dependency_ready") {
+		t.Fatalf("basic item read did not omit readiness: %+v", refreshedSource)
+	}
+	refreshedSource, err = service.readWorkItemSourcePage(t.Context(), nativeScope{organization: firstOrganization.ID, project: firstProject.ID, credential: credential}, string(source.WorkItemID))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !refreshedSource.DependencyReady || len(refreshedSource.Blockers) != 1 || refreshedSource.Blockers[0].State != "Done" || !refreshedSource.Blockers[0].Terminal {
 		t.Fatalf("refreshed relationship facts=%+v", refreshedSource)
 	}
@@ -533,6 +540,13 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, itemPath+"/dependencies", testHubAdminToken, remove), http.StatusOK)
 	var sourceAfterRemove tracker.NativeIssue
 	decodeHubResponse(t, performHubAPIRequest(t, service, http.MethodGet, itemPath, testHubAdminToken, nil), &sourceAfterRemove)
+	if sourceAfterRemove.DependencyReady || !slices.Contains(sourceAfterRemove.OmittedFields, "dependency_ready") {
+		t.Fatalf("basic item read did not omit readiness: %+v", sourceAfterRemove)
+	}
+	sourceAfterRemove, err = service.readWorkItemSourcePage(t.Context(), scope, string(source.WorkItemID))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(sourceAfterRemove.Dependencies) != 0 || len(sourceAfterRemove.Blockers) != 0 || !sourceAfterRemove.DependencyReady {
 		t.Fatalf("source relationship removal=%+v", sourceAfterRemove)
 	}
