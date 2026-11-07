@@ -18,7 +18,7 @@ import (
 const runnerSessionColumns = `organization_id,project_id,issue_id,attempt_id,id,revision,start_key,started_at,completed_at,backend_id,backend_kind,role,model,policy_id,provider_thread_id,provider_session_id,pr_number,pr_head_sha,pr_base_sha,final_state,worker_pid,worker_group_id,worker_started_at,worker_reaped_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes`
 
 func (s *session) RunnerSessionTime(ctx context.Context) (time.Time, error) {
-	return s.queries.LeaseTime(ctx)
+	return s.leaseTime(ctx)
 }
 
 func scanRunnerSession(row interface{ Scan(...any) error }) (runnersession.Record, error) {

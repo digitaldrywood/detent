@@ -81,7 +81,7 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return leasestore.Attempt{}, false, mapError(ctx, err)
 	}
-	now, err := s.queries.LeaseTime(ctx)
+	now, err := s.leaseTime(ctx)
 	if err != nil {
 		return leasestore.Attempt{}, false, mapError(ctx, err)
 	}
@@ -137,7 +137,7 @@ func (s *session) registerAttemptPayload(ctx context.Context, event leasestore.A
 	if event.PayloadReference == (attachment.ArchiveReference{}) {
 		return nil
 	}
-	now, err := s.queries.LeaseTime(ctx)
+	now, err := s.leaseTime(ctx)
 	if err != nil {
 		return mapError(ctx, err)
 	}

@@ -44,7 +44,7 @@ func (r *Repository) runnerEventCommand(ctx context.Context, org tracker.Organiz
 		return err
 	}
 	defer release()
-	s := &session{organization: org, readOnly: readOnly, credentials: map[string]accessstore.Credential{}, tokenGrants: map[projectAccessKey]accessstore.TokenGrant{}}
+	s := &session{organization: org, readOnly: readOnly, leaseClock: r.leaseClock, credentials: map[string]accessstore.Credential{}, tokenGrants: map[projectAccessKey]accessstore.TokenGrant{}}
 	f, facts := newRunnerEventFacts(s, s, command)
 	b := new(pgx.Batch)
 	lock := ""

@@ -74,7 +74,11 @@ func newRunnerEventFacts(s *session, writer tenantstore.Writer, c eventstore.Run
 	}
 	queueRunFact(b, &f.item, `SELECT * FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=COALESCE(NULLIF($3,''),(SELECT issue_id FROM runner_sessions WHERE organization_id=$1 AND project_id=$2 AND id=$4),(SELECT i.native_id FROM issues i JOIN leases l ON l.organization_id=i.organization_id AND l.issue_id=i.id WHERE l.organization_id=$1 AND l.lease_id=$5 AND i.project_id=$2))`+lock, s.organization, c.Project, c.WorkItem, c.SessionID, c.LeaseID)
 	queueRunFact(b, &f.lease, `SELECT * FROM leases WHERE organization_id=$1 AND lease_id=$2`+lock, s.organization, c.LeaseID)
-	b.Queue(`SELECT clock_timestamp()`).QueryRow(func(row pgx.Row) error { return row.Scan(&f.now) })
+	if s.leaseClock != nil {
+		f.now = s.leaseClock().UTC()
+	} else {
+		b.Queue(`SELECT clock_timestamp()`).QueryRow(func(row pgx.Row) error { return row.Scan(&f.now) })
+	}
 	queueRunFact(b, &f.attempt, `SELECT * FROM native_attempts WHERE organization_id=$1 AND id=COALESCE(NULLIF($2,''),(SELECT id FROM native_attempts WHERE organization_id=$1 AND lease_id=$3 ORDER BY fencing_token DESC LIMIT 1))`, s.organization, c.AttemptID, c.LeaseID)
 	queueRunFact(b, &f.latest, `SELECT a.* FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE a.organization_id=$1 AND i.project_id=$2 AND i.native_id=COALESCE(NULLIF($3,''),(SELECT issue_id FROM runner_sessions WHERE organization_id=$1 AND project_id=$2 AND id=$4),(SELECT i.native_id FROM issues i JOIN leases l ON l.organization_id=i.organization_id AND l.issue_id=i.id WHERE l.organization_id=$1 AND l.lease_id=$5 AND i.project_id=$2)) ORDER BY a.fencing_token DESC LIMIT 1`, s.organization, c.Project, c.WorkItem, c.SessionID, c.LeaseID)
 	queueRunFact(b, &f.machine, `SELECT m.* FROM machines m JOIN leases l ON l.organization_id=m.organization_id AND l.machine_id=m.id WHERE l.organization_id=$1 AND l.lease_id=$2`, s.organization, c.LeaseID)

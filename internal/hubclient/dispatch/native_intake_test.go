@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,7 +47,14 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 			states[i].Transitions = []string{"Todo", "Blocked", "Done"}
 		}
 	}
-	h := newNativeChangeHubWithStates(t, "Human Review", states)
+	var frozenTime atomic.Int64
+	clock := func() time.Time {
+		if value := frozenTime.Load(); value != 0 {
+			return time.Unix(0, value).UTC()
+		}
+		return time.Now().UTC()
+	}
+	h := newNativeChangeHubConfigured(t, "Human Review", states, false, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}, Clock: clock})
 	identityPath := filepath.Join(t.TempDir(), "private", "identity.json")
 	file, err := runnerauth.Initialize(identityPath, fixtureClient(h.admin.Transport()).baseURL.String())
 	if err != nil {
@@ -81,6 +89,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.scheduler.now = clock
 	source := h.createInProgress(t, "Complete implementation before delegated acceptance")
 	worker := nativeIntakeWorker{started: make(chan runner.RunRequest, 1)}
 	orch, err := orchestrator.New(orchestrator.Config{
@@ -109,6 +118,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if workerRequest.Issue.ID != source.ID {
 		t.Fatalf("dispatched source = %s, want %s", workerRequest.Issue.ID, source.ID)
 	}
+	frozenTime.Store(time.Now().UTC().UnixNano())
 	ctx, stop, err := workerRequest.Execution.Guard(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -402,7 +412,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	}
 	_, err = foreignStore.CreateIntakeIssue(t.Context(), draft)
 	var apiErr *APIError
-	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusNotFound {
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden || apiErr.Code != "access_denied" {
 		t.Fatalf("foreign authority = %v", err)
 	}
 	readOnlyPath := filepath.Join(t.TempDir(), "private", "identity.json")

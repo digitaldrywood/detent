@@ -76,7 +76,7 @@ func (r *Repository) writeRunnerCommand(ctx context.Context, organization tracke
 		return errors.Join(accessstore.ErrDenied, results.Close())
 	}
 	db := timedQueries{DBTX: tx}
-	h := &runnerHeartbeatSession{session: &session{organization: organization, db: db, queries: pgquery.New(db)}, identity: identity, preloaded: preload}
+	h := &runnerHeartbeatSession{session: &session{organization: organization, leaseClock: r.leaseClock, db: db, queries: pgquery.New(db)}, identity: identity, preloaded: preload}
 	if preload {
 		if err := h.readHeartbeatRows(ctx, results); err != nil {
 			return errors.Join(err, results.Close())

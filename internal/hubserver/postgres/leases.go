@@ -20,6 +20,13 @@ import (
 
 var _ leasestore.Repository = (*Repository)(nil)
 
+func (s *session) leaseTime(ctx context.Context) (time.Time, error) {
+	if s.leaseClock != nil {
+		return s.leaseClock().UTC(), nil
+	}
+	return s.queries.LeaseTime(ctx)
+}
+
 func (r *Repository) ReadLeases(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(leasestore.Reader) error) error {
 	return r.transaction(ctx, organization, workload, true, func(s *session) error { return read(s) })
 }
@@ -195,7 +202,7 @@ func (s *session) CheckpointAttemptPage(ctx context.Context, issueID int64, curs
 }
 
 func (s *session) Usage(ctx context.Context, machine string) (int64, error) {
-	now, err := s.queries.LeaseTime(ctx)
+	now, err := s.leaseTime(ctx)
 	if err != nil {
 		return 0, mapError(ctx, err)
 	}
@@ -216,7 +223,7 @@ func (s *session) Claim(ctx context.Context, request leasestore.Claim) (leasesto
 		return leasestore.Lease{}, mapError(ctx, err)
 	}
 	found := err == nil
-	now, err := s.queries.LeaseTime(ctx)
+	now, err := s.leaseTime(ctx)
 	if err != nil {
 		return leasestore.Lease{}, mapError(ctx, err)
 	}
