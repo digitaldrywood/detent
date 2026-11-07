@@ -136,7 +136,7 @@ func TestNativePrepareReviewAcrossAttempts(t *testing.T) {
 							return nil, err
 						}
 						response.Body.Close()
-						if test.mutate != nil {
+						if test.mutate != nil && page.Detail != nil && len(page.Detail.Versions) != 0 {
 							test.mutate(page.Detail)
 						}
 						body, err := json.Marshal(page)

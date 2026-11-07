@@ -28,7 +28,7 @@ func TestNativeDependencyReasonRefresh(t *testing.T) {
 		return "Waits for the shared foundation.", nil
 	}
 	ctx := runner.WithDependencyReasonGenerator(t.Context(), generate)
-	changed, err := hub.native.Dependency(ctx, dependent.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: dependent.Revision, RelatedWorkItemID: blocker, Operation: "add"})
+	changed, err := hub.admin.Dependency(ctx, dependent.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: dependent.Revision, RelatedWorkItemID: blocker, Operation: "add"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,13 +44,13 @@ func TestNativeDependencyReasonRefresh(t *testing.T) {
 	if calls != 2 {
 		t.Fatalf("generated %d sentences, want two stale edge directions", calls)
 	}
-	if err := hub.native.RefreshDependencyReasons(ctx, dependent.WorkItemID, generate); err != nil {
+	if err := hub.admin.RefreshDependencyReasons(ctx, dependent.WorkItemID, generate); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 2 {
 		t.Fatalf("current bases regenerated: %d calls", calls)
 	}
-	if _, err := hub.native.Dependency(ctx, dependent.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: changed.Revision, RelatedWorkItemID: blocker, Operation: "remove"}); err != nil {
+	if _, err := hub.admin.Dependency(ctx, dependent.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: changed.Revision, RelatedWorkItemID: blocker, Operation: "remove"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []tracker.NativeWorkItemID{dependent.WorkItemID, blocker} {
@@ -83,13 +83,13 @@ func TestNativeDependencyReasonRefresh(t *testing.T) {
 			}
 			request := tracker.UpdateDependencyReason{Mutation: nativeMutationKey(), WorkItemID: dependent.WorkItemID, Kind: "blocked", Text: "Uses the first accepted sentence.", Basis: issue.BlockedReason.CurrentBasis, ExpectedRevision: issue.BlockedReason.Revision}
 			var result tracker.DependencyReason
-			if err := hub.native.Transport().Request(ctx, http.MethodPost, hub.native.Scope()+path+"/dependency-reasons", request, &result); err != nil {
+			if err := hub.admin.Transport().Request(ctx, http.MethodPost, hub.native.Scope()+path+"/dependency-reasons", request, &result); err != nil {
 				return "", err
 			}
 		}
 		return "Uses the competing generated sentence.", nil
 	})
-	if _, err := hub.native.Dependency(racing, dependent.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, RelatedWorkItemID: blocker, Operation: "add"}); err != nil {
+	if _, err := hub.admin.Dependency(racing, dependent.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, RelatedWorkItemID: blocker, Operation: "add"}); err != nil {
 		t.Fatal(err)
 	}
 	current, err = hub.native.Issue(ctx, dependent.WorkItemID)

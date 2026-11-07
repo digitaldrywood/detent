@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -56,9 +57,6 @@ func nativeSSHExecution(t *testing.T, ctx context.Context, execution runner.Exec
 }
 
 func TestSSHNativeEvidenceSource(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
 
 	t.Parallel()
 	h := newNativeChangeHub(t, true)
@@ -245,9 +243,6 @@ func TestSSHNativeEvidenceSource(t *testing.T) {
 }
 
 func TestSSHNativePublication(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
 
 	t.Parallel()
 	for _, scenario := range []string{"complete", "capture disconnected", "upload acknowledgment lost"} {
@@ -327,18 +322,9 @@ func TestSSHNativePublication(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(artifact.Reference{})
 			}))
 			defer store.Close()
-			var publisher struct {
-				ID    string `json:"id"`
-				Token string `json:"token"`
-			}
-			if err := h.admin.Transport().Request(ctx, http.MethodPost, "/api/v1/tokens", map[string]string{"name": "artifacts", "scope": "worker"}, &publisher); err != nil {
-				t.Fatal(err)
-			}
-			if err := h.admin.Transport().Request(ctx, http.MethodPost, "/api/v2/tokens/"+publisher.ID+"/grants", map[string]any{"organization_id": h.organization, "project_id": h.project}, nil); err != nil {
-				t.Fatal(err)
-			}
-			binding := artifact.Binding{ServiceID: artifact.NewID("service"), Origin: store.URL, Mode: "customer", PublisherTokenID: publisher.ID}
-			if err := h.admin.Transport().Request(ctx, http.MethodPut, h.admin.Scope()+"/artifact-services/"+binding.ServiceID, binding, nil); err != nil {
+			publisherID, _ := testsupport.NativeChangePublisher(t, h.config, h.project)
+			binding := artifact.Binding{ServiceID: artifact.NewID("service"), Origin: store.URL, Mode: "customer", PublisherTokenID: publisherID}
+			if err := h.admin.Transport().Request(ctx, http.MethodPut, h.admin.Scope()+"/onboarding/artifact-services/"+binding.ServiceID, binding, nil); err != nil {
 				t.Fatal(err)
 			}
 			fixtureArtifactConfiguration(t, h.scheduler, binding.ServiceID, 4<<20)

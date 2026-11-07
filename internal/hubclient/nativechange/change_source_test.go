@@ -46,9 +46,6 @@ func TestNativeRecoveredSourceRequiresCurrentVersion(t *testing.T) {
 }
 
 func TestNativeChangeSourceRecoversOnlyVerifiedOwner(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
 	t.Parallel()
 	for _, test := range []struct {
 		name                                       string
@@ -145,6 +142,7 @@ func TestNativeChangeSourceRecoversOnlyVerifiedOwner(t *testing.T) {
 				checkpointHead = base
 			}
 			execution.claim.recovery.SourceAttemptID = "saved-source"
+			execution.claim.recovery.Change = &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}
 			if test.transferred {
 				execution.claim.recovery.SourceVersionID = version.ID
 			}
@@ -244,6 +242,8 @@ func TestNativeChangeSourceRecoversOnlyVerifiedOwner(t *testing.T) {
 			if err := os.WriteFile(pending, []byte("pending local work"), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			recovery := execution.claim.recovery
+			execution.recovery.Store(&recovery)
 			selected := execution.claim.recovery.SourceVersionID
 			previousSource, retainedSource := execution.recoveredSource, execution.retainedSource
 			recovered, err := execution.RecoverChangeSource(t.Context())

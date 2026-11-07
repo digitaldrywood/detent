@@ -235,10 +235,11 @@ func TestNativeRefreshOversizedRecordedAttempt(t *testing.T) {
 	if _, err := h.native.Transition(t.Context(), item, tracker.Transition{Mutation: mutation, ExpectedRevision: current.Revision, State: "Blocked", Reason: "worker_progress"}); err != nil {
 		t.Fatal(err)
 	}
-	other := h.createInProgress(t, "Unaffected item")
-	if err := h.connector.UpdateIssueState(t.Context(), other.ID, "Blocked"); err != nil {
+	otherNative, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Unaffected item", Body: "Preserve this body." + issueContractTestSections, State: "Blocked"})
+	if err != nil {
 		t.Fatal(err)
 	}
+	other := issueFromNative(otherNative)
 	ready := h.createInProgress(t, "Ready work")
 	issues, err := h.connector.FetchIssuesByStates(t.Context(), []string{"Blocked", "In Progress"})
 	if err != nil || len(issues) != 3 {
@@ -251,8 +252,9 @@ func TestNativeRefreshOversizedRecordedAttempt(t *testing.T) {
 				t.Fatalf("refresh lost recorded authority: %+v", got)
 			}
 		case other.ID:
-			if got.State != "Blocked" || got.WorkpadSignal != nil || got.Description != other.Description {
-				t.Fatalf("neighbor changed during refresh: %+v", got)
+			detail, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(other.ID))
+			if err != nil || got.State != "Blocked" || got.WorkpadSignal != nil || detail.Body != other.Description {
+				t.Fatalf("neighbor changed during refresh: state=%s signal=%+v error=%v", got.State, got.WorkpadSignal, err)
 			}
 		case ready.ID:
 			if got.State != "In Progress" || got.WorkpadSignal != nil {
