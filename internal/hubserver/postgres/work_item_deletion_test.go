@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -137,19 +139,20 @@ func TestWorkItemDeletionRetainsHistoryAndReceipts(t *testing.T) {
 }
 
 func TestWorkItemDeletionRetainsMigratedIdentities(t *testing.T) {
+	const migrationVersion = 20261107060339
 	admin := template.Database(t)
 	provider, err := migrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.Down(t.Context()); err != nil {
+	if _, err := provider.DownTo(t.Context(), migrationVersion-1); err != nil {
 		t.Fatal(err)
 	}
 	repository, _ := repositoryFor(t, admin, smallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedRepository(t, repository, org)
 	}
-	if _, err := provider.Up(t.Context()); err != nil {
+	if _, err := provider.UpTo(t.Context(), migrationVersion); err != nil {
 		t.Fatal(err)
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -289,5 +292,136 @@ func TestRetainedWorkItemIdentitiesEnforceTenantReadOnlyAccess(t *testing.T) {
 		if err := tx.Rollback(); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestWorkItemDeletionRemovesOnlyLiveAttachmentReferences(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedRepository(t, repository, org)
+		seedTenantAccess(t, repository, org)
+		seedHistory(t, repository, org, "attachment")
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO attachments(organization_id,project_id,id,uploader,name,content_type,size,sha256,created_at) VALUES($1,'prj_first','attachment_shared','first','example.txt','text/plain',1,$2,$3)`, org, strings.Repeat("a", 64), historyAt()); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.BindAttachment(t.Context(), attachmentstore.Reference{ProjectID: "prj_first", AttachmentID: "attachment_shared", WorkItemID: "wi_first_1", RetainWithWorkItem: true}); err != nil {
+				return err
+			}
+			return w.BindAttachment(t.Context(), attachmentstore.Reference{ProjectID: "prj_first", AttachmentID: "attachment_shared", WorkItemID: "wi_first_2", CommentID: "comment_first_2_1"})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.DeleteComment(t.Context(), "prj_first", "wi_first_2", "comment_first_2_1")
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			refs, err := r.AttachmentReferences(t.Context(), "prj_first", "attachment_shared", 10)
+			if err != nil {
+				return err
+			}
+			if len(refs) != 1 || refs[0].WorkItemID != "wi_first_1" {
+				t.Fatalf("comment cleanup references=%+v", refs)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.DeleteWorkItem(t.Context(), "prj_first", "wi_first_1") }); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			refs, err := r.AttachmentReferences(t.Context(), "prj_first", "attachment_shared", 10)
+			if err != nil {
+				return err
+			}
+			if len(refs) != 0 {
+				t.Fatalf("issue cleanup references=%+v", refs)
+			}
+			record, err := r.Attachment(t.Context(), "prj_first", "attachment_shared")
+			if err != nil {
+				return err
+			}
+			if record.Metadata.DeletedAt != nil || record.ObjectDeletedAt != nil {
+				t.Fatal("reference cleanup deleted attachment metadata")
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if org == "org_first" {
+			if err := repository.ReadTenant(t.Context(), "org_second", corestore.Serving, func(r tenantstore.Reader) error {
+				refs, err := r.AttachmentReferences(t.Context(), "prj_first", "attachment_shared", 10)
+				if err == nil && len(refs) != 2 {
+					t.Fatal("cleanup crossed tenants")
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+func TestRetainedIdentityMigrationIncludesConcurrentIssueCreation(t *testing.T) {
+	const migrationVersion = 20261107060339
+	admin := template.Database(t)
+	provider, err := migrationProvider(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.DownTo(t.Context(), migrationVersion-1); err != nil {
+		t.Fatal(err)
+	}
+	repository, _ := repositoryFor(t, admin, smallPool())
+	admin.SetMaxOpenConns(2)
+	seedRepository(t, repository, "org_first")
+	inserted, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	writer := startRepositoryTask(t, func(ctx context.Context) error {
+		return repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.CreateWorkItem(ctx, corestore.WorkItem{OrganizationID: "org_first", ProjectID: "prj_first", NativeID: "wi_during_migration", Number: 3, Title: "Example"}); err != nil {
+				return err
+			}
+			close(inserted)
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+	})
+	waitRepositorySignal(t, inserted)
+	migration := startRepositoryTask(t, func(ctx context.Context) error { _, err := provider.UpTo(ctx, migrationVersion); return err })
+	testenv.WaitUntil(t, t.Context(), func() error {
+		var waiting bool
+		if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid WHERE a.datname=current_database() AND l.relation='public.issues'::regclass AND l.mode='ShareRowExclusiveLock' AND NOT l.granted)`).Scan(&waiting); err != nil {
+			return err
+		}
+		if !waiting {
+			return errors.New("migration is not waiting for the concurrent issue writer")
+		}
+		return nil
+	})
+	releaseOnce.Do(func() { close(release) })
+	if err := writer.wait(t); err != nil {
+		t.Fatal(err)
+	}
+	if err := migration.wait(t); err != nil {
+		t.Fatal(err)
+	}
+	var captured bool
+	if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM work_item_identities WHERE organization_id='org_first' AND native_id='wi_during_migration')`).Scan(&captured); err != nil {
+		t.Fatal(err)
+	}
+	if !captured {
+		t.Fatal("migration missed an issue committed before capture installation")
 	}
 }
