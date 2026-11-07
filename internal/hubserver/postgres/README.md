@@ -1061,6 +1061,19 @@ facts again. Startup verifies the helper's owner, security mode, search path
 and execution grant; runtime credentials gain no platform membership or pool.
 The separately provisioned functions persist across schema rollback, like roles.
 
+The legacy board fallback uses `board_search_candidates`, owned by the separate
+`detent_search_reader_v2` role. This role cannot log in or inherit serving,
+platform or migration authority. It can read only the title/body keys and
+reporter ownership columns needed by the helper. The helper fixes its search
+path, derives the tenant from the bound transaction, checks authoritative issue
+ownership, and returns IDs. Runtime checks the role and function at startup;
+platform credentials cannot read bodies or execute this helper. Trigram indexes
+cover board titles and full bodies in `native_work_item_pages`. The existing
+work-item-page maintenance owner backfills and refreshes these bodies; board
+rows intentionally omit them. Provision roles before migrations and complete
+item-page backfill and body-only HTTP/MCP verification before treating an
+empty-document production project as fully searchable.
+
 Issue and thread writes publish metadata-only pending/listing postings atomically.
 Comment visibility changes update one source row and invalidate its aggregate.
 Archive, reporter and project changes enqueue one parent cursor rather than
