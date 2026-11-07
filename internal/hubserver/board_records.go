@@ -165,6 +165,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 		return page, err
 	}
 	selection.SearchText = strings.TrimSpace(params.Get("q"))
+	selection.SearchRanked = !includeBoard && selection.SearchText != ""
 	if len(selection.SearchText) > searchstore.MaxQueryTextBytes {
 		return page, nativePublicInvalid("Search query is too long")
 	}
@@ -199,7 +200,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 	selection.Limit = limit + 1
 	selection.Compact = includeSummary || includeWork
 	if position := cursor.Issues; position != nil {
-		selection.After = &viewstore.BoardPosition{Lane: position.Lane, State: position.State, Priority: position.Priority, ActivityMissing: position.ActivityMissing != 0, Identifier: position.Identifier}
+		selection.After = &viewstore.BoardPosition{SearchExact: position.SearchExact, SearchRank: position.Score, SearchNumber: position.SearchNumber, Lane: position.Lane, State: position.State, Priority: position.Priority, ActivityMissing: position.ActivityMissing != 0, Identifier: position.Identifier}
 		selection.AfterSequence = position.Sequence
 		if position.Activity != "" {
 			at, err := time.Parse(time.RFC3339Nano, position.Activity)
@@ -293,6 +294,34 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 			}
 		}
 		applyNativeShippedWindows(page.Work, windows, selectedWindow)
+	}
+	if selection.SearchText != "" || selection.Fingerprint != "" {
+		for _, records := range [][]viewstore.BoardRecord{snapshot.Records, snapshot.WorkRecords} {
+			for index := range records {
+				row := &records[index]
+				issue := row.PageIssue
+				if issue == nil {
+					return page, viewstore.ErrInvalidView
+				}
+				if selection.Compact {
+					compact := operatortool.NativeListIssue(*issue)
+					issue = &compact
+				}
+				if selection.SearchText != "" {
+					issue.Snippet = searchstore.Snippet(searchstore.Text{Title: row.PageIssue.Title, Body: row.PageIssue.Body}, selection.SearchText)
+					issue.SearchScore = row.Position.SearchRank
+					extra, err := json.Marshal(struct {
+						Snippet     string  `json:"snippet"`
+						SearchScore float64 `json:"search_score"`
+					}{issue.Snippet, issue.SearchScore})
+					if err != nil {
+						return page, err
+					}
+					row.ListBytes += len(extra)
+				}
+				row.PageIssue = issue
+			}
+		}
 	}
 	records := snapshot.Records
 	hasMore := len(records) > limit

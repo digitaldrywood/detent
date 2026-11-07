@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -245,10 +247,132 @@ func seedPostgresSearchIssue(t *testing.T, f postgresWorkViewFixture, number int
 		if err := w.PutSearch(t.Context(), document, 0); err != nil {
 			return err
 		}
-		record := viewstore.BoardRecord{OrganizationID: "org_security", ProjectID: f.project, WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{Lane: 1, State: "Todo", Activity: &at, Identifier: fmt.Sprintf("%s#%d", f.project, number)}, ActorPrincipalID: "example", CreatedAt: at, UpdatedAt: at, Payload: payload}
+		record := viewstore.BoardRecord{OrganizationID: "org_security", ProjectID: f.project, WorkItemID: id, SourceRevision: 1, SourceProjectRevision: project.Core.ContentSettingsRevision, Position: viewstore.BoardPosition{Lane: 1, State: "Todo", Activity: &at, Identifier: fmt.Sprintf("%s#%d", f.project, number)}, ActorPrincipalID: "example", CreatedAt: at, UpdatedAt: at, Payload: payload, PageIssue: &issue, ListIssue: &issue, ReporterRelations: &viewstore.BoardReporterRelations{}, ListBytes: 2048, ProjectedAt: at}
 		return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: f.project, WorkItemID: id, ExpectedRevision: 1, ExpectedProjectRevision: project.Core.ContentSettingsRevision, Current: &record})
 	}); err != nil {
 		t.Fatal(err)
 	}
 	return id
+}
+
+func TestBoardSearchFallbackReturnsHTTPAndMCPMatches(t *testing.T) {
+	service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}})
+	for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+		t.Run(string(org), func(t *testing.T) {
+			service.config.RunDetails.(*memoryRunDetails).beforeRead = nil
+			f := newNativeFixture(t, service, org, "Example search")
+			response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "first"}, Title: "Release audit resume credential", Body: "\nfingerprint: example-key\nbodyuniquemarker\n" + issueContractTestSections, State: "Todo"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var first tracker.NativeIssue
+			decodeHubResponse(t, response, &first)
+			second := f.create(t, "Release audit")
+			for _, item := range []tracker.NativeIssue{first, second} {
+				if err := service.refreshBoardRecord(t.Context(), org, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: item.WorkItemID}, service.config.now()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			foreign := newNativeFixture(t, service, org, "Private project")
+			hidden := foreign.create(t, "Private relationship sentinel")
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				row, err := w.BoardItem(t.Context(), f.project.ID, first.WorkItemID)
+				if err != nil {
+					return err
+				}
+				related := []tracker.NativeDependency{{ID: hidden.WorkItemID, ProjectID: foreign.project.ID, Number: hidden.Number, Title: hidden.Title, State: hidden.State}}
+				row.PageIssue.Related, row.ListIssue.Related = related, related
+				return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: f.project.ID, WorkItemID: first.WorkItemID, ExpectedRevision: row.SourceRevision, ExpectedEventSequence: row.SourceEventSequence, ExpectedProjectRevision: row.SourceProjectRevision, Current: &row})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for {
+				more, err := searchstore.NewContent(service.runDetailStore()).RefreshOne(t.Context(), tenantSearchRepository{service.config.TenantRepository}, org)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !more {
+					break
+				}
+			}
+			credential, _, err := service.authenticateTenantAPIHash(t.Context(), org, apikey.HashToken(f.token), "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity := operatorIdentity(credential, string(org))
+			ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{ID: "example-search-" + string(org), Identity: identity, Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+				return service.operatorCurrentAuthority(ctx, credential, string(org))
+			}})
+			ctx = context.WithValue(ctx, operatorCatalogKey{}, operatorCatalogAuthority{identity: identity, credential: credential})
+			if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: string(f.project.ID)}); err != nil {
+				var denied *operatortool.AuthorizationError
+				if errors.As(err, &denied) {
+					t.Fatalf("MCP fixture authority stage=%s cause=%v", denied.Stage, denied.Cause)
+				}
+				t.Fatal(err)
+			}
+			send := hostedContextProtocol(t, service, ctx, "http")
+			service.config.RunDetails.(*memoryRunDetails).beforeRead = func(context.Context) error { return errors.New("search read an object") }
+			for _, test := range []struct {
+				query, fingerprint string
+				want               []tracker.NativeWorkItemID
+			}{
+				{"release audit resume credential", "", []tracker.NativeWorkItemID{first.WorkItemID, second.WorkItemID}},
+				{"absentuniqueterm", "", nil},
+				{"bodyuniquemarker", "", []tracker.NativeWorkItemID{first.WorkItemID}},
+				{"", "example-key", []tracker.NativeWorkItemID{first.WorkItemID}},
+				{"", "absent-key", nil},
+			} {
+				for _, include := range []string{"summary", "board", "work"} {
+					params := url.Values{"q": {test.query}, "fingerprint": {test.fingerprint}, "archived": {"all"}, "include": {include}, "limit": {"1"}}
+					var got []tracker.NativeWorkItemID
+					for {
+						response := performHubAPIRequest(t, service, http.MethodGet, f.base+"/work-items?"+params.Encode(), f.token, nil)
+						requireNativeStatus(t, response, http.StatusOK)
+						if strings.Contains(response.Body.String(), string(hidden.WorkItemID)) {
+							t.Fatal("search restored an inaccessible relationship")
+						}
+						var page tracker.NativeIssuePage
+						decodeHubResponse(t, response, &page)
+						for _, item := range page.Items {
+							if item.OrganizationID != org || item.ProjectID != f.project.ID {
+								t.Fatal("search leaked another tenant or project")
+							}
+							got = append(got, item.WorkItemID)
+						}
+						if page.NextCursor == "" {
+							break
+						}
+						params.Set("cursor", page.NextCursor)
+						if len(got) > 2 {
+							t.Fatal("search cursor repeated results")
+						}
+					}
+					want := slices.Clone(test.want)
+					if include == "board" {
+						slices.Sort(got)
+						slices.Sort(want)
+					}
+					if !slices.Equal(got, want) {
+						t.Fatalf("%s search=%v want=%v", include, got, test.want)
+					}
+				}
+				raw := hostedContextData(t, send("tools/call", operatortool.WorkList, map[string]any{"project_id": f.project.ID, "query": test.query, "fingerprint": test.fingerprint, "archived": "all", "include": []string{"summary"}, "limit": 5}), false)
+				if strings.Contains(string(raw), string(hidden.WorkItemID)) {
+					t.Fatal("MCP search leaked an inaccessible relationship")
+				}
+				var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
+				if err := json.Unmarshal(raw, &result); err != nil {
+					t.Fatal(err)
+				}
+				if len(result.Data.Items) != len(test.want) {
+					t.Fatalf("MCP search=%s", raw)
+				}
+				for index, item := range result.Data.Items {
+					wantNumber := map[tracker.NativeWorkItemID]int{first.WorkItemID: first.Number, second.WorkItemID: second.Number}[test.want[index]]
+					if item.Number != wantNumber {
+						t.Fatalf("MCP order=%s", raw)
+					}
+				}
+			}
+		})
+	}
 }

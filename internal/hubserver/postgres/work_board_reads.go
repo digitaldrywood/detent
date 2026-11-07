@@ -83,13 +83,7 @@ func (s *session) boardSelectionWhere(ctx context.Context, selection viewstore.B
 		return where, args, err
 	}
 	var pending bool
-	err = s.db.QueryRow(ctx, `SELECT EXISTS(
- SELECT 1 FROM issues i LEFT JOIN search_documents d ON d.organization_id=i.organization_id AND d.project_id=i.project_id AND d.work_item_id=i.native_id AND d.kind='issue'
- WHERE i.organization_id=$1 AND i.project_id=$2 AND ($3::boolean IS NULL OR i.archived=$3) AND (NOT $4 OR i.actor_principal_id=$5) AND (d.id IS NULL OR d.placeholder OR d.indexed_revision<>d.revision)
- UNION ALL
- SELECT 1 FROM native_comments c JOIN issues i ON i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id LEFT JOIN search_documents d ON d.organization_id=c.organization_id AND d.project_id=c.project_id AND d.kind='comment' AND d.source_id=c.id
- WHERE i.organization_id=$1 AND i.project_id=$2 AND NOT c.deleted AND ($3::boolean IS NULL OR i.archived=$3) AND (NOT $4 OR i.actor_principal_id=$5) AND (d.id IS NULL OR d.placeholder OR d.indexed_revision<>d.revision)
-)`, s.organization, selection.ProjectID, selection.Archived, selection.Reporter, selection.ReporterPrincipalID).Scan(&pending)
+	err = s.db.QueryRow(ctx, boardSearchPendingSQL, s.organization, selection.ProjectID, selection.Archived, selection.Reporter, selection.ReporterPrincipalID).Scan(&pending)
 	if err != nil {
 		return "", nil, mapError(ctx, err)
 	}
@@ -231,12 +225,29 @@ WHERE NOT EXISTS(SELECT 1 FROM unnest(` + terms + `::text[]) WITH ORDINALITY q(t
 }
 
 func (s *session) BoardPage(ctx context.Context, f viewstore.BoardSelection) ([]viewstore.BoardRecord, error) {
-	if err := checkPage(f.Limit); err != nil {
+	return s.boardPage(ctx, f, false, nil)
+}
+
+func (s *session) boardPage(ctx context.Context, f viewstore.BoardSelection, typed bool, workOrderReady *bool) ([]viewstore.BoardRecord, error) {
+	if typed {
+		if f.Limit < 1 || f.Limit > 2001 {
+			return nil, corestore.ErrInvalidPage
+		}
+	} else if err := checkPage(f.Limit); err != nil {
 		return nil, err
 	}
-	where, args, err := s.boardSelectionWhere(ctx, f)
+	where, args, err := boardWhere(s.organization, f)
+	if !typed {
+		where, args, err = s.boardSelectionWhere(ctx, f)
+	}
 	if err != nil {
 		return nil, err
+	}
+	if typed {
+		where += " AND b.page_ready"
+		if f.Compact {
+			where += " AND b.list_ready"
+		}
 	}
 	order := "b.lane_rank,b.state,b.priority_rank,b.activity_missing,coalesce(b.activity_at,'-infinity'::timestamptz) DESC,b.identifier"
 	prefix := "b.lane_rank,b.state,b.priority_rank,b.activity_missing"
@@ -271,11 +282,15 @@ func (s *session) BoardPage(ctx context.Context, f viewstore.BoardSelection) ([]
 	}
 	projectedWorkOrder := false
 	if f.WorkOrder && !searchRanked {
-		var pending bool
-		if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND issue_number IS NULL)`, s.organization, f.ProjectID).Scan(&pending); err != nil {
-			return nil, mapError(ctx, err)
+		if workOrderReady != nil {
+			projectedWorkOrder = *workOrderReady
+		} else {
+			var pending bool
+			if err := s.db.QueryRow(ctx, boardWorkOrderPendingSQL, s.organization, f.ProjectID).Scan(&pending); err != nil {
+				return nil, mapError(ctx, err)
+			}
+			projectedWorkOrder = !pending
 		}
-		projectedWorkOrder = !pending
 		order = "b.running DESC,b.dispatchable DESC,i.number DESC,b.identifier"
 		if projectedWorkOrder {
 			order = "b.running DESC,b.dispatchable DESC,b.issue_number DESC,b.identifier"
@@ -509,3 +524,13 @@ func (s *session) BoardAttemptCount(ctx context.Context, issueID int64) (int64, 
 	err := s.db.QueryRow(ctx, `SELECT count(*) FROM native_attempts WHERE organization_id=$1 AND issue_id=$2`, s.organization, issueID).Scan(&count)
 	return count, mapError(ctx, err)
 }
+
+const boardSearchPendingSQL = `SELECT EXISTS(
+ SELECT 1 FROM issues i LEFT JOIN search_documents d ON d.organization_id=i.organization_id AND d.project_id=i.project_id AND d.work_item_id=i.native_id AND d.kind='issue'
+ WHERE i.organization_id=$1 AND i.project_id=$2 AND ($3::boolean IS NULL OR i.archived=$3) AND (NOT $4 OR i.actor_principal_id=$5) AND (d.id IS NULL OR d.placeholder OR d.indexed_revision<>d.revision)
+ UNION ALL
+ SELECT 1 FROM native_comments c JOIN issues i ON i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id LEFT JOIN search_documents d ON d.organization_id=c.organization_id AND d.project_id=c.project_id AND d.kind='comment' AND d.source_id=c.id
+ WHERE i.organization_id=$1 AND i.project_id=$2 AND NOT c.deleted AND ($3::boolean IS NULL OR i.archived=$3) AND (NOT $4 OR i.actor_principal_id=$5) AND (d.id IS NULL OR d.placeholder OR d.indexed_revision<>d.revision)
+)`
+
+const boardWorkOrderPendingSQL = `SELECT EXISTS(SELECT 1 FROM native_board_items WHERE organization_id=$1 AND project_id=$2 AND issue_number IS NULL)`
