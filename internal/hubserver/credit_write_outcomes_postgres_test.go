@@ -3,9 +3,11 @@ package hubserver
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
@@ -27,7 +29,11 @@ func TestPostgresCreditCheckoutClassifiesProviderOutcome(t *testing.T) {
 				err         error
 				status      int
 			}{
-				{"rejected", "failed", &billing.StripeError{Method: http.MethodPost, Path: "checkout/sessions", StatusCode: 400}, http.StatusBadGateway},
+				{"rejected", "failed", creditCheckoutStripeFailure(t, strings.NewReader(`{"error":{"type":"invalid_request_error","code":"parameter_missing"}}`)), http.StatusBadGateway},
+				{"malformed 400", "pending", creditCheckoutStripeFailure(t, strings.NewReader(`{"error":{"type":"idempotency_error"`)), http.StatusServiceUnavailable},
+				{"unreadable 400", "pending", creditCheckoutStripeFailure(t, iotest.ErrReader(io.ErrUnexpectedEOF)), http.StatusServiceUnavailable},
+				{"oversized 400", "pending", creditCheckoutStripeFailure(t, strings.NewReader(`{"error":{"type":"idempotency_error"},"padding":"`+strings.Repeat("x", 2*1024*1024)+`"}`)), http.StatusServiceUnavailable},
+				{"unclassified 400", "pending", creditCheckoutStripeFailure(t, strings.NewReader(`{"error":{}}`)), http.StatusServiceUnavailable},
 				{"concurrent", "pending", &billing.StripeError{Method: http.MethodPost, Path: "checkout/sessions", StatusCode: 409}, http.StatusServiceUnavailable},
 				{"idempotency conflict", "pending", &billing.StripeError{Method: http.MethodPost, Path: "checkout/sessions", StatusCode: 400, Type: "idempotency_error"}, http.StatusServiceUnavailable},
 				{"server error", "pending", &billing.StripeError{Method: http.MethodPost, Path: "checkout/sessions", StatusCode: 500}, http.StatusServiceUnavailable},
@@ -67,10 +73,46 @@ func TestPostgresCreditCheckoutClassifiesProviderOutcome(t *testing.T) {
 					if test.state == "pending" && (len(provider.creditCheckouts) != calls+1 || provider.creditCheckouts[calls] != purchase) {
 						t.Fatal("uncertain purchase replay changed its identity")
 					}
+					if test.state == "pending" {
+						calls = len(provider.creditCheckouts)
+						if got := request(); got != http.StatusOK || len(provider.creditCheckouts) != calls {
+							t.Fatalf("recovered session replay = %d, provider calls=%d, want %d", got, len(provider.creditCheckouts), calls)
+						}
+					}
 				})
 			}
 		})
 	}
+}
+
+func creditCheckoutStripeFailure(t *testing.T, body io.Reader) error {
+	t.Helper()
+	provider, err := billing.NewStripe(billing.StripeConfig{APIKey: "sk_test_fixture_credit", Client: &http.Client{Transport: hostedBillingStripeTransport(func(request *http.Request) (*http.Response, error) {
+		response := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}
+		switch request.Method + " " + request.URL.Path {
+		case "GET /v1/account":
+			response.Body = io.NopCloser(strings.NewReader(`{"id":"acct_example"}`))
+		case "GET /v1/customers/cus_example":
+			response.Body = io.NopCloser(strings.NewReader(`{"id":"cus_example","livemode":false,"metadata":{"detent_organization_id":"org_example"}}`))
+		case "GET /v1/prices/price_credit":
+			response.Body = io.NopCloser(strings.NewReader(`{"id":"price_credit","livemode":false,"active":true,"type":"one_time","billing_scheme":"per_unit","currency":"usd","unit_amount":500}`))
+		case "POST /v1/checkout/sessions":
+			response.StatusCode = http.StatusBadRequest
+			response.Body = io.NopCloser(body)
+		default:
+			t.Fatalf("unexpected Stripe request: %s %s", request.Method, request.URL.Path)
+		}
+		return response, nil
+	})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.(billing.CreditProvider).CreditCheckout(t.Context(), billing.CreditRequest{CheckoutRequest: billing.CheckoutRequest{Binding: billing.Binding{OrganizationID: "org_example", AccountID: "acct_example", CustomerID: "cus_example"}, PriceID: "price_credit", IdempotencyKey: "example_purchase"}, USDCents: 500})
+	var failure *billing.StripeError
+	if !errors.As(err, &failure) || failure.StatusCode != http.StatusBadRequest || failure.Method != http.MethodPost || failure.Path != "checkout/sessions" {
+		t.Fatalf("checkout error = %v, want Stripe checkout 400", err)
+	}
+	return err
 }
 
 func TestPostgresAutoFundClassifiesProviderOutcome(t *testing.T) {

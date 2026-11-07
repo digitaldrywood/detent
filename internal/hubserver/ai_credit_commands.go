@@ -92,7 +92,7 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 		session, err = provider.CreditCheckout(ctx, billing.CreditRequest{CheckoutRequest: billing.CheckoutRequest{Binding: binding, PriceID: purchase.PriceID, IdempotencyKey: key, ReturnURL: s.hostedBillingReturn(true), ExpiresAt: purchase.CreatedAt.Truncate(time.Second).Add(time.Hour)}, USDCents: purchase.USDCents})
 		if err != nil {
 			var failure *billing.StripeError
-			if errors.As(err, &failure) && failure.StatusCode >= 400 && failure.StatusCode < 500 && failure.StatusCode != http.StatusConflict && failure.Type != "idempotency_error" {
+			if errors.As(err, &failure) && failure.StatusCode >= 400 && failure.StatusCode < 500 && failure.StatusCode != http.StatusConflict && failure.Type != "" && failure.Type != "idempotency_error" {
 				if failure.Method == http.MethodPost && failure.Path == "checkout/sessions" {
 					err = errors.Join(err, s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
 						_, err := writer.MarkBillingCreditPurchaseFailed(ctx, purchase.Key)
