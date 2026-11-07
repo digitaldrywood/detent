@@ -1546,6 +1546,20 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 					if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.Outcome, "", nil); err != nil {
 						t.Fatal(err)
 					}
+					if test.RestoreRefusal == "policy" {
+						retained := execution.(*ownedExecution)
+						refused := execution.(runner.ChangeExecution).NativeChange()
+						if refused == nil || refused.VersionID != "" || refused.VersionCode != "policy_mismatch" {
+							t.Fatalf("stale policy publication did not fail closed: %+v", refused)
+						}
+						if _, err := h.native.ValidateLease(t.Context(), retained.claim.lease); err != nil {
+							t.Fatalf("configuration change revoked the fenced lease: %v", err)
+						}
+						if retained.CompletionData().PolicyID != retained.claim.lease.PolicyID || retained.CompletionData().PolicyID == h.descriptor.ID || retained.CompletionSnapshot().Diff == nil || retained.CompletionSnapshot().Diff.HeadSHA != head {
+							t.Fatal("configuration change lost pinned execution source")
+						}
+						return
+					}
 					republished := execution.(runner.ChangeExecution).NativeChange()
 					if republished == nil || republished.Error != "" || republished.VersionError != "" || republished.VersionID == "" || republished.HeadSHA != head {
 						t.Fatalf("publisher did not recover same source: %+v", republished)

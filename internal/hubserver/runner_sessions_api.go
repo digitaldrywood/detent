@@ -188,11 +188,11 @@ func (s *Service) runnerSessionFence(ctx context.Context, r tenantstore.Reader, 
 	if err != nil {
 		return attempt, policystore.Revision{}, err
 	}
-	current, err := r.ProjectPolicy(ctx, scope.project)
+	current, err := r.ProjectPolicyRevision(ctx, scope.project, bound.PolicyID)
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 		return attempt, current, err
 	}
-	if err != nil || current.PolicyID != bound.PolicyID {
+	if err != nil || bound.OrganizationID != scope.organization || bound.ProjectID != scope.project || bound.LeaseID != request.LeaseID || current.PolicyID != bound.PolicyID {
 		return attempt, current, tracker.ErrStaleFencingToken
 	}
 	return attempt, current, nil
