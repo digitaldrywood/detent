@@ -35,7 +35,7 @@ func (e *nativeExecution) RecordUsage(ctx context.Context, entry tracker.NativeU
 	}
 
 	if e.data.Identity != nil && e.data.Outcome == "" {
-		if err := e.append(ctx, "run.observed", "", nil, true); err != nil {
+		if err := e.append(ctx, "run.observed", "", nil); err != nil {
 			return err
 		}
 	}

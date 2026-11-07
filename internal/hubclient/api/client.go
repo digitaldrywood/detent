@@ -18,6 +18,7 @@ import (
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -305,7 +306,15 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return c.withinRequestBudget(ctx, method, path, func() error {
+	target, _, _ := strings.Cut(path, "?")
+	var replayMutation bool
+	switch request := input.(type) {
+	case runnersession.Mutation:
+		replayMutation = strings.HasSuffix(target, "/runner-sessions")
+	case tracker.NativeRunEvent:
+		replayMutation = request.IdempotencyKey != "" && strings.Contains(target, "/work-items/") && strings.HasSuffix(target, "/events")
+	}
+	return c.withinRequestBudget(ctx, method, path, replayMutation && method == http.MethodPost, func() error {
 		return c.requestOnce(ctx, timeout, method, path, headers, input, output)
 	})
 }
@@ -492,7 +501,7 @@ func (c *Client) download(ctx context.Context, target string, limit int64) ([]by
 	}
 	var payload []byte
 	var contentType string
-	err := c.withinRequestBudget(ctx, http.MethodGet, target, func() error {
+	err := c.withinRequestBudget(ctx, http.MethodGet, target, false, func() error {
 		var err error
 		payload, contentType, err = c.downloadOnce(ctx, target, limit)
 		return err

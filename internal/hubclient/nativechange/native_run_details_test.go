@@ -113,7 +113,11 @@ func TestNativeArchiveBackedUsagePublication(t *testing.T) {
 			entry := tracker.NativeUsage{Provider: "codex", Model: "gpt-6-astra", Input: 100, Output: 20, CostEstimate: 0.01, ReportedCostMicros: &paid, CostSource: "runner_report", Currency: "USD"}
 			usage := runner.UsageExecution(execution)
 			for update := int64(1); update <= 2; update++ {
-				err := usage.RecordUsage(t.Context(), entry)
+				if err := usage.RecordUsage(t.Context(), entry); err != nil {
+					t.Fatal(err)
+				}
+				execution.data.Runtime.HeartbeatAt = execution.runtimePublishedAt.Add(execution.scheduler.leaseTTL / 3)
+				err := execution.append(t.Context(), "run.observed", "", nil)
 				if wantFailure := test.lostAcknowledgment && update == 1; (err != nil) != wantFailure {
 					t.Fatalf("usage publication error=%v, want failure=%t", err, wantFailure)
 				}
