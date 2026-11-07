@@ -26,6 +26,11 @@ type nativeRuntimeTenantSnapshot struct {
 	policyFound          bool
 	leasePolicy          policystore.LeasePolicy
 	currentPolicyBinding *policystore.LeasePolicy
+	transition           eventstore.Event
+	decision             eventstore.Event
+	changeRecord         eventstore.Change
+	changeVersion        *eventstore.Version
+	changePolicy         currentChangePolicyRows
 	boardSequence        int64
 	reservation          *claimstore.ProviderReservation
 }
@@ -34,25 +39,7 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 	if len(admission) > 1 {
 		return tracker.NativeRuntimeEvidence{}, nativeRunEventStorageUnavailable()
 	}
-	if attemptID == "" {
-		row, version, err := s.readWorkItemRecord(ctx, scope, item)
-		if err != nil {
-			return tracker.NativeRuntimeEvidence{}, err
-		}
-		issue, err := s.hydrateWorkItemRecord(ctx, row, version)
-		if err != nil {
-			return tracker.NativeRuntimeEvidence{}, err
-		}
-		evidence, _, _, err := s.readOperatorExplanation(ctx, scope, issue)
-		if err != nil {
-			return tracker.NativeRuntimeEvidence{}, err
-		}
-		if err := s.readRuntimeAdmissionTenant(ctx, scope, issue, &evidence, admission); err != nil {
-			return tracker.NativeRuntimeEvidence{}, err
-		}
-		return evidence, nil
-	}
-	if !validNativeID(attemptID, "attempt") {
+	if attemptID != "" && !validNativeID(attemptID, "attempt") {
 		if local, err := strconv.ParseInt(attemptID, 10, 64); err == nil && local > 0 {
 			return tracker.NativeRuntimeEvidence{}, nativeRunEventStorageUnavailable()
 		}
@@ -85,7 +72,12 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		if err != nil {
 			return err
 		}
-		attempt, err := r.Attempt(ctx, attemptID)
+		var attempt leasestore.Attempt
+		if attemptID == "" {
+			attempt, err = r.LatestAttempt(ctx, row.ID)
+		} else {
+			attempt, err = r.Attempt(ctx, attemptID)
+		}
 		if err != nil {
 			return err
 		}
@@ -125,6 +117,40 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		board, err := r.BoardSequence(ctx, scope.project)
 		if err != nil {
 			return err
+		}
+		change, changeErr := r.LatestChange(ctx, scope.project, row.NativeID)
+		if changeErr != nil && !errors.Is(changeErr, corestore.ErrNotFound) {
+			return changeErr
+		}
+		if changeErr == nil {
+			snapshot.changeRecord = change
+			if change.CurrentVersionID != nil {
+				current, err := r.Version(ctx, change.ID, *change.CurrentVersionID)
+				if err != nil {
+					return err
+				}
+				snapshot.changeVersion = &current
+			}
+			snapshot.changePolicy, err = readChangeSummaryPolicyRows(ctx, r, scope)
+			if err != nil {
+				return err
+			}
+		}
+		if history, ok := r.(eventstore.WorkflowTransitionReader); ok {
+			transition, err := history.LatestWorkflowTransition(ctx, scope.project, row.NativeID)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			if err == nil {
+				snapshot.transition = transition
+			}
+			decision, err := history.LatestSchedulerDecision(ctx, scope.project, row.NativeID)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			if err == nil {
+				snapshot.decision = decision
+			}
 		}
 		snapshot.project, snapshot.item, snapshot.version = project, row, version
 		snapshot.attempt = tenantAttemptSnapshot{attempt: attempt, lease: lease, event: event}
@@ -213,6 +239,35 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		Capacity:    []tracker.NativeRuntimeCapacity{},
 		Scheduling:  tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "unknown", At: now, WorkItemRevision: issue.Revision, Reason: "Runner capacity and admission projection are not available from this typed read"},
 	}
+	if snapshot.transition.ID != "" {
+		transition, err := content.Event(ctx, snapshot.transition)
+		if err != nil {
+			return tracker.NativeRuntimeEvidence{}, err
+		}
+		result.LatestTransition = &transition
+	}
+	if snapshot.decision.ID != "" {
+		decision, err := content.Event(ctx, snapshot.decision)
+		if err != nil {
+			return tracker.NativeRuntimeEvidence{}, err
+		}
+		result.LatestDecision = &decision
+	}
+	if snapshot.changeRecord.ID != "" {
+		detail, err := s.hydrateCurrentChangeDetail(ctx, scope, issue.WorkItemID, snapshot.changeRecord, snapshot.changeVersion, snapshot.changePolicy, now)
+		if err != nil {
+			return tracker.NativeRuntimeEvidence{}, err
+		}
+		if len(detail.Versions) != 0 {
+			version := detail.Versions[0]
+			result.CurrentVersion = &tracker.NativeChangeVersionEvidence{NativeChangeReference: tracker.NativeChangeReference{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}, PublishedAt: version.CreatedAt, Validation: boundedChangeCommand(version.Validation), Landing: boundedChangeLanding(version.Landing)}
+		}
+		detail.Change.Body = ""
+		detail.Change.LinkedIssues = nil
+		detail.Versions, detail.Reviews, detail.Checks, detail.Discussion = nil, nil, nil, nil
+		detail.Summary.Messages = nil
+		result.Change = &detail
+	}
 	if !snapshot.policyFound {
 		result.Unavailable = append(result.Unavailable, "approved_dispatch_policy")
 	}
@@ -226,6 +281,14 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		result.CurrentLease = &current
 		result.Scheduling.Outcome = "claimed"
 		result.Scheduling.Reason = "A current fenced lease owns this item"
+	}
+	if result.CurrentLease == nil {
+		for _, state := range snapshot.project.States {
+			if state.Name == issue.State && !state.Dispatchable {
+				result.Scheduling.Outcome = "skipped"
+				result.Scheduling.Reason = issue.State + " is not dispatchable"
+			}
+		}
 	}
 	if attempt.Runtime == nil {
 		result.Unavailable = append(result.Unavailable, "runtime_phase_heartbeat", "instruction_activity", "rest_accounting", "github_scope_timings", "attempt_landing_receipt", "host_issue_acceptance")

@@ -8,6 +8,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -179,4 +183,82 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.st
 		return 0, fmt.Errorf("read recorded change revision for %s: %w", item, err)
 	}
 	return revision, nil
+}
+
+func (s *Service) hydrateNativeIssueChangeRecord(ctx context.Context, scope nativeScope, issue *tracker.NativeIssue) error {
+	binding, _, err := s.projectConnector(ctx, nil, scope)
+	if err != nil {
+		return err
+	}
+	change := &tracker.NativeIssueChange{Connector: tracker.NativeChangeConnectorNone}
+	if binding != nil {
+		change.Connector = tracker.NativeChangeConnectorGitHub
+	}
+	issue.Change = change
+	var latest eventstore.Change
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		latest, err = r.LatestChange(ctx, scope.project, issue.WorkItemID)
+		return err
+	})
+	if errors.Is(err, corestore.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	result, err := s.readBoundedChangeRecord(ctx, scope, operatortool.ChangeArguments{ItemID: string(issue.WorkItemID), ChangeID: latest.ID, Section: "current"}, operatortool.ChangeResult{})
+	if err != nil {
+		return err
+	}
+	detail := result.Detail
+	change.ChangeID, change.State = detail.Change.ID, "open"
+	if detail.Change.CurrentLanding() != nil {
+		change.State = "closed"
+	}
+	for _, version := range detail.Versions {
+		if version.ID != detail.Change.CurrentVersion {
+			continue
+		}
+		change.HeadSHA = version.HeadSHA
+		if version.External != nil {
+			change.URL, change.Number = version.External.URL, externalPullRequestNumber(*version.External)
+			if version.External.Provider == "github" {
+				change.Connector = tracker.NativeChangeConnectorGitHub
+			}
+			if change.Number > 0 {
+				issue.PullRequest = &tracker.NativePullRequest{Number: change.Number, URL: change.URL}
+			}
+		}
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			row, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
+			if err != nil {
+				return err
+			}
+			attempt, err := r.LatestAttempt(ctx, row.ID)
+			if errors.Is(err, corestore.ErrNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if attempt.Status == "succeeded" {
+				diff, err := r.LatestAttemptDiff(ctx, scope.project, attempt.ID, "attempt")
+				if errors.Is(err, corestore.ErrNotFound) {
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				if diff.HeadSHA == version.HeadSHA {
+					change.Revision = tracker.Revision(attempt.WorkItemRevision)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

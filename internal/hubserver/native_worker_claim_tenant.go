@@ -312,8 +312,17 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 		}
 		runnerAPI = workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered
 	}
+	decision := tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: plan.item.NativeID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{RunnerID: scope.credential.Runner.RunnerID, Source: "native_claim", Outcome: "claimed", Reason: "A current fenced lease owns this item", At: now, WorkItemRevision: tracker.Revision(plan.item.Revision)}}}
+	decisionRaw, err := json.Marshal(decision)
+	if err != nil {
+		return leasestore.Lease{}, err
+	}
+	decisionRow, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).PrepareEvent(ctx, scope.organization, decisionRaw)
+	if err != nil {
+		return leasestore.Lease{}, err
+	}
 	var lease leasestore.Lease
-	err := s.writeNativeClaimCommand(ctx, scope, func(ctx context.Context, w tenantstore.Writer) error {
+	err = s.writeNativeClaimCommand(ctx, scope, func(ctx context.Context, w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
@@ -561,6 +570,9 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 				}
 			}
 		} else {
+			if _, err := w.AppendEvent(ctx, decisionRow); err != nil {
+				return err
+			}
 			if err := w.AssignRunnerLease(ctx, runnerstore.LeaseAssignment{OrganizationID: scope.organization, LeaseID: lease.LeaseID, RunnerID: identity.RunnerID, AssignedAt: authoritativeNow}); err != nil {
 				return err
 			}

@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
-	"strings"
 
 	"github.com/labstack/echo/v4"
 
@@ -132,16 +131,18 @@ func (s *Service) authorizeCommentWorkItem(ctx context.Context, scope nativeScop
 }
 
 func (s *Service) workItemResource(ctx context.Context, scope nativeScope, id string, params url.Values) (tracker.NativeIssue, error) {
-	if len(params) > 0 {
-		for name, values := range params {
-			if name != "include" || len(values) != 1 || strings.TrimSpace(values[0]) != "" {
-				return tracker.NativeIssue{}, workItemStorageUnavailable()
-			}
+	for name, values := range params {
+		if name != "include" || len(values) != 1 {
+			return tracker.NativeIssue{}, nativePublicInvalid("Unsupported work item query")
 		}
+	}
+	include, err := nativeIssueChangeIncluded(params.Get("include"))
+	if err != nil {
+		return tracker.NativeIssue{}, err
 	}
 
 	var issue tracker.NativeIssue
-	err := s.readWorkItemPageSnapshot(ctx, scope, func(ctx context.Context) error {
+	err = s.readWorkItemPageSnapshot(ctx, scope, func(ctx context.Context) error {
 		var err error
 		issue, err = s.readWorkItemPageModel(ctx, scope, id)
 		return err
@@ -157,6 +158,9 @@ func (s *Service) workItemResource(ctx context.Context, scope nativeScope, id st
 				issue.OmittedFields = append(issue.OmittedFields, field)
 			}
 		}
+	}
+	if err == nil && include {
+		err = s.hydrateNativeIssueChangeRecord(ctx, scope, &issue)
 	}
 	return issue, err
 }
