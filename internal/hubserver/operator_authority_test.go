@@ -22,7 +22,7 @@ func TestHostedOperatorCurrentAuthority(t *testing.T) {
 			for _, test := range []struct {
 				name, role, grant, project, kind string
 				scope                            apikey.Scope
-				change                           func(*testing.T, hostedSecurityFixture, hostedSecurityUser)
+				change                           func(*testing.T, operatorSecurityFixture, hostedSecurityUser)
 				denied                           bool
 			}{
 				{name: "viewer read", role: "viewer", grant: "read", scope: apikey.ScopeRead},
@@ -37,33 +37,33 @@ func TestHostedOperatorCurrentAuthority(t *testing.T) {
 				{name: "member plan denied", role: "member", kind: "plan", scope: apikey.ScopeRead, denied: true},
 				{name: "missing grant", role: "admin", scope: apikey.ScopeRead, denied: true},
 				{name: "foreign project", role: "owner", grant: "write", project: "other", scope: apikey.ScopeRead, denied: true},
-				{name: "local membership removed", role: "member", grant: "write", scope: apikey.ScopeRead, denied: true, change: func(t *testing.T, f hostedSecurityFixture, u hostedSecurityUser) {
-					operatorSQL(t, f, "UPDATE hosted_members SET active=0 WHERE user_id=?", u.identity.Subject)
+				{name: "local membership removed", role: "member", grant: "write", scope: apikey.ScopeRead, denied: true, change: func(t *testing.T, f operatorSecurityFixture, u hostedSecurityUser) {
+					operatorPostgresSQL(t, f, "UPDATE hosted_members SET active=FALSE WHERE user_id=$1", u.identity.Subject)
 				}},
-				{name: "local role downgraded", role: "owner", grant: "write", scope: apikey.ScopeWrite, denied: true, change: func(t *testing.T, f hostedSecurityFixture, u hostedSecurityUser) {
-					operatorSQL(t, f, "UPDATE hosted_members SET role='viewer' WHERE user_id=?", u.identity.Subject)
+				{name: "local role downgraded", role: "owner", grant: "write", scope: apikey.ScopeWrite, denied: true, change: func(t *testing.T, f operatorSecurityFixture, u hostedSecurityUser) {
+					operatorPostgresSQL(t, f, "UPDATE hosted_members SET role='viewer' WHERE user_id=$1", u.identity.Subject)
 				}},
-				{name: "grant removed after discovery", role: "member", grant: "write", scope: apikey.ScopeRead, denied: true, change: func(t *testing.T, f hostedSecurityFixture, u hostedSecurityUser) {
-					operatorSQL(t, f, "DELETE FROM hosted_project_grants WHERE user_id=?", u.identity.Subject)
+				{name: "grant removed after discovery", role: "member", grant: "write", scope: apikey.ScopeRead, denied: true, change: func(t *testing.T, f operatorSecurityFixture, u hostedSecurityUser) {
+					operatorPostgresSQL(t, f, "DELETE FROM hosted_project_grants WHERE user_id=$1", u.identity.Subject)
 				}},
-				{name: "write grant downgraded", role: "member", grant: "write", scope: apikey.ScopeWrite, denied: true, change: func(t *testing.T, f hostedSecurityFixture, u hostedSecurityUser) {
-					operatorSQL(t, f, "UPDATE hosted_project_grants SET can_write=0 WHERE user_id=?", u.identity.Subject)
+				{name: "write grant downgraded", role: "member", grant: "write", scope: apikey.ScopeWrite, denied: true, change: func(t *testing.T, f operatorSecurityFixture, u hostedSecurityUser) {
+					operatorPostgresSQL(t, f, "UPDATE hosted_project_grants SET can_write=FALSE WHERE user_id=$1", u.identity.Subject)
 				}},
-				{name: "session revoked", role: "owner", grant: "write", scope: apikey.ScopeRead, denied: true, change: func(t *testing.T, f hostedSecurityFixture, u hostedSecurityUser) {
-					operatorSQL(t, f, "UPDATE hosted_sessions SET revoked_at=?", formatHubTime(time.Now()))
+				{name: "session revoked", role: "owner", grant: "write", scope: apikey.ScopeRead, denied: true, change: func(t *testing.T, f operatorSecurityFixture, u hostedSecurityUser) {
+					operatorPostgresSQL(t, f, "UPDATE hosted_sessions SET revoked_at=$1", formatHubTime(time.Now()))
 				}},
-				{name: "session expired", role: "owner", grant: "write", scope: apikey.ScopeRead, denied: true, change: func(t *testing.T, f hostedSecurityFixture, u hostedSecurityUser) {
-					operatorSQL(t, f, "UPDATE hosted_sessions SET expires_at=?", formatHubTime(time.Now().Add(-time.Hour)))
+				{name: "session expired", role: "owner", grant: "write", scope: apikey.ScopeRead, denied: true, change: func(t *testing.T, f operatorSecurityFixture, u hostedSecurityUser) {
+					operatorPostgresSQL(t, f, "UPDATE hosted_sessions SET expires_at=$1", formatHubTime(time.Now().Add(-time.Hour)))
 				}},
 			} {
 				t.Run(test.name, func(t *testing.T) {
-					var shared hostedSharedFixture
-					var f hostedSecurityFixture
+					var shared operatorSharedFixture
+					var f operatorSecurityFixture
 					if deployment == "shared" {
-						shared = newHostedSharedFixture(t)
-						f = shared.hostedSecurityFixture
+						shared = newOperatorSharedFixture(t)
+						f = shared.operatorSecurityFixture
 					} else {
-						f = newHostedSecurityFixture(t)
+						f = newOperatorSecurityFixture(t)
 					}
 					u := f.user(t, "operator", test.role, "operator@example.test", test.grant, "")
 					project := test.project
@@ -150,12 +150,16 @@ func operatorSQL(t *testing.T, f hostedSecurityFixture, query string, args ...an
 	}
 }
 
+func operatorPostgresSQL(t *testing.T, f operatorSecurityFixture, query string, args ...any) {
+	t.Helper()
+	if _, err := f.admin.ExecContext(t.Context(), query, args...); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHubMCPOperatorCredentialBoundary(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
-	response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "mcp-worker", "scope": "worker"})
-	requireNativeStatus(t, response, http.StatusCreated)
-	var worker tokenResponse
-	decodeHubResponse(t, response, &worker)
+	worker := operatorNativeTokenFixture(t, f.service, f.project.OrganizationID, apiScopeWorker, "mcp-worker")
 	path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/mcp"
 	for _, test := range []struct {
 		name, token, target string
@@ -165,7 +169,7 @@ func TestHubMCPOperatorCredentialBoundary(t *testing.T) {
 		{"administrator", testHubAdminToken, path, http.StatusOK},
 		{"worker cannot become operator", worker.Token, path, http.StatusForbidden},
 		{"no credential", "", path, http.StatusUnauthorized},
-		{"foreign organization", f.token, "/api/v2/organizations/other/mcp", http.StatusForbidden},
+		{"foreign organization", f.token, "/api/v2/organizations/other/mcp", http.StatusUnauthorized},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := performHubAPIRequest(t, f.service, http.MethodPost, test.target, test.token, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": "2025-11-25", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "test", "version": "1"}}})
@@ -180,7 +184,7 @@ func TestReporterOperatorAuthority(t *testing.T) {
 	for _, deployment := range []string{"shared", "dedicated"} {
 		for _, role := range []string{"reporter", "member", "viewer"} {
 			t.Run(deployment+"/"+role, func(t *testing.T) {
-				f, ctx := newHostedKeyMCPFixture(t, deployment, role)
+				f, ctx := newOperatorKeyFixture(t, deployment, role)
 				for _, test := range []struct {
 					name     string
 					reporter bool
