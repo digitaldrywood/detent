@@ -84,6 +84,7 @@ type BoardCandidate struct {
 	QueuedAt   *time.Time
 	ProjectID  tracker.ProjectID
 	WorkItemID tracker.NativeWorkItemID
+	Required   bool
 }
 
 type BoardSelection struct {

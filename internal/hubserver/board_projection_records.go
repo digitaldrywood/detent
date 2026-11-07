@@ -82,9 +82,16 @@ func (s *Service) maintainBoardRecord(ctx context.Context, organization tracker.
 		return after, false, corestore.ErrTenantMismatch
 	}
 	var candidate viewstore.BoardCandidate
+	var settled bool
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		var err error
 		candidate, err = r.NextBoardCandidate(ctx, after, attempted...)
+		if err == nil && !candidate.Required {
+			settled, err = boardRecordSettled(ctx, r, candidate)
+			if err != nil {
+				return &boardRefreshError{item: candidate.WorkItemID, step: "candidate_state", cause: err}
+			}
+		}
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -93,11 +100,48 @@ func (s *Service) maintainBoardRecord(ctx context.Context, organization tracker.
 	if err != nil {
 		return after, false, err
 	}
+	if settled {
+		return candidate.WorkItemID, true, nil
+	}
 	err = s.refreshBoardRecord(ctx, organization, candidate, s.config.now())
 	if errors.Is(err, corestore.ErrRevisionConflict) {
 		err = nil
 	}
 	return candidate.WorkItemID, true, err
+}
+
+func boardRecordSettled(ctx context.Context, r tenantstore.Reader, candidate viewstore.BoardCandidate) (bool, error) {
+	card, err := r.BoardItem(ctx, candidate.ProjectID, candidate.WorkItemID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil || !card.Display.Ready || card.Display.Change != nil || card.Display.Attempt != nil || card.Display.Execution != nil || card.ExpiresAt != nil {
+		return false, err
+	}
+	item, err := r.WorkItem(ctx, candidate.ProjectID, candidate.WorkItemID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil || card.SourceRevision != item.Revision || card.SourceEventSequence != item.EventSequence {
+		return false, err
+	}
+	project, err := r.Project(ctx, candidate.ProjectID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil || project.Profile != "native" || project.DeletedAt != nil || card.SourceProjectRevision != project.ContentSettingsRevision {
+		return false, err
+	}
+	if _, err := r.LatestChange(ctx, candidate.ProjectID, candidate.WorkItemID); !errors.Is(err, corestore.ErrNotFound) {
+		return false, err
+	}
+	if _, err := r.LatestAttempt(ctx, item.ID); !errors.Is(err, corestore.ErrNotFound) {
+		return false, err
+	}
+	if _, err := r.ActiveLeaseForIssue(ctx, item.ID); !errors.Is(err, corestore.ErrNotFound) {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Service) boardProjectionSnapshot(ctx context.Context, organization tracker.OrganizationID, candidate viewstore.BoardCandidate, now time.Time) (snapshot boardProjectionSnapshot, err error) {

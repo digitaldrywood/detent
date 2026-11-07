@@ -26,6 +26,13 @@ type boardChangeMutationRepository struct {
 	changeReads int
 	reads       int
 	failRead    int
+	writes      int
+	boardError  error
+}
+
+func (r *boardChangeMutationRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	r.writes++
+	return r.Repository.WriteTenant(ctx, org, workload, write)
 }
 
 func (r *boardChangeMutationRepository) ReadTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
@@ -43,6 +50,13 @@ type boardChangeMutationReader struct {
 	eventstore.AuditDispositionReader
 	repository   *boardChangeMutationRepository
 	organization tracker.OrganizationID
+}
+
+func (r boardChangeMutationReader) BoardItem(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (viewstore.BoardRecord, error) {
+	if r.repository.boardError != nil {
+		return viewstore.BoardRecord{}, r.repository.boardError
+	}
+	return r.Reader.BoardItem(ctx, project, item)
 }
 
 func (r boardChangeMutationReader) BoardChangeRows(ctx context.Context, project tracker.ProjectID, requests []tenantstore.BoardChangeRequest) ([]tenantstore.BoardChangeRows, error) {
@@ -151,7 +165,7 @@ func TestBoardProjectionDeletedChangeAndRealErrorsPostgres(t *testing.T) {
 					if _, err := w.CreateChange(t.Context(), changeRow); err != nil {
 						return err
 					}
-					for extra := range test.size {
+					for extra := range max(0, test.size-index-1) {
 						paddingID := tracker.NativeWorkItemID(fmt.Sprintf("padding_%d_%d", index, extra))
 						if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: "example", NativeID: paddingID, Number: int64(100 + index*100 + extra), Title: "Example", WorkflowStateName: &issue.State}); err != nil {
 							return err
@@ -231,14 +245,51 @@ func TestBoardProjectionDeletedChangeAndRealErrorsPostgres(t *testing.T) {
 				}
 				if test.name == "deleted" {
 					reads := mutating.changeReads
+					writes := mutating.writes
 					if _, _, err := service.maintainBoardRecord(t.Context(), org, id); err != nil {
 						t.Fatal(err)
 					}
-					if mutating.changeReads != reads {
-						t.Fatal("next tick reprocessed deleted Change")
+					if mutating.changeReads != reads || mutating.writes != writes {
+						t.Fatal("next tick rebuilt card after deleting its Change")
+					}
+					mutating.boardError = context.DeadlineExceeded
+					if _, _, err := service.maintainBoardRecord(t.Context(), org, id); !errors.Is(err, context.DeadlineExceeded) {
+						t.Fatalf("settled card read failure was masked: %v", err)
+					}
+					mutating.boardError = nil
+					if _, err := admin.ExecContext(t.Context(), "INSERT INTO native_board_dirty(organization_id,project_id,work_item_id) VALUES($1,'example',$2)", org, id); err != nil {
+						t.Fatal(err)
+					}
+					if _, _, err := service.maintainBoardRecord(t.Context(), org, id); err != nil {
+						t.Fatal(err)
+					}
+					writes++
+					if mutating.writes != writes {
+						t.Fatal("dirty card with unchanged source fences was skipped")
+					}
+					if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+						if _, err := w.CreateChange(t.Context(), changeRow); err != nil {
+							return err
+						}
+						return w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: "example", WorkItemID: id, ChangeID: changeID, CreatedAt: now})
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if _, _, err := service.maintainBoardRecord(t.Context(), org, id); err != nil {
+						t.Fatal(err)
+					}
+					if mutating.changeReads != reads+1 || mutating.writes != writes+1 {
+						t.Fatal("newly linked Change did not refresh settled card")
 					}
 				}
 				if test.audit {
+					var total int
+					if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id='example'", org).Scan(&total); err != nil {
+						t.Fatal(err)
+					}
+					if total != test.size {
+						t.Fatalf("fixture has %d issues, want %d", total, test.size)
+					}
 					counts := [2]int{statements + 2*transactions, statements + transactions}
 					if auditCounts == [2]int{} {
 						auditCounts = counts

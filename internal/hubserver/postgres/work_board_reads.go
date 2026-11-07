@@ -52,7 +52,7 @@ func (s *session) NextBoardCandidate(ctx context.Context, after tracker.NativeWo
 		skipped[index] = string(id)
 	}
 	var candidate viewstore.BoardCandidate
-	err := s.db.QueryRow(ctx, `SELECT coalesce(stale.project_id,candidates.project_id),candidates.work_item_id,dirty.queued_at FROM (
+	err := s.db.QueryRow(ctx, `SELECT coalesce(stale.project_id,candidates.project_id),candidates.work_item_id,dirty.queued_at,candidates.priority<4 FROM (
  (SELECT project_id,work_item_id,0 AS priority FROM native_board_dirty WHERE organization_id=$1 AND work_item_id>$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
  UNION ALL (SELECT project_id,work_item_id,1 AS priority FROM native_board_dirty WHERE organization_id=$1 AND work_item_id<=$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
  UNION ALL (SELECT project_id,work_item_id,2 AS priority FROM native_board_items WHERE organization_id=$1 AND NOT card_display_ready AND work_item_id>$2 AND work_item_id<>ALL($3::text[]) ORDER BY work_item_id LIMIT 1)
@@ -68,7 +68,7 @@ func (s *session) NextBoardCandidate(ctx context.Context, after tracker.NativeWo
   AND stale.project_id<>candidates.project_id
   AND EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=$1 AND i.project_id=candidates.project_id AND i.native_id=candidates.work_item_id)
  LEFT JOIN native_board_dirty dirty ON dirty.organization_id=$1 AND dirty.project_id=coalesce(stale.project_id,candidates.project_id) AND dirty.work_item_id=candidates.work_item_id
- ORDER BY candidates.priority,candidates.work_item_id LIMIT 1`, s.organization, after, skipped).Scan(&candidate.ProjectID, &candidate.WorkItemID, &candidate.QueuedAt)
+ ORDER BY candidates.priority,candidates.work_item_id LIMIT 1`, s.organization, after, skipped).Scan(&candidate.ProjectID, &candidate.WorkItemID, &candidate.QueuedAt, &candidate.Required)
 	return candidate, mapError(ctx, err)
 }
 
