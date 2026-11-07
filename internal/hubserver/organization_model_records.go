@@ -79,6 +79,9 @@ func (s *Service) updateOrganizationModelRecord(ctx context.Context, scope nativ
 		return nil, nativePublicInvalid("Model selection is invalid")
 	}
 	effective = config.ResolveCloudModelSelection(config.ResolveModelSelection(organizationModelDefaults(), *request.Selection), config.ModelSelection{})
+	if len(effective.Validate()) > 0 {
+		return nil, nativePublicInvalid("Model selection is invalid")
+	}
 	value := cloudModelSelection{Revision: request.ExpectedRevision + 1, Selection: request.Selection, Effective: effective}
 	raw, err := json.Marshal(value)
 	if err != nil {

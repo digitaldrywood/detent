@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -101,6 +102,35 @@ func TestOrganizationModelRecordsWithoutSQLite(t *testing.T) {
 			overridden, err := service.projectRecordModel(t.Context(), project)
 			if err != nil || overridden.Selection == nil || overridden.Selection.Enabled == nil || *overridden.Selection.Enabled || overridden.Effective.Enabled == nil || *overridden.Effective.Enabled {
 				t.Fatalf("project override = %+v error=%v", overridden, err)
+			}
+			for _, test := range []struct {
+				name      string
+				selection config.ModelSelection
+			}{
+				{"incomplete enabled policy", config.ModelSelection{Enabled: new(true)}},
+				{"omitted enabled stage max", config.ModelSelection{Stages: map[string]config.ModelSelectionStage{"plan": {Effort: new("max")}}}},
+				{"omitted enabled unknown stage level", config.ModelSelection{Stages: map[string]config.ModelSelectionStage{"plan": {Level: new("missing")}}}},
+				{"omitted enabled level max", config.ModelSelection{Levels: map[string]config.ModelSelectionDefaults{"normal": {Effort: new("max")}}}},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					before, err := service.readOrganizationModels(t.Context(), org)
+					if err != nil {
+						t.Fatal(err)
+					}
+					invalid := cloudModelSelectionRequest{Mutation: tracker.Mutation{IdempotencyKey: test.name}, ExpectedRevision: before.Revision, Selection: &test.selection}
+					_, err = service.executeNativeMutation(t.Context(), scope, nativeCommandOptions{OperationID: "models"}, invalid.Mutation, invalid, nil)
+					var failure *nativeError
+					if !errors.As(err, &failure) || failure.Code != "invalid_request" || failure.status != http.StatusUnprocessableEntity {
+						t.Errorf("invalid model policy error = %v, want invalid_request with status 422", err)
+					}
+					after, err := service.readOrganizationModels(t.Context(), org)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(before, after) {
+						t.Error("rejected mutation changed organization revision or model policy")
+					}
+				})
 			}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.RevokeAccessCredential(t.Context(), "admin", now) }); err != nil {
 				t.Fatal(err)
