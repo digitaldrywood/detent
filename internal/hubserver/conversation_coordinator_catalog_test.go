@@ -13,6 +13,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -150,16 +153,8 @@ func TestCoordinatorCatalogMatchesOperatorCatalog(t *testing.T) {
 
 func TestCoordinatorTurnOutlivesSharedBrowserAccessToken(t *testing.T) {
 	if testing.Short() {
-		t.Skip("durable SQLite integration")
+		t.Skip("durable PostgreSQL integration")
 	}
-	var skew atomic.Int64
-	backend := newFakeCoordinatorBackend()
-	f := newHostedSharedFixture(t, func(cfg *Config) {
-		cfg.now = func() time.Time { return time.Now().Add(time.Duration(skew.Load())) }
-		cfg.Conversation = &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir()}
-	})
-	owner := f.member(t, "owner", "owner", "write")
-	seedCoordinatorRepository(t, f.service, f.project)
 	for _, test := range []struct {
 		name   string
 		skew   time.Duration
@@ -170,7 +165,38 @@ func TestCoordinatorTurnOutlivesSharedBrowserAccessToken(t *testing.T) {
 		{"turn outlasts its own budget", coordinatorTurnTimeout + time.Minute, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			skew.Store(0)
+			var skew atomic.Int64
+			backend := newFakeCoordinatorBackend()
+			key := hostedSharedKey(7)
+			provider := newHostedSecurityProvider()
+			cfg := hostedSharedTestConfig(hostedTestDatabasePath(t), provider, key, 1)
+			cfg.now = func() time.Time { return time.Now().Add(time.Duration(skew.Load())) }
+			cfg.Conversation = &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir(), ArchiveContents: &conversationContentFixture{}}
+			service := openTestService(t, cfg)
+			native := newNativeFixture(t, service, "", "Example project")
+			f := hostedSharedFixture{hostedSecurityFixture: hostedSecurityFixture{service: native.service, provider: provider, project: native.project.ID, base: native.base}, key: key}
+			owner := f.member(t, "owner", "owner", "")
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), native.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				member, err := w.AccessMember(t.Context(), owner.identity.Subject)
+				if err != nil {
+					return err
+				}
+				if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: native.project.OrganizationID, UserID: member.UserID, ProjectID: native.project.ID, CanWrite: true}); err != nil {
+					return err
+				}
+				if err := w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: native.project.OrganizationID, TokenID: member.PrincipalID, ProjectID: native.project.ID}); err != nil {
+					return err
+				}
+				record, err := w.ProjectRecord(t.Context(), native.project.ID)
+				if err != nil {
+					return err
+				}
+				record.Settings.Repository = "example-org/example-project"
+				_, err = w.UpdateProjectRecord(t.Context(), record)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
 			results := make(chan runner.AgentToolResult, 1)
 			backend.setRun(func(ctx context.Context, _ int, handle runner.AgentToolHandler, _ runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 				skew.Store(int64(test.skew))
@@ -178,8 +204,8 @@ func TestCoordinatorTurnOutlivesSharedBrowserAccessToken(t *testing.T) {
 				results <- result
 				return runner.AgentTurnResult{}, err
 			})
-			key := "access-" + strings.ReplaceAll(test.name, " ", "-")
-			body := fmt.Sprintf(`{"key":%q,"first_message":{"key":%q,"text":"Link #1 and #2 as related"}}`, key, key)
+			commandKey := "access-" + strings.ReplaceAll(test.name, " ", "-")
+			body := fmt.Sprintf(`{"key":%q,"first_message":{"key":%q,"text":"Link #1 and #2 as related"}}`, commandKey, commandKey)
 			response := f.serve(t, hostedSharedRequest{user: &owner, method: http.MethodPost, target: f.base + "/conversations", body: body, csrf: cloudassert.CSRFToken("shared-user_owner", "org_security"), mutate: func(c *cloudassert.Claims) { c.AccessExpiresAt = time.Now().Add(time.Minute) }})
 			requireNativeStatus(t, response, http.StatusCreated)
 			select {

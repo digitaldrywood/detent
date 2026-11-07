@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
@@ -99,7 +101,11 @@ type streamFixture struct {
 
 func newStreamFixture(t *testing.T) streamFixture {
 	t.Helper()
-	f := newConversationAPIFixture(t, nil)
+	return newStreamFixtureWithAPI(t, newConversationAPIFixture(t, nil))
+}
+
+func newStreamFixtureWithAPI(t *testing.T, f conversationAPIFixture) streamFixture {
+	t.Helper()
 	server := httptest.NewServer(f.service.Handler())
 	t.Cleanup(server.Close)
 	restoreHeartbeat, restoreAuthorize := conversationStreamHeartbeat, conversationStreamAuthorize
@@ -163,13 +169,20 @@ func TestConversationStreamReplaysAndFollows(t *testing.T) {
 		t.Skip("loopback network listener integration")
 	}
 
-	f := newStreamFixture(t)
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Conversation: &ConversationConfig{Enabled: true, ArchiveContents: &conversationContentFixture{}}})
+	native := newNativeFixture(t, service, "", "Example project")
+	credential, _, err := native.service.authenticateTenantAPIHash(t.Context(), native.project.OrganizationID, apikey.HashToken(native.token), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newStreamFixtureWithAPI(t, conversationAPIFixture{nativeFixture: native, ownerID: credential.ID})
 	created := f.create(t, f.token, map[string]any{"first_message": map[string]any{"key": "first", "text": "Stream me"}})
 	id := created.Conversation.ID
 	t.Run("replay stops at authorized head", func(t *testing.T) {
 		response := httptest.NewRecorder()
 		bounded := newConversationStream(f.service.echo.NewContext(httptest.NewRequest(http.MethodGet, "/", nil), response))
-		cursor, err := bounded.replay(t.Context(), f.service.conversations.store, f.service.database.reader, id, 0, 1)
+		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+		cursor, err := f.service.replayPGConversationEvents(t.Context(), scope, bounded, id, 0, 1)
 		if err != nil || cursor != 1 || strings.Contains(response.Body.String(), string(conversation.EventCommandReceipt)) {
 			t.Fatalf("replay exceeded authorized head: cursor=%d error=%v data=%s", cursor, err, response.Body.String())
 		}
