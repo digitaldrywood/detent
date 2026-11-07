@@ -157,6 +157,16 @@ func (s *Service) readAuthorizedProjectRecord(ctx context.Context, scope nativeS
 			return err
 		}
 		if includeModels {
+			if owner, ok := r.(projectstore.PageReader); ok {
+				page, ready, err := owner.ProjectPage(ctx, result.Record)
+				if err != nil {
+					return err
+				}
+				if ready {
+					result.Page = &page
+					return nil
+				}
+			}
 			row, err := r.OrganizationModels(ctx)
 			if err != nil {
 				return err
@@ -218,7 +228,13 @@ func (s *Service) projectRecordWorkflow(ctx context.Context, record projectstore
 }
 
 func (s *Service) projectRecordNative(ctx context.Context, record projectstore.Record, models ...policystore.OrganizationModels) (tracker.NativeProject, error) {
-	markdown, err := s.projectRecordWorkflow(ctx, record)
+	var markdown string
+	var err error
+	if record.Page != nil {
+		markdown = record.Page.Body
+	} else {
+		markdown, err = s.projectRecordWorkflow(ctx, record)
+	}
 	if err != nil {
 		return tracker.NativeProject{}, err
 	}
@@ -230,11 +246,17 @@ func (s *Service) projectRecordNative(ctx context.Context, record projectstore.R
 	if repository != "" {
 		project.CloneURL = "https://github.com/" + repository + ".git"
 	}
-	selection, err := s.projectRecordModel(ctx, record, models...)
-	if err != nil {
-		return project, err
+	var effective config.ModelSelection
+	if record.Page != nil {
+		effective = record.Page.Model
+	} else {
+		selection, readErr := s.projectRecordModel(ctx, record, models...)
+		if readErr != nil {
+			return project, readErr
+		}
+		effective = selection.Effective
 	}
-	project.ModelSelection, err = json.Marshal(selection.Effective)
+	project.ModelSelection, err = json.Marshal(effective)
 	return project, err
 }
 

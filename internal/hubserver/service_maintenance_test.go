@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -100,6 +101,13 @@ func TestHostedMaintenancePublishesPagesForTwoTenants(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO health_findings(organization_id,id,fingerprint,signal,class,subject_kind,subject_id,opened_at,last_seen_at,severity,summary,next_action,evidence_object_key,evidence_sha256,evidence_bytes,evidence_content_bytes) VALUES($1,'finding','fingerprint','signal','class','project','example',now(),now(),'attention',$1,'inspect','','',0,0)`, org); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO health_finding_projects(organization_id,finding_id,project_id) VALUES($1,'finding','example')`, org); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
@@ -172,6 +180,24 @@ func TestHostedMaintenancePublishesPagesForTwoTenants(t *testing.T) {
 					}
 					if !board.Display.Ready || board.PageIssue == nil {
 						return fmt.Errorf("tenant %s board pending", other)
+					}
+					health, err := r.(healthstore.Reader).HealthFindings(t.Context(), "example", "all", nil, 0, "", 100)
+					if err != nil {
+						return err
+					}
+					if len(health.Findings) != 1 || health.Findings[0].Summary != string(other) {
+						return fmt.Errorf("hosted scheduler did not publish tenant health: %+v", health)
+					}
+					record, err := r.ProjectRecord(t.Context(), "example")
+					if err != nil {
+						return err
+					}
+					_, projectReady, err := r.(projectstore.PageReader).ProjectPage(t.Context(), record)
+					if err != nil {
+						return err
+					}
+					if !projectReady {
+						return fmt.Errorf("hosted scheduler did not publish project page")
 					}
 					return nil
 				}); err != nil {

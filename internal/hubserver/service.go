@@ -686,6 +686,8 @@ func (s *Service) newReadModelMaintenance() (*hubmaintenance.Scheduler, error) {
 		s.WorkItemPageMaintenanceFeature(),
 		s.IntegrationPageMaintenanceFeature(),
 		s.OnboardingPageMaintenanceFeature(),
+		s.HealthPageMaintenanceFeature(),
+		s.ProjectPageMaintenanceFeature(),
 		{Name: "board", Bytes: BoardMaintenanceBytes, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
 			if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
 				return err
