@@ -1,15 +1,17 @@
 package testsupport
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -30,8 +33,7 @@ import (
 )
 
 func nativeChangeSchema() fs.FS {
-	_, source, _, _ := runtime.Caller(0)
-	return os.DirFS(filepath.Join(filepath.Dir(source), "../../../hubserver/postgres"))
+	return os.DirFS("../../hubserver/postgres")
 }
 
 var nativeChangeTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
@@ -73,8 +75,12 @@ func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Co
 	}
 	admin := nativeChangeTemplate.Database(t)
 	connection := pgtransport.Connection{User: "example_" + uuid.NewString()[:8], Password: uuid.NewString(), SSLMode: "disable"}
-	if err := admin.QueryRowContext(t.Context(), `SELECT current_database(), current_setting('port')::integer, current_setting('unix_socket_directories')`).Scan(&connection.Database, &connection.Port, &connection.Host); err != nil {
+	var dataDirectory string
+	if err := admin.QueryRowContext(t.Context(), `SELECT current_database(), current_setting('port')::integer, current_setting('unix_socket_directories'), current_setting('data_directory')`).Scan(&connection.Database, &connection.Port, &connection.Host, &dataDirectory); err != nil {
 		t.Fatal(err)
+	}
+	if connection.Host == "." {
+		connection.Host = dataDirectory
 	}
 	name := pgx.Identifier{connection.User}.Sanitize()
 	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+name+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(connection.Password)+" IN ROLE detent_runtime_v2"); err != nil {
@@ -102,6 +108,7 @@ func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Co
 		if err != nil {
 			t.Fatal(err)
 		}
+		provider = nativeChangeIdentityProvider{HostedProvider: provider}
 		cfg.Hosted = &hubserver.HostedConfig{OrganizationID: "org_example", WorkOSOrganizationID: "provider_example", PublicURL: "https://hub.example.test", Provider: provider}
 	}
 	migrations, err := fs.Sub(nativeChangeSchema(), "migrations")
@@ -116,7 +123,22 @@ func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Co
 	if cfg.Clock != nil {
 		now = cfg.Clock().UTC()
 	}
+	if cfg.SecretKeys == nil {
+		cfg.SecretKeys, err = hubsecrets.FromEnvironment(func(key string) string {
+			if key == "DETENT_HUB_SECRET_KEYS" {
+				return `{"1":"` + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32)) + `"}`
+			}
+			return "1"
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
+	envelope, err := cfg.SecretKeys.Seal(bytes.Repeat([]byte{2}, 32), accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
+	if err != nil {
+		t.Fatal(err)
+	}
 	err = repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example", Slug: "example", CreatedAt: now}); err != nil {
 			return err
@@ -124,7 +146,16 @@ func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Co
 		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: cfg.Hosted.WorkOSOrganizationID, AllocationGeneration: 1}); err != nil {
 			return err
 		}
-		return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "test_admin", Name: "Example administrator", Hash: apikey.HashToken(string(cfg.InitialAdminToken)), Scope: "admin", CreatedAt: now, UpdatedAt: now, KeyScope: "admin", ProjectAccess: "all", Kind: "service"})
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "test_admin", Name: "Example administrator", Hash: apikey.HashToken(string(cfg.InitialAdminToken)), Scope: "operator", NativeOnly: true, UserID: "user_example", MembershipID: "membership_example", CreatedAt: now, UpdatedAt: now, KeyScope: "admin", ProjectAccess: "all", Kind: "personal"}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: "user_example", MembershipID: "membership_example", Email: "owner@example.test", Role: "owner", Active: true, PrincipalID: "test_admin", CreatedAt: now, UpdatedAt: now}); err != nil {
+			return err
+		}
+		if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: "hub_" + strings.ReplaceAll(uuid.NewString(), "-", ""), CursorKey: bytes.Repeat([]byte{2}, 32)}); err != nil {
+			return err
+		}
+		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: now})
 	})
 	if err := errors.Join(err, repository.Close()); err != nil {
 		t.Fatal(err)

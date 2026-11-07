@@ -2686,32 +2686,51 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	}
 	h := &nativeChangeHub{clock: config.Clock, review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), descriptor: clientTestPolicy()}
 	h.seed = func(write func(tenantstore.Writer) error) {
-		testsupport.DispatchWriteFixture(t, config, write)
+		testsupport.NativeChangeWrite(t, config, write)
 	}
-	var project tracker.NativeProject
-	body := map[string]any{"name": "native-change", "idempotency_key": "project-native-change", "states": states, "grant_access": true}
-	if err := admin.Request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/projects", body, &project); err != nil {
-		t.Fatal(err)
+	reopens := 0
+	h.reopen = func(seed func(string) error) {
+		t.Helper()
+		requests.Lock()
+		defer requests.Unlock()
+		if err := service.Close(); err != nil {
+			t.Fatalf("close fixture before seed: %v", err)
+		}
+		reopens++
+		seedPath := filepath.Join(filepath.Dir(config.DatabasePath), fmt.Sprintf("seed-%d.db", reopens))
+		if err := hubserver.BackupDatabase(t.Context(), config.DatabasePath, seedPath); err != nil {
+			t.Fatalf("snapshot stopped fixture: %v", err)
+		}
+		if err := seed(seedPath); err != nil {
+			t.Fatalf("seed stopped fixture: %v", err)
+		}
+		config.DatabasePath = seedPath
+		service, err = hubserver.Open(t.Context(), config)
+		if err != nil {
+			t.Fatalf("reopen seeded fixture: %v", err)
+		}
 	}
+	project := testsupport.NativeChangeProject(t, config, states, requireDependencies)
 	h.project = project.ID
-	if requireDependencies {
-		h.seed(func(w tenantstore.Writer) error {
-			record, err := w.ProjectRecord(t.Context(), h.project)
-			if err != nil {
-				return err
-			}
-			record.Core.RequireDependencies = true
-			_, err = w.UpdateProjectRecord(t.Context(), record)
-			return err
-		})
-	}
-
-	token := nativeChangeAdminToken
+	token := testsupport.NativeChangeWorker(t, config, project.ID, "machine-native-change")
 	if h.admin, err = admin.Native(h.organization, h.project); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{Policy: h.descriptor}); err != nil {
 		t.Fatal(err)
+	}
+	h.otherWorker = func(t *testing.T) *NativeClient {
+		t.Helper()
+		other := testsupport.NativeChangeWorker(t, config, project.ID, "machine-native-other")
+		client, err := newTestClient(t, Config{URL: serverURL, TokenSource: func() string { return other }, HTTPClient: httpClient})
+		if err != nil {
+			t.Fatal(err)
+		}
+		native, err := client.Native(h.organization, h.project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return native
 	}
 	h.failChanges = &changeFailingTransport{next: httpClient.Transport}
 	worker, err := newTestClient(t, Config{URL: serverURL, TokenSource: func() string { return token }, HTTPClient: &http.Client{Transport: h.failChanges}})
