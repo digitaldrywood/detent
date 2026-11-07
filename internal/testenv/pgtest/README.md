@@ -4,12 +4,17 @@
 fixtures are unchanged. PostgreSQL schema migrations belong to their owning
 package; supply them as the template migration function.
 
-Keep one `pgtest.NewTemplate(migrate)` in a package variable per test process.
-Call `template.Database(t)` to get an isolated `*sql.DB`, and call
-`template.Close(ctx)` after `m.Run()` in `TestMain`, before `os.Exit`. Give the
-close context the test process deadline. Fixture cleanup is registered with
-`t.Cleanup`; close application connections before fixture cleanup runs. Run
-with a nonzero `go test -timeout` so setup and cleanup have a deadline.
+Keep a `pgtest.NewTemplate(migrate)` in a package variable for the test process.
+The first constructed Template owns the binary cluster's lifetime, including
+when another Template initializes first. Close that owner after `m.Run()` in
+`TestMain`, before `os.Exit`, even if the owner never needed a database. Give the
+close context the test process deadline. Other Templates borrow the same server;
+their `Close` drops only their own databases. Close all borrowers before the
+lifetime owner. A closed lifetime owner cannot start another cluster.
+
+Call `template.Database(t)` to get an isolated `*sql.DB`. Fixture cleanup is
+registered with `t.Cleanup`; close application connections before fixture cleanup
+runs. Run with a nonzero `go test -timeout` so setup and cleanup have a deadline.
 
 The migration function receives an empty database and must finish all migration
 work before returning. It runs once, then its connection pool is closed and the
@@ -22,7 +27,8 @@ Select the server explicitly with `DETENT_TEST_POSTGRES`:
 
 - `binary`: run `initdb` and `postgres` from PATH. Use PostgreSQL 17 or 18 binaries.
   The cluster lives under `TMPDIR`, listens only on a unique Unix socket, and is
-  stopped and removed by `template.Close`. A shell supervisor owns the postmaster
+  stopped and removed by the lifetime owner's `Close`. Every Template in the
+  test binary shares this cluster. A shell supervisor owns the postmaster
   and reads a lifetime pipe whose only writer is the test binary. Normal close
   requests fast shutdown; EOF after an abrupt exit requests immediate shutdown.
   The supervisor waits for the postmaster to release its IPC resources. This
@@ -56,16 +62,20 @@ TMPDIR="$PWD/tmp" DETENT_TEST_POSTGRES=binary \
   go test -race ./internal/testenv/pgtest -timeout=120s
 ```
 
-At most four top-level tests own fixtures per template at once. A test and its
-subtests share admission, so requesting another database cannot wait on a slot
-held by that same test. Every database remains isolated, with two client
-connections per database and one administrative connection per template. Total
-connections depend on the number of databases those tests keep open; close
-unused pools promptly. The admin pool serializes cloning. Ownership checks use
-exact generated names; cleanup never enumerates or drops other processes'
-databases.
+In binary mode, at most four top-level tests own fixtures across all Templates
+at once, with one shared administrative connection. URL attachment retains
+per-Template admission and administrative pools. A test and its subtests share
+admission, so requesting another database cannot wait on a slot held by that same
+test. Every database remains isolated, with two client connections per database.
+Total connections depend on the number of databases those tests keep open; close
+unused pools promptly. The admin pool serializes cloning. Each Template retains
+its own exact-name ownership set; closing a borrower never drops another
+Template's databases. Cleanup never enumerates other processes' databases.
+
 Failed migration and fixture setup close their connection pools and drop their
-databases, preserving the primary error. Cleanup detaches cancellation while
+databases, preserving the primary error. Even a failed lifetime-owner migration
+keeps the shared server available until the owner explicitly closes it. Cleanup
+detaches cancellation while
 retaining the test deadline. Process readiness and parallel test coordination
 use signals, without polling, sleeps, or fixture-specific timeouts.
 

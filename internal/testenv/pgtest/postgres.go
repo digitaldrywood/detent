@@ -37,18 +37,33 @@ const connectionLimit = 2
 
 var errNotConfigured = errors.New("PostgreSQL 17 or 18 fixtures require DETENT_TEST_POSTGRES=binary or a disposable local postgres:// URL")
 
+var processCluster binaryCluster
+
+type binaryCluster struct {
+	mu        sync.Mutex
+	owner     *Template
+	once      sync.Once
+	server    *server
+	err       error
+	closed    bool
+	admission *Template
+}
+
 type Template struct {
-	once    sync.Once
-	migrate func(context.Context, *sql.DB) error
-	server  *server
-	name    string
-	err     error
-	mu      sync.Mutex
-	owners  map[string]int
-	changed chan struct{}
+	cluster   *binaryCluster
+	admission *Template
+	once      sync.Once
+	migrate   func(context.Context, *sql.DB) error
+	server    *server
+	name      string
+	err       error
+	mu        sync.Mutex
+	owners    map[string]int
+	changed   chan struct{}
 }
 
 type server struct {
+	shared bool
 	config *pgtransport.Connection
 	admin  *sql.DB
 	stop   func(context.Context) error
@@ -57,7 +72,13 @@ type server struct {
 }
 
 func NewTemplate(migrate func(context.Context, *sql.DB) error) *Template {
-	return &Template{migrate: migrate, owners: make(map[string]int), changed: make(chan struct{})}
+	p := &Template{migrate: migrate, owners: make(map[string]int), changed: make(chan struct{}), cluster: &processCluster}
+	processCluster.mu.Lock()
+	if processCluster.owner == nil {
+		processCluster.owner = p
+	}
+	processCluster.mu.Unlock()
+	return p
 }
 
 func (p *Template) Database(t *testing.T) *sql.DB {
@@ -156,7 +177,14 @@ func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
 }
 
 func (p *Template) initialize(ctx context.Context, selection string) (resultErr error) {
-	s, err := openServer(ctx, selection)
+	var s *server
+	var err error
+	if selection == "binary" {
+		s, err = p.cluster.open(ctx)
+		p.admission = p.cluster.admission
+	} else {
+		s, err = openServer(ctx, selection)
+	}
 	if err != nil {
 		return err
 	}
@@ -166,7 +194,7 @@ func (p *Template) initialize(ctx context.Context, selection string) (resultErr 
 		if !complete {
 			cleanupCtx, cancel := cleanupContext(ctx)
 			defer cancel()
-			resultErr = errors.Join(resultErr, p.Close(cleanupCtx))
+			resultErr = errors.Join(resultErr, p.closeDatabases(cleanupCtx))
 		}
 	}()
 	name, err := s.create(ctx, "template0")
@@ -192,6 +220,9 @@ func (p *Template) initialize(ctx context.Context, selection string) (resultErr 
 }
 
 func (p *Template) acquire(ctx context.Context, name string) (func(), error) {
+	if p.admission != nil {
+		return p.admission.acquire(ctx, name)
+	}
 	owner, _, _ := strings.Cut(name, "/")
 	for {
 		if err := ctx.Err(); err != nil {
@@ -268,11 +299,17 @@ func (p *Template) clone(ctx context.Context, owner string, setup func(context.C
 }
 
 func (p *Template) Close(ctx context.Context) error {
+	ctx, cancel := cleanupContext(ctx)
+	defer cancel()
+	return errors.Join(p.closeDatabases(ctx), p.cluster.close(ctx, p))
+}
+
+func (p *Template) closeDatabases(ctx context.Context) error {
+	ctx, cancel := cleanupContext(ctx)
+	defer cancel()
 	if p.server == nil {
 		return nil
 	}
-	ctx, cancel := cleanupContext(ctx)
-	defer cancel()
 	var err error
 	p.server.mu.Lock()
 	names := make([]string, 0, len(p.server.owned))
@@ -289,7 +326,9 @@ func (p *Template) Close(ctx context.Context) error {
 		err = errors.Join(err, p.server.drop(ctx, p.name))
 		p.name = ""
 	}
-	err = errors.Join(err, p.server.admin.Close(), p.server.stop(ctx))
+	if !p.server.shared {
+		err = errors.Join(err, p.server.admin.Close(), p.server.stop(ctx))
+	}
 	p.server = nil
 	return err
 }
@@ -562,4 +601,37 @@ func fixtureConnector(connection pgtransport.Connection) (driver.Connector, erro
 		return nil, err
 	}
 	return stdlib.GetConnector(*config.ConnConfig), nil
+}
+
+func (c *binaryCluster) open(ctx context.Context) (*server, error) {
+	c.once.Do(func() {
+		c.server, c.err = openServer(ctx, "binary")
+		c.admission = &Template{owners: make(map[string]int), changed: make(chan struct{})}
+	})
+	if c.err != nil {
+		return nil, c.err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return nil, errors.New("disposable PostgreSQL cluster is closed")
+	}
+	return &server{config: c.server.config, admin: c.server.admin, shared: true, owned: make(map[string]struct{})}, nil
+}
+
+func (c *binaryCluster) close(ctx context.Context, owner *Template) error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.owner != owner {
+		return nil
+	}
+	c.once.Do(func() { c.err = errors.New("disposable PostgreSQL cluster is closed") })
+	if c.server == nil || c.closed {
+		return nil
+	}
+	c.closed = true
+	return errors.Join(c.server.admin.Close(), c.server.stop(ctx))
 }

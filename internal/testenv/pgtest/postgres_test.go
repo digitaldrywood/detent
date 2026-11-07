@@ -427,6 +427,7 @@ func TestBinaryStderrFloodAndCleanup(t *testing.T) {
 			ctx, finish := testContext(t)
 			defer finish()
 			p := NewTemplate(migrateFixture)
+			p.cluster = &binaryCluster{owner: p}
 			if err := p.initialize(ctx, "binary"); err != nil {
 				t.Fatal(err)
 			}
@@ -920,5 +921,79 @@ func TestBinaryDurabilitySettingsAndURLPreservation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestTemplatesShareBinaryClusterAndKeepOwnership(t *testing.T) {
+	root := processTemplate.Database(t)
+	ctx, cancel := testContext(t)
+	defer cancel()
+	for range 2 {
+		p := NewTemplate(migrateFixture)
+		if err := p.initialize(ctx, "binary"); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := p.Close(ctx); err != nil {
+				t.Error(err)
+			}
+		})
+		if p.server.config.Host != processTemplate.server.config.Host {
+			t.Fatal("Templates started separate disposable clusters")
+		}
+		if p.server.admin != processTemplate.server.admin {
+			t.Fatal("Templates opened separate administrator pools")
+		}
+		if p.admission != processTemplate.admission {
+			t.Fatal("Templates do not share server admission")
+		}
+		if err := p.server.drop(ctx, processTemplate.name); err == nil {
+			t.Fatal("shared server accepted another Template's database")
+		}
+		db, cleanup, err := p.clone(ctx, t.Name(), func(context.Context, *sql.DB) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.PingContext(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := cleanup(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := root.PingContext(ctx); err != nil {
+			t.Fatalf("borrower close stopped shared cluster: %v", err)
+		}
+	}
+}
+
+func TestOwnerMigrationFailureKeepsBinaryLifetime(t *testing.T) {
+	ctx, cancel := testContext(t)
+	defer cancel()
+	sentinel := errors.New("initial migration failed")
+	owner := NewTemplate(func(context.Context, *sql.DB) error { return sentinel })
+	owner.cluster = &binaryCluster{owner: owner}
+	t.Cleanup(func() {
+		if err := owner.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := owner.initialize(ctx, "binary"); !errors.Is(err, sentinel) {
+		t.Fatalf("initial migration: %v", err)
+	}
+	if err := owner.cluster.server.admin.PingContext(ctx); err != nil {
+		t.Fatalf("failed migration ended the binary lifetime: %v", err)
+	}
+	retry := NewTemplate(migrateFixture)
+	retry.cluster = owner.cluster
+	t.Cleanup(func() {
+		if err := retry.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := retry.initialize(ctx, "binary"); err != nil {
+		t.Fatalf("retry on the original server: %v", err)
 	}
 }

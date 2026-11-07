@@ -31,6 +31,16 @@ func TestBinaryLifetime(t *testing.T) {
 		if err := processTemplate.initialize(t.Context(), "binary"); err != nil {
 			t.Fatal(err)
 		}
+		borrower := NewTemplate(migrateFixture)
+		if err := borrower.initialize(t.Context(), "binary"); err != nil {
+			t.Fatal(err)
+		}
+		if borrower.server.config.Host != processTemplate.server.config.Host {
+			t.Fatal("lifetime fixture started a second postmaster")
+		}
+		if err := borrower.Close(t.Context()); err != nil {
+			t.Fatal(err)
+		}
 		data := processTemplate.server.config.Host
 		pidfile, err := os.ReadFile(filepath.Join(data, "postmaster.pid"))
 		if err != nil {
