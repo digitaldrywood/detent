@@ -265,7 +265,7 @@ func TestNativeSecurityAuditRetainsProviderReservation(t *testing.T) {
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if current.Lease.ID != "" || len(fixtureClaims(h.scheduler)) != 0 {
+	if releases != 1 || current.Lease.ID != "" || len(fixtureClaims(h.scheduler)) != 0 {
 		t.Fatalf("stage completion did not release reservation: releases=%d held=%d", releases, len(fixtureClaims(h.scheduler)))
 	}
 	next, err := h.native.Claim(t.Context(), competingClaim)
