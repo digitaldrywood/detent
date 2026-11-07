@@ -312,66 +312,72 @@ func TestBoardSearchFallbackReturnsHTTPAndMCPMatches(t *testing.T) {
 			send := hostedContextProtocol(t, service, ctx, "http")
 			service.config.RunDetails.(*memoryRunDetails).beforeRead = func(context.Context) error { return errors.New("search read an object") }
 			for _, test := range []struct {
-				query, fingerprint string
-				want               []tracker.NativeWorkItemID
+				name, query, fingerprint string
+				want                     []tracker.NativeWorkItemID
 			}{
-				{"release audit resume credential", "", []tracker.NativeWorkItemID{first.WorkItemID, second.WorkItemID}},
-				{"absentuniqueterm", "", nil},
-				{"bodyuniquemarker", "", []tracker.NativeWorkItemID{first.WorkItemID}},
-				{"", "example-key", []tracker.NativeWorkItemID{first.WorkItemID}},
-				{"", "absent-key", nil},
+				{"matching query", "release audit resume credential", "", []tracker.NativeWorkItemID{first.WorkItemID, second.WorkItemID}},
+				{"empty query", "absentuniqueterm", "", nil},
+				{"body query", "bodyuniquemarker", "", []tracker.NativeWorkItemID{first.WorkItemID}},
+				{"matching fingerprint", "", "example-key", []tracker.NativeWorkItemID{first.WorkItemID}},
+				{"empty fingerprint", "", "absent-key", nil},
 			} {
-				for _, include := range []string{"summary", "board", "work"} {
-					params := url.Values{"q": {test.query}, "fingerprint": {test.fingerprint}, "archived": {"all"}, "include": {include}, "limit": {"1"}}
-					var got []tracker.NativeWorkItemID
-					for {
-						response := performHubAPIRequest(t, service, http.MethodGet, f.base+"/work-items?"+params.Encode(), f.token, nil)
-						requireNativeStatus(t, response, http.StatusOK)
-						if strings.Contains(response.Body.String(), string(hidden.WorkItemID)) {
-							t.Fatal("search restored an inaccessible relationship")
-						}
-						var page tracker.NativeIssuePage
-						decodeHubResponse(t, response, &page)
-						for _, item := range page.Items {
-							if item.OrganizationID != org || item.ProjectID != f.project.ID {
-								t.Fatal("search leaked another tenant or project")
+				t.Run(test.name, func(t *testing.T) {
+					for _, include := range []string{"summary", "board", "work"} {
+						t.Run("http/"+include, func(t *testing.T) {
+							params := url.Values{"q": {test.query}, "fingerprint": {test.fingerprint}, "archived": {"all"}, "include": {include}, "limit": {"1"}}
+							var got []tracker.NativeWorkItemID
+							for {
+								response := performHubAPIRequest(t, service, http.MethodGet, f.base+"/work-items?"+params.Encode(), f.token, nil)
+								requireNativeStatus(t, response, http.StatusOK)
+								if strings.Contains(response.Body.String(), string(hidden.WorkItemID)) {
+									t.Fatal("search restored an inaccessible relationship")
+								}
+								var page tracker.NativeIssuePage
+								decodeHubResponse(t, response, &page)
+								for _, item := range page.Items {
+									if item.OrganizationID != org || item.ProjectID != f.project.ID {
+										t.Fatal("search leaked another tenant or project")
+									}
+									got = append(got, item.WorkItemID)
+								}
+								if page.NextCursor == "" {
+									break
+								}
+								params.Set("cursor", page.NextCursor)
+								if len(got) > 2 {
+									t.Fatal("search cursor repeated results")
+								}
 							}
-							got = append(got, item.WorkItemID)
+							want := slices.Clone(test.want)
+							if include == "board" {
+								slices.Sort(got)
+								slices.Sort(want)
+							}
+							if !slices.Equal(got, want) {
+								t.Fatalf("%s search=%v want=%v", include, got, test.want)
+							}
+						})
+					}
+					t.Run("mcp", func(t *testing.T) {
+						raw := hostedContextData(t, send("tools/call", operatortool.WorkList, map[string]any{"project_id": f.project.ID, "query": test.query, "fingerprint": test.fingerprint, "archived": "all", "include": []string{"summary"}, "limit": 5}), false)
+						if strings.Contains(string(raw), string(hidden.WorkItemID)) {
+							t.Fatal("MCP search leaked an inaccessible relationship")
 						}
-						if page.NextCursor == "" {
-							break
+						var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
+						if err := json.Unmarshal(raw, &result); err != nil {
+							t.Fatal(err)
 						}
-						params.Set("cursor", page.NextCursor)
-						if len(got) > 2 {
-							t.Fatal("search cursor repeated results")
+						if len(result.Data.Items) != len(test.want) {
+							t.Fatalf("MCP search=%s", raw)
 						}
-					}
-					want := slices.Clone(test.want)
-					if include == "board" {
-						slices.Sort(got)
-						slices.Sort(want)
-					}
-					if !slices.Equal(got, want) {
-						t.Fatalf("%s search=%v want=%v", include, got, test.want)
-					}
-				}
-				raw := hostedContextData(t, send("tools/call", operatortool.WorkList, map[string]any{"project_id": f.project.ID, "query": test.query, "fingerprint": test.fingerprint, "archived": "all", "include": []string{"summary"}, "limit": 5}), false)
-				if strings.Contains(string(raw), string(hidden.WorkItemID)) {
-					t.Fatal("MCP search leaked an inaccessible relationship")
-				}
-				var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
-				if err := json.Unmarshal(raw, &result); err != nil {
-					t.Fatal(err)
-				}
-				if len(result.Data.Items) != len(test.want) {
-					t.Fatalf("MCP search=%s", raw)
-				}
-				for index, item := range result.Data.Items {
-					wantNumber := map[tracker.NativeWorkItemID]int{first.WorkItemID: first.Number, second.WorkItemID: second.Number}[test.want[index]]
-					if item.Number != wantNumber {
-						t.Fatalf("MCP order=%s", raw)
-					}
-				}
+						for index, item := range result.Data.Items {
+							wantNumber := map[tracker.NativeWorkItemID]int{first.WorkItemID: first.Number, second.WorkItemID: second.Number}[test.want[index]]
+							if item.Number != wantNumber {
+								t.Fatalf("MCP order=%s", raw)
+							}
+						}
+					})
+				})
 			}
 		})
 	}
