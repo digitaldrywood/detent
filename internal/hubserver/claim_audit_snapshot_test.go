@@ -198,31 +198,92 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 			}
 		}
 		input := changeTestInput()
-		run := securityaudit.Run{ID: 501, ProjectID: "example", Repository: input.Repository, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA}
-		review := tracker.ChangeReview{ID: "foreign-run", VersionID: "version_049", Decision: "changes_requested", CreatedAt: now, SecurityAudit: &tracker.SecurityAuditReview{SessionID: 501, VersionID: "version_049", Run: run}}
-		raw, _ := json.Marshal(review)
-		evidence, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: "change_049", Kind: "review"}, raw)
-		if err != nil {
-			t.Fatal(err)
+		for index := range 50 {
+			id := int64(1000 + index)
+			if index == 49 {
+				id = 501
+			}
+			versionID := fmt.Sprintf("version_%03d", index)
+			run := securityaudit.Run{ID: id, ProjectID: "example", Repository: input.Repository, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA}
+			review := tracker.ChangeReview{ID: "legacy-run", VersionID: versionID, Decision: "changes_requested", CreatedAt: now, SecurityAudit: &tracker.SecurityAuditReview{SessionID: id, VersionID: versionID, Run: run}}
+			raw, err := json.Marshal(review)
+			if err != nil {
+				t.Fatal(err)
+			}
+			evidence, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: fmt.Sprintf("change_%03d", index), Kind: "review"}, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			evidence.ReviewKind = ""
+			evidence.ReviewSessionKnown = false
+			evidence.ReviewSessionID = 0
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(t.Context(), evidence); return err }); err != nil {
+				t.Fatal(err)
+			}
 		}
+
 		disposition := securityaudit.Disposition{AuditRunID: 501, FindingID: "foreign", Status: securityaudit.DispositionFalsePositive, ServiceIdentity: securityaudit.ServiceIdentity("example"), RecordedAt: now}
-		raw, _ = json.Marshal(disposition)
+		raw, _ := json.Marshal(disposition)
 		ref, err := details.StoreDetail(t.Context(), string(org), raw)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: "wi_049", WorkflowStates: []string{"Merging"}}
-		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(t.Context(), evidence); return err }); err != nil {
+		scalar, err := service.readNativeClaimPlanRows(t.Context(), scope, request, now, nil, nil, nativeClaimPlan{})
+		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := service.readNativeClaimPlan(t.Context(), scope, request, now); err != nil {
-			t.Fatalf("audit without dispositions: %v", err)
+		scalar.changeFacts = nil
+		expected, err := service.nativeClaimCurrentChangeDetail(t.Context(), scope, scalar, now)
+		if err != nil {
+			t.Fatalf("scalar legacy audit without dispositions: %v", err)
+		}
+		actual, err := service.readNativeClaimPlan(t.Context(), scope, request, now)
+		if err != nil {
+			t.Errorf("batch legacy audit without dispositions tenant=%s: %v", org, err)
+		} else {
+			detail, err := service.nativeClaimCurrentChangeDetail(t.Context(), scope, actual, now)
+			if err != nil || !reflect.DeepEqual(detail, expected) {
+				t.Errorf("legacy audit detail changed: %v", err)
+			}
+		}
+		var legacyExchanges, legacyStatements int64
+		for _, size := range []int{2, 50} {
+			pageRequest := tracker.NativeClaim{PolicyID: descriptor.ID, WorkflowStates: []string{"Merging"}}
+			for index := 50 - size; index < 50; index++ {
+				pageRequest.ProviderCandidates = append(pageRequest.ProviderCandidates, tracker.NativeCapacityCandidate{WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index))})
+			}
+			var statements int64
+			ctx := postgres.WithTransactionTiming(t.Context(), nil, func(time.Time, string) { statements++ })
+			exchanges.Store(0)
+			scan, err := service.readNativeClaimCandidates(ctx, scope, pageRequest, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(scan.plans) != size {
+				t.Fatalf("legacy candidates=%d want %d", len(scan.plans), size)
+			}
+			for _, plan := range scan.plans {
+				if _, err := service.hydrateNativeClaimPlan(ctx, scope, pageRequest, now, plan, &descriptor); err != nil {
+					t.Errorf("legacy page hydration tenant=%s size=%d: %v", org, size, err)
+				}
+			}
+			got := exchanges.Load()
+			t.Logf("legacy tenant=%s candidates=%d statements=%d exchanges=%d", org, size, statements, got)
+			if size == 2 {
+				legacyExchanges, legacyStatements = got, statements
+			} else if got != legacyExchanges || statements != legacyStatements {
+				t.Errorf("legacy snapshot cost grew: %d/%d versus %d/%d", statements, got, legacyStatements, legacyExchanges)
+			}
 		}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			_, err := w.(eventstore.AuditDispositionWriter).CreateAuditDisposition(t.Context(), eventstore.AuditDisposition{Organization: org, Project: "example", ChangeID: "change_000", ReviewSequence: 1, ActorID: "test_hub_admin", RequestKey: "foreign-run", RequestHash: "example", Reference: ref, Disposition: disposition})
 			return err
 		}); err != nil {
 			t.Fatal(err)
+		}
+		if _, err := service.nativeClaimCurrentChangeDetail(t.Context(), scope, scalar, now); !errors.Is(err, corestore.ErrRevisionConflict) {
+			t.Errorf("scalar legacy foreign disposition: %v", err)
 		}
 		if _, err := service.readNativeClaimPlan(t.Context(), scope, request, now); !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Fatalf("foreign audit disposition outside candidate page: %v", err)

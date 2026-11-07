@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -83,10 +84,20 @@ func TestAuditDispositionWritesPreserveReadableSession(t *testing.T) {
 					t.Fatalf("snapshot dispositions=%d, want 200", got)
 				}
 				rows, err := r.(eventstore.AuditDispositionReader).AuditDispositions(t.Context(), row.Project, 1)
-				if err == nil && len(rows) != 200 {
-					t.Errorf("dispositions = %d, want 200", len(rows))
+				if err != nil {
+					return err
 				}
-				return err
+				batch, err := r.(tenantstore.ClaimAuditDispositionRowsReader).ClaimAuditDispositionRows(t.Context(), row.Project, []int64{1, 2, 404})
+				if err != nil {
+					return err
+				}
+				if !reflect.DeepEqual(batch[1], rows) || len(rows) != 200 || len(batch[2]) != 1 {
+					t.Fatal("batched disposition metadata differs from scalar")
+				}
+				if empty, covered := batch[404]; !covered || len(empty) != 0 {
+					t.Fatal("empty legacy audit run was not queried")
+				}
+				return nil
 			}); err != nil {
 				t.Fatalf("read full session: %v", err)
 			}

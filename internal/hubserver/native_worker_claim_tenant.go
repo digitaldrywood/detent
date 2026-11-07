@@ -249,6 +249,13 @@ func (s *Service) readNativeClaimCandidates(ctx context.Context, scope nativeSco
 
 		return readNativeClaimChangeFacts(ctx, r, scope, scan.plans)
 	})
+	if err == nil {
+		plans := scan.plans
+		if scan.replay != nil {
+			plans = []nativeClaimPlan{*scan.replay}
+		}
+		err = s.prepareNativeClaimLegacyAuditFacts(ctx, scope, plans)
+	}
 	return scan, err
 }
 
@@ -681,6 +688,9 @@ func readTenantProviderReservation(ctx context.Context, r claimstore.Reader, lea
 func (s *Service) readNativeClaimPlan(ctx context.Context, scope nativeScope, request tracker.NativeClaim, now time.Time) (nativeClaimPlan, error) {
 	plan, err := s.readNativeClaimPlanRows(ctx, scope, request, now, nil, nil, nativeClaimPlan{})
 	if err != nil {
+		return nativeClaimPlan{}, err
+	}
+	if err := s.prepareNativeClaimLegacyAuditFacts(ctx, scope, []nativeClaimPlan{plan}); err != nil {
 		return nativeClaimPlan{}, err
 	}
 	return s.hydrateNativeClaimPlan(ctx, scope, request, now, plan, nil)

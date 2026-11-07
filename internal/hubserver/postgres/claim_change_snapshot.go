@@ -97,3 +97,40 @@ ORDER BY 1,2,8,20`, s.organization, project, ids, corestore.MaxPageSize+1)
 	}
 	return result, mapError(ctx, rows.Err())
 }
+
+func (s *session) ClaimAuditDispositionRows(ctx context.Context, project tracker.ProjectID, runs []int64) (map[int64][]eventstore.AuditDisposition, error) {
+	if project == "" || len(runs) > 100*corestore.MaxPageSize {
+		return nil, corestore.ErrInvalidPage
+	}
+	result := map[int64][]eventstore.AuditDisposition{}
+	for _, id := range runs {
+		result[id] = nil
+	}
+	if len(runs) == 0 {
+		return result, nil
+	}
+	rows, err := s.db.Query(ctx, `SELECT d.id,d.change_id,d.review_sequence,d.audit_session_id,d.finding_id,d.status,d.actor_id,d.recorded_at,d.payload_object_key,d.payload_sha256,d.payload_bytes,d.payload_content_bytes
+FROM (SELECT DISTINCT unnest($3::bigint[]) AS id) requested
+CROSS JOIN LATERAL (
+ SELECT * FROM runner_audit_dispositions WHERE organization_id=$1 AND project_id=$2 AND audit_session_id=requested.id ORDER BY id LIMIT 201
+) d ORDER BY d.audit_session_id,d.id`, s.organization, project, runs)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		row := eventstore.AuditDisposition{Organization: s.organization, Project: project}
+		var key, digest string
+		var size, contentSize int64
+		d := &row.Disposition
+		if err := rows.Scan(&d.ID, &row.ChangeID, &row.ReviewSequence, &d.AuditRunID, &d.FindingID, &d.Status, &row.ActorID, &d.RecordedAt, &key, &digest, &size, &contentSize); err != nil {
+			return nil, mapError(ctx, err)
+		}
+		if len(result[d.AuditRunID]) >= 200 {
+			return nil, corestore.ErrInvalidPage
+		}
+		row.Reference = eventstore.Reference(key, digest, size, contentSize)
+		result[d.AuditRunID] = append(result[d.AuditRunID], row)
+	}
+	return result, mapError(ctx, rows.Err())
+}

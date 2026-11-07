@@ -90,6 +90,10 @@ func (r nativePreviewCountingReader) LandingCapacityUsage(ctx context.Context, p
 	return r.Reader.LandingCapacityUsage(ctx, project, now)
 }
 
+func (r nativePreviewCountingReader) ClaimAuditDispositionRows(ctx context.Context, project tracker.ProjectID, ids []int64) (map[int64][]eventstore.AuditDisposition, error) {
+	return r.Reader.(tenantstore.ClaimAuditDispositionRowsReader).ClaimAuditDispositionRows(ctx, project, ids)
+}
+
 func (r nativePreviewCountingReader) ClaimChangeRows(ctx context.Context, project tracker.ProjectID, ids []string) (map[string]tenantstore.BoardChangeRows, error) {
 	return r.Reader.(tenantstore.ClaimChangeRowsReader).ClaimChangeRows(ctx, project, ids)
 }

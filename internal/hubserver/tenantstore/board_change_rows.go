@@ -33,3 +33,7 @@ type BoardChangeRowsReader interface {
 type ClaimChangeRowsReader interface {
 	ClaimChangeRows(context.Context, tracker.ProjectID, []string) (map[string]BoardChangeRows, error)
 }
+
+type ClaimAuditDispositionRowsReader interface {
+	ClaimAuditDispositionRows(context.Context, tracker.ProjectID, []int64) (map[int64][]eventstore.AuditDisposition, error)
+}
