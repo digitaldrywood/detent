@@ -171,7 +171,7 @@ type fleetSchema struct {
 	Items                *fleetSchema           `json:"items"`
 	Enum                 []string               `json:"enum"`
 	MinLength            int                    `json:"minLength"`
-	MaxLength            int                    `json:"maxLength"`
+	MaxLength            *int                   `json:"maxLength"`
 	MinItems             int                    `json:"minItems"`
 	MaxItems             int                    `json:"maxItems"`
 	Minimum              *float64               `json:"minimum"`
@@ -214,7 +214,7 @@ func (s fleetSchema) accepts(value any) bool {
 		}
 	case "string":
 		v, ok := value.(string)
-		if !ok || len(v) < s.MinLength || len(v) > s.MaxLength || s.MinLength > 0 && strings.TrimSpace(v) == "" {
+		if !ok || len(v) < s.MinLength || s.MaxLength != nil && len(v) > *s.MaxLength || s.MinLength > 0 && strings.TrimSpace(v) == "" {
 			return false
 		}
 		if len(s.Enum) > 0 && !slices.Contains(s.Enum, v) {

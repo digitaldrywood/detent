@@ -82,6 +82,8 @@ func TestPostgresEntryKeyRuntimeCatalog(t *testing.T) {
 			{operatortool.BoardSessionHistory, `"reference":"#1","native_attempt_id":"attempt_0123456789abcdef0123456789abcdef"`, `"id":"` + org + `"`},
 			{operatortool.ExplainItem, `"reference":"#1","include":["summary"]`, `"issue_id":"item"`},
 			{operatortool.CreateRunnerEnrollment, `"request_id":"entry-enrollment","enrollment":{"project_ids":["project"],"operations":["read"],"ttl_seconds":60}`, `"id":"enrollment_`},
+			{operatortool.CreateRunnerEnrollment, `"request_id":"entry-enrollment-projects","enrollment":{"scope":"projects","project_ids":["project"],"operations":["read"],"ttl_seconds":60}`, `"scope":"projects"`},
+			{operatortool.CreateRunnerEnrollment, `"request_id":"entry-enrollment-organization","enrollment":{"scope":"organization","project_ids":[],"operations":["read"],"ttl_seconds":60}`, `"scope":"organization"`},
 			{operatortool.MarkUrgentRunnerUpdate, `"request_id":"entry-urgent","change":{"expected_revision":0,"version":"1.2.3"}`, `"version":"1.2.3"`},
 			{operatortool.TransferItem, `"identifier":"#1","expected_revision":"1","version_id":"version","request_id":"entry-transfer"`, `"quiesced":true`},
 		} {
