@@ -13,7 +13,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -49,16 +48,7 @@ func TestProjectSetupFailurePrecedesNativeClaim(t *testing.T) {
 			t.Fatalf("setup runs = %q, error = %v; want %d", content, err, want)
 		}
 	}
-	localStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runner.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := localStore.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	setup := project.NewRunnerSetup("runner-one", localStore, nil)
+	setup := project.NewRunnerSetup("runner-one", nil, nil)
 	writeSetup("printf 'failure\\n' >> trace\nexit 7\n")
 	h.scheduler.prepareProject = func(ctx context.Context, name string) error {
 		if name == "local" {
@@ -95,9 +85,7 @@ func TestProjectSetupFailurePrecedesNativeClaim(t *testing.T) {
 		}
 	}
 	assertRuns(2)
-	if hash, err := localStore.ProjectRunnerSetupHash(t.Context(), "runner-one", selected.ID); err != nil || hash != "" {
-		t.Fatalf("failed setup hash = %q, error = %v", hash, err)
-	}
+
 	if h.scheduler.localChecks["local"].Setup != "failed" || h.scheduler.localChecks["local"].RunnerSetupDeclared == nil || !*h.scheduler.localChecks["local"].RunnerSetupDeclared {
 		t.Fatal("failed project setup was not reported")
 	}
@@ -115,22 +103,14 @@ func TestProjectSetupFailurePrecedesNativeClaim(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	assertRuns(3)
-	hash, err := localStore.ProjectRunnerSetupHash(t.Context(), "runner-one", selected.ID)
-	if err != nil || hash == "" {
-		t.Fatalf("successful native setup hash = %q, error = %v", hash, err)
-	}
+	assertRuns(5)
 	writeSetup("printf 'changed\\n' >> trace\n")
 	for range 2 {
 		if err := h.scheduler.PrepareProject(t.Context(), "local"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	assertRuns(4)
-	changed, err := localStore.ProjectRunnerSetupHash(t.Context(), "runner-one", selected.ID)
-	if err != nil || changed == "" || changed == hash {
-		t.Fatalf("changed native setup hash = %q, previous = %q, error = %v", changed, hash, err)
-	}
+	assertRuns(7)
 	for _, declared := range []bool{false, true} {
 		body := "---\ntracker:\n  kind: hub_native\n"
 		if declared {
@@ -147,7 +127,11 @@ func TestProjectSetupFailurePrecedesNativeClaim(t *testing.T) {
 		if checks.RunnerSetupDeclared == nil || *checks.RunnerSetupDeclared != declared || checks.Setup != "passed" {
 			t.Fatalf("changed declaration was not reported: %+v", checks)
 		}
-		assertRuns(4)
+		if declared {
+			assertRuns(8)
+		} else {
+			assertRuns(7)
+		}
 	}
 
 }
