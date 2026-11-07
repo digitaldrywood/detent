@@ -121,11 +121,11 @@ func (s *Service) prepareBoardPage(ctx context.Context, scope nativeScope, recor
 		changes, supported = s.prepareBoardChangeRows(ctx, scope, valid)
 	}
 	prepared = maps.Clone(prepared)
-	return prepareBoardRecordPage(ctx, records, func(ctx context.Context, row viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
+	for _, row := range records {
 		value := prepared[row.WorkItemID]
 		card := value.card
 		if value.err != nil {
-			return card, value.err
+			continue
 		}
 		if currentChange && card.Change != nil {
 			var summary tracker.ChangeSummary
@@ -136,12 +136,19 @@ func (s *Service) prepareBoardPage(ctx context.Context, scope nativeScope, recor
 				summary, err = s.selectedCurrentChangeSummary(ctx, scope, row.WorkItemID, card.Change.ID, now)
 			}
 			if err != nil {
-				return card, err
+				value.err = err
+				prepared[row.WorkItemID] = value
+				continue
 			}
 			change := *card.Change
 			change.Status = summary.Status
 			card.Change = &change
 		}
-		return card, nil
+		value.card = card
+		prepared[row.WorkItemID] = value
+	}
+	return prepareBoardRecordPage(ctx, records, func(_ context.Context, row viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
+		value := prepared[row.WorkItemID]
+		return value.card, value.err
 	})
 }
