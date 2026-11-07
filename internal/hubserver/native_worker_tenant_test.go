@@ -221,7 +221,15 @@ func TestReviewTerminalLease(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if _, err := f.admin.ExecContext(t.Context(), "UPDATE issues SET workflow_state_name='Done' WHERE organization_id=$1 AND native_id=$2", "org_startup", string(lease.WorkItemID)); err != nil {
+				if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+					item, err := w.LockWorkItem(t.Context(), "prj_runner", lease.WorkItemID)
+					if err != nil {
+						return err
+					}
+					item.WorkflowStateName = new("Done")
+					_, err = w.UpdateWorkItem(t.Context(), item)
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
 				if test.completed {
