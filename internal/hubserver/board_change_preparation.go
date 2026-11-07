@@ -17,6 +17,7 @@ type boardChangePreparation struct {
 	policy   currentChangePolicyRows
 	approval *ChangeVersionApproval
 	err      error
+	workload corestore.Workload
 }
 
 func (s *Service) prepareBoardChangeRows(ctx context.Context, scope nativeScope, cards []tracker.NativeBoardCard) (boardChangePreparation, bool) {
@@ -36,11 +37,12 @@ func (s *Service) prepareBoardChangeRowsFor(ctx context.Context, scope nativeSco
 			requests = append(requests, request)
 		}
 	}
-	result := boardChangePreparation{rows: map[tenantstore.BoardChangeRequest]tenantstore.BoardChangeRows{}}
+	result := boardChangePreparation{rows: map[tenantstore.BoardChangeRequest]tenantstore.BoardChangeRows{}, workload: workload}
 	if len(requests) == 0 {
 		return result, true
 	}
 	supported := false
+	hasChanges := false
 	finishRows := timeSpan(ctx, "board_change_rows")
 	result.err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, workload, func(reader tenantstore.Reader) error {
 		batch, ok := reader.(tenantstore.BoardChangeRowsReader)
@@ -62,13 +64,17 @@ func (s *Service) prepareBoardChangeRowsFor(ctx context.Context, scope nativeSco
 			}
 			for _, row := range rows {
 				result.rows[row.Request] = row
+				hasChanges = hasChanges || row.Change != nil
 			}
+		}
+		if !hasChanges {
+			return nil
 		}
 		result.policy, err = readChangeSummaryPolicyRows(ctx, reader, scope)
 		return err
 	})
 	finishRows()
-	if result.err == nil && supported {
+	if result.err == nil && supported && hasChanges {
 		refs := []attachment.ArchiveReference{eventstore.Reference(result.policy.Project.PayloadObjectKey, result.policy.Project.PayloadSHA256, result.policy.Project.PayloadBytes, result.policy.Project.PayloadContentBytes)}
 		if result.policy.hasReview {
 			r := result.policy.Review
@@ -110,7 +116,7 @@ func (p boardChangePreparation) summary(ctx context.Context, s *Service, scope n
 	if row.Change.CurrentVersionID != nil && row.Version == nil {
 		return tracker.ChangeSummary{}, projectRecordError(corestore.ErrNotFound)
 	}
-	detail, err := s.hydrateCurrentChangeDetailWithFacts(ctx, scope, item, *row.Change, row.Version, p.policy, now, &row, p.approval)
+	detail, err := s.hydrateCurrentChangeDetailWithFacts(ctx, scope, item, *row.Change, row.Version, p.policy, now, &row, p.approval, p.workload)
 	return detail.Summary, err
 }
 func boardCurrentApproval(ctx context.Context, content *eventstore.Content, scope nativeScope, rows currentChangePolicyRows, approval *ChangeVersionApproval) (ChangeVersionApproval, error) {

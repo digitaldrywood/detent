@@ -172,11 +172,17 @@ func (s *Service) readAuditDisposition(ctx context.Context, scope nativeScope, r
 }
 
 func (s *Service) prepareValidatorAuditDispositions(ctx context.Context, scope nativeScope, changeID string, run securityaudit.Run) ([]securityaudit.Disposition, []eventstore.AuditDisposition, error) {
+	return s.prepareValidatorAuditDispositionsFor(ctx, scope, changeID, run, corestore.Serving)
+}
+
+func (s *Service) prepareValidatorAuditDispositionsFor(ctx context.Context, scope nativeScope, changeID string, run securityaudit.Run, workload corestore.Workload) ([]securityaudit.Disposition, []eventstore.AuditDisposition, error) {
 	var rows []eventstore.AuditDisposition
 	var sources []eventstore.Evidence
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
-			return err
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, workload, func(r tenantstore.Reader) error {
+		if workload != corestore.Background {
+			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+				return err
+			}
 		}
 		reader, ok := r.(eventstore.AuditDispositionReader)
 		if !ok {
@@ -250,6 +256,10 @@ func lockValidatorAuditDispositions(ctx context.Context, r tenantstore.Reader, s
 }
 
 func (s *Service) summarizeChangeWithAuditDispositions(ctx context.Context, scope nativeScope, detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool) (tracker.ChangeSummary, error) {
+	return s.summarizeChangeWithAuditDispositionsFor(ctx, scope, detail, policyID, reviewPolicyID, now, priorApproval, corestore.Serving)
+}
+
+func (s *Service) summarizeChangeWithAuditDispositionsFor(ctx context.Context, scope nativeScope, detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool, workload corestore.Workload) (tracker.ChangeSummary, error) {
 	dispositions := make(map[int64][]securityaudit.Disposition)
 	for _, review := range detail.Reviews {
 		if review.VersionID != detail.Change.CurrentVersion || review.SecurityAudit == nil {
@@ -259,7 +269,7 @@ func (s *Service) summarizeChangeWithAuditDispositions(ctx context.Context, scop
 		if _, exists := dispositions[run.ID]; exists {
 			continue
 		}
-		values, _, err := s.prepareValidatorAuditDispositions(ctx, scope, detail.Change.ID, run)
+		values, _, err := s.prepareValidatorAuditDispositionsFor(ctx, scope, detail.Change.ID, run, workload)
 		if err != nil {
 			return tracker.ChangeSummary{}, err
 		}

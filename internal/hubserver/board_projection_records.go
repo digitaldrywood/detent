@@ -263,15 +263,22 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 			scope := nativeScope{organization: organization, project: candidate.ProjectID}
 			step = "change_rows"
 			changes, supported := s.prepareBoardChangeRowsFor(ctx, scope, []tracker.NativeBoardCard{card}, corestore.Background)
+			if changes.err != nil {
+				return changes.err
+			}
 			if !supported {
 				return corestore.ErrNotFound
 			}
-			step = "change_summary"
-			summary, err := changes.summary(ctx, s, scope, candidate.WorkItemID, card.Change.ID, now)
-			if err != nil {
-				return err
+			if row := changes.rows[tenantstore.BoardChangeRequest{WorkItemID: candidate.WorkItemID, ChangeID: card.Change.ID}]; row.Change == nil {
+				card.Change, snapshot.changePrincipalID = nil, ""
+			} else {
+				step = "change_summary"
+				summary, err := changes.summary(ctx, s, scope, candidate.WorkItemID, card.Change.ID, now)
+				if err != nil {
+					return err
+				}
+				card.Change.Status = summary.Status
 			}
-			card.Change.Status = summary.Status
 		}
 		card.StatusLine = nativeBoardStatusLine(card)
 		step = "board_payload"
