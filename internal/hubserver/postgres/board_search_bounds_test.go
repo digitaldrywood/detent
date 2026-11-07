@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -22,6 +23,28 @@ import (
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type boardSearchDeadline struct{ observed, deadline time.Time }
+
+type boardSearchSessionTrace struct {
+	conn      *pgx.Conn
+	deadlines []boardSearchDeadline
+}
+
+func (p *boardSearchSessionTrace) TraceQueryStart(ctx context.Context, conn *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	p.conn = conn
+	if deadline, ok := ctx.Deadline(); ok {
+		p.deadlines = append(p.deadlines, boardSearchDeadline{time.Now(), deadline})
+	}
+	return ctx
+}
+func (*boardSearchSessionTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+func (p *boardSearchSessionTrace) TraceBatchStart(ctx context.Context, conn *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	return p.TraceQueryStart(ctx, conn, pgx.TraceQueryStartData{})
+}
+func (*boardSearchSessionTrace) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {
+}
+func (*boardSearchSessionTrace) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
 func newBoardSearchFixture(t *testing.T) searchFixture {
 	t.Helper()
@@ -83,6 +106,28 @@ func publishSearchBody(ctx context.Context, f searchFixture, w tenantstore.Write
 func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 	f := newBoardSearchFixture(t)
 	ctx := t.Context()
+	trace := &boardSearchSessionTrace{}
+	f.pool = tracedFeaturePool(t, f.pool, trace)
+	counted, err := postgres.NewRepository(ctx, f.pool, smallPool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := counted.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	f.repository = counted
+	timedOut := func(err error) bool {
+		var pgErr *pgconn.PgError
+		return errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &pgErr) && pgErr.Code == "57014" && strings.Contains(pgErr.Message, "statement timeout"))
+	}
+	settleSearch := func(t *testing.T) {
+		t.Helper()
+		if _, err := f.admin.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('board-search:org_first',0))`); err != nil {
+			t.Fatal(err)
+		}
+	}
 	selection := viewstore.BoardSelection{ProjectID: "prj_first", SearchText: "abc", Limit: 1, Reporter: true, ReporterPrincipalID: "example"}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		err := f.repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
@@ -174,38 +219,82 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 		defer cancel()
 		hostile := selection
 		hostile.SearchText = "cabcab"
-		started := time.Now()
 		err := f.repository.ReadTenant(bounded, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
 			_, err := r.BoardPage(bounded, hostile)
 			return err
 		})
-		var pgErr *pgconn.PgError
-		if !errors.As(err, &pgErr) || pgErr.Code != "57014" || !strings.Contains(pgErr.Message, "statement timeout") {
+		if !timedOut(err) {
 			t.Fatalf("hostile search escaped server budget: %v", err)
-		}
-		if elapsed := time.Since(started); elapsed > time.Second {
-			t.Fatalf("hostile search exceeded read budget: %v", elapsed)
 		}
 	})
 	t.Run("sequential searches share the first deadline", func(t *testing.T) {
+		settleSearch(t)
 		first, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 		defer cancel()
-		started := time.Now()
+		firstDeadline, _ := first.Deadline()
 		err := f.repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+			trace.deadlines = nil
 			if _, err := r.BoardPage(first, selection); err != nil {
-				return err
+				t.Fatalf("initial search failed: %v", err)
 			}
 			hostile := selection
 			hostile.SearchText = "cabcab"
 			_, err := r.BoardPage(ctx, hostile)
+			for _, sample := range trace.deadlines {
+				if sample.deadline.After(firstDeadline) {
+					t.Fatalf("second search extended first deadline: %v > %v", sample.deadline, firstDeadline)
+				}
+			}
 			return err
 		})
-		if err == nil || time.Since(started) > 500*time.Millisecond {
+		if err == nil {
 			t.Fatalf("second search reset first read budget: %v", err)
 		}
 	})
 	for _, path := range []string{"page", "model", "lanes", "closed"} {
 		t.Run(path, func(t *testing.T) {
+			read := func(ctx context.Context, r tenantstore.Reader) error {
+				var err error
+				switch path {
+				case "page":
+					_, err = r.BoardPage(ctx, selection)
+				case "model":
+					_, err = r.(interface {
+						BoardModelPages(context.Context, viewstore.BoardSelection, *viewstore.BoardSelection, accessstore.Authority) (viewstore.BoardModelPage, error)
+					}).BoardModelPages(ctx, selection, nil, accessstore.Authority{})
+				case "lanes":
+					_, err = r.BoardLanes(ctx, selection, historyAt())
+				case "closed":
+					_, err = r.BoardClosedWindows(ctx, selection, []time.Time{historyAt().Add(-time.Hour)}, historyAt())
+				}
+				return err
+			}
+			settleSearch(t)
+			if err := f.repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+				trace.deadlines = nil
+				if err := read(ctx, r); err != nil {
+					return fmt.Errorf("probe search: %w", err)
+				}
+				if len(trace.deadlines) == 0 {
+					t.Fatal("search omitted its client deadline")
+				}
+				sample := trace.deadlines[len(trace.deadlines)-1]
+				budget := sample.deadline.Sub(sample.observed)
+				if budget <= 0 || budget > 750*time.Millisecond {
+					t.Fatalf("search client budget=%v", budget)
+				}
+				var setting string
+				if err := trace.conn.QueryRow(ctx, "SHOW statement_timeout").Scan(&setting); err != nil {
+					return fmt.Errorf("probe server budget: %w", err)
+				}
+				serverBudget, err := time.ParseDuration(setting)
+				if err != nil || serverBudget <= 0 || serverBudget > 750*time.Millisecond {
+					t.Fatalf("search server budget=%q, %v", setting, err)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
 			blocker, err := f.admin.BeginTx(ctx, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -220,28 +309,11 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 			}
 			bounded, cancel := context.WithTimeout(ctx, 2*time.Second)
 			defer cancel()
-			started := time.Now()
 			err = f.repository.ReadTenant(bounded, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
-				switch path {
-				case "page":
-					_, err = r.BoardPage(bounded, selection)
-				case "model":
-					_, err = r.(interface {
-						BoardModelPages(context.Context, viewstore.BoardSelection, *viewstore.BoardSelection, accessstore.Authority) (viewstore.BoardModelPage, error)
-					}).BoardModelPages(bounded, selection, nil, accessstore.Authority{})
-				case "lanes":
-					_, err = r.BoardLanes(bounded, selection, historyAt())
-				case "closed":
-					_, err = r.BoardClosedWindows(bounded, selection, []time.Time{historyAt().Add(-time.Hour)}, historyAt())
-				}
-				return err
+				return read(bounded, r)
 			})
-			var pgErr *pgconn.PgError
-			if !errors.As(err, &pgErr) || pgErr.Code != "57014" || !strings.Contains(pgErr.Message, "statement timeout") {
+			if !timedOut(err) {
 				t.Fatalf("search did not enforce a server statement timeout: %v", err)
-			}
-			if elapsed := time.Since(started); elapsed > time.Second {
-				t.Fatalf("search exceeded read budget: %v", elapsed)
 			}
 		})
 	}
