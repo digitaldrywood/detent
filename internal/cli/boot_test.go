@@ -195,6 +195,10 @@ func TestMain(m *testing.M) {
 	}
 	defaultInspectCaches = func(context.Context) toolcache.Report { return toolcache.Report{} }
 	exitCode := m.Run()
+	if err := clihangHubTemplate.Close(context.Background()); err != nil {
+		fmt.Fprintln(os.Stderr, "close CLI PostgreSQL fixture:", err)
+		exitCode = 1
+	}
 	if err := os.RemoveAll(codexHome); err != nil {
 		fmt.Fprintln(os.Stderr, "clean test Codex home:", err)
 		exitCode = 1
