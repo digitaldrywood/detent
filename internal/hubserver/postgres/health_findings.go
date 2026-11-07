@@ -151,6 +151,9 @@ func (s *session) healthFindings(ctx context.Context, project tracker.ProjectID,
 		if projected && checkpoint != row.Generation {
 			return page, healthstore.ErrPagePending
 		}
+		if !projected {
+			row.DisplayEvidence = healthstore.Evidence{}
+		}
 		if len(page.Findings) == 0 || page.Findings[len(page.Findings)-1].ID != row.ID {
 			page.Findings = append(page.Findings, row)
 		}

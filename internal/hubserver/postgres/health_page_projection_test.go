@@ -20,6 +20,10 @@ func TestHealthPageRejectsStaleEvidence(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO health_finding_projects(organization_id,finding_id,project_id) VALUES($1,'finding','prj_first')`, org); err != nil {
+			t.Fatal(err)
+		}
+
 		var candidate healthstore.Finding
 		err = repository.ReadTenant(t.Context(), org, corestore.Background, func(r tenantstore.Reader) error {
 			var err error
@@ -75,5 +79,21 @@ func TestHealthPageRejectsStaleEvidence(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if _, err := admin.ExecContext(t.Context(), `UPDATE health_findings SET evidence_object_key='' WHERE organization_id=$1 AND id='finding'`, org); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			if _, err := r.(healthstore.Reader).HealthFindings(t.Context(), "prj_first", "all", nil, 0, "", 2); !errors.Is(err, healthstore.ErrPagePending) {
+				t.Fatalf("cleared source served projected evidence: %v", err)
+			}
+			page, err := r.(healthstore.FallbackReader).LegacyHealthFindings(t.Context(), "prj_first", "all", nil, 0, "", 2)
+			if err == nil && (len(page.Findings) != 1 || page.Findings[0].Evidence.Key != "" || page.Findings[0].DisplayEvidence.Reason != "") {
+				t.Fatalf("cleared source retained stale fallback evidence: %+v", page)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+
 	}
 }
