@@ -76,7 +76,10 @@ func TestValidateCommandReusesGoTestReceiptsAcrossCheckouts(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkout := func() string {
-		root := t.TempDir()
+		root, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
 		for name, content := range map[string]string{
 			"go.mod":          "module example.test/validate\n\ngo 1.26.0\n",
 			"pkg/input.txt":   "ok",

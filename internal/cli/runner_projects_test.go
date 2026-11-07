@@ -96,13 +96,16 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 			hub.features = []string{"native_issues", "scoped_collaboration", "scoped_runner_identity", "repository_policy", tracker.NativeProjectCheckoutCapability, tracker.NativeLocalChecksCapability}
 			hub.cloneURLs = map[tracker.ProjectID]string{"prj_later": "https://github.com/example-org/later.git"}
 			hub.repositories["prj_orders"] = "example-org/prj_orders"
-			root := t.TempDir()
+			root, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
 			configPath := filepath.Join(root, "config", "global.yaml")
 			workspaceRoot := filepath.Join(root, "checkouts")
 			checkout(t, filepath.Join(workspaceRoot, "orders"))
 			runDoctorWorkflowSourceGit(t, filepath.Join(workspaceRoot, "orders"), "remote", "set-url", "origin", "https://github.com/example-org/prj_orders.git")
 			runDoctorWorkflowSourceGit(t, filepath.Join(workspaceRoot, "orders"), "config", "url."+filepath.Join(workspaceRoot, "orders")+".insteadOf", "https://github.com/example-org/prj_orders.git")
-			_, err := runRegisterInTestWorkspace(t, nil, func(*cobra.Command, string) error { return nil }, "--url", hub.server.URL+"/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--workspace-root", workspaceRoot)
+			_, err = runRegisterInTestWorkspace(t, nil, func(*cobra.Command, string) error { return nil }, "--url", hub.server.URL+"/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--workspace-root", workspaceRoot)
 			if err != nil {
 				t.Fatal(err)
 			}
