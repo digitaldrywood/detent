@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -49,6 +50,7 @@ var (
 )
 
 type Config struct {
+	runMaintenance                 func(context.Context, *hubmaintenance.Scheduler, func(error)) error
 	startup                        *startupHealth
 	migrate                        func(context.Context, *sql.DB, *slog.Logger) (int64, error)
 	TenantRepository               tenantstore.Repository
@@ -119,8 +121,16 @@ type Config struct {
 }
 
 func (c Config) normalized() Config {
+	if c.runMaintenance == nil {
+		c.runMaintenance = func(ctx context.Context, scheduler *hubmaintenance.Scheduler, report func(error)) error {
+			return scheduler.Run(ctx, report)
+		}
+	}
 	if c.RunDetails == nil && c.Hosted != nil && c.Hosted.SharedEntry != nil {
 		c.RunDetails = c.Hosted.SharedEntry.RunDetails
+	}
+	if c.DatabaseBackend == DatabasePostgres && c.RunDetails != nil {
+		c.RunDetails = hubmaintenance.LimitDetails(c.RunDetails)
 	}
 	if c.runnerReleaseSignatureVerifier == nil {
 		c.runnerReleaseSignatureVerifier = update.VerifyChecksumSignature

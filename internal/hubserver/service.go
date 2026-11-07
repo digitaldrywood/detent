@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -52,6 +53,7 @@ type Service struct {
 	readerWaits             atomic.Int64
 	readerWaited            atomic.Int64
 	requestMetrics          *tenantRequestMetrics
+	maintenance             *hubmaintenance.Scheduler
 	runnerPublishedReleases sync.Map
 	tokenUse                sync.Map
 	tokenUseWork            sync.WaitGroup
@@ -222,6 +224,14 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		reconcileDone:      make(chan struct{}),
 		clientBuild:        conversationClientIdentity(conversationClientFS, cfg.Version, cfg.now()),
 		pullRequests:       newPullRequestCache(),
+	}
+	if database.postgres != nil && !cfg.CredentialMaintenance {
+		service.maintenance, err = service.newReadModelMaintenance()
+		if err != nil {
+			workerCancel()
+			reconcileCancel()
+			return nil, errors.Join(err, database.Close())
+		}
 	}
 	if service.config.NativeRunEvents == nil && service.config.TenantRepository != nil {
 		service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
@@ -654,9 +664,54 @@ func (s *Service) runGitHubWebhookMaintenance(ctx context.Context) {
 	}
 }
 
+type hostedMaintenanceTenant struct{ hubmaintenance.Tenant }
+
+func (t hostedMaintenanceTenant) Page(ctx context.Context, after string, limit int) ([]hubmaintenance.Tenant, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 || t.Organization <= after {
+		return nil, nil
+	}
+	return []hubmaintenance.Tenant{t.Tenant}, nil
+}
+
+func (s *Service) newReadModelMaintenance() (*hubmaintenance.Scheduler, error) {
+	tenant := hubmaintenance.Tenant{Organization: s.config.Hosted.OrganizationID, Generation: 1}
+	if entry := s.config.Hosted.SharedEntry; entry != nil {
+		tenant.Generation = entry.Generation
+	}
+	var after tracker.NativeWorkItemID
+	return hubmaintenance.New(hostedMaintenanceTenant{tenant}, []hubmaintenance.Feature{
+		s.WorkItemPageMaintenanceFeature(),
+		{Name: "board", Bytes: BoardMaintenanceBytes, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
+			if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
+				return err
+			}
+			next, _, err := s.MaintainBoardRecord(ctx, tracker.OrganizationID(selected.Organization), after)
+			after = next
+			return err
+		}},
+	})
+}
+
 func (s *Service) runPostgresMaintenance(ctx context.Context) {
 	defer close(s.workerDone)
-	s.maintainNativeBoard(ctx)
+	var maintenance sync.WaitGroup
+	maintenance.Go(func() {
+		if err := s.config.runMaintenance(ctx, s.maintenance, func(err error) {
+			s.config.Logger.WarnContext(ctx, "maintain hosted read models", "error", err)
+		}); err != nil && !errors.Is(err, context.Canceled) {
+			s.config.Logger.WarnContext(ctx, "stop hosted read-model maintenance", "error", err)
+		}
+	})
+	defer maintenance.Wait()
+	refreshUnread := func() {
+		if err := s.maintainTeamUnread(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			s.config.Logger.ErrorContext(ctx, "refresh team unread summary", "error", err)
+		}
+	}
+	refreshUnread()
 	s.maintainNativeSearch(ctx)
 	s.maintainPostgresChangeReviews(ctx)
 	ticker := time.NewTicker(s.config.WebhookMaintenanceInterval)
@@ -667,10 +722,10 @@ func (s *Service) runPostgresMaintenance(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-s.boardRefresh:
-			s.maintainNativeBoard(ctx)
+			refreshUnread()
 			s.maintainPostgresChangeReviews(ctx)
 		case <-ticker.C:
-			s.maintainNativeBoard(ctx)
+			refreshUnread()
 			s.maintainNativeSearch(ctx)
 			s.maintainPostgresChangeReviews(ctx)
 			now := s.config.now()

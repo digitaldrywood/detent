@@ -84,6 +84,23 @@ func LimitDetails(store attachment.DetailStore) *Details {
 	return &Details{store: store}
 }
 
+func (s *Details) ReadDetails(ctx context.Context, organization string, refs []attachment.ArchiveReference) ([]attachment.DetailReadResult, error) {
+	if err := attachment.ValidateDetailBatch(organization, refs); err != nil {
+		return nil, err
+	}
+	if batch, ok := s.store.(attachment.DetailBatchStore); ok {
+		var bytes int64
+		for _, ref := range refs {
+			bytes += ref.CompressedSize + ref.UncompressedSize
+		}
+		if err := charge(ctx, organization, bytes); err != nil {
+			return nil, err
+		}
+		return batch.ReadDetails(ctx, organization, refs)
+	}
+	return attachment.ReadDetailBatch(ctx, organization, refs, s.ReadDetail)
+}
+
 func (s *Details) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
 	if s.store == nil {
 		return nil, artifact.ErrStorage
