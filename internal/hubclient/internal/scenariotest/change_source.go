@@ -28,7 +28,7 @@ import (
 func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
 	newNativeChangeHubWithStates := func(t *testing.T, review string, states []tracker.NativeState) *nativeChangeHub {
-		return newNativeChangeHubConfigured(t, review, states, false, false, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
+		return newNativeChangeHubConfigured(t, review, states, false, false, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}}, factories)
 	}
 	if testing.Short() {
 		t.Skip("git subprocess integration")
@@ -120,12 +120,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 						}
 					}
 				}
-				runtimeStore, err := store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer runtimeStore.Close()
-				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: runtimeStore, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: gate.PlanConfig{Enabled: test.planning}, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
+				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: gate.PlanConfig{Enabled: test.planning}, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -265,7 +260,14 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 			if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: state, Reason: "user_requested"}); err != nil {
 				t.Fatal(err)
 			}
-			h.scheduler, err = newTestScheduler(h.native.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: "machine-air", Hostname: "Air", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+			h.native = h.otherWorker(t)
+			identity, err := h.native.Transport().RunnerIdentity(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			machine := fixtureSchedulerMachine(h.scheduler)
+			machine.ID = identity.MachineID
+			h.scheduler, err = newTestScheduler(h.native.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -456,7 +458,14 @@ func RunNativeSourceResumesWithoutPreviousRuntime(t *testing.T, factories Constr
 			if _, err := secondStore.WorkAttempt(t.Context(), attemptID); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("fresh runner inherited a local attempt: %v", err)
 			}
-			h.scheduler, err = newTestScheduler(h.native.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: "machine-second", Hostname: "example", Capacity: 1, Version: "test"}, HeartbeatInterval: h.scheduler.HeartbeatInterval(), LeaseTTL: h.scheduler.LeaseDuration()})
+			h.native = h.otherWorker(t)
+			identity, err := h.native.Transport().RunnerIdentity(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			machine := fixtureSchedulerMachine(h.scheduler)
+			machine.ID = identity.MachineID
+			h.scheduler, err = newTestScheduler(h.native.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: h.scheduler.HeartbeatInterval(), LeaseTTL: h.scheduler.LeaseDuration()})
 			if err != nil {
 				t.Fatal(err)
 			}
