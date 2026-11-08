@@ -289,6 +289,7 @@ func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
 }
 
 type boardLanePlan struct {
+	Index    string  `json:"Index Name"`
 	Relation string  `json:"Relation Name"`
 	Rows     float64 `json:"Actual Rows"`
 	Removed  float64 `json:"Rows Removed by Filter"`
