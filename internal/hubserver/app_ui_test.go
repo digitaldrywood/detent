@@ -787,10 +787,6 @@ func enrollAppRunner(t *testing.T, f *browserHostedFixture, name string, version
 }
 
 func TestAppBootstrapWorkspaceAvailability(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	for _, test := range []struct {
 		name                         string
 		service, terminal            bool
@@ -802,35 +798,77 @@ func TestAppBootstrapWorkspaceAvailability(t *testing.T) {
 		{name: "supported terminal", service: true, terminal: true, isolation: "container", wantFiles: true, wantTerminal: true},
 		{name: "Mac user under sandbox policy", service: true, terminal: true, isolation: "user", wantFiles: true},
 		{name: "viewer", service: true, terminal: true, isolation: "container", account: "viewer"},
-		{name: "stale report", service: true, terminal: true, isolation: "container", mutation: "UPDATE runner_identities SET last_heartbeat_at = '2000-01-01T00:00:00Z'"},
-		{name: "revoked runner", service: true, terminal: true, isolation: "container", mutation: "UPDATE api_tokens SET revoked_at = created_at WHERE id IN (SELECT token_id FROM runner_identities)"},
-		{name: "missing project grant", service: true, terminal: true, isolation: "container", mutation: "DELETE FROM token_grants WHERE token_id IN (SELECT token_id FROM runner_identities)"},
-		{name: "disabled runner", service: true, terminal: true, isolation: "container", mutation: "UPDATE runner_identities SET state = 'disabled'"},
-		{name: "missing claim operation", service: true, terminal: true, isolation: "container", mutation: `UPDATE runner_identities SET operations_json = '["read","heartbeat"]'`},
-		{name: "missing runner grant", service: true, terminal: true, isolation: "container", mutation: "UPDATE hosted_project_grants SET manage_runner = 0", wantFiles: true},
-		{name: "missing write grant", service: true, terminal: true, isolation: "container", mutation: "UPDATE hosted_project_grants SET can_write = 0"},
-		{name: "split capabilities", service: true, terminal: true, isolation: "container", mutation: `UPDATE runner_identities SET workspace_capabilities_json = '{"files":true,"exec":false,"terminal":true}'`},
+		{name: "stale report", service: true, terminal: true, isolation: "container", mutation: "stale report"},
+		{name: "revoked runner", service: true, terminal: true, isolation: "container", mutation: "revoked runner"},
+		{name: "missing project grant", service: true, terminal: true, isolation: "container", mutation: "missing project grant"},
+		{name: "disabled runner", service: true, terminal: true, isolation: "container", mutation: "disabled runner"},
+		{name: "missing claim operation", service: true, terminal: true, isolation: "container", mutation: "missing claim operation"},
+		{name: "missing runner grant", service: true, terminal: true, isolation: "container", mutation: "missing runner grant", wantFiles: true},
+		{name: "missing write grant", service: true, terminal: true, isolation: "container", mutation: "missing write grant"},
+		{name: "split capabilities", service: true, terminal: true, isolation: "container", mutation: "split capabilities"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false, func(config *Config) {
+			f := newPostgresBrowserHostedFixtureServing(t, true, "org_browser_preview", false, func(config *Config) {
 				if test.service {
 					config.Workspace = &WorkspaceConfig{Enabled: true, Terminal: WorkspaceTerminalConfig{Enabled: test.terminal}}
 				}
 			})
 			grantAppRunners(t, f)
-			runner := enrollAppRunner(t, f, "Workspace", "test", runnerauth.Claim)
-			capabilities, err := json.Marshal(workspacesession.Capabilities{Files: true, Exec: true, Terminal: true})
-			if err != nil {
-				t.Fatal(err)
+			operations := []string{runnerauth.Claim}
+			if test.mutation == "missing claim operation" {
+				operations = nil
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET workspace_capabilities_json = ?, workspace_isolation = ? WHERE id = ?", string(capabilities), test.isolation, runner.RunnerID); err != nil {
-				t.Fatal(err)
-			}
-			if test.mutation != "" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), test.mutation); err != nil {
-					t.Fatal(err)
+			runner := enrollAppRunner(t, f, "Workspace", "test", operations...)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(writer tenantstore.Writer) error {
+				identity, err := writer.RunnerIdentity(t.Context(), string(runner.RunnerID))
+				if err != nil {
+					return err
 				}
+				capabilities := workspacesession.Capabilities{Files: true, Exec: true, Terminal: true}
+				switch test.mutation {
+				case "stale report":
+					identity.LastHeartbeatAt = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+				case "revoked runner":
+					if err := writer.RevokeAccessCredential(t.Context(), identity.TokenID, f.service.config.now()); err != nil {
+						return err
+					}
+				case "missing project grant":
+					for _, project := range []tracker.ProjectID{tracker.ProjectID(f.project), tracker.ProjectID(f.privateProject)} {
+						if err := writer.DeleteAccessTokenGrant(t.Context(), identity.TokenID, project); err != nil {
+							return err
+						}
+					}
+				case "disabled runner":
+					identity.State = "disabled"
+					if err := writer.UpdateRunnerRouting(t.Context(), identity.Revision, identity); err != nil {
+						return err
+					}
+				case "missing runner grant", "missing write grant":
+					for _, project := range []string{f.project, f.privateProject} {
+						grant, err := writer.AccessProjectGrant(t.Context(), "user_browser_owner", tracker.ProjectID(project))
+						if err != nil {
+							return err
+						}
+						if test.mutation == "missing runner grant" {
+							grant.ManageRunner = false
+						} else {
+							grant.CanWrite = false
+						}
+						if err := writer.SetAccessProjectGrant(t.Context(), grant); err != nil {
+							return err
+						}
+					}
+				case "split capabilities":
+					capabilities.Exec = false
+				}
+				if err := writer.UpdateRunnerIdentity(t.Context(), identity); err != nil {
+					return err
+				}
+				return writer.ReplaceRunnerWorkspaceReport(t.Context(), string(runner.RunnerID), capabilities, test.isolation)
+			}); err != nil {
+				t.Fatal(err)
 			}
+
 			account := test.account
 			if account == "" {
 				account = "owner"

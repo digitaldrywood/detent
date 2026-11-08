@@ -300,7 +300,12 @@ func newPostgresBrowserHostedFixture(t *testing.T, allocated bool) *browserHoste
 
 func newPostgresBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organization string, configure ...func(*Config)) *browserHostedFixture {
 	t.Helper()
-	return newBrowserHostedFixtureBackend(t, allocated, organization, true, true, configure...)
+	return newPostgresBrowserHostedFixtureServing(t, allocated, organization, true, configure...)
+}
+
+func newPostgresBrowserHostedFixtureServing(t *testing.T, allocated bool, organization string, listen bool, configure ...func(*Config)) *browserHostedFixture {
+	t.Helper()
+	return newBrowserHostedFixtureBackend(t, allocated, organization, listen, true, configure...)
 }
 
 func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization string, listen bool, configure ...func(*Config)) *browserHostedFixture {
