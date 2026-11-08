@@ -37,11 +37,15 @@ func (f conversationWorkerAuthorityFunc) VerifyConversationWorker(ctx context.Co
 
 func TestConversationPostgresWorkerHandlersUseFencedTenantState(t *testing.T) {
 	for _, concurrent := range []bool{false, true} {
-		t.Run(fmt.Sprintf("concurrent_event=%t", concurrent), func(t *testing.T) { testConversationPostgresWorkerHandlers(t, concurrent) })
+		t.Run(fmt.Sprintf("concurrent_event=%t", concurrent), func(t *testing.T) {
+			for _, origin := range []string{conversationOriginWorker, conversationOriginUser} {
+				t.Run("origin="+origin, func(t *testing.T) { testConversationPostgresWorkerHandlers(t, concurrent, origin) })
+			}
+		})
 	}
 }
 
-func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool) {
+func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origin string) {
 	repository, admin := projectRecordPostgresWithAdmin(t, 4)
 	f := newConversationTenantFixture(t, repository, time.Now().UTC())
 	var logs bytes.Buffer
@@ -118,7 +122,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool) {
 		createdAt := time.Now().UTC()
 		_, err = w.CreateConversation(t.Context(), conversationstore.Conversation{
 			OrganizationID: f.project.OrganizationID, ID: conversation.NewConversationID(), ProjectID: f.project.ID,
-			OwnerPrincipalID: ownerCredential.ID, Origin: conversationOriginWorker, Title: "Worker issue",
+			OwnerPrincipalID: ownerCredential.ID, Origin: origin, Title: "Worker issue",
 			Visibility: conversation.VisibilityShared, Status: conversation.StatusActive, WorkItemID: string(issue.NativeID),
 			LinkedAt: &createdAt, Revision: 1, Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: createdAt},
 			Preferences: conversation.DefaultPreferences(), CreatedAt: createdAt, UpdatedAt: createdAt,
@@ -188,7 +192,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool) {
 	if err := json.Unmarshal(bound.Body.Bytes(), &bindResponse); err != nil {
 		t.Fatal(err)
 	}
-	if bindResponse.ConversationID != linked.ID || len(bindResponse.Resume.Transcript) != 1 || bindResponse.Resume.Transcript[0].Text != "Example prior response" || len(bindResponse.Pending) != 1 || bindResponse.Pending[0].Key != "pg-bind-control" || bindResponse.Pending[0].Text != "Example pending instruction" {
+	if bindResponse.Continuation != (origin == conversationOriginUser) || bindResponse.ConversationID != linked.ID || len(bindResponse.Resume.Transcript) != 1 || bindResponse.Resume.Transcript[0].Text != "Example prior response" || len(bindResponse.Pending) != 1 || bindResponse.Pending[0].Key != "pg-bind-control" || bindResponse.Pending[0].Text != "Example pending instruction" {
 		t.Fatalf("bind response = %+v", bindResponse)
 	}
 	if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {

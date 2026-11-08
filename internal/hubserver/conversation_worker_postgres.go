@@ -222,7 +222,7 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 			return err
 		}
 		record = conversationRecordFromStore(stored)
-		response = conversationBindResponse{ConversationID: record.ID, Resume: resume, Pending: pending, Preferences: record.Preferences.Normalized()}
+		response = conversationBindResponse{ConversationID: record.ID, Continuation: record.Origin == conversationOriginUser, Resume: resume, Pending: pending, Preferences: record.Preferences.Normalized()}
 		if len(pending) > 0 {
 			response.Cursor = pending[len(pending)-1].Cursor
 		}
