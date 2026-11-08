@@ -120,6 +120,7 @@ func (s *Service) registerPostgresRoutes(e *echo.Echo) {
 	e.GET("/health", s.health, s.requireAPIScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin))
 	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(s.config.staticFiles()))))
 	s.registerNativeRoutes(e)
+	s.registerArtifactCatalogRoutes(e)
 	s.registerProjectSecretRoutes(e)
 	s.registerRunnerRoutes(e)
 	s.registerCostUsageRoutes(e)
