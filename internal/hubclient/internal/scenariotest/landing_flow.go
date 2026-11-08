@@ -1400,6 +1400,9 @@ func (transport incorporationRejectionTransport) RoundTrip(request *http.Request
 		if err != nil {
 			return nil, err
 		}
+		if response.StatusCode == http.StatusTooManyRequests {
+			return response, nil
+		}
 		io.Copy(io.Discard, response.Body)
 		response.Body.Close()
 		if response.StatusCode != http.StatusUnprocessableEntity {
