@@ -15,6 +15,9 @@ import (
 )
 
 func (s *Service) loadGitHubBatchRecord(ctx context.Context, scope nativeScope) (*tracker.GitHubBatch, error) {
+	if s.config.TenantRepository == nil {
+		return nil, ErrPostgresFeatureUnavailable
+	}
 	var row projectstore.IntakeBatch
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {

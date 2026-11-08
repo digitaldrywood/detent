@@ -14,8 +14,11 @@ import (
 )
 
 func (s *Service) maintainGitHubReconciliationRecords(ctx context.Context) error {
-	if s.config.ReconcileBackend == nil || s.config.ImportBackend == nil || s.config.TenantRepository == nil {
+	if s.config.ReconcileBackend == nil || s.config.ImportBackend == nil {
 		return nil
+	}
+	if s.config.TenantRepository == nil || s.database == nil {
+		return ErrPostgresFeatureUnavailable
 	}
 	organization := s.database.hostedOrganization
 	var row projectstore.GitHubReconciliation
