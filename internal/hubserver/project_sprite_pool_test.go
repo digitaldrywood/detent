@@ -2317,61 +2317,74 @@ func TestProjectSpriteLoginReadiness(t *testing.T) {
 		{name: "verified sleeping member", checks: &spriteMemberReady, heartbeatAgo: time.Minute, allowed: true, status: "sleeping"},
 		{name: "failed wake is unreachable", checks: &spriteMemberReady, heartbeatAgo: time.Minute, wakeFailed: true, allowed: true, status: "unreachable"},
 	} {
-		for _, typed := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/typed=%t", test.name, typed), func(t *testing.T) {
-				f, scope, provider := newSpritePoolFixture(t, "")
-				setSpriteAllocationFixture(t, f, 1, 0)
-				if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
-					t.Fatal(err)
-				}
-				runner := provider.runners[0]
-				if test.checks != nil {
-					response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.MachineID)+"/heartbeat", runner.Credential, map[string]any{"display_name": runner.DisplayName, "capacity": runner.Capacity, "version": runner.Version, "sprite_name": runner.SpriteName, "local_checks": test.checks})
-					requireNativeStatus(t, response, http.StatusOK)
-					f.service.spriteWakeWork.Wait()
-				}
-				heartbeat := f.service.config.now().Add(-test.heartbeatAgo)
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET last_heartbeat_at=? WHERE machine_id=?`, formatHubTime(heartbeat), runner.MachineID); err != nil {
-					t.Fatal(err)
-				}
-				if test.wakeFailed {
-					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE machines SET machine_facts_ready=NULL,capabilities_json=json_set(capabilities_json,'$.sprite_wake_failed_at',?) WHERE id=?`, formatHubTime(heartbeat.Add(time.Second)), runner.MachineID); err != nil {
-						t.Fatal(err)
-					}
-				}
-				assertSpritePostgresFacts(t, f)
-				if typed {
-					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET local_checks_json='{}' WHERE organization_id=?`, scope.organization); err != nil {
-						t.Fatal(err)
-					}
-				} else {
-					if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM runner_local_checks WHERE runner_id IN (SELECT id FROM runner_identities WHERE organization_id=?)`, scope.organization); err != nil {
-						t.Fatal(err)
-					}
-				}
-				allowed, err := spriteRunnerAllowedFixture(t, f, scope, runner.RunnerID)
-				if err != nil || allowed != test.allowed {
-					t.Fatalf("allowed=%t err=%v, want %t", allowed, err, test.allowed)
-				}
-				hosted := f.service.config.Hosted
-				f.service.config.Hosted = nil
-				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/sprite-pool", testHubAdminToken, nil)
-				f.service.config.Hosted = hosted
+		t.Run(test.name, func(t *testing.T) {
+			f, scope, provider := newSpritePoolFixture(t, "")
+			setSpriteAllocationFixture(t, f, 1, 0)
+			if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
+				t.Fatal(err)
+			}
+			runner := provider.runners[0]
+			if test.checks != nil {
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.MachineID)+"/heartbeat", runner.Credential, map[string]any{"display_name": runner.DisplayName, "capacity": runner.Capacity, "version": runner.Version, "sprite_name": runner.SpriteName, "local_checks": test.checks})
 				requireNativeStatus(t, response, http.StatusOK)
-				var view spritePoolView
-				decodeHubResponse(t, response, &view)
-				if len(view.Members) != 1 || view.Members[0].Status != test.status {
-					t.Fatalf("members=%+v, want status %s", view.Members, test.status)
+				f.service.spriteWakeWork.Wait()
+			}
+			heartbeat := f.service.config.now().Add(-test.heartbeatAgo)
+			writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+				identity, err := w.RunnerIdentity(t.Context(), runner.RunnerID)
+				if err != nil {
+					return err
 				}
-				var commands []string
-				for _, step := range view.Members[0].WaitingFor {
-					commands = append(commands, step.Command)
-				}
-				if strings.Join(commands, "\n") != strings.Join(test.commands, "\n") {
-					t.Fatalf("waiting for %q, want %q", commands, test.commands)
-				}
+				identity.LastHeartbeatAt = heartbeat
+				return w.UpdateRunnerIdentity(t.Context(), identity)
 			})
-		}
+			if test.wakeFailed {
+				request, err := f.service.spriteLifecycleArchive(t.Context(), scope.organization, spriteLifecycleRequest{Actor: scope.credential.ID, Provider: "detent-test"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				receipt, err := f.service.spriteLifecycleArchive(t.Context(), scope.organization, spriteLifecycleReceipt{Log: "Runner service start was rejected"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					owner := w.(postgres.SpriteWriter)
+					identity, err := w.RunnerIdentity(t.Context(), runner.RunnerID)
+					if err != nil {
+						return err
+					}
+					at := heartbeat.Add(time.Second)
+					operation, err := owner.CreateSpriteOperation(t.Context(), postgres.SpriteOperation{OrganizationID: scope.organization, IdempotencyKey: "fixture-wake", Name: runner.SpriteName, Operation: "wake", TargetEnrollmentID: identity.EnrollmentID, ProjectID: scope.project, RequestObjectKey: &request, CreatedAt: at, NextAttemptAt: at})
+					if err != nil {
+						return err
+					}
+					operation.Outcome, operation.ReceiptObjectKey, operation.UpdatedAt = "pending", &receipt, at
+					return owner.UpdateSpriteOperation(t.Context(), operation, operation.Attempts)
+				})
+			}
+			assertSpritePostgresFacts(t, f)
+			allowed, err := spriteRunnerAllowedFixture(t, f, scope, runner.RunnerID)
+			if err != nil || allowed != test.allowed {
+				t.Fatalf("allowed=%t err=%v, want %t", allowed, err, test.allowed)
+			}
+			hosted := f.service.config.Hosted
+			f.service.config.Hosted = nil
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/sprite-pool", testHubAdminToken, nil)
+			f.service.config.Hosted = hosted
+			requireNativeStatus(t, response, http.StatusOK)
+			var view spritePoolView
+			decodeHubResponse(t, response, &view)
+			if len(view.Members) != 1 || view.Members[0].Status != test.status {
+				t.Fatalf("members=%+v, want status %s", view.Members, test.status)
+			}
+			var commands []string
+			for _, step := range view.Members[0].WaitingFor {
+				commands = append(commands, step.Command)
+			}
+			if strings.Join(commands, "\n") != strings.Join(test.commands, "\n") {
+				t.Fatalf("waiting for %q, want %q", commands, test.commands)
+			}
+		})
 	}
 }
 

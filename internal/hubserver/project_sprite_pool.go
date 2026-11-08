@@ -1047,6 +1047,17 @@ func (s *Service) describeSpritePoolMembersRecord(ctx context.Context, scope nat
 			m.Status = "ready"
 			if now.Sub(runner.LastHeartbeatAt) >= spriteRunnerIdle {
 				m.Status = "sleeping"
+				owner, ok := r.(postgres.SpriteReader)
+				if !ok {
+					return accessstore.ErrTransactionRequired
+				}
+				wake, err := owner.SpriteEnrollmentWake(ctx, row.Record.Identity.EnrollmentID)
+				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
+				if err == nil && wake.Attempts > 0 && wake.Outcome != "committed" && wake.UpdatedAt.After(runner.LastHeartbeatAt) {
+					m.Status = "unreachable"
+				}
 			}
 		}
 		return nil
