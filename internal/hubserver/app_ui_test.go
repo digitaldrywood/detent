@@ -47,8 +47,9 @@ func useAppClientFS(t *testing.T, fsys fs.FS) {
 
 func appClientBundle() fstest.MapFS {
 	return fstest.MapFS{
-		conversationClientShell: &fstest.MapFile{Data: []byte(appShellTestBody)},
-		conversationClientEntry: &fstest.MapFile{Data: []byte("console.log(1)")},
+		conversationClientShell:      &fstest.MapFile{Data: []byte(appShellTestBody)},
+		conversationClientEntry:      &fstest.MapFile{Data: []byte("console.log(1)")},
+		"fonts/Geist-Variable.woff2": &fstest.MapFile{Data: []byte("example-font")},
 	}
 }
 
@@ -220,6 +221,7 @@ func TestAppSharedEntry(t *testing.T) {
 		location    string
 		shell       bool
 		contentType string
+		body        string
 	}{
 		{name: "revoked work", user: &revoked, target: prefix + "/work", status: http.StatusSeeOther, location: "/organizations?switch=1"},
 		{name: "revoked chat", user: &revoked, target: prefix + "/chat/c/conv_1", status: http.StatusSeeOther, location: "/organizations?switch=1"},
@@ -229,12 +231,15 @@ func TestAppSharedEntry(t *testing.T) {
 		{name: "unscoped client route", user: &owner, target: "/work", status: http.StatusNotFound},
 		{name: "unscoped bootstrap", user: &owner, target: "/app/bootstrap", status: http.StatusNotFound},
 		{name: "unscoped static", user: &owner, target: "/static/app/conversation/app.js", status: http.StatusNotFound},
-		{name: "scoped font", user: &owner, target: prefix + "/static/fonts/Geist-Variable.woff2", status: http.StatusOK, contentType: "font/woff2"},
+		{name: "scoped font", user: &owner, target: prefix + "/static/fonts/Geist-Variable.woff2", status: http.StatusOK, contentType: "font/woff2", body: "example-font"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := f.serve(t, hostedSharedRequest{user: test.user, target: test.target})
 			if response.Code != test.status {
 				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body.String())
+			}
+			if test.body != "" && response.Body.String() != test.body {
+				t.Fatalf("body = %q, want %q", response.Body.String(), test.body)
 			}
 			if got := response.Header().Get("Location"); got != test.location {
 				t.Fatalf("location = %q, want %q", got, test.location)
