@@ -356,9 +356,6 @@
     "internal/hubserver/chat_usage_records_test.go": {
       "database_path": 1
     },
-    "internal/hubserver/chat_usage_test.go": {
-      "database_path": 2
-    },
     "internal/hubserver/claim_preflight_test.go": {
       "database_path": 1
     },
@@ -379,9 +376,6 @@
       "database_path": 1
     },
     "internal/hubserver/conversation_api_test.go": {
-      "database_path": 1
-    },
-    "internal/hubserver/conversation_coordinator_test.go": {
       "database_path": 1
     },
     "internal/hubserver/conversation_dispatch_tenant_test.go": {

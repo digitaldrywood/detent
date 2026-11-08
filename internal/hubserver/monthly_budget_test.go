@@ -805,8 +805,16 @@ func TestMonthlyBudgetLunaQueueAndHardStop(t *testing.T) {
 		t.Run(fmt.Sprint("hard-stop-", hardStop), func(t *testing.T) {
 			f := newCoordinatorFixture(t, fmt.Sprint("monthly-luna-", hardStop))
 			record := f.seed(t, "budget Luna", nil)
+			setBudget := func(policy budget.MonthlyPolicy) {
+				key := dispatchNotificationKey(f.organization)
+				before := f.service.notifications.dispatchCursor(key)
+				setMonthlyBudgetFixture(t, f.nativeFixture, false, policy)
+				if after := f.service.notifications.dispatchCursor(key); after == before {
+					t.Fatal("budget update did not notify dispatch")
+				}
+			}
 			if !hardStop {
-				setMonthlyBudgetFixture(t, f.nativeFixture, false, budget.MonthlyPolicy{Enabled: true, LunaMicros: new(int64)})
+				setBudget(budget.MonthlyPolicy{Enabled: true, LunaMicros: new(int64)})
 				f.history(t, &record, conversation.RoleUser, "wait for budget", conversation.DeliverySaved)
 				ran, err := f.coordinator().(*conversationTurnCoordinator).pass(record.ID)
 				if err != nil || ran {
@@ -816,12 +824,21 @@ func TestMonthlyBudgetLunaQueueAndHardStop(t *testing.T) {
 				if len(messages) != 1 || messages[0].Delivery != conversation.DeliverySaved {
 					t.Fatalf("queued evidence=%+v", messages)
 				}
-				setMonthlyBudgetFixture(t, f.nativeFixture, false, budget.MonthlyPolicy{Enabled: true, LunaMicros: new(int64(1))})
+				setBudget(budget.MonthlyPolicy{Enabled: true, LunaMicros: new(int64(1))})
 				f.backend.waitStarted(t)
 				f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
 				return
 			}
 			release := make(chan struct{})
+			t.Cleanup(func() {
+				if t.Failed() {
+					select {
+					case <-release:
+					default:
+						close(release)
+					}
+				}
+			})
 			f.backend.setRun(blockingRun(release, "partial answer"))
 			f.say(t, &record, "finish when eligible")
 			f.backend.waitStarted(t)
@@ -830,10 +847,13 @@ func TestMonthlyBudgetLunaQueueAndHardStop(t *testing.T) {
 				return ok && reply.Text == "partial answer"
 			})
 			other := newNativeFixture(t, f.service, f.organization, "unaffected-Luna")
+			f.write(t, func(w tenantstore.Writer) error {
+				return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.organization, TokenID: f.owner, ProjectID: other.project.ID})
+			})
 			unrelated := f.seed(t, "other project", func(r *conversationRecord) { r.ProjectID = other.project.ID })
 			f.say(t, &unrelated, "unrelated turn")
 			f.backend.waitStarted(t)
-			setMonthlyBudgetFixture(t, f.nativeFixture, false, budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, LunaMicros: new(int64)})
+			setBudget(budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, LunaMicros: new(int64)})
 			stopped := f.waitAssistant(t, record.ID, conversation.DeliveryInterrupted)
 			if stopped.Text != "partial answer" {
 				t.Fatal("lost partial answer")
@@ -844,7 +864,7 @@ func TestMonthlyBudgetLunaQueueAndHardStop(t *testing.T) {
 			}
 			f.waitAssistant(t, unrelated.ID, conversation.DeliveryInterrupted)
 			close(release)
-			setMonthlyBudgetFixture(t, f.nativeFixture, false, budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, LunaMicros: new(int64(1000000))})
+			setBudget(budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, LunaMicros: new(int64(1000000))})
 			f.backend.waitStarted(t)
 			f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
 		})

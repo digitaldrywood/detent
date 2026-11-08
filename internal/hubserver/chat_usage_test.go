@@ -8,7 +8,6 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +15,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -55,8 +58,11 @@ func TestConversationCoordinatorPersistsUsage(t *testing.T) {
 	f.say(t, &record, "Hello")
 	assistant := f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
 	testenv.WaitUntil(t, t.Context(), func() error {
-		var input, cached, output, reasoning int64
-		err := f.service.database.db.QueryRowContext(t.Context(), "SELECT input, cached_input, output, reasoning_output FROM conversation_usage WHERE turn_id=? AND organization_id=? AND conversation_id=?", assistant.ID, f.organization, record.ID).Scan(&input, &cached, &output, &reasoning)
+		usage, err := readCoordinatorUsage(t, f.service, f.organization, assistant.ID)
+		input, cached, output, reasoning := usage.Input, usage.CachedInput, usage.Output, usage.ReasoningOutput
+		if err == nil && usage.ConversationID != record.ID {
+			t.Fatalf("usage conversation=%s", usage.ConversationID)
+		}
 		if err != nil {
 			return fmt.Errorf("durable usage missing: %w", err)
 		}
@@ -74,13 +80,19 @@ func TestChatUsagePriceVersionsAndPeriods(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	next := start.AddDate(0, 1, 0)
 	change := start.AddDate(0, 0, 15)
-	_, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO conversation_prices(provider,model,effective_at,input,cached_input,output) VALUES('openai','gpt-6-luna',?,.20,.02,1)", change.UnixMicro())
-	if err != nil {
-		t.Fatal(err)
-	}
+	f.write(t, func(w tenantstore.Writer) error {
+		return w.CreateConversationPrice(t.Context(), billingstore.ConversationPrice{OrganizationID: f.organization, ID: 2, Provider: "openai", Model: "gpt-6-luna", EffectiveAt: change, Input: .2, CachedInput: .02, Output: 1})
+	})
 	for i, at := range []time.Time{start.Add(-time.Microsecond), start, change.Add(-time.Microsecond), change, next} {
 		usage := ConversationUsage{OrganizationID: f.organization, ProjectID: f.project.ID, ConversationID: record.ID, TurnID: fmt.Sprintf("turn-%d", i), Provider: "openai", Model: "gpt-6-luna", OccurredAt: at, Tokens: runner.AgentTokenCounts{InputTokens: 1_000_000, CachedInputTokens: 400_000, OutputTokens: 100_000, ReasoningOutputTokens: 30_000}, Outcome: conversation.DeliveryCompleted}
 		for range 2 {
+			if i == 1 {
+				f.write(t, func(w tenantstore.Writer) error {
+					_, err := w.RecordConversationUsage(t.Context(), billingstore.ConversationUsage{OrganizationID: f.organization, ProjectID: f.project.ID, ConversationID: record.ID, TurnID: usage.TurnID, Provider: usage.Provider, Model: usage.Model, OccurredAt: usage.OccurredAt, Input: 1000000, CachedInput: 400000, Output: 100000, ReasoningOutput: 30000, Outcome: string(usage.Outcome), PriceID: new(int64(1)), CostUSD: new(.114), CacheSavingsUSD: new(.036)})
+					return err
+				})
+				continue
+			}
 			if err := f.service.database.RecordConversationUsage(t.Context(), usage); err != nil {
 				t.Fatal(err)
 			}
@@ -112,12 +124,12 @@ func TestChatUsagePriceVersionsAndPeriods(t *testing.T) {
 
 	period := usageWindow{From: start, To: next}
 	infrastructure := costTestObservation("cpu", start, next)
-	if _, err := recordTestCost(t, f.service.database.db, string(f.organization), string(f.project.ID), infrastructure, next); err != nil {
+	if _, err := recordPostgresTestCost(t, f.service.database, string(f.organization), string(f.project.ID), infrastructure, next); err != nil {
 		t.Fatal(err)
 	}
 	paid, quantity := int64(70_000), 100.0
 	runnerCost := costObservation{Provider: "codex", ProviderAccount: "runner", ResourceID: "attempt", AttemptID: "attempt", WorkItemID: "issue", Model: "gpt-6-sol", BillingMode: "metered", UsageKind: "cumulative", Bucket: runnerCostBucket, Metric: "gpt-6-sol", SourceID: "runner-source", Revision: 1, From: start, To: next, Quantity: &quantity, Unit: "token", QuantityBasis: "provider_reported", AmountMicros: &paid, ReportedAmountMicros: &paid, Currency: "USD", Basis: "runner_reported", EvidenceSource: "runner_report", ObservedAt: next, FreshUntil: next, Coverage: "complete"}
-	if _, err := recordTestCost(t, f.service.database.db, string(f.organization), string(f.project.ID), runnerCost, next); err != nil {
+	if _, err := recordPostgresTestCost(t, f.service.database, string(f.organization), string(f.project.ID), runnerCost, next); err != nil {
 		t.Fatal(err)
 	}
 	report, err := f.service.database.monthlyCosts(t.Context(), string(f.organization), "organization", nil, period, next)
@@ -131,7 +143,7 @@ func TestChatUsagePriceVersionsAndPeriods(t *testing.T) {
 		}
 	}
 	if amounts[lunaCostBucket] != 456_000 || amounts[runnerCostBucket] != 70_000 || amounts[spriteCostBucket] != 20_000 {
-		t.Fatalf("distinct charges combined incorrectly: %+v", report.Totals)
+		t.Fatalf("distinct charges combined incorrectly: amounts=%v totals=%+v", amounts, report.Totals)
 	}
 	if len(report.ByProject) != 1 || len(report.ByProject[0].Totals) != 3 {
 		t.Fatalf("project breakdown: %+v", report.ByProject)
@@ -244,10 +256,6 @@ func (f chatUsageTransport) RoundTrip(request *http.Request) (*http.Response, er
 }
 
 func TestGenkitCoordinatorPersistsPricedUsage(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Done."}]}],"usage":{"input_tokens":1000000,"output_tokens":100000,"total_tokens":1100000,"input_tokens_details":{"cached_tokens":400000},"output_tokens_details":{"reasoning_tokens":30000}}}}
@@ -274,25 +282,29 @@ func TestGenkitCoordinatorPersistsPricedUsage(t *testing.T) {
 	f.say(t, &record, "Hello")
 	assistant := f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
 	testenv.WaitUntil(t, t.Context(), func() error {
-		var cost float64
-		var provider string
-		err := f.service.database.db.QueryRowContext(t.Context(), "SELECT provider,cost_usd FROM conversation_usage WHERE turn_id=?", assistant.ID).Scan(&provider, &cost)
+		usage, err := readCoordinatorUsage(t, f.service, f.organization, assistant.ID)
 		if err != nil {
 			return fmt.Errorf("usage not persisted: %w", err)
 		}
-		if provider != "openai" || math.Abs(cost-.114) > 1e-12 {
-			t.Fatalf("provider=%s cost=%v", provider, cost)
+		if usage.Provider != "openai" || usage.CostUSD == nil || math.Abs(*usage.CostUSD-.114) > 1e-12 {
+			t.Fatalf("persisted usage=%+v", usage)
 		}
 		return nil
 	})
-	databasePath := f.service.config.DatabasePath
+	admin := usagePostgresAdmin(t, f.service)
+	reopenConfig := f.service.config
+	defaults := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
+	reopenConfig.Postgres = defaults.Postgres
+	reopenConfig.Hosted = defaults.Hosted
+	reopenConfig.Hosted.OrganizationID = string(f.organization)
+	reopenConfig.TenantRepository, reopenConfig.AccessRepository, reopenConfig.BillingRepository = nil, nil, nil
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened := openTestService(t, Config{DatabasePath: filepath.Clean(databasePath)})
-	var cost float64
-	if err := reopened.database.db.QueryRowContext(t.Context(), "SELECT cost_usd FROM conversation_usage WHERE turn_id=?", assistant.ID).Scan(&cost); err != nil || math.Abs(cost-.114) > 1e-12 {
-		t.Fatalf("reopened cost=%v error=%v", cost, err)
+	reopened := openTestService(t, reopenConfig)
+	usage, err := readCoordinatorUsage(t, reopened, f.organization, assistant.ID)
+	if err != nil || usage.CostUSD == nil || math.Abs(*usage.CostUSD-.114) > 1e-12 {
+		t.Fatalf("reopened usage=%+v error=%v", usage, err)
 	}
 }
 
@@ -335,9 +347,8 @@ func TestConversationCoordinatorMetersFailedAndInterruptedTurns(t *testing.T) {
 			}
 			assistant := f.waitAssistant(t, record.ID, test.outcome)
 			testenv.WaitUntil(t, t.Context(), func() error {
-				var outcome string
-				var input, output int64
-				err := f.service.database.db.QueryRowContext(t.Context(), "SELECT outcome,input,output FROM conversation_usage WHERE turn_id=?", assistant.ID).Scan(&outcome, &input, &output)
+				usage, err := readCoordinatorUsage(t, f.service, f.organization, assistant.ID)
+				outcome, input, output := usage.Outcome, usage.Input, usage.Output
 				if err != nil {
 					return fmt.Errorf("usage missing: %w", err)
 				}
@@ -366,19 +377,32 @@ func TestConversationCoordinatorMetersResumedUsageAndResolvedModel(t *testing.T)
 	record := f.seed(t, "Usage", nil)
 	for turn := 1; turn <= 2; turn++ {
 		f.say(t, &record, "Hello")
+		f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
 		waitUntil(t, "metered turn", func() bool {
-			var count int
-			err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_usage WHERE conversation_id=? AND model='example-resolved'", record.ID).Scan(&count)
-			return err == nil && count == turn
+			summary, err := f.service.database.chatUsageSummary(t.Context(), f.organization, usageWindow{From: time.Unix(0, 0).UTC(), To: time.Now().Add(time.Hour)}, nil)
+			return err == nil && summary.Turns == int64(turn)
 		})
 	}
 	if f.backend.request(t, 1).Resume.ThreadID != "resumed-thread" {
 		t.Fatal("thread was not resumed")
 	}
-	var input, cached, output, reasoning int64
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT sum(input),sum(cached_input),sum(output),sum(reasoning_output) FROM conversation_usage WHERE conversation_id=?", record.ID).Scan(&input, &cached, &output, &reasoning); err != nil {
+	var totals billingstore.ConversationUsageSummary
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		rows, err := r.ConversationUsageBuckets(t.Context(), time.Unix(0, 0).UTC(), time.Now().Add(time.Hour), nil, false)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if row.Model != "example-resolved" {
+				t.Fatalf("usage model=%q", row.Model)
+			}
+		}
+		totals, err = r.ConversationUsageSummary(t.Context(), time.Unix(0, 0).UTC(), time.Now().Add(time.Hour), nil)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
+	input, cached, output, reasoning := totals.Input, totals.CachedInput, totals.Output, totals.ReasoningOutput
 	if input != 120 || cached != 60 || output != 30 || reasoning != 7 {
 		t.Fatalf("totals = %d %d %d %d", input, cached, output, reasoning)
 	}
@@ -402,19 +426,18 @@ func TestChatCacheSavingsCurrency(t *testing.T) {
 func TestConversationUsageCommitsWithCompletion(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name, trigger string
-		want          conversation.Delivery
-		wantRows      int
+		name     string
+		fail     bool
+		want     conversation.Delivery
+		wantRows int
 	}{
-		{"completion sees usage", `CREATE TRIGGER completion_requires_usage BEFORE UPDATE OF delivery ON conversation_messages WHEN NEW.role='assistant' AND NEW.delivery='completed' AND NOT EXISTS(SELECT 1 FROM conversation_usage WHERE turn_id=NEW.id) BEGIN SELECT RAISE(ABORT,'completion must include usage'); END`, conversation.DeliveryCompleted, 1},
-		{"usage failure rolls back completion", `CREATE TRIGGER fail_usage BEFORE INSERT ON conversation_usage BEGIN SELECT RAISE(ABORT,'example usage write failure'); END`, conversation.DeliveryResponding, 0},
+		{"completion sees usage", false, conversation.DeliveryCompleted, 1},
+		{"usage failure rolls back completion", true, conversation.DeliveryResponding, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newCoordinatorFixture(t, "atomic-usage")
 			f.conversations.config.Model = "example-model"
-			if _, err := f.service.database.db.ExecContext(t.Context(), test.trigger); err != nil {
-				t.Fatal(err)
-			}
+			f.service.config.TenantRepository = coordinatorUsageRepository{Repository: f.service.config.TenantRepository, fail: test.fail}
 			f.backend.setRun(func(_ context.Context, _ int, _ runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 				return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{InputTokens: 10, OutputTokens: 5}})
 			})
@@ -427,10 +450,55 @@ func TestConversationUsageCommitsWithCompletion(t *testing.T) {
 			if !ok || assistant.Delivery != test.want {
 				t.Fatalf("assistant = %+v, want %s", assistant, test.want)
 			}
-			var rows int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_usage WHERE turn_id=?", assistant.ID).Scan(&rows); err != nil || rows != test.wantRows {
+			_, err := readCoordinatorUsage(t, f.service, f.organization, assistant.ID)
+			rows := 1
+			if errors.Is(err, corestore.ErrNotFound) {
+				rows = 0
+				err = nil
+			}
+			if err != nil || rows != test.wantRows {
 				t.Fatalf("usage rows = %d, %v", rows, err)
 			}
 		})
 	}
+}
+
+func readCoordinatorUsage(t *testing.T, service *Service, organization tracker.OrganizationID, turn string) (billingstore.ConversationUsage, error) {
+	t.Helper()
+	var row billingstore.ConversationUsage
+	err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		row, err = r.ConversationUsage(t.Context(), turn)
+		return err
+	})
+	return row, err
+}
+
+type coordinatorUsageRepository struct {
+	tenantstore.Repository
+	fail bool
+}
+
+func (r coordinatorUsageRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, work corestore.Workload, fn func(tenantstore.Writer) error) error {
+	return r.Repository.WriteTenant(ctx, org, work, func(w tenantstore.Writer) error { return fn(coordinatorUsageWriter{Writer: w, fail: r.fail}) })
+}
+
+type coordinatorUsageWriter struct {
+	tenantstore.Writer
+	fail bool
+}
+
+func (w coordinatorUsageWriter) RecordConversationUsage(ctx context.Context, row billingstore.ConversationUsage) (bool, error) {
+	if w.fail {
+		return false, errors.New("example usage write failure")
+	}
+	return w.Writer.RecordConversationUsage(ctx, row)
+}
+func (w coordinatorUsageWriter) UpdateMessage(ctx context.Context, row conversationstore.Message, rev int64) (conversationstore.Message, error) {
+	if row.Role == conversation.RoleAssistant && row.Delivery == conversation.DeliveryCompleted {
+		if _, err := w.ConversationUsage(ctx, row.ID); err != nil {
+			return conversationstore.Message{}, errors.New("completion must include usage")
+		}
+	}
+	return w.Writer.UpdateMessage(ctx, row, rev)
 }

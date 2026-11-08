@@ -3,13 +3,12 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,16 +16,28 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/multitracer"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -133,25 +144,37 @@ func blockingRun(release chan struct{}, delta string) func(ctx context.Context, 
 
 type coordinatorFixture struct {
 	nativeFixture
-	backend       *fakeCoordinatorBackend
-	conversations *conversationService
-	owner         string
-	organization  tracker.OrganizationID
+	backend        *fakeCoordinatorBackend
+	conversations  *conversationService
+	owner          string
+	organization   tracker.OrganizationID
+	connectionData json.RawMessage
 }
 
 func newCoordinatorFixture(t *testing.T, name string, contents ...*conversationContentFixture) *coordinatorFixture {
 	t.Helper()
+	return newConfiguredCoordinatorFixture(t, name, func(cfg *Config) {
+		if len(contents) > 0 {
+			cfg.Conversation.ArchiveContents = contents[0]
+		}
+	})
+}
+
+func newConfiguredCoordinatorFixture(t *testing.T, name string, configure ...func(*Config)) *coordinatorFixture {
+	t.Helper()
 	backend := newFakeCoordinatorBackend()
-	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Conversation: &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir()}}
-	config.Conversation.ArchiveContents = &conversationContentFixture{}
-	if len(contents) > 0 {
-		config.Conversation.ArchiveContents = contents[0]
+	config := Config{Content: (&changeObjectFixture{}).call, Conversation: &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir(), ArchiveContents: &conversationContentFixture{}}}
+	for _, apply := range configure {
+		apply(&config)
 	}
-	service := openTestService(t, config)
-	var organization tracker.OrganizationID
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM organizations WHERE local = 1").Scan(&organization); err != nil {
-		t.Fatal(err)
+	service := newPostgresNativeService(t, config)
+	service.registerConversationRoutes(service.echo)
+	service.registerCostUsageRoutes(service.echo)
+	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now), chat.WithSessionStore(operatorChatStore{service.database}, service.resolveOperatorChatAuthority))
+	if service.database.billingAuditStore == nil {
+		service.database.billingAuditStore = service.runDetailStore()
 	}
+	organization := service.accessOrganization()
 	states := []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Blocked", "In Review", "Done"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Blocked", "In Review", "Done"}},
@@ -159,26 +182,60 @@ func newCoordinatorFixture(t *testing.T, name string, contents ...*conversationC
 		{Name: "In Review", Transitions: []string{"Todo", "Done"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
 	}
-	response := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", testHubAdminToken, map[string]any{"idempotency_key": "project-" + name, "name": name, "states": states})
-	requireNativeStatus(t, response, http.StatusOK)
-	var project tracker.NativeProject
-	decodeHubResponse(t, response, &project)
-	response = performHubAPIRequest(t, service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "operator-" + name, "scope": "operator"})
-	requireNativeStatus(t, response, http.StatusCreated)
-	var token tokenResponse
-	decodeHubResponse(t, response, &token)
-	response = performHubAPIRequest(t, service, http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", testHubAdminToken, map[string]any{"organization_id": organization, "project_id": project.ID})
-	requireNativeStatus(t, response, http.StatusNoContent)
+	native := newNativeFixture(t, service, organization, name)
+	organization = native.project.OrganizationID
+	project := native.project
+	project.States = states
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), project.ID)
+		if err != nil {
+			return err
+		}
+		record.States = states
+		_, err = w.UpdateProjectRecord(t.Context(), record)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	credential, status, err := service.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(native.token), "", "")
+	if err != nil {
+		t.Fatalf("coordinator credential status=%d error=%v", status, err)
+	}
 	if service.conversations == nil {
 		t.Fatal("conversation service is not enabled")
 	}
 	seedNativeFixturePolicy(t, service, string(organization)+"/"+string(project.ID))
-	return &coordinatorFixture{
-		nativeFixture: nativeFixture{service: service, project: project, base: "/api/v2/organizations/" + string(organization) + "/projects/" + string(project.ID), token: token.Token},
+	fixture := &coordinatorFixture{
+		nativeFixture: nativeFixture{service: service, project: project, base: "/api/v2/organizations/" + string(organization) + "/projects/" + string(project.ID), token: native.token},
 		backend:       backend,
 		conversations: service.conversations,
-		owner:         token.ID,
+		owner:         credential.ID,
 		organization:  organization,
+	}
+	fixture.write(t, func(w tenantstore.Writer) error {
+		return w.CreateConversationPrice(t.Context(), billingstore.ConversationPrice{OrganizationID: organization, ID: 1, Provider: "openai", Model: "gpt-6-luna", EffectiveAt: time.Unix(0, 0).UTC(), Input: .1, CachedInput: .01, Output: .5})
+	})
+	fixture.attachOperatorConnection(t)
+	return fixture
+}
+
+func (f *coordinatorFixture) attachOperatorConnection(t *testing.T) {
+	t.Helper()
+	f.service.echo.GET("/api/v2/organizations/:organization/coordinator-fixture-context", func(c echo.Context) error {
+		ctx := c.Request().Context()
+		connection := operatortool.CurrentConnection(ctx)
+		connection.ID, connection.Client = newNativeID("luna"), "Luna"
+		ctx = operatortool.WithConnection(ctx, connection)
+		if err := f.service.operatorChat.AttachConnection(ctx); err != nil {
+			return err
+		}
+		f.connectionData = coordinatorConnectionData(ctx)
+		return c.NoContent(http.StatusOK)
+	}, f.service.operatorAuthority)
+	response := performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/"+string(f.organization)+"/coordinator-fixture-context", f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	if len(f.connectionData) == 0 {
+		t.Fatal("coordinator fixture operator connection is missing")
 	}
 }
 
@@ -216,23 +273,21 @@ func TestCoordinatorPublicationRefreshesBeforeMutation(t *testing.T) {
 				if preparations != 1 {
 					return nil
 				}
-				tx, err := f.service.database.db.BeginTx(ctx, nil)
-				if err != nil {
+				return f.service.config.TenantRepository.WriteTenant(ctx, f.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					if change == "event sequence" {
+						_, err := w.AppendConversationEvent(ctx, conversationstore.Event{OrganizationID: f.organization, ConversationID: record.ID, Event: conversation.Event{Type: conversation.EventConversationUpdated, Data: json.RawMessage(`{}`), CreatedAt: f.service.config.now()}})
+						return err
+					}
+					prepared, _ := preparedUpdate.Value(conversationContentsKey{}).(preparedConversationContents)
+					if err := registerPreparedConversationObjects(ctx, w, f.organization, prepared, f.service.config.now()); err != nil {
+						return err
+					}
+					for _, ref := range prepared {
+						updated.ContentID = contentArchiveID(string(f.organization), ref)
+					}
+					_, err := w.UpdateConversation(ctx, conversationRecordToStore(updated), record.Revision)
 					return err
-				}
-				defer tx.Rollback()
-				switch change {
-				case "revision":
-					_, err = tx.ExecContext(ctx, "UPDATE conversations SET revision=revision+1 WHERE id=?", record.ID)
-				case "event sequence":
-					_, err = tx.ExecContext(ctx, "UPDATE conversations SET event_seq=event_seq+1 WHERE id=?", record.ID)
-				default:
-					err = f.conversations.store.updateConversation(preparedUpdate, tx, &updated, record.Revision)
-				}
-				if err != nil {
-					return err
-				}
-				return f.service.database.commit(ctx, tx)
+				})
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -255,21 +310,13 @@ func TestCoordinatorWriterReadsIgnoreHistory(t *testing.T) {
 	for _, count := range []int{1, 128} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
 			f := newCoordinatorFixture(t, "writer-history")
+			probe := &coordinatorQueryTrace{}
+			admin := coordinatorTraceRepository(t, f, probe)
 			record := f.seed(t, "writer history", nil)
 			for range count {
 				f.history(t, &record, conversation.RoleAssistant, "historical answer", conversation.DeliveryCompleted)
 			}
-			var statements []tracedStatement
-			ctx := withRequestTiming(t.Context(), &requestTiming{writerTrace: func(query string, args []driver.NamedValue) {
-				if !strings.HasPrefix(query, "SELECT ") || !strings.Contains(query, "FROM conversations WHERE id") {
-					return
-				}
-				statement := tracedStatement{query: query}
-				for _, arg := range args {
-					statement.args = append(statement.args, arg.Value)
-				}
-				statements = append(statements, statement)
-			}})
+			ctx := context.WithValue(t.Context(), coordinatorQueryTraceKey{}, probe)
 			err := f.coordinator().(*conversationTurnCoordinator).write(ctx, record.ID, func(_ context.Context, _ tenantstore.Writer, record *conversationRecord, _ time.Time) error {
 				if record.MessageCount != int64(count) {
 					t.Fatalf("message count=%d want=%d", record.MessageCount, count)
@@ -279,32 +326,17 @@ func TestCoordinatorWriterReadsIgnoreHistory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(statements) == 0 {
+			if len(probe.statements) == 0 {
 				t.Fatal("coordinator writer read was not traced")
 			}
-			for _, statement := range statements {
-				for _, detail := range explainQueryPlan(t, f.service.database.reader, statement.query, statement.args) {
+			for _, statement := range probe.statements {
+				for _, detail := range coordinatorExplainPlan(t, admin, statement) {
 					if strings.Contains(detail, "conversation_messages") || strings.Contains(detail, "native_archive_sections") {
 						t.Errorf("coordinator writer reads history: %s", detail)
 					}
 				}
 			}
 		})
-	}
-}
-
-func (f *coordinatorFixture) transact(t *testing.T, fn func(tx *sql.Tx) error) {
-	t.Helper()
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatalf("BeginTx() error = %v", err)
-	}
-	if err := fn(tx); err != nil {
-		_ = tx.Rollback()
-		t.Fatalf("transaction error = %v", err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("Commit() error = %v", err)
 	}
 }
 
@@ -326,10 +358,26 @@ func (f *coordinatorFixture) seed(t *testing.T, title string, mutate func(*conve
 	if mutate != nil {
 		mutate(&record)
 	}
+	if err := validateConversationRecord(&record); err != nil {
+		t.Fatal(err)
+	}
 	ctx := prepareTestConversationRecord(t, f.conversations.store, record)
-	f.transact(t, func(tx *sql.Tx) error {
-		return f.conversations.store.createConversation(ctx, tx, &record)
-	})
+	prepared, _ := ctx.Value(conversationContentsKey{}).(preparedConversationContents)
+	if err := f.service.config.TenantRepository.WriteTenant(ctx, f.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, prepared, now); err != nil {
+			return err
+		}
+		for _, ref := range prepared {
+			record.ContentID = contentArchiveID(string(f.organization), ref)
+		}
+		stored, err := w.CreateConversation(ctx, conversationRecordToStore(record))
+		if err == nil {
+			record = conversationRecordFromStore(stored)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	return record
 }
 
@@ -338,20 +386,7 @@ func (f *coordinatorFixture) seed(t *testing.T, title string, mutate func(*conve
 func (f *coordinatorFixture) say(t *testing.T, record *conversationRecord, text string) conversationMessageRecord {
 	t.Helper()
 	message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageText, Text: text, Delivery: conversation.DeliverySaved, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}}
-	plan, err := f.conversations.newPublicationPlan(t.Context(), record.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := plan.appendMessage(t.Context(), &message); err != nil {
-		t.Fatal(err)
-	}
-	ctx := plan.context(t.Context())
-	if err := f.service.config.TenantRepository.WriteTenant(ctx, f.organization, corestore.Serving, func(tx tenantstore.Writer) error {
-		now := f.service.config.now()
-		return f.coordinator().(*conversationTurnCoordinator).appendMessage(ctx, tx, record, &message, now)
-	}); err != nil {
-		t.Fatal(err)
-	}
+	f.appendMessage(t, record, &message)
 	f.conversations.committed(*record)
 	return message
 }
@@ -364,47 +399,125 @@ func (f *coordinatorFixture) history(t *testing.T, record *conversationRecord, r
 		actor = conversation.Actor{Kind: conversation.ActorCoordinator}
 	}
 	message := conversationMessageRecord{Role: role, Kind: conversation.MessageText, Text: text, Delivery: delivery, Actor: actor}
+	f.appendMessage(t, record, &message)
+}
+
+func (f *coordinatorFixture) appendMessage(t *testing.T, record *conversationRecord, message *conversationMessageRecord) {
+	t.Helper()
+	if message.Role == conversation.RoleUser && len(message.Data) == 0 {
+		message.Data = f.connectionData
+	}
 	plan, err := f.conversations.newPublicationPlan(t.Context(), record.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := plan.appendMessage(t.Context(), &message); err != nil {
+	plan.coordinator = true
+	if err := plan.appendMessage(t.Context(), message); err != nil {
 		t.Fatal(err)
+	}
+	for _, body := range plan.events {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := plan.prepareValue(t.Context(), raw); err != nil {
+			t.Fatal(err)
+		}
 	}
 	ctx := plan.context(t.Context())
 	if err := f.service.config.TenantRepository.WriteTenant(ctx, f.organization, corestore.Serving, func(tx tenantstore.Writer) error {
-		now := f.service.config.now()
-		return f.coordinator().(*conversationTurnCoordinator).appendMessage(ctx, tx, record, &message, now)
+		if err := registerPreparedConversationObjects(ctx, tx, f.organization, plan.prepared, plan.now); err != nil {
+			return err
+		}
+		return f.coordinator().(*conversationTurnCoordinator).appendMessage(ctx, tx, record, message, plan.now)
 	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *coordinatorFixture) write(t *testing.T, write func(tenantstore.Writer) error) {
+	t.Helper()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.organization, corestore.Serving, write); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func (f *coordinatorFixture) conversation(t *testing.T, id string) conversationRecord {
 	t.Helper()
-	record, err := f.conversations.store.readConversation(t.Context(), f.service.database.db, f.organization, f.project.ID, id)
+	record, err := f.coordinator().(*conversationTurnCoordinator).readConversation(t.Context(), nil, id)
 	if err != nil {
-		t.Fatalf("readConversation() error = %v", err)
+		t.Fatal(err)
 	}
 	return record
 }
 
 func (f *coordinatorFixture) messages(t *testing.T, id string) []conversationMessageRecord {
 	t.Helper()
-	messages, err := f.conversations.store.listMessages(t.Context(), f.service.database.db, id, 0, 500)
-	if err != nil {
-		t.Fatalf("listMessages() error = %v", err)
+	var rows []conversationMessageRecord
+	var before int64
+	for len(rows) < 500 {
+		limit := min(corestore.MaxPageSize, 500-len(rows))
+		page, err := f.coordinator().(*conversationTurnCoordinator).coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: id, BeforeSequence: before, Limit: limit})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		before = page[0].Seq
+		rows = append(page, rows...)
+		if len(page) < limit {
+			break
+		}
 	}
-	return messages
+	return rows
 }
 
 func (f *coordinatorFixture) events(t *testing.T, id string) []conversation.Event {
 	t.Helper()
-	events, err := f.conversations.store.listEvents(t.Context(), f.service.database.db, id, 0, 1000)
-	if err != nil {
-		t.Fatalf("listEvents() error = %v", err)
+	var rows []conversationstore.Event
+	refs := map[string]attachment.ArchiveReference{}
+	var after int64
+	for len(rows) < 1000 {
+		var page conversationstore.EventPage
+		limit := min(corestore.MaxPageSize, 1000-len(rows))
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			page, err = r.ConversationEvents(t.Context(), id, after, limit)
+			if err != nil {
+				return err
+			}
+			for _, row := range page.Items {
+				if row.ContentReference != "" {
+					object, err := r.ConversationContent(t.Context(), row.ContentReference)
+					if err != nil {
+						return err
+					}
+					refs[row.ContentReference] = object.Reference
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		rows = append(rows, page.Items...)
+		if len(page.Items) < limit {
+			break
+		}
+		after = page.Items[len(page.Items)-1].Seq
 	}
-	return events
+	result := make([]conversation.Event, 0, len(rows))
+	for _, row := range rows {
+		if row.ContentReference != "" {
+			var payload conversationContent
+			if err := f.service.readConversationObject(t.Context(), string(f.organization), refs[row.ContentReference], &payload); err != nil {
+				t.Fatal(err)
+			}
+			row.Event.Data = payload.Data
+		}
+		result = append(result, row.Event)
+	}
+	return result
 }
 
 func waitUntil(t *testing.T, what string, condition func() bool) {
@@ -434,8 +547,22 @@ func (f *coordinatorFixture) waitAssistant(t *testing.T, id string, delivery con
 	t.Helper()
 	var found conversationMessageRecord
 	waitUntil(t, "assistant message "+string(delivery), func() bool {
-		message, ok := lastReply(f.messages(t, id))
-		if ok && message.Delivery == delivery {
+		messages := f.messages(t, id)
+		message, ok := lastReply(messages)
+		var lastUserSeq int64
+		var pendingUser bool
+		for _, item := range messages {
+			if item.Role == conversation.RoleUser && item.Seq > lastUserSeq {
+				lastUserSeq = item.Seq
+			}
+			if item.Role == conversation.RoleUser && (item.Delivery == conversation.DeliverySaved || item.Delivery == conversation.DeliveryQueued || item.Delivery == conversation.DeliverySending) {
+				pendingUser = true
+			}
+		}
+		if ok && message.Delivery == conversation.DeliveryFailed && delivery != conversation.DeliveryFailed && message.Seq > lastUserSeq && !pendingUser {
+			t.Fatalf("assistant failed before %s: text=%q data=%s", delivery, message.Text, message.Data)
+		}
+		if ok && message.Delivery == delivery && message.Seq > lastUserSeq {
 			found = message
 			return true
 		}
@@ -647,7 +774,7 @@ func TestConversationCoordinatorCoalescesMessagesSavedDuringTurn(t *testing.T) {
 	release := make(chan struct{})
 	f.backend.setRun(blockingRun(release, ""))
 	record := f.seed(t, "coalesce", nil)
-	f.say(t, &record, "first")
+	f.say(t, &record, "initial message")
 	f.backend.waitStarted(t)
 	f.backend.setRun(newFakeCoordinatorBackend().run)
 	f.say(t, &record, "second")
@@ -666,12 +793,17 @@ func TestConversationCoordinatorCoalescesMessagesSavedDuringTurn(t *testing.T) {
 		}
 		return f.conversation(t, record.ID).Execution.Status == conversation.ExecutionIdle
 	})
-	time.Sleep(50 * time.Millisecond)
+	coordinator := f.coordinator().(*conversationTurnCoordinator)
+	waitUntil(t, "coordinator passes drained", func() bool {
+		coordinator.mu.Lock()
+		defer coordinator.mu.Unlock()
+		return len(coordinator.passes) == 0
+	})
 	if f.backend.turns() != 2 {
 		t.Fatalf("turns = %d, want exactly one follow-up turn", f.backend.turns())
 	}
 	second := f.backend.request(t, 1)
-	if !strings.Contains(second.Prompt, "second") || !strings.Contains(second.Prompt, "third") || strings.Contains(second.Prompt, "first") {
+	if !strings.Contains(second.Prompt, "second") || !strings.Contains(second.Prompt, "third") || strings.Contains(second.Prompt, "initial message") {
 		t.Fatalf("follow-up prompt = %q, want only the two newer messages", second.Prompt)
 	}
 	if strings.Index(second.Prompt, "second") > strings.Index(second.Prompt, "third") {
@@ -834,14 +966,17 @@ func TestConversationCoordinatorStop(t *testing.T) {
 				t.Fatalf("execution = %s, want %s", got, wantExecution)
 			}
 			if !test.finish {
-				var encoded, contentID string
-				err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT receipt_json,content_attachment_id FROM conversation_commands WHERE conversation_id = ? AND key = ?", record.ID, messages[0].CommandKey).Scan(&encoded, &contentID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				receipt, err := f.conversations.store.decodeReceipt(t.Context(), f.service.database.reader, record.ID, encoded, contentID)
-				if err != nil || receipt.Status != conversation.DeliveryFailed || receipt.Error == nil || receipt.Error.Code != "coordinator_error" {
-					t.Fatalf("receipt = %#v, error = %v", receipt, err)
+				var receipt conversation.Receipt
+				f.read(t, func(r tenantstore.Reader) error {
+					command, found, err := r.Command(t.Context(), record.ID, messages[0].CommandKey)
+					if err == nil && !found {
+						return errors.New("command receipt is missing")
+					}
+					receipt = command.Receipt
+					return err
+				})
+				if receipt.Status != conversation.DeliveryFailed || receipt.Error == nil || receipt.Error.Code != "coordinator_error" {
+					t.Fatalf("receipt = %#v", receipt)
 				}
 			}
 			f.coordinator().Stop()
@@ -857,16 +992,11 @@ func TestConversationCoordinatorStop(t *testing.T) {
 				t.Fatal("test backend did not exit")
 			}
 			if !test.finish {
-				cfg := f.service.config
-				if err := f.service.Close(); err != nil {
-					t.Fatal(err)
-				}
-				cfg.Conversation.Backend = newFakeCoordinatorBackend()
-				restarted, err := Open(t.Context(), cfg)
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = restarted.Close() })
+				restarted := reopenCoordinatorService(t, f.service, func(cfg *Config) {
+					conversationConfig := *cfg.Conversation
+					conversationConfig.Backend = newFakeCoordinatorBackend()
+					cfg.Conversation = &conversationConfig
+				})
 				f.service, f.conversations = restarted, restarted.conversations
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/commands", f.token,
 					conversation.Command{Key: "retry-after-restart", Kind: conversation.CommandRetry, MessageID: messages[0].ID})
@@ -895,8 +1025,10 @@ func TestConversationCoordinatorIgnoresLinked(t *testing.T) {
 		record.Visibility = conversation.VisibilityShared
 	})
 	f.history(t, &linked, conversation.RoleUser, "hello", conversation.DeliverySaved)
-	f.coordinator().Wake(linked.ID)
-	time.Sleep(150 * time.Millisecond)
+	started, err := f.coordinator().(*conversationTurnCoordinator).runTurn(linked.ID)
+	if started || err != nil && !errors.Is(err, errCoordinatorNothingPending) {
+		t.Fatalf("linked turn started=%v error=%v", started, err)
+	}
 	if f.backend.turns() != 0 {
 		t.Fatalf("turns = %d, want none for a linked conversation", f.backend.turns())
 	}
@@ -951,8 +1083,10 @@ func TestConversationCoordinatorListAttention(t *testing.T) {
 	review := f.createIndependent(t, "review")
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(review.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "review"}, ExpectedRevision: review.Revision, State: "In Review", Reason: "user_requested"}), http.StatusOK)
 	running := f.createIndependent(t, "running")
-	worker := f.worker(t, "worker")
-	lease := claimNativeAttempt(t, f.nativeFixture, worker, "machine", "session", running.WorkItemID)
+	r := prepareRunner(t, f.nativeFixture, runnerauth.Claim, runnerauth.Events)
+	r.enroll(t)
+	worker := r.redemption.Credential
+	lease := nativeAttemptFixtureLease(t, r, running, "session")
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(running.WorkItemID)+"/events", worker, nativeStartedEvent(lease)), http.StatusOK)
 	waiting := f.createIndependent(t, "waiting")
 	linkedAt := time.Now().UTC()
@@ -970,8 +1104,16 @@ func TestConversationCoordinatorListAttention(t *testing.T) {
 		t.Fatal(err)
 	}
 	questionContext := prepareRecordTestPayload(t, conversationFixture{store: f.conversations.store}, linkedConversation, questionRaw)
-	f.transact(t, func(tx *sql.Tx) error {
-		return f.conversations.store.upsertQuestion(questionContext, tx, question)
+	prepared, _ := questionContext.Value(conversationContentsKey{}).(preparedConversationContents)
+	f.write(t, func(w tenantstore.Writer) error {
+		if err := registerPreparedConversationObjects(questionContext, w, f.organization, prepared, linkedAt); err != nil {
+			return err
+		}
+		stored := conversationstore.Question{OrganizationID: f.organization, ConversationID: linkedConversation.ID, Question: question.Question}
+		for _, ref := range prepared {
+			stored.ContentReference = contentArchiveID(string(f.organization), ref)
+		}
+		return w.UpsertQuestion(questionContext, stored)
 	})
 	f.createIndependent(t, "plain todo")
 
@@ -993,7 +1135,13 @@ func TestConversationCoordinatorListAttention(t *testing.T) {
 		}
 		return nil
 	}
-	if item := find(got.Blocked, blocked.WorkItemID); item == nil || !strings.Contains(item.Reason, string(blocker.WorkItemID)) || item.URL != "/local-organization/attention/issues/"+strconv.Itoa(blocked.Number) || item.Title != "blocked" {
+	var organizationSlug string
+	f.read(t, func(r tenantstore.Reader) error {
+		organization, err := r.AccessOrganization(t.Context())
+		organizationSlug = organization.Slug
+		return err
+	})
+	if item := find(got.Blocked, blocked.WorkItemID); item == nil || !strings.Contains(item.Reason, string(blocker.WorkItemID)) || item.URL != "/"+organizationSlug+"/"+f.project.Slug+"/issues/"+strconv.Itoa(blocked.Number) || item.Title != "blocked" {
 		t.Fatalf("blocked = %#v, want the dependency-blocked issue with reason and url", got.Blocked)
 	}
 	if item := find(got.Running, running.WorkItemID); item == nil || item.Reason == "" {
@@ -1023,9 +1171,7 @@ func TestConversationCoordinatorToolArgumentsAndScope(t *testing.T) {
 	f := newCoordinatorFixture(t, "scope")
 	own := f.createIndependent(t, "own issue")
 	done := f.createIndependent(t, "done issue")
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Done') WHERE native_id=?", f.project.ID, done.WorkItemID); err != nil {
-		t.Fatal(err)
-	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(done.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "finish-issue"}, ExpectedRevision: done.Revision, State: "Done", Reason: "user_requested"}), http.StatusOK)
 	other := newNativeFixture(t, f.service, "", "other-project")
 	other.createIndependent(t, "foreign first")
 	other.createIndependent(t, "foreign second")
@@ -1161,9 +1307,11 @@ func TestConversationCoordinatorProposeIssue(t *testing.T) {
 		t.Fatal("expected an assistant status message carrying the proposal")
 	}
 	var issues int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id = ?", f.project.ID).Scan(&issues); err != nil {
-		t.Fatal(err)
-	}
+	f.read(t, func(r tenantstore.Reader) error {
+		items, err := r.WorkItems(t.Context(), f.project.ID, 0, 100)
+		issues = len(items)
+		return err
+	})
 	if issues != 0 {
 		t.Fatalf("propose_issue created %d issues, want none", issues)
 	}
@@ -1314,7 +1462,7 @@ func TestConversationCoordinatorToolMessagesFromUpdates(t *testing.T) {
 						output := httptest.NewRecorder()
 						stream := &conversationStream{response: echo.NewResponse(output, echo.New())}
 						head := f.conversation(t, record.ID).EventSeq
-						if cursor, err := stream.replay(t.Context(), f.conversations.store, f.service.database.reader, record.ID, 0, head); err != nil || cursor != head || !strings.Contains(output.Body.String(), wantAccepted) || !strings.Contains(output.Body.String(), wantUpdated) {
+						if cursor, err := f.service.replayPGConversationEvents(t.Context(), nativeAttemptListingScope(t, f.nativeFixture), stream, record.ID, 0, head); err != nil || cursor != head || !strings.Contains(output.Body.String(), wantAccepted) || !strings.Contains(output.Body.String(), wantUpdated) {
 							t.Fatalf("SSE tool replay: cursor=%d head=%d error=%v", cursor, head, err)
 						}
 						if len([]rune(tools[0].Text)) > 500 {
@@ -1340,7 +1488,7 @@ func TestConversationReconcileLeavesHubCoordinatorTurns(t *testing.T) {
 	t.Parallel()
 	f := newCoordinatorFixture(t, "reconcile")
 	record := f.seed(t, "reconcile", func(record *conversationRecord) { record.Execution.Status = conversation.ExecutionRunning })
-	before, err := f.conversations.store.readConversation(t.Context(), f.service.database.db, record.OrganizationID, record.ProjectID, record.ID)
+	before, err := f.coordinator().(*conversationTurnCoordinator).readConversation(t.Context(), nil, record.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1352,7 +1500,7 @@ func TestConversationReconcileLeavesHubCoordinatorTurns(t *testing.T) {
 		t.Fatalf("reconcileExecutions() error = %v", err)
 	}
 
-	after, err := f.conversations.store.readConversation(t.Context(), f.service.database.db, record.OrganizationID, record.ProjectID, record.ID)
+	after, err := f.coordinator().(*conversationTurnCoordinator).readConversation(t.Context(), nil, record.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1459,7 +1607,7 @@ func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
 			f := newCoordinatorFixture(t, "luna-preferences")
 			f.conversations.config.Model = genkitbackend.Model
 			f.conversations.config.ReasoningEffort = "low"
-			reportConversationModels(t, conversationAPIFixture{nativeFixture: f.nativeFixture}, "gpt-6-astra")
+			reportConversationModels(t, conversationAPIFixture{nativeFixture: f.nativeFixture, ownerID: f.owner}, "gpt-6-astra")
 			d := f.service.database
 			if test.hosted {
 				d.hostedOrganization = f.organization
@@ -1477,10 +1625,10 @@ func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
 				}
 			}
 			if test.credits {
-				d.aiCreditMode = "test"
-				if _, err := d.db.ExecContext(t.Context(), "INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'test',?)", f.organization, test.balance); err != nil {
-					t.Fatal(err)
-				}
+				d.aiCreditMode, d.aiCreditCostMultiplier = "test", defaultAICreditCostMultiplier
+				f.write(t, func(w tenantstore.Writer) error {
+					return w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: f.organization, Mode: "test", BalanceMicros: test.balance})
+				})
 			}
 			chosen := newFakeCoordinatorBackend()
 			sink := recordingConversationUsageSink{usage: make(chan ConversationUsage, 1)}
@@ -1659,7 +1807,7 @@ func TestConversationCoordinatorToolsHonourReadAccess(t *testing.T) {
 		{
 			name: "built-in skill requires current project read access",
 			tool: "read_skill", args: func(tracker.NativeWorkItemID) string { return `{"name":"split-issue"}` }, revoke: "grant",
-			contains: "can no longer read this project",
+			contains: operatortool.ErrAccessDenied.Error(),
 		},
 		{
 			name: "a blocker in the owner's project is named",
@@ -1681,22 +1829,22 @@ func TestConversationCoordinatorToolsHonourReadAccess(t *testing.T) {
 		{
 			name: "a withdrawn grant ends list_attention", tool: "list_attention",
 			args: func(tracker.NativeWorkItemID) string { return `{"scope":"project"}` }, revoke: "grant",
-			contains: "can no longer read this project",
+			contains: operatortool.ErrAccessDenied.Error(),
 		},
 		{
 			name: "a withdrawn grant ends explain_issue", tool: "explain_issue",
 			args:   func(own tracker.NativeWorkItemID) string { return `{"work_item_id":"` + string(own) + `"}` },
-			revoke: "grant", contains: "can no longer read this project",
+			revoke: "grant", contains: operatortool.ErrAccessDenied.Error(),
 		},
 		{
 			name: "a withdrawn grant ends propose_issue", tool: "propose_issue",
 			args:   func(tracker.NativeWorkItemID) string { return `{"title":"t","objective":"o"}` },
-			revoke: "grant", contains: "can no longer read this project",
+			revoke: "grant", contains: operatortool.ErrAccessDenied.Error(),
 		},
 		{
 			name: "a revoked owner token ends every tool", tool: "list_attention",
 			args: func(tracker.NativeWorkItemID) string { return `{"scope":"project"}` }, revoke: "token",
-			contains: "can no longer read this project",
+			contains: operatortool.ErrAccessDenied.Error(),
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1706,23 +1854,27 @@ func TestConversationCoordinatorToolsHonourReadAccess(t *testing.T) {
 			var dependent, blocker tracker.NativeWorkItemID
 			if test.setup != nil {
 				dependent, blocker = test.setup(t, f)
-				f.transact(t, func(tx *sql.Tx) error {
-					_, err := tx.ExecContext(t.Context(), `INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at)
-SELECT b.id, d.id, 'native', ?, ? FROM issues b, issues d WHERE b.native_id = ? AND d.native_id = ?`, testTimestamp, testTimestamp, string(blocker), string(dependent))
-					return err
+				f.write(t, func(w tenantstore.Writer) error {
+					blocked, err := w.WorkItemByNativeID(t.Context(), dependent)
+					if err != nil {
+						return err
+					}
+					blocking, err := w.WorkItemByNativeID(t.Context(), blocker)
+					if err != nil {
+						return err
+					}
+					return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: f.organization, ProjectID: blocked.ProjectID, WorkItemID: dependent, RelatedProjectID: blocking.ProjectID, RelatedWorkItemID: blocker, Type: "dependency"}, "add", f.service.config.now())
 				})
 			}
 			record := f.seed(t, test.name, nil)
 			switch test.revoke {
 			case "grant":
-				f.transact(t, func(tx *sql.Tx) error {
-					_, err := tx.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id = ?", f.owner)
-					return err
+				f.write(t, func(w tenantstore.Writer) error {
+					return w.DeleteAccessTokenGrant(t.Context(), f.owner, f.project.ID)
 				})
 			case "token":
-				f.transact(t, func(tx *sql.Tx) error {
-					_, err := tx.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE id = ?", testTimestamp, f.owner)
-					return err
+				f.write(t, func(w tenantstore.Writer) error {
+					return w.RevokeAccessCredential(t.Context(), f.owner, f.service.config.now())
 				})
 			}
 			f.backend.setRun(callTool(test.tool, test.args(own.WorkItemID)))
@@ -1778,7 +1930,6 @@ func TestConversationCoordinatorBoundsWorkers(t *testing.T) {
 				}
 			}
 			waitUntil(t, "workers started", func() bool { return f.backend.turns() == test.wantWorkers })
-			time.Sleep(50 * time.Millisecond)
 			coordinator.mu.Lock()
 			workers, queued := coordinator.workers, len(coordinator.queue)
 			coordinator.mu.Unlock()
@@ -1878,24 +2029,42 @@ func TestConversationCoordinatorAttachmentReadFailure(t *testing.T) {
 			if err := plan.appendMessage(t.Context(), &message); err != nil {
 				t.Fatal(err)
 			}
+			for _, event := range plan.events {
+				raw, err := json.Marshal(event)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := plan.prepareValue(t.Context(), raw); err != nil {
+					t.Fatal(err)
+				}
+			}
+			objects := f.conversations.store.contents.(*conversationContentFixture)
+			ref, err := objects.PublishContent(t.Context(), string(f.organization), []byte("secret plan"))
+			if err != nil {
+				t.Fatal(err)
+			}
 			ctx := plan.context(t.Context())
-			f.transact(t, func(tx *sql.Tx) error {
-				if err := f.conversations.appendMessage(ctx, tx, &record, &message, plan.now); err != nil {
+			contentID := contentArchiveID(string(f.organization), ref)
+			expires := plan.now.Add(time.Hour)
+			f.write(t, func(w tenantstore.Writer) error {
+				if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, plan.now); err != nil {
 					return err
 				}
-				if _, err := tx.ExecContext(t.Context(), `INSERT INTO conversation_attachments (id, conversation_id, message_id, principal_id, name, mime, size, artifact_ref, created_at)
-VALUES ('att_1', ?, ?, ?, 'notes.txt', 'text/plain', 11, 'ref_1', ?)`, record.ID, message.ID, f.owner, testTimestamp); err != nil {
+				if err := f.coordinator().(*conversationTurnCoordinator).appendMessage(ctx, w, &record, &message, plan.now); err != nil {
 					return err
 				}
-				if _, err := tx.ExecContext(t.Context(), "INSERT INTO conversation_attachment_blobs (artifact_ref, content) VALUES ('ref_1', ?)", []byte("secret plan")); err != nil {
+				a := conversationstore.Attachment{OrganizationID: f.organization, ProjectID: f.project.ID, ConversationID: record.ID, ID: conversation.NewAttachmentID(), PrincipalID: f.owner, Name: "notes.txt", MIME: "text/plain", Size: 11, ArtifactRef: "ref_1", ContentID: contentID, CreatedAt: plan.now, ExpiresAt: &expires}
+				owner := w.(conversationstore.AttachmentWriter)
+				if err := owner.CreateConversationAttachment(ctx, a, conversationstore.ContentObject{OrganizationID: f.organization, ID: contentID, Reference: ref, CreatedAt: plan.now}); err != nil {
 					return err
 				}
-				if test.breakStore {
-					_, err := tx.ExecContext(t.Context(), "ALTER TABLE conversation_attachment_blobs RENAME TO conversation_attachment_blobs_gone")
-					return err
-				}
-				return nil
+				return owner.BindConversationAttachment(ctx, f.project.ID, record.ID, a.ID, f.owner, message.ID, plan.now)
 			})
+			if test.breakStore {
+				objects.mu.Lock()
+				delete(objects.content, ref.Key)
+				objects.mu.Unlock()
+			}
 			f.coordinator().Wake(record.ID)
 			assistant := f.waitAssistant(t, record.ID, test.wantDelivery)
 			waitUntil(t, "execution settled", func() bool { return f.conversation(t, record.ID).Execution.Status == test.wantExecution })
@@ -2021,30 +2190,63 @@ func TestCoordinatorFreeRefusesLuna(t *testing.T) {
 		{name: "exhausted viewer sees owner action", credits: true, want: "Ask an organization owner", hidden: "Auto-fund"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newCoordinatorFixture(t, "free-chat")
+			plans := capacityHostedPlans()
+			f := newConfiguredCoordinatorFixture(t, "free-chat", func(cfg *Config) {
+				if test.credits {
+					cfg.Hosted = &HostedConfig{Plans: &plans, OrganizationID: "org_credit", WorkOSOrganizationID: "provider_org_credit", BootstrapSubject: "user_owner", PublicURL: "http://127.0.0.1:7777", Provider: newHostedSecurityProvider()}
+				}
+			})
 			d := f.service.database
 			d.hostedOrganization = f.organization
-			plans := capacityHostedPlans()
 			if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
 				t.Fatal(err)
 			}
 			f.conversations.config.Model = "gpt-6-luna"
 			if test.credits {
-				d.aiCreditMode = "test"
-				if _, err := d.db.ExecContext(t.Context(), "INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros,failure) VALUES(?,'test',?,'update the saved payment method')", f.organization, test.balance); err != nil {
-					t.Fatal(err)
-				}
+				d.aiCreditMode, d.aiCreditCostMultiplier = "test", defaultAICreditCostMultiplier
 				role := "viewer"
 				if test.owner {
 					role = "owner"
 				}
-				if _, err := d.db.ExecContext(t.Context(), "INSERT INTO hosted_members(user_id,email,membership_id,role,principal_id,created_at,updated_at) VALUES('user_credit','credit@example.test','member_credit',?,?,?,?)", role, f.owner, formatHubTime(d.now()), formatHubTime(d.now())); err != nil {
-					t.Fatal(err)
+				f.write(t, func(w tenantstore.Writer) error {
+					if err := w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: f.organization, Mode: "test", BalanceMicros: test.balance, Failure: "update the saved payment method"}); err != nil {
+						return err
+					}
+					credential, err := w.AccessCredential(t.Context(), f.owner)
+					if err != nil {
+						return err
+					}
+					if credential.UserID == "" || credential.MembershipID == "" {
+						return errors.New("credit fixture credential has no hosted member")
+					}
+					member, err := w.AccessMember(t.Context(), credential.UserID)
+					if err != nil {
+						return err
+					}
+					member.Role = role
+					return w.UpdateAccessMember(t.Context(), member)
+				})
+				credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.organization, apikey.HashToken(f.token), "", "")
+				if err != nil || credential.ID != f.owner || credential.Hosted == nil || credential.Hosted.Subject == "" || credential.HostedPrincipal == "" || credential.HostedRole != role {
+					t.Fatalf("credit fixture owner/member authority status=%d role=%s: %v", status, credential.HostedRole, err)
 				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base, f.token, nil), http.StatusOK)
 			}
 			if test.included {
 				now := d.now()
-				setIncludedCreditSubscription(t, d, f.organization, now.Add(-time.Hour), now.Add(time.Hour), now.Add(time.Hour), PlanReference{ID: "team", Version: 2})
+				f.write(t, func(w tenantstore.Writer) error {
+					plan := billingstore.PlanReference{ID: "team", Version: 2}
+					end := now.Add(time.Hour)
+					if err := w.SetBillingAccount(t.Context(), billingstore.Account{OrganizationID: f.organization, Mode: "test", Binding: billing.Binding{AccountID: "acct_" + string(f.organization), CustomerID: "cus_" + string(f.organization)}, Plan: plan, Status: "active", PaidThrough: end, AccessUntil: end, Snapshot: billing.Snapshot{SubscriptionID: "sub_" + string(f.organization), Status: "active", PeriodStart: now.Add(-time.Hour), PeriodEnd: end}}); err != nil {
+						return err
+					}
+					assignment, err := w.BillingAssignment(t.Context())
+					if err != nil {
+						return err
+					}
+					assignment.Subscription, assignment.ExpiresAt = &plan, &end
+					return w.SetBillingAssignment(t.Context(), assignment, assignment.Revision)
+				})
 			}
 			record := f.seed(t, "Free chat", nil)
 			f.say(t, &record, "Can you explain this project?")
@@ -2059,8 +2261,13 @@ func TestCoordinatorFreeRefusesLuna(t *testing.T) {
 					t.Fatal(err)
 				}
 				var balance int64
-				if err := d.db.QueryRowContext(t.Context(), "SELECT balance_micros FROM ai_credit_accounts").Scan(&balance); err != nil || balance != test.wantBalance {
-					t.Fatalf("charged balance=%d want=%d err=%v", balance, test.wantBalance, err)
+				f.read(t, func(r tenantstore.Reader) error {
+					account, err := r.BillingCreditAccount(t.Context(), "test")
+					balance = account.BalanceMicros
+					return err
+				})
+				if balance != test.wantBalance {
+					t.Fatalf("charged balance=%d want=%d", balance, test.wantBalance)
 				}
 				f.say(t, &record, "One more question")
 				reply = f.waitAssistant(t, record.ID, conversation.DeliveryFailed)
@@ -2076,4 +2283,159 @@ func TestCoordinatorFreeRefusesLuna(t *testing.T) {
 			}
 		})
 	}
+}
+
+type coordinatorQueryTraceKey struct{}
+
+type coordinatorQueryTrace struct {
+	statements []tracedStatement
+}
+
+func (p *coordinatorQueryTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if ctx.Value(coordinatorQueryTraceKey{}) == p && strings.HasPrefix(data.SQL, "SELECT ") && strings.Contains(data.SQL, "FROM conversations c") {
+		p.statements = append(p.statements, tracedStatement{query: data.SQL, args: append([]any(nil), data.Args...)})
+	}
+	return ctx
+}
+
+func (*coordinatorQueryTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func coordinatorTraceRepository(t *testing.T, f *coordinatorFixture, probe *coordinatorQueryTrace) *sql.DB {
+	t.Helper()
+	admin := usagePostgresAdmin(t, f.service)
+	connection := startupConnection(t, admin, "detent_runtime_v2", "")
+	cfg, err := connection.PoolConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.MaxConns = 3
+	rows, err := admin.QueryContext(t.Context(), `SELECT n.nspname||'.'||c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relrowsecurity`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var relations []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		relations = append(relations, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	guard := pgtest.NewTenantGuard(relations, func(message string) { t.Error(message) })
+	cfg.ConnConfig.Tracer = multitracer.New(guard, probe)
+	pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1})
+	if err != nil {
+		pool.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		f.conversations.stop()
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	f.service.config.TenantRepository = repository
+	return admin
+}
+
+func coordinatorExplainPlan(t *testing.T, admin *sql.DB, statement tracedStatement) []string {
+	t.Helper()
+	rows, err := admin.QueryContext(t.Context(), "EXPLAIN "+statement.query, statement.args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var details []string
+	for rows.Next() {
+		var detail string
+		if err := rows.Scan(&detail); err != nil {
+			t.Fatal(err)
+		}
+		details = append(details, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return details
+}
+
+func (f *coordinatorFixture) read(t *testing.T, read func(tenantstore.Reader) error) {
+	t.Helper()
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.organization, corestore.Serving, read); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func reopenCoordinatorService(t *testing.T, original *Service, configure ...func(*Config)) *Service {
+	t.Helper()
+	cfg := original.config
+	admin := usagePostgresAdmin(t, original)
+	connection := startupConnection(t, admin, "detent_runtime_v2", "")
+	organization, local := original.database.hostedOrganization, original.localOrganization
+	if err := original.Close(); err != nil {
+		t.Fatal(err)
+	}
+	migrations, err := fs.Sub(migrationFiles, "postgres/migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := postgres.Open(t.Context(), postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}, migrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectRecordDatabases.Store(repository, admin)
+	t.Cleanup(func() {
+		projectRecordDatabases.Delete(repository)
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	cfg.Postgres = nil
+	cfg.DatabaseBackend = ""
+	cfg.TenantRepository = repository
+	cfg.AccessRepository = nil
+	cfg.BillingRepository = nil
+	unhosted := cfg.Hosted == nil
+	if unhosted {
+		cfg.Hosted = startupConfig(connection).Hosted
+		cfg.Hosted.OrganizationID = string(organization)
+	}
+	for _, apply := range configure {
+		apply(&cfg)
+	}
+	var service *Service
+	if unhosted {
+		logger := cfg.Logger
+		cfg.Logger = discardLogger()
+		service = openLocalPostgresHubTestService(t, repository, cfg)
+		service.config.Logger = logger
+		service.database.logger = logger
+		if service.conversations != nil {
+			service.conversations.logger = logger.With("component", "conversation")
+			service.registerConversationRoutes(service.echo)
+		}
+	} else {
+		service = openPostgresHubTestService(t, repository, cfg)
+	}
+	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now), chat.WithSessionStore(operatorChatStore{service.database}, service.resolveOperatorChatAuthority))
+	service.database.hostedOrganization = organization
+	service.localOrganization = local
+	service.requestMetrics.organization = organization
+	if cfg.Hosted == nil && service.conversations != nil {
+		if err := service.conversations.start(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return service
 }

@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,7 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -95,23 +97,51 @@ func TestCoordinatorSubjectRefresh(t *testing.T) {
 		sizes       []int
 		unavailable bool
 		escaped     bool
+		api         bool
 	}{
 		{name: "ordinary history"},
+		{name: "API origin", api: true},
 		{name: "oversized page", sizes: []int{40000, 40000, 40000, 40000, 40000, 40000, 40000, 40000, 40000}},
 		{name: "escaped oversized page", escaped: true, sizes: []int{8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000}},
 		{name: "single oversized record", sizes: []int{operatortool.MaxResultBytes + 1, 10}},
 		{name: "failed history read", unavailable: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newCoordinatorFixture(t, "subject-refresh-"+strings.ReplaceAll(test.name, " ", "-"))
+			details := &memoryRunDetails{}
+			f := newConfiguredCoordinatorFixture(t, "subject-refresh-"+strings.ReplaceAll(test.name, " ", "-"), func(cfg *Config) { cfg.RunDetails = details })
 			issue := f.create(t, "question subject")
 			expected := map[string]tracker.HistoryDataOmission{}
 			seedHistory := func(id, data string) {
-				f.transact(t, func(tx *sql.Tx) error {
-					if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET event_sequence=event_sequence+1 WHERE native_id=?", issue.WorkItemID); err != nil {
-						return err
+				var payload tracker.CollaborationData
+				unreadable := json.Unmarshal([]byte(data), &payload) != nil
+				event := tracker.CollaborationEvent{ID: id, OrganizationID: f.organization, ProjectID: f.project.ID, AggregateID: issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: f.owner}, RecordedAt: time.Now().UTC(), Data: payload}
+				raw, err := json.Marshal(event)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.HasPrefix(id, "oversized-") {
+					digest := sha256.Sum256(raw)
+					expected[id] = tracker.HistoryDataOmission{Bytes: len(raw), SHA256: hex.EncodeToString(digest[:])}
+				}
+				stored, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(t.Context(), f.organization, raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if unreadable {
+					details.mu.Lock()
+					_, present := details.data[stored.PayloadObjectKey]
+					delete(details.data, stored.PayloadObjectKey)
+					details.mu.Unlock()
+					if !present {
+						t.Fatal("history object was not stored before deletion")
 					}
-					_, err := tx.ExecContext(t.Context(), `INSERT INTO collaboration_events (id, organization_id, project_id, work_item_id, sequence, type, schema_version, actor_json, data_json, recorded_at) SELECT ?, organization_id, project_id, native_id, event_sequence, 'workflow.transitioned', 1, actor_json, ?, ? FROM issues WHERE native_id=?`, id, data, formatHubTime(time.Now().UTC()), issue.WorkItemID)
+					ref := eventstore.Reference(stored.PayloadObjectKey, stored.PayloadSHA256, stored.PayloadBytes, stored.PayloadContentBytes)
+					if _, err := f.service.runDetailStore().ReadDetail(t.Context(), string(f.organization), ref); !errors.Is(err, artifact.ErrMissing) {
+						t.Fatalf("deleted history object read = %v, want missing", err)
+					}
+				}
+				f.write(t, func(w tenantstore.Writer) error {
+					_, err := w.AppendEvent(t.Context(), stored)
 					return err
 				})
 			}
@@ -125,8 +155,6 @@ func TestCoordinatorSubjectRefresh(t *testing.T) {
 					t.Fatal(err)
 				}
 				id := fmt.Sprintf("oversized-%d", index)
-				digest := sha256.Sum256(data)
-				expected[id] = tracker.HistoryDataOmission{Bytes: len(data), SHA256: hex.EncodeToString(digest[:])}
 				seedHistory(id, string(data))
 			}
 			if test.unavailable {
@@ -201,7 +229,23 @@ func TestCoordinatorSubjectRefresh(t *testing.T) {
 					}
 					return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: "I read the bounded history; omitted payloads remain an evidence limitation."})
 				})
-				f.say(t, &record, "Summarize this issue")
+				if test.api {
+					response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/commands", f.token, conversation.Command{Key: fmt.Sprintf("subject-question-%d", index), Kind: conversation.CommandMessage, Text: "Summarize this issue"})
+					if response.Code != http.StatusOK {
+						scope := nativeAttemptListingScope(t, f.nativeFixture)
+						current := f.conversation(t, record.ID)
+						var audience string
+						f.read(t, func(r tenantstore.Reader) error {
+							var err error
+							audience, err = conversationReadAudienceRecord(t.Context(), r, f.organization, scope.credential)
+							return err
+						})
+						t.Fatalf("API turn=%d status=%d owner_matches=%t audience_matches=%t project_matches=%t response=%s", index, response.Code, current.OwnerPrincipalID == scope.credential.ID, current.ReadAudience == audience, current.ProjectID == scope.project, response.Body.String())
+					}
+				} else {
+					f.say(t, &record, "Summarize this issue")
+				}
+				f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
 				waitUntil(t, "subject turn completed", func() bool {
 					return f.backend.turns() >= index+1 && f.conversation(t, record.ID).Execution.Status == conversation.ExecutionIdle
 				})
@@ -222,9 +266,11 @@ func TestCoordinatorSubjectRefresh(t *testing.T) {
 				}
 			}
 			var before int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", issue.WorkItemID).Scan(&before); err != nil {
-				t.Fatal(err)
-			}
+			f.read(t, func(r tenantstore.Reader) error {
+				comments, err := r.Comments(t.Context(), f.project.ID, issue.WorkItemID, 0, 100)
+				before = len(comments)
+				return err
+			})
 			if before != 9 {
 				t.Fatalf("coordinator wrote %d issue comments", before)
 			}

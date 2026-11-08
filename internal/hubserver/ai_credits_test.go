@@ -961,15 +961,28 @@ func TestAICreditCSVExport(t *testing.T) {
 
 func setIncludedCreditSubscription(t *testing.T, d *database, organization tracker.OrganizationID, start, end, access time.Time, ref PlanReference) {
 	t.Helper()
-	state := hostedBillingState{Status: "active", Plan: ref, AccessUntil: access, PaidThrough: end, Snapshot: billing.Snapshot{SubscriptionID: "sub_" + string(organization), Status: "active", PeriodStart: start, PeriodEnd: end}}
-	raw, err := json.Marshal(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.db.ExecContext(t.Context(), `INSERT INTO hosted_billing_accounts(organization_id,account_id,customer_id,state_json) VALUES(?,?,?,?) ON CONFLICT(organization_id) DO UPDATE SET state_json=excluded.state_json`, organization, "acct_"+string(organization), "cus_"+string(organization), string(raw)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.db.ExecContext(t.Context(), `UPDATE hosted_plan_assignments SET subscription_id=?,subscription_version=?,subscription_expires_at=? WHERE organization_id=?`, ref.ID, ref.Version, formatHubTime(access), organization); err != nil {
+	if err := d.billingRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		account, err := w.BillingAccount(t.Context())
+		if errors.Is(err, corestore.ErrNotFound) {
+			account = billingstore.Account{OrganizationID: organization, Mode: billing.ModeTest, Binding: billing.Binding{OrganizationID: string(organization), AccountID: "acct_" + string(organization), CustomerID: "cus_" + string(organization)}}
+		} else if err != nil {
+			return err
+		}
+		account.Status = "active"
+		account.Plan = billingstore.PlanReference{ID: ref.ID, Version: ref.Version}
+		account.AccessUntil, account.PaidThrough = access, end
+		account.Snapshot = billing.Snapshot{SubscriptionID: "sub_" + string(organization), Status: "active", PeriodStart: start, PeriodEnd: end}
+		if err := w.SetBillingAccount(t.Context(), account); err != nil {
+			return err
+		}
+		assignment, err := w.BillingAssignment(t.Context())
+		if err != nil {
+			return err
+		}
+		assignment.Subscription = &account.Plan
+		assignment.ExpiresAt = &access
+		return w.SetBillingAssignment(t.Context(), assignment, assignment.Revision)
+	}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -977,19 +990,23 @@ func setIncludedCreditSubscription(t *testing.T, d *database, organization track
 func TestIncludedAICreditUsage(t *testing.T) {
 	t.Parallel()
 	f := newCoordinatorFixture(t, "included-credit-usage")
-	d := f.service.database
-	d.hostedOrganization, d.aiCreditMode, d.aiCreditCostMultiplier = f.organization, billing.ModeTest, 1.5
+	service, organization := f.service, f.organization
+	d := service.database
+	d.billingAuditStore = &memoryRunDetails{}
+	d.hostedOrganization, d.aiCreditMode, d.aiCreditCostMultiplier = organization, billing.ModeTest, 1.5
 	plans := capacityHostedPlans()
 	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
 		t.Fatal(err)
 	}
 	start := time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC)
 	end := start.AddDate(0, 1, 0)
-	if _, err := d.db.ExecContext(t.Context(), `INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'test',5000000)`, f.organization); err != nil {
+	if err := d.billingRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: organization, Mode: billing.ModeTest, BalanceMicros: 5000000})
+	}); err != nil {
 		t.Fatal(err)
 	}
-	setIncludedCreditSubscription(t, d, f.organization, start, end, end.Add(time.Hour), PlanReference{ID: "starter", Version: 1})
-	record := f.seed(t, "Included credit usage", nil)
+	setIncludedCreditSubscription(t, d, organization, start, end, end.Add(time.Hour), PlanReference{ID: "starter", Version: 1})
+	projectID, conversationID := f.project.ID, f.seed(t, "Included credit usage", nil).ID
 	for _, test := range []struct {
 		name                    string
 		at                      time.Time
@@ -1004,16 +1021,24 @@ func TestIncludedAICreditUsage(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if !test.at.Before(end) {
-				setIncludedCreditSubscription(t, d, f.organization, test.at, test.at.AddDate(0, 1, 0), test.at.AddDate(0, 1, 0), PlanReference{ID: "starter", Version: 1})
+				setIncludedCreditSubscription(t, d, organization, test.at, test.at.AddDate(0, 1, 0), test.at.AddDate(0, 1, 0), PlanReference{ID: "starter", Version: 1})
 			}
-			usage := ConversationUsage{OrganizationID: f.organization, ProjectID: f.project.ID, ConversationID: record.ID, TurnID: test.name, Provider: "openai", Model: "gpt-6-luna", Tokens: runner.AgentTokenCounts{InputTokens: test.tokens}, Outcome: conversation.DeliveryCompleted, OccurredAt: test.at}
+			usage := ConversationUsage{OrganizationID: organization, ProjectID: projectID, ConversationID: conversationID, TurnID: test.name, Provider: "openai", Model: "gpt-6-luna", Tokens: runner.AgentTokenCounts{InputTokens: test.tokens}, Outcome: conversation.DeliveryCompleted, OccurredAt: test.at}
 			for range 2 {
 				if err := d.RecordConversationUsage(t.Context(), usage); err != nil {
 					t.Fatal(err)
 				}
 			}
 			var balance, amount, included, used int64
-			if err := d.reader.QueryRowContext(t.Context(), `SELECT a.balance_micros,t.amount_micros,t.included_amount_micros FROM ai_credit_accounts a JOIN ai_credit_transactions t USING(organization_id,mode) WHERE t.source=?`, "usage:"+test.name).Scan(&balance, &amount, &included); err != nil {
+			if err := d.billingRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+				account, err := r.BillingCreditAccount(t.Context(), billing.ModeTest)
+				if err != nil {
+					return err
+				}
+				row, err := r.BillingCreditTransactionBySource(t.Context(), billing.ModeTest, "usage:"+test.name)
+				balance, amount, included = account.BalanceMicros, row.AmountMicros, row.IncludedAmountMicros
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
 			if balance != test.balance || included != test.included || amount != -test.tokens*15/100 {
@@ -1023,35 +1048,54 @@ func TestIncludedAICreditUsage(t *testing.T) {
 			if !test.at.Before(end) {
 				periodStart = test.at
 			}
-			if err := d.reader.QueryRowContext(t.Context(), `SELECT used_micros FROM ai_credit_periods WHERE organization_id=? AND mode='test' AND period_start=?`, f.organization, periodStart.UnixMicro()).Scan(&used); err != nil || used != test.used {
+			periodEnd := periodStart.AddDate(0, 1, 0)
+			err := d.billingRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+				period, err := r.BillingCreditPeriod(t.Context(), billing.ModeTest, periodStart, periodEnd)
+				used = period.UsedMicros
+				return err
+			})
+			if err != nil || used != test.used {
 				t.Fatalf("period used=%d want=%d err=%v", used, test.used, err)
 			}
 		})
 	}
-	if _, err := d.db.ExecContext(t.Context(), `INSERT INTO organizations(id,name,created_at) VALUES('org_second_credits','Second organization',?)`, formatHubTime(start)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.db.ExecContext(t.Context(), `INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES('org_second_credits','test',0)`); err != nil {
+	seedHostedBillingRecordAccount(t, d.billingRepository, "org_second_credits", billingstore.Account{OrganizationID: "org_second_credits", Mode: billing.ModeTest, Binding: billing.Binding{OrganizationID: "org_second_credits", AccountID: "acct_fixture", CustomerID: "cus_fixture"}})
+	if err := d.billingRepository.WriteTenant(t.Context(), "org_second_credits", corestore.Serving, func(w tenantstore.Writer) error {
+		for _, plan := range plans.Plans {
+			if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: "org_second_credits", PlanReference: billingstore.PlanReference{ID: plan.ID, Version: plan.Version}, Name: plan.Name, MonthlyUSDCents: plan.MonthlyUSDCents, Allowances: plan.Allowances, Features: plan.Features}); err != nil {
+				return err
+			}
+		}
+		if err := w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: "org_second_credits", Base: billingstore.PlanReference{ID: plans.Base.ID, Version: plans.Base.Version}}, 0); err != nil {
+			return err
+		}
+		return w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: "org_second_credits", Mode: billing.ModeTest})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	setIncludedCreditSubscription(t, d, "org_second_credits", start, end, end, PlanReference{ID: "team", Version: 2})
-	tx, err := d.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	if used, err := d.spendIncludedAICredits(t.Context(), tx, "org_second_credits", start, 9000000); err != nil || used != 9000000 {
+	var used int64
+	err := d.billingRepository.WriteTenant(t.Context(), "org_second_credits", corestore.Serving, func(w tenantstore.Writer) error {
+		credits, err := d.includedAICreditsFromReader(t.Context(), w, start)
+		if err != nil {
+			return err
+		}
+		if _, err := w.PostBillingUsageCredit(t.Context(), billingstore.CreditPeriod{OrganizationID: "org_second_credits", Mode: billing.ModeTest, StartsAt: start, EndsAt: end, AllowanceMicros: credits.AllowanceMicros}, billingstore.CreditTransaction{OrganizationID: "org_second_credits", Mode: billing.ModeTest, Source: "usage:second", AmountMicros: -9000000, Kind: "usage", RecordedAt: start}, 9000000); err != nil {
+			return err
+		}
+		period, err := w.BillingCreditPeriod(t.Context(), billing.ModeTest, start, end)
+		used = period.UsedMicros
+		return err
+	})
+	if err != nil || used != 9000000 {
 		t.Fatalf("second organization used=%d err=%v", used, err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
 	}
 	for _, test := range []struct {
 		org  tracker.OrganizationID
 		at   time.Time
 		want int64
-	}{{f.organization, end.AddDate(0, 1, 0), 4750000}, {"org_second_credits", start, 900000}} {
-		credits, err := d.includedAICredits(t.Context(), d.reader, test.org, test.at)
+	}{{organization, end.AddDate(0, 1, 0), 4750000}, {"org_second_credits", start, 900000}} {
+		credits, err := d.includedAICreditsRecord(t.Context(), test.org, test.at)
 		if err != nil || credits.remaining() != test.want {
 			t.Fatalf("org=%s credits=%+v err=%v", test.org, credits, err)
 		}
