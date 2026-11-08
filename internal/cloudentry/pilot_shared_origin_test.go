@@ -33,6 +33,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -82,6 +83,7 @@ type pilotTenantLauncher struct {
 	version           string
 	mu                sync.Mutex
 	running           map[string]func()
+	services          map[string]*hubserver.Service
 	transports        map[string]*http.Transport
 	useUnix           bool
 	specs             map[string]TenantSpec
@@ -122,21 +124,34 @@ func (l *pilotTenantLauncher) Start(_ context.Context, spec TenantSpec) error {
 	}
 	l.configureDatabase(&config)
 	if l.useUnix {
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan struct{})
 		config.ListenAddress = "unix:" + spec.Socket
-		go func() {
-			defer close(done)
-			_ = hubserver.Run(ctx, config)
-		}()
-		l.starts++
-		l.specs[spec.Organization.ID] = spec
-		l.running[spec.Organization.ID] = func() { cancel(); <-done }
-		return nil
 	}
 	service, err := hubserver.Open(context.Background(), config)
 	if err != nil {
 		return err
+	}
+	if l.services == nil {
+		l.services = make(map[string]*hubserver.Service)
+	}
+	l.services[spec.Organization.ID] = service
+	if l.useUnix {
+		listener, err := net.Listen("unix", spec.Socket)
+		if err != nil {
+			return errors.Join(err, service.Close())
+		}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = service.Serve(listener)
+		}()
+		l.starts++
+		l.specs[spec.Organization.ID] = spec
+		l.running[spec.Organization.ID] = func() {
+			_ = service.Close()
+			_ = listener.Close()
+			<-done
+		}
+		return nil
 	}
 	server := httptest.NewServer(service.Handler())
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -192,6 +207,7 @@ func (l *pilotTenantLauncher) Stop(id string) error {
 	l.mu.Lock()
 	stop, ok := l.running[id]
 	delete(l.running, id)
+	delete(l.services, id)
 	delete(l.transports, id)
 	l.mu.Unlock()
 	if ok {
@@ -1037,23 +1053,26 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, test := range []struct{ self, other pilotOrganization }{{alpha, beta}, {beta, alpha}} {
+			p.launcher.mu.Lock()
+			service := p.launcher.services[test.self.id]
+			p.launcher.mu.Unlock()
+			tenant := hubmaintenance.Tenant{Organization: test.self.id, Generation: 1}
+			var after tracker.NativeWorkItemID
+			for range 8 {
+				ctx := (hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: hubserver.BoardMaintenanceBytes}).Context(t.Context(), tenant)
+				next, _, err := service.MaintainBoardRecord(ctx, tracker.OrganizationID(test.self.id), after)
+				if err != nil {
+					t.Fatal(err)
+				}
+				after = next
+			}
 			var result struct {
 				Items []tracker.NativeIssue `json:"items"`
 			}
-			var list pilotResponse
-			deadline := time.Now().Add(10 * time.Second)
-			ticker := time.NewTicker(20 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				list = fay.get(test.self.projectAPI() + "/work-items")
-				pilotStatus(t, "issue list", list, http.StatusOK)
-				if err := json.Unmarshal([]byte(list.body), &result); err != nil {
-					t.Fatal(err)
-				}
-				if len(result.Items) == 8 || time.Now().After(deadline) {
-					break
-				}
-				<-ticker.C
+			list := fay.get(test.self.projectAPI() + "/work-items")
+			pilotStatus(t, "issue list", list, http.StatusOK)
+			if err := json.Unmarshal([]byte(list.body), &result); err != nil {
+				t.Fatal(err)
 			}
 			if len(result.Items) != 8 {
 				t.Fatalf("%s issue count=%d want=8", test.self.id, len(result.Items))
