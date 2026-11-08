@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
@@ -148,21 +149,23 @@ type workItemRecordFields struct {
 }
 
 type workItemRecordPlan struct {
-	project             projectstore.Record
-	current             corestore.WorkItem
-	related             corestore.WorkItem
-	relationship        *corestore.Relationship
-	relationshipType    string
-	relationshipOperate string
-	issue               tracker.NativeIssue
-	previousContent     string
-	linkedSource        *eventstore.LinkedSource
-	comment             tracker.NativeComment
-	commentRow          corestore.Comment
-	eventType           string
-	fields              []string
-	create              bool
-	existing            bool
+	project                 projectstore.Record
+	current                 corestore.WorkItem
+	related                 corestore.WorkItem
+	relationship            *corestore.Relationship
+	relationshipType        string
+	relationshipOperate     string
+	issue                   tracker.NativeIssue
+	previousContent         string
+	linkedSource            *eventstore.LinkedSource
+	comment                 tracker.NativeComment
+	verificationComment     *attachmentEvidencePublication
+	verificationAttachments []string
+	commentRow              corestore.Comment
+	eventType               string
+	fields                  []string
+	create                  bool
+	existing                bool
 }
 
 func sameWorkItemProjectPlan(planned, current projectstore.Record) bool {
@@ -441,6 +444,8 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 		plan.issue.LastActivityAt = now
 		plan.eventType = "issue.edited"
 		plan.fields = []string{"archived"}
+	case tracker.VerifyFix:
+		return s.planVerificationRecord(ctx, scope, plan, request)
 	case tracker.UpdateIssue:
 		if err := requireReporterTriage(scope, plan.issue); err != nil {
 			return plan, err
@@ -916,6 +921,17 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 				return nil, err
 			}
 			data := tracker.CollaborationData{Revision: tracker.Revision(revision), Fields: plan.fields}
+			if request, ok := input.(tracker.VerifyFix); ok {
+				if plan.issue.Verification != nil {
+					data.Verification = plan.issue.Verification.State
+				}
+				if request.Result == tracker.VerifyResultNotFixed {
+					data.FromState = stringValue(plan.current.WorkflowStateName)
+					data.ToState = plan.issue.State
+					data.Reason = "user_requested"
+					data.ReasonDetail = "Filer verification: not fixed"
+				}
+			}
 			if plan.comment.ID != "" {
 				data.CommentID = plan.comment.ID
 			}
@@ -1202,8 +1218,21 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 						return err
 					}
 				}
+				if plan.verificationComment != nil {
+					if err := s.writeVerificationComment(ctx, w, scope, plan.verificationComment, plan.verificationAttachments); err != nil {
+						return err
+					}
+				}
 				if err := writeWorkItemRecord(ctx, w, plan, fields); err != nil {
 					return err
+				}
+				if request, ok := input.(tracker.VerifyFix); ok && request.Result == tracker.VerifyResultNotFixed {
+					if s.config.ConversationDispatch == nil {
+						return conversationDispatchUnavailable()
+					}
+					if err := s.config.ConversationDispatch.RequestDispatch(ctx, w, scope.project, string(plan.issue.WorkItemID), leasestore.Fence{}, s.config.now()); err != nil {
+						return err
+					}
 				}
 				if plan.comment.ID == "" && plan.current.ID != 0 && (slices.Contains(plan.fields, "title") || slices.Contains(plan.fields, "body")) {
 					source, err := w.LinkedSource(ctx, scope.project, plan.issue.WorkItemID)

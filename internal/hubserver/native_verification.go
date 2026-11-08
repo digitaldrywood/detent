@@ -65,6 +65,9 @@ func (s *Service) verifyNativeIssueCommand(ctx context.Context, scope nativeScop
 		return nil, nativePublicInvalid("Expected revision must be positive")
 	}
 	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+item+"/verification"), Item: item, Feature: "collaboration"}
+	if s.config.TenantRepository != nil {
+		return s.executeWorkItemRecordMutation(ctx, scope, options, request.Mutation, request, "")
+	}
 	result, err := s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		issue, _, err := readNativeIssue(ctx, tx, scope, item)
 		if err != nil {
