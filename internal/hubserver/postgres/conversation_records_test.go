@@ -276,7 +276,7 @@ func TestConversationRecordsAreTenantScopedAndTransactional(t *testing.T) {
 }
 
 func TestConversationMessageCountBackfillsAllTenants(t *testing.T) {
-	const version = 20261108185629
+	const version = 20261108204849
 	admin, _ := migrationDatabaseAtVersion(t, version-1)
 	seedCore(t, admin)
 	for index, organization := range []string{"org_first", "org_second"} {
