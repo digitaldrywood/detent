@@ -26,25 +26,11 @@
       "backend_sqlite": 1,
       "sqlite_open": 1
     },
-    "internal/artifact/catalog.go": {
-      "driver_import": 1,
-      "sql_pragma": 7,
-      "sql_schema": 1,
-      "sqlite_open": 1
-    },
-    "internal/artifact/migrations/00001_catalog.sql": {
-      "sqlite_migration": 1
-    },
-    "internal/artifact/migrations/00002_hosted_traffic.sql": {
-      "sqlite_migration": 1
-    },
     "internal/artifact/service.go": {
-      "database_path": 2
+      "database_path": 1
     },
     "internal/artifact/service_test.go": {
-      "database_path": 6,
-      "sql_pragma": 2,
-      "sqlite_open": 1
+      "database_path": 2
     },
     "internal/auth/service_test.go": {
       "backend_sqlite": 1,
