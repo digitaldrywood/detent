@@ -475,6 +475,9 @@ func (s *Service) operatorCompatibilityWork(ctx context.Context, scope nativeSco
 	if err != nil {
 		return nil, err
 	}
+	if s.config.TenantRepository != nil && (name == operatortool.OrderItem || name == operatortool.SetQueuePriority) {
+		return s.mutateQueueRecord(ctx, scope, name, request, command)
+	}
 	id := tracker.WorkItemID(record.ID)
 	switch name {
 	case operatortool.SetQueuePriority:
