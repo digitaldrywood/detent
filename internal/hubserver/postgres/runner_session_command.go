@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -77,6 +78,13 @@ func (f *runnerEventSession) UpdateRunnerSession(ctx context.Context, r runnerse
 		err = corestore.ErrRevisionConflict
 	}
 	return id, mapError(ctx, err)
+}
+
+func (f *runnerEventSession) RegisterSessionWorkerProcess(ctx context.Context, receipt ProcessReceipt, at time.Time) (ProcessReceipt, error) {
+	if err := f.flushRunEvents(ctx); err != nil {
+		return ProcessReceipt{}, err
+	}
+	return f.session.RegisterSessionWorkerProcess(ctx, receipt, at)
 }
 
 var _ runnersession.Writer = (*runnerEventSession)(nil)

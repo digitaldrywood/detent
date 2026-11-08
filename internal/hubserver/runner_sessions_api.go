@@ -396,6 +396,9 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 			return err
 		}
 		record.ReceiptID, err = writer.UpdateRunnerSession(ctx, record, runnersession.History{SessionID: record.ID, Revision: record.Revision, Key: request.Key, Reference: historyRef})
+		if err == nil && request.Worker != nil {
+			return registerSessionWorkerProcess(ctx, w, scope, record, snapshot, historyRef, leasestore.Fence{LeaseID: locked.LeaseID, FencingToken: locked.FencingToken})
+		}
 		return err
 	})
 	if err != nil {
