@@ -543,6 +543,11 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		t.Fatal(err)
 	}
 
+	if origin == conversationOriginWorker {
+		ownerScope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: apiScopeOperator}}
+		testPGConversationContinuation(t, f.service, repository, scope, ownerScope, issue, linked.ID, nextIdentity)
+	}
+
 	reporterScope := nativeScope{
 		organization: f.project.OrganizationID,
 		project:      f.project.ID,
@@ -630,6 +635,153 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	if err := f.service.streamConversationEvents(echoContext); err != nil || response.Code != http.StatusNotFound {
 		t.Fatalf("reporter stream after linked item reassignment = status %d, error %v", response.Code, err)
 	}
+}
+
+func testPGConversationContinuation(t *testing.T, service *Service, repository tenantstore.Repository, scope, ownerScope nativeScope, item corestore.WorkItem, conversationID string, identity conversationWorkerIdentity) {
+	t.Helper()
+	originalClock, originalDispatch := service.config.now, service.config.ConversationDispatch
+	defer func() { service.config.now, service.config.ConversationDispatch = originalClock, originalDispatch }()
+	service.config.ConversationDispatch = tenantNativeRunEventParticipant{service: service}
+	router := service.conversations.controls.(*conversationWorkerRouter)
+	claimNumber := 0
+	release := func() {
+		t.Helper()
+		if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			released, err := w.Release(t.Context(), leasestore.Fence{LeaseID: string(identity.LeaseID), FencingToken: int64(identity.FencingToken)}, "released")
+			if err != nil {
+				return err
+			}
+			return service.conversations.leaseReleasedTenant(t.Context(), w, released.LeaseID, released.FencingToken, "released")
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bind := func() conversationBindResponse {
+		t.Helper()
+		claimNumber++
+		suffix := fmt.Sprint(claimNumber)
+		var lease leasestore.Lease
+		if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			current, err := w.WorkItem(t.Context(), scope.project, item.NativeID)
+			if err != nil {
+				return err
+			}
+			lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: current.ID, ExpectedRevision: current.Revision, MachineID: string(scope.credential.Runner.MachineID), SessionID: "session-pg-continuation-" + suffix, LeaseID: "lease-pg-continuation-" + suffix, TTL: time.Hour})
+			if err != nil {
+				return err
+			}
+			_, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "attempt-pg-continuation-" + suffix, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: "run-pg-continuation-" + suffix, Sequence: 1, Status: "running", DispatchGeneration: int64(claimNumber + 2), PayloadObjectKey: "example/continuation-" + suffix})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		service.config.now = func() time.Time { return lease.RenewedAt }
+		identity = conversationWorkerIdentity{LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), AttemptID: "attempt-pg-continuation-" + suffix}
+		body := map[string]any{"lease_id": identity.LeaseID, "fencing_token": identity.FencingToken, "attempt_id": identity.AttemptID, "run_id": "run-pg-continuation-" + suffix, "capabilities": map[string]bool{"steer": true, "interrupt": true, "answer": true, "continue": true}}
+		response := callConversationWorkerRoute(t, router.bind, scope, http.MethodPost, "/bind", string(item.NativeID), "", body, identity)
+		if response.Code != http.StatusOK {
+			t.Fatalf("continuation bind = %d: %s", response.Code, response.Body.String())
+		}
+		var bound conversationBindResponse
+		if err := json.Unmarshal(response.Body.Bytes(), &bound); err != nil {
+			t.Fatal(err)
+		}
+		return bound
+	}
+	for _, acknowledged := range []bool{false, true} {
+		release()
+		key := fmt.Sprintf("pg-continue-ack-%t", acknowledged)
+		raw, err := service.commandPostConversation(t.Context(), ownerScope, conversationID, conversation.Command{Key: key, Kind: conversation.CommandContinue, Text: "Continue the example work", Expected: conversation.Expected{AttemptID: identity.AttemptID}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var receipt conversation.Receipt
+		if err := json.Unmarshal(raw, &receipt); err != nil {
+			t.Fatal(err)
+		}
+		if receipt.Status != conversation.DeliverySaved {
+			t.Fatalf("Continue receipt = %+v", receipt)
+		}
+		bound := bind()
+		if !bound.Continuation || len(bound.Pending) != 1 || bound.Pending[0].MessageID != receipt.MessageID {
+			t.Fatalf("saved Continue lost completion ownership: %+v", bound)
+		}
+		originalAttempt := identity.AttemptID
+		_, err = service.commandPostConversation(t.Context(), ownerScope, conversationID, conversation.Command{Key: key + "-active", Kind: conversation.CommandContinue, Expected: conversation.Expected{AttemptID: identity.AttemptID}})
+		var refusal *nativeError
+		if !errors.As(err, &refusal) || refusal.status != http.StatusConflict || refusal.Code != "stale_execution" {
+			t.Fatalf("active Continue = %v", err)
+		}
+		if acknowledged {
+			if _, err := router.pollControlsPostgres(t.Context(), scope, conversationID, identity, bound.Cursor); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for range 2 {
+			release()
+			bound = bind()
+			if !bound.Continuation || len(bound.Pending) != 0 {
+				t.Fatalf("replacement lost ownership or replayed Continue: %+v", bound)
+			}
+			if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				message, err := r.Message(t.Context(), conversationID, receipt.MessageID)
+				if err != nil {
+					return err
+				}
+				want := conversation.DeliveryUnknown
+				if acknowledged {
+					want = conversation.DeliveryInterrupted
+				}
+				if message.AttemptID != originalAttempt || message.Delivery != want {
+					t.Fatalf("replacement rewrote Continue: %+v", message)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if acknowledged {
+			for _, status := range []string{"completed", "interrupted"} {
+				response := callConversationWorkerRoute(t, router.turnEvents, scope, http.MethodPost, "/turn-events", "", conversationID, map[string]any{"lease_id": identity.LeaseID, "fencing_token": identity.FencingToken, "attempt_id": identity.AttemptID, "batch_key": key + "-" + status, "events": []map[string]any{{"type": "execution_status", "status": status}}}, identity)
+				wantStatus := http.StatusAccepted
+				if status == "interrupted" {
+					wantStatus = http.StatusConflict
+				}
+				if response.Code != wantStatus {
+					t.Fatalf("execution-level %s = %d: %s", status, response.Code, response.Body.String())
+				}
+				if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					stored, err := r.Conversation(t.Context(), scope.project, conversationID)
+					if err != nil {
+						return err
+					}
+					if stored.ExecutionContinuation {
+						return fmt.Errorf("execution-level %s retained or restored completed continuation", status)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+
+		response := callConversationWorkerRoute(t, router.unbind, scope, http.MethodPost, "/unbind", string(item.NativeID), "", map[string]any{"lease_id": identity.LeaseID, "fencing_token": identity.FencingToken, "attempt_id": identity.AttemptID, "outcome": "succeeded"}, identity)
+		if response.Code != http.StatusOK {
+			t.Fatalf("continuation unbind = %d: %s", response.Code, response.Body.String())
+		}
+		for range 2 {
+			release()
+			bound = bind()
+			if bound.Continuation || len(bound.Pending) != 0 {
+				t.Fatalf("completed Continue reclaimed ordinary ownership: %+v", bound)
+			}
+		}
+		response = callConversationWorkerRoute(t, router.unbind, scope, http.MethodPost, "/unbind", string(item.NativeID), "", map[string]any{"lease_id": identity.LeaseID, "fencing_token": identity.FencingToken, "attempt_id": identity.AttemptID, "outcome": "succeeded"}, identity)
+		if response.Code != http.StatusOK {
+			t.Fatalf("ordinary unbind = %d: %s", response.Code, response.Body.String())
+		}
+	}
+	release()
 }
 
 func callConversationWorkerRoute(t *testing.T, handler echo.HandlerFunc, scope nativeScope, method, path, item, conversationID string, body any, identity conversationWorkerIdentity) *httptest.ResponseRecorder {

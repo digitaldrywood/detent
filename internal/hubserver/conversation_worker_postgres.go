@@ -222,7 +222,7 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 			return err
 		}
 		record = conversationRecordFromStore(stored)
-		response = conversationBindResponse{ConversationID: record.ID, Continuation: record.Origin == conversationOriginUser, Resume: resume, Pending: pending, Preferences: record.Preferences.Normalized()}
+		response = conversationBindResponse{ConversationID: record.ID, Continuation: record.Origin == conversationOriginUser || record.ExecutionContinuation, Resume: resume, Pending: pending, Preferences: record.Preferences.Normalized()}
 		if len(pending) > 0 {
 			response.Cursor = pending[len(pending)-1].Cursor
 		}
@@ -397,6 +397,9 @@ func (r *conversationWorkerRouter) unbindPostgres(e echo.Context, request conver
 			return fmt.Errorf("refresh conversation event head before unbind: %w", err)
 		}
 		stored.Execution, stored.UpdatedAt = execution, now
+		if status == conversation.ExecutionCompleted {
+			stored.ExecutionContinuation = false
+		}
 		stored, err = writer.UpdateConversation(ctx, stored, stored.Revision)
 		if err != nil {
 			return fmt.Errorf("update conversation worker execution: %w", err)
@@ -583,6 +586,9 @@ func (c *conversationService) leaseReleasedTenant(ctx context.Context, writer te
 		return err
 	}
 	current.Execution, current.UpdatedAt = record.Execution, now
+	if current.Execution.Status == conversation.ExecutionCompleted {
+		current.ExecutionContinuation = false
+	}
 	updated, err := writer.UpdateConversation(ctx, current, current.Revision)
 	if err != nil {
 		return err
@@ -718,6 +724,9 @@ func (r *conversationWorkerRouter) turnEventsPostgres(e echo.Context, id string,
 		if stateChanged {
 			execution.UpdatedAt = now
 			latest.Execution, latest.UpdatedAt = execution, now
+			if execution.Status == conversation.ExecutionCompleted {
+				latest.ExecutionContinuation = false
+			}
 			latest.ProviderThreadID = record.ProviderThreadID
 			latest.ProviderThreadRunnerID = record.ProviderThreadRunnerID
 			latest.ProviderThreadOrigin = record.ProviderThreadOrigin

@@ -129,7 +129,7 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "SET ROLE detent_migration_v2"); err != nil {
 			return err
 		}
-		provider, err := goose.NewProvider(goose.DialectPostgres, db, RoleMigrations(os.DirFS("migrations")), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
+		provider, err := goose.NewProvider(goose.DialectPostgres, db, RoleMigrations(os.DirFS("migrations")), goose.WithGoMigrations(ConversationMigrations(os.DirFS("migrations"))...), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
 		if err != nil {
 			return err
 		}

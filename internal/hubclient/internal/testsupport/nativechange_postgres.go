@@ -53,7 +53,7 @@ var nativeChangeTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql.
 	if err != nil {
 		return err
 	}
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(migrations), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(migrations), goose.WithGoMigrations(postgres.ConversationMigrations(migrations)...), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
 	if err != nil {
 		return err
 	}
@@ -81,7 +81,7 @@ var scenarioPostgresTemplate = pgtest.NewTemplate(func(ctx context.Context, db *
 	if _, err := db.ExecContext(ctx, `SET ROLE detent_migration_v2`); err != nil {
 		return err
 	}
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("../../hubserver/postgres/migrations")), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("../../hubserver/postgres/migrations")), goose.WithGoMigrations(postgres.ConversationMigrations(os.DirFS("../../hubserver/postgres/migrations"))...), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
 	if err != nil {
 		return err
 	}

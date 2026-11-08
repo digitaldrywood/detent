@@ -101,6 +101,9 @@ func validateNativeSchema(ctx context.Context, pool *pgxpool.Pool, migrations fs
 	if len(expected) == 0 {
 		return ErrSchema
 	}
+	for _, migration := range ConversationMigrations(migrations) {
+		expected = append(expected, migration.Version)
+	}
 	slices.Sort(expected)
 	var owned bool
 	if err := pool.QueryRow(ctx, `SELECT pg_get_userbyid(relowner) = 'detent_migration_v2' FROM pg_class WHERE oid = 'public.goose_db_version'::regclass`).Scan(&owned); err != nil {
@@ -129,7 +132,7 @@ func migrationProvider(pool *sql.DB, migrations fs.FS) (*goose.Provider, error) 
 		return nil, ErrSchema
 	}
 	return goose.NewProvider(goose.DialectPostgres, pool, RoleMigrations(migrations),
-		goose.WithDisableGlobalRegistry(true), goose.WithAllowOutofOrder(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
+		goose.WithGoMigrations(ConversationMigrations(migrations)...), goose.WithDisableGlobalRegistry(true), goose.WithAllowOutofOrder(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
 }
 
 func validateSchema(ctx context.Context, pool *sql.DB, migrations fs.FS) error {

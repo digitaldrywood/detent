@@ -31,6 +31,7 @@ type Conversation struct {
 	ProviderThreadRunnerID string
 	ProviderThreadOrigin   string
 	Execution              conversation.Execution
+	ExecutionContinuation  bool
 	EventSequence          int64
 	Preferences            conversation.Preferences
 	ReadAudience           string

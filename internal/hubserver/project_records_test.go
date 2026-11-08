@@ -61,7 +61,7 @@ func projectRecordPostgresWithAdmin(t *testing.T, maxConnections int, configure 
 		if _, err := db.ExecContext(ctx, "SET ROLE detent_migration_v2"); err != nil {
 			return err
 		}
-		provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("postgres/migrations")), goose.WithDisableGlobalRegistry(true))
+		provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("postgres/migrations")), goose.WithGoMigrations(postgres.ConversationMigrations(os.DirFS("postgres/migrations"))...), goose.WithDisableGlobalRegistry(true))
 		if err != nil {
 			return err
 		}

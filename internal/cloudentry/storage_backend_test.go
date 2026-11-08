@@ -50,7 +50,7 @@ var entryPostgresTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql
 	if _, err := db.ExecContext(ctx, "SET ROLE "+postgres.MigrationRoleName); err != nil {
 		return err
 	}
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("../hubserver/postgres/migrations")), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("../hubserver/postgres/migrations")), goose.WithGoMigrations(postgres.ConversationMigrations(os.DirFS("../hubserver/postgres/migrations"))...), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
 	if err != nil {
 		return err
 	}

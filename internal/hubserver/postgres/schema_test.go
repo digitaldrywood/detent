@@ -49,7 +49,7 @@ var template = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 
 func migrationProvider(db *sql.DB) (*goose.Provider, error) {
 	return goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("migrations")),
-		goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
+		goose.WithGoMigrations(postgres.ConversationMigrations(os.DirFS("migrations"))...), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
 }
 
 func TestMain(m *testing.M) {

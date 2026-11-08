@@ -464,7 +464,7 @@ func conversationRecordFromStore(record conversationstore.Conversation) conversa
 		Archived: record.Archived, SubjectWorkItemID: record.SubjectWorkItemID, WorkItemID: record.WorkItemID,
 		LinkedAt: record.LinkedAt, Revision: record.Revision, ProviderThreadID: record.ProviderThreadID,
 		ProviderThreadRunnerID: record.ProviderThreadRunnerID, ProviderThreadOrigin: record.ProviderThreadOrigin,
-		Execution: record.Execution, EventSeq: record.EventSequence, CreatedAt: record.CreatedAt,
+		Execution: record.Execution, ExecutionContinuation: record.ExecutionContinuation, EventSeq: record.EventSequence, CreatedAt: record.CreatedAt,
 		UpdatedAt: record.UpdatedAt, LastMessageAt: record.LastMessageAt, SettledAt: record.SettledAt,
 		Preferences: record.Preferences, MessageCount: record.MessageCount, ContentID: record.ContentReference,
 	}
@@ -1097,6 +1097,9 @@ func (s *Service) commandPostConversationPG(ctx context.Context, scope nativeSco
 			if command.Kind == conversation.CommandInterrupt || command.Kind == conversation.CommandContinue {
 				storedConversation.Execution = current.Execution
 			}
+			if command.Kind == conversation.CommandContinue {
+				storedConversation.ExecutionContinuation = true
+			}
 			storedConversation.UpdatedAt = plan.now
 			storedConversation, err = writer.UpdateConversation(ctx, storedConversation, previousRevision)
 			if err != nil {
@@ -1344,7 +1347,7 @@ func conversationRecordToStore(record conversationRecord) conversationstore.Conv
 		Status: record.Status, SubjectWorkItemID: record.SubjectWorkItemID, WorkItemID: record.WorkItemID,
 		LinkedAt: record.LinkedAt, Revision: record.Revision, ProviderThreadID: record.ProviderThreadID,
 		ProviderThreadRunnerID: record.ProviderThreadRunnerID, ProviderThreadOrigin: record.ProviderThreadOrigin,
-		Execution: record.Execution, EventSequence: record.EventSeq, Preferences: record.Preferences,
+		Execution: record.Execution, ExecutionContinuation: record.ExecutionContinuation, EventSequence: record.EventSeq, Preferences: record.Preferences,
 		ReadAudience: record.ReadAudience, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
 		LastMessageAt: record.LastMessageAt, SettledAt: record.SettledAt, Archived: record.Archived,
 		ContentReference: record.ContentID,

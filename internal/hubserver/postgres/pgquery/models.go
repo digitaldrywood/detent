@@ -682,6 +682,7 @@ type Conversation struct {
 	ConversionState        int16
 	DeletedAt              *time.Time
 	MessageCount           int64
+	ExecutionContinuation  bool
 }
 
 type ConversationAttachment struct {

@@ -102,12 +102,13 @@ type conversationRecord struct {
 	// the permission set of the turn that opened it, so only a turn of the
 	// same kind resumes it. It is empty for threads
 	// recorded before the column existed, which therefore never resume.
-	ProviderThreadOrigin string
-	Execution            conversation.Execution
-	EventSeq             int64
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
-	LastMessageAt        *time.Time
+	ProviderThreadOrigin  string
+	Execution             conversation.Execution
+	ExecutionContinuation bool
+	EventSeq              int64
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	LastMessageAt         *time.Time
 	// SettledAt is when the conversation last became settled, nil while it
 	// is active.
 	SettledAt *time.Time
