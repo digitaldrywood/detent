@@ -1,10 +1,10 @@
-package orchestrator_test
+package web_test
 
 import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
-	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,10 +24,6 @@ import (
 )
 
 func TestStartupSessionsAppearInStateAndHealth(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	digest := policy.Digest([]byte("startup health fixture"))
 	pinnedPolicy := policy.Descriptor{
 		SourceRevision: digest,
@@ -49,16 +45,14 @@ func TestStartupSessionsAppearInStateAndHealth(t *testing.T) {
 			name = "validator after restart"
 		}
 		t.Run(name, func(t *testing.T) {
-			db, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
-			issue := testIssue("issue-2486", "digitaldrywood/detent#2486", "Rework")
+			db := &startupHealthStore{}
+			issue := connector.NewIssue()
+			issue.ID, issue.Identifier, issue.State = "issue-2486", "example-org/example-project#2486", "Rework"
+			issue.Title = "Startup session"
+			issue.URL = "https://github.com/example-org/example-project/issues/2486"
 			if validator {
-				issue.PullRequest = &connector.PullRequest{Number: 2487, URL: "https://github.com/digitaldrywood/detent/pull/2487", HeadSHA: "head", State: "OPEN", CIStatus: "success"}
+				issue.PullRequest = &connector.PullRequest{Number: 2487, URL: "https://github.com/example-org/example-project/pull/2487", HeadSHA: "head", State: "OPEN", CIStatus: "success"}
 			}
-			// The previous process died with a code session still recorded as running.
 			attempt, err := db.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, WorkerType: "agent", Lane: "Rework", StartedAt: time.Now().Add(-time.Minute), LeaseExpiresAt: time.Now().Add(time.Minute), WorkerMetadataJSON: string(metadata)})
 			if err != nil {
 				t.Fatal(err)
@@ -109,7 +103,7 @@ func TestStartupSessionsAppearInStateAndHealth(t *testing.T) {
 			if err := snapshots.Publish(snapshot); err != nil {
 				t.Fatal(err)
 			}
-			server, err := web.NewServer(web.Config{LookupEnv: func(string) string { return "" }}, web.Dependencies{Hub: snapshots, Store: db, Registry: project.NewRegistry(), Connector: tracker, WorkerProcesses: db, ObserveProcesses: func(ids []procgroup.Identity) ([]procgroup.Observation, error) {
+			server, err := web.NewServer(web.Config{LookupEnv: func(string) string { return "" }}, web.Dependencies{Hub: snapshots, Store: startupHealthWebStore{}, Registry: project.NewRegistry(), Connector: tracker, WorkerProcesses: db, ObserveProcesses: func(ids []procgroup.Identity) ([]procgroup.Observation, error) {
 				out := make([]procgroup.Observation, len(ids))
 				for i, id := range ids {
 					out[i] = procgroup.Observation{Identity: id, Alive: true, ProcessCount: 2}
@@ -163,7 +157,7 @@ type startupHealthSession struct {
 	err             error
 }
 type startupHealthRunner struct {
-	db      store.Store
+	db      *startupHealthStore
 	started chan startupHealthSession
 }
 
@@ -190,4 +184,95 @@ func (r *startupHealthRunner) session(ctx context.Context, issue connector.Issue
 	}
 	r.started <- startupHealthSession{id: id, resumedFrom: prior, validator: validator, err: err}
 	<-ctx.Done()
+}
+
+type startupHealthWebStore struct {
+	store.Store
+}
+
+type startupHealthStore struct {
+	mu        sync.Mutex
+	attempts  []store.WorkAttempt
+	sessions  []store.SessionStart
+	processes []store.WorkerProcess
+}
+
+func (s *startupHealthStore) StartWorkAttempt(_ context.Context, start store.WorkAttemptStart) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := int64(len(s.attempts) + 1)
+	s.attempts = append(s.attempts, store.WorkAttempt{ID: id, ProjectID: start.ProjectID, IssueID: start.IssueID, Identifier: start.Identifier, WorkerType: start.WorkerType, Lane: start.Lane, StartedAt: start.StartedAt, LeaseExpiresAt: start.LeaseExpiresAt, WorkerMetadataJSON: start.WorkerMetadataJSON, Status: store.WorkAttemptStatusActive})
+	return id, nil
+}
+
+func (s *startupHealthStore) WorkAttempt(_ context.Context, id int64) (store.WorkAttempt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attempts[id-1], nil
+}
+
+func (s *startupHealthStore) RecordWorkAttemptHeartbeat(context.Context, store.WorkAttemptHeartbeat) error {
+	return nil
+}
+func (s *startupHealthStore) CompleteWorkAttempt(_ context.Context, completion store.WorkAttemptCompletion) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.attempts[completion.AttemptID-1].Status = completion.Status
+	return nil
+}
+func (s *startupHealthStore) ListActiveWorkAttempts(_ context.Context, query store.WorkAttemptQuery) ([]store.WorkAttempt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var active []store.WorkAttempt
+	for _, attempt := range s.attempts {
+		if attempt.ProjectID == query.ProjectID && attempt.Status == store.WorkAttemptStatusActive {
+			active = append(active, attempt)
+		}
+	}
+	return active, nil
+}
+func (s *startupHealthStore) ListRecentTerminalWorkAttempts(context.Context, store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
+	return nil, nil
+}
+func (s *startupHealthStore) TimeoutExpiredWorkAttempts(context.Context, store.WorkAttemptTimeout) ([]store.WorkAttempt, error) {
+	return nil, nil
+}
+func (s *startupHealthStore) RecordSchedulerDecision(context.Context, store.SchedulerDecision) (int64, error) {
+	return 1, nil
+}
+func (s *startupHealthStore) ListRecentSchedulerDecisions(context.Context, store.SchedulerDecisionQuery) ([]store.SchedulerDecision, error) {
+	return nil, nil
+}
+func (s *startupHealthStore) StartSession(_ context.Context, start store.SessionStart) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessions = append(s.sessions, start)
+	return int64(len(s.sessions)), nil
+}
+func (s *startupHealthStore) UpdateSessionWorkerProcess(_ context.Context, id int64, registration store.WorkerProcessRegistration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.processes = append(s.processes, store.WorkerProcess{SessionID: id, WorkerProcessIdentity: registration.WorkerProcessIdentity})
+	return nil
+}
+func (s *startupHealthStore) ListActiveWorkerProcesses(context.Context) ([]store.WorkerProcess, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]store.WorkerProcess(nil), s.processes...), nil
+}
+func (s *startupHealthStore) ListOrphanedAgentSessions(_ context.Context, project string) ([]store.OrphanedAgentSession, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var orphans []store.OrphanedAgentSession
+	for i, session := range s.sessions {
+		if session.ProjectID != project || session.WorkAttemptID == 0 {
+			continue
+		}
+		attempt := s.attempts[session.WorkAttemptID-1]
+		orphans = append(orphans, store.OrphanedAgentSession{ResumeState: store.AgentResumeState{DetentSessionID: int64(i + 1), ProviderThreadID: session.ProviderThreadID, AgentBackendKind: session.AgentBackendKind, Orphaned: true}, WorkAttemptID: session.WorkAttemptID, ProjectID: project, IssueID: session.IssueID, Identifier: session.Identifier, WorkerType: attempt.WorkerType, Lane: attempt.Lane, StartedAt: session.StartedAt})
+	}
+	return orphans, nil
+}
+func (s *startupHealthStore) MarkAgentSessionOrphaned(context.Context, int64, time.Time) error {
+	return nil
 }
