@@ -3,11 +3,10 @@ package artifact
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -78,13 +77,15 @@ func (a *testAllowances) Limits(context.Context, string) (Limits, error) {
 
 func testConfig(t *testing.T) Config {
 	t.Helper()
-	return Config{ServiceID: NewID("service"), OrganizationID: NewID("org"), Mode: "customer", DatabasePath: filepath.Join(t.TempDir(), "catalog.db"), Policy: Policy{ID: "test", Limits: Limits{RetainedBytes: 64 << 20, ReservedBytes: 32 << 20, ArtifactBytes: 8 << 20, UploadBytes: MaxChunkBytes, RetentionSeconds: 3600}, AbandonedUploadSeconds: 600, DeletionRecordSeconds: 7200, BackupSeconds: 3600}}
+	cfg := Config{ServiceID: NewID("service"), OrganizationID: NewID("org"), Mode: "customer", ProjectID: NewID("prj"), Policy: Policy{ID: "test", Limits: Limits{RetainedBytes: 64 << 20, ReservedBytes: 32 << 20, ArtifactBytes: 8 << 20, UploadBytes: MaxChunkBytes, RetentionSeconds: 3600}, AbandonedUploadSeconds: 600, DeletionRecordSeconds: 7200, BackupSeconds: 3600}}
+	cfg.Catalog = newMemoryCatalog(cfg)
+	return cfg
 }
 
 func testService(t *testing.T) (*Service, *memoryStorage) {
 	t.Helper()
 	storage := &memoryStorage{data: map[string][]byte{}}
-	s, err := NewService(t.Context(), testConfig(t), storage, nil)
+	s, err := newTestService(t.Context(), testConfig(t), storage, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +98,7 @@ func testService(t *testing.T) (*Service, *memoryStorage) {
 }
 
 func testReservation(s *Service) Reservation {
-	return Reservation{ServiceID: s.config.ServiceID, Mode: s.config.Mode, HostedOptIn: s.config.HostedOptIn, Scope: Scope{OrganizationID: s.config.OrganizationID, ProjectID: NewID("prj"), WorkItemID: NewID("wi"), RunID: NewID("run"), AttemptID: NewID("attempt")}, Key: "log", Kind: "log", Bytes: 4 << 20, LeaseID: "lease", FencingToken: 1}
+	return Reservation{ServiceID: s.config.ServiceID, Mode: s.config.Mode, HostedOptIn: s.config.HostedOptIn, Scope: Scope{OrganizationID: s.config.OrganizationID, ProjectID: s.config.ProjectID, WorkItemID: NewID("wi"), RunID: NewID("run"), AttemptID: NewID("attempt")}, Key: "log", Kind: "log", Bytes: 4 << 20, LeaseID: "lease", FencingToken: 1}
 }
 
 func testPart(sequence int, data string) Part {
@@ -105,10 +106,6 @@ func testPart(sequence int, data string) Part {
 }
 
 func TestUploadRecoveryAndImmutableManifests(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite catalog integration")
-	}
-
 	t.Parallel()
 	for _, lost := range []bool{false, true} {
 		t.Run(fmt.Sprintf("lost_reply_%t", lost), func(t *testing.T) {
@@ -175,9 +172,16 @@ func TestUploadRecoveryAndImmutableManifests(t *testing.T) {
 			if err != nil || !bytes.Equal(data, part.Data) {
 				t.Fatal("read", err)
 			}
-			if _, err := s.catalog.db.ExecContext(t.Context(), "UPDATE manifests SET digest='changed'"); err == nil {
-				t.Fatal("manifest update allowed")
+			stored, err := s.command(t.Context(), CatalogCommand{Operation: "manifest", UploadID: u.ArtifactID, Revision: 1})
+			if err != nil {
+				t.Fatal(err)
 			}
+			changedManifest := stored.Manifest
+			changedManifest.SHA256 = Digest([]byte("changed"))
+			if _, err := s.command(t.Context(), CatalogCommand{Operation: "commit", UploadID: u.ArtifactID, Manifest: changedManifest}); !errors.Is(err, ErrConflict) {
+				t.Fatal("manifest update allowed", err)
+			}
+
 			usage, err = s.Usage(t.Context())
 			if err != nil || usage.ReservedBytes != 0 || usage.RetainedBytes <= int64(len(part.Data)) {
 				t.Fatal("accounting", usage, err)
@@ -186,7 +190,7 @@ func TestUploadRecoveryAndImmutableManifests(t *testing.T) {
 			if err := s.Close(); err != nil {
 				t.Fatal(err)
 			}
-			reopened, err := NewService(t.Context(), cfg, storage, nil)
+			reopened, err := newTestService(t.Context(), cfg, storage, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -217,10 +221,6 @@ func TestUploadRecoveryAndImmutableManifests(t *testing.T) {
 }
 
 func TestPublishPendingProgressesPastRejectedReceipts(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite catalog integration")
-	}
-
 	t.Parallel()
 	s, _ := testService(t)
 	start := time.Now().UTC().Truncate(time.Second)
@@ -287,19 +287,19 @@ func (p *testPublisher) Publish(_ context.Context, ref Reference) error {
 }
 
 func TestArtifactFailureStates(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite catalog integration")
-	}
-
 	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		mutate func(*Service, *memoryStorage, Upload, Object)
 		want   error
 	}{
-		{"missing", func(_ *Service, m *memoryStorage, u Upload, o Object) { delete(m.data, u.ArtifactID+"/"+o.ID) }, ErrMissing},
-		{"corrupt", func(_ *Service, m *memoryStorage, u Upload, o Object) { m.data[u.ArtifactID+"/"+o.ID] = []byte("bad") }, ErrIntegrity},
-		{"outage", func(_ *Service, m *memoryStorage, _ Upload, _ Object) { m.failure = ErrStorage }, ErrStorage},
+		{"missing", func(s *Service, m *memoryStorage, u Upload, o Object) {
+			delete(m.data, s.objectKey(u.ArtifactID, o.ID))
+		}, ErrMissing},
+		{"corrupt", func(s *Service, m *memoryStorage, u Upload, o Object) {
+			m.data[s.objectKey(u.ArtifactID, o.ID)] = []byte("bad")
+		}, ErrIntegrity},
+		{"outage", func(s *Service, m *memoryStorage, _ Upload, _ Object) { m.failure = ErrStorage }, ErrStorage},
 		{"expired", func(s *Service, _ *memoryStorage, u Upload, _ Object) {
 			s.now = func() time.Time { return u.ExpiresAt }
 		}, ErrExpired},
@@ -329,10 +329,6 @@ func TestArtifactFailureStates(t *testing.T) {
 }
 
 func TestHostedConcurrentReservationsAndDowngrade(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite catalog integration")
-	}
-
 	t.Parallel()
 	cfg := testConfig(t)
 	cfg.Mode = "hosted"
@@ -340,7 +336,7 @@ func TestHostedConcurrentReservationsAndDowngrade(t *testing.T) {
 	allow := &testAllowances{cfg.Policy.Limits}
 	allow.limits.RetainedBytes = 4 << 20
 	allow.limits.ReservedBytes = 4 << 20
-	s, err := NewService(t.Context(), cfg, &memoryStorage{data: map[string][]byte{}}, allow)
+	s, err := newTestService(t.Context(), cfg, &memoryStorage{data: map[string][]byte{}}, allow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,10 +372,6 @@ func TestHostedConcurrentReservationsAndDowngrade(t *testing.T) {
 }
 
 func TestAbandonedUploadsAndDeletionRecovery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite catalog integration")
-	}
-
 	t.Parallel()
 	for _, kind := range []string{"log", "diff"} {
 		t.Run(kind, func(t *testing.T) {
@@ -436,105 +428,61 @@ func TestAbandonedUploadsAndDeletionRecovery(t *testing.T) {
 	}
 }
 
-func TestCatalogOwnershipAndBackup(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite catalog integration")
-	}
-
+func TestCatalogSharedHubAndExport(t *testing.T) {
 	t.Parallel()
-	s, m := testService(t)
-	if other, err := NewService(t.Context(), s.config, m, nil); err == nil {
-		other.Close()
-		t.Fatal("second owner accepted")
+	s, storage := testService(t)
+	other, err := newTestService(t.Context(), s.config, storage, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer other.Close()
 	u, err := s.Reserve(t.Context(), testReservation(s))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Append(t.Context(), u.ArtifactID, testPart(0, "backup")); err != nil {
+	if _, err := s.Append(t.Context(), u.ArtifactID, testPart(0, "export")); err != nil {
 		t.Fatal(err)
 	}
-	backup := filepath.Join(t.TempDir(), "backup.db")
-	if err := s.Backup(t.Context(), backup); err != nil {
+	if _, _, err := other.Manifest(t.Context(), u.ArtifactID, 1); err != nil {
+		t.Fatal("second service cannot read Hub catalog", err)
+	}
+	path := filepath.Join(t.TempDir(), "catalog.jsonl")
+	if err := s.Backup(t.Context(), path); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Backup(t.Context(), backup); err == nil {
-		t.Fatal("existing backup overwritten")
+	if err := s.Backup(t.Context(), path); err == nil {
+		t.Fatal("existing export overwritten")
 	}
-	cfg := s.config
-	cfg.DatabasePath = backup
-	restored, err := NewService(t.Context(), cfg, m, nil)
+	file, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer restored.Close()
-	var integrity string
-	if err := restored.catalog.db.QueryRowContext(t.Context(), "PRAGMA integrity_check").Scan(&integrity); err != nil || integrity != "ok" {
-		t.Fatal(integrity, err)
-	}
-	body, _, err := restored.Manifest(t.Context(), u.ArtifactID, 1)
-	if err != nil {
+	defer file.Close()
+	var exported CatalogResult
+	if err := json.NewDecoder(file).Decode(&exported); err != nil {
 		t.Fatal(err)
 	}
-	var manifest Manifest
-	if err := json.Unmarshal(body, &manifest); err != nil {
-		t.Fatal(err)
-	}
-	if manifest.Validate() != nil {
-		t.Fatal("restored manifest invalid")
+	if len(exported.Uploads) != 1 || len(exported.Manifests) != 1 || exported.Manifests[0].ArtifactID != u.ArtifactID {
+		t.Fatalf("export=%+v", exported)
 	}
 }
 
-func TestCatalogRejectsInvalidDatabases(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite catalog integration")
-	}
-
+func TestCatalogRequiresHub(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{"memory", "uri", "wrong application", "future version"} {
-		t.Run(kind, func(t *testing.T) {
-			cfg := testConfig(t)
-			switch kind {
-			case "memory":
-				cfg.DatabasePath = ":memory:"
-			case "uri":
-				cfg.DatabasePath = "file:catalog.db"
-			case "wrong application", "future version":
-				if kind == "future version" {
-					s, err := NewService(t.Context(), cfg, &memoryStorage{data: map[string][]byte{}}, nil)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if err := s.Close(); err != nil {
-						t.Fatal(err)
-					}
-				}
-				db, err := sql.Open("sqlite", cfg.DatabasePath)
-				if err != nil {
-					t.Fatal(err)
-				}
-				query := "PRAGMA application_id=123"
-				if kind == "future version" {
-					query = "INSERT INTO artifact_schema_version(version_id,is_applied) VALUES(99,1)"
-				}
-				if _, err := db.ExecContext(t.Context(), query); err != nil {
-					t.Fatal(err)
-				}
-				db.Close()
+	for _, path := range []string{"", ":memory:", "file:catalog.db", filepath.Join(t.TempDir(), "catalog.db")} {
+		cfg := testConfig(t)
+		cfg.Catalog = nil
+		cfg.DatabasePath = path
+		if service, err := NewService(t.Context(), cfg, &memoryStorage{data: map[string][]byte{}}, nil); !errors.Is(err, ErrAuthorization) {
+			if service != nil {
+				service.Close()
 			}
-			if s, err := NewService(t.Context(), cfg, &memoryStorage{data: map[string][]byte{}}, nil); err == nil {
-				s.Close()
-				t.Fatal("invalid catalog accepted")
-			}
-		})
+			t.Fatal("local catalog accepted", err)
+		}
 	}
 }
 
 func TestAbandonedUnverifiedObjectKeepsReservationUntilCleanup(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite catalog integration")
-	}
-
 	t.Parallel()
 	for _, outage := range []bool{false, true} {
 		t.Run(strconv.FormatBool(outage), func(t *testing.T) {
@@ -569,8 +517,13 @@ func TestAbandonedUnverifiedObjectKeepsReservationUntilCleanup(t *testing.T) {
 			if err != nil || ref.State != "interrupted" || ref.Objects != 1 {
 				t.Fatal(ref, err)
 			}
-			if len(storage.data) != 1 {
-				t.Fatal("unverified object retained", len(storage.data))
+			if _, ok := storage.data[u.ArtifactID+"/"+"unverified"]; ok {
+				t.Fatal("unverified object retained")
+			}
+			for _, entry := range storage.data {
+				if string(entry) == "unverified" {
+					t.Fatal("unverified object retained")
+				}
 			}
 			usage, err := s.Usage(t.Context())
 			if err != nil || usage.ReservedBytes != 0 {
@@ -581,10 +534,6 @@ func TestAbandonedUnverifiedObjectKeepsReservationUntilCleanup(t *testing.T) {
 }
 
 func TestRestoredCatalogCannotResurrectDeletedArtifact(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite catalog integration")
-	}
-
 	t.Parallel()
 	s, storage := testService(t)
 	r := testReservation(s)
@@ -605,7 +554,7 @@ func TestRestoredCatalogCannotResurrectDeletedArtifact(t *testing.T) {
 	}
 	cfg := s.config
 	cfg.DatabasePath = backup
-	restored, err := NewService(t.Context(), cfg, storage, nil)
+	restored, err := newTestService(t.Context(), cfg, storage, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -630,10 +579,6 @@ func TestRestoredCatalogCannotResurrectDeletedArtifact(t *testing.T) {
 }
 
 func TestArtifactManifestHeadroom(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite catalog integration")
-	}
-
 	t.Parallel()
 	for _, size := range []int64{4096, 16384} {
 		t.Run(strconv.FormatInt(size, 10), func(t *testing.T) {
@@ -665,17 +610,13 @@ func TestArtifactManifestHeadroom(t *testing.T) {
 }
 
 func TestReservationCustodyBinding(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite catalog integration")
-	}
-
 	t.Parallel()
 	for _, mode := range []string{"customer", "hosted"} {
 		t.Run(mode, func(t *testing.T) {
 			cfg := testConfig(t)
 			cfg.Mode, cfg.HostedOptIn = mode, mode == "hosted"
 			storage := &memoryStorage{data: map[string][]byte{}}
-			s, err := NewService(t.Context(), cfg, storage, &testAllowances{cfg.Policy.Limits})
+			s, err := newTestService(t.Context(), cfg, storage, &testAllowances{cfg.Policy.Limits})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -712,28 +653,15 @@ func TestReservationCustodyBinding(t *testing.T) {
 	}
 }
 
-func TestCatalogDSNPaths(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name, path, want string
-	}{
-		{"Unix", "/var/lib/artifacts/catalog.db", "file:///var/lib/artifacts/catalog.db?"},
-		{"Windows uppercase", "C:/artifacts/catalog.db", "file:///C:/artifacts/catalog.db?"},
-		{"Windows lowercase", "d:/artifacts/catalog.db", "file:///d:/artifacts/catalog.db?"},
-		{"special characters", "C:/artifact data/catalog#1.db", "file:///C:/artifact%20data/catalog%231.db?"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			dsn := catalogDSN(test.path)
-			if !strings.HasPrefix(dsn, test.want) {
-				t.Fatalf("catalogDSN() = %q, want prefix %q", dsn, test.want)
-			}
-			parsed, err := url.Parse(dsn)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if parsed.Host != "" || len(parsed.Query()["_pragma"]) != 4 {
-				t.Fatal("catalog path became an authority or lost its pragmas", dsn)
-			}
-		})
+func newTestService(ctx context.Context, cfg Config, storage Storage, allowances Allowances) (*Service, error) {
+	if cfg.Catalog == nil {
+		cfg.Catalog = newMemoryCatalog(cfg)
 	}
+	if catalog, ok := cfg.Catalog.(*memoryCatalog); ok {
+		catalog.config = cfg
+		if allow, ok := allowances.(*testAllowances); ok && cfg.Mode == "hosted" {
+			catalog.limits = func() Limits { return allow.limits }
+		}
+	}
+	return NewService(ctx, cfg, storage, allowances)
 }

@@ -2,232 +2,184 @@ package artifact
 
 import (
 	"context"
-	"database/sql"
-	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
-	"net/url"
+	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
-	"sync"
-
-	"github.com/pressly/goose/v3"
-	"modernc.org/sqlite"
-
-	"github.com/digitaldrywood/detent/internal/instancelock"
+	"time"
 )
 
-//go:embed migrations/*.sql
-var catalogMigrations embed.FS
-
-type catalog struct {
-	db        *sql.DB
-	lock      *instancelock.Lock
-	path      string
-	closeOnce sync.Once
-	closeErr  error
+type CatalogScope struct {
+	OrganizationID string `json:"organization_id"`
+	ProjectID      string `json:"project_id"`
+	ServiceID      string `json:"service_id"`
 }
 
-func catalogPath(raw string) (string, error) {
-	if raw == "" || raw == ":memory:" || strings.HasPrefix(strings.ToLower(raw), "file:") {
-		return "", ErrInvalid
-	}
-	absolute, err := filepath.Abs(raw)
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(filepath.Dir(absolute), 0o700); err != nil {
-		return "", err
-	}
-	if _, err := os.Lstat(absolute); err == nil {
-		return filepath.EvalSymlinks(absolute)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	parent, err := filepath.EvalSymlinks(filepath.Dir(absolute))
-	return filepath.Join(parent, filepath.Base(absolute)), err
+type CatalogObject struct {
+	Object
+	StorageVersion string `json:"storage_version"`
+	Verified       bool   `json:"verified"`
+	Discarded      bool   `json:"discarded"`
 }
 
-func openCatalog(ctx context.Context, raw string) (*catalog, error) {
-	path, err := catalogPath(raw)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateLocalDatabaseFilesystem(filepath.Dir(path)); err != nil {
-		return nil, err
-	}
-	lock, err := instancelock.Acquire(path + ".lock")
-	if err != nil {
-		return nil, err
-	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
-	if err != nil && !errors.Is(err, os.ErrExist) {
-		return nil, errors.Join(err, lock.Close())
-	}
-	if file != nil {
-		if err := file.Close(); err != nil {
-			return nil, errors.Join(err, lock.Close())
-		}
-	}
-	db, err := sql.Open("sqlite", catalogDSN(path))
-	if err != nil {
-		return nil, errors.Join(err, lock.Close())
-	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	c := &catalog{db: db, lock: lock, path: path}
-	if err := c.initialize(ctx); err != nil {
-		return nil, errors.Join(err, c.Close())
-	}
-	return c, nil
+type CatalogManifest struct {
+	Reference
+	BodyKey           string    `json:"body_key"`
+	BodyBytes         int64     `json:"body_bytes"`
+	CreatedAt         time.Time `json:"created_at"`
+	RetentionPolicyID string    `json:"retention_policy_id"`
+	Capture           *Capture  `json:"capture,omitempty"`
 }
 
-func catalogDSN(path string) string {
-	databasePath := filepath.ToSlash(path)
-	if len(databasePath) >= 3 && databasePath[1] == ':' && databasePath[2] == '/' && (databasePath[0] >= 'A' && databasePath[0] <= 'Z' || databasePath[0] >= 'a' && databasePath[0] <= 'z') {
-		databasePath = "/" + databasePath
-	}
-	u := url.URL{Scheme: "file", Path: databasePath}
-	q := u.Query()
-	for _, pragma := range []string{"busy_timeout(5000)", "foreign_keys(1)", "locking_mode(EXCLUSIVE)", "synchronous(FULL)"} {
-		q.Add("_pragma", pragma)
-	}
-	u.RawQuery = q.Encode()
-	return u.String()
+type CatalogCommand struct {
+	CatalogScope
+	Operation string          `json:"operation"`
+	UploadID  string          `json:"upload_id,omitempty"`
+	Key       string          `json:"key,omitempty"`
+	Upload    Upload          `json:"upload,omitzero"`
+	Object    CatalogObject   `json:"object,omitzero"`
+	Manifest  CatalogManifest `json:"manifest,omitzero"`
+	Revision  int64           `json:"revision,omitempty"`
+	At        time.Time       `json:"at,omitzero"`
+	Before    time.Time       `json:"before,omitzero"`
+	After     string          `json:"after,omitempty"`
+	Limit     int             `json:"limit,omitempty"`
+	Outcome   string          `json:"outcome,omitempty"`
+	Receipt   string          `json:"receipt,omitempty"`
+	Traffic   CatalogTraffic  `json:"traffic,omitzero"`
 }
 
-func (c *catalog) initialize(ctx context.Context) error {
-	for _, check := range []struct {
-		query string
-		want  int
-	}{{"PRAGMA busy_timeout", 5000}, {"PRAGMA foreign_keys", 1}, {"PRAGMA synchronous", 2}} {
-		var got int
-		if err := c.db.QueryRowContext(ctx, check.query).Scan(&got); err != nil {
-			return err
-		}
-		if got != check.want {
-			return errors.New("artifact SQLite configuration mismatch")
-		}
-	}
-	var mode string
-	if err := c.db.QueryRowContext(ctx, "PRAGMA locking_mode").Scan(&mode); err != nil {
-		return err
-	}
-	if !strings.EqualFold(mode, "exclusive") {
-		return errors.New("artifact catalog requires exclusive ownership")
-	}
-	if _, err := c.db.ExecContext(ctx, "BEGIN EXCLUSIVE"); err != nil {
-		return err
-	}
-	if _, err := c.db.ExecContext(ctx, "COMMIT"); err != nil {
-		return err
-	}
-	var identity int
-	if err := c.db.QueryRowContext(ctx, "PRAGMA application_id").Scan(&identity); err != nil {
-		return err
-	}
-	const applicationID = 0x44544152
-	if identity != applicationID {
-		var count int
-		if err := c.db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'").Scan(&count); err != nil {
-			return err
-		}
-		if identity != 0 || count != 0 {
-			return errors.New("database is not a Detent artifact catalog")
-		}
-		if _, err := c.db.ExecContext(ctx, fmt.Sprintf("PRAGMA application_id = %d", applicationID)); err != nil {
-			return err
-		}
-	}
-	if err := c.db.QueryRowContext(ctx, "PRAGMA journal_mode = WAL").Scan(&mode); err != nil {
-		return err
-	}
-	if !strings.EqualFold(mode, "wal") {
-		return errors.New("artifact catalog requires WAL")
-	}
-	migrations, err := fs.Sub(catalogMigrations, "migrations")
-	if err != nil {
-		return err
-	}
-	provider, err := goose.NewProvider(goose.DialectSQLite3, c.db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName("artifact_schema_version"))
-	if err != nil {
-		return err
-	}
-	current, target, err := provider.GetVersions(ctx)
-	if err != nil {
-		return err
-	}
-	if target != 2 || current > target {
-		return errors.New("unsupported artifact catalog schema")
-	}
-	if _, err := provider.Up(ctx); err != nil {
-		return err
-	}
-	current, _, err = provider.GetVersions(ctx)
-	if err != nil {
-		return err
-	}
-	if current != target {
-		return errors.New("artifact catalog migration incomplete")
-	}
-	return nil
+type CatalogTraffic struct {
+	ID               string `json:"id,omitempty"`
+	UploadBytes      int64  `json:"upload_bytes,omitempty"`
+	DownloadBytes    int64  `json:"download_bytes,omitempty"`
+	Requests         int64  `json:"requests,omitempty"`
+	WindowSeconds    int64  `json:"window_seconds,omitempty"`
+	RetentionSeconds int64  `json:"retention_seconds,omitempty"`
 }
 
-func (c *catalog) Close() error {
-	c.closeOnce.Do(func() { c.closeErr = errors.Join(c.db.Close(), c.lock.Close()) })
-	return c.closeErr
+type CatalogResult struct {
+	Upload    Upload            `json:"upload,omitzero"`
+	Object    CatalogObject     `json:"object,omitzero"`
+	Objects   []CatalogObject   `json:"objects,omitempty"`
+	Manifest  CatalogManifest   `json:"manifest,omitzero"`
+	Manifests []CatalogManifest `json:"manifests,omitempty"`
+	Uploads   []Upload          `json:"uploads,omitempty"`
+	Usage     Usage             `json:"usage,omitzero"`
+	Traffic   CatalogTraffic    `json:"traffic,omitzero"`
+	Next      string            `json:"next,omitempty"`
 }
 
-func (c *catalog) backup(ctx context.Context, destination string) (resultErr error) {
-	path, err := catalogPath(destination)
-	if err != nil {
-		return err
+type Catalog interface {
+	Execute(context.Context, CatalogCommand) (CatalogResult, error)
+}
+
+type RemoteCatalog struct {
+	Hub *RemoteHub
+}
+
+func (c *RemoteCatalog) Execute(ctx context.Context, command CatalogCommand) (CatalogResult, error) {
+	var result CatalogResult
+	if c == nil || c.Hub == nil || c.Hub.PublisherToken == nil || command.OrganizationID != c.Hub.OrganizationID || command.ServiceID != c.Hub.ServiceID || !ValidID(command.ProjectID, "prj") || c.Hub.ProjectID != "" && command.ProjectID != c.Hub.ProjectID {
+		return result, ErrDenied
 	}
-	if path == c.path {
-		return ErrConflict
+	err := c.Hub.requestCatalog(ctx, command, &result)
+	return result, err
+}
+
+func (h *RemoteHub) requestCatalog(ctx context.Context, command CatalogCommand, result *CatalogResult) error {
+	return h.requestResultLimit(ctx, h.PublisherToken(), h.base(command.ProjectID)+"/artifact-services/"+h.ServiceID+"/catalog", command, result, 8<<20)
+}
+
+type CatalogAuthorization func(context.Context, string, CatalogCommand) error
+
+func NewCatalogHandler(owner Catalog, authorize CatalogAuthorization) (http.Handler, error) {
+	if owner == nil || authorize == nil {
+		return nil, ErrInvalid
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return errors.Join(err, os.Remove(path))
-	}
-	complete := false
-	defer func() {
-		if !complete {
-			resultErr = errors.Join(resultErr, os.Remove(path))
-		}
-	}()
-	conn, err := c.db.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	err = conn.Raw(func(driver any) error {
-		backuper, ok := driver.(interface {
-			NewBackup(string) (*sqlite.Backup, error)
-		})
-		if !ok {
-			return ErrUnsupported
-		}
-		backup, err := backuper.NewBackup(path)
-		if err != nil {
-			return err
-		}
-		var stepErr error
-		for more := true; more && stepErr == nil; {
-			if stepErr = ctx.Err(); stepErr != nil {
-				break
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "application/json")
+		fail := func(err error) {
+			status := http.StatusServiceUnavailable
+			for _, entry := range []struct {
+				err    error
+				status int
+			}{{ErrDenied, 403}, {ErrAuthorization, 401}, {ErrMissing, 404}, {ErrInvalid, 422}, {ErrIntegrity, 422}, {ErrConflict, 409}, {ErrQuota, 429}, {ErrExpired, 410}} {
+				if errors.Is(err, entry.err) {
+					status = entry.status
+					err = entry.err
+					break
+				}
 			}
-			more, stepErr = backup.Step(256)
+			w.WriteHeader(status)
+			code := "catalog_unavailable"
+			if status != http.StatusServiceUnavailable {
+				code = err.Error()
+			}
+			if err := json.NewEncoder(w).Encode(struct {
+				Code string `json:"code"`
+			}{code}); err != nil {
+				return
+			}
 		}
-		return errors.Join(stepErr, backup.Finish())
-	})
-	if err = errors.Join(err, conn.Close()); err != nil {
-		return err
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var command CatalogCommand
+		if err := Decode(r.Body, &command, 2<<20); err != nil {
+			fail(err)
+			return
+		}
+		header := r.Header.Values("Authorization")
+		if len(header) != 1 || len(header[0]) < 8 || header[0][:7] != "Bearer " {
+			fail(ErrDenied)
+			return
+		}
+		if err := authorize(r.Context(), header[0][7:], command); err != nil {
+			fail(err)
+			return
+		}
+		result, err := owner.Execute(r.Context(), command)
+		if err != nil {
+			fail(err)
+			return
+		}
+		if err := json.NewEncoder(w).Encode(result); err != nil {
+			return
+		}
+	}), nil
+}
+
+func (s *Service) command(ctx context.Context, command CatalogCommand) (CatalogResult, error) {
+	command.CatalogScope = CatalogScope{OrganizationID: s.config.OrganizationID, ProjectID: s.config.ProjectID, ServiceID: s.config.ServiceID}
+	return s.catalog.Execute(ctx, command)
+}
+
+func (s *Service) Backup(ctx context.Context, path string) (resultErr error) {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create artifact export: %w", err)
 	}
-	complete = true
-	return nil
+	defer func() { resultErr = errors.Join(resultErr, file.Close()) }()
+	encoder := json.NewEncoder(file)
+	after := ""
+	for {
+		result, err := s.command(ctx, CatalogCommand{Operation: "export", After: after, Limit: 32})
+		if err != nil {
+			return fmt.Errorf("export Hub catalog: %w", err)
+		}
+		if err := encoder.Encode(result); err != nil {
+			return fmt.Errorf("write artifact export: %w", err)
+		}
+		if result.Next == "" {
+			return nil
+		}
+		if result.Next <= after {
+			return ErrIntegrity
+		}
+		after = result.Next
+	}
 }

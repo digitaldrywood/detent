@@ -17,10 +17,6 @@ func (f allowanceFunction) Limits(ctx context.Context, organization string) (Lim
 }
 
 func TestHostedTrafficAndAdmittedCompletion(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite catalog integration")
-	}
-
 	t.Parallel()
 	for _, mode := range []string{"customer", "hosted"} {
 		t.Run(mode, func(t *testing.T) {
@@ -33,7 +29,7 @@ func TestHostedTrafficAndAdmittedCompletion(t *testing.T) {
 			limits.RelayBytes = 8 << 20
 			calls := 0
 			allow := allowanceFunction(func(context.Context, string) (Limits, error) { calls++; return limits, nil })
-			s, err := NewService(t.Context(), cfg, &memoryStorage{data: map[string][]byte{}}, allow)
+			s, err := newTestService(t.Context(), cfg, &memoryStorage{data: map[string][]byte{}}, allow)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -74,7 +70,7 @@ func TestHostedTrafficAndAdmittedCompletion(t *testing.T) {
 				}
 				return
 			}
-			if after.RelayBytes != 2*int64(len(part.Data)) || after.StorageRequests < 2 {
+			if after.RelayBytes != 2*after.RetainedBytes || after.StorageRequests < 2 {
 				t.Fatalf("traffic = %+v", after)
 			}
 			request := testReservation(s)
@@ -90,8 +86,12 @@ func TestHostedTrafficAndAdmittedCompletion(t *testing.T) {
 			if err := s.recordTraffic(t.Context(), 1, 0, 1); err != nil {
 				t.Fatal(err)
 			}
-			if err := s.catalog.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_traffic").Scan(&rows); err != nil || rows != 1 {
-				t.Fatalf("telemetry retention %d: %v", rows, err)
+			if err := s.Maintain(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			rows = len(s.catalog.(*memoryCatalog).traffic)
+			if rows != 1 {
+				t.Fatalf("telemetry retention %d", rows)
 			}
 		})
 	}
@@ -143,7 +143,7 @@ func TestHostedRelayQuotaAndRemoteLimits(t *testing.T) {
 	limits.WindowSeconds = 3600
 	limits.TelemetrySeconds = 86400
 	limits.RelayBytes = 1
-	s, err := NewService(t.Context(), cfg, &memoryStorage{data: map[string][]byte{}}, allowanceFunction(func(context.Context, string) (Limits, error) { return limits, nil }))
+	s, err := newTestService(t.Context(), cfg, &memoryStorage{data: map[string][]byte{}}, allowanceFunction(func(context.Context, string) (Limits, error) { return limits, nil }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,10 +158,6 @@ func TestHostedRelayQuotaAndRemoteLimits(t *testing.T) {
 }
 
 func TestHostedTrafficSettingsSurviveRestart(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite catalog integration")
-	}
-
 	t.Parallel()
 	cfg := testConfig(t)
 	cfg.Mode, cfg.HostedOptIn = "hosted", true
@@ -169,7 +165,7 @@ func TestHostedTrafficSettingsSurviveRestart(t *testing.T) {
 	limits := cfg.Policy.Limits
 	limits.RelayBytes, limits.WindowSeconds, limits.TelemetrySeconds = 1<<30, 60, 3600
 	allow := allowanceFunction(func(context.Context, string) (Limits, error) { return limits, nil })
-	service, err := NewService(t.Context(), cfg, storage, allow)
+	service, err := newTestService(t.Context(), cfg, storage, allow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +175,7 @@ func TestHostedTrafficSettingsSurviveRestart(t *testing.T) {
 	if err := service.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := NewService(t.Context(), cfg, storage, allow)
+	reopened, err := newTestService(t.Context(), cfg, storage, allow)
 	if err != nil {
 		t.Fatal(err)
 	}

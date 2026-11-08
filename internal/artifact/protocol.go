@@ -83,6 +83,10 @@ func (h *RemoteHub) request(ctx context.Context, token, target string, input any
 }
 
 func (h *RemoteHub) requestResult(ctx context.Context, token, target string, input, output any) error {
+	return h.requestResultLimit(ctx, token, target, input, output, 4096)
+}
+
+func (h *RemoteHub) requestResultLimit(ctx context.Context, token, target string, input, output any, limit int64) error {
 	if !ValidOrigin(h.Origin) || token == "" {
 		return ErrAuthorization
 	}
@@ -100,19 +104,44 @@ func (h *RemoteHub) requestResult(ctx context.Context, token, target string, inp
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	}
-	response, err := client.Do(req)
+	isolated := *client
+	isolated.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := isolated.Do(req)
 	if err != nil {
 		return ErrAuthorization
 	}
 	defer response.Body.Close()
+	if _, catalog := output.(*CatalogResult); catalog && response.StatusCode >= 400 {
+		var failure struct {
+			Code string `json:"code"`
+		}
+		if Decode(response.Body, &failure, 4096) != nil {
+			return ErrAuthorization
+		}
+		for _, known := range []error{ErrDenied, ErrAuthorization, ErrMissing, ErrInvalid, ErrIntegrity, ErrConflict, ErrQuota, ErrExpired} {
+			if failure.Code == known.Error() {
+				return known
+			}
+		}
+		return ErrAuthorization
+	}
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusNotFound {
 		return ErrDenied
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		if response.StatusCode == http.StatusConflict {
+			return ErrConflict
+		}
+		if response.StatusCode == http.StatusGone {
+			return ErrExpired
+		}
+		if response.StatusCode == http.StatusUnprocessableEntity {
+			return ErrInvalid
+		}
 		return hostedAllowanceStatus(response.StatusCode)
 	}
 	if output != nil {
-		return Decode(response.Body, output, 4096)
+		return Decode(response.Body, output, limit)
 	}
 	return nil
 }

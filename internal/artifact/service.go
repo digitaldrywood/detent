@@ -2,10 +2,10 @@ package artifact
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,6 +40,8 @@ type Config struct {
 	Mode            string        `json:"mode"`
 	HostedOptIn     bool          `json:"hosted_opt_in"`
 	OrganizationID  string        `json:"organization_id"`
+	ProjectID       string        `json:"project_id"`
+	Catalog         Catalog       `json:"-"`
 	DatabasePath    string        `json:"database_path"`
 	Policy          Policy        `json:"policy"`
 	Storage         StorageConfig `json:"storage"`
@@ -64,11 +66,14 @@ type Upload struct {
 	PartLimit  int64  `json:"part_limit"`
 	ArtifactID string `json:"artifact_id"`
 	Reservation
-	State         string    `json:"state"`
-	CreatedAt     time.Time `json:"created_at"`
-	Deadline      time.Time `json:"deadline"`
-	ExpiresAt     time.Time `json:"expires_at"`
-	RetainedBytes int64     `json:"retained_bytes"`
+	State            string     `json:"state"`
+	CreatedAt        time.Time  `json:"created_at"`
+	Deadline         time.Time  `json:"deadline"`
+	ExpiresAt        time.Time  `json:"expires_at"`
+	RetainedBytes    int64      `json:"retained_bytes"`
+	ReservedBytes    int64      `json:"reserved_bytes"`
+	ManifestRevision int64      `json:"manifest_revision"`
+	DeletedAt        *time.Time `json:"deleted_at,omitempty"`
 }
 
 type Part struct {
@@ -94,17 +99,16 @@ type Service struct {
 	trafficRetention atomic.Int64
 	config           Config
 	storage          Storage
-	catalog          *catalog
+	catalog          Catalog
 	allowances       Allowances
 	now              func() time.Time
-	mu               sync.Mutex
-	publishMu        sync.Mutex
 	publishAfter     publishCursor
+	publishMu        sync.Mutex
 }
 
 func (cfg Config) Validate() error {
 	p := cfg.Policy
-	if !ValidID(cfg.ServiceID, "service") || !ValidID(cfg.OrganizationID, "org") || !slices.Contains([]string{"customer", "hosted"}, cfg.Mode) || cfg.Mode == "hosted" && !cfg.HostedOptIn || p.ID == "" || len(p.ID) > 128 || !validLimits(p.Limits) || p.AbandonedUploadSeconds <= 0 || p.AbandonedUploadSeconds > 365*86400 || p.BackupSeconds <= 0 || p.BackupSeconds > 365*86400 || p.DeletionRecordSeconds <= p.BackupSeconds+p.AbandonedUploadSeconds || p.DeletionRecordSeconds > 10*365*86400 {
+	if !ValidID(cfg.ProjectID, "prj") || !ValidID(cfg.ServiceID, "service") || !ValidID(cfg.OrganizationID, "org") || !slices.Contains([]string{"customer", "hosted"}, cfg.Mode) || cfg.Mode == "hosted" && !cfg.HostedOptIn || p.ID == "" || len(p.ID) > 128 || !validLimits(p.Limits) || p.AbandonedUploadSeconds <= 0 || p.AbandonedUploadSeconds > 365*86400 || p.BackupSeconds <= 0 || p.BackupSeconds > 365*86400 || p.DeletionRecordSeconds <= p.BackupSeconds+p.AbandonedUploadSeconds || p.DeletionRecordSeconds > 10*365*86400 {
 		return ErrInvalid
 	}
 	return nil
@@ -124,26 +128,27 @@ func NewService(ctx context.Context, cfg Config, storage Storage, allowances All
 	if cfg.Mode == "hosted" && allowances == nil {
 		return nil, ErrQuota
 	}
-	catalog, err := openCatalog(ctx, cfg.DatabasePath)
+	catalog := cfg.Catalog
+	if catalog == nil {
+		return nil, ErrAuthorization
+	}
+	service := &Service{config: cfg, storage: storage, catalog: catalog, allowances: allowances, now: time.Now}
+	settings, err := service.command(ctx, CatalogCommand{Operation: "traffic_settings"})
 	if err != nil {
 		return nil, err
 	}
-	service := &Service{config: cfg, storage: storage, catalog: catalog, allowances: allowances, now: time.Now}
-	var window, retention int64
-	if err := catalog.db.QueryRowContext(ctx, "SELECT window_seconds,retention_seconds FROM hosted_traffic_settings WHERE singleton=1").Scan(&window, &retention); err != nil {
-		return nil, errors.Join(err, catalog.Close())
+	service.trafficWindow.Store(settings.Traffic.WindowSeconds)
+	service.trafficRetention.Store(settings.Traffic.RetentionSeconds)
+	if service.trafficWindow.Load() < 60 || service.trafficRetention.Load() < service.trafficWindow.Load() {
+		return nil, ErrIntegrity
 	}
-	service.trafficWindow.Store(window)
-	service.trafficRetention.Store(retention)
 	if cfg.Mode == "hosted" {
 		service.storage = hostedStorage{service: service, storage: storage}
 	}
 	return service, nil
 }
 
-func (s *Service) Close() error { return s.catalog.Close() }
-
-func (s *Service) Backup(ctx context.Context, path string) error { return s.catalog.backup(ctx, path) }
+func (s *Service) Close() error { return nil }
 
 func (s *Service) limits(ctx context.Context) (Limits, error) {
 	l := s.config.Policy.Limits
@@ -170,106 +175,68 @@ func (s *Service) limits(ctx context.Context) (Limits, error) {
 }
 
 func (s *Service) Usage(ctx context.Context) (Usage, error) {
-	var usage Usage
-	err := s.catalog.db.QueryRowContext(ctx, "SELECT coalesce(sum(retained_bytes),0),coalesce(sum(reserved_bytes),0) FROM uploads WHERE organization_id=? AND state!='deleted'", s.config.OrganizationID).Scan(&usage.RetainedBytes, &usage.ReservedBytes)
-	if err != nil || s.config.Mode != "hosted" {
-		return usage, err
-	}
 	now := s.now().UTC()
-	seconds := s.trafficWindow.Load()
-	usage.WindowStart = time.Unix(now.Unix()/seconds*seconds, 0).UTC()
-	usage.ObservedAt = now
-	err = s.catalog.db.QueryRowContext(ctx, "SELECT coalesce(sum(upload_bytes+download_bytes),0),coalesce(sum(requests),0) FROM hosted_traffic WHERE minute >= ?", usage.WindowStart.Unix()).Scan(&usage.RelayBytes, &usage.StorageRequests)
-	return usage, err
+	window := s.trafficWindow.Load()
+	result, err := s.command(ctx, CatalogCommand{Operation: "usage", At: now, Before: time.Unix(now.Unix()/window*window, 0).UTC()})
+	if s.config.Mode != "hosted" {
+		result.Usage.WindowStart = time.Time{}
+		result.Usage.ObservedAt = time.Time{}
+		result.Usage.RelayBytes = 0
+		result.Usage.StorageRequests = 0
+	}
+	return result.Usage, err
 }
 
 func (s *Service) Reserve(ctx context.Context, r Reservation) (Upload, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if r.ServiceID != s.config.ServiceID || r.Mode != s.config.Mode || r.HostedOptIn != s.config.HostedOptIn {
+	if r.ServiceID != s.config.ServiceID || r.Mode != s.config.Mode || r.HostedOptIn != s.config.HostedOptIn || r.OrganizationID != s.config.OrganizationID || r.ProjectID != s.config.ProjectID {
 		return Upload{}, ErrDenied
 	}
-	if r.Validate() != nil || r.OrganizationID != s.config.OrganizationID || r.Key == "" || len(r.Key) > 128 || !slices.Contains([]string{"log", "diff", "screenshot", "video"}, r.Kind) || r.Bytes <= 0 || r.Bytes > MaxArtifactBytes {
+	if r.Validate() != nil || r.Key == "" || len(r.Key) > 128 || !slices.Contains([]string{"log", "diff", "screenshot", "video"}, r.Kind) || r.Bytes <= 0 || r.Bytes > MaxArtifactBytes {
 		return Upload{}, ErrInvalid
 	}
-	raw, err := json.Marshal(r)
-	if err != nil {
-		return Upload{}, err
-	}
-	var id, hash string
-	err = s.catalog.db.QueryRowContext(ctx, "SELECT id,request_hash FROM uploads WHERE organization_id=? AND project_id=? AND idempotency_key=?", r.OrganizationID, r.ProjectID, r.Key).Scan(&id, &hash)
+	existing, err := s.command(ctx, CatalogCommand{Operation: "upload_by_key", Key: r.Key})
 	if err == nil {
-		if hash != Digest(raw) {
+		if existing.Upload.Reservation != r {
 			return Upload{}, ErrConflict
 		}
-		return s.Upload(ctx, id)
+		return existing.Upload, nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if !errors.Is(err, ErrMissing) {
 		return Upload{}, err
 	}
-	l, err := s.limits(ctx)
+	limits, err := s.limits(ctx)
 	if err != nil {
 		return Upload{}, err
 	}
-	u, err := s.Usage(ctx)
+	usage, err := s.Usage(ctx)
 	if err != nil {
 		return Upload{}, err
 	}
-	if r.Bytes > l.ArtifactBytes || r.Bytes > l.ReservedBytes-u.ReservedBytes || r.Bytes > l.RetainedBytes-u.RetainedBytes-u.ReservedBytes {
+	if r.Bytes > limits.ArtifactBytes || r.Bytes > limits.ReservedBytes-usage.ReservedBytes || r.Bytes > limits.RetainedBytes-usage.RetainedBytes-usage.ReservedBytes {
 		return Upload{}, ErrQuota
 	}
-	if s.config.Mode == "hosted" && (r.Bytes > (l.RelayBytes-u.RelayBytes)/2-u.ReservedBytes) {
+	if s.config.Mode == "hosted" && r.Bytes > (limits.RelayBytes-usage.RelayBytes)/2-usage.ReservedBytes {
 		return Upload{}, ErrQuota
 	}
 	now := s.now().UTC().Truncate(time.Second)
-	upload := Upload{PartLimit: l.UploadBytes, ArtifactID: NewID("artifact"), Reservation: r, State: "uploading", CreatedAt: now, Deadline: now.Add(time.Duration(s.config.Policy.AbandonedUploadSeconds) * time.Second), ExpiresAt: now.Add(time.Duration(l.RetentionSeconds) * time.Second)}
-	_, err = s.catalog.db.ExecContext(ctx, "INSERT INTO uploads(id,organization_id,project_id,idempotency_key,request_hash,request_json,state,reserved_bytes,created_at,upload_deadline,expires_at,admitted_upload_bytes) VALUES(?,?,?,?,?,?,'uploading',?,?,?,?,?)", upload.ArtifactID, r.OrganizationID, r.ProjectID, r.Key, Digest(raw), raw, r.Bytes, now.Unix(), upload.Deadline.Unix(), upload.ExpiresAt.Unix(), l.UploadBytes)
-	return upload, err
-}
-
-func (s *Service) loadUpload(ctx context.Context, id string) (Upload, error) {
-	var u Upload
-	var raw []byte
-	var created, deadline, expires int64
-	err := s.catalog.db.QueryRowContext(ctx, "SELECT request_json,state,created_at,upload_deadline,expires_at,retained_bytes,admitted_upload_bytes FROM uploads WHERE id=?", id).Scan(&raw, &u.State, &created, &deadline, &expires, &u.RetainedBytes, &u.PartLimit)
-	if errors.Is(err, sql.ErrNoRows) {
-		return u, ErrMissing
-	}
-	if err != nil {
-		return u, err
-	}
-	if err := json.Unmarshal(raw, &u.Reservation); err != nil {
-		return u, err
-	}
-	if u.ServiceID != s.config.ServiceID || u.Mode != s.config.Mode || u.HostedOptIn != s.config.HostedOptIn {
-		return u, ErrDenied
-	}
-	u.ArtifactID = id
-	u.CreatedAt, u.Deadline, u.ExpiresAt = time.Unix(created, 0).UTC(), time.Unix(deadline, 0).UTC(), time.Unix(expires, 0).UTC()
-	return u, nil
+	upload := Upload{Reservation: r, ArtifactID: NewID("artifact"), PartLimit: limits.UploadBytes, State: "uploading", ReservedBytes: r.Bytes, CreatedAt: now, Deadline: now.Add(time.Duration(s.config.Policy.AbandonedUploadSeconds) * time.Second), ExpiresAt: now.Add(time.Duration(limits.RetentionSeconds) * time.Second)}
+	result, err := s.command(ctx, CatalogCommand{Operation: "reserve", Upload: upload, At: now})
+	return result.Upload, err
 }
 
 func (s *Service) Upload(ctx context.Context, id string) (Upload, error) {
-	u, err := s.loadUpload(ctx, id)
+	result, err := s.command(ctx, CatalogCommand{Operation: "upload", UploadID: id})
 	if err != nil {
-		return u, err
+		return Upload{}, err
 	}
-	if u.State != "deleted" && u.State != "deletion_pending" {
-		if _, err := s.storage.Get(ctx, id+"/deleted", "", 128); err == nil {
-			if _, err := s.catalog.db.ExecContext(ctx, "UPDATE uploads SET state='deletion_pending' WHERE id=? AND state!='deleted'", id); err != nil {
-				return u, err
-			}
-			u.State = "deletion_pending"
-		} else if !errors.Is(err, ErrMissing) {
-			return u, err
-		}
+	u := result.Upload
+	if u.ServiceID != s.config.ServiceID || u.OrganizationID != s.config.OrganizationID || u.ProjectID != s.config.ProjectID || u.Mode != s.config.Mode || u.HostedOptIn != s.config.HostedOptIn {
+		return Upload{}, ErrDenied
 	}
 	return u, nil
 }
 
 func (s *Service) Append(ctx context.Context, id string, p Part) (Object, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	u, err := s.Upload(ctx, id)
 	if err != nil {
 		return Object{}, err
@@ -293,63 +260,64 @@ func (s *Service) Append(ctx context.Context, id string, p Part) (Object, error)
 		return Object{}, err
 	}
 	obj := Object{ID: NewID("object"), MediaType: p.MediaType, Size: int64(len(p.Data)), SHA256: p.SHA256, Path: p.Path, Side: p.Side, Sequence: p.Sequence}
-	var existing []byte
-	var version string
-	var verified int
-	err = s.catalog.db.QueryRowContext(ctx, "SELECT descriptor_json,storage_version,verified FROM objects WHERE upload_id=? AND sequence=?", id, p.Sequence).Scan(&existing, &version, &verified)
-	if err == nil {
-		var previous Object
-		if err := json.Unmarshal(existing, &previous); err != nil {
-			return Object{}, err
+	result, err := s.command(ctx, CatalogCommand{Operation: "objects", UploadID: id, Limit: MaxObjects})
+	if err != nil {
+		return Object{}, err
+	}
+	var pending *CatalogObject
+	var total int64
+	count := 0
+	for _, stored := range result.Objects {
+		if stored.Discarded {
+			continue
 		}
-		obj.ID, obj.Offset = previous.ID, previous.Offset
-		if obj != previous {
+		total += stored.Size
+		if stored.Verified {
+			count++
+		}
+		if stored.Sequence != p.Sequence {
+			continue
+		}
+		obj.ID, obj.Offset = stored.ID, stored.Offset
+		if obj != stored.Object {
 			return Object{}, ErrConflict
 		}
-		if verified == 1 {
+		if stored.Verified {
 			if u.Kind == "log" && u.State == "uploading" {
-				var count int
-				if err := s.catalog.db.QueryRowContext(ctx, "SELECT coalesce(max(json_extract(body,'$.objects[#-1].sequence')),-1) FROM manifests WHERE upload_id=?", id).Scan(&count); err != nil {
-					return Object{}, err
-				}
-				if count < p.Sequence {
+				latest, err := s.command(ctx, CatalogCommand{Operation: "manifest", UploadID: id, Revision: u.ManifestRevision})
+				if errors.Is(err, ErrMissing) || err == nil && latest.Manifest.Objects <= p.Sequence {
 					if _, err := s.seal(ctx, id, "partial", nil); err != nil {
 						return Object{}, err
 					}
+				} else if err != nil {
+					return Object{}, err
 				}
 			}
 			return obj, nil
 		}
-	} else if errors.Is(err, sql.ErrNoRows) {
-		if u.State != "uploading" {
+		copy := stored
+		pending = &copy
+	}
+	if u.State != "uploading" {
+		return Object{}, ErrConflict
+	}
+	if !s.now().Before(u.Deadline) {
+		return Object{}, ErrExpired
+	}
+	if int64(len(p.Data)) > u.PartLimit {
+		return Object{}, ErrQuota
+	}
+	if pending == nil {
+		if count != p.Sequence || len(result.Objects) != count {
 			return Object{}, ErrConflict
-		}
-		if !s.now().Before(u.Deadline) {
-			return Object{}, ErrExpired
-		}
-		partLimit := u.PartLimit
-		if partLimit == 0 {
-			partLimit = s.config.Policy.Limits.UploadBytes
-		}
-		if int64(len(p.Data)) > partLimit {
-			return Object{}, ErrQuota
-		}
-		var count int
-		if err := s.catalog.db.QueryRowContext(ctx, "SELECT count(*) FROM objects WHERE upload_id=? AND verified=1", id).Scan(&count); err != nil {
-			return Object{}, err
-		}
-		if count != p.Sequence {
-			return Object{}, ErrConflict
-		}
-		var total int64
-		objects, err := s.objects(ctx, id)
-		if err != nil {
-			return Object{}, err
-		}
-		for _, o := range objects {
-			total += o.Size
 		}
 		obj.Offset = total
+		objects := make([]Object, 0, len(result.Objects)+1)
+		for _, stored := range result.Objects {
+			if !stored.Discarded {
+				objects = append(objects, stored.Object)
+			}
+		}
 		descriptors, err := json.Marshal(append(objects, obj))
 		if err != nil {
 			return Object{}, err
@@ -361,27 +329,17 @@ func (s *Service) Append(ctx context.Context, id string, p Part) (Object, error)
 		if u.Kind == "log" {
 			headroom *= 2
 		}
-		if obj.Size > u.Bytes-u.RetainedBytes-headroom {
+		if obj.Size > u.Bytes-u.RetainedBytes-headroom || obj.Size > u.Bytes-total {
 			return Object{}, ErrQuota
 		}
-		raw, err := json.Marshal(obj)
+		stored, err := s.command(ctx, CatalogCommand{Operation: "put_object", UploadID: id, Object: CatalogObject{Object: obj}, At: s.now().UTC()})
 		if err != nil {
 			return Object{}, err
 		}
-		if _, err := s.catalog.db.ExecContext(ctx, "INSERT INTO objects(upload_id,sequence,id,descriptor_json) VALUES(?,?,?,?)", id, p.Sequence, obj.ID, raw); err != nil {
-			return Object{}, err
-		}
-	} else {
-		return Object{}, err
+		obj = stored.Object.Object
 	}
-	if u.State != "uploading" {
-		return Object{}, ErrConflict
-	}
-	if !s.now().Before(u.Deadline) {
-		return Object{}, ErrExpired
-	}
-	key := id + "/" + obj.ID
-	version, err = s.storage.Put(ctx, key, p.Data)
+	key := s.objectKey(id, obj.ID)
+	version, err := s.storage.Put(ctx, key, p.Data)
 	if err != nil && !errors.Is(err, ErrConflict) {
 		return Object{}, err
 	}
@@ -392,18 +350,10 @@ func (s *Service) Append(ctx context.Context, id string, p Part) (Object, error)
 	if int64(len(read)) != obj.Size || Digest(read) != obj.SHA256 {
 		return Object{}, ErrIntegrity
 	}
-	tx, err := s.catalog.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Object{}, err
+	if version == "" {
+		version = "null"
 	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "UPDATE objects SET storage_version=?,verified=1 WHERE id=?", version, obj.ID); err != nil {
-		return Object{}, err
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE uploads SET retained_bytes=retained_bytes+?,reserved_bytes=reserved_bytes-? WHERE id=?", obj.Size, obj.Size, id); err != nil {
-		return Object{}, err
-	}
-	if err := tx.Commit(); err != nil {
+	if _, err := s.command(ctx, CatalogCommand{Operation: "verify_object", UploadID: id, Object: CatalogObject{Object: obj, StorageVersion: version}, At: s.now().UTC()}); err != nil {
 		return Object{}, err
 	}
 	if u.Kind == "log" {
@@ -415,29 +365,20 @@ func (s *Service) Append(ctx context.Context, id string, p Part) (Object, error)
 }
 
 func (s *Service) objects(ctx context.Context, id string) ([]Object, error) {
-	rows, err := s.catalog.db.QueryContext(ctx, "SELECT descriptor_json FROM objects WHERE upload_id=? AND verified=1 ORDER BY sequence", id)
+	result, err := s.command(ctx, CatalogCommand{Operation: "objects", UploadID: id, Limit: MaxObjects})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	objects := []Object{}
-	for rows.Next() {
-		var raw []byte
-		var obj Object
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
+	for _, stored := range result.Objects {
+		if stored.Verified && !stored.Discarded {
+			objects = append(objects, stored.Object)
 		}
-		if err := json.Unmarshal(raw, &obj); err != nil {
-			return nil, err
-		}
-		objects = append(objects, obj)
 	}
-	return objects, rows.Err()
+	return objects, nil
 }
 
 func (s *Service) Finalize(ctx context.Context, id, state string, capture *Capture) (Reference, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if state != "complete" && state != "interrupted" {
 		return Reference{}, ErrInvalid
 	}
@@ -476,23 +417,26 @@ func (s *Service) seal(ctx context.Context, id, state string, capture *Capture) 
 	if err != nil {
 		return Reference{}, err
 	}
-	var pending int
-	if err := s.catalog.db.QueryRowContext(ctx, "SELECT count(*) FROM objects WHERE upload_id=? AND verified=0", id).Scan(&pending); err != nil {
+	result, err := s.command(ctx, CatalogCommand{Operation: "objects", UploadID: id, Limit: MaxObjects})
+	if err != nil {
 		return Reference{}, err
 	}
-	if pending != 0 && state == "complete" {
-		return Reference{}, ErrConflict
-	}
-	if pending != 0 && state == "interrupted" {
-		if err := s.discardPending(ctx, id); err != nil {
-			return Reference{}, err
+	for _, stored := range result.Objects {
+		if stored.Verified || stored.Discarded {
+			continue
+		}
+		if state == "complete" {
+			return Reference{}, ErrConflict
+		}
+		if state == "interrupted" {
+			if err := s.discardPending(ctx, id); err != nil {
+				return Reference{}, err
+			}
+			break
 		}
 	}
-	var revision int64
-	if err := s.catalog.db.QueryRowContext(ctx, "SELECT coalesce(max(revision),0)+1 FROM manifests WHERE upload_id=?", id).Scan(&revision); err != nil {
-		return Reference{}, err
-	}
-	m := Manifest{SchemaVersion: 1, Scope: u.Scope, ArtifactID: id, ManifestID: NewID("manifest"), Revision: revision, Kind: u.Kind, State: state, CreatedAt: u.CreatedAt, ExpiresAt: u.ExpiresAt, RetentionPolicyID: s.config.Policy.ID, Objects: objects, Capture: capture}
+	revision := u.ManifestRevision + 1
+	m := Manifest{SchemaVersion: 1, Scope: u.Scope, ArtifactID: id, ManifestID: "manifest_" + Digest([]byte(id + "/" + strconv.FormatInt(revision, 10)))[:32], Revision: revision, Kind: u.Kind, State: state, CreatedAt: u.CreatedAt, ExpiresAt: u.ExpiresAt, RetentionPolicyID: s.config.Policy.ID, Objects: objects, Capture: capture}
 	for _, obj := range objects {
 		m.TotalBytes += obj.Size
 	}
@@ -507,29 +451,20 @@ func (s *Service) seal(ctx context.Context, id, state string, capture *Capture) 
 		return Reference{}, ErrQuota
 	}
 	ref := Reference{SchemaVersion: 1, Scope: m.Scope, ServiceID: s.config.ServiceID, ArtifactID: id, ManifestID: m.ManifestID, Revision: revision, SHA256: Digest(raw), Kind: m.Kind, State: state, Availability: "available", Bytes: m.TotalBytes, Objects: len(objects), ExpiresAt: m.ExpiresAt, ObservedAt: s.now().UTC()}
-	encoded, err := json.Marshal(ref)
+	key := s.objectKey(id, "manifests/"+strconv.FormatInt(revision, 10))
+	version, err := s.storage.Put(ctx, key, raw)
+	if err != nil && !errors.Is(err, ErrConflict) {
+		return Reference{}, err
+	}
+	read, err := s.storage.Get(ctx, key, version, MaxManifestBytes)
 	if err != nil {
 		return Reference{}, err
 	}
-	tx, err := s.catalog.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Reference{}, err
+	if Digest(read) != ref.SHA256 {
+		return Reference{}, ErrConflict
 	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "INSERT INTO manifests(upload_id,revision,id,body,digest,reference_json) VALUES(?,?,?,?,?,?)", id, revision, m.ManifestID, raw, ref.SHA256, encoded); err != nil {
-		return Reference{}, err
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO outbox(manifest_id) VALUES(?)", m.ManifestID); err != nil {
-		return Reference{}, err
-	}
-	newState := u.State
-	if state != "partial" {
-		newState = state
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE uploads SET state=?,retained_bytes=retained_bytes+?,reserved_bytes=CASE WHEN ?='uploading' THEN reserved_bytes-? ELSE 0 END WHERE id=?", newState, len(raw), newState, len(raw), id); err != nil {
-		return Reference{}, err
-	}
-	return ref, tx.Commit()
+	committed, err := s.command(ctx, CatalogCommand{Operation: "commit", UploadID: id, Manifest: CatalogManifest{Reference: ref, BodyKey: key, BodyBytes: int64(len(raw)), CreatedAt: u.CreatedAt, RetentionPolicyID: m.RetentionPolicyID, Capture: capture}, At: s.now().UTC()})
+	return committed.Manifest.Reference, err
 }
 
 func (s *Service) Manifest(ctx context.Context, id string, revision int64) ([]byte, Reference, error) {
@@ -543,22 +478,22 @@ func (s *Service) Manifest(ctx context.Context, id string, revision int64) ([]by
 	if u.State == "deleted" || u.State == "deletion_pending" {
 		return nil, Reference{}, ErrMissing
 	}
-	var body, raw []byte
-	err = s.catalog.db.QueryRowContext(ctx, "SELECT body,reference_json FROM manifests WHERE upload_id=? AND (?=0 OR revision=?) ORDER BY revision DESC LIMIT 1", id, revision, revision).Scan(&body, &raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, Reference{}, ErrMissing
+	if revision == 0 {
+		revision = u.ManifestRevision
 	}
+	result, err := s.command(ctx, CatalogCommand{Operation: "manifest", UploadID: id, Revision: revision})
 	if err != nil {
 		return nil, Reference{}, err
 	}
-	var ref Reference
-	if err := json.Unmarshal(raw, &ref); err != nil {
-		return nil, ref, err
+	manifest := result.Manifest
+	body, err := s.storage.Get(ctx, manifest.BodyKey, "", MaxManifestBytes)
+	if err != nil {
+		return nil, manifest.Reference, err
 	}
-	if Digest(body) != ref.SHA256 {
-		return nil, ref, ErrIntegrity
+	if int64(len(body)) != manifest.BodyBytes || Digest(body) != manifest.SHA256 {
+		return nil, manifest.Reference, ErrIntegrity
 	}
-	return body, ref, nil
+	return body, manifest.Reference, nil
 }
 
 func (s *Service) ReadObject(ctx context.Context, id string, revision int64, objectID string) (Object, []byte, error) {
@@ -574,11 +509,21 @@ func (s *Service) ReadObject(ctx context.Context, id string, revision int64, obj
 		if obj.ID != objectID {
 			continue
 		}
-		var version string
-		if err := s.catalog.db.QueryRowContext(ctx, "SELECT storage_version FROM objects WHERE upload_id=? AND id=? AND verified=1", id, objectID).Scan(&version); err != nil {
+		stored, err := s.command(ctx, CatalogCommand{Operation: "objects", UploadID: id, Limit: MaxObjects})
+		if err != nil {
+			return obj, nil, err
+		}
+		version := ""
+		for _, entry := range stored.Objects {
+			if entry.ID == objectID && entry.Verified {
+				version = entry.StorageVersion
+				break
+			}
+		}
+		if version == "" {
 			return obj, nil, ErrMissing
 		}
-		data, err := s.storage.Get(ctx, id+"/"+objectID, version, obj.Size)
+		data, err := s.storage.Get(ctx, s.objectKey(id, objectID), version, obj.Size)
 		if err != nil {
 			return obj, nil, err
 		}
@@ -588,4 +533,8 @@ func (s *Service) ReadObject(ctx context.Context, id string, revision int64, obj
 		return obj, data, nil
 	}
 	return Object{}, nil, ErrMissing
+}
+
+func (s *Service) objectKey(id, suffix string) string {
+	return s.config.OrganizationID + "/" + s.config.ProjectID + "/" + s.config.ServiceID + "/" + id + "/" + suffix
 }

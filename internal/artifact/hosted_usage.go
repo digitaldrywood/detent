@@ -32,20 +32,8 @@ func (m hostedStorage) Delete(ctx context.Context, key, version string) error {
 func (s *Service) recordTraffic(ctx context.Context, upload, download, requests int64) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
-	tx, err := s.catalog.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	now := s.now().Unix()
-
-	if _, err := tx.ExecContext(ctx, "DELETE FROM hosted_traffic WHERE minute < ?", now-s.trafficRetention.Load()); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO hosted_traffic(minute,upload_bytes,download_bytes,requests) VALUES(?,?,?,?) ON CONFLICT(minute) DO UPDATE SET upload_bytes=upload_bytes+excluded.upload_bytes,download_bytes=download_bytes+excluded.download_bytes,requests=requests+excluded.requests`, now/60*60, upload, download, requests); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err := s.command(ctx, CatalogCommand{Operation: "traffic", At: s.now().UTC().Truncate(time.Minute), Traffic: CatalogTraffic{ID: NewID("traffic"), UploadBytes: upload, DownloadBytes: download, Requests: requests}})
+	return err
 }
 
 func (h *RemoteHub) Limits(ctx context.Context, organization string) (Limits, error) {
@@ -91,7 +79,7 @@ func (s *Service) configureTraffic(ctx context.Context, limits Limits) error {
 	if s.trafficWindow.Load() == limits.WindowSeconds && s.trafficRetention.Load() == limits.TelemetrySeconds {
 		return nil
 	}
-	if _, err := s.catalog.db.ExecContext(ctx, "UPDATE hosted_traffic_settings SET window_seconds=?,retention_seconds=? WHERE singleton=1", limits.WindowSeconds, limits.TelemetrySeconds); err != nil {
+	if _, err := s.command(ctx, CatalogCommand{Operation: "set_traffic_settings", Traffic: CatalogTraffic{WindowSeconds: limits.WindowSeconds, RetentionSeconds: limits.TelemetrySeconds}}); err != nil {
 		return err
 	}
 	s.trafficWindow.Store(limits.WindowSeconds)

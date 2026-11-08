@@ -106,10 +106,6 @@ func TestHTTPArtifactAccessWithoutRunners(t *testing.T) {
 }
 
 func TestHTTPFailureAndDecodeContracts(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite catalog integration")
-	}
-
 	t.Parallel()
 	s, _ := testService(t)
 	handler, err := NewHTTPServer(s, &testAuthorizer{})
@@ -383,10 +379,6 @@ func TestRemoteHubAuthorizationSurvivesServerCleanup(t *testing.T) {
 }
 
 func TestArtifactServeShutdown(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite catalog integration")
-	}
-
 	t.Parallel()
 	s, _ := testService(t)
 	handler, err := NewHTTPServer(s, &testAuthorizer{})

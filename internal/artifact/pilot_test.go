@@ -9,17 +9,13 @@ import (
 )
 
 func TestPilotArtifactTraffic(t *testing.T) {
-	if testing.Short() {
-		t.Skip("SQLite catalog integration")
-	}
-
 	t.Parallel()
 	for _, size := range []int{1024, 64 << 10} {
 		t.Run(fmt.Sprintf("bytes_%d", size), func(t *testing.T) {
 			t.Parallel()
 			config := testConfig(t)
 			config.Mode, config.HostedOptIn = "hosted", true
-			service, err := NewService(t.Context(), config, &memoryStorage{data: map[string][]byte{}}, &testAllowances{limits: config.Policy.Limits})
+			service, err := newTestService(t.Context(), config, &memoryStorage{data: map[string][]byte{}}, &testAllowances{limits: config.Policy.Limits})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -45,8 +41,8 @@ func TestPilotArtifactTraffic(t *testing.T) {
 				t.Fatal(err)
 			}
 			after, err := service.Usage(t.Context())
-			if err != nil || after.RelayBytes != before.RelayBytes || after.StorageRequests-before.StorageRequests != 1 {
-				t.Fatalf("retry must only probe the deletion marker: %+v %+v %v", before, after, err)
+			if err != nil || after.RelayBytes != before.RelayBytes || after.StorageRequests != before.StorageRequests {
+				t.Fatalf("verified replay performed storage requests: %+v %+v %v", before, after, err)
 			}
 			ref, err := service.Finalize(t.Context(), upload.ArtifactID, "complete", nil)
 			if err != nil || ref.State != "complete" {

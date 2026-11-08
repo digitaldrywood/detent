@@ -113,7 +113,7 @@ func (h *HTTPServer) upload(c echo.Context) (Upload, error) {
 	if err != nil {
 		return Upload{}, err
 	}
-	u, err := h.service.loadUpload(c.Request().Context(), c.Param("artifact"))
+	u, err := h.service.Upload(c.Request().Context(), c.Param("artifact"))
 	if err != nil {
 		return Upload{}, ErrDenied
 	}
@@ -167,11 +167,11 @@ func (h *HTTPServer) read(c echo.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	var projectID string
-	if err := h.service.catalog.db.QueryRowContext(c.Request().Context(), "SELECT project_id FROM uploads WHERE id=?", c.Param("artifact")).Scan(&projectID); err != nil {
+	upload, err := h.service.Upload(c.Request().Context(), c.Param("artifact"))
+	if err != nil {
 		return 0, ErrDenied
 	}
-	if err := h.authorizer.Read(c.Request().Context(), ReadAuthorization{ProjectID: projectID, Token: token, ArtifactID: c.Param("artifact"), Revision: revision}); err != nil {
+	if err := h.authorizer.Read(c.Request().Context(), ReadAuthorization{ProjectID: upload.ProjectID, Token: token, ArtifactID: c.Param("artifact"), Revision: revision}); err != nil {
 		return 0, err
 	}
 	return revision, nil
