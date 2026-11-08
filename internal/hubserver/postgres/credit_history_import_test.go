@@ -1,14 +1,11 @@
 package postgres_test
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
@@ -41,11 +38,36 @@ func TestCreditHistoryImportPreservesTenantLedgerAndAdvancesSequence(t *testing.
 			if err != nil {
 				t.Fatalf("import %s replay %d: %v", organization, replay, err)
 			}
-			if result != (postgres.CreditHistoryImportResult{Accounts: 1, Packs: 1, Transactions: 1}) {
+			if result != (postgres.CreditHistoryImportResult{Accounts: 2, Packs: 2, Transactions: 2}) {
 				t.Fatalf("import %s replay %d result=%+v", organization, replay, result)
 			}
 		}
+		if err := repository.Close(); err != nil {
+			t.Fatal(err)
+		}
+		repository, _ = repositoryFor(t, admin, smallPool())
 		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			second, err := reader.BillingCreditAccount(t.Context(), "test")
+			if err != nil {
+				return err
+			}
+			if second.BalanceMicros != 900 || second.PriceID != "price_second" {
+				return fmt.Errorf("second credit account=%+v", second)
+			}
+			secondPack, err := reader.CreditPack(t.Context(), "price_second", "test")
+			if err != nil {
+				return err
+			}
+			if secondPack.USDCents != 48 {
+				return fmt.Errorf("second credit pack=%+v", secondPack)
+			}
+			secondTransaction, err := reader.BillingCreditTransactionBySource(t.Context(), "test", "legacy_same_source")
+			if err != nil {
+				return err
+			}
+			if secondTransaction.ID != 44 || secondTransaction.AmountMicros != 80 || secondTransaction.IncludedAmountMicros != 6 || secondTransaction.ReasonReference.Key == "" {
+				return fmt.Errorf("second credit transaction=%+v", secondTransaction)
+			}
 			account, err := reader.BillingCreditAccount(t.Context(), "live")
 			if err != nil {
 				return err
@@ -99,7 +121,7 @@ func TestCreditHistoryImportPreservesTenantLedgerAndAdvancesSequence(t *testing.
 			if err != nil {
 				return err
 			}
-			if row.ID <= 43 || row.AmountMicros != 7 {
+			if row.ID <= 44 || row.AmountMicros != 7 {
 				return fmt.Errorf("post-import credit transaction=%+v", row)
 			}
 			account, err := reader.BillingCreditAccount(t.Context(), "live")
@@ -133,17 +155,13 @@ func TestCreditHistoryImportRejectsUnsupportedPeriodsAndPurchasesBeforeWrites(t 
 		t.Run(test.name, func(t *testing.T) {
 			organization := tracker.OrganizationID("org_credit_unsupported_" + test.name)
 			seedTenantAccess(t, repository, organization)
-			copy := newBillingImportCopy(t, catalog, "ai_credit_accounts", "ai_credit_packs", "ai_credit_transactions", "ai_credit_periods", "ai_credit_purchases")
-			seedCreditHistorySource(t, copy.db, organization, "")
-			var insertErr error
+			copy := newNeutralBillingFixture(t, organization, "ai_credit_accounts", "ai_credit_packs", "ai_credit_transactions", "ai_credit_periods", "ai_credit_purchases")
+			seedCreditHistorySource(t, copy, organization, "")
 			switch test.table {
 			case "ai_credit_periods":
-				_, insertErr = copy.db.ExecContext(t.Context(), `INSERT INTO ai_credit_periods(organization_id,mode,period_start,period_end,allowance_micros,used_micros) VALUES(?,?,?,?,?,?)`, organization, "live", int64(1), int64(2), int64(100), int64(0))
+				copy.add(t, "ai_credit_periods", map[string]any{"organization_id": organization, "mode": "live", "period_start": int64(1), "period_end": int64(2), "allowance_micros": int64(100), "used_micros": int64(0)})
 			case "ai_credit_purchases":
-				_, insertErr = copy.db.ExecContext(t.Context(), `INSERT INTO ai_credit_purchases(purchase_key,organization_id,mode,price_id,usd_cents,automatic,payment_method,state,payment_id,session_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, "purchase_example", organization, "live", "price_example", int64(24), int64(0), "method_example", "pending", "", "{}", historyAt().UnixMicro())
-			}
-			if insertErr != nil {
-				t.Fatal(insertErr)
+				copy.add(t, "ai_credit_purchases", map[string]any{"purchase_key": "purchase_example", "organization_id": organization, "mode": "live", "price_id": "price_example", "usd_cents": int64(24), "automatic": int64(0), "payment_method": "method_example", "state": "pending", "payment_id": "", "session_json": "{}", "created_at": historyAt().UnixMicro()})
 			}
 			path := copy.seal(t)
 			objects := newHistoryObjects()
@@ -170,33 +188,27 @@ func TestCreditHistoryImportRejectsUnsupportedPeriodsAndPurchasesBeforeWrites(t 
 
 func creditHistorySourceCopy(t *testing.T, catalog storagecatalog.Catalog, organization tracker.OrganizationID) string {
 	t.Helper()
-	copy := newBillingImportCopy(t, catalog, "ai_credit_accounts", "ai_credit_packs", "ai_credit_transactions", "ai_credit_periods", "ai_credit_purchases")
-	seedCreditHistorySource(t, copy.db, organization, "legacy credit reason")
+	copy := newNeutralBillingFixture(t, organization, "ai_credit_accounts", "ai_credit_packs", "ai_credit_transactions", "ai_credit_periods", "ai_credit_purchases")
+	seedCreditHistorySource(t, copy, organization, "legacy credit reason")
 	return copy.seal(t)
 }
 
-func seedCreditHistorySource(t *testing.T, db *sql.DB, organization tracker.OrganizationID, reason string) {
+func seedCreditHistorySource(t *testing.T, fixture *neutralBillingFixture, organization tracker.OrganizationID, reason string) {
 	t.Helper()
-	for _, statement := range []struct {
-		query string
-		args  []any
-	}{
-		{query: `INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros,auto_enabled,threshold_cents,price_id,payment_method,failure) VALUES(?,?,?,?,?,?,?,?)`, args: []any{organization, "live", int64(650), int64(1), int64(24), "price_example", "method_example", ""}},
-		{query: `INSERT INTO ai_credit_packs(price_id,mode,usd_cents) VALUES(?,?,?)`, args: []any{"price_example", "live", int64(24)}},
-		{query: `INSERT INTO ai_credit_transactions(id,organization_id,mode,source,amount_micros,included_amount_micros,kind,actor,reason,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, args: []any{int64(43), organization, "live", "legacy_same_source", int64(70), int64(5), "complimentary", "operator_example", reason, historyAt().UnixMicro()}},
-	} {
-		if _, err := db.ExecContext(t.Context(), statement.query, statement.args...); err != nil {
-			t.Fatal(err)
-		}
-	}
+	fixture.add(t, "ai_credit_accounts", map[string]any{"organization_id": organization, "mode": "live", "balance_micros": int64(650), "auto_enabled": int64(1), "threshold_cents": int64(24), "price_id": "price_example", "payment_method": "method_example", "failure": ""})
+	fixture.add(t, "ai_credit_packs", map[string]any{"price_id": "price_example", "mode": "live", "usd_cents": int64(24)})
+	fixture.add(t, "ai_credit_transactions", map[string]any{"id": int64(43), "organization_id": organization, "mode": "live", "source": "legacy_same_source", "amount_micros": int64(70), "included_amount_micros": int64(5), "kind": "complimentary", "actor": "operator_example", "reason": reason, "recorded_at": historyAt().UnixMicro()})
+	fixture.add(t, "ai_credit_accounts", map[string]any{"organization_id": organization, "mode": "test", "balance_micros": int64(900), "auto_enabled": int64(0), "threshold_cents": int64(48), "price_id": "price_second", "payment_method": "method_second", "failure": ""})
+	fixture.add(t, "ai_credit_packs", map[string]any{"price_id": "price_second", "mode": "test", "usd_cents": int64(48)})
+	fixture.add(t, "ai_credit_transactions", map[string]any{"id": int64(44), "organization_id": organization, "mode": "test", "source": "legacy_same_source", "amount_micros": int64(80), "included_amount_micros": int64(6), "kind": "complimentary", "actor": "operator_example", "reason": reason, "recorded_at": historyAt().UnixMicro()})
 }
 
 func creditHistoryImportSource(copyPath string, catalog storagecatalog.Catalog, organization tracker.OrganizationID, objects attachment.DetailStore) postgres.CreditHistoryImportSource {
 	return postgres.CreditHistoryImportSource{
-		CopyPath: copyPath,
-		Catalog:  catalog,
-		Schema:   schemaFromCatalogForTest(catalog),
-		Objects:  objects,
+		BundlePath: copyPath,
+		Catalog:    catalog,
+		Schema:     schemaFromCatalogForTest(catalog),
+		Objects:    objects,
 		Source: storagecatalog.Source{
 			Schema:         "hub_copy",
 			Store:          "hub",

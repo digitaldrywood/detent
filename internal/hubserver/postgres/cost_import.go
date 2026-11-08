@@ -170,16 +170,13 @@ func (r *Repository) ImportCostCopy(ctx context.Context, source CostImportSource
 		source.Schema = schemaFromCatalog(source.Catalog)
 	}
 	source.Source.Schema = "hub_copy"
-	if source.BundlePath != "" {
-		source.Source.Schema = "hub_neutral"
-	}
 	if _, err := source.Catalog.Bind(source.Source, source.Schema); err != nil {
 		return progress, err
 	}
 	organization := tracker.OrganizationID(source.Source.OrganizationID)
 	if source.BundlePath != "" {
 		err := ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) error {
-			source.neutral, source.snapshotID = bundle, bundle.Digest()
+			source.neutral, source.snapshotID = bundle, bundle.Identity().SourceSHA256
 			importer, err := r.newCostImporter(ctx, source)
 			if err != nil {
 				return err

@@ -54,6 +54,10 @@ func TestCoreProjectImportPreservesRevisionsAndRejectsChangedCopy(t *testing.T) 
 			if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM projects WHERE organization_id=$1", org).Scan(&dryRunProjects); err != nil || dryRunProjects != 0 {
 				t.Fatalf("dry run wrote projects=%d: %v", dryRunProjects, err)
 			}
+			historicalChecksum := fmt.Sprintf("%x", sha256.Sum256([]byte("historical source")))
+			if err := repository.PinCoreImportSource(t.Context(), org, historicalChecksum, source.Objects); err != nil {
+				t.Fatal(err)
+			}
 			for range 2 {
 				count, err := repository.ImportCoreProjects(t.Context(), source)
 				if err != nil || count != 2 {
@@ -82,7 +86,7 @@ func TestCoreProjectImportPreservesRevisionsAndRejectsChangedCopy(t *testing.T) 
 				t.Fatal(err)
 			}
 			if err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(reader eventstore.Reader) error {
-				receipt, err := reader.Receipt(t.Context(), "production-import", "neutral-source", "example-source")
+				receipt, err := reader.Receipt(t.Context(), "production-import", "neutral-source", "source")
 				if err != nil {
 					return err
 				}

@@ -30,11 +30,13 @@ const creditHistoryImportPageSize = 100
 var errUnsupportedCreditHistory = errors.New("credit history contains unsupported period or purchase rows")
 
 type CreditHistoryImportSource struct {
-	CopyPath string
-	Catalog  storagecatalog.Catalog
-	Source   storagecatalog.Source
-	Schema   storagecatalog.Schema
-	Objects  attachment.DetailStore
+	BundlePath string
+	neutral    *VerifiedNeutralImport
+	CopyPath   string
+	Catalog    storagecatalog.Catalog
+	Source     storagecatalog.Source
+	Schema     storagecatalog.Schema
+	Objects    attachment.DetailStore
 }
 
 type CreditHistoryImportResult struct {
@@ -49,9 +51,10 @@ type creditHistoryImportTable struct {
 }
 
 type creditHistorySourceRow struct {
-	id    int64
-	cells map[string]storagecatalog.Cell
-	value map[string]storagecatalog.Value
+	position int64
+	id       int64
+	cells    map[string]storagecatalog.Cell
+	value    map[string]storagecatalog.Value
 }
 
 var creditHistoryImportTables = []creditHistoryImportTable{
@@ -62,7 +65,7 @@ var creditHistoryImportTables = []creditHistoryImportTable{
 
 func (r *Repository) ImportCreditHistory(ctx context.Context, source CreditHistoryImportSource) (CreditHistoryImportResult, error) {
 	var result CreditHistoryImportResult
-	if source.CopyPath == "" || source.Objects == nil || source.Source.Store != "hub" || strings.TrimSpace(source.Source.OrganizationID) != source.Source.OrganizationID || source.Source.OrganizationID == "" {
+	if (source.CopyPath == "") == (source.BundlePath == "") || source.Objects == nil || source.Source.Store != "hub" || strings.TrimSpace(source.Source.OrganizationID) != source.Source.OrganizationID || source.Source.OrganizationID == "" {
 		return result, errors.New("invalid credit history import source")
 	}
 	if source.Schema == nil {
@@ -79,32 +82,51 @@ func (r *Repository) ImportCreditHistory(ctx context.Context, source CreditHisto
 	}
 	completed := false
 	snapshotID := ""
-	err = ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, copyHash string) error {
-		snapshotID = copyHash
-		for _, table := range append(slices.Clone(creditHistoryImportTables), creditHistoryImportTable{name: "ai_credit_periods", keys: []string{"organization_id", "mode", "period_start", "period_end"}}, creditHistoryImportTable{name: "ai_credit_purchases", keys: []string{"purchase_key"}}) {
-			if err := validateConversationBillingCopyTable(ctx, tx, source.Catalog, source.Schema, table.name, table.keys); err != nil {
-				return fmt.Errorf("validate %s source: %w", table.name, err)
-			}
-		}
-		for _, table := range []string{"ai_credit_periods", "ai_credit_purchases"} {
-			var count int64
-			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM "`+table+`" WHERE organization_id=?`, organization).Scan(&count); err != nil {
+	if source.BundlePath != "" {
+		err = ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) error {
+			source.neutral = bundle
+			snapshotID = bundle.Identity().SourceSHA256
+			if err := validateNeutralCreditHistory(ctx, source); err != nil {
 				return err
 			}
-			if count != 0 {
-				return errUnsupportedCreditHistory
+			if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
+				return err
 			}
-		}
-		if err := r.PinCoreImportSource(ctx, organization, copyHash, source.Objects); err != nil {
-			return err
-		}
-		var err error
-		completed, result, err = r.beginCreditHistoryImport(ctx, organization, source.Source.Schema, copyHash, catalogDigest)
-		if err != nil || completed {
-			return err
-		}
-		return r.importCreditHistoryCopy(ctx, tx, copyHash, source, organization, &result)
-	})
+			var err error
+			completed, result, err = r.beginCreditHistoryImport(ctx, organization, source.Source.Schema, snapshotID, catalogDigest)
+			if err != nil || completed {
+				return err
+			}
+			return r.importCreditHistoryCopy(ctx, nil, snapshotID, source, organization, &result)
+		})
+	} else {
+		err = ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, copyHash string) error {
+			snapshotID = copyHash
+			for _, table := range append(slices.Clone(creditHistoryImportTables), creditHistoryImportTable{name: "ai_credit_periods", keys: []string{"organization_id", "mode", "period_start", "period_end"}}, creditHistoryImportTable{name: "ai_credit_purchases", keys: []string{"purchase_key"}}) {
+				if err := validateConversationBillingCopyTable(ctx, tx, source.Catalog, source.Schema, table.name, table.keys); err != nil {
+					return fmt.Errorf("validate %s source: %w", table.name, err)
+				}
+			}
+			for _, table := range []string{"ai_credit_periods", "ai_credit_purchases"} {
+				var count int64
+				if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM "`+table+`" WHERE organization_id=?`, organization).Scan(&count); err != nil {
+					return err
+				}
+				if count != 0 {
+					return errUnsupportedCreditHistory
+				}
+			}
+			if err := r.PinCoreImportSource(ctx, organization, copyHash, source.Objects); err != nil {
+				return err
+			}
+			var err error
+			completed, result, err = r.beginCreditHistoryImport(ctx, organization, source.Source.Schema, copyHash, catalogDigest)
+			if err != nil || completed {
+				return err
+			}
+			return r.importCreditHistoryCopy(ctx, tx, copyHash, source, organization, &result)
+		})
+	}
 	if err != nil || completed {
 		return result, err
 	}
@@ -159,7 +181,13 @@ func (r *Repository) importCreditHistoryCopy(ctx context.Context, tx *sql.Tx, co
 	for _, table := range creditHistoryImportTables {
 		var after int64
 		for {
-			page, err := readCreditHistoryPage(ctx, tx, source, binding, table, organization, after)
+			var page []creditHistorySourceRow
+			var err error
+			if source.neutral != nil {
+				page, err = readNeutralCreditHistoryPage(ctx, source, binding, table, after)
+			} else {
+				page, err = readCreditHistoryPage(ctx, tx, source, binding, table, organization, after)
+			}
 			if err != nil {
 				return fmt.Errorf("read %s import page: %w", table.name, err)
 			}
@@ -185,6 +213,9 @@ func (r *Repository) importCreditHistoryCopy(ctx context.Context, tx *sql.Tx, co
 				}
 				*creditHistoryCount(result, table.name)++
 				after = row.id
+				if source.neutral != nil {
+					after = row.position
+				}
 			}
 		}
 	}

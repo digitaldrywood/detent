@@ -84,6 +84,13 @@ func neutralFixtureRow(t *testing.T, table postgres.NeutralImportTable, values m
 	for _, key := range table.Key {
 		row.Key = append(row.Key, string(row.Values[key.Column].Data))
 	}
+	if len(table.Key) == 1 && table.Key[0].Column == "id" && table.Key[0].Kind == "integer" {
+		id, err := strconv.ParseInt(row.Key[0], 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row.SourceRowID = id
+	}
 	return row
 }
 func writeNeutralFixture(t *testing.T, organization tracker.OrganizationID, tables []postgres.NeutralImportTable, records map[string][]postgres.NeutralImportRow) (string, postgres.NeutralImportManifest) {
@@ -176,6 +183,14 @@ func TestNeutralImportBundleVerifiesBeforeReadAndSeeksCompositeKeys(t *testing.T
 			}
 			if got != 205 {
 				t.Fatalf("read %d rows", got)
+			}
+			ordinalPage, err := source.OrdinalPage(t.Context(), table.Name, 99, 3)
+			if err != nil || len(ordinalPage) != 1 || ordinalPage[0].Ordinal != 100 || ordinalPage[0].Key[6] != "100" {
+				t.Fatalf("ordinal boundary page=%+v: %v", ordinalPage, err)
+			}
+			ordinalPage, err = source.OrdinalPage(t.Context(), table.Name, 100, 3)
+			if err != nil || len(ordinalPage) != 3 || ordinalPage[0].Ordinal != 101 || ordinalPage[2].Ordinal != 103 || ordinalPage[0].Key[6] != "101" {
+				t.Fatalf("ordinal continuation=%+v: %v", ordinalPage, err)
 			}
 			key := slices.Clone(records[101].Key)
 			row, err := source.Lookup(t.Context(), table.Name, key)
@@ -300,7 +315,11 @@ func (f *neutralBillingFixture) add(t *testing.T, name string, values map[string
 	t.Helper()
 	for _, table := range f.tables {
 		if table.Name == name {
-			f.records[name] = append(f.records[name], neutralFixtureRow(t, table, values))
+			row := neutralFixtureRow(t, table, values)
+			if row.SourceRowID == 0 {
+				row.SourceRowID = int64(len(f.records[name])) + 1
+			}
+			f.records[name] = append(f.records[name], row)
 			return
 		}
 	}

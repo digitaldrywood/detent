@@ -59,13 +59,16 @@ type NeutralImportPage struct {
 	Last   []string `json:"last"`
 }
 type NeutralImportRow struct {
-	Key    []string                       `json:"key"`
-	Values map[string]storagecatalog.Cell `json:"values"`
+	SourceRowID int64                          `json:"source_row_id,omitempty"`
+	Ordinal     int64                          `json:"-"`
+	Key         []string                       `json:"key"`
+	Values      map[string]storagecatalog.Cell `json:"values"`
 }
 type VerifiedNeutralImport struct {
-	root     *os.Root
-	manifest NeutralImportManifest
-	digest   string
+	pageOffsets map[string]int64
+	root        *os.Root
+	manifest    NeutralImportManifest
+	digest      string
 }
 
 func ReadNeutralImportBundle(ctx context.Context, directory string, organization tracker.OrganizationID, read func(*VerifiedNeutralImport) error) (resultErr error) {
@@ -149,20 +152,38 @@ func (s *VerifiedNeutralImport) Page(ctx context.Context, name string, after []s
 	start := sort.Search(len(table.Pages), func(i int) bool {
 		return len(after) == 0 || compareNeutralImportKeys(table.Key, table.Pages[i].Last, after) > 0
 	})
-	result := make([]NeutralImportRow, 0, limit)
-	for index := start; index < len(table.Pages) && len(result) < limit; index++ {
-		rows, err := s.page(ctx, table, table.Pages[index])
-		if err != nil {
-			return nil, err
-		}
-		first := sort.Search(len(rows), func(i int) bool {
-			return len(after) == 0 || compareNeutralImportKeys(table.Key, rows[i].Key, after) > 0
-		})
-		remaining := limit - len(result)
-		result = append(result, rows[first:min(len(rows), first+remaining)]...)
+	if start == len(table.Pages) {
+		return []NeutralImportRow{}, nil
 	}
-	return result, nil
+	rows, err := s.page(ctx, table, table.Pages[start])
+	if err != nil {
+		return nil, err
+	}
+	first := sort.Search(len(rows), func(i int) bool {
+		return len(after) == 0 || compareNeutralImportKeys(table.Key, rows[i].Key, after) > 0
+	})
+	return rows[first:min(len(rows), first+limit)], nil
 }
+func (s *VerifiedNeutralImport) OrdinalPage(ctx context.Context, name string, after int64, limit int) ([]NeutralImportRow, error) {
+	if after < 0 || limit < 1 || limit > neutralImportPageRows {
+		return nil, ErrNeutralImport
+	}
+	table, err := s.table(name)
+	if err != nil {
+		return nil, err
+	}
+	page := sort.Search(len(table.Pages), func(i int) bool { return s.pageOffsets[table.Pages[i].File]+int64(table.Pages[i].Rows) > after })
+	if page == len(table.Pages) {
+		return []NeutralImportRow{}, nil
+	}
+	rows, err := s.page(ctx, table, table.Pages[page])
+	if err != nil {
+		return nil, err
+	}
+	first := int(after - s.pageOffsets[table.Pages[page].File])
+	return rows[first:min(len(rows), first+limit)], nil
+}
+
 func (s *VerifiedNeutralImport) Lookup(ctx context.Context, name string, key []string) (NeutralImportRow, error) {
 	table, err := s.table(name)
 	if err != nil || !validNeutralImportKey(table.Key, key) {
@@ -188,6 +209,7 @@ func (s *VerifiedNeutralImport) verify(ctx context.Context, organization tracker
 	if s.manifest.Version != 1 || organization == "" || identity.OrganizationID != organization || identity.SourceID == "" || strings.TrimSpace(identity.SourceID) != identity.SourceID || len(identity.SourceID) > 200 || !artifact.ValidHash(identity.SourceSHA256, 64) || identity.SchemaVersion != 1 || len(s.manifest.Tables) == 0 {
 		return ErrNeutralImport
 	}
+	s.pageOffsets = make(map[string]int64)
 	names := make(map[string]bool)
 	files := map[string]bool{"manifest.json": true}
 	for _, table := range s.manifest.Tables {
@@ -208,13 +230,26 @@ func (s *VerifiedNeutralImport) verify(ctx context.Context, organization tracker
 			}
 		}
 		var previous []string
+		var ordinal int64
+		sourceIDs := map[int64]bool{}
 		for _, page := range table.Pages {
 			if page.File == "" || filepath.Base(page.File) != page.File || page.File == "." || files[page.File] || !artifact.ValidHash(page.SHA256, 64) || page.Rows < 1 || page.Rows > neutralImportPageRows || !validNeutralImportKey(table.Key, page.First) || !validNeutralImportKey(table.Key, page.Last) || compareNeutralImportKeys(table.Key, page.First, page.Last) > 0 || previous != nil && compareNeutralImportKeys(table.Key, previous, page.First) >= 0 {
 				return ErrNeutralImport
 			}
 			files[page.File] = true
-			if _, err := s.page(ctx, table, page); err != nil {
+			s.pageOffsets[page.File] = ordinal
+			ordinal += int64(page.Rows)
+			rows, err := s.page(ctx, table, page)
+			if err != nil {
 				return err
+			}
+			for _, row := range rows {
+				if row.SourceRowID > 0 {
+					if sourceIDs[row.SourceRowID] {
+						return ErrNeutralImport
+					}
+					sourceIDs[row.SourceRowID] = true
+				}
 			}
 			previous = page.Last
 		}
@@ -238,6 +273,15 @@ func (s *VerifiedNeutralImport) page(ctx context.Context, table NeutralImportTab
 	}
 	var previous []string
 	for _, row := range rows {
+		if row.SourceRowID < 0 {
+			return nil, ErrNeutralImport
+		}
+		if row.SourceRowID > 0 && len(table.Key) == 1 && table.Key[0].Column == "id" && table.Key[0].Kind == "integer" {
+			id, err := strconv.ParseInt(string(row.Values["id"].Data), 10, 64)
+			if err != nil || id != row.SourceRowID {
+				return nil, ErrNeutralImport
+			}
+		}
 		if !validNeutralImportKey(table.Key, row.Key) || len(row.Values) != len(table.Columns) || previous != nil && compareNeutralImportKeys(table.Key, previous, row.Key) >= 0 {
 			return nil, ErrNeutralImport
 		}
@@ -262,6 +306,9 @@ func (s *VerifiedNeutralImport) page(ctx context.Context, table NeutralImportTab
 			return nil, storagecatalog.ErrOrganization
 		}
 		previous = row.Key
+	}
+	for index := range rows {
+		rows[index].Ordinal = s.pageOffsets[page.File] + int64(index) + 1
 	}
 	if !slices.Equal(rows[0].Key, page.First) || !slices.Equal(rows[len(rows)-1].Key, page.Last) {
 		return nil, ErrNeutralImport

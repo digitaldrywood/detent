@@ -1559,9 +1559,6 @@
     "internal/hubserver/postgres/cost_import.go": {
       "sql_pragma_table": 1
     },
-    "internal/hubserver/postgres/credit_history_import_test.go": {
-      "driver_import": 1
-    },
     "internal/hubserver/postgres/import_copy_validation.go": {
       "sql_pragma_table": 2
     },

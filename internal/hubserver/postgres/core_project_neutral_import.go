@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strconv"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -23,24 +25,28 @@ func (r *Repository) PinVerifiedNeutralImport(ctx context.Context, source *Verif
 	if err != nil {
 		return err
 	}
-	if err := r.PinCoreImportSource(ctx, identity.OrganizationID, source.Digest(), objects); err != nil {
+	if err := r.PinCoreImportSource(ctx, identity.OrganizationID, identity.SourceSHA256, objects); err != nil {
 		return err
 	}
 	manifest, err := json.Marshal(source.manifest)
 	if err != nil {
 		return err
 	}
-	receipt, err := eventstore.NewContent(objects).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: identity.OrganizationID, ActorID: "production-import", Operation: "neutral-source", CommandKey: identity.SourceID, RequestHash: source.Digest()}, manifest)
+	receipt, err := eventstore.NewContent(objects).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: identity.OrganizationID, ActorID: "production-import", Operation: "neutral-source", CommandKey: "source", RequestHash: source.Digest()}, manifest)
 	if err != nil {
 		return err
 	}
-	return r.transaction(ctx, identity.OrganizationID, corestore.Background, false, func(s *session) error {
+	err = r.transaction(ctx, identity.OrganizationID, corestore.Background, false, func(s *session) error {
 		if _, err := s.BindNeutralImportSource(ctx, BindNeutralImportSourceInput{OrganizationID: identity.OrganizationID, SourceID: identity.SourceID, SchemaVersion: int64(identity.SchemaVersion), Checksum: source.Digest(), SchemaDigest: artifact.Digest(schema), VerifiedAt: time.Now().UTC()}); err != nil {
 			return err
 		}
 		_, err := s.PutReceipt(ctx, receipt)
 		return err
 	})
+	if errors.Is(err, corestore.ErrRevisionConflict) {
+		return mutation.ErrConflict
+	}
+	return err
 }
 func (r *Repository) importNeutralCoreProjects(ctx context.Context, source CoreProjectImportSource) (int64, error) {
 	var count int64
