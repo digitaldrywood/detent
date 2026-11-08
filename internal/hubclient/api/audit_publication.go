@@ -23,6 +23,10 @@ func auditPublicationFailure(err error, request tracker.ReviewChange) error {
 	var api *APIError
 	if errors.As(err, &api) && api.Status >= 300 && api.Status <= 599 {
 		diagnostic.Code, diagnostic.HTTPStatus = "http_rejection", api.Status
+		diagnostic.RefusalCode = api.Code
+		if !diagnostic.Valid() {
+			diagnostic.RefusalCode = ""
+		}
 	}
 	return &auditPublicationError{err: err, diagnostic: diagnostic}
 }

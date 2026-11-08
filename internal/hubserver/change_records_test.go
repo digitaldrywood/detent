@@ -22,7 +22,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/gate"
 	hubapi "github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubclient/checkpoint"
+	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
+	"github.com/digitaldrywood/detent/internal/hubclient/nativechange"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -34,11 +38,29 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/runnersession"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
+
+type reviewExecutionHost struct {
+	executioncontract.ExecutionHost
+	client *hubapi.Client
+}
+
+func (h reviewExecutionHost) Transport() *hubapi.Client                                   { return h.client }
+func (reviewExecutionHost) Now() time.Time                                                { return time.Now() }
+func (reviewExecutionHost) LeaseDuration() time.Duration                                  { return time.Hour }
+func (reviewExecutionHost) RemainingExecution(tracker.NativeLease) time.Duration          { return time.Hour }
+func (reviewExecutionHost) ValidateExecutionPolicy(context.Context, string, string) error { return nil }
+func (reviewExecutionHost) ProviderObservations() func() ([]providercapacity.Report, error) {
+	return nil
+}
 
 type failingChangeEventRepository struct {
 	tenantstore.Repository
@@ -745,7 +767,7 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 }
 
 func TestChangeVersionRecordPublishesRunningSource(t *testing.T) {
-	for _, mode := range []string{"current", "default approval", "default revert", "atomic rollback", "concurrent pin", "imported approval", "imported observation", "pinned"} {
+	for _, mode := range []string{"current", "audit", "default approval", "default revert", "atomic rollback", "concurrent pin", "imported approval", "imported observation", "pinned"} {
 		t.Run(mode, func(t *testing.T) {
 			repository, admin := projectRecordPostgresWithAdmin(t, 4)
 			details := &memoryRunDetails{}
@@ -762,11 +784,12 @@ func TestChangeVersionRecordPublishesRunningSource(t *testing.T) {
 func testChangeVersionRecordPublication(t *testing.T, running bool, repository tenantstore.Repository, f hostedSecurityFixture, owner hostedSecurityUser, admin *sql.DB, reviewModes ...string) {
 	t.Helper()
 	service := f.service
-	originalPostgres, originalAccess := service.database.postgres, service.config.AccessRepository
+	originalPostgres, originalAccess, originalTenant := service.database.postgres, service.config.AccessRepository, service.config.TenantRepository
 	service.database.postgres = repository.(*postgres.Repository)
 	service.config.AccessRepository = repository
+	service.config.TenantRepository = repository
 	t.Cleanup(func() {
-		service.database.postgres, service.config.AccessRepository = originalPostgres, originalAccess
+		service.database.postgres, service.config.AccessRepository, service.config.TenantRepository = originalPostgres, originalAccess, originalTenant
 	})
 	orgID, projectID := tracker.OrganizationID(service.config.Hosted.OrganizationID), f.project
 	response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-item"}, Title: "Version issue", Body: workItemRecordBody, State: "Todo"})
@@ -785,8 +808,15 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	if len(reviewModes) > 0 {
 		reviewMode = reviewModes[0]
 	}
+	if reviewMode == "audit" {
+		previous := descriptor.ID
+		descriptor.Gates.SecurityAudit = true
+		descriptor = descriptor.WithID()
+		requireNativeStatus(t, f.request(t, owner, http.MethodPut, f.base+"/policy", policy.Change{ExpectedID: previous, Policy: descriptor}), http.StatusOK)
+		reviewPolicy = defaultChangeReviewPolicy(descriptor)
+	}
 	var originalReview eventstore.ReviewPolicy
-	if reviewMode != "current" {
+	if reviewMode != "current" && reviewMode != "audit" {
 		oldRules := reviewPolicy
 		if reviewMode == "pinned" {
 			var principal string
@@ -968,6 +998,16 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		t.Fatal(err)
 	}
 	scope := nativeScope{organization: orgID, project: projectID, credential: apiCredential{ID: principal.ID, Hash: principal.Hash, Scope: apiScopeOperator, Hosted: owner.identity.Hosted, HostedRole: "owner", HostedMembership: member.MembershipID, HostedPrincipal: member.PrincipalID, NativeOnly: true}}
+	server := httptest.NewServer(service.Handler())
+	t.Cleanup(server.Close)
+	client, err := hubapi.New(hubapi.Config{URL: server.URL, TokenSource: func() string { return workerToken }, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := client.Native(orgID, projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	start := tracker.NativeRunEvent{
 		Mutation: tracker.Mutation{IdempotencyKey: "source-run-start"}, Type: "run.started", SchemaVersion: 1,
 		Data: tracker.NativeRunData{AttemptID: attemptID, RunID: runID, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), PolicyID: descriptor.ID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "example"}},
@@ -976,6 +1016,18 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		start.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", LocalAttemptID: 42, Generation: 1, Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 42, Generation: 1, SessionID: 42}}
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, start), http.StatusOK)
+	if reviewMode == "audit" {
+		ctx := hubapi.WithMutationAuthority(t.Context(), native.Scope(), tracker.NativeLease{ID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, nil)
+		sessions := hubapi.NewRunnerSessions(native)
+		id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(item.WorkItemID), StartedAt: now, AgentRole: "code", Model: "example-model"})
+		if err != nil {
+			t.Fatalf("coding session setup: %v", err)
+		}
+		if err := sessions.FinishSession(ctx, id, store.SessionFinish{CompletedAt: now, FinalState: "completed"}); err != nil {
+			t.Fatalf("coding session setup: %v", err)
+		}
+		start.Data.Runtime.Activity.SessionID = id
+	}
 	finish := start
 	finish.IdempotencyKey = "source-run-finish"
 	finish.Type = "run.finished"
@@ -989,6 +1041,9 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	input := changeTestInput()
 	input.AttemptID, input.RunID, input.PolicyID = start.Data.AttemptID, start.Data.RunID, descriptor.ID
 	bundle := changeTestSource(t, &input)
+	if reviewMode == "audit" {
+		input.Validation = &gate.CommandResult{Command: "make check", HeadSHA: input.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 1}
+	}
 	request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish-version", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, ExpectedVersionID: "", ChangeVersionInput: input, SourceBundle: bundle}
 	if running {
 		diff := tracker.AttemptDiffRequest{Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: attemptID, RunnerID: runnerID, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 2}, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA}
@@ -1000,7 +1055,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, observation), http.StatusOK)
 		}
 	}
-	if reviewMode != "current" {
+	if reviewMode != "current" && reviewMode != "audit" {
 		if reviewMode == "imported observation" {
 			observed := performHubAPIRequest(t, service, http.MethodPost, f.base+"/policy/observed", workerToken, policy.Observation{Descriptor: descriptor})
 			requireNativeStatus(t, observed, http.StatusNoContent)
@@ -1145,22 +1200,12 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	requireNativeStatus(t, versionResponse, http.StatusOK)
 	var version tracker.ChangeVersion
 	decodeHubResponse(t, versionResponse, &version)
-	if running {
+	if running && reviewMode != "audit" {
 		finish.Data.Sequence = 4
 		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, finish), http.StatusOK)
 	}
 	if version.Source == nil || version.Source.BundleSHA256 != input.Source.BundleSHA256 || version.Policy.ID != descriptor.ID || version.ReviewPolicy.ID != reviewPolicy.ID || version.Number != 1 {
 		t.Fatalf("published version=%+v", version)
-	}
-	server := httptest.NewServer(service.Handler())
-	t.Cleanup(server.Close)
-	client, err := hubapi.New(hubapi.Config{URL: server.URL, TokenSource: func() string { return workerToken }, HTTPClient: server.Client()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	native, err := client.Native(orgID, projectID)
-	if err != nil {
-		t.Fatal(err)
 	}
 	replay, err := native.PublishChangeVersion(t.Context(), item.WorkItemID, change.ID, request)
 	if err != nil || !reflect.DeepEqual(replay, version) {
@@ -1187,6 +1232,98 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	requireNativeStatus(t, sourceResponse, http.StatusOK)
 	if !bytes.Equal(sourceResponse.Body.Bytes(), bundle) {
 		t.Fatal("hydrated source differed from published immutable bundle")
+	}
+	if running && reviewMode == "audit" {
+		ctx := hubapi.WithMutationAuthority(t.Context(), native.Scope(), tracker.NativeLease{ID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, nil)
+		sessions := hubapi.NewRunnerSessions(native)
+		id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(item.WorkItemID), StartedAt: now, AgentRole: "security_audit", Model: "example-model"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sessions.FinishSession(ctx, id, store.SessionFinish{CompletedAt: now, FinalState: "completed"}); err != nil {
+			t.Fatal(err)
+		}
+		observation := start
+		observation.Type, observation.Data.Sequence, observation.IdempotencyKey = "run.observed", 4, "audit-runtime"
+		observation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "validation", LocalAttemptID: 42, Generation: 1, Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 42, Generation: 1, SessionID: id}}
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, observation), http.StatusOK)
+		audit := tracker.SecurityAuditReview{VersionID: version.ID, SessionID: id, DiffDigest: version.Source.DiffSHA256, Verdict: "pass", Run: securityaudit.Run{ID: id, InvocationID: "review-invocation", ProjectID: string(projectID), IssueID: string(item.WorkItemID), Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), AuthenticationMode: "api_key", ExitStatus: securityaudit.ExitStatusSuccess, WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now, CompletedAt: now, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings"}}
+		connector, err := hubapi.NewNativeConnector(native)
+		if err != nil {
+			t.Fatal(err)
+		}
+		activeLease := tracker.NativeLease{ID: tracker.LeaseID(lease.LeaseID), WorkItemID: item.WorkItemID, FencingToken: tracker.FencingToken(lease.FencingToken), PolicyID: descriptor.ID}
+		execution, err := nativechange.NewRecoveredExecution(reviewExecutionHost{client: client}, ctx, executioncontract.ExecutionClaim{Source: connector, Lease: activeLease}, checkpoint.State{Data: observation.Data, Diff: &tracker.AttemptDiffRequest{BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA}, PreparedFinalization: &tracker.NativeFinalization{Changed: true, ChangeID: change.ID, VersionID: version.ID, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wrongRole, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(item.WorkItemID), StartedAt: now, AgentRole: "code", Model: "example-model"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sessions.FinishSession(ctx, wrongRole, store.SessionFinish{CompletedAt: now, FinalState: "completed"}); err != nil {
+			t.Fatal(err)
+		}
+		incomplete, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(item.WorkItemID), StartedAt: now, AgentRole: "security_audit", Model: "example-model"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		err = execution.(runner.NativeSecurityAuditExecution).RecordSecurityAudit(ctx, audit)
+		if err != nil {
+			var apiError *hubapi.APIError
+			if errors.As(err, &apiError) {
+				t.Fatalf("running-source audit publication: status=%d code=%s rejection=%+v message=%s", apiError.Status, apiError.Code, apiError.Rejection, apiError.Message)
+			}
+			t.Fatal(err)
+		}
+		if err := execution.(runner.NativeSecurityAuditExecution).RecordSecurityAudit(ctx, audit); err != nil {
+			t.Fatal(err)
+		}
+		detail, err := native.RuntimeChange(ctx, item.WorkItemID, change.ID)
+		if err != nil || len(detail.Reviews) != 1 || detail.Summary.Status != "reviewed" {
+			t.Fatalf("audit publication or replay lost its evidence: reviews=%d status=%s error=%v", len(detail.Reviews), detail.Summary.Status, err)
+		}
+		for _, test := range []struct {
+			name string
+			edit func(*tracker.SecurityAuditReview)
+		}{
+			{name: "coding session", edit: func(a *tracker.SecurityAuditReview) {
+				a.SessionID, a.Run.ID = start.Data.Runtime.Activity.SessionID, start.Data.Runtime.Activity.SessionID
+			}},
+			{name: "wrong session role", edit: func(a *tracker.SecurityAuditReview) { a.SessionID, a.Run.ID = wrongRole, wrongRole }},
+			{name: "unfinished audit session", edit: func(a *tracker.SecurityAuditReview) { a.SessionID, a.Run.ID = incomplete, incomplete }},
+			{name: "different repository", edit: func(a *tracker.SecurityAuditReview) {
+				a.Run.Repository = "https://github.com/example-org/other-project"
+			}},
+			{name: "different digest", edit: func(a *tracker.SecurityAuditReview) { a.DiffDigest = strings.Repeat("0", 64) }},
+			{name: "stale reviewer", edit: func(a *tracker.SecurityAuditReview) { a.Run.ReviewerDigest = strings.Repeat("0", 64) }},
+			{name: "foreign project", edit: func(a *tracker.SecurityAuditReview) { a.Run.ProjectID = "prj_other" }},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				invalid := audit
+				test.edit(&invalid)
+				invalid.Run.InvocationID = "refused-" + test.name
+				if err := execution.(runner.NativeSecurityAuditExecution).RecordSecurityAudit(ctx, invalid); err == nil {
+					t.Fatal("invalid audit acquired review authority")
+				}
+			})
+		}
+		foreignRequest := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "foreign-audit", LeaseID: activeLease.ID, FencingToken: activeLease.FencingToken}, ExpectedVersionID: version.ID, Decision: "approved", SecurityAudit: &audit}
+		_, err = foreign.ReviewChange(ctx, item.WorkItemID, change.ID, version.ID, foreignRequest)
+		if !errors.As(err, &refusal) || refusal.Status != http.StatusNotFound {
+			t.Fatalf("foreign audit error=%v, want not found", err)
+		}
+		foreignRequest.IdempotencyKey = "stale-audit-fence"
+		foreignRequest.FencingToken++
+		_, err = native.ReviewChange(ctx, item.WorkItemID, change.ID, version.ID, foreignRequest)
+		if !errors.As(err, &refusal) || refusal.Code != "stale_fencing_token" {
+			t.Fatalf("stale audit fence error=%v", err)
+		}
+		detail, err = native.RuntimeChange(ctx, item.WorkItemID, change.ID)
+		if err != nil || len(detail.Reviews) != 1 {
+			t.Fatalf("refused audits changed review evidence: reviews=%d error=%v", len(detail.Reviews), err)
+		}
 	}
 	if running {
 		return

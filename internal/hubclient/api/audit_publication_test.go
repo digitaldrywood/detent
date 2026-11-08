@@ -19,13 +19,17 @@ func TestAuditPublicationRetainsSafeFailureMeasurements(t *testing.T) {
 		status   int
 		response string
 		field    string
+		refusal  string
 	}{
-		{"pass", 200, `{}`, ""},
-		{"payload rejected before decoding", 413, `private-audit-secret`, ""},
-		{"audit authority rejection", 422, `{"code":"invalid_request","message":"private-audit-secret","details":{"rejection":{"category":"security_audit","field":"session_id"}}}`, "session_id"},
-		{"session conflict", 409, `{"code":"conflict","message":"private-audit-secret"}`, ""},
-		{"server failure", 503, `{"code":"unavailable","message":"private-audit-secret"}`, ""},
-		{"invalid success response", 200, `private-audit-secret`, ""},
+		{"pass", 200, `{}`, "", ""},
+		{"payload rejected before decoding", 413, `private-audit-secret`, "", ""},
+		{"audit authority rejection", 422, `{"code":"invalid_request","message":"private-audit-secret","details":{"rejection":{"category":"security_audit","field":"session_id"}}}`, "session_id", "invalid_request"},
+		{"session conflict", 409, `{"code":"conflict","message":"private-audit-secret"}`, "", "conflict"},
+		{"server failure", 503, `{"code":"unavailable","message":"private-audit-secret"}`, "", "unavailable"},
+		{"invalid success response", 200, `private-audit-secret`, "", ""},
+		{"typed payload refusal", 413, `{"code":"payload_too_large","message":"private-audit-secret"}`, "", "payload_too_large"},
+		{"typed access refusal", 403, `{"code":"access_denied","message":"private-audit-secret"}`, "", "access_denied"},
+		{"untrusted refusal code", 422, `{"code":"private-audit-secret","message":"private-audit-secret"}`, "", ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var received int64
@@ -66,7 +70,7 @@ func TestAuditPublicationRetainsSafeFailureMeasurements(t *testing.T) {
 				t.Fatalf("missing typed failure: %v", err)
 			}
 			failure := carrier.NativeTerminalFailure().Public()
-			want := tracker.PublicationFailure{Operation: "security_audit/review", Code: "http_rejection", HTTPStatus: test.status, RequestBytes: received, BodyBytes: 23, OutputBytes: 123}
+			want := tracker.PublicationFailure{Operation: "security_audit/review", Code: "http_rejection", HTTPStatus: test.status, RefusalCode: test.refusal, RequestBytes: received, BodyBytes: 23, OutputBytes: 123}
 			if test.status == 200 {
 				want.Code, want.HTTPStatus = "request_failed", 0
 			}

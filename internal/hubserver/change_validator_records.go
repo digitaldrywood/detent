@@ -76,6 +76,9 @@ func (s *Service) prepareValidatorReviewRecord(ctx context.Context, scope native
 		if p.session.AttemptID != p.attempt.ID || p.session.IssueID != string(change.WorkItemID) || p.session.PolicyID != approved.PolicyID || p.session.CompletedAt == nil || p.session.FinalState != "completed" {
 			return tracker.ErrStaleFencingToken
 		}
+		if request.SecurityAudit != nil && p.session.Role != "security_audit" {
+			return securityAuditRejection("security audit requires a recorded audit session", "execution_session")
+		}
 		reviews, ok := r.(eventstore.ValidatorReviewReader)
 		if !ok {
 			return nativeRunEventStorageUnavailable()

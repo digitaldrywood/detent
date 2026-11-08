@@ -3,7 +3,7 @@ package tracker
 import "testing"
 
 func TestPublicationFailureRedactsUntrustedFields(t *testing.T) {
-	for _, field := range []string{"operation", "code", "status", "request", "body", "output"} {
+	for _, field := range []string{"operation", "code", "status", "refusal", "request", "body", "output"} {
 		t.Run(field, func(t *testing.T) {
 			failure := PublicationFailure{Operation: "security_audit/review", Code: "http_rejection", HTTPStatus: 413, RequestBytes: 1024}
 			switch field {
@@ -13,6 +13,8 @@ func TestPublicationFailureRedactsUntrustedFields(t *testing.T) {
 				failure.Code = "secret"
 			case "status":
 				failure.HTTPStatus = 123456
+			case "refusal":
+				failure.RefusalCode = "secret"
 			case "request":
 				failure.RequestBytes = -1
 			case "body":
