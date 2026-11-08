@@ -13,7 +13,44 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type attemptAgentSelectionKey struct{}
+
+type attemptAgentSelection struct {
+	execution Execution
+	role      string
+	selection agentSelection
+	identity  *tracker.NativeExecutionIdentity
+}
+
+func attemptSelectionFromContext(ctx context.Context) *attemptAgentSelection {
+	if current, ok := ctx.Value(attemptAgentSelectionKey{}).(*attemptAgentSelection); ok {
+		return current
+	}
+	return nil
+}
+
+func nativeAttemptIdentity(ctx context.Context, execution Execution, role, backend string, request *AgentTurnRequest) tracker.NativeExecutionIdentity {
+	identity := tracker.NativeExecutionIdentity{Role: role, Backend: backend, Model: effectiveModel("", request.Model, "provider_default"), ReasoningEffort: request.ReasoningEffort}
+	current := attemptSelectionFromContext(ctx)
+	if current == nil || execution == nil || current.execution != execution {
+		return identity
+	}
+	if current.identity == nil {
+		current.identity = &identity
+	} else {
+		identity = *current.identity
+		if identity.Model != "provider_default" {
+			request.Model = identity.Model
+		} else {
+			request.Model = ""
+		}
+		request.ReasoningEffort = identity.ReasoningEffort
+	}
+	return identity
+}
 
 type agentSelection struct {
 	resolvedAgentOverride
@@ -50,6 +87,21 @@ func (r agentRuntime) selectRequestBackend(req RunRequest, ctx selector.Context,
 }
 
 func resolveRequestAgentSelection(ctx context.Context, req RunRequest, process AgentProcessRequest, baseModel, role string, cfg config.Config, backendConfig config.AgentBackend, backend AgentBackend) agentSelection {
+	current := attemptSelectionFromContext(ctx)
+	if current != nil && req.Execution != nil && current.execution == req.Execution && current.role == role {
+		return current.selection
+	}
+	selected := resolveAttemptAgentSelection(ctx, req, process, baseModel, role, cfg, backendConfig, backend)
+	if current != nil && req.Execution != nil && selected.Err == nil {
+		if selected.Effort == "" {
+			_, _, selected.Effort = agentTurnIdentityOptions(backendConfig)
+		}
+		*current = attemptAgentSelection{execution: req.Execution, role: role, selection: selected}
+	}
+	return selected
+}
+
+func resolveAttemptAgentSelection(ctx context.Context, req RunRequest, process AgentProcessRequest, baseModel, role string, cfg config.Config, backendConfig config.AgentBackend, backend AgentBackend) agentSelection {
 	backend = capacitySelectionBackend(req, backend)
 	if hasResumeIdentity(req) {
 		identity := req.ResumeState.RuntimeIdentity
