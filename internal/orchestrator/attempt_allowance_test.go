@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -27,10 +28,6 @@ func (c *attemptTriageConnector) CreateComment(ctx context.Context, id, body str
 }
 
 func TestAttemptAllowanceTriagePublication(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name                           string
@@ -63,8 +60,7 @@ func TestAttemptAllowanceTriagePublication(t *testing.T) {
 				cfg.ObservedStates = []string{"Human Review"}
 			}
 			tracker.refreshed = issue
-			db, _ := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now)
-			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
+			orch := newAttemptTriageLogicOrchestrator(cfg, tracker, now)
 			state := newState(cfg)
 			note := "## Why this stalled\nThree sessions kept failing the same CI check.\n\n## What is blocking\n- [Failing check](https://github.com/owner/repo/pull/2/checks) needs a fix.\n\n## Options\n- Fix the failing check manually.\n- Close the PR and reduce the scope."
 			attempt := store.WorkAttempt{ID: 4, WorkerType: runpkg.RunModeTriage, WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{"attempt_allowance_triage": note})}
@@ -98,6 +94,18 @@ func TestAttemptAllowanceTriagePublication(t *testing.T) {
 	}
 }
 
+func newAttemptTriageLogicOrchestrator(cfg Config, tracker connector.Connector, now time.Time) *Orchestrator {
+	return &Orchestrator{
+		cfg:             cfg,
+		connector:       tracker,
+		workflowMetrics: &autoPromoteWorkflowMetricsRecorder{},
+		workAttempts:    &implementProgressAttemptStore{},
+		laneLedger:      &recordingLaneLedger{},
+		logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		now:             func() time.Time { return now },
+	}
+}
+
 func TestAttemptAllowanceNoteFormat(t *testing.T) {
 	t.Parallel()
 	valid := "## Why this stalled\nCI kept failing.\n## What is blocking\n- [CI](https://example.com/check) is red.\n## Options\n- Fix CI manually.\n- Close the issue."
@@ -126,10 +134,6 @@ func (attemptTriageRunner) Run(_ context.Context, req runpkg.RunRequest) (runpkg
 }
 
 func TestDispatchRetainsConfiguredModeAfterPriorSessions(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name     string
@@ -161,19 +165,12 @@ func TestDispatchRetainsConfiguredModeAfterPriorSessions(t *testing.T) {
 				issue.State = "Rework"
 			}
 			cfg := laneMutationTestConfig()
-			db, id := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now.Add(-time.Hour))
-			selector := newLaneMutationTestOrchestrator(cfg, nil, db, db, now)
+			attempts := &implementProgressAttemptStore{}
+			selector := newAttemptTriageLogicOrchestrator(cfg, nil, now)
 			selectionState := newState(cfg)
 			mode := selector.dispatchMode(t.Context(), &selectionState, issue)
 			metadata := marshalWorkAttemptJSON(map[string]any{completionSourceStartMetadataKey: newCompletionSourceStartRecord(issue, mode), "run_mode": mode})
 			for i := range tt.sessions {
-				if i > 0 {
-					var err error
-					id, err = db.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: cfg.Project.ID, IssueID: issue.ID, Identifier: issue.Identifier, WorkerType: "agent", Lane: issue.State, AttemptNumber: i + 1, StartedAt: now.Add(-time.Duration(10-i) * time.Minute)})
-					if err != nil {
-						t.Fatal(err)
-					}
-				}
 				class := ""
 				if tt.infra && i == tt.sessions-1 {
 					class = "service_restart"
@@ -186,12 +183,16 @@ func TestDispatchRetainsConfiguredModeAfterPriorSessions(t *testing.T) {
 				if issue.PullRequest != nil {
 					class = "no_progress"
 				}
-				if err := db.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: id, CompletedAt: now.Add(-time.Duration(9-i) * time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: terminal, ErrorClass: class, WorkerMetadataJSON: metadata, Phase: tt.phase, StatusMessage: tt.message}); err != nil {
-					t.Fatal(err)
+				started := now.Add(-time.Duration(10-i) * time.Minute)
+				if i == 0 {
+					started = now.Add(-time.Hour)
 				}
+				row := store.WorkAttempt{ID: int64(100 + i), ProjectID: cfg.Project.ID, IssueID: issue.ID, Identifier: issue.Identifier, WorkerType: "agent", Lane: issue.State, AttemptNumber: i + 1, StartedAt: started, CompletedAt: now.Add(-time.Duration(9-i) * time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: terminal, ErrorClass: class, WorkerMetadataJSON: metadata, Phase: tt.phase, StatusMessage: tt.message}
+				attempts.history = append([]store.WorkAttempt{row}, attempts.history...)
 			}
 			tracker := &attemptTriageConnector{implementProgressConnector: implementProgressConnector{refreshed: issue, hydrated: issue}}
-			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
+			orch := newAttemptTriageLogicOrchestrator(cfg, tracker, now)
+			orch.workAttempts = attempts
 			orch.supervisor = newTestSupervisor(t, attemptTriageRunner{}, cfg)
 			orch.runResults = make(chan runpkg.Completion, 1)
 			state := newState(cfg)
@@ -215,10 +216,6 @@ func TestDispatchRetainsConfiguredModeAfterPriorSessions(t *testing.T) {
 }
 
 func TestAttemptAllowancePreservesOperatorCompletionLane(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, lane := range []string{"Done", "Blocked"} {
 		t.Run(lane, func(t *testing.T) {
@@ -226,16 +223,17 @@ func TestAttemptAllowancePreservesOperatorCompletionLane(t *testing.T) {
 			issue := connector.Issue{ID: "issue", Identifier: "owner/repo#1", URL: "https://github.com/owner/repo/issues/1", State: lane}
 			tracker := &attemptTriageConnector{implementProgressConnector: implementProgressConnector{refreshed: issue}}
 			cfg := laneMutationTestConfig()
-			db, id := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now)
-			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
+			orch := newAttemptTriageLogicOrchestrator(cfg, tracker, now)
+			attempts := orch.workAttempts.(*implementProgressAttemptStore)
 			state := newState(cfg)
-			running := Running{Issue: issue, WorkAttemptID: id, Mode: runpkg.RunModeTriage, CompletionLane: lane}
+			running := Running{Issue: issue, WorkAttemptID: 1, Mode: runpkg.RunModeTriage, CompletionLane: lane}
 			state.Running[issue.ID] = running
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: runpkg.RunResult{Output: fallbackAttemptTriageNote(issue, "test")}})
-			attempt, err := db.WorkAttempt(t.Context(), id)
-			if err != nil {
-				t.Fatal(err)
+			if len(attempts.completions) != 1 {
+				t.Fatalf("triage completion writes = %d, want 1", len(attempts.completions))
 			}
+			completion := attempts.completions[0]
+			attempt := store.WorkAttempt{ID: completion.AttemptID, Status: completion.Status, WorkerMetadataJSON: completion.WorkerMetadataJSON}
 			if err := orch.publishAttemptTriage(t.Context(), &state, issue, attempt, now); err != nil {
 				t.Fatal(err)
 			}
@@ -334,10 +332,6 @@ func TestAttemptAllowanceTriageInfrastructureFailure(t *testing.T) {
 }
 
 func TestAttemptAllowanceTriageFallbackCompletion(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name   string
@@ -356,10 +350,9 @@ func TestAttemptAllowanceTriageFallbackCompletion(t *testing.T) {
 			issue := connector.Issue{ID: "issue", Identifier: "owner/repo#1", URL: "https://github.com/owner/repo/issues/1", State: "Rework"}
 			tracker := &attemptTriageConnector{implementProgressConnector: implementProgressConnector{refreshed: issue}}
 			cfg := laneMutationTestConfig()
-			db, id := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now)
-			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
+			orch := newAttemptTriageLogicOrchestrator(cfg, tracker, now)
 			state := newState(cfg)
-			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: id, Mode: runpkg.RunModeTriage}
+			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: 1, Mode: runpkg.RunModeTriage}
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: tt.result, Err: tt.err})
 			if len(tracker.comments) != 1 || len(tracker.updates) != 0 {
 				t.Fatalf("writes: comments=%+v updates=%+v", tracker.comments, tracker.updates)
@@ -376,10 +369,6 @@ func TestAttemptAllowanceTriageFallbackCompletion(t *testing.T) {
 }
 
 func TestAttemptAllowanceLiveHead(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tt := range []struct {
 		name, ci, mergeable, want, passState            string
@@ -455,9 +444,10 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 			}
 			cfg.AutoPromote.Gate.Validator.Enabled = tt.validator
 			cfg.AutoPromote.Gate.SecurityAudit.Enabled = tt.audit
-			db, _ := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now)
-			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
-			orch.securityAuditStore = db
+			audits := &securityAuditMemoryStore{}
+			orch := newAttemptTriageLogicOrchestrator(cfg, tracker, now)
+			orch.validatorMemo = &validatorMemoFixture{}
+			orch.securityAuditStore = audits
 			orch.securityAuditRuns = make(map[string]struct{})
 			if tt.auditRunning {
 				orch.securityAuditRuns[orch.securityAuditIdentity(live).cacheKey] = struct{}{}
@@ -478,7 +468,7 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 			if tt.pending {
 				if tt.audit && !tt.auditRunning && tt.ci != "pending" {
 					orch.securityAuditWG.Wait()
-					if _, err := db.LatestSecurityAuditRun(t.Context(), orch.securityAuditIdentity(live).key); err != nil {
+					if _, err := audits.LatestSecurityAuditRun(t.Context(), orch.securityAuditIdentity(live).key); err != nil {
 						t.Fatalf("missing audit was not started: %v", err)
 					}
 				}
