@@ -8690,26 +8690,14 @@ func TestBoardFirstPaintColdBootRendersPlaceholders(t *testing.T) {
 func TestDashboardEnrichesCycleTimeFromStore(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	usageStore := openWebTestStore(t)
 	startedAt := time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC)
-	sessionID, err := usageStore.StartSession(ctx, store.SessionStart{
-		IssueID:    "issue-215",
-		Identifier: "example-org/example-project#215",
-		StartedAt:  startedAt,
-		Model:      "gpt-5-codex",
-	})
-	if err != nil {
-		t.Fatalf("StartSession() error = %v", err)
-	}
-	if err := usageStore.FinishSession(ctx, sessionID, store.SessionFinish{
-		CompletedAt:    startedAt.Add(90 * time.Minute),
-		RuntimeSeconds: int64(90 * time.Minute / time.Second),
-		FinalState:     "completed",
-		Model:          "gpt-5-codex",
-	}); err != nil {
-		t.Fatalf("FinishSession() error = %v", err)
-	}
+	usageStore := storeProbe{cycleTimeReport: func(ctx context.Context) (store.CycleTimeReport, error) {
+		return store.CycleTimeReport{
+			Issues:         []store.CycleTimeIssue{{Key: "example-org/example-project#215", StartedAt: startedAt, CompletedAt: startedAt.Add(90 * time.Minute), DurationSeconds: 5400, Sessions: 1}},
+			Buckets:        []store.CycleTimeBucket{{Label: "1-4h", MinSeconds: 3600, MaxSeconds: 14400, Count: 1}},
+			AverageSeconds: 5400,
+		}, ctx.Err()
+	}}
 
 	deps := testDeps(t)
 	deps.Store = usageStore
@@ -10761,44 +10749,17 @@ func TestAPIRefreshHTMXRendersRefusalFragment(t *testing.T) {
 func TestServerEnrichesBudgetBurnDownFromStoreAndRegistry(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
 	generatedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	backend := openWebTestStore(t)
-	events := []store.UsageEvent{
-		{
-			ProjectID:  "detent",
-			CostUSD:    1.25,
-			StartedAt:  time.Date(2026, 5, 31, 8, 0, 0, 0, time.UTC),
-			FinishedAt: time.Date(2026, 5, 31, 8, 1, 0, 0, time.UTC),
-			Outcome:    "completed",
-		},
-		{
-			ProjectID:  "detent",
-			CostUSD:    1,
-			StartedAt:  time.Date(2026, 6, 1, 6, 0, 0, 0, time.UTC),
-			FinishedAt: time.Date(2026, 6, 1, 6, 1, 0, 0, time.UTC),
-			Outcome:    "completed",
-		},
-		{
-			ProjectID:  "pyroapex",
-			CostUSD:    9,
-			StartedAt:  time.Date(2026, 6, 1, 7, 0, 0, 0, time.UTC),
-			FinishedAt: time.Date(2026, 6, 1, 7, 1, 0, 0, time.UTC),
-			Outcome:    "completed",
-		},
-		{
-			ProjectID:  "detent",
-			CostUSD:    2.5,
-			StartedAt:  time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC),
-			FinishedAt: time.Date(2026, 6, 1, 11, 1, 0, 0, time.UTC),
-			Outcome:    "completed",
-		},
-	}
-	for _, event := range events {
-		if _, err := backend.RecordUsageEvent(ctx, event); err != nil {
-			t.Fatalf("RecordUsageEvent() error = %v", err)
+	backend := storeProbe{budgetCostEvents: func(ctx context.Context, query store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
+		if !slices.Equal(query.ProjectIDs, []string{"detent"}) || !query.From.Equal(time.Date(2026, 5, 26, 0, 0, 0, 0, time.UTC)) || !query.To.Equal(time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC)) {
+			return nil, errors.New("unexpected budget scope or window")
 		}
-	}
+		return []store.BudgetCostEvent{
+			{ProjectID: "detent", CostUSD: 1.25, At: time.Date(2026, 5, 31, 8, 1, 0, 0, time.UTC)},
+			{ProjectID: "detent", CostUSD: 1, At: time.Date(2026, 6, 1, 6, 1, 0, 0, time.UTC)},
+			{ProjectID: "detent", CostUSD: 2.5, At: time.Date(2026, 6, 1, 11, 1, 0, 0, time.UTC)},
+		}, ctx.Err()
+	}}
 
 	registry := project.NewRegistry()
 	if err := registry.Set(newBudgetTestProject(t, "detent", 100, 10, workflowconfig.BillingModeSubscription)); err != nil {
@@ -11634,10 +11595,8 @@ func TestServerWorkflowTimelineAPI(t *testing.T) {
 func TestWorkflowMetricsStateAPIIncludesLaneTrendComparisons(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
 	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
-	backend := openWebTestStore(t)
-	seedWorkflowTrendEvents(t, ctx, backend, now)
+	backend := storeProbe{workflowMetrics: workflowComparisonReportFixture(now)}
 
 	deps := testDeps(t)
 	deps.Store = backend
@@ -11796,10 +11755,8 @@ func TestProjectDiagnosticsRendersWorkflowMetricsEmptyHistory(t *testing.T) {
 func TestProjectDiagnosticsRendersWorkflowMetricsTrends(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
 	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
-	backend := openWebTestStore(t)
-	seedWorkflowTrendEvents(t, ctx, backend, now)
+	backend := storeProbe{workflowMetrics: workflowComparisonReportFixture(now)}
 
 	deps := testDeps(t)
 	deps.Store = backend
@@ -11926,9 +11883,7 @@ func TestServerUsageAPIRejectsInvalidParameters(t *testing.T) {
 func TestReportsPageRendersUsageCharts(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	usageStore := openWebTestStore(t)
-	seedUsageAPIEvents(t, ctx, usageStore)
+	usageStore := storeProbe{usageReport: usageChartReportFixture}
 
 	deps := testDeps(t)
 	deps.Store = usageStore
@@ -13040,6 +12995,8 @@ type storeProbe struct {
 	store.Store
 
 	cycleTimeReport   func(context.Context) (store.CycleTimeReport, error)
+	usageReport       func(context.Context, store.UsageReportQuery) (store.UsageReport, error)
+	workflowMetrics   func(context.Context, store.WorkflowMetricsQuery) (store.WorkflowMetricsReport, error)
 	budgetCostEvents  func(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error)
 	runtimeEvidence   func(context.Context, store.RuntimeEvidenceQuery) (store.RuntimeEvidence, error)
 	validatorVerdicts func(context.Context, store.ValidatorVerdictQuery) ([]store.ValidatorVerdict, error)
@@ -13122,7 +13079,10 @@ func (storeProbe) ListRecentTerminalWorkAttempts(context.Context, store.WorkAtte
 	return nil, nil
 }
 
-func (storeProbe) UsageReport(_ context.Context, query store.UsageReportQuery) (store.UsageReport, error) {
+func (p storeProbe) UsageReport(ctx context.Context, query store.UsageReportQuery) (store.UsageReport, error) {
+	if p.usageReport != nil {
+		return p.usageReport(ctx, query)
+	}
 	return store.UsageReport{By: query.By}, nil
 }
 
@@ -13194,7 +13154,10 @@ func (p *workflowPhaseEventStoreProbe) workflowPhaseEventCount() int {
 	return len(p.events)
 }
 
-func (storeProbe) WorkflowMetricsReport(context.Context, store.WorkflowMetricsQuery) (store.WorkflowMetricsReport, error) {
+func (p storeProbe) WorkflowMetricsReport(ctx context.Context, query store.WorkflowMetricsQuery) (store.WorkflowMetricsReport, error) {
+	if p.workflowMetrics != nil {
+		return p.workflowMetrics(ctx, query)
+	}
 	return store.WorkflowMetricsReport{}, nil
 }
 
@@ -14383,4 +14346,63 @@ func (f *authKeyStoreFixture) MarkAPIKeyLastUsed(ctx context.Context, id string,
 
 func (*authKeyStoreFixture) RecordAPIUsageLog(ctx context.Context, _ store.APIUsageLog) error {
 	return ctx.Err()
+}
+
+func usageChartReportFixture(ctx context.Context, query store.UsageReportQuery) (store.UsageReport, error) {
+	mainModel := store.UsageReportModel{Model: "gpt-report", InputTokens: 170, OutputTokens: 80, TotalTokens: 250, RuntimeSeconds: 55, Events: 2}
+	miniModel := store.UsageReportModel{Model: "gpt-report-mini", InputTokens: 50, OutputTokens: 25, TotalTokens: 75, RuntimeSeconds: 15, Events: 1}
+	firstModel := store.UsageReportModel{Model: "gpt-report", InputTokens: 100, OutputTokens: 50, TotalTokens: 150, RuntimeSeconds: 30, Events: 1}
+	secondModel := store.UsageReportModel{Model: "gpt-report", InputTokens: 70, OutputTokens: 30, TotalTokens: 100, RuntimeSeconds: 25, Events: 1}
+	combined := store.UsageReportRow{InputTokens: 170, OutputTokens: 80, TotalTokens: 250, RuntimeSeconds: 55, Events: 2, Models: []store.UsageReportModel{mainModel}}
+	mini := store.UsageReportRow{InputTokens: 50, OutputTokens: 25, TotalTokens: 75, RuntimeSeconds: 15, Events: 1, Models: []store.UsageReportModel{miniModel}}
+	firstDay := store.UsageReportRow{InputTokens: 150, OutputTokens: 75, TotalTokens: 225, RuntimeSeconds: 45, Events: 2, Models: []store.UsageReportModel{firstModel, miniModel}}
+	secondDay := store.UsageReportRow{InputTokens: 70, OutputTokens: 30, TotalTokens: 100, RuntimeSeconds: 25, Events: 1, Models: []store.UsageReportModel{secondModel}}
+	var rows []store.UsageReportRow
+	switch query.By {
+	case store.UsageReportByDay:
+		firstDay.Key, secondDay.Key = "2026-05-31", "2026-06-01"
+		rows = []store.UsageReportRow{firstDay, secondDay}
+	case store.UsageReportByProject:
+		firstDay.Key, secondDay.Key = "detent", "example-project"
+		rows = []store.UsageReportRow{firstDay, secondDay}
+	case store.UsageReportByIssue:
+		combined.Key, mini.Key = "example-org/example-project#119", "example-org/example-project#120"
+		rows = []store.UsageReportRow{combined, mini}
+	case store.UsageReportByPR:
+		mini.Key = "detent#142"
+		rows = []store.UsageReportRow{
+			{Key: "detent#141", InputTokens: 100, OutputTokens: 50, TotalTokens: 150, RuntimeSeconds: 30, Events: 1, Models: []store.UsageReportModel{firstModel}},
+			mini,
+			{Key: "example-project#141", InputTokens: 70, OutputTokens: 30, TotalTokens: 100, RuntimeSeconds: 25, Events: 1, Models: []store.UsageReportModel{secondModel}},
+		}
+	case store.UsageReportByModel:
+		combined.Key, mini.Key = "gpt-report", "gpt-report-mini"
+		rows = []store.UsageReportRow{combined, mini}
+	default:
+		return store.UsageReport{}, errors.New("unexpected report group")
+	}
+	return store.UsageReport{By: query.By, Totals: store.UsageReportTotals{InputTokens: 220, OutputTokens: 105, TotalTokens: 325, RuntimeSeconds: 70, Events: 3, Models: []store.UsageReportModel{mainModel, miniModel}}, Rows: rows}, ctx.Err()
+}
+
+func workflowComparisonReportFixture(now time.Time) func(context.Context, store.WorkflowMetricsQuery) (store.WorkflowMetricsReport, error) {
+	metric := func(name string, count, total, average, p50, p90 int64) store.WorkflowPhaseMetric {
+		return store.WorkflowPhaseMetric{ProjectID: "detent", PhaseType: string(store.WorkflowPhaseTypeLane), PhaseName: name, Count: count, TotalSeconds: total, AverageSeconds: average, P50Seconds: p50, P90Seconds: p90, P95Seconds: p90, WaitSeconds: total, EndpointFamily: "codex"}
+	}
+	return func(ctx context.Context, query store.WorkflowMetricsQuery) (store.WorkflowMetricsReport, error) {
+		if query.ProjectID != "" && query.ProjectID != "detent" {
+			return store.WorkflowMetricsReport{}, errors.New("unexpected workflow project")
+		}
+		var report store.WorkflowMetricsReport
+		if query.To.Equal(now) {
+			if query.From.Equal(now.Add(-24 * time.Hour)) {
+				report.Lanes = []store.WorkflowPhaseMetric{metric("Human Review", 1, 600, 600, 600, 600), metric("In Progress", 1, 240, 240, 240, 240), metric("Merging", 1, 300, 300, 300, 300), metric("Todo", 1, 120, 120, 120, 120)}
+			} else {
+				report.Lanes = []store.WorkflowPhaseMetric{metric("Human Review", 2, 1020, 510, 420, 600), metric("In Progress", 1, 240, 240, 240, 240), metric("Merging", 2, 780, 390, 300, 480), metric("Todo", 2, 240, 120, 120, 120)}
+			}
+			report.SubPhases = []store.WorkflowPhaseMetric{{ProjectID: "detent", PhaseType: string(store.WorkflowPhaseTypeAgentSession), PhaseName: "agent_active", Count: 1, TotalSeconds: 180, AverageSeconds: 180, P50Seconds: 180, P90Seconds: 180, P95Seconds: 180, Turns: 2, TotalTokens: 600, EndpointFamily: "codex"}}
+		} else if query.To.Equal(now.Add(-24 * time.Hour)) {
+			report.Lanes = []store.WorkflowPhaseMetric{metric("Human Review", 1, 420, 420, 420, 420), metric("Merging", 1, 480, 480, 480, 480), metric("Todo", 1, 120, 120, 120, 120)}
+		}
+		return report, ctx.Err()
+	}
 }
