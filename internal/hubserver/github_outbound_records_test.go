@@ -3,6 +3,9 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -20,6 +23,30 @@ type githubOutboundSignal struct{ calls chan OutboxItem }
 type gitHubDeadlineBackend struct {
 	deadline time.Time
 	bounded  bool
+}
+
+type gitHubLeaseBarrier struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *gitHubLeaseBarrier) Execute(context.Context, OutboxItem) error {
+	return errors.New("step backend required")
+}
+func (b *gitHubLeaseBarrier) VerifyAndExecute(ctx context.Context, item OutboxItem) error {
+	return b.Execute(ctx, item)
+}
+func (b *gitHubLeaseBarrier) Step(ctx context.Context, item OutboxItem) (OutboxStepResult, error) {
+	if err := item.BeforeWrite(ctx); err != nil {
+		return OutboxStepResult{}, err
+	}
+	close(b.entered)
+	select {
+	case <-b.release:
+		return OutboxStepResult{Done: true}, nil
+	case <-ctx.Done():
+		return OutboxStepResult{}, ctx.Err()
+	}
 }
 
 func (b *gitHubDeadlineBackend) Execute(ctx context.Context, _ OutboxItem) error {
@@ -172,4 +199,74 @@ func TestGitHubOutboundPollJitter(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestGitHubOutboundRenewsExecutingLease(t *testing.T) {
+	service, _, _ := gitHubWebhookRecordFixture(t)
+	var clock atomic.Int64
+	clock.Store(time.Now().UTC().Truncate(time.Microsecond).UnixNano())
+	now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+	service.config.now = now
+	service.config.OutboxProcessingTimeout = time.Minute
+	backend := &gitHubLeaseBarrier{entered: make(chan struct{}), release: make(chan struct{})}
+	service.config.OutboxBackend = backend
+	fire := make(chan time.Time, 1)
+	created, renewed := make(chan time.Duration, 1), make(chan time.Duration, 1)
+	service.config.newOutboxTimer = func(delay time.Duration) outboxTimer {
+		created <- delay
+		return outboxTimer{ticks: fire, stop: func() {}, reset: func(next time.Duration) { renewed <- next }}
+	}
+	payload, err := eventstore.NewContent(service.runDetailStore()).PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: "org"}, json.RawMessage(`{"body":"Example"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), "org", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: "first", WorkItemID: "wi_example", Key: "renew", Repository: "example-org/example-project", IssueNumber: 1, Kind: string(MutationWorkpad), CreatedAt: now(), Payload: payload})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	joined := false
+	var release sync.Once
+	defer func() {
+		cancel()
+		release.Do(func() { close(backend.release) })
+		if !joined {
+			<-done
+		}
+	}()
+	go func() { _, err := service.ProcessOutbox(ctx); done <- err }()
+	select {
+	case <-backend.entered:
+	case err := <-done:
+		joined = true
+		t.Fatalf("start effect: %v", err)
+	}
+	if delay := <-created; delay != 20*time.Second {
+		t.Fatalf("renewal period=%v", delay)
+	}
+	clock.Add(int64(20 * time.Second))
+	fire <- now()
+	select {
+	case <-renewed:
+	case err := <-done:
+		joined = true
+		t.Fatalf("renew lease: %v", err)
+	}
+	clock.Add(int64(40 * time.Second))
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), "org", corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.(projectstore.GitHubOutboxWriter).ClaimGitHubOutbound(t.Context(), now(), now().Add(time.Minute), "replacement")
+		if !errors.Is(err, corestore.ErrNotFound) {
+			t.Errorf("renewed execution was reclaimed at original expiry: %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	release.Do(func() { close(backend.release) })
+	if err := <-done; err != nil {
+		t.Error(err)
+	}
+	joined = true
 }
