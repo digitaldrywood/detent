@@ -234,14 +234,23 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 	stored := store.objects[objectKey]
 	store.objects[objectKey] = spacesObject{content: []byte("short"), created: stored.created}
 	store.mu.Unlock()
-	if raw, failed := call(operatortool.ReadAttachment, selector); !failed {
-		t.Fatalf("incomplete content succeeded=%s", raw)
-	}
 	personalCall := entryMCPClient(t, anonymous, personal.Token, mcp.ProtocolVersion, "/mcp")
-	raw, failed := personalCall(operatortool.ReadAttachment, map[string]any{"organization_id": "org_alpha", "project_id": project, "attachment_id": record.ID})
-	var refusal apikey.Refusal
-	if !failed || json.Unmarshal(raw, &refusal) != nil || refusal.Code != "attachment_unavailable" {
-		t.Fatalf("incomplete personal content=%s failed=%v", raw, failed)
+	for _, test := range []struct {
+		name string
+		read func() (json.RawMessage, bool)
+	}{
+		{name: "service", read: func() (json.RawMessage, bool) { return call(operatortool.ReadAttachment, selector) }},
+		{name: "personal", read: func() (json.RawMessage, bool) {
+			return personalCall(operatortool.ReadAttachment, map[string]any{"organization_id": "org_alpha", "project_id": project, "attachment_id": record.ID})
+		}},
+	} {
+		t.Run("incomplete content "+test.name, func(t *testing.T) {
+			raw, failed := test.read()
+			var refusal apikey.Refusal
+			if !failed || json.Unmarshal(raw, &refusal) != nil || refusal.Code != "attachment_unavailable" {
+				t.Fatalf("incomplete content=%s failed=%v", raw, failed)
+			}
+		})
 	}
 	store.mu.Lock()
 	store.objects[objectKey] = stored
@@ -270,7 +279,7 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 			}
 		}
 	}
-	raw, failed = call(operatortool.ReadAttachmentMetadata, selector)
+	raw, failed := call(operatortool.ReadAttachmentMetadata, selector)
 	var bound attachment.Metadata
 	if failed || json.Unmarshal(raw, &bound) != nil || len(bound.ReferencedBy) != 2 {
 		t.Fatalf("replayed references=%s", raw)

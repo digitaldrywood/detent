@@ -321,6 +321,10 @@ func (e accessKeyExecutor) Execute(ctx context.Context, call operatortool.Call) 
 			return operatortool.Result{}, err
 		}
 		if response.status >= http.StatusInternalServerError {
+			var refusal apikey.Refusal
+			if response.status == http.StatusBadGateway && json.Unmarshal(response.body.Bytes(), &refusal) == nil && refusal.Code == "attachment_unavailable" {
+				return operatortool.Result{}, &refusal
+			}
 			return operatortool.Result{}, tenantauth.ErrUnavailable
 		}
 		if response.status != http.StatusCreated && response.status != http.StatusOK {
