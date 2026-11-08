@@ -324,6 +324,9 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "interrupted"); err != nil {
 			t.Fatal(err)
 		}
+		if err := h.native.Release(t.Context(), execution.Recovery().Lease, "released"); err != nil {
+			t.Fatal(err)
+		}
 		if planningRecovery {
 			if resumeCase != "" {
 				change, err := h.admin.CreateChange(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Preserved current Change"})
