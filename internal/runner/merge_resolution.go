@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -69,9 +70,17 @@ func (r *Runner) resolveNativeLanding(ctx context.Context, req RunRequest, sourc
 				return err
 			}
 		}
+		provider, tier, effort := agentTurnIdentityOptions(backendConfig)
+		if selected.Effort != "" {
+			effort = selected.Effort
+		}
+		turnIdentity := AgentTurnRequest{Model: model, ReasoningEffort: effort}
+		executionIdentity := nativeAttemptIdentity(ctx, req.Execution, RoleMerge, selection.BackendID, &turnIdentity)
+		model, effort = turnIdentity.Model, turnIdentity.ReasoningEffort
 		identity := configuredRuntimeIdentity(selection, backendConfig, RoleMerge, model, r.now())
 		identity.Selection = selected.Selection
-		if err := req.Execution.Start(ctx, tracker.NativeExecutionIdentity{Role: RoleMerge, Backend: selection.BackendID, Model: model}); err != nil {
+		identity.ReasoningEffort = agentidentity.NewValue(effort, agentidentity.ProvenanceConfigured)
+		if err := req.Execution.Start(ctx, executionIdentity); err != nil {
 			return err
 		}
 		started := r.now()
@@ -97,10 +106,6 @@ func (r *Runner) resolveNativeLanding(ctx context.Context, req RunRequest, sourc
 		turnCtx, cancel := context.WithTimeout(ctx, limit)
 		defer cancel()
 		prompt := fmt.Sprintf("Resolve only the conflicting hunks of the approved Change in this isolated integration worktree. The reviewed head is %s; HEAD is the current base. Conflict files: %s. Preserve both the reviewed intent and unrelated base changes. Follow repository instructions. Regenerate generated files from combined inputs; never hand-merge generated output. Stage the resolution with git add. Do not commit, rebase, change branches or refs, push, or implement any other issue work. The runner will verify the resolved diff and run the approved gate. This is one bounded merge-resolution turn; if it cannot be completed, leave the conflict unresolved.", opts.HeadSHA, strings.Join(files, ", "))
-		provider, tier, effort := agentTurnIdentityOptions(backendConfig)
-		if selected.Effort != "" {
-			effort = selected.Effort
-		}
 		turnInfo := info
 		turnInfo.Path = path
 		request := AgentTurnRequest{

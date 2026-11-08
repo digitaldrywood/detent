@@ -100,10 +100,11 @@ func (p *resolutionProvider) RunTurn(ctx context.Context, req AgentTurnRequest, 
 
 func TestNativeLandingMergeResolution(t *testing.T) {
 	for _, test := range []struct {
-		name, content                                                string
+		name, content, effort                                        string
 		changed, failed, outside, shifted, gateFailure, budgetDenied bool
 	}{
 		{name: "unchanged reviewed diff retains review and lands", content: "first\nreviewed\nbase\n"},
+		{name: "merge identity retains project effort", content: "first\nreviewed\nbase\n", effort: "low"},
 		{name: "base line shifts retain equivalent reviewed diff", content: "prefix\nfirst\nreviewed\nbase\n", shifted: true},
 		{name: "nonconflicting hunk edits return to implementation", content: "other\nreviewed\nbase\n", failed: true},
 		{name: "changed diff publishes for review", content: "first\nresolved\nbase\n", changed: true},
@@ -156,6 +157,7 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 				command = "git grep --quiet reviewed HEAD -- feature.txt"
 			}
 			cfg := config.Config{}
+			cfg.Agent.Effort.Merge = test.effort
 			cfg.Gate.Run = command
 			deps := Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: provider}
 			if test.budgetDenied {
@@ -198,6 +200,9 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 			}
 			if permits != 1 || result.Tokens.TotalTokens != 7 || provider.calls != 1 || provider.request.MaxTurns != 1 || provider.request.MaxDuration <= 0 || !result.TurnStarted || !strings.Contains(provider.request.Prompt, "only the conflicting hunks") {
 				t.Fatalf("resolution was not one bounded merge turn: %#v, %#v", provider, result)
+			}
+			if execution.identity.ReasoningEffort != test.effort || provider.request.ReasoningEffort != test.effort {
+				t.Fatalf("merge identity lost resolved effort: identity=%+v provider=%q", execution.identity, provider.request.ReasoningEffort)
 			}
 			remoteHead := strings.TrimSpace(runRunnerGit(t, remote, "rev-parse", "refs/heads/main"))
 			switch {

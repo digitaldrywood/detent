@@ -69,11 +69,13 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 	}
 	workflow.Config.Agent = workflow.Config.EffectiveModelSelection().SessionAgent(workflow.Config.Agent, resolved.Selection.Level)
 	model = effectiveModel("", resolved.Model, runtime.defaultModelForRole(role))
+	provider, tier, effort := agentTurnIdentityOptions(backendConfig)
+	if resolved.Effort != "" {
+		effort = resolved.Effort
+	}
 	identity := configuredRuntimeIdentity(selection, backendConfig, role, model, startedAt)
 	identity.Selection = resolved.Selection
-	if resolved.Effort != "" {
-		identity.ReasoningEffort = agentidentity.NewValue(resolved.Effort, agentidentity.ProvenanceConfigured)
-	}
+	identity.ReasoningEffort = agentidentity.NewValue(effort, agentidentity.ProvenanceConfigured)
 	var budgetProjection *dispatchBudgetProjection
 	if workflow.Config.Budget.EffectiveBillingMode() != config.BillingModeSubscription {
 		admission, refused, err := r.checkDispatchBudget(ctx, budgetChecker, dispatchEstimator, req.Issue, model, startedAt)
@@ -83,10 +85,11 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 		budgetProjection = admission.budgetProjection
 	}
 	if req.Execution != nil {
-		executionIdentity := tracker.NativeExecutionIdentity{Role: role, Backend: selection.BackendID, Model: model}
-		if executionIdentity.Model == "" {
-			executionIdentity.Model = "provider_default"
-		}
+		turnIdentity := AgentTurnRequest{Model: model, ReasoningEffort: effort}
+		executionIdentity := nativeAttemptIdentity(ctx, req.Execution, role, selection.BackendID, &turnIdentity)
+		model, effort = turnIdentity.Model, turnIdentity.ReasoningEffort
+		identity.RequestedModel = agentidentity.NewValue(model, agentidentity.ProvenanceConfigured)
+		identity.ReasoningEffort = agentidentity.NewValue(effort, agentidentity.ProvenanceConfigured)
 		if runtime, ok := req.Execution.(RuntimeExecution); ok {
 			if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Identity: identity}); err != nil {
 				return result, err
@@ -108,10 +111,6 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 	sessionCtx, cancelSession := r.sessionLimit(cacheCtx, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS), ErrSessionDurationExceeded)
 	defer cancelSession()
 	result = RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: identity, budgetProjection: budgetProjection}
-	provider, tier, effort := agentTurnIdentityOptions(backendConfig)
-	if resolved.Effort != "" {
-		effort = resolved.Effort
-	}
 	var output strings.Builder
 	turnCount := 0
 	removeWorkspace = false

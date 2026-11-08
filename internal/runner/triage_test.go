@@ -143,7 +143,7 @@ func TestRunnerTriageNativeAdmission(t *testing.T) {
 			if !errors.Is(err, tt.startErr) {
 				t.Fatalf("Run error = %v, want %v", err, tt.startErr)
 			}
-			if !execution.started || execution.identity.Model != capacity.Model || execution.identity.Backend != capacity.Backend || execution.identity.Role != capacity.Role {
+			if !execution.started || execution.identity.Model != capacity.Model || execution.identity.Backend != capacity.Backend || execution.identity.Role != capacity.Role || execution.identity.ReasoningEffort != tt.effort {
 				t.Fatalf("execution identity = %+v, reservation = %+v", execution.identity, capacity)
 			}
 			observed := execution.startupRuntime
