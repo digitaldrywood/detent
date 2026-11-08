@@ -175,5 +175,6 @@ func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope nativeScope, r
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	s.notifyNativeDispatch(ctx, scope, request)
 	return respond(receipt)
 }
