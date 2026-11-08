@@ -83,6 +83,9 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
+		if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", now); err != nil {
+			return err
+		}
 		validState := false
 		for _, state := range project.States {
 			if state.Name == request.State {

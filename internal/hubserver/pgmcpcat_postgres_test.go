@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -184,6 +185,24 @@ func TestPostgresMissingOperatorCatalog(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(w tenantstore.Writer) error {
+			base := service.config.Hosted.Plans.Base
+			plan, err := w.BillingPlan(t.Context(), billingstore.PlanReference{ID: base.ID, Version: base.Version})
+			if err != nil {
+				return err
+			}
+			plan.Features = nil
+			return w.ReplaceBillingPlan(t.Context(), plan)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		t.Run(org+"/disabled-order", func(t *testing.T) {
+			call(t, operatortool.OrderItem, `"project_id":"compat","identifier":"#1","queue_scope":"compat","state":"Todo","rank":"002","request_id":"disabled-order"`, http.StatusTooManyRequests)
+		})
+		t.Run(org+"/disabled-priority", func(t *testing.T) {
+			call(t, operatortool.SetQueuePriority, `"project_id":"compat","identifier":"#1","queue_scope":"compat","state":"Todo","queue_priority":"high","request_id":"disabled-priority"`, http.StatusTooManyRequests)
+		})
 
 	}
 }

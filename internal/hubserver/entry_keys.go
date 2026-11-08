@@ -422,6 +422,10 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	}
 	result, err := (hostedOperatorExecutor{s}).Execute(ctx, operatortool.Call{Name: call.Name, Arguments: call.Arguments})
 	if err != nil {
+		var allowance *operatortool.AllowanceError
+		if errors.As(err, &allowance) {
+			return s.refusedAPIError(c, http.StatusTooManyRequests, allowance.Code, allowance.Message, allowance)
+		}
 		var conflict *operatortool.ConflictError
 		if errors.As(err, &conflict) && conflict.Code != "revision_conflict" {
 			return s.refusedAPIError(c, http.StatusConflict, conflict.Code, conflict.Message, conflict)
