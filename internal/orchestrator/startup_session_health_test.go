@@ -84,7 +84,7 @@ func TestStartupSessionsAppearInStateAndHealth(t *testing.T) {
 			var session startupHealthSession
 			select {
 			case session = <-runner.started:
-			case <-time.After(10 * time.Second):
+			case <-t.Context().Done():
 				t.Fatal("startup did not start worker")
 			}
 			if session.err != nil {

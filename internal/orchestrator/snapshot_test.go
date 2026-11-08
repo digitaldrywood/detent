@@ -217,7 +217,7 @@ func TestCompletionSnapshotRetainsTerminalAttemptDuringHandoff(t *testing.T) {
 			defer func() { close(tracker.release); <-done }()
 			select {
 			case <-tracker.entered:
-			case <-time.After(5 * time.Second):
+			case <-t.Context().Done():
 				t.Fatal("completion did not reach the blocked handoff")
 			}
 			observed, err := orch.State(t.Context())

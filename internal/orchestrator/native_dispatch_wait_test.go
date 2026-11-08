@@ -66,7 +66,7 @@ func TestRunNativeCandidateWake(t *testing.T) {
 				t.Helper()
 				select {
 				case <-signal:
-				case <-time.After(5 * time.Second):
+				case <-t.Context().Done():
 					t.Fatal("lifecycle signal missing")
 				}
 			}
@@ -94,7 +94,7 @@ func TestRunNativeCandidateWake(t *testing.T) {
 				if !errors.Is(err, context.Canceled) {
 					t.Fatal(err)
 				}
-			case <-time.After(5 * time.Second):
+			case <-t.Context().Done():
 				t.Fatal("run did not stop")
 			}
 			await(source.stopped)

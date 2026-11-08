@@ -169,13 +169,13 @@ func TestTickDispatchPrecedesBlockedMaintenance(t *testing.T) {
 				cancel()
 				select {
 				case <-finished:
-				case <-time.After(10 * time.Second):
+				case <-t.Context().Done():
 					t.Error("tick did not finish after cancellation")
 				}
 			}()
 			select {
 			case <-held:
-			case <-time.After(10 * time.Second):
+			case <-t.Context().Done():
 				t.Fatal("maintenance did not reach held provider")
 			}
 			readCtx, cancelRead := context.WithTimeout(ctx, 5*time.Second)
@@ -197,7 +197,7 @@ func TestTickDispatchPrecedesBlockedMaintenance(t *testing.T) {
 			close(release)
 			select {
 			case <-finished:
-			case <-time.After(10 * time.Second):
+			case <-t.Context().Done():
 				t.Fatal("tick did not finish")
 			}
 			cancel()

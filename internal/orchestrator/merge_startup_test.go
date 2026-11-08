@@ -55,7 +55,7 @@ func TestMergeWorkerStartupDeadlineExpiresWithoutPollTick(t *testing.T) {
 	}
 	select {
 	case <-runner.started:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for merge runner to start")
 	}
 	if got := timer.Duration(); got != 4*time.Minute {
@@ -71,7 +71,7 @@ func TestMergeWorkerStartupDeadlineExpiresWithoutPollTick(t *testing.T) {
 	var completion runpkg.Completion
 	select {
 	case completion = <-orch.runResults:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for startup-timeout completion")
 	}
 	if !errors.Is(completion.Err, runpkg.ErrMergeWorkerStartupTimeout) {
@@ -141,13 +141,13 @@ func TestMergeWorkerWorkspaceProgressStopsStartupDeadline(t *testing.T) {
 	}
 	select {
 	case <-runner.progressed:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for workspace progress")
 	}
 	select {
 	case update := <-orch.runUpdates:
 		orch.handleRunUpdate(&state, update)
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for workspace progress update")
 	}
 	if !timer.Stopped() {
@@ -173,7 +173,7 @@ func TestMergeWorkerWorkspaceProgressStopsStartupDeadline(t *testing.T) {
 			t.Fatalf("completion error = %v", completion.Err)
 		}
 		orch.handleRunResult(t.Context(), &state, completion)
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for released merge runner")
 	}
 }

@@ -201,7 +201,7 @@ func TestDispatchRetainsConfiguredModeAfterPriorSessions(t *testing.T) {
 			var result runpkg.Completion
 			select {
 			case result = <-orch.runResults:
-			case <-time.After(5 * time.Second):
+			case <-t.Context().Done():
 				t.Fatal("runner did not complete")
 			}
 			if result.Request.Mode != tt.wantMode {
@@ -294,7 +294,7 @@ func TestAttemptAllowanceTriageInfrastructureFailure(t *testing.T) {
 			var completion runpkg.Completion
 			select {
 			case completion = <-orch.runResults:
-			case <-time.After(5 * time.Second):
+			case <-t.Context().Done():
 				t.Fatal("runner did not complete")
 			}
 			completion.Request.Mode = runpkg.RunModeTriage
@@ -323,7 +323,7 @@ func TestAttemptAllowanceTriageInfrastructureFailure(t *testing.T) {
 			}
 			select {
 			case completion = <-restarted.runResults:
-			case <-time.After(5 * time.Second):
+			case <-t.Context().Done():
 				t.Fatal("recovered runner did not complete")
 			}
 			if completion.Request.Mode != runpkg.RunModeImplement {

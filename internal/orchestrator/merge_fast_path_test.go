@@ -359,7 +359,7 @@ func TestMergingFastPathChangedHeadReappliesCITriggerBeforeMerge(t *testing.T) {
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("relabel = %#v, want %#v", got, want)
 		}
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for changed-head trigger-label reapplication")
 	}
 	if len(tracker.merges) != 0 {
@@ -665,7 +665,7 @@ func TestMergingFastPathMainAdvanceRetriggersMissingCurrentHeadChecks(t *testing
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("relabel = %#v, want %#v", got, want)
 		}
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for trigger-label relabel to start")
 	}
 	if !strings.Contains(logs.String(), "ci_trigger_label_scheduled") {
@@ -1151,7 +1151,7 @@ func receiveMergeFastPathCompletion(t *testing.T, completions <-chan runpkg.Comp
 	select {
 	case completion := <-completions:
 		return completion
-	case <-time.After(2 * time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for merge fast-path completion")
 	}
 	return runpkg.Completion{}

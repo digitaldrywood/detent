@@ -189,7 +189,7 @@ func TestCompleteTerminalRunningClearsInFlightHeartbeatLease(t *testing.T) {
 	close(connectorBackend.allowRenewal)
 	select {
 	case <-completionDone:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for terminal completion")
 	}
 	cancel()

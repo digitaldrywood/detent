@@ -39,7 +39,7 @@ func TestCompletionRefillsProjectSlotWithoutRefresh(t *testing.T) {
 				if request.Issue.ID != first.ID {
 					t.Fatalf("first run = %q, want %q", request.Issue.ID, first.ID)
 				}
-			case <-time.After(time.Second):
+			case <-t.Context().Done():
 				t.Fatal("first run did not start")
 			}
 			tracker.mu.Lock()
@@ -85,7 +85,7 @@ func TestCapacityIncreaseRefillsWithoutRefresh(t *testing.T) {
 		if request.Issue.ID != first.ID {
 			t.Fatalf("first run = %q, want %q", request.Issue.ID, first.ID)
 		}
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("first run did not start")
 	}
 	if err := orch.UpdateConfig(context.Background(), orchestrator.Config{

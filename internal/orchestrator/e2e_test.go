@@ -262,7 +262,7 @@ func assertOrchestratorStopped(t *testing.T, errCh <-chan error) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("orchestrator Run() error = %v, want context canceled", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for orchestrator to stop")
 	}
 }

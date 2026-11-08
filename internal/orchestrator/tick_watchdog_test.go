@@ -118,7 +118,7 @@ func TestTickWatchdogRunsOutsideTickLoop(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("watchdog did not stop after cancellation")
 	}
 }

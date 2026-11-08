@@ -457,7 +457,7 @@ func receiveClaimAttempt(t *testing.T, attempts <-chan string) string {
 	select {
 	case login := <-attempts:
 		return login
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for claim attempt")
 		return ""
 	}
@@ -469,7 +469,7 @@ func receiveClaimRun(t *testing.T, started <-chan RunRequest) RunRequest {
 	select {
 	case request := <-started:
 		return request
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for runner start")
 		return RunRequest{}
 	}
@@ -489,7 +489,7 @@ func receiveClaimCancellation(t *testing.T, canceled <-chan struct{}) {
 
 	select {
 	case <-canceled:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for runner cancellation")
 	}
 }

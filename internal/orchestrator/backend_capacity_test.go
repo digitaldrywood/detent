@@ -934,18 +934,13 @@ func TestRequestBackendCapacityClearWhileRefreshIsBusy(t *testing.T) {
 	go func() { done <- orch.Run(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case err := <-done:
-			if err != nil && !errors.Is(err, context.Canceled) {
-				t.Errorf("Run() error = %v", err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("orchestrator did not stop")
+		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("Run() error = %v", err)
 		}
 	})
 	select {
 	case <-tracker.entered:
-	case <-time.After(5 * time.Second):
+	case <-t.Context().Done():
 		t.Fatal("refresh did not enter the tracker")
 	}
 	requestCtx, requestCancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -1231,13 +1226,13 @@ func TestValidatorCapacityPausesWithoutFailureBackoff(t *testing.T) {
 	orch.startValidatorStage(t.Context(), &state, issue, now)
 	select {
 	case <-validator.requests:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("validator did not run")
 	}
 	var event validatorCapacityEvent
 	select {
 	case event = <-orch.validatorCapacityEvents:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("validator capacity event was not published")
 	}
 	orch.handleValidatorCapacityEvent(&state, event)
@@ -1299,7 +1294,7 @@ func TestValidatorTransientOverloadReleasesCapacityProbe(t *testing.T) {
 	orch.startValidatorStage(t.Context(), &state, issue, now)
 	select {
 	case <-validator.requests:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("validator did not run")
 	}
 	identity := validatorStageIdentityForIssue(issue)
@@ -1324,7 +1319,7 @@ func TestValidatorTransientOverloadReleasesCapacityProbe(t *testing.T) {
 	var capacityEvent validatorCapacityEvent
 	select {
 	case capacityEvent = <-orch.validatorCapacityEvents:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("validator overload probe release event was not published")
 	}
 	orch.handleValidatorCapacityEvent(&state, capacityEvent)
@@ -1381,7 +1376,7 @@ func TestValidatorCapacityProbeFailureKeepsOutage(t *testing.T) {
 			orch.startValidatorStage(t.Context(), &state, issue, now)
 			select {
 			case <-validator.requests:
-			case <-time.After(time.Second):
+			case <-t.Context().Done():
 				t.Fatal("validator did not run")
 			}
 			orch.validatorWG.Wait()

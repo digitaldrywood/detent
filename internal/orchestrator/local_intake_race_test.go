@@ -45,7 +45,7 @@ func TestLocalIntakeStopsRacingDispatchAndResumes(t *testing.T) {
 	defer stop()
 	select {
 	case <-tracker.started:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("candidate preparation barrier not reached")
 	}
 	cfg.LocalIntakeDisabled = true
@@ -53,7 +53,7 @@ func TestLocalIntakeStopsRacingDispatchAndResumes(t *testing.T) {
 	go func() { updated <- orch.UpdateConfig(t.Context(), cfg) }()
 	select {
 	case <-applied:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("intake policy blocked behind the dispatch tick")
 	}
 	close(tracker.release)
@@ -62,7 +62,7 @@ func TestLocalIntakeStopsRacingDispatchAndResumes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("config update did not finish")
 	}
 	state, err := orch.State(t.Context())

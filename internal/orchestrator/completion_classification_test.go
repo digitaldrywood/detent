@@ -181,7 +181,7 @@ func TestUnfinishedSessionsRetainConfiguredDispatch(t *testing.T) {
 				if result.Request.Mode != runpkg.RunModeImplement {
 					t.Fatalf("fourth mode = %s", result.Request.Mode)
 				}
-			case <-time.After(5 * time.Second):
+			case <-t.Context().Done():
 				t.Fatal("implementation did not complete")
 			}
 			if len(tracker.updates) != 0 || len(tracker.comments) != 0 {

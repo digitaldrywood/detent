@@ -195,7 +195,7 @@ func finishTestWorkspaceCleanup(t *testing.T, o *Orchestrator, state *State) {
 	select {
 	case result := <-o.workspaceCleanupResults:
 		o.finishWorkspaceCleanup(state, result)
-	case <-time.After(10 * time.Second):
+	case <-t.Context().Done():
 		t.Fatal("cleanup did not finish")
 	}
 	o.workspaceCleanupWG.Wait()

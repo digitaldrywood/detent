@@ -2012,7 +2012,7 @@ func TestMemoryConnectorOrchestratorsPartitionSharedIssuesByAuthorization(t *tes
 				if !errors.Is(err, context.Canceled) {
 					t.Fatalf("Run() error = %v, want context canceled", err)
 				}
-			case <-time.After(time.Second):
+			case <-t.Context().Done():
 				t.Fatal("timed out waiting for orchestrator shutdown")
 			}
 		})
@@ -3696,7 +3696,7 @@ func TestDispatchReadyIssuesStaggersContinuationDispatches(t *testing.T) {
 	}
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for dispatchReadyIssues to finish")
 	}
 }

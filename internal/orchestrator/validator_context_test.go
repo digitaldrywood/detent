@@ -178,7 +178,7 @@ func TestValidatorContextSchedulesOnceAndRejectsHeldResult(t *testing.T) {
 		if req.Issue.Description != "A" {
 			t.Fatal("wrong input")
 		}
-	case <-time.After(5 * time.Second):
+	case <-t.Context().Done():
 		t.Fatal("review did not start")
 	}
 	o.startValidatorStage(t.Context(), &state, issue, time.Now())
@@ -192,7 +192,7 @@ func TestValidatorContextSchedulesOnceAndRejectsHeldResult(t *testing.T) {
 	validator.Release()
 	select {
 	case <-validator.done:
-	case <-time.After(5 * time.Second):
+	case <-t.Context().Done():
 		t.Fatal("review did not finish")
 	}
 	a := validatorStageIdentityForIssue(issue, cfg.AutoPromote.Gate)

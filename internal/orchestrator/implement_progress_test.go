@@ -1693,7 +1693,7 @@ func TestHandleRunResultReappliesCITriggerAfterWorkerPush(t *testing.T) {
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("relabel = %#v, want %#v", got, want)
 		}
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for worker-push trigger-label reapplication")
 	}
 }
@@ -1771,7 +1771,7 @@ func TestHandleRunResultRefreshesNewPullRequestBeforeCITrigger(t *testing.T) {
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("relabel = %#v, want %#v", got, want)
 		}
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for new-PR trigger-label reapplication")
 	}
 	if tracker.hydrations != 2 {
@@ -1856,7 +1856,7 @@ func TestHandleRunResultRefreshesStalePullRequestAfterHydrationFailure(t *testin
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("relabel = %#v, want %#v", got, want)
 		}
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for refreshed-head trigger-label reapplication")
 	}
 	if tracker.hydrations != 3 {

@@ -208,7 +208,7 @@ func TestHubSchedulingCycle(t *testing.T) {
 					if admitted.Execution != scheduling.execution || admitted.RetryMode != "" || admitted.ResumeState != (store.AgentResumeState{}) || admitted.Issue.ID != selected.ID {
 						t.Fatalf("native claim lost recovery owner or seeded local continuation: %+v", admitted)
 					}
-				case <-time.After(5 * time.Second):
+				case <-t.Context().Done():
 					t.Fatal("interrupted Code did not reach its native execution owner")
 				}
 			}
@@ -987,7 +987,7 @@ func TestNativeLandingBatchDispatch(t *testing.T) {
 			if request.LandingBatch == nil || request.Mode != runpkg.RunModeMerge {
 				t.Fatalf("unbatched native request: %#v", request)
 			}
-		case <-time.After(5 * time.Second):
+		case <-t.Context().Done():
 			t.Fatal("batch member not started")
 		}
 	}

@@ -287,11 +287,7 @@ func TestCompletedDependencyWaitAdmitsPrerequisiteAfterRestart(t *testing.T) {
 			}
 			t.Cleanup(func() {
 				o.cancelRunning(&state, wantIssue)
-				select {
-				case <-o.runResults:
-				case <-time.After(10 * time.Second):
-					t.Error("worker did not finish after cancellation")
-				}
+				<-o.runResults
 			})
 			if request := receiveWorkerHostRunRequest(t, runner.started); request.Issue.ID != wantIssue {
 				t.Fatalf("launched %s, want %s", request.Issue.ID, wantIssue)

@@ -749,7 +749,7 @@ func testDrainStopsDispatchAndLetsRunningSessionFinish(t *testing.T, activeState
 
 	select {
 	case <-tracker.started:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("discovery did not block while implementation was active")
 	}
 
@@ -880,7 +880,7 @@ func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
 
 			select {
 			case <-tracker.started:
-			case <-time.After(time.Second):
+			case <-t.Context().Done():
 				t.Fatal("dispatch tick did not reach pending tracker fetch")
 			}
 
@@ -1004,7 +1004,7 @@ func TestWaitForDispatchQuiescedHonorsContext(t *testing.T) {
 
 	select {
 	case <-tracker.started:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("dispatch startup did not reach blocking connector")
 	}
 
@@ -1035,7 +1035,7 @@ func TestWaitForDispatchQuiescedHonorsContext(t *testing.T) {
 
 	select {
 	case <-runner.started:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("admitted dispatch did not become visible after startup resumed")
 	}
 	close(runner.release)
@@ -3834,7 +3834,7 @@ func (c *parallelFetchConnector) waitCandidateStarted(t *testing.T) {
 
 	select {
 	case <-c.candidateStarted:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for candidate fetch to start")
 	}
 }
@@ -3844,7 +3844,7 @@ func (c *parallelFetchConnector) waitStatusStarted(t *testing.T) {
 
 	select {
 	case <-c.statusStarted:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for observed status fetch to start")
 	}
 }

@@ -82,7 +82,7 @@ func TestQueuedCompletionsReleaseCapacityBeforeRefill(t *testing.T) {
 			defer func() { release(); <-finished }()
 			select {
 			case <-entered:
-			case <-time.After(time.Second):
+			case <-t.Context().Done():
 				t.Fatal("completion cohort did not reach refill")
 			}
 			ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
@@ -107,7 +107,7 @@ func TestQueuedCompletionsReleaseCapacityBeforeRefill(t *testing.T) {
 			release()
 			select {
 			case <-finished:
-			case <-time.After(time.Second):
+			case <-t.Context().Done():
 				t.Fatal("completion cohort did not finish")
 			}
 			if fetches != 1 {

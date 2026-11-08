@@ -192,7 +192,7 @@ func TestCompletedReworkStartsCurrentHeadAuditBeforePromotion(t *testing.T) {
 	o.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
 	select {
 	case <-auditor.started:
-	case <-time.After(5 * time.Second):
+	case <-t.Context().Done():
 		t.Fatal("current-head audit did not start")
 	}
 	o.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Minute))

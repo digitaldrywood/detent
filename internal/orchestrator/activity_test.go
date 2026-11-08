@@ -40,7 +40,7 @@ func TestActivityUpdateHandlerPublishesIssueSessionContent(t *testing.T) {
 		if event.DetentSessionID != 1156 || event.Kind != "tool_output" || event.Title != "Tool output · exec_command" || event.Content != "ok package" {
 			t.Fatalf("event = %#v", event)
 		}
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for activity event")
 	}
 
@@ -62,7 +62,7 @@ func TestActivityUpdateHandlerPublishesIssueSessionContent(t *testing.T) {
 			event.Content != "server=codex_apps tool=github.create_pull_request repository=acme/other reason=repository_mismatch" || event.Status != "decline" {
 			t.Fatalf("MCP event = %#v", event)
 		}
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for MCP activity event")
 	}
 }

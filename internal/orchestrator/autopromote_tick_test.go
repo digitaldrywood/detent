@@ -3091,7 +3091,7 @@ func TestValidatorStageTracksHeadBeforeAndDuringReview(t *testing.T) {
 				if got := req.Issue.PullRequest.HeadSHA; got != "B" {
 					t.Fatalf("seeded head = %s, want B", got)
 				}
-			case <-time.After(time.Second):
+			case <-t.Context().Done():
 				t.Fatal("validator did not start")
 			}
 			current.PullRequest.HeadSHA = tt.finalHead
@@ -3864,7 +3864,7 @@ func TestRunDrainsInFlightValidatorStageOnShutdown(t *testing.T) {
 		if request.Issue.ID != issue.ID {
 			t.Fatalf("validator issue ID = %q, want %q", request.Issue.ID, issue.ID)
 		}
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("validator did not start")
 	}
 	select {
@@ -3872,7 +3872,7 @@ func TestRunDrainsInFlightValidatorStageOnShutdown(t *testing.T) {
 		if request.Issue.ID != runningIssue.ID {
 			t.Fatalf("run issue ID = %q, want %q", request.Issue.ID, runningIssue.ID)
 		}
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("worker run did not start")
 	}
 
@@ -3880,7 +3880,7 @@ func TestRunDrainsInFlightValidatorStageOnShutdown(t *testing.T) {
 
 	select {
 	case <-runner.canceled:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("validator did not observe shutdown cancellation")
 	}
 	waitForGlobalDispatchSlot(t, globalGate, "bravo")
@@ -3895,7 +3895,7 @@ func TestRunDrainsInFlightValidatorStageOnShutdown(t *testing.T) {
 
 	select {
 	case <-runner.done:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("validator did not exit")
 	}
 
@@ -3904,7 +3904,7 @@ func TestRunDrainsInFlightValidatorStageOnShutdown(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Run() error = %v, want context canceled", err)
 		}
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("Run() did not return after validator exited")
 	}
 }
