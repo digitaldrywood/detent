@@ -163,4 +163,4 @@ SELECT count(*) FROM runner_sprite_memberships WHERE organization_id=$1 AND allo
 SELECT count(*) FROM runner_sprite_memberships WHERE organization_id=$1 AND state<>'deleted' AND state<>'deleting';
 
 -- name: SpriteProvisionSourceFailure :one
-SELECT * FROM sprite_lifecycle_operations WHERE organization_id=$1 AND project_id=$2 AND source_revision=$3 AND outcome='rejected' AND operation IN ('provision','bootstrap','checkpoint') ORDER BY updated_at DESC,idempotency_key DESC LIMIT 1;
+SELECT * FROM sprite_lifecycle_operations WHERE organization_id=$1 AND project_id=$2 AND source_revision=$3 AND outcome='rejected' AND next_attempt_at>updated_at AND operation IN ('provision','bootstrap','checkpoint') ORDER BY updated_at DESC,idempotency_key DESC LIMIT 1;

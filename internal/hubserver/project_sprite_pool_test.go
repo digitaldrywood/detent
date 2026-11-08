@@ -823,9 +823,11 @@ func TestSpritePoolNameCollisions(t *testing.T) {
 				provider.stage = func(stage string) {
 					if stage == "create conflict" {
 						name := provider.created[len(provider.created)-1]
-						if err := f.service.retirePoolSpriteReservation(t.Context(), scope, name, "reservation retired\n", false); err != nil {
-							t.Error(err)
-						}
+						updateSpriteMembersFixture(t, f, func(member *runnerstore.SpriteMembership) {
+							if member.Name == name {
+								member.State = "deleting"
+							}
+						})
 					}
 				}
 			}
@@ -834,10 +836,10 @@ func TestSpritePoolNameCollisions(t *testing.T) {
 				f.service.config.Hosted = nil
 				historical := prepareRunner(t, f, runnerauth.Read)
 				f.service.config.Hosted = hosted
-				now := formatHubTime(f.service.config.now())
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,'detent-test',?,'deleted',?,?)`, scope.organization, "sprite-bright-badger", historical.enrollment.ID, now, now); err != nil {
-					t.Fatal(err)
-				}
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					now := f.service.config.now()
+					return w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: scope.organization, Name: "sprite-bright-badger", ProviderOrganization: "detent-test", EnrollmentID: historical.enrollment.ID, State: "deleted", IdleSince: now, CreatedAt: now})
+				})
 			}
 			view, err := f.service.readSpritePool(t.Context(), scope)
 			if err != nil {
@@ -879,7 +881,15 @@ func TestSpritePoolNameCollisions(t *testing.T) {
 				if i < test.conflicts {
 					var state string
 					var revoked bool
-					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT m.state,e.revoked_at IS NOT NULL FROM organization_sprite_members m JOIN runner_enrollments e ON e.id=m.enrollment_id WHERE m.organization_id=? AND m.name=?`, scope.organization, name).Scan(&state, &revoked); err != nil {
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+						member, err := r.(postgres.SpriteReader).SpriteMember(t.Context(), name)
+						if err != nil {
+							return err
+						}
+						enrollment, err := r.RunnerEnrollment(t.Context(), member.EnrollmentID)
+						state, revoked = member.State, enrollment.RevokedAt != nil
+						return err
+					}); err != nil {
 						t.Fatal(err)
 					}
 					if state != "deleted" || !revoked {
@@ -1085,32 +1095,43 @@ func TestSpritePoolDeletionBoundaries(t *testing.T) {
 				if test.change == "busy ceiling" {
 					updateSpritePoolFixture(t, f, func(pool *postgres.SpritePool) { pool.MaxRunners = 0 })
 				}
-				now := formatHubTime(f.service.config.now())
-				_, err = f.service.database.db.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT 'lease-busy',i.id,r.machine_id,'session-busy',?,?,?,?,? FROM issues i JOIN runner_identities r ON r.organization_id=i.organization_id WHERE i.project_id=? LIMIT 1`, formatHubTime(f.service.config.now().Add(time.Hour)), now, now, now, now, scope.project)
+				view, err := f.service.readSpritePool(t.Context(), scope)
+				if err != nil {
+					t.Fatal(err)
+				}
+				claimSpriteFixture(t, f, view.Members[0].RunnerID, "lease-busy")
 			case "floor":
 				if test.managed {
 					setSpriteAllocationFixture(t, f, 1, 2)
 					break
 				}
-				_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE organization_sprite_pools SET min_runners=1 WHERE organization_id=?`, scope.organization)
+				updateSpritePoolFixture(t, f, func(pool *postgres.SpritePool) { pool.MinRunners = 1 })
 			case "recent":
-				_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE organization_sprite_members SET idle_since=? WHERE organization_id=?`, formatHubTime(f.service.config.now()), scope.organization)
+				updateSpriteMembersFixture(t, f, func(member *runnerstore.SpriteMembership) { member.IdleSince = f.service.config.now() })
 			case "expired":
-				_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE organization_sprite_members SET state='bootstrapping' WHERE organization_id=?`, scope.organization)
-				if err == nil {
-					_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE runner_enrollments SET expires_at=? WHERE id IN (SELECT enrollment_id FROM organization_sprite_members WHERE organization_id=?)`, formatHubTime(f.service.config.now().Add(-time.Minute)), scope.organization)
-				}
+				updateSpriteMembersFixture(t, f, func(member *runnerstore.SpriteMembership) { member.State = "bootstrapping" })
+				now := f.service.config.now().Add(time.Hour)
+				f.service.config.now = func() time.Time { return now }
 			case "organization":
-				_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE organization_secrets SET organization_slug='another-org' WHERE organization_id=?`, scope.organization)
+				writeSpriteFixture(t, f, func(w tenantstore.Writer) error {
+					secret, err := w.AccessSecret(t.Context(), "", flySpritesToken)
+					if err != nil {
+						return err
+					}
+					secret.OrganizationSlug = "another-org"
+					return w.StoreAccessSecret(t.Context(), secret, accessstore.SecretAudit{OrganizationID: scope.organization, Actor: "fixture", Kind: flySpritesToken, Event: "set", KeyVersion: secret.Envelope.Version, RecordedAt: f.service.config.now()})
+				})
 			case "retiring":
 				updateSpritePoolFixture(t, f, func(pool *postgres.SpritePool) { pool.MaxRunners = 1 })
 				view, err := f.service.readSpritePool(t.Context(), scope)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE organization_sprite_members SET state='deleting' WHERE organization_id=? AND name=?`, scope.organization, view.Members[0].Name); err != nil {
-					t.Fatal(err)
-				}
+				updateSpriteMembersFixture(t, f, func(member *runnerstore.SpriteMembership) {
+					if member.Name == view.Members[0].Name {
+						member.State = "deleting"
+					}
+				})
 				if err := f.service.deletePoolSprite(t.Context(), scope, view.Members[1]); err != nil {
 					t.Fatal(err)
 				}

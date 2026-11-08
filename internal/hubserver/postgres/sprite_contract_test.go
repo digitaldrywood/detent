@@ -238,6 +238,16 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := repository.WriteSprite(t.Context(), "org_first", corestore.Serving, func(w postgres.SpriteWriter) error {
+		row, err := w.CreateSpriteOperation(t.Context(), postgres.SpriteOperation{OrganizationID: "org_first", IdempotencyKey: "no-delay-source", Name: "first", Operation: "provision", Attempts: 90, SourceRevision: "current-source", RequestObjectKey: new("objects/request"), CreatedAt: now.Add(time.Second), NextAttemptAt: now.Add(time.Second)})
+		if err != nil {
+			return err
+		}
+		row.Outcome, row.ReceiptObjectKey, row.UpdatedAt = "rejected", new("objects/no-delay"), now.Add(time.Second)
+		return w.UpdateSpriteOperation(t.Context(), row, row.Attempts)
+	}); err != nil {
+		t.Fatal(err)
+	}
 	var unbound int
 	if err := pool.QueryRow(pgtest.UnboundProbe(t.Context()), `SELECT count(*) FROM organization_sprite_pools`).Scan(&unbound); err != nil || unbound != 0 {
 		t.Fatalf("unbound rows=%d err=%v", unbound, err)

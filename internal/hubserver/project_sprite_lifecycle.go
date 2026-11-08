@@ -53,6 +53,10 @@ func (e spriteBootstrapExitError) Error() string {
 }
 
 func (s *Service) rejectSpriteOperation(ctx context.Context, op postgres.SpriteOperation, log string, remoteCreated bool) error {
+	return s.rejectSpriteOperationWithRetry(ctx, op, log, remoteCreated, true)
+}
+
+func (s *Service) rejectSpriteOperationWithRetry(ctx context.Context, op postgres.SpriteOperation, log string, remoteCreated, retry bool) error {
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	key, err := s.spriteLifecycleArchive(cleanup, op.OrganizationID, spriteLifecycleReceipt{Log: log})
@@ -68,7 +72,10 @@ func (s *Service) rejectSpriteOperation(ctx context.Context, op postgres.SpriteO
 		op.Outcome = "rejected"
 		op.ReceiptObjectKey = &key
 		op.UpdatedAt = s.config.now()
-		op.NextAttemptAt = spriteOperationRetryAt(op, op.UpdatedAt)
+		op.NextAttemptAt = op.UpdatedAt
+		if retry {
+			op.NextAttemptAt = spriteOperationRetryAt(op, op.UpdatedAt)
+		}
 		if err := owner.UpdateSpriteOperation(cleanup, op, op.Attempts); err != nil {
 			return err
 		}
@@ -94,7 +101,7 @@ func (s *Service) rejectSpriteOperation(ctx context.Context, op postgres.SpriteO
 			}
 		}
 		member = spritePoolMember{Name: row.Name, EnrollmentID: row.EnrollmentID, AllocationProjectID: row.AllocationProjectID}
-		if row.AllocationProjectID != "" {
+		if retry && row.AllocationProjectID != "" {
 			allocation, err := owner.SpriteAllocation(cleanup, row.AllocationProjectID)
 			if errors.Is(err, corestore.ErrNotFound) {
 				return nil
@@ -1064,7 +1071,7 @@ func (s *Service) runSpriteOperation(ctx context.Context, op postgres.SpriteOper
 		switch status {
 		case http.StatusOK:
 			if op.Outcome == "pending" {
-				return errors.Join(errSpriteNameTaken, s.rejectSpriteOperation(ctx, op, "Sprite name is already in use\n", false))
+				return errors.Join(errSpriteNameTaken, s.rejectSpriteOperationWithRetry(ctx, op, "Sprite name is already in use\n", false, false))
 			}
 		case http.StatusNotFound:
 			if err := s.saveSpriteOperation(ctx, &op, "uncertain", nil); err != nil {
@@ -1081,6 +1088,9 @@ func (s *Service) runSpriteOperation(ctx context.Context, op postgres.SpriteOper
 				return err
 			}
 			if status != http.StatusCreated {
+				if spriteNameCollision(status, raw) {
+					return errors.Join(errSpriteNameTaken, s.rejectSpriteOperationWithRetry(ctx, op, "Sprite name is already in use\n", false, false))
+				}
 				cause := spritesResponseError(status)
 				if status >= 400 && status < 500 && status != http.StatusRequestTimeout && status != http.StatusTooManyRequests {
 					return errors.Join(cause, s.rejectSpriteOperation(ctx, op, cause.Error()+"\n", false))

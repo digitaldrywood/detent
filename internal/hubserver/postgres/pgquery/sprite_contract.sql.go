@@ -862,7 +862,7 @@ func (q *Queries) SpritePromotionSource(ctx context.Context, organizationID trac
 }
 
 const spriteProvisionSourceFailure = `-- name: SpriteProvisionSourceFailure :one
-SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id, source_revision FROM sprite_lifecycle_operations WHERE organization_id=$1 AND project_id=$2 AND source_revision=$3 AND outcome='rejected' AND operation IN ('provision','bootstrap','checkpoint') ORDER BY updated_at DESC,idempotency_key DESC LIMIT 1
+SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id, source_revision FROM sprite_lifecycle_operations WHERE organization_id=$1 AND project_id=$2 AND source_revision=$3 AND outcome='rejected' AND next_attempt_at>updated_at AND operation IN ('provision','bootstrap','checkpoint') ORDER BY updated_at DESC,idempotency_key DESC LIMIT 1
 `
 
 type SpriteProvisionSourceFailureParams struct {

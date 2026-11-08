@@ -132,26 +132,33 @@ func (s *Service) createPoolSpriteWithNames(ctx context.Context, scope nativeSco
 		if s.config.Hosted == nil || settings.MaxRunners == 0 {
 			return false, nil
 		}
-		name, err := names.next(func(name string) (bool, error) {
-			exists := false
-			err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-				owner, ok := r.(postgres.SpriteReader)
-				if !ok {
-					return accessstore.ErrTransactionRequired
-				}
-				_, err := owner.SpriteMember(ctx, name)
-				exists = err == nil
-				if errors.Is(err, corestore.ErrNotFound) {
-					return nil
-				}
-				return err
+		created := false
+		for {
+			name, err := names.next(func(name string) (bool, error) {
+				exists := false
+				err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					owner, ok := r.(postgres.SpriteReader)
+					if !ok {
+						return accessstore.ErrTransactionRequired
+					}
+					_, err := owner.SpriteMember(ctx, name)
+					exists = err == nil
+					if errors.Is(err, corestore.ErrNotFound) {
+						return nil
+					}
+					return err
+				})
+				return exists, err
 			})
-			return exists, err
-		})
-		if err != nil {
-			return false, err
+			if err != nil {
+				return created, err
+			}
+			reserved, err := s.createPoolSpriteRecord(ctx, scope, settings, allowOrganization, name)
+			created = created || reserved
+			if !errors.Is(err, errSpriteNameTaken) {
+				return created, err
+			}
 		}
-		return s.createPoolSpriteRecord(ctx, scope, settings, allowOrganization, name)
 	}
 
 	if s.config.Hosted == nil || settings.MaxRunners == 0 {
@@ -784,4 +791,21 @@ func spriteMemberHoldsWork(ctx context.Context, q nativeQueryer, organization tr
 	var held bool
 	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM leases l JOIN runner_identities r ON r.machine_id=l.machine_id WHERE r.enrollment_id=? AND r.organization_id=? AND l.released_at IS NULL AND (r.removed_at IS NULL OR EXISTS(SELECT 1 FROM native_attempts a WHERE a.lease_id=l.lease_id AND a.worker_cleanup_required=1 AND a.cleanup_acknowledged_at IS NULL)))`, enrollment, organization).Scan(&held)
 	return held, err
+}
+
+func spriteNameCollision(status int, data []byte) bool {
+	if status == http.StatusConflict {
+		return true
+	}
+	if status != http.StatusBadRequest {
+		return false
+	}
+	var failure struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(data, &failure) != nil {
+		return false
+	}
+	message := strings.ToLower(failure.Error)
+	return strings.Contains(message, "already exists") || strings.Contains(message, "already taken")
 }
