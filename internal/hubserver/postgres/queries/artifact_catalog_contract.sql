@@ -46,7 +46,7 @@ INSERT INTO artifact_catalog_manifests(organization_id,project_id,service_id,upl
 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *;
 
 -- name: CatalogObjectTotals :one
-SELECT count(*) FILTER(WHERE verified_at IS NOT NULL)::bigint AS verified_count,COALESCE(sum(size) FILTER(WHERE verified_at IS NOT NULL),0)::bigint AS verified_bytes,count(*) FILTER(WHERE verified_at IS NULL AND discarded_at IS NULL)::bigint AS pending_count FROM artifact_catalog_objects WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4;
+SELECT count(*) FILTER(WHERE verified_at IS NOT NULL)::bigint AS verified_count,COALESCE(sum(size) FILTER(WHERE verified_at IS NOT NULL),0)::bigint AS verified_bytes,count(*) FILTER(WHERE verified_at IS NULL AND discarded_at IS NULL)::bigint AS pending_count,COALESCE(sum(size) FILTER(WHERE verified_at IS NULL AND discarded_at IS NULL),0)::bigint AS pending_bytes FROM artifact_catalog_objects WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4;
 
 -- name: SealCatalogUpload :one
 UPDATE artifact_catalog_uploads SET manifest_revision=sqlc.arg(revision),state=CASE WHEN sqlc.arg(state)::text='partial' THEN 'uploading' ELSE sqlc.arg(state) END,retained_bytes=retained_bytes+sqlc.arg(body_bytes),reserved_bytes=CASE WHEN sqlc.arg(state)::text='partial' THEN reserved_bytes-sqlc.arg(body_bytes) ELSE 0 END

@@ -63,6 +63,11 @@ func (s *session) PutCatalogObject(ctx context.Context, row CatalogObject, at ti
 		if existing.ID != row.ID || existing.Sha256 != row.Sha256 || existing.Size != row.Size || existing.MediaType != row.MediaType || existing.Path != row.Path || existing.Side != row.Side || existing.ByteOffset != row.ByteOffset {
 			return CatalogObject{}, corestore.ErrRevisionConflict
 		}
+		if existing.VerifiedAt == nil && existing.DiscardedAt == nil {
+			if err := s.checkCatalogObjectAdmission(ctx, row, upload, 0); err != nil {
+				return CatalogObject{}, err
+			}
+		}
 		return existing, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -74,8 +79,8 @@ func (s *session) PutCatalogObject(ctx context.Context, row CatalogObject, at ti
 	if !at.Before(upload.UploadDeadline) {
 		return CatalogObject{}, artifact.ErrExpired
 	}
-	if row.Size > upload.ReservedBytes {
-		return CatalogObject{}, artifact.ErrQuota
+	if err := s.checkCatalogObjectAdmission(ctx, row, upload, row.Size); err != nil {
+		return CatalogObject{}, err
 	}
 	result, err := s.queries.CreateCatalogObject(ctx, pgquery.CreateCatalogObjectParams{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ServiceID: row.ServiceID, UploadID: row.UploadID, Sequence: row.Sequence, ID: row.ID, MediaType: row.MediaType, Size: row.Size, Sha256: row.Sha256, Path: row.Path, Side: row.Side, ByteOffset: row.ByteOffset})
 	return result, mapError(ctx, err)
@@ -150,4 +155,18 @@ func (s *session) DiscardCatalogObject(ctx context.Context, row CatalogObject, a
 	}
 	result, err := s.queries.DiscardCatalogObject(ctx, pgquery.DiscardCatalogObjectParams{OrganizationID: s.organization, ProjectID: row.ProjectID, ServiceID: row.ServiceID, UploadID: row.UploadID, Sequence: row.Sequence, DiscardedAt: new(at), DiscardReceiptObjectKey: new(receipt)})
 	return result, updated(ctx, err)
+}
+
+func (s *session) checkCatalogObjectAdmission(ctx context.Context, row CatalogObject, upload CatalogUpload, additional int64) error {
+	if row.Size > upload.PartLimit {
+		return artifact.ErrQuota
+	}
+	totals, err := s.queries.CatalogObjectTotals(ctx, pgquery.CatalogObjectTotalsParams{OrganizationID: s.organization, ProjectID: row.ProjectID, ServiceID: row.ServiceID, UploadID: row.UploadID})
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if totals.PendingBytes > upload.ReservedBytes || additional > upload.ReservedBytes-totals.PendingBytes {
+		return artifact.ErrQuota
+	}
+	return nil
 }

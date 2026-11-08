@@ -352,3 +352,131 @@ func TestArtifactCatalogContractSerializesQuotaAndRequiresDiscardReceipt(t *test
 		}
 	}
 }
+
+func TestArtifactCatalogPendingAdmission(t *testing.T) {
+	for _, scenario := range []string{"outstanding descriptors", "stored part limit", "concurrent descriptors"} {
+		t.Run(scenario, func(t *testing.T) {
+			admin, repository, _, now := artifactCatalogFixture(t)
+			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+				for _, project := range []tracker.ProjectID{"prj_first", "prj_second"} {
+					service := fmt.Sprintf("service_%032x", 1)
+					request := catalogReservation(org, project, service, now)
+					if scenario == "stored part limit" {
+						request.Upload.PartLimit = 100
+					}
+					if err := repository.WriteArtifactCatalog(t.Context(), org, corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
+						_, err := w.ReserveCatalogUpload(t.Context(), request)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					object := postgres.CatalogObject{OrganizationID: org, ProjectID: project, ServiceID: service, UploadID: "upload", Sequence: 0, ID: "pending_0", MediaType: "text/plain", Size: 800, Sha256: artifact.Digest([]byte("pending_0"))}
+					put := func(value postgres.CatalogObject) error {
+						return repository.WriteArtifactCatalog(t.Context(), org, corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
+							_, err := w.PutCatalogObject(t.Context(), value, now)
+							return err
+						})
+					}
+					if scenario == "stored part limit" {
+						object.Size = 101
+						if err := put(object); !errors.Is(err, artifact.ErrQuota) {
+							t.Fatalf("descriptor above stored part limit admitted: %v", err)
+						}
+						object.Size = 100
+						if err := put(object); err != nil {
+							t.Fatalf("descriptor at stored part limit refused: %v", err)
+						}
+						continue
+					}
+					if scenario == "concurrent descriptors" {
+						start := make(chan struct{})
+						results := make(chan error, 2)
+						var workers sync.WaitGroup
+						for sequence := int32(0); sequence < 2; sequence++ {
+							workers.Go(func() {
+								<-start
+								value := object
+								value.Sequence = sequence
+								value.ID = fmt.Sprintf("pending_%d", sequence)
+								results <- put(value)
+							})
+						}
+						close(start)
+						workers.Wait()
+						close(results)
+						admitted, rejected := 0, 0
+						for err := range results {
+							if err == nil {
+								admitted++
+							} else if errors.Is(err, artifact.ErrQuota) {
+								rejected++
+							} else {
+								t.Fatal(err)
+							}
+						}
+						if admitted != 1 || rejected != 1 {
+							t.Fatalf("reservation over-authorized concurrent descriptors: admitted=%d rejected=%d", admitted, rejected)
+						}
+						continue
+					}
+					if err := put(object); err != nil {
+						t.Fatal(err)
+					}
+					second := object
+					second.Sequence = 1
+					second.ID = "pending_1"
+					if err := put(second); !errors.Is(err, artifact.ErrQuota) {
+						t.Fatalf("two 800-byte descriptors authorized under 1000-byte reservation: %v", err)
+					}
+					second.Size = 200
+					if err := put(second); err != nil {
+						t.Fatalf("remaining reserved bytes refused: %v", err)
+					}
+					third := object
+					third.Sequence = 2
+					third.ID = "pending_2"
+					third.Size = 1
+					if err := put(third); !errors.Is(err, artifact.ErrQuota) {
+						t.Fatalf("uncertain writes lost pending reservation: %v", err)
+					}
+					if err := repository.WriteArtifactCatalog(t.Context(), org, corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
+						_, err := w.DiscardCatalogObject(t.Context(), object, now, "")
+						return err
+					}); !errors.Is(err, artifact.ErrInvalid) {
+						t.Fatalf("unreceipted discard released reservation: %v", err)
+					}
+					if err := put(third); !errors.Is(err, artifact.ErrQuota) {
+						t.Fatalf("failed discard changed pending bytes: %v", err)
+					}
+					if err := repository.WriteArtifactCatalog(t.Context(), org, corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
+						_, err := w.DiscardCatalogObject(t.Context(), object, now, "objects/definite-rejection")
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+					third.Size = 800
+					if err := put(third); err != nil {
+						t.Fatalf("definite discard did not release descriptor admission: %v", err)
+					}
+				}
+			}
+			if scenario == "outstanding descriptors" {
+				if err := repository.Close(); err != nil {
+					t.Fatal(err)
+				}
+				repository, _ = repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+				for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+					for _, project := range []tracker.ProjectID{"prj_first", "prj_second"} {
+						err := repository.WriteArtifactCatalog(t.Context(), org, corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
+							_, err := w.PutCatalogObject(t.Context(), postgres.CatalogObject{OrganizationID: org, ProjectID: project, ServiceID: fmt.Sprintf("service_%032x", 1), UploadID: "upload", Sequence: 3, ID: "after_reopen", MediaType: "text/plain", Size: 1, Sha256: artifact.Digest([]byte("after_reopen"))}, now)
+							return err
+						})
+						if !errors.Is(err, artifact.ErrQuota) {
+							t.Fatalf("reopen lost pending descriptor reservation: %v", err)
+						}
+					}
+				}
+			}
+		})
+	}
+}

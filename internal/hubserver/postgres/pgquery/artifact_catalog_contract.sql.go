@@ -243,7 +243,7 @@ func (q *Queries) CatalogObject(ctx context.Context, arg CatalogObjectParams) (A
 }
 
 const catalogObjectTotals = `-- name: CatalogObjectTotals :one
-SELECT count(*) FILTER(WHERE verified_at IS NOT NULL)::bigint AS verified_count,COALESCE(sum(size) FILTER(WHERE verified_at IS NOT NULL),0)::bigint AS verified_bytes,count(*) FILTER(WHERE verified_at IS NULL AND discarded_at IS NULL)::bigint AS pending_count FROM artifact_catalog_objects WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4
+SELECT count(*) FILTER(WHERE verified_at IS NOT NULL)::bigint AS verified_count,COALESCE(sum(size) FILTER(WHERE verified_at IS NOT NULL),0)::bigint AS verified_bytes,count(*) FILTER(WHERE verified_at IS NULL AND discarded_at IS NULL)::bigint AS pending_count,COALESCE(sum(size) FILTER(WHERE verified_at IS NULL AND discarded_at IS NULL),0)::bigint AS pending_bytes FROM artifact_catalog_objects WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4
 `
 
 type CatalogObjectTotalsParams struct {
@@ -257,6 +257,7 @@ type CatalogObjectTotalsRow struct {
 	VerifiedCount int64
 	VerifiedBytes int64
 	PendingCount  int64
+	PendingBytes  int64
 }
 
 func (q *Queries) CatalogObjectTotals(ctx context.Context, arg CatalogObjectTotalsParams) (CatalogObjectTotalsRow, error) {
@@ -267,7 +268,12 @@ func (q *Queries) CatalogObjectTotals(ctx context.Context, arg CatalogObjectTota
 		arg.UploadID,
 	)
 	var i CatalogObjectTotalsRow
-	err := row.Scan(&i.VerifiedCount, &i.VerifiedBytes, &i.PendingCount)
+	err := row.Scan(
+		&i.VerifiedCount,
+		&i.VerifiedBytes,
+		&i.PendingCount,
+		&i.PendingBytes,
+	)
 	return i, err
 }
 
