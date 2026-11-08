@@ -1739,7 +1739,8 @@ func TestWorkItemAPIRejectsUnsupportedTracker(t *testing.T) {
 func TestAPIKeyManagementAndScopedWorkItemAccess(t *testing.T) {
 	t.Parallel()
 
-	server, backend, _, _ := newAPIKeyWorkItemTestServer(t, openWebTestStore(t))
+	keys, recorded := newAPIKeyUsageObserver()
+	server, _, _, _ := newAPIKeyWorkItemTestServer(t, keys)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()
@@ -1748,7 +1749,7 @@ func TestAPIKeyManagementAndScopedWorkItemAccess(t *testing.T) {
 		}
 	})
 	create := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/keys", `{
-		"name": "Video Studio",
+		"name": "Example client",
 		"scopes": ["write"],
 		"project_ids": ["example-org-video"],
 		"expires_in": "90d"
@@ -1782,7 +1783,14 @@ func TestAPIKeyManagementAndScopedWorkItemAccess(t *testing.T) {
 	if allowed.Code != http.StatusCreated {
 		t.Fatalf("allowed work item status = %d, want %d; body = %s", allowed.Code, http.StatusCreated, allowed.Body.String())
 	}
-	waitForAPIUsageLog(t, backend, apiKeyIDFromResponse(t, create.Body.Bytes()))
+	select {
+	case usage := <-recorded:
+		if usage.APIKeyID != apiKeyIDFromResponse(t, create.Body.Bytes()) || usage.Method != http.MethodPost || usage.Path != "/api/v1/projects/example-org-video/work-items" || usage.StatusCode != http.StatusCreated {
+			t.Fatalf("usage writer request = %+v", usage)
+		}
+	case <-t.Context().Done():
+		t.Fatal("allowed request was not sent to the usage writer")
+	}
 
 	disallowedProject := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/projects/detent/work-items", `{
 		"title": "Wrong project",
@@ -1943,7 +1951,8 @@ func TestAPIKeyRevokeExpireRotateAndRateLimit(t *testing.T) {
 func TestAPIUsageLogRecordsReturnedHTTPErrorStatus(t *testing.T) {
 	t.Parallel()
 
-	server, backend, _, _ := newAPIKeyWorkItemTestServer(t, openWebTestStore(t))
+	keys, recorded := newAPIKeyUsageObserver()
+	server, _, _, _ := newAPIKeyWorkItemTestServer(t, keys)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()
@@ -1962,9 +1971,13 @@ func TestAPIUsageLogRecordsReturnedHTTPErrorStatus(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("board card status = %d, want %d; body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
-	logs := waitForAPIUsageLogs(t, backend, keyID)
-	if logs[0].StatusCode != int64(http.StatusNotFound) {
-		t.Fatalf("usage log status = %d, want %d; log = %#v", logs[0].StatusCode, http.StatusNotFound, logs[0])
+	select {
+	case usage := <-recorded:
+		if usage.APIKeyID != keyID || usage.StatusCode != http.StatusNotFound {
+			t.Fatalf("usage log status/key = %+v, want 404 for %s", usage, keyID)
+		}
+	case <-t.Context().Done():
+		t.Fatal("returned HTTP error was not sent to the usage writer")
 	}
 }
 
@@ -12271,35 +12284,6 @@ func createExpiredAPIKey(t *testing.T, backend store.Store) string {
 	return token
 }
 
-func waitForAPIUsageLog(t *testing.T, backend store.Store, keyID string) {
-	t.Helper()
-
-	_ = waitForAPIUsageLogs(t, backend, keyID)
-}
-
-func waitForAPIUsageLogs(t *testing.T, backend store.Store, keyID string) []sqlc.ApiUsageLog {
-	t.Helper()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		queries := backend.Queries()
-		if queries == nil {
-			t.Fatalf("store Queries() = nil")
-		}
-		logs, err := queries.ListAPIUsageLogsByKey(context.Background(), keyID)
-		if err != nil {
-			t.Fatalf("ListAPIUsageLogsByKey() error = %v", err)
-		}
-		if len(logs) > 0 {
-			return logs
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("usage log count for %s stayed 0", keyID)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
 func mustSetWebProject(t *testing.T, registry *project.Registry, id string, paused bool) {
 	t.Helper()
 
@@ -14297,8 +14281,24 @@ func (loopbackReadStoreFixture) ListAPIKeys(ctx context.Context) ([]store.APIKey
 
 type authKeyStoreFixture struct {
 	storeProbe
-	mu   sync.Mutex
-	keys map[string]store.APIKey
+	mu          sync.Mutex
+	keys        map[string]store.APIKey
+	recordUsage func(context.Context, store.APIUsageLog) error
+}
+
+func newAPIKeyUsageObserver() (*authKeyStoreFixture, <-chan store.APIUsageLog) {
+	recorded := make(chan store.APIUsageLog, 1)
+	keys := &authKeyStoreFixture{keys: make(map[string]store.APIKey), recordUsage: func(ctx context.Context, usage store.APIUsageLog) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		select {
+		case recorded <- usage:
+		default:
+		}
+		return nil
+	}}
+	return keys, recorded
 }
 
 func (f *authKeyStoreFixture) CreateAPIKey(ctx context.Context, attrs store.APIKeyCreate) (store.APIKey, error) {
@@ -14393,7 +14393,10 @@ func (f *authKeyStoreFixture) MarkAPIKeyLastUsed(ctx context.Context, id string,
 	return f.mutate(ctx, id, func(key *store.APIKey) { key.LastUsedAt = &at })
 }
 
-func (*authKeyStoreFixture) RecordAPIUsageLog(ctx context.Context, _ store.APIUsageLog) error {
+func (f *authKeyStoreFixture) RecordAPIUsageLog(ctx context.Context, usage store.APIUsageLog) error {
+	if f.recordUsage != nil {
+		return f.recordUsage(ctx, usage)
+	}
 	return ctx.Err()
 }
 
