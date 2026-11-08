@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -191,22 +192,33 @@ func restoreCoreReportLanding(ctx context.Context, tx *sql.Tx, source CoreChange
 	}
 }
 
-func decodeCoreReportData(ctx context.Context, tx *sql.Tx, source CoreWorkItemImportSource, raw []byte, data *tracker.CollaborationData) error {
+func decodeCoreReportData(ctx context.Context, tx *coreNeutralImport, source CoreWorkItemImportSource, raw []byte, data *tracker.CollaborationData) error {
 	objects := reportImportObjects{organization: source.OrganizationID, store: source.Objects}
-	content := &changeContent{store: objects, query: tx, payloads: map[string][]byte{}, references: map[string]attachment.ArchiveReference{}}
+	content := &changeContent{store: objects, payloads: map[string][]byte{}, references: map[string]attachment.ArchiveReference{}}
+	owner := &runDetailContext{store: objects, organization: string(source.OrganizationID), cache: map[string]map[string]tracker.NativeRunData{}}
 	ctx = context.WithValue(ctx, changeContentKey{}, content)
-	ctx = context.WithValue(ctx, runDetailContextKey{}, &runDetailContext{store: objects, organization: string(source.OrganizationID), cache: map[string]map[string]tracker.NativeRunData{}})
-	ctx = payloadQueryContext(ctx, tx)
-	if err := decodeStorageJSON(ctx, raw, data); err != nil {
+	ctx = context.WithValue(ctx, runDetailContextKey{}, owner)
+	resolved, err := resolveCoreNeutralJSON(ctx, tx, source.OrganizationID, objects, raw)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(resolved, data); err != nil {
 		return err
 	}
 	var fields map[string]json.RawMessage
-	if err := decodeStorageJSON(ctx, raw, &fields); err != nil {
+	if err := json.Unmarshal(resolved, &fields); err != nil {
 		return err
 	}
 	if runRaw := fields["run"]; len(runRaw) > 0 && string(runRaw) != "null" {
+		resolved, err := resolveCoreNeutralJSON(ctx, tx, source.OrganizationID, objects, runRaw)
+		if err != nil {
+			return err
+		}
+		if err := prepareCoreNeutralRunDetail(ctx, tx, source.OrganizationID, objects, resolved, content, owner); err != nil {
+			return err
+		}
 		var run tracker.NativeRunData
-		if err := decodeActivityRun(ctx, tx, string(runRaw), &run); err != nil {
+		if err := decodeActivityRun(ctx, nil, string(resolved), &run); err != nil {
 			return err
 		}
 		data.Run = &run
@@ -235,15 +247,23 @@ func (s reportImportObjects) ReadDetail(ctx context.Context, organization string
 
 func ImportCoreReportEvents(ctx context.Context, target ReportImportTarget, source CoreWorkItemImportSource) (ReportImportSummary, error) {
 	var summary ReportImportSummary
-	if target == nil || source.CopyPath == "" || source.OrganizationID == "" || source.ProjectID == "" || source.Objects == nil {
+	if source.CopyPath != "" {
+		return summary, postgres.ErrNeutralImport
+	}
+	if target == nil || source.BundlePath == "" || source.OrganizationID == "" || source.ProjectID == "" || source.Objects == nil {
 		return summary, errors.New("invalid report import source")
 	}
 	digest := sha256.New()
-	err := postgres.ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, copyHash string) error {
+	err := postgres.ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+		if err := postgres.ValidateNeutralCoreImportTables(bundle, "collaboration_events", "change_content_objects", "attachments"); err != nil {
+			return err
+		}
+		tx := newCoreNeutralImport(bundle)
+		copyHash := bundle.Identity().SourceSHA256
 		summary.SourceSHA256 = copyHash
 		after := ""
 		for {
-			rows, err := tx.QueryContext(ctx, `SELECT id,work_item_id,sequence,type,schema_version,actor_json,data_json,event_revision,recorded_at FROM collaboration_events WHERE organization_id=? AND project_id=? AND id>? AND (type LIKE 'run.%' OR type='workflow.transitioned') ORDER BY id LIMIT 100`, source.OrganizationID, source.ProjectID, after)
+			rows, err := tx.rows(ctx, "collaboration_events", map[string]string{"organization_id": string(source.OrganizationID), "project_id": string(source.ProjectID)}, []string{"id"}, []string{after}, 100)
 			if err != nil {
 				return err
 			}
@@ -253,16 +273,12 @@ func ImportCoreReportEvents(ctx context.Context, target ReportImportTarget, sour
 				revision                        sql.NullInt64
 			}
 			page := []row{}
-			for rows.Next() {
+			for _, raw := range rows {
 				var value row
-				if err := rows.Scan(&value.id, &value.item, &value.sequence, &value.kind, &value.schema, &value.actor, &value.data, &value.revision, &value.at); err != nil {
-					rows.Close()
+				if err := raw.Decode(map[string]any{"id": &value.id, "work_item_id": &value.item, "sequence": &value.sequence, "type": &value.kind, "schema_version": &value.schema, "actor_json": &value.actor, "data_json": &value.data, "event_revision": &value.revision, "recorded_at": &value.at}); err != nil {
 					return err
 				}
 				page = append(page, value)
-			}
-			if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-				return err
 			}
 			if len(page) == 0 {
 				return nil
@@ -272,6 +288,9 @@ func ImportCoreReportEvents(ctx context.Context, target ReportImportTarget, sour
 			proofs := make([][]byte, 0, len(page))
 			observations, reworks := 0, 0
 			for _, row := range page {
+				if !strings.HasPrefix(row.kind, "run.") && row.kind != "workflow.transitioned" {
+					continue
+				}
 				var actor tracker.Actor
 				var data tracker.CollaborationData
 				if json.Unmarshal([]byte(row.actor), &actor) != nil {

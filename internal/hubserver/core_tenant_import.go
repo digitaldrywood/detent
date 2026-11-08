@@ -109,7 +109,7 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 			break
 		}
 		for _, project := range projects {
-			count, err := ImportCoreWorkItems(ctx, repository, CoreWorkItemImportSource{CopyPath: source.CopyPath, OrganizationID: source.OrganizationID, ProjectID: project.ID, Objects: source.Objects})
+			count, err := ImportCoreWorkItems(ctx, repository, CoreWorkItemImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, ProjectID: project.ID, Objects: source.Objects})
 			if err != nil {
 				return result, fmt.Errorf("import tenant work items: %w", err)
 			}
@@ -117,7 +117,7 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 			after = project.ID
 		}
 	}
-	result.Dependencies, err = ImportCoreIssueDependencies(ctx, repository, CoreDependencyImportSource{CopyPath: source.CopyPath, OrganizationID: source.OrganizationID, Objects: source.Objects})
+	result.Dependencies, err = ImportCoreIssueDependencies(ctx, repository, CoreDependencyImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, Objects: source.Objects})
 	if err != nil {
 		return result, fmt.Errorf("import tenant dependencies: %w", err)
 	}

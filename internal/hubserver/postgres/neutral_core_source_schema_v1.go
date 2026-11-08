@@ -188,6 +188,9 @@ func validateNeutralCoreSourceSchema(source *VerifiedNeutralImport, names ...str
 	for name, definition := range neutralExecutionSourceSchemasV1() {
 		definitions[name] = definition
 	}
+	for name, definition := range neutralWorkItemSourceSchemasV1() {
+		definitions[name] = definition
+	}
 	for _, name := range names {
 		definition, ok := definitions[name]
 		if !ok {

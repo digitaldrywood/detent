@@ -188,3 +188,102 @@ func readCoreNeutralObject(ctx context.Context, source *coreNeutralImport, organ
 	}
 	return raw, nil
 }
+
+func (s *coreNeutralImport) each(ctx context.Context, table string, filters map[string]string, order []string, read func(postgres.NeutralImportRow) error) error {
+	var after []string
+	for {
+		rows, err := s.rows(ctx, table, filters, order, after, 100)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		for _, row := range rows {
+			if err := read(row); err != nil {
+				return err
+			}
+		}
+		last := rows[len(rows)-1]
+		after = make([]string, len(order))
+		for index, column := range order {
+			if err := last.Decode(map[string]any{column: &after[index]}); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func resolveCoreNeutralJSON(ctx context.Context, source *coreNeutralImport, organization tracker.OrganizationID, objects attachment.DetailStore, raw []byte) ([]byte, error) {
+	if strings.HasPrefix(string(raw), "orgs/") {
+		return readCoreNeutralObject(ctx, source, organization, objects, string(raw))
+	}
+	return resolveStorageJSONWith(ctx, raw, func(ctx context.Context, org string, ref attachment.ArchiveReference) ([]byte, error) {
+		if org != string(organization) || ref.Validate(org) != nil {
+			return nil, artifact.ErrIntegrity
+		}
+		value, err := objects.ReadDetail(ctx, org, ref)
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(value)) != ref.UncompressedSize {
+			return nil, artifact.ErrIntegrity
+		}
+		return value, nil
+	})
+}
+
+func reconstructCoreNeutralVersion(ctx context.Context, source *coreNeutralImport, objects attachment.DetailStore, organization, project, item, record string, revision int64) ([]byte, error) {
+	if revision < 1 {
+		return nil, sql.ErrNoRows
+	}
+	rows, err := source.rows(ctx, "collaboration_versions", map[string]string{"organization_id": organization, "project_id": project, "work_item_id": item, "record_id": record}, []string{"revision"}, []string{strconv.FormatInt(max(0, revision-nativeVersionSnapshotInterval), 10)}, nativeVersionSnapshotInterval)
+	if err != nil {
+		return nil, err
+	}
+	type versionRow struct {
+		revision      int64
+		encoding, raw string
+	}
+	versions := make([]versionRow, 0, len(rows))
+	snapshot := -1
+	for _, row := range rows {
+		var value versionRow
+		if err := row.Decode(map[string]any{"revision": &value.revision, "encoding": &value.encoding, "record_json": &value.raw}); err != nil {
+			return nil, err
+		}
+		if value.revision > revision {
+			break
+		}
+		versions = append(versions, value)
+		if value.encoding == "snapshot" {
+			snapshot = len(versions) - 1
+		}
+	}
+	if snapshot < 0 || versions[len(versions)-1].revision != revision {
+		return nil, sql.ErrNoRows
+	}
+	var raw []byte
+	for index := snapshot; index < len(versions); index++ {
+		value := versions[index]
+		encoded, err := resolveCoreNeutralJSON(ctx, source, tracker.OrganizationID(organization), objects, []byte(value.raw))
+		if err != nil {
+			return nil, err
+		}
+		if index > snapshot && value.revision != versions[index-1].revision+1 {
+			return nil, sql.ErrNoRows
+		}
+		switch value.encoding {
+		case "snapshot":
+			raw = encoded
+		case "patch":
+			raw, err = applyNativeVersionPatch(raw, encoded)
+			if err != nil {
+				return nil, err
+			}
+		default:
+			return nil, errors.New("unknown history encoding")
+		}
+	}
+	return raw, nil
+}

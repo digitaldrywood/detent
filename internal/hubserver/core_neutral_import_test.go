@@ -244,3 +244,58 @@ func (f *coreNeutralFixture) write() string {
 	path, _ := writeCoreNeutralFixture(f.t, f.organization, tables, f.records, 1)
 	return path
 }
+
+func (f *coreNeutralFixture) clone(t *testing.T) *coreNeutralFixture {
+	t.Helper()
+	copy := &coreNeutralFixture{t: t, organization: f.organization, tables: make(map[string]postgres.NeutralImportTable), records: make(map[string][]postgres.NeutralImportRow)}
+	raw, err := json.Marshal(f.tables)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &copy.tables); err != nil {
+		t.Fatal(err)
+	}
+	raw, err = json.Marshal(f.records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &copy.records); err != nil {
+		t.Fatal(err)
+	}
+	return copy
+}
+func (f *coreNeutralFixture) set(table string, filters map[string]string, updates map[string]any) {
+	f.t.Helper()
+	matched := 0
+	for index, row := range f.records[table] {
+		matches := true
+		for name, want := range filters {
+			cell, ok := row.Values[name]
+			if !ok || cell.Null || string(cell.Data) != want {
+				matches = false
+				break
+			}
+		}
+		if !matches {
+			continue
+		}
+		matched++
+		values := make(map[string]any, len(row.Values))
+		for name, cell := range row.Values {
+			if cell.Null {
+				values[name] = nil
+			} else if cell.Encoding == "binary" {
+				values[name] = cell.Data
+			} else {
+				values[name] = string(cell.Data)
+			}
+		}
+		for name, value := range updates {
+			values[name] = value
+		}
+		f.records[table][index] = coreNeutralFixtureRow(f.t, f.tables[table], values)
+	}
+	if matched == 0 {
+		f.t.Fatalf("no source rows matched %s update", table)
+	}
+}

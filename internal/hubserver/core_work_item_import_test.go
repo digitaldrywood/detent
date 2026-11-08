@@ -5,25 +5,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	var native *pgxpool.Config
+	repository, _ := projectRecordPostgresWithAdmin(t, 3, func(config *pgxpool.Config) { native = config.Copy() })
 	objects := &memoryRunDetails{}
 	orgs := []tracker.OrganizationID{"org_import_first", "org_import_second"}
 	for _, org := range orgs {
@@ -44,43 +44,24 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 		}); err != nil {
 			t.Fatal(err)
 		}
-		originalPath := coreWorkItemSourceCopy(t, org, project, false)
-		contents, err := os.ReadFile(originalPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		path := filepath.Join(t.TempDir(), "report-source.db")
-		if err := os.WriteFile(path, contents, 0600); err != nil {
-			t.Fatal(err)
-		}
-		copyDB, err := sql.Open("sqlite", path)
-		if err != nil {
-			t.Fatal(err)
-		}
+		fixture := coreWorkItemNeutralFixture(t, org, project, false)
+		event := fixture.records["collaboration_events"][1]
 		var actor, recorded string
-		if err := copyDB.QueryRowContext(t.Context(), `SELECT actor_json,recorded_at FROM collaboration_events WHERE sequence=2`).Scan(&actor, &recorded); err != nil {
+		if err := event.Decode(map[string]any{"actor_json": &actor, "recorded_at": &recorded}); err != nil {
 			t.Fatal(err)
 		}
 		runData, err := json.Marshal(tracker.CollaborationData{Revision: 2, Run: &tracker.NativeRunData{AttemptID: "attempt_report_import", RunID: "run_report_import", Sequence: 1, Outcome: "failed", TerminalFailure: &tracker.NativeTerminalFailure{Error: "hub request timed out"}}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := copyDB.ExecContext(t.Context(), `INSERT INTO collaboration_events VALUES(?,?,?,?,?,?,?,?,?,?,?)`, "event_report_import", 3, "run.finished", 1, actor, string(runData), 2, recorded, org, project, "wi_core_import"); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := copyDB.ExecContext(t.Context(), `UPDATE issues SET event_sequence=3`); err != nil {
-			t.Fatal(err)
-		}
-		if err := copyDB.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(path, 0444); err != nil {
-			t.Fatal(err)
-		}
-		source := CoreWorkItemImportSource{CopyPath: path, OrganizationID: org, ProjectID: project, Objects: objects}
+		fixture.add("collaboration_events", map[string]any{"id": "event_report_import", "sequence": 3, "type": "run.finished", "schema_version": 1, "actor_json": actor, "data_json": string(runData), "event_revision": 2, "recorded_at": recorded, "project_id": project, "work_item_id": "wi_core_import"})
+		fixture.set("issues", map[string]string{"native_id": "wi_core_import"}, map[string]any{"event_sequence": 3})
+		path := fixture.write()
+
+		source := CoreWorkItemImportSource{BundlePath: path, OrganizationID: org, ProjectID: project, Objects: objects}
 		for range 2 {
 			count, err := ImportCoreWorkItems(t.Context(), repository, source)
-			if err != nil || count != 1 {
+			if err != nil || count != 2 {
 				t.Fatalf("organization %s import count=%d error=%v", org, count, err)
 			}
 		}
@@ -96,30 +77,33 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 			projectionDigest = parity.ProjectionSHA256
 		}
 		t.Run(string(org)+" nullable report revision", func(t *testing.T) {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			nullablePath := filepath.Join(t.TempDir(), "nullable-report-source.db")
-			if err := os.WriteFile(nullablePath, data, 0600); err != nil {
-				t.Fatal(err)
-			}
-			db, err := sql.Open("sqlite", nullablePath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, updateErr := db.ExecContext(t.Context(), `UPDATE collaboration_events SET event_revision=NULL WHERE type='run.finished'`)
-			if err := errors.Join(updateErr, db.Close()); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Chmod(nullablePath, 0444); err != nil {
-				t.Fatal(err)
-			}
+			nullableFixture := fixture.clone(t)
+			nullableFixture.set("collaboration_events", map[string]string{"type": "run.finished"}, map[string]any{"event_revision": nil})
 			nullableSource := source
-			nullableSource.CopyPath = nullablePath
+			nullableSource.BundlePath = nullableFixture.write()
+
 			parity, err := ImportCoreReportEvents(t.Context(), repository, nullableSource)
 			if err != nil || parity.Events != 1 || parity.ProjectionSHA256 != projectionDigest {
 				t.Fatalf("nullable source report fidelity: %+v error %v", parity, err)
+			}
+		})
+
+		if err := repository.Close(); err != nil {
+			t.Fatal(err)
+		}
+		pool, err := pgxpool.NewWithConfig(t.Context(), native.Copy())
+		if err != nil {
+			t.Fatal(err)
+		}
+		repository, err = postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
+		if err != nil {
+			pool.Close()
+			t.Fatal(err)
+		}
+		reopened := repository
+		t.Cleanup(func() {
+			if err := reopened.Close(); err != nil {
+				t.Error(err)
 			}
 		})
 
@@ -131,6 +115,23 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 			if item.ID != 41 || item.Revision != 2 || item.EventSequence != 3 || item.Title != "Updated title" || item.WorkflowStateName == nil || *item.WorkflowStateName != "Todo" || item.BodyObjectKey == nil {
 				return errors.New("typed work item did not preserve source identity and current fields")
 			}
+			second, err := r.WorkItem(t.Context(), project, "wi_core_import_second")
+			if err != nil {
+				return err
+			}
+			secondComments, err := r.Comments(t.Context(), project, second.NativeID, 0, 10)
+			if err != nil {
+				return err
+			}
+			for _, key := range []eventstore.CollaborationVersionKey{{RecordID: string(second.NativeID), Revision: 1}, {RecordID: string(second.NativeID), Revision: 2}, {RecordID: "comment_core_import_second", Revision: 1}} {
+				if _, err := r.CollaborationVersion(t.Context(), key.RecordID, key.Revision); err != nil {
+					return err
+				}
+			}
+			if second.ID != 43 || second.Number != 3 || second.Revision != 2 || second.EventSequence != 2 || len(secondComments) != 1 || secondComments[0].ID != "comment_core_import_second" {
+				return errors.New("second work item or its history was not preserved after reopen")
+			}
+
 			if *item.BodyObjectKey == "" {
 				return errors.New("work item body reference is empty")
 			}
@@ -236,34 +237,15 @@ func TestCoreWorkItemImportRejectsChangedCopyWhenAllIssuesWereDeleted(t *testing
 		t.Fatal(err)
 	}
 	original := coreWorkItemSourceCopy(t, org, project, false)
-	source := CoreWorkItemImportSource{CopyPath: original, OrganizationID: org, ProjectID: project, Objects: objects}
-	if count, err := ImportCoreWorkItems(t.Context(), repository, source); err != nil || count != 1 {
+	source := CoreWorkItemImportSource{BundlePath: original, OrganizationID: org, ProjectID: project, Objects: objects}
+	if count, err := ImportCoreWorkItems(t.Context(), repository, source); err != nil || count != 2 {
 		t.Fatalf("initial import count=%d error=%v", count, err)
 	}
 
-	changedPath := filepath.Join(t.TempDir(), "empty-source.db")
-	contents, err := os.ReadFile(original)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(changedPath, contents, 0600); err != nil {
-		t.Fatal(err)
-	}
-	changed, err := sql.Open("sqlite", changedPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := changed.ExecContext(t.Context(), `DELETE FROM issues`); err != nil {
-		_ = changed.Close()
-		t.Fatal(err)
-	}
-	if err := changed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(changedPath, 0400); err != nil {
-		t.Fatal(err)
-	}
-	source.CopyPath = changedPath
+	changedFixture := coreWorkItemNeutralFixture(t, org, project, false)
+	changedFixture.records["issues"] = nil
+	source.BundlePath = changedFixture.write()
+
 	if _, err := ImportCoreWorkItems(t.Context(), repository, source); !errors.Is(err, mutation.ErrConflict) {
 		t.Fatalf("changed empty copy error=%v", err)
 	}
@@ -302,14 +284,14 @@ func TestCoreIssueDependencyImportWaitsForCrossProjectIssuesAndReplays(t *testin
 				t.Fatal(err)
 			}
 			copyPath := coreDependencySourceCopy(t, org, dependentProject, blockerProject)
-			if count, err := ImportCoreWorkItems(t.Context(), repository, CoreWorkItemImportSource{CopyPath: copyPath, OrganizationID: org, ProjectID: dependentProject, Objects: objects}); err != nil || count != 1 {
+			if count, err := ImportCoreWorkItems(t.Context(), repository, CoreWorkItemImportSource{BundlePath: copyPath, OrganizationID: org, ProjectID: dependentProject, Objects: objects}); err != nil || count != 2 {
 				t.Fatalf("dependent issue import count=%d error=%v", count, err)
 			}
-			dependencySource := CoreDependencyImportSource{CopyPath: copyPath, OrganizationID: org, Objects: objects}
+			dependencySource := CoreDependencyImportSource{BundlePath: copyPath, OrganizationID: org, Objects: objects}
 			if _, err := ImportCoreIssueDependencies(t.Context(), repository, dependencySource); !errors.Is(err, corestore.ErrNotFound) {
 				t.Fatalf("dependency import before blocker exists error=%v", err)
 			}
-			if count, err := ImportCoreWorkItems(t.Context(), repository, CoreWorkItemImportSource{CopyPath: copyPath, OrganizationID: org, ProjectID: blockerProject, Objects: objects}); err != nil || count != 1 {
+			if count, err := ImportCoreWorkItems(t.Context(), repository, CoreWorkItemImportSource{BundlePath: copyPath, OrganizationID: org, ProjectID: blockerProject, Objects: objects}); err != nil || count != 1 {
 				t.Fatalf("blocker issue import count=%d error=%v", count, err)
 			}
 			for range 2 {
@@ -381,7 +363,7 @@ func TestCoreWorkItemImportRollsBackMalformedQueue(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	source := CoreWorkItemImportSource{CopyPath: coreWorkItemSourceCopy(t, org, project, true), OrganizationID: org, ProjectID: project, Objects: objects}
+	source := CoreWorkItemImportSource{BundlePath: coreWorkItemSourceCopy(t, org, project, true), OrganizationID: org, ProjectID: project, Objects: objects}
 	if _, err := ImportCoreWorkItems(t.Context(), repository, source); err == nil {
 		t.Fatal("malformed queue completed import")
 	}
@@ -397,166 +379,103 @@ func TestCoreWorkItemImportRollsBackMalformedQueue(t *testing.T) {
 
 func coreWorkItemSourceCopy(t *testing.T, org tracker.OrganizationID, project tracker.ProjectID, malformedQueue bool) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "source.db")
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	for _, statement := range []string{
-		`CREATE TABLE issues(id INTEGER,native_id TEXT,project_id TEXT,number INTEGER,revision INTEGER,event_sequence INTEGER,native_source_key TEXT,title TEXT,body TEXT,issue_contract_json TEXT,report_context_json TEXT,actor_json TEXT,provenance_json TEXT,archived INTEGER,created_at TEXT,updated_at TEXT,native_created_at TEXT,native_updated_at TEXT,last_activity_at TEXT,workflow_state_id INTEGER,labels_json TEXT,assignees_json TEXT,author_login TEXT,repository_id INTEGER,dispatch_wait_since TEXT,organization_id TEXT)`,
-		`CREATE TABLE workflow_states(id INTEGER,detent_state TEXT)`,
-		`CREATE TABLE repositories(id INTEGER,github_owner TEXT,github_name TEXT)`,
-		`CREATE TABLE queue_entries(id INTEGER,issue_id INTEGER,scope TEXT,state TEXT,rank TEXT,priority_override INTEGER,created_at TEXT,updated_at TEXT)`,
-		`CREATE TABLE native_comments(id TEXT,revision INTEGER,sequence INTEGER,body TEXT,actor_json TEXT,edited_by_json TEXT,provenance_json TEXT,source_key TEXT,deleted INTEGER,created_at TEXT,updated_at TEXT,organization_id TEXT,project_id TEXT,work_item_id TEXT)`,
-		`CREATE TABLE collaboration_versions(organization_id TEXT,project_id TEXT,work_item_id TEXT,record_id TEXT,revision INTEGER,encoding TEXT,record_json TEXT)`,
-		`CREATE TABLE collaboration_events(id TEXT,sequence INTEGER,type TEXT,schema_version INTEGER,actor_json TEXT,data_json TEXT,event_revision INTEGER,recorded_at TEXT,organization_id TEXT,project_id TEXT,work_item_id TEXT)`,
-	} {
-		if _, err := db.ExecContext(t.Context(), statement); err != nil {
-			t.Fatal(err)
-		}
-	}
+	return coreWorkItemNeutralFixture(t, org, project, malformedQueue).write()
+}
+func coreWorkItemNeutralFixture(t *testing.T, org tracker.OrganizationID, project tracker.ProjectID, malformedQueue bool) *coreNeutralFixture {
+	t.Helper()
+	fixture := newCoreNeutralFixture(t, org, "issues", "workflow_states", "repositories", "queue_entries", "native_comments", "collaboration_versions", "collaboration_events", "issue_dependencies", "change_content_objects", "attachments")
 	const created = "2026-10-01T00:00:00Z"
 	const updated = "2026-10-02T00:00:00Z"
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO workflow_states VALUES(1,'Todo')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO repositories VALUES(1,'example-org','example-project')`); err != nil {
-		t.Fatal(err)
-	}
+	fixture.add("workflow_states", map[string]any{"id": 1, "project_id": project, "detent_state": "Todo"})
+	fixture.add("repositories", map[string]any{"id": 1, "github_owner": "example-org", "github_name": "example-project"})
 	actor := tracker.Actor{Kind: "human", PrincipalID: "example-owner"}
 	actorJSON, err := json.Marshal(actor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: project, WorkItemID: "wi_core_import", Number: 1, Revision: 1, Profile: "native"}, Title: "Initial title", Body: coreImportBody(), State: "Todo", Labels: []string{"needs-review"}, Assignees: []string{"example-assignee"}, Actor: actor, CreatedAt: parseTestTime(t, created), UpdatedAt: parseTestTime(t, created), LastActivityAt: parseTestTime(t, created)}
-	baseRaw, err := json.Marshal(base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	baseKeys, baseFields, err := nativeVersionObject(baseRaw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	baseRaw, err = nativeVersionObjectBytes(baseKeys, baseFields)
-	if err != nil {
-		t.Fatal(err)
-	}
-	current := base
-	current.Revision = 2
-	current.Title = "Updated title"
-	current.UpdatedAt = parseTestTime(t, updated)
-	current.LastActivityAt = parseTestTime(t, updated)
-	currentRaw, err := json.Marshal(current)
-	if err != nil {
-		t.Fatal(err)
-	}
-	currentKeys, currentFields, err := nativeVersionObject(currentRaw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	currentRaw, err = nativeVersionObjectBytes(currentKeys, currentFields)
-	if err != nil {
-		t.Fatal(err)
-	}
-	patch, encoding, err := encodeNativeVersion(baseRaw, "snapshot", currentRaw, 2)
-	if err != nil || encoding != "patch" {
-		t.Fatalf("encode source history encoding=%q error=%v", encoding, err)
-	}
-	for _, version := range []struct {
-		revision int
-		encoding string
-		raw      []byte
-	}{{1, "snapshot", baseRaw}, {2, encoding, patch}} {
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO collaboration_versions VALUES(?,?,?,?,?,?,?)`, org, project, "wi_core_import", "wi_core_import", version.revision, version.encoding, string(version.raw)); err != nil {
+	for index, suffix := range []string{"", "_second"} {
+		base := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: project, WorkItemID: tracker.NativeWorkItemID("wi_core_import" + suffix), Number: 1 + index*2, Revision: 1, Profile: "native"}, Title: "Initial title", Body: coreImportBody(), State: "Todo", Labels: []string{"needs-review"}, Assignees: []string{"example-assignee"}, Actor: actor, CreatedAt: parseTestTime(t, created), UpdatedAt: parseTestTime(t, created), LastActivityAt: parseTestTime(t, created)}
+		baseRaw, err := json.Marshal(base)
+		if err != nil {
 			t.Fatal(err)
 		}
-	}
-	commentActor, _ := json.Marshal(tracker.Actor{Kind: "human", PrincipalID: "example-commenter"})
-	comment := tracker.NativeComment{ID: "comment_core_import", OrganizationID: org, ProjectID: project, WorkItemID: "wi_core_import", Revision: 1, Sequence: 1, Body: "Example comment", Actor: tracker.Actor{Kind: "human", PrincipalID: "example-commenter"}, CreatedAt: parseTestTime(t, created), UpdatedAt: parseTestTime(t, created)}
-	commentRaw, err := json.Marshal(comment)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO native_comments VALUES(?,1,1,'Example comment',?,NULL,NULL,NULL,0,?,?,?, ?,?)`, comment.ID, string(commentActor), created, created, org, project, "wi_core_import"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO collaboration_versions VALUES(?,?,?,?,?,?,?)`, org, project, "wi_core_import", comment.ID, 1, "snapshot", string(commentRaw)); err != nil {
-		t.Fatal(err)
-	}
-	queueState := "Todo"
-	if malformedQueue {
-		queueState = ""
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO queue_entries VALUES(41,41,'native',?,'010',1,?,?)`, queueState, created, updated); err != nil {
-		t.Fatal(err)
-	}
-	for sequence, name := range []string{"issue.created", "issue.edited"} {
-		data, _ := json.Marshal(tracker.CollaborationData{Revision: tracker.Revision(sequence + 1)})
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO collaboration_events VALUES(?,?,?,?,?,?,?,?,?,?,?)`, "event_core_import_"+string(rune('1'+sequence)), sequence+1, name, 1, string(actorJSON), string(data), sequence+1, []string{created, updated}[sequence], org, project, "wi_core_import"); err != nil {
+		baseKeys, baseFields, err := nativeVersionObject(baseRaw)
+		if err != nil {
 			t.Fatal(err)
 		}
+		baseRaw, err = nativeVersionObjectBytes(baseKeys, baseFields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		current := base
+		current.Revision = 2
+		current.Title = "Updated title"
+		current.UpdatedAt = parseTestTime(t, updated)
+		current.LastActivityAt = parseTestTime(t, updated)
+		currentRaw, err := json.Marshal(current)
+		if err != nil {
+			t.Fatal(err)
+		}
+		currentKeys, currentFields, err := nativeVersionObject(currentRaw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		currentRaw, err = nativeVersionObjectBytes(currentKeys, currentFields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		patch, encoding, err := encodeNativeVersion(baseRaw, "snapshot", currentRaw, 2)
+		if err != nil || encoding != "patch" {
+			t.Fatalf("encode source history encoding=%q error=%v", encoding, err)
+		}
+		for _, version := range []struct {
+			revision int
+			encoding string
+			raw      []byte
+		}{{1, "snapshot", baseRaw}, {2, encoding, patch}} {
+			fixture.add("collaboration_versions", map[string]any{"organization_id": org, "project_id": project, "work_item_id": "wi_core_import" + suffix, "record_id": "wi_core_import" + suffix, "revision": version.revision, "encoding": version.encoding, "record_json": string(version.raw)})
+		}
+		commentActor, _ := json.Marshal(tracker.Actor{Kind: "human", PrincipalID: "example-commenter"})
+		comment := tracker.NativeComment{ID: "comment_core_import" + suffix, OrganizationID: org, ProjectID: project, WorkItemID: tracker.NativeWorkItemID("wi_core_import" + suffix), Revision: 1, Sequence: 1, Body: "Example comment", Actor: tracker.Actor{Kind: "human", PrincipalID: "example-commenter"}, CreatedAt: parseTestTime(t, created), UpdatedAt: parseTestTime(t, created)}
+		commentRaw, err := json.Marshal(comment)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixture.add("native_comments", map[string]any{"id": comment.ID, "revision": 1, "sequence": 1, "body": "Example comment", "actor_json": string(commentActor), "edited_by_json": nil, "provenance_json": nil, "source_key": nil, "deleted": 0, "created_at": created, "updated_at": created, "organization_id": org, "project_id": project, "work_item_id": "wi_core_import" + suffix})
+		fixture.add("collaboration_versions", map[string]any{"organization_id": org, "project_id": project, "work_item_id": "wi_core_import" + suffix, "record_id": comment.ID, "revision": 1, "encoding": "snapshot", "record_json": string(commentRaw)})
+		queueState := "Todo"
+		if malformedQueue {
+			queueState = ""
+		}
+		fixture.add("queue_entries", map[string]any{"id": 41 + index*2, "issue_id": 41 + index*2, "scope": "native", "state": queueState, "rank": "010", "priority_override": 1, "created_at": created, "updated_at": updated})
+		for sequence, name := range []string{"issue.created", "issue.edited"} {
+			data, _ := json.Marshal(tracker.CollaborationData{Revision: tracker.Revision(sequence + 1)})
+			fixture.add("collaboration_events", map[string]any{"id": "event_core_import_" + string(rune('1'+sequence)) + suffix, "sequence": sequence + 1, "type": name, "schema_version": 1, "actor_json": string(actorJSON), "data_json": string(data), "event_revision": sequence + 1, "recorded_at": []string{created, updated}[sequence], "organization_id": org, "project_id": project, "work_item_id": "wi_core_import" + suffix})
+		}
+		fixture.add("issues", map[string]any{"id": 41 + index*2, "native_id": "wi_core_import" + suffix, "project_id": project, "number": 1 + index*2, "revision": 2, "event_sequence": 2, "native_source_key": nil, "title": "Updated title", "body": coreImportBody(), "issue_contract_json": nil, "report_context_json": nil, "actor_json": string(actorJSON), "provenance_json": nil, "archived": 0, "created_at": created, "updated_at": updated, "native_created_at": created, "native_updated_at": updated, "last_activity_at": updated, "workflow_state_id": 1, "labels_json": "[\"needs-review\"]", "assignees_json": "[\"example-assignee\"]", "author_login": "example-author", "repository_id": 1, "dispatch_wait_since": nil, "organization_id": org})
 	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO issues VALUES(41,'wi_core_import',?,1,2,2,NULL,'Updated title',?,NULL,NULL,?,NULL,0,?,?,?, ?,?,1,'["needs-review"]','["example-assignee"]','example-author',1,NULL,?)`, project, coreImportBody(), string(actorJSON), created, updated, created, updated, updated, org); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(path, 0400); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return fixture
 }
 
 func coreDependencySourceCopy(t *testing.T, org tracker.OrganizationID, dependentProject, blockerProject tracker.ProjectID) string {
 	t.Helper()
-	path := coreWorkItemSourceCopy(t, org, dependentProject, false)
-	if err := os.Chmod(path, 0600); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	fixture := coreWorkItemNeutralFixture(t, org, dependentProject, false)
 	actor := tracker.Actor{Kind: "human", PrincipalID: "example-owner"}
 	actorJSON, err := json.Marshal(actor)
 	if err != nil {
-		_ = db.Close()
 		t.Fatal(err)
 	}
 	const created = "2026-10-01T00:00:00Z"
 	const updated = "2026-10-02T00:00:00Z"
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO issues(id,native_id,project_id,number,revision,event_sequence,native_source_key,title,body,issue_contract_json,report_context_json,actor_json,provenance_json,archived,created_at,updated_at,native_created_at,native_updated_at,last_activity_at,workflow_state_id,labels_json,assignees_json,author_login,repository_id,dispatch_wait_since,organization_id)
-VALUES(42,'wi_core_blocker',?,2,1,1,NULL,'Blocker title','Blocker body',NULL,NULL,?,NULL,0,?,?,?,?,?,1,'[]','[]','example-author',1,NULL,?)`, blockerProject, string(actorJSON), created, updated, created, updated, updated, org); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
+	fixture.add("issues", map[string]any{"id": 42, "native_id": "wi_core_blocker", "project_id": blockerProject, "number": 2, "revision": 1, "event_sequence": 1, "native_source_key": nil, "title": "Blocker title", "body": "Blocker body", "issue_contract_json": nil, "report_context_json": nil, "actor_json": string(actorJSON), "provenance_json": nil, "archived": 0, "created_at": created, "updated_at": updated, "native_created_at": created, "native_updated_at": updated, "last_activity_at": updated, "workflow_state_id": 1, "labels_json": "[]", "assignees_json": "[]", "author_login": "example-author", "repository_id": 1, "dispatch_wait_since": nil, "organization_id": org})
 	blocker := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: blockerProject, WorkItemID: "wi_core_blocker", Number: 2, Revision: 1, Profile: "native"}, Title: "Blocker title", Body: "Blocker body", State: "Todo", Actor: actor, CreatedAt: parseTestTime(t, created), UpdatedAt: parseTestTime(t, updated), LastActivityAt: parseTestTime(t, updated)}
 	blockerRaw, err := json.Marshal(blocker)
 	if err != nil {
-		_ = db.Close()
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO collaboration_versions VALUES(?,?,?,?,?,?,?)`, org, blockerProject, blocker.WorkItemID, blocker.WorkItemID, blocker.Revision, "snapshot", string(blockerRaw)); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `CREATE TABLE issue_dependencies(blocker_issue_id INTEGER,dependent_issue_id INTEGER,provenance TEXT,source_version TEXT,created_at TEXT,updated_at TEXT)`); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO issue_dependencies VALUES(42,41,'github','source-v17','2026-10-02T03:04:05.123456789Z','2026-10-03T04:05:06.987654321Z')`); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(path, 0400); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	fixture.add("collaboration_versions", map[string]any{"organization_id": org, "project_id": blockerProject, "work_item_id": blocker.WorkItemID, "record_id": blocker.WorkItemID, "revision": blocker.Revision, "encoding": "snapshot", "record_json": string(blockerRaw)})
+	fixture.add("issue_dependencies", map[string]any{"blocker_issue_id": 42, "dependent_issue_id": 41, "provenance": "github", "source_version": "source-v17", "created_at": "2026-10-02T03:04:05.123456789Z", "updated_at": "2026-10-03T04:05:06.987654321Z"})
+	return fixture.write()
 }
 
 func coreImportBody() string {
@@ -570,4 +489,60 @@ func parseTestTime(t *testing.T, raw string) time.Time {
 		t.Fatal(err)
 	}
 	return value
+}
+
+func TestCoreWorkItemImportsRejectUnsupportedSchemaBeforePin(t *testing.T) {
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
+	for _, family := range []string{"work_items", "dependencies", "report_events"} {
+		t.Run(family, func(t *testing.T) {
+			fixture := coreWorkItemNeutralFixture(t, "org_work_item_schema", "prj_example", false)
+			tableName := "issues"
+			if family == "report_events" {
+				tableName = "collaboration_events"
+			}
+			table := fixture.tables[tableName]
+			table.Columns["unaccounted"] = fmt.Sprintf(`[%d,"unaccounted","TEXT",1,null,0,0]`, len(table.Columns))
+			for _, row := range fixture.records[table.Name] {
+				row.Values["unaccounted"] = storagecatalog.Cell{Encoding: "utf8", Data: []byte("must survive migration")}
+			}
+			fixture.tables[table.Name] = table
+			objects := &memoryRunDetails{}
+			path := fixture.write()
+			var err error
+			switch family {
+			case "work_items":
+				_, err = ImportCoreWorkItems(t.Context(), repository, CoreWorkItemImportSource{BundlePath: path, OrganizationID: fixture.organization, ProjectID: "prj_example", Objects: objects})
+			case "dependencies":
+				_, err = ImportCoreIssueDependencies(t.Context(), repository, CoreDependencyImportSource{BundlePath: path, OrganizationID: fixture.organization, Objects: objects})
+			case "report_events":
+				_, err = ImportCoreReportEvents(t.Context(), repository, CoreWorkItemImportSource{BundlePath: path, OrganizationID: fixture.organization, ProjectID: "prj_example", Objects: objects})
+			}
+			if !errors.Is(err, storagecatalog.ErrUnmapped) {
+				t.Fatalf("schema drift error=%v", err)
+			}
+			var count int
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM neutral_import_sources").Scan(&count); err != nil || count != 0 {
+				t.Fatalf("source pinned before schema validation: count=%d error=%v", count, err)
+			}
+		})
+	}
+}
+
+func TestCoreWorkItemImportsRefuseLegacyCopy(t *testing.T) {
+	for _, family := range []string{"work_items", "dependencies", "report_events"} {
+		for _, bundle := range []string{"", "unused-neutral-bundle"} {
+			var err error
+			switch family {
+			case "work_items":
+				_, err = ImportCoreWorkItems(t.Context(), nil, CoreWorkItemImportSource{CopyPath: "preserved-copy", BundlePath: bundle})
+			case "dependencies":
+				_, err = ImportCoreIssueDependencies(t.Context(), nil, CoreDependencyImportSource{CopyPath: "preserved-copy", BundlePath: bundle})
+			case "report_events":
+				_, err = ImportCoreReportEvents(t.Context(), nil, CoreWorkItemImportSource{CopyPath: "preserved-copy", BundlePath: bundle})
+			}
+			if !errors.Is(err, postgres.ErrNeutralImport) {
+				t.Fatalf("%s legacy selector error=%v", family, err)
+			}
+		}
+	}
 }

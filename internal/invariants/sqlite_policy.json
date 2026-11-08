@@ -376,10 +376,6 @@
       "driver_import": 1,
       "sqlite_open": 1
     },
-    "internal/hubserver/core_work_item_import_test.go": {
-      "driver_import": 1,
-      "sqlite_open": 5
-    },
     "internal/hubserver/cost_records_test.go": {
       "database_path": 1
     },

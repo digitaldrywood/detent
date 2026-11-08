@@ -24,6 +24,7 @@ import (
 )
 
 type CoreWorkItemImportSource struct {
+	BundlePath     string
 	CopyPath       string
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
@@ -31,6 +32,7 @@ type CoreWorkItemImportSource struct {
 }
 
 type CoreDependencyImportSource struct {
+	BundlePath     string
 	CopyPath       string
 	OrganizationID tracker.OrganizationID
 	Objects        attachment.DetailStore
@@ -72,13 +74,21 @@ type coreWorkItemImportRow struct {
 }
 
 func ImportCoreWorkItems(ctx context.Context, target *postgres.Repository, source CoreWorkItemImportSource) (int64, error) {
-	if target == nil || source.CopyPath == "" || source.OrganizationID == "" || source.ProjectID == "" || source.Objects == nil {
+	if source.CopyPath != "" {
+		return 0, postgres.ErrNeutralImport
+	}
+	if target == nil || source.BundlePath == "" || source.OrganizationID == "" || source.ProjectID == "" || source.Objects == nil {
 		return 0, errors.New("invalid core work item import source")
 	}
 	objects := eventstore.NewContent(source.Objects)
 	var imported int64
-	err := postgres.ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, copyHash string) error {
-		if err := target.PinCoreImportSource(ctx, source.OrganizationID, copyHash, source.Objects); err != nil {
+	err := postgres.ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+		if err := postgres.ValidateNeutralCoreImportTables(bundle, "issues", "workflow_states", "repositories", "queue_entries", "native_comments", "collaboration_versions", "collaboration_events", "change_content_objects", "attachments"); err != nil {
+			return err
+		}
+		tx := newCoreNeutralImport(bundle)
+		copyHash := bundle.Identity().SourceSHA256
+		if err := target.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
 			return err
 		}
 		var after int64
@@ -107,13 +117,21 @@ func ImportCoreWorkItems(ctx context.Context, target *postgres.Repository, sourc
 }
 
 func ImportCoreIssueDependencies(ctx context.Context, target *postgres.Repository, source CoreDependencyImportSource) (int64, error) {
-	if target == nil || source.CopyPath == "" || source.OrganizationID == "" || source.Objects == nil {
+	if source.CopyPath != "" {
+		return 0, postgres.ErrNeutralImport
+	}
+	if target == nil || source.BundlePath == "" || source.OrganizationID == "" || source.Objects == nil {
 		return 0, errors.New("invalid core dependency import source")
 	}
 	objects := eventstore.NewContent(source.Objects)
 	var imported int64
-	err := postgres.ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, copyHash string) error {
-		if err := target.PinCoreImportSource(ctx, source.OrganizationID, copyHash, source.Objects); err != nil {
+	err := postgres.ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+		if err := postgres.ValidateNeutralCoreImportTables(bundle, "issues", "issue_dependencies"); err != nil {
+			return err
+		}
+		tx := newCoreNeutralImport(bundle)
+		copyHash := bundle.Identity().SourceSHA256
+		if err := target.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
 			return err
 		}
 		var afterDependent, afterBlocker int64
@@ -141,22 +159,29 @@ func ImportCoreIssueDependencies(ctx context.Context, target *postgres.Repositor
 	return imported, err
 }
 
-func readCoreDependencyImportPage(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, afterDependent, afterBlocker int64) ([]coreDependencyImportRow, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT d.dependent_issue_id,d.blocker_issue_id,dependent.project_id,dependent.native_id,blocker.project_id,blocker.native_id,blocker.organization_id,d.provenance,d.source_version,d.created_at,d.updated_at
-FROM issue_dependencies d
-JOIN issues dependent ON dependent.id=d.dependent_issue_id
-LEFT JOIN issues blocker ON blocker.id=d.blocker_issue_id
-WHERE dependent.organization_id=?
-AND (d.dependent_issue_id>? OR (d.dependent_issue_id=? AND d.blocker_issue_id>?))
-ORDER BY d.dependent_issue_id,d.blocker_issue_id LIMIT 100`, organization, afterDependent, afterDependent, afterBlocker)
+func readCoreDependencyImportPage(ctx context.Context, tx *coreNeutralImport, organization tracker.OrganizationID, afterDependent, afterBlocker int64) ([]coreDependencyImportRow, error) {
+	rows, err := tx.rows(ctx, "issue_dependencies", nil, []string{"dependent_issue_id", "blocker_issue_id"}, []string{strconv.FormatInt(afterDependent, 10), strconv.FormatInt(afterBlocker, 10)}, 100)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	result := make([]coreDependencyImportRow, 0, 100)
-	for rows.Next() {
+	for _, sourceRow := range rows {
 		var row coreDependencyImportRow
-		if err := rows.Scan(&row.DependentID, &row.BlockerID, &row.DependentProjectID, &row.DependentWorkItem, &row.BlockerProjectID, &row.BlockerWorkItem, &row.BlockerOrganization, &row.Provenance, &row.SourceVersion, &row.CreatedAt, &row.UpdatedAt); err != nil {
+		if err := sourceRow.Decode(map[string]any{"dependent_issue_id": &row.DependentID, "blocker_issue_id": &row.BlockerID, "provenance": &row.Provenance, "source_version": &row.SourceVersion, "created_at": &row.CreatedAt, "updated_at": &row.UpdatedAt}); err != nil {
+			return nil, err
+		}
+		dependent, err := tx.one(ctx, "issues", map[string]string{"organization_id": string(organization), "id": strconv.FormatInt(row.DependentID, 10)}, []string{"id"})
+		if err != nil {
+			return nil, err
+		}
+		if err := dependent.Decode(map[string]any{"project_id": &row.DependentProjectID, "native_id": &row.DependentWorkItem}); err != nil {
+			return nil, err
+		}
+		blocker, err := tx.one(ctx, "issues", map[string]string{"id": strconv.FormatInt(row.BlockerID, 10)}, []string{"id"})
+		if err != nil {
+			return nil, err
+		}
+		if err := blocker.Decode(map[string]any{"project_id": &row.BlockerProjectID, "native_id": &row.BlockerWorkItem, "organization_id": &row.BlockerOrganization}); err != nil {
 			return nil, err
 		}
 		if row.DependentID < 1 || row.BlockerID < 1 || row.DependentID == row.BlockerID || row.DependentProjectID == "" || row.DependentWorkItem == "" || row.BlockerProjectID == "" || row.BlockerWorkItem == "" || !row.BlockerOrganization.Valid || row.BlockerOrganization.String != string(organization) || row.Provenance == "" {
@@ -164,9 +189,7 @@ ORDER BY d.dependent_issue_id,d.blocker_issue_id LIMIT 100`, organization, after
 		}
 		result = append(result, row)
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, err
-	}
+
 	return result, nil
 }
 
@@ -218,32 +241,57 @@ func prepareCoreDependencyImport(ctx context.Context, objects *eventstore.Conten
 	}, nil
 }
 
-func readCoreWorkItemImportPage(ctx context.Context, tx *sql.Tx, source CoreWorkItemImportSource, after int64) ([]coreWorkItemImportRow, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT i.id,i.native_id,i.project_id,i.number,i.revision,i.event_sequence,i.native_source_key,
-i.title,i.body,i.issue_contract_json,i.report_context_json,i.actor_json,i.provenance_json,i.archived,
-i.created_at,i.updated_at,i.native_created_at,i.native_updated_at,i.last_activity_at,
-COALESCE(ws.detent_state,''),COALESCE(i.labels_json,'[]'),COALESCE(i.assignees_json,'[]'),COALESCE(i.author_login,''),
-COALESCE(r.github_owner || '/' || r.github_name,''),i.dispatch_wait_since
-FROM issues i
-LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id
-LEFT JOIN repositories r ON r.id=i.repository_id
-WHERE i.organization_id=? AND i.project_id=? AND i.id>? ORDER BY i.id LIMIT 100`, source.OrganizationID, source.ProjectID, after)
+func readCoreWorkItemImportPage(ctx context.Context, tx *coreNeutralImport, source CoreWorkItemImportSource, after int64) ([]coreWorkItemImportRow, error) {
+	rows, err := tx.rows(ctx, "issues", map[string]string{"organization_id": string(source.OrganizationID), "project_id": string(source.ProjectID)}, []string{"id"}, []string{strconv.FormatInt(after, 10)}, 100)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	result := make([]coreWorkItemImportRow, 0, 100)
-	for rows.Next() {
+	for _, sourceRow := range rows {
 		var row coreWorkItemImportRow
 		var nativeSourceKey, created, updated, nativeCreated, nativeUpdated, activity sql.NullString
 		item := &row.Item
 		item.OrganizationID = source.OrganizationID
-		err := rows.Scan(&item.ID, &item.NativeID, &item.ProjectID, &item.Number, &item.Revision, &item.EventSequence, &nativeSourceKey,
-			&item.Title, &row.Body, &row.Contract, &row.ReportContext, &row.Actor, &row.Provenance, &item.Archived,
-			&created, &updated, &nativeCreated, &nativeUpdated, &activity,
-			&row.WorkflowState, &row.Labels, &row.Assignees, &row.Author, &row.Repository, &row.DispatchWaitSince)
+		err := sourceRow.Decode(map[string]any{"id": &item.ID, "native_id": &item.NativeID, "project_id": &item.ProjectID, "number": &item.Number, "revision": &item.Revision, "event_sequence": &item.EventSequence, "native_source_key": &nativeSourceKey, "title": &item.Title, "body": &row.Body, "issue_contract_json": &row.Contract, "report_context_json": &row.ReportContext, "actor_json": &row.Actor, "provenance_json": &row.Provenance, "archived": &item.Archived, "created_at": &created, "updated_at": &updated, "native_created_at": &nativeCreated, "native_updated_at": &nativeUpdated, "last_activity_at": &activity, "dispatch_wait_since": &row.DispatchWaitSince})
 		if err != nil {
 			return nil, err
+		}
+		var stateID, repositoryID sql.NullInt64
+		var labels, assignees, author sql.NullString
+		if err := sourceRow.Decode(map[string]any{"workflow_state_id": &stateID, "repository_id": &repositoryID, "labels_json": &labels, "assignees_json": &assignees, "author_login": &author}); err != nil {
+			return nil, err
+		}
+		row.Labels, row.Assignees, row.Author = "[]", "[]", author.String
+		if labels.Valid {
+			row.Labels = labels.String
+		}
+		if assignees.Valid {
+			row.Assignees = assignees.String
+		}
+		row.WorkflowState = sql.NullString{Valid: true}
+		if stateID.Valid {
+			state, err := tx.one(ctx, "workflow_states", map[string]string{"id": strconv.FormatInt(stateID.Int64, 10)}, []string{"id"})
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return nil, err
+			}
+			if err == nil {
+				if err := state.Decode(map[string]any{"detent_state": &row.WorkflowState}); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if repositoryID.Valid {
+			repository, err := tx.one(ctx, "repositories", map[string]string{"id": strconv.FormatInt(repositoryID.Int64, 10)}, []string{"id"})
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return nil, err
+			}
+			if err == nil {
+				var owner, name string
+				if err := repository.Decode(map[string]any{"github_owner": &owner, "github_name": &name}); err != nil {
+					return nil, err
+				}
+				row.Repository = owner + "/" + name
+			}
 		}
 		if item.ProjectID != source.ProjectID || item.ID < 1 || item.NativeID == "" || item.Number < 1 || item.Revision < 1 {
 			return nil, eventstore.ErrInvalidRecord
@@ -272,13 +320,11 @@ WHERE i.organization_id=? AND i.project_id=? AND i.id>? ORDER BY i.id LIMIT 100`
 		item.WorkflowStateName = nullStringPointer(row.WorkflowState)
 		result = append(result, row)
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, err
-	}
+
 	return result, nil
 }
 
-func prepareCoreWorkItemImport(ctx context.Context, tx *sql.Tx, objects *eventstore.Content, source CoreWorkItemImportSource, copyHash string, row coreWorkItemImportRow) (postgres.CoreWorkItemImport, error) {
+func prepareCoreWorkItemImport(ctx context.Context, tx *coreNeutralImport, objects *eventstore.Content, source CoreWorkItemImportSource, copyHash string, row coreWorkItemImportRow) (postgres.CoreWorkItemImport, error) {
 	item := row.Item
 	if err := json.Unmarshal([]byte(row.Actor), &row.CurrentIssueSnapshot.Actor); err != nil {
 		return postgres.CoreWorkItemImport{}, eventstore.ErrInvalidRecord
@@ -368,7 +414,7 @@ func prepareCoreWorkItemImport(ctx context.Context, tx *sql.Tx, objects *eventst
 	var latestRaw []byte
 	for _, version := range record.Versions {
 		if version.RecordID == string(item.NativeID) && version.Revision == item.Revision {
-			latestRaw, err = reconstructNativeVersion(ctx, tx, string(source.OrganizationID), string(item.ProjectID), string(item.NativeID), string(item.NativeID), item.Revision)
+			latestRaw, err = reconstructCoreNeutralVersion(ctx, tx, source.Objects, string(source.OrganizationID), string(item.ProjectID), string(item.NativeID), string(item.NativeID), item.Revision)
 			if err != nil {
 				return postgres.CoreWorkItemImport{}, err
 			}
@@ -408,7 +454,7 @@ func prepareCoreWorkItemImport(ctx context.Context, tx *sql.Tx, objects *eventst
 		if importedVersionRevision(record.Versions, comment.ID) != comment.Revision {
 			return postgres.CoreWorkItemImport{}, errors.New("current comment version is missing")
 		}
-		raw, err := reconstructNativeVersion(ctx, tx, string(source.OrganizationID), string(item.ProjectID), string(item.NativeID), comment.ID, comment.Revision)
+		raw, err := reconstructCoreNeutralVersion(ctx, tx, source.Objects, string(source.OrganizationID), string(item.ProjectID), string(item.NativeID), comment.ID, comment.Revision)
 		if err != nil {
 			return postgres.CoreWorkItemImport{}, err
 		}
@@ -433,18 +479,14 @@ func prepareCoreWorkItemImport(ctx context.Context, tx *sql.Tx, objects *eventst
 	return record, nil
 }
 
-func readCoreImportQueues(ctx context.Context, tx *sql.Tx, source CoreWorkItemImportSource, item corestore.WorkItem, record *postgres.CoreWorkItemImport) error {
-	rows, err := tx.QueryContext(ctx, `SELECT q.scope,q.state,q.rank,q.priority_override,q.created_at,q.updated_at
-FROM queue_entries q WHERE q.issue_id=$1 ORDER BY q.id`, item.ID)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
+func readCoreImportQueues(ctx context.Context, tx *coreNeutralImport, source CoreWorkItemImportSource, item corestore.WorkItem, record *postgres.CoreWorkItemImport) error {
+	return tx.each(ctx, "queue_entries", map[string]string{"issue_id": strconv.FormatInt(item.ID, 10)}, []string{"id"}, func(sourceRow postgres.NeutralImportRow) error {
+		var err error
+
 		var queue claimstore.QueueEntry
 		var priority sql.NullInt64
 		var created, updated string
-		if err := rows.Scan(&queue.Scope, &queue.State, &queue.Rank, &priority, &created, &updated); err != nil {
+		if err := sourceRow.Decode(map[string]any{"scope": &queue.Scope, "state": &queue.State, "rank": &queue.Rank, "priority_override": &priority, "created_at": &created, "updated_at": &updated}); err != nil {
 			return err
 		}
 		queue.OrganizationID, queue.ProjectID, queue.WorkItemID = source.OrganizationID, item.ProjectID, item.NativeID
@@ -460,24 +502,20 @@ FROM queue_entries q WHERE q.issue_id=$1 ORDER BY q.id`, item.ID)
 			queue.Priority = &priority.Int64
 		}
 		record.Queues = append(record.Queues, queue)
-	}
-	return errors.Join(rows.Err(), rows.Close())
+		return nil
+	})
 }
 
-func readCoreImportComments(ctx context.Context, tx *sql.Tx, objects *eventstore.Content, source CoreWorkItemImportSource, item corestore.WorkItem, row *coreWorkItemImportRow, record *postgres.CoreWorkItemImport) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id,revision,sequence,body,actor_json,edited_by_json,provenance_json,source_key,deleted,created_at,updated_at
-FROM native_comments WHERE organization_id=? AND project_id=? AND work_item_id=? ORDER BY sequence`, source.OrganizationID, item.ProjectID, item.NativeID)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
+func readCoreImportComments(ctx context.Context, tx *coreNeutralImport, objects *eventstore.Content, source CoreWorkItemImportSource, item corestore.WorkItem, row *coreWorkItemImportRow, record *postgres.CoreWorkItemImport) error {
 	row.CommentBodies = make(map[string]string)
-	for rows.Next() {
+	return tx.each(ctx, "native_comments", map[string]string{"organization_id": string(source.OrganizationID), "project_id": string(item.ProjectID), "work_item_id": string(item.NativeID)}, []string{"sequence"}, func(sourceRow postgres.NeutralImportRow) error {
+		var err error
+
 		var comment corestore.Comment
 		var body, actorJSON string
 		var editedJSON, provenanceJSON, sourceKey sql.NullString
 		var created, updated string
-		if err := rows.Scan(&comment.ID, &comment.Revision, &comment.Sequence, &body, &actorJSON, &editedJSON, &provenanceJSON, &sourceKey, &comment.Deleted, &created, &updated); err != nil {
+		if err := sourceRow.Decode(map[string]any{"id": &comment.ID, "revision": &comment.Revision, "sequence": &comment.Sequence, "body": &body, "actor_json": &actorJSON, "edited_by_json": &editedJSON, "provenance_json": &provenanceJSON, "source_key": &sourceKey, "deleted": &comment.Deleted, "created_at": &created, "updated_at": &updated}); err != nil {
 			return err
 		}
 		comment.OrganizationID, comment.ProjectID, comment.WorkItemID = source.OrganizationID, item.ProjectID, item.NativeID
@@ -522,67 +560,44 @@ FROM native_comments WHERE organization_id=? AND project_id=? AND work_item_id=?
 		comment.BodyObjectKey = ref.Key
 		record.Comments = append(record.Comments, comment)
 		row.CommentBodies[comment.ID] = body
-	}
-	return errors.Join(rows.Err(), rows.Close())
+		return nil
+	})
 }
 
-func readCoreImportVersions(ctx context.Context, tx *sql.Tx, source CoreWorkItemImportSource, item corestore.WorkItem, record *postgres.CoreWorkItemImport) error {
-	rows, err := tx.QueryContext(ctx, `SELECT record_id,revision FROM collaboration_versions
-WHERE organization_id=? AND project_id=? AND work_item_id=? ORDER BY record_id,revision`, source.OrganizationID, item.ProjectID, item.NativeID)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	type versionKey struct {
-		recordID string
-		revision int64
-	}
-	keys := make([]versionKey, 0, 16)
-	for rows.Next() {
-		var key versionKey
-		if err := rows.Scan(&key.recordID, &key.revision); err != nil {
-			return err
-		}
-		keys = append(keys, key)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
-	}
-	if len(keys) == 0 {
-		return nil
-	}
+func readCoreImportVersions(ctx context.Context, tx *coreNeutralImport, source CoreWorkItemImportSource, item corestore.WorkItem, record *postgres.CoreWorkItemImport) error {
 	content := eventstore.NewContent(source.Objects)
 	lastID := ""
 	lastRevision := int64(0)
-	for _, key := range keys {
-		if key.revision < 1 || key.recordID == "" || key.recordID == lastID && key.revision <= lastRevision {
+	return tx.each(ctx, "collaboration_versions", map[string]string{"organization_id": string(source.OrganizationID), "project_id": string(item.ProjectID), "work_item_id": string(item.NativeID)}, []string{"record_id", "revision"}, func(sourceRow postgres.NeutralImportRow) error {
+		var id string
+		var revision int64
+		if err := sourceRow.Decode(map[string]any{"record_id": &id, "revision": &revision}); err != nil {
+			return err
+		}
+		if revision < 1 || id == "" || id == lastID && revision <= lastRevision {
 			return errors.New("incomplete collaboration version history")
 		}
-		lastID, lastRevision = key.recordID, key.revision
-		raw, err := reconstructNativeVersion(ctx, tx, string(source.OrganizationID), string(item.ProjectID), string(item.NativeID), key.recordID, key.revision)
+		lastID, lastRevision = id, revision
+		raw, err := reconstructCoreNeutralVersion(ctx, tx, source.Objects, string(source.OrganizationID), string(item.ProjectID), string(item.NativeID), id, revision)
 		if err != nil {
-			return fmt.Errorf("reconstruct collaboration version %s/%d: %w", key.recordID, key.revision, err)
+			return fmt.Errorf("reconstruct collaboration version %s/%d: %w", id, revision, err)
 		}
-		row, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: source.OrganizationID, ProjectID: item.ProjectID, WorkItemID: item.NativeID, RecordID: key.recordID, Revision: key.revision}, raw)
+		row, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: source.OrganizationID, ProjectID: item.ProjectID, WorkItemID: item.NativeID, RecordID: id, Revision: revision}, raw)
 		if err != nil {
 			return err
 		}
 		record.Versions = append(record.Versions, row)
-	}
-	return nil
+		return nil
+	})
 }
 
-func readCoreImportEvents(ctx context.Context, tx *sql.Tx, objects *eventstore.Content, source CoreWorkItemImportSource, item corestore.WorkItem, record *postgres.CoreWorkItemImport) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id,sequence,type,schema_version,actor_json,data_json,event_revision,recorded_at
-FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? ORDER BY sequence`, source.OrganizationID, item.ProjectID, item.NativeID)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
+func readCoreImportEvents(ctx context.Context, tx *coreNeutralImport, objects *eventstore.Content, source CoreWorkItemImportSource, item corestore.WorkItem, record *postgres.CoreWorkItemImport) error {
+	return tx.each(ctx, "collaboration_events", map[string]string{"organization_id": string(source.OrganizationID), "project_id": string(item.ProjectID), "work_item_id": string(item.NativeID)}, []string{"sequence"}, func(sourceRow postgres.NeutralImportRow) error {
+		var err error
+
 		var id, eventType, actorJSON, dataJSON, recorded string
 		var sequence, schemaVersion, eventRevision int64
-		if err := rows.Scan(&id, &sequence, &eventType, &schemaVersion, &actorJSON, &dataJSON, &eventRevision, &recorded); err != nil {
+		if err := sourceRow.Decode(map[string]any{"id": &id, "sequence": &sequence, "type": &eventType, "schema_version": &schemaVersion, "actor_json": &actorJSON, "data_json": &dataJSON, "event_revision": &eventRevision, "recorded_at": &recorded}); err != nil {
 			return err
 		}
 		var actor tracker.Actor
@@ -608,8 +623,8 @@ FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item
 		}
 		event.EventRevision = eventRevision
 		record.Events = append(record.Events, event)
-	}
-	return errors.Join(rows.Err(), rows.Close())
+		return nil
+	})
 }
 
 func verifiedCoreImportObject(ctx context.Context, objects attachment.DetailStore, organization tracker.OrganizationID, raw []byte) (attachment.ArchiveReference, error) {
