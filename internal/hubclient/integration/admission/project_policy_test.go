@@ -40,25 +40,21 @@ func (s policyAdmissionSource) CheckProjectPolicy(context.Context, string, strin
 
 func TestProjectPolicyAdmissionPreservesConflict(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"first rejection", "still pending"} {
-		t.Run(name, func(t *testing.T) {
-			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n---\nKeep human review holds.\n"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			source := policyAdmissionSource{failure: &hubclient.APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: "repository policy approval pending"}}
-			loaded, err := project.New(project.Config{Project: globalconfig.Project{ID: "example", Workdir: t.TempDir()}, Workflow: workflow}, project.Dependencies{Scheduling: source, Runner: orchestrator.FakeRunner{}})
-			if loaded != nil {
-				t.Cleanup(func() {
-					if err := loaded.Close(); err != nil {
-						t.Error(err)
-					}
-				})
-			}
-			var failure *hubclient.APIError
-			if !errors.As(err, &failure) || failure.Status != http.StatusConflict || failure.Code != "policy_mismatch" {
-				t.Fatalf("pending approval lost its API conflict: %v", err)
+	workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n---\nKeep human review holds.\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := policyAdmissionSource{failure: &hubclient.APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: "repository policy approval pending"}}
+	loaded, err := project.New(project.Config{Project: globalconfig.Project{ID: "example", Workdir: t.TempDir()}, Workflow: workflow}, project.Dependencies{Scheduling: source, Runner: orchestrator.FakeRunner{}})
+	if loaded != nil {
+		t.Cleanup(func() {
+			if err := loaded.Close(); err != nil {
+				t.Error(err)
 			}
 		})
+	}
+	var failure *hubclient.APIError
+	if !errors.As(err, &failure) || failure.Status != http.StatusConflict || failure.Code != "policy_mismatch" {
+		t.Fatalf("pending approval lost its API conflict: %v", err)
 	}
 }
