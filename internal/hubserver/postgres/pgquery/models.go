@@ -1092,6 +1092,7 @@ type HealthFinding struct {
 	PageSourceAt         time.Time
 	PageProjectedAt      *time.Time
 	PageExaminedAt       time.Time
+	Revision             int64
 }
 
 type HealthFindingIssue struct {

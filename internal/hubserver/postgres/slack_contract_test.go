@@ -16,11 +16,19 @@ func TestSlackContractPersistsSettingsAndRetryReceipts(t *testing.T) {
 	now := historyAt()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedRepository(t, repository, org)
+		evidence, err := newHistoryObjects().StoreDetail(t.Context(), string(org), []byte("example evidence"))
+		if err != nil {
+			t.Fatal(err)
+		}
 		for _, id := range []string{"first", "second"} {
-			if _, err := admin.ExecContext(t.Context(), `INSERT INTO health_findings(organization_id,id,fingerprint,signal,class,subject_kind,subject_id,opened_at,last_seen_at,severity,summary,next_action,evidence_object_key,evidence_sha256,evidence_bytes,evidence_content_bytes) VALUES($1,$2,$2,'signal','class','work_item','wi_first_1',$3,$3,'attention','example','inspect','','',0,0)`, org, id, now); err != nil {
+			if err := repository.WriteHealth(t.Context(), org, corestore.Background, func(w postgres.HealthWriter) error {
+				_, err := w.CreateHealthRecord(t.Context(), postgres.CreateHealthRecordInput{OrganizationID: org, ID: id, Fingerprint: id, Signal: "signal", Class: "class", SubjectKind: "work_item", SubjectID: "wi_first_1", OpenedAt: now, LastSeenAt: now, Severity: "attention", Summary: "example", NextAction: "inspect", EvidenceObjectKey: evidence.Key, EvidenceSha256: evidence.SHA256, EvidenceBytes: evidence.CompressedSize, EvidenceContentBytes: evidence.UncompressedSize})
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
 		}
+
 		if err := repository.WriteSlack(t.Context(), org, corestore.Serving, func(w postgres.SlackWriter) error {
 			row, err := w.CreateSlackIntegration(t.Context(), postgres.CreateSlackIntegrationInput{OrganizationID: org, ChannelName: string(org), Enabled: true, UpdatedAt: now})
 			if err != nil {
@@ -59,7 +67,7 @@ func TestSlackContractPersistsSettingsAndRetryReceipts(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		err := repository.WriteSlack(t.Context(), org, corestore.Background, func(w postgres.SlackWriter) error {
+		err = repository.WriteSlack(t.Context(), org, corestore.Background, func(w postgres.SlackWriter) error {
 			_, err := w.ClaimSlackDelivery(t.Context(), postgres.ClaimSlackDeliveryInput{OrganizationID: org, ID: "first", ExpectedAttempts: 1, Now: now, NextAttemptAt: now.Add(time.Minute)})
 			return err
 		})
