@@ -197,13 +197,13 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 	}
 	for n, source := range sources {
 		organization := organizations[n]
-		copySource := postgres.AccessCopyImportSource{CopyPath: accessSQLiteCopy(t, source), OrganizationID: organization, Catalog: source.Catalog, Objects: source.Objects}
+		copySource := postgres.AccessCopyImportSource{BundlePath: accessNeutralBundle(t, source, true), OrganizationID: organization, Catalog: source.Catalog, Objects: source.Objects}
 		if err := r.InitializeAccessCopyOrganization(t.Context(), copySource); err != nil {
 			t.Fatalf("initialize tenant organization: %v", err)
 		}
 		seedRepository(t, r, organization)
 		processed, err := r.ImportAccessCopy(t.Context(), copySource)
-		if err != nil || processed != int64(len(accessFixtureTables)) {
+		if err != nil || processed != int64(2*len(accessFixtureTables)-2) {
 			t.Fatalf("tenant %s import = %d, %v", organizations[n], processed, err)
 		}
 		if err := r.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -316,7 +316,7 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 			t.Fatalf("tenant %s audit payload = %s, %v", organization, payload, err)
 		}
 		var grants int
-		if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_invitation_grants WHERE organization_id=$1`, organization).Scan(&grants); err != nil || grants != 1 {
+		if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_invitation_grants WHERE organization_id=$1`, organization).Scan(&grants); err != nil || grants != 2 {
 			t.Fatalf("tenant %s invitation grants=%d, err=%v", organization, grants, err)
 		}
 		var canWrite, manageRunner bool
@@ -324,9 +324,39 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 			t.Fatalf("tenant %s invitation grant parity: write=%t runner=%t err=%v", organization, canWrite, manageRunner, err)
 		}
 	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = repositoryFor(t, db, smallPool())
+	for _, org := range organizations {
+		if err := r.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
+			for _, suffix := range []string{"first", "second"} {
+				credential, err := reader.CredentialByHash(t.Context(), "hash_"+suffix)
+				if err != nil || credential.OrganizationID != org || credential.ID != "token_"+suffix || credential.UserID != "user_"+suffix {
+					t.Fatalf("reopened credential=%+v: %v", credential, err)
+				}
+				member, err := reader.AccessMember(t.Context(), "user_"+suffix)
+				if err != nil || !member.Active || member.PrincipalID != credential.ID {
+					t.Fatalf("reopened member=%+v: %v", member, err)
+				}
+				project := tracker.ProjectID("prj_" + suffix)
+				grant, err := reader.AccessTokenGrant(t.Context(), credential.ID, project)
+				if err != nil || grant.OrganizationID != org || grant.ProjectID != project {
+					t.Fatalf("reopened token grant=%+v: %v", grant, err)
+				}
+				secret, err := reader.AccessSecret(t.Context(), project, "github")
+				if err != nil || string(secret.Envelope.Ciphertext) != string([]byte{10, 11, 12}) {
+					t.Fatalf("reopened project secret differs: %v", err)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, table := range []string{"api_tokens", "hosted_members", "hosted_project_grants", "token_grants", "hosted_sessions", "hosted_transactions", "hosted_invitations", "hosted_member_reservations", "hosted_binding_migrations", "organization_secrets", "organization_secret_audit", "project_secrets", "project_secret_audit", "hosted_audit", "hosted_audit_times"} {
 		var count int
-		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM "+pgx.Identifier{table}.Sanitize()).Scan(&count); err != nil || count != 2 {
+		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM "+pgx.Identifier{table}.Sanitize()).Scan(&count); err != nil || count != 4 {
 			t.Errorf("shared %s rows=%d, err=%v", table, count, err)
 		}
 	}
@@ -367,37 +397,56 @@ func TestAccessImportMissingProjectReferenceDoesNotAdvanceCheckpoint(t *testing.
 	}
 }
 
-func TestAccessImportRejectsCredentialBoundToAnotherOrganization(t *testing.T) {
+func TestAccessImportRejectsForeignOrganizationBindings(t *testing.T) {
 	db := template.Database(t)
 	r, _ := repositoryFor(t, db, smallPool())
-	organization := tracker.OrganizationID("org_access_binding")
-	seedAccessTarget(t, db, r, organization)
-	source, _ := accessImportSourceFor(t, db, "raw_access_binding", organization, false)
-	if _, err := db.ExecContext(t.Context(), `UPDATE raw_access_binding.api_tokens SET hosted_organization_id='org_other'`); err != nil {
-		t.Fatal(err)
-	}
-	importer, err := r.NewAccessImporter(t.Context(), source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for range 2 {
-		if _, err := importer.Step(t.Context(), postgres.AccessImportLimit); err != nil {
-			t.Fatal(err)
+	for _, transport := range []string{"postgres", "neutral"} {
+		for _, tc := range []struct {
+			name, table, column string
+		}{
+			{"credential", "api_tokens", "hosted_organization_id"},
+			{"provider", "hosted_transactions", "organization_id"},
+		} {
+			t.Run(transport+"_"+tc.name, func(t *testing.T) {
+				organization := tracker.OrganizationID("org_" + transport + "_" + tc.name)
+				seedAccessTarget(t, db, r, organization)
+				schema := "raw_" + transport + "_" + tc.name
+				source, _ := accessImportSourceFor(t, db, schema, organization, false)
+				if _, err := db.ExecContext(t.Context(), "UPDATE "+pgx.Identifier{schema, tc.table}.Sanitize()+" SET "+pgx.Identifier{tc.column}.Sanitize()+"='org_other'"); err != nil {
+					t.Fatal(err)
+				}
+				failingStage := int64(slices.Index(accessFixtureTables, tc.table))
+				var importErr error
+				if transport == "neutral" {
+					_, importErr = r.ImportAccessCopy(t.Context(), postgres.AccessCopyImportSource{BundlePath: accessNeutralBundle(t, source, false), OrganizationID: organization, Catalog: source.Catalog, Objects: source.Objects})
+				} else {
+					importer, err := r.NewAccessImporter(t.Context(), source)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for range failingStage {
+						if _, err := importer.Step(t.Context(), postgres.AccessImportLimit); err != nil {
+							t.Fatal(err)
+						}
+					}
+					_, importErr = importer.Step(t.Context(), postgres.AccessImportLimit)
+				}
+				if !errors.Is(importErr, postgres.ErrAccessImport) {
+					t.Fatalf("cross-organization import error = %v", importErr)
+				}
+				var stage, processed int64
+				if err := db.QueryRowContext(t.Context(), `SELECT stage,processed FROM access_imports WHERE organization_id=$1`, organization).Scan(&stage, &processed); err != nil {
+					t.Fatal(err)
+				}
+				if stage != failingStage || processed != failingStage {
+					t.Fatalf("cross-organization row advanced checkpoint: stage=%d processed=%d", stage, processed)
+				}
+				var rows int
+				if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM "+pgx.Identifier{tc.table}.Sanitize()+" WHERE organization_id=$1", organization).Scan(&rows); err != nil || rows != 0 {
+					t.Fatalf("cross-organization rows imported=%d, err=%v", rows, err)
+				}
+			})
 		}
-	}
-	if _, err := importer.Step(t.Context(), postgres.AccessImportLimit); !errors.Is(err, postgres.ErrAccessImport) {
-		t.Fatalf("cross-organization credential import error = %v", err)
-	}
-	var stage, processed int64
-	if err := db.QueryRowContext(t.Context(), `SELECT stage,processed FROM access_imports WHERE organization_id=$1`, organization).Scan(&stage, &processed); err != nil {
-		t.Fatal(err)
-	}
-	if stage != 2 || processed != 2 {
-		t.Fatalf("cross-organization credential advanced checkpoint: stage=%d processed=%d", stage, processed)
-	}
-	var credentials int
-	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM api_tokens WHERE organization_id=$1`, organization).Scan(&credentials); err != nil || credentials != 0 {
-		t.Fatalf("cross-organization credentials imported=%d, err=%v", credentials, err)
 	}
 }
 

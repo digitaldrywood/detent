@@ -1536,9 +1536,6 @@
     "internal/hubserver/postgres/access_import_copy.go": {
       "sql_pragma_table": 1
     },
-    "internal/hubserver/postgres/access_import_copy_test.go": {
-      "sqlite_open": 1
-    },
     "internal/hubserver/postgres/conversation_billing_import.go": {
       "sql_pragma_table": 1
     },

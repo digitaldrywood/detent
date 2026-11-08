@@ -14,6 +14,7 @@ import (
 )
 
 type AccessCopyImportSource struct {
+	BundlePath     string
 	CopyPath       string
 	OrganizationID tracker.OrganizationID
 	Catalog        storagecatalog.Catalog
@@ -30,7 +31,7 @@ func (r *Repository) InitializeAccessCopyOrganization(ctx context.Context, sourc
 }
 
 func (r *Repository) importAccessCopy(ctx context.Context, source AccessCopyImportSource, organizationOnly bool) (int64, error) {
-	if source.CopyPath == "" || source.OrganizationID == "" || source.Objects == nil {
+	if (source.CopyPath == "") == (source.BundlePath == "") || source.OrganizationID == "" || source.Objects == nil {
 		return 0, ErrAccessImport
 	}
 	if err := source.Catalog.Validate(); err != nil {
@@ -48,18 +49,18 @@ func (r *Repository) importAccessCopy(ctx context.Context, source AccessCopyImpo
 		}
 	}
 	var processed int64
-	err := ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, digest string) error {
-		if err := r.PinCoreImportSource(ctx, source.OrganizationID, digest, source.Objects); err != nil {
-			return err
-		}
-		importer, err := r.NewAccessImporter(ctx, AccessImportSource{
-			copyTx:  tx,
-			Catalog: source.Catalog,
-			Source:  storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: source.Catalog.Version, OrganizationID: string(source.OrganizationID)},
-			Schema:  schema, SnapshotID: digest, Objects: source.Objects,
-		})
+	run := func(input AccessImportSource) error {
+		input.Catalog = source.Catalog
+		input.Source = storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: source.Catalog.Version, OrganizationID: string(source.OrganizationID)}
+		input.Schema, input.Objects = schema, source.Objects
+		importer, err := r.NewAccessImporter(ctx, input)
 		if err != nil {
 			return err
+		}
+		if input.neutral != nil {
+			if err := importer.pinNeutralAccessSource(ctx); err != nil {
+				return err
+			}
 		}
 		if organizationOnly {
 			checkpoint, err := importer.start(ctx)
@@ -80,6 +81,18 @@ func (r *Repository) importAccessCopy(ctx context.Context, source AccessCopyImpo
 				return nil
 			}
 		}
+	}
+	if source.BundlePath != "" {
+		err := ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *VerifiedNeutralImport) error {
+			return run(AccessImportSource{neutral: bundle, SnapshotID: bundle.Identity().SourceSHA256})
+		})
+		return processed, err
+	}
+	err := ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, digest string) error {
+		if err := r.PinCoreImportSource(ctx, source.OrganizationID, digest, source.Objects); err != nil {
+			return err
+		}
+		return run(AccessImportSource{copyTx: tx, SnapshotID: digest})
 	})
 	return processed, err
 }

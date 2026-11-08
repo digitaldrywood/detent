@@ -32,6 +32,7 @@ const AccessImportLimit = 100
 type AccessImportSource struct {
 	DB         *sql.DB
 	copyTx     *sql.Tx
+	neutral    *VerifiedNeutralImport
 	Catalog    storagecatalog.Catalog
 	Source     storagecatalog.Source
 	Schema     storagecatalog.Schema
@@ -126,7 +127,13 @@ var accessImportTransforms = map[string]map[string]accessImportTransform{
 }
 
 func (r *Repository) NewAccessImporter(ctx context.Context, source AccessImportSource) (*AccessImporter, error) {
-	if (source.DB == nil) == (source.copyTx == nil) || source.Source.Store != "hub" || source.SnapshotID == "" || len(source.SnapshotID) > 200 || strings.TrimSpace(source.SnapshotID) != source.SnapshotID || strings.TrimSpace(source.Source.OrganizationID) != source.Source.OrganizationID {
+	inputs := 0
+	for _, present := range []bool{source.DB != nil, source.copyTx != nil, source.neutral != nil} {
+		if present {
+			inputs++
+		}
+	}
+	if inputs != 1 || source.Source.Store != "hub" || source.SnapshotID == "" || len(source.SnapshotID) > 200 || strings.TrimSpace(source.SnapshotID) != source.SnapshotID || strings.TrimSpace(source.Source.OrganizationID) != source.Source.OrganizationID {
 		return nil, ErrAccessImport
 	}
 	encoded, err := json.Marshal(struct {
@@ -329,6 +336,9 @@ func (i *AccessImporter) validateSource(ctx context.Context) error {
 		}
 		i.tables = append(i.tables, accessImportTable{name: name, keys: keys})
 	}
+	if i.source.neutral != nil {
+		return i.validateNeutralAccessOrganization(ctx)
+	}
 	statement := strings.Join([]string{"SELECT id FROM", i.sourceTable("organizations"), "ORDER BY id COLLATE " + i.sourceCollation() + " LIMIT 2"}, " ")
 	rows, err := i.querySource(ctx, statement)
 	if err != nil {
@@ -390,6 +400,13 @@ func (i *AccessImporter) sourceTable(table string) string {
 }
 
 func (i *AccessImporter) validateSourceTable(ctx context.Context, table string) error {
+	if i.source.neutral != nil {
+		keys, err := accessSourceKeys(i.source.Catalog.Tables["hub/"+table])
+		if err != nil {
+			return err
+		}
+		return i.source.neutral.ValidateCatalogTable(i.source.Catalog, i.source.Schema, table, keys)
+	}
 	if i.source.copyTx != nil {
 		return i.validateCopyTable(ctx, table)
 	}
@@ -429,7 +446,7 @@ func (i *AccessImporter) validateSourceTable(ctx context.Context, table string) 
 }
 
 func (i *AccessImporter) validateSourceIndex(ctx context.Context, table string, keys []string) error {
-	if i.source.copyTx != nil {
+	if i.source.copyTx != nil || i.source.neutral != nil {
 		return nil
 	}
 	var valid bool
@@ -452,6 +469,9 @@ WHERE k.n<=i.indnkeyatts AND k.coll<>'"C"'::regcollation))`, i.sourceTable(table
 }
 
 func (i *AccessImporter) readPage(ctx context.Context, table accessImportTable, checkpoint accessImportCheckpoint, limit int) ([]accessImportRow, error) {
+	if i.source.neutral != nil {
+		return i.readNeutralAccessPage(ctx, table, checkpoint, limit)
+	}
 	columns := make([]string, 0, len(i.source.Schema[table.name]))
 	for name := range i.source.Schema[table.name] {
 		columns = append(columns, name)

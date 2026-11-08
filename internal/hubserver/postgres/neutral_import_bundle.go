@@ -303,8 +303,10 @@ func (s *VerifiedNeutralImport) page(ctx context.Context, table NeutralImportTab
 				return nil, ErrNeutralImport
 			}
 		}
-		if organization, ok := row.Values["organization_id"]; ok && (organization.Null || organization.Encoding != "utf8" || string(organization.Data) != string(s.manifest.Identity.OrganizationID)) {
-			return nil, storagecatalog.ErrOrganization
+		if organization, ok := row.Values["organization_id"]; ok {
+			if organization.Null || organization.Encoding != "utf8" || table.Name != "hosted_transactions" && string(organization.Data) != string(s.manifest.Identity.OrganizationID) {
+				return nil, storagecatalog.ErrOrganization
+			}
 		}
 		previous = row.Key
 	}

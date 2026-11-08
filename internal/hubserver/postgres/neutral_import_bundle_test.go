@@ -214,7 +214,7 @@ func TestNeutralImportBundleVerifiesBeforeReadAndSeeksCompositeKeys(t *testing.T
 	}
 }
 func TestNeutralImportBundleRejectsMalformedSourcesBeforeCallback(t *testing.T) {
-	for _, scenario := range []string{"version", "schema version", "tenant", "checksum", "key order", "path escape", "writable page", "schema drift", "duplicate source row ID", "negative source position"} {
+	for _, scenario := range []string{"version", "schema version", "tenant", "row tenant", "provider organization null", "provider organization encoding", "checksum", "key order", "path escape", "writable page", "schema drift", "duplicate source row ID", "negative source position"} {
 		t.Run(scenario, func(t *testing.T) {
 			table := neutralFixtureTable(t, "projects", []postgres.NeutralImportKey{{Column: "id", Kind: "text"}})
 			records := []postgres.NeutralImportRow{neutralFixtureRow(t, table, map[string]any{"organization_id": "org_first", "id": "project_a"}), neutralFixtureRow(t, table, map[string]any{"organization_id": "org_first", "id": "project_b"})}
@@ -225,7 +225,17 @@ func TestNeutralImportBundleRejectsMalformedSourcesBeforeCallback(t *testing.T) 
 			if scenario == "negative source position" {
 				records[0].SourcePosition = new(int64(-1))
 			}
-			directory, manifest := writeNeutralFixture(t, "org_first", []postgres.NeutralImportTable{table}, map[string][]postgres.NeutralImportRow{"projects": records})
+			if scenario == "row tenant" {
+				records[0].Values["organization_id"] = storagecatalog.Cell{Encoding: "utf8", Data: []byte("org_second")}
+			}
+			if strings.HasPrefix(scenario, "provider organization") {
+				table = neutralFixtureTable(t, "hosted_transactions", []postgres.NeutralImportKey{{Column: "token_hash", Kind: "text"}})
+				records = []postgres.NeutralImportRow{neutralFixtureRow(t, table, map[string]any{"token_hash": "transaction", "organization_id": nil})}
+				if scenario == "provider organization encoding" {
+					records[0].Values["organization_id"] = storagecatalog.Cell{Encoding: "binary", Data: []byte("provider")}
+				}
+			}
+			directory, manifest := writeNeutralFixture(t, "org_first", []postgres.NeutralImportTable{table}, map[string][]postgres.NeutralImportRow{table.Name: records})
 			switch scenario {
 			case "schema drift":
 				manifest.Tables[0].Columns["id"] = "invalid signature"
