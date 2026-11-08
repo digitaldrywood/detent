@@ -2389,6 +2389,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}
 				landing := h.scheduler.RunExecution(issue.ID)
 				if test.BaseMoved {
+					landingRevision := landing.Recovery().Issue.Revision
 					guarded, stop, err := landing.Guard(t.Context())
 					if err != nil {
 						t.Fatal(err)
@@ -2456,8 +2457,8 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					stop()
 					item := tracker.NativeWorkItemID(issue.ID)
 					evidence, err := h.latestRuntimeEvidence(t, item)
-					if err != nil || evidence.Attempt == nil || evidence.Attempt.Status != "succeeded" || evidence.Attempt.WorkItemRevision != 3 || evidence.Attempt.DispatchGeneration != 0 || evidence.Attempt.Checkpoint == nil || evidence.Attempt.Checkpoint.WorktreeState != "unpushed" || evidence.Attempt.Checkpoint.HeadSHA != target.HeadSHA || evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.Landing == nil || evidence.Attempt.Runtime.Landing.Landed || evidence.Attempt.Runtime.Landing.RefusalKind != workspace.LandRefusalBaseMoved || evidence.Change == nil || evidence.Change.Change.CurrentVersion != target.VersionID || evidence.Change.Change.Landed != nil || h.state(t, issue.ID) != "Merging" {
-						t.Fatalf("waiting attempt lost truthful revision3 landing evidence: %+v, %v", evidence, err)
+					if err != nil || evidence.Attempt == nil || evidence.Attempt.Status != "succeeded" || landingRevision <= 0 || evidence.Attempt.WorkItemRevision != landingRevision || evidence.Attempt.DispatchGeneration != 0 || evidence.Attempt.Checkpoint == nil || evidence.Attempt.Checkpoint.WorktreeState != "unpushed" || evidence.Attempt.Checkpoint.HeadSHA != target.HeadSHA || evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.Landing == nil || evidence.Attempt.Runtime.Landing.Landed || evidence.Attempt.Runtime.Landing.RefusalKind != workspace.LandRefusalBaseMoved || evidence.Change == nil || evidence.Change.Change.CurrentVersion != target.VersionID || evidence.Change.Change.Landed != nil || h.state(t, issue.ID) != "Merging" {
+						t.Fatalf("waiting attempt lost landing evidence for claimed revision %d: %+v, %v", landingRevision, evidence, err)
 					}
 					candidates = h.candidatesIn(t, "Merging")
 					if len(candidates) != 1 || candidates[0].ID != issue.ID {
