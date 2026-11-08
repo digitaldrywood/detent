@@ -3371,6 +3371,17 @@ type ProjectActionRun struct {
 	UpdatedAt           time.Time
 }
 
+type ProjectBudgetOverride struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	PerDayMaxUsd   pgtype.Float8
+	PerIssueMaxUsd pgtype.Float8
+	ExpiresAt      time.Time
+	CreatedAt      time.Time
+	Reason         string
+	Revision       int64
+}
+
 type ProjectEventCursor struct {
 	OrganizationID        tracker.OrganizationID
 	ProjectID             tracker.ProjectID
