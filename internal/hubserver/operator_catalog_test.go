@@ -228,7 +228,7 @@ func TestPostgresOperatorCatalogBootstrapAuthority(t *testing.T) {
 		{organization: "org_second", allocated: true},
 	} {
 		t.Run(test.organization, func(t *testing.T) {
-			f := newBrowserHostedOrganizationFixture(t, test.allocated, test.organization)
+			f := newPostgresBrowserHostedOrganizationFixture(t, test.allocated, test.organization)
 			cookie := f.cookies["owner"]
 			session, err := f.service.hostedSessions.Authenticate(t.Context(), cookie.Value)
 			if err != nil {

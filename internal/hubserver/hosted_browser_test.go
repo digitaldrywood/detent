@@ -261,7 +261,7 @@ const browserHostedPreviewLifetime = 20 * time.Minute
 
 func browserHostedSession(t *testing.T, service *Service, identity auth.Identity) (string, auth.Session) {
 	t.Helper()
-	if identity.Hosted.OrganizationID == service.config.Hosted.WorkOSOrganizationID {
+	if service.database.postgres == nil || identity.Hosted.OrganizationID == service.config.Hosted.WorkOSOrganizationID {
 		token, session, err := service.hostedSessions.CreateIdentitySession(t.Context(), identity)
 		if err != nil {
 			t.Fatal(err)
@@ -293,7 +293,22 @@ func newBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organizat
 	return newBrowserHostedFixtureServing(t, allocated, organization, true, configure...)
 }
 
+func newPostgresBrowserHostedFixture(t *testing.T, allocated bool) *browserHostedFixture {
+	t.Helper()
+	return newPostgresBrowserHostedOrganizationFixture(t, allocated, "org_browser_preview")
+}
+
+func newPostgresBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organization string, configure ...func(*Config)) *browserHostedFixture {
+	t.Helper()
+	return newBrowserHostedFixtureBackend(t, allocated, organization, true, true, configure...)
+}
+
 func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization string, listen bool, configure ...func(*Config)) *browserHostedFixture {
+	t.Helper()
+	return newBrowserHostedFixtureBackend(t, allocated, organization, listen, false, configure...)
+}
+
+func newBrowserHostedFixtureBackend(t *testing.T, allocated bool, organization string, listen, postgres bool, configure ...func(*Config)) *browserHostedFixture {
 	t.Helper()
 	server := &httptest.Server{URL: "https://browser.example.test"}
 	base := server.URL
@@ -317,13 +332,31 @@ func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization s
 	for _, apply := range configure {
 		apply(&cfg)
 	}
-	service := openTestService(t, cfg)
+	var service *Service
+	if postgres {
+		service = openTestService(t, cfg)
+	} else {
+		seedHubDatabaseTemplate(t, cfg.DatabasePath)
+		var err error
+		service, err = Open(t.Context(), cfg)
+		if err != nil {
+			if listen {
+				server.Close()
+			}
+			t.Fatal(err)
+		}
+	}
 	fixture := &browserHostedFixture{service: service, server: server, provider: provider, cookies: make(map[string]*http.Cookie), stop: make(chan struct{})}
 	accounts := make(map[string]auth.Identity)
 	t.Cleanup(func() {
 		if listen {
 			fixture.server.CloseClientConnections()
 			fixture.server.Close()
+		}
+		if !postgres {
+			if err := fixture.service.CloseContext(context.WithoutCancel(t.Context())); err != nil {
+				t.Error(err)
+			}
 		}
 	})
 	for _, account := range []struct {
@@ -339,7 +372,10 @@ func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization s
 		{name: "revoked", user: "user_browser_viewer", email: "viewer@example.test"},
 		{name: "expired", user: "user_browser_viewer", email: "viewer@example.test"},
 	} {
-		organization := service.config.Hosted.WorkOSOrganizationID
+		organization := ""
+		if postgres {
+			organization = service.config.Hosted.WorkOSOrganizationID
+		}
 		if allocated && (account.role != "" || account.support != "" || account.name == "revoked" || account.name == "expired") {
 			organization = provider.organization.ID
 		}
@@ -369,7 +405,7 @@ func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization s
 			}
 		}
 		token, session := browserHostedSession(t, service, identity)
-		if account.name == "wrong-organization" {
+		if postgres && account.name == "wrong-organization" {
 			verified, err := service.hostedSessions.Authenticate(t.Context(), token)
 			if err != nil || verified.Identity == nil || verified.Identity.OrganizationID != organization {
 				t.Fatalf("foreign organization session identity=%+v error=%v", verified.Identity, err)
@@ -530,16 +566,22 @@ func (f *browserHostedFixture) createProject(t *testing.T, name string) string {
 		t.Fatal("project form returned an invalid project location")
 	}
 	seedNativeFixturePolicy(t, f.service, f.service.config.Hosted.OrganizationID+"/"+project)
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(f.service.config.Hosted.OrganizationID), corestore.Serving, func(w tenantstore.Writer) error {
-		record, err := w.ProjectRecord(t.Context(), tracker.ProjectID(project))
-		if err != nil {
-			return err
+	if f.service.database.postgres == nil {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=0 WHERE id=?", project); err != nil {
+			t.Fatal(err)
 		}
-		record.Settings.DuplicateChallenge = false
-		_, err = w.UpdateProjectRecord(t.Context(), record)
-		return err
-	}); err != nil {
-		t.Fatal(err)
+	} else {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(f.service.config.Hosted.OrganizationID), corestore.Serving, func(w tenantstore.Writer) error {
+			record, err := w.ProjectRecord(t.Context(), tracker.ProjectID(project))
+			if err != nil {
+				return err
+			}
+			record.Settings.DuplicateChallenge = false
+			_, err = w.UpdateProjectRecord(t.Context(), record)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return project
 }

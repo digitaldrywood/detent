@@ -67,7 +67,7 @@ func (f *browserHostedFixture) appRequest(t *testing.T, account, method, path st
 
 func TestAppShellServing(t *testing.T) {
 	useAppClientFS(t, appClientBundle())
-	f := newBrowserHostedFixture(t, true)
+	f := newPostgresBrowserHostedFixture(t, true)
 	var projectSlug string
 	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), tracker.OrganizationID(f.service.config.Hosted.OrganizationID), corestore.Serving, func(r tenantstore.Reader) error {
 		project, err := r.ProjectRecord(t.Context(), tracker.ProjectID(f.project))
@@ -567,7 +567,7 @@ func TestRunnerBehind(t *testing.T) {
 
 func TestAppUpdates(t *testing.T) {
 	useAppClientFS(t, appClientBundle())
-	f := newBrowserHostedFixture(t, true)
+	f := newPostgresBrowserHostedFixture(t, true)
 	read := func(t *testing.T, account string) appUpdates {
 		t.Helper()
 		response := f.appRequest(t, account, http.MethodGet, "/app/updates")

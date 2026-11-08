@@ -91,7 +91,7 @@ func TestPostgresAppReservedRoutesReturnNotFound(t *testing.T) {
 }
 
 func TestPostgresOrganizationPageUsesGrantedProjects(t *testing.T) {
-	f := newBrowserHostedFixture(t, true)
+	f := newPostgresBrowserHostedFixture(t, true)
 	for _, test := range []struct {
 		account string
 		private bool
