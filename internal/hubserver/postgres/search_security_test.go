@@ -233,11 +233,7 @@ func TestSearchIndexedQueryPlan(t *testing.T) {
 	d = f.put(t, d, searchstore.Text{Title: "rareplanterm"}, 0)
 	f.put(t, searchIssue("org_first", "wi_first_1"), searchstore.Text{Title: "rareplanterm"}, 0)
 	f.drain(t, "org_first")
-	_, err := f.admin.ExecContext(t.Context(), `INSERT INTO search_documents (organization_id,id,kind,source_id,revision,indexed_revision,title,scope,status,updated_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,vector)
-        SELECT 'org_first','other_'||n,'thread','other_'||n,1,1,'commonterm','general','open',CURRENT_TIMESTAMP,$1,$2,$3,$4,$5::tsvector FROM generate_series(1,10000) n`, d.Payload.Key, d.Payload.SHA256, d.Payload.CompressedSize, d.Payload.UncompressedSize, searchstore.Vector(searchstore.Document{OrganizationID: d.OrganizationID, ProjectID: d.ProjectID, Kind: "thread"}, searchstore.Text{Title: "commonterm"}))
-	if err != nil {
-		t.Fatal(err)
-	}
+	seedSearchThreadPlanHistory(t, f, d, 10000)
 	if _, err := f.admin.ExecContext(t.Context(), `ANALYZE search_documents`); err != nil {
 		t.Fatal(err)
 	}
@@ -549,6 +545,75 @@ func TestSearchExactTermContinuesBeyondCandidateLimit(t *testing.T) {
 		})
 	}
 
+}
+
+func seedSearchThreadPlanHistory(t *testing.T, f searchFixture, d searchstore.Document, count int) {
+	t.Helper()
+	insert := func(first, last int) error {
+		_, err := f.admin.ExecContext(t.Context(), `INSERT INTO search_documents (organization_id,id,kind,source_id,revision,indexed_revision,title,scope,status,updated_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,vector)
+ SELECT 'org_first','other_'||n,'thread','other_'||n,1,1,'commonterm','general','open',
+ COALESCE((SELECT updated_at FROM search_documents WHERE organization_id='org_first' AND id='other_1'),CURRENT_TIMESTAMP),
+ $1,$2,$3,$4,$5::tsvector FROM generate_series($6::int,$7::int) n`, d.Payload.Key, d.Payload.SHA256, d.Payload.CompressedSize, d.Payload.UncompressedSize, searchstore.Vector(searchstore.Document{OrganizationID: d.OrganizationID, ProjectID: d.ProjectID, Kind: "thread"}, searchstore.Text{Title: "commonterm"}), first, last)
+		return err
+	}
+	if err := insert(1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.admin.ExecContext(t.Context(), `ALTER TABLE search_documents DISABLE TRIGGER search_document_postings`); err != nil {
+		t.Fatal(err)
+	}
+	insertErr := insert(2, count)
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+	_, enableErr := f.admin.ExecContext(cleanup, `ALTER TABLE search_documents ENABLE TRIGGER search_document_postings`)
+	cancel()
+	if err := errors.Join(insertErr, enableErr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO search_scope_documents(organization_id,project_id,work_item_id,id)
+ SELECT p.organization_id,p.project_id,p.work_item_id,'other_'||n FROM search_scope_documents p CROSS JOIN generate_series(2,$1::int) n
+ WHERE p.organization_id='org_first' AND p.id='other_1'`, count); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO search_postings(organization_id,scope,term,document_id,impact,updated_at,updated_at_submicrosecond)
+ SELECT p.organization_id,p.scope,p.term,'other_'||n,p.impact,p.updated_at,p.updated_at_submicrosecond FROM search_postings p CROSS JOIN generate_series(2,$1::int) n
+ WHERE p.organization_id='org_first' AND p.document_id='other_1'`, count); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := f.admin.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	for _, query := range []string{
+		`CREATE TEMP TABLE plan_postings_before AS SELECT * FROM search_postings WHERE organization_id='org_first' AND document_id IN ('other_2','other_'||$1::text)`,
+		`CREATE TEMP TABLE plan_scope_before AS SELECT * FROM search_scope_documents WHERE organization_id='org_first' AND id IN ('other_2','other_'||$1::text)`,
+	} {
+		if _, err := conn.ExecContext(t.Context(), query, count); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, status := range []string{"resolved", "open"} {
+		if _, err := conn.ExecContext(t.Context(), `UPDATE search_documents SET status=$1 WHERE organization_id='org_first' AND id IN ('other_2','other_'||$2::text)`, status, count); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var different int
+	if err := conn.QueryRowContext(t.Context(), `SELECT count(*) FROM (
+ (SELECT * FROM plan_postings_before EXCEPT SELECT * FROM search_postings WHERE organization_id='org_first' AND document_id IN ('other_2','other_'||$1::text))
+ UNION ALL (SELECT * FROM search_postings WHERE organization_id='org_first' AND document_id IN ('other_2','other_'||$1::text) EXCEPT SELECT * FROM plan_postings_before)
+ ) difference`, count).Scan(&different); err != nil || different != 0 {
+		t.Fatalf("bulk postings differ from trigger: rows=%d error=%v", different, err)
+	}
+	if err := conn.QueryRowContext(t.Context(), `SELECT count(*) FROM (
+ (SELECT * FROM plan_scope_before EXCEPT SELECT * FROM search_scope_documents WHERE organization_id='org_first' AND id IN ('other_2','other_'||$1::text))
+ UNION ALL (SELECT * FROM search_scope_documents WHERE organization_id='org_first' AND id IN ('other_2','other_'||$1::text) EXCEPT SELECT * FROM plan_scope_before)
+ ) difference`, count).Scan(&different); err != nil || different != 0 {
+		t.Fatalf("bulk scope differs from trigger: rows=%d error=%v", different, err)
+	}
 }
 
 func seedSearchWorkHistory(t *testing.T, f searchFixture, d searchstore.Document, count int) {
