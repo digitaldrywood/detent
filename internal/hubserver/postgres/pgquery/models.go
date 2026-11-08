@@ -3665,35 +3665,36 @@ type ProjectSecretAudit struct {
 }
 
 type ProjectSetting struct {
-	OrganizationID            tracker.OrganizationID
-	ProjectID                 tracker.ProjectID
-	Revision                  int64
-	RequireVisualAttachments  bool
-	ModelRevision             int64
-	ModelKey                  string
-	ModelSha256               string
-	ModelBytes                int64
-	ModelContentBytes         int64
-	Intake                    string
-	Projection                string
-	RepositoryEnabled         bool
-	Repository                string
-	CheckoutRepository        string
-	AgingEnabled              bool
-	DuplicateChallenge        bool
-	ArchiveCompletedAfterDays pgtype.Int8
-	ArchiveCancelledAfterDays pgtype.Int8
-	WorkflowKey               string
-	WorkflowSha256            string
-	WorkflowBytes             int64
-	WorkflowContentBytes      int64
-	IconKind                  string
-	IconName                  string
-	IconColor                 string
-	IconEmoji                 string
-	IconImageKey              string
-	IconImageSha256           string
-	PageSourceAt              time.Time
+	OrganizationID                  tracker.OrganizationID
+	ProjectID                       tracker.ProjectID
+	Revision                        int64
+	RequireVisualAttachments        bool
+	ModelRevision                   int64
+	ModelKey                        string
+	ModelSha256                     string
+	ModelBytes                      int64
+	ModelContentBytes               int64
+	Intake                          string
+	Projection                      string
+	RepositoryEnabled               bool
+	Repository                      string
+	CheckoutRepository              string
+	AgingEnabled                    bool
+	DuplicateChallenge              bool
+	ArchiveCompletedAfterDays       pgtype.Int8
+	ArchiveCancelledAfterDays       pgtype.Int8
+	WorkflowKey                     string
+	WorkflowSha256                  string
+	WorkflowBytes                   int64
+	WorkflowContentBytes            int64
+	IconKind                        string
+	IconName                        string
+	IconColor                       string
+	IconEmoji                       string
+	IconImageKey                    string
+	IconImageSha256                 string
+	PageSourceAt                    time.Time
+	GithubReconciliationInitialized bool
 }
 
 type ProjectSlug struct {
