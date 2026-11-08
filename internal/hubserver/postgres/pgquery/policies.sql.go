@@ -202,7 +202,9 @@ func (q *Queries) PolicyGetProjectRevisions(ctx context.Context, arg PolicyGetPr
 }
 
 const policyGetReviewCurrent = `-- name: PolicyGetReviewCurrent :one
-SELECT r.organization_id, r.project_id, r.review_policy_id, r.policy_id, r.revision, r.updated_by, r.updated_at, r.payload_object_key, r.payload_sha256, r.payload_bytes, r.payload_content_bytes FROM change_review_policies c JOIN change_review_policy_revisions r
+SELECT r.organization_id,r.project_id,r.review_policy_id,r.policy_id,c.revision,
+       r.updated_by,r.updated_at,r.payload_object_key,r.payload_sha256,r.payload_bytes,r.payload_content_bytes
+FROM change_review_policies c JOIN change_review_policy_revisions r
   ON r.organization_id=c.organization_id AND r.project_id=c.project_id AND r.review_policy_id=c.review_policy_id
 WHERE c.organization_id=$1 AND c.project_id=$2
 `
@@ -212,9 +214,23 @@ type PolicyGetReviewCurrentParams struct {
 	ProjectID      tracker.ProjectID
 }
 
-func (q *Queries) PolicyGetReviewCurrent(ctx context.Context, arg PolicyGetReviewCurrentParams) (ChangeReviewPolicyRevision, error) {
+type PolicyGetReviewCurrentRow struct {
+	OrganizationID      tracker.OrganizationID
+	ProjectID           tracker.ProjectID
+	ReviewPolicyID      string
+	PolicyID            string
+	Revision            int64
+	UpdatedBy           string
+	UpdatedAt           time.Time
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
+}
+
+func (q *Queries) PolicyGetReviewCurrent(ctx context.Context, arg PolicyGetReviewCurrentParams) (PolicyGetReviewCurrentRow, error) {
 	row := q.db.QueryRow(ctx, policyGetReviewCurrent, arg.OrganizationID, arg.ProjectID)
-	var i ChangeReviewPolicyRevision
+	var i PolicyGetReviewCurrentRow
 	err := row.Scan(
 		&i.OrganizationID,
 		&i.ProjectID,

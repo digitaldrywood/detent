@@ -170,7 +170,7 @@ WHERE organization_id=? AND project_id>? ORDER BY project_id LIMIT 100`, source.
 				current, currentErr := s.queries.PolicyGetReviewCurrent(ctx, pgquery.PolicyGetReviewCurrentParams{OrganizationID: source.OrganizationID, ProjectID: sourceRow.project})
 				expected := ""
 				if currentErr == nil {
-					currentPolicy := reviewPolicyRecord(current)
+					currentPolicy := reviewPolicyRecord(pgquery.ChangeReviewPolicyRevision(current))
 					if !sameReviewPolicy(currentPolicy, row) {
 						return corestore.ErrRevisionConflict
 					}

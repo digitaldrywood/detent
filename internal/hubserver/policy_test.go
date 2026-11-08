@@ -1419,10 +1419,22 @@ func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 		}
 		return rules
 	}
-	read(t, http.StatusNotFound)
+	read(t, http.StatusOK)
 	first := hubTestPolicy()
 	approveHubTestPolicy(t, f.service, f.base+"/policy", first)
 	seeded := read(t, http.StatusOK)
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		stored, err := r.ReviewPolicy(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		if stored.Revision != 1 || stored.PolicyRevisionID != first.ID {
+			t.Fatalf("seeded review revision=%+v", stored)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if first.Gates.Kind == "human_review" {
 		t.Fatal("the fixture descriptor must not ask for human review")
 	}
@@ -1438,7 +1450,11 @@ func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 		t.Fatalf("default review policy did not follow the descriptor: %#v", followed)
 	}
 	var principal string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name = 'operator-seeded'").Scan(&principal); err != nil {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		credential, err := r.CredentialByHash(t.Context(), apikey.HashToken(f.token))
+		principal = credential.ID
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	custom := tracker.ChangeReviewPolicy{PolicyID: second.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}}
@@ -1458,7 +1474,15 @@ func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 	descriptor.Gates.RequiredChecks = 1
 	descriptor = descriptor.WithID()
 	approveHubTestPolicy(t, checked.service, checked.base+"/policy", descriptor)
-	requireNativeStatus(t, performHubAPIRequest(t, checked.service, http.MethodGet, checked.base+"/change-review-policy", checked.token, nil), http.StatusNotFound)
+	if err := checked.service.config.TenantRepository.ReadTenant(t.Context(), checked.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		_, err := r.ReviewPolicy(t.Context(), checked.project.ID)
+		if !errors.Is(err, corestore.ErrNotFound) {
+			t.Fatalf("unsatisfiable default seeded review: %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	reviewed := newNativeFixture(t, nil, "", "reviewed")
 	gated := hubTestPolicy()
@@ -2230,6 +2254,17 @@ func TestPostgresObservedPolicyPreservesHubTriageAndOccupiedWorkflow(t *testing.
 						after, err := r.ProjectRecord(t.Context(), project.ID)
 						if err != nil {
 							return err
+						}
+						review, err := r.ReviewPolicy(t.Context(), project.ID)
+						if err != nil {
+							return err
+						}
+						expectedPolicy, expectedRevision := candidate.ID, int64(2)
+						if test.occupied == "Legacy" {
+							expectedPolicy, expectedRevision = original.ID, 1
+						}
+						if review.PolicyRevisionID != expectedPolicy || review.Revision != expectedRevision {
+							t.Errorf("observed review policy=%+v, want policy=%q revision=%d", review, expectedPolicy, expectedRevision)
 						}
 						if test.occupied == "Legacy" {
 							if !reflect.DeepEqual(before, after) {

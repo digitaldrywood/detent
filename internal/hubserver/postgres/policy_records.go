@@ -462,7 +462,7 @@ func (s *session) ReviewPolicy(ctx context.Context, project tracker.ProjectID) (
 	if err != nil {
 		return eventstore.ReviewPolicy{}, mapError(ctx, err)
 	}
-	return reviewPolicyRecord(row), nil
+	return reviewPolicyRecord(pgquery.ChangeReviewPolicyRevision(row)), nil
 }
 
 func (s *session) SetReviewPolicy(ctx context.Context, row eventstore.ReviewPolicy, expected string) error {
@@ -497,7 +497,8 @@ func (s *session) SetReviewPolicy(ctx context.Context, row eventstore.ReviewPoli
 		if readErr != nil {
 			return mapError(ctx, readErr)
 		}
-		if !sameReviewPolicy(reviewPolicyRecord(current), row) {
+		stored := reviewPolicyRecord(current)
+		if !sameReviewPolicy(stored, row) && (expected == row.ReviewPolicyID || !sameReviewPolicyContent(stored, row)) {
 			return corestore.ErrUniqueViolation
 		}
 	} else if err != nil {
@@ -529,5 +530,9 @@ func sameOptionalBool(left, right *bool) bool {
 }
 
 func sameReviewPolicy(left, right eventstore.ReviewPolicy) bool {
-	return left.OrganizationID == right.OrganizationID && left.ProjectID == right.ProjectID && left.PolicyRevisionID == right.PolicyRevisionID && left.ReviewPolicyID == right.ReviewPolicyID && left.Revision == right.Revision && left.UpdatedBy == right.UpdatedBy && left.UpdatedAt.Equal(right.UpdatedAt) && left.PayloadObjectKey == right.PayloadObjectKey && left.PayloadSHA256 == right.PayloadSHA256 && left.PayloadBytes == right.PayloadBytes && left.PayloadContentBytes == right.PayloadContentBytes
+	return sameReviewPolicyContent(left, right) && left.Revision == right.Revision && left.UpdatedBy == right.UpdatedBy && left.UpdatedAt.Equal(right.UpdatedAt)
+}
+
+func sameReviewPolicyContent(left, right eventstore.ReviewPolicy) bool {
+	return left.OrganizationID == right.OrganizationID && left.ProjectID == right.ProjectID && left.PolicyRevisionID == right.PolicyRevisionID && left.ReviewPolicyID == right.ReviewPolicyID && left.PayloadObjectKey == right.PayloadObjectKey && left.PayloadSHA256 == right.PayloadSHA256 && left.PayloadBytes == right.PayloadBytes && left.PayloadContentBytes == right.PayloadContentBytes
 }

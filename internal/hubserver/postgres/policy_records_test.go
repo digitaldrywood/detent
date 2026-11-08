@@ -88,6 +88,36 @@ func TestProjectPolicyAuthorityIsRevisionedPerTenantAndCASProtected(t *testing.T
 	if !errors.Is(err, corestore.ErrRevisionConflict) {
 		t.Fatalf("stale review-policy write error = %v, want revision conflict", err)
 	}
+	nextReview := review
+	nextReview.ReviewPolicyID, nextReview.Revision = "review_next", 2
+	if err := repository.WriteTenant(t.Context(), organizations[0], corestore.Serving, func(w tenantstore.Writer) error {
+		return w.SetReviewPolicy(t.Context(), nextReview, review.ReviewPolicyID)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tampered := review
+	replacement := policyTestRevision(organizations[0], "prj_first", "tampered", now)
+	tampered.Revision = 3
+	tampered.PayloadObjectKey, tampered.PayloadSHA256 = replacement.PayloadObjectKey, replacement.PayloadSHA256
+	err = repository.WriteTenant(t.Context(), organizations[0], corestore.Serving, func(w tenantstore.Writer) error {
+		return w.SetReviewPolicy(t.Context(), tampered, nextReview.ReviewPolicyID)
+	})
+	if !errors.Is(err, corestore.ErrUniqueViolation) {
+		t.Fatalf("changed immutable review content error=%v, want unique violation", err)
+	}
+	if err := repository.ReadTenant(t.Context(), organizations[0], corestore.Serving, func(r tenantstore.Reader) error {
+		current, err := r.ReviewPolicy(t.Context(), "prj_first")
+		if err != nil {
+			return err
+		}
+		if current.ReviewPolicyID != nextReview.ReviewPolicyID || current.Revision != 2 {
+			t.Fatalf("refused immutable content changed current review: %+v", current)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 }
 
 func TestProjectPolicyRevisionRetainsFrozenLandingGate(t *testing.T) {

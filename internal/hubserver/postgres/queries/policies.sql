@@ -153,7 +153,9 @@ VALUES (
 RETURNING *;
 
 -- name: PolicyGetReviewCurrent :one
-SELECT r.* FROM change_review_policies c JOIN change_review_policy_revisions r
+SELECT r.organization_id,r.project_id,r.review_policy_id,r.policy_id,c.revision,
+       r.updated_by,r.updated_at,r.payload_object_key,r.payload_sha256,r.payload_bytes,r.payload_content_bytes
+FROM change_review_policies c JOIN change_review_policy_revisions r
   ON r.organization_id=c.organization_id AND r.project_id=c.project_id AND r.review_policy_id=c.review_policy_id
 WHERE c.organization_id=sqlc.arg(organization_id) AND c.project_id=sqlc.arg(project_id);
 

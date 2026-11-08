@@ -21,6 +21,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	hubapi "github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
@@ -43,12 +44,28 @@ type failingChangeEventRepository struct {
 	tenantstore.Repository
 }
 
+type failingReviewPolicyRepository struct{ tenantstore.Repository }
+type failingReviewPolicyWriter struct{ tenantstore.Writer }
+
+func (r failingReviewPolicyRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	return r.Repository.WriteTenant(ctx, organization, workload, func(w tenantstore.Writer) error { return write(failingReviewPolicyWriter{w}) })
+}
+
+func (w failingReviewPolicyWriter) SetReviewPolicy(ctx context.Context, row eventstore.ReviewPolicy, expected string) error {
+	if err := w.Writer.SetReviewPolicy(ctx, row, expected); err != nil {
+		return err
+	}
+	return errors.New("injected review policy write failure")
+}
+
 type committedChangeWriteResponseLossRepository struct {
 	tenantstore.Repository
 }
 
 type changeArchiveMutationStore struct {
 	attachment.DetailStore
+	reviewPolicyID      string
+	afterReviewPayload  func(context.Context) error
 	afterLandingPayload func(context.Context) error
 	fired               bool
 }
@@ -109,6 +126,16 @@ func (s *changeArchiveMutationStore) StoreDetail(ctx context.Context, organizati
 	ref, err := s.DetailStore.StoreDetail(ctx, organization, raw)
 	if err != nil || s.fired {
 		return ref, err
+	}
+	if s.afterReviewPayload != nil {
+		var review tracker.ChangeReviewPolicy
+		if json.Unmarshal(raw, &review) == nil && review.ID == s.reviewPolicyID {
+			after := s.afterReviewPayload
+			s.afterReviewPayload = nil
+			if err := after(ctx); err != nil {
+				return attachment.ArchiveReference{}, err
+			}
+		}
 	}
 	var change tracker.ChangeRequest
 	if json.Unmarshal(raw, &change) == nil && change.Landed != nil {
@@ -462,11 +489,11 @@ func TestChangeReviewPolicyUsesSelectedTenantPolicyAndReceipt(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var retained tracker.ChangeReviewPolicy
 	decodeHubResponse(t, response, &retained)
-	if retained.ID != saved.ID || retained.PolicyID != descriptor.ID || !retained.RequireReview {
-		t.Fatalf("repository approval changed retained review rules: %+v", retained)
+	if retained.ID != defaultChangeReviewPolicy(next).ID || retained.PolicyID != next.ID || retained.RequireReview {
+		t.Fatalf("default review rules did not follow repository approval: %+v", retained)
 	}
-	retained.PolicyID = next.ID
-	response = f.request(t, owner, http.MethodPut, path, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rebind-review-policy"}, ExpectedID: saved.ID, Policy: retained})
+	retained.RequireReview = true
+	response = f.request(t, owner, http.MethodPut, path, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rebind-review-policy"}, ExpectedID: retained.ID, Policy: retained})
 	requireNativeStatus(t, response, http.StatusOK)
 	var rebound tracker.ChangeReviewPolicy
 	decodeHubResponse(t, response, &rebound)
@@ -718,17 +745,21 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 }
 
 func TestChangeVersionRecordPublishesRunningSource(t *testing.T) {
-	repository, admin := projectRecordPostgresWithAdmin(t, 4)
-	details := &memoryRunDetails{}
-	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
-		t.Run(string(organization), func(t *testing.T) {
-			f, owner := newChangePolicyPostgresTenantFixture(t, repository, organization, details)
-			testChangeVersionRecordPublication(t, true, repository, f, owner, admin)
+	for _, mode := range []string{"current", "default approval", "default revert", "atomic rollback", "concurrent pin", "imported approval", "imported observation", "pinned"} {
+		t.Run(mode, func(t *testing.T) {
+			repository, admin := projectRecordPostgresWithAdmin(t, 4)
+			details := &memoryRunDetails{}
+			for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+				t.Run(string(organization), func(t *testing.T) {
+					f, owner := newChangePolicyPostgresTenantFixture(t, repository, organization, details)
+					testChangeVersionRecordPublication(t, true, repository, f, owner, admin, mode)
+				})
+			}
 		})
 	}
 }
 
-func testChangeVersionRecordPublication(t *testing.T, running bool, repository tenantstore.Repository, f hostedSecurityFixture, owner hostedSecurityUser, admin *sql.DB) {
+func testChangeVersionRecordPublication(t *testing.T, running bool, repository tenantstore.Repository, f hostedSecurityFixture, owner hostedSecurityUser, admin *sql.DB, reviewModes ...string) {
 	t.Helper()
 	service := f.service
 	originalPostgres, originalAccess := service.database.postgres, service.config.AccessRepository
@@ -748,8 +779,133 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	var change tracker.ChangeRequest
 	decodeHubResponse(t, response, &change)
 	changePath := changesPath + "/" + change.ID
-	policy := hubTestPolicy()
-	reviewPolicy := defaultChangeReviewPolicy(policy)
+	descriptor := hubTestPolicy()
+	reviewPolicy := defaultChangeReviewPolicy(descriptor)
+	reviewMode := "current"
+	if len(reviewModes) > 0 {
+		reviewMode = reviewModes[0]
+	}
+	var originalReview eventstore.ReviewPolicy
+	if reviewMode != "current" {
+		oldRules := reviewPolicy
+		if reviewMode == "pinned" {
+			var principal string
+			if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
+				member, err := r.AccessMember(t.Context(), owner.identity.Subject)
+				principal = member.PrincipalID
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			oldRules.RequiredChecks = []tracker.ChangeCheckSpec{{Name: "example-check", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: strings.Repeat("e", 64), Source: "independent", MaxAgeSeconds: 3600}}
+			oldRules.ID = changerequest.PolicyID(oldRules)
+		}
+		updatedBy, updatedAt := "example-owner", service.config.now().UTC().Truncate(time.Microsecond)
+		if strings.HasPrefix(reviewMode, "imported") {
+			updatedBy, updatedAt = "production-import", time.Unix(0, 0).UTC()
+		}
+		var err error
+		originalReview, err = eventstore.NewContent(service.runDetailStore()).PrepareReviewPolicy(t.Context(), eventstore.ReviewPolicy{OrganizationID: orgID, ProjectID: projectID, PolicyRevisionID: descriptor.ID, Revision: 1, UpdatedBy: updatedBy, UpdatedAt: updatedAt}, oldRules)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), orgID, corestore.Serving, func(w tenantstore.Writer) error { return w.SetReviewPolicy(t.Context(), originalReview, "") }); err != nil {
+			t.Fatal(err)
+		}
+		next := descriptor
+		next.ConfigDigest = strings.Repeat("b", 64)
+		next = next.WithID()
+		if strings.HasPrefix(reviewMode, "imported") {
+			row, err := eventstore.NewContent(service.runDetailStore()).PrepareProjectPolicy(t.Context(), orgID, next)
+			if err != nil {
+				t.Fatal(err)
+			}
+			row.ProjectID, row.ApprovedBy, row.ApprovedAt = projectID, "repository-default-branch", service.config.now().UTC()
+			if err := repository.WriteTenant(t.Context(), orgID, corestore.Serving, func(w tenantstore.Writer) error { return w.ApproveProjectPolicy(t.Context(), row, descriptor.ID) }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		originalDetails := service.config.RunDetails
+		var reviewRace *changeArchiveMutationStore
+		expectedReview := originalReview
+		if reviewMode == "atomic rollback" {
+			service.config.TenantRepository = failingReviewPolicyRepository{Repository: repository}
+		}
+		if reviewMode == "concurrent pin" {
+			var principal string
+			if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
+				member, err := r.AccessMember(t.Context(), owner.identity.Subject)
+				principal = member.PrincipalID
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			pinned := oldRules
+			pinned.RequiredChecks = []tracker.ChangeCheckSpec{{Name: "example-check", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: strings.Repeat("e", 64), Source: "independent", MaxAgeSeconds: 3600}}
+			pinned.ID = changerequest.PolicyID(pinned)
+			row, err := eventstore.NewContent(service.runDetailStore()).PrepareReviewPolicy(t.Context(), eventstore.ReviewPolicy{OrganizationID: orgID, ProjectID: projectID, PolicyRevisionID: descriptor.ID, Revision: 2, UpdatedBy: "example-owner", UpdatedAt: updatedAt}, pinned)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expectedReview = row
+			reviewRace = &changeArchiveMutationStore{DetailStore: originalDetails, reviewPolicyID: defaultChangeReviewPolicy(next).ID, afterReviewPayload: func(ctx context.Context) error {
+				return repository.WriteTenant(ctx, orgID, corestore.Serving, func(w tenantstore.Writer) error { return w.SetReviewPolicy(ctx, row, originalReview.ReviewPolicyID) })
+			}}
+			service.config.RunDetails = reviewRace
+		}
+		if reviewMode != "imported observation" {
+			approved := f.request(t, owner, http.MethodPut, f.base+"/policy", policy.Change{ExpectedID: descriptor.ID, Policy: next})
+			service.config.TenantRepository = repository
+			service.config.RunDetails = originalDetails
+			if reviewRace != nil && reviewRace.afterReviewPayload != nil {
+				t.Fatal("approval did not reach prepared review content")
+			}
+			if reviewMode == "atomic rollback" || reviewMode == "concurrent pin" {
+				status := http.StatusInternalServerError
+				if reviewMode == "concurrent pin" {
+					status = http.StatusConflict
+				}
+				requireNativeStatus(t, approved, status)
+				if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
+					current, err := r.ProjectPolicy(t.Context(), projectID)
+					if err != nil {
+						return err
+					}
+					if current.PolicyID != descriptor.ID {
+						t.Fatalf("failed approval changed repository policy: %+v", current)
+					}
+					review, err := r.ReviewPolicy(t.Context(), projectID)
+					if err != nil {
+						return err
+					}
+					if !reflect.DeepEqual(review, expectedReview) {
+						t.Fatalf("failed approval changed review: got=%+v want=%+v", review, expectedReview)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				var history int
+				if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM change_review_policy_revisions WHERE organization_id=$1 AND project_id=$2 AND review_policy_id=$3`, orgID, projectID, defaultChangeReviewPolicy(next).ID).Scan(&history); err != nil {
+					t.Fatal(err)
+				}
+				if history != 0 {
+					t.Fatalf("failed approval retained default revision rows=%d", history)
+				}
+				return
+			}
+			requireNativeStatus(t, approved, http.StatusOK)
+		}
+		if reviewMode == "default revert" {
+			reverted := f.request(t, owner, http.MethodPut, f.base+"/policy", policy.Change{ExpectedID: next.ID, Policy: descriptor})
+			requireNativeStatus(t, reverted, http.StatusOK)
+			next.ConfigDigest = strings.Repeat("c", 64)
+			next = next.WithID()
+			advanced := f.request(t, owner, http.MethodPut, f.base+"/policy", policy.Change{ExpectedID: descriptor.ID, Policy: next})
+			requireNativeStatus(t, advanced, http.StatusOK)
+		}
+		descriptor, reviewPolicy = next, defaultChangeReviewPolicy(next)
+	}
 	service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
 	attemptID, runID, leaseID := newNativeID("attempt"), newNativeID("run"), newNativeID("lease")
 	var lease leasestore.Lease
@@ -794,7 +950,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: orgID, LeaseID: lease.LeaseID, RunnerID: runnerID, AssignedAt: now}); err != nil {
 			return err
 		}
-		return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: orgID, ProjectID: projectID, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: policy.ID, BoundAt: now})
+		return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: orgID, ProjectID: projectID, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: descriptor.ID, BoundAt: now})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -814,7 +970,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	scope := nativeScope{organization: orgID, project: projectID, credential: apiCredential{ID: principal.ID, Hash: principal.Hash, Scope: apiScopeOperator, Hosted: owner.identity.Hosted, HostedRole: "owner", HostedMembership: member.MembershipID, HostedPrincipal: member.PrincipalID, NativeOnly: true}}
 	start := tracker.NativeRunEvent{
 		Mutation: tracker.Mutation{IdempotencyKey: "source-run-start"}, Type: "run.started", SchemaVersion: 1,
-		Data: tracker.NativeRunData{AttemptID: attemptID, RunID: runID, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), PolicyID: policy.ID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "example"}},
+		Data: tracker.NativeRunData{AttemptID: attemptID, RunID: runID, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), PolicyID: descriptor.ID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "example"}},
 	}
 	if running {
 		start.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", LocalAttemptID: 42, Generation: 1, Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 42, Generation: 1, SessionID: 42}}
@@ -831,7 +987,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, finish), http.StatusOK)
 	}
 	input := changeTestInput()
-	input.AttemptID, input.RunID = start.Data.AttemptID, start.Data.RunID
+	input.AttemptID, input.RunID, input.PolicyID = start.Data.AttemptID, start.Data.RunID, descriptor.ID
 	bundle := changeTestSource(t, &input)
 	request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish-version", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, ExpectedVersionID: "", ChangeVersionInput: input, SourceBundle: bundle}
 	if running {
@@ -843,6 +999,95 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 			observation.IdempotencyKey = fmt.Sprintf("source-run-progress-%d", sequence)
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, observation), http.StatusOK)
 		}
+	}
+	if reviewMode != "current" {
+		if reviewMode == "imported observation" {
+			observed := performHubAPIRequest(t, service, http.MethodPost, f.base+"/policy/observed", workerToken, policy.Observation{Descriptor: descriptor})
+			requireNativeStatus(t, observed, http.StatusNoContent)
+		}
+		published := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", workerToken, request)
+		if reviewMode == "pinned" {
+			requireNativeStatus(t, published, http.StatusConflict)
+			var refusal struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			}
+			decodeHubResponse(t, published, &refusal)
+			if refusal.Code != "policy_mismatch" || !strings.Contains(refusal.Message, "read the current policy and retry") {
+				t.Fatalf("stale pinned policy refusal=%q", refusal.Code)
+			}
+		} else {
+			requireNativeStatus(t, published, http.StatusOK)
+			var version tracker.ChangeVersion
+			decodeHubResponse(t, published, &version)
+			if version.ReviewPolicy.ID != reviewPolicy.ID || version.Policy.ID != descriptor.ID {
+				t.Fatalf("published policy=%+v review=%+v", version.Policy, version.ReviewPolicy)
+			}
+			if reviewMode == "imported observation" {
+				repeated := performHubAPIRequest(t, service, http.MethodPost, f.base+"/policy/observed", workerToken, policy.Observation{Descriptor: descriptor})
+				requireNativeStatus(t, repeated, http.StatusNoContent)
+			} else {
+				repeated := f.request(t, owner, http.MethodPut, f.base+"/policy", policy.Change{ExpectedID: descriptor.ID, Policy: descriptor})
+				requireNativeStatus(t, repeated, http.StatusOK)
+			}
+		}
+		if err := repository.ReadTenant(t.Context(), orgID, corestore.Serving, func(r tenantstore.Reader) error {
+			current, err := r.ReviewPolicy(t.Context(), projectID)
+			if err != nil {
+				return err
+			}
+			versions, err := r.Versions(t.Context(), change.ID, 0, 10)
+			if err != nil {
+				return err
+			}
+			expectedVersions := 1
+			if reviewMode == "pinned" {
+				expectedVersions = 0
+			}
+			if len(versions) != expectedVersions {
+				t.Fatalf("published version rows=%d want=%d", len(versions), expectedVersions)
+			}
+			if reviewMode == "pinned" {
+				if !reflect.DeepEqual(current, originalReview) {
+					t.Fatalf("pinned review changed: got=%+v want=%+v", current, originalReview)
+				}
+			} else {
+				expectedRevision := int64(2)
+				if reviewMode == "default revert" {
+					expectedRevision = 4
+				}
+				if current.Revision != expectedRevision || current.PolicyRevisionID != descriptor.ID || current.ReviewPolicyID != reviewPolicy.ID || current.UpdatedBy == "production-import" {
+					t.Fatalf("default review did not advance: %+v", current)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var history int
+		if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM change_review_policy_revisions WHERE organization_id=$1 AND project_id=$2 AND review_policy_id=$3 AND policy_id=$4 AND revision=1 AND updated_by=$5 AND updated_at=$6`, orgID, projectID, originalReview.ReviewPolicyID, originalReview.PolicyRevisionID, originalReview.UpdatedBy, originalReview.UpdatedAt).Scan(&history); err != nil {
+			t.Fatal(err)
+		}
+		if history != 1 {
+			t.Fatalf("original immutable review rows=%d, want 1", history)
+		}
+		if reviewMode == "pinned" {
+			rules, err := eventstore.NewContent(service.runDetailStore()).ReviewPolicy(t.Context(), originalReview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rules.PolicyID = descriptor.ID
+			rebound := f.request(t, owner, http.MethodPut, f.base+"/change-review-policy", tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rebind-pinned"}, ExpectedID: originalReview.ReviewPolicyID, Policy: rules})
+			requireNativeStatus(t, rebound, http.StatusOK)
+			accepted := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", workerToken, request)
+			requireNativeStatus(t, accepted, http.StatusOK)
+			var version tracker.ChangeVersion
+			decodeHubResponse(t, accepted, &version)
+			if version.PolicyID != descriptor.ID || version.ReviewPolicy.ID == originalReview.ReviewPolicyID || !reflect.DeepEqual(version.ReviewPolicy.RequiredChecks, rules.RequiredChecks) {
+				t.Fatalf("rebound pinned publication changed review checks: %+v", version.ReviewPolicy)
+			}
+		}
+		return
 	}
 	service.config.TenantRepository = failingChangeEventRepository{Repository: repository}
 	failed := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", workerToken, request)
@@ -904,7 +1149,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		finish.Data.Sequence = 4
 		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, finish), http.StatusOK)
 	}
-	if version.Source == nil || version.Source.BundleSHA256 != input.Source.BundleSHA256 || version.Policy.ID != policy.ID || version.ReviewPolicy.ID != reviewPolicy.ID || version.Number != 1 {
+	if version.Source == nil || version.Source.BundleSHA256 != input.Source.BundleSHA256 || version.Policy.ID != descriptor.ID || version.ReviewPolicy.ID != reviewPolicy.ID || version.Number != 1 {
 		t.Fatalf("published version=%+v", version)
 	}
 	server := httptest.NewServer(service.Handler())
@@ -950,7 +1195,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	requireNativeStatus(t, detailResponse, http.StatusOK)
 	var detail tracker.ChangeDetail
 	decodeHubResponse(t, detailResponse, &detail)
-	if detail.Change.CurrentVersion != version.ID || detail.Change.Revision != 2 || len(detail.Versions) != 1 || detail.Versions[0].Policy.ID != policy.ID {
+	if detail.Change.CurrentVersion != version.ID || detail.Change.Revision != 2 || len(detail.Versions) != 1 || detail.Versions[0].Policy.ID != descriptor.ID {
 		t.Fatalf("published change detail=%+v", detail)
 	}
 	approve := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve-version"}, ExpectedRevision: detail.Change.Revision, ExpectedVersionID: version.ID, Decision: "approved", Body: "Reviewed current source"}
@@ -1086,7 +1331,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: orgID, LeaseID: lease.LeaseID, RunnerID: runnerID, AssignedAt: now}); err != nil {
 			return err
 		}
-		return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: orgID, ProjectID: projectID, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: policy.ID, BoundAt: now})
+		return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: orgID, ProjectID: projectID, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: descriptor.ID, BoundAt: now})
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"errors"
+	"net/http"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
@@ -61,7 +62,7 @@ type currentChangePolicyRows struct {
 func readCurrentChangePolicyRows(ctx context.Context, r tenantstore.Reader, scope nativeScope) (currentChangePolicyRows, error) {
 	rows, err := readChangeSummaryPolicyRows(ctx, r, scope)
 	if err == nil && rows.hasReview && rows.Review.PolicyRevisionID != rows.Project.PolicyID {
-		return rows, corestore.ErrTenantMismatch
+		return rows, &nativeError{Code: "policy_mismatch", Message: "Change review policy does not match the approved repository policy; read the current policy and retry", status: http.StatusConflict, publicMessage: true}
 	}
 	return rows, err
 }
