@@ -653,7 +653,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}))
 			}
 			if test.Enrolled {
-				h.connector, err = NewNativeConnector(h.native)
+				h.connector.worker, err = NewNativeConnector(h.native)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1069,7 +1069,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					if _, err := h.scheduler.RestoreCompletion(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, Repository: source}, savedIssue, saved); err != nil {
 						t.Fatal(err)
 					}
-					h.connector = ownerConnector
+					h.connector.worker = ownerConnector
 					return h.scheduler.RunExecution(issue.ID).(*ownedExecution)
 				}
 				if test.RestartCompletion {
@@ -2631,6 +2631,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if config.Clock == nil {
 		config.Clock = time.Now
 	}
+	config = hubclientPostgresConfig(t, config, states, requireDependencies)
 
 	if config.Conversation != nil && config.Conversation.Enabled && config.Conversation.ArchiveContents == nil {
 		conversationConfig := *config.Conversation
@@ -2647,7 +2648,6 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if config.RunDetails == nil {
 		config.RunDetails = &archivedRunDetails{}
 	}
-	config = testsupport.NativeChangePostgresConfig(t, config)
 	service, err := hubserver.Open(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
@@ -2697,10 +2697,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &nativeChangeHub{config: config, clock: config.Clock, review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), descriptor: clientTestPolicy()}
-	h.seed = func(write func(tenantstore.Writer) error) {
-		testsupport.NativeChangeWrite(t, config, write)
-	}
+	h := &nativeChangeHub{config: config, clock: config.Clock, review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), project: "prj_example", descriptor: clientTestPolicy()}
 	reopens := 0
 	h.reopen = func(seed func(string) error) {
 		t.Helper()
@@ -2723,9 +2720,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 			t.Fatalf("reopen seeded fixture: %v", err)
 		}
 	}
-	project := testsupport.NativeChangeProject(t, config, states, requireDependencies)
-	h.project = project.ID
-	token := testsupport.NativeChangeWorker(t, config, project.ID, testsupport.NativeChangeMachineID)
+	h.seed = func(write func(tenantstore.Writer) error) { testsupport.DispatchWriteFixture(t, config, write) }
 	if h.admin, err = admin.Native(h.organization, h.project); err != nil {
 		t.Fatal(err)
 	}
@@ -2734,11 +2729,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	}
 	h.otherWorker = func(t *testing.T) *NativeClient {
 		t.Helper()
-		other := testsupport.NativeChangeWorker(t, config, project.ID, testsupport.NativeChangeOtherMachineID)
-		client, err := newTestClient(t, Config{URL: serverURL, TokenSource: func() string { return other }, HTTPClient: httpClient})
-		if err != nil {
-			t.Fatal(err)
-		}
+		client, _ := hubclientEnrolledRunner(t, admin, h.organization, h.project, httpClient.Transport)
 		native, err := client.Native(h.organization, h.project)
 		if err != nil {
 			t.Fatal(err)
@@ -2746,27 +2737,29 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		return native
 	}
 	h.failChanges = &changeFailingTransport{next: httpClient.Transport}
-	worker, err := newTestClient(t, Config{URL: serverURL, TokenSource: func() string { return token }, HTTPClient: &http.Client{Transport: h.failChanges}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	worker, machine := hubclientEnrolledRunner(t, admin, h.organization, h.project, h.failChanges)
 	if h.native, err = worker.Native(h.organization, h.project); err != nil {
 		t.Fatal(err)
 	}
-	if h.connector, err = NewNativeConnector(h.native); err != nil {
+	operator, err := NewNativeConnector(h.admin)
+	if err != nil {
 		t.Fatal(err)
 	}
+	workerConnector, err := NewNativeConnector(h.native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.connector = &hubclientFixtureConnector{NativeConnector: operator, admin: h.admin, worker: workerConnector}
 	h.scheduler, err = newTestScheduler(worker, SchedulerConfig{
 		OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project},
-		Machine:           Machine{ID: testsupport.NativeChangeMachineID, Hostname: "host", Capacity: 1, Version: "test"},
-		HeartbeatInterval: time.Nanosecond, LeaseTTL: 90 * time.Second,
+		Machine:           machine,
+		HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second,
 		LeaseHold: h.leaseHold,
 		Now:       config.Clock,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	dispatchEnableEnrollment(t, h)
 	return h
 }
 
@@ -2794,7 +2787,7 @@ type nativeChangeHub struct {
 	descriptor      policy.Descriptor
 	admin           *NativeClient
 	native          *NativeClient
-	connector       *NativeConnector
+	connector       *hubclientFixtureConnector
 	scheduler       *Scheduler
 	failChanges     *changeFailingTransport
 	otherWorker     func(*testing.T) *NativeClient
@@ -3245,6 +3238,7 @@ func (h *nativeChangeHub) claim(t *testing.T, issueID string) connector.Issue {
 
 func (h *nativeChangeHub) candidates(t *testing.T) []connector.Issue {
 	t.Helper()
+	h.scheduler.ExecutionSource("local").NativeClient().ApplyHeartbeatChanges(nil)
 	candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"Todo", "In Progress"}})
 	if err != nil {
 		page, readErr := h.admin.Issues(t.Context(), nil)

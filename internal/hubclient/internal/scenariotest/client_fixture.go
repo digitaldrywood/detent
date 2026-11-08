@@ -22,6 +22,7 @@ import (
 	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -119,6 +120,12 @@ type SchedulerConfig = dispatch.SchedulerConfig
 func newTestScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 	if config.Machine.DisplayName == "" {
 		config.Machine.DisplayName = config.Machine.Hostname
+	}
+	if config.CapacityConfiguration == nil {
+		limit := config.Machine.Capacity
+		config.CapacityConfiguration = func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig {
+			return &runnerauth.CapacityConfig{Revision: policy.Digest([]byte("fixture capacity")), LocalLimit: limit, ClientLimit: limit, RuntimeLimit: limit, ObservedAt: time.Now().UTC()}
+		}
 	}
 	clock := config.Now
 	if clock == nil {

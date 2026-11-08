@@ -7,11 +7,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
-func RunMain(m *testing.M) int {
+func RunMain(m *testing.M, cleanups ...func() error) int {
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
 	}
-	scratch, err := os.MkdirTemp("", "detent-hubclient-test-")
+	scratch, err := os.MkdirTemp("", "h")
 	if err != nil {
 		panic(err)
 	}
@@ -26,6 +26,11 @@ func RunMain(m *testing.M) int {
 		}
 	}
 	code := m.Run()
+	for _, cleanup := range cleanups {
+		if err := cleanup(); err != nil {
+			panic(err)
+		}
+	}
 	if err := os.RemoveAll(scratch); err != nil {
 		panic(err)
 	}

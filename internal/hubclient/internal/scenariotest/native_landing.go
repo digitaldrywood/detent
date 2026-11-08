@@ -13,6 +13,7 @@ func (h *nativeChangeHub) candidatesIn(t *testing.T, states ...string) []connect
 }
 func CandidatesIn(t *testing.T, scheduler *Scheduler, descriptor policy.Descriptor, states ...string) []connector.Issue {
 	t.Helper()
+	scheduler.ExecutionSource("local").NativeClient().ApplyHeartbeatChanges(nil)
 	capacity := 0
 	if descriptor.Gates.GitHubPullRequest {
 		capacity = 1

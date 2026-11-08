@@ -9,7 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/nativechange"
 )
 
-func TestMain(m *testing.M) { os.Exit(testsupport.RunMain(m)) }
+func TestMain(m *testing.M) { os.Exit(testsupport.RunMain(m, scenariotest.ClosePostgres)) }
 func TestRunnerPublication(t *testing.T) {
 	scenariotest.Run(t, []scenariotest.Scenario{
 		{Name: "held publication reconciles lost create through new Runner lease", Publication: "lost_create", Rework: true, Formal: true},
