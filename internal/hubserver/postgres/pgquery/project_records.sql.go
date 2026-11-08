@@ -221,6 +221,17 @@ func (q *Queries) LockActiveProject(ctx context.Context, arg LockActiveProjectPa
 const projectHasActiveWork = `-- name: ProjectHasActiveWork :one
 SELECT EXISTS(SELECT 1 FROM issues i JOIN leases l ON l.organization_id=i.organization_id AND l.issue_id=i.id WHERE i.organization_id=$1 AND i.project_id=$2 AND l.released_at IS NULL AND l.expires_at>$3::timestamptz)
 OR EXISTS(SELECT 1 FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE i.organization_id=$1 AND i.project_id=$2 AND a.status='running')
+OR EXISTS(SELECT 1 FROM workspace_sessions w WHERE w.organization_id=$1 AND w.project_id=$2 AND w.state NOT IN ('closed','failed'))
+OR EXISTS(SELECT 1 FROM project_action_runs a WHERE a.organization_id=$1 AND a.project_id=$2 AND a.status IN ('queued','running'))
+OR EXISTS(SELECT 1 FROM conversations c WHERE c.organization_id=$1 AND c.project_id=$2 AND (c.execution_status IS NULL OR c.execution_lease_id IS NULL OR c.execution_status IN ('waiting_for_runner','starting','running','waiting_input','interrupting','unknown')))
+OR EXISTS(SELECT 1 FROM conversations c JOIN conversation_messages m ON m.organization_id=c.organization_id AND m.conversation_id=c.id WHERE c.organization_id=$1 AND c.project_id=$2 AND m.delivery IN ('queued','sending','sent','delivered','responding','unknown'))
+OR EXISTS(SELECT 1 FROM github_imports g WHERE g.organization_id=$1 AND g.project_id=$2 AND (g.status IN ('pending','running','partial') OR g.intake_pending))
+OR EXISTS(SELECT 1 FROM github_outbound o WHERE o.organization_id=$1 AND o.project_id=$2 AND o.status IN ('pending','processing','retrying'))
+OR EXISTS(SELECT 1 FROM runner_sprite_memberships m WHERE m.organization_id=$1 AND (m.token_project_id=$2 OR m.allocation_project_id=$2) AND m.state<>'deleted')
+OR EXISTS(SELECT 1 FROM project_sprite_allocations a WHERE a.organization_id=$1 AND a.project_id=$2 AND a.desired_count>0)
+OR EXISTS(SELECT 1 FROM onboarding_issue_intake b WHERE b.organization_id=$1 AND b.project_id=$2 AND b.hub_owned AND b.batch_status IN ('discovering','importing'))
+OR EXISTS(SELECT 1 FROM artifact_upload_authorizations a WHERE a.organization_id=$1 AND a.project_id=$2 AND a.expires_at>$3)
+OR EXISTS(SELECT 1 FROM health_finding_projects p JOIN health_slack_deliveries d ON d.organization_id=p.organization_id AND d.finding_id=p.finding_id WHERE p.organization_id=$1 AND p.project_id=$2 AND d.completed_at IS NULL)
 `
 
 type ProjectHasActiveWorkParams struct {

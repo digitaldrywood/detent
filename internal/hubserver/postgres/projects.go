@@ -7,6 +7,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -68,6 +69,18 @@ func (s *session) DeleteProject(ctx context.Context, id tracker.ProjectID) error
 	if err := s.db.QueryRow(ctx, `SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, id).Scan(&locked); err != nil {
 		return mapError(ctx, err)
 	}
+	now, err := s.queries.LeaseTime(ctx)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	active, err := s.queries.ProjectHasActiveWork(ctx, pgquery.ProjectHasActiveWorkParams{OrganizationID: s.organization, ProjectID: id, Now: now})
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if active.Bool {
+		return projectstore.ErrActiveWork
+	}
+
 	actions, err := s.ProjectActions(ctx, id)
 	if err != nil {
 		return err

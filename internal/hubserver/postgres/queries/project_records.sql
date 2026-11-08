@@ -31,7 +31,18 @@ SELECT id FROM projects WHERE organization_id=$1 AND id=$2 AND deleted_at IS NUL
 
 -- name: ProjectHasActiveWork :one
 SELECT EXISTS(SELECT 1 FROM issues i JOIN leases l ON l.organization_id=i.organization_id AND l.issue_id=i.id WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND l.released_at IS NULL AND l.expires_at>sqlc.arg(now)::timestamptz)
-OR EXISTS(SELECT 1 FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND a.status='running');
+OR EXISTS(SELECT 1 FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND a.status='running')
+OR EXISTS(SELECT 1 FROM workspace_sessions w WHERE w.organization_id=sqlc.arg(organization_id) AND w.project_id=sqlc.arg(project_id) AND w.state NOT IN ('closed','failed'))
+OR EXISTS(SELECT 1 FROM project_action_runs a WHERE a.organization_id=sqlc.arg(organization_id) AND a.project_id=sqlc.arg(project_id) AND a.status IN ('queued','running'))
+OR EXISTS(SELECT 1 FROM conversations c WHERE c.organization_id=sqlc.arg(organization_id) AND c.project_id=sqlc.arg(project_id) AND (c.execution_status IS NULL OR c.execution_lease_id IS NULL OR c.execution_status IN ('waiting_for_runner','starting','running','waiting_input','interrupting','unknown')))
+OR EXISTS(SELECT 1 FROM conversations c JOIN conversation_messages m ON m.organization_id=c.organization_id AND m.conversation_id=c.id WHERE c.organization_id=sqlc.arg(organization_id) AND c.project_id=sqlc.arg(project_id) AND m.delivery IN ('queued','sending','sent','delivered','responding','unknown'))
+OR EXISTS(SELECT 1 FROM github_imports g WHERE g.organization_id=sqlc.arg(organization_id) AND g.project_id=sqlc.arg(project_id) AND (g.status IN ('pending','running','partial') OR g.intake_pending))
+OR EXISTS(SELECT 1 FROM github_outbound o WHERE o.organization_id=sqlc.arg(organization_id) AND o.project_id=sqlc.arg(project_id) AND o.status IN ('pending','processing','retrying'))
+OR EXISTS(SELECT 1 FROM runner_sprite_memberships m WHERE m.organization_id=sqlc.arg(organization_id) AND (m.token_project_id=sqlc.arg(project_id) OR m.allocation_project_id=sqlc.arg(project_id)) AND m.state<>'deleted')
+OR EXISTS(SELECT 1 FROM project_sprite_allocations a WHERE a.organization_id=sqlc.arg(organization_id) AND a.project_id=sqlc.arg(project_id) AND a.desired_count>0)
+OR EXISTS(SELECT 1 FROM onboarding_issue_intake b WHERE b.organization_id=sqlc.arg(organization_id) AND b.project_id=sqlc.arg(project_id) AND b.hub_owned AND b.batch_status IN ('discovering','importing'))
+OR EXISTS(SELECT 1 FROM artifact_upload_authorizations a WHERE a.organization_id=sqlc.arg(organization_id) AND a.project_id=sqlc.arg(project_id) AND a.expires_at>sqlc.arg(now))
+OR EXISTS(SELECT 1 FROM health_finding_projects p JOIN health_slack_deliveries d ON d.organization_id=p.organization_id AND d.finding_id=p.finding_id WHERE p.organization_id=sqlc.arg(organization_id) AND p.project_id=sqlc.arg(project_id) AND d.completed_at IS NULL);
 
 -- name: RetireProject :execrows
 UPDATE projects SET deleted_at=$3 WHERE organization_id=$1 AND id=$2 AND deleted_at IS NULL;
