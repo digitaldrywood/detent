@@ -3,23 +3,27 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -32,7 +36,13 @@ func (f conversationWorkerAuthorityFunc) VerifyConversationWorker(ctx context.Co
 }
 
 func TestConversationPostgresWorkerHandlersUseFencedTenantState(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	for _, concurrent := range []bool{false, true} {
+		t.Run(fmt.Sprintf("concurrent_event=%t", concurrent), func(t *testing.T) { testConversationPostgresWorkerHandlers(t, concurrent) })
+	}
+}
+
+func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool) {
+	repository, admin := projectRecordPostgresWithAdmin(t, 4)
 	f := newConversationTenantFixture(t, repository, time.Now().UTC())
 	var logs bytes.Buffer
 	f.service.config.Logger = slog.New(slog.NewTextHandler(&logs, nil))
@@ -86,6 +96,14 @@ func TestConversationPostgresWorkerHandlersUseFencedTenantState(t *testing.T) {
 			return err
 		}
 		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: f.project.OrganizationID, ID: string(binding.MachineID), Hostname: "example-worker", DisplayName: "Example worker", Capacity: 1}); err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		enrollment := runnerstore.Enrollment{OrganizationID: f.project.OrganizationID, ID: "enrollment_worker", RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenHash: apikey.HashToken("example-enrollment"), Scope: "projects", ProjectIDs: workerIdentity.ProjectIDs, Operations: workerIdentity.Operations, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: ownerCredential.ID}
+		if err := w.CreateRunnerEnrollment(t.Context(), enrollment); err != nil {
+			return err
+		}
+		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: f.project.OrganizationID, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenID: workerID, EnrollmentID: enrollment.ID, Scope: "projects", State: "active", Operations: workerIdentity.Operations, ProjectIDs: workerIdentity.ProjectIDs, CreatedAt: now, ExpiresAt: now.Add(time.Hour), LastHeartbeatAt: now}); err != nil {
 			return err
 		}
 		lease, err := w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(binding.MachineID), SessionID: "session-pg-worker", LeaseID: "lease-pg-worker", TTL: time.Hour})
@@ -151,7 +169,18 @@ func TestConversationPostgresWorkerHandlersUseFencedTenantState(t *testing.T) {
 	}
 
 	bindBody := map[string]any{"lease_id": identity.LeaseID, "fencing_token": identity.FencingToken, "attempt_id": identity.AttemptID, "run_id": "run-pg-worker", "capabilities": map[string]bool{"steer": true, "interrupt": true, "answer": true, "continue": true}}
-	bound := callConversationWorkerRoute(t, router.bind, scope, http.MethodPost, "/bind", string(issue.NativeID), "", bindBody, identity)
+	bind := func() *httptest.ResponseRecorder {
+		return callConversationWorkerRoute(t, router.bind, scope, http.MethodPost, "/bind", string(issue.NativeID), "", bindBody, identity)
+	}
+	var bound *httptest.ResponseRecorder
+	if concurrent {
+		order := &conversationBindOrderRepository{Repository: repository, first: make(chan string, 1), projectRelease: make(chan struct{})}
+		f.service.config.TenantRepository = order
+		bound = bindWithConcurrentRunnerEvent(t, admin, order, f.project.OrganizationID, f.project.ID, binding.RunnerID, bind)
+		f.service.config.TenantRepository = repository
+	} else {
+		bound = bind()
+	}
 	if bound.Code != http.StatusOK {
 		t.Fatalf("bind status = %d, body = %s, log = %s", bound.Code, bound.Body.String(), logs.String())
 	}
@@ -557,4 +586,89 @@ func callConversationWorkerRoute(t *testing.T, handler echo.HandlerFunc, scope n
 		echo.New().HTTPErrorHandler(err, c)
 	}
 	return response
+}
+
+type conversationBindOrderRepository struct {
+	tenantstore.Repository
+	first          chan string
+	projectRelease chan struct{}
+	once           sync.Once
+}
+
+type conversationBindOrderWriter struct {
+	tenantstore.Writer
+	order *conversationBindOrderRepository
+}
+
+func (r *conversationBindOrderRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	return r.Repository.WriteTenant(ctx, org, workload, func(w tenantstore.Writer) error { return write(conversationBindOrderWriter{Writer: w, order: r}) })
+}
+
+func (w conversationBindOrderWriter) RunnerIdentityByCredential(ctx context.Context, id string) (runnerstore.Identity, error) {
+	w.order.once.Do(func() { w.order.first <- "runner" })
+	return w.Writer.RunnerIdentityByCredential(ctx, id)
+}
+
+func (w conversationBindOrderWriter) LockWorkItemProject(ctx context.Context, project tracker.ProjectID) error {
+	if err := w.Writer.LockWorkItemProject(ctx, project); err != nil {
+		return err
+	}
+	w.order.once.Do(func() { w.order.first <- "project" })
+	select {
+	case <-w.order.projectRelease:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (w conversationBindOrderWriter) LockLease(ctx context.Context, id string) (leasestore.Lease, error) {
+	return w.Writer.(leasestore.FencedLeaseLocker).LockLease(ctx, id)
+}
+
+func bindWithConcurrentRunnerEvent(t *testing.T, admin *sql.DB, order *conversationBindOrderRepository, org tracker.OrganizationID, project tracker.ProjectID, runner string, bind func() *httptest.ResponseRecorder) *httptest.ResponseRecorder {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	event, err := admin.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer event.Rollback()
+	var id string
+	if err := event.QueryRowContext(ctx, `SELECT runner_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2 FOR UPDATE`, org, runner).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	var release sync.Once
+	joined := false
+	go func() { done <- bind() }()
+	defer func() {
+		release.Do(func() { close(order.projectRelease) })
+		event.Rollback()
+		if !joined {
+			<-done
+		}
+	}()
+	select {
+	case <-order.first:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	projectErr := event.QueryRowContext(ctx, `SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR UPDATE NOWAIT`, org, project).Scan(&id)
+	if err := event.Rollback(); err != nil {
+		t.Error(err)
+	}
+	release.Do(func() { close(order.projectRelease) })
+	if projectErr != nil {
+		t.Errorf("runner event could not acquire project while bind waited for runner: %v", projectErr)
+	}
+	select {
+	case response := <-done:
+		joined = true
+		return response
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	return nil
 }

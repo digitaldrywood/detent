@@ -125,6 +125,9 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 		if err := s.authorizeAccessScope(ctx, writer, scope, false); err != nil {
 			return err
 		}
+		if _, err := writer.RunnerIdentityByCredential(ctx, scope.credential.ID); err != nil {
+			return fmt.Errorf("lock bind runner: %w", err)
+		}
 		if err := writer.LockWorkItemProject(ctx, scope.project); err != nil {
 			return err
 		}
