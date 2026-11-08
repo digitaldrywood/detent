@@ -68,21 +68,27 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 	}
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
 	request := AgentTurnRequest{Model: effectiveModel("", selection.Model, runtime.defaultModelForRole(role)), ModelProvider: modelProvider, ServiceTier: serviceTier, ReasoningEffort: effort, MaxDuration: progressTurnTimeout(workflow.Config, backendConfig), MaxRSSBytes: r.maxAgentRSSBytes, RSSPollInterval: r.rssPollInterval, processRSS: r.processRSS}
-	identity := tracker.NativeExecutionIdentity{Role: role, Backend: selection.BackendID, Model: request.Model}
+	process := AgentProcessRequest{Environment: r.withGoBudget(ctx, "", procgroup.Environment{Variables: serviceapi.RestrictedEnvironment()})}
+	resolved := resolveRequestAgentSelection(ctx, req, process, request.Model, role, workflow.Config, backendConfig, backend)
+	if resolved.Err != nil {
+		return progresscheck.Decision{}, resolved.Err
+	}
+	request.Model = resolved.Model
+	if resolved.Effort != "" {
+		request.ReasoningEffort = resolved.Effort
+	}
 	if reserved, ok := req.Execution.(ProviderCapacityExecution); ok {
 		if reservation := reserved.ProviderCapacity(); reservation != nil {
 			if reservation.Backend != selection.BackendID || reservation.Role != role {
 				return progresscheck.Decision{}, errors.New("progress backend differs from its admission")
 			}
-			identity.Model = reservation.Model
-			if identity.Model != "provider_default" {
-				request.Model = identity.Model
+			request.Model = reservation.Model
+			if request.Model == "provider_default" {
+				request.Model = ""
 			}
 		}
 	}
-	if identity.Model == "" {
-		identity.Model = "provider_default"
-	}
+	identity := nativeAttemptIdentity(ctx, req.Execution, role, selection.BackendID, &request)
 	if observed, ok := req.Execution.(RuntimeExecution); ok {
 		if err := observed.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now()}); err != nil {
 			return progresscheck.Decision{}, err

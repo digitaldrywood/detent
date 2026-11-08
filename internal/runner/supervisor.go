@@ -241,6 +241,7 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 
 	var result RunResult
 	var err error
+	ctx = context.WithValue(ctx, attemptAgentSelectionKey{}, &attemptAgentSelection{})
 	if request.PrepareRun != nil {
 		prepare := request.PrepareRun
 		request.PrepareRun = nil

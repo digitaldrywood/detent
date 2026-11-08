@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -181,13 +182,34 @@ func RunNativeRetryProgressLoadsRepeatedLandingRefusals(t *testing.T, factories 
 
 type nativeProgressRerouteAgent struct {
 	PlanningAgent
-	attempt     string
-	err         error
-	decision    *progresscheck.Decision
-	duringCheck func(context.Context) error
+	attempt              string
+	err                  error
+	decision             *progresscheck.Decision
+	duringCheck          func(context.Context) error
+	catalogCalls         int
+	progressEffort       string
+	implementationEffort string
 }
 
-func (a *nativeProgressRerouteAgent) RunTurn(ctx context.Context, _ runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+var errProgressImplementationReached = errors.New("implementation provider reached")
+
+func (a *nativeProgressRerouteAgent) RunTurnWithTools(ctx context.Context, request runner.AgentTurnRequest, _ []runner.AgentTool, _ runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	return a.RunTurn(ctx, request, update)
+}
+
+func (a *nativeProgressRerouteAgent) ListModels(context.Context, runner.AgentProcessRequest) ([]runner.AgentModel, error) {
+	a.catalogCalls++
+	return []runner.AgentModel{{ID: "code-model", Model: "code-model", SupportedReasoningEfforts: []string{"low", "high"}}, {ID: "plan-model", Model: "plan-model", SupportedReasoningEfforts: []string{"low", "high"}}}, nil
+}
+
+func (a *nativeProgressRerouteAgent) RunTurn(ctx context.Context, request runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	if !request.ReadOnly {
+		a.implementationEffort = request.ReasoningEffort
+		return runner.AgentTurnResult{}, errProgressImplementationReached
+	}
+	if !request.TextOnly {
+		a.progressEffort = request.ReasoningEffort
+	}
 	if a.duringCheck != nil {
 		if err := a.duringCheck(ctx); err != nil {
 			return runner.AgentTurnResult{}, err
@@ -236,7 +258,8 @@ type nativeProgressRerouteRun struct {
 
 type nativeProgressRerouteRunner struct {
 	*runner.Runner
-	started chan nativeProgressRerouteRun
+	started        chan nativeProgressRerouteRun
+	implementation bool
 }
 
 type nativeProgressRerouteScheduling struct {
@@ -253,6 +276,15 @@ func (s *nativeProgressRerouteScheduling) ReadmitRetryProgress(ctx context.Conte
 }
 
 func (r *nativeProgressRerouteRunner) Run(ctx context.Context, request runner.RunRequest) (runner.RunResult, error) {
+	if r.implementation {
+		_, err := r.Runner.Run(ctx, request)
+		if errors.Is(err, errProgressImplementationReached) {
+			err = nil
+		}
+		r.started <- nativeProgressRerouteRun{request: request, err: err}
+		<-ctx.Done()
+		return runner.RunResult{}, ctx.Err()
+	}
 	request.ProviderReports = []providercapacity.Report{{Backend: "codex", Models: []string{"plan-model", "code-model"}}}
 	requirement, err := r.DispatchCapacity(ctx, request)
 	if err == nil {
@@ -438,16 +470,21 @@ func RunNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T, factor
 
 	t.Parallel()
 	for _, tt := range []struct {
-		name     string
-		failure  error
-		invalid  bool
-		conflict bool
-		reason   string
+		name          string
+		failure       error
+		invalid       bool
+		conflict      bool
+		reason        string
+		effort        string
+		projectEffort bool
 	}{
 		{name: "backend", failure: errors.New("provider unavailable"), reason: "provider unavailable"},
 		{name: "timeout", failure: context.DeadlineExceeded, reason: "context deadline exceeded"},
 		{name: "invalid decision", invalid: true, reason: "progress decision names unavailable step"},
 		{name: "old Hub publication conflict", conflict: true, reason: "revision_conflict"},
+		{name: "rework identity retains issue effort", failure: errors.New("provider unavailable"), reason: "provider unavailable", effort: "low"},
+		{name: "rework identity retains project effort", failure: errors.New("provider unavailable"), reason: "provider unavailable", effort: "low", projectEffort: true},
+		{name: "rework identity retains effort after deadline", failure: context.DeadlineExceeded, reason: "context deadline exceeded", effort: "low"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Now()
@@ -466,7 +503,11 @@ func RunNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T, factor
 					return next.RoundTrip(request)
 				})
 			}
-			issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Retry implementation after progress failure", Body: "Update the README." + issueContractTestSections})
+			body := "Update the README." + issueContractTestSections
+			if tt.effort != "" && !tt.projectEffort {
+				body += "\n```detent-agent\nschema: 1\neffort: " + tt.effort + "\n```"
+			}
+			issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Retry implementation after progress failure", Body: body})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -506,20 +547,39 @@ func RunNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T, factor
 			}
 			issue = claim("Rework")
 			original := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
-			change, err := h.admin.CreateChange(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Retained progress source"})
-			if err != nil {
-				t.Fatal(err)
+			if tt.effort == "" {
+				change, err := h.admin.CreateChange(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Retained progress source"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				h.publish(t, tracker.NativeWorkItemID(issue.ID), change.ID, nativeChangeFixtureHead("b"))
 			}
-			h.publish(t, tracker.NativeWorkItemID(issue.ID), change.ID, nativeChangeFixtureHead("b"))
 			provider := &nativeProgressRerouteAgent{err: tt.failure, attempt: failed.CompletionData().AttemptID}
 			if tt.invalid {
 				provider.decision = &progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "unavailable", Diagnosis: failed.CompletionData().AttemptID + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Continue", Evidence: []string{failed.CompletionData().AttemptID}}
 			}
-			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "implementation", Backend: "codex", Model: "code-model", Default: true}}}}}, Workspace: nativeProgressWorkspace{path: t.TempDir()}, AgentBackend: provider})
+			var runWorkspace workspace.Backend = nativeProgressWorkspace{path: t.TempDir()}
+			if tt.effort != "" {
+				source := nativeChangeSourceRepo(t)
+				remote := filepath.Join(t.TempDir(), "origin.git")
+				nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
+				nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
+				nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+				nativeChangeGit(t, source, "push", "-u", "origin", "main")
+				runWorkspace, err = workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "implementation", Backend: "codex", Model: "code-model", Default: true}}}}
+			if tt.projectEffort {
+				cfg.Agent.Effort.Rework = tt.effort
+			}
+			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: cfg}, Workspace: runWorkspace, AgentBackend: provider})
 			if err != nil {
 				t.Fatal(err)
 			}
-			backend := &nativeProgressRerouteRunner{Runner: agent, started: make(chan nativeProgressRerouteRun, 1)}
+			backend := &nativeProgressRerouteRunner{Runner: agent, started: make(chan nativeProgressRerouteRun, 1), implementation: tt.effort != ""}
 			source := &nativeProgressRerouteScheduling{nativeCompletionScheduling: &nativeCompletionScheduling{Scheduler: h.scheduler, issue: issue, released: make(chan error, 1)}, refused: make(chan error, 1)}
 			orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"}}, orchestrator.Dependencies{Connector: h.connector, Scheduling: source, Runner: backend, Now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(t.Output(), nil))})
 			if err != nil {
@@ -551,6 +611,24 @@ func RunNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T, factor
 			check, err := h.admin.NativeAttempt(t.Context(), tracker.NativeWorkItemID(issue.ID), original.CompletionData().AttemptID)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tt.effort != "" {
+				if check.Identity == nil || check.Identity.Role != runner.RoleRework || check.Identity.Model != "code-model" || check.Identity.ReasoningEffort != tt.effort {
+					t.Fatalf("rework identity lost resolved effort: %+v", check.Identity)
+				}
+				if provider.catalogCalls != 1 || provider.progressEffort != tt.effort || provider.implementationEffort != tt.effort {
+					t.Fatalf("attempt selection was not shared: catalogs=%d progress=%q implementation=%q prior=%s", provider.catalogCalls, provider.progressEffort, provider.implementationEffort, started.request.PriorAttempt.Reason)
+				}
+				implementation := started.request.Execution.(*ownedExecution)
+				if implementation.CompletionData().AttemptID != check.AttemptID {
+					t.Fatal("progress failure replaced the implementation attempt")
+				}
+				changed := *check.Identity
+				changed.ReasoningEffort = "high"
+				if err := implementation.Start(t.Context(), changed); err == nil {
+					t.Fatal("implementation allowed its admitted effort to change")
+				}
+				return
 			}
 			if check.Identity == nil || check.Identity.Role != runner.RoleRework || check.Outcome != "cancelled" || check.ClaimReleasedAt == nil {
 				t.Fatalf("failed progress check retained its rework identity: %+v", check)

@@ -2210,8 +2210,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				}
 			}
 		}
-		executionIdentity := tracker.NativeExecutionIdentity{Role: role, Backend: selection.BackendID, Model: sessionModel}
+		executionIdentity := tracker.NativeExecutionIdentity{Role: role, Backend: selection.BackendID, Model: sessionModel, ReasoningEffort: turnRequest.ReasoningEffort}
 		if !preStartBinding {
+			executionIdentity = nativeAttemptIdentity(ctx, req.Execution, role, selection.BackendID, &turnRequest)
 			if err := req.Execution.Start(ctx, executionIdentity); err != nil {
 				return RunResult{}, err
 			}
@@ -2239,12 +2240,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			}
 		}
 		if preStartBinding {
-			executionIdentity = tracker.NativeExecutionIdentity{
-				Role:            role,
-				Backend:         selection.BackendID,
-				Model:           effectiveModel("", turnRequest.Model, "provider_default"),
-				ReasoningEffort: turnRequest.ReasoningEffort,
-			}
+			executionIdentity = nativeAttemptIdentity(ctx, req.Execution, role, selection.BackendID, &turnRequest)
 		}
 		if reviewRecovery == nil && turnRecovery == nil {
 			resumeState, err = r.nativeResume(ctx, &req, backend, processRequest, recoveryState, resumeState, executionIdentity, preStartBinding, runWorkspace, info, workspaceIssue)
