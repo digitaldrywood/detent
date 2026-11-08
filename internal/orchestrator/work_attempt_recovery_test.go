@@ -336,7 +336,21 @@ func newWorkAttemptRecoveryOrchestratorWithConnector(
 ) *Orchestrator {
 	t.Helper()
 
-	orch, err := New(Config{
+	orch, err := New(workAttemptRecoveryTestConfig(), Dependencies{
+		Connector:       tracker,
+		WorkAttempts:    runtimeStore,
+		WorkflowMetrics: runtimeStore,
+		AgentResume:     runtimeStore,
+		WorkspaceReaper: reaper,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	return orch
+}
+
+func workAttemptRecoveryTestConfig() Config {
+	return Config{
 		PollInterval:                  time.Hour,
 		MaxConcurrentAgents:           1,
 		Project:                       scheduler.ProjectCandidate{ID: "detent"},
@@ -350,17 +364,36 @@ func newWorkAttemptRecoveryOrchestratorWithConnector(
 			Enabled:    true,
 			LeaseField: "Detent Lease",
 		},
-	}, Dependencies{
-		Connector:       tracker,
-		WorkAttempts:    runtimeStore,
-		WorkflowMetrics: runtimeStore,
-		AgentResume:     runtimeStore,
-		WorkspaceReaper: reaper,
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
 	}
-	return orch
+}
+
+func newWorkAttemptRecoveryLogicOrchestrator(t *testing.T, issue connector.Issue, now time.Time) (*Orchestrator, int64) {
+	t.Helper()
+	attempt := store.WorkAttempt{
+		ID:                 1,
+		ProjectID:          "detent",
+		IssueID:            issue.ID,
+		Identifier:         issue.Identifier,
+		IssueURL:           issue.URL,
+		Repo:               issue.PRRepository,
+		WorkerType:         "agent",
+		WorkerHost:         "worker-a",
+		Lane:               issue.State,
+		AttemptNumber:      1,
+		Status:             store.WorkAttemptStatusTerminal,
+		TerminalState:      store.WorkAttemptTerminalFailure,
+		StartedAt:          now.Add(-time.Minute),
+		CompletedAt:        now.Add(4 * time.Minute),
+		Phase:              "completed",
+		StatusMessage:      string(store.WorkAttemptTerminalFailure),
+		WorkerMetadataJSON: runningWorkAttemptMetadataJSON(Running{Policy: orchestratorTestPolicy()}, nil),
+	}
+	attempts := &recordingWorkAttemptStore{workAttempt: &attempt, history: []store.WorkAttempt{attempt}}
+	orch, err := New(workAttemptRecoveryTestConfig(), Dependencies{Connector: &recoveryTestConnector{}, WorkAttempts: attempts, WorkflowMetrics: &autoPromoteWorkflowMetricsRecorder{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return orch, attempt.ID
 }
 
 func startRecoveryWorkAttempt(
@@ -484,18 +517,12 @@ func (c *recoveryTestConnector) SetField(_ context.Context, issueID string, fiel
 }
 
 func TestRecoveryPreservesIndependentRuntimeHolds(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, source := range []BlockedSource{BlockedSourceDependency, BlockedSourceOperatorStop, BlockedSourceOwnership, BlockedSourceMergeDuration} {
 		t.Run(string(source), func(t *testing.T) {
-			runtimeStore := openWorkAttemptRecoveryStore(t, t.Context())
 			issue := recoveryTestIssue()
 			now := time.Now().UTC()
-			attemptID := startRecoveryWorkAttempt(t, t.Context(), runtimeStore, issue, store.WorkAttemptStatusTerminal, store.WorkAttemptTerminalFailure, now.Add(-time.Minute))
-			orch := newWorkAttemptRecoveryOrchestrator(t, runtimeStore, nil)
+			orch, attemptID := newWorkAttemptRecoveryLogicOrchestrator(t, issue, now)
 			state := newState(orch.cfg)
 			state.Blocked[issue.ID] = Blocked{Issue: issue, Source: source, Reason: "independent predicate remains false"}
 			response, err := orch.handleWorkAttemptRecovery(t.Context(), &state, WorkAttemptRecoveryRequest{AttemptID: attemptID, Action: WorkAttemptRecoveryRetryFresh}, now)
@@ -520,16 +547,10 @@ func TestRecoveryPreservesIndependentRuntimeHolds(t *testing.T) {
 }
 
 func TestRecoveryDoesNotQueueBehindRunningWorker(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
-	runtimeStore := openWorkAttemptRecoveryStore(t, t.Context())
 	issue := recoveryTestIssue()
 	now := time.Now().UTC()
-	attemptID := startRecoveryWorkAttempt(t, t.Context(), runtimeStore, issue, store.WorkAttemptStatusTerminal, store.WorkAttemptTerminalFailure, now.Add(-time.Minute))
-	orch := newWorkAttemptRecoveryOrchestrator(t, runtimeStore, nil)
+	orch, attemptID := newWorkAttemptRecoveryLogicOrchestrator(t, issue, now)
 	state := newState(orch.cfg)
 	state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: attemptID + 1}
 	response, err := orch.handleWorkAttemptRecovery(t.Context(), &state, WorkAttemptRecoveryRequest{AttemptID: attemptID, Action: WorkAttemptRecoveryRetryFresh}, now)
