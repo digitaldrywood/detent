@@ -66,10 +66,14 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteSprite(t.Context(), org, corestore.Serving, func(w postgres.SpriteWriter) error {
+			tenant, ok := w.(tenantstore.Writer)
+			if !ok {
+				t.Fatal("Sprite writes do not share the tenant transaction")
+			}
 			for i := range 22 {
 				name := fmt.Sprintf("zz_history_%02d", i)
 				enrollment := runnerstore.Enrollment{OrganizationID: org, ID: name, TokenHash: apikey.HashToken(string(org) + name), Scope: "organization", Operations: []string{"read"}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "admin"}
-				if err := w.(tenantstore.Writer).CreateRunnerEnrollment(t.Context(), enrollment); err != nil {
+				if err := tenant.CreateRunnerEnrollment(t.Context(), enrollment); err != nil {
 					return err
 				}
 				if err := w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: org, Name: name, EnrollmentID: name, ProviderOrganization: "example", State: "deleted", CreatedAt: now.Add(time.Duration(i+1) * time.Minute), IdleSince: now, AllocationProjectID: "prj_first"}); err != nil {

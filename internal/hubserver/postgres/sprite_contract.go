@@ -38,6 +38,7 @@ type SpriteReader interface {
 	SpritePoolMemberPage(context.Context, SpriteMemberCursor, int) ([]SpritePoolMember, error)
 	SpriteAllocationQueue(context.Context, SpriteAllocationCursor, int) ([]SpriteAllocation, error)
 	SpriteAllocation(context.Context, tracker.ProjectID) (SpriteAllocation, error)
+	SpriteAllocationAuthority(context.Context, tracker.ProjectID, time.Time) (bool, error)
 	SpriteAllocations(context.Context, tracker.ProjectID, int) ([]SpriteAllocation, error)
 	SpriteMembers(context.Context, string, int) ([]SpriteMember, error)
 	SpriteOperation(context.Context, string) (SpriteOperation, error)
@@ -230,4 +231,9 @@ func (s *session) SpriteAllocationQueue(ctx context.Context, after SpriteAllocat
 	}
 	rows, err := s.queries.SpriteAllocationQueue(ctx, pgquery.SpriteAllocationQueueParams{OrganizationID: s.organization, AfterRequestedAt: after.RequestedAt, AfterProjectID: string(after.ProjectID), PageLimit: int32(limit)})
 	return rows, mapError(ctx, err)
+}
+
+func (s *session) SpriteAllocationAuthority(ctx context.Context, project tracker.ProjectID, at time.Time) (bool, error) {
+	allowed, err := s.queries.SpriteAllocationAuthority(ctx, pgquery.SpriteAllocationAuthorityParams{OrganizationID: s.organization, ProjectID: project, At: at})
+	return allowed, mapError(ctx, err)
 }

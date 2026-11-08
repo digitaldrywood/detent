@@ -1,7 +1,7 @@
 package hubserver
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -17,15 +19,27 @@ import (
 
 func setPlacementFixture(t *testing.T, f nativeFixture, placement policy.Placement, ceiling int) nativeScope {
 	t.Helper()
-	raw, err := json.Marshal(placement)
+	placement = placement.Resolved()
+	err := f.service.database.postgres.WriteSprite(t.Context(), f.project.OrganizationID, corestore.Serving, func(w postgres.SpriteWriter) error {
+		row, err := w.SpritePool(t.Context())
+		if errors.Is(err, corestore.ErrNotFound) {
+			row = postgres.SpritePool{OrganizationID: f.project.OrganizationID, IdleSeconds: 300, IsolationTier: "native-trusted", ConfiguredBy: "test_hub_admin"}
+		} else if err != nil {
+			return err
+		}
+		row.MaxRunners = int32(ceiling)
+		row.PlacementMode, row.TodoThreshold, row.OverflowSlots, row.MaxSpriteSlots = placement.Mode, int32(placement.TodoThreshold), int32(placement.OverflowSlots), int32(placement.MaxSpriteSlots)
+		_, err = w.PutSpritePool(t.Context(), row, row.Revision)
+		return err
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_pools(organization_id,max_runners,bootstrap,configured_by,placement_json) SELECT ?,?,'true',id,? FROM api_tokens WHERE token_hash=? ON CONFLICT(organization_id) DO UPDATE SET placement_json=excluded.placement_json,max_runners=excluded.max_runners`, f.project.OrganizationID, ceiling, string(raw), apikey.HashToken(testHubAdminToken))
-	if err != nil {
-		t.Fatal(err)
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("fixture authority=%d %v", status, err)
 	}
-	return nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	return nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
 }
 
 func placementFixtureRunner(t *testing.T, f nativeFixture, name, account string, sprite bool, capacity int, models ...string) runnerFixture {

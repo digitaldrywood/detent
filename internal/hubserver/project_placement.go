@@ -13,6 +13,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -675,4 +683,325 @@ func readProjectIdentityResolver(ctx context.Context, q nativeQueryer, scope nat
 	}
 	cfg.Agents.ModelSelection = selection.Effective
 	return runner.NewBoardIdentityResolver(cfg, selector.Context{})
+}
+
+func (s *Service) spritePlacementRecord(ctx context.Context, scope nativeScope) (placementSnapshot, error) {
+	result := placementSnapshot{Items: map[tracker.WorkItemID]providercapacity.Requirement{}, Local: map[tracker.WorkItemID]int{}}
+	now := s.config.now()
+	var pool postgres.SpritePool
+	var projects []corestore.Project
+	var records []runnerstore.RoutingRecord
+	var allocations []postgres.SpriteAllocation
+	var urgent runnerstore.UrgentUpdate
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		owner, ok := r.(postgres.SpriteReader)
+		if !ok {
+			return accessstore.ErrTransactionRequired
+		}
+		pool, err = owner.SpritePool(ctx)
+		if errors.Is(err, corestore.ErrNotFound) {
+			pool.PlacementMode = "blended"
+		} else if err != nil {
+			return err
+		}
+		projects, err = r.Projects(ctx, "", 100)
+		if err != nil {
+			return err
+		}
+		allocations, err = owner.SpriteAllocations(ctx, "", 100)
+		if err != nil {
+			return err
+		}
+		routing, ok := r.(runnerstore.RoutingPageReader)
+		if !ok {
+			return accessstore.ErrTransactionRequired
+		}
+		for page := range 6 {
+			rows, readErr := routing.RunnerRoutingRecords(ctx, corestore.MaxPageSize, page*corestore.MaxPageSize, now)
+			if readErr != nil {
+				return readErr
+			}
+			records = append(records, rows...)
+			if len(rows) < corestore.MaxPageSize {
+				break
+			}
+		}
+		urgent, err = r.RunnerUrgentUpdate(ctx)
+		return err
+	})
+	if err != nil {
+		return result, err
+	}
+	result.Policy = policy.Placement{Mode: pool.PlacementMode, TodoThreshold: int(pool.TodoThreshold), OverflowSlots: int(pool.OverflowSlots), MaxSpriteSlots: int(pool.MaxSpriteSlots)}
+	allocated := map[tracker.ProjectID]bool{}
+	for _, a := range allocations {
+		allocated[a.ProjectID] = true
+	}
+	slices.SortStableFunc(projects, func(a, b corestore.Project) int {
+		if allocated[a.ID] != allocated[b.ID] {
+			if allocated[a.ID] {
+				return -1
+			}
+			return 1
+		}
+		if a.SchedulingRank < b.SchedulingRank {
+			return -1
+		}
+		if a.SchedulingRank > b.SchedulingRank {
+			return 1
+		}
+		return strings.Compare(string(a.ID), string(b.ID))
+	})
+	counted := map[string]bool{}
+	slots := map[string]bool{}
+	capacity := newPlacementCapacity()
+	members, err := s.readSpritePoolRecord(ctx, scope)
+	if err != nil {
+		return result, err
+	}
+	byEnrollment := map[string]spritePoolMember{}
+	for _, m := range members.Members {
+		if m.State != "deleted" {
+			byEnrollment[m.EnrollmentID] = m
+		}
+	}
+	for _, record := range records {
+		r := runnerFromRoutingRecord(record, now, urgent)
+		current := placementRunner{Runner: r, Enrollment: record.Record.Identity.EnrollmentID, Sprite: record.Record.Machine.SpriteName == r.Hostname && validSpritesSlug(r.Hostname)}
+		current.Paused = current.Sprite && now.Sub(r.LastHeartbeatAt) >= spriteRunnerIdle
+		result.Runners = append(result.Runners, current)
+		if current.Sprite {
+			for _, lease := range record.Leases {
+				key := string(lease.Lease.ID)
+				if lease.LandingCapacity > 0 {
+					if group := landingCapacityKey(lease.MachineID, string(lease.Lease.ProjectID), lease.SessionID); group != "" {
+						key = group
+					}
+				}
+				slots[key] = true
+			}
+		}
+	}
+	result.SpriteUsed = len(slots)
+	for _, project := range projects {
+		if project.DeletedAt != nil || project.Profile != "native" {
+			continue
+		}
+		localScope := scope
+		localScope.project = project.ID
+		var pinned policystore.Revision
+		var projectRecord projectstore.Record
+		var candidates claimstore.CandidatePage
+		var allocation projectSpriteAllocation
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			owner, ok := r.(postgres.SpriteReader)
+			if !ok {
+				return accessstore.ErrTransactionRequired
+			}
+			allocation, err = readSpriteAllocationRecord(ctx, owner, project.ID)
+			if err != nil {
+				return err
+			}
+			pinned, err = r.ProjectPolicy(ctx, project.ID)
+			if errors.Is(err, corestore.ErrNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			projectRecord, err = r.ProjectRecord(ctx, project.ID)
+			if err != nil {
+				return err
+			}
+			candidates, err = r.CandidatePage(ctx, claimstore.CandidateQuery{ProjectID: project.ID, Scope: string(project.ID), States: []string{"todo"}, AvailableAt: now, Limit: 100})
+			return err
+		})
+		if err != nil {
+			return result, err
+		}
+		if pinned.PolicyID == "" {
+			continue
+		}
+		descriptor, err := eventstore.NewContent(s.runDetailStore()).ProjectPolicy(ctx, pinned)
+		if err != nil {
+			return result, err
+		}
+		workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(project.ID), descriptor)
+		if err != nil {
+			return result, err
+		}
+		selection, err := s.projectRecordModel(ctx, projectRecord)
+		if err != nil {
+			return result, err
+		}
+		workflow.Config.Agents.ModelSelection = selection.Effective
+		workflow.Config.Plan.Enabled = descriptor.Gates.PlanEnabled
+		resolver, err := runner.NewBoardIdentityResolver(workflow.Config, selector.Context{})
+		if err != nil {
+			return result, err
+		}
+		decision, err := checkMonthlyBudget(ctx, nil, localScope, budget.CostExposure{SpriteInfrastructure: true, RunnerAPI: workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered}, false, now, s.config.TenantRepository)
+		if err != nil {
+			return result, err
+		}
+		if !decision.Allowed {
+			continue
+		}
+		depth, localFree, spriteFree, pending := 0, 0, 0, 0
+		fullLocalDemand := 0
+		known := false
+		for _, candidate := range candidates.Items {
+			row, version, err := s.readWorkItemRecord(ctx, localScope, string(candidate.WorkItemID))
+			if err != nil {
+				return result, err
+			}
+			issue, err := s.hydrateWorkItemRecord(ctx, row, version)
+			if err != nil {
+				return result, err
+			}
+			identity, err := resolver.Identity(connector.Issue{Title: issue.Title, Description: issue.Body, Labels: issue.Labels, State: issue.State})
+			if err != nil {
+				continue
+			}
+			requirement := providercapacity.Requirement{Role: identity.Role, Backend: identity.BackendKind, Model: identity.RequestedModel.Value}
+			if requirement.Validate() != nil {
+				continue
+			}
+			hasReports := slices.ContainsFunc(result.Runners, func(r placementRunner) bool { return r.Sprite && len(r.ProviderCapacity) > 0 })
+			compatible := !hasReports && pool.MaxRunners > 0 && descriptor.Requirements.RunnerID == "" && descriptor.Requirements.MachineID == "" && len(descriptor.Requirements.RequiredTags) == 0
+			for _, r := range result.Runners {
+				if r.Sprite && r.State == "active" && r.Health != "revoked" && r.Health != "expired" && descriptor.Requirements.Match(r.RunnerID, string(r.MachineID), r.Tags) == nil && slices.ContainsFunc(r.ProviderCapacity, func(v providercapacity.View) bool { return v.Supports(requirement) }) {
+					compatible = true
+				}
+			}
+			if !compatible {
+				continue
+			}
+			depth++
+			localCompatible := 0
+			for _, r := range result.Runners {
+				if !r.Sprite && (r.Scope == "organization" || slices.Contains(r.ProjectIDs, project.ID)) {
+					localCompatible += newPlacementCapacity().available(r, project.ID, descriptor.Requirements, requirement, now, false)
+				}
+			}
+			if localCompatible == 0 {
+				fullLocalDemand++
+			}
+			localAssigned := false
+			for _, r := range result.Runners {
+				if r.Scope != "organization" && !slices.Contains(r.ProjectIDs, project.ID) {
+					continue
+				}
+				if r.Sprite {
+					continue
+				}
+				if result.Policy.Mode != "sprites_only" && capacity.available(r, project.ID, descriptor.Requirements, requirement, now, true) > 0 {
+					localFree++
+					localAssigned = true
+					break
+				}
+			}
+			if localAssigned || result.Policy.Mode == "local_first" && localCompatible > 0 {
+				continue
+			}
+			for _, r := range result.Runners {
+				if !r.Sprite || r.Scope != "organization" && !slices.Contains(r.ProjectIDs, project.ID) {
+					continue
+				}
+				m, managed := byEnrollment[r.Enrollment]
+				if managed && (m.State != "enrolled" || m.AllocationProjectID != "" && m.AllocationProjectID != project.ID && !pool.ShareIdleCapacity || allocation.Managed && m.AllocationProjectID == "") {
+					continue
+				}
+				if capacity.available(r, project.ID, descriptor.Requirements, requirement, now, true) > 0 {
+					spriteFree++
+					break
+				}
+			}
+			result.Items[tracker.WorkItemID(candidate.ID)] = requirement
+		}
+		for _, r := range result.Runners {
+			if !r.Sprite {
+				continue
+			}
+			for _, view := range r.ProviderCapacity {
+				if view.MaxConcurrent > 0 {
+					known = true
+				}
+			}
+		}
+		for _, m := range members.Members {
+			if m.State != "bootstrapping" && m.State != "enrolled" {
+				continue
+			}
+			owner := tracker.ProjectID("")
+			if allocation.Managed {
+				owner = project.ID
+			}
+			if m.AllocationProjectID != owner {
+				continue
+			}
+			if !counted[m.EnrollmentID] && (m.State == "bootstrapping" || !slices.ContainsFunc(result.Runners, func(r placementRunner) bool { return r.Enrollment == m.EnrollmentID && len(r.ProviderCapacity) > 0 })) {
+				counted[m.EnrollmentID] = true
+				pending++
+			}
+		}
+		target := max(depth-localFree, 0)
+		if result.Policy.Mode == "local_first" {
+			target = min(target, fullLocalDemand)
+			if depth < result.Policy.TodoThreshold {
+				target = 0
+			} else {
+				target = min(target, max(result.Policy.OverflowSlots-result.SpriteUsed, 0))
+			}
+		}
+		if limit := result.Policy.SpriteLimit(); limit > 0 {
+			target = min(target, max(limit-result.SpriteUsed, 0))
+		}
+		if !allocation.Managed {
+			result.ReadyTodo += depth
+			result.LocalFree += localFree
+			result.SpriteFree += spriteFree
+			result.Pending += pending
+			result.SpriteTarget += target
+		}
+		if known {
+			available := 0
+			accounts := []scopedProviderAccount{}
+			for _, r := range result.Runners {
+				if !r.Sprite {
+					continue
+				}
+				for _, view := range r.ProviderCapacity {
+					if view.MaxConcurrent <= 0 {
+						continue
+					}
+					account := scopedProviderAccount{runnerID: r.RunnerID, Report: view.Report}
+					if slices.ContainsFunc(accounts, func(prior scopedProviderAccount) bool { return sharedProviderAccount(prior, account) }) {
+						continue
+					}
+					accounts = append(accounts, account)
+					used := 0
+					for _, prior := range capacity.accounts {
+						if sharedProviderAccount(prior, account) {
+							used++
+						}
+					}
+					available += max(view.MaxConcurrent-view.Used-used, 0)
+				}
+			}
+			available = max(available-pending, 0)
+			result.ProviderFree = &available
+		}
+	}
+	result.Provisionable = max(result.SpriteTarget-result.SpriteFree-result.Pending, 0)
+	if result.ProviderFree != nil {
+		result.Provisionable = min(result.Provisionable, *result.ProviderFree)
+	}
+	result.Reason = "Compatible ready Todo exceeds eligible local capacity"
+	if result.ReadyTodo == 0 {
+		result.Reason = "No compatible ready Todo demand"
+	}
+	return result, nil
 }

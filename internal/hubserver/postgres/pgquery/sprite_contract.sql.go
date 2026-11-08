@@ -269,6 +269,33 @@ func (q *Queries) SpriteAllocation(ctx context.Context, arg SpriteAllocationPara
 	return i, err
 }
 
+const spriteAllocationAuthority = `-- name: SpriteAllocationAuthority :one
+SELECT EXISTS(
+ SELECT 1 FROM project_sprite_allocations a
+ JOIN projects p ON p.organization_id=a.organization_id AND p.id=a.project_id AND p.deleted_at IS NULL
+ JOIN api_tokens t ON t.organization_id=a.organization_id AND t.id=a.configured_by
+ WHERE a.organization_id=$1 AND a.project_id=$2
+ AND t.revoked_at IS NULL AND t.created_at<=$3::timestamptz AND (t.expires_at IS NULL OR t.expires_at>$3::timestamptz)
+ AND ((t.scope='admin' AND NOT t.native_only AND t.key_kind='service') OR EXISTS(
+  SELECT 1 FROM hosted_members m JOIN hosted_project_grants g ON g.organization_id=m.organization_id AND g.user_id=m.user_id
+  WHERE m.organization_id=a.organization_id AND m.principal_id=t.id AND m.active AND m.role IN ('owner','admin') AND g.project_id=a.project_id AND g.can_write
+ ))
+)::boolean
+`
+
+type SpriteAllocationAuthorityParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	At             time.Time
+}
+
+func (q *Queries) SpriteAllocationAuthority(ctx context.Context, arg SpriteAllocationAuthorityParams) (bool, error) {
+	row := q.db.QueryRow(ctx, spriteAllocationAuthority, arg.OrganizationID, arg.ProjectID, arg.At)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const spriteAllocationQueue = `-- name: SpriteAllocationQueue :many
 SELECT a.organization_id, a.project_id, a.desired_count, a.revision, a.provision_failures, a.requested_at, a.configured_by FROM project_sprite_allocations a
 JOIN projects p ON p.organization_id=a.organization_id AND p.id=a.project_id AND p.deleted_at IS NULL

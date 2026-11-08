@@ -6,10 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -44,7 +50,7 @@ func readProjectSpriteAllocation(ctx context.Context, q nativeQueryer, scope nat
 func (s *Service) getProjectSpriteAllocation(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
-	result, err := readProjectSpriteAllocation(ctx, s.database.reader, nativeRequestScope(c))
+	result, err := s.projectSpriteAllocation(ctx, nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -62,12 +68,150 @@ func (s *Service) setProjectSpriteAllocation(c echo.Context) error {
 		return s.invalidAPIRequest(c, err)
 	}
 	scope.requireHostedAdmin = true
+	if s.config.TenantRepository != nil {
+		result, err := s.setSpriteAllocationRecord(c.Request().Context(), scope, "PUT "+c.Request().URL.EscapedPath(), request)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		s.startSpritePoolForQueue(scope)
+		c.Response().Header().Set("Cache-Control", "no-store")
+		return c.JSONBlob(http.StatusOK, result)
+	}
 	result, err := s.executeNativeMutation(c.Request().Context(), scope, nativeCommandOptions{OperationID: "PUT " + c.Request().URL.EscapedPath(), Feature: "collaboration"}, request.Mutation, request, updateProjectSpriteAllocation(request))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	s.startSpritePoolForQueue(scope)
 	return c.JSONBlob(http.StatusOK, result)
+}
+
+func (s *Service) projectSpriteAllocation(ctx context.Context, scope nativeScope) (projectSpriteAllocation, error) {
+	if s.config.TenantRepository == nil {
+		return readProjectSpriteAllocation(ctx, s.database.reader, scope)
+	}
+	var result projectSpriteAllocation
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		owner, ok := r.(postgres.SpriteReader)
+		if !ok {
+			return accessstore.ErrTransactionRequired
+		}
+		var err error
+		result, err = readSpriteAllocationRecord(ctx, owner, scope.project)
+		return err
+	})
+	return result, err
+}
+
+func readSpriteAllocationRecord(ctx context.Context, r postgres.SpriteReader, project tracker.ProjectID) (projectSpriteAllocation, error) {
+	result := projectSpriteAllocation{ProjectID: project}
+	row, err := r.SpriteAllocation(ctx, project)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return result, nil
+	}
+	if err != nil {
+		return result, err
+	}
+	count, err := r.SpriteActiveMemberCount(ctx, project)
+	result.Managed, result.DesiredCount, result.Revision = true, int(row.DesiredCount), tracker.Revision(row.Revision)
+	result.AllocatedCount, result.ProvisionFailures = int(count), int(row.ProvisionFailures)
+	result.Shortfall = max(result.DesiredCount-result.AllocatedCount, 0)
+	return result, err
+}
+
+func (s *Service) setSpriteAllocationRecord(ctx context.Context, scope nativeScope, operation string, request projectSpriteAllocationRequest) (json.RawMessage, error) {
+	scope.requireHostedAdmin = true
+	if !canManageProjectSecrets(scope.credential) || scope.project == "" {
+		return nil, accessstore.ErrDenied
+	}
+	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 || request.DesiredCount < 0 || request.DesiredCount > 100 || request.ExpectedRevision < 0 {
+		return nil, spritePoolInvalid("A command key, nonnegative revision and desired count between 0 and 100 are required")
+	}
+	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+		return nil, err
+	}
+	hash, err := nativeCommandHash(request)
+	if err != nil {
+		return nil, err
+	}
+	if raw, found, err := s.changeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash); found || err != nil {
+		return raw, err
+	}
+	current, err := s.projectSpriteAllocation(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	if current.Revision != request.ExpectedRevision {
+		return nil, nativeConflict(current.Revision)
+	}
+	value := projectSpriteAllocation{ProjectID: scope.project, Managed: true, DesiredCount: request.DesiredCount, AllocatedCount: current.AllocatedCount, Shortfall: max(request.DesiredCount-current.AllocatedCount, 0), Revision: current.Revision + 1}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	content := eventstore.NewContent(s.runDetailStore())
+	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.now()}, raw)
+	if err != nil {
+		return nil, err
+	}
+	var previous *eventstore.Receipt
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+			return err
+		}
+		if existing, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
+			if existing.RequestHash != hash {
+				return nativeConflict(0)
+			}
+			previous = &existing
+			return nil
+		} else if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		project, err := w.ProjectRecord(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if project.Core.DeletedAt != nil {
+			return nativeNotFound()
+		}
+		owner, ok := w.(postgres.SpriteWriter)
+		if !ok {
+			return accessstore.ErrTransactionRequired
+		}
+		if _, err := owner.LockSpritePool(ctx); errors.Is(err, corestore.ErrNotFound) {
+			return spritePoolInvalid("Configure the organization Sprite pool before allocating project members")
+		} else if err != nil {
+			return err
+		}
+		count, err := owner.SpriteActiveMemberCount(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if count != int64(current.AllocatedCount) {
+			return nativeConflict(current.Revision)
+		}
+		_, err = owner.PutSpriteAllocation(ctx, postgres.SpriteAllocation{OrganizationID: scope.organization, ProjectID: scope.project, DesiredCount: int32(request.DesiredCount), RequestedAt: s.config.now(), ConfiguredBy: secretActor(scope)}, int64(request.ExpectedRevision))
+		if err != nil {
+			return err
+		}
+		_, err = w.PutReceipt(ctx, receipt)
+		return err
+	})
+	if err != nil {
+		if errors.Is(err, corestore.ErrRevisionConflict) || errors.Is(err, corestore.ErrUniqueViolation) {
+			if raw, found, readErr := s.changeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash); found || readErr != nil {
+				return raw, readErr
+			}
+		}
+		return nil, projectRecordError(err)
+	}
+	if previous != nil {
+		return content.Receipt(ctx, *previous)
+	}
+	return raw, nil
 }
 
 func updateProjectSpriteAllocation(request projectSpriteAllocationRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
@@ -102,7 +246,7 @@ func updateProjectSpriteAllocation(request projectSpriteAllocationRequest) func(
 }
 
 func readSpriteAllocationProjects(ctx context.Context, q nativeQueryer, scope nativeScope) ([]tracker.ProjectID, error) {
-	rows, err := q.QueryContext(ctx, `SELECT a.project_id FROM project_sprite_allocations a JOIN projects p ON p.id=a.project_id AND p.organization_id=a.organization_id WHERE a.organization_id=? AND p.deleted_at IS NULL ORDER BY julianday(a.requested_at),a.project_id`, scope.organization)
+	rows, err := q.QueryContext(ctx, `SELECT a.project_id FROM project_sprite_allocations a JOIN projects p ON p.id=a.project_id AND p.organization_id=a.organization_id WHERE a.organization_id=? AND p.deleted_at IS NULL ORDER BY a.requested_at,a.project_id`, scope.organization)
 	if err != nil {
 		return nil, err
 	}
@@ -275,6 +419,19 @@ func spritePoolProviderFree(ctx context.Context, q nativeQueryer, scope nativeSc
 }
 
 func (s *Service) projectSpriteAllocationAuthority(ctx context.Context, q nativeQueryer, scope nativeScope) (bool, error) {
+	if s.config.TenantRepository != nil {
+		var allowed bool
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			owner, ok := r.(postgres.SpriteReader)
+			if !ok {
+				return accessstore.ErrTransactionRequired
+			}
+			var err error
+			allowed, err = owner.SpriteAllocationAuthority(ctx, scope.project, s.config.now())
+			return err
+		})
+		return allowed, err
+	}
 	var allowed bool
 	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM project_sprite_allocations a JOIN api_tokens t ON t.id=a.configured_by AND t.revoked_at IS NULL JOIN projects p ON p.id=a.project_id AND p.organization_id=a.organization_id AND p.deleted_at IS NULL WHERE a.organization_id=? AND a.project_id=? AND (t.expires_at IS NULL OR julianday(t.expires_at)>julianday(?)) AND ((t.scope='admin' AND t.native_only=0) OR EXISTS(SELECT 1 FROM hosted_members m JOIN hosted_project_grants g ON g.user_id=m.user_id AND g.organization_id=a.organization_id AND g.project_id=a.project_id AND g.can_write=1 WHERE m.principal_id=t.id AND m.active=1 AND m.role IN ('owner','admin'))))`, scope.organization, scope.project, formatHubTime(s.config.now())).Scan(&allowed)
 	return allowed, err

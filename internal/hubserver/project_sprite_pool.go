@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -103,6 +104,14 @@ func (s *Service) registerSpritePoolRoutes(e *echo.Echo) {
 	e.PUT(nativeBase+"/sprite-pool", s.setSpritePool, read)
 	e.GET(nativeBase+"/sprite-pool/allocation", s.getProjectSpriteAllocation, read)
 	e.PUT(nativeBase+"/sprite-pool/allocation", s.setProjectSpriteAllocation, read)
+	if s.config.Hosted != nil {
+		e.GET(hostedOrganizationBase+"/sprite-pool", s.organizationSpritesScope(s.getSpritePool), s.hostedSessionOnly)
+		e.PUT(hostedOrganizationBase+"/sprite-pool", s.organizationSpritesScope(s.setSpritePool), s.hostedAdministrationSession)
+	} else {
+		organization := s.requireAPIScope(apiScopeOperator, apiScopeAdmin)
+		e.GET("/api/v2/organizations/:organization/sprite-pool", s.getSpritePool, organization, s.organizationSpritesScope)
+		e.PUT("/api/v2/organizations/:organization/sprite-pool", s.setSpritePool, organization, s.organizationSpritesScope)
+	}
 }
 
 func (s *Service) getSpritePool(c echo.Context) error {
@@ -121,7 +130,12 @@ func (s *Service) spritePoolResponse(ctx context.Context, scope nativeScope) (sp
 	if err != nil {
 		return view, err
 	}
-	decision, err := readOrganizationPlacementSnapshot(ctx, s.database.reader, scope, s.config.now(), s.database.billingRepository)
+	var decision placementSnapshot
+	if s.config.TenantRepository != nil {
+		decision, err = s.spritePlacementRecord(ctx, scope)
+	} else {
+		decision, err = readOrganizationPlacementSnapshot(ctx, s.database.reader, scope, s.config.now(), s.database.billingRepository)
+	}
 	if err != nil {
 		return view, err
 	}
@@ -138,6 +152,9 @@ func (s *Service) spritePoolResponse(ctx context.Context, scope nativeScope) (sp
 func (s *Service) readSpritePool(ctx context.Context, scope nativeScope) (spritePoolView, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	if s.config.TenantRepository != nil {
+		return s.readSpritePoolRecord(ctx, scope)
+	}
 	settings, err := readSpritePoolSettings(ctx, s.database.reader, scope)
 	view := spritePoolView{spritePoolSettings: settings, Members: []spritePoolMember{}}
 	if err != nil {
@@ -202,6 +219,13 @@ func (s *Service) setSpritePool(c echo.Context) error {
 }
 
 func (s *Service) setSpritePoolCommand(ctx context.Context, scope nativeScope, input spritePoolCommand) (spritePoolView, error) {
+	if s.config.TenantRepository != nil {
+		if err := s.updateSpritePoolRecord(ctx, scope, input); err != nil {
+			return spritePoolView{}, err
+		}
+		s.startSpritePoolForQueue(scope)
+		return s.spritePoolResponse(ctx, scope)
+	}
 	if input.ShareIdleCapacity != nil || input.IdempotencyKey != "" {
 		if err := s.executeSpritePoolCommand(ctx, scope, input); err != nil {
 			return spritePoolView{}, err
@@ -769,6 +793,9 @@ func (s *Service) maintainSpritePools(ctx context.Context) {
 }
 
 func (s *Service) describeSpritePoolMembers(ctx context.Context, scope nativeScope, members []spritePoolMember) error {
+	if s.config.TenantRepository != nil {
+		return s.describeSpritePoolMembersRecord(ctx, scope, members)
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	now := s.config.now()
@@ -865,4 +892,117 @@ func spriteLoginSteps(checks runnerauth.LocalChecks, observed bool, problems []r
 
 func spritePoolInvalid(message string) error {
 	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity, publicMessage: true}
+}
+
+func (s *Service) readSpritePoolRecord(ctx context.Context, scope nativeScope) (spritePoolView, error) {
+	settings, _, err := s.spritePoolSettingsRecord(ctx, scope)
+	view := spritePoolView{spritePoolSettings: settings, Members: []spritePoolMember{}}
+	if err != nil {
+		return view, err
+	}
+	if settings.IsolationTier == isolation.Sandbox {
+		view.IsolationTierUnavailableReason = spriteSandboxUnavailableReason
+	}
+	cursor := postgres.SpriteMemberCursor{}
+	for range 6 {
+		var page []postgres.SpritePoolMember
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+				return err
+			}
+			var err error
+			owner, ok := r.(postgres.SpriteReader)
+			if !ok {
+				return accessstore.ErrTransactionRequired
+			}
+			page, err = owner.SpritePoolMemberPage(ctx, cursor, corestore.MaxPageSize)
+			return err
+		})
+		if err != nil {
+			return view, err
+		}
+		for _, entry := range page {
+			m := entry.RunnerSpriteMembership
+			view.Members = append(view.Members, spritePoolMember{Name: m.Name, AllocationProjectID: tracker.ProjectID(m.AllocationProjectID), State: m.State, BootstrapLog: m.BootstrapLog, RunnerID: entry.RunnerID, EnrollmentID: m.EnrollmentID, IdleSince: m.IdleSince})
+			cursor = postgres.SpriteMemberCursor{CreatedAt: m.CreatedAt, Name: m.Name}
+		}
+		if len(page) < corestore.MaxPageSize {
+			return view, nil
+		}
+	}
+	return view, corestore.ErrInvalidPage
+}
+
+func (s *Service) describeSpritePoolMembersRecord(ctx context.Context, scope nativeScope, members []spritePoolMember) error {
+	return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		now := s.config.now()
+		urgent, err := r.RunnerUrgentUpdate(ctx)
+		if err != nil {
+			return err
+		}
+		for i := range members {
+			m := &members[i]
+			m.Status = m.State
+			if m.State == "bootstrapping" {
+				m.Status = "provisioning"
+				continue
+			}
+			if m.State == "deleted" {
+				continue
+			}
+			if m.RunnerID == "" {
+				if m.State == "enrolled" {
+					m.Status = "unreachable"
+				}
+				continue
+			}
+			routing, ok := r.(runnerstore.RoutingReader)
+			if !ok {
+				return accessstore.ErrTransactionRequired
+			}
+			row, err := routing.RunnerRoutingRecord(ctx, m.RunnerID, now)
+			if err != nil {
+				return err
+			}
+			runner := runnerFromRoutingRecord(row, now, urgent)
+			if m.State == "deleting" {
+				held, err := r.RunnerHasActiveLease(ctx, m.RunnerID, now)
+				if err != nil {
+					return err
+				}
+				if held {
+					m.Status = "draining"
+				}
+				continue
+			}
+			m.Status = "unreachable"
+			if runner.State != "active" || runner.Health == "revoked" || runner.Health == "expired" {
+				continue
+			}
+			if m.AllocationProjectID != "" {
+				checks, err := r.RunnerLocalChecks(ctx, m.RunnerID, m.AllocationProjectID)
+				observed := err == nil
+				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
+				m.WaitingFor = spriteLoginSteps(checks, observed, runner.Problems, m.AllocationProjectID)
+				if len(m.WaitingFor) > 0 {
+					m.Status = "awaiting_login"
+					continue
+				}
+				if !checks.WorkReady() {
+					m.Status = "awaiting_setup"
+					continue
+				}
+			}
+			m.Status = "ready"
+			if now.Sub(runner.LastHeartbeatAt) >= spriteRunnerIdle {
+				m.Status = "sleeping"
+			}
+		}
+		return nil
+	})
 }

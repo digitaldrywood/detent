@@ -83,3 +83,16 @@ SELECT sqlc.embed(m),COALESCE(r.runner_id,'')::text AS runner_id
 FROM selected s JOIN runner_sprite_memberships m ON m.organization_id=s.organization_id AND m.name=s.name
 LEFT JOIN runner_identities r ON r.organization_id=m.organization_id AND r.enrollment_id=m.enrollment_id
 ORDER BY m.created_at,m.name LIMIT sqlc.arg(page_limit);
+
+-- name: SpriteAllocationAuthority :one
+SELECT EXISTS(
+ SELECT 1 FROM project_sprite_allocations a
+ JOIN projects p ON p.organization_id=a.organization_id AND p.id=a.project_id AND p.deleted_at IS NULL
+ JOIN api_tokens t ON t.organization_id=a.organization_id AND t.id=a.configured_by
+ WHERE a.organization_id=sqlc.arg(organization_id) AND a.project_id=sqlc.arg(project_id)
+ AND t.revoked_at IS NULL AND t.created_at<=sqlc.arg(at)::timestamptz AND (t.expires_at IS NULL OR t.expires_at>sqlc.arg(at)::timestamptz)
+ AND ((t.scope='admin' AND NOT t.native_only AND t.key_kind='service') OR EXISTS(
+  SELECT 1 FROM hosted_members m JOIN hosted_project_grants g ON g.organization_id=m.organization_id AND g.user_id=m.user_id
+  WHERE m.organization_id=a.organization_id AND m.principal_id=t.id AND m.active AND m.role IN ('owner','admin') AND g.project_id=a.project_id AND g.can_write
+ ))
+)::boolean;

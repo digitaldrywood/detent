@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/budget"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -37,6 +38,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func newSpriteNativeFixture(t *testing.T, cfg Config) nativeFixture {
+	t.Helper()
+	f := newDefaultNativeFixture(t, cfg)
+	f.service.registerSpritePoolRoutes(f.service.echo)
+	return f
+}
 
 func TestSpritePoolPostgresSettingsAndAuthority(t *testing.T) {
 	var poolConfig *pgxpool.Config
@@ -1059,7 +1067,14 @@ func TestSpritePoolAccessSettings(t *testing.T) {
 		{"legacy switch approved", new("native-trusted"), true, http.StatusOK, "native-trusted"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{})
+			f := newSpriteNativeFixture(t, Config{})
+			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("authority=%d %v", status, err)
+			}
+			if _, err := f.service.spritePoolResponse(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}); err != nil {
+				t.Fatal(err)
+			}
 			path := f.base + "/sprite-pool"
 			var before spritePoolView
 			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path, testHubAdminToken, nil), &before)
@@ -1067,9 +1082,18 @@ func TestSpritePoolAccessSettings(t *testing.T) {
 				response := performHubAPIRequest(t, f.service, http.MethodPut, path, testHubAdminToken, map[string]any{"min_runners": 0, "max_runners": 0, "revision": before.Revision})
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &before)
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE organization_sprite_pools SET isolation_tier='sandbox' WHERE organization_id=?", f.project.OrganizationID); err != nil {
+				if err := f.service.database.postgres.WriteSprite(t.Context(), f.project.OrganizationID, corestore.Serving, func(w postgres.SpriteWriter) error {
+					row, err := w.SpritePool(t.Context())
+					if err != nil {
+						return err
+					}
+					row.IsolationTier = "sandbox"
+					_, err = w.PutSpritePool(t.Context(), row, row.Revision)
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
+				before.Revision++
 			}
 			input := map[string]any{"min_runners": 0, "max_runners": 0, "revision": before.Revision}
 			if test.tier != nil {
@@ -1098,19 +1122,20 @@ func TestSpritePoolAccessSettings(t *testing.T) {
 
 func setSpriteAllocationFixture(t *testing.T, f nativeFixture, desired int, revision tracker.Revision) projectSpriteAllocation {
 	t.Helper()
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("fixture authority=%d %v", status, err)
+	}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	raw, err := f.service.setSpriteAllocationRecord(t.Context(), scope, "fixture_sprite_allocation", projectSpriteAllocationRequest{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("allocation")}, ExpectedRevision: revision, DesiredCount: desired})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback()
-	result, err := updateProjectSpriteAllocation(projectSpriteAllocationRequest{DesiredCount: desired, ExpectedRevision: revision})(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: bootstrapTokenID}}, f.service.config.now())
-	if err != nil {
+	var result projectSpriteAllocation
+	if err := json.Unmarshal(raw, &result); err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	return result.(projectSpriteAllocation)
+	return result
 }
 
 func setSpriteMemberChecks(t *testing.T, f nativeFixture, checks runnerauth.LocalChecks) {
@@ -1127,10 +1152,22 @@ func setSpriteMemberChecks(t *testing.T, f nativeFixture, checks runnerauth.Loca
 var spriteMemberReady = runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}}
 
 func TestProjectSpriteAllocationCommands(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{})
+	var poolConfig *pgxpool.Config
+	repository, _ := projectRecordPostgresWithAdmin(t, 4, func(cfg *pgxpool.Config) { poolConfig = cfg.Copy() })
+	cfg := Config{SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: &verifiedAttemptDetails{}}
+	service := openLocalPostgresHubTestService(t, repository, cfg)
+	service.registerSpritePoolRoutes(service.echo)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+		seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: org, Name: string(org), Slug: string(org)})
+	}
+	f := newNativeFixture(t, service, "org_first", "first")
 	setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 2)
 	later := newNativeFixture(t, f.service, f.project.OrganizationID, "later")
-	for _, project := range []nativeFixture{f, later} {
+	other := newNativeFixture(t, f.service, "org_first_second", "other")
+	otherLater := newNativeFixture(t, f.service, other.project.OrganizationID, "other later")
+	setPlacementFixture(t, other, policy.Placement{Mode: "blended"}, 101)
+	fixtures := []nativeFixture{f, later, other, otherLater}
+	for _, project := range fixtures {
 		t.Run(string(project.project.ID), func(t *testing.T) {
 			for _, test := range []struct {
 				name, key, revision string
@@ -1152,6 +1189,17 @@ func TestProjectSpriteAllocationCommands(t *testing.T) {
 					requireNativeStatus(t, response, test.status)
 				})
 			}
+			for _, path := range []string{project.base + "/sprite-pool", project.base + "/sprite-pool/allocation"} {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, "", nil), http.StatusUnauthorized)
+				foreign := other.token
+				if project.project.OrganizationID == other.project.OrganizationID {
+					foreign = f.token
+				}
+				refused := performHubAPIRequest(t, f.service, http.MethodGet, path, foreign, nil)
+				if refused.Code != http.StatusUnauthorized && refused.Code != http.StatusForbidden {
+					t.Fatalf("foreign tenant response=%d %s", refused.Code, refused.Body.String())
+				}
+			}
 			response := performHubAPIRequest(t, f.service, http.MethodGet, project.base+"/sprite-pool/allocation", project.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			var allocation projectSpriteAllocation
@@ -1161,10 +1209,56 @@ func TestProjectSpriteAllocationCommands(t *testing.T) {
 			}
 		})
 	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), poolConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	reopened, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	resumed := openLocalPostgresHubTestService(t, reopened, cfg)
+	resumed.registerSpritePoolRoutes(resumed.echo)
+	for _, project := range fixtures {
+		response := performHubAPIRequest(t, resumed, http.MethodGet, project.base+"/sprite-pool/allocation", project.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var got projectSpriteAllocation
+		decodeHubResponse(t, response, &got)
+		if !got.Managed || got.DesiredCount != 5 || got.Revision != 1 || got.Shortfall != 5 {
+			t.Fatalf("allocation after service reopen=%+v", got)
+		}
+		response = performHubAPIRequest(t, resumed, http.MethodPut, project.base+"/sprite-pool/allocation", testHubAdminToken, map[string]any{"idempotency_key": "allocate" + string(project.project.ID), "expected_revision": "0", "desired_count": 5})
+		requireNativeStatus(t, response, http.StatusOK)
+		decodeHubResponse(t, response, &got)
+		if got.Revision != 1 {
+			t.Fatalf("receipt replay after service reopen=%+v", got)
+		}
+		response = performHubAPIRequest(t, resumed, http.MethodGet, "/api/v2/organizations/"+string(project.project.OrganizationID)+"/sprite-pool", testHubAdminToken, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var settings spritePoolView
+		decodeHubResponse(t, response, &settings)
+		want := 2
+		if project.project.OrganizationID == "org_first_second" {
+			want = 101
+		}
+		if settings.MaxRunners != want {
+			t.Fatalf("pool after service reopen=%+v", settings)
+		}
+	}
+
 }
 
 func TestSpritePoolOperatorTools(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{})
+	f := newSpriteNativeFixture(t, Config{})
 	captured := make(chan context.Context, 1)
 	f.service.echo.GET("/api/v2/organizations/:organization/sprite-tools-test", func(c echo.Context) error {
 		captured <- c.Request().Context()
@@ -1562,32 +1656,52 @@ func TestProjectSpriteWorkspaceClaims(t *testing.T) {
 }
 
 func TestHostedProjectSpriteAllocationAuthority(t *testing.T) {
-	f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
-	db := f.service.database.db
-	var principal string
-	if err := db.QueryRowContext(t.Context(), `SELECT principal_id FROM hosted_members WHERE user_id='user_browser_owner'`).Scan(&principal); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO organization_sprite_pools(organization_id,max_runners,configured_by) VALUES(?,2,?)`, "org_browser_preview", principal); err != nil {
-		t.Fatal(err)
-	}
-	cookie := f.cookies["owner"]
-	if cookie == nil {
-		t.Fatal("missing owner session")
-	}
-	response := f.rawAPI(t, "owner", http.MethodPut, "/api/v2/organizations/org_browser_preview/projects/"+f.project+"/sprite-pool/allocation", `{"idempotency_key":"allocate","expected_revision":"0","desired_count":2}`, map[string]string{"X-CSRF-Token": hostedCSRF(cookie.Value)})
-	browserHostedStatus(t, response, http.StatusOK)
-	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
-	allowed, err := f.service.projectSpriteAllocationAuthority(t.Context(), f.service.database.reader, scope)
-	if err != nil || !allowed {
-		t.Fatalf("configuring owner allowed=%t err=%v", allowed, err)
-	}
-	if _, err := db.ExecContext(t.Context(), `UPDATE hosted_project_grants SET can_write=0 WHERE project_id=? AND user_id='user_browser_owner'`, f.project); err != nil {
-		t.Fatal(err)
-	}
-	allowed, err = f.service.projectSpriteAllocationAuthority(t.Context(), f.service.database.reader, scope)
-	if err != nil || allowed {
-		t.Fatalf("revoked project grant allowed=%t err=%v", allowed, err)
+	f := newSharedRouteFixture(t, func(cfg *Config) { cfg.RunDetails = &verifiedAttemptDetails{} })
+	for org, service := range f.services {
+		service.registerSpritePoolRoutes(service.echo)
+		triggered := make(chan nativeScope, 3)
+		service.startSpritePoolForQueue = func(scope nativeScope) { triggered <- scope }
+		organization := tracker.OrganizationID(org)
+		for _, project := range []tracker.ProjectID{"first", "second"} {
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: string(project), Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+					return err
+				}
+				return w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization, UserID: org + "_owner", ProjectID: project, CanWrite: true})
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		path := "/api/v2/organizations/" + org + "/sprite-pool"
+		response := f.request(t, org, path, `{"idempotency_key":"pool","revision":0,"min_runners":0,"max_runners":101}`, func(c *cloudassert.Claims) { sharedRouteBrowserClaims(c); c.Method = http.MethodPut }, map[string]string{"X-CSRF-Token": strings.Repeat("b", 64)})
+		requireNativeStatus(t, response, http.StatusOK)
+		for _, project := range []tracker.ProjectID{"first", "second"} {
+			path := "/api/v2/organizations/" + org + "/projects/" + string(project) + "/sprite-pool/allocation"
+			response := f.request(t, org, path, `{"idempotency_key":"allocate","expected_revision":"0","desired_count":2}`, func(c *cloudassert.Claims) { sharedRouteBrowserClaims(c); c.Method = http.MethodPut }, map[string]string{"X-CSRF-Token": strings.Repeat("b", 64)})
+			requireNativeStatus(t, response, http.StatusOK)
+			scope := nativeScope{organization: organization, project: project}
+			allowed, err := service.projectSpriteAllocationAuthority(t.Context(), nil, scope)
+			if err != nil || !allowed {
+				t.Fatalf("configuring owner allowed=%t err=%v", allowed, err)
+			}
+			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization, UserID: org + "_owner", ProjectID: project, CanWrite: false})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			allowed, err = service.projectSpriteAllocationAuthority(t.Context(), nil, scope)
+			if err != nil || allowed {
+				t.Fatalf("revoked project grant allowed=%t err=%v", allowed, err)
+			}
+		}
+		if len(triggered) != 3 {
+			t.Fatalf("lifecycle triggers=%d", len(triggered))
+		}
+		for range 3 {
+			if got := <-triggered; got.organization != organization {
+				t.Fatalf("foreign lifecycle trigger=%+v", got)
+			}
+		}
 	}
 }
 
