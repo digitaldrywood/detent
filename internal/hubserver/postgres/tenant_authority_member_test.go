@@ -1,4 +1,4 @@
-package tenantauth_test
+package postgres_test
 
 import (
 	"errors"
@@ -8,7 +8,7 @@ import (
 )
 
 func TestPersonalAuthorityUsesCurrentMembershipAndPrincipal(t *testing.T) {
-	db, pools := fixture(t)
+	db, pools := tenantAuthorityFixture(t)
 	authority := tenantauth.New(pools, nil)
 	for _, org := range []string{"first", "second"} {
 		for _, statement := range []string{

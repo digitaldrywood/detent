@@ -1,4 +1,4 @@
-package tenantauth_test
+package postgres_test
 
 import (
 	"context"
@@ -66,7 +66,7 @@ func (c *countedConn) Write(value []byte) (int, error) {
 
 func TestAuthorityUsesTwoWireExchangesAndFourStatements(t *testing.T) {
 	counts := new(wireCounts)
-	_, pools := fixture(t, func(config *pgxpool.Config) {
+	_, pools := tenantAuthorityFixture(t, func(config *pgxpool.Config) {
 		config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
 			conn, err := new(net.Dialer).DialContext(ctx, network, address)
 			if err != nil {

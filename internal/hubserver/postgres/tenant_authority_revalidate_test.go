@@ -1,4 +1,4 @@
-package tenantauth_test
+package postgres_test
 
 import (
 	"errors"
@@ -19,7 +19,7 @@ func TestRevalidationRejectsChangedAuthorityAndHoldsLocks(t *testing.T) {
 		{"unchanged", ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			db, pools := fixture(t)
+			db, pools := tenantAuthorityFixture(t)
 			authority := tenantauth.New(pools, func() time.Time { return time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC) })
 			scope, err := authority.Resolve(t.Context(), tenantauth.RequestIdentity{Organization: "first", CredentialHash: "same-proof"})
 			if err != nil {

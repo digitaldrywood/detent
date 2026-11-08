@@ -1,4 +1,4 @@
-package tenantauth_test
+package postgres_test
 
 import (
 	"errors"
@@ -12,7 +12,7 @@ import (
 )
 
 func TestRunnerAuthorityPreservesRenewalAndProjectBounds(t *testing.T) {
-	db, pools := fixture(t)
+	db, pools := tenantAuthorityFixture(t)
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	authority := tenantauth.New(pools, func() time.Time { return now })
 	runnerID := "runner_" + strings.Repeat("1", 32)
