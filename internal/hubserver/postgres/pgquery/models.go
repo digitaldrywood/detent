@@ -4323,6 +4323,19 @@ type RunnerCheckoutRepository struct {
 	ReportedAt     time.Time
 }
 
+type RunnerConfigurationSnapshot struct {
+	OrganizationID       tracker.OrganizationID
+	RunnerID             string
+	Revision             int64
+	SourceRevision       string
+	DefaultsObjectKey    *string
+	DefaultsSha256       string
+	DefaultsBytes        int64
+	DefaultsContentBytes int64
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
 type RunnerEnrollment struct {
 	OrganizationID tracker.OrganizationID
 	ID             string
@@ -4514,6 +4527,30 @@ type RunnerProjectCapacityLimit struct {
 	RunnerID       string
 	ProjectID      tracker.ProjectID
 	CapacityLimit  int32
+}
+
+type RunnerProjectConfiguration struct {
+	OrganizationID         tracker.OrganizationID
+	RunnerID               string
+	ProjectID              tracker.ProjectID
+	Revision               int64
+	ConfigRevision         string
+	PolicyID               string
+	State                  string
+	Paused                 bool
+	AllowLocalBinding      bool
+	LocalIntakeEnabled     bool
+	PayloadObjectKey       string
+	PayloadSHA256          string
+	PayloadBytes           int64
+	PayloadContentBytes    int64
+	ObservedConfigRevision string
+	ObservedPolicyID       string
+	ObservedRegistered     bool
+	ObservedPaused         bool
+	ObservedDraining       bool
+	ObservedAt             *time.Time
+	UpdatedAt              time.Time
 }
 
 type RunnerProjectDailyToken struct {
