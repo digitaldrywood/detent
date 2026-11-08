@@ -29,24 +29,8 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 	if validation != "make check-landing" {
 		return evidence
 	}
-	entries, err := os.ReadDir(command.Dir)
-	if err != nil {
+	if !landingRecipeInputsMatch(command.Dir) {
 		return evidence
-	}
-	for _, entry := range entries {
-		if entry.Name() == "GNUmakefile" || entry.Name() == "makefile" {
-			return evidence
-		}
-	}
-	for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh"} {
-		actual, err := os.ReadFile(filepath.Join(command.Dir, name))
-		if err != nil {
-			return evidence
-		}
-		supported, err := fs.ReadFile(detent.ValidationFS(), name)
-		if err != nil || !bytes.Equal(actual, supported) {
-			return evidence
-		}
 	}
 	for _, entry := range command.Env {
 		key, value, _ := strings.Cut(entry, "=")
@@ -90,6 +74,29 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 	probe.Env = append(slices.Clone(command.Env), "GOTOOLCHAIN="+toolchain, "GOMAXPROCS=1")
 	evidence = validationEnvironment(ctx, &probe)
 	return evidence
+}
+
+func landingRecipeInputsMatch(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.Name() == "GNUmakefile" || entry.Name() == "makefile" {
+			return false
+		}
+	}
+	for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-sqlite-policy.py"} {
+		actual, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return false
+		}
+		supported, err := fs.ReadFile(detent.ValidationFS(), name)
+		if err != nil || !bytes.Equal(actual, supported) {
+			return false
+		}
+	}
+	return true
 }
 
 func validationProbe(ctx context.Context, command *exec.Cmd, text string) *exec.Cmd {
