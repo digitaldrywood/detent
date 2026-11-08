@@ -71,6 +71,9 @@ func (e *nativeExecution) PrepareReview(ctx context.Context, expected tracker.Na
 func (e *nativeExecution) validationVersion(ctx context.Context, stage string) (runner.NativeValidation, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.change != nil && e.change.Error != "" {
+		return runner.NativeValidation{}, fmt.Errorf("native source publication: %w", ErrUnavailable)
+	}
 	if e.change != nil && e.change.NoChange != nil {
 		return e.noChangeValidation(ctx, stage)
 	}
