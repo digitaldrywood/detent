@@ -139,7 +139,11 @@ func TestRunnerHeartbeatCommandBoundsAndRollback(t *testing.T) {
 					if err := w.UpdateRunnerIdentity(ctx, identity); err != nil {
 						return err
 					}
-					if err := w.HeartbeatMachine(ctx, leasestore.Machine{OrganizationID: org, ID: "machine_shared", Capacity: identity.ReportedCapacity, Version: "example"}, now.Add(time.Minute)); err != nil {
+					version := "committed"
+					if rollback {
+						version = "rolled-back"
+					}
+					if err := w.HeartbeatMachine(ctx, leasestore.Machine{OrganizationID: org, ID: "machine_shared", Capacity: identity.ReportedCapacity, Version: version}, now.Add(time.Minute)); err != nil {
 						return err
 					}
 					if err := w.ReplaceRunnerBackendIsolation(ctx, "runner_shared", isolation.Report{"example": {isolation.NativeTrusted}}); err != nil {
@@ -191,8 +195,8 @@ func TestRunnerHeartbeatCommandBoundsAndRollback(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					if identity.ReportedCapacity != 7 || machine.Capacity != 7 {
-						t.Errorf("rollback changed liveness: runner=%d machine=%d", identity.ReportedCapacity, machine.Capacity)
+					if identity.ReportedCapacity != 7 || machine.Capacity != 1 || machine.Version != "committed" {
+						t.Errorf("rollback changed liveness or configured capacity: runner=%d machine=%d version=%s", identity.ReportedCapacity, machine.Capacity, machine.Version)
 					}
 					return nil
 				}); err != nil {
