@@ -113,7 +113,7 @@ func newChangeTestServer(t *testing.T) *web.Server {
 		t.Fatal(err)
 	}
 	deps := testDeps(t)
-	deps.Registry, deps.Hub, deps.Connector, deps.Store = registry, snapshots, source, openWebTestStore(t)
+	deps.Registry, deps.Hub, deps.Connector = registry, snapshots, source
 	server, err := web.NewServer(web.Config{StaticDir: "../../static"}, deps)
 	if err != nil {
 		t.Fatal(err)

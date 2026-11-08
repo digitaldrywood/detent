@@ -202,7 +202,12 @@ func newRemoteMCPTestServer(t *testing.T, logger *slog.Logger) (*web.Server, sto
 
 func newRemoteMCPTestServerWithConfig(t *testing.T, logger *slog.Logger, config globalconfig.Config, now func() time.Time) (*web.Server, store.Store) {
 	t.Helper()
-	backend := openWebTestStore(t)
+	backend := &authKeyStoreFixture{keys: make(map[string]store.APIKey)}
+	return newRemoteMCPTestServerWithBackend(t, logger, config, now, backend), backend
+}
+
+func newRemoteMCPTestServerWithBackend(t *testing.T, logger *slog.Logger, config globalconfig.Config, now func() time.Time, backend store.Store) *web.Server {
+	t.Helper()
 	deps := testDeps(t)
 	deps.Store = backend
 	deps.MagicLinkSender = &webAuthSender{}
@@ -223,7 +228,7 @@ func newRemoteMCPTestServerWithConfig(t *testing.T, logger *slog.Logger, config 
 			t.Errorf("Shutdown() error = %v", err)
 		}
 	})
-	return server, backend
+	return server
 }
 
 func createRemoteMCPKey(t *testing.T, server *web.Server, name string, scopes []string, projects []string) (string, string) {
@@ -275,7 +280,7 @@ func TestRemoteMCPAcceptsXAPIKeyHeader(t *testing.T) {
 // must not include another project's usage, counts or unscoped event text.
 func TestRemoteMCPCurrentProjectAuthority(t *testing.T) {
 	t.Parallel()
-	backend := openWebTestStore(t)
+	backend := &authKeyStoreFixture{keys: make(map[string]store.APIKey)}
 	deps := testDeps(t)
 	deps.Store = backend
 	if err := deps.Hub.Publish(telemetry.Snapshot{

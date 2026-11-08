@@ -14280,10 +14280,37 @@ func (loopbackReadStoreFixture) ListAPIKeys(ctx context.Context) ([]store.APIKey
 }
 
 type authKeyStoreFixture struct {
-	storeProbe
+	explanationStoreFixture
 	mu          sync.Mutex
 	keys        map[string]store.APIKey
 	recordUsage func(context.Context, store.APIUsageLog) error
+}
+
+type explanationStoreFixture struct {
+	storeProbe
+}
+
+func (explanationStoreFixture) ProvenanceAttributionTrustBoundary(ctx context.Context) (time.Time, error) {
+	return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), ctx.Err()
+}
+
+func (explanationStoreFixture) ListActiveWorkAttempts(ctx context.Context, _ store.WorkAttemptQuery) ([]store.WorkAttempt, error) {
+	return nil, ctx.Err()
+}
+
+func (explanationStoreFixture) ListIssueSchedulerDecisions(ctx context.Context, _ store.IssueSchedulerDecisionQuery) ([]store.SchedulerDecision, error) {
+	return nil, ctx.Err()
+}
+
+func (explanationStoreFixture) LatestIssueAgentSession(ctx context.Context, _ store.IssueIdentity) (store.IssueAgentSession, error) {
+	if err := ctx.Err(); err != nil {
+		return store.IssueAgentSession{}, err
+	}
+	return store.IssueAgentSession{}, store.ErrNotFound
+}
+
+func (explanationStoreFixture) AdmissionProposalHistory(ctx context.Context, _, _ string) ([]admissionmodel.Proposal, error) {
+	return nil, ctx.Err()
 }
 
 func newAPIKeyUsageObserver() (*authKeyStoreFixture, <-chan store.APIUsageLog) {

@@ -136,7 +136,7 @@ func TestOIDCRequiresSecurePublicURL(t *testing.T) {
 	t.Parallel()
 
 	deps := testDeps(t)
-	deps.Store = openWebTestStore(t)
+	deps.Store = &webAuthStoreFixture{}
 	deps.IdentityProvider = &webOIDCProvider{}
 	_, err := web.NewServer(web.Config{
 		DashboardURL: "http://detent.example.com",
@@ -178,7 +178,7 @@ func (p *webOIDCProvider) Exchange(_ context.Context, code string, verifier stri
 func newOIDCWebServer(t *testing.T, provider auth.IdentityProvider, allowedEmails []string, allowedDomains []string, logger *slog.Logger) *web.Server {
 	t.Helper()
 	deps := testDeps(t)
-	deps.Store = openWebTestStore(t)
+	deps.Store = &webAuthStoreFixture{}
 	deps.IdentityProvider = provider
 	server, err := web.NewServer(web.Config{
 		Logger:        logger,

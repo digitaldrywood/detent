@@ -13,7 +13,8 @@ import (
 )
 
 func TestLocalSettingsOperatorTools(t *testing.T) {
-	server, db := newRemoteMCPTestServer(t, nil)
+	db := openWebTestStore(t)
+	server := newRemoteMCPTestServerWithBackend(t, nil, globalconfig.Config{}, nil, db)
 	cfg := globalconfig.Config{Projects: []globalconfig.Project{{ID: "detent"}, {ID: "other"}}}
 	if _, err := db.InitializeLocalConfiguration(t.Context(), cfg, nil); err != nil {
 		t.Fatal(err)
@@ -165,7 +166,8 @@ func TestLocalSettingsOperatorTools(t *testing.T) {
 	}
 
 	t.Run("Hub retains authority", func(t *testing.T) {
-		server, db := newRemoteMCPTestServerWithConfig(t, nil, globalconfig.Config{Client: globalconfig.HubClient{URL: "https://hub.invalid"}}, nil)
+		db := openWebTestStore(t)
+		server := newRemoteMCPTestServerWithBackend(t, nil, globalconfig.Config{Client: globalconfig.HubClient{URL: "https://hub.invalid"}}, nil, db)
 		if _, err := db.InitializeLocalConfiguration(t.Context(), cfg, nil); err != nil {
 			t.Fatal(err)
 		}

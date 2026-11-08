@@ -205,7 +205,7 @@ func newLocalIssueDetailTestServer(t *testing.T) *web.Server {
 
 	deps := testDeps(t)
 	deps.Hub = snapshotHub
-	deps.Store = openWebTestStore(t)
+	deps.Store = explanationStoreFixture{}
 	deps.Registry = registry
 	deps.Connector = conn
 	server, err := web.NewServer(web.Config{

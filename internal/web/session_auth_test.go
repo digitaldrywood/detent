@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -152,7 +153,7 @@ func TestLocalSessionGateRejectsHostedIdentity(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			deps := testDeps(t)
-			deps.Store = hostedWebSessionStore{Store: openWebTestStore(t)}
+			deps.Store = hostedWebSessionStore{Store: storeProbe{}}
 			deps.MagicLinkSender = &webAuthSender{}
 			server, err := web.NewServer(web.Config{
 				DashboardURL: "https://detent.test",
@@ -178,6 +179,71 @@ func TestLocalSessionGateRejectsHostedIdentity(t *testing.T) {
 
 type hostedWebSessionStore struct {
 	store.Store
+}
+
+type webAuthStoreFixture struct {
+	authKeyStoreFixture
+	mu       sync.Mutex
+	links    map[string]auth.MagicLink
+	sessions map[string]auth.SessionRecord
+}
+
+func (s *webAuthStoreFixture) CreateWebSession(ctx context.Context, record auth.SessionRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sessions == nil {
+		s.sessions = make(map[string]auth.SessionRecord)
+	}
+	s.sessions[record.TokenHash] = record
+	return nil
+}
+
+func (s *webAuthStoreFixture) WebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
+	if err := ctx.Err(); err != nil {
+		return auth.Session{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.sessions[hash]
+	if !ok || !record.ExpiresAt.After(now) {
+		return auth.Session{}, auth.ErrInvalidSession
+	}
+	return auth.Session{Email: record.Email, ExpiresAt: record.ExpiresAt, Identity: record.Identity}, nil
+}
+
+func (s *webAuthStoreFixture) CreateMagicLink(ctx context.Context, link auth.MagicLink) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.links == nil {
+		s.links = make(map[string]auth.MagicLink)
+	}
+	s.links[link.TokenHash] = link
+	return nil
+}
+
+func (s *webAuthStoreFixture) ConsumeMagicLink(ctx context.Context, consumption auth.MagicLinkConsumption) (auth.Session, error) {
+	if err := ctx.Err(); err != nil {
+		return auth.Session{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	link, ok := s.links[consumption.TokenHash]
+	if !ok || !link.ExpiresAt.After(consumption.Now) {
+		return auth.Session{}, auth.ErrInvalidLink
+	}
+	delete(s.links, consumption.TokenHash)
+	if s.sessions == nil {
+		s.sessions = make(map[string]auth.SessionRecord)
+	}
+	record := auth.SessionRecord{TokenHash: consumption.SessionHash, Email: link.Email, ExpiresAt: consumption.SessionExpiresAt, CreatedAt: consumption.Now}
+	s.sessions[record.TokenHash] = record
+	return auth.Session{Email: record.Email, ExpiresAt: record.ExpiresAt}, nil
 }
 
 func (hostedWebSessionStore) WebSession(context.Context, string, time.Time) (auth.Session, error) {
@@ -206,7 +272,7 @@ func newMagicLinkWebServer(t *testing.T, sender auth.Sender) *web.Server {
 		}},
 	}, func() web.Dependencies {
 		deps := testDeps(t)
-		deps.Store = openWebTestStore(t)
+		deps.Store = &webAuthStoreFixture{}
 		deps.MagicLinkSender = sender
 		return deps
 	}())
