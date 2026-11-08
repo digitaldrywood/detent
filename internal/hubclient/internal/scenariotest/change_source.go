@@ -261,6 +261,10 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				t.Fatal(err)
 			}
 			h.native = h.otherWorker(t)
+			h.connector.worker, err = NewNativeConnector(h.native)
+			if err != nil {
+				t.Fatal(err)
+			}
 			identity, err := h.native.Transport().RunnerIdentity(t.Context())
 			if err != nil {
 				t.Fatal(err)
@@ -459,6 +463,10 @@ func RunNativeSourceResumesWithoutPreviousRuntime(t *testing.T, factories Constr
 				t.Fatalf("fresh runner inherited a local attempt: %v", err)
 			}
 			h.native = h.otherWorker(t)
+			h.connector.worker, err = NewNativeConnector(h.native)
+			if err != nil {
+				t.Fatal(err)
+			}
 			identity, err := h.native.Transport().RunnerIdentity(t.Context())
 			if err != nil {
 				t.Fatal(err)
