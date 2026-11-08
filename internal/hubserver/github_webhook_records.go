@@ -36,7 +36,9 @@ func (s *Service) receiveGitHubWebhookRecord(c echo.Context, verifiedByEntry boo
 	if !verifiedByEntry {
 		signature, err := hex.DecodeString(strings.TrimPrefix(c.Request().Header.Get("X-Hub-Signature-256"), "sha256="))
 		mac := hmac.New(sha256.New, s.config.GitHubWebhookSecret)
-		_, _ = mac.Write(raw)
+		if _, err := mac.Write(raw); err != nil {
+			return c.NoContent(http.StatusInternalServerError)
+		}
 		if err != nil || !strings.HasPrefix(c.Request().Header.Get("X-Hub-Signature-256"), "sha256=") || !hmac.Equal(signature, mac.Sum(nil)) {
 			return c.NoContent(http.StatusUnauthorized)
 		}
@@ -66,7 +68,10 @@ func (s *Service) receiveGitHubWebhookRecord(c echo.Context, verifiedByEntry boo
 	row := projectstore.GitHubWebhook{DeliveryID: id, Repository: strings.ToLower(repository), EventType: event, Action: envelope.Action, Digest: hex.EncodeToString(digest[:]), Payload: ref, ReceivedAt: now, ExpiresAt: now.Add(s.config.WebhookPayloadRetention), NextAttemptAt: now, Status: "pending"}
 	created := false
 	err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
-		owner := w.(projectstore.GitHubIntakeWriter)
+		owner, ok := w.(projectstore.GitHubIntakeWriter)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
 		var err error
 		created, err = owner.CreateGitHubWebhook(ctx, row)
 		if err != nil {
@@ -107,7 +112,11 @@ func (s *Service) maintainGitHubWebhookRecords(ctx context.Context) error {
 	var row projectstore.GitHubWebhook
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		var err error
-		row, err = r.(projectstore.GitHubIntakeReader).NextGitHubWebhook(ctx, s.config.now())
+		gitHubIntakeReader, ok := r.(projectstore.GitHubIntakeReader)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
+		row, err = gitHubIntakeReader.NextGitHubWebhook(ctx, s.config.now())
 		return err
 	})
 	if err == nil {
@@ -116,7 +125,11 @@ func (s *Service) maintainGitHubWebhookRecords(ctx context.Context) error {
 		err = nil
 	}
 	pruneErr := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
-		return w.(projectstore.GitHubIntakeWriter).PurgeGitHubWebhookPayloads(ctx, s.config.now(), 64)
+		gitHubIntakeWriter, ok := w.(projectstore.GitHubIntakeWriter)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
+		return gitHubIntakeWriter.PurgeGitHubWebhookPayloads(ctx, s.config.now(), 64)
 	})
 	return errors.Join(err, pruneErr)
 }
@@ -135,7 +148,11 @@ func (s *Service) processGitHubWebhookRecord(ctx context.Context, row projectsto
 	var projects []tracker.ProjectID
 	err = s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		var err error
-		projects, err = r.(projectstore.GitHubIntakeReader).GitHubWebhookProjects(ctx, row.Repository, row.AfterProject, 2)
+		gitHubIntakeReader, ok := r.(projectstore.GitHubIntakeReader)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
+		projects, err = gitHubIntakeReader.GitHubWebhookProjects(ctx, row.Repository, row.AfterProject, 2)
 		return err
 	})
 	if err != nil {
@@ -161,7 +178,11 @@ func (s *Service) processGitHubWebhookRecord(ctx context.Context, row projectsto
 		row.NextAttemptAt = row.NextAttemptAt.Add(time.Second * time.Duration(1<<min(row.Attempts, 6)))
 	}
 	writeErr := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
-		return w.(projectstore.GitHubIntakeWriter).UpdateGitHubWebhook(ctx, row, previous, attempts)
+		gitHubIntakeWriter, ok := w.(projectstore.GitHubIntakeWriter)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
+		return gitHubIntakeWriter.UpdateGitHubWebhook(ctx, row, previous, attempts)
 	})
 	return errors.Join(err, writeErr)
 }

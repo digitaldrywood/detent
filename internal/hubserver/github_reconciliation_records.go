@@ -21,7 +21,11 @@ func (s *Service) maintainGitHubReconciliationRecords(ctx context.Context) error
 	var row projectstore.GitHubReconciliation
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		var err error
-		row, err = r.(projectstore.GitHubReconciliationReader).NextGitHubReconciliation(ctx, s.config.now())
+		gitHubReconciliationReader, ok := r.(projectstore.GitHubReconciliationReader)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
+		row, err = gitHubReconciliationReader.NextGitHubReconciliation(ctx, s.config.now())
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -46,7 +50,11 @@ func (s *Service) maintainGitHubReconciliationRecords(ctx context.Context) error
 	if err == nil {
 		err = s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 			var err error
-			linked, err = r.(projectstore.GitHubReconciliationReader).NextGitHubLinkedSource(ctx, row.ProjectID, row.AfterWorkItem)
+			gitHubReconciliationReader, ok := r.(projectstore.GitHubReconciliationReader)
+			if !ok {
+				return ErrPostgresFeatureUnavailable
+			}
+			linked, err = gitHubReconciliationReader.NextGitHubLinkedSource(ctx, row.ProjectID, row.AfterWorkItem)
 			return err
 		})
 		if errors.Is(err, corestore.ErrNotFound) {
@@ -89,7 +97,11 @@ func (s *Service) maintainGitHubReconciliationRecords(ctx context.Context) error
 		}
 	}
 	writeErr := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
-		return w.(projectstore.GitHubReconciliationWriter).SaveGitHubReconciliation(ctx, row)
+		gitHubReconciliationWriter, ok := w.(projectstore.GitHubReconciliationWriter)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
+		return gitHubReconciliationWriter.SaveGitHubReconciliation(ctx, row)
 	})
 	return errors.Join(err, writeErr)
 }

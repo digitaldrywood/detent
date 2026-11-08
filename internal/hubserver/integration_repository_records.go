@@ -137,6 +137,10 @@ func (s *Service) bindGitHubRepositoryRecordCommand(ctx context.Context, scope n
 		if err != nil {
 			return err
 		}
-		return w.(projectstore.GitHubReconciliationWriter).SaveGitHubReconciliation(ctx, projectstore.GitHubReconciliation{ProjectID: scope.project, Repository: repository, NodeID: snapshot.Repository.NodeID, NextAttemptAt: s.config.now().Add(s.config.ReconcileInterval)})
+		gitHubReconciliationWriter, ok := w.(projectstore.GitHubReconciliationWriter)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
+		return gitHubReconciliationWriter.SaveGitHubReconciliation(ctx, projectstore.GitHubReconciliation{ProjectID: scope.project, Repository: repository, NodeID: snapshot.Repository.NodeID, NextAttemptAt: s.config.now().Add(s.config.ReconcileInterval)})
 	})
 }
