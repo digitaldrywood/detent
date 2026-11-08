@@ -134,7 +134,7 @@
       "TestRepositorySQLite",
       "TestSQLitePolicyViolations",
       "TestSQLiteShrinkData",
-      "TestSQLiteIntegrationBaseline",
+      "TestSQLiteWorkspacePolicy",
       "TestSQLiteDependencyCompletion",
       "TestRepositorySources",
       "TestRepositoryWorkflow",

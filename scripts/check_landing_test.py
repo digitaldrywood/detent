@@ -51,7 +51,7 @@ class ShortLandingGateTest(unittest.TestCase):
         self.git("config", "user.email", "fixture@example.test")
         self.git("config", "commit.gpgsign", "false")
         (self.root / "scripts").mkdir()
-        for name in ("check-landing.sh", "check-evidence.sh"):
+        for name in ("check-landing.sh", "check-evidence.sh", "check-sqlite-policy.py"):
             shutil.copy2(ROOT / "scripts" / name, self.root / "scripts" / name)
         (self.root / "go.mod").write_text("module example.test\n\ngo 1.26\n")
         for directory in ("lib", "app", "integration", "unrelated", "removed"):
@@ -60,6 +60,9 @@ class ShortLandingGateTest(unittest.TestCase):
         (self.root / "lib/data.txt").write_text("old\n")
         (self.root / "lib/testdata").mkdir()
         (self.root / "lib/testdata/fixture.json").write_text("{}\n")
+        policy = self.root / "internal/invariants/sqlite_policy.json"
+        policy.parent.mkdir(parents=True)
+        policy.write_text('{"files":{},"modules":{}}\n')
         self.commit()
         self.base = self.git("rev-parse", "HEAD").strip()
         self.git("update-ref", "refs/remotes/origin/develop", self.base)
@@ -179,6 +182,25 @@ class ShortLandingGateTest(unittest.TestCase):
                 result = self.run_gate(base, budget)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(self.trace(), [])
+
+    def test_policy_growth_stops_before_build(self):
+        policy = self.root / "internal/invariants/sqlite_policy.json"
+        policy.write_text('{"files":{"new.go":{"driver_import":1}},"modules":{}}\n')
+        self.commit()
+        result = self.run_gate(self.base)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("new.go: SQLite driver_import count 1 exceeds target baseline 0", result.stderr)
+        self.assertEqual(self.trace(), [])
+
+    def test_shallow_candidate_uses_explicit_target_without_origin(self):
+        (self.root / "lib/source.go").write_text("package lib\nconst Value = 1\n")
+        self.commit()
+        head = self.git("rev-parse", "HEAD").strip()
+        (self.root / ".git/shallow").write_text(head + "\n")
+        self.git("update-ref", "-d", "refs/remotes/origin/develop")
+        result = self.run_gate(self.base)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Landing comparison: base=" + self.base, result.stdout)
 
 
 if __name__ == "__main__":

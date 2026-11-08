@@ -16,9 +16,10 @@ trap 'result=$?; printf "check-landing finished: exit=%s wall=%ss\n" "$result" "
 
 head=$(git rev-parse --verify 'HEAD^{commit}')
 base_head=$(git rev-parse --verify "${base_ref}^{commit}")
-base=$(git merge-base "$base_head" "$head")
+base=$base_head
 printf 'Landing comparison: base=%s head=%s\n' "$base" "$head"
 
+check_with_evidence sqlite-policy python3 scripts/check-sqlite-policy.py "$base" "$head"
 check_with_evidence assets make -j1 assets generate-docs TEST_PROCS="$procs"
 check_with_evidence build go build -p "$procs" ./...
 

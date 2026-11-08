@@ -31,6 +31,11 @@ if name == "make":
     else:
         os.execv(os.environ["PROBE_MAKE"], ["make"] + args)
 if name == "python3":
+    if args[:1] == ["scripts/check-sqlite-policy.py"]:
+        Path("trace").touch(exist_ok=True)
+        if os.environ.get("PROBE_FAILURE") == "sqlite-policy":
+            sys.exit("deliberate sqlite-policy failure")
+        sys.exit(0)
     if args[:1] == ["-m"] or args == ["scripts/check-runner-enrollment-docs.py"]:
         sys.exit(0)
     os.execv(os.environ["PROBE_PYTHON"], ["python3"] + args)
@@ -141,7 +146,7 @@ class LandingGateTest(unittest.TestCase):
     def test_stage_budget_and_failures(self):
         scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
         self.assertIsNotNone(scratch, "a supplied scratch directory is required")
-        cases = [("check-land", budget, failure, "") for budget, failure in ((1, ""), (2, ""), (4, ""), (7, ""), (4, "lint"), (4, "vet"), (4, "build"), (4, "unit-short"), (4, "docs"), (4, "sqlc"), (4, "hub-sqlc"), (4, "invariant-manifest"), (4, "invariants"), (4, "migrations"))]
+        cases = [("check-land", budget, failure, "") for budget, failure in ((1, ""), (2, ""), (4, ""), (7, ""), (4, "sqlite-policy"), (4, "lint"), (4, "vet"), (4, "build"), (4, "unit-short"), (4, "docs"), (4, "sqlc"), (4, "hub-sqlc"), (4, "invariant-manifest"), (4, "invariants"), (4, "migrations"))]
         cases += [(target, 4, "", "") for target in ("test", "test-fast", "test-race", "test-cover")]
         cases += [("test-cover", 4, failure, shard) for failure, shard in (("", "2/3"), ("", "3/3"), ("hub-2", "2/3"))]
         cases += [("test-race", 4, "", shard) for shard in ("1/3", "2/3", "hub-2")]
@@ -152,7 +157,7 @@ class LandingGateTest(unittest.TestCase):
             with self.subTest(target=target, budget=budget, failure=failure, changed=changed), tempfile.TemporaryDirectory(prefix="npm-nilaway-", dir=scratch) as directory:
                 root = Path(directory)
                 (root / "scripts").mkdir()
-                for name in ("Makefile", ".golangci-version", "go.mod", "scripts/check-land.sh", "scripts/check-evidence.sh", "scripts/check-browser.sh", "scripts/test-workspace.sh", "scripts/cover-packages.sh", "scripts/race-packages.sh"):
+                for name in ("Makefile", ".golangci-version", "go.mod", "scripts/check-land.sh", "scripts/check-evidence.sh", "scripts/check-browser.sh", "scripts/test-workspace.sh", "scripts/cover-packages.sh", "scripts/race-packages.sh", "scripts/check-sqlite-policy.py"):
                     (root / name).parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(ROOT / name, root / name)
                 for name in ("go", "git", "lint", "python3"):
@@ -181,7 +186,7 @@ class LandingGateTest(unittest.TestCase):
                 self.assertEqual(result.returncode == 0, not failed, result.stdout + result.stderr)
                 events = [json.loads(line) for line in (root / "trace").read_text().splitlines()]
                 tests = [event for event in events if event["action"] == "start" and event["stage"] in ("unit-short", "invariants")]
-                if failure not in ("app", "docs", "sqlc", "hub-sqlc"):
+                if failure not in ("app", "docs", "sqlc", "hub-sqlc", "sqlite-policy"):
                     self.assertTrue(tests)
                 for event in tests:
                     self.assertNotIn("-count=1", event["args"], event)
@@ -192,6 +197,11 @@ class LandingGateTest(unittest.TestCase):
                     continue
                 self.assertEqual("Landing checks passed." in result.stdout, not failed)
                 starts = [event["stage"] for event in events if event["action"] == "start"]
+                if failure == "sqlite-policy":
+                    self.assertEqual(starts, [])
+                    evidence = [json.loads(line.split(": ", 1)[1]) for line in result.stdout.splitlines() if line.startswith("detent-check-evidence:")]
+                    self.assertEqual([item["scope"] for item in evidence], ["sqlite-policy"])
+                    continue
                 self.assertFalse((root / "browser-args").exists())
                 self.assertFalse((root / "browser-build-args").exists())
                 if app_changed:
@@ -211,7 +221,7 @@ class LandingGateTest(unittest.TestCase):
                 evidence = [json.loads(line.split(": ", 1)[1]) for line in result.stdout.splitlines() if line.startswith("detent-check-evidence:")]
                 if failure in generated:
                     self.assertFalse(set(starts) & {"lint", "vet", "build", "unit-short"})
-                    self.assertEqual([item["scope"] for item in evidence], (["app"] if app_changed else []) + ["generated"])
+                    self.assertEqual([item["scope"] for item in evidence], ["sqlite-policy"] + (["app"] if app_changed else []) + ["generated"])
                     self.assertNotEqual(evidence[-1]["exit_code"], 0)
                     continue
                 starts = starts[len(generated):]
@@ -237,7 +247,7 @@ class LandingGateTest(unittest.TestCase):
                 self.assertNotIn("npm", output)
                 self.assertNotIn("nilaway", output)
                 self.assertFalse((root / "static/app/conversation/app.js").exists())
-                expected_scopes = {"generated", "lint", "vet", "build", "unit-short"}
+                expected_scopes = {"sqlite-policy", "generated", "lint", "vet", "build", "unit-short"}
                 expected_scopes.update(tail)
                 if app_changed:
                     expected_scopes.add("app")
