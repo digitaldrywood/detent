@@ -24,26 +24,24 @@ func TestConversationBillingImportPreservesSnapshotWithoutRebilling(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	copy := newBillingImportCopy(t, catalog, "conversation_prices", "conversation_usage")
-	if _, err := copy.db.ExecContext(t.Context(), "INSERT INTO conversation_prices(id,provider,model,effective_at,input,cached_input,output) VALUES(?,?,?,?,?,?,?)", 1, "example-provider", "example-model", 1767225600000000, 0.1, 0.01, 0.5); err != nil {
-		t.Fatal(err)
-	}
-	insertUsage := "INSERT INTO conversation_usage(organization_id,project_id,conversation_id,turn_id,provider,model,occurred_at,input,cached_input,output,reasoning_output,outcome,price_id,cost_usd,cache_savings_usd) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+	copies := map[tracker.OrganizationID]string{}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		copy := newNeutralBillingFixture(t, organization, "conversation_prices", "conversation_usage")
+		copy.add(t, "conversation_prices", map[string]any{"id": int64(1), "provider": "example-provider", "model": "example-model", "effective_at": int64(1767225600000000), "input": 0.1, "cached_input": 0.01, "output": 0.5})
+		copy.add(t, "conversation_prices", map[string]any{"id": int64(2), "provider": "example-provider", "model": "second-model", "effective_at": int64(1767225600000000), "input": 0.2, "cached_input": 0.02, "output": 0.6})
 		for n := 0; n < 101; n++ {
 			conversation := "conversation"
 			if n == 100 {
 				conversation = "late-conversation"
 			}
-			if _, err := copy.db.ExecContext(t.Context(), insertUsage, organization, "prj_shared", conversation, fmt.Sprintf("turn-%03d", n), "example-provider", "example-model", int64(1767225600000001), 100, 20, 30, 5, "delivered", 1, 0.0000232, 0.0000018); err != nil {
-				t.Fatal(err)
+			values := map[string]any{"organization_id": organization, "project_id": "prj_shared", "conversation_id": conversation, "turn_id": fmt.Sprintf("turn-%03d", n), "provider": "example-provider", "model": "example-model", "occurred_at": int64(1767225600000001), "input": int64(100), "cached_input": int64(20), "output": int64(30), "reasoning_output": int64(5), "outcome": "delivered", "price_id": int64(1), "cost_usd": 0.0000232, "cache_savings_usd": 0.0000018}
+			if n == 50 {
+				values["price_id"], values["cost_usd"], values["cache_savings_usd"] = nil, nil, nil
 			}
+			copy.add(t, "conversation_usage", values)
 		}
-		if _, err := copy.db.ExecContext(t.Context(), "UPDATE conversation_usage SET price_id=NULL,cost_usd=NULL,cache_savings_usd=NULL WHERE organization_id=? AND turn_id='turn-050'", organization); err != nil {
-			t.Fatal(err)
-		}
+		copies[organization] = copy.seal(t)
 	}
-	copyPath := copy.seal(t)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedTenantAccess(t, repository, organization)
 		for _, query := range []string{
@@ -54,16 +52,14 @@ func TestConversationBillingImportPreservesSnapshotWithoutRebilling(t *testing.T
 				t.Fatal(err)
 			}
 		}
-		source := postgres.ConversationBillingImportSource{CopyPath: copyPath, Catalog: catalog, Schema: schemaFromCatalogForTest(catalog), Objects: &costImportObjects{historyObjects: newHistoryObjects()}, Source: storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(organization)}}
+		source := postgres.ConversationBillingImportSource{BundlePath: copies[organization], Catalog: catalog, Schema: schemaFromCatalogForTest(catalog), Objects: &costImportObjects{historyObjects: newHistoryObjects()}, Source: storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(organization)}}
 		if _, err := repository.ImportConversationBilling(t.Context(), source); err == nil {
 			t.Fatal("missing conversation accepted")
 		}
-		changedCopy := newBillingImportCopy(t, catalog, "conversation_prices", "conversation_usage")
-		if _, err := changedCopy.db.ExecContext(t.Context(), insertUsage, organization, "prj_shared", "conversation", "changed", "example-provider", "example-model", int64(1767225600000001), 1, 0, 1, 0, "delivered", nil, nil, nil); err != nil {
-			t.Fatal(err)
-		}
+		changedCopy := newNeutralBillingFixture(t, organization, "conversation_prices", "conversation_usage")
+		changedCopy.add(t, "conversation_usage", map[string]any{"organization_id": organization, "project_id": "prj_shared", "conversation_id": "conversation", "turn_id": "changed", "provider": "example-provider", "model": "example-model", "occurred_at": int64(1767225600000001), "input": int64(1), "cached_input": int64(0), "output": int64(1), "reasoning_output": int64(0), "outcome": "delivered", "price_id": nil, "cost_usd": nil, "cache_savings_usd": nil})
 		changed := source
-		changed.CopyPath = changedCopy.seal(t)
+		changed.BundlePath = changedCopy.seal(t)
 		if _, err := repository.ImportConversationBilling(t.Context(), changed); !errors.Is(err, mutation.ErrConflict) {
 			t.Fatalf("partial import accepted changed snapshot: %v", err)
 		}
@@ -86,9 +82,17 @@ func TestConversationBillingImportPreservesSnapshotWithoutRebilling(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Prices != 1 || got.Usage != 101 {
+			if got.Prices != 2 || got.Usage != 101 {
 				t.Fatalf("import counts=%+v", got)
 			}
+		}
+		if err := repository.Close(); err != nil {
+			t.Fatal(err)
+		}
+		repository, _ = repositoryFor(t, admin, smallPool())
+		var prices int
+		if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_prices WHERE organization_id=$1", organization).Scan(&prices); err != nil || prices != 2 {
+			t.Fatalf("tenant prices=%d: %v", prices, err)
 		}
 		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 			got, err := r.ConversationUsage(t.Context(), "turn-100")
@@ -130,7 +134,7 @@ func TestConversationBillingImportPreservesSnapshotWithoutRebilling(t *testing.T
 		if err := admin.QueryRowContext(t.Context(), "SELECT completed,price_rows,usage_rows FROM conversation_billing_imports WHERE organization_id=$1", organization).Scan(&completed, &priceRows, &usageRows); err != nil {
 			t.Fatal(err)
 		}
-		if !completed || priceRows != 1 || usageRows != 101 {
+		if !completed || priceRows != 2 || usageRows != 101 {
 			t.Fatalf("completion receipt completed=%v prices=%d usage=%d", completed, priceRows, usageRows)
 		}
 		if _, err := repository.ImportConversationBilling(t.Context(), changed); !errors.Is(err, mutation.ErrConflict) {

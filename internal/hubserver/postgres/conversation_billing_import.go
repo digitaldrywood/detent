@@ -21,6 +21,8 @@ import (
 )
 
 type ConversationBillingImportSource struct {
+	BundlePath string
+	neutral    *VerifiedNeutralImport
 	CopyPath   string
 	Catalog    storagecatalog.Catalog
 	Source     storagecatalog.Source
@@ -37,7 +39,7 @@ type ConversationBillingImportResult struct {
 
 func (r *Repository) ImportConversationBilling(ctx context.Context, source ConversationBillingImportSource) (ConversationBillingImportResult, error) {
 	var result ConversationBillingImportResult
-	if source.CopyPath == "" || source.Objects == nil || source.Source.Store != "hub" || strings.TrimSpace(source.Source.OrganizationID) != source.Source.OrganizationID || source.Source.OrganizationID == "" {
+	if (source.CopyPath == "") == (source.BundlePath == "") || source.Objects == nil || source.Source.Store != "hub" || strings.TrimSpace(source.Source.OrganizationID) != source.Source.OrganizationID || source.Source.OrganizationID == "" {
 		return result, errors.New("invalid conversation billing import source")
 	}
 	if source.Schema == nil {
@@ -48,6 +50,26 @@ func (r *Repository) ImportConversationBilling(ctx context.Context, source Conve
 		return result, err
 	}
 	organization := tracker.OrganizationID(source.Source.OrganizationID)
+	if source.BundlePath != "" {
+		err := ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) error {
+			for _, table := range []struct {
+				name string
+				keys []string
+			}{{"conversation_prices", []string{"id"}}, {"conversation_usage", []string{"organization_id", "turn_id"}}} {
+				if err := bundle.ValidateCatalogTable(source.Catalog, source.Schema, table.name, table.keys); err != nil {
+					return err
+				}
+			}
+			if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
+				return err
+			}
+			source.neutral, source.snapshotID = bundle, bundle.Identity().SourceSHA256
+			var err error
+			result, err = r.importConversationBillingCopy(ctx, source)
+			return err
+		})
+		return result, err
+	}
 	err := ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, digest string) error {
 		for _, table := range []string{"conversation_prices", "conversation_usage"} {
 			keys := []string{"id"}
@@ -238,6 +260,9 @@ func validateConversationBillingCopyTable(ctx context.Context, tx *sql.Tx, catal
 }
 
 func readConversationBillingPage(ctx context.Context, tx *sql.Tx, source ConversationBillingImportSource, binding *storagecatalog.Binding, table string, columns, keys []string, after []any) ([]map[string]storagecatalog.Value, []any, error) {
+	if source.neutral != nil {
+		return readNeutralConversationBillingPage(ctx, source, binding, table, columns, keys, after)
+	}
 	quoted := make([]string, len(columns))
 	for n, name := range columns {
 		quoted[n] = `CAST("` + strings.ReplaceAll(name, `"`, `""`) + `" AS TEXT)`
