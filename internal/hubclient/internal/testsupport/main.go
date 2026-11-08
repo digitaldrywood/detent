@@ -1,8 +1,10 @@
 package testsupport
 
 import (
+	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
@@ -11,7 +13,7 @@ func RunMain(m *testing.M) int {
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
 	}
-	scratch, err := os.MkdirTemp("", "detent-hubclient-test-")
+	scratch, err := os.MkdirTemp("", "h")
 	if err != nil {
 		panic(err)
 	}
@@ -26,6 +28,12 @@ func RunMain(m *testing.M) int {
 		}
 	}
 	code := m.Run()
+	cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	err = CloseNativeChangePostgres(cleanup)
+	cancel()
+	if err != nil {
+		panic(err)
+	}
 	if err := os.RemoveAll(scratch); err != nil {
 		panic(err)
 	}

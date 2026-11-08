@@ -456,7 +456,7 @@ func startBinary(ctx context.Context) (_ string, _ func() error, resultErr error
 		return "", nil, fmt.Errorf("initialize disposable PostgreSQL: %w: %s", err, output)
 	}
 	processCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	cmd := exec.CommandContext(processCtx, "postgres", "-D", "data", "-h", "", "-k", ".", "-c", "lc_messages=C", "-c", "max_connections=16", "-c", "logging_collector=off")
+	cmd := exec.CommandContext(processCtx, "postgres", "-D", "data", "-h", "", "-k", "..", "-c", "lc_messages=C", "-c", "max_connections=16", "-c", "logging_collector=off")
 	cmd.Dir = dir
 	cmd.Env = init.Env
 	procgroup.Configure(processCtx, cmd)
@@ -488,7 +488,7 @@ func startBinary(ctx context.Context) (_ string, _ func() error, resultErr error
 	}
 	select {
 	case <-ready:
-		return "postgres://detent_test@127.0.0.1:5432/postgres?host=" + url.QueryEscape(filepath.Join(dir, "data")), stop, nil
+		return "postgres://detent_test@127.0.0.1:5432/postgres?host=" + url.QueryEscape(dir), stop, nil
 	case err := <-done:
 		cancel()
 		return "", nil, fmt.Errorf("disposable PostgreSQL exited before readiness: %w", err)

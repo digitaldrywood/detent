@@ -261,18 +261,8 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			t.Parallel()
 			fresh := test.changedHead || test.changedModel || test.conversationModel != "" || test.dirty || test.rebase || test.conversationEffort != "" || test.configuredEffort != test.priorEffort || test.overrideEffort != "" && test.overrideEffort != test.priorEffort || test.legacyEffort && test.priorEffort != test.configuredEffort
 			ctx := t.Context()
-			path := filepath.Join(t.TempDir(), "sessions.db")
-			db, err := store.Open(ctx, store.Config{Path: path})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = db.Close() })
 			started := time.Date(2026, 10, 29, 14, 0, 0, 0, time.UTC)
 			approved := runnerTestPolicy()
-			metadata, err := json.Marshal(map[string]policy.Descriptor{"policy": approved})
-			if err != nil {
-				t.Fatal(err)
-			}
 			role := RoleCode
 			if test.rebase || test.dirty {
 				role = RoleRework
@@ -324,49 +314,18 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			cfg.Tracker.Kind = config.TrackerHubNative
 			cfg.Agent.Effort.Code = test.configuredEffort
 			cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Role: role, Backend: "codex", Model: "example-model", Default: true}}
-			deps := Dependencies{ProcessSource: emptyProcessSource, ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Continue the issue"}, Store: db, Workspace: backend, AgentBackend: agent}
-			first, err := NewRunner(deps)
-			if err != nil {
-				t.Fatal(err)
-			}
-			attemptID, err := db.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: "native", IssueID: issue.ID, WorkerType: "agent", StartedAt: started, RuntimeIdentity: identity, WorkerMetadataJSON: string(metadata)})
-			if err != nil {
-				t.Fatal(err)
-			}
-			sessionID, _, err := first.startSession(ctx, RunRequest{Issue: issue, WorkAttemptID: attemptID}, started, identity, store.AgentResumeState{}, "", "")
-			if err != nil {
-				t.Fatal(err)
-			}
+			owner := newNativeSessionOwner(approved)
 			resume := AgentResume{ThreadID: "persisted-thread", SessionID: "persisted-session"}
-			first.persistSessionProviderIdentity(ctx, sessionID, AgentUpdate{ThreadID: resume.ThreadID, ProviderSessionID: resume.SessionID})
-			if err := db.Close(); err != nil {
-				t.Fatal(err)
-			}
-			db, err = store.Open(ctx, store.Config{Path: path})
-			if err != nil {
-				t.Fatal(err)
-			}
-			deps.Store = db
-			if test.status == "cancelled" {
-				if _, err := db.TimeoutExpiredWorkAttempts(ctx, store.WorkAttemptTimeout{Now: started.Add(time.Minute), ConfirmedGoneAttemptIDs: []int64{attemptID}, TerminalState: store.WorkAttemptTerminalAbandoned, ErrorClass: "service_restart"}); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				if err := db.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: started.Add(time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalFailure, SessionFinalState: "failed", WorkerMetadataJSON: string(metadata)}); err != nil {
-					t.Fatal(err)
-				}
-			}
+			sessionID := owner.seed("attempt_previous", store.SessionStart{ProjectID: "native", IssueID: issue.ID, StartedAt: started, RequestedModel: "example-model", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: role, RuntimeIdentity: identity}, resume, store.SessionFinish{FinalState: test.status})
+			sessions := owner.client("attempt_current")
+			deps := Dependencies{ProcessSource: emptyProcessSource, ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Continue the issue"}, Store: sessions, Workspace: backend, AgentBackend: agent}
 			restarted, err := NewRunner(deps)
-			if err != nil {
-				t.Fatal(err)
-			}
-			currentAttemptID, err := db.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: "native", IssueID: issue.ID, WorkerType: "agent", StartedAt: started.Add(time.Minute)})
 			if err != nil {
 				t.Fatal(err)
 			}
 			checkpoint := executionCheckpoint(&local)
 			checkpoint.Resume = "resume_session"
-			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{ID: "new-lease", MachineID: "machine", FencingToken: 2}, Attempts: []tracker.NativeAttempt{{Status: test.status, Checkpoint: &checkpoint, NativeRunData: tracker.NativeRunData{MachineID: "machine", LeaseID: "old-lease", FencingToken: 1, Identity: &tracker.NativeExecutionIdentity{Role: role, Backend: "codex", Model: "example-model"}, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: attemptID, Identity: identity}}}}}}
+			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{ID: "new-lease", MachineID: "machine", FencingToken: 2}, Attempts: []tracker.NativeAttempt{{Status: test.status, Checkpoint: &checkpoint, NativeRunData: tracker.NativeRunData{AttemptID: "attempt_previous", MachineID: "machine", LeaseID: "old-lease", FencingToken: 1, Identity: &tracker.NativeExecutionIdentity{Role: role, Backend: "codex", Model: "example-model"}, Runtime: &tracker.NativeRuntimeObservation{Identity: identity}}}}}}
 			if !test.legacyEffort {
 				execution.recovery.Attempts[0].Identity.ReasoningEffort = test.priorEffort
 			}
@@ -434,7 +393,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = restarted.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, WorkAttemptID: currentAttemptID, Generation: 2, Issue: issue, Mode: RunModeImplement, Execution: runExecution})
+			_, err = restarted.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, Issue: issue, Mode: RunModeImplement, Execution: runExecution})
 			wantResume := resume
 			wantAction, wantReason := "resume_session", "verified_local_session"
 			if fresh {
@@ -491,16 +450,12 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 					}
 				}
 			}
-			latest, err := db.(store.ActivityStore).LatestIssueAgentSession(ctx, store.IssueIdentity{ProjectID: "native", IssueID: issue.ID})
-			if err != nil {
-				t.Fatal(err)
-			}
-			persisted, err := db.Queries().GetCodexSession(ctx, latest.DetentSessionID)
+			persisted := owner.latest(t, "attempt_current")
 			wantParent := sessionID
 			if wantResume == (AgentResume{}) {
 				wantParent = 0
 			}
-			if err != nil || persisted.ResumedFromSessionID.Int64 != wantParent || persisted.WorkAttemptID.Int64 != currentAttemptID {
+			if persisted.Start.ResumedFromSessionID != wantParent || persisted.Start.WorkAttemptID != 0 {
 				t.Fatalf("restart lost session provenance: session=%+v error=%v", persisted, err)
 			}
 		})
