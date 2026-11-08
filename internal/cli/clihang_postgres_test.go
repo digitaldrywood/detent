@@ -66,7 +66,7 @@ var clihangHubTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB
 	return err
 })
 
-func clihangPostgresHub(t *testing.T, token string, content entryauthority.ContentHandler) (*hubserver.Service, func()) {
+func clihangPostgresHub(t *testing.T, token string, content entryauthority.ContentHandler, options ...clihangPostgresOptions) (*hubserver.Service, func()) {
 	t.Helper()
 	admin := clihangHubTemplate.Database(t)
 	connection := pgtransport.Connection{User: "example_" + strings.ReplaceAll(uuid.NewString(), "-", ""), Password: uuid.NewString(), SSLMode: "disable"}
@@ -192,6 +192,13 @@ func clihangPostgresHub(t *testing.T, token string, content entryauthority.Conte
 			t.Fatal(err)
 		}
 	}
+	for _, option := range options {
+		if option.seed != nil {
+			if err := option.seed(repository); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -214,11 +221,17 @@ func clihangPostgresHub(t *testing.T, token string, content entryauthority.Conte
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabaseBackend: hubserver.DatabasePostgres,
+	config := hubserver.Config{DatabaseBackend: hubserver.DatabasePostgres,
 		Postgres: &postgres.Config{Connection: connection, Pool: budgets}, SecretKeys: keys, Content: content,
 		RunDetails: hubmaintenance.LimitDetails(&clihangDetails{data: make(map[string][]byte)}), Hosted: &hubserver.HostedConfig{
 			OrganizationID: "org_example", WorkOSOrganizationID: "provider_org_example", PublicURL: "https://hub.example.test", Provider: provider,
-		}})
+		}}
+	for _, option := range options {
+		if option.config != nil {
+			*option.config = config
+		}
+	}
+	service, err := hubserver.Open(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,4 +305,9 @@ func (s *clihangDetails) read(ctx context.Context, key string) ([]byte, error) {
 		return nil, artifact.ErrMissing
 	}
 	return bytes.Clone(data), nil
+}
+
+type clihangPostgresOptions struct {
+	seed   func(*postgres.Repository) error
+	config *hubserver.Config
 }

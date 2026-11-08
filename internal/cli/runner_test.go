@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +29,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/observability"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -36,6 +47,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/toolcache"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 	"github.com/digitaldrywood/detent/internal/workspace"
 
@@ -438,10 +450,6 @@ func TestBuildRunnerUsesTopLevelPricingPath(t *testing.T) {
 }
 
 func TestBuildBudgetDispatchGuards(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	disabled := workflowconfig.Default().Budget
@@ -476,18 +484,8 @@ func TestBuildBudgetDispatchGuards(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	storeBackend, err := store.Open(ctx, store.Config{
-		Backend: store.BackendSQLite,
-		Path:    filepath.Join(t.TempDir(), "detent.db"),
-	})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	t.Cleanup(func() {
-		if err := storeBackend.Close(); err != nil {
-			t.Fatalf("Close() error = %v", err)
-		}
-	})
+	clients := newBudgetPostgresFixture(t, true)
+	storeBackend := clients["org_example"]["quiet"]
 
 	checker, estimator, err = buildBudgetDispatchGuards("alpha", enabled, storeBackend, nil)
 	if err != nil {
@@ -497,25 +495,6 @@ func TestBuildBudgetDispatchGuards(t *testing.T) {
 		t.Fatalf("enabled guards = %T/%T, want checker and estimator", checker, estimator)
 	}
 
-	startedAt := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
-	for index, inputTokens := range []int64{10, 20, 30, 40, 50} {
-		sessionID, err := storeBackend.StartSession(ctx, store.SessionStart{
-			StartedAt: startedAt.Add(time.Duration(index) * time.Minute),
-			Model:     "gpt-history",
-		})
-		if err != nil {
-			t.Fatalf("StartSession() error = %v", err)
-		}
-		if err := storeBackend.FinishSession(ctx, sessionID, store.SessionFinish{
-			CompletedAt: startedAt.Add(time.Duration(index+1) * time.Minute),
-			InputTokens: inputTokens,
-			TotalTokens: inputTokens,
-			FinalState:  runnerpkg.FinalStateCompleted,
-			Model:       "gpt-history",
-		}); err != nil {
-			t.Fatalf("FinishSession() error = %v", err)
-		}
-	}
 	estimate, err := estimator.EstimateDispatch(ctx, "gpt-history")
 	if err != nil {
 		t.Fatalf("EstimateDispatch() error = %v", err)
@@ -526,38 +505,11 @@ func TestBuildBudgetDispatchGuards(t *testing.T) {
 }
 
 func TestBuildBudgetDispatchGuardsIsolatesProjectDailySpend(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	ctx := context.Background()
-	backend, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	t.Cleanup(func() {
-		if err := backend.Close(); err != nil {
-			t.Fatalf("Close() error = %v", err)
-		}
-	})
+	clients := newBudgetPostgresFixture(t, false)
 	now := time.Date(2026, 7, 12, 20, 0, 0, 0, time.UTC)
-	for _, session := range []struct {
-		projectID string
-		tokens    int64
-	}{
-		{projectID: "quiet", tokens: 10},
-		{projectID: "busy", tokens: 200},
-	} {
-		sessionID, err := backend.StartSession(ctx, store.SessionStart{ProjectID: session.projectID, StartedAt: now.Add(-time.Minute), Model: "gpt-test"})
-		if err != nil {
-			t.Fatalf("StartSession(%s) error = %v", session.projectID, err)
-		}
-		if err := backend.FinishSession(ctx, sessionID, store.SessionFinish{CompletedAt: now, InputTokens: session.tokens, TotalTokens: session.tokens, FinalState: "complete", Model: "gpt-test"}); err != nil {
-			t.Fatalf("FinishSession(%s) error = %v", session.projectID, err)
-		}
-	}
 
 	cfg := workflowconfig.Default().Budget
 	cfg.Enabled = true
@@ -572,7 +524,7 @@ func TestBuildBudgetDispatchGuardsIsolatesProjectDailySpend(t *testing.T) {
 		{projectID: "busy", wantAllow: false},
 	} {
 		t.Run(tt.projectID, func(t *testing.T) {
-			checker, _, err := buildBudgetDispatchGuards(tt.projectID, cfg, backend, pricing)
+			checker, _, err := buildBudgetDispatchGuards(tt.projectID, cfg, clients["org_example"][tt.projectID], pricing)
 			if err != nil {
 				t.Fatalf("buildBudgetDispatchGuards() error = %v", err)
 			}
@@ -2841,4 +2793,158 @@ func antigravityHomeOptions(t *testing.T) workflowconfig.BackendOptions {
 		t.Fatal(err)
 	}
 	return options
+}
+
+func newBudgetPostgresFixture(t *testing.T, history bool) map[string]map[string]*api.RunnerSessions {
+	t.Helper()
+	const token = "fixture-budget-admin"
+	var config hubserver.Config
+	seed := func(repository *postgres.Repository) error {
+		for _, organization := range []tracker.OrganizationID{"org_example", "org_other"} {
+			if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+				for _, project := range []tracker.ProjectID{"prj_quiet", "prj_busy"} {
+					if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: string(project), Slug: strings.TrimPrefix(string(project), "prj_"), Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}); err != nil {
+						return err
+					}
+					tokens := []int64{5, 5}
+					model := "gpt-test"
+					if project == "prj_busy" {
+						tokens = []int64{100, 100}
+					}
+					if history {
+						tokens, model = []int64{10, 20, 30, 40, 50}, "gpt-history"
+					}
+					for index, input := range tokens {
+						id := fmt.Sprintf("%s_%s_%d", organization, project, index)
+						if history && (organization == "org_other" || project == "prj_busy") {
+							input *= 100
+						}
+						item, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: project, NativeID: tracker.NativeWorkItemID("wi_" + id), Number: int64(index + 1), Title: "Example"})
+						if err != nil {
+							return err
+						}
+						lease, err := w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(clihangBinding(organization).MachineID), SessionID: "session_" + id, LeaseID: "lease_" + id, TTL: time.Hour})
+						if err != nil {
+							return err
+						}
+						at := time.Date(2026, 7, 12, 20, 0, 0, 0, time.UTC).Add(time.Duration(index) * time.Minute)
+						fence := leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}
+						if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "attempt_" + id, Fence: fence, RunID: "run_" + id, Sequence: 1, Status: "succeeded", StartedAt: at, PayloadObjectKey: "fixture/" + id, Usage: []tracker.NativeUsage{{Provider: "example", Model: model, Input: input, To: at}}}); err != nil {
+							return err
+						}
+						if _, err := w.Release(t.Context(), fence, "finished"); err != nil {
+							return err
+						}
+					}
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	service, _ := clihangPostgresHub(t, token, nil, clihangPostgresOptions{seed: seed, config: &config})
+	open := func(service *hubserver.Service, organization string) map[string]map[string]*api.RunnerSessions {
+		server := httptest.NewServer(service.Handler())
+		t.Cleanup(server.Close)
+		credential := token
+		foreign := "org_other"
+		if organization == "org_other" {
+			credential += "-other"
+			foreign = "org_example"
+		}
+		for _, auth := range []string{"", credential} {
+			path := "/api/v2/organizations/" + foreign + "/projects/prj_quiet/runner-model-quantiles?model=gpt-history&limit=20"
+			if auth == "" {
+				path = "/api/v2/organizations/" + organization + "/projects/prj_quiet/runner-model-quantiles?model=gpt-history&limit=20"
+			}
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if auth != "" {
+				request.Header.Set("Authorization", "Bearer "+auth)
+			}
+			response, err := server.Client().Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := response.Body.Close(); err != nil {
+				t.Fatal(err)
+			}
+			want := http.StatusNotFound
+			if auth == "" {
+				want = http.StatusUnauthorized
+			}
+			if response.StatusCode != want {
+				t.Fatalf("authorization status=%d, want %d", response.StatusCode, want)
+			}
+		}
+		clients := make(map[string]map[string]*api.RunnerSessions)
+		client, err := hubclient.New(hubclient.Config{URL: server.URL, HTTPClient: server.Client(), TokenSource: func() string { return credential }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clients[organization] = make(map[string]*api.RunnerSessions)
+		for _, project := range []string{"quiet", "busy"} {
+			native, err := client.Native(tracker.OrganizationID(organization), tracker.ProjectID("prj_"+project))
+			if err != nil {
+				t.Fatal(err)
+			}
+			clients[organization][project] = api.NewRunnerSessions(native)
+			if history {
+				q, err := native.RecentModelTokenQuantiles(t.Context(), store.ModelTokenQuantileQuery{Model: "gpt-history", Limit: 20})
+				want := int64(50)
+				if organization == "org_other" || project == "busy" {
+					want *= 100
+				}
+				if err != nil || q.Sessions != 5 || q.P90InputTokens != want {
+					t.Fatalf("scoped historical quantiles = %+v error=%v want=%d", q, err, want)
+				}
+			} else {
+				spend, err := native.ProjectDailyTokenSpend(t.Context(), project, time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC))
+				want := int64(10)
+				if project == "busy" {
+					want = 200
+				}
+				if err != nil || spend.InputTokens != want || spend.Sessions != 2 {
+					t.Fatalf("scoped daily spend = %+v error=%v want=%d", spend, err, want)
+				}
+			}
+		}
+		return clients
+	}
+	open(service, "org_example")
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	otherConfig := config
+	otherHosted := *config.Hosted
+	otherHosted.OrganizationID = "org_other"
+	otherHosted.WorkOSOrganizationID = "provider_org_other"
+	otherConfig.Hosted = &otherHosted
+	other, err := hubserver.Open(t.Context(), otherConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := other.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	open(other, "org_other")
+	if err := other.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := hubserver.Open(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return open(reopened, "org_example")
 }
