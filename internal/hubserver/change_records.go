@@ -1042,7 +1042,11 @@ func (s *Service) hydrateCurrentChangeDetailWithFacts(ctx context.Context, scope
 		detail.Summary = changerequest.SummarizeCurrentVersion(detail, policyID, reviewID, now, false)
 		return detail, nil
 	}
-	version, err := s.hydrateChangeVersion(ctx, scope, item, *versionRecord)
+	var observations *tenantstore.ChangeVersionRows
+	if facts != nil {
+		observations = facts.VersionObservations
+	}
+	version, err := s.hydrateChangeVersionWithRows(ctx, scope, item, *versionRecord, observations)
 	if err != nil {
 		return tracker.ChangeDetail{}, err
 	}

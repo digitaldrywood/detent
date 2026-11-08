@@ -28,9 +28,31 @@ func readNativeClaimChangeFacts(ctx context.Context, r tenantstore.Reader, scope
 	if err != nil {
 		return err
 	}
+	requests := []tenantstore.ChangeVersionRequest{}
+	positions := []int{}
 	for i := range plans {
 		if row, ok := rows[plans[i].changeRecord.ID]; ok {
 			plans[i].changeFacts = &row
+			if plans[i].changeVersion.ID != "" {
+				requests = append(requests, tenantstore.ChangeVersionRequest{WorkItemID: plans[i].candidate.WorkItemID, Reference: tracker.NativeChangeReference{ChangeID: plans[i].changeRecord.ID, VersionID: plans[i].changeVersion.ID, HeadSHA: plans[i].changeVersion.HeadSHA}})
+				positions = append(positions, i)
+			}
+		}
+	}
+	if len(requests) != 0 {
+		reader, ok := r.(tenantstore.ChangeVersionRowsReader)
+		if !ok {
+			return nativeRunEventStorageUnavailable()
+		}
+		observations, err := reader.ChangeVersionRows(ctx, scope.project, requests)
+		if err != nil {
+			return err
+		}
+		if len(observations) != len(positions) {
+			return corestore.ErrRevisionConflict
+		}
+		for index, position := range positions {
+			plans[position].changeFacts.VersionObservations = &observations[index]
 		}
 	}
 	return nil

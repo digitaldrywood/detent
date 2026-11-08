@@ -19,12 +19,30 @@ type BoardChangeLink struct {
 	VersionExists    bool
 }
 type BoardChangeRows struct {
-	Request           BoardChangeRequest
-	Change            *eventstore.Change
-	Version           *eventstore.Version
-	Links             []BoardChangeLink
-	Evidence          []eventstore.Evidence
-	AuditDispositions map[int64][]eventstore.AuditDisposition
+	Request             BoardChangeRequest
+	Change              *eventstore.Change
+	Version             *eventstore.Version
+	Links               []BoardChangeLink
+	Evidence            []eventstore.Evidence
+	AuditDispositions   map[int64][]eventstore.AuditDisposition
+	VersionObservations *ChangeVersionRows
+}
+
+type ChangeVersionRequest struct {
+	WorkItemID tracker.NativeWorkItemID
+	Reference  tracker.NativeChangeReference
+}
+
+type ChangeVersionRows struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Request        ChangeVersionRequest
+	Publication    *eventstore.NativePRPublication
+	Landing        *eventstore.LandingObservation
+}
+
+type ChangeVersionRowsReader interface {
+	ChangeVersionRows(context.Context, tracker.ProjectID, []ChangeVersionRequest) ([]ChangeVersionRows, error)
 }
 type BoardChangeRowsReader interface {
 	BoardChangeRows(context.Context, tracker.ProjectID, []BoardChangeRequest) ([]BoardChangeRows, error)
