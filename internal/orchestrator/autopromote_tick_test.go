@@ -700,10 +700,6 @@ func TestAutoPromoteConfiguredInProgressSourcePromotesReadyPullRequest(t *testin
 }
 
 func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
@@ -836,19 +832,17 @@ func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
 				logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 			}
 
-			db := openWorkAttemptRecoveryStore(t, t.Context())
-			orch.workAttempts = db
-			for i := range 3 {
-				id, err := db.StartWorkAttempt(t.Context(), store.WorkAttemptStart{
-					ProjectID: cfg.Project.ID, IssueID: tt.issue.ID, WorkerType: "agent", Lane: "Rework", AttemptNumber: i + 1, StartedAt: now.Add(-time.Duration(10-i) * time.Minute),
+			attempts := &implementProgressAttemptStore{}
+			for i := 2; i >= 0; i-- {
+				completed := now.Add(-time.Duration(9-i) * time.Minute)
+				attempts.history = append(attempts.history, store.WorkAttempt{
+					ID: int64(i + 1), ProjectID: cfg.Project.ID, IssueID: tt.issue.ID,
+					WorkerType: "agent", Lane: "Rework", AttemptNumber: i + 1,
+					StartedAt: now.Add(-time.Duration(10-i) * time.Minute), CompletedAt: completed,
+					TerminalState: store.WorkAttemptTerminalFailure, Phase: "failed", ErrorClass: "runner_error",
 				})
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := db.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: id, TerminalState: store.WorkAttemptTerminalFailure, Phase: "failed", ErrorClass: "runner_error", CompletedAt: now.Add(-time.Duration(9-i) * time.Minute)}); err != nil {
-					t.Fatal(err)
-				}
 			}
+			orch.workAttempts = attempts
 
 			orch.tick(context.Background(), &state, now)
 
