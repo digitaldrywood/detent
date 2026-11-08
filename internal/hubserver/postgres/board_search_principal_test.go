@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -47,9 +48,9 @@ func TestBoardSearchPrincipalAdmission(t *testing.T) {
 	ctx := t.Context()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedBoardSearchProject(t, f, org, "prj_second", "another", []tracker.NativeWorkItemID{"wi_second_1"})
-	}
-	if _, err := f.admin.ExecContext(ctx, `UPDATE search_postings SET literal_positions=ARRAY(SELECT generate_series(1,80000,2)::bigint) WHERE document_id='issue/wi_first_1' AND cardinality(literal_positions)>0`); err != nil {
-		t.Fatal(err)
+		if _, err := f.admin.ExecContext(ctx, `UPDATE search_postings SET literal_positions=ARRAY(SELECT generate_series(1,80000,2)::bigint) WHERE organization_id=$1 AND document_id='issue/wi_first_1' AND term=ANY($2::text[]) AND cardinality(literal_positions)>0`, org, searchstore.LiteralQueryTerms(org, "prj_first", "cabcab")); err != nil {
+			t.Fatal(err)
+		}
 	}
 	config := f.pool.Config()
 	config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, principalSearchTracer{})
@@ -118,7 +119,7 @@ func TestBoardSearchPrincipalAdmission(t *testing.T) {
 							return err
 						})
 					}
-					same := viewstore.BoardSelection{ProjectID: "prj_first", SearchText: "abc", Limit: 1, Reporter: true, ReporterPrincipalID: "example"}
+					same := viewstore.BoardSelection{ProjectID: "prj_first", SearchText: "example", Limit: 1, Reporter: true, ReporterPrincipalID: "example"}
 					if err := read(org, same); !errors.Is(err, context.DeadlineExceeded) {
 						t.Fatalf("model=%t same principal escaped concurrency bound: %v", model, err)
 					}
