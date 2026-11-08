@@ -1,15 +1,24 @@
 package conversation_test
 
 import (
+	"context"
+	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/scenariotest"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubclient/nativechange"
 )
 
-func TestMain(m *testing.M) { os.Exit(testsupport.RunMain(m)) }
+func TestMain(m *testing.M) {
+	os.Exit(testsupport.RunMain(m, func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return errors.Join(scenariotest.ClosePostgres(), testsupport.CloseNativeChangePostgres(ctx), testsupport.CloseDispatchPostgres(ctx))
+	}))
+}
 func TestConversationRunnerExecutesLiveTurns(t *testing.T) {
 	scenariotest.RunConversationRunnerExecutesLiveTurns(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
 }

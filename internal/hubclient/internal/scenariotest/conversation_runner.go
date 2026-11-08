@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -381,8 +380,6 @@ func RunConversationRunnerExecutesLiveTurns(t *testing.T, constructors Construct
 
 }
 
-const conversationRunnerAdminToken = "conversation-runner-admin"
-
 type conversationRunnerHub struct {
 	constructors Constructors
 	requests     *testsupport.Transport
@@ -391,85 +388,22 @@ type conversationRunnerHub struct {
 	project      tracker.ProjectID
 	base         string
 	operator     string
-	worker       string
+	workerConfig Config
+	machine      Machine
 	descriptor   policy.Descriptor
 }
 
 func newConversationRunnerHub(t *testing.T) *conversationRunnerHub {
 	t.Helper()
-	service, err := hubserver.Open(t.Context(), hubserver.Config{
-		RunDetails:        &archivedRunDetails{},
-		DatabasePath:      hubDatabasePath(t),
-		InitialAdminToken: []byte(conversationRunnerAdminToken),
-		Content:           newHubContentStore(),
-		Conversation:      &hubserver.ConversationConfig{Enabled: true, ArchiveContents: &conversationArchiveFixture{}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := service.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	handler := service.Handler()
-	httpClient := &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
-		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, request)
-		response := recorder.Result()
-		response.Request = request
-		return response, nil
-	})}
-	requests := testsupport.NewTransport(httpClient.Transport)
-	httpClient.Transport = requests
-	admin, err := createTestClient(t, Config{URL: "http://hub.test", TokenSource: func() string { return conversationRunnerAdminToken }, HTTPClient: httpClient})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var organizations tracker.Page[struct {
-		ID tracker.OrganizationID `json:"organization_id"`
-	}]
-	if err := admin.Request(t.Context(), http.MethodGet, "/api/v2/organizations", nil, &organizations); err != nil {
-		t.Fatal(err)
-	}
-	h := &conversationRunnerHub{requests: requests, httpClient: httpClient, organization: organizations.Items[0].ID, descriptor: clientTestPolicy()}
 	states := []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
 		{Name: "Done", Terminal: true},
 	}
-	var project tracker.NativeProject
-	body := map[string]any{"name": "product", "idempotency_key": "project-product", "states": states, "require_dependencies": false}
-	if err := admin.Request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/projects", body, &project); err != nil {
-		t.Fatal(err)
-	}
-	h.project = project.ID
-	h.base = "/api/v2/organizations/" + string(h.organization) + "/projects/" + string(h.project)
-	h.operator = h.createToken(t, admin, "operator", "operator")
-	h.worker = h.createToken(t, admin, "worker", "worker")
-	native, err := admin.Native(h.organization, h.project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := native.ApproveProjectPolicy(t.Context(), policy.Change{Policy: h.descriptor}); err != nil {
-		t.Fatal(err)
-	}
-	return h
-}
-
-func (h *conversationRunnerHub) createToken(t *testing.T, admin *Client, name, scope string) string {
-	t.Helper()
-	var token struct {
-		ID    string `json:"id"`
-		Token string `json:"token"`
-	}
-	if err := admin.Request(t.Context(), http.MethodPost, "/api/v1/tokens", map[string]string{"name": name, "scope": scope}, &token); err != nil {
-		t.Fatal(err)
-	}
-	if err := admin.Request(t.Context(), http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", map[string]any{"organization_id": h.organization, "project_id": h.project}, nil); err != nil {
-		t.Fatal(err)
-	}
-	return token.Token
+	owner := newNativeChangeHubConfigured(t, "Done", states, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}}, Constructors{})
+	transport := fixtureClient(owner.admin.Transport()).httpClient.Transport
+	requests := testsupport.NewTransport(transport)
+	return &conversationRunnerHub{requests: requests, httpClient: &http.Client{Transport: requests}, organization: owner.organization, project: owner.project, base: owner.admin.Scope(), operator: nativeChangeAdminToken, descriptor: owner.descriptor, workerConfig: fixtureClient(owner.native.Transport()).config, machine: fixtureSchedulerMachine(owner.scheduler)}
 }
 
 // expect performs one operator request over real HTTP, requires the status
@@ -553,14 +487,16 @@ func (h *conversationRunnerHub) await(t *testing.T, id, reason string, want func
 
 func (h *conversationRunnerHub) scheduler(t *testing.T) *Scheduler {
 	t.Helper()
-	client, err := createTestClient(t, Config{URL: "http://hub.test", TokenSource: func() string { return h.worker }, HTTPClient: h.httpClient}, h.constructors)
+	workerConfig := h.workerConfig
+	workerConfig.HTTPClient = h.httpClient
+	client, err := createTestClient(t, workerConfig, h.constructors)
 	if err != nil {
 		t.Fatal(err)
 	}
 	scheduler, err := newTestScheduler(client, SchedulerConfig{
 		OrganizationID:    h.organization,
 		NativeProjects:    map[string]tracker.ProjectID{"local": h.project},
-		Machine:           Machine{ID: "machine-conversation", Hostname: "host", Capacity: 1, Version: "test"},
+		Machine:           h.machine,
 		HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second,
 	})
 	if err != nil {
@@ -596,7 +532,12 @@ func (h *conversationRunnerHub) startAttempt(t *testing.T, scheduler *Scheduler,
 	if len(workflows) > 0 {
 		workflow = workflows[0]
 	}
+	native, err := scheduler.Transport().Native(h.organization, h.project)
+	if err != nil {
+		t.Fatal(err)
+	}
 	agent, err := runner.NewRunner(runner.Dependencies{
+		Store:         api.NewRunnerSessions(native),
 		ProcessSource: emptyProcessSource,
 		Workflow:      workflow,
 		Workspace:     &conversationStubWorkspace{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}},

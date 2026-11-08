@@ -1264,9 +1264,6 @@ func (s *Service) commandCreateConversationPG(ctx context.Context, scope nativeS
 }
 
 func (s *Service) commandPatchConversationPG(ctx context.Context, scope nativeScope, id string, request conversationPatchRequest, title string) (json.RawMessage, error) {
-	if request.Preferences != nil {
-		return nil, conversationUnsupported("Conversation preference updates require the model catalog migration")
-	}
 	var updated conversationstore.Conversation
 	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
 		current, err := writer.LockConversation(ctx, scope.project, id)
@@ -1295,8 +1292,17 @@ func (s *Service) commandPatchConversationPG(ctx context.Context, scope nativeSc
 		if request.ProjectID != "" && tracker.ProjectID(request.ProjectID) != current.ProjectID {
 			return conversationProjectFixed()
 		}
+		if request.Preferences != nil {
+			preferences := request.Preferences.apply(current.Preferences)
+			if err := conversation.ValidatePreferences(preferences, nil); err != nil {
+				return nativePublicInvalid("Conversation preferences are invalid")
+			}
+			current.Preferences = preferences
+		}
 		previousRevision := current.Revision
-		current.Title = title
+		if request.Title != nil || request.Preferences == nil {
+			current.Title = title
+		}
 		current.UpdatedAt = s.config.now()
 		updated, err = writer.UpdateConversation(ctx, current, previousRevision)
 		if err != nil {
