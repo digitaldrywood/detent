@@ -94,7 +94,7 @@ func (s *Service) readCommentPageModel(ctx context.Context, scope nativeScope, i
 		}
 		if size+len(raw)+1 > operatortool.MaxResultBytes {
 			if len(page.Items) == 0 {
-				return page, nativePublicInvalid("A single comment exceeds the page budget")
+				return page, nativePublicInvalid("A single comment exceeds the page budget; use " + operatortool.WorkBulkExport + " to read the full comment")
 			}
 			more = true
 			break
@@ -318,7 +318,7 @@ func (s *Service) readCommentSourceRecords(ctx context.Context, scope nativeScop
 		}
 		if size+len(raw)+1 > operatortool.MaxResultBytes {
 			if len(page.Items) == 0 {
-				return page, nativePublicInvalid("A single comment exceeds the page budget")
+				return page, nativePublicInvalid("A single comment exceeds the page budget; use " + operatortool.WorkBulkExport + " to read the full comment")
 			}
 			more = true
 			break

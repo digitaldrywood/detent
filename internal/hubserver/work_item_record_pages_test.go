@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -59,6 +60,23 @@ func (r commentPageCountingReader) CollaborationVersions(ctx context.Context, ke
 		versions[left], versions[right] = versions[right], versions[left]
 	}
 	return versions, err
+}
+
+func TestOversizedCommentReportsBulkFallback(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "comment-fallback")
+	for _, title := range []string{"First comment owner", "Second comment owner"} {
+		t.Run(title, func(t *testing.T) {
+			item := f.create(t, title)
+			path := f.base + "/work-items/" + string(item.WorkItemID) + "/comments"
+			created := performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: string(item.WorkItemID)}, Body: strings.Repeat("\x00", 64<<10)})
+			requireNativeStatus(t, created, http.StatusOK)
+			response := performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+			if body := response.Body.String(); !strings.Contains(body, "single comment") || !strings.Contains(body, operatortool.WorkBulkExport) {
+				t.Fatalf("oversized comment omitted its existing bulk fallback: %s", body)
+			}
+		})
+	}
 }
 
 func TestCommentPageUsesSetBasedVersions(t *testing.T) {
