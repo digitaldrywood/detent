@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -18,6 +19,7 @@ type CatalogScope struct {
 
 type CatalogObject struct {
 	Object
+	UploadID       string `json:"upload_id"`
 	StorageVersion string `json:"storage_version"`
 	Verified       bool   `json:"verified"`
 	Discarded      bool   `json:"discarded"`
@@ -133,8 +135,13 @@ func NewCatalogHandler(owner Catalog, authorize CatalogAuthorization) (http.Hand
 			fail(err)
 			return
 		}
+		expected := "/api/v2/organizations/" + command.OrganizationID + "/projects/" + command.ProjectID + "/artifact-services/" + command.ServiceID + "/catalog"
+		if r.URL.EscapedPath() != expected || !ValidID(command.OrganizationID, "org") || !ValidID(command.ProjectID, "prj") || !ValidID(command.ServiceID, "service") {
+			fail(ErrDenied)
+			return
+		}
 		header := r.Header.Values("Authorization")
-		if len(header) != 1 || len(header[0]) < 8 || header[0][:7] != "Bearer " {
+		if len(header) != 1 || !strings.HasPrefix(header[0], "Bearer ") || len(header[0]) <= 7 || len(header[0]) > 4103 {
 			fail(ErrDenied)
 			return
 		}

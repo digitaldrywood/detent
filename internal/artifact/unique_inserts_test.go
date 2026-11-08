@@ -162,6 +162,7 @@ func (m *memoryCatalog) Execute(_ context.Context, c CatalogCommand) (CatalogRes
 			if c.Object.Size > u.PartLimit || c.Object.Size > u.ReservedBytes-pending {
 				return result, ErrQuota
 			}
+			c.Object.UploadID = c.UploadID
 			m.objects[c.UploadID] = append(m.objects[c.UploadID], c.Object)
 			result.Object = c.Object
 		case "verify_object", "discard_object":
