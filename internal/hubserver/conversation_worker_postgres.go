@@ -1127,6 +1127,9 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 		if err := r.service.server.authorizeAccessScope(ctx, writer, scope, false); err != nil {
 			return err
 		}
+		if _, err := r.service.server.authorizeConversationWorkerPG(ctx, writer, scope, snapshot, identity, "", false); err != nil {
+			return err
+		}
 		stored, err := writer.LockConversation(ctx, scope.project, id)
 		if err != nil {
 			return err
@@ -1134,9 +1137,6 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 		record := conversationRecordFromStore(stored)
 		if stored.Revision != snapshot.Revision || stored.Execution.Owner.AttemptID != snapshot.Execution.Owner.AttemptID {
 			return conversationStale("The conversation changed; retry the control poll")
-		}
-		if _, err := r.service.server.authorizeConversationWorkerPG(ctx, writer, scope, record, identity, "", false); err != nil {
-			return err
 		}
 		acknowledged, err := writer.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: id, AttemptID: identity.AttemptID, Role: conversation.RoleUser, Deliveries: []conversation.Delivery{conversation.DeliverySending}, BeforeSequence: after + 1, Limit: limit})
 		if err != nil {

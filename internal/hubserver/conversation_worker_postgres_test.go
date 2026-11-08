@@ -324,7 +324,13 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool) {
 		t.Fatal(err)
 	}
 	for _, remaining := range []int{1, 0} {
-		acknowledged, err := router.pollControlsPostgres(t.Context(), scope, linked.ID, identity, acknowledgementCursor)
+		var acknowledged conversationControlsResponse
+		var err error
+		if remaining == 1 {
+			acknowledged = pollControlsAgainstRunnerEvent(t, admin, f.service, router, scope, linked.ID, identity, acknowledgementCursor)
+		} else {
+			acknowledged, err = router.pollControlsPostgres(t.Context(), scope, linked.ID, identity, acknowledgementCursor)
+		}
 		if err != nil || len(acknowledged.Controls) != 0 {
 			t.Fatalf("bounded acknowledgement poll controls=%d error=%v", len(acknowledged.Controls), err)
 		}
@@ -671,4 +677,77 @@ func bindWithConcurrentRunnerEvent(t *testing.T, admin *sql.DB, order *conversat
 		t.Fatal(ctx.Err())
 	}
 	return nil
+}
+
+type conversationControlOrderRepository struct {
+	tenantstore.Repository
+	attempted chan struct{}
+	once      sync.Once
+}
+
+type conversationControlOrderWriter struct {
+	tenantstore.Writer
+	order *conversationControlOrderRepository
+}
+
+func (r *conversationControlOrderRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	return r.Repository.WriteTenant(ctx, org, workload, func(w tenantstore.Writer) error {
+		return write(conversationControlOrderWriter{Writer: w, order: r})
+	})
+}
+
+func (w conversationControlOrderWriter) RunnerIdentityByCredential(ctx context.Context, id string) (runnerstore.Identity, error) {
+	w.order.once.Do(func() { close(w.order.attempted) })
+	return w.Writer.RunnerIdentityByCredential(ctx, id)
+}
+
+func pollControlsAgainstRunnerEvent(t *testing.T, admin *sql.DB, service *Service, router *conversationWorkerRouter, scope nativeScope, id string, identity conversationWorkerIdentity, after int64) conversationControlsResponse {
+	t.Helper()
+	blocker, err := admin.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runner string
+	if err := blocker.QueryRowContext(t.Context(), `SELECT runner_id FROM runner_identities WHERE organization_id=$1 AND token_id=$2 FOR UPDATE`, scope.organization, scope.credential.ID).Scan(&runner); err != nil {
+		blocker.Rollback()
+		t.Fatal(err)
+	}
+	finished := make(chan struct{})
+	previousRepository, previousAuthority := service.config.TenantRepository, service.config.ConversationWorkerAuthority
+	order := &conversationControlOrderRepository{Repository: previousRepository, attempted: make(chan struct{})}
+	service.config.TenantRepository = order
+	service.config.ConversationWorkerAuthority = conversationWorkerAuthorityFunc(func(ctx context.Context, reader tenantstore.Reader, worker ConversationWorkerIdentity) error {
+		if _, err := reader.RunnerIdentityByCredential(ctx, worker.Credential.ID); err != nil {
+			return err
+		}
+		return previousAuthority.VerifyConversationWorker(ctx, reader, worker)
+	})
+	defer func() {
+		blocker.Rollback()
+		<-finished
+		service.config.TenantRepository, service.config.ConversationWorkerAuthority = previousRepository, previousAuthority
+	}()
+	var page conversationControlsResponse
+	var pollErr error
+	go func() {
+		defer close(finished)
+		page, pollErr = router.pollControlsPostgres(t.Context(), scope, id, identity, after)
+	}()
+	select {
+	case <-order.attempted:
+	case <-finished:
+		t.Fatalf("control poll finished before runner authority: %v", pollErr)
+	}
+	var conversationID string
+	if err := blocker.QueryRowContext(t.Context(), `SELECT id FROM conversations WHERE organization_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE NOWAIT`, scope.organization, scope.project, id).Scan(&conversationID); err != nil {
+		t.Fatalf("control poll locked conversation while waiting for runner identity: %v", err)
+	}
+	if err := blocker.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	<-finished
+	if pollErr != nil {
+		t.Fatal(pollErr)
+	}
+	return page
 }
