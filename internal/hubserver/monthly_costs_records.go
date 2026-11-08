@@ -6,9 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"math"
 	"strconv"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -31,6 +29,11 @@ func (d *database) monthlyCostRecords(ctx context.Context, organization string, 
 		return nil, nil, snapshot, err
 	}
 	observations := []attributedCostObservation{}
+	type conversationCostKey struct {
+		project        tracker.ProjectID
+		provider, turn string
+	}
+	recorded := map[conversationCostKey]bool{}
 	for _, revision := range snapshot.Revisions {
 		if d.billingAuditStore == nil {
 			return nil, nil, snapshot, errors.New("monthly cost archives unavailable")
@@ -58,17 +61,17 @@ func (d *database) monthlyCostRecords(ctx context.Context, organization string, 
 			return nil, nil, snapshot, errors.New("monthly cost archive identity mismatch")
 		}
 		observations = append(observations, attributedCostObservation{ProjectID: string(revision.ProjectID), ReceivedAt: revision.ReceivedAt, costObservation: o})
+		if o.Bucket == lunaCostBucket && o.ProviderAccount == "luna" && o.SourceID == "luna:"+o.ResourceID {
+			recorded[conversationCostKey{revision.ProjectID, o.Provider, o.ResourceID}] = true
+		}
 	}
 	for _, u := range snapshot.Conversations {
-		from := u.OccurredAt
-		quantity := float64(u.Input) + float64(u.Output)
-		o := costObservation{Provider: u.Provider, ProviderAccount: "luna", ResourceID: u.TurnID, Bucket: lunaCostBucket, Metric: u.Model, Model: u.Model, BillingMode: "metered", SourceID: "luna:" + u.TurnID, Revision: 1, From: from, To: from.Add(time.Microsecond), Quantity: &quantity, Unit: "token", QuantityBasis: "provider_reported", Input: u.Input, CachedInput: u.CachedInput, Output: u.Output, Currency: "USD", Basis: "unknown", EvidenceSource: "conversation_usage", ObservedAt: from.Add(time.Microsecond), FreshUntil: from.Add(time.Microsecond), Coverage: "complete"}
-		if u.CostUSD != nil {
-			amount := int64(math.Round(*u.CostUSD * 1e6))
-			o.AmountMicros, o.EstimatedAmountMicros, o.Basis = &amount, &amount, "estimated"
-			if u.PriceID != nil {
-				o.EstimateSource = "conversation_prices:" + strconv.FormatInt(*u.PriceID, 10)
-			}
+		if recorded[conversationCostKey{u.ProjectID, u.Provider, u.TurnID}] {
+			continue
+		}
+		o, err := conversationUsageCostObservation(u)
+		if err != nil {
+			return nil, nil, snapshot, err
 		}
 		observations = append(observations, attributedCostObservation{ProjectID: string(u.ProjectID), costObservation: o})
 	}
