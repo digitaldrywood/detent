@@ -106,7 +106,11 @@ func TestPostgresEntryKeyRuntimeCatalog(t *testing.T) {
 	}
 }
 
-func seedEntryRuntimeAttempt(t *testing.T, s *Service, org tracker.OrganizationID) leasestore.Lease {
+func seedEntryRuntimeAttempt(t *testing.T, s *Service, org tracker.OrganizationID, items ...tracker.NativeWorkItemID) leasestore.Lease {
+	itemID := tracker.NativeWorkItemID("item")
+	if len(items) > 0 {
+		itemID = items[0]
+	}
 	t.Helper()
 	now := s.config.now()
 	content := eventstore.NewContent(s.runDetailStore())
@@ -136,7 +140,7 @@ func seedEntryRuntimeAttempt(t *testing.T, s *Service, org tracker.OrganizationI
 		t.Fatal(err)
 	}
 	version.SourceObjectKey, version.SourceSHA256, version.SourceBytes, version.SourceContentBytes = ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize
-	change, err := content.PrepareChange(t.Context(), org, marshal(tracker.ChangeRequest{ID: "change", OrganizationID: org, ProjectID: "project", WorkItemID: "item", Title: "Example", Revision: 1, CreatedAt: now, UpdatedAt: now}))
+	change, err := content.PrepareChange(t.Context(), org, marshal(tracker.ChangeRequest{ID: "change", OrganizationID: org, ProjectID: "project", WorkItemID: itemID, Title: "Example", Revision: 1, CreatedAt: now, UpdatedAt: now}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +152,7 @@ func seedEntryRuntimeAttempt(t *testing.T, s *Service, org tracker.OrganizationI
 		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: org, ID: "machine", Hostname: "example", Capacity: 2, Version: "example"}); err != nil {
 			return err
 		}
-		item, err := w.WorkItem(t.Context(), "project", "item")
+		item, err := w.WorkItem(t.Context(), "project", itemID)
 		if err != nil {
 			return err
 		}
@@ -160,7 +164,7 @@ func seedEntryRuntimeAttempt(t *testing.T, s *Service, org tracker.OrganizationI
 			return err
 		}
 		run := tracker.NativeRunData{AttemptID: "attempt_0123456789abcdef0123456789abcdef", RunID: "run", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), MachineID: "machine", RunnerID: "runner_catalog", PolicyID: policy.ID, Sequence: 1, Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 1, Generation: 1, HeartbeatAt: now, Phase: "completed", Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 1, Generation: 1, Coverage: "partial", AsOf: now, Spans: []workflowmetrics.ActivitySpan{{ID: string(org), Kind: "tool", Outcome: "succeeded", StartedAt: now}}}, GitHub: &tracker.NativeGitHubScope{Scope: string(org), ObservedAt: now}}}
-		event, err := content.PrepareEvent(t.Context(), org, marshal(tracker.CollaborationEvent{ID: "event", OrganizationID: org, ProjectID: "project", AggregateID: "item", Type: "run.finished", Actor: tracker.Actor{Kind: "machine", PrincipalID: "machine"}, SchemaVersion: 1, RecordedAt: now, Data: tracker.CollaborationData{Run: &run}}))
+		event, err := content.PrepareEvent(t.Context(), org, marshal(tracker.CollaborationEvent{ID: "event", OrganizationID: org, ProjectID: "project", AggregateID: itemID, Type: "run.finished", Actor: tracker.Actor{Kind: "machine", PrincipalID: "machine"}, SchemaVersion: 1, RecordedAt: now, Data: tracker.CollaborationData{Run: &run}}))
 		if err != nil {
 			return err
 		}
@@ -173,7 +177,7 @@ func seedEntryRuntimeAttempt(t *testing.T, s *Service, org tracker.OrganizationI
 		if _, err := w.PrepareAttachmentArchive(t.Context(), archive); err != nil {
 			return err
 		}
-		if err := w.PublishAttachmentArchive(t.Context(), archive, "item"); err != nil {
+		if err := w.PublishAttachmentArchive(t.Context(), archive, itemID); err != nil {
 			return err
 		}
 		if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "attempt_0123456789abcdef0123456789abcdef", Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: "run", Sequence: 1, Status: "succeeded", StartedAt: now, PayloadObjectKey: payload.Key}); err != nil {
@@ -193,7 +197,7 @@ func seedEntryRuntimeAttempt(t *testing.T, s *Service, org tracker.OrganizationI
 		if _, err = w.UpdateChange(t.Context(), change); err != nil {
 			return err
 		}
-		return w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: "project", WorkItemID: "item", ChangeID: "change"})
+		return w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: org, ProjectID: "project", WorkItemID: itemID, ChangeID: "change"})
 	})
 	if err != nil {
 		t.Fatal(err)

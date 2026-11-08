@@ -52,7 +52,7 @@ func (s *Service) executeBoardRead(ctx context.Context, call operatortool.Call) 
 	}
 	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: request.ProjectID})
 	if err != nil {
-		return operatortool.Result{}, err
+		return operatortool.Result{}, fmt.Errorf("authorize board: %w", err)
 	}
 	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
 	if !ok {
@@ -65,7 +65,11 @@ func (s *Service) executeBoardRead(ctx context.Context, call operatortool.Call) 
 	projects := operatorProjectPage{Projects: []tracker.NativeProject{}}
 	if request.ProjectID != "" {
 		scope.project = tracker.ProjectID(request.ProjectID)
-		project, err := readNativeProject(ctx, s.database.reader, scope)
+		record, err := s.readTenantProjectRecord(ctx, scope)
+		if err != nil {
+			return operatortool.Result{}, safeWorkReadError(fmt.Errorf("read project record: %w", err))
+		}
+		project, err := s.projectRecordNative(ctx, record)
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(fmt.Errorf("load project: %w", err))
 		}
@@ -79,6 +83,9 @@ func (s *Service) executeBoardRead(ctx context.Context, call operatortool.Call) 
 	result := nativeBoardResult{GeneratedAt: s.config.now(), Freshness: explain.SourceAvailable, Projects: []nativeBoardProject{}, Truncated: projects.NextCursor != "", Unavailable: []string{"aggregate_dispatch_readiness"}, EligibilityTool: operatortool.ExplainItem}
 	remaining := request.Limit
 	for _, project := range projects.Projects {
+		if project.Profile != "native" {
+			continue
+		}
 		if remaining == 0 {
 			result.Truncated = true
 			break

@@ -191,7 +191,7 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 		}
 		definitions, err := s.administrationCatalog(ctx)
 		return entryKeyHasDefinition(definitions, name), err
-	case operatortool.ExplainItem:
+	case operatortool.ExplainItem, operatortool.BoardState, operatortool.Dashboard:
 		return catalog.credential.HostedRole != "account", nil
 	case operatortool.Activity, operatortool.GetRunnerUpdate, operatortool.GetUrgentRunnerUpdate, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting, operatortool.CreateRunnerEnrollment, operatortool.MarkUrgentRunnerUpdate:
 		definitions, err := (hubFleetExecutor{service: s}).ListTools(ctx)
@@ -204,7 +204,7 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 	case operatortool.WorkList, operatortool.WorkItem, operatortool.HealthFindings, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.WorkBulkExport, operatortool.BoardActivity, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt, operatortool.GitHubScopeTimings:
 		_, found := entryKeyDefinition(operatortool.WorkReadCatalog(), name)
 		return found && catalog.credential.HostedRole != "account", nil
-	case operatortool.EditComment, operatortool.RestoreItem, operatortool.TransferItem, operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.SetDependency:
+	case operatortool.StopRun, operatortool.OrderItem, operatortool.SetQueuePriority, operatortool.VerifyFix, operatortool.EditComment, operatortool.RestoreItem, operatortool.TransferItem, operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.SetDependency:
 		definition, found := entryKeyDefinition(operatortool.CommandCatalog(), name)
 		if !found {
 			return false, nil
@@ -286,6 +286,8 @@ func entryKeyToolSupported(name string) bool {
 		return true
 	}
 	switch name {
+	case operatortool.BoardState, operatortool.Dashboard, operatortool.StopRun, operatortool.OrderItem, operatortool.SetQueuePriority, operatortool.VerifyFix:
+		return true
 	case operatortool.OrganizationSession, operatortool.MembershipList, operatortool.InvitationSend, operatortool.InvitationEdit, operatortool.InvitationResend, operatortool.MemberRole, operatortool.MemberGrant:
 		return true
 	case operatortool.WorkAttemptReceipt, operatortool.GitHubScopeTimings, operatortool.BoardSessionHistory, operatortool.ExplainItem, operatortool.CreateRunnerEnrollment, operatortool.MarkUrgentRunnerUpdate, operatortool.TransferItem:
