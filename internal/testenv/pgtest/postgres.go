@@ -484,14 +484,27 @@ func openServer(ctx context.Context, selection string) (_ *server, resultErr err
 	return s, nil
 }
 
+const maxSocketDirectoryLength = 64
+
+func socketParent() string {
+	if dir := os.TempDir(); len(dir) <= maxSocketDirectoryLength {
+		return dir
+	}
+	return "/tmp"
+}
+
 func startBinary(ctx context.Context) (_ string, _ func(context.Context) error, resultErr error) {
 	dir, err := os.MkdirTemp("", "pg-")
 	if err != nil {
 		return "", nil, err
 	}
+	socketDir, err := os.MkdirTemp(socketParent(), "pgs-")
+	if err != nil {
+		return "", nil, errors.Join(err, os.RemoveAll(dir))
+	}
 	defer func() {
 		if resultErr != nil {
-			resultErr = errors.Join(resultErr, os.RemoveAll(dir))
+			resultErr = errors.Join(resultErr, os.RemoveAll(dir), os.RemoveAll(socketDir))
 		}
 	}()
 	init := exec.CommandContext(ctx, "initdb", "-D", "data", "-U", "detent_test", "--auth=trust", "--no-locale", "--encoding=UTF8")
@@ -528,7 +541,7 @@ kill -TERM "$watchdog" 2>/dev/null
 wait "$watchdog" 2>/dev/null
 exit "$status"
 `
-	cmd := exec.CommandContext(processCtx, "/bin/sh", "-c", supervise, "pgtest", "postgres", "-D", "data", "-h", "", "-k", ".", "-c", "lc_messages=C", "-c", "logging_collector=off", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off")
+	cmd := exec.CommandContext(processCtx, "/bin/sh", "-c", supervise, "pgtest", "postgres", "-D", "data", "-h", "", "-k", socketDir, "-c", "lc_messages=C", "-c", "logging_collector=off", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off")
 	cmd.Args = append(cmd.Args, "-c", "max_connections="+strconv.Itoa(binaryConnectionLimit))
 	cmd.Dir = dir
 	cmd.Env = init.Env
@@ -561,16 +574,16 @@ exit "$status"
 		_, writeErr := io.WriteString(owner, "fast\n")
 		select {
 		case err := <-done:
-			return errors.Join(writeErr, owner.Close(), err, os.RemoveAll(dir))
+			return errors.Join(writeErr, owner.Close(), err, os.RemoveAll(dir), os.RemoveAll(socketDir))
 		case <-ctx.Done():
 			cancel()
 			<-done
-			return errors.Join(ctx.Err(), os.RemoveAll(dir))
+			return errors.Join(ctx.Err(), os.RemoveAll(dir), os.RemoveAll(socketDir))
 		}
 	}
 	select {
 	case <-ready:
-		return "postgres://detent_test@127.0.0.1:5432/postgres?host=" + url.QueryEscape(filepath.Join(dir, "data")), stop, nil
+		return "postgres://detent_test@127.0.0.1:5432/postgres?host=" + url.QueryEscape(socketDir), stop, nil
 	case err := <-done:
 		cancel()
 		return "", nil, errors.Join(fmt.Errorf("disposable PostgreSQL exited before readiness: %w", err), owner.Close())

@@ -41,7 +41,10 @@ func TestBinaryLifetime(t *testing.T) {
 		if err := borrower.Close(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		data := processTemplate.server.config.Host
+		var data string
+		if err := processTemplate.server.admin.QueryRowContext(t.Context(), "SHOW data_directory").Scan(&data); err != nil {
+			t.Fatal(err)
+		}
 		pidfile, err := os.ReadFile(filepath.Join(data, "postmaster.pid"))
 		if err != nil {
 			t.Fatal(err)

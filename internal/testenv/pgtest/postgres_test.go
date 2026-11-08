@@ -444,7 +444,11 @@ func TestBinaryStderrFloodAndCleanup(t *testing.T) {
 			if err := p.initialize(ctx, "binary"); err != nil {
 				t.Fatal(err)
 			}
-			dir := filepath.Dir(p.server.config.Host)
+			var data string
+			if err := p.server.admin.QueryRowContext(ctx, "SHOW data_directory").Scan(&data); err != nil {
+				t.Fatal(err)
+			}
+			dir, socketDir := filepath.Dir(data), p.server.config.Host
 			t.Cleanup(func() {
 				if p.server != nil {
 					if err := p.Close(ctx); err != nil {
@@ -478,8 +482,10 @@ func TestBinaryStderrFloodAndCleanup(t *testing.T) {
 			} else if err != nil {
 				t.Fatalf("canceled caller prevented cleanup: %v", err)
 			}
-			if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("server cleanup left cluster files: %v", err)
+			for _, path := range []string{dir, socketDir} {
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("server cleanup left %s: %v", path, err)
+				}
 			}
 		})
 	}
@@ -1082,4 +1088,30 @@ func TestSharedBinaryClusterSupportsFullTemplatePools(t *testing.T) {
 	}
 	release.Do(func() { close(hold) })
 	workers.Wait()
+}
+
+func TestBinaryStartsUnderLongTempDirectory(t *testing.T) {
+	if _, err := exec.LookPath("postgres"); err != nil {
+		t.Fatal(err)
+	}
+	long := filepath.Join(t.TempDir(), strings.Repeat("runner-workspace-", 12))
+	if err := os.MkdirAll(long, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", long)
+	ctx, cancel := testContext(t)
+	defer cancel()
+	s, err := openServer(ctx, "binary")
+	if err != nil {
+		t.Fatalf("start under %d-byte TMPDIR: %v", len(long), err)
+	}
+	t.Cleanup(func() {
+		if err := errors.Join(s.admin.Close(), s.stop(ctx)); err != nil {
+			t.Error(err)
+		}
+	})
+	var one int
+	if err := s.admin.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil || one != 1 {
+		t.Fatalf("query under long TMPDIR = %d, %v", one, err)
+	}
 }
