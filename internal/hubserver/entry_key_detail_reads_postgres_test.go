@@ -551,6 +551,14 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 	service, currentOrganization = firstService, "org_startup"
 	for _, name := range []string{operatortool.ListComments, operatortool.ListChanges} {
 		t.Run(name+"_current_payload_integrity", func(t *testing.T) {
+			if name == operatortool.ListComments {
+				if err := service.stopGitHubWebhookMaintenance(); err != nil {
+					t.Fatal(err)
+				}
+				repository := service.config.TenantRepository
+				service.config.TenantRepository = pgmcpcatPendingCommentsRepository{Repository: repository}
+				t.Cleanup(func() { service.config.TenantRepository = repository })
+			}
 			var key string
 			if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
 				if name == operatortool.ListComments {

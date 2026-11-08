@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -96,4 +98,29 @@ func pgmcpcatPayload(raw string) string {
 		return string(envelope.Data)
 	}
 	return raw
+}
+
+type pgmcpcatPendingCommentsRepository struct {
+	tenantstore.Repository
+}
+
+func (r pgmcpcatPendingCommentsRepository) ReadTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.ReadTenant(ctx, org, workload, func(reader tenantstore.Reader) error {
+		return read(pgmcpcatPendingCommentsReader{Reader: reader, WorkItemPageReader: reader.(viewstore.WorkItemPageReader), WorkItemRelationshipBatchReader: reader.(tenantstore.WorkItemRelationshipBatchReader), CollaborationVersionsReader: reader.(eventstore.CollaborationVersionsReader)})
+	})
+}
+
+func (r pgmcpcatPendingCommentsRepository) ReadRequest(ctx context.Context, org tracker.OrganizationID, read func(context.Context) error) error {
+	return r.Repository.(tenantstore.RequestReader).ReadRequest(ctx, org, read)
+}
+
+type pgmcpcatPendingCommentsReader struct {
+	tenantstore.Reader
+	viewstore.WorkItemPageReader
+	tenantstore.WorkItemRelationshipBatchReader
+	eventstore.CollaborationVersionsReader
+}
+
+func (pgmcpcatPendingCommentsReader) CommentPageRecords(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, bool, int) ([]viewstore.CommentPageRecord, error) {
+	return nil, viewstore.ErrPagePending
 }
