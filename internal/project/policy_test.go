@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 
-	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -20,7 +19,6 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 
-	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -325,10 +323,6 @@ func TestTrustedRefIgnoresWorkingBranchPolicyEdits(t *testing.T) {
 }
 
 func TestNativeSharedPolicyReloadsRunningProject(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	root := t.TempDir()
 	path := filepath.Join(root, "WORKFLOW.md")
@@ -347,15 +341,8 @@ func TestNativeSharedPolicyReloadsRunningProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	scheduling := &mappedPolicyScheduling{approved: approved}
-	attempts, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(root, "runtime.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := attempts.Close(); err != nil {
-			t.Error(err)
-		}
-	})
+	attempts := &policyAttemptStore{}
+	pendingApproval := errors.New("repository policy approval pending")
 	p, err := New(Config{Project: cfg, Workflow: workflow}, Dependencies{Scheduling: scheduling, Runner: orchestrator.FakeRunner{}, WorkAttempts: attempts, WorkflowReconcileInterval: time.Hour})
 	if err != nil {
 		t.Fatal(err)
@@ -397,7 +384,7 @@ func TestNativeSharedPolicyReloadsRunningProject(t *testing.T) {
 			scheduling.mu.Lock()
 			scheduling.checkError = nil
 			if tick.pending {
-				scheduling.checkError = &hubclient.APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: "repository policy approval pending"}
+				scheduling.checkError = pendingApproval
 			}
 			if tick.catalog {
 				scheduling.checkError = errors.Join(orchestrator.ErrSchedulingUnavailable, fmt.Errorf("%w: provider models for backend codex: wait for initialize response: context deadline exceeded", providercapacity.ErrCatalogUnavailable))
@@ -410,8 +397,7 @@ func TestNativeSharedPolicyReloadsRunningProject(t *testing.T) {
 					t.Fatalf("provider startup failure was reported as a policy rejection: %q, %v", reloadError, err)
 				}
 			} else if tick.pending {
-				var failure *hubclient.APIError
-				if !errors.As(err, &failure) || failure.Status != http.StatusConflict || failure.Code != "policy_mismatch" || p.Workflow().Config.Policy.ID != approved.ID || !strings.HasPrefix(reloadError, "repository policy reload rejected: ") {
+				if !errors.Is(err, pendingApproval) || p.Workflow().Config.Policy.ID != approved.ID || !strings.HasPrefix(reloadError, "repository policy reload rejected: ") {
 					t.Fatalf("pending approval changed effective policy: %s, %q, %v", p.Workflow().Config.Policy.ID, reloadError, err)
 				}
 			} else if err != nil || p.Workflow().Config.Policy.ID != upgradedPolicy.ID || p.WorkflowSourceStatus().LastReloadError != "" {
