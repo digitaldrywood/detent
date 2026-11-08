@@ -35,16 +35,19 @@ func (s *Service) maintainGitHubReconciliationRecords(ctx context.Context) error
 		return err
 	}
 	scope, err := s.gitHubIntegrationScope(ctx, organization, row.ProjectID)
-	if err != nil {
-		return err
-	}
-	if !strings.EqualFold(scope.integrationRepository, row.Repository) {
-		return errors.New("GitHub reconciliation repository changed")
+	if err == nil && !strings.EqualFold(scope.integrationRepository, row.Repository) {
+		err = errors.New("GitHub reconciliation repository changed")
 	}
 	owner, name, _ := splitRepositoryFullName(row.Repository)
-	snapshot, err := s.config.ReconcileBackend.Reconcile(ctx, ReconcileRequest{Profile: "native", Repository: RepositoryTarget{Owner: owner, Name: name, NodeID: row.NodeID}, SkipIssues: true, SkipRepository: true, Through: s.config.now()})
-	if err == nil && (snapshot.Repository.NodeID != row.NodeID || !strings.EqualFold(snapshot.Repository.Owner+"/"+snapshot.Repository.Name, row.Repository)) {
+	var snapshot ReconcileSnapshot
+	if err == nil {
+		snapshot, err = s.config.ReconcileBackend.Reconcile(ctx, ReconcileRequest{Profile: "native", Repository: RepositoryTarget{Owner: owner, Name: name, NodeID: row.NodeID}, SkipIssues: true, SkipRepository: true, Through: s.config.now()})
+	}
+	if err == nil && (snapshot.Repository.NodeID == "" || row.NodeID != "" && snapshot.Repository.NodeID != row.NodeID || !strings.EqualFold(snapshot.Repository.Owner+"/"+snapshot.Repository.Name, row.Repository)) {
 		err = errors.New("GitHub reconciliation source identity changed")
+	}
+	if err == nil {
+		row.NodeID = snapshot.Repository.NodeID
 	}
 	var linked eventstore.LinkedSource
 	if err == nil {
@@ -69,7 +72,7 @@ func (s *Service) maintainGitHubReconciliationRecords(ctx context.Context) error
 			if err == nil {
 				page, fetchErr := s.config.ImportBackend.FetchImportPage(ctx, GitHubImportRequest{Profile: "native", Repository: repository, IssueNumber: number, Stage: "issue"})
 				err = fetchErr
-				if err == nil && page.Issue == nil {
+				if err == nil && (page.Issue == nil || page.Issue.Number != number) {
 					err = errors.New("GitHub reconciliation source is incomplete")
 				}
 				if err == nil {
@@ -89,7 +92,7 @@ func (s *Service) maintainGitHubReconciliationRecords(ctx context.Context) error
 	row.NextAttemptAt = s.config.now().Add(time.Second)
 	if err != nil {
 		row.Attempts++
-		row.NextAttemptAt = s.config.now().Add(time.Second * time.Duration(1<<min(row.Attempts, 8)))
+		row.NextAttemptAt = s.config.now().Add(time.Duration(float64(time.Second*time.Duration(1<<min(row.Attempts, 8))) * (0.5 + s.config.jitter())))
 	} else {
 		row.Attempts = 0
 		if row.AfterWorkItem == "" {

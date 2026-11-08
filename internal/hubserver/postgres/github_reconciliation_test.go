@@ -21,16 +21,34 @@ func TestGitHubReconciliationRetainsFencedTenantCursors(t *testing.T) {
 				return err
 			}
 			for _, project := range []tracker.ProjectID{"one", "two"} {
-				if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: org, ID: project, Name: string(project), Profile: "native"}); err != nil {
+				record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: project, Name: string(project), Profile: "native"}, States: []tracker.NativeState{{Name: "Todo"}}})
+				if err != nil {
 					return err
 				}
-				if err := w.(projectstore.GitHubReconciliationWriter).SaveGitHubReconciliation(t.Context(), projectstore.GitHubReconciliation{ProjectID: project, Repository: "example-org/" + string(project), NodeID: "R_" + string(project), NextAttemptAt: now}); err != nil {
+				record.Settings.Repository = "example-org/" + string(project)
+				if _, err := w.UpdateProjectRecord(t.Context(), record); err != nil {
 					return err
 				}
 			}
 			return nil
 		}); err != nil {
 			t.Fatal(err)
+		}
+		for _, project := range []tracker.ProjectID{"one", "two"} {
+			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				owner := w.(projectstore.GitHubReconciliationWriter)
+				row, err := owner.NextGitHubReconciliation(t.Context(), now.Add(-time.Second))
+				if err != nil {
+					return err
+				}
+				if row.ProjectID != project || row.Revision != 0 || row.NodeID != "" || row.Repository != "example-org/"+string(project) {
+					t.Fatalf("uninitialized binding=%+v", row)
+				}
+				row.NodeID, row.NextAttemptAt = "R_"+string(project), now
+				return owner.SaveGitHubReconciliation(t.Context(), row)
+			}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		for _, project := range []tracker.ProjectID{"one", "two"} {
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {

@@ -184,6 +184,72 @@ func TestPostgresImportStarts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	now := time.Now().UTC()
+	repair := &gitHubRepairFixture{}
+	service.config.ImportBackend, service.config.ReconcileBackend = repair, repair
+	service.config.now = func() time.Time { return now }
+	service.config.jitter = func() float64 { return 0.5 }
+	service.config.ReconcileInterval = time.Minute
+	if err := service.maintainGitHubReconciliationRecords(t.Context()); !errors.Is(err, errGitHubRepairFixture) {
+		t.Fatalf("unavailable repository=%v", err)
+	}
+	if err := service.maintainGitHubReconciliationRecords(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(repair.reads) != 1 || repair.reads[0] != "example-org/second" {
+		t.Fatalf("failed repository starved repair: %v", repair.reads)
+	}
+	for range 2 {
+		now = now.Add(time.Second)
+		if err := service.maintainGitHubReconciliationRecords(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(repair.reads) != 2 || repair.reads[1] != "example-org/first" {
+		t.Fatalf("retry did not resume source repair: %v", repair.reads)
+	}
+	for _, project := range []tracker.ProjectID{"first", "second"} {
+		var job projectstore.GitHubImport
+		if err := repository.ReadTenant(t.Context(), "org", corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			job, err = r.(projectstore.GitHubImportReader).GitHubImportForIssue(t.Context(), project, 1)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		issue, err := service.readWorkItem(t.Context(), nativeScope{organization: "org", project: project}, job.WorkItemID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if issue.Body != "Repaired source body" {
+			t.Fatalf("source body=%q", issue.Body)
+		}
+	}
+}
+
+var errGitHubRepairFixture = errors.New("example repository unavailable")
+
+type gitHubRepairFixture struct {
+	failed bool
+	reads  []string
+}
+
+func (b *gitHubRepairFixture) Reconcile(_ context.Context, request ReconcileRequest) (ReconcileSnapshot, error) {
+	if request.Repository.Name == "first" && !b.failed {
+		b.failed = true
+		return ReconcileSnapshot{}, errGitHubRepairFixture
+	}
+	return ReconcileSnapshot{Repository: RepositorySource{Owner: request.Repository.Owner, Name: request.Repository.Name, NodeID: "R_" + request.Repository.Name}}, nil
+}
+
+func (b *gitHubRepairFixture) FetchImportPage(ctx context.Context, request GitHubImportRequest) (GitHubImportPage, error) {
+	b.reads = append(b.reads, request.Repository)
+	page, err := (gitHubLifecycleImporter{}).FetchImportPage(ctx, request)
+	if page.Issue != nil {
+		page.Issue.Body = "Repaired source body"
+		page.Issue.UpdatedAt = page.Issue.UpdatedAt.Add(time.Hour)
+	}
+	return page, err
 }
 
 type gitHubLifecycleImporter struct{}
