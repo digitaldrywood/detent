@@ -129,3 +129,27 @@ func TestGitHubWebhookRetryJitter(t *testing.T) {
 		*now = now.Add(2 * time.Minute)
 	}
 }
+
+func TestGitHubBatchMissingTransportReturnsError(t *testing.T) {
+	service, _, _ := gitHubWebhookRecordFixture(t)
+	for _, project := range []tracker.ProjectID{"first", "second"} {
+		scope, err := service.gitHubIntegrationScope(t.Context(), "org", project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row, err := service.prepareGitHubBatchRecord(t.Context(), scope, &tracker.GitHubBatch{ID: "batch_" + string(project), Revision: 1, HubOwned: true, Status: "discovering", Discovery: tracker.GitHubDiscovery{Repository: scope.integrationRepository}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), "org", corestore.Serving, func(w tenantstore.Writer) error {
+			return w.(projectstore.IntakeBatchWriter).SaveProjectIntakeBatch(t.Context(), row, 0)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for _, call := range []func(context.Context, nativeScope) error{service.completeRunnerGitHubBatch, service.advanceGitHubBatch} {
+			if err := call(t.Context(), scope); err == nil {
+				t.Fatal("discovery accepted an unavailable transport")
+			}
+		}
+	}
+}

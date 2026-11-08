@@ -274,6 +274,9 @@ func (s *Service) advanceGitHubBatchRecord(ctx context.Context, scope nativeScop
 	}
 	scope.githubIntakeRevision = &githubIntakeRevision{batchID: batch.ID, revision: batch.Revision}
 	if batch.Status == "discovering" {
+		if s.config.ImportBackend == nil {
+			return nativePublicInvalid("GitHub import transport is unavailable")
+		}
 		page, fetchErr := s.config.ImportBackend.FetchImportPage(ctx, GitHubImportRequest{Profile: "native", Repository: batch.Discovery.Repository, Stage: "batch", Discovery: &batch.Discovery})
 		if fetchErr != nil {
 			return fetchErr
