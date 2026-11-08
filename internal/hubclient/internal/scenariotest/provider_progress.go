@@ -19,6 +19,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -76,15 +78,20 @@ func RunNativeRetryProgressSharedOutagePersistsOneDefect(t *testing.T, factories
 		if err != nil || !checked || record.DefectIssueID == "" {
 			t.Fatalf("outage progress publication failed: record=%+v checked=%v error=%v", record, checked, err)
 		}
-		persisted, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
-		if err != nil || len(persisted.Dependencies) != 1 || string(persisted.Dependencies[0]) != record.DefectIssueID {
-			t.Fatalf("missing persisted defect reference: issue=%+v record=%+v error=%v", persisted, record, err)
+		var persisted corestore.RelationshipPage
+		hubclientReadPostgres(t, h.config, h.organization, func(reader tenantstore.Reader) error {
+			var err error
+			persisted, err = reader.Relationships(t.Context(), h.project, tracker.NativeWorkItemID(issue.ID), corestore.RelationshipCursor{}, 2)
+			return err
+		})
+		if len(persisted.Items) != 1 || persisted.Items[0].OrganizationID != h.organization || persisted.Items[0].ProjectID != h.project || persisted.Items[0].WorkItemID != tracker.NativeWorkItemID(issue.ID) || persisted.Items[0].Type != "dependency" || persisted.Items[0].Direction != "blocked_by" || string(persisted.Items[0].RelatedWorkItemID) != record.DefectIssueID || persisted.Items[0].RelatedProjectID != h.project || persisted.Next != (corestore.RelationshipCursor{}) {
+			t.Fatalf("missing persisted defect reference: relationships=%+v record=%+v", persisted, record)
 		}
 		if defectID == "" {
-			defectID = persisted.Dependencies[0]
+			defectID = persisted.Items[0].RelatedWorkItemID
 		}
-		if persisted.Dependencies[0] != defectID {
-			t.Fatalf("outage created another defect: got %s want %s", persisted.Dependencies[0], defectID)
+		if persisted.Items[0].RelatedWorkItemID != defectID {
+			t.Fatalf("outage created another defect: got %s want %s", persisted.Items[0].RelatedWorkItemID, defectID)
 		}
 		if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "In Review"); err != nil {
 			t.Fatal(err)
