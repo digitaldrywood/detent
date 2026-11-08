@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -51,7 +52,8 @@ func RunLandingScenarios(t *testing.T, factories Constructors) {
 		audited      string
 	}{
 		{name: "plain git by default"},
-		{name: "audited clean landing", audited: "clean"},
+		{name: "audited clean landing after publisher reclaim", audited: "clean"},
+		{name: "audited landing integrates an advanced target", audited: "target"},
 		{name: "audited already incorporated landing", audited: "incorporated"},
 		{name: "incorporated audit excludes 200 unrelated target commits", audited: "advanced"},
 		{name: "audited already incorporated receipt retry", audited: "receipt"},
@@ -121,22 +123,64 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessions := api.NewRunnerSessions(h.native)
 	provider := NewReviewAgent()
-	agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource,
-		Store: sessions, ProjectID: "local", Workspace: backend, AgentBackend: provider,
-		Workflow: config.Workflow{Config: config.Config{Policy: next, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "true", AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"},
-	})
-	if err != nil {
-		t.Fatal(err)
+	if scenario == "clean" {
+		provider.failStage = "security"
 	}
+	newAgent := func(backend workspace.Backend) *runner.Runner {
+		t.Helper()
+		agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource,
+			Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workspace: backend, AgentBackend: provider,
+			Workflow: config.Workflow{Config: config.Config{Policy: next, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "true", AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return agent
+	}
+	agent := newAgent(backend)
 	result, err := agent.Run(t.Context(), runner.RunRequest{Execution: h.scheduler.RunExecution(issue.ID), ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+	var publishingAttempt, reviewAttempt string
+	if scenario == "clean" {
+		owner := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
+		published := owner.NativeChange()
+		if published == nil || published.VersionID == "" || published.Reviewed || provider.writableCalls != 1 {
+			t.Fatalf("publisher loss requires one retained unreviewed source: change=%+v result=%+v error=%v", published, result, err)
+		}
+		publishingAttempt = owner.CompletionData().AttemptID
+		if err := owner.Finish(t.Context(), "interrupted"); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.native.Release(t.Context(), owner.claim.lease, "cancelled"); err != nil && !api.ClaimLost(err) {
+			t.Fatal(err)
+		}
+		if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "cancelled"); err != nil {
+			t.Fatal(err)
+		}
+		fixtureConfigureScheduler(t, h, func(*SchedulerConfig) {})
+		provider.available.Store(true)
+		backend, err = workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(nativeChangeTempDir(t), "replacement-workspaces"), SourceRoot: source, AutoBranch: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		agent = newAgent(backend)
+		candidate = h.claim(t, issue.ID)
+		replacement := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
+		if replacement.CompletionData().AttemptID == publishingAttempt {
+			t.Fatal("replacement reused the dead publisher attempt")
+		}
+		result, err = agent.Run(t.Context(), runner.RunRequest{Execution: replacement, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+		if err != nil || result.TurnStarted || provider.writableCalls != 1 || result.NativeChange == nil || result.NativeChange.VersionID != published.VersionID || !result.NativeChange.Reviewed {
+			t.Fatalf("reclaim did not review retained source without implementation: result=%+v writable=%d error=%v", result, provider.writableCalls, err)
+		}
+		reviewAttempt = replacement.CompletionData().AttemptID
+	}
 	if err != nil || result.NativeChange == nil || !result.NativeChange.Reviewed {
 		t.Fatalf("source did not pass review: %+v, %v", result.NativeChange, err)
 	}
 	change := result.NativeChange
 	h.complete(t, issue.ID, change, true)
-	incorporated := scenario != "clean"
+	incorporated := scenario != "clean" && scenario != "target"
 	if incorporated {
 		nativeChangeGit(t, source, "merge", "--squash", change.HeadSHA)
 		nativeChangeGit(t, source, "commit", "-m", "Previously incorporated source")
@@ -151,6 +195,14 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 			nativeChangeGit(t, source, "add", "INDEPENDENT.md")
 			nativeChangeGit(t, source, "commit", "-m", fmt.Sprintf("Advance target independently %d", i))
 		}
+		nativeChangeGit(t, source, "push", "origin", "main")
+	}
+	if scenario == "target" {
+		if err := os.WriteFile(filepath.Join(source, "INDEPENDENT.md"), []byte("Independent target change\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		nativeChangeGit(t, source, "add", "INDEPENDENT.md")
+		nativeChangeGit(t, source, "commit", "-m", "Advance target before landing")
 		nativeChangeGit(t, source, "push", "origin", "main")
 	}
 	baseOutput, err := exec.CommandContext(t.Context(), "git", "-C", source, "rev-parse", "main").Output()
@@ -174,6 +226,40 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 	if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
 		t.Fatal(err)
 	}
+	landingOwner := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
+	landingRequests := 0
+	var firstLanding tracker.LandChangeVersion
+	if scenario == "receipt" {
+		transport := fixtureClient(h.native.Transport()).requests
+		original := transport.Load()
+		transport.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+			landingRequest := request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/landing")
+			if landingRequest {
+				body, err := io.ReadAll(request.Body)
+				if err != nil {
+					return nil, err
+				}
+				request.Body = io.NopCloser(bytes.NewReader(body))
+				var command tracker.LandChangeVersion
+				if err := json.Unmarshal(body, &command); err != nil {
+					return nil, err
+				}
+				landingRequests++
+				if landingRequests == 1 {
+					firstLanding = command
+				} else if !reflect.DeepEqual(command, firstLanding) {
+					t.Error("landing replay changed its source or idempotency key")
+				}
+			}
+			response, err := original.RoundTrip(request)
+			if err == nil && landingRequest && landingRequests == 1 && response.StatusCode == http.StatusOK {
+				response.Body.Close()
+				return nil, errors.New("injected connection loss after committed landing receipt")
+			}
+			return response, err
+		}))
+		t.Cleanup(func() { transport.Store(original) })
+	}
 	if scenario == "advanced" {
 		h.failChanges.next = incorporationRejectionTransport{next: h.failChanges.next, t: t}
 	}
@@ -190,11 +276,32 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 	if prompt := provider.SecurityPrompt(); incorporated && (prompt == nil || !strings.Contains(*prompt, "CHANGE.md") || strings.Contains(*prompt, "INDEPENDENT.md")) {
 		t.Fatal("incorporated landing audit must contain only the reviewed delta files")
 	}
-	if audit == nil || !audit.Landing || audit.Verdict != "pass" || audit.VersionID != change.VersionID || audit.Run.BaseSHA != landed.BaseSHA || audit.Run.HeadSHA != auditHead || landed.HeadSHA != change.HeadSHA || provider.SecurityCalls() != 2 {
+	wantAuditCalls := int32(2)
+	if publishingAttempt != "" {
+		wantAuditCalls++
+	}
+	if audit == nil || !audit.Landing || audit.Verdict != "pass" || audit.VersionID != change.VersionID || audit.Run.BaseSHA != landed.BaseSHA || audit.Run.HeadSHA != auditHead || landed.HeadSHA != change.HeadSHA || provider.SecurityCalls() != wantAuditCalls {
 		t.Fatalf("landing lost generated exact-source audit evidence: %+v, audit calls=%d", landed, provider.SecurityCalls())
 	}
 	if incorporated && (landed.BaseSHA != change.BaseSHA || landed.MergeSHA != base || landed.HeadSHA == base) {
 		t.Fatalf("incorporated source changed target identity: %+v, target=%s", landed, base)
+	}
+	if scenario == "target" {
+		if landed.Path != "clean_push" || landed.BaseSHA != base || landed.MergeSHA == base || landed.MergeSHA == change.HeadSHA {
+			t.Fatalf("advanced target did not integrate the reviewed source: %+v", landed)
+		}
+		validated := false
+		for _, timing := range landed.Pipeline {
+			validated = validated || timing.Stage == "landing_validation" && timing.HeadSHA == change.HeadSHA && timing.Execution == "reused" && timing.ReusedReceiptID != "" && timing.ExitCode != nil && *timing.ExitCode == 0
+		}
+		if !validated {
+			t.Fatalf("clean integration lost the reviewed source validation: %+v", landed.Pipeline)
+		}
+		remoteHead, err := exec.CommandContext(t.Context(), "git", "-C", remote, "rev-parse", "refs/heads/main").Output()
+		if err != nil || strings.TrimSpace(string(remoteHead)) != landed.MergeSHA {
+			t.Fatalf("remote head=%s receipt=%s error=%v", remoteHead, landed.MergeSHA, err)
+		}
+		nativeChangeGit(t, remote, "merge-base", "--is-ancestor", base, landed.MergeSHA)
 	}
 	detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID)
 	if err != nil || detail.Change.Landed == nil || detail.Change.Landed.MergeSHA != landed.MergeSHA || detail.Summary.Status != "landed" || len(detail.Versions) != 1 || detail.Versions[0].Landing == nil {
@@ -217,12 +324,86 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 	if retained == nil || !retained.Landing || retained.SessionID != audit.SessionID || retained.DiffDigest != audit.DiffDigest || retained.Verdict != "pass" {
 		t.Fatalf("Hub landing lost audit identity: %+v", retained)
 	}
+	if publishingAttempt != "" {
+		if detail.Versions[0].AttemptID != publishingAttempt || landingOwner.CompletionData().AttemptID == publishingAttempt || landingOwner.CompletionData().AttemptID == reviewAttempt {
+			t.Fatal("landing replaced source attribution or reused the dead publisher")
+		}
+		h.seed(func(w tenantstore.Writer) error {
+			var auditBound, acceptanceBound bool
+			for _, review := range detail.Reviews {
+				var sessionID int64
+				if review.SecurityAudit != nil && !review.SecurityAudit.Landing {
+					sessionID = review.SecurityAudit.SessionID
+				} else if review.Validator != nil {
+					sessionID = review.Validator.SessionID
+				} else {
+					continue
+				}
+				session, err := w.(runnersession.Reader).RunnerSession(t.Context(), h.project, sessionID)
+				if err != nil {
+					return err
+				}
+				if review.VersionID != change.VersionID || session.AttemptID != reviewAttempt || review.Decision != "approved" {
+					t.Fatalf("retained source review has the wrong owner: review=%+v session=%+v", review, session)
+				}
+				auditBound = auditBound || review.SecurityAudit != nil
+				acceptanceBound = acceptanceBound || review.Validator != nil
+			}
+			if !auditBound || !acceptanceBound {
+				t.Fatal("replacement attempt did not audit and accept retained source")
+			}
+			receipt, err := w.LatestLandingReceipt(t.Context(), h.project, tracker.NativeWorkItemID(issue.ID))
+			if err == nil && (receipt.AttemptID != landingOwner.CompletionData().AttemptID || receipt.VersionID != change.VersionID) {
+				t.Fatalf("receipt belongs to the wrong attempt: %+v", receipt)
+			}
+			return err
+		})
+	}
 	recorded := false
 	for _, review := range detail.Reviews {
 		recorded = recorded || review.Decision == "approved" && review.SecurityAudit != nil && review.SecurityAudit.Landing && review.SecurityAudit.SessionID == audit.SessionID && review.SecurityAudit.DiffDigest == audit.DiffDigest && review.SecurityAudit.Run.BaseSHA == landed.BaseSHA && review.SecurityAudit.Run.HeadSHA == auditHead
 	}
 	if !recorded {
 		t.Fatal("Hub accepted landing without its generated audit approval")
+	}
+	if scenario == "receipt" {
+		if landingRequests != 2 {
+			t.Fatalf("committed receipt replay requests=%d, want 2", landingRequests)
+		}
+		attemptID := landingOwner.CompletionData().AttemptID
+		h.seed(func(w tenantstore.Writer) error {
+			stored, err := w.LandingReceipt(t.Context(), attemptID)
+			if err != nil {
+				return err
+			}
+			latest, err := w.LatestLandingReceipt(t.Context(), h.project, tracker.NativeWorkItemID(issue.ID))
+			if err == nil && (stored != latest || stored.VersionID != change.VersionID || stored.MergeSHA != landed.MergeSHA) {
+				t.Fatalf("receipt replay did not converge: stored=%+v latest=%+v", stored, latest)
+			}
+			return err
+		})
+		fixture := fixtureClient(h.admin.Transport())
+		freshClient, err := createTestClient(t, Config{URL: fixture.baseURL.String(), TokenSource: func() string { return nativeChangeAdminToken }, HTTPClient: &http.Client{Transport: fixture.config.HTTPClient.Transport}}, factories)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fresh, err := freshClient.Native(h.organization, h.project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		item := tracker.NativeWorkItemID(issue.ID)
+		terminal, err := fresh.Issue(t.Context(), item)
+		if err != nil || terminal.State != "Done" || !terminal.Terminal {
+			t.Fatalf("reconnected terminal state=%+v error=%v", terminal, err)
+		}
+		readback, err := fresh.RuntimeEvidence(t.Context(), item, attemptID)
+		if err != nil || readback.Attempt == nil || readback.Attempt.Runtime == nil || readback.Attempt.Runtime.Landing == nil || readback.Attempt.Runtime.Landing.MergeSHA != landed.MergeSHA || readback.Attempt.Runtime.Landing.VersionID != change.VersionID {
+			t.Fatalf("reconnected receipt=%+v error=%v", readback.Attempt, err)
+		}
+		remoteHead, err := exec.CommandContext(t.Context(), "git", "-C", remote, "rev-parse", "refs/heads/main").Output()
+		if err != nil || strings.TrimSpace(string(remoteHead)) != landed.MergeSHA || landed.MergeSHA != base {
+			t.Fatalf("receipt replay changed remote head: head=%s receipt=%s before=%s error=%v", remoteHead, landed.MergeSHA, base, err)
+		}
 	}
 }
 
