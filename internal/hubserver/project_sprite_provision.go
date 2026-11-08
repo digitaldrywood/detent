@@ -18,6 +18,10 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -29,6 +33,30 @@ func spriteShellQuote(value string) string {
 }
 
 func (s *Service) poolSpriteToken(ctx context.Context, scope nativeScope, name string) ([]byte, error) {
+	if s.config.TenantRepository != nil {
+		var operation postgres.SpriteOperation
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			owner, ok := r.(postgres.SpriteReader)
+			if !ok {
+				return accessstore.ErrTransactionRequired
+			}
+			member, err := owner.SpriteMember(ctx, name)
+			if err != nil {
+				return err
+			}
+			operation, err = owner.SpriteOperation(ctx, "provision:"+member.EnrollmentID)
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+		request, err := s.spriteLifecyclePayload(ctx, operation)
+		if err != nil {
+			return nil, err
+		}
+		return s.spriteOperationToken(ctx, operation, request)
+	}
+
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
 	actor, err := s.spritePoolAuthority(readCtx, s.database.reader, scope)
@@ -100,6 +128,32 @@ func (s *Service) createPoolSprite(ctx context.Context, scope nativeScope, setti
 }
 
 func (s *Service) createPoolSpriteWithNames(ctx context.Context, scope nativeScope, settings spritePoolSettings, allowOrganization bool, names *spriteNameGenerator) (bool, error) {
+	if s.config.TenantRepository != nil {
+		if s.config.Hosted == nil || settings.MaxRunners == 0 {
+			return false, nil
+		}
+		name, err := names.next(func(name string) (bool, error) {
+			exists := false
+			err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				owner, ok := r.(postgres.SpriteReader)
+				if !ok {
+					return accessstore.ErrTransactionRequired
+				}
+				_, err := owner.SpriteMember(ctx, name)
+				exists = err == nil
+				if errors.Is(err, corestore.ErrNotFound) {
+					return nil
+				}
+				return err
+			})
+			return exists, err
+		})
+		if err != nil {
+			return false, err
+		}
+		return s.createPoolSpriteRecord(ctx, scope, settings, allowOrganization, name)
+	}
+
 	if s.config.Hosted == nil || settings.MaxRunners == 0 {
 		return false, nil
 	}
@@ -127,6 +181,9 @@ func (s *Service) createPoolSpriteWithNames(ctx context.Context, scope nativeSco
 }
 
 func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, settings spritePoolSettings, allowOrganization bool, name string) (bool, error) {
+	if s.config.TenantRepository != nil {
+		return s.createPoolSpriteRecord(ctx, scope, settings, allowOrganization, name)
+	}
 	scope.project = ""
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -630,6 +687,9 @@ func spriteBootstrapDiagnostic(line string) string {
 }
 
 func (s *Service) deletePoolSprite(ctx context.Context, scope nativeScope, member spritePoolMember) error {
+	if s.config.TenantRepository != nil {
+		return s.deletePoolSpriteRecord(ctx, scope, member)
+	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

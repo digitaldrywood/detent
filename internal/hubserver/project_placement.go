@@ -770,6 +770,22 @@ func (s *Service) spritePlacementRecord(ctx context.Context, scope nativeScope) 
 		r := runnerFromRoutingRecord(record, now, urgent)
 		current := placementRunner{Runner: r, Enrollment: record.Record.Identity.EnrollmentID, Sprite: record.Record.Machine.SpriteName == r.Hostname && validSpritesSlug(r.Hostname)}
 		current.Paused = current.Sprite && now.Sub(r.LastHeartbeatAt) >= spriteRunnerIdle
+		if current.Paused {
+			if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				owner, ok := r.(postgres.SpriteReader)
+				if !ok {
+					return accessstore.ErrTransactionRequired
+				}
+				wake, err := owner.SpriteEnrollmentWake(ctx, current.Enrollment)
+				if errors.Is(err, corestore.ErrNotFound) {
+					return nil
+				}
+				current.Pending = err == nil && (wake.Outcome == "committed" || wake.Outcome == "uncertain") && wake.UpdatedAt.After(current.LastHeartbeatAt)
+				return err
+			}); err != nil {
+				return result, err
+			}
+		}
 		result.Runners = append(result.Runners, current)
 		if current.Sprite {
 			for _, lease := range record.Leases {
@@ -907,7 +923,7 @@ func (s *Service) spritePlacementRecord(ctx context.Context, scope nativeScope) 
 				continue
 			}
 			for _, r := range result.Runners {
-				if !r.Sprite || r.Scope != "organization" && !slices.Contains(r.ProjectIDs, project.ID) {
+				if !r.Sprite || r.Paused || r.Scope != "organization" && !slices.Contains(r.ProjectIDs, project.ID) {
 					continue
 				}
 				m, managed := byEnrollment[r.Enrollment]
@@ -929,6 +945,12 @@ func (s *Service) spritePlacementRecord(ctx context.Context, scope nativeScope) 
 				if view.MaxConcurrent > 0 {
 					known = true
 				}
+			}
+		}
+		for _, r := range result.Runners {
+			if r.Pending && !counted[r.Enrollment] && (r.Scope == "organization" || slices.Contains(r.ProjectIDs, project.ID)) {
+				counted[r.Enrollment] = true
+				pending++
 			}
 		}
 		for _, m := range members.Members {

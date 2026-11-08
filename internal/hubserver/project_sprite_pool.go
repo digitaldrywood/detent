@@ -99,6 +99,9 @@ func decideSpriteScale(input spriteScaleInput) spriteScaleDecision {
 }
 
 func (s *Service) registerSpritePoolRoutes(e *echo.Echo) {
+	if s.config.TenantRepository != nil {
+		e.Use(s.spritePoolAfterHeartbeat)
+	}
 	read := s.requireNativeScope(apiScopeOperator, apiScopeAdmin)
 	e.GET(nativeBase+"/sprite-pool", s.getSpritePool, read)
 	e.PUT(nativeBase+"/sprite-pool", s.setSpritePool, read)
@@ -111,6 +114,20 @@ func (s *Service) registerSpritePoolRoutes(e *echo.Echo) {
 		organization := s.requireAPIScope(apiScopeOperator, apiScopeAdmin)
 		e.GET("/api/v2/organizations/:organization/sprite-pool", s.getSpritePool, organization, s.organizationSpritesScope)
 		e.PUT("/api/v2/organizations/:organization/sprite-pool", s.setSpritePool, organization, s.organizationSpritesScope)
+	}
+}
+
+func (s *Service) spritePoolAfterHeartbeat(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		err := next(c)
+		if err != nil || c.Request().Method != http.MethodPost || c.Path() != nativeBase+"/machines/:machine/heartbeat" || c.Response().Status < 200 || c.Response().Status >= 300 {
+			return err
+		}
+		credential, ok := c.Get("hub_api_credential").(apiCredential)
+		if ok && credential.Runner.RunnerID != "" && credential.Runner.OrganizationID != "" && s.startSpriteLifecycle != nil {
+			s.startSpriteLifecycle(nativeScope{organization: credential.Runner.OrganizationID}, "")
+		}
+		return nil
 	}
 }
 
@@ -372,6 +389,10 @@ func (s *Service) spritePoolSettingsRecord(ctx context.Context, scope nativeScop
 }
 
 func (s *Service) updateSpritePoolRecord(ctx context.Context, scope nativeScope, command spritePoolCommand) error {
+	return s.updateSpritePoolRecordInput(ctx, scope, command, command)
+}
+
+func (s *Service) updateSpritePoolRecordInput(ctx context.Context, scope nativeScope, command spritePoolCommand, input any) error {
 	scope.project = ""
 	scope.requireHostedAdmin = true
 	if !canManageProjectSecrets(scope.credential) {
@@ -383,7 +404,7 @@ func (s *Service) updateSpritePoolRecord(ctx context.Context, scope nativeScope,
 	if len(command.IdempotencyKey) > 128 || command.IdempotencyKey != "" && strings.TrimSpace(command.IdempotencyKey) == "" {
 		return nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
-	hash, err := nativeCommandHash(command)
+	hash, err := nativeCommandHash(input)
 	if err != nil {
 		return err
 	}
@@ -550,6 +571,9 @@ WHERE p.organization_id=? AND (t.expires_at IS NULL OR julianday(t.expires_at)>j
 }
 
 func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, view spritePoolView) (spriteScaleInput, []spritePoolMember, error) {
+	if s.config.TenantRepository != nil {
+		return s.spritePoolSnapshotRecord(ctx, scope, view)
+	}
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
 	allocation, err := readProjectSpriteAllocation(readCtx, s.database.reader, scope)
@@ -670,6 +694,9 @@ func (s *Service) spritePoolMemberRetention(ctx context.Context, scope nativeSco
 }
 
 func (s *Service) scaleSpritePool(ctx context.Context, scope nativeScope, allowCreate bool) error {
+	if s.config.TenantRepository != nil {
+		return s.scaleSpritePoolRecord(ctx, scope, allowCreate)
+	}
 	scope.project = ""
 	view, err := s.readSpritePool(ctx, scope)
 	if err != nil || view.Revision == 0 {
@@ -767,6 +794,13 @@ func (s *Service) scheduleSpritePoolForQueue(ctx context.Context, scope nativeSc
 }
 
 func (s *Service) maintainSpritePools(ctx context.Context) {
+	if s.config.TenantRepository != nil {
+		if s.config.Hosted != nil && s.config.Hosted.OrganizationID != "" {
+			s.startSpriteLifecycle(nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID)}, "")
+		}
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT organization_id FROM organization_sprite_members WHERE state<>'deleted' UNION SELECT organization_id FROM project_sprite_allocations WHERE desired_count>0`)
@@ -793,6 +827,9 @@ func (s *Service) maintainSpritePools(ctx context.Context) {
 }
 
 func (s *Service) describeSpritePoolMembers(ctx context.Context, scope nativeScope, members []spritePoolMember) error {
+	if s.config.TenantRepository != nil {
+		return s.describeSpritePoolMembersRecord(ctx, scope, members)
+	}
 	if s.config.TenantRepository != nil {
 		return s.describeSpritePoolMembersRecord(ctx, scope, members)
 	}
@@ -923,6 +960,11 @@ func (s *Service) readSpritePoolRecord(ctx context.Context, scope nativeScope) (
 		}
 		for _, entry := range page {
 			m := entry.RunnerSpriteMembership
+			log, err := s.spriteMemberLogRecord(ctx, scope.organization, m.Name)
+			if err != nil {
+				return view, err
+			}
+			m.BootstrapLog = log
 			view.Members = append(view.Members, spritePoolMember{Name: m.Name, AllocationProjectID: tracker.ProjectID(m.AllocationProjectID), State: m.State, BootstrapLog: m.BootstrapLog, RunnerID: entry.RunnerID, EnrollmentID: m.EnrollmentID, IdleSince: m.IdleSince})
 			cursor = postgres.SpriteMemberCursor{CreatedAt: m.CreatedAt, Name: m.Name}
 		}
@@ -969,7 +1011,11 @@ func (s *Service) describeSpritePoolMembersRecord(ctx context.Context, scope nat
 			}
 			runner := runnerFromRoutingRecord(row, now, urgent)
 			if m.State == "deleting" {
-				held, err := r.RunnerHasActiveLease(ctx, m.RunnerID, now)
+				owner, ok := r.(postgres.SpriteReader)
+				if !ok {
+					return accessstore.ErrTransactionRequired
+				}
+				held, err := owner.SpriteMemberBusy(ctx, m.Name)
 				if err != nil {
 					return err
 				}

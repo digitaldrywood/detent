@@ -173,8 +173,14 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope
 	if s.config.SecretKeys == nil {
 		return
 	}
-	if state != "" {
-		allowed, err := monthlySpriteAllowed(ctx, s.database.reader, nativeScope{organization: scope.organization}, s.config.now(), s.database.billingRepository)
+	if state != "" && s.config.TenantRepository == nil {
+		var allowed bool
+		var err error
+		if s.config.TenantRepository != nil {
+			allowed, err = s.monthlySpriteAllowedRecord(ctx, nativeScope{organization: scope.organization})
+		} else {
+			allowed, err = monthlySpriteAllowed(ctx, s.database.reader, nativeScope{organization: scope.organization}, s.config.now(), s.database.billingRepository)
+		}
 		if err != nil {
 			s.config.Logger.Warn("Check Sprite lifecycle monthly budget", "error", err)
 			return
@@ -217,7 +223,6 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope
 				if wakeContext.Err() == nil {
 					s.config.Logger.Warn("sprite runners could not be woken", "error", err)
 				}
-				return
 			}
 		}
 		if err := s.scaleSpritePool(wakeContext, scope, state != ""); err != nil && wakeContext.Err() == nil {
@@ -234,6 +239,19 @@ func (s *Service) stopSpriteRunners() {
 }
 
 func (s *Service) spriteWakeDispatchable(ctx context.Context, scope nativeScope, state string) (bool, error) {
+	if s.config.TenantRepository != nil {
+		record, err := s.readProjectRecord(ctx, scope)
+		if err != nil {
+			return false, err
+		}
+		for _, candidate := range record.States {
+			if candidate.Name == state && candidate.Dispatchable && !candidate.Terminal {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+
 	project, err := readNativeProject(ctx, s.database.reader, scope)
 	if err != nil {
 		return false, err
@@ -254,6 +272,9 @@ type spriteWakeCandidate struct {
 }
 
 func (s *Service) wakeSpriteRunners(ctx context.Context, scope nativeScope, state string) (int, error) {
+	if s.config.TenantRepository != nil {
+		return s.wakeSpriteRunnersRecord(ctx, scope, state)
+	}
 	if s.config.SecretKeys == nil {
 		return 0, nil
 	}
@@ -370,6 +391,10 @@ ORDER BY m.hostname LIMIT 1`, scope.organization, cutoff, formatHubTime(s.config
 }
 
 func (s *Service) spriteWakeSecret(ctx context.Context, db nativeQueryer, scope nativeScope, name string) (nativeScope, hubsecrets.Envelope, error) {
+	if s.config.TenantRepository != nil {
+		resolved, _, envelope, err := s.spriteWakeSecretRecord(ctx, scope, name)
+		return resolved, envelope, err
+	}
 	var provider string
 	member := db.QueryRowContext(ctx, `SELECT token_project_id,provider_organization FROM organization_sprite_members WHERE organization_id=? AND name=? AND state<>'deleted'`, scope.organization, name).Scan(&scope.project, &provider)
 	if member != nil && !errors.Is(member, sql.ErrNoRows) {
@@ -414,6 +439,9 @@ func (s *Service) wakeSpriteRunnerWithSecret(ctx context.Context, scope, secretS
 }
 
 func (s *Service) wakeOrganizationSpriteRunners(ctx context.Context, scope nativeScope) (int, error) {
+	if s.config.TenantRepository != nil {
+		return s.wakeOrganizationSpriteRunnersRecord(ctx, scope)
+	}
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
 	rows, err := s.database.reader.QueryContext(readCtx, `SELECT p.id,ws.source_name FROM projects p JOIN workflow_states ws ON ws.project_id=p.id WHERE p.organization_id=? AND p.profile='native' AND ws.dispatchable=1 AND ws.terminal=0 AND EXISTS(SELECT 1 FROM issues i WHERE i.project_id=p.id AND i.organization_id=p.organization_id AND i.workflow_state_id=ws.id AND i.archived=0 AND NOT EXISTS(SELECT 1 FROM leases l WHERE l.issue_id=i.id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?))) ORDER BY p.scheduling_rank,p.id,ws.source_name`, scope.organization, formatHubTime(s.config.now()))

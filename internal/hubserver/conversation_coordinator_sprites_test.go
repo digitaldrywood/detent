@@ -20,11 +20,12 @@ func TestCoordinatorSpritePoolReplay(t *testing.T) {
 		{"explicit idle threshold", new(600)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{})
-			scope := nativeScope{organization: f.project.OrganizationID, credential: apiCredential{Scope: apiScopeAdmin, Hash: apikey.HashToken(testHubAdminToken)}}
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE token_hash=?", scope.credential.Hash).Scan(&scope.credential.ID); err != nil {
-				t.Fatal(err)
+			f := newSpriteNativeFixture(t, Config{})
+			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("authority=%d %v", status, err)
 			}
+			scope := nativeScope{organization: f.project.OrganizationID, credential: credential}
 			ctx := context.WithValue(t.Context(), nativeOperatorScopeKey{}, func(context.Context) (nativeScope, error) { return scope, nil })
 			change := coordinatorSpriteChange{Input: coordinatorSpriteArguments{MinRunners: new(0), MaxRunners: new(0), IdleSeconds: test.idle, ShareIdleCapacity: new(true)}}
 			raw, err := json.Marshal(change)

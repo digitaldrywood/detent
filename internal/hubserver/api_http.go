@@ -133,6 +133,7 @@ func (s *Service) registerPostgresRoutes(e *echo.Echo) {
 	s.registerNativeRoutes(e)
 	s.registerArtifactCatalogRoutes(e)
 	s.registerProjectSecretRoutes(e)
+	s.registerSpritePoolRoutes(e)
 	s.registerRunnerRoutes(e)
 	s.registerCostUsageRoutes(e)
 	s.registerConversationRoutes(e)

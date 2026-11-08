@@ -3,7 +3,6 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,10 +14,94 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestSpriteWakeLostResponseReconcilesAfterServiceReopen(t *testing.T) {
+	var mu sync.Mutex
+	starts, observations := 0, 0
+	client := &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if request.Method == http.MethodPost {
+			starts++
+			return nil, errors.New("service start committed before response was lost")
+		}
+		observations++
+		return spritesTestResponse(`{"name":"detent-runner","state":{"status":"running"}}`, http.StatusOK), nil
+	})}
+	f, scope, runners := newSpriteWakeFixture(t, client, true, time.Minute, "first-host", "second-host")
+	now := f.service.config.now()
+	f.service.config.now = func() time.Time { return now }
+	woken, err := f.service.wakeSpriteRunners(t.Context(), scope, "Todo")
+	if err != nil || woken != 0 {
+		t.Fatalf("uncertain wake count=%d error=%v", woken, err)
+	}
+	if starts != 2 {
+		t.Fatalf("initial service starts=%d", starts)
+	}
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		owner, ok := r.(postgres.SpriteReader)
+		if !ok {
+			return accessstore.ErrTransactionRequired
+		}
+		for _, runner := range runners {
+			operation, err := owner.SpriteEnrollmentWake(t.Context(), runner.enrollment.ID)
+			if err != nil {
+				return err
+			}
+			if operation.Outcome != "uncertain" || operation.RequestObjectKey == nil || operation.Attempts != 1 {
+				t.Fatalf("wake uncertainty was not durable: %+v", operation)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{DatabaseBackend: DatabasePostgres, Postgres: f.service.config.Postgres, Hosted: &HostedConfig{OrganizationID: string(scope.organization), WorkOSOrganizationID: "provider_startup", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}, SecretKeys: f.service.config.SecretKeys, RunDetails: f.service.config.RunDetails, SpritesHTTPClient: client, now: func() time.Time { return now }}
+	if err := f.service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	resumed := openTestService(t, cfg)
+	resumed.maintainSpritePools(t.Context())
+	resumed.spriteWakeWork.Wait()
+	if err := resumed.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		owner, ok := r.(postgres.SpriteReader)
+		if !ok {
+			return accessstore.ErrTransactionRequired
+		}
+		for _, runner := range runners {
+			operation, err := owner.SpriteEnrollmentWake(t.Context(), runner.enrollment.ID)
+			if err != nil {
+				return err
+			}
+			if operation.Outcome != "committed" || operation.ReceiptObjectKey == nil || operation.TargetEnrollmentID != runner.enrollment.ID {
+				t.Fatalf("wake did not reconcile after restart: %+v", operation)
+			}
+			if _, err := r.RunnerSpriteMembershipByEnrollment(t.Context(), runner.enrollment.ID); !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("manual Sprite acquired managed pool deletion authority: %v", err)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if starts != 2 || observations != 2 {
+		t.Fatalf("recovery starts=%d observations=%d; want two starts and two observations", starts, observations)
+	}
+}
 
 func TestWakeSpriteRunners(t *testing.T) {
 	t.Parallel()
@@ -56,12 +139,26 @@ func TestWakeSpriteRunners(t *testing.T) {
 				})}
 				f, scope, runners := newSpriteWakeFixture(t, client, tt.storeToken, tt.heartbeatAgo, "customer-host")
 				if tt.organizationScope {
-					_, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET scope='organization' WHERE id=?", runners[0].binding.RunnerID)
-					if err != nil {
-						t.Fatal(err)
-					}
-					_, err = f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id=?", runners[0].binding.RunnerID)
-					if err != nil {
+					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+						identity, err := w.RunnerIdentity(t.Context(), runners[0].binding.RunnerID)
+						if err != nil {
+							return err
+						}
+						identity.Scope = "organization"
+						if err := w.UpdateRunnerRouting(t.Context(), identity.Revision, identity); err != nil {
+							return err
+						}
+						grants, err := w.AccessTokenGrants(t.Context(), identity.TokenID, "", 200)
+						if err != nil {
+							return err
+						}
+						for _, grant := range grants {
+							if err := w.DeleteAccessTokenGrant(t.Context(), identity.TokenID, grant.ProjectID); err != nil {
+								return err
+							}
+						}
+						return nil
+					}); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -72,15 +169,18 @@ func TestWakeSpriteRunners(t *testing.T) {
 					}
 					storeOrganizationSpritesSecret(t, f, token)
 					if tt.wrongOrganizationToken && !tt.storeToken {
-						_, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM organization_secrets WHERE organization_id=?", f.project.OrganizationID)
-						if err != nil {
+						if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+							return w.DeleteAccessSecret(t.Context(), "", flySpritesToken, accessstore.SecretAudit{OrganizationID: scope.organization, Actor: "fixture", Kind: flySpritesToken, Event: "delete", RecordedAt: f.service.config.now()})
+						}); err != nil {
 							t.Fatal(err)
 						}
-						response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations", testHubAdminToken, map[string]any{"name": "Other Sprite organization"})
-						requireNativeStatus(t, response, http.StatusCreated)
-						var organization nativeOrganization
-						decodeHubResponse(t, response, &organization)
-						foreign := newNativeFixture(t, f.service, organization.ID, "other")
+						organization := tracker.OrganizationID("org_foreign")
+						if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+							return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Other Sprite organization", Slug: "other-sprites", CreatedAt: f.service.config.now()})
+						}); err != nil {
+							t.Fatal(err)
+						}
+						foreign := nativeFixture{service: f.service, project: tracker.NativeProject{OrganizationID: organization}}
 						storeOrganizationSpritesSecret(t, foreign, token)
 					}
 				}
@@ -94,7 +194,7 @@ func TestWakeSpriteRunners(t *testing.T) {
 				if state == "" {
 					t.Fatalf("fixture project has no state with dispatchable=%t", tt.dispatchable)
 				}
-				setSpriteFactsFixtureMode(t, f, typed)
+				assertSpritePostgresFacts(t, f)
 				beforeWake := f.service.config.now()
 				woken, err := f.service.wakeSpriteRunners(t.Context(), scope, state)
 				if err != nil {
@@ -107,7 +207,7 @@ func TestWakeSpriteRunners(t *testing.T) {
 					return err == nil && !at.Before(beforeWake) && !at.After(afterWake)
 				}
 				if tt.wantWakeCalls > 0 {
-					facts, err := readMachineSpriteFacts(t.Context(), f.service.database.reader, scope.organization, runners[0].binding.MachineID)
+					facts, err := f.service.spriteWakeFactsRecord(t.Context(), scope.organization, runners[0].binding.RunnerID)
 					if err != nil || spriteFactValue(facts.Name) != "customer-host" {
 						t.Fatalf("wake lost Sprite identity: %+v, %v", facts, err)
 					}
@@ -169,17 +269,17 @@ func TestSpriteWakeSecret(t *testing.T) {
 				if tt.memberProject {
 					tokenProject = string(f.project.ID)
 				}
-				now := formatHubTime(f.service.config.now())
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_pools(organization_id,configured_by) VALUES(?,(SELECT id FROM api_tokens ORDER BY id LIMIT 1))`, f.project.OrganizationID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,token_project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,?,?,?,'enrolled',?,?)`, f.project.OrganizationID, tokenProject, "customer-host", tt.provider, runners[0].enrollment.ID, now, now); err != nil {
+				setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 2)
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					now := f.service.config.now()
+					return w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: scope.organization, Name: "customer-host", ProviderOrganization: tt.provider, TokenProjectID: tracker.ProjectID(tokenProject), EnrollmentID: runners[0].enrollment.ID, State: "enrolled", IdleSince: now, CreatedAt: now})
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
 			secretScope, envelope, err := f.service.spriteWakeSecret(t.Context(), f.service.database.db, scope, "customer-host")
 			if tt.want == "" {
-				if !errors.Is(err, sql.ErrNoRows) {
+				if !errors.Is(err, corestore.ErrNotFound) {
 					t.Fatalf("err = %v, want no usable token", err)
 				}
 				return
@@ -200,8 +300,17 @@ func TestSpriteWakeSecret(t *testing.T) {
 
 func newSpriteWakeFixture(t *testing.T, client *http.Client, storeToken bool, heartbeatAgo time.Duration, names ...string) (nativeFixture, nativeScope, []runnerFixture) {
 	t.Helper()
-	f := newDefaultNativeFixture(t, Config{SecretKeys: secretTestKeys(t, "1", "1"), SpritesHTTPClient: client})
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: "test"}}
+	f := newSpriteNativeFixture(t, Config{SecretKeys: secretTestKeys(t, "1", "1"), SpritesHTTPClient: client, RunDetails: &verifiedAttemptDetails{}})
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("fixture authority=%d %v", status, err)
+	}
+	f.service.wakeSpriteRunnersAfter = func(scope nativeScope, result json.RawMessage) {
+		f.service.scheduleSpriteWake(t.Context(), scope, result)
+	}
+	f.service.startSpriteLifecycle = func(scope nativeScope, state string) { f.service.scheduleSpriteLifecycle(t.Context(), scope, state) }
+	f.service.startSpritePoolForQueue = func(scope nativeScope) { f.service.scheduleSpritePoolForQueue(t.Context(), scope) }
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
 	runners := enrollSpriteWakeRunners(t, f, heartbeatAgo, names...)
 	if storeToken {
 		storeSpriteWakeSecret(t, f, spritesSecretSentinel)
@@ -217,7 +326,14 @@ func enrollSpriteWakeRunners(t *testing.T, f nativeFixture, heartbeatAgo time.Du
 		runner.redemption.Hostname = name
 		runner.redemption.SpriteName = name
 		runner.enroll(t)
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?", formatHubTime(f.service.config.now().Add(-heartbeatAgo)), runner.binding.RunnerID); err != nil {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+			identity, err := w.RunnerIdentity(t.Context(), runner.binding.RunnerID)
+			if err != nil {
+				return err
+			}
+			identity.LastHeartbeatAt = f.service.config.now().Add(-heartbeatAgo)
+			return w.UpdateRunnerIdentity(t.Context(), identity)
+		}); err != nil {
 			t.Fatal(err)
 		}
 		runners = append(runners, runner)
@@ -231,8 +347,10 @@ func storeSpriteWakeSecret(t *testing.T, f nativeFixture, token string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO project_secrets(organization_id, project_id, kind, organization_slug, ciphertext, nonce, wrapped_data_key, master_key_version, updated_at) VALUES(?,?,?,?,?,?,?,?,?)
-ON CONFLICT(organization_id, project_id, kind) DO UPDATE SET ciphertext=excluded.ciphertext, nonce=excluded.nonce, wrapped_data_key=excluded.wrapped_data_key, master_key_version=excluded.master_key_version`, f.project.OrganizationID, f.project.ID, flySpritesToken, "detent-test", envelope.Ciphertext, envelope.Nonce, envelope.WrappedKey, envelope.Version, formatHubTime(f.service.config.now())); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		now := f.service.config.now()
+		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Kind: flySpritesToken, OrganizationSlug: "detent-test", Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Actor: "fixture", Kind: flySpritesToken, Event: "set", KeyVersion: envelope.Version, RecordedAt: now})
+	}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -569,8 +687,10 @@ func storeOrganizationSpritesSecret(t *testing.T, f nativeFixture, token string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_secrets(organization_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(organization_id,kind) DO UPDATE SET organization_slug=excluded.organization_slug,ciphertext=excluded.ciphertext,nonce=excluded.nonce,wrapped_data_key=excluded.wrapped_data_key,master_key_version=excluded.master_key_version`, f.project.OrganizationID, flySpritesToken, "detent-test", envelope.Ciphertext, envelope.Nonce, envelope.WrappedKey, envelope.Version, formatHubTime(f.service.config.now()))
-	if err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		now := f.service.config.now()
+		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: f.project.OrganizationID, Kind: flySpritesToken, OrganizationSlug: "detent-test", Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: f.project.OrganizationID, Actor: "fixture", Kind: flySpritesToken, Event: "set", KeyVersion: envelope.Version, RecordedAt: now})
+	}); err != nil {
 		t.Fatal(err)
 	}
 }

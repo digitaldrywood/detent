@@ -739,6 +739,7 @@ func (s *Service) runPostgresMaintenance(ctx context.Context) {
 	refreshUnread()
 	s.maintainNativeSearch(ctx)
 	s.maintainPostgresChangeReviews(ctx)
+	s.maintainSpritePools(ctx)
 	ticker := time.NewTicker(s.config.WebhookMaintenanceInterval)
 	defer ticker.Stop()
 	lastCleanup := s.config.now()
@@ -753,6 +754,7 @@ func (s *Service) runPostgresMaintenance(ctx context.Context) {
 			refreshUnread()
 			s.maintainNativeSearch(ctx)
 			s.maintainPostgresChangeReviews(ctx)
+			s.maintainSpritePools(ctx)
 			now := s.config.now()
 			if err := s.expireGoTestReceipts(ctx, now, s.config.now); err != nil && !errors.Is(err, context.Canceled) {
 				s.config.Logger.Warn("expire PostgreSQL Go test receipts", "error", err)
