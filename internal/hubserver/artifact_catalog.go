@@ -20,7 +20,7 @@ import (
 func (s *Service) registerArtifactCatalogRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/artifact-services/:service/catalog", s.artifactCatalog)
 	e.POST("/api/v2/organizations/:organization/artifact-services/:service/catalog", s.artifactCatalog)
-	e.PUT(nativeBase+"/artifact-services/:service/catalog-policy", s.setArtifactCatalogPolicy, s.requireNativeScope(apiScopeAdmin))
+	e.PUT(nativeBase+"/artifact-services/:service/catalog-policy", s.setArtifactCatalogPolicy, s.requireOnboardingAdmin())
 }
 
 func (s *Service) catalogPublisherScope(ctx context.Context, r postgres.ArtifactCatalogReader, command artifact.CatalogCommand, credential apiCredential, write bool) (nativeScope, artifact.Binding, error) {

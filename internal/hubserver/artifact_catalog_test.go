@@ -126,7 +126,7 @@ func TestPostgresArtifactCatalogJourney(t *testing.T) {
 			t.Fatal(err)
 		}
 		err = hub.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			for _, credential := range []accessstore.Credential{{OrganizationID: org, ID: workerID, Name: workerID, Hash: apikey.HashToken(workerToken), Scope: "worker", NativeOnly: true, CreatedAt: now(), UpdatedAt: now(), ExpiresAt: &expiry, ProjectAccess: "selected", Kind: "service"}, {OrganizationID: org, ID: adminID, Name: adminID, Hash: apikey.HashToken(adminToken), Scope: "admin", NativeOnly: true, UserID: adminID, MembershipID: adminMembership.ID, KeyScope: "admin", CreatedAt: now(), UpdatedAt: now(), ExpiresAt: &expiry, ProjectAccess: "all", Kind: "service"}} {
+			for _, credential := range []accessstore.Credential{{OrganizationID: org, ID: workerID, Name: workerID, Hash: apikey.HashToken(workerToken), Scope: "worker", NativeOnly: true, CreatedAt: now(), UpdatedAt: now(), ExpiresAt: &expiry, ProjectAccess: "selected", Kind: "service"}, {OrganizationID: org, ID: adminID, Name: adminID, Hash: apikey.HashToken(adminToken), Scope: "operator", NativeOnly: true, UserID: adminID, MembershipID: adminMembership.ID, KeyScope: "admin", CreatedAt: now(), UpdatedAt: now(), ExpiresAt: &expiry, ProjectAccess: "all", Kind: "service"}} {
 				if err := w.CreateAccessCredential(t.Context(), credential); err != nil {
 					return err
 				}
@@ -232,6 +232,10 @@ func TestPostgresArtifactCatalogJourney(t *testing.T) {
 		for _, publisher := range publishers {
 			publisher.config = artifact.Config{OrganizationID: string(org), ServiceID: publisher.serviceID, Mode: publisher.mode, HostedOptIn: publisher.mode == "hosted", Policy: policy}
 			for _, project := range projects {
+				unconfigured := &artifact.RemoteCatalog{Hub: &artifact.RemoteHub{Origin: hubServer.URL, OrganizationID: string(org), ProjectID: string(project.id), ServiceID: publisher.serviceID, PublisherToken: func() string { return publisher.token }, Client: catalogJourneyHTTPClient(t)}}
+				if _, err := unconfigured.Execute(t.Context(), artifact.CatalogCommand{CatalogScope: artifact.CatalogScope{OrganizationID: string(org), ProjectID: string(project.id), ServiceID: publisher.serviceID}, Operation: "traffic_settings"}); !errors.Is(err, artifact.ErrQuota) {
+					t.Fatal("catalog admitted an unconfigured server policy", err)
+				}
 				path := "/api/v2/organizations/" + string(org) + "/projects/" + string(project.id) + "/artifact-services/" + publisher.serviceID + "/catalog-policy"
 				requireNativeStatus(t, performHubAPIRequest(t, hub, http.MethodPut, path, publisher.token, policy), http.StatusNotFound)
 				requireNativeStatus(t, performHubAPIRequest(t, hub, http.MethodPut, path, adminToken, policy), http.StatusNoContent)
