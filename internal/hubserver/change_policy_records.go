@@ -18,11 +18,16 @@ import (
 )
 
 func (s *Service) changeReviewPolicyRecord(ctx context.Context, scope nativeScope) (tracker.ChangeReviewPolicy, error) {
-	rows, err := s.currentChangePolicyRows(ctx, scope)
+	var rows currentChangePolicyRows
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		rows, err = readChangeSummaryPolicyRows(ctx, r, scope)
+		return err
+	})
 	if err != nil {
 		return tracker.ChangeReviewPolicy{}, projectRecordError(err)
 	}
-	approved, err := hydrateCurrentChangeVersionApproval(ctx, eventstore.NewContent(s.runDetailStore()), scope, rows, "")
+	approved, err := hydrateChangeSummaryPolicy(ctx, eventstore.NewContent(s.runDetailStore()), scope, rows)
 	return approved.ReviewPolicy, projectRecordError(err)
 }
 
@@ -66,13 +71,20 @@ func (s *Service) approveChangeReviewPolicyRecord(c echo.Context, request tracke
 	var current eventstore.ReviewPolicy
 	var oldRules tracker.ChangeReviewPolicy
 	currentStored := false
-	rows, err = s.currentChangePolicyRows(ctx, scope)
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		rows, err = readChangeSummaryPolicyRows(ctx, r, scope)
+		return err
+	})
 	if err != nil {
 		return s.nativeAPIError(c, projectRecordError(err))
 	}
-	approval, err := hydrateCurrentChangeVersionApproval(ctx, content, scope, rows, request.Policy.PolicyID)
+	approval, err := hydrateChangeSummaryPolicy(ctx, content, scope, rows)
 	if err != nil {
 		return s.nativeAPIError(c, projectRecordError(err))
+	}
+	if request.Policy.PolicyID != approval.Policy.ID {
+		return s.nativeAPIError(c, policyMismatch("Review policy must name the current repository policy"))
 	}
 	current, currentStored = rows.Review, rows.hasReview
 	oldRules = approval.ReviewPolicy

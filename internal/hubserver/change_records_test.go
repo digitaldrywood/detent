@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -445,6 +446,27 @@ func TestChangeReviewPolicyUsesSelectedTenantPolicyAndReceipt(t *testing.T) {
 	if err != nil || !found || reference.ChangeID != change.ID || reference.VersionID != "" || summary.Status != "draft" {
 		t.Fatalf("latest selected Change = %+v, %+v, found=%v, err=%v", reference, summary, found, err)
 	}
+	next := descriptor
+	next.ConfigDigest = policy.Digest([]byte("updated repository configuration"))
+	next = next.WithID()
+	response = f.request(t, owner, http.MethodPut, f.base+"/policy", policy.Change{ExpectedID: descriptor.ID, Policy: next})
+	requireNativeStatus(t, response, http.StatusOK)
+	response = f.request(t, owner, http.MethodGet, path, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var retained tracker.ChangeReviewPolicy
+	decodeHubResponse(t, response, &retained)
+	if retained.ID != saved.ID || retained.PolicyID != descriptor.ID || !retained.RequireReview {
+		t.Fatalf("repository approval changed retained review rules: %+v", retained)
+	}
+	retained.PolicyID = next.ID
+	response = f.request(t, owner, http.MethodPut, path, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rebind-review-policy"}, ExpectedID: saved.ID, Policy: retained})
+	requireNativeStatus(t, response, http.StatusOK)
+	var rebound tracker.ChangeReviewPolicy
+	decodeHubResponse(t, response, &rebound)
+	if rebound.PolicyID != next.ID || !rebound.RequireReview || rebound.ID == saved.ID {
+		t.Fatalf("review policy did not bind current repository approval: %+v", rebound)
+	}
+
 }
 
 func TestApprovedChangeReviewRejectsPolicyChangedAfterPreflight(t *testing.T) {
