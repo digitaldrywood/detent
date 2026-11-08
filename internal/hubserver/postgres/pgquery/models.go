@@ -5118,6 +5118,7 @@ type SpriteLifecycleOperation struct {
 	ExecSessionID      *string
 	ProviderResourceID string
 	ProjectID          tracker.ProjectID
+	SourceRevision     string
 }
 
 type StorageConversionCursor struct {

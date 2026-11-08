@@ -47,8 +47,8 @@ func (q *Queries) CreateSpriteAllocation(ctx context.Context, arg CreateSpriteAl
 }
 
 const createSpriteOperation = `-- name: CreateSpriteOperation :one
-INSERT INTO sprite_lifecycle_operations(organization_id,idempotency_key,name,operation,outcome,attempts,next_attempt_at,created_at,updated_at,request_object_key,target_enrollment_id,project_id)
-VALUES($1,$2,$3,$4,'pending',0,$5,$6,$6,$7,$8,$9) ON CONFLICT DO NOTHING RETURNING organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id
+INSERT INTO sprite_lifecycle_operations(organization_id,idempotency_key,name,operation,outcome,attempts,next_attempt_at,created_at,updated_at,request_object_key,target_enrollment_id,project_id,provider_resource_id,source_revision)
+VALUES($1,$2,$3,$4,'pending',$7::bigint,$5,$6,$6,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING RETURNING organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id, source_revision
 `
 
 type CreateSpriteOperationParams struct {
@@ -58,9 +58,12 @@ type CreateSpriteOperationParams struct {
 	Operation          string
 	NextAttemptAt      time.Time
 	CreatedAt          time.Time
+	InitialAttempts    int64
 	RequestObjectKey   *string
 	TargetEnrollmentID string
 	ProjectID          tracker.ProjectID
+	ProviderResourceID string
+	SourceRevision     string
 }
 
 func (q *Queries) CreateSpriteOperation(ctx context.Context, arg CreateSpriteOperationParams) (SpriteLifecycleOperation, error) {
@@ -71,9 +74,12 @@ func (q *Queries) CreateSpriteOperation(ctx context.Context, arg CreateSpriteOpe
 		arg.Operation,
 		arg.NextAttemptAt,
 		arg.CreatedAt,
+		arg.InitialAttempts,
 		arg.RequestObjectKey,
 		arg.TargetEnrollmentID,
 		arg.ProjectID,
+		arg.ProviderResourceID,
+		arg.SourceRevision,
 	)
 	var i SpriteLifecycleOperation
 	err := row.Scan(
@@ -92,6 +98,7 @@ func (q *Queries) CreateSpriteOperation(ctx context.Context, arg CreateSpriteOpe
 		&i.ExecSessionID,
 		&i.ProviderResourceID,
 		&i.ProjectID,
+		&i.SourceRevision,
 	)
 	return i, err
 }
@@ -122,7 +129,7 @@ func (q *Queries) LockSpritePool(ctx context.Context, organizationID tracker.Org
 }
 
 const pendingSpriteOperations = `-- name: PendingSpriteOperations :many
-SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id FROM sprite_lifecycle_operations WHERE organization_id=$1 AND outcome IN ('pending','uncertain') AND next_attempt_at<=$2 ORDER BY next_attempt_at,idempotency_key LIMIT $3
+SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id, source_revision FROM sprite_lifecycle_operations WHERE organization_id=$1 AND outcome IN ('pending','uncertain') AND next_attempt_at<=$2 ORDER BY next_attempt_at,idempotency_key LIMIT $3
 `
 
 type PendingSpriteOperationsParams struct {
@@ -156,6 +163,7 @@ func (q *Queries) PendingSpriteOperations(ctx context.Context, arg PendingSprite
 			&i.ExecSessionID,
 			&i.ProviderResourceID,
 			&i.ProjectID,
+			&i.SourceRevision,
 		); err != nil {
 			return nil, err
 		}
@@ -486,7 +494,7 @@ func (q *Queries) SpriteBudgetRetainsMember(ctx context.Context, arg SpriteBudge
 }
 
 const spriteEnrollmentWake = `-- name: SpriteEnrollmentWake :one
-SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id FROM sprite_lifecycle_operations WHERE organization_id=$1 AND target_enrollment_id=$2 AND operation='wake' ORDER BY created_at DESC,idempotency_key DESC LIMIT 1
+SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id, source_revision FROM sprite_lifecycle_operations WHERE organization_id=$1 AND target_enrollment_id=$2 AND operation='wake' ORDER BY created_at DESC,idempotency_key DESC LIMIT 1
 `
 
 type SpriteEnrollmentWakeParams struct {
@@ -513,6 +521,7 @@ func (q *Queries) SpriteEnrollmentWake(ctx context.Context, arg SpriteEnrollment
 		&i.ExecSessionID,
 		&i.ProviderResourceID,
 		&i.ProjectID,
+		&i.SourceRevision,
 	)
 	return i, err
 }
@@ -565,7 +574,7 @@ func (q *Queries) SpriteMemberBusy(ctx context.Context, arg SpriteMemberBusyPara
 }
 
 const spriteMemberOperations = `-- name: SpriteMemberOperations :many
-SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id FROM sprite_lifecycle_operations WHERE organization_id=$1 AND name=$2 AND outcome IN ('committed','rejected') AND receipt_object_key IS NOT NULL ORDER BY created_at,idempotency_key LIMIT 6
+SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id, source_revision FROM sprite_lifecycle_operations WHERE organization_id=$1 AND name=$2 AND outcome IN ('committed','rejected') AND receipt_object_key IS NOT NULL ORDER BY created_at,idempotency_key LIMIT 6
 `
 
 type SpriteMemberOperationsParams struct {
@@ -598,6 +607,7 @@ func (q *Queries) SpriteMemberOperations(ctx context.Context, arg SpriteMemberOp
 			&i.ExecSessionID,
 			&i.ProviderResourceID,
 			&i.ProjectID,
+			&i.SourceRevision,
 		); err != nil {
 			return nil, err
 		}
@@ -691,7 +701,7 @@ func (q *Queries) SpriteMembers(ctx context.Context, arg SpriteMembersParams) ([
 }
 
 const spriteOperation = `-- name: SpriteOperation :one
-SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id FROM sprite_lifecycle_operations WHERE organization_id=$1 AND idempotency_key=$2
+SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id, source_revision FROM sprite_lifecycle_operations WHERE organization_id=$1 AND idempotency_key=$2
 `
 
 type SpriteOperationParams struct {
@@ -718,6 +728,7 @@ func (q *Queries) SpriteOperation(ctx context.Context, arg SpriteOperationParams
 		&i.ExecSessionID,
 		&i.ProviderResourceID,
 		&i.ProjectID,
+		&i.SourceRevision,
 	)
 	return i, err
 }
@@ -846,6 +857,40 @@ func (q *Queries) SpritePromotionSource(ctx context.Context, organizationID trac
 		&i.WrappedDataKey,
 		&i.MasterKeyVersion,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const spriteProvisionSourceFailure = `-- name: SpriteProvisionSourceFailure :one
+SELECT organization_id, idempotency_key, name, operation, outcome, receipt_object_key, attempts, next_attempt_at, created_at, updated_at, request_object_key, target_enrollment_id, exec_session_id, provider_resource_id, project_id, source_revision FROM sprite_lifecycle_operations WHERE organization_id=$1 AND project_id=$2 AND source_revision=$3 AND outcome='rejected' AND operation IN ('provision','bootstrap','checkpoint') ORDER BY updated_at DESC,idempotency_key DESC LIMIT 1
+`
+
+type SpriteProvisionSourceFailureParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	SourceRevision string
+}
+
+func (q *Queries) SpriteProvisionSourceFailure(ctx context.Context, arg SpriteProvisionSourceFailureParams) (SpriteLifecycleOperation, error) {
+	row := q.db.QueryRow(ctx, spriteProvisionSourceFailure, arg.OrganizationID, arg.ProjectID, arg.SourceRevision)
+	var i SpriteLifecycleOperation
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.IdempotencyKey,
+		&i.Name,
+		&i.Operation,
+		&i.Outcome,
+		&i.ReceiptObjectKey,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RequestObjectKey,
+		&i.TargetEnrollmentID,
+		&i.ExecSessionID,
+		&i.ProviderResourceID,
+		&i.ProjectID,
+		&i.SourceRevision,
 	)
 	return i, err
 }

@@ -225,6 +225,19 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := repository.WriteSprite(t.Context(), "org_first", corestore.Serving, func(w postgres.SpriteWriter) error {
+		row, err := w.CreateSpriteOperation(t.Context(), postgres.SpriteOperation{OrganizationID: "org_first", IdempotencyKey: "failed-source", Name: "first", Operation: "bootstrap", Attempts: 7, SourceRevision: "current-source", ProviderResourceID: "owned-resource", RequestObjectKey: new("objects/request"), CreatedAt: now, NextAttemptAt: now})
+		if err != nil {
+			return err
+		}
+		if row.Attempts != 7 || row.SourceRevision != "current-source" || row.ProviderResourceID != "owned-resource" {
+			t.Fatalf("replacement source was lost: %+v", row)
+		}
+		row.Outcome, row.ReceiptObjectKey, row.UpdatedAt, row.NextAttemptAt = "rejected", new("objects/failure-receipt"), now, now.Add(time.Minute)
+		return w.UpdateSpriteOperation(t.Context(), row, 7)
+	}); err != nil {
+		t.Fatal(err)
+	}
 	var unbound int
 	if err := pool.QueryRow(pgtest.UnboundProbe(t.Context()), `SELECT count(*) FROM organization_sprite_pools`).Scan(&unbound); err != nil || unbound != 0 {
 		t.Fatalf("unbound rows=%d err=%v", unbound, err)
@@ -335,6 +348,22 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 			}
 			if len(seen) != 22 {
 				t.Fatalf("active and recent deleted members=%d", len(seen))
+			}
+			failure, failureErr := r.SpriteProvisionSourceFailure(t.Context(), "prj_first", "current-source")
+			if org == "org_first" {
+				if failureErr != nil || failure.Attempts != 8 || !failure.NextAttemptAt.Equal(now.Add(time.Minute)) || failure.ProviderResourceID != "owned-resource" {
+					t.Fatalf("failure source after reopen=%+v err=%v", failure, failureErr)
+				}
+			} else if !errors.Is(failureErr, corestore.ErrNotFound) {
+				t.Fatalf("foreign failure source=%+v err=%v", failure, failureErr)
+			}
+			for _, source := range []struct {
+				project  tracker.ProjectID
+				revision string
+			}{{"prj_second", "current-source"}, {"prj_first", "changed-source"}} {
+				if _, err := r.SpriteProvisionSourceFailure(t.Context(), source.project, source.revision); !errors.Is(err, corestore.ErrNotFound) {
+					t.Fatalf("source/project boundary error=%v", err)
+				}
 			}
 			operation, err := r.SpriteOperation(t.Context(), "first")
 			if err != nil {

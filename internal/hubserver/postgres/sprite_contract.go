@@ -52,6 +52,7 @@ type SpriteReader interface {
 	SpriteAllocations(context.Context, tracker.ProjectID, int) ([]SpriteAllocation, error)
 	SpriteMembers(context.Context, string, int) ([]SpriteMember, error)
 	SpriteOperation(context.Context, string) (SpriteOperation, error)
+	SpriteProvisionSourceFailure(context.Context, tracker.ProjectID, string) (SpriteOperation, error)
 	SpriteEnrollmentWake(context.Context, string) (SpriteOperation, error)
 	SpriteWakeTarget(context.Context, string, string, tracker.ProjectID, time.Time) (bool, error)
 	SpriteMemberOperations(context.Context, string) ([]SpriteOperation, error)
@@ -150,7 +151,7 @@ func (s *session) CreateSpriteOperation(ctx context.Context, row SpriteOperation
 	if err := s.checkOrganization(row.OrganizationID); err != nil {
 		return SpriteOperation{}, err
 	}
-	if row.IdempotencyKey == "" || row.Name == "" || row.CreatedAt.IsZero() || row.NextAttemptAt.IsZero() || row.RequestObjectKey == nil || *row.RequestObjectKey == "" || row.Operation == "wake" && row.TargetEnrollmentID == "" {
+	if row.IdempotencyKey == "" || row.Name == "" || row.Attempts < 0 || len(row.SourceRevision) > 128 || row.CreatedAt.IsZero() || row.NextAttemptAt.IsZero() || row.RequestObjectKey == nil || *row.RequestObjectKey == "" || row.Operation == "wake" && row.TargetEnrollmentID == "" {
 		return SpriteOperation{}, corestore.ErrInvalidPage
 	}
 	if row.Operation == "wake" && row.ProjectID == "" {
@@ -191,12 +192,12 @@ func (s *session) CreateSpriteOperation(ctx context.Context, row SpriteOperation
 			return SpriteOperation{}, mapError(ctx, err)
 		}
 	}
-	result, err := s.queries.CreateSpriteOperation(ctx, pgquery.CreateSpriteOperationParams{OrganizationID: s.organization, IdempotencyKey: row.IdempotencyKey, Name: row.Name, Operation: row.Operation, NextAttemptAt: row.NextAttemptAt, CreatedAt: row.CreatedAt, RequestObjectKey: row.RequestObjectKey, TargetEnrollmentID: row.TargetEnrollmentID, ProjectID: row.ProjectID})
+	result, err := s.queries.CreateSpriteOperation(ctx, pgquery.CreateSpriteOperationParams{OrganizationID: s.organization, IdempotencyKey: row.IdempotencyKey, Name: row.Name, Operation: row.Operation, NextAttemptAt: row.NextAttemptAt, CreatedAt: row.CreatedAt, RequestObjectKey: row.RequestObjectKey, TargetEnrollmentID: row.TargetEnrollmentID, ProjectID: row.ProjectID, ProviderResourceID: row.ProviderResourceID, InitialAttempts: row.Attempts, SourceRevision: row.SourceRevision})
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return result, mapError(ctx, err)
 	}
 	result, err = s.SpriteOperation(ctx, row.IdempotencyKey)
-	if err == nil && (result.Name != row.Name || result.Operation != row.Operation || result.TargetEnrollmentID != row.TargetEnrollmentID || result.ProjectID != row.ProjectID) {
+	if err == nil && (result.Name != row.Name || result.Operation != row.Operation || result.TargetEnrollmentID != row.TargetEnrollmentID || result.ProjectID != row.ProjectID || result.SourceRevision != row.SourceRevision || row.ProviderResourceID != "" && result.ProviderResourceID != row.ProviderResourceID) {
 		return SpriteOperation{}, corestore.ErrUniqueViolation
 	}
 	return result, err
@@ -438,4 +439,9 @@ func (s *session) SpriteRunnerAllowed(ctx context.Context, runnerID string, proj
 		return false, nil
 	}
 	return err == nil && checks.WorkReady(), err
+}
+
+func (s *session) SpriteProvisionSourceFailure(ctx context.Context, project tracker.ProjectID, source string) (SpriteOperation, error) {
+	row, err := s.queries.SpriteProvisionSourceFailure(ctx, pgquery.SpriteProvisionSourceFailureParams{OrganizationID: s.organization, ProjectID: project, SourceRevision: source})
+	return row, mapError(ctx, err)
 }

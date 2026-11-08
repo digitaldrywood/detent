@@ -34,8 +34,8 @@ SELECT * FROM runner_sprite_memberships WHERE organization_id=$1 AND name>$2 ORD
 SELECT * FROM sprite_lifecycle_operations WHERE organization_id=$1 AND idempotency_key=$2;
 
 -- name: CreateSpriteOperation :one
-INSERT INTO sprite_lifecycle_operations(organization_id,idempotency_key,name,operation,outcome,attempts,next_attempt_at,created_at,updated_at,request_object_key,target_enrollment_id,project_id)
-VALUES($1,$2,$3,$4,'pending',0,$5,$6,$6,sqlc.narg(request_object_key),sqlc.arg(target_enrollment_id),sqlc.arg(project_id)) ON CONFLICT DO NOTHING RETURNING *;
+INSERT INTO sprite_lifecycle_operations(organization_id,idempotency_key,name,operation,outcome,attempts,next_attempt_at,created_at,updated_at,request_object_key,target_enrollment_id,project_id,provider_resource_id,source_revision)
+VALUES($1,$2,$3,$4,'pending',sqlc.arg(initial_attempts)::bigint,$5,$6,$6,sqlc.narg(request_object_key),sqlc.arg(target_enrollment_id),sqlc.arg(project_id),sqlc.arg(provider_resource_id),sqlc.arg(source_revision)) ON CONFLICT DO NOTHING RETURNING *;
 
 -- name: UpdateSpriteOperation :execrows
 UPDATE sprite_lifecycle_operations SET outcome=sqlc.arg(outcome),receipt_object_key=sqlc.narg(receipt_object_key),provider_resource_id=CASE WHEN sqlc.arg(provider_resource_id)::text='' THEN provider_resource_id ELSE sqlc.arg(provider_resource_id)::text END,attempts=attempts+1,next_attempt_at=sqlc.arg(next_attempt_at),updated_at=sqlc.arg(updated_at)
@@ -161,3 +161,6 @@ SELECT count(*) FROM runner_sprite_memberships WHERE organization_id=$1 AND allo
 
 -- name: SpriteRetainedPoolCount :one
 SELECT count(*) FROM runner_sprite_memberships WHERE organization_id=$1 AND state<>'deleted' AND state<>'deleting';
+
+-- name: SpriteProvisionSourceFailure :one
+SELECT * FROM sprite_lifecycle_operations WHERE organization_id=$1 AND project_id=$2 AND source_revision=$3 AND outcome='rejected' AND operation IN ('provision','bootstrap','checkpoint') ORDER BY updated_at DESC,idempotency_key DESC LIMIT 1;
