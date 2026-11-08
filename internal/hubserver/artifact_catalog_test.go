@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -321,6 +322,69 @@ func TestPostgresArtifactCatalogJourney(t *testing.T) {
 			verifyCatalogJourneyExport(t, destination, org, publisher.serviceID, len(publisher.records))
 		}
 		for _, publisher := range publishers {
+			old := now().Add(-40 * 24 * time.Hour).Truncate(time.Minute)
+			if err := hub.database.postgres.WriteArtifactCatalog(t.Context(), org, corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
+				for _, project := range projects {
+					if err := w.RecordCatalogTrafficNow(t.Context(), postgres.CatalogTrafficReport{OrganizationID: org, ProjectID: project.id, ServiceID: publisher.serviceID, ID: "old-report", UploadBytes: 10, Requests: 1}, old); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := hub.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.DeleteAccessTokenGrant(t.Context(), publisher.id, projects[1].id)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := publisher.config.Catalog.Execute(t.Context(), artifact.CatalogCommand{CatalogScope: artifact.CatalogScope{OrganizationID: string(org), ServiceID: publisher.serviceID}, Operation: "prune_traffic", Limit: 32}); err != nil {
+				t.Fatal(err)
+			}
+			if err := hub.database.postgres.ReadArtifactCatalog(t.Context(), org, corestore.Serving, func(r postgres.ArtifactCatalogReader) error {
+				usage, err := r.CatalogServiceTraffic(t.Context(), postgres.CatalogServiceTrafficInput{OrganizationID: org, ServiceID: publisher.serviceID, Minute: old, Minute_2: old.Add(time.Minute)})
+				if err != nil {
+					return err
+				}
+				if usage.RelayBytes != 20 || usage.Requests != 2 {
+					t.Fatal("traffic pruning erased a summary with protected project sources", usage)
+				}
+				for index, project := range projects {
+					buckets, err := r.ScopedCatalogTrafficBuckets(t.Context(), postgres.ScopedCatalogTrafficBucketsInput{OrganizationID: org, ServiceID: publisher.serviceID, ProjectID: string(project.id), After1: time.Unix(0, 0), PageLimit: 32})
+					if err != nil {
+						return err
+					}
+					receipts, err := r.ScopedCatalogTrafficReceipts(t.Context(), postgres.ScopedCatalogTrafficReceiptsInput{OrganizationID: org, ServiceID: publisher.serviceID, ProjectID: string(project.id), PageLimit: 32})
+					if err != nil {
+						return err
+					}
+					oldBuckets, oldReceipts := 0, 0
+					for _, row := range buckets {
+						if row.Minute.Equal(old) {
+							oldBuckets++
+						}
+					}
+					for _, row := range receipts {
+						if row.ID == "old-report" {
+							oldReceipts++
+						}
+					}
+					if oldBuckets != index || oldReceipts != index {
+						t.Fatalf("traffic pruning crossed a revoked project grant: project %d buckets=%d receipts=%d", index, oldBuckets, oldReceipts)
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := hub.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: publisher.id, ProjectID: projects[1].id})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := publisher.config.Catalog.Execute(t.Context(), artifact.CatalogCommand{CatalogScope: artifact.CatalogScope{OrganizationID: string(org), ServiceID: publisher.serviceID}, Operation: "prune_traffic", Limit: 32}); err != nil {
+				t.Fatal(err)
+			}
 			request := projects[0].reservation
 			request.ServiceID, request.Mode, request.HostedOptIn = publisher.serviceID, publisher.mode, publisher.mode == "hosted"
 			request.Key = "abandoned"

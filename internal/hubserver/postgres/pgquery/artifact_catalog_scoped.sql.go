@@ -274,7 +274,7 @@ func (q *Queries) LockCatalogPolicy(ctx context.Context, arg LockCatalogPolicyPa
 }
 
 const pruneCatalogServiceTraffic = `-- name: PruneCatalogServiceTraffic :exec
-DELETE FROM artifact_catalog_service_traffic d WHERE (d.organization_id,d.service_id,d.minute) IN (SELECT s.organization_id,s.service_id,s.minute FROM artifact_catalog_service_traffic s WHERE s.organization_id=$1 AND s.service_id=$2 AND s.minute<$3::timestamptz ORDER BY s.minute,s.organization_id,s.service_id,s.minute LIMIT $4)
+DELETE FROM artifact_catalog_service_traffic d WHERE (d.organization_id,d.service_id,d.minute) IN (SELECT s.organization_id,s.service_id,s.minute FROM artifact_catalog_service_traffic s WHERE s.organization_id=$1 AND s.service_id=$2 AND s.minute<$3::timestamptz AND NOT EXISTS(SELECT 1 FROM artifact_catalog_traffic t WHERE t.organization_id=s.organization_id AND (s.service_id='' OR t.service_id=s.service_id) AND t.minute=s.minute) AND NOT EXISTS(SELECT 1 FROM artifact_catalog_traffic_receipts t WHERE t.organization_id=s.organization_id AND (s.service_id='' OR t.service_id=s.service_id) AND t.minute=s.minute) ORDER BY s.minute,s.organization_id,s.service_id,s.minute LIMIT $4)
 `
 
 type PruneCatalogServiceTrafficParams struct {
@@ -295,7 +295,7 @@ func (q *Queries) PruneCatalogServiceTraffic(ctx context.Context, arg PruneCatal
 }
 
 const pruneScopedCatalogTraffic = `-- name: PruneScopedCatalogTraffic :exec
-DELETE FROM artifact_catalog_traffic d WHERE (d.organization_id,d.project_id,d.service_id,d.minute) IN (SELECT s.organization_id,s.project_id,s.service_id,s.minute FROM artifact_catalog_traffic s WHERE s.organization_id=$1 AND s.service_id=$2 AND s.minute<$3::timestamptz AND ($4::text='' OR s.project_id=$4) ORDER BY s.minute,s.organization_id,s.project_id,s.service_id,s.minute LIMIT $5)
+DELETE FROM artifact_catalog_traffic d WHERE (d.organization_id,d.project_id,d.service_id,d.minute) IN (SELECT s.organization_id,s.project_id,s.service_id,s.minute FROM artifact_catalog_traffic s WHERE s.organization_id=$1 AND s.service_id=$2 AND s.minute<$3::timestamptz AND ($4::text='' OR s.project_id=$4) AND ($5::text='' OR EXISTS(SELECT 1 FROM artifact_services b JOIN token_grants g ON (g.organization_id,g.project_id,g.token_id)=(b.organization_id,b.project_id,b.publisher_token_id) WHERE b.organization_id=s.organization_id AND b.project_id=s.project_id AND b.id=s.service_id AND b.publisher_token_id=$5)) ORDER BY s.minute,s.organization_id,s.project_id,s.service_id,s.minute LIMIT $6)
 `
 
 type PruneScopedCatalogTrafficParams struct {
@@ -303,6 +303,7 @@ type PruneScopedCatalogTrafficParams struct {
 	ServiceID      string
 	Before         time.Time
 	ProjectID      string
+	PublisherID    string
 	PageLimit      int32
 }
 
@@ -312,13 +313,14 @@ func (q *Queries) PruneScopedCatalogTraffic(ctx context.Context, arg PruneScoped
 		arg.ServiceID,
 		arg.Before,
 		arg.ProjectID,
+		arg.PublisherID,
 		arg.PageLimit,
 	)
 	return err
 }
 
 const pruneScopedCatalogTrafficReceipts = `-- name: PruneScopedCatalogTrafficReceipts :exec
-DELETE FROM artifact_catalog_traffic_receipts d WHERE (d.organization_id,d.project_id,d.service_id,d.id) IN (SELECT s.organization_id,s.project_id,s.service_id,s.id FROM artifact_catalog_traffic_receipts s WHERE s.organization_id=$1 AND s.service_id=$2 AND s.minute<$3::timestamptz AND ($4::text='' OR s.project_id=$4) ORDER BY s.minute,s.organization_id,s.project_id,s.service_id,s.id LIMIT $5)
+DELETE FROM artifact_catalog_traffic_receipts d WHERE (d.organization_id,d.project_id,d.service_id,d.id) IN (SELECT s.organization_id,s.project_id,s.service_id,s.id FROM artifact_catalog_traffic_receipts s WHERE s.organization_id=$1 AND s.service_id=$2 AND s.minute<$3::timestamptz AND ($4::text='' OR s.project_id=$4) AND ($5::text='' OR EXISTS(SELECT 1 FROM artifact_services b JOIN token_grants g ON (g.organization_id,g.project_id,g.token_id)=(b.organization_id,b.project_id,b.publisher_token_id) WHERE b.organization_id=s.organization_id AND b.project_id=s.project_id AND b.id=s.service_id AND b.publisher_token_id=$5)) ORDER BY s.minute,s.organization_id,s.project_id,s.service_id,s.id LIMIT $6)
 `
 
 type PruneScopedCatalogTrafficReceiptsParams struct {
@@ -326,6 +328,7 @@ type PruneScopedCatalogTrafficReceiptsParams struct {
 	ServiceID      string
 	Before         time.Time
 	ProjectID      string
+	PublisherID    string
 	PageLimit      int32
 }
 
@@ -335,6 +338,7 @@ func (q *Queries) PruneScopedCatalogTrafficReceipts(ctx context.Context, arg Pru
 		arg.ServiceID,
 		arg.Before,
 		arg.ProjectID,
+		arg.PublisherID,
 		arg.PageLimit,
 	)
 	return err

@@ -57,7 +57,7 @@ func (c *Catalog) page(ctx context.Context, command artifact.CatalogCommand, cfg
 	org := tracker.OrganizationID(command.OrganizationID)
 	if command.Operation == "prune_traffic" {
 		err := c.write(ctx, command, func(w postgres.ArtifactCatalogWriter) error {
-			return w.PruneScopedCatalogTraffic(ctx, postgres.ScopedCatalogTrafficPrune{OrganizationID: org, ServiceID: command.ServiceID, ProjectID: command.ProjectID, Before: command.Before, PageLimit: int32(command.Limit)})
+			return w.PruneScopedCatalogTraffic(ctx, postgres.ScopedCatalogTrafficPrune{OrganizationID: org, PublisherID: cfg.PublisherID, ServiceID: command.ServiceID, ProjectID: command.ProjectID, Before: command.Before, PageLimit: int32(command.Limit)})
 		})
 		return result, err
 	}
