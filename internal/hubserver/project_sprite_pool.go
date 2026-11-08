@@ -5,13 +5,22 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -220,6 +229,9 @@ func (s *Service) setSpritePoolCommand(ctx context.Context, scope nativeScope, i
 }
 
 func (s *Service) executeSpritePoolCommand(ctx context.Context, scope nativeScope, command spritePoolCommand) error {
+	if s.config.TenantRepository != nil {
+		return s.updateSpritePoolRecord(ctx, scope, command)
+	}
 	return s.executeSpritePoolSettingsCommand(ctx, scope, command.Mutation, command, func(ctx context.Context, tx *sql.Tx, scope nativeScope) (spritePoolSettings, *string, error) {
 		settings := command.spritePoolSettings
 		settings.IsolationTier = isolation.NativeTrusted
@@ -281,11 +293,185 @@ func validateSpritePoolSettings(settings *spritePoolSettings) error {
 }
 
 func (s *Service) updateSpritePool(ctx context.Context, scope nativeScope, settings spritePoolSettings, tier *string) error {
+	if s.config.TenantRepository != nil {
+		return s.updateSpritePoolRecord(ctx, scope, spritePoolCommand{spritePoolSettings: settings, Bootstrap: &settings.Bootstrap, IsolationTier: tier, ShareIdleCapacity: &settings.ShareIdleCapacity})
+	}
 	scope.project = ""
 	scope.requireHostedAdmin = true
 	return s.secretMutation(ctx, scope, func(tx *sql.Tx) error {
 		return s.updateSpritePoolInTx(ctx, tx, scope, settings, tier)
 	})
+}
+
+func (s *Service) spritePoolSettingsRecord(ctx context.Context, scope nativeScope) (spritePoolSettings, postgres.SpritePool, error) {
+	settings := spritePoolSettings{IsolationTier: isolation.NativeTrusted, IdleSeconds: 300, Placement: &policy.Placement{Mode: "blended"}}
+	var row postgres.SpritePool
+	configured := false
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		owner, ok := r.(postgres.SpriteReader)
+		if !ok {
+			return accessstore.ErrTransactionRequired
+		}
+		var err error
+		row, err = owner.SpritePool(ctx)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		configured = err == nil
+		return err
+	})
+	if err != nil {
+		return settings, row, err
+	}
+	if !configured {
+		return settings, row, nil
+	}
+	settings = spritePoolSettings{MinRunners: int(row.MinRunners), MaxRunners: int(row.MaxRunners), IdleSeconds: int(row.IdleSeconds), Revision: row.Revision, IsolationTier: row.IsolationTier, ShareIdleCapacity: row.ShareIdleCapacity, Placement: &policy.Placement{Mode: row.PlacementMode, TodoThreshold: int(row.TodoThreshold), OverflowSlots: int(row.OverflowSlots), MaxSpriteSlots: int(row.MaxSpriteSlots)}}
+	if row.BootstrapObjectKey != nil {
+		reader, ok := s.runDetailStore().(attachment.CanonicalDetailStore)
+		if !ok {
+			return settings, row, artifact.ErrStorage
+		}
+		raw, err := reader.ReadCanonicalDetail(ctx, string(scope.organization), "sprite-pool", *row.BootstrapObjectKey)
+		if err != nil {
+			return settings, row, err
+		}
+		if len(raw) > 65536 {
+			return settings, row, artifact.ErrIntegrity
+		}
+		settings.Bootstrap = string(raw)
+	}
+	return settings, row, nil
+}
+
+func (s *Service) updateSpritePoolRecord(ctx context.Context, scope nativeScope, command spritePoolCommand) error {
+	scope.project = ""
+	scope.requireHostedAdmin = true
+	if !canManageProjectSecrets(scope.credential) {
+		return accessstore.ErrDenied
+	}
+	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
+		return err
+	}
+	if len(command.IdempotencyKey) > 128 || command.IdempotencyKey != "" && strings.TrimSpace(command.IdempotencyKey) == "" {
+		return nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+	}
+	hash, err := nativeCommandHash(command)
+	if err != nil {
+		return err
+	}
+	const operation = "set_sprite_pool"
+	if command.IdempotencyKey != "" {
+		if _, found, err := s.changeRecordReceipt(ctx, scope, operation, command.IdempotencyKey, hash); found || err != nil {
+			return err
+		}
+	}
+	current, row, err := s.spritePoolSettingsRecord(ctx, scope)
+	if err != nil {
+		return err
+	}
+	settings := command.spritePoolSettings
+	settings.IsolationTier, settings.ShareIdleCapacity = current.IsolationTier, current.ShareIdleCapacity
+	if command.IsolationTier != nil {
+		settings.IsolationTier = *command.IsolationTier
+	}
+	if command.ShareIdleCapacity != nil {
+		settings.ShareIdleCapacity = *command.ShareIdleCapacity
+	}
+	if settings.Placement == nil {
+		settings.Placement = current.Placement
+	}
+	if err := validateSpritePoolAccess(command.IsolationTier); err != nil {
+		return err
+	}
+	if command.Bootstrap != nil {
+		settings.Bootstrap = *command.Bootstrap
+	} else {
+		settings.Bootstrap = current.Bootstrap
+	}
+	if err := validateSpritePoolSettings(&settings); err != nil {
+		return err
+	}
+	if settings.MaxRunners > math.MaxInt32 || settings.Placement.TodoThreshold > math.MaxInt32 {
+		return spritePoolInvalid("Sprite pool settings exceed the supported integer range")
+	}
+	if settings.MaxRunners > 0 && (s.config.SecretKeys == nil || s.config.Hosted == nil) {
+		return spritePoolInvalid("Sprite pools require hosted configuration and the project secret store")
+	}
+	if current.Revision != settings.Revision {
+		if command.IdempotencyKey != "" {
+			if _, found, err := s.changeRecordReceipt(ctx, scope, operation, command.IdempotencyKey, hash); found || err != nil {
+				return err
+			}
+		}
+		return nativeConflict(tracker.Revision(current.Revision))
+	}
+	if command.Bootstrap != nil {
+		row.BootstrapObjectKey = nil
+		if settings.Bootstrap != "" {
+			store := s.runDetailStore()
+			if _, ok := store.(attachment.CanonicalDetailStore); !ok {
+				return artifact.ErrStorage
+			}
+			ref, err := store.StoreDetail(ctx, string(scope.organization), []byte(settings.Bootstrap))
+			if err != nil {
+				return err
+			}
+			if ref.Validate(string(scope.organization)) != nil || ref.UncompressedSize != int64(len(settings.Bootstrap)) || attachment.ValidateCanonicalDetailKey(string(scope.organization), "sprite-pool", ref.Key) != nil {
+				return artifact.ErrIntegrity
+			}
+			row.BootstrapObjectKey = &ref.Key
+		}
+	}
+	row.OrganizationID, row.ConfiguredBy = scope.organization, secretActor(scope)
+	row.MinRunners, row.MaxRunners, row.IdleSeconds = int32(settings.MinRunners), int32(settings.MaxRunners), int32(settings.IdleSeconds)
+	row.IsolationTier, row.ShareIdleCapacity = settings.IsolationTier, settings.ShareIdleCapacity
+	row.PlacementMode, row.TodoThreshold, row.OverflowSlots, row.MaxSpriteSlots = settings.Placement.Mode, int32(settings.Placement.TodoThreshold), int32(settings.Placement.OverflowSlots), int32(settings.Placement.MaxSpriteSlots)
+	var receipt eventstore.Receipt
+	if command.IdempotencyKey != "" {
+		receipt, err = eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.now()}, []byte("true"))
+		if err != nil {
+			return err
+		}
+	}
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+			return err
+		}
+		if command.IdempotencyKey != "" {
+			previous, err := w.Receipt(ctx, scope.credential.ID, operation, command.IdempotencyKey)
+			if err == nil {
+				if previous.RequestHash != hash {
+					return nativeConflict(0)
+				}
+				return nil
+			}
+			if !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+		}
+		owner, ok := w.(postgres.SpriteWriter)
+		if !ok {
+			return accessstore.ErrTransactionRequired
+		}
+		if _, err := owner.PutSpritePool(ctx, row, settings.Revision); err != nil {
+			return err
+		}
+		if command.IdempotencyKey != "" {
+			_, err := w.PutReceipt(ctx, receipt)
+			return err
+		}
+		return nil
+	})
+	if command.IdempotencyKey != "" && (errors.Is(err, corestore.ErrRevisionConflict) || errors.Is(err, corestore.ErrUniqueViolation)) {
+		if _, found, readErr := s.changeRecordReceipt(ctx, scope, operation, command.IdempotencyKey, hash); found || readErr != nil {
+			return readErr
+		}
+	}
+	return projectRecordError(err)
 }
 
 func (s *Service) updateSpritePoolInTx(ctx context.Context, tx *sql.Tx, scope nativeScope, settings spritePoolSettings, tier *string) error {

@@ -17,11 +17,18 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/budget"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -30,6 +37,117 @@ import (
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestSpritePoolPostgresSettingsAndAuthority(t *testing.T) {
+	var poolConfig *pgxpool.Config
+	repository, _ := projectRecordPostgresWithAdmin(t, 3, func(cfg *pgxpool.Config) { poolConfig = cfg.Copy() })
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	details := &verifiedAttemptDetails{}
+	services := make(map[tracker.OrganizationID]*Service)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		principal := "admin_" + string(org)
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", Slug: string(org), CreatedAt: now}); err != nil {
+				return err
+			}
+			for _, project := range []tracker.ProjectID{"first", "second"} {
+				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: project, Name: string(project), Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+					return err
+				}
+			}
+			return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: principal, Hash: principal, Name: "Example administrator", Scope: "admin", Kind: "service", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		service := &Service{database: &database{postgres: repository}, config: Config{AccessRepository: repository, TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(org)}, SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: details, now: func() time.Time { return now }}}
+		scope := nativeScope{organization: org, project: "first", credential: apiCredential{ID: principal, Hash: principal, Scope: apiScopeAdmin}}
+		services[org] = service
+		settings := spritePoolSettings{MinRunners: 1, MaxRunners: 3, IdleSeconds: 120, Bootstrap: "printf " + string(org), Placement: &policy.Placement{Mode: "local_first", TodoThreshold: 3, OverflowSlots: 2}}
+		if err := service.updateSpritePool(t.Context(), scope, settings, nil); err != nil {
+			t.Fatal(err)
+		}
+		got, row, err := service.spritePoolSettingsRecord(t.Context(), scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Revision != 1 || got.Bootstrap != settings.Bootstrap || got.MinRunners != 1 || got.MaxRunners != 3 || got.IdleSeconds != 120 || *got.Placement != *settings.Placement || row.ConfiguredBy != principal || row.BootstrapObjectKey == nil {
+			t.Fatalf("persisted settings=%+v owner=%+v", got, row)
+		}
+		command := spritePoolCommand{Mutation: tracker.Mutation{IdempotencyKey: "settings-command"}, spritePoolSettings: spritePoolSettings{Revision: 1, MinRunners: 1, MaxRunners: 4, IdleSeconds: 180}, ShareIdleCapacity: new(true)}
+		if err := service.executeSpritePoolCommand(t.Context(), scope, command); err != nil {
+			t.Fatal(err)
+		}
+		if err := service.executeSpritePoolCommand(t.Context(), scope, command); err != nil {
+			t.Fatalf("replay=%v", err)
+		}
+		for _, test := range []struct {
+			name    string
+			scope   nativeScope
+			command spritePoolCommand
+		}{
+			{"changed command", scope, spritePoolCommand{Mutation: command.Mutation, spritePoolSettings: spritePoolSettings{Revision: 1, MaxRunners: 5}}},
+			{"stale settings", scope, spritePoolCommand{spritePoolSettings: spritePoolSettings{Revision: 1, MaxRunners: 3}}},
+			{"sandbox", scope, spritePoolCommand{spritePoolSettings: spritePoolSettings{Revision: 2, MaxRunners: 3}, IsolationTier: new("sandbox")}},
+			{"foreign organization", nativeScope{organization: "org_foreign", credential: scope.credential}, command},
+			{"missing credential", nativeScope{organization: org}, command},
+			{"operator", nativeScope{organization: org, credential: apiCredential{ID: principal, Hash: principal, Scope: apiScopeOperator}}, command},
+		} {
+			t.Run(string(org)+"/"+test.name, func(t *testing.T) {
+				if err := service.executeSpritePoolCommand(t.Context(), test.scope, test.command); err == nil {
+					t.Fatal("refused command succeeded")
+				}
+			})
+		}
+		var revokeErr error
+		details.afterStore = func(attachment.ArchiveReference) {
+			details.afterStore = nil
+			revokeErr = repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.RevokeAccessCredential(t.Context(), principal, now) })
+		}
+		err = service.executeSpritePoolCommand(t.Context(), scope, spritePoolCommand{Mutation: tracker.Mutation{IdempotencyKey: "revoked-during-upload"}, spritePoolSettings: spritePoolSettings{Revision: 2, MinRunners: 1, MaxRunners: 5}, Bootstrap: new("printf changed")})
+		details.afterStore = nil
+		if revokeErr != nil || err == nil {
+			t.Fatalf("authority changed during upload: revoke=%v mutation=%v", revokeErr, err)
+		}
+		if err := service.executeSpritePoolCommand(t.Context(), scope, command); err == nil {
+			t.Fatal("revoked administrator replayed settings command")
+		}
+		if _, _, err := service.spritePoolSettingsRecord(t.Context(), scope); err == nil {
+			t.Fatal("revoked administrator read pool settings")
+		}
+	}
+	if err := repository.Close(); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), poolConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	reopened, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	for org, service := range services {
+		service.config.TenantRepository, service.config.AccessRepository = reopened, reopened
+		if err := reopened.ReadSprite(t.Context(), org, corestore.Serving, func(r postgres.SpriteReader) error {
+			row, err := r.SpritePool(t.Context())
+			if err != nil {
+				return err
+			}
+			if row.Revision != 2 || row.MaxRunners != 4 || !row.ShareIdleCapacity || row.PlacementMode != "local_first" || row.TodoThreshold != 3 || row.OverflowSlots != 2 || row.BootstrapObjectKey == nil {
+				t.Fatalf("reopened settings=%+v", row)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 func TestSpriteScaleDecision(t *testing.T) {
 	t.Parallel()
