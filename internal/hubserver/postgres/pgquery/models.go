@@ -959,6 +959,24 @@ type GithubOutbound struct {
 	PayloadSHA256       string
 	PayloadBytes        int64
 	PayloadContentBytes int64
+	Outcome             string
+	Phase               string
+	PageCursor          string
+	TargetID            int64
+	FallbackID          int64
+	Verification        int64
+	PageSequence        int64
+	SourceUpdatedAt     time.Time
+}
+
+type GithubOutboundObservation struct {
+	OrganizationID tracker.OrganizationID
+	OutboundID     int64
+	Kind           string
+	SourceKey      string
+	Verification   int64
+	Sequence       int64
+	Ready          bool
 }
 
 type GithubReconciliation struct {
