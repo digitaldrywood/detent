@@ -2,10 +2,9 @@ package hubserver
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"reflect"
 
-	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -29,13 +28,14 @@ func tenantPRPublicationRecord(authority NativeRunEventAuthority, publication tr
 }
 
 type preparedNativePRPublication struct {
-	change     eventstore.Change
-	version    eventstore.Version
-	checkpoint string
-	diff       leasestore.AttemptDiff
+	change   eventstore.Change
+	version  eventstore.Version
+	record   eventstore.NativePRPublication
+	diff     leasestore.AttemptDiff
+	retained bool
 }
 
-func (s *Service) prepareTenantPRPublication(ctx context.Context, authority *NativeRunEventAuthority) (preparedNativePRPublication, error) {
+func (s *Service) prepareTenantPRPublication(ctx context.Context, authority *NativeRunEventAuthority, previous *tracker.NativeRunData) (preparedNativePRPublication, error) {
 	data := authority.Event.Data
 	publication := tenantRunPRPublication(data)
 	if data.Handoff != nil && data.Finalization != nil && data.Handoff.Publication != nil && data.Finalization.Publication != nil && !reflect.DeepEqual(data.Handoff.Publication, data.Finalization.Publication) {
@@ -44,7 +44,7 @@ func (s *Service) prepareTenantPRPublication(ctx context.Context, authority *Nat
 	if publication == nil {
 		return preparedNativePRPublication{}, nil
 	}
-	prepared := preparedNativePRPublication{}
+	prepared := preparedNativePRPublication{record: tenantPRPublicationRecord(*authority, *publication)}
 	err := s.config.TenantRepository.ReadTenant(ctx, authority.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
 		var err error
 		prepared.change, err = reader.Change(ctx, publication.ChangeID)
@@ -55,19 +55,21 @@ func (s *Service) prepareTenantPRPublication(ctx context.Context, authority *Nat
 		if err != nil {
 			return err
 		}
-		attempt, err := reader.Attempt(ctx, data.AttemptID)
-		if err != nil {
+		stored, err := reader.PRPublication(ctx, publication.VersionID)
+		if err == nil {
+			expected := prepared.record
+			expected.RecorderAttemptID = stored.RecorderAttemptID
+			if expected != stored {
+				return corestore.ErrRevisionConflict
+			}
+			prepared.retained = true
+			return nil
+		}
+		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		if attempt.CheckpointObjectKey == nil {
-			return nativeExecutionConflict("PR publication requires its exact confirmed checkpoint")
-		}
-		prepared.checkpoint = *attempt.CheckpointObjectKey
-		prepared.diff, err = reader.AttemptDiff(ctx, authority.ProjectID, data.AttemptID, tracker.DiffGeneration{Source: "attempt", Seq: data.Sequence})
-		if err != nil {
-			return nativeExecutionConflict("PR publication requires the current fenced final diff")
-		}
-		return nil
+		prepared.diff, err = reader.LatestAttemptDiff(ctx, authority.ProjectID, data.AttemptID, tracker.DiffSourceAttempt)
+		return err
 	})
 	if err != nil {
 		return preparedNativePRPublication{}, err
@@ -80,25 +82,14 @@ func (s *Service) prepareTenantPRPublication(ctx context.Context, authority *Nat
 	if change.ProjectID != authority.ProjectID || change.WorkItemID != authority.WorkItem.NativeID || change.CurrentVersionID == nil || *change.CurrentVersionID != publication.VersionID || !version.Policy.Gates.GitHubPullRequest || !publication.Matches(publication.ChangeID, version) {
 		return preparedNativePRPublication{}, nativeExecutionConflict("PR publication no longer matches the current Change version or source")
 	}
-	store, ok := s.runDetailStore().(attachment.CanonicalDetailStore)
-	if !ok {
-		return preparedNativePRPublication{}, nativeRunEventStorageUnavailable()
-	}
-	raw, err := store.ReadCanonicalDetail(ctx, string(authority.OrganizationID), string(authority.ProjectID), prepared.checkpoint)
-	if err != nil {
-		return preparedNativePRPublication{}, err
-	}
-	var payload checkpointPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return preparedNativePRPublication{}, err
-	}
-	checkpoint := payload.Checkpoint
-	if checkpoint == nil || checkpoint.ExternalEffect != "pr_create" || checkpoint.EffectState != "confirmed" || checkpoint.EffectID != publication.EffectID("pr_create") || checkpoint.Change == nil || *checkpoint.Change != publication.SourceVersion || checkpoint.HeadSHA != publication.HeadSHA {
-		return preparedNativePRPublication{}, nativeExecutionConflict("PR publication requires its exact confirmed checkpoint")
-	}
-	diff := prepared.diff
-	if diff.WorkItemID != authority.WorkItem.NativeID || diff.Producer.LeaseID != data.LeaseID || diff.Producer.FencingToken != data.FencingToken || diff.HeadSHA != publication.HeadSHA {
-		return preparedNativePRPublication{}, corestore.ErrRevisionConflict
+	if !prepared.retained {
+		if previous == nil || previous.Handoff == nil || previous.Handoff.ExternalEffect != "pr_create" || previous.Handoff.EffectState != "confirmed" || previous.Handoff.EffectID != publication.EffectID("pr_create") || previous.Handoff.Change == nil || *previous.Handoff.Change != publication.SourceVersion || previous.Handoff.HeadSHA != publication.HeadSHA {
+			return preparedNativePRPublication{}, nativeExecutionConflict("PR publication requires its exact confirmed checkpoint")
+		}
+		diff := prepared.diff
+		if diff.WorkItemID != authority.WorkItem.NativeID || diff.Producer.ID != data.AttemptID || diff.Producer.LeaseID != data.LeaseID || diff.Producer.FencingToken != data.FencingToken || diff.HeadSHA != publication.HeadSHA || diff.Generation.Seq < data.Sequence || diff.Generation.Seq > authority.BatchThrough {
+			return preparedNativePRPublication{}, corestore.ErrRevisionConflict
+		}
 	}
 	return prepared, nil
 }
@@ -120,15 +111,26 @@ func (s *Service) validateTenantPRPublication(ctx context.Context, reader tenant
 	if err != nil {
 		return err
 	}
-	attempt, err := reader.Attempt(ctx, authority.Event.Data.AttemptID)
+	if change.OrganizationID != authority.OrganizationID || change.ProjectID != authority.ProjectID || change.WorkItemID != authority.WorkItem.NativeID || valueOrEmpty(change.CurrentVersionID) != publication.VersionID || !reflect.DeepEqual(version, prepared.version) {
+		return corestore.ErrRevisionConflict
+	}
+	if prepared.retained {
+		stored, err := reader.PRPublication(ctx, publication.VersionID)
+		if err != nil {
+			return err
+		}
+		expected := prepared.record
+		expected.RecorderAttemptID = stored.RecorderAttemptID
+		if expected != stored {
+			return corestore.ErrRevisionConflict
+		}
+		return nil
+	}
+	diff, err := reader.LatestAttemptDiff(ctx, authority.ProjectID, authority.Event.Data.AttemptID, tracker.DiffSourceAttempt)
 	if err != nil {
 		return err
 	}
-	diff, err := reader.AttemptDiff(ctx, authority.ProjectID, authority.Event.Data.AttemptID, prepared.diff.Generation)
-	if err != nil {
-		return err
-	}
-	if !reflect.DeepEqual(change, prepared.change) || !reflect.DeepEqual(version, prepared.version) || attempt.CheckpointObjectKey == nil || *attempt.CheckpointObjectKey != prepared.checkpoint || !reflect.DeepEqual(diff, prepared.diff) {
+	if !reflect.DeepEqual(diff, prepared.diff) {
 		return corestore.ErrRevisionConflict
 	}
 	return nil

@@ -27,6 +27,7 @@ import (
 )
 
 type NativeRunEventAuthority struct {
+	BatchThrough       int64
 	Termination        bool
 	Scope              nativeScope
 	OrganizationID     tracker.OrganizationID
@@ -466,7 +467,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		if err != nil {
 			return nil, err
 		}
-		authority := NativeRunEventAuthority{Termination: termination, Scope: scope, OrganizationID: scope.organization, ProjectID: scope.project, WorkItem: workItem, Lease: lease, UsageCorrection: attemptEvent.UsageCorrection, Event: event}
+		authority := NativeRunEventAuthority{BatchThrough: events[len(events)-1].Data.Sequence, Termination: termination, Scope: scope, OrganizationID: scope.organization, ProjectID: scope.project, WorkItem: workItem, Lease: lease, UsageCorrection: attemptEvent.UsageCorrection, Event: event}
 		if i == len(events)-1 && usageFactsFound && !termination {
 			facts := usageFacts
 			authority.UsageFacts = &facts
@@ -477,7 +478,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			authority.UsageCosts = costs
 		}
 		if !termination && tenantRunPRPublication(event.Data) != nil {
-			publication, err := s.prepareTenantPRPublication(ctx, &authority)
+			publication, err := s.prepareTenantPRPublication(ctx, &authority, predecessor)
 			if err != nil {
 				return nil, err
 			}
