@@ -182,7 +182,7 @@ func TestChatMutationRequiresConfirmationAndUsesKanbanHandler(t *testing.T) {
 
 func TestChatPriorityRequiresConfirmationAndUsesPriorityHandler(t *testing.T) {
 	t.Parallel()
-	backend := openWebTestStore(t)
+	backend := &authKeyStoreFixture{keys: make(map[string]store.APIKey)}
 	priorityConnector := &chatPriorityConnector{kanbanActionConnector: &kanbanActionConnector{name: "memory"}}
 	deps := testDeps(t)
 	deps.Store = backend
@@ -225,7 +225,7 @@ func TestChatPriorityRequiresConfirmationAndUsesPriorityHandler(t *testing.T) {
 
 func TestChatConfirmationEnforcesAPIKeyProjectScope(t *testing.T) {
 	t.Parallel()
-	backend := openWebTestStore(t)
+	backend := &authKeyStoreFixture{keys: make(map[string]store.APIKey)}
 	actionConnector := &kanbanActionConnector{name: "memory"}
 	deps := testDeps(t)
 	deps.Store = backend

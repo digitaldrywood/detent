@@ -60,7 +60,7 @@ func TestPrivateDashboardAccessComposesWithMagicLinkAuth(t *testing.T) {
 
 	token := privateDashboardTestToken(7)
 	deps := testDeps(t)
-	deps.Store = openWebTestStore(t)
+	deps.Store = &webAuthStoreFixture{}
 	deps.MagicLinkSender = &webAuthSender{}
 	server, err := web.NewServer(web.Config{
 		DashboardURL: "http://detent.test",
