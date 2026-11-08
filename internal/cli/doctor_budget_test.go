@@ -16,6 +16,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -41,6 +42,9 @@ func TestDoctorBudgetOverridesShowsActiveOverride(t *testing.T) {
 				for _, id := range []tracker.ProjectID{"prj_quiet", "prj_busy"} {
 					row, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: id, Name: string(id), Slug: strings.TrimPrefix(string(id), "prj_"), Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}})
 					if err != nil {
+						return err
+					}
+					if err := w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, ProjectID: id, TokenID: "worker_" + string(organization)}); err != nil {
 						return err
 					}
 					row.Settings.WorkflowKey, row.Settings.WorkflowSHA256, row.Settings.WorkflowBytes, row.Settings.WorkflowContentBytes = ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize
@@ -203,6 +207,14 @@ func TestDoctorBudgetOverridesShowsActiveOverride(t *testing.T) {
 		worker, err := api.New(api.Config{URL: server.URL, HTTPClient: server.Client(), TokenSource: func() string { return token + "-worker" }})
 		if err != nil {
 			t.Fatal(err)
+		}
+		workerNative, err := worker.Native(tracker.OrganizationID(organization), "prj_quiet")
+		if err != nil {
+			t.Fatal(err)
+		}
+		workerValue, err := newHubBudgetSessionStore(workerNative, "quiet").ActiveBudgetOverride(t.Context(), "quiet", now)
+		if err != nil || workerValue.PerDayMaxUSD == nil || *workerValue.PerDayMaxUSD != 210 {
+			t.Fatalf("enrolled runtime override=%+v error=%v", workerValue, err)
 		}
 		err = worker.Request(t.Context(), http.MethodPut, native.Scope()+"/budget-override", request, nil)
 		if !errors.As(err, &apiError) || apiError.Status != http.StatusForbidden {
