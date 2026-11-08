@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -66,7 +67,7 @@ func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeSco
 	}
 	prepared, sessionMachine, err := s.prepareValidatorReviewRecord(ctx, scope, change, version, versionRow, request)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("prepare validator review: %w", err)
 	}
 
 	now, err := s.database.currentTime()
@@ -192,6 +193,11 @@ func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeSco
 	}
 	for {
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if prepared != nil {
+				if _, err := w.RunnerForLease(ctx, string(request.LeaseID)); err != nil {
+					return fmt.Errorf("lock review runner: %w", err)
+				}
+			}
 			var transition *changeWorkflowTransition
 			if workflowPlan != nil {
 				transition = workflowPlan.transition
@@ -248,7 +254,7 @@ func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeSco
 				}
 			}
 			if err := s.lockValidatorReviewRecord(ctx, w, scope, change, request, prepared); err != nil {
-				return err
+				return fmt.Errorf("lock validator review: %w", err)
 			}
 			if request.Bundle != nil {
 				ref, err := w.ArtifactReference(ctx, scope.project, change.WorkItemID, request.Bundle.ArtifactID, request.Bundle.Revision)
@@ -269,13 +275,13 @@ func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeSco
 			}
 			workflowCurrent, err := s.recheckChangeReviewWorkflow(ctx, w, scope, workflowPlan, currentChange)
 			if err != nil {
-				return err
+				return fmt.Errorf("recheck review workflow: %w", err)
 			}
 			if _, err := w.AppendEvidence(ctx, evidence); err != nil {
-				return err
+				return fmt.Errorf("append review evidence: %w", err)
 			}
 			if _, err := w.AppendEvent(ctx, event); err != nil {
-				return err
+				return fmt.Errorf("append review event: %w", err)
 			}
 			if instructions != nil {
 				if _, err := w.CreateComment(ctx, instructions.comment); err != nil {
@@ -290,7 +296,7 @@ func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeSco
 			}
 			if transitionReady && workflowCurrent {
 				if err := s.applyChangeWorkflowTransition(ctx, w, scope, transition); err != nil {
-					return err
+					return fmt.Errorf("apply review workflow: %w", err)
 				}
 			}
 			_, err = w.PutReceipt(ctx, receipt)
