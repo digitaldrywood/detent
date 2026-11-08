@@ -2711,6 +2711,22 @@ type OrganizationSlug struct {
 	Slug           string
 }
 
+type OrganizationSpritePool struct {
+	OrganizationID     tracker.OrganizationID
+	MinRunners         int32
+	MaxRunners         int32
+	IdleSeconds        int32
+	BootstrapObjectKey *string
+	ConfiguredBy       string
+	Revision           int64
+	IsolationTier      string
+	ShareIdleCapacity  bool
+	PlacementMode      string
+	TodoThreshold      int32
+	OverflowSlots      int32
+	MaxSpriteSlots     int32
+}
+
 type PlatformAccessKey struct {
 	ID                    string
 	TokenHash             string
@@ -3721,6 +3737,16 @@ type ProjectSlug struct {
 	ProjectID      tracker.ProjectID
 }
 
+type ProjectSpriteAllocation struct {
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	DesiredCount      int32
+	Revision          int64
+	ProvisionFailures int64
+	RequestedAt       time.Time
+	ConfiguredBy      string
+}
+
 type ProjectWorkflowApply struct {
 	OrganizationID           tracker.OrganizationID
 	ProjectID                tracker.ProjectID
@@ -4720,6 +4746,19 @@ type SearchScopeRefresh struct {
 	PrincipalID    string
 	AfterID        string
 	RefreshOrder   int64
+}
+
+type SpriteLifecycleOperation struct {
+	OrganizationID   tracker.OrganizationID
+	IdempotencyKey   string
+	Name             string
+	Operation        string
+	Outcome          string
+	ReceiptObjectKey *string
+	Attempts         int64
+	NextAttemptAt    time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 type StorageConversionCursor struct {
