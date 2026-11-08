@@ -154,8 +154,17 @@ func (s *session) ChangeReviewEvidence(ctx context.Context, change, version stri
 	if err != nil {
 		return nil, false, err
 	}
-	if before.CurrentVersionID == nil || *before.CurrentVersionID != version || before.EvidenceSequence != through || before.ReviewSummarySequence != through {
+	if before.CurrentVersionID == nil || *before.CurrentVersionID != version || before.EvidenceSequence != through {
 		return nil, false, corestore.ErrRevisionConflict
+	}
+	if before.ReviewSummarySequence != through {
+		current, err := s.queries.RecordChangeReviewSummaryCurrent(ctx, pgquery.RecordChangeReviewSummaryCurrentParams{OrganizationID: s.organization, ChangeID: change, SummarySequence: before.ReviewSummarySequence})
+		if err != nil {
+			return nil, false, mapError(ctx, err)
+		}
+		if !current {
+			return nil, false, corestore.ErrRevisionConflict
+		}
 	}
 	sequences, err := s.queries.RecordCurrentChangeReviewSequences(ctx, pgquery.RecordCurrentChangeReviewSequencesParams{OrganizationID: s.organization, ChangeID: change, VersionID: version, ReviewingActor: actor, Through: through})
 	if err != nil {
@@ -196,6 +205,7 @@ func (s *session) ChangeReviewEvidence(ctx context.Context, change, version stri
 	if err != nil {
 		return nil, false, err
 	}
+	after.ReviewSummarySequence = before.ReviewSummarySequence
 	if !reflect.DeepEqual(before, after) {
 		return nil, false, corestore.ErrRevisionConflict
 	}

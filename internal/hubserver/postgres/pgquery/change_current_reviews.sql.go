@@ -11,6 +11,27 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const recordChangeReviewSummaryCurrent = `-- name: RecordChangeReviewSummaryCurrent :one
+SELECT NOT EXISTS (
+ SELECT 1 FROM change_evidence
+ WHERE organization_id=$1 AND change_id=$2
+ AND kind='review' AND sequence>$3::bigint
+) AS current
+`
+
+type RecordChangeReviewSummaryCurrentParams struct {
+	OrganizationID  tracker.OrganizationID
+	ChangeID        string
+	SummarySequence int64
+}
+
+func (q *Queries) RecordChangeReviewSummaryCurrent(ctx context.Context, arg RecordChangeReviewSummaryCurrentParams) (bool, error) {
+	row := q.db.QueryRow(ctx, recordChangeReviewSummaryCurrent, arg.OrganizationID, arg.ChangeID, arg.SummarySequence)
+	var current bool
+	err := row.Scan(&current)
+	return current, err
+}
+
 const recordCurrentChangeEvidenceBySequences = `-- name: RecordCurrentChangeEvidenceBySequences :many
 SELECT organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, review_kind, review_landing, review_session_known, review_session_id, review_session_machine FROM change_evidence WHERE organization_id=$1 AND change_id=$2
 AND sequence=ANY($3::bigint[]) ORDER BY sequence

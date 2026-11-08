@@ -1562,6 +1562,17 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 			if err != nil || len(rows) != 2 || rows[0].Sequence != 450 || rows[1].Sequence != 500 {
 				t.Fatalf("legacy review not recovered: rows=%+v error=%v", rows, err)
 			}
+			discussion, err := f.content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: org, ChangeID: f.change.ID, Kind: "discussion"}, historyJSON(t, tracker.ChangeDiscussion{ID: "current_discussion", VersionID: f.version.ID, Body: "Current feedback", Actor: historyActor(), CreatedAt: historyAt()}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := appendRow(t.Context(), discussion); err != nil {
+				t.Fatal(err)
+			}
+			neutralRows, err := read(501)
+			if err != nil || !reflect.DeepEqual(rows, neutralRows) {
+				t.Fatalf("discussion invalidated current review evidence: rows=%+v error=%v", neutralRows, err)
+			}
 			for _, test := range []struct {
 				name  string
 				tip   int64

@@ -145,7 +145,9 @@ func (s *Service) recheckChangeReviewWorkflow(ctx context.Context, w tenantstore
 	if p == nil {
 		return false, nil
 	}
-	if p.current.ID != "" && !reflect.DeepEqual(current, p.current) {
+	expected := p.current
+	expected.ReviewSummarySequence = current.ReviewSummarySequence
+	if p.current.ID != "" && !reflect.DeepEqual(current, expected) {
 		return false, corestore.ErrRevisionConflict
 	}
 	if len(p.audits) > 0 {

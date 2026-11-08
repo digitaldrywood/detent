@@ -41,3 +41,10 @@ AND h.review_kind='human_prior_approval')) AS approved;
 -- name: RecordPendingChangeReviewSummary :one
 SELECT * FROM change_requests WHERE organization_id=sqlc.arg(organization_id) AND review_summary_sequence<evidence_sequence AND id>sqlc.arg(after_id)
 ORDER BY id LIMIT 1;
+
+-- name: RecordChangeReviewSummaryCurrent :one
+SELECT NOT EXISTS (
+ SELECT 1 FROM change_evidence
+ WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id)
+ AND kind='review' AND sequence>sqlc.arg(summary_sequence)::bigint
+) AS current;
