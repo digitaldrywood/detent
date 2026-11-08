@@ -1,7 +1,6 @@
 package invariants
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -27,12 +26,6 @@ var sqliteEngine = regexp.MustCompile(`(?mi)(?:^|[{},])\s*(?:-\s*)?["']?engine["
 
 var sqliteGoose = regexp.MustCompile(`(?mi)^\s*(?:(?:override|export)\s+)?GOOSE_DRIVER\s*(?::|\?|\+)?=\s*["']?sqlite3?["']?(?:\s|$)`)
 
-type sqliteSource struct {
-	name    string
-	imports []string
-	counts  map[string]int
-}
-
 func TestRepositorySQLite(t *testing.T) {
 	if *sqliteShrink {
 		if err := shrinkSQLitePolicy(repositoryRoot(t)); err != nil {
@@ -41,16 +34,7 @@ func TestRepositorySQLite(t *testing.T) {
 		return
 	}
 	t.Parallel()
-	root := os.DirFS(repositoryRoot(t))
-	data, err := fs.ReadFile(root, "internal/invariants/sqlite_policy.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var policy sqlitePolicy
-	if err := json.Unmarshal(data, &policy); err != nil {
-		t.Fatal(err)
-	}
-	for _, problem := range checkSQLitePolicy(root, policy) {
+	for _, problem := range checkSQLiteRepository(repositoryRoot(t)) {
 		t.Error(problem)
 	}
 }
@@ -102,7 +86,6 @@ func sqliteCountProblems(file string, current, baseline map[string]int) []string
 
 func scanSQLite(root fs.FS) (sqlitePolicy, error) {
 	current := sqlitePolicy{Files: make(map[string]map[string]int), Modules: make(map[string]map[string]int)}
-	moduleName := ""
 	for _, file := range []string{"go.mod", "go.sum"} {
 		data, err := fs.ReadFile(root, file)
 		if file == "go.sum" && errors.Is(err, fs.ErrNotExist) {
@@ -115,15 +98,12 @@ func scanSQLite(root fs.FS) (sqlitePolicy, error) {
 		for line := range strings.SplitSeq(string(data), "\n") {
 			line, _, _ = strings.Cut(line, "//")
 			fields := strings.Fields(line)
-			if file == "go.mod" && len(fields) == 2 && fields[0] == "module" {
-				moduleName = strings.Trim(fields[1], `"`)
-			}
 			if file == "go.sum" && len(fields) > 0 {
 				fields = fields[:1]
 			}
 			for _, field := range fields {
 				module := strings.Trim(field, `"`)
-				if strings.Contains(module, "/") && sqliteDriver(module) {
+				if strings.Contains(module, "/") && !strings.HasPrefix(module, ".") && !path.IsAbs(module) && sqliteDriver(module) {
 					counts[module]++
 				}
 			}
@@ -132,7 +112,6 @@ func scanSQLite(root fs.FS) (sqlitePolicy, error) {
 			current.Modules[file] = counts
 		}
 	}
-	var sources []sqliteSource
 	sqlFiles := make(map[string][]byte)
 	migrationDirs := []string{"internal/store/migrations", "internal/hubserver/migrations", "internal/hubserver/migration_steps", "internal/hubserver/testdata/migrations", "internal/artifact/migrations"}
 	err := fs.WalkDir(root, ".", func(file string, entry fs.DirEntry, err error) error {
@@ -158,12 +137,10 @@ func scanSQLite(root fs.FS) (sqlitePolicy, error) {
 		counts := make(map[string]int)
 		switch {
 		case extension == ".go":
-			var imports []string
-			counts, imports, err = sqliteSourceCounts(file, data)
+			counts, err = sqliteSourceCounts(file, data)
 			if err != nil {
 				return err
 			}
-			sources = append(sources, sqliteSource{name: file, imports: imports, counts: counts})
 		case extension == ".sql":
 			sqlFiles[file] = data
 			return nil
@@ -198,7 +175,6 @@ func scanSQLite(root fs.FS) (sqlitePolicy, error) {
 			current.Files[file] = counts
 		}
 	}
-	sqliteWrapperCounts(moduleName, sources, current.Files)
 	return current, nil
 }
 
@@ -245,67 +221,28 @@ func sqliteSchemaPaths(file, data string) []string {
 	return paths
 }
 
-func sqliteWrapperCounts(module string, sources []sqliteSource, files map[string]map[string]int) {
-	reverse := make(map[string][]string)
-	tainted := make(map[string]bool)
-	var pending []string
-	for _, source := range sources {
-		if strings.HasSuffix(source.name, "_test.go") {
-			continue
-		}
-		owner := path.Join(module, path.Dir(source.name))
-		if len(source.counts) > 0 && !tainted[owner] {
-			tainted[owner] = true
-			pending = append(pending, owner)
-		}
-		for _, imported := range source.imports {
-			reverse[imported] = append(reverse[imported], owner)
-		}
-	}
-	for i := 0; i < len(pending); i++ {
-		for _, importer := range reverse[pending[i]] {
-			if !tainted[importer] {
-				tainted[importer] = true
-				pending = append(pending, importer)
-			}
-		}
-	}
-	for _, source := range sources {
-		for _, imported := range source.imports {
-			if tainted[imported] && !sqliteDriver(imported) {
-				if files[source.name] == nil {
-					files[source.name] = make(map[string]int)
-				}
-				files[source.name]["wrapper_import"]++
-			}
-		}
-	}
-}
-
 func sqliteDriver(module string) bool {
 	module = strings.ToLower(module)
 	return strings.Contains(module, "sqlite") || strings.Contains(module, "sqlcipher") || strings.Contains(module, "libsql") || strings.HasPrefix(module, "turso.tech/database")
 }
 
-func sqliteSourceCounts(name string, data []byte) (map[string]int, []string, error) {
+func sqliteSourceCounts(name string, data []byte) (map[string]int, error) {
 	file, err := parser.ParseFile(token.NewFileSet(), name, data, parser.SkipObjectResolution)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse Go source: %w", err)
+		return nil, fmt.Errorf("parse Go source: %w", err)
 	}
 	counts := make(map[string]int)
 	imports := make(map[string]string)
-	var imported []string
 	for _, spec := range file.Imports {
 		module, err := strconv.Unquote(spec.Path.Value)
 		if err != nil {
-			return nil, nil, fmt.Errorf("parse import: %w", err)
+			return nil, fmt.Errorf("parse import: %w", err)
 		}
 		alias := path.Base(module)
 		if spec.Name != nil {
 			alias = spec.Name.Name
 		}
 		imports[alias] = module
-		imported = append(imported, module)
 		if sqliteDriver(module) {
 			counts["driver_import"]++
 		}
@@ -348,7 +285,7 @@ func sqliteSourceCounts(name string, data []byte) (map[string]int, []string, err
 		}
 		return true
 	})
-	return counts, imported, nil
+	return counts, nil
 }
 
 func sqliteString(expression ast.Expr) (string, bool) {
@@ -447,12 +384,12 @@ func TestSQLitePolicyViolations(t *testing.T) {
 			allow: map[string]map[string]int{"internal/example/new.go": {"driver_import": 1}},
 		},
 		{
-			name: "wrapper chain import", source: `package fixture; import renamed "example.org/project/internal/outer"; var open = renamed.Open`, kind: "wrapper_import", want: "internal/example/new.go: SQLite wrapper_import count 1 exceeds frozen baseline 0",
+			name: "wrapper imports do not create per-file debt", source: `package fixture; import renamed "example.org/project/internal/outer"; var open = renamed.Open`,
 			files: map[string]string{
 				"internal/driver/driver.go": importSource,
 				"internal/outer/outer.go":   `package outer; import _ "example.org/project/internal/driver"`,
 			},
-			allow: map[string]map[string]int{"internal/driver/driver.go": {"driver_import": 1}, "internal/outer/outer.go": {"wrapper_import": 1}},
+			allow: map[string]map[string]int{"internal/driver/driver.go": {"driver_import": 1}},
 		},
 		{
 			name: "test dependency does not taint production wrapper", source: `package fixture; import _ "example.org/project/internal/driver"`,
