@@ -1193,7 +1193,7 @@ type preparedDefaultReviewPolicy struct {
 
 func defaultFollowingReviewPolicy(current tracker.ChangeReviewPolicy, descriptor policy.Descriptor) (tracker.ChangeReviewPolicy, bool) {
 	rules := defaultChangeReviewPolicy(descriptor)
-	if current.ID != "" && (current.ID == rules.ID || !followsRepositoryGate(current)) {
+	if current.ID != "" && (current.PolicyID == descriptor.ID || !followsRepositoryGate(current)) {
 		return rules, false
 	}
 	return rules, changerequest.ValidatePolicy(rules, descriptor) == nil

@@ -1516,6 +1516,34 @@ func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 
 }
 
+func TestDefaultFollowingReviewPolicy(t *testing.T) {
+	t.Parallel()
+	descriptor := hubTestPolicy()
+	manual := defaultChangeReviewPolicy(descriptor)
+	manual.RequireReview = true
+	manual.ID = changerequest.PolicyID(manual)
+	previous := defaultChangeReviewPolicy(descriptor)
+	previous.PolicyID = "policy_previous"
+	previous.ID = changerequest.PolicyID(previous)
+	for _, test := range []struct {
+		name       string
+		current    tracker.ChangeReviewPolicy
+		wantFollow bool
+	}{
+		{name: "preserve manual review on unchanged policy", current: manual},
+		{name: "preserve unchanged default", current: defaultChangeReviewPolicy(descriptor)},
+		{name: "seed missing default", wantFollow: true},
+		{name: "follow newly approved repository policy", current: previous, wantFollow: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, follow := defaultFollowingReviewPolicy(test.current, descriptor)
+			if follow != test.wantFollow {
+				t.Fatalf("rewrite review policy = %t, want %t", follow, test.wantFollow)
+			}
+		})
+	}
+}
+
 func seedNativeFixturePolicy(t *testing.T, s *Service, scope string) {
 	t.Helper()
 	seedNativeFixturePolicyContext(t.Context(), t, s, scope)
