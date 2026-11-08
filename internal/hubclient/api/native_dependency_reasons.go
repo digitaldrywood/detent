@@ -114,7 +114,7 @@ func (c *NativeClient) dependencyReasonIssue(ctx context.Context, id tracker.Nat
 		return issue, err
 	}
 	var recovery tracker.NativeRecovery
-	if err := c.client.request(ctx, http.MethodGet, c.base()+path+"/recovery", nil, &recovery); err != nil {
+	if err := c.client.request(ctx, http.MethodGet, c.base()+path+"?view=recovery&projection=bounded&detail=summary", nil, &recovery); err != nil {
 		return issue, err
 	}
 	if recovery.Issue.WorkItemID != id || recovery.Issue.ProjectID != c.project || recovery.Issue.OrganizationID != c.organization {

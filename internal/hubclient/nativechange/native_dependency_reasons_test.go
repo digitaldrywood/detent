@@ -1,7 +1,11 @@
 package nativechange
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -19,6 +23,30 @@ func TestNativeDependencyReasonRefresh(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			hub := newNativeChangeHub(t, true)
+			requests := fixtureClient(hub.admin.Transport()).requests
+			transport := requests.Load()
+			requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				response, err := transport.RoundTrip(request)
+				item := strings.TrimPrefix(request.URL.Path, hub.admin.Scope()+"/work-items/")
+				if err != nil || response.StatusCode != http.StatusOK || request.Method != http.MethodGet || item == request.URL.Path || strings.Contains(item, "/") || request.URL.Query().Has("view") {
+					return response, err
+				}
+				var issue tracker.NativeIssue
+				decodeErr := json.NewDecoder(response.Body).Decode(&issue)
+				if err := errors.Join(decodeErr, response.Body.Close()); err != nil {
+					return nil, err
+				}
+				issue.OmittedFields = append(issue.OmittedFields, "blockers", "dependents", "blocked_reason", "unblocks_reason")
+				issue.Dependencies, issue.Blockers, issue.Dependents = nil, nil, nil
+				issue.BlockedReason, issue.UnblocksReason = tracker.DependencyReason{}, tracker.DependencyReason{}
+				payload, err := json.Marshal(issue)
+				if err != nil {
+					return nil, err
+				}
+				response.Body, response.ContentLength = io.NopCloser(bytes.NewReader(payload)), int64(len(payload))
+				response.Header.Del("Content-Length")
+				return response, nil
+			}))
 			dependencyIssue := func(ctx context.Context, id tracker.NativeWorkItemID) (tracker.NativeIssue, error) {
 				recovery, err := hub.native.Recovery(ctx, id)
 				return recovery.Issue, err
@@ -152,16 +180,16 @@ func TestNativeOutcomeRefreshesDependencyReasonsAndUsage(t *testing.T) {
 	if err := execution.Finish(t.Context(), "failed"); err != nil {
 		t.Fatal(err)
 	}
-	current, err := hub.native.Issue(t.Context(), dependent.WorkItemID)
+	current, err := hub.native.Recovery(t.Context(), dependent.WorkItemID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	neighbor, err := hub.native.Issue(t.Context(), blocker.WorkItemID)
+	neighbor, err := hub.native.Recovery(t.Context(), blocker.WorkItemID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 2 || current.BlockedReason.Text == "" || neighbor.UnblocksReason.Text == "" {
-		t.Fatalf("outcome did not refresh endpoints: calls=%d reasons=%+v %+v", calls, current.BlockedReason, neighbor.UnblocksReason)
+	if calls != 2 || current.Issue.BlockedReason.Text == "" || neighbor.Issue.UnblocksReason.Text == "" {
+		t.Fatalf("outcome did not refresh endpoints: calls=%d reasons=%+v %+v", calls, current.Issue.BlockedReason, neighbor.Issue.UnblocksReason)
 	}
 	attempts, err := hub.admin.AttemptsDetailPage(t.Context(), dependent.WorkItemID, "", 100)
 	if err != nil {
