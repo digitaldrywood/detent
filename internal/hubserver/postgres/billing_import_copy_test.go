@@ -1,135 +1,78 @@
 package postgres_test
 
 import (
-	"database/sql"
 	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	_ "modernc.org/sqlite"
-
-	"github.com/digitaldrywood/detent/internal/storagecatalog"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type importCopyColumn struct {
-	Ordinal int
-	Name    string
-	Type    string
-	NotNull int
-	Default any
-	Primary int
-	Hidden  int
+type neutralBillingFixture struct {
+	organization tracker.OrganizationID
+	tables       []postgres.NeutralImportTable
+	records      map[string][]postgres.NeutralImportRow
 }
 
-type billingImportCopy struct {
-	path string
-	db   *sql.DB
-}
-
-func newBillingImportCopy(t *testing.T, catalog storagecatalog.Catalog, tables ...string) billingImportCopy {
+func newNeutralBillingFixture(t *testing.T, organization tracker.OrganizationID, names ...string) *neutralBillingFixture {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "hub-copy.sqlite")
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	copy := billingImportCopy{path: path, db: db}
-	for _, name := range tables {
-		definition, ok := catalog.Tables["hub/"+name]
-		if !ok {
-			t.Fatalf("missing catalog table %s", name)
-		}
-		columns := make([]importCopyColumn, 0, len(definition.Columns))
-		for _, column := range definition.Columns {
-			var parsed importCopyColumn
+	fixture := &neutralBillingFixture{organization: organization, records: map[string][]postgres.NeutralImportRow{}}
+	for _, name := range names {
+		table := neutralFixtureTable(t, name, nil)
+		positions := map[int]postgres.NeutralImportKey{}
+		for column, signature := range table.Columns {
 			var fields []json.RawMessage
-			if err := json.Unmarshal([]byte(column.Source), &fields); err != nil {
+			if err := json.Unmarshal([]byte(signature), &fields); err != nil {
 				t.Fatal(err)
 			}
-			if len(fields) != 7 {
-				t.Fatalf("source signature fields=%d", len(fields))
+			var position int
+			var kind string
+			if err := json.Unmarshal(fields[5], &position); err != nil {
+				t.Fatal(err)
 			}
-			for index, field := range fields {
-				var err error
-				switch index {
-				case 0:
-					err = json.Unmarshal(field, &parsed.Ordinal)
-				case 1:
-					err = json.Unmarshal(field, &parsed.Name)
-				case 2:
-					err = json.Unmarshal(field, &parsed.Type)
-				case 3:
-					err = json.Unmarshal(field, &parsed.NotNull)
-				case 4:
-					err = json.Unmarshal(field, &parsed.Default)
-				case 5:
-					err = json.Unmarshal(field, &parsed.Primary)
-				case 6:
-					err = json.Unmarshal(field, &parsed.Hidden)
-				}
-				if err != nil {
-					t.Fatal(err)
-				}
+			if err := json.Unmarshal(fields[2], &kind); err != nil {
+				t.Fatal(err)
 			}
-			columns = append(columns, parsed)
+			if position == 0 {
+				continue
+			}
+			keyKind := "text"
+			if strings.Contains(strings.ToUpper(kind), "INT") {
+				keyKind = "integer"
+			}
+			positions[position] = postgres.NeutralImportKey{Column: column, Kind: keyKind}
 		}
-		for left := range columns {
-			for right := left + 1; right < len(columns); right++ {
-				if columns[right].Ordinal < columns[left].Ordinal {
-					columns[left], columns[right] = columns[right], columns[left]
-				}
+		for position := 1; position <= len(positions); position++ {
+			key, ok := positions[position]
+			if !ok {
+				t.Fatal("non-contiguous primary key")
 			}
+			table.Key = append(table.Key, key)
 		}
-		var ddl, primary []string
-		for _, column := range columns {
-			statement := `"` + strings.ReplaceAll(column.Name, `"`, `""`) + `" ` + column.Type
-			if column.NotNull == 1 {
-				statement += " NOT NULL"
-			}
-			if column.Default != nil {
-				statement += " DEFAULT " + fmt.Sprint(column.Default)
-			}
-			ddl = append(ddl, statement)
-			if column.Primary > 0 {
-				if len(primary) < column.Primary {
-					primary = append(primary, make([]string, column.Primary-len(primary))...)
-				}
-				primary[column.Primary-1] = `"` + strings.ReplaceAll(column.Name, `"`, `""`) + `"`
-			}
+		if len(table.Key) == 0 {
+			t.Fatal("missing primary key")
 		}
-		if len(primary) == 1 && strings.HasPrefix(columns[primaryPosition(columns, primary[0])].Type, "INTEGER") && columns[primaryPosition(columns, primary[0])].NotNull == 0 {
-			ddl[primaryPosition(columns, primary[0])] += " PRIMARY KEY"
-		} else if len(primary) > 0 {
-			ddl = append(ddl, "PRIMARY KEY ("+strings.Join(primary, ",")+")")
-		}
-		if _, err := db.Exec(`CREATE TABLE "` + strings.ReplaceAll(name, `"`, `""`) + `" (` + strings.Join(ddl, ",") + ")"); err != nil {
-			t.Fatalf("create %s source table: %v", name, err)
-		}
+		fixture.tables = append(fixture.tables, table)
 	}
-	t.Cleanup(func() { _ = copy.db.Close() })
-	return copy
+	return fixture
 }
-
-func primaryPosition(columns []importCopyColumn, quoted string) int {
-	name := strings.Trim(quoted, `"`)
-	for i, column := range columns {
-		if column.Name == name {
-			return i
-		}
-	}
-	return 0
-}
-
-func (c billingImportCopy) seal(t *testing.T) string {
+func (f *neutralBillingFixture) add(t *testing.T, name string, values map[string]any) {
 	t.Helper()
-	if err := c.db.Close(); err != nil {
-		t.Fatal(err)
+	for _, table := range f.tables {
+		if table.Name == name {
+			row := neutralFixtureRow(t, table, values)
+			if row.SourceRowID == 0 {
+				row.SourceRowID = int64(len(f.records[name])) + 1
+			}
+			f.records[name] = append(f.records[name], row)
+			return
+		}
 	}
-	if err := os.Chmod(c.path, 0o400); err != nil {
-		t.Fatal(err)
-	}
-	return c.path
+	t.Fatal("missing fixture table")
+}
+func (f *neutralBillingFixture) seal(t *testing.T) string {
+	t.Helper()
+	directory, _ := writeNeutralFixture(t, f.organization, f.tables, f.records)
+	return directory
 }

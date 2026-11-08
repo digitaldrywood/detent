@@ -3,7 +3,7 @@ package postgres_test
 import (
 	"bytes"
 	"context"
-	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -30,47 +30,41 @@ func TestConversationHistoryImportPreservesTenantHistoryAndAttachmentBytes(t *te
 		t.Fatalf("catalog source schema: %v", err)
 	}
 	tables := []string{"conversations", "conversation_messages", "conversation_questions", "conversation_commands", "conversation_events", "conversation_starts", "conversation_audience_events", "conversation_turn_batches", "conversation_tool_revisions", "message_references", "conversation_attachments", "conversation_attachment_blobs", "attachments"}
-	copy := newBillingImportCopy(t, catalog, tables...)
+	copies := map[tracker.OrganizationID]string{}
 	now := "2026-11-01T18:00:00.123456Z"
 	objects := &countingHistoryObjects{base: newHistoryObjects(), storedPayloads: make(map[string]int)}
 	archiveReferences := make(map[tracker.OrganizationID]attachment.ArchiveReference)
 	archivePayloads := make(map[tracker.OrganizationID]string)
-	for _, organization := range []string{"org_first", "org_second"} {
-		conversationID := "conversation_" + organization
-		messageID := "message_" + organization
-		artifactRef := "artifact_" + organization
-		blob := []byte("conversation attachment " + organization)
-		if _, err := copy.db.ExecContext(t.Context(), `INSERT INTO conversations(id,organization_id,project_id,owner_principal_id,origin,title,visibility,status,execution_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, conversationID, organization, "prj_shared", "first", "user", "Example conversation", "private", "active", "{}", now, now); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := copy.db.ExecContext(t.Context(), `INSERT INTO conversation_messages(id,conversation_id,seq,role,kind,text,data_json,delivery,actor_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, messageID, conversationID, 1, "user", "text", "Example message", "{}", "saved", "{}", now, now); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := copy.db.ExecContext(t.Context(), `INSERT INTO conversation_attachments(id,conversation_id,principal_id,name,mime,size,artifact_ref,created_at) VALUES(?,?,?,?,?,?,?,?)`, "attachment_"+organization, conversationID, "first", "example.txt", "text/plain", len(blob), artifactRef, now); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := copy.db.ExecContext(t.Context(), `INSERT INTO conversation_attachment_blobs(artifact_ref,content) VALUES(?,?)`, artifactRef, blob); err != nil {
-			t.Fatal(err)
-		}
-		archiveID := "archive_" + organization
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		copy := newNeutralBillingFixture(t, organization, tables...)
+		archiveID := "archive_" + string(organization)
 		archiveBytes := []byte(`{"body":"preserved existing archive"}`)
-		archivePayloads[tracker.OrganizationID(organization)] = organization + "\x00" + string(archiveBytes)
-		archiveRef, err := objects.StoreDetail(t.Context(), organization, archiveBytes)
+		archivePayloads[organization] = string(organization) + "\x00" + string(archiveBytes)
+		archiveRef, err := objects.StoreDetail(t.Context(), string(organization), archiveBytes)
 		if err != nil {
 			t.Fatal(err)
 		}
-		archiveReferences[tracker.OrganizationID(organization)] = archiveRef
-		if _, err := copy.db.ExecContext(t.Context(), `UPDATE conversation_messages SET content_attachment_id=? WHERE id=?`, archiveID, messageID); err != nil {
-			t.Fatal(err)
+		archiveReferences[organization] = archiveRef
+		copy.add(t, "attachments", map[string]any{"id": archiveID, "organization_id": organization, "project_id": "prj_shared", "uploader": "first", "name": "history.json.gz", "content_type": "application/gzip", "size": archiveRef.CompressedSize, "sha256": archiveRef.SHA256, "created_at": now, "kind": "archive", "retention_class": "organization", "object_key": archiveRef.Key, "uncompressed_size": archiveRef.UncompressedSize, "codec": archiveRef.Codec, "schema_version": archiveRef.SchemaVersion, "storage_binding_id": "", "customer_owned": 0})
+		for _, suffix := range []string{"", "_second"} {
+			conversationID := "conversation_" + string(organization) + suffix
+			messageID := "message_" + string(organization) + suffix
+			artifactRef := "artifact_" + string(organization) + suffix
+			blob := append([]byte("conversation attachment "+string(organization)+suffix), 0, 255, 128)
+			copy.add(t, "conversations", map[string]any{"id": conversationID, "organization_id": organization, "project_id": "prj_shared", "owner_principal_id": "first", "origin": "user", "title": "Example conversation", "visibility": "private", "status": "active", "execution_json": "{}", "created_at": now, "updated_at": now})
+			copy.add(t, "conversation_messages", map[string]any{"id": messageID, "conversation_id": conversationID, "seq": 1, "role": "user", "kind": "text", "text": "Example message", "data_json": "{}", "delivery": "saved", "actor_json": "{}", "created_at": now, "updated_at": now, "content_attachment_id": archiveID})
+			copy.add(t, "conversation_attachments", map[string]any{"id": "attachment_" + string(organization) + suffix, "conversation_id": conversationID, "principal_id": "first", "name": "example.txt", "mime": "text/plain", "size": len(blob), "artifact_ref": artifactRef, "created_at": now})
+			copy.add(t, "conversation_attachment_blobs", map[string]any{"artifact_ref": artifactRef, "content": blob})
 		}
-		if _, err := copy.db.ExecContext(t.Context(), `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at,kind,retention_class,object_key,uncompressed_size,codec,schema_version,storage_binding_id,customer_owned) VALUES(?,?,?,?,?,?,?,?,?,'archive','organization',?,?,?,?,'',0)`, archiveID, organization, "prj_shared", "first", "history.json.gz", "application/gzip", archiveRef.CompressedSize, archiveRef.SHA256, now, archiveRef.Key, archiveRef.UncompressedSize, archiveRef.Codec, archiveRef.SchemaVersion); err != nil {
-			t.Fatal(err)
+		for position, target := range []string{"z-work", "a-work"} {
+			copy.add(t, "message_references", map[string]any{"message_id": "message_" + string(organization), "conversation_id": "conversation_" + string(organization), "target_kind": "issue", "target_id": target, "label": target, "created_at": now})
+			copy.records["message_references"][position].SourcePosition = new(int64(position))
 		}
+		copies[organization] = copy.seal(t)
 	}
-	copyPath := copy.seal(t)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedTenantAccess(t, repository, organization)
-		source := postgres.ConversationHistoryImportSource{CopyPath: copyPath, Catalog: catalog, Schema: schemaFromCatalogForTest(catalog), Objects: objects, Source: storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(organization)}}
+		source := postgres.ConversationHistoryImportSource{BundlePath: copies[organization], Catalog: catalog, Schema: schemaFromCatalogForTest(catalog), Objects: objects, Source: storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(organization)}}
 		storesBefore, readsBefore := objects.stores, objects.reads
 		objects.failKey = archiveReferences[organization].Key
 		if _, err := repository.ImportConversationHistory(t.Context(), source); !errors.Is(err, os.ErrNotExist) {
@@ -82,16 +76,41 @@ func TestConversationHistoryImportPreservesTenantHistoryAndAttachmentBytes(t *te
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.Rows != 3 {
-				t.Fatalf("imported rows=%d want 3", result.Rows)
+			if result.Rows != 8 {
+				t.Fatalf("imported rows=%d want 8", result.Rows)
 			}
 		}
-		if objects.stores-storesBefore != 4 || objects.reads-readsBefore != 6 || objects.storedPayloads[archivePayloads[organization]] != 1 {
-			t.Fatalf("archive import store/read calls = %d/%d, original payload stores=%d; want 4/6 including source-pin verification and the existing archive stored once", objects.stores-storesBefore, objects.reads-readsBefore, objects.storedPayloads[archivePayloads[organization]])
+		if objects.stores-storesBefore != 8 || objects.reads-readsBefore != 10 || objects.storedPayloads[archivePayloads[organization]] != 1 {
+			t.Fatalf("archive import store/read calls = %d/%d, original payload stores=%d; want 8/10 including source-manifest verification and two attachment objects and the existing archive stored once", objects.stores-storesBefore, objects.reads-readsBefore, objects.storedPayloads[archivePayloads[organization]])
 		}
+		if err := repository.Close(); err != nil {
+			t.Fatal(err)
+		}
+		repository, _ = repositoryFor(t, admin, smallPool())
 		conversationID := "conversation_" + string(organization)
 		messageID := "message_" + string(organization)
 		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			references, err := reader.MessageReferences(t.Context(), conversationID, messageID)
+			if err != nil {
+				return err
+			}
+			if len(references) != 2 || references[0].TargetID != "z-work" || references[1].TargetID != "a-work" {
+				t.Fatalf("reference order changed: %+v", references)
+			}
+			second, err := reader.ConversationByID(t.Context(), conversationID+"_second")
+			if err != nil {
+				return err
+			}
+			if second.MessageCount != 1 || second.OrganizationID != organization {
+				t.Fatalf("second conversation=%+v", second)
+			}
+			secondMessage, err := reader.Message(t.Context(), conversationID+"_second", messageID+"_second")
+			if err != nil {
+				return err
+			}
+			if secondMessage.Sequence != 1 || secondMessage.Text != "Example message" {
+				t.Fatalf("second message=%+v", secondMessage)
+			}
 			conversation, err := reader.ConversationByID(t.Context(), conversationID)
 			if err != nil {
 				return err
@@ -124,57 +143,61 @@ func TestConversationHistoryImportPreservesTenantHistoryAndAttachmentBytes(t *te
 		}); err != nil {
 			t.Fatal(err)
 		}
-		var contentID string
-		if err := admin.QueryRowContext(t.Context(), `SELECT content_attachment_id FROM conversation_attachments WHERE organization_id=$1 AND id=$2`, organization, "attachment_"+string(organization)).Scan(&contentID); err != nil {
-			t.Fatal(err)
-		}
-		if contentID == "" {
-			t.Fatal("attachment has no archived content reference")
-		}
-		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
-			object, err := reader.ConversationContent(t.Context(), contentID)
-			if err != nil {
-				return err
+		for _, suffix := range []string{"", "_second"} {
+			var contentID string
+			if err := admin.QueryRowContext(t.Context(), `SELECT content_attachment_id FROM conversation_attachments WHERE organization_id=$1 AND id=$2`, organization, "attachment_"+string(organization)+suffix).Scan(&contentID); err != nil {
+				t.Fatal(err)
 			}
-			actual, err := objects.ReadDetail(t.Context(), string(organization), object.Reference)
-			if err != nil {
-				return err
+			if contentID == "" {
+				t.Fatal("attachment has no archived content reference")
 			}
-			if !bytes.Equal(actual, []byte("conversation attachment "+string(organization))) {
-				t.Fatal("imported attachment bytes changed")
+			if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				object, err := reader.ConversationContent(t.Context(), contentID)
+				if err != nil {
+					return err
+				}
+				actual, err := objects.ReadDetail(t.Context(), string(organization), object.Reference)
+				if err != nil {
+					return err
+				}
+				if !bytes.Equal(actual, append([]byte("conversation attachment "+string(organization)+suffix), 0, 255, 128)) {
+					t.Fatal("imported attachment bytes changed")
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
 			}
-			return nil
-		}); err != nil {
-			t.Fatal(err)
 		}
 	}
-	changedBytes, err := os.ReadFile(copyPath)
+	manifestPath := filepath.Join(copies["org_first"], "manifest.json")
+	changedBytes, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	changedPath := filepath.Join(t.TempDir(), "changed.sqlite")
-	if err := os.WriteFile(changedPath, changedBytes, 0600); err != nil {
+	var manifest postgres.NeutralImportManifest
+	if err := json.Unmarshal(changedBytes, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	changed, err := sql.Open("sqlite", changedPath)
+	manifest.Identity.SourceID = "changed-source"
+	changedBytes, err = json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := changed.ExecContext(t.Context(), `DELETE FROM conversations WHERE organization_id='org_first'`); err != nil {
+	if err := os.Chmod(manifestPath, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := changed.Close(); err != nil {
+	if err := os.WriteFile(manifestPath, changedBytes, 0400); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(changedPath, 0400); err != nil {
+	if err := os.Chmod(manifestPath, 0400); err != nil {
 		t.Fatal(err)
 	}
-	changedSource := postgres.ConversationHistoryImportSource{CopyPath: changedPath, Catalog: catalog, Schema: schemaFromCatalogForTest(catalog), Objects: objects, Source: storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: catalog.Version, OrganizationID: "org_first"}}
+	changedSource := postgres.ConversationHistoryImportSource{BundlePath: copies["org_first"], Catalog: catalog, Schema: schemaFromCatalogForTest(catalog), Objects: objects, Source: storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: catalog.Version, OrganizationID: "org_first"}}
 	if _, err := repository.ImportConversationHistory(t.Context(), changedSource); !errors.Is(err, mutation.ErrConflict) {
 		t.Fatalf("changed source copy error=%v", err)
 	}
 	var count int
-	if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM conversation_attachments`).Scan(&count); err != nil || count != 2 {
+	if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM conversation_attachments`).Scan(&count); err != nil || count != 4 {
 		t.Fatalf("conversation attachment count=%d error=%v", count, err)
 	}
 }

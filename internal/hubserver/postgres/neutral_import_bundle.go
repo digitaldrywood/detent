@@ -59,10 +59,11 @@ type NeutralImportPage struct {
 	Last   []string `json:"last"`
 }
 type NeutralImportRow struct {
-	SourceRowID int64                          `json:"source_row_id,omitempty"`
-	Ordinal     int64                          `json:"-"`
-	Key         []string                       `json:"key"`
-	Values      map[string]storagecatalog.Cell `json:"values"`
+	SourcePosition *int64                         `json:"source_position,omitempty"`
+	SourceRowID    int64                          `json:"source_row_id,omitempty"`
+	Ordinal        int64                          `json:"-"`
+	Key            []string                       `json:"key"`
+	Values         map[string]storagecatalog.Cell `json:"values"`
 }
 type VerifiedNeutralImport struct {
 	pageOffsets map[string]int64
@@ -273,7 +274,7 @@ func (s *VerifiedNeutralImport) page(ctx context.Context, table NeutralImportTab
 	}
 	var previous []string
 	for _, row := range rows {
-		if row.SourceRowID < 0 {
+		if row.SourceRowID < 0 || row.SourcePosition != nil && *row.SourcePosition < 0 {
 			return nil, ErrNeutralImport
 		}
 		if row.SourceRowID > 0 && len(table.Key) == 1 && table.Key[0].Column == "id" && table.Key[0].Kind == "integer" {
@@ -292,7 +293,7 @@ func (s *VerifiedNeutralImport) page(ctx context.Context, table NeutralImportTab
 			if cell.Encoding == "utf8" && !utf8.Valid(cell.Data) {
 				return nil, ErrNeutralImport
 			}
-			if cell.Null && (cell.Encoding != "" || len(cell.Data) != 0) || !cell.Null && cell.Encoding != "utf8" && cell.Encoding != "base64" && cell.Encoding != "hex" {
+			if cell.Null && (cell.Encoding != "" || len(cell.Data) != 0) || !cell.Null && cell.Encoding != "utf8" && cell.Encoding != "base64" && cell.Encoding != "hex" && cell.Encoding != "binary" {
 				return nil, ErrNeutralImport
 			}
 		}

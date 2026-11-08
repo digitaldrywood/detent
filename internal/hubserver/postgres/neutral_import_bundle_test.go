@@ -1,6 +1,7 @@
 package postgres_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -70,6 +71,10 @@ func neutralFixtureRow(t *testing.T, table postgres.NeutralImportTable, values m
 		}
 		if value == nil {
 			row.Values[name] = storagecatalog.Cell{Null: true}
+			continue
+		}
+		if data, ok := value.([]byte); ok {
+			row.Values[name] = storagecatalog.Cell{Encoding: "binary", Data: bytes.Clone(data)}
 			continue
 		}
 		text := fmt.Sprint(value)
@@ -209,10 +214,17 @@ func TestNeutralImportBundleVerifiesBeforeReadAndSeeksCompositeKeys(t *testing.T
 	}
 }
 func TestNeutralImportBundleRejectsMalformedSourcesBeforeCallback(t *testing.T) {
-	for _, scenario := range []string{"version", "schema version", "tenant", "checksum", "key order", "path escape", "writable page", "schema drift"} {
+	for _, scenario := range []string{"version", "schema version", "tenant", "checksum", "key order", "path escape", "writable page", "schema drift", "duplicate source row ID", "negative source position"} {
 		t.Run(scenario, func(t *testing.T) {
 			table := neutralFixtureTable(t, "projects", []postgres.NeutralImportKey{{Column: "id", Kind: "text"}})
 			records := []postgres.NeutralImportRow{neutralFixtureRow(t, table, map[string]any{"organization_id": "org_first", "id": "project_a"}), neutralFixtureRow(t, table, map[string]any{"organization_id": "org_first", "id": "project_b"})}
+			if scenario == "duplicate source row ID" {
+				records[0].SourceRowID = 7
+				records[1].SourceRowID = 7
+			}
+			if scenario == "negative source position" {
+				records[0].SourcePosition = new(int64(-1))
+			}
 			directory, manifest := writeNeutralFixture(t, "org_first", []postgres.NeutralImportTable{table}, map[string][]postgres.NeutralImportRow{"projects": records})
 			switch scenario {
 			case "schema drift":
@@ -261,72 +273,4 @@ func TestNeutralImportBundleRejectsMalformedSourcesBeforeCallback(t *testing.T) 
 			}
 		})
 	}
-}
-
-type neutralBillingFixture struct {
-	organization tracker.OrganizationID
-	tables       []postgres.NeutralImportTable
-	records      map[string][]postgres.NeutralImportRow
-}
-
-func newNeutralBillingFixture(t *testing.T, organization tracker.OrganizationID, names ...string) *neutralBillingFixture {
-	t.Helper()
-	fixture := &neutralBillingFixture{organization: organization, records: map[string][]postgres.NeutralImportRow{}}
-	for _, name := range names {
-		table := neutralFixtureTable(t, name, nil)
-		positions := map[int]postgres.NeutralImportKey{}
-		for column, signature := range table.Columns {
-			var fields []json.RawMessage
-			if err := json.Unmarshal([]byte(signature), &fields); err != nil {
-				t.Fatal(err)
-			}
-			var position int
-			var kind string
-			if err := json.Unmarshal(fields[5], &position); err != nil {
-				t.Fatal(err)
-			}
-			if err := json.Unmarshal(fields[2], &kind); err != nil {
-				t.Fatal(err)
-			}
-			if position == 0 {
-				continue
-			}
-			keyKind := "text"
-			if strings.Contains(strings.ToUpper(kind), "INT") {
-				keyKind = "integer"
-			}
-			positions[position] = postgres.NeutralImportKey{Column: column, Kind: keyKind}
-		}
-		for position := 1; position <= len(positions); position++ {
-			key, ok := positions[position]
-			if !ok {
-				t.Fatal("non-contiguous primary key")
-			}
-			table.Key = append(table.Key, key)
-		}
-		if len(table.Key) == 0 {
-			t.Fatal("missing primary key")
-		}
-		fixture.tables = append(fixture.tables, table)
-	}
-	return fixture
-}
-func (f *neutralBillingFixture) add(t *testing.T, name string, values map[string]any) {
-	t.Helper()
-	for _, table := range f.tables {
-		if table.Name == name {
-			row := neutralFixtureRow(t, table, values)
-			if row.SourceRowID == 0 {
-				row.SourceRowID = int64(len(f.records[name])) + 1
-			}
-			f.records[name] = append(f.records[name], row)
-			return
-		}
-	}
-	t.Fatal("missing fixture table")
-}
-func (f *neutralBillingFixture) seal(t *testing.T) string {
-	t.Helper()
-	directory, _ := writeNeutralFixture(t, f.organization, f.tables, f.records)
-	return directory
 }

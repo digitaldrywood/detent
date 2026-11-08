@@ -1539,15 +1539,8 @@
     "internal/hubserver/postgres/access_import_copy_test.go": {
       "sqlite_open": 1
     },
-    "internal/hubserver/postgres/billing_import_copy_test.go": {
-      "driver_import": 1,
-      "sqlite_open": 1
-    },
     "internal/hubserver/postgres/conversation_billing_import.go": {
       "sql_pragma_table": 1
-    },
-    "internal/hubserver/postgres/conversation_history_import_test.go": {
-      "sqlite_open": 1
     },
     "internal/hubserver/postgres/core_cutover_source_test.go": {
       "sqlite_open": 1
