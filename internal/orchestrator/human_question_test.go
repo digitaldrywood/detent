@@ -15,10 +15,6 @@ import (
 )
 
 func TestINV14DispatchQuestionTool(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, tc := range []struct {
 		name, gateKind, passState string
@@ -40,7 +36,7 @@ func TestINV14DispatchQuestionTool(t *testing.T) {
 				AutoPromote:         AutoPromoteConfig{Enabled: tc.enabled, PassState: tc.passState, Gate: gate.Config{Kind: tc.gateKind}},
 			})
 			worker := newWorkerHostRunner()
-			o := Orchestrator{cfg: cfg, connector: fakehub.New(fakehub.Config{}), workAttempts: openWorkAttemptRecoveryStore(t, t.Context()), supervisor: newTestSupervisor(t, worker, cfg), runResults: make(chan runner.Completion, 1)}
+			o := Orchestrator{cfg: cfg, connector: fakehub.New(fakehub.Config{}), workAttempts: &recordingWorkAttemptStore{}, supervisor: newTestSupervisor(t, worker, cfg), runResults: make(chan runner.Completion, 1)}
 			state := newState(cfg)
 			if !o.dispatchIssue(t.Context(), &state, dispatchTestIssue("issue", "Todo"), 1, time.Now(), "") {
 				t.Fatal("dispatch did not start")
