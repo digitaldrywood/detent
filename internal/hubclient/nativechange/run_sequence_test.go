@@ -1,6 +1,7 @@
 package nativechange
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"strings"
@@ -115,9 +116,18 @@ func TestDeferredNativePublisherDoesNotReuseIdentity(t *testing.T) {
 			if e.data.AttemptID == attempt {
 				t.Fatal("retry reused a deferred attempt")
 			}
-			e.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("c"), "README.md"))
+			retryBase, retryHead := nativeChangeFixtureHead("b"), nativeChangeFixtureHead("d")
+			retryDiff := nativeChangeDiff(retryHead, "README.md")
+			e.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
+				diff, ok := retryDiff(ctx)
+				diff.BaseSHA = retryBase
+				return diff, ok
+			})
 			e.SetRepository(nativeChangeRepository)
 			if err := e.Checkpoint(t.Context(), tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unpushed", ExternalEffect: "none", EffectState: "none"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.RecordSourceValidation(t.Context(), gate.CommandResult{Command: "go test ./internal/example", HeadSHA: retryHead, TreeSHA: strings.Repeat("b", 40), DurationNS: 1, StartedAt: time.Now().UTC().Add(-time.Second), FinishedAt: time.Now().UTC()}); err != nil {
 				t.Fatal(err)
 			}
 			if err := e.PrepareFinish(t.Context(), "succeeded", "", nil); err != nil {
@@ -125,6 +135,10 @@ func TestDeferredNativePublisherDoesNotReuseIdentity(t *testing.T) {
 			}
 			if change := e.NativeChange(); change == nil || change.ChangeID != changeID || change.VersionID == "" || change.VersionError != "" {
 				t.Fatalf("retry did not publish: %+v", change)
+			}
+			detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), changeID)
+			if err != nil || len(detail.Versions) != 1 || detail.Versions[0].BaseSHA != retryBase || detail.Versions[0].HeadSHA != retryHead || detail.Versions[0].Validation == nil {
+				t.Fatalf("retry did not retain its validated source: versions=%+v error=%v", detail.Versions, err)
 			}
 		})
 	}
