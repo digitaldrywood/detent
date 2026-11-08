@@ -567,13 +567,20 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 	return nil
 }
 
+func (e *nativeExecution) settledPublication() *tracker.NativePRPublication {
+	if e.change == nil || !e.settled || !e.change.Changed || e.change.Error != "" || e.change.VersionError != "" {
+		return nil
+	}
+	return e.publication
+}
+
 func (e *nativeExecution) preparedFinalization() *tracker.NativeFinalization {
 	change := e.change
 	if change == nil {
 		return nil
 	}
 	finalization := (tracker.NativeFinalization{
-		NoChange: change.NoChange, Publication: e.publication,
+		NoChange: change.NoChange, Publication: e.settledPublication(),
 		ObservedAt: e.scheduler.now().UTC(), Settled: e.settled,
 		Changed: change.Changed, Files: change.Files, ChangeID: change.ChangeID,
 		VersionID: change.VersionID, BaseSHA: change.BaseSHA, HeadSHA: change.HeadSHA,

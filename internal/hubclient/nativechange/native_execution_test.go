@@ -30,23 +30,31 @@ import (
 
 func TestPreparedPublicationRequiresCurrentCompletion(t *testing.T) {
 	for _, test := range []struct {
-		name      string
-		head      string
-		effect    string
-		wantError bool
+		name         string
+		head         string
+		effect       string
+		unchanged    bool
+		unsettled    bool
+		sourceError  string
+		versionError string
+		wantError    bool
 	}{
 		{name: "confirmed source", head: "published-head", effect: "confirmed"},
 		{name: "moved final head", head: "changed-head", effect: "confirmed", wantError: true},
 		{name: "ambiguous effect", head: "published-head", effect: "ambiguous", wantError: true},
+		{name: "unchanged source omits publication claim", head: "published-head", effect: "confirmed", unchanged: true},
+		{name: "unsettled source omits publication claim", head: "published-head", effect: "confirmed", unsettled: true},
+		{name: "unavailable source retains its failure", head: "published-head", effect: "confirmed", sourceError: "source unavailable"},
+		{name: "refused version retains its failure", head: "published-head", effect: "confirmed", versionError: "version refused"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			publication := &tracker.NativePRPublication{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}
 			checkpoint := &tracker.NativeCheckpoint{HeadSHA: "published-head", ExternalEffect: "pr_create", EffectState: test.effect, EffectID: publication.EffectID("pr_create"), Change: &tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}}
 			execution := &nativeExecution{
 				scheduler: &executionAuthority{now: time.Now},
-				role:      runner.RoleCode, settled: true, storedSeq: 2,
+				role:      runner.RoleCode, settled: !test.unsettled, storedSeq: 2,
 				data:          tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: runner.RoleCode}, Handoff: checkpoint},
-				change:        &runner.NativeChange{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"},
+				change:        &runner.NativeChange{Changed: !test.unchanged, ChangeID: "change", VersionID: "version", HeadSHA: "published-head", Error: test.sourceError, VersionError: test.versionError},
 				publication:   publication,
 				lastDiff:      &tracker.AttemptDiffRequest{HeadSHA: "published-head"},
 				worktreeState: "clean", worktreeHead: "published-head",
@@ -54,11 +62,22 @@ func TestPreparedPublicationRequiresCurrentCompletion(t *testing.T) {
 					return tracker.AttemptDiffRequest{HeadSHA: test.head}, true
 				},
 			}
-			if err := execution.prepareFinish(t.Context(), "succeeded"); (err != nil) != test.wantError {
-				t.Fatalf("prepared publication completion error = %v, want refusal %t", err, test.wantError)
+			if !test.unsettled {
+				if err := execution.prepareFinish(t.Context(), "succeeded"); (err != nil) != test.wantError {
+					t.Fatalf("prepared publication completion error = %v, want refusal %t", err, test.wantError)
+				}
 			}
 			if execution.data.Outcome != "" || execution.data.Finalization != nil {
 				t.Fatal("completion validation published a terminal outcome")
+			}
+			if test.unchanged || test.unsettled || test.sourceError != "" || test.versionError != "" {
+				finalization := execution.preparedFinalization()
+				if finalization.Publication != nil || finalization.Error != test.sourceError || finalization.VersionError != test.versionError {
+					t.Fatalf("incomplete source finalization = %+v", finalization)
+				}
+				if execution.publication != publication || execution.data.Handoff != checkpoint {
+					t.Fatal("incomplete settlement discarded publication recovery evidence")
+				}
 			}
 		})
 	}
@@ -1181,16 +1200,18 @@ func TestNativeRejectedReviewCheckpointReleasesClaim(t *testing.T) {
 
 func TestNativeDeterministicCompletionReleasesCapacity(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		observed bool
-		status   int
-		code     string
+		name           string
+		observed       bool
+		status         int
+		code           string
+		versionRefused bool
 	}{
-		{"lost identical acknowledgment", true, 200, ""},
-		{"review observation conflict", true, 409, "run_sequence_conflict"},
-		{"changed idempotency payload", true, 409, "idempotency_conflict"},
-		{"terminal issue contract rejection", false, 422, "invalid_request"},
-		{"review observation validation rejection", true, 422, "invalid_request"},
+		{name: "lost identical acknowledgment", observed: true, status: 200},
+		{name: "review observation conflict", observed: true, status: 409, code: "run_sequence_conflict"},
+		{name: "changed idempotency payload", observed: true, status: 409, code: "idempotency_conflict"},
+		{name: "terminal issue contract rejection", status: 422, code: "invalid_request"},
+		{name: "review observation validation rejection", observed: true, status: 422, code: "invalid_request"},
+		{name: "cached publication retains terminal version refusal", versionRefused: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			h := newNativeChangeHub(t, true)
@@ -1212,6 +1233,26 @@ func TestNativeDeterministicCompletionReleasesCapacity(t *testing.T) {
 			}
 			publication := tracker.NativePRPublication{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, Repository: "https://github.com/owner/repository", Branch: "work/completion", External: tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: "https://github.com/owner/repository/pull/7"}}
 			e.publication = &publication
+			if test.versionRefused {
+				publication.PolicyID, publication.BaseRef = version.PolicyID, "main"
+				source.ExternalEffect, source.EffectState, source.EffectID = "pr_create", "confirmed", publication.EffectID("pr_create")
+				source.Change = &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}
+				e.data.Handoff = &source
+				e.settled, e.storedSeq = true, e.data.Sequence+1
+				e.lastDiff = &tracker.AttemptDiffRequest{BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA}
+				e.change = &runner.NativeChange{Changed: true, ChangeID: change.ID, VersionID: version.ID, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, VersionError: "source version refused"}
+				if err := e.Finish(t.Context(), "succeeded"); err != nil {
+					t.Fatalf("finish refused source: %v", err)
+				}
+				recovery, err := h.admin.Recovery(t.Context(), item)
+				if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "failed" || recovery.Attempts[0].Finalization == nil || recovery.Attempts[0].Finalization.VersionError != "source version refused" || recovery.Attempts[0].Finalization.Publication != nil {
+					t.Fatalf("version refusal was not retained as terminal failure: %+v, %v", recovery.Attempts, err)
+				}
+				if e.publication != &publication || e.data.Handoff == nil || e.data.Handoff.EffectState != "confirmed" || e.data.Handoff.EffectID != publication.EffectID("pr_create") {
+					t.Fatal("terminal failure discarded confirmed publication recovery evidence")
+				}
+				return
+			}
 			client := e.claim.source.NativeClient().Transport()
 			next := fixtureClient(client).requests.Load()
 			committed := false
