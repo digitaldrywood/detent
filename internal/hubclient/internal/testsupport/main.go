@@ -1,14 +1,25 @@
 package testsupport
 
 import (
+	"context"
+	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 func RunMain(m *testing.M, cleanups ...func() error) int {
+	flag.Parse()
+	timeout, err := time.ParseDuration(flag.Lookup("test.timeout").Value.String())
+	if err != nil || timeout <= 0 {
+		panic("PostgreSQL fixtures require a nonzero go test -timeout")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
 	}
@@ -39,8 +50,17 @@ func RunMain(m *testing.M, cleanups ...func() error) int {
 	code := m.Run()
 	for _, cleanup := range cleanups {
 		if err := cleanup(); err != nil {
-			panic(err)
+			fmt.Fprintln(os.Stderr, err)
+			code = 1
 		}
+	}
+	if err := CloseNativeChangePostgres(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = 1
+	}
+	if err := CloseDispatchPostgres(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = 1
 	}
 	if err := os.RemoveAll(scratch); err != nil {
 		panic(err)
