@@ -3,9 +3,6 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
-	"errors"
-	"reflect"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -31,7 +28,12 @@ func (r *Repository) InitializeAccessCopyOrganization(ctx context.Context, sourc
 }
 
 func (r *Repository) importAccessCopy(ctx context.Context, source AccessCopyImportSource, organizationOnly bool) (int64, error) {
-	if (source.CopyPath == "") == (source.BundlePath == "") || source.OrganizationID == "" || source.Objects == nil {
+	if source.CopyPath != "" {
+		return 0, ErrNeutralImport
+
+	}
+
+	if source.BundlePath == "" || source.OrganizationID == "" || source.Objects == nil {
 		return 0, ErrAccessImport
 	}
 	if err := source.Catalog.Validate(); err != nil {
@@ -57,11 +59,11 @@ func (r *Repository) importAccessCopy(ctx context.Context, source AccessCopyImpo
 		if err != nil {
 			return err
 		}
-		if input.neutral != nil {
-			if err := importer.pinNeutralAccessSource(ctx); err != nil {
-				return err
-			}
+
+		if err := importer.pinNeutralAccessSource(ctx); err != nil {
+			return err
 		}
+
 		if organizationOnly {
 			checkpoint, err := importer.start(ctx)
 			if err != nil {
@@ -82,69 +84,17 @@ func (r *Repository) importAccessCopy(ctx context.Context, source AccessCopyImpo
 			}
 		}
 	}
-	if source.BundlePath != "" {
-		err := ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *VerifiedNeutralImport) error {
-			return run(AccessImportSource{neutral: bundle, SnapshotID: bundle.Identity().SourceSHA256})
-		})
-		return processed, err
-	}
-	err := ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, digest string) error {
-		if err := r.PinCoreImportSource(ctx, source.OrganizationID, digest, source.Objects); err != nil {
-			return err
-		}
-		return run(AccessImportSource{copyTx: tx, SnapshotID: digest})
+
+	err := ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *VerifiedNeutralImport) error {
+		return run(AccessImportSource{neutral: bundle, SnapshotID: bundle.Identity().SourceSHA256})
 	})
 	return processed, err
 }
 
 func (i *AccessImporter) sourceCollation() string {
-	if i.source.copyTx != nil {
-		return "BINARY"
-	}
 	return `"C"`
 }
 
 func (i *AccessImporter) querySource(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	if i.source.copyTx != nil {
-		return i.source.copyTx.QueryContext(ctx, query, args...)
-	}
 	return i.source.DB.QueryContext(ctx, query, args...)
-}
-
-func (i *AccessImporter) validateCopyTable(ctx context.Context, table string) error {
-	rows, err := i.querySource(ctx, `SELECT cid,name,type,"notnull",dflt_value,pk,hidden FROM pragma_table_xinfo(?)`, table)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	expected := i.source.Schema[table]
-	seen := make(map[string]bool, len(expected))
-	for rows.Next() {
-		var ordinal, notNull, primary, hidden int
-		var name, columnType string
-		var defaultValue sql.NullString
-		if err := rows.Scan(&ordinal, &name, &columnType, &notNull, &defaultValue, &primary, &hidden); err != nil {
-			return err
-		}
-		var actualDefault any
-		if defaultValue.Valid {
-			actualDefault = defaultValue.String
-		}
-		actual, err := json.Marshal([]any{ordinal, name, columnType, notNull, actualDefault, primary, hidden})
-		if err != nil {
-			return err
-		}
-		var left, right any
-		if json.Unmarshal(actual, &left) != nil || json.Unmarshal([]byte(expected[name]), &right) != nil || !reflect.DeepEqual(left, right) {
-			return storagecatalog.ErrUnmapped
-		}
-		seen[name] = true
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
-	}
-	if len(seen) != len(expected) || len(seen) == 0 {
-		return storagecatalog.ErrUnmapped
-	}
-	return nil
 }

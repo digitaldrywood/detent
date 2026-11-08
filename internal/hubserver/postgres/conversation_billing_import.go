@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -28,7 +27,6 @@ type ConversationBillingImportSource struct {
 	Source     storagecatalog.Source
 	Schema     storagecatalog.Schema
 	Objects    attachment.DetailStore
-	copyTx     *sql.Tx
 	snapshotID string
 }
 
@@ -38,8 +36,13 @@ type ConversationBillingImportResult struct {
 }
 
 func (r *Repository) ImportConversationBilling(ctx context.Context, source ConversationBillingImportSource) (ConversationBillingImportResult, error) {
+	if source.CopyPath != "" {
+		return ConversationBillingImportResult{}, ErrNeutralImport
+
+	}
+
 	var result ConversationBillingImportResult
-	if (source.CopyPath == "") == (source.BundlePath == "") || source.Objects == nil || source.Source.Store != "hub" || strings.TrimSpace(source.Source.OrganizationID) != source.Source.OrganizationID || source.Source.OrganizationID == "" {
+	if source.BundlePath == "" || source.Objects == nil || source.Source.Store != "hub" || strings.TrimSpace(source.Source.OrganizationID) != source.Source.OrganizationID || source.Source.OrganizationID == "" {
 		return result, errors.New("invalid conversation billing import source")
 	}
 	if source.Schema == nil {
@@ -50,42 +53,22 @@ func (r *Repository) ImportConversationBilling(ctx context.Context, source Conve
 		return result, err
 	}
 	organization := tracker.OrganizationID(source.Source.OrganizationID)
-	if source.BundlePath != "" {
-		err := ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) error {
-			for _, table := range []struct {
-				name string
-				keys []string
-			}{{"conversation_prices", []string{"id"}}, {"conversation_usage", []string{"organization_id", "turn_id"}}} {
-				if err := bundle.ValidateCatalogTable(source.Catalog, source.Schema, table.name, table.keys); err != nil {
-					return err
-				}
-			}
-			if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
-				return err
-			}
-			source.neutral, source.snapshotID = bundle, bundle.Identity().SourceSHA256
-			var err error
-			result, err = r.importConversationBillingCopy(ctx, source)
-			return err
-		})
-		return result, err
-	}
-	err := ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, digest string) error {
-		for _, table := range []string{"conversation_prices", "conversation_usage"} {
-			keys := []string{"id"}
-			if table == "conversation_usage" {
-				keys = []string{"organization_id", "turn_id"}
-			}
-			if err := validateConversationBillingCopyTable(ctx, tx, source.Catalog, source.Schema, table, keys); err != nil {
+
+	err := ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) error {
+		for _, table := range []struct {
+			name string
+			keys []string
+		}{{"conversation_prices", []string{"id"}}, {"conversation_usage", []string{"organization_id", "turn_id"}}} {
+			if err := bundle.ValidateCatalogTable(source.Catalog, source.Schema, table.name, table.keys); err != nil {
 				return err
 			}
 		}
-		if err := r.PinCoreImportSource(ctx, organization, digest, source.Objects); err != nil {
+		if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
 			return err
 		}
-		source.copyTx, source.snapshotID = tx, digest
-		imported, err := r.importConversationBillingCopy(ctx, source)
-		result = imported
+		source.neutral, source.snapshotID = bundle, bundle.Identity().SourceSHA256
+		var err error
+		result, err = r.importConversationBillingCopy(ctx, source)
 		return err
 	})
 	return result, err
@@ -154,7 +137,7 @@ func (r *Repository) importConversationBillingCopy(ctx context.Context, source C
 		}
 		var after []any
 		for {
-			page, next, err := readConversationBillingPage(ctx, source.copyTx, source, binding, table.name, columns, table.keys, after)
+			page, next, err := readConversationBillingPage(ctx, source, binding, table.name, columns, table.keys, after)
 			if err != nil {
 				return result, err
 			}
@@ -207,141 +190,6 @@ func importConversationBillingRow(ctx context.Context, w tenantstore.Writer, org
 	return err
 }
 
-func validateConversationBillingCopyTable(ctx context.Context, tx *sql.Tx, catalog storagecatalog.Catalog, schema storagecatalog.Schema, table string, keys []string) error {
-	if tx == nil || len(keys) == 0 {
-		return storagecatalog.ErrUnmapped
-	}
-	definition, ok := catalog.Tables["hub/"+table]
-	if !ok || len(definition.Columns) == 0 || len(schema[table]) != len(definition.Columns) {
-		return storagecatalog.ErrUnmapped
-	}
-	rows, err := tx.QueryContext(ctx, `SELECT cid,name,type,"notnull",dflt_value,pk,hidden FROM pragma_table_xinfo(?) ORDER BY cid`, table)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	seen := make(map[string]bool, len(schema[table]))
-	primary := make([]string, len(keys))
-	for rows.Next() {
-		var ordinal, notNull, primaryKey, hidden int
-		var name, columnType string
-		var defaultValue sql.NullString
-		if err := rows.Scan(&ordinal, &name, &columnType, &notNull, &defaultValue, &primaryKey, &hidden); err != nil {
-			return err
-		}
-		mapping, exists := definition.Columns[name]
-		if !exists || schema[table][name] != mapping.Source {
-			return storagecatalog.ErrUnmapped
-		}
-		var actualDefault any
-		if defaultValue.Valid {
-			actualDefault = defaultValue.String
-		}
-		actual, err := json.Marshal([]any{ordinal, name, columnType, notNull, actualDefault, primaryKey, hidden})
-		if err != nil || !sameSourceSignature(actual, mapping.Source) {
-			return storagecatalog.ErrUnmapped
-		}
-		if primaryKey > 0 {
-			if primaryKey > len(primary) {
-				return storagecatalog.ErrUnmapped
-			}
-			primary[primaryKey-1] = name
-		}
-		seen[name] = true
-	}
-	err = errors.Join(rows.Err(), rows.Close())
-	if err != nil {
-		return err
-	}
-	if len(seen) != len(schema[table]) || !slices.Equal(primary, keys) {
-		return storagecatalog.ErrUnmapped
-	}
-	return validateImportCopyPrimaryIndex(ctx, tx, table, keys)
-}
-
-func readConversationBillingPage(ctx context.Context, tx *sql.Tx, source ConversationBillingImportSource, binding *storagecatalog.Binding, table string, columns, keys []string, after []any) ([]map[string]storagecatalog.Value, []any, error) {
-	if source.neutral != nil {
-		return readNeutralConversationBillingPage(ctx, source, binding, table, columns, keys, after)
-	}
-	quoted := make([]string, len(columns))
-	for n, name := range columns {
-		quoted[n] = `CAST("` + strings.ReplaceAll(name, `"`, `""`) + `" AS TEXT)`
-	}
-	order := make([]string, len(keys))
-	for n, name := range keys {
-		order[n] = `"` + strings.ReplaceAll(name, `"`, `""`) + `" COLLATE BINARY`
-	}
-	query := strings.Join([]string{"SELECT", strings.Join(quoted, ","), "FROM", `"` + strings.ReplaceAll(table, `"`, `""`) + `"`}, " ")
-	args := make([]any, 0, len(after)+1)
-	if table == "conversation_usage" {
-		query += " WHERE organization_id = ?"
-		args = append(args, source.Source.OrganizationID)
-	}
-	if len(after) > 0 {
-		placeholders := make([]string, len(after))
-		for n := range after {
-			placeholders[n] = "?"
-		}
-		clause := " WHERE "
-		if table == "conversation_usage" {
-			clause = " AND "
-		}
-		query += clause + "(" + strings.Join(order, ",") + ") > (" + strings.Join(placeholders, ",") + ")"
-		args = append(args, after...)
-	}
-	query += " ORDER BY " + strings.Join(order, ",") + " LIMIT 100"
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer rows.Close()
-	var page []map[string]storagecatalog.Value
-	for rows.Next() {
-		data := make([][]byte, len(columns))
-		destinations := make([]any, len(columns))
-		for n := range data {
-			destinations[n] = &data[n]
-		}
-		if err := rows.Scan(destinations...); err != nil {
-			return nil, nil, err
-		}
-		raw := make(map[string]storagecatalog.Cell, len(columns))
-		values := make(map[string]storagecatalog.Value, len(columns))
-		for n, name := range columns {
-			cell := storagecatalog.Cell{Encoding: "utf8", Data: data[n]}
-			if data[n] == nil {
-				cell = storagecatalog.Cell{Null: true}
-			}
-			raw[name] = cell
-			value, err := source.Catalog.Decode("hub/"+table, name, cell)
-			if err != nil {
-				return nil, nil, err
-			}
-			values[name] = value
-		}
-		if _, err := binding.ValidateMappedRow(table, raw); err != nil {
-			return nil, nil, err
-		}
-		after = make([]any, len(keys))
-		for n, key := range keys {
-			if raw[key].Null {
-				return nil, nil, storagecatalog.ErrValue
-			}
-			value := values[key]
-			switch source.Catalog.Tables["hub/"+table].Columns[key].Codec {
-			case "int64":
-				after[n] = value.Integer
-			case "float64":
-				after[n] = value.Real
-			default:
-				after[n] = value.Text
-			}
-		}
-		page = append(page, values)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, nil, err
-	}
-
-	return page, after, nil
+func readConversationBillingPage(ctx context.Context, source ConversationBillingImportSource, binding *storagecatalog.Binding, table string, columns, keys []string, after []any) ([]map[string]storagecatalog.Value, []any, error) {
+	return readNeutralConversationBillingPage(ctx, source, binding, table, columns, keys, after)
 }

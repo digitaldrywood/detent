@@ -3,11 +3,9 @@ package postgres
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 
@@ -27,45 +25,22 @@ type CoreHubIdentityImportSource struct {
 }
 
 func (r *Repository) ImportCoreHubIdentity(ctx context.Context, source CoreHubIdentityImportSource) (int64, error) {
-	if (source.CopyPath == "") == (source.BundlePath == "") || source.OrganizationID == "" || source.Objects == nil {
+	if source.CopyPath != "" {
+		return 0, ErrNeutralImport
+	}
+
+	if source.BundlePath == "" || source.OrganizationID == "" || source.Objects == nil {
 		return 0, errors.New("invalid core Hub identity import source")
 	}
 	var imported int64
-	if source.BundlePath != "" {
-		err := ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *VerifiedNeutralImport) error {
-			identity, err := neutralHubIdentity(ctx, bundle)
-			if err != nil {
-				return err
-			}
-			if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
-				return err
-			}
-			if err := r.importHubIdentity(ctx, identity); err != nil {
-				return err
-			}
-			imported = 1
-			return nil
-		})
-		return imported, err
-	}
-	err := ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, copyHash string) error {
-		if err := r.PinCoreImportSource(ctx, source.OrganizationID, copyHash, source.Objects); err != nil {
+
+	err := ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *VerifiedNeutralImport) error {
+		identity, err := neutralHubIdentity(ctx, bundle)
+		if err != nil {
 			return err
 		}
-		var identity accessstore.HubIdentity
-		identity.OrganizationID = source.OrganizationID
-		if err := tx.QueryRowContext(ctx, `SELECT id,cursor_key FROM hub_identity`).Scan(&identity.ID, &identity.CursorKey); err != nil {
-			return fmt.Errorf("read source Hub identity: %w", err)
-		}
-		if !validSourceHubIdentity(identity.ID) || len(identity.CursorKey) != 32 {
-			return errors.New("invalid source Hub identity")
-		}
-		var rows int64
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM hub_identity`).Scan(&rows); err != nil {
-			return fmt.Errorf("count source Hub identities: %w", err)
-		}
-		if rows != 1 {
-			return errors.New("source Hub identity is not a singleton")
+		if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
+			return err
 		}
 		if err := r.importHubIdentity(ctx, identity); err != nil {
 			return err

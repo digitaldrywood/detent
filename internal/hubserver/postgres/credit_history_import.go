@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -64,8 +63,12 @@ var creditHistoryImportTables = []creditHistoryImportTable{
 }
 
 func (r *Repository) ImportCreditHistory(ctx context.Context, source CreditHistoryImportSource) (CreditHistoryImportResult, error) {
+	if source.CopyPath != "" {
+		return CreditHistoryImportResult{}, ErrNeutralImport
+	}
+
 	var result CreditHistoryImportResult
-	if (source.CopyPath == "") == (source.BundlePath == "") || source.Objects == nil || source.Source.Store != "hub" || strings.TrimSpace(source.Source.OrganizationID) != source.Source.OrganizationID || source.Source.OrganizationID == "" {
+	if source.BundlePath == "" || source.Objects == nil || source.Source.Store != "hub" || strings.TrimSpace(source.Source.OrganizationID) != source.Source.OrganizationID || source.Source.OrganizationID == "" {
 		return result, errors.New("invalid credit history import source")
 	}
 	if source.Schema == nil {
@@ -82,51 +85,24 @@ func (r *Repository) ImportCreditHistory(ctx context.Context, source CreditHisto
 	}
 	completed := false
 	snapshotID := ""
-	if source.BundlePath != "" {
-		err = ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) error {
-			source.neutral = bundle
-			snapshotID = bundle.Identity().SourceSHA256
-			if err := validateNeutralCreditHistory(ctx, source); err != nil {
-				return err
-			}
-			if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
-				return err
-			}
-			var err error
-			completed, result, err = r.beginCreditHistoryImport(ctx, organization, source.Source.Schema, snapshotID, catalogDigest)
-			if err != nil || completed {
-				return err
-			}
-			return r.importCreditHistoryCopy(ctx, nil, snapshotID, source, organization, &result)
-		})
-	} else {
-		err = ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, copyHash string) error {
-			snapshotID = copyHash
-			for _, table := range append(slices.Clone(creditHistoryImportTables), creditHistoryImportTable{name: "ai_credit_periods", keys: []string{"organization_id", "mode", "period_start", "period_end"}}, creditHistoryImportTable{name: "ai_credit_purchases", keys: []string{"purchase_key"}}) {
-				if err := validateConversationBillingCopyTable(ctx, tx, source.Catalog, source.Schema, table.name, table.keys); err != nil {
-					return fmt.Errorf("validate %s source: %w", table.name, err)
-				}
-			}
-			for _, table := range []string{"ai_credit_periods", "ai_credit_purchases"} {
-				var count int64
-				if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM "`+table+`" WHERE organization_id=?`, organization).Scan(&count); err != nil {
-					return err
-				}
-				if count != 0 {
-					return errUnsupportedCreditHistory
-				}
-			}
-			if err := r.PinCoreImportSource(ctx, organization, copyHash, source.Objects); err != nil {
-				return err
-			}
-			var err error
-			completed, result, err = r.beginCreditHistoryImport(ctx, organization, source.Source.Schema, copyHash, catalogDigest)
-			if err != nil || completed {
-				return err
-			}
-			return r.importCreditHistoryCopy(ctx, tx, copyHash, source, organization, &result)
-		})
-	}
+
+	err = ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) error {
+		source.neutral = bundle
+		snapshotID = bundle.Identity().SourceSHA256
+		if err := validateNeutralCreditHistory(ctx, source); err != nil {
+			return err
+		}
+		if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
+			return err
+		}
+		var err error
+		completed, result, err = r.beginCreditHistoryImport(ctx, organization, source.Source.Schema, snapshotID, catalogDigest)
+		if err != nil || completed {
+			return err
+		}
+		return r.importCreditHistoryCopy(ctx, snapshotID, source, organization, &result)
+	})
+
 	if err != nil || completed {
 		return result, err
 	}
@@ -173,7 +149,7 @@ func (r *Repository) completeCreditHistoryImport(ctx context.Context, organizati
 	})
 }
 
-func (r *Repository) importCreditHistoryCopy(ctx context.Context, tx *sql.Tx, copyHash string, source CreditHistoryImportSource, organization tracker.OrganizationID, result *CreditHistoryImportResult) error {
+func (r *Repository) importCreditHistoryCopy(ctx context.Context, copyHash string, source CreditHistoryImportSource, organization tracker.OrganizationID, result *CreditHistoryImportResult) error {
 	binding, err := source.Catalog.Bind(source.Source, source.Schema)
 	if err != nil {
 		return err
@@ -183,11 +159,9 @@ func (r *Repository) importCreditHistoryCopy(ctx context.Context, tx *sql.Tx, co
 		for {
 			var page []creditHistorySourceRow
 			var err error
-			if source.neutral != nil {
-				page, err = readNeutralCreditHistoryPage(ctx, source, binding, table, after)
-			} else {
-				page, err = readCreditHistoryPage(ctx, tx, source, binding, table, organization, after)
-			}
+
+			page, err = readNeutralCreditHistoryPage(ctx, source, binding, table, after)
+
 			if err != nil {
 				return fmt.Errorf("read %s import page: %w", table.name, err)
 			}
@@ -212,10 +186,9 @@ func (r *Repository) importCreditHistoryCopy(ctx context.Context, tx *sql.Tx, co
 					return fmt.Errorf("write %s import row %d: %w", table.name, row.id, err)
 				}
 				*creditHistoryCount(result, table.name)++
-				after = row.id
-				if source.neutral != nil {
-					after = row.position
-				}
+
+				after = row.position
+
 			}
 		}
 	}
@@ -231,86 +204,6 @@ func creditHistoryCount(result *CreditHistoryImportResult, table string) *int64 
 	default:
 		return &result.Transactions
 	}
-}
-
-func readCreditHistoryPage(ctx context.Context, tx *sql.Tx, source CreditHistoryImportSource, binding *storagecatalog.Binding, table creditHistoryImportTable, organization tracker.OrganizationID, after int64) ([]creditHistorySourceRow, error) {
-	definition := source.Catalog.Tables["hub/"+table.name]
-	columns := make([]string, 0, len(definition.Columns))
-	for column := range definition.Columns {
-		columns = append(columns, column)
-	}
-	slices.Sort(columns)
-	selection := []string{"r.rowid"}
-	for _, column := range columns {
-		if !conversationImportIdentifier.MatchString(column) {
-			return nil, storagecatalog.ErrUnmapped
-		}
-		selection = append(selection, `CAST(r."`+column+`" AS TEXT)`)
-	}
-	from := `"` + table.name + `" r`
-	where := ` WHERE r.rowid>?`
-	args := []any{after}
-	if _, scoped := definition.Columns["organization_id"]; scoped {
-		where += ` AND r.organization_id=?`
-		args = append(args, organization)
-	}
-	var query strings.Builder
-	query.WriteString("SELECT ")
-	query.WriteString(strings.Join(selection, ","))
-	query.WriteString(" FROM ")
-	query.WriteString(from)
-	query.WriteString(where)
-	query.WriteString(" ORDER BY r.rowid LIMIT ?")
-	args = append(args, creditHistoryImportPageSize)
-	rows, err := tx.QueryContext(ctx, query.String(), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	page := make([]creditHistorySourceRow, 0, creditHistoryImportPageSize)
-	for rows.Next() {
-		var row creditHistorySourceRow
-		cells := make([]sql.NullString, len(columns))
-		destinations := make([]any, 1+len(columns))
-		destinations[0] = &row.id
-		for i := range cells {
-			destinations[i+1] = &cells[i]
-		}
-		if err := rows.Scan(destinations...); err != nil {
-			return nil, err
-		}
-		row.cells = make(map[string]storagecatalog.Cell, len(columns))
-		row.value = make(map[string]storagecatalog.Value, len(columns))
-		for i, name := range columns {
-			cell := storagecatalog.Cell{}
-			if cells[i].Valid {
-				cell.Encoding = "utf8"
-				cell.Data = []byte(cells[i].String)
-			} else {
-				cell.Null = true
-			}
-			row.cells[name] = cell
-			column := definition.Columns[name]
-			if column.Disposition == "column" {
-				value, err := source.Catalog.Decode("hub/"+table.name, name, cell)
-				if err != nil {
-					return nil, err
-				}
-				row.value[name] = value
-			}
-		}
-		if _, err := binding.ValidateMappedRow(table.name, row.cells); err != nil {
-			return nil, err
-		}
-		if row.id < 1 {
-			return nil, storagecatalog.ErrValue
-		}
-		page = append(page, row)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, err
-	}
-	return page, nil
 }
 
 func (r *Repository) importCreditHistoryRow(ctx context.Context, organization tracker.OrganizationID, copyHash, table string, row creditHistorySourceRow, reason billingstore.AuditReference) error {

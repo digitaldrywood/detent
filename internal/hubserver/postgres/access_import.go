@@ -31,7 +31,6 @@ const AccessImportLimit = 100
 
 type AccessImportSource struct {
 	DB         *sql.DB
-	copyTx     *sql.Tx
 	neutral    *VerifiedNeutralImport
 	Catalog    storagecatalog.Catalog
 	Source     storagecatalog.Source
@@ -128,7 +127,7 @@ var accessImportTransforms = map[string]map[string]accessImportTransform{
 
 func (r *Repository) NewAccessImporter(ctx context.Context, source AccessImportSource) (*AccessImporter, error) {
 	inputs := 0
-	for _, present := range []bool{source.DB != nil, source.copyTx != nil, source.neutral != nil} {
+	for _, present := range []bool{source.DB != nil, source.neutral != nil} {
 		if present {
 			inputs++
 		}
@@ -397,9 +396,6 @@ func accessSourceKeys(table storagecatalog.Table) ([]string, error) {
 }
 
 func (i *AccessImporter) sourceTable(table string) string {
-	if i.source.copyTx != nil {
-		return pgx.Identifier{table}.Sanitize()
-	}
 	return pgx.Identifier{i.source.Source.Schema}.Sanitize() + "." + pgx.Identifier{table}.Sanitize()
 }
 
@@ -410,9 +406,6 @@ func (i *AccessImporter) validateSourceTable(ctx context.Context, table string) 
 			return err
 		}
 		return i.source.neutral.ValidateCatalogTable(i.source.Catalog, i.source.Schema, table, keys)
-	}
-	if i.source.copyTx != nil {
-		return i.validateCopyTable(ctx, table)
 	}
 	statement := strings.Join([]string{"SELECT * FROM", i.sourceTable(table), "LIMIT 0"}, " ")
 	rows, err := i.source.DB.QueryContext(ctx, statement)
@@ -450,7 +443,7 @@ func (i *AccessImporter) validateSourceTable(ctx context.Context, table string) 
 }
 
 func (i *AccessImporter) validateSourceIndex(ctx context.Context, table string, keys []string) error {
-	if i.source.copyTx != nil || i.source.neutral != nil {
+	if i.source.neutral != nil {
 		return nil
 	}
 	var valid bool
@@ -496,18 +489,12 @@ func (i *AccessImporter) readPage(ctx context.Context, table accessImportTable, 
 		placeholders := make([]string, len(table.keys))
 		for n := range table.keys {
 			placeholders[n] = fmt.Sprintf("$%d::text COLLATE \"C\"", n+1)
-			if i.source.copyTx != nil {
-				placeholders[n] = "?"
-			}
 			args = append(args, checkpoint.after[n])
 		}
 		predicate += strings.Join(placeholders, ",") + ")"
 		queryParts = append(queryParts, "WHERE", predicate)
 	}
 	limitClause := fmt.Sprintf("LIMIT $%d::integer", len(args)+1)
-	if i.source.copyTx != nil {
-		limitClause = "LIMIT ?"
-	}
 	queryParts = append(queryParts, "ORDER BY", strings.Join(order, ","), limitClause)
 	args = append(args, limit)
 	query := strings.Join(queryParts, " ")

@@ -1533,18 +1533,9 @@
     "internal/hubserver/policy_test.go": {
       "database_path": 6
     },
-    "internal/hubserver/postgres/access_import_copy.go": {
-      "sql_pragma_table": 1
-    },
-    "internal/hubserver/postgres/conversation_billing_import.go": {
-      "sql_pragma_table": 1
-    },
     "internal/hubserver/postgres/core_project_import.go": {
       "driver_import": 1,
       "sqlite_open": 1
-    },
-    "internal/hubserver/postgres/cost_import.go": {
-      "sql_pragma_table": 1
     },
     "internal/hubserver/postgres/import_copy_validation.go": {
       "sql_pragma_table": 2

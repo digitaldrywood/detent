@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -75,8 +74,13 @@ var conversationImportTablesInOrder = []conversationImportTable{
 }
 
 func (r *Repository) ImportConversationHistory(ctx context.Context, source ConversationHistoryImportSource) (ConversationHistoryImportResult, error) {
+	if source.CopyPath != "" {
+		return ConversationHistoryImportResult{},
+			ErrNeutralImport
+	}
+
 	var result ConversationHistoryImportResult
-	if (source.CopyPath == "") == (source.BundlePath == "") || source.Objects == nil || source.Source.Store != "hub" || strings.TrimSpace(source.Source.OrganizationID) != source.Source.OrganizationID || source.Source.OrganizationID == "" {
+	if source.BundlePath == "" || source.Objects == nil || source.Source.Store != "hub" || strings.TrimSpace(source.Source.OrganizationID) != source.Source.OrganizationID || source.Source.OrganizationID == "" {
 		return result, errors.New("invalid conversation history import source")
 	}
 	if source.Schema == nil {
@@ -93,48 +97,24 @@ func (r *Repository) ImportConversationHistory(ctx context.Context, source Conve
 	}
 	completed := false
 	snapshotID := ""
-	if source.BundlePath != "" {
-		err = ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) error {
-			source.neutral = bundle
-			snapshotID = bundle.Identity().SourceSHA256
-			if err := validateNeutralConversationHistory(ctx, source); err != nil {
-				return err
-			}
-			if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
-				return err
-			}
-			var err error
-			completed, result.Rows, err = r.beginConversationHistoryImport(ctx, organization, source.Source.Schema, snapshotID, catalogDigest)
-			if err != nil || completed {
-				return err
-			}
-			return r.importConversationHistoryCopy(ctx, nil, snapshotID, source, organization, &result)
-		})
-	} else {
-		err = ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, copyHash string) error {
-			snapshotID = copyHash
-			for _, table := range conversationImportTablesInOrder {
-				if err := validateConversationBillingCopyTable(ctx, tx, source.Catalog, source.Schema, table.source, table.keys); err != nil {
-					return fmt.Errorf("validate %s source: %w", table.source, err)
-				}
-			}
-			if err := validateConversationBillingCopyTable(ctx, tx, source.Catalog, source.Schema, "conversation_attachment_blobs", []string{"artifact_ref"}); err != nil {
-				return fmt.Errorf("validate conversation_attachment_blobs source: %w", err)
-			}
-			if err := validateConversationBillingCopyTable(ctx, tx, source.Catalog, source.Schema, "attachments", []string{"id"}); err != nil {
-				return fmt.Errorf("validate attachments source: %w", err)
-			}
-			if err := r.PinCoreImportSource(ctx, organization, copyHash, source.Objects); err != nil {
-				return err
-			}
-			var err error
-			completed, result.Rows, err = r.beginConversationHistoryImport(ctx, organization, source.Source.Schema, copyHash, catalogDigest)
-			if err != nil || completed {
-				return err
-			}
-			return r.importConversationHistoryCopy(ctx, tx, copyHash, source, organization, &result)
-		})
-	}
+
+	err = ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) error {
+		source.neutral = bundle
+		snapshotID = bundle.Identity().SourceSHA256
+		if err := validateNeutralConversationHistory(ctx, source); err != nil {
+			return err
+		}
+		if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
+			return err
+		}
+		var err error
+		completed, result.Rows, err = r.beginConversationHistoryImport(ctx, organization, source.Source.Schema, snapshotID, catalogDigest)
+		if err != nil || completed {
+			return err
+		}
+		return r.importConversationHistoryCopy(ctx, snapshotID, source, organization, &result)
+	})
+
 	if err == nil && !completed {
 		err = r.completeConversationHistoryImport(ctx, organization, source.Source.Schema, snapshotID, catalogDigest, result.Rows)
 	}
@@ -186,11 +166,11 @@ func (r *Repository) completeConversationHistoryImport(ctx context.Context, orga
 	})
 }
 
-func (r *Repository) importConversationHistoryCopy(ctx context.Context, tx *sql.Tx, copyHash string, source ConversationHistoryImportSource, organization tracker.OrganizationID, result *ConversationHistoryImportResult) error {
+func (r *Repository) importConversationHistoryCopy(ctx context.Context, copyHash string, source ConversationHistoryImportSource, organization tracker.OrganizationID, result *ConversationHistoryImportResult) error {
 	for _, table := range conversationImportTablesInOrder {
 		var after int64
 		for {
-			page, err := readConversationHistoryPage(ctx, tx, source, table, organization, after)
+			page, err := readConversationHistoryPage(ctx, source, table, organization, after)
 			if err != nil {
 				return fmt.Errorf("read %s import page: %w", table.source, err)
 			}
@@ -200,14 +180,14 @@ func (r *Repository) importConversationHistoryCopy(ctx context.Context, tx *sql.
 			batch := ConversationImportBatch{OrganizationID: organization}
 			archiveIDs := make(map[string]conversationstore.ContentObject)
 			for _, row := range page {
-				prepared, objects, err := prepareConversationImportRow(ctx, tx, source, copyHash, organization, table, row, archiveIDs)
+				prepared, objects, err := prepareConversationImportRow(ctx, source, copyHash, organization, table, row, archiveIDs)
 				if err != nil {
 					return fmt.Errorf("prepare %s row %d: %w", table.source, row.rowID, err)
 				}
 				batch.Rows = append(batch.Rows, prepared...)
 				batch.ContentObjects = append(batch.ContentObjects, objects...)
 				if table.source == "conversation_attachments" {
-					attachment, object, err := prepareConversationAttachment(ctx, tx, source, copyHash, organization, row, archiveIDs)
+					attachment, object, err := prepareConversationAttachment(ctx, source, copyHash, organization, row, archiveIDs)
 					if err != nil {
 						return fmt.Errorf("prepare conversation attachment row %d: %w", row.rowID, err)
 					}
@@ -216,10 +196,9 @@ func (r *Repository) importConversationHistoryCopy(ctx context.Context, tx *sql.
 						batch.ContentObjects = append(batch.ContentObjects, *object)
 					}
 				}
-				after = row.rowID
-				if source.neutral != nil {
-					after = row.cursor
-				}
+
+				after = row.cursor
+
 			}
 			batch.ContentObjects = uniqueConversationContentObjects(batch.ContentObjects)
 			if err := r.ImportConversationBatch(ctx, batch); err != nil {
@@ -231,93 +210,11 @@ func (r *Repository) importConversationHistoryCopy(ctx context.Context, tx *sql.
 	return nil
 }
 
-func readConversationHistoryPage(ctx context.Context, tx *sql.Tx, source ConversationHistoryImportSource, table conversationImportTable, organization tracker.OrganizationID, after int64) ([]conversationSourceRow, error) {
-	if source.neutral != nil {
-		return readNeutralConversationHistoryPage(ctx, source, table, after)
-	}
-	definition := source.Catalog.Tables["hub/"+table.source]
-	columns := make([]string, 0, len(definition.Columns))
-	for column := range definition.Columns {
-		columns = append(columns, column)
-	}
-	slices.Sort(columns)
-	selection := []string{"r.rowid"}
-	for _, column := range columns {
-		selection = append(selection, `CAST(r."`+strings.ReplaceAll(column, `"`, `""`)+`" AS TEXT)`)
-	}
-	from, orgExpr := conversationHistorySource(table.source)
-	var query strings.Builder
-	query.WriteString("SELECT ")
-	query.WriteString(strings.Join(selection, ","))
-	query.WriteString(" FROM ")
-	query.WriteString(from)
-	query.WriteString(" WHERE ")
-	query.WriteString(orgExpr)
-	query.WriteString("=? AND r.rowid>? ORDER BY r.rowid LIMIT ?")
-	rows, err := tx.QueryContext(ctx, query.String(), organization, after, conversationImportPageSize)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	page := make([]conversationSourceRow, 0, conversationImportPageSize)
-	for rows.Next() {
-		var row conversationSourceRow
-		values := make([]sql.NullString, len(columns))
-		scan := make([]any, 1+len(values))
-		scan[0] = &row.rowID
-		for i := range values {
-			scan[i+1] = &values[i]
-		}
-		if err := rows.Scan(scan...); err != nil {
-			return nil, err
-		}
-		row.cells = make(map[string]storagecatalog.Cell, len(columns))
-		for i, column := range columns {
-			cell := storagecatalog.Cell{}
-			if values[i].Valid {
-				cell.Encoding = "utf8"
-				cell.Data = []byte(values[i].String)
-			} else {
-				cell.Null = true
-			}
-			row.cells[column] = cell
-		}
-		if table.source == "conversation_attachments" {
-			if err := tx.QueryRowContext(ctx, `SELECT project_id FROM conversations WHERE organization_id=? AND id=?`, organization, cellText(row.cells["conversation_id"])).Scan(&row.project); err != nil {
-				return nil, err
-			}
-		}
-		if table.source == "message_references" {
-			if err := tx.QueryRowContext(ctx, `SELECT count(*)-1 FROM message_references WHERE message_id=? AND rowid < ?`, cellText(row.cells["message_id"]), row.rowID).Scan(&row.position); err != nil {
-				return nil, err
-			}
-		}
-		page = append(page, row)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, err
-	}
-	return page, nil
+func readConversationHistoryPage(ctx context.Context, source ConversationHistoryImportSource, table conversationImportTable, organization tracker.OrganizationID, after int64) ([]conversationSourceRow, error) {
+	return readNeutralConversationHistoryPage(ctx, source, table, after)
 }
 
-func conversationHistorySource(table string) (string, string) {
-	switch table {
-	case "conversations":
-		return `conversations r`, `r.organization_id`
-	case "conversation_messages", "conversation_questions", "conversation_commands", "conversation_events", "conversation_audience_events", "conversation_tool_revisions", "conversation_attachments":
-		return table + ` r JOIN conversations c ON c.id=r.conversation_id`, `c.organization_id`
-	case "conversation_starts":
-		return `conversation_starts r JOIN conversations c ON c.id=r.conversation_id`, `c.organization_id`
-	case "conversation_turn_batches":
-		return `conversation_turn_batches r JOIN conversation_starts st ON st.attempt_id=r.attempt_id JOIN conversations c ON c.id=st.conversation_id`, `c.organization_id`
-	case "message_references":
-		return `message_references r JOIN conversation_messages m ON m.id=r.message_id JOIN conversations c ON c.id=m.conversation_id`, `c.organization_id`
-	default:
-		return "", ""
-	}
-}
-
-func prepareConversationImportRow(ctx context.Context, tx *sql.Tx, source ConversationHistoryImportSource, copyHash string, organization tracker.OrganizationID, table conversationImportTable, row conversationSourceRow, archiveIDs map[string]conversationstore.ContentObject) ([]ConversationImportRow, []conversationstore.ContentObject, error) {
+func prepareConversationImportRow(ctx context.Context, source ConversationHistoryImportSource, copyHash string, organization tracker.OrganizationID, table conversationImportTable, row conversationSourceRow, archiveIDs map[string]conversationstore.ContentObject) ([]ConversationImportRow, []conversationstore.ContentObject, error) {
 	if table.source == "conversation_attachments" {
 		return nil, nil, nil
 	}
@@ -334,7 +231,7 @@ func prepareConversationImportRow(ctx context.Context, tx *sql.Tx, source Conver
 		sourceID := cellText(cell)
 		object, found := archiveIDs[sourceID]
 		if !found {
-			object, err = prepareConversationArchiveObject(ctx, tx, source, organization, sourceID)
+			object, err = prepareConversationArchiveObject(ctx, source, organization, sourceID)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -435,7 +332,7 @@ func conversationObjectsForCell(cells map[string]storagecatalog.Cell, archiveIDs
 	return []conversationstore.ContentObject{object}
 }
 
-func prepareConversationAttachment(ctx context.Context, tx *sql.Tx, source ConversationHistoryImportSource, copyHash string, organization tracker.OrganizationID, row conversationSourceRow, archiveIDs map[string]conversationstore.ContentObject) (ConversationImportAttachment, *conversationstore.ContentObject, error) {
+func prepareConversationAttachment(ctx context.Context, source ConversationHistoryImportSource, copyHash string, organization tracker.OrganizationID, row conversationSourceRow, archiveIDs map[string]conversationstore.ContentObject) (ConversationImportAttachment, *conversationstore.ContentObject, error) {
 	values := make(map[string]storagecatalog.Value, len(row.cells))
 	for column, cell := range row.cells {
 		if column == "conversion_state" {
@@ -456,7 +353,7 @@ func prepareConversationAttachment(ctx context.Context, tx *sql.Tx, source Conve
 		prepared, found := archiveIDs[oldContentID]
 		if !found {
 			var err error
-			prepared, err = prepareConversationArchiveObject(ctx, tx, source, organization, oldContentID)
+			prepared, err = prepareConversationArchiveObject(ctx, source, organization, oldContentID)
 			if err != nil {
 				return ConversationImportAttachment{}, nil, err
 			}
@@ -465,17 +362,13 @@ func prepareConversationAttachment(ctx context.Context, tx *sql.Tx, source Conve
 		contentID, object = prepared.ID, &prepared
 	} else if values["deleted_at"].Null {
 		var blob []byte
-		if source.neutral != nil {
-			var err error
-			blob, err = neutralConversationBlob(ctx, source, artifactRef)
-			if err != nil {
-				return ConversationImportAttachment{}, nil, err
-			}
-		} else {
-			if err := tx.QueryRowContext(ctx, `SELECT content FROM conversation_attachment_blobs WHERE artifact_ref=?`, artifactRef).Scan(&blob); err != nil {
-				return ConversationImportAttachment{}, nil, err
-			}
+
+		var err error
+		blob, err = neutralConversationBlob(ctx, source, artifactRef)
+		if err != nil {
+			return ConversationImportAttachment{}, nil, err
 		}
+
 		if int64(len(blob)) != values["size"].Integer || len(blob) == 0 {
 			return ConversationImportAttachment{}, nil, artifact.ErrIntegrity
 		}
@@ -517,7 +410,7 @@ func prepareConversationAttachment(ctx context.Context, tx *sql.Tx, source Conve
 	return ConversationImportAttachment{Record: record, Receipt: receipt}, object, nil
 }
 
-func prepareConversationArchiveObject(ctx context.Context, tx *sql.Tx, source ConversationHistoryImportSource, organization tracker.OrganizationID, sourceID string) (conversationstore.ContentObject, error) {
+func prepareConversationArchiveObject(ctx context.Context, source ConversationHistoryImportSource, organization tracker.OrganizationID, sourceID string) (conversationstore.ContentObject, error) {
 	var metadata conversationArchiveSource
 	var kind, retention, createdAt string
 	var compressed, uncompressed int64
@@ -525,15 +418,13 @@ func prepareConversationArchiveObject(ctx context.Context, tx *sql.Tx, source Co
 	var binding string
 	var customerOwned bool
 	var err error
-	if source.neutral != nil {
-		var row NeutralImportRow
-		row, err = source.neutral.Lookup(ctx, "attachments", []string{sourceID})
-		if err == nil {
-			err = row.Decode(map[string]any{"id": &metadata.id, "project_id": &metadata.project, "uploader": &metadata.uploader, "object_key": &metadata.reference.Key, "sha256": &metadata.reference.SHA256, "size": &compressed, "uncompressed_size": &uncompressed, "codec": &metadata.reference.Codec, "schema_version": &schema, "kind": &kind, "retention_class": &retention, "storage_binding_id": &binding, "customer_owned": &customerOwned, "created_at": &createdAt})
-		}
-	} else {
-		err = tx.QueryRowContext(ctx, `SELECT id,project_id,uploader,object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class,storage_binding_id,customer_owned,created_at FROM attachments WHERE organization_id=? AND id=?`, organization, sourceID).Scan(&metadata.id, &metadata.project, &metadata.uploader, &metadata.reference.Key, &metadata.reference.SHA256, &compressed, &uncompressed, &metadata.reference.Codec, &schema, &kind, &retention, &binding, &customerOwned, &createdAt)
+
+	var row NeutralImportRow
+	row, err = source.neutral.Lookup(ctx, "attachments", []string{sourceID})
+	if err == nil {
+		err = row.Decode(map[string]any{"id": &metadata.id, "project_id": &metadata.project, "uploader": &metadata.uploader, "object_key": &metadata.reference.Key, "sha256": &metadata.reference.SHA256, "size": &compressed, "uncompressed_size": &uncompressed, "codec": &metadata.reference.Codec, "schema_version": &schema, "kind": &kind, "retention_class": &retention, "storage_binding_id": &binding, "customer_owned": &customerOwned, "created_at": &createdAt})
 	}
+
 	if err != nil {
 		return conversationstore.ContentObject{}, err
 	}

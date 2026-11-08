@@ -3,11 +3,9 @@ package postgres
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"reflect"
-	"slices"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -23,7 +21,6 @@ type CostImportSource struct {
 	Source     storagecatalog.Source
 	Schema     storagecatalog.Schema
 	Objects    attachment.DetailStore
-	copyTx     *sql.Tx
 	snapshotID string
 }
 
@@ -36,7 +33,7 @@ type costImporter struct {
 }
 
 func (r *Repository) newCostImporter(ctx context.Context, source CostImportSource) (*costImporter, error) {
-	if source.copyTx == nil && source.neutral == nil || source.Objects == nil || source.Source.Store != "hub" || source.snapshotID == "" || len(source.snapshotID) > 200 || strings.TrimSpace(source.Source.OrganizationID) != source.Source.OrganizationID {
+	if source.neutral == nil || source.Objects == nil || source.Source.Store != "hub" || source.snapshotID == "" || len(source.snapshotID) > 200 || strings.TrimSpace(source.Source.OrganizationID) != source.Source.OrganizationID {
 		return nil, ErrCostImport
 	}
 	encoded, err := json.Marshal(struct {
@@ -67,73 +64,19 @@ func (r *Repository) newCostImporter(ctx context.Context, source CostImportSourc
 }
 
 func (i *costImporter) validateSource(ctx context.Context) error {
-	if i.source.neutral != nil {
-		if err := i.source.neutral.ValidateCatalogTable(i.source.Catalog, i.source.Schema, "usage_cost_observations", costImportColumns[:7]); err != nil {
-			return err
-		}
-		for _, name := range costImportColumns {
-			column := i.source.Catalog.Tables["hub/usage_cost_observations"].Columns[name]
-			if column.Disposition == "pending" {
-				return storagecatalog.ErrPending
-			}
-			if column.Disposition == "transform" && column.Transform != "cost-observation" {
-				return storagecatalog.ErrUnmapped
-			}
-		}
-		return nil
-	}
-	rows, err := i.source.copyTx.QueryContext(ctx, `SELECT cid,name,type,"notnull",dflt_value,pk,hidden FROM pragma_table_xinfo(?) ORDER BY cid`, "usage_cost_observations")
-	if err != nil {
+	if err := i.source.neutral.ValidateCatalogTable(i.source.Catalog, i.source.Schema, "usage_cost_observations", costImportColumns[:7]); err != nil {
 		return err
 	}
-	defer rows.Close()
-	definition := i.source.Catalog.Tables["hub/usage_cost_observations"]
-	count := 0
-	primary := make([]string, 7)
-	for rows.Next() {
-		var name string
-		var ordinal, notNull, primaryKey, hidden int
-		var columnType string
-		var defaultValue sql.NullString
-		if err := rows.Scan(&ordinal, &name, &columnType, &notNull, &defaultValue, &primaryKey, &hidden); err != nil {
-			return err
-		}
-		var actualDefault any
-		if defaultValue.Valid {
-			actualDefault = defaultValue.String
-		}
-		actual, err := json.Marshal([]any{ordinal, name, columnType, notNull, actualDefault, primaryKey, hidden})
-		if err != nil {
-			return err
-		}
-		count++
-		mapping, ok := definition.Columns[name]
-		if !ok || i.source.Schema["usage_cost_observations"][name] != mapping.Source || !sameSourceSignature(actual, mapping.Source) {
-			return storagecatalog.ErrUnmapped
-		}
-		if primaryKey > 0 {
-			if primaryKey > len(primary) {
-				return ErrCostImport
-			}
-			primary[primaryKey-1] = name
-		}
-		if mapping.Disposition == "pending" {
+	for _, name := range costImportColumns {
+		column := i.source.Catalog.Tables["hub/usage_cost_observations"].Columns[name]
+		if column.Disposition == "pending" {
 			return storagecatalog.ErrPending
 		}
-		if mapping.Disposition == "transform" && mapping.Transform != "cost-observation" {
+		if column.Disposition == "transform" && column.Transform != "cost-observation" {
 			return storagecatalog.ErrUnmapped
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	if count != len(costImportColumns) || !slices.Equal(primary, costImportColumns[:7]) {
-		return storagecatalog.ErrUnmapped
-	}
-	return validateImportCopyPrimaryIndex(ctx, i.source.copyTx, "usage_cost_observations", costImportColumns[:7])
+	return nil
 }
 
 func schemaFromCatalog(catalog storagecatalog.Catalog) storagecatalog.Schema {
@@ -162,8 +105,12 @@ func sameSourceSignature(actual []byte, expected string) bool {
 }
 
 func (r *Repository) ImportCostCopy(ctx context.Context, source CostImportSource) (CostImportProgress, error) {
+	if source.CopyPath != "" {
+		return CostImportProgress{}, ErrNeutralImport
+	}
+
 	var progress CostImportProgress
-	if (source.CopyPath == "") == (source.BundlePath == "") || source.Objects == nil || source.Source.Store != "hub" || source.Source.OrganizationID == "" {
+	if source.BundlePath == "" || source.Objects == nil || source.Source.Store != "hub" || source.Source.OrganizationID == "" {
 		return progress, ErrCostImport
 	}
 	if source.Schema == nil {
@@ -174,32 +121,14 @@ func (r *Repository) ImportCostCopy(ctx context.Context, source CostImportSource
 		return progress, err
 	}
 	organization := tracker.OrganizationID(source.Source.OrganizationID)
-	if source.BundlePath != "" {
-		err := ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) error {
-			source.neutral, source.snapshotID = bundle, bundle.Identity().SourceSHA256
-			importer, err := r.newCostImporter(ctx, source)
-			if err != nil {
-				return err
-			}
-			if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
-				return err
-			}
-			for {
-				progress, err = importer.step(ctx, costImportPageLimit)
-				if err != nil || progress.Done {
-					return err
-				}
-			}
-		})
-		return progress, err
-	}
-	err := ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, digest string) error {
-		if err := r.PinCoreImportSource(ctx, organization, digest, source.Objects); err != nil {
-			return err
-		}
-		source.copyTx, source.snapshotID = tx, digest
+
+	err := ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) error {
+		source.neutral, source.snapshotID = bundle, bundle.Identity().SourceSHA256
 		importer, err := r.newCostImporter(ctx, source)
 		if err != nil {
+			return err
+		}
+		if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
 			return err
 		}
 		for {

@@ -50,22 +50,15 @@ type coreProjectImportRow struct {
 }
 
 func (r *Repository) ImportCoreProjects(ctx context.Context, source CoreProjectImportSource) (int64, error) {
-	if (source.CopyPath == "") == (source.BundlePath == "") || source.OrganizationID == "" || source.Objects == nil {
+	if source.CopyPath != "" {
+		return 0, ErrNeutralImport
+	}
+
+	if source.BundlePath == "" || source.OrganizationID == "" || source.Objects == nil {
 		return 0, errors.New("invalid core project import source")
 	}
-	if source.BundlePath != "" {
-		return r.importNeutralCoreProjects(ctx, source)
-	}
-	var count int64
-	err := ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, copyHash string) error {
-		if err := r.PinCoreImportSource(ctx, source.OrganizationID, copyHash, source.Objects); err != nil {
-			return err
-		}
-		var err error
-		count, err = r.importCoreProjects(ctx, source, tx, copyHash)
-		return err
-	})
-	return count, err
+
+	return r.importNeutralCoreProjects(ctx, source)
 }
 
 func (r *Repository) PinCoreImportSource(ctx context.Context, organization tracker.OrganizationID, copyHash string, objects attachment.DetailStore) error {
@@ -94,12 +87,6 @@ func (r *Repository) PinCoreImportSource(ctx context.Context, organization track
 			return mutation.ErrConflict
 		}
 		return nil
-	})
-}
-
-func (r *Repository) importCoreProjects(ctx context.Context, source CoreProjectImportSource, tx *sql.Tx, copyHash string) (int64, error) {
-	return r.importCoreProjectPages(ctx, source, func(after string) ([]coreProjectImportRow, error) {
-		return readCoreProjectImportPage(ctx, tx, source.OrganizationID, after)
 	})
 }
 
@@ -152,28 +139,6 @@ func (r *Repository) importCoreProjectPages(ctx context.Context, source CoreProj
 			count++
 		}
 	}
-}
-
-func readCoreProjectImportPage(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, after string) ([]coreProjectImportRow, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT p.id,p.name,p.slug,p.profile,p.require_dependencies,p.scheduling_rank,p.content_settings_revision,p.workflow_source,p.workflow_source_revision,p.workflow_markdown,p.states_json,COALESCE(p.model_selection_json,''),p.created_at,p.deleted_at,p.integration_revision,p.github_intake,p.github_projection,p.github_repository_enabled,COALESCE(r.github_owner || '/' || r.github_name,''),p.checkout_repository,p.aging_enabled,p.duplicate_challenge,p.archive_completed_after_days,p.archive_cancelled_after_days,p.require_visual_attachments,p.model_selection_revision,p.repository_id,p.icon_kind,p.icon_name,p.icon_color,p.icon_emoji,p.icon_image_key,p.icon_image_sha256 FROM projects p LEFT JOIN repositories r ON r.id=p.repository_id WHERE p.organization_id=? AND p.id>? ORDER BY p.id LIMIT 100`, organization, after)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	result := make([]coreProjectImportRow, 0, 100)
-	for rows.Next() {
-		var row coreProjectImportRow
-		c, v := &row.Record.Core, &row.Record.Settings
-		c.OrganizationID = organization
-		v.OrganizationID = organization
-		err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.Profile, &c.RequireDependencies, &c.SchedulingRank, &c.ContentSettingsRevision, &c.WorkflowSource, &c.WorkflowSourceRevision, &row.Workflow, &row.States, &row.Models, &row.Created, &row.Deleted, &v.Revision, &v.Intake, &v.Projection, &v.RepositoryEnabled, &v.Repository, &v.CheckoutRepository, &v.AgingEnabled, &v.DuplicateChallenge, &v.ArchiveCompletedAfterDays, &v.ArchiveCancelledAfterDays, &v.RequireVisualAttachments, &v.ModelRevision, &row.RepositoryID, &row.IconKind, &row.IconName, &row.IconColor, &row.IconEmoji, &row.IconImageKey, &row.IconImageSHA256)
-		if err != nil {
-			return nil, err
-		}
-		v.ProjectID = c.ID
-		result = append(result, row)
-	}
-	return result, rows.Err()
 }
 
 func prepareCoreProjectImport(ctx context.Context, content *eventstore.Content, source CoreProjectImportSource, row coreProjectImportRow) (projectstore.Record, eventstore.Receipt, error) {

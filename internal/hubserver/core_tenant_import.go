@@ -14,6 +14,7 @@ import (
 )
 
 type TenantCoreImportSource struct {
+	BundlePath     string
 	CopyPath       string
 	OrganizationID tracker.OrganizationID
 	Catalog        storagecatalog.Catalog
@@ -47,13 +48,16 @@ type TenantCoreImportResult struct {
 }
 
 func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source TenantCoreImportSource) (result TenantCoreImportResult, resultErr error) {
-	if source.CopyPath == "" || source.OrganizationID == "" || source.Objects == nil {
-		return result, errors.New("tenant import requires a source copy, organization and archive storage")
+	if source.CopyPath != "" {
+		return result, postgres.ErrNeutralImport
+	}
+	if source.BundlePath == "" || source.OrganizationID == "" || source.Objects == nil {
+		return result, errors.New("tenant import requires a neutral bundle, organization and archive storage")
 	}
 	if err := source.Catalog.Validate(); err != nil {
 		return result, err
 	}
-	if err := postgres.VerifyCoreCutoverCopy(ctx, source.CopyPath); err != nil {
+	if err := postgres.VerifyNeutralCoreCutover(ctx, source.BundlePath, source.OrganizationID); err != nil {
 		return result, err
 	}
 	database, err := openPostgresDatabase(ctx, config)
@@ -67,15 +71,15 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 		}
 	}()
 	repository := database.postgres
-	accessSource := postgres.AccessCopyImportSource{CopyPath: source.CopyPath, OrganizationID: source.OrganizationID, Catalog: source.Catalog, Objects: source.Objects}
+	accessSource := postgres.AccessCopyImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, Catalog: source.Catalog, Objects: source.Objects}
 	if err := repository.InitializeAccessCopyOrganization(ctx, accessSource); err != nil {
 		return result, fmt.Errorf("initialize tenant organization: %w", err)
 	}
-	result.HubIdentityRows, err = repository.ImportCoreHubIdentity(ctx, postgres.CoreHubIdentityImportSource{CopyPath: source.CopyPath, OrganizationID: source.OrganizationID, Objects: source.Objects})
+	result.HubIdentityRows, err = repository.ImportCoreHubIdentity(ctx, postgres.CoreHubIdentityImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, Objects: source.Objects})
 	if err != nil {
 		return result, fmt.Errorf("import tenant Hub identity: %w", err)
 	}
-	result.Projects, err = repository.ImportCoreProjects(ctx, postgres.CoreProjectImportSource{CopyPath: source.CopyPath, OrganizationID: source.OrganizationID, Objects: source.Objects})
+	result.Projects, err = repository.ImportCoreProjects(ctx, postgres.CoreProjectImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, Objects: source.Objects})
 	if err != nil {
 		return result, fmt.Errorf("import tenant projects: %w", err)
 	}
@@ -83,7 +87,7 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 	if err != nil {
 		return result, fmt.Errorf("import tenant access: %w", err)
 	}
-	policies, err := repository.ImportCorePolicies(ctx, postgres.CorePolicyImportSource{CopyPath: source.CopyPath, OrganizationID: source.OrganizationID, Objects: source.Objects})
+	policies, err := repository.ImportCorePolicies(ctx, postgres.CorePolicyImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, Objects: source.Objects})
 	if err != nil {
 		return result, fmt.Errorf("import tenant policies: %w", err)
 	}
@@ -125,17 +129,17 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 	if err != nil {
 		return result, fmt.Errorf("import tenant changes: %w", err)
 	}
-	monthly, err := repository.ImportCoreMonthlyBudgetFacts(ctx, postgres.CorePolicyImportSource{CopyPath: source.CopyPath, OrganizationID: source.OrganizationID, Objects: source.Objects})
+	monthly, err := repository.ImportCoreMonthlyBudgetFacts(ctx, postgres.CorePolicyImportSource{BundlePath: source.BundlePath, OrganizationID: source.OrganizationID, Objects: source.Objects})
 	if err != nil {
 		return result, fmt.Errorf("import tenant monthly budget facts: %w", err)
 	}
 	result.MonthlyAdmissions = monthly.Admissions
 	result.MonthlyLeases = monthly.Leases
 	costs, err := repository.ImportCostCopy(ctx, postgres.CostImportSource{
-		CopyPath: source.CopyPath,
-		Catalog:  source.Catalog,
-		Source:   storagecatalog.Source{Store: "hub", CatalogVersion: source.Catalog.Version, OrganizationID: string(source.OrganizationID)},
-		Objects:  source.Objects,
+		BundlePath: source.BundlePath,
+		Catalog:    source.Catalog,
+		Source:     storagecatalog.Source{Store: "hub", CatalogVersion: source.Catalog.Version, OrganizationID: string(source.OrganizationID)},
+		Objects:    source.Objects,
 	})
 	if err != nil {
 		return result, fmt.Errorf("import tenant costs: %w", err)
@@ -147,20 +151,20 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 	result.CostCurrentSources = costs.CurrentSources
 	result.CostHistoryRows = costs.HistoryRows
 	conversations, err := repository.ImportConversationHistory(ctx, postgres.ConversationHistoryImportSource{
-		CopyPath: source.CopyPath,
-		Catalog:  source.Catalog,
-		Source:   storagecatalog.Source{Store: "hub", CatalogVersion: source.Catalog.Version, OrganizationID: string(source.OrganizationID)},
-		Objects:  source.Objects,
+		BundlePath: source.BundlePath,
+		Catalog:    source.Catalog,
+		Source:     storagecatalog.Source{Store: "hub", CatalogVersion: source.Catalog.Version, OrganizationID: string(source.OrganizationID)},
+		Objects:    source.Objects,
 	})
 	if err != nil {
 		return result, fmt.Errorf("import tenant conversation history: %w", err)
 	}
 	result.ConversationRows = conversations.Rows
 	billing, err := repository.ImportConversationBilling(ctx, postgres.ConversationBillingImportSource{
-		CopyPath: source.CopyPath,
-		Catalog:  source.Catalog,
-		Source:   storagecatalog.Source{Store: "hub", CatalogVersion: source.Catalog.Version, OrganizationID: string(source.OrganizationID)},
-		Objects:  source.Objects,
+		BundlePath: source.BundlePath,
+		Catalog:    source.Catalog,
+		Source:     storagecatalog.Source{Store: "hub", CatalogVersion: source.Catalog.Version, OrganizationID: string(source.OrganizationID)},
+		Objects:    source.Objects,
 	})
 	if err != nil {
 		return result, fmt.Errorf("import tenant conversation usage: %w", err)
@@ -168,10 +172,10 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 	result.ConversationPrices = billing.Prices
 	result.ConversationUsage = billing.Usage
 	credits, err := repository.ImportCreditHistory(ctx, postgres.CreditHistoryImportSource{
-		CopyPath: source.CopyPath,
-		Catalog:  source.Catalog,
-		Source:   storagecatalog.Source{Store: "hub", CatalogVersion: source.Catalog.Version, OrganizationID: string(source.OrganizationID)},
-		Objects:  source.Objects,
+		BundlePath: source.BundlePath,
+		Catalog:    source.Catalog,
+		Source:     storagecatalog.Source{Store: "hub", CatalogVersion: source.Catalog.Version, OrganizationID: string(source.OrganizationID)},
+		Objects:    source.Objects,
 	})
 	if err != nil {
 		return result, fmt.Errorf("import tenant credit history: %w", err)
