@@ -953,7 +953,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			var editedComment tracker.NativeComment
 			if test.Feedback == "edit" {
 				var err error
-				editedComment, err = h.native.CreateComment(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateComment{Mutation: nativeMutationKey(), Body: "Earlier runner context."})
+				editedComment, err = h.admin.CreateComment(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateComment{Mutation: nativeMutationKey(), Body: "Earlier feedback context."})
 				if err != nil {
 					t.Fatal(err)
 				}
