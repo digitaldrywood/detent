@@ -59,24 +59,31 @@ func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for index := 1; index <= 512; index++ {
-			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%04d", index))
+		for _, index := range []int{1, 512} {
+			first := 1
+			if index == 512 {
+				first = 2
+			}
 			if err := repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
-				item, err := w.CreateWorkItem(ctx, corestore.WorkItem{OrganizationID: org, ProjectID: "prj_example", NativeID: id, Number: int64(index), Title: "Example", WorkflowStateName: new("Todo")})
-				if err != nil {
-					return err
+				for number := first; number <= index; number++ {
+					id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%04d", number))
+					item, err := w.CreateWorkItem(ctx, corestore.WorkItem{OrganizationID: org, ProjectID: "prj_example", NativeID: id, Number: int64(number), Title: "Example", WorkflowStateName: new("Todo")})
+					if err != nil {
+						return err
+					}
+					row := viewstore.BoardRecord{OrganizationID: org, ProjectID: item.ProjectID, WorkItemID: id, SourceRevision: item.Revision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("prj_example#%d", number)}, Dispatchable: true, CreatedAt: historyAt(), UpdatedAt: historyAt(), Payload: ref}
+					if number%2 == 0 {
+						row.Labels = []string{"detent:workspace"}
+					}
+					if err := w.ReplaceBoardItem(ctx, viewstore.BoardUpdate{ProjectID: item.ProjectID, WorkItemID: id, ExpectedRevision: item.Revision, Current: &row}); err != nil {
+						return err
+					}
 				}
-				row := viewstore.BoardRecord{OrganizationID: org, ProjectID: item.ProjectID, WorkItemID: id, SourceRevision: item.Revision, Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("prj_example#%d", index)}, Dispatchable: true, CreatedAt: historyAt(), UpdatedAt: historyAt(), Payload: ref}
-				if index%2 == 0 {
-					row.Labels = []string{"detent:workspace"}
-				}
-				return w.ReplaceBoardItem(ctx, viewstore.BoardUpdate{ProjectID: item.ProjectID, WorkItemID: id, ExpectedRevision: item.Revision, Current: &row})
+				return nil
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if index != 1 && index != 512 {
-				continue
-			}
+			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%04d", index))
 			probe := &boardQueryTracer{}
 			counted, err := postgres.NewRepository(ctx, tracedFeaturePool(t, pool, probe), smallPool())
 			if err != nil {
@@ -235,17 +242,26 @@ func TestBoardWorkOrderReadsBoundedProjection(t *testing.T) {
 			}
 		}
 		checkTotals(256)
-		for index := 1; index <= 512; index++ {
+		for _, last := range []int{1, 512} {
+			first := 1
+			if last == 512 {
+				first = 2
+			}
 			if err := repository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
-				row, err := w.BoardItem(ctx, "prj_example", tracker.NativeWorkItemID(fmt.Sprintf("wi_%04d", index)))
-				if err != nil {
-					return err
+				for index := first; index <= last; index++ {
+					row, err := w.BoardItem(ctx, "prj_example", tracker.NativeWorkItemID(fmt.Sprintf("wi_%04d", index)))
+					if err != nil {
+						return err
+					}
+					if err := w.ReplaceBoardItem(ctx, viewstore.BoardUpdate{ProjectID: row.ProjectID, WorkItemID: row.WorkItemID, ExpectedRevision: row.SourceRevision, Current: &row}); err != nil {
+						return err
+					}
 				}
-				return w.ReplaceBoardItem(ctx, viewstore.BoardUpdate{ProjectID: row.ProjectID, WorkItemID: row.WorkItemID, ExpectedRevision: row.SourceRevision, Current: &row})
+				return nil
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if index == 1 {
+			if last == 1 {
 				checkTotals(256)
 			}
 		}
