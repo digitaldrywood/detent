@@ -249,7 +249,6 @@ type doctorDeps struct {
 	cacheCapacityBytes   func(string) (uint64, error)
 	inspectCaches        func(context.Context) toolcache.Report
 	githubWorkflows      func(context.Context, workflowconfig.Config, string) (map[string]string, error)
-	codexStorage         func(context.Context, string, workflowconfig.Config, func(string) string) []doctorCheck
 	loadWorkflow         func(string) (workflowconfig.Workflow, error)
 	lookupEnv            func(string) string
 	resolveCommandOnPath func(string, string) (string, error)
@@ -1234,9 +1233,6 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.inspectCaches == nil {
 		d.inspectCaches = defaultInspectCaches
 	}
-	if d.codexStorage == nil {
-		d.codexStorage = defaults.codexStorage
-	}
 	if d.loadWorkflow == nil {
 		d.loadWorkflow = defaults.loadWorkflow
 	}
@@ -1353,7 +1349,6 @@ func defaultDoctorDeps() doctorDeps {
 		resolveCommandInDir:  resolveDoctorCommandInDir,
 		runCommandInDir:      runDoctorCommandInDir,
 		codexInitialize:      probeDoctorCodexInitialize,
-		codexStorage:         checkDoctorCodexStorage,
 		codexAccount:         probeDoctorCodexAccount,
 		httpDo:               defaultDoctorHTTPDo,
 		githubScopes:         defaultGitHubScopes,

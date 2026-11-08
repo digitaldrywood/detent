@@ -666,7 +666,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		}
 		maintenance := deps.startupMaintenance
 		if maintenance == nil {
-			maintenance = maintainStartupCodexArtifacts
+			maintenance = maintainStartupCodexTranscripts
 		}
 		if logs := maintenance(ctx, cfg.Global, runtimeStore); logs != nil {
 			resourceWorkers.Go(logs)
@@ -944,16 +944,15 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	})
 }
 
-func maintainStartupCodexArtifacts(ctx context.Context, cfg globalconfig.Config, runtimeStore store.Store) func() {
+func maintainStartupCodexTranscripts(ctx context.Context, cfg globalconfig.Config, runtimeStore store.Store) func() {
 	logger := slog.Default()
 	retentionHomes := map[string]bool{}
-	var logHomes []string
 	for _, projectConfig := range cfg.Projects {
 		workflow, err := project.LoadWorkflowContext(ctx, projectConfig)
 		if err != nil {
 			continue
 		}
-		homes, err := codexRetentionHomes(workflow.Config, os.LookupEnv)
+		homes, err := codexTranscriptHomes(workflow.Config, os.LookupEnv)
 		if err != nil {
 			logger.Warn("resolve Codex retention homes", "error", err)
 			continue
@@ -966,16 +965,9 @@ func maintainStartupCodexArtifacts(ctx context.Context, cfg globalconfig.Config,
 			if err := pruneCodexTranscripts(ctx, home, time.Now(), runtimeStore); err != nil {
 				logger.Warn("Codex transcript retention failed", "home", home, "error", err)
 			}
-			logHomes = append(logHomes, home)
 		}
 	}
-	return func() {
-		for _, home := range logHomes {
-			if err := pruneCodexLogs(ctx, home, time.Now(), codexLogSizeLimit, codexAppServerAlive); err != nil {
-				logger.Warn("Codex log retention failed", "home", home, "error", err)
-			}
-		}
-	}
+	return nil
 }
 
 func newHealthNotificationManager(cfg globalconfig.Config, stateStore store.HealthNotificationStateStore, logger *slog.Logger) (*healthnotify.Manager, error) {

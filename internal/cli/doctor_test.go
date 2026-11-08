@@ -6088,7 +6088,6 @@ func successfulDoctorDeps() doctorDeps {
 		inspectCaches: func(context.Context) toolcache.Report {
 			return toolcache.Report{BuildPath: "/cache/build", ModulePath: "/cache/modules"}
 		},
-		codexStorage: func(context.Context, string, workflowconfig.Config, func(string) string) []doctorCheck { return nil },
 		proposalLaneWriter: func(ctx context.Context, _ string, _ workflowconfig.Config, tracker connector.Connector, issue connector.Issue, target string) error {
 			return tracker.UpdateIssueState(ctx, issue.ID, target)
 		},
