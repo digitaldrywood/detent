@@ -1552,13 +1552,6 @@
     "internal/hubserver/postgres/core_cutover_source_test.go": {
       "sqlite_open": 1
     },
-    "internal/hubserver/postgres/core_policy_import.go": {
-      "driver_import": 1
-    },
-    "internal/hubserver/postgres/core_policy_import_test.go": {
-      "driver_import": 1,
-      "sqlite_open": 1
-    },
     "internal/hubserver/postgres/core_project_import.go": {
       "driver_import": 1,
       "sqlite_open": 1

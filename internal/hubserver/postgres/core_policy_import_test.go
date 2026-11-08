@@ -1,15 +1,11 @@
 package postgres_test
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
+	"fmt"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/changerequest"
@@ -33,15 +29,49 @@ func TestCorePolicyImportPreservesApprovalsPointersAndBudgetHistory(t *testing.T
 	now := time.Date(2026, 11, 1, 21, 0, 0, 0, time.UTC)
 	for _, organization := range organizations {
 		policyID := importedCurrentPolicyDescriptor().ID
-		source := postgres.CorePolicyImportSource{CopyPath: corePolicyCopy(t, organization, now), OrganizationID: organization, Objects: newHistoryObjects()}
+		source := postgres.CorePolicyImportSource{BundlePath: corePolicyCopy(t, organization, now), OrganizationID: organization, Objects: newHistoryObjects()}
 		for range 2 {
 			result, err := repository.ImportCorePolicies(t.Context(), source)
 			if err != nil {
 				t.Fatalf("organization %s import: %v", organization, err)
 			}
-			if result != (postgres.CorePolicyImportResult{PolicyRevisions: 2, CurrentPolicies: 1, ReviewPolicies: 1, MonthlyPolicies: 3}) {
+			if result != (postgres.CorePolicyImportResult{PolicyRevisions: 4, CurrentPolicies: 2, ReviewPolicies: 2, MonthlyPolicies: 4}) {
 				t.Fatalf("organization %s import counts = %+v", organization, result)
 			}
+		}
+		if err := repository.Close(); err != nil {
+			t.Fatal(err)
+		}
+		repository, _ = repositoryFor(t, db, smallPool())
+		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			current, err := reader.ProjectPolicy(t.Context(), "prj_2")
+			if err != nil {
+				return err
+			}
+			if current.PolicyID != policyID || current.ApprovedBy != "operator" {
+				t.Fatalf("second project current policy=%+v", current)
+			}
+			review, err := reader.ReviewPolicy(t.Context(), "prj_2")
+			if err != nil {
+				return err
+			}
+			reviewValue, err := eventstore.NewContent(source.Objects).ReviewPolicy(t.Context(), review)
+			if err != nil {
+				return err
+			}
+			if review.PolicyRevisionID != policyID || reviewValue.PolicyID != policyID || !reviewValue.RequireReview {
+				t.Fatalf("second project review policy=%+v", review)
+			}
+			monthly, err := reader.BillingMonthlyPolicy(t.Context(), "prj_2")
+			if err != nil {
+				return err
+			}
+			if monthly.Policy.RunnerMicros == nil || *monthly.Policy.RunnerMicros != 300 {
+				t.Fatalf("second project monthly policy=%+v", monthly)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
 		}
 		reported := importedReportedPolicyDescriptor()
 		reportedRaw, err := json.Marshal(reported)
@@ -150,17 +180,36 @@ func TestCorePolicyImportPreservesApprovalsPointersAndBudgetHistory(t *testing.T
 		if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM monthly_budget_policies WHERE organization_id=$1`, organization).Scan(&budgetRows); err != nil {
 			t.Fatal(err)
 		}
-		if budgetRows != 3 {
-			t.Fatalf("organization %s monthly budget rows = %d, want 3", organization, budgetRows)
+		if budgetRows != 4 {
+			t.Fatalf("organization %s monthly budget rows = %d, want 4", organization, budgetRows)
 		}
 		claimLease(t, repository, organization, leaseClaim(1))
+		claimLease(t, repository, organization, leaseClaim(2))
 		for range 2 {
 			facts, err := repository.ImportCoreMonthlyBudgetFacts(t.Context(), source)
-			if err != nil || facts != (postgres.CoreMonthlyBudgetFactsResult{Admissions: 1, Leases: 1}) {
+			if err != nil || facts != (postgres.CoreMonthlyBudgetFactsResult{Admissions: 2, Leases: 2}) {
 				t.Fatalf("organization %s budget facts = %+v, error=%v", organization, facts, err)
 			}
 		}
+		if err := repository.Close(); err != nil {
+			t.Fatal(err)
+		}
+		repository, _ = repositoryFor(t, db, smallPool())
 		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			second, err := reader.BillingMonthlyAdmission(t.Context(), 2)
+			if err != nil {
+				return err
+			}
+			if !second.AdmittedAt.Equal(now.Add(-time.Minute)) {
+				t.Fatalf("second admission=%+v", second)
+			}
+			secondLease, err := reader.BillingMonthlyLease(t.Context(), "lease_2")
+			if err != nil {
+				return err
+			}
+			if !secondLease.LunaAPI || secondLease.RunnerAPI || !secondLease.SpriteInfrastructure {
+				t.Fatalf("second lease=%+v", secondLease)
+			}
 			admission, err := reader.BillingMonthlyAdmission(t.Context(), 1)
 			if err != nil {
 				return err
@@ -190,85 +239,67 @@ func TestCorePolicyImportPreservesApprovalsPointersAndBudgetHistory(t *testing.T
 
 func corePolicyCopy(t *testing.T, organization tracker.OrganizationID, now time.Time) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "policies.db")
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
+	tables := []postgres.NeutralImportTable{
+		neutralFixtureTable(t, "policy_revisions", []postgres.NeutralImportKey{{Column: "scope", Kind: "text"}, {Column: "policy_id", Kind: "text"}}),
+		neutralFixtureTable(t, "project_policies", []postgres.NeutralImportKey{{Column: "scope", Kind: "text"}}),
+		neutralFixtureTable(t, "monthly_budget_policies", []postgres.NeutralImportKey{{Column: "organization_id", Kind: "text"}, {Column: "project_id", Kind: "text"}, {Column: "revision", Kind: "integer"}}),
+		neutralFixtureTable(t, "issues", []postgres.NeutralImportKey{{Column: "id", Kind: "integer"}}),
+		neutralFixtureTable(t, "leases", []postgres.NeutralImportKey{{Column: "lease_id", Kind: "text"}}),
+		neutralFixtureTable(t, "monthly_budget_admissions", []postgres.NeutralImportKey{{Column: "issue_id", Kind: "integer"}}),
+		neutralFixtureTable(t, "monthly_budget_leases", []postgres.NeutralImportKey{{Column: "lease_id", Kind: "text"}}),
+		neutralFixtureTable(t, "change_review_policies", []postgres.NeutralImportKey{{Column: "organization_id", Kind: "text"}, {Column: "project_id", Kind: "text"}}),
 	}
-	for _, statement := range []string{
-		`CREATE TABLE policy_revisions(scope TEXT,policy_id TEXT,metadata_json TEXT,approved_by TEXT,approved_at TEXT,gate_github_pull_request INTEGER,PRIMARY KEY(scope,policy_id))`,
-		`CREATE TABLE project_policies(scope TEXT PRIMARY KEY,policy_id TEXT)`,
-		`CREATE TABLE monthly_budget_policies(organization_id TEXT,project_id TEXT,revision INTEGER,policy_json TEXT,actor_id TEXT,updated_at TEXT,PRIMARY KEY(organization_id,project_id,revision))`,
-		`CREATE TABLE issues(id INTEGER PRIMARY KEY,organization_id TEXT NOT NULL)`,
-		`CREATE TABLE leases(lease_id TEXT PRIMARY KEY,issue_id INTEGER NOT NULL REFERENCES issues(id))`,
-		`CREATE TABLE monthly_budget_admissions(issue_id INTEGER PRIMARY KEY,admitted_at TEXT)`,
-		`CREATE TABLE monthly_budget_leases(lease_id TEXT PRIMARY KEY,exposure_json TEXT)`,
-		`CREATE TABLE change_review_policies(organization_id TEXT,project_id TEXT,policy_json TEXT,PRIMARY KEY(organization_id,project_id))`,
-	} {
-		if _, err := db.ExecContext(t.Context(), statement); err != nil {
-			t.Fatal(err)
+	definitions := map[string]postgres.NeutralImportTable{}
+	for _, table := range tables {
+		definitions[table.Name] = table
+	}
+	records := map[string][]postgres.NeutralImportRow{}
+	add := func(name string, values map[string]any) {
+		records[name] = append(records[name], neutralFixtureRow(t, definitions[name], values))
+	}
+	old, current := importedReportedPolicyDescriptor(), importedCurrentPolicyDescriptor()
+	for id := int64(1); id <= 2; id++ {
+		project := fmt.Sprintf("prj_%d", id)
+		scope := string(organization) + "/" + project
+		for _, row := range []struct {
+			descriptor policy.Descriptor
+			actor      string
+		}{{old, "runner-report"}, {current, "operator"}} {
+			encoded, err := json.Marshal(row.descriptor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			add("policy_revisions", map[string]any{"scope": scope, "policy_id": row.descriptor.ID, "metadata_json": string(encoded), "approved_by": row.actor, "approved_at": now.Format(time.RFC3339Nano), "gate_github_pull_request": row.descriptor.Gates.GitHubPullRequest})
 		}
-	}
-	old := importedReportedPolicyDescriptor()
-	current := importedCurrentPolicyDescriptor()
-	for _, row := range []struct {
-		descriptor policy.Descriptor
-		actor      string
-	}{
-		{descriptor: old, actor: "runner-report"},
-		{descriptor: current, actor: "operator"},
-	} {
-		encoded, err := json.Marshal(row.descriptor)
+		add("project_policies", map[string]any{"scope": scope, "policy_id": current.ID})
+		add("change_review_policies", map[string]any{"organization_id": organization, "project_id": project, "policy_json": legacyReviewPolicyJSON(current.ID)})
+		projectPolicy, err := json.Marshal(budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, RunnerMicros: int64ptr(300)})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO policy_revisions(scope,policy_id,metadata_json,approved_by,approved_at,gate_github_pull_request) VALUES(?,?,?,?,?,?)`, string(organization)+"/prj_1", row.descriptor.ID, string(encoded), row.actor, now.Format(time.RFC3339Nano), row.descriptor.Gates.GitHubPullRequest); err != nil {
+		add("monthly_budget_policies", map[string]any{"organization_id": organization, "project_id": project, "revision": 1, "policy_json": string(projectPolicy), "actor_id": "admin", "updated_at": now.Add(time.Second).Format(time.RFC3339Nano)})
+		add("issues", map[string]any{"id": id, "organization_id": organization})
+		lease := fmt.Sprintf("lease_%d", id)
+		add("leases", map[string]any{"lease_id": lease, "issue_id": id})
+		exposure, err := json.Marshal(budget.CostExposure{LunaAPI: true, SpriteInfrastructure: true})
+		if err != nil {
 			t.Fatal(err)
 		}
+		add("monthly_budget_admissions", map[string]any{"issue_id": id, "admitted_at": now.Add(-time.Minute).Format(time.RFC3339Nano)})
+		add("monthly_budget_leases", map[string]any{"lease_id": lease, "exposure_json": string(exposure)})
 	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO project_policies(scope,policy_id) VALUES(?,?)`, string(organization)+"/prj_1", importedCurrentPolicyDescriptor().ID); err != nil {
-		t.Fatal(err)
-	}
-	reviewJSON := legacyReviewPolicyJSON(importedCurrentPolicyDescriptor().ID)
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO change_review_policies(organization_id,project_id,policy_json) VALUES(?,?,?)`, organization, "prj_1", reviewJSON); err != nil {
-		t.Fatal(err)
-	}
-	orgPolicy, _ := json.Marshal(budget.MonthlyPolicy{Enabled: true, Mode: budget.DrainIssue, TotalMicros: new(int64)})
-	orgPolicyTwo, _ := json.Marshal(budget.MonthlyPolicy{Enabled: true, Mode: budget.DrainIssue, TotalMicros: int64ptr(1000)})
-	projectPolicy, _ := json.Marshal(budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, RunnerMicros: int64ptr(300)})
 	for _, row := range []struct {
-		project  string
 		revision int64
-		policy   []byte
-	}{
-		{project: "", revision: 1, policy: orgPolicy},
-		{project: "", revision: 2, policy: orgPolicyTwo},
-		{project: "prj_1", revision: 1, policy: projectPolicy},
-	} {
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO monthly_budget_policies(organization_id,project_id,revision,policy_json,actor_id,updated_at) VALUES(?,?,?,?,?,?)`, organization, row.project, row.revision, string(row.policy), "admin", now.Add(time.Duration(row.revision)*time.Second).Format(time.RFC3339Nano)); err != nil {
+		total    int64
+	}{{1, 0}, {2, 1000}} {
+		encoded, err := json.Marshal(budget.MonthlyPolicy{Enabled: true, Mode: budget.DrainIssue, TotalMicros: int64ptr(row.total)})
+		if err != nil {
 			t.Fatal(err)
 		}
+		add("monthly_budget_policies", map[string]any{"organization_id": organization, "project_id": "", "revision": row.revision, "policy_json": string(encoded), "actor_id": "admin", "updated_at": now.Add(time.Duration(row.revision) * time.Second).Format(time.RFC3339Nano)})
 	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO issues(id,organization_id) VALUES(1,?),(2,?)`, organization, organization); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id) VALUES('lease_1',1)`); err != nil {
-		t.Fatal(err)
-	}
-	exposure, _ := json.Marshal(budget.CostExposure{LunaAPI: true, SpriteInfrastructure: true})
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO monthly_budget_admissions(issue_id,admitted_at) VALUES(1,?)`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO monthly_budget_leases(lease_id,exposure_json) VALUES('lease_1',?)`, string(exposure)); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(path, 0400); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	directory, _ := writeNeutralFixture(t, organization, tables, records)
+	return directory
 }
 
 func legacyReviewPolicyJSON(policyID string) string {
