@@ -280,10 +280,9 @@ func (s *session) beginBoardSearch(ctx context.Context, selection viewstore.Boar
 	}
 	if initial {
 		milliseconds := max(1, (time.Until(s.searchDeadline) - 25*time.Millisecond).Milliseconds())
-		lockKey := fmt.Sprintf("board-search:%q:%q", s.organization, selection.ReporterPrincipalID)
-		const statement = `SELECT set_config('statement_timeout',$1,true) IS NOT NULL AND pg_try_advisory_xact_lock(hashtextextended($2,0))`
+		const statement = `SELECT set_config('statement_timeout',$1,true) IS NOT NULL AND pg_try_advisory_xact_lock(hashtextextended('board-search:' || $2,0))`
 		if len(batches) > 0 {
-			batches[0].Queue(statement, fmt.Sprintf("%dms", milliseconds), lockKey).QueryRow(func(row pgx.Row) error {
+			batches[0].Queue(statement, fmt.Sprintf("%dms", milliseconds), s.organization).QueryRow(func(row pgx.Row) error {
 				if err := row.Scan(&s.searchAdmitted); err != nil {
 					return err
 				}
@@ -295,7 +294,7 @@ func (s *session) beginBoardSearch(ctx context.Context, selection viewstore.Boar
 			return ctx, cancel, nil
 		}
 		var admitted bool
-		err := s.db.QueryRow(ctx, statement, fmt.Sprintf("%dms", milliseconds), lockKey).Scan(&admitted)
+		err := s.db.QueryRow(ctx, statement, fmt.Sprintf("%dms", milliseconds), s.organization).Scan(&admitted)
 		if err != nil {
 			return ctx, cancel, mapError(ctx, err)
 		}
