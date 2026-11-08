@@ -55,7 +55,7 @@ func TestOperationsMissingRequiredChecks(t *testing.T) {
 			if tt.existing {
 				report.Decisions = []operations.Decision{{ProjectID: "p", Issue: "owner/repo#1", Question: "Existing"}}
 			}
-			deps.Store = operationsStore{Store: openWebTestStore(t), report: report}
+			deps.Store = operationsStore{report: report}
 			issue := telemetry.Issue{ID: "i", Title: "Label-gated Full CI", URL: "https://github.com/owner/repo/issues/1", Identifier: "owner/repo#1", ProjectID: "p", State: tt.state, PullRequest: &telemetry.PullRequest{Number: 42, State: "open", HeadSHA: "head", RequiredCheckFailures: []telemetry.PullRequestCheck{{Name: "Full CI", Status: tt.status}, {Name: "Full CI", Status: tt.status}}}}
 			if tt.unavailable {
 				issue.PullRequest.HydrationUnavailableReason = "rate_limited"

@@ -68,7 +68,7 @@ func TestChatExplainItemUsesIssueExplanationReadModel(t *testing.T) {
 	observedAt := time.Date(2026, 8, 7, 20, 15, 0, 0, time.UTC)
 	toolCalled := false
 	deps := testDeps(t)
-	deps.Store = openWebTestStore(t)
+	deps.Store = explanationStoreFixture{}
 	deps.Chat = chatpkg.ProviderFunc(func(ctx context.Context, request chatpkg.TurnRequest) (chatpkg.TurnResponse, error) {
 		found := false
 		for _, tool := range request.Tools {

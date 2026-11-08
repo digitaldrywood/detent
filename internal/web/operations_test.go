@@ -14,20 +14,23 @@ import (
 	"github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/operations"
 	"github.com/digitaldrywood/detent/internal/project"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
 type operationsStore struct {
-	store.Store
+	storeProbe
 	report operations.Report
 	err    error
 }
 
-func (s operationsStore) OperationsReport(context.Context, time.Time, time.Time) (operations.Report, error) {
-	return s.report, s.err
+func (s operationsStore) OperationsReport(_ context.Context, now, _ time.Time) (operations.Report, error) {
+	report := s.report
+	if report.DataTime.IsZero() {
+		report.DataTime = now
+	}
+	return report, s.err
 }
 
 func TestOperationsHandlers(t *testing.T) {
@@ -50,7 +53,7 @@ func TestOperationsHandlers(t *testing.T) {
 			t.Parallel()
 			deps := testDeps(t)
 			fixture := operations.Report{DataTime: time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC), Stats: []operations.Window{{Label: "24h", Merges: 3}}, Actions: []operations.Action{{ID: 1, ProjectID: "p", Issue: "i", Kind: "return_retired_parks", Reason: "operator_routine:return_retired_parks"}}, Decisions: []operations.Decision{{ProjectID: "p", Issue: "owner/repo#1", Question: "Choose target?", URL: "https://github.com/owner/repo/issues/1"}}}
-			backend := operationsStore{Store: openWebTestStore(t), report: fixture}
+			backend := operationsStore{report: fixture}
 			if tc.failure {
 				backend.err = errors.New("database unavailable")
 			}
@@ -378,7 +381,7 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 			if tc.configureProject {
 				setOperationsTestProject(t, deps.Registry, "example-project", tc.autoPromote, tc.optoutLabel, tc.allowedLabels, tc.gateKind, tc.sourceState, tc.passState, tc.approvalLabel, tc.terminalStates, !tc.humanReviewDisabled)
 			}
-			deps.Store = openWebTestStore(t)
+			deps.Store = operationsStore{}
 			if err := deps.Hub.Publish(tc.snapshot); err != nil {
 				t.Fatal(err)
 			}
@@ -456,7 +459,7 @@ func setOperationsTestProject(t *testing.T, registry *project.Registry, id strin
 func TestOperationsDecisionDedupeKeepsProjectLocalIdentifiers(t *testing.T) {
 	t.Parallel()
 	deps := testDeps(t)
-	deps.Store = operationsStore{Store: openWebTestStore(t)}
+	deps.Store = operationsStore{}
 	if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{
 		{ID: "alpha", ProjectID: "alpha", Identifier: "ENG-123", State: "Human Review", RequiredGate: &telemetry.RequiredGate{HumanAction: "Review alpha."}, PullRequest: &telemetry.PullRequest{Number: 1, State: "OPEN"}},
 		{ID: "beta", ProjectID: "beta", Identifier: "ENG-123", State: "Human Review", RequiredGate: &telemetry.RequiredGate{HumanAction: "Review beta."}, PullRequest: &telemetry.PullRequest{Number: 2, State: "OPEN"}},
@@ -486,7 +489,7 @@ func TestOperationsDecisionDedupeKeepsProjectLocalIdentifiers(t *testing.T) {
 func TestOperationsDecisionDedupeKeepsGitHubHostsSeparate(t *testing.T) {
 	t.Parallel()
 	deps := testDeps(t)
-	deps.Store = openWebTestStore(t)
+	deps.Store = operationsStore{}
 	if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{
 		{ID: "alpha", ProjectID: "alpha", Identifier: "owner/repo#99", State: "Blocked", URL: "https://github.alpha.example/owner/repo/issues/99", WorkpadHumanAction: &telemetry.BlockerEvidence{Owner: "human", Status: "unverifiable", Reason: "Approve alpha release."}},
 		{ID: "beta", ProjectID: "beta", Identifier: "owner/repo#99", State: "Blocked", URL: "https://github.beta.example/owner/repo/issues/99", WorkpadHumanAction: &telemetry.BlockerEvidence{Owner: "human", Status: "unverifiable", Reason: "Approve beta release."}},
@@ -529,7 +532,7 @@ func TestOperationsQuestionAgeOrder(t *testing.T) {
 	for _, tc := range []struct{ name, path string }{{"api", "/api/v1/operations"}, {"page", "/operations"}} {
 		t.Run(tc.name, func(t *testing.T) {
 			deps := testDeps(t)
-			deps.Store = openWebTestStore(t)
+			deps.Store = operationsStore{}
 			if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{
 				{ID: "recent", ProjectID: "a", Identifier: "owner/repo#1", State: "Blocked", WorkpadHumanAction: &telemetry.BlockerEvidence{Owner: "human", Status: "unverifiable", Reason: "Recent action?", RecordedAt: &recent}},
 				{ID: "old", ProjectID: "z", Identifier: "owner/repo#2", State: "Blocked", WorkpadHumanAction: &telemetry.BlockerEvidence{Owner: "human", Status: "unverifiable", Reason: "Old action?", RecordedAt: &old}},
@@ -590,7 +593,7 @@ func TestOperationsWorkpadHumanAction(t *testing.T) {
 			if tc.existing {
 				report.Decisions = []operations.Decision{{ProjectID: "p", Issue: "owner/repo#1", Question: "existing question", AskedAt: &at}}
 			}
-			deps.Store = operationsStore{Store: openWebTestStore(t), report: report}
+			deps.Store = operationsStore{report: report}
 			issue := telemetry.Issue{ID: "i", ProjectID: "p", Identifier: "owner/repo#1", Title: "Waiting card", State: tc.state, WorkpadHumanAction: &telemetry.BlockerEvidence{Owner: "human", Status: tc.status, Reason: tc.reason, RecordedAt: &at}}
 			if tc.proseOnly {
 				// The snapshot excludes legacy prose from structured human-action evidence.

@@ -197,7 +197,7 @@ func TestServerOpenAPIBypassesDashboardAuthentication(t *testing.T) {
 			name: "magic link",
 			setup: func(t *testing.T) (web.Config, web.Dependencies) {
 				deps := testDeps(t)
-				deps.Store = openWebTestStore(t)
+				deps.Store = &webAuthStoreFixture{}
 				deps.MagicLinkSender = &webAuthSender{}
 				cfg := openAPITestConfig()
 				cfg.GlobalConfig.Auth = globalconfig.Auth{
@@ -213,7 +213,7 @@ func TestServerOpenAPIBypassesDashboardAuthentication(t *testing.T) {
 			name: "OIDC",
 			setup: func(t *testing.T) (web.Config, web.Dependencies) {
 				deps := testDeps(t)
-				deps.Store = openWebTestStore(t)
+				deps.Store = &webAuthStoreFixture{}
 				deps.IdentityProvider = &webOIDCProvider{}
 				cfg := openAPITestConfig()
 				cfg.GlobalConfig.Auth = globalconfig.Auth{
