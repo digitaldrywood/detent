@@ -14,11 +14,11 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -193,11 +193,7 @@ func RunNoChangeRequiredGates(t *testing.T, factories Constructors) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			sessions, err := store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer sessions.Close()
+			sessions := api.NewRunnerSessions(h.native)
 			message := "```detent-status\nschema: 1\nstatus: no_change_needed\nfields:\n  completion_verified_sha: " + strings.Repeat("a", 40) + "\n  completion_evidence: Inspect README.md and run git status --porcelain on current base\n```"
 			provider := &noChangeEvidenceAgent{committingAgent: committingAgent{finalMessage: message, validator: "pass"}}
 			if test.advance || test.advanceDuringReview {
