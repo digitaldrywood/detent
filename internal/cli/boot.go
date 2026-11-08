@@ -22,21 +22,16 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/digitaldrywood/detent/internal/activehours"
-	"github.com/digitaldrywood/detent/internal/boardsnapshot"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/healthnotify"
-	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/logging"
-	"github.com/digitaldrywood/detent/internal/notify"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/service"
-	"github.com/digitaldrywood/detent/internal/statuspage"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tui"
@@ -220,15 +215,7 @@ func defaultBoot(ctx context.Context, cfg BootConfig) error {
 }
 
 type startRunningDependencies struct {
-	snapshotNow           func() time.Time
-	boardSnapshotStore    boardsnapshot.Store
-	boardSnapshotInterval time.Duration
-	backgroundWaitStarted func()
-	buildDriftInterval    time.Duration
-	readInstalledBuild    installedBuildReader
-	managerDependencies   project.ManagerDependencies
-	providerStatusManager *statuspage.Manager
-	startupMaintenance    func(context.Context, globalconfig.Config, store.Store) func()
+	startupMaintenance func(context.Context, globalconfig.Config, store.Store) func()
 }
 
 func startRunning(ctx context.Context, cfg BootConfig) error {
@@ -246,41 +233,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		return err
 	}
 	return startRemoteRunner(ctx, cfg)
-}
-
-func newHealthNotificationManager(cfg globalconfig.Config, stateStore store.HealthNotificationStateStore, logger *slog.Logger) (*healthnotify.Manager, error) {
-	health := cfg.Notifications.Health
-	if strings.TrimSpace(health.Webhook.URL) == "" {
-		return healthnotify.NewManager(healthnotify.Config{}, healthnotify.Dependencies{})
-	}
-	hostname, err := os.Hostname()
-	if err != nil {
-		if logger != nil {
-			logger.Warn("resolve health notification hostname failed", "error", err)
-		}
-		hostname = ""
-	}
-	instance := strings.TrimSpace(cfg.InstanceName)
-	if instance == "" {
-		instance = strings.TrimSpace(cfg.Global.Identity.Name)
-	}
-	if instance == "" {
-		instance = strings.TrimSpace(strings.SplitN(hostname, ".", 2)[0])
-	}
-	manager, err := healthnotify.NewManager(healthnotify.Config{
-		Webhook: notify.WebhookConfig{
-			URL:     health.Webhook.URL,
-			Headers: health.Webhook.Headers,
-			Timeout: health.Webhook.Timeout(),
-		},
-		Instance: instance,
-		Host:     hostname,
-		Debounce: health.Debounce(),
-	}, healthnotify.Dependencies{Store: stateStore, Logger: logger})
-	if err != nil {
-		return nil, fmt.Errorf("configure health notifications: %w", err)
-	}
-	return manager, nil
 }
 
 type sessionProjectBackfiller interface {
@@ -681,69 +633,6 @@ func unexpectedBootServeError(err error) error {
 	return err
 }
 
-func serveWithTerminalDashboard(
-	ctx context.Context,
-	server *web.Server,
-	listener net.Listener,
-	snapshots *hub.Hub[telemetry.Snapshot],
-	build buildinfo.Info,
-	logPath string,
-	output io.Writer,
-	shutdownTimeoutSource func() time.Duration,
-	interrupt func(),
-	afterExit func(),
-) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	listenerOwned := true
-	defer func() {
-		if listenerOwned && listener != nil {
-			if err := listener.Close(); err != nil {
-				slog.Default().Warn("close web listener failed", "error", err)
-			}
-		}
-	}()
-
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	model, err := tui.NewModel(
-		runCtx,
-		snapshots,
-		tui.WithBuild(build),
-		tui.WithLogPath(logPath),
-		tui.WithShutdownTimeoutSource(shutdownTimeoutSource),
-		tui.WithInterruptFunc(interrupt),
-	)
-	if err != nil {
-		return err
-	}
-	defer model.Close()
-
-	type result struct {
-		err error
-	}
-	results := make(chan result, 2)
-	listenerOwned = false
-	go func() {
-		results <- result{err: serve(runCtx, server, listener)}
-	}()
-	go func() {
-		finalModel, runErr := runTerminalDashboardProgram(runCtx, tea.NewProgram(model, terminalDashboardProgramOptions()...))
-		summaryErr := writeTerminalDashboardSummary(output, finalModel, model)
-		if afterExit != nil {
-			afterExit()
-		}
-		results <- result{err: errors.Join(runErr, summaryErr)}
-	}()
-
-	first := <-results
-	cancel()
-	second := <-results
-	return terminalDashboardError(first.err, second.err)
-}
-
 func terminalDashboardError(first error, second error) error {
 	if err := unexpectedTerminalDashboardError(first); err != nil {
 		return err
@@ -1053,39 +942,6 @@ func globalConfigFromWorkflow(globalPath string, workflowPath string) (globalcon
 	return cfg, nil
 }
 
-func bootKanbanWorkflow(ctx context.Context, cfg BootConfig) (workflowconfig.Config, error) {
-	workflow, ok, err := bootWorkflow(ctx, cfg)
-	if err != nil || !ok {
-		return workflowconfig.Default(), err
-	}
-	workflow.Config.Server.Kanban.Normalize()
-	return workflow.Config, nil
-}
-
-func bootWorkflow(ctx context.Context, cfg BootConfig) (workflowconfig.Workflow, bool, error) {
-	firstProject := firstGlobalProject(cfg.Global)
-	if strings.TrimSpace(firstProject.Workflow) != "" {
-		workflow, err := loadRuntimeProjectWorkflow(ctx, firstProject, runtimeDeps{}.withDefaults())
-		if cfg.Global.Client.IdentityFile != "" && errors.Is(err, os.ErrNotExist) {
-			return workflowconfig.Workflow{}, false, nil
-		}
-		if err != nil {
-			return workflowconfig.Workflow{}, false, fmt.Errorf("load boot workflow: %w", err)
-		}
-		return workflow, true, nil
-	}
-
-	path := strings.TrimSpace(cfg.WorkflowPath)
-	if path == "" {
-		return workflowconfig.Workflow{}, false, nil
-	}
-	workflow, err := workflowconfig.LoadWorkflow(path)
-	if err != nil {
-		return workflowconfig.Workflow{}, false, fmt.Errorf("load boot workflow: %w", err)
-	}
-	return workflow, true, nil
-}
-
 func buildGlobalScheduler(settings globalconfig.Settings) (scheduler.GlobalScheduler, error) {
 	schedulerConfig, err := globalSchedulerConfig(settings)
 	if err != nil {
@@ -1113,21 +969,6 @@ func buildGlobalDispatchPools(cfg globalconfig.Config) (*scheduler.PoolRegistry,
 		return nil, fmt.Errorf("create agent pools: %w", err)
 	}
 	return registry, nil
-}
-
-func startupDispatchRampStarts(registry *scheduler.PoolRegistry) int {
-	if registry == nil {
-		return 1
-	}
-	total := 0
-	for _, pool := range registry.PoolSnapshots() {
-		capacity := pool.BurstTo
-		if capacity <= 0 {
-			capacity = pool.Capacity
-		}
-		total += capacity
-	}
-	return max(total, 1)
 }
 
 func globalPoolConfigs(settings globalconfig.Settings) ([]scheduler.PoolConfig, error) {
@@ -1332,13 +1173,6 @@ func parseSlogLevel(level string) slog.Level {
 }
 
 func refresherForRegistry(registry *project.Registry) web.Refresher {
-	if registry == nil {
-		return nil
-	}
-	return registryRefresher{registry: registry}
-}
-
-func recoveryForRegistry(registry *project.Registry) web.WorkAttemptRecovery {
 	if registry == nil {
 		return nil
 	}
@@ -1691,20 +1525,6 @@ func printBootBanner(cfg BootConfig, displayURL string) error {
 	}
 	_, err := io.WriteString(out, bootBanner(cfg.Version, displayURL, cfg.Isolated))
 	return err
-}
-
-func isolatedDemo(cfg BootConfig) string {
-	if cfg.Isolated == nil {
-		return ""
-	}
-	return strings.TrimSpace(cfg.Isolated.Demo)
-}
-
-func isolatedDemoClock(cfg BootConfig) string {
-	if cfg.Isolated == nil {
-		return ""
-	}
-	return strings.TrimSpace(cfg.Isolated.DemoClock)
 }
 
 func bootBanner(version string, displayURL string, isolated *IsolatedRuntimeInfo) string {

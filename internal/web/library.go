@@ -394,14 +394,6 @@ func librarySourceLabel(identifier string, id string) string {
 	return "unassigned"
 }
 
-func githubIssueURL(repository string, number int) string {
-	repository = strings.TrimSpace(repository)
-	if repository == "" || number <= 0 {
-		return ""
-	}
-	return "https://github.com/" + repository + "/issues/" + strconv.Itoa(number)
-}
-
 func libraryPullRequestURL(issueURL string, repository string, number int) string {
 	if number <= 0 {
 		return ""
