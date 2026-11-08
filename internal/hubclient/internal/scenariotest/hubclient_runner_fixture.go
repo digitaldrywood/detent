@@ -1,11 +1,14 @@
 package scenariotest
 
 import (
+	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -15,7 +18,7 @@ func hubclientEnrolledRunner(t *testing.T, admin *Client, organization tracker.O
 	t.Helper()
 	url := fixtureClient(admin).baseURL.String()
 	path := filepath.Join(t.TempDir(), "private", "runner.json")
-	file, err := runnerauth.Initialize(path, url)
+	file, err := hubclientInitializeIdentity(path, url)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +33,7 @@ func hubclientEnrolledRunner(t *testing.T, admin *Client, organization tracker.O
 		t.Fatal(err)
 	}
 	file.Identity = identity
-	if err := runnerauth.Save(path, file); err != nil {
+	if err := hubclientSaveIdentity(path, file); err != nil {
 		t.Fatal(err)
 	}
 	fleet, err := NewFleetClient(admin, organization, nil)
@@ -45,4 +48,24 @@ func hubclientEnrolledRunner(t *testing.T, admin *Client, organization tracker.O
 		t.Fatal(err)
 	}
 	return client, machine
+}
+
+func hubclientInitializeIdentity(path, hubURL string) (runnerauth.File, error) {
+	credential, err := apikey.GenerateToken()
+	if err != nil {
+		return runnerauth.File{}, err
+	}
+	value := runnerauth.File{Schema: 1, HubURL: hubURL, Identity: runnerauth.Identity{Binding: runnerauth.NewBinding()}, Credential: credential}
+	return value, hubclientSaveIdentity(path, value)
+}
+
+func hubclientSaveIdentity(path string, value runnerauth.File) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0o600)
 }

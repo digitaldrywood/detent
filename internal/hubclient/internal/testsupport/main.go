@@ -27,7 +27,11 @@ func RunMain(m *testing.M, cleanups ...func() error) int {
 	if err := os.Setenv("CODEX_HOME", filepath.Join(scratch, "codex")); err != nil {
 		panic(err)
 	}
-	for key, value := range map[string]string{"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "Test User", "GIT_AUTHOR_EMAIL": "test@example.com", "GIT_COMMITTER_NAME": "Test User", "GIT_COMMITTER_EMAIL": "test@example.com"} {
+	gitConfig := filepath.Join(scratch, "gitconfig")
+	if err := os.WriteFile(gitConfig, []byte("[core]\nfsync = none\n[maintenance]\nauto = false\n[gc]\nauto = 0\n"), 0o600); err != nil {
+		panic(err)
+	}
+	for key, value := range map[string]string{"GIT_CONFIG_GLOBAL": gitConfig, "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "Test User", "GIT_AUTHOR_EMAIL": "test@example.com", "GIT_COMMITTER_NAME": "Test User", "GIT_COMMITTER_EMAIL": "test@example.com"} {
 		if err := os.Setenv(key, value); err != nil {
 			panic(err)
 		}
