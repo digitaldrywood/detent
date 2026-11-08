@@ -25,27 +25,27 @@ var _ conversationstore.Reader = (*session)(nil)
 var _ conversationstore.Writer = (*session)(nil)
 
 func (s *session) Conversation(ctx context.Context, project tracker.ProjectID, id string) (conversationstore.Conversation, error) {
-	return scanPGConversation(s.db.QueryRow(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND project_id=$2 AND id=$3`, s.organization, project, id))
+	return scanPGConversation(ctx, s.db.QueryRow(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND project_id=$2 AND id=$3`, s.organization, project, id))
 }
 
 func (s *session) LockConversation(ctx context.Context, project tracker.ProjectID, id string) (conversationstore.Conversation, error) {
-	return scanPGConversation(s.db.QueryRow(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE OF c`, s.organization, project, id))
+	return scanPGConversation(ctx, s.db.QueryRow(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE OF c`, s.organization, project, id))
 }
 
 func (s *session) ConversationByID(ctx context.Context, id string) (conversationstore.Conversation, error) {
-	return scanPGConversation(s.db.QueryRow(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND id=$2`, s.organization, id))
+	return scanPGConversation(ctx, s.db.QueryRow(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND id=$2`, s.organization, id))
 }
 
 func (s *session) ConversationByExecutionLease(ctx context.Context, leaseID string) (conversationstore.Conversation, error) {
-	return scanPGConversation(s.db.QueryRow(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND execution_lease_id=$2`, s.organization, leaseID))
+	return scanPGConversation(ctx, s.db.QueryRow(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND execution_lease_id=$2`, s.organization, leaseID))
 }
 
 func (s *session) ConversationByWorkItem(ctx context.Context, project tracker.ProjectID, item string) (conversationstore.Conversation, error) {
-	return scanPGConversation(s.db.QueryRow(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND project_id=$2 AND work_item_id=$3`, s.organization, project, item))
+	return scanPGConversation(ctx, s.db.QueryRow(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND project_id=$2 AND work_item_id=$3`, s.organization, project, item))
 }
 
 func (s *session) ConversationByCreationKey(ctx context.Context, principal, key string) (conversationstore.Conversation, error) {
-	return scanPGConversation(s.db.QueryRow(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND owner_principal_id=$2 AND creation_key=$3`, s.organization, principal, key))
+	return scanPGConversation(ctx, s.db.QueryRow(ctx, conversationSelect+` WHERE c.deleted_at IS NULL AND organization_id=$1 AND owner_principal_id=$2 AND creation_key=$3`, s.organization, principal, key))
 }
 
 const conversationSelect = `SELECT c.organization_id,c.project_id,c.id,c.creation_key,c.creation_hash,c.owner_principal_id,c.owner_subject,c.origin,c.title,c.visibility,c.status,
@@ -54,7 +54,7 @@ c.execution_json,c.event_seq,c.preferences_json,c.read_audience,c.created_at,c.u
 c.content_attachment_id,c.message_count
 FROM conversations c`
 
-func scanPGConversation(row interface{ Scan(...any) error }) (conversationstore.Conversation, error) {
+func scanPGConversation(ctx context.Context, row interface{ Scan(...any) error }) (conversationstore.Conversation, error) {
 	var record conversationstore.Conversation
 	var subject, workItem pgtype.Text
 	var linked, lastMessage, settled pgtype.Timestamptz
@@ -65,7 +65,7 @@ func scanPGConversation(row interface{ Scan(...any) error }) (conversationstore.
 		&preferences, &record.ReadAudience, &record.CreatedAt, &record.UpdatedAt, &lastMessage, &settled, &record.Archived,
 		&record.ContentReference, &record.MessageCount)
 	if err != nil {
-		return record, err
+		return record, mapError(ctx, err)
 	}
 	record.SubjectWorkItemID = subject.String
 	record.WorkItemID = workItem.String
@@ -155,7 +155,7 @@ func (s *session) Conversations(ctx context.Context, filter conversationstore.Co
 	defer rows.Close()
 	page := conversationstore.ConversationPage{Items: make([]conversationstore.Conversation, 0, filter.Limit)}
 	for rows.Next() {
-		record, err := scanPGConversation(rows)
+		record, err := scanPGConversation(ctx, rows)
 		if err != nil {
 			return page, err
 		}
@@ -216,7 +216,7 @@ func (s *session) LifecycleConversations(ctx context.Context, filter conversatio
 	defer rows.Close()
 	page := conversationstore.ConversationPage{Items: make([]conversationstore.Conversation, 0, filter.Limit)}
 	for rows.Next() {
-		record, err := scanPGConversation(rows)
+		record, err := scanPGConversation(ctx, rows)
 		if err != nil {
 			return page, err
 		}

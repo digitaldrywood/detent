@@ -155,6 +155,24 @@ func TestConversationRecordsAreTenantScopedAndTransactional(t *testing.T) {
 			t.Fatalf("rollback message error=%v", err)
 		}
 		if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+			for _, lookup := range []struct {
+				name string
+				read func() (conversationstore.Conversation, error)
+			}{
+				{"project", func() (conversationstore.Conversation, error) { return r.Conversation(ctx, "prj_shared", "missing") }},
+				{"id", func() (conversationstore.Conversation, error) { return r.ConversationByID(ctx, "missing") }},
+				{"lease", func() (conversationstore.Conversation, error) { return r.ConversationByExecutionLease(ctx, "missing") }},
+				{"work item", func() (conversationstore.Conversation, error) {
+					return r.ConversationByWorkItem(ctx, "prj_shared", "missing")
+				}},
+				{"creation key", func() (conversationstore.Conversation, error) {
+					return r.ConversationByCreationKey(ctx, "owner", "missing")
+				}},
+			} {
+				if _, err := lookup.read(); !errors.Is(err, corestore.ErrNotFound) {
+					t.Errorf("%s missing %s lookup error=%v, want not found", organization, lookup.name, err)
+				}
+			}
 			contentID := contentIDs[organization]
 			conversationID := "conv_0123456789abcdef0123456789abcdef"
 			got, err := r.Conversation(ctx, "prj_shared", conversationID)
