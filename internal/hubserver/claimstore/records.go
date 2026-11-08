@@ -133,6 +133,12 @@ type LandingCapacityUsage struct {
 	Unknown bool
 }
 
+type CapacityUsage struct {
+	Host    int64
+	Runner  int64
+	Project int64
+}
+
 type Reader interface {
 	CandidatePage(context.Context, CandidateQuery) (CandidatePage, error)
 	SelectionCursor(context.Context, string, tracker.ProjectID) (SelectionCursor, error)
@@ -142,6 +148,7 @@ type Reader interface {
 	ProviderReservation(context.Context, tracker.LeaseID) (ProviderReservation, error)
 	ProviderReservationUsage(context.Context, providercapacity.Report, string, time.Time) (int, error)
 	LandingCapacityUsage(context.Context, tracker.ProjectID, time.Time) (LandingCapacityUsage, error)
+	ClaimCapacityUsage(context.Context, string, string, tracker.ProjectID, string, time.Time) (CapacityUsage, error)
 }
 
 type Writer interface {

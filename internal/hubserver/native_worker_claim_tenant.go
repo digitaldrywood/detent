@@ -500,18 +500,21 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 				return err
 			}
 			exposure.SpriteInfrastructure = machine.SpriteName != "" && machine.SpriteName == machine.Hostname
-			machineUsed, err := w.Usage(ctx, machine.ID)
+			batch := ""
+			if stringsEqualFold(plan.candidate.State, "Merging") && plan.changeReady && !plan.landingRequired {
+				parts := strings.Split(request.SessionID, "/")
+				if len(parts) == 3 && parts[0] == "landing" && parts[1] != "" && parts[2] != "" {
+					batch = parts[1]
+				}
+			}
+			usage, err := w.ClaimCapacityUsage(ctx, machine.ID, identity.RunnerID, scope.project, batch, authoritativeNow)
 			if err != nil {
 				return err
 			}
-			if machine.Capacity <= 0 || machineUsed >= machine.Capacity {
+			if machine.Capacity <= 0 || usage.Host >= machine.Capacity {
 				return ErrNoClaimableWork
 			}
-			runnerUsed, projectUsed, err := w.RunnerProjectUsage(ctx, identity.RunnerID, scope.project, authoritativeNow)
-			if err != nil {
-				return err
-			}
-			if runnerUsed >= int64(availableCapacity) || projectCapacityConfigured && projectUsed >= int64(projectCapacity) {
+			if usage.Runner >= int64(availableCapacity) || projectCapacityConfigured && usage.Project >= int64(projectCapacity) {
 				return ErrNoClaimableWork
 			}
 		} else {
