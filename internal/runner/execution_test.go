@@ -218,6 +218,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 	for _, test := range []struct {
 		name               string
 		status             string
+		recoveryReason     string
 		unpushed           bool
 		changedHead        bool
 		changedModel       bool
@@ -253,9 +254,9 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 		{name: "cancelled retry preserves divergent tracked and untracked work", status: "cancelled", gitRef: true, dirty: true},
 		{name: "failed retry preserves divergent tracked and untracked work", status: "failed", gitRef: true, dirty: true},
 		{name: "cancelled retry rebases current Change", status: "cancelled", gitRef: true, rebase: true},
-		{name: "failed retry rebases current Change", status: "failed", rebase: true},
-		{name: "rework conflict reaches fresh agent", status: "failed", rebase: true, conflict: true},
-		{name: "cached rework conflict reaches fresh agent", status: "failed", rebase: true, conflict: true, cachedResolution: true},
+		{name: "failed retry rebases current Change", status: "failed", rebase: true, recoveryReason: "verified_hub_source"},
+		{name: "rework conflict reaches fresh agent", status: "failed", rebase: true, conflict: true, recoveryReason: "verified_hub_source"},
+		{name: "cached rework conflict reaches fresh agent", status: "failed", rebase: true, conflict: true, cachedResolution: true, recoveryReason: "verified_hub_source"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -399,6 +400,9 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			if fresh {
 				wantResume = AgentResume{}
 				wantAction, wantReason = "fresh_checkout", "session_restart_required"
+			}
+			if test.recoveryReason != "" {
+				wantReason = test.recoveryReason
 			}
 			wantModel := "example-model"
 			if test.conversationModel != "" {
