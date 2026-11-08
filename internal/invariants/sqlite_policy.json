@@ -53,10 +53,6 @@
     "internal/cli/artifact_test.go": {
       "database_path": 1
     },
-    "internal/cli/boot.go": {
-      "backend_sqlite": 1,
-      "sqlite_open": 1
-    },
     "internal/cli/budget.go": {
       "backend_sqlite": 1,
       "sqlite_open": 1
@@ -64,16 +60,9 @@
     "internal/cli/cli_test.go": {
       "sqlite_open": 2
     },
-    "internal/cli/codex_retention.go": {
-      "sql_pragma": 2,
-      "sqlite_open": 1
-    },
-    "internal/cli/codex_retention_test.go": {
-      "sqlite_open": 4
-    },
     "internal/cli/doctor.go": {
       "driver_import": 1,
-      "sqlite_open": 11
+      "sqlite_open": 5
     },
     "internal/cli/doctor_admission.go": {
       "sqlite_open": 1
@@ -105,7 +94,7 @@
     },
     "internal/cli/doctor_environment.go": {
       "sql_pragma_table": 1,
-      "sqlite_open": 2
+      "sqlite_open": 1
     },
     "internal/cli/doctor_invariant_evidence.go": {
       "sql_julianday": 3,
@@ -115,7 +104,7 @@
       "sqlite_open": 2
     },
     "internal/cli/doctor_test.go": {
-      "sqlite_open": 5
+      "sqlite_open": 3
     },
     "internal/cli/doctor_throughput.go": {
       "sqlite_open": 1
@@ -1834,8 +1823,8 @@
       "sqlite_open": 1
     },
     "internal/orchestrator/autopromote_tick_test.go": {
-      "backend_sqlite": 4,
-      "sqlite_open": 4
+      "backend_sqlite": 3,
+      "sqlite_open": 3
     },
     "internal/orchestrator/completion_classification_test.go": {
       "backend_sqlite": 1,
@@ -1878,10 +1867,6 @@
     "internal/orchestrator/merge_required_checks_test.go": {
       "sqlite_open": 1
     },
-    "internal/orchestrator/native_completion_test.go": {
-      "backend_sqlite": 1,
-      "sqlite_open": 1
-    },
     "internal/orchestrator/operational_completion_restart_test.go": {
       "sqlite_open": 1
     },
@@ -1909,8 +1894,8 @@
       "sqlite_open": 1
     },
     "internal/orchestrator/workflow_metrics_test.go": {
-      "backend_sqlite": 7,
-      "sqlite_open": 7
+      "backend_sqlite": 6,
+      "sqlite_open": 6
     },
     "internal/project/managed_config_test.go": {
       "backend_sqlite": 1,
