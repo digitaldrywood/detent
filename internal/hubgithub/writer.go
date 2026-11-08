@@ -103,7 +103,7 @@ func (w *Writer) updateWorkflowLabel(ctx context.Context, item hubserver.OutboxI
 		labels = append(labels, desired.Label)
 	}
 	labels = normalizedLabels(labels)
-	if err := w.client.REST(ctx, http.MethodPut, path+"/labels", map[string]any{"labels": labels}, nil); err != nil {
+	if err := w.writeOutbound(ctx, item, http.MethodPut, path+"/labels", map[string]any{"labels": labels}, nil); err != nil {
 		return fmt.Errorf("replace github workflow label: %w", err)
 	}
 	return nil
@@ -443,6 +443,7 @@ func classifyError(err error) error {
 }
 
 type restIssue struct {
+	State  string      `json:"state"`
 	Labels []restLabel `json:"labels"`
 }
 
@@ -456,11 +457,12 @@ type restComment struct {
 }
 
 type restPullRequest struct {
-	State          string `json:"state"`
-	Draft          bool   `json:"draft"`
-	Merged         bool   `json:"merged"`
-	Mergeable      *bool  `json:"mergeable"`
-	MergeableState string `json:"mergeable_state"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	State          string    `json:"state"`
+	Draft          bool      `json:"draft"`
+	Merged         bool      `json:"merged"`
+	Mergeable      *bool     `json:"mergeable"`
+	MergeableState string    `json:"mergeable_state"`
 	Head           struct {
 		SHA string `json:"sha"`
 	} `json:"head"`
