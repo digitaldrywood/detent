@@ -258,7 +258,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	service.startSpritePoolForQueue = func(scope nativeScope) {
 		service.scheduleSpritePoolForQueue(workerContext, scope)
 	}
-	if database.postgres == nil {
+	if database.postgres == nil || cfg.OutboxBackend != nil {
 		service.outbox = newOutboxWorker(service)
 	}
 	if cfg.Hosted != nil {

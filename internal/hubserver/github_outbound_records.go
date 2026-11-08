@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -10,31 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func (s *Service) prepareGitHubSummaryRecord(ctx context.Context, scope nativeScope, issue tracker.NativeIssue) (*projectstore.GitHubOutbound, error) {
-	if s.config.Hosted == nil || issue.LinkedSource == nil {
-		return nil, nil
-	}
-	_, repository, number, err := tracker.ParseGitHubIssueURL(issue.LinkedSource.URL)
-	if err != nil {
-		return nil, err
-	}
-	path, err := s.readIssueBrowserPath(ctx, string(issue.WorkItemID))
-	if err != nil {
-		return nil, err
-	}
-	desired, err := json.Marshal(WorkpadDesired{Phase: "summary", Body: "Tracked in Detent: " + s.config.Hosted.PublicURL + path, Marker: "<!-- detent-summary:" + string(issue.WorkItemID) + ":intake -->", Summary: true, IssueNumber: number})
-	if err != nil {
-		return nil, err
-	}
-	payload, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, desired)
-	if err != nil {
-		return nil, err
-	}
-	return &projectstore.GitHubOutbound{ProjectID: scope.project, WorkItemID: issue.WorkItemID, Key: "intake:" + string(issue.WorkItemID), Repository: repository, IssueNumber: int64(number), Kind: string(MutationWorkpad), CreatedAt: s.config.now(), Payload: payload}, nil
-}
 
 func (s *Service) processGitHubOutboundRecord(ctx context.Context) (bool, error) {
 	if s.config.OutboxBackend == nil || s.config.TenantRepository == nil {
@@ -44,7 +19,11 @@ func (s *Service) processGitHubOutboundRecord(ctx context.Context) (bool, error)
 	var row projectstore.GitHubOutbound
 	err := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 		var err error
-		row, err = w.(projectstore.GitHubOutboxWriter).ClaimGitHubOutbound(ctx, s.config.now(), s.config.now().Add(s.config.OutboxProcessingTimeout), s.config.newLeaseID())
+		gitHubOutboxWriter, ok := w.(projectstore.GitHubOutboxWriter)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
+		row, err = gitHubOutboxWriter.ClaimGitHubOutbound(ctx, s.config.now(), s.config.now().Add(s.config.OutboxProcessingTimeout), s.config.newLeaseID())
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -75,7 +54,11 @@ func (s *Service) processGitHubOutboundRecord(ctx context.Context) (bool, error)
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	writeErr := s.config.TenantRepository.WriteTenant(cleanup, organization, corestore.Background, func(w tenantstore.Writer) error {
-		return w.(projectstore.GitHubOutboxWriter).FinishGitHubOutbound(cleanup, row)
+		gitHubOutboxWriter, ok := w.(projectstore.GitHubOutboxWriter)
+		if !ok {
+			return ErrPostgresFeatureUnavailable
+		}
+		return gitHubOutboxWriter.FinishGitHubOutbound(cleanup, row)
 	})
 	return err == nil && writeErr == nil, errors.Join(err, writeErr)
 }
