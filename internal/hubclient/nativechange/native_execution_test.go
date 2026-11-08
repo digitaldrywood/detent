@@ -340,7 +340,9 @@ func TestPreProviderCancellationRecordsReleaseReason(t *testing.T) {
 		runtime        bool
 		unstarted      bool
 		partialRuntime bool
+		started        bool
 	}{
+		{name: "identity bound deferred publisher", reason: "dispatch_deferred", runtime: true, started: true},
 		{name: "dispatch_deferred", reason: "dispatch_deferred", runtime: true},
 		{name: "provider_capacity_unavailable", reason: "provider_capacity_unavailable", runtime: true},
 		{name: "dispatch_deferred_without_runtime", reason: "dispatch_deferred"},
@@ -404,6 +406,12 @@ func TestPreProviderCancellationRecordsReleaseReason(t *testing.T) {
 					}
 				}
 			}
+			wantSequence := int64(1)
+			if test.started {
+				execution.data.Identity = &tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}
+				execution.data.Sequence = 1
+				wantSequence = 2
+			}
 			claim.execution = execution
 			fixtureInstallClaim(t, scheduler, claim, policy.Descriptor{}, "project")
 			if err := scheduler.ReleaseClaim(t.Context(), string(lease.WorkItemID), test.reason); err != nil {
@@ -422,10 +430,10 @@ func TestPreProviderCancellationRecordsReleaseReason(t *testing.T) {
 				t.Fatalf("pre-provider cancellation missing: released=%v events=%+v", released, events)
 			}
 			event := events[0]
-			if event.Type != "run.finished" || event.Data.Outcome != "cancelled" || event.Data.Identity != nil || event.Data.TerminalFailure == nil || event.Data.TerminalFailure.Stage != "pre_provider" || !strings.HasSuffix(event.Data.TerminalFailure.Error, "release reason: "+test.reason) {
+			if event.Type != "run.finished" || event.Data.Outcome != "cancelled" || (event.Data.Identity != nil) != test.started || event.Data.TerminalFailure == nil || event.Data.TerminalFailure.Stage != "pre_provider" || !strings.HasSuffix(event.Data.TerminalFailure.Error, "release reason: "+test.reason) {
 				t.Fatalf("pre-provider cancellation lost its cause: %+v", event.Data)
 			}
-			if event.Data.LeaseID != lease.ID || event.Data.FencingToken != 7 || event.Data.Sequence != 1 {
+			if event.Data.LeaseID != lease.ID || event.Data.FencingToken != 7 || event.Data.Sequence != wantSequence {
 				t.Fatalf("cancellation lost execution fencing: %+v", event.Data)
 			}
 			if (event.Data.Runtime != nil) != test.runtime {
