@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +21,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	hubapi "github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -30,6 +33,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
@@ -50,6 +54,7 @@ type changeArchiveMutationStore struct {
 
 type failingChangeEventWriter struct {
 	tenantstore.Writer
+	runnersession.Reader
 }
 
 type changeLandingLockRepository struct {
@@ -65,6 +70,7 @@ type changeLandingLockRepository struct {
 
 type changeLandingLockWriter struct {
 	tenantstore.Writer
+	runnersession.Reader
 	repository *changeLandingLockRepository
 }
 
@@ -87,7 +93,7 @@ type changeReviewDetailReadGuard struct {
 
 func (r failingChangeEventRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
 	return r.Repository.WriteTenant(ctx, organization, workload, func(w tenantstore.Writer) error {
-		return write(failingChangeEventWriter{Writer: w})
+		return write(failingChangeEventWriter{Writer: w, Reader: w.(runnersession.Reader)})
 	})
 }
 
@@ -123,7 +129,7 @@ func (w failingChangeEventWriter) LockLease(ctx context.Context, id string) (lea
 
 func (r *changeLandingLockRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
 	return r.Repository.WriteTenant(ctx, organization, workload, func(w tenantstore.Writer) error {
-		return write(changeLandingLockWriter{Writer: w, repository: r})
+		return write(changeLandingLockWriter{Writer: w, Reader: w.(runnersession.Reader), repository: r})
 	})
 }
 
@@ -567,26 +573,31 @@ func newChangePolicyPostgresFixture(t *testing.T) (tenantstore.Repository, hoste
 func newChangePolicyPostgresFixtureWithAdmin(t *testing.T, maxConnections int) (tenantstore.Repository, hostedSecurityFixture, hostedSecurityUser, *sql.DB) {
 	t.Helper()
 	repository, admin := projectRecordPostgresWithAdmin(t, maxConnections)
-	details := &memoryRunDetails{}
+	f, owner := newChangePolicyPostgresTenantFixture(t, repository, "org_security", &memoryRunDetails{})
+	return repository, f, owner, admin
+}
+
+func newChangePolicyPostgresTenantFixture(t *testing.T, repository tenantstore.Repository, organization tracker.OrganizationID, details *memoryRunDetails) (hostedSecurityFixture, hostedSecurityUser) {
+	t.Helper()
 	projectID := tracker.ProjectID("prj_security")
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	descriptor := hubTestPolicy()
 	content := eventstore.NewContent(details)
-	policyRevision, err := content.PrepareProjectPolicy(t.Context(), "org_security", descriptor)
+	policyRevision, err := content.PrepareProjectPolicy(t.Context(), organization, descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
 	policyRevision.ProjectID = projectID
 	policyRevision.ApprovedBy = "example-owner"
 	policyRevision.ApprovedAt = now.UTC().Truncate(time.Microsecond)
-	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_security", Name: "Example organization", CreatedAt: now}); err != nil {
+	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", CreatedAt: now}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: "org_security", ProviderID: "org_provider"}); err != nil {
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "org_provider"}); err != nil {
 			return err
 		}
-		project := projectstore.Record{Core: corestore.Project{OrganizationID: "org_security", ID: projectID, Name: "Example project", Slug: "example-project", Profile: "native"}, States: nativeFixtureStates()}
+		project := projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: projectID, Name: "Example project", Slug: "example-project", Profile: "native"}, States: nativeFixtureStates()}
 		if _, err := w.CreateProjectRecord(t.Context(), project); err != nil {
 			return err
 		}
@@ -594,34 +605,47 @@ func newChangePolicyPostgresFixtureWithAdmin(t *testing.T, maxConnections int) (
 			return err
 		}
 		free := normalizeHostedPlan(pilotHostedPlans().Plans[0])
-		plan := billingstore.Plan{OrganizationID: "org_security", PlanReference: billingstore.PlanReference{ID: free.ID, Version: free.Version}, Name: free.Name, MonthlyUSDCents: free.MonthlyUSDCents, Allowances: free.Allowances, Features: free.Features}
+		plan := billingstore.Plan{OrganizationID: organization, PlanReference: billingstore.PlanReference{ID: free.ID, Version: free.Version}, Name: free.Name, MonthlyUSDCents: free.MonthlyUSDCents, Allowances: free.Allowances, Features: free.Features}
 		if err := w.CreateBillingPlan(t.Context(), plan); err != nil {
 			return err
 		}
-		return w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: "org_security", Base: plan.PlanReference}, 0)
+		return w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: organization, Base: plan.PlanReference}, 0)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	f := newHostedSecurityFixture(t, func(cfg *Config) {
-		cfg.AccessRepository = repository
-		cfg.BillingRepository = repository
-		cfg.TenantRepository = repository
-		cfg.RunDetails = details
+	provider := newHostedSecurityProvider()
+	plans := pilotHostedPlans()
+	service := openTestService(t, Config{
+		AccessRepository:  repository,
+		BillingRepository: repository,
+		TenantRepository:  repository,
+		RunDetails:        details,
+		Hosted: &HostedConfig{
+			Plans:                &plans,
+			OrganizationID:       string(organization),
+			WorkOSOrganizationID: "org_provider",
+			BootstrapSubject:     "user_owner",
+			PublicURL:            "http://127.0.0.1:7777",
+			StaffEmails:          []string{"staff@example.test", "support@example.test"},
+			SupportActors:        []string{"support@example.test"},
+			Provider:             provider,
+		},
 	})
+	f := hostedSecurityFixture{service: service, provider: provider, project: projectID, base: "/api/v2/organizations/" + string(organization) + "/projects/" + string(projectID)}
 	owner := f.user(t, "review_admin", "owner", "review-admin@example.test", "", "")
-	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		member, err := w.AccessMember(t.Context(), owner.identity.Subject)
 		if err != nil {
 			return err
 		}
-		if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: "org_security", UserID: member.UserID, ProjectID: f.project, CanWrite: true}); err != nil {
+		if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization, UserID: member.UserID, ProjectID: f.project, CanWrite: true}); err != nil {
 			return err
 		}
-		return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_security", TokenID: member.PrincipalID, ProjectID: f.project})
+		return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: member.PrincipalID, ProjectID: f.project})
 	}); err != nil {
 		t.Fatal(err)
 	}
-	return repository, f, owner, admin
+	return f, owner
 }
 
 func TestChangeReviewPolicyRechecksDemotedAdminInTenantWriter(t *testing.T) {
@@ -665,20 +689,31 @@ func TestChangeReviewPolicyRechecksDemotedAdminInTenantWriter(t *testing.T) {
 }
 
 func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *testing.T) {
-	testChangeVersionRecordPublication(t, false)
+	repository, f, owner, admin := newChangePolicyPostgresFixtureWithAdmin(t, 4)
+	testChangeVersionRecordPublication(t, false, repository, f, owner, admin)
 }
 
 func TestChangeVersionRecordPublishesRunningSource(t *testing.T) {
-	testChangeVersionRecordPublication(t, true)
+	repository, admin := projectRecordPostgresWithAdmin(t, 4)
+	details := &memoryRunDetails{}
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(organization), func(t *testing.T) {
+			f, owner := newChangePolicyPostgresTenantFixture(t, repository, organization, details)
+			testChangeVersionRecordPublication(t, true, repository, f, owner, admin)
+		})
+	}
 }
 
-func testChangeVersionRecordPublication(t *testing.T, running bool) {
-	repository, f, owner, admin := newChangePolicyPostgresFixtureWithAdmin(t, 4)
+func testChangeVersionRecordPublication(t *testing.T, running bool, repository tenantstore.Repository, f hostedSecurityFixture, owner hostedSecurityUser, admin *sql.DB) {
+	t.Helper()
 	service := f.service
-	originalPostgres := service.database.postgres
+	originalPostgres, originalAccess := service.database.postgres, service.config.AccessRepository
 	service.database.postgres = repository.(*postgres.Repository)
-	t.Cleanup(func() { service.database.postgres = originalPostgres })
-	orgID, projectID := tracker.OrganizationID("org_security"), f.project
+	service.config.AccessRepository = repository
+	t.Cleanup(func() {
+		service.database.postgres, service.config.AccessRepository = originalPostgres, originalAccess
+	})
+	orgID, projectID := tracker.OrganizationID(service.config.Hosted.OrganizationID), f.project
 	response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-item"}, Title: "Version issue", Body: workItemRecordBody, State: "Todo"})
 	requireNativeStatus(t, response, http.StatusOK)
 	var item tracker.NativeIssue
@@ -848,22 +883,44 @@ func testChangeVersionRecordPublication(t *testing.T, running bool) {
 	if version.Source == nil || version.Source.BundleSHA256 != input.Source.BundleSHA256 || version.Policy.ID != policy.ID || version.ReviewPolicy.ID != reviewPolicy.ID || version.Number != 1 {
 		t.Fatalf("published version=%+v", version)
 	}
-	replay := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", workerToken, request)
-	requireNativeStatus(t, replay, http.StatusOK)
-	if replay.Body.String() != versionResponse.Body.String() {
-		t.Fatalf("version replay changed immutable payload: %s != %s", replay.Body.String(), versionResponse.Body.String())
+	server := httptest.NewServer(service.Handler())
+	t.Cleanup(server.Close)
+	client, err := hubapi.New(hubapi.Config{URL: server.URL, TokenSource: func() string { return workerToken }, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := client.Native(orgID, projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := native.PublishChangeVersion(t.Context(), item.WorkItemID, change.ID, request)
+	if err != nil || !reflect.DeepEqual(replay, version) {
+		t.Fatalf("runner version replay changed immutable payload: got=%+v want=%+v error=%v", replay, version, err)
+	}
+	foreignOrganization := tracker.OrganizationID("org_first")
+	if orgID == foreignOrganization {
+		foreignOrganization = "org_second"
+	}
+	foreign, err := client.Native(foreignOrganization, projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = foreign.PublishChangeVersion(t.Context(), item.WorkItemID, change.ID, request)
+	var refusal *hubapi.APIError
+	if !errors.As(err, &refusal) || refusal.Status != http.StatusNotFound {
+		t.Fatalf("foreign runner publication error=%v, want not found", err)
 	}
 	changed := request
 	changed.SourceBundle = append(bytes.Clone(bundle), 0)
 	conflict := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", workerToken, changed)
 	requireNativeStatus(t, conflict, http.StatusConflict)
-	if running {
-		return
-	}
 	sourceResponse := f.request(t, owner, http.MethodGet, changePath+"/versions/"+version.ID+"/source", nil)
 	requireNativeStatus(t, sourceResponse, http.StatusOK)
 	if !bytes.Equal(sourceResponse.Body.Bytes(), bundle) {
 		t.Fatal("hydrated source differed from published immutable bundle")
+	}
+	if running {
+		return
 	}
 	detailResponse := f.request(t, owner, http.MethodGet, changePath, nil)
 	requireNativeStatus(t, detailResponse, http.StatusOK)
@@ -1077,14 +1134,14 @@ func testChangeVersionRecordPublication(t *testing.T, running bool) {
 	var releaseOnce sync.Once
 	releaseLanding := func() { releaseOnce.Do(func() { close(barrier.release) }) }
 	var landingJoined, appendStarted, appendJoined bool
-	landingResult := make(chan int, 1)
+	landingResult := make(chan *httptest.ResponseRecorder, 1)
 	appendResult := make(chan error, 1)
 	appendFinished := make(chan struct{})
 	service.config.TenantRepository = barrier
 	concurrentLanding := landingRequest
 	concurrentLanding.IdempotencyKey = "land-concurrent-evidence-lock"
 	go func() {
-		landingResult <- performHubAPIRequest(t, service, http.MethodPost, landingPath, workerToken, concurrentLanding).Code
+		landingResult <- performHubAPIRequest(t, service, http.MethodPost, landingPath, workerToken, concurrentLanding)
 	}()
 	t.Cleanup(func() {
 		releaseLanding()
@@ -1105,8 +1162,9 @@ func testChangeVersionRecordPublication(t *testing.T, running bool) {
 	})
 	select {
 	case <-barrier.prepared:
-	case <-time.After(30 * time.Second):
-		t.Fatal("landing did not reach the post-validation transaction point")
+	case result := <-landingResult:
+		landingJoined = true
+		t.Fatalf("landing exited before the post-validation transaction: status=%d body=%s", result.Code, result.Body.String())
 	}
 	select {
 	case <-barrier.locked:
@@ -1143,10 +1201,10 @@ func testChangeVersionRecordPublication(t *testing.T, running bool) {
 		t.Fatalf("Change row was not locked during concurrent evidence append: %v", probeErr)
 	}
 	releaseLanding()
-	landingStatus := <-landingResult
+	landingResponse := <-landingResult
 	landingJoined = true
-	if landingStatus != http.StatusInternalServerError {
-		t.Fatalf("injected concurrent landing status = %d, want %d", landingStatus, http.StatusInternalServerError)
+	if landingResponse.Code != http.StatusInternalServerError {
+		t.Fatalf("injected concurrent landing status = %d, want %d", landingResponse.Code, http.StatusInternalServerError)
 	}
 	if err := <-appendResult; err != nil {
 		t.Fatalf("append review evidence after landing rollback: %v", err)
