@@ -36,11 +36,12 @@ import (
 type historyObjects struct {
 	mu      sync.Mutex
 	objects map[string][]byte
+	encoder attachment.ArchiveEncoder
 }
 
 func newHistoryObjects() *historyObjects { return &historyObjects{objects: make(map[string][]byte)} }
 func (s *historyObjects) StoreDetail(_ context.Context, org string, raw []byte) (attachment.ArchiveReference, error) {
-	ref, compressed, err := attachment.PrepareArchive(org, 1, bytes.NewReader(raw))
+	ref, compressed, err := s.encoder.Prepare(org, 1, bytes.NewReader(raw))
 	if err != nil {
 		return ref, err
 	}
