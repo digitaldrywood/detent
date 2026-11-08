@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,7 +38,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	schedulerpkg "github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -117,15 +117,7 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			localStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(root, "runner.db")})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := localStore.Close(); err != nil {
-					t.Error(err)
-				}
-			})
+			setupState := &runnerSetupFixture{}
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewTextHandler(&logs, nil))
 			t.Cleanup(func() {
@@ -134,7 +126,7 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 				}
 			})
 			applied := cfg
-			p := &runnerProjects{client: client, cfg: cfg, setup: project.NewRunnerSetup("test-runner", localStore, logger), logger: logger, checks: make(map[string]runnerauth.LocalChecks), apply: func(_ context.Context, next globalconfig.Config) error { applied = next; return nil }}
+			p := &runnerProjects{client: client, cfg: cfg, setup: project.NewRunnerSetup("test-runner", setupState, logger), logger: logger, checks: make(map[string]runnerauth.LocalChecks), apply: func(_ context.Context, next globalconfig.Config) error { applied = next; return nil }}
 			doctorStarted, releaseDoctor := make(chan struct{}), make(chan struct{})
 			t.Cleanup(func() {
 				select {
@@ -1271,4 +1263,31 @@ func TestRunnerProjectsRejectHostAuthorization(t *testing.T) {
 			}
 		})
 	}
+}
+
+type runnerSetupFixture struct {
+	mu     sync.Mutex
+	hashes map[[2]string]string
+}
+
+func (s *runnerSetupFixture) ProjectRunnerSetupHash(ctx context.Context, runner, project string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hashes[[2]string{runner, project}], nil
+}
+
+func (s *runnerSetupFixture) SetProjectRunnerSetupHash(ctx context.Context, runner, project, hash string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hashes == nil {
+		s.hashes = make(map[[2]string]string)
+	}
+	s.hashes[[2]string{runner, project}] = hash
+	return nil
 }

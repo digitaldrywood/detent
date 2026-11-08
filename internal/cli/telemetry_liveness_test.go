@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -20,9 +21,11 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/projectsettings"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
@@ -32,10 +35,6 @@ import (
 )
 
 func TestTelemetryPublicationSurvivesStalledSourceAfterRestart(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	for _, source := range []string{"project_state", "lifetime_totals"} {
 		for _, cached := range []bool{false, true} {
 			name := source + "/initializing"
@@ -421,16 +420,11 @@ type stalledTelemetryTotals struct{}
 
 func newTelemetryWebServer(t *testing.T, snapshots *hub.Hub[telemetry.Snapshot], registry *project.Registry) *web.Server {
 	t.Helper()
-	db, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
 	server, err := web.NewServer(web.Config{
 		Logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
 		LookupEnv:           func(string) string { return "" },
 		SSEFragmentInterval: time.Millisecond,
-	}, web.Dependencies{Hub: snapshots, Registry: registry, Store: db, Connector: fakehub.New(fakehub.Config{})})
+	}, web.Dependencies{Hub: snapshots, Registry: registry, Store: snapshotFixtureStore{}, Connector: fakehub.New(fakehub.Config{})})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,4 +488,44 @@ func (r *telemetryEventRecorder) status() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.Code
+}
+
+type snapshotFixtureStore struct {
+	store.Store
+}
+
+func (snapshotFixtureStore) LocalProjectRank(context.Context, *projectsettings.RankChange) (projectsettings.Rank, error) {
+	return projectsettings.Rank{}, sql.ErrNoRows
+}
+
+func (snapshotFixtureStore) LifetimeTotals(context.Context) (store.LifetimeTotals, error) {
+	return store.LifetimeTotals{}, nil
+}
+
+func (snapshotFixtureStore) ListRecentTerminalWorkAttempts(context.Context, store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
+	return nil, nil
+}
+
+func (snapshotFixtureStore) RuntimeEvidence(context.Context, store.RuntimeEvidenceQuery) (store.RuntimeEvidence, error) {
+	return store.RuntimeEvidence{Backend: "memory", Healthy: true}, nil
+}
+
+func (snapshotFixtureStore) WorkflowMetricsReport(context.Context, store.WorkflowMetricsQuery) (store.WorkflowMetricsReport, error) {
+	return store.WorkflowMetricsReport{}, nil
+}
+
+func (snapshotFixtureStore) CycleTimeReport(context.Context) (store.CycleTimeReport, error) {
+	return store.CycleTimeReport{}, nil
+}
+
+func (snapshotFixtureStore) BudgetCostEvents(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
+	return nil, nil
+}
+
+func (snapshotFixtureStore) EfficiencyReceipt(context.Context, string, string, string) (efficiency.Receipt, error) {
+	return efficiency.Receipt{}, sql.ErrNoRows
+}
+
+func (snapshotFixtureStore) ListEfficiencyReceipts(context.Context, efficiency.Query) ([]efficiency.Receipt, error) {
+	return nil, nil
 }

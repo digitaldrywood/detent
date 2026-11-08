@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -18,10 +19,6 @@ import (
 )
 
 func TestRunnerProjectConfigurationOwner(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	for _, scenario := range []string{"resume", "organization scope", "read", "removed intake key", "foreign project", "revoked project grant", "replaced mapping", "foreign binding", "expired identity"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
@@ -68,15 +65,7 @@ func TestRunnerProjectConfigurationOwner(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg.Projects, cfg.Client.NativeProjects = resolved.Projects, resolved.Client.NativeProjects
-			attempts, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(root, "runtime.db")})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := attempts.Close(); err != nil {
-					t.Error(err)
-				}
-			})
+			attempts := &configurationAttemptFixture{}
 			manager, err := projectfixture.NewManager(project.ManagerConfigFromGlobal(cfg), project.ManagerDependencies{ProjectFactory: func(selected globalconfig.Project) (*project.Project, error) {
 				return projectfixture.New(project.Config{Project: selected}, project.Dependencies{Runner: orchestrator.FakeRunner{}, WorkAttempts: attempts})
 			}})
@@ -152,4 +141,24 @@ func TestRunnerProjectConfigurationOwner(t *testing.T) {
 			}
 		})
 	}
+}
+
+type configurationAttemptFixture struct {
+	store.WorkAttemptStore
+}
+
+func (*configurationAttemptFixture) ListActiveWorkAttempts(ctx context.Context, _ store.WorkAttemptQuery) ([]store.WorkAttempt, error) {
+	return nil, ctx.Err()
+}
+
+func (*configurationAttemptFixture) ListRecentTerminalWorkAttempts(ctx context.Context, _ store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
+	return nil, ctx.Err()
+}
+
+func (*configurationAttemptFixture) TimeoutExpiredWorkAttempts(ctx context.Context, _ store.WorkAttemptTimeout) ([]store.WorkAttempt, error) {
+	return nil, ctx.Err()
+}
+
+func (*configurationAttemptFixture) ListRecentSchedulerDecisions(ctx context.Context, _ store.SchedulerDecisionQuery) ([]store.SchedulerDecision, error) {
+	return nil, ctx.Err()
 }

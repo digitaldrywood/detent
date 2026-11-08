@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -19,7 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/web"
@@ -236,10 +234,6 @@ func TestDashboardReadClientStateProblemsMatchExplain(t *testing.T) {
 }
 
 func TestStateCommandOutput(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
@@ -288,16 +282,7 @@ func TestStateCommandOutput(t *testing.T) {
 				if err := snapshots.Publish(snapshot); err != nil {
 					t.Fatal(err)
 				}
-				backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "state.db")})
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() {
-					if err := backend.Close(); err != nil {
-						t.Error(err)
-					}
-				})
-				dashboard, err := web.NewServer(web.Config{LookupEnv: func(string) string { return "" }}, web.Dependencies{Hub: snapshots, Store: backend, Registry: project.NewRegistry(), Connector: fakehub.New(fakehub.Config{})})
+				dashboard, err := web.NewServer(web.Config{LookupEnv: func(string) string { return "" }}, web.Dependencies{Hub: snapshots, Store: snapshotFixtureStore{}, Registry: project.NewRegistry(), Connector: fakehub.New(fakehub.Config{})})
 				if err != nil {
 					t.Fatal(err)
 				}
