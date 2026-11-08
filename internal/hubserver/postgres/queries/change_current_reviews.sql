@@ -23,8 +23,15 @@ WITH selected AS MATERIALIZED (
 SELECT DISTINCT evidence_sequence FROM selected ORDER BY evidence_sequence;
 
 -- name: RecordCurrentChangeEvidenceBySequences :many
-SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id)
-AND sequence=ANY(sqlc.arg(sequences)::bigint[]) ORDER BY sequence;
+WITH requested AS MATERIALIZED (
+ SELECT DISTINCT sqlc.arg(organization_id)::text AS organization_id,sqlc.arg(change_id)::text AS change_id,unnest(sqlc.arg(sequences)::bigint[]) AS sequence
+)
+SELECT evidence.* FROM requested
+CROSS JOIN LATERAL (
+ SELECT * FROM change_evidence e
+ WHERE e.organization_id=requested.organization_id AND e.change_id=requested.change_id AND e.sequence=requested.sequence
+ LIMIT 1
+) evidence ORDER BY evidence.sequence;
 
 -- name: RecordCurrentChangeReviewChecks :many
 SELECT * FROM change_evidence

@@ -170,7 +170,7 @@ func (s *session) ChangeReviewEvidence(ctx context.Context, change, version stri
 	if err != nil {
 		return nil, false, mapError(ctx, err)
 	}
-	rows, err := s.queries.RecordCurrentChangeEvidenceBySequences(ctx, pgquery.RecordCurrentChangeEvidenceBySequencesParams{OrganizationID: s.organization, ChangeID: change, Sequences: sequences})
+	rows, err := s.queries.RecordCurrentChangeEvidenceBySequences(ctx, pgquery.RecordCurrentChangeEvidenceBySequencesParams{OrganizationID: string(s.organization), ChangeID: change, Sequences: sequences})
 	if err != nil {
 		return nil, false, mapError(ctx, err)
 	}

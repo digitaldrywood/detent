@@ -33,12 +33,19 @@ func (q *Queries) RecordChangeReviewSummaryCurrent(ctx context.Context, arg Reco
 }
 
 const recordCurrentChangeEvidenceBySequences = `-- name: RecordCurrentChangeEvidenceBySequences :many
-SELECT organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, review_kind, review_landing, review_session_known, review_session_id, review_session_machine FROM change_evidence WHERE organization_id=$1 AND change_id=$2
-AND sequence=ANY($3::bigint[]) ORDER BY sequence
+WITH requested AS MATERIALIZED (
+ SELECT DISTINCT $1::text AS organization_id,$2::text AS change_id,unnest($3::bigint[]) AS sequence
+)
+SELECT evidence.organization_id, evidence.change_id, evidence.sequence, evidence.version_id, evidence.kind, evidence.source_key, evidence.actor_kind, evidence.actor_principal_id, evidence.decision, evidence.created_at, evidence.payload_object_key, evidence.payload_sha256, evidence.payload_bytes, evidence.payload_content_bytes, evidence.payload_format_version, evidence.review_kind, evidence.review_landing, evidence.review_session_known, evidence.review_session_id, evidence.review_session_machine FROM requested
+CROSS JOIN LATERAL (
+ SELECT organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, review_kind, review_landing, review_session_known, review_session_id, review_session_machine FROM change_evidence e
+ WHERE e.organization_id=requested.organization_id AND e.change_id=requested.change_id AND e.sequence=requested.sequence
+ LIMIT 1
+) evidence ORDER BY evidence.sequence
 `
 
 type RecordCurrentChangeEvidenceBySequencesParams struct {
-	OrganizationID tracker.OrganizationID
+	OrganizationID string
 	ChangeID       string
 	Sequences      []int64
 }

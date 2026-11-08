@@ -1081,7 +1081,15 @@ func TestEventChangeCommandReceiptContention(t *testing.T) {
 func TestChangeSummaryVisitsCurrentActorsInsteadOfReviewHistory(t *testing.T) {
 	admin := template.Database(t)
 	repository, _ := repositoryFor(t, admin, smallPool())
+	if _, err := admin.ExecContext(t.Context(), `ALTER TABLE change_evidence SET (autovacuum_enabled=false); ALTER TABLE current_change_reviews SET (autovacuum_enabled=false)`); err != nil {
+		t.Fatal(err)
+	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if org == "org_second" {
+			if _, err := admin.ExecContext(t.Context(), `ANALYZE change_evidence; ANALYZE current_change_reviews`); err != nil {
+				t.Fatal(err)
+			}
+		}
 		seedRepository(t, repository, org)
 		for _, actors := range []int{17, 10000} {
 			key := fmt.Sprintf("current_%d", actors)
@@ -1135,7 +1143,7 @@ func TestChangeSummaryVisitsCurrentActorsInsteadOfReviewHistory(t *testing.T) {
 							t.Fatal(err)
 						}
 						headSQL, headArgs := probe.statement, append([]any(nil), probe.args...)
-						rows, err := queries.RecordCurrentChangeEvidenceBySequences(t.Context(), pgquery.RecordCurrentChangeEvidenceBySequencesParams{OrganizationID: org, ChangeID: args.ChangeID, Sequences: sequences})
+						rows, err := queries.RecordCurrentChangeEvidenceBySequences(t.Context(), pgquery.RecordCurrentChangeEvidenceBySequencesParams{OrganizationID: string(org), ChangeID: args.ChangeID, Sequences: sequences})
 						if err != nil {
 							t.Fatal(err)
 						}
