@@ -2291,9 +2291,6 @@
       "backend_sqlite": 1,
       "sqlite_open": 2
     },
-    "internal/web/native_work_integration_test.go": {
-      "database_path": 1
-    },
     "internal/web/reports_digest_test.go": {
       "backend_sqlite": 2,
       "sqlite_open": 2
