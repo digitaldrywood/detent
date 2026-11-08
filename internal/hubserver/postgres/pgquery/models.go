@@ -1108,6 +1108,21 @@ type HealthFindingProject struct {
 	PageSequence   int64
 }
 
+type HealthSlackDelivery struct {
+	OrganizationID  tracker.OrganizationID
+	ID              string
+	FindingID       string
+	Event           string
+	EventAt         time.Time
+	QueuedAt        time.Time
+	NextAttemptAt   time.Time
+	Attempts        int64
+	Outcome         string
+	ExternalReceipt string
+	CompletedAt     *time.Time
+	StatusCode      int32
+}
+
 type HostedArtifactUsage struct {
 	OrganizationID tracker.OrganizationID
 	ServiceID      string
@@ -4776,6 +4791,18 @@ type SearchScopeRefresh struct {
 	PrincipalID    string
 	AfterID        string
 	RefreshOrder   int64
+}
+
+type SlackIntegration struct {
+	OrganizationID     tracker.OrganizationID
+	ChannelName        string
+	Enabled            bool
+	Revision           int64
+	LastSuccessAt      *time.Time
+	LastFailureAt      *time.Time
+	LastStatusCode     int32
+	LastDeliveryFailed bool
+	UpdatedAt          time.Time
 }
 
 type SpriteLifecycleOperation struct {
