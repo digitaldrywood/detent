@@ -112,6 +112,9 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 					return s.nativeAPIError(c, nativeNotFound())
 				}
 				hostedRoute := c.Path() == "/api/v2/capabilities" || strings.HasPrefix(c.Path(), nativeBase) || c.Path() == "/api/v2/organizations" && c.Request().Method == http.MethodGet || c.Path() == nativeOrganizationIssuePath && hostedReadRequest(c)
+				if configurationRankRequest(c) {
+					hostedRoute = true
+				}
 				if credential.Hosted != nil && (!hostedRoute || strings.HasSuffix(c.Path(), "/checks")) {
 					return s.nativeAPIError(c, nativeNotFound())
 				}

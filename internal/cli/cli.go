@@ -978,7 +978,12 @@ func updateProject(
 			return globalconfig.Project{}, err
 		}
 	}
-	if operation == OperationPromoteProject && !cfg.Client.Configured() {
+	var promotedPriority *int
+	if operation == OperationPromoteProject && cfg.Client.Configured() {
+		priority, applyErr := promoteHubProjectRank(ctx, cfg, id, cfg.Projects[index].Priority, opts.lookupEnv)
+		err = applyErr
+		promotedPriority = &priority
+	} else if operation == OperationPromoteProject {
 		err = writeLocalConfigurationRank(ctx, path, cfg, id, cfg.Projects[index].Priority)
 	} else {
 		err = opts.write(path, cfg)
@@ -993,6 +998,9 @@ func updateProject(
 	index = projectIndex(cfg.Projects, id)
 	if index < 0 {
 		return globalconfig.Project{}, projectNotFoundError(id, cfg.Projects)
+	}
+	if promotedPriority != nil {
+		cfg.Projects[index].Priority = *promotedPriority
 	}
 
 	if err := opts.signal(ctx, Signal{
