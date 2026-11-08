@@ -1539,9 +1539,6 @@
     "internal/hubserver/postgres/conversation_billing_import.go": {
       "sql_pragma_table": 1
     },
-    "internal/hubserver/postgres/core_cutover_source_test.go": {
-      "sqlite_open": 1
-    },
     "internal/hubserver/postgres/core_project_import.go": {
       "driver_import": 1,
       "sqlite_open": 1
