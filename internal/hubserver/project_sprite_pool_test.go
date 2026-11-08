@@ -905,13 +905,14 @@ func TestSpritePoolCapacity(t *testing.T) {
 		runners                         int
 		reports, paused, wake, separate bool
 		wantFree, wantPending           int
+		wantLimit                       *int
 	}{
 		{name: "unauthenticated enrollment is not ready", runners: 1},
-		{name: "provider bounds reported local capacity", runners: 1, reports: true, wantFree: 1},
-		{name: "shared subscription is counted once", runners: 2, reports: true, wantFree: 1},
-		{name: "explicit independent accounts add capacity", runners: 2, reports: true, separate: true, wantFree: 2},
-		{name: "paused member contributes no ready capacity", runners: 1, reports: true, paused: true},
-		{name: "waking a paused member avoids creating a replacement", runners: 1, reports: true, paused: true, wake: true, wantPending: 1},
+		{name: "provider bounds reported local capacity", runners: 1, reports: true, wantFree: 1, wantLimit: new(1)},
+		{name: "shared subscription is counted once", runners: 2, reports: true, wantFree: 1, wantLimit: new(1)},
+		{name: "explicit independent accounts add capacity", runners: 2, reports: true, separate: true, wantFree: 2, wantLimit: new(2)},
+		{name: "paused member contributes no ready capacity", runners: 1, reports: true, paused: true, wantLimit: new(1)},
+		{name: "waking a paused member avoids creating a replacement", runners: 1, reports: true, paused: true, wake: true, wantPending: 1, wantLimit: new(0)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f, scope, _ := newSpritePoolFixture(t, "")
@@ -959,6 +960,9 @@ func TestSpritePoolCapacity(t *testing.T) {
 			input, _, err := f.service.spritePoolSnapshot(t.Context(), scope, view)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if (input.CreateLimit == nil) != (test.wantLimit == nil) || input.CreateLimit != nil && *input.CreateLimit != *test.wantLimit {
+				t.Fatalf("provider reservation limit=%v want=%v", input.CreateLimit, test.wantLimit)
 			}
 			if input.Free != test.wantFree || input.Pending != test.wantPending {
 				t.Fatalf("capacity free=%d pending=%d, want free=%d pending=%d", input.Free, input.Pending, test.wantFree, test.wantPending)
@@ -1664,18 +1668,17 @@ func TestProjectSpriteAllocationLifecycle(t *testing.T) {
 			f.service.config.Hosted = nil
 			later := newNativeFixture(t, f.service, f.project.OrganizationID, "later")
 			f.service.config.Hosted = hosted
-			setSpriteAllocationFixture(t, f, 3, 0)
-			setSpriteAllocationFixture(t, later, 3, 0)
+			now := f.service.config.now()
+			f.service.config.now = func() time.Time { return now }
 			first, second := f, later
 			if order == "oldest" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE project_sprite_allocations SET requested_at=? WHERE project_id=?`, formatHubTime(f.service.config.now().Add(-time.Hour)), later.project.ID); err != nil {
-					t.Fatal(err)
-				}
+				setSpriteAllocationFixture(t, later, 3, 0)
+				now = now.Add(time.Hour)
+				setSpriteAllocationFixture(t, f, 3, 0)
 				first, second = later, f
 			} else {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE project_sprite_allocations SET requested_at=?`, formatHubTime(f.service.config.now())); err != nil {
-					t.Fatal(err)
-				}
+				setSpriteAllocationFixture(t, f, 3, 0)
+				setSpriteAllocationFixture(t, later, 3, 0)
 				if later.project.ID < f.project.ID {
 					first, second = later, f
 				}
@@ -1684,7 +1687,7 @@ func TestProjectSpriteAllocationLifecycle(t *testing.T) {
 			f.service.spriteWakeWork.Wait()
 			read := func(project nativeFixture) projectSpriteAllocation {
 				t.Helper()
-				allocation, err := readProjectSpriteAllocation(t.Context(), f.service.database.reader, nativeScope{organization: scope.organization, project: project.project.ID})
+				allocation, err := f.service.projectSpriteAllocation(t.Context(), nativeScope{organization: scope.organization, project: project.project.ID, credential: scope.credential})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1704,11 +1707,12 @@ func TestProjectSpriteAllocationLifecycle(t *testing.T) {
 						t.Fatalf("claim project=%s allowed=%t err=%v", project.project.ID, allowed, err)
 					}
 				}
-				var runnerScope string
-				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT scope FROM runner_identities WHERE id=?`, runner.RunnerID).Scan(&runnerScope); err != nil || runnerScope != "projects" {
-					t.Fatalf("runner scope=%s err=%v", runnerScope, err)
+				identity, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: scope.organization, credential: scope.credential}, runner.RunnerID)
+				if err != nil || identity.Scope != "projects" {
+					t.Fatalf("runner scope=%s err=%v", identity.Scope, err)
 				}
 			}
+			now = now.Add(time.Second)
 			setSpriteAllocationFixture(t, first, 1, 1)
 			updateSpriteMembersFixture(t, f, func(member *runnerstore.SpriteMembership) { member.IdleSince = f.service.config.now().Add(-time.Hour) })
 			if err := f.service.scaleSpritePool(t.Context(), scope, true); err != nil {
@@ -1745,8 +1749,11 @@ func TestProjectSpriteBudgetSelection(t *testing.T) {
 			hosted, keys := f.service.config.Hosted, f.service.config.SecretKeys
 			f.service.config.Hosted, f.service.config.SecretKeys = nil, nil
 			later := newNativeFixture(t, f.service, f.project.OrganizationID, "later")
+			now := f.service.config.now()
+			f.service.config.now = func() time.Time { return now }
 			setSpriteAllocationFixture(t, f, 2, 0)
 			setMonthlyBudgetFixture(t, f, false, budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, SpriteMicros: new(int64)})
+			now = now.Add(time.Second)
 			if managed {
 				setSpriteAllocationFixture(t, later, 2, 0)
 			} else {
@@ -1754,9 +1761,7 @@ func TestProjectSpriteBudgetSelection(t *testing.T) {
 				later.create(t, "later first")
 				later.create(t, "later second")
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE project_sprite_allocations SET requested_at=? WHERE project_id=?`, formatHubTime(f.service.config.now().Add(-time.Hour)), f.project.ID); err != nil {
-				t.Fatal(err)
-			}
+
 			f.service.config.Hosted, f.service.config.SecretKeys = hosted, keys
 			if err := f.service.scaleSpritePool(t.Context(), scope, true); err != nil {
 				t.Fatal(err)
@@ -1834,9 +1839,9 @@ func TestProjectSpriteAllocationLimits(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f, scope, provider := newSpritePoolFixture(t, "")
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE organization_sprite_pools SET min_runners=?,max_runners=3`, test.organizationMembers); err != nil {
-				t.Fatal(err)
-			}
+			updateSpritePoolFixture(t, f, func(pool *postgres.SpritePool) {
+				pool.MinRunners, pool.MaxRunners = int32(test.organizationMembers), 3
+			})
 			if test.organizationMembers > 0 {
 				if err := f.service.scaleSpritePool(t.Context(), scope, true); err != nil {
 					t.Fatal(err)

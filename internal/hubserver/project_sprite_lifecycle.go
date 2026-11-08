@@ -362,7 +362,6 @@ func (s *Service) createPoolSpriteRecord(ctx context.Context, scope nativeScope,
 		if scope.project != "" {
 			input.Depth, input.Free, input.Pending = 0, 0, 0
 			input.Ceiling = min(input.Ceiling, floor)
-			input.CreateLimit = nil
 		} else if placement.Policy.Mode == "local_first" {
 			input.Floor = min(input.Floor, placement.Policy.OverflowSlots)
 		}

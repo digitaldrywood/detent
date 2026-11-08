@@ -766,8 +766,10 @@ func (s *Service) spritePlacementRecord(ctx context.Context, scope nativeScope) 
 			byEnrollment[m.EnrollmentID] = m
 		}
 	}
+	reported := map[string]bool{}
 	for _, record := range records {
 		r := runnerFromRoutingRecord(record, now, urgent)
+		reported[record.Record.Identity.EnrollmentID] = len(r.ProviderCapacity) > 0
 		current := placementRunner{Runner: r, Enrollment: record.Record.Identity.EnrollmentID, Sprite: record.Record.Machine.SpriteName == r.Hostname && validSpritesSlug(r.Hostname)}
 		current.Paused = current.Sprite && now.Sub(r.LastHeartbeatAt) >= spriteRunnerIdle
 		if current.Paused {
@@ -867,7 +869,6 @@ func (s *Service) spritePlacementRecord(ctx context.Context, scope nativeScope) 
 		}
 		depth, localFree, spriteFree, pending := 0, 0, 0, 0
 		fullLocalDemand := 0
-		known := false
 		for _, candidate := range candidates.Items {
 			row, version, err := s.readWorkItemRecord(ctx, localScope, string(candidate.WorkItemID))
 			if err != nil {
@@ -937,16 +938,7 @@ func (s *Service) spritePlacementRecord(ctx context.Context, scope nativeScope) 
 			}
 			result.Items[tracker.WorkItemID(candidate.ID)] = requirement
 		}
-		for _, r := range result.Runners {
-			if !r.Sprite {
-				continue
-			}
-			for _, view := range r.ProviderCapacity {
-				if view.MaxConcurrent > 0 {
-					known = true
-				}
-			}
-		}
+
 		for _, r := range result.Runners {
 			if r.Pending && !counted[r.Enrollment] && (r.Scope == "organization" || slices.Contains(r.ProjectIDs, project.ID)) {
 				counted[r.Enrollment] = true
@@ -964,7 +956,7 @@ func (s *Service) spritePlacementRecord(ctx context.Context, scope nativeScope) 
 			if m.AllocationProjectID != owner {
 				continue
 			}
-			if !counted[m.EnrollmentID] && (m.State == "bootstrapping" || !slices.ContainsFunc(result.Runners, func(r placementRunner) bool { return r.Enrollment == m.EnrollmentID && len(r.ProviderCapacity) > 0 })) {
+			if !counted[m.EnrollmentID] && (m.State == "bootstrapping" || !reported[m.EnrollmentID]) {
 				counted[m.EnrollmentID] = true
 				pending++
 			}
@@ -988,34 +980,46 @@ func (s *Service) spritePlacementRecord(ctx context.Context, scope nativeScope) 
 			result.Pending += pending
 			result.SpriteTarget += target
 		}
-		if known {
-			available := 0
-			accounts := []scopedProviderAccount{}
-			for _, r := range result.Runners {
-				if !r.Sprite {
-					continue
-				}
-				for _, view := range r.ProviderCapacity {
-					if view.MaxConcurrent <= 0 {
-						continue
-					}
-					account := scopedProviderAccount{runnerID: r.RunnerID, Report: view.Report}
-					if slices.ContainsFunc(accounts, func(prior scopedProviderAccount) bool { return sharedProviderAccount(prior, account) }) {
-						continue
-					}
-					accounts = append(accounts, account)
-					used := 0
-					for _, prior := range capacity.accounts {
-						if sharedProviderAccount(prior, account) {
-							used++
-						}
-					}
-					available += max(view.MaxConcurrent-view.Used-used, 0)
-				}
-			}
-			available = max(available-pending, 0)
-			result.ProviderFree = &available
+
+	}
+	type accountKey struct{ provider, shared, runner, alias string }
+	type accountCapacity struct{ maximum, used int }
+	accounts := map[accountKey]accountCapacity{}
+	pending := map[string]bool{}
+	for _, r := range result.Runners {
+		if !r.Sprite {
+			continue
 		}
+		if r.Pending {
+			pending[r.Enrollment] = true
+		}
+		for _, view := range r.ProviderCapacity {
+			if view.MaxConcurrent <= 0 {
+				continue
+			}
+			key := accountKey{provider: view.Provider, shared: view.SharedAccountAlias}
+			if key.shared == "" {
+				key.runner, key.alias = r.RunnerID, view.AccountAlias
+			}
+			if prior, ok := accounts[key]; ok {
+				accounts[key] = accountCapacity{maximum: min(prior.maximum, view.MaxConcurrent), used: max(prior.used, view.Used)}
+			} else {
+				accounts[key] = accountCapacity{maximum: view.MaxConcurrent, used: view.Used}
+			}
+		}
+	}
+	if len(accounts) > 0 {
+		for _, member := range members.Members {
+			if (member.State == "bootstrapping" || member.State == "enrolled") && !reported[member.EnrollmentID] {
+				pending[member.EnrollmentID] = true
+			}
+		}
+		available := 0
+		for _, account := range accounts {
+			available += max(account.maximum-account.used, 0)
+		}
+		available = max(available-len(pending), 0)
+		result.ProviderFree = &available
 	}
 	result.Provisionable = max(result.SpriteTarget-result.SpriteFree-result.Pending, 0)
 	if result.ProviderFree != nil {
