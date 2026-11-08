@@ -1,8 +1,10 @@
 package postgres_test
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"testing"
 	"time"
 
@@ -13,7 +15,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestWorkspaceContractFencesSessionsAndPersistsOccupancy(t *testing.T) {
+func workspaceContractFixture(t *testing.T) (*sql.DB, *postgres.Repository, *pgxpool.Pool, time.Time) {
+	t.Helper()
 	admin := template.Database(t)
 	repository, pool := repositoryFor(t, admin, smallPool())
 	now := historyAt()
@@ -55,6 +58,11 @@ func TestWorkspaceContractFencesSessionsAndPersistsOccupancy(t *testing.T) {
 			}
 		}
 	}
+	return admin, repository, pool, now
+}
+
+func TestWorkspaceContractFencesSessionsAndPersistsOccupancy(t *testing.T) {
+	admin, repository, pool, now := workspaceContractFixture(t)
 	for _, test := range []struct {
 		name string
 		arg  postgres.WorkspaceUpdate

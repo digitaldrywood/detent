@@ -3161,6 +3161,36 @@ type ProjectAction struct {
 	CommandContentBytes   int64
 }
 
+type ProjectActionRun struct {
+	OrganizationID      tracker.OrganizationID
+	ProjectID           tracker.ProjectID
+	ID                  string
+	ActionID            string
+	WorkspaceID         string
+	CommandObjectKey    string
+	CommandSha256       string
+	CommandBytes        int64
+	CommandContentBytes int64
+	Status              string
+	ExitCode            pgtype.Int4
+	Reason              string
+	StartedAt           *time.Time
+	FinishedAt          *time.Time
+	OutputObjectKey     *string
+	OutputSha256        string
+	OutputBytes         int64
+	OutputContentBytes  int64
+	OutputSequence      int64
+	Truncated           bool
+	ClaimedBy           string
+	LeaseID             string
+	FencingToken        int64
+	CreatedBy           string
+	Revision            int64
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
 type ProjectEventCursor struct {
 	OrganizationID        tracker.OrganizationID
 	ProjectID             tracker.ProjectID
@@ -4904,6 +4934,38 @@ type WorkspaceOccupancy struct {
 	EndedAt        *time.Time
 }
 
+type WorkspaceRelaySession struct {
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	WorkspaceID       string
+	ID                string
+	PrincipalID       string
+	Subject           string
+	ConnectionID      string
+	Channels          []string
+	OpenedAt          time.Time
+	ClosedAt          *time.Time
+	CloseReason       string
+	BytesIn           int64
+	BytesOut          int64
+	RecordingArtifact string
+	SupportReason     string
+}
+
+type WorkspaceRelayTicket struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Digest         string
+	WorkspaceID    string
+	SessionID      string
+	PrincipalID    string
+	Subject        string
+	SupportReason  string
+	CreatedAt      time.Time
+	ExpiresAt      time.Time
+	RedeemedAt     *time.Time
+}
+
 type WorkspaceSession struct {
 	OrganizationID     tracker.OrganizationID
 	ProjectID          tracker.ProjectID
@@ -4936,4 +4998,28 @@ type WorkspaceSession struct {
 	Revision           int64
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+}
+
+type WorkspaceTerminalRecording struct {
+	OrganizationID   tracker.OrganizationID
+	ProjectID        tracker.ProjectID
+	WorkspaceID      string
+	ID               string
+	RelaySessionID   string
+	StreamID         string
+	PrincipalID      string
+	Subject          string
+	Isolation        string
+	SupportReason    string
+	StartedAt        time.Time
+	FinishedAt       *time.Time
+	TerminalCols     int32
+	TerminalRows     int32
+	CastObjectKey    string
+	CastSha256       string
+	CastBytes        int64
+	CastContentBytes int64
+	Truncated        bool
+	Revision         int64
+	UpdatedAt        time.Time
 }
