@@ -58,6 +58,10 @@ func RunMain(m *testing.M, cleanups ...func() error) int {
 		fmt.Fprintln(os.Stderr, err)
 		code = 1
 	}
+	if err := CloseScenarioPostgres(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = 1
+	}
 	if err := CloseDispatchPostgres(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		code = 1

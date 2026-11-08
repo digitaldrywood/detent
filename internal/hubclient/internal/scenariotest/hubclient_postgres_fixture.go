@@ -3,7 +3,6 @@ package scenariotest
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/base64"
 	"errors"
 	"log/slog"
@@ -12,10 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pressly/goose/v3"
-
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -24,36 +22,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
-	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-var hubclientPostgresTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
-	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, `SET synchronous_commit = off`); err != nil {
-		return err
-	}
-	roles, err := os.ReadFile("../../hubserver/postgres/roles.sql")
-	if err != nil {
-		return err
-	}
-	if _, err := db.ExecContext(ctx, string(roles)); err != nil {
-		return err
-	}
-	if _, err := db.ExecContext(ctx, `CREATE ROLE hubclient_test LOGIN; GRANT detent_runtime_v2 TO hubclient_test`); err != nil {
-		return err
-	}
-	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, `SET ROLE detent_migration_v2`); err != nil {
-		return err
-	}
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("../../hubserver/postgres/migrations")), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
-	if err != nil {
-		return err
-	}
-	_, err = provider.Up(ctx)
-	return err
-})
 
 type hubclientIdentityProvider struct{ auth.HostedProvider }
 
@@ -66,12 +36,12 @@ func (hubclientIdentityProvider) Memberships(_ context.Context, user, organizati
 func ClosePostgres() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	return hubclientPostgresTemplate.Close(ctx)
+	return testsupport.CloseScenarioPostgres(ctx)
 }
 
 func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracker.NativeState, requireDependencies bool) hubserver.Config {
 	t.Helper()
-	admin := hubclientPostgresTemplate.Database(t)
+	admin := testsupport.ScenarioPostgresDatabase(t)
 	connection := pgtransport.Connection{User: "hubclient_test", Password: "test-only", SSLMode: "disable"}
 	var socket, data string
 	if err := admin.QueryRowContext(t.Context(), `SELECT current_database(), current_setting('port')::integer, current_setting('unix_socket_directories'), current_setting('data_directory')`).Scan(&connection.Database, &connection.Port, &socket, &data); err != nil {
