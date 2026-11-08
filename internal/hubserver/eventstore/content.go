@@ -142,12 +142,18 @@ func (c *Content) PrepareEvent(ctx context.Context, organization tracker.Organiz
 	if json.Unmarshal(raw, &value) != nil || value.OrganizationID != organization || value.ID == "" || value.ProjectID == "" || value.AggregateID == "" || value.SchemaVersion != 1 || value.AggregateSequence < 0 {
 		return Event{}, ErrInvalidRecord
 	}
+	if value.Type == "scheduler.decision" && (value.Data.Decision == nil || value.Data.Decision.Outcome == "") {
+		return Event{}, ErrInvalidRecord
+	}
 	ref, err := c.prepare(ctx, organization, value)
 	row := Event{OrganizationID: organization, ProjectID: value.ProjectID, WorkItemID: value.AggregateID, ID: value.ID, Sequence: value.AggregateSequence, Type: value.Type, SchemaVersion: int64(value.SchemaVersion), ActorKind: value.Actor.Kind, ActorPrincipalID: value.Actor.PrincipalID, RecordedAt: value.RecordedAt, EventRevision: int64(value.Data.Revision), FromState: value.Data.FromState, ToState: value.Data.ToState}
 	if value.Data.Change != nil {
 		row.ChangeID = value.Data.Change.ChangeID
 		row.VersionID = value.Data.Change.VersionID
 		row.HeadSHA = value.Data.Change.HeadSHA
+	}
+	if value.Data.Decision != nil {
+		row.SchedulerOutcome = value.Data.Decision.Outcome
 	}
 	row = ProjectChangePush(row, value)
 	if value.Data.Run != nil {
@@ -172,6 +178,9 @@ func (c *Content) Event(ctx context.Context, row Event) (tracker.CollaborationEv
 	if err == nil {
 		if value.ID != row.ID || value.OrganizationID != row.OrganizationID || value.ProjectID != row.ProjectID || value.AggregateID != row.WorkItemID || value.Type != row.Type || value.Actor.Kind != row.ActorKind || value.Actor.PrincipalID != row.ActorPrincipalID {
 			return value, fmt.Errorf("validate event identity: %w", artifact.ErrIntegrity)
+		}
+		if row.SchedulerOutcome != "" && (value.Data.Decision == nil || value.Data.Decision.Outcome != row.SchedulerOutcome) {
+			return value, fmt.Errorf("validate scheduler outcome: %w", artifact.ErrIntegrity)
 		}
 		if row.PushKnown {
 			var checkpoint tracker.NativeCheckpoint

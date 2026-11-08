@@ -98,15 +98,16 @@ func (s *Service) readHistoryTenant(ctx context.Context, scope nativeScope, item
 	events := make([]tracker.CollaborationEvent, 0, len(records))
 	payloads := make([][]byte, 0, len(records))
 	for _, record := range records {
+		if view == "timeline" && strings.HasPrefix(record.Type, "run.") {
+			events = append(events, tracker.CollaborationEvent{ID: record.ID, OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, AggregateType: "issue", AggregateID: record.WorkItemID, AggregateSequence: record.Sequence, Type: record.Type, SchemaVersion: int(record.SchemaVersion), Actor: tracker.Actor{Kind: record.ActorKind, PrincipalID: record.ActorPrincipalID}, RecordedAt: record.RecordedAt})
+			payloads = append(payloads, nil)
+			continue
+		}
 		event, raw, err := s.readTenantCollaborationEvent(ctx, record)
 		if err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}
 		switch view {
-		case "timeline":
-			if strings.HasPrefix(event.Type, "run.") {
-				event.Data = tracker.CollaborationData{}
-			}
 		case "blockers":
 			data := event.Data
 			event.Data = tracker.CollaborationData{Revision: data.Revision, FromState: data.FromState, ToState: data.ToState, Reason: data.Reason}

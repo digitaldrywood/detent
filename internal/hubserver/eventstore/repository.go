@@ -11,6 +11,7 @@ import (
 )
 
 type Event struct {
+	SchedulerOutcome     string
 	PushKnown            bool
 	PushChangeID         string
 	PushVersionID        string
@@ -324,4 +325,14 @@ type LandingObservation struct {
 type WorkflowTransitionReader interface {
 	LatestWorkflowTransition(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (Event, error)
 	LatestSchedulerDecision(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (Event, error)
+}
+
+type SchedulerDecisionRows struct {
+	Available   bool
+	Latest      *Event
+	Exclusion   *Event
+	Unprojected *Event
+}
+type SchedulerDecisionReader interface {
+	SchedulerDecisions(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (SchedulerDecisionRows, error)
 }

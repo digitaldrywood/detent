@@ -631,6 +631,7 @@ type CollaborationEvent struct {
 	PushHeadSha          string
 	PushExternalEffect   string
 	PushEffectState      string
+	SchedulerOutcome     string
 }
 
 type CollaborationVersion struct {
@@ -5000,6 +5001,45 @@ type ScheduledCiDecision struct {
 	Target         string
 	Reason         string
 	CreatedAt      time.Time
+}
+
+type SchedulerEventHead struct {
+	HeadKind             string
+	OrganizationID       tracker.OrganizationID
+	ProjectID            tracker.ProjectID
+	WorkItemID           string
+	ID                   string
+	Sequence             int64
+	Type                 string
+	SchemaVersion        int64
+	ActorKind            string
+	ActorPrincipalID     string
+	EventRevision        int64
+	ChangeID             string
+	VersionID            string
+	HeadSHA              string
+	RunID                string
+	AttemptID            string
+	FromState            string
+	ToState              string
+	RecordedAt           time.Time
+	PayloadObjectKey     string
+	PayloadSHA256        string
+	PayloadBytes         int64
+	PayloadContentBytes  int64
+	PayloadFormatVersion int64
+	LandingWaiting       bool
+	LandingChangeID      string
+	LandingVersionID     string
+	LandingHeadSHA       string
+	ProjectSequence      int64
+	PushKnown            bool
+	PushChangeID         string
+	PushVersionID        string
+	PushHeadSha          string
+	PushExternalEffect   string
+	PushEffectState      string
+	SchedulerOutcome     string
 }
 
 type SearchDocument struct {

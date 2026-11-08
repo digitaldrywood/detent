@@ -303,7 +303,6 @@
       "sql_insert_or": 1
     },
     "internal/hubserver/collaboration_payloads_test.go": {
-      "sql_pragma_table": 1,
       "sql_schema": 1
     },
     "internal/hubserver/config.go": {
