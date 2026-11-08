@@ -10,8 +10,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -107,6 +109,7 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 			t.Fatal(err)
 		}
 	}
+	rollbackCleanup := errors.New("rollback cleanup fixture")
 	cases := []struct {
 		name string
 		org  tracker.OrganizationID
@@ -149,6 +152,34 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 			_, err = w.CreateSpriteOperation(t.Context(), postgres.SpriteOperation{OrganizationID: "org_first", IdempotencyKey: "deleted-project", Name: "first", Operation: "bootstrap", RequestObjectKey: new("objects/request"), CreatedAt: now, NextAttemptAt: now})
 			return err
 		}, corestore.ErrNotFound},
+		{"exec session cannot bind a provision receipt", "org_first", func(w postgres.SpriteWriter) error {
+			row, err := w.SpriteOperation(t.Context(), "first")
+			if err != nil {
+				return err
+			}
+			row.Outcome, row.UpdatedAt, row.NextAttemptAt = "uncertain", now, now
+			if err := w.UpdateSpriteOperation(t.Context(), row, row.Attempts); err != nil {
+				return err
+			}
+			row.Attempts++
+			row.Operation = "bootstrap"
+			return w.SetSpriteExecSession(t.Context(), row, "session-example")
+		}, corestore.ErrRevisionConflict},
+		{"cleanup survives retired project", "org_first", func(w postgres.SpriteWriter) error {
+			writer := w.(tenantstore.Writer)
+			project, err := writer.Project(t.Context(), "prj_first")
+			if err != nil {
+				return err
+			}
+			project.DeletedAt = &now
+			if _, err := writer.UpdateProject(t.Context(), project); err != nil {
+				return err
+			}
+			if _, err := w.CreateSpriteOperation(t.Context(), postgres.SpriteOperation{OrganizationID: "org_first", IdempotencyKey: "cleanup-retired-project", Name: "first", Operation: "delete", RequestObjectKey: new("objects/request"), CreatedAt: now, NextAttemptAt: now}); err != nil {
+				return err
+			}
+			return rollbackCleanup
+		}, rollbackCleanup},
 		{"missing request payload", "org_first", func(w postgres.SpriteWriter) error {
 			_, err := w.CreateSpriteOperation(t.Context(), postgres.SpriteOperation{OrganizationID: "org_first", IdempotencyKey: "missing-request", Name: "first", Operation: "provision", CreatedAt: now, NextAttemptAt: now})
 			return err
@@ -255,6 +286,20 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 			if activeCount != 2 {
 				t.Fatalf("pool count=%d", activeCount)
 			}
+			retained, err := r.SpriteRetainedPoolCount(t.Context())
+			if err != nil || retained != 1 {
+				t.Fatalf("retained pool count=%d err=%v", retained, err)
+			}
+			for _, project := range []tracker.ProjectID{"prj_first", "prj_second"} {
+				retained, err := r.SpriteRetainedMemberCount(t.Context(), project)
+				want := int64(1)
+				if project == "prj_second" {
+					want = 0
+				}
+				if err != nil || retained != want {
+					t.Fatalf("%s retained count=%d want=%d err=%v", project, retained, want, err)
+				}
+			}
 			queue, err := r.SpriteAllocationQueue(t.Context(), postgres.SpriteAllocationCursor{}, 1)
 			if err != nil {
 				return err
@@ -317,6 +362,156 @@ func TestSpriteContractPersistsScopedAllocationsAndLifecycleReceipts(t *testing.
 		})
 		if err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+func TestSpriteRunnerSelectionHonorsAllocationAndSharing(t *testing.T) {
+	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	organizations := []tracker.OrganizationID{"org_first", "org_second"}
+	for _, organization := range organizations {
+		seedTenantAccess(t, repository, organization)
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			for _, name := range []string{"first", "second"} {
+				if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: tracker.ProjectID("prj_" + name), Name: name, Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"first", "second"} {
+			id := string(organization) + "_" + name
+			seedRunnerIdentity(t, repository, organization, id, "machine_"+name, now, true)
+		}
+		if err := repository.WriteSprite(t.Context(), organization, corestore.Serving, func(w postgres.SpriteWriter) error {
+			if _, err := w.PutSpritePool(t.Context(), postgres.SpritePool{OrganizationID: organization, MaxRunners: 2, IdleSeconds: 300, ConfiguredBy: "admin", IsolationTier: "native-trusted", PlacementMode: "blended"}, 0); err != nil {
+				return err
+			}
+			for _, name := range []string{"first", "second"} {
+				id := string(organization) + "_" + name
+				project := tracker.ProjectID("prj_" + name)
+				if _, err := w.PutSpriteAllocation(t.Context(), postgres.SpriteAllocation{OrganizationID: organization, ProjectID: project, DesiredCount: 1, RequestedAt: now, ConfiguredBy: "admin"}, 0); err != nil {
+					return err
+				}
+				if err := w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: organization, Name: name, EnrollmentID: "enrollment_" + id, ProviderOrganization: "example", State: "enrolled", AllocationProjectID: project, AllocationRevision: 1, IdleSince: now, CreatedAt: now}); err != nil {
+					return err
+				}
+				writer := w.(tenantstore.Writer)
+				for _, target := range []tracker.ProjectID{"prj_first", "prj_second"} {
+					if err := writer.ReplaceRunnerLocalChecks(t.Context(), id, target, runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}, ObservedAt: now}); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rollback := errors.New("rollback selection fixture")
+	for _, organization := range organizations {
+		for _, name := range []string{"first", "second"} {
+			for _, test := range []struct {
+				name, change string
+				other, want  bool
+			}{
+				{name: "own ready member", want: true},
+				{name: "sharing requires consent", other: true},
+				{name: "shared ready member", change: "sharing", other: true, want: true},
+				{name: "shared target desired zero", change: "target zero", other: true},
+				{name: "owner desired zero", change: "owner zero"},
+				{name: "retiring member", change: "retiring"},
+				{name: "runner draining", change: "draining"},
+				{name: "revoked runner token", change: "revoked"},
+				{name: "missing runner grant", change: "grant"},
+				{name: "failed target checkout", change: "checks"},
+				{name: "foreign tenant identity", change: "foreign"},
+			} {
+				t.Run(string(organization)+"/"+name+"/"+test.name, func(t *testing.T) {
+					err := repository.WriteSprite(t.Context(), organization, corestore.Serving, func(w postgres.SpriteWriter) error {
+						writer := w.(tenantstore.Writer)
+						id := string(organization) + "_" + name
+						project := tracker.ProjectID("prj_" + name)
+						target := project
+						if test.other {
+							target = "prj_first"
+							if name == "first" {
+								target = "prj_second"
+							}
+						}
+						switch test.change {
+						case "sharing", "target zero":
+							pool, err := w.SpritePool(t.Context())
+							if err != nil {
+								return err
+							}
+							pool.ShareIdleCapacity = true
+							if _, err := w.PutSpritePool(t.Context(), pool, pool.Revision); err != nil {
+								return err
+							}
+						case "retiring":
+							member, err := w.SpriteMember(t.Context(), name)
+							if err != nil {
+								return err
+							}
+							if err := writer.UpdateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: organization, Name: member.Name, EnrollmentID: member.EnrollmentID, ProviderOrganization: member.ProviderOrganization, State: "deleting", CreatedAt: member.CreatedAt, IdleSince: member.IdleSince, AllocationProjectID: project, AllocationRevision: 1}); err != nil {
+								return err
+							}
+						case "draining", "grant":
+							identity, err := writer.RunnerIdentity(t.Context(), id)
+							if err != nil {
+								return err
+							}
+							if test.change == "draining" {
+								identity.State = "draining"
+							} else {
+								identity.Scope = "projects"
+							}
+							if err := writer.UpdateRunnerRouting(t.Context(), identity.Revision, identity); err != nil {
+								return err
+							}
+						case "revoked":
+							if err := writer.RevokeAccessCredential(t.Context(), id, now); err != nil {
+								return err
+							}
+						case "checks":
+							if err := writer.ReplaceRunnerLocalChecks(t.Context(), id, target, runnerauth.LocalChecks{Checkout: "failed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}, ObservedAt: now}); err != nil {
+								return err
+							}
+						case "foreign":
+							foreign := organizations[0]
+							if foreign == organization {
+								foreign = organizations[1]
+							}
+							id = string(foreign) + "_" + name
+						}
+						if test.change == "target zero" || test.change == "owner zero" {
+							allocation, err := w.SpriteAllocation(t.Context(), target)
+							if err != nil {
+								return err
+							}
+							allocation.DesiredCount = 0
+							if _, err := w.PutSpriteAllocation(t.Context(), allocation, allocation.Revision); err != nil {
+								return err
+							}
+						}
+						allowed, err := w.SpriteRunnerAllowed(t.Context(), id, target, now)
+						if err != nil {
+							return err
+						}
+						if allowed != test.want {
+							t.Errorf("allowed=%t want=%t", allowed, test.want)
+						}
+						return rollback
+					})
+					if !errors.Is(err, rollback) {
+						t.Fatal(err)
+					}
+				})
+			}
 		}
 	}
 }

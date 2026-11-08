@@ -100,13 +100,14 @@ SELECT EXISTS(
 -- name: SetSpriteExecSession :execrows
 UPDATE sprite_lifecycle_operations SET exec_session_id=sqlc.arg(exec_session_id)::text
 WHERE organization_id=sqlc.arg(organization_id) AND idempotency_key=sqlc.arg(idempotency_key)
-AND attempts=sqlc.arg(expected_attempts) AND outcome='uncertain'
+AND attempts=sqlc.arg(expected_attempts) AND operation='bootstrap' AND outcome='uncertain'
 AND (exec_session_id IS NULL OR exec_session_id=sqlc.arg(exec_session_id)::text);
 
 -- name: SpriteMemberBusy :one
 SELECT EXISTS(SELECT 1 FROM runner_sprite_memberships m JOIN runner_identities r ON r.organization_id=m.organization_id AND r.enrollment_id=m.enrollment_id
  JOIN leases l ON l.organization_id=r.organization_id AND l.machine_id=r.machine_id
- WHERE m.organization_id=$1 AND m.name=$2 AND l.released_at IS NULL)::boolean;
+ WHERE m.organization_id=$1 AND m.name=$2 AND l.released_at IS NULL
+ AND (r.removed_at IS NULL OR EXISTS(SELECT 1 FROM native_attempts a WHERE a.organization_id=l.organization_id AND a.lease_id=l.lease_id AND a.cleanup_acknowledged_at IS NULL)))::boolean;
 
 -- name: SpriteMemberWanted :one
 SELECT (m.state IN ('bootstrapping','enrolled') AND CASE WHEN m.allocation_project_id='' THEN p.max_runners>0 ELSE
@@ -125,7 +126,9 @@ WHERE m.organization_id=$1 AND m.name=$2;
 SELECT EXISTS(SELECT 1 FROM runner_sprite_memberships m JOIN runner_identities r ON r.organization_id=m.organization_id AND r.enrollment_id=m.enrollment_id
  JOIN leases l ON l.organization_id=r.organization_id AND l.machine_id=r.machine_id
  JOIN monthly_budget_admissions a ON a.organization_id=l.organization_id AND a.issue_id=l.issue_id
- WHERE m.organization_id=$1 AND m.name=$2 AND l.fencing_token=(SELECT max(latest.fencing_token) FROM leases latest WHERE latest.organization_id=l.organization_id AND latest.issue_id=l.issue_id))::boolean;
+ JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
+ JOIN project_workflow_states ws ON ws.organization_id=i.organization_id AND ws.project_id=i.project_id AND ws.name=i.workflow_state_name
+ WHERE NOT i.archived AND NOT ws.terminal AND m.organization_id=$1 AND m.name=$2 AND l.fencing_token=(SELECT max(latest.fencing_token) FROM leases latest WHERE latest.organization_id=l.organization_id AND latest.issue_id=l.issue_id))::boolean;
 
 -- name: SpriteWakeTarget :one
 SELECT EXISTS(SELECT 1 FROM runner_identities r JOIN machines m ON m.organization_id=r.organization_id AND m.id=r.machine_id
@@ -152,3 +155,9 @@ ON CONFLICT (organization_id,kind) DO NOTHING;
 
 -- name: SpriteEnrollmentWake :one
 SELECT * FROM sprite_lifecycle_operations WHERE organization_id=$1 AND target_enrollment_id=$2 AND operation='wake' ORDER BY created_at DESC,idempotency_key DESC LIMIT 1;
+
+-- name: SpriteRetainedMemberCount :one
+SELECT count(*) FROM runner_sprite_memberships WHERE organization_id=$1 AND allocation_project_id=$2 AND state<>'deleted' AND state<>'deleting';
+
+-- name: SpriteRetainedPoolCount :one
+SELECT count(*) FROM runner_sprite_memberships WHERE organization_id=$1 AND state<>'deleted' AND state<>'deleting';

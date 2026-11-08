@@ -288,7 +288,7 @@ func (q *Queries) RecordSpriteProvisionFailure(ctx context.Context, arg RecordSp
 const setSpriteExecSession = `-- name: SetSpriteExecSession :execrows
 UPDATE sprite_lifecycle_operations SET exec_session_id=$1::text
 WHERE organization_id=$2 AND idempotency_key=$3
-AND attempts=$4 AND outcome='uncertain'
+AND attempts=$4 AND operation='bootstrap' AND outcome='uncertain'
 AND (exec_session_id IS NULL OR exec_session_id=$1::text)
 `
 
@@ -468,7 +468,9 @@ const spriteBudgetRetainsMember = `-- name: SpriteBudgetRetainsMember :one
 SELECT EXISTS(SELECT 1 FROM runner_sprite_memberships m JOIN runner_identities r ON r.organization_id=m.organization_id AND r.enrollment_id=m.enrollment_id
  JOIN leases l ON l.organization_id=r.organization_id AND l.machine_id=r.machine_id
  JOIN monthly_budget_admissions a ON a.organization_id=l.organization_id AND a.issue_id=l.issue_id
- WHERE m.organization_id=$1 AND m.name=$2 AND l.fencing_token=(SELECT max(latest.fencing_token) FROM leases latest WHERE latest.organization_id=l.organization_id AND latest.issue_id=l.issue_id))::boolean
+ JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
+ JOIN project_workflow_states ws ON ws.organization_id=i.organization_id AND ws.project_id=i.project_id AND ws.name=i.workflow_state_name
+ WHERE NOT i.archived AND NOT ws.terminal AND m.organization_id=$1 AND m.name=$2 AND l.fencing_token=(SELECT max(latest.fencing_token) FROM leases latest WHERE latest.organization_id=l.organization_id AND latest.issue_id=l.issue_id))::boolean
 `
 
 type SpriteBudgetRetainsMemberParams struct {
@@ -546,7 +548,8 @@ func (q *Queries) SpriteMember(ctx context.Context, arg SpriteMemberParams) (Run
 const spriteMemberBusy = `-- name: SpriteMemberBusy :one
 SELECT EXISTS(SELECT 1 FROM runner_sprite_memberships m JOIN runner_identities r ON r.organization_id=m.organization_id AND r.enrollment_id=m.enrollment_id
  JOIN leases l ON l.organization_id=r.organization_id AND l.machine_id=r.machine_id
- WHERE m.organization_id=$1 AND m.name=$2 AND l.released_at IS NULL)::boolean
+ WHERE m.organization_id=$1 AND m.name=$2 AND l.released_at IS NULL
+ AND (r.removed_at IS NULL OR EXISTS(SELECT 1 FROM native_attempts a WHERE a.organization_id=l.organization_id AND a.lease_id=l.lease_id AND a.cleanup_acknowledged_at IS NULL)))::boolean
 `
 
 type SpriteMemberBusyParams struct {
@@ -845,6 +848,33 @@ func (q *Queries) SpritePromotionSource(ctx context.Context, organizationID trac
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const spriteRetainedMemberCount = `-- name: SpriteRetainedMemberCount :one
+SELECT count(*) FROM runner_sprite_memberships WHERE organization_id=$1 AND allocation_project_id=$2 AND state<>'deleted' AND state<>'deleting'
+`
+
+type SpriteRetainedMemberCountParams struct {
+	OrganizationID      tracker.OrganizationID
+	AllocationProjectID string
+}
+
+func (q *Queries) SpriteRetainedMemberCount(ctx context.Context, arg SpriteRetainedMemberCountParams) (int64, error) {
+	row := q.db.QueryRow(ctx, spriteRetainedMemberCount, arg.OrganizationID, arg.AllocationProjectID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const spriteRetainedPoolCount = `-- name: SpriteRetainedPoolCount :one
+SELECT count(*) FROM runner_sprite_memberships WHERE organization_id=$1 AND state<>'deleted' AND state<>'deleting'
+`
+
+func (q *Queries) SpriteRetainedPoolCount(ctx context.Context, organizationID tracker.OrganizationID) (int64, error) {
+	row := q.db.QueryRow(ctx, spriteRetainedPoolCount, organizationID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const spriteWakeTarget = `-- name: SpriteWakeTarget :one

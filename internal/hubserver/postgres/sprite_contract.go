@@ -38,10 +38,13 @@ type SpriteReader interface {
 	SpriteMember(context.Context, string) (SpriteMember, error)
 	SpriteMemberBusy(context.Context, string) (bool, error)
 	SpriteMemberWanted(context.Context, string) (bool, error)
+	SpriteRunnerAllowed(context.Context, string, tracker.ProjectID, time.Time) (bool, error)
 	SpriteMemberRunner(context.Context, string) (string, error)
 	SpriteBudgetRetainsMember(context.Context, string) (bool, error)
 	SpriteActiveMemberCount(context.Context, tracker.ProjectID) (int64, error)
+	SpriteRetainedMemberCount(context.Context, tracker.ProjectID) (int64, error)
 	SpritePoolMemberCount(context.Context) (int64, error)
+	SpriteRetainedPoolCount(context.Context) (int64, error)
 	SpritePoolMemberPage(context.Context, SpriteMemberCursor, int) ([]SpritePoolMember, error)
 	SpriteAllocationQueue(context.Context, SpriteAllocationCursor, int) ([]SpriteAllocation, error)
 	SpriteAllocation(context.Context, tracker.ProjectID) (SpriteAllocation, error)
@@ -183,7 +186,7 @@ func (s *session) CreateSpriteOperation(ctx context.Context, row SpriteOperation
 			}
 		}
 	}
-	if row.ProjectID != "" {
+	if row.ProjectID != "" && row.Operation != "delete" {
 		if _, err := s.queries.LockActiveProject(ctx, pgquery.LockActiveProjectParams{OrganizationID: s.organization, ID: row.ProjectID}); err != nil {
 			return SpriteOperation{}, mapError(ctx, err)
 		}
@@ -292,7 +295,7 @@ func (s *session) SetSpriteExecSession(ctx context.Context, row SpriteOperation,
 	if err := s.checkOrganization(row.OrganizationID); err != nil {
 		return err
 	}
-	if id == "" || len(id) > 200 {
+	if row.Operation != "bootstrap" || id == "" || len(id) > 200 {
 		return corestore.ErrInvalidPage
 	}
 	count, err := s.queries.SetSpriteExecSession(ctx, pgquery.SetSpriteExecSessionParams{OrganizationID: s.organization, IdempotencyKey: row.IdempotencyKey, ExpectedAttempts: row.Attempts, ExecSessionID: id})
@@ -354,4 +357,85 @@ func (s *session) SpriteEnrollmentWake(ctx context.Context, enrollment string) (
 func (s *session) SpriteWakeTarget(ctx context.Context, enrollment, name string, project tracker.ProjectID, at time.Time) (bool, error) {
 	value, err := s.queries.SpriteWakeTarget(ctx, pgquery.SpriteWakeTargetParams{OrganizationID: s.organization, EnrollmentID: enrollment, SpriteName: name, ProjectID: project, At: at})
 	return value, mapError(ctx, err)
+}
+
+func (s *session) SpriteRetainedMemberCount(ctx context.Context, project tracker.ProjectID) (int64, error) {
+	count, err := s.queries.SpriteRetainedMemberCount(ctx, pgquery.SpriteRetainedMemberCountParams{OrganizationID: s.organization, AllocationProjectID: string(project)})
+	return count, mapError(ctx, err)
+}
+
+func (s *session) SpriteRetainedPoolCount(ctx context.Context) (int64, error) {
+	count, err := s.queries.SpriteRetainedPoolCount(ctx, s.organization)
+	return count, mapError(ctx, err)
+}
+
+func (s *session) SpriteRunnerAllowed(ctx context.Context, runnerID string, project tracker.ProjectID, now time.Time) (bool, error) {
+	identity, err := s.RunnerIdentity(ctx, runnerID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if identity.State != "active" || identity.RemovedAt != nil {
+		return false, nil
+	}
+	granted, err := s.RunnerProjectAuthorized(ctx, runnerID, project, now)
+	if err != nil || !granted {
+		return false, err
+	}
+	allocation, err := s.SpriteAllocation(ctx, project)
+	managed := err == nil
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		return false, err
+	}
+	member, err := s.RunnerSpriteMembershipByEnrollment(ctx, identity.EnrollmentID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		if !managed {
+			return true, nil
+		}
+		machine, err := s.Machine(ctx, string(identity.MachineID))
+		if err != nil {
+			return false, err
+		}
+		if machine.SpriteName != "" && machine.SpriteName == machine.Hostname {
+			return true, nil
+		}
+		pool, err := s.SpritePool(ctx)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return true, nil
+		}
+		return pool.PlacementMode != "sprites_only", err
+	}
+	if err != nil {
+		return false, err
+	}
+	if member.State != "enrolled" {
+		return false, nil
+	}
+	if member.AllocationProjectID == "" {
+		return !managed, nil
+	}
+	if managed && allocation.DesiredCount == 0 {
+		return false, nil
+	}
+	owner, err := s.SpriteAllocation(ctx, member.AllocationProjectID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil || owner.DesiredCount == 0 {
+		return false, err
+	}
+	pool, err := s.SpritePool(ctx)
+	if err != nil {
+		return false, err
+	}
+	if pool.MaxRunners == 0 || member.AllocationProjectID != project && !pool.ShareIdleCapacity {
+		return false, nil
+	}
+	checks, err := s.RunnerLocalChecks(ctx, runnerID, project)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return false, nil
+	}
+	return err == nil && checks.WorkReady(), err
 }
