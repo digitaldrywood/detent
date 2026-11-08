@@ -12,7 +12,7 @@ import (
 	"github.com/pressly/goose/v3"
 	goosedb "github.com/pressly/goose/v3/database"
 
-	"github.com/digitaldrywood/detent/internal/schemafingerprint"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
 
 func TestHubMigrationVerificationScope(t *testing.T) {
@@ -149,26 +149,44 @@ func TestHubMigrationVerificationScope(t *testing.T) {
 }
 
 func TestCurrentSchemaFingerprintUsesLatestMigrationState(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "schema-fingerprint")
-	versions, err := hubSchemaVersions()
+	admin := postgresStartupTemplate.Database(t)
+	config := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
+	before, err := openPostgresDatabase(t.Context(), *config.Postgres)
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, err := currentSchemaFingerprint(t.Context(), f.service.database.db)
-	if err != nil {
+	version, fingerprint := before.schemaVersion, before.schemaFingerprint
+	if version == 0 || fingerprint == "" {
+		t.Fatal("validated schema metadata is empty")
+	}
+	if err := before.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hub_schema_version(version_id, is_applied) VALUES (64, 0)"); err != nil {
-		t.Fatal(err)
-	}
-	got, err := currentSchemaFingerprint(t.Context(), f.service.database.db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expectedVersions := slices.DeleteFunc(slices.Clone(versions), func(version int64) bool { return version == 64 })
-	want := schemafingerprint.Versions(expectedVersions)
-	if got == before || got != want {
-		t.Fatalf("fingerprint after latest down record = %q, want %q (before %q)", got, want, before)
+	for _, applied := range []bool{false, true} {
+		if _, err := admin.ExecContext(t.Context(), "INSERT INTO public.goose_db_version(version_id,is_applied) VALUES($1,$2)", version, applied); err != nil {
+			t.Fatal(err)
+		}
+		reopened, err := openPostgresDatabase(t.Context(), *config.Postgres)
+		if !applied {
+			if reopened != nil {
+				if closeErr := reopened.Close(); closeErr != nil {
+					t.Error(closeErr)
+				}
+			}
+			if !errors.Is(err, postgres.ErrSchema) {
+				t.Fatalf("latest Down state: %v, want schema refusal", err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reopened.schemaVersion != version || reopened.schemaFingerprint != fingerprint {
+			t.Errorf("restored schema metadata=(%d,%q), want (%d,%q)", reopened.schemaVersion, reopened.schemaFingerprint, version, fingerprint)
+		}
+		if err := reopened.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
