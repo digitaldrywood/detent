@@ -2,6 +2,7 @@
   "tables": {
     "github_reconciliation": {"class": "hot_state"},
     "github_outbound": {"class": "hot_state"},
+    "github_outbound_observations": {"class": "hot_state"},
     "github_webhook_receipts": {"class": "hot_state"},
     "project_onboarding_page_access": {"class": "hot_state"},
     "project_onboarding_page_viewers": {"class": "hot_state"},

@@ -116,6 +116,7 @@ type Config struct {
 	retentionTimeout           func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	jitter                     func() float64
 	newLeaseID                 func() string
+	newOutboxTimer             func(time.Duration) outboxTimer
 	newTokenID                 func() string
 	generateToken              func() (string, error)
 }
@@ -214,6 +215,12 @@ func (c Config) normalized() Config {
 	}
 	if c.newLeaseID == nil {
 		c.newLeaseID = uuid.NewString
+	}
+	if c.newOutboxTimer == nil {
+		c.newOutboxTimer = func(duration time.Duration) outboxTimer {
+			timer := time.NewTimer(duration)
+			return outboxTimer{ticks: timer.C, reset: func(next time.Duration) { timer.Reset(next) }, stop: func() { timer.Stop() }}
+		}
 	}
 	if c.newTokenID == nil {
 		c.newTokenID = uuid.NewString

@@ -16,6 +16,20 @@ import (
 
 type githubOutboundSignal struct{ calls chan OutboxItem }
 
+type gitHubDeadlineBackend struct {
+	deadline time.Time
+	bounded  bool
+}
+
+func (b *gitHubDeadlineBackend) Execute(ctx context.Context, _ OutboxItem) error {
+	b.deadline, b.bounded = ctx.Deadline()
+	return nil
+}
+
+func (b *gitHubDeadlineBackend) VerifyAndExecute(ctx context.Context, item OutboxItem) error {
+	return b.Execute(ctx, item)
+}
+
 func (s githubOutboundSignal) Execute(ctx context.Context, item OutboxItem) error {
 	select {
 	case s.calls <- item:
@@ -104,5 +118,29 @@ func TestPostgresGitHubOutboundUsesConfiguredBackend(t *testing.T) {
 	}
 	if backend.executeCalls != 2 || backend.effects != 2 || len(backend.deliveredKeys) != 2 {
 		t.Fatalf("backend calls=%d effects=%d keys=%v", backend.executeCalls, backend.effects, backend.deliveredKeys)
+	}
+}
+
+func TestGitHubOutboundCallBoundedByLease(t *testing.T) {
+	service, now, _ := gitHubWebhookRecordFixture(t)
+	*now = time.Now().UTC().Truncate(time.Microsecond)
+	backend := &gitHubDeadlineBackend{}
+	service.config.OutboxBackend = backend
+	service.config.OutboxProcessingTimeout = time.Minute
+	raw := json.RawMessage(`{"body":"Example body","marker":"<!-- example -->"}`)
+	payload, err := eventstore.NewContent(service.runDetailStore()).PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: "org"}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), "org", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: "first", WorkItemID: "wi_example", Key: "deadline", Repository: "example-org/example-project", IssueNumber: 1, Kind: string(MutationWorkpad), CreatedAt: *now, Payload: payload})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if processed, err := service.ProcessOutbox(t.Context()); err != nil || !processed {
+		t.Fatalf("processed=%t err=%v", processed, err)
+	}
+	if !backend.bounded || backend.deadline.After(now.Add(time.Minute)) {
+		t.Fatalf("external context bounded=%t deadline=%v lease=%v", backend.bounded, backend.deadline, now.Add(time.Minute))
 	}
 }

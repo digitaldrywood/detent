@@ -11,6 +11,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
@@ -30,6 +33,23 @@ const (
 )
 
 var ErrIdempotencyConflict = errors.New("github outbox idempotency key already has different content")
+var ErrOutboxUncertain = errors.New("GitHub write requires reconciliation")
+
+type rejectedOutboxWrite struct{ error }
+
+func (e *rejectedOutboxWrite) Unwrap() error { return e.error }
+
+func RejectedOutboxWrite(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &rejectedOutboxWrite{err}
+}
+
+func isRejectedOutboxWrite(err error) bool {
+	var rejected *rejectedOutboxWrite
+	return errors.As(err, &rejected)
+}
 
 type MutationKind string
 
@@ -114,6 +134,7 @@ type WorkflowStateChange struct {
 }
 
 type OutboxItem struct {
+	OrganizationID  tracker.OrganizationID
 	Profile         string
 	ID              int64
 	IdempotencyKey  string
@@ -128,6 +149,23 @@ type OutboxItem struct {
 	Status          string
 	Attempts        int
 	CreatedAt       time.Time
+	Progress        OutboxProgress
+	Uncertain       bool
+	Blocked         bool
+	BeforeWrite     func(context.Context) error `json:"-"`
+}
+
+type OutboxProgress = projectstore.GitHubOutboundProgress
+type OutboxObservation = projectstore.GitHubOutboundObservation
+
+type OutboxStepResult struct {
+	Progress     OutboxProgress
+	Observations []OutboxObservation
+	Done         bool
+}
+
+type OutboxStepBackend interface {
+	Step(context.Context, OutboxItem) (OutboxStepResult, error)
 }
 
 type OutboxBackend interface {
@@ -370,6 +408,12 @@ type outboxWorker struct {
 	cancel  context.CancelFunc
 	wake    chan struct{}
 	wait    sync.WaitGroup
+}
+
+type outboxTimer struct {
+	ticks <-chan time.Time
+	reset func(time.Duration)
+	stop  func()
 }
 
 func newOutboxWorker(service *Service) *outboxWorker {

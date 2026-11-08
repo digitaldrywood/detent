@@ -61,25 +61,37 @@ func TestGitHubOutboundFencesExpiredClaimsAcrossTenants(t *testing.T) {
 				t.Fatalf("unexpired claim was reclaimed: %+v", second)
 			}
 			second.Status = "completed"
-			return owner.FinishGitHubOutbound(t.Context(), second)
+			second.Outcome = "committed"
+			return owner.FinishGitHubOutbound(t.Context(), second, now)
 		}); err != nil {
 			t.Fatal(err)
 		}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			owner := w.(projectstore.GitHubOutboxWriter)
-			current, err := owner.ClaimGitHubOutbound(t.Context(), now.Add(time.Minute), now.Add(2*time.Minute), "current")
+			if err := owner.RenewGitHubOutbound(t.Context(), expired.ID, expired.LeaseID, now.Add(30*time.Second), now.Add(2*time.Minute), true); err != nil {
+				return err
+			}
+			if _, err := owner.ClaimGitHubOutbound(t.Context(), now.Add(time.Minute), now.Add(3*time.Minute), "early"); !errors.Is(err, corestore.ErrNotFound) {
+				t.Fatalf("renewed claim was reclaimed: %v", err)
+			}
+			current, err := owner.ClaimGitHubOutbound(t.Context(), now.Add(2*time.Minute), now.Add(3*time.Minute), "current")
 			if err != nil {
 				return err
 			}
-			if current.ID != expired.ID || current.Attempts != 2 {
+			if current.ID != expired.ID || current.Attempts != 2 || current.Outcome != "uncertain" {
 				t.Fatalf("recovered=%+v", current)
 			}
 			expired.Status = "completed"
-			if err := owner.FinishGitHubOutbound(t.Context(), expired); !errors.Is(err, corestore.ErrRevisionConflict) {
+			expired.Outcome = "committed"
+			if err := owner.FinishGitHubOutbound(t.Context(), expired, now.Add(2*time.Minute)); !errors.Is(err, corestore.ErrRevisionConflict) {
 				t.Fatalf("expired claim completed: %v", err)
 			}
 			current.Status = "completed"
-			return owner.FinishGitHubOutbound(t.Context(), current)
+			current.Outcome = "committed"
+			if err := owner.RenewGitHubOutbound(t.Context(), expired.ID, expired.LeaseID, now.Add(2*time.Minute), now.Add(4*time.Minute), false); !errors.Is(err, corestore.ErrRevisionConflict) {
+				t.Fatalf("old claim renewed: %v", err)
+			}
+			return owner.FinishGitHubOutbound(t.Context(), current, now.Add(2*time.Minute))
 		}); err != nil {
 			t.Fatal(err)
 		}

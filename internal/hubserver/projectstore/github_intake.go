@@ -39,12 +39,30 @@ type GitHubOutbound struct {
 	IssueNumber, Attempts                                int64
 	CreatedAt, NextAttemptAt                             time.Time
 	Payload                                              eventstore.Receipt
+	Outcome                                              string
+	Progress                                             GitHubOutboundProgress
+	Blocked                                              bool
+	Observations                                         []GitHubOutboundObservation
+}
+
+type GitHubOutboundProgress struct {
+	Stage, Cursor                            string
+	TargetID, FallbackID, Verification, Page int64
+	SourceUpdatedAt                          time.Time
+}
+
+type GitHubOutboundObservation struct {
+	Kind, Key string
+	Sequence  int64
+	Ready     bool
 }
 
 type GitHubOutboxWriter interface {
+	GitHubOutbound(context.Context, string) (GitHubOutbound, error)
 	EnqueueGitHubOutbound(context.Context, GitHubOutbound) error
 	ClaimGitHubOutbound(context.Context, time.Time, time.Time, string) (GitHubOutbound, error)
-	FinishGitHubOutbound(context.Context, GitHubOutbound) error
+	RenewGitHubOutbound(context.Context, int64, string, time.Time, time.Time, bool) error
+	FinishGitHubOutbound(context.Context, GitHubOutbound, time.Time) error
 }
 
 type GitHubReconciliation struct {
