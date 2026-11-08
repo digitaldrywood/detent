@@ -3214,10 +3214,6 @@ func TestTickAutoPromoteValidatorUnavailableRoutesRework(t *testing.T) {
 }
 
 func TestValidatorVerdictRejectsDifferentPRProvenance(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	issue := connector.Issue{ID: "issue-docs", Identifier: "digitaldrywood/pyroapex-mobile#153",
 		PullRequest: &connector.PullRequest{Number: 155, BaseSHA: "base-docs", HeadSHA: "head-docs"}}
@@ -3238,7 +3234,7 @@ func TestValidatorVerdictRejectsDifferentPRProvenance(t *testing.T) {
 		{name: "exact PR", repo: "digitaldrywood/pyroapex-mobile", pr: 155, base: "base-docs", head: "head-docs", digest: "digest-docs", want: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			memo := openValidatorMemoStore(t)
+			memo := &validatorMemoFixture{}
 			at := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 			if err := memo.RecordValidatorVerdict(t.Context(), store.ValidatorVerdict{
 				ProjectID: "detent", IssueID: issue.ID, HeadSHA: tt.head, Repository: tt.repo, ContextDigest: identity.ContextDigest,
@@ -3257,10 +3253,6 @@ func TestValidatorVerdictRejectsDifferentPRProvenance(t *testing.T) {
 }
 
 func TestValidatorFailedMemoRejectsDifferentPRProvenance(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	issue := connector.Issue{ID: "issue-failed-memo", Identifier: "digitaldrywood/detent#153",
 		PullRequest: &connector.PullRequest{Number: 155, BaseSHA: "base-docs", HeadSHA: "head-docs"}}
@@ -3278,7 +3270,7 @@ func TestValidatorFailedMemoRejectsDifferentPRProvenance(t *testing.T) {
 		{name: "exact PR", repo: "digitaldrywood/detent", pr: 155, base: "base-docs", want: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			memo := openValidatorMemoStore(t)
+			memo := &validatorMemoFixture{}
 			if err := memo.RecordValidatorVerdict(t.Context(), store.ValidatorVerdict{
 				ProjectID: "detent", IssueID: issue.ID, HeadSHA: identity.HeadSHA,
 				Repository: tt.repo, PRNumber: &tt.pr, BaseSHA: tt.base, ContextDigest: identity.ContextDigest,
@@ -3527,14 +3519,10 @@ func TestTickAutoPromoteUsesPersistedValidatorVerdictAfterRestart(t *testing.T) 
 }
 
 func TestTickAutoPromoteValidatorVerdictHeadSHAInvalidatesMemo(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	ctx := context.Background()
-	memo := openValidatorMemoStore(t)
+	memo := &validatorMemoFixture{}
 	now := time.Date(2026, 6, 14, 10, 0, 0, 0, time.UTC)
 	oldReview := now.Add(-20 * time.Minute)
 	cfg := autoPromoteValidatorTestConfig()
@@ -3584,8 +3572,11 @@ func TestTickAutoPromoteValidatorVerdictHeadSHAInvalidatesMemo(t *testing.T) {
 	state := newState(cfg)
 	orch.tick(ctx, &state, now)
 
-	waitForValidatorRequests(t, validator, 1)
+	orch.validatorWG.Wait()
 	requests := validator.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("validator requests = %d, want 1", len(requests))
+	}
 	if requests[0].Issue.PullRequest == nil || requests[0].Issue.PullRequest.HeadSHA != "head-validator-new" {
 		t.Fatalf("validator request head SHA = %#v, want new head", requests[0].Issue.PullRequest)
 	}
@@ -6734,14 +6725,10 @@ func (c *autoPromoteTickConnector) SetField(_ context.Context, issueID string, f
 }
 
 func TestTickAutoPromoteLoadsValidatorVerdictAfterWorkpadHydration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	ctx := t.Context()
-	memo := openValidatorMemoStore(t)
+	memo := &validatorMemoFixture{}
 	now := time.Date(2026, 9, 13, 15, 0, 0, 0, time.UTC)
 	oldReview := now.Add(-20 * time.Minute)
 	cfg := autoPromoteValidatorTestConfig()

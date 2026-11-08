@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -690,12 +689,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			metrics := &workflowMetricsRecorderSpy{}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling, workflowMetrics: metrics}
 			if test.machineAttempt > 0 {
-				db, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "retry.db")})
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = db.Close() })
-				orch.workflowMetrics = db
+				orch.workflowMetrics = &autoPromoteWorkflowMetricsRecorder{}
 			}
 			if native, ok := tracker.(*nativeWorkflowConnector); ok && test.reviewed == nil && test.change != nil {
 				native.reviewed = &test.change.Reviewed

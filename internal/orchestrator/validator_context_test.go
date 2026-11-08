@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -86,12 +86,8 @@ func TestValidatorContextMemoReuse(t *testing.T) {
 }
 
 func TestValidatorLegacyContextNotReusable(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	issue := connector.Issue{ID: "legacy", Identifier: "o/r#1", PullRequest: &connector.PullRequest{Number: 2, BaseSHA: "base", HeadSHA: "head"}}
-	memo := openValidatorMemoStore(t)
+	memo := &validatorMemoFixture{}
 	for _, v := range []string{gate.ValidatorVerdictPass, gate.ValidatorVerdictRework, gate.ValidatorVerdictWait} {
 		t.Run(v, func(t *testing.T) {
 			err := memo.RecordValidatorVerdict(t.Context(), store.ValidatorVerdict{ProjectID: "detent", IssueID: issue.ID, HeadSHA: "head", Repository: "o/r", PRNumber: new(int64(2)), BaseSHA: "base", DiffDigest: "diff", Submitted: true, Verdict: v, RecordedAt: time.Now()})
@@ -107,17 +103,13 @@ func TestValidatorLegacyContextNotReusable(t *testing.T) {
 }
 
 func TestValidatorChangedContextReviewsOnce(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	for _, verdict := range []string{gate.ValidatorVerdictRework, gate.ValidatorVerdictPass, gate.ValidatorVerdictWait} {
 		t.Run(verdict, func(t *testing.T) {
 			cfg := autoPromoteValidatorTestConfig()
 			issue := connector.Issue{ID: "changed", Identifier: "o/r#200", Description: "A", PullRequest: &connector.PullRequest{Number: 207, BaseSHA: "base", HeadSHA: "head"}}
 			tracker := &currentValidatorTaskConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}, body: "A"}
 			validator := &autoPromoteTickValidator{result: gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictPass, Score: 1, DiffDigest: "diff"}}
-			o := &Orchestrator{cfg: cfg, connector: tracker, validator: validator, validatorMemo: openValidatorMemoStore(t)}
+			o := &Orchestrator{cfg: cfg, connector: tracker, validator: validator, validatorMemo: &validatorMemoFixture{}}
 			state := newState(cfg)
 			o.recordValidatorVerdict(t.Context(), issue, validatorStageIdentityForIssue(issue, cfg.AutoPromote.Gate), gate.ValidatorResult{Submitted: true, Verdict: verdict, Score: 1, DiffDigest: "diff"}, time.Now())
 			o.startValidatorStage(t.Context(), &state, issue, time.Now())
@@ -162,15 +154,15 @@ func (c *currentValidatorTaskConnector) setBody(body string) {
 }
 
 func TestValidatorContextSchedulesOnceAndRejectsHeldResult(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	cfg := autoPromoteValidatorTestConfig()
 	issue := connector.Issue{ID: "held", Identifier: "o/r#200", Description: "A", PullRequest: &connector.PullRequest{Number: 207, BaseSHA: "base", HeadSHA: "head", State: "OPEN"}}
 	tracker := &currentValidatorTaskConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}, body: "A"}
 	validator := newBlockingAutoPromoteValidatorRunner()
-	o := &Orchestrator{cfg: cfg, connector: tracker, validator: validator, validatorMemo: openValidatorMemoStore(t), logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	o := &Orchestrator{cfg: cfg, connector: tracker, validator: validator, validatorMemo: &validatorMemoFixture{}, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	t.Cleanup(func() {
+		validator.Release()
+		o.validatorWG.Wait()
+	})
 	state := newState(cfg)
 	o.startValidatorStage(t.Context(), &state, issue, time.Now())
 	select {
@@ -196,23 +188,18 @@ func TestValidatorContextSchedulesOnceAndRejectsHeldResult(t *testing.T) {
 		t.Fatal("review did not finish")
 	}
 	a := validatorStageIdentityForIssue(issue, cfg.AutoPromote.Gate)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		o.validatorMu.Lock()
-		_, running := o.validatorRuns[a.Key]
-		_, published := o.validatorResults[a.Key]
-		o.validatorMu.Unlock()
-		if !running {
-			if published {
-				t.Fatal("held A published after B")
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("held stage did not retire")
-		}
-		runtime.Gosched()
+	o.validatorWG.Wait()
+	o.validatorMu.Lock()
+	_, running := o.validatorRuns[a.Key]
+	_, published := o.validatorResults[a.Key]
+	o.validatorMu.Unlock()
+	if running {
+		t.Fatal("held stage did not retire")
 	}
+	if published {
+		t.Fatal("held A published after B")
+	}
+
 	if _, err := o.validatorMemo.ValidatorVerdict(t.Context(), store.ValidatorVerdictKey{ProjectID: "detent", IssueID: issue.ID, HeadSHA: "head", ContextDigest: a.ContextDigest}); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("stale A persisted: %v", err)
 	}
@@ -257,4 +244,96 @@ func (c *autoPromoteTickConnector) FetchValidationIssue(_ context.Context, issue
 		}
 	}
 	return issue, nil
+}
+
+type validatorMemoFixture struct {
+	mu       sync.Mutex
+	verdicts []store.ValidatorVerdict
+}
+
+func validatorMemoFixtureKey(verdict store.ValidatorVerdict) store.ValidatorVerdictKey {
+	key := store.ValidatorVerdictKey{ProjectID: verdict.ProjectID, IssueID: verdict.IssueID, HeadSHA: verdict.HeadSHA, ContextDigest: verdict.ContextDigest, Repository: verdict.Repository, BaseSHA: verdict.BaseSHA}
+	if verdict.PRNumber != nil {
+		key.PRNumber = *verdict.PRNumber
+	}
+	return key
+}
+
+func validatorMemoFixtureMatches(verdict store.ValidatorVerdict, key store.ValidatorVerdictKey) bool {
+	identity := validatorMemoFixtureKey(verdict)
+	return identity.ProjectID == key.ProjectID && identity.IssueID == key.IssueID && identity.HeadSHA == key.HeadSHA &&
+		(key.ContextDigest == "" || identity.ContextDigest == key.ContextDigest) &&
+		(key.Repository == "" || identity.Repository == key.Repository) &&
+		(key.BaseSHA == "" || identity.BaseSHA == key.BaseSHA) &&
+		(key.PRNumber == 0 || identity.PRNumber == key.PRNumber)
+}
+
+func (m *validatorMemoFixture) RecordValidatorVerdict(ctx context.Context, verdict store.ValidatorVerdict) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := validatorMemoFixtureKey(verdict)
+	m.verdicts = slices.DeleteFunc(m.verdicts, func(current store.ValidatorVerdict) bool { return validatorMemoFixtureKey(current) == key })
+	if verdict.UpdatedAt.IsZero() {
+		verdict.UpdatedAt = verdict.RecordedAt
+	}
+	m.verdicts = append(m.verdicts, verdict)
+	return nil
+}
+
+func (m *validatorMemoFixture) ValidatorVerdict(ctx context.Context, key store.ValidatorVerdictKey) (store.ValidatorVerdict, error) {
+	if err := ctx.Err(); err != nil {
+		return store.ValidatorVerdict{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result store.ValidatorVerdict
+	found := false
+	for _, verdict := range m.verdicts {
+		if validatorMemoFixtureMatches(verdict, key) && (!found || !verdict.RecordedAt.Before(result.RecordedAt)) {
+			result, found = verdict, true
+		}
+	}
+	if !found {
+		return store.ValidatorVerdict{}, store.ErrNotFound
+	}
+	return result, nil
+}
+
+func (m *validatorMemoFixture) ListValidatorVerdicts(ctx context.Context, query store.ValidatorVerdictQuery) ([]store.ValidatorVerdict, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result []store.ValidatorVerdict
+	for _, verdict := range m.verdicts {
+		if query.ProjectID != "" && verdict.ProjectID != query.ProjectID || !query.From.IsZero() && verdict.UpdatedAt.Before(query.From) || !query.To.IsZero() && !verdict.UpdatedAt.Before(query.To) {
+			continue
+		}
+		result = append(result, verdict)
+	}
+	slices.SortStableFunc(result, func(a, b store.ValidatorVerdict) int { return b.UpdatedAt.Compare(a.UpdatedAt) })
+	return result, nil
+}
+
+func (m *validatorMemoFixture) MarkValidatorVerdictCommented(ctx context.Context, key store.ValidatorVerdictKey, at time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	found := false
+	for index, verdict := range m.verdicts {
+		if validatorMemoFixtureMatches(verdict, key) {
+			m.verdicts[index].Commented, m.verdicts[index].UpdatedAt = true, at
+			found = true
+		}
+	}
+	if !found {
+		return store.ErrNotFound
+	}
+	return nil
 }
