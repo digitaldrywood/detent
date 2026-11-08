@@ -130,7 +130,7 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 	}
 	settleSearch := func(t *testing.T) {
 		t.Helper()
-		if _, err := f.admin.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('board-search:"org_first":"example"',0))`); err != nil {
+		if _, err := f.admin.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('board-search:org_first',0))`); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -253,7 +253,7 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 			}
 		})
 	}
-	t.Run("principal concurrency cap", func(t *testing.T) {
+	t.Run("tenant concurrency cap", func(t *testing.T) {
 		held, err := f.admin.BeginTx(ctx, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -263,12 +263,12 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 				t.Error(err)
 			}
 		}()
-		if _, err := held.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, `board-search:"org_first":"example"`); err != nil {
+		if _, err := held.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('board-search:' || $1,0))`, "org_first"); err != nil {
 			t.Fatal(err)
 		}
 		err = f.repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error { _, err := r.BoardPage(ctx, selection); return err })
 		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Errorf("saturated principal search error=%v", err)
+			t.Errorf("saturated tenant search error=%v", err)
 		}
 		err = f.repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
 			_, err := r.(interface {
@@ -277,7 +277,7 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 			return err
 		})
 		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Errorf("saturated principal model error=%v", err)
+			t.Errorf("saturated tenant model error=%v", err)
 		}
 		err = f.repository.ReadTenant(ctx, "org_second", corestore.Serving, func(r tenantstore.Reader) error { _, err := r.BoardPage(ctx, selection); return err })
 		if err != nil {
@@ -308,8 +308,8 @@ func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
 		t.Fatalf("search timeout leaked into pooled session: %s", timeout)
 	}
 	var admitted bool
-	if err := f.admin.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended('board-search:"org_first":"example"',0))`).Scan(&admitted); err != nil || !admitted {
-		t.Fatalf("principal cap was not released: admitted=%t error=%v", admitted, err)
+	if err := f.admin.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended('board-search:org_first',0))`).Scan(&admitted); err != nil || !admitted {
+		t.Fatalf("tenant cap was not released: admitted=%t error=%v", admitted, err)
 	}
 
 }
