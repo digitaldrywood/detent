@@ -21,7 +21,6 @@ exec "$@"</string>
     <string>/Users/example/Library/Application Support/Detent Hub/hub.db</string>
     <string>--listen</string>
     <string>127.0.0.1:7777</string>
-    <string>--github-disabled</string>
   </array>
   <key>RunAtLoad</key>
   <true/>

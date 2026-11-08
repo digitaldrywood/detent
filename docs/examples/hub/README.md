@@ -29,13 +29,21 @@ show that ingress shape.
 
 | Surface | Configuration |
 | --- | --- |
-| Customer Hub | `detent hub serve --database PATH --listen ADDRESS --github-disabled`; private `DETENT_HUB_ADMIN_TOKEN`, optional TLS/trusted-proxy flags |
+| Customer Hub | `detent hub serve --database PATH --listen ADDRESS`; private `DETENT_HUB_ADMIN_TOKEN`, Hub CLI login or GitHub App credentials, optional TLS/trusted-proxy flags |
 | Hosted tenant Hub | `--hosted-config PATH`; root `organization_id`, `workos_organization_id`, `bootstrap_subject`, `public_url`, `workos`, `directory`, `staff_emails`, `support_actors`, entitlement and billing fields |
 | WorkOS fields | `client_id`, `api_key_env` (default `WORKOS_API_KEY`), optional `api_url` (default `https://api.workos.com`), `issuer_url` (default `<api_url>/user_management/<client_id>`; set only for a custom auth domain) |
 | Entitlements | `entitlements` plan catalog and assignments; see [allowances](../../hosted-allowances.md) |
 | Shared entry and registry | `detent cloud serve --entry-config PATH`; tenant `shared_entry` block; `detent cloud registry register/list`; `detent hub migrate-shared-origin` |
 
 Hosted and entry YAML parsers reject unknown fields.
+
+The customer Hub service examples require an existing `gh` login accessible to
+the Hub service identity or both `DETENT_HUB_GITHUB_APP_ID` and
+`DETENT_HUB_GITHUB_APP_PRIVATE_KEY` in its private environment. A hosted Hub
+started with `--hosted-config` skips CLI credential lookup and runs without Hub
+GitHub transport when either App value is missing. See
+[GitHub modes](../../hub-self-hosting.md#github-modes) for credential setup and
+runner fallback.
 
 ## Shared entry
 

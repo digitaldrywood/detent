@@ -40,8 +40,10 @@ export HUB_URL=http://127.0.0.1:7777
 export HUB_DIR="$HOME/.local/share/detent-hub"
 mkdir -p "$HUB_DIR/backups"
 export DETENT_HUB_ADMIN_TOKEN="$(openssl rand -hex 32)"
-detent hub serve --database "$HUB_DIR/hub.db" --listen 127.0.0.1:7777 --github-disabled
+detent hub serve --database "$HUB_DIR/hub.db" --listen 127.0.0.1:7777
 ```
+
+This unhosted command requires the Hub process's existing `gh` login or GitHub App credentials; see [GitHub modes](hub-self-hosting.md#github-modes). A hosted Hub can run without GitHub transport when App credentials are absent.
 
 `DETENT_HUB_ADMIN_TOKEN` is the bootstrap administrator credential. Keep the generated value in a secret manager and load the same value for subsequent starts. Startup inserts it once; a different environment value later does not rotate it (see [authentication, projects and runners](hub-self-hosting.md#authentication-projects-and-runners)). The web app is at `$HUB_URL/work`, using `operator` as the HTTP authentication username and the administrator token as the password.
 
@@ -133,7 +135,7 @@ Hub projects have exactly one authority profile. Repository aliases created from
 
 An administrator updates settings with `PUT /integration` using `idempotency_key`, `expected_revision` (a decimal string), `intake` (`disabled` or `manual`), `projection` (`disabled` or `summary`) and `repository_enabled` (boolean). Bound native projects always report `intake: automatic`; omitting `intake` preserves the stored value. Compatibility projects cannot enable native summary projection. Profile changes happen only through cutover. Disabling repository integration does not authorize bypassing GitHub merge gates.
 
-`detent hub serve --github-disabled` runs a Hub with no GitHub credential; pure native projects need no GitHub repository. `POST /integration/repository` with `repository: "owner/name"`, `idempotency_key` and `expected_revision` attaches a repository to an existing native project, verifying repository metadata without fetching issues. A repository belongs to at most one project and bindings are immutable; a repository already bound to a compatibility project is migrated by importing and cutting over that project.
+Pure native projects need no GitHub repository. A Hub started with `--hosted-config` and without GitHub App credentials runs without Hub GitHub transport; an unhosted Hub requires CLI or App credentials. `POST /integration/repository` with `repository: "owner/name"`, `idempotency_key` and `expected_revision` attaches a repository to an existing native project, verifying repository metadata without fetching issues. A repository belongs to at most one project and bindings are immutable; a repository already bound to a compatibility project is migrated by importing and cutting over that project.
 
 ### Native GitHub intake
 

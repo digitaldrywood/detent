@@ -266,8 +266,11 @@ start it with a private database and the administrator token environment
 variable described above:
 
 ```sh
-detent hub serve --database ./hub.db --github-disabled
+detent hub serve --database ./hub.db
 ```
+
+Without hosted configuration, startup requires either the Hub process's existing
+`gh` login or GitHub App credentials; see [GitHub modes](#github-modes).
 
 The default listener is `127.0.0.1:7777`. Open
 `http://127.0.0.1:7777/work` in a private browser window. In the browser's HTTP
@@ -319,12 +322,13 @@ to GitHub.
 ## GitHub modes
 
 These modes use existing Hub flags and environment variables; no additional
-configuration keys or token scopes are required. The example service keeps
-GitHub disabled by default. Hub credentials and runner credentials are separate.
+configuration keys or token scopes are required. The example services use CLI
+fallback unless App credentials are configured. Hub credentials and runner
+credentials are separate.
 
 | Mode | Use when | GitHub credentials on the Hub |
 | --- | --- | --- |
-| Hub disabled, runner fallback | Native-only operation or runner-owned intake and PR landing | None |
+| Hosted Hub without App credentials, runner fallback | Native-only operation or runner-owned intake and PR landing on a hosted Hub | None |
 | Hub CLI fallback | An interactive Hub or a service with an explicitly provisioned CLI login | The Hub process's existing `gh` login |
 | Operator-owned GitHub App | A service needs independent GitHub access and optional webhook intake | App ID, private key and, for webhooks, a shared secret |
 
@@ -341,12 +345,14 @@ Confirm `manual_import_enabled: true` in the response. A bound native project
 still reports `intake: "automatic"` for webhook intake; that value alone does
 not enable manual import. Enabling manual import does not disable webhooks.
 
-### Hub disabled: runner fallback
+### Hosted Hub without App credentials: runner fallback
 
-Keep `--github-disabled` in the service's `detent hub serve` command. It bypasses
-Hub credential lookup and disables Hub import, outbox, reconciliation and webhook
-verification, even if App variables are present. Pure native work needs no
-GitHub repository or login.
+For `detent hub serve --hosted-config PATH`, leave both
+`DETENT_HUB_GITHUB_APP_ID` and `DETENT_HUB_GITHUB_APP_PRIVATE_KEY` unset to run
+without Hub GitHub transport. Hosted startup skips CLI credential lookup when
+either App value is missing and configures no Hub import, outbox or reconciliation
+client. Cloud entry also configures App transport only when both values are
+present. Pure native projects need no GitHub repository or login.
 
 For a native project that uses GitHub, associate the runner's matching checkout,
 [enable manual intake](#enable-manual-intake), and use
@@ -361,8 +367,8 @@ GitHub outbox writes are unavailable in this mode.
 
 ### Hub CLI fallback
 
-Remove `--github-disabled` and leave both `DETENT_HUB_GITHUB_APP_ID` and
-`DETENT_HUB_GITHUB_APP_PRIVATE_KEY` unset. On self-hosted startup the Hub runs
+Omit `--hosted-config` and leave both `DETENT_HUB_GITHUB_APP_ID` and
+`DETENT_HUB_GITHUB_APP_PRIVATE_KEY` unset. On unhosted startup the Hub runs
 `gh auth token` and uses the returned token for its import, outbox and periodic
 reconciliation clients. The `gh` executable must be on the Hub process's PATH,
 and its login must be accessible to that process. Failure to resolve a token
@@ -375,7 +381,7 @@ directory are unavailable, and a service may also lack the interactive user's
 keyring session. If using this mode in a service, provision an existing authorized
 CLI credential/configuration for the service identity in its accessible private
 state, without weakening `ProtectHome` or copying a human's home directory.
-Otherwise choose runner fallback or the App mode. Without a webhook secret the
+Otherwise choose the App mode. Without a webhook secret the
 webhook endpoint is unavailable; outbound polling is described below.
 
 ### Operator-owned GitHub App
@@ -413,10 +419,10 @@ existing behavior. Tokens are encrypted per user in Cloud entry, never passed to
 runners or browsers, and can be revoked from account OAuth grants. Expired tokens
 require reconnecting. Without a connection, repository reads make no GitHub calls.
 
-Remove `--github-disabled` from the service command. Both App ID and private key
-must be nonempty to select App transport; setting only one falls back to the
-CLI mode. The Hub resolves repository installations and refreshes installation
-tokens itself; no installation-ID variable is needed. Keep secrets out of shell
+Both App ID and private key must be nonempty to select App transport. If either
+is missing, an unhosted Hub falls back to CLI mode and a hosted Hub starts without
+Hub GitHub transport. The Hub resolves repository installations and refreshes
+installation tokens itself; no installation-ID variable is needed. Keep secrets out of shell
 arguments, source control and logs. The Hub reads the webhook secret from
 `DETENT_HUB_GITHUB_WEBHOOK_SECRET` by default; `--github-webhook-secret-env`
 selects a different environment variable name, not the secret value.
@@ -832,8 +838,11 @@ the maintenance process environment, then run as the database owner:
 ```sh
 detent hub verify --database '/private/backup/<snapshot>.db'
 detent hub restore --database '/private/backup/<snapshot>.db' --output /private/restored/hub.db
-detent hub serve --database /private/restored/hub.db --listen 127.0.0.1:7777 --github-disabled
+detent hub serve --database /private/restored/hub.db --listen 127.0.0.1:7777
 ```
+
+The restored unhosted Hub requires CLI or App credentials as described in
+[GitHub modes](#github-modes). Check those credentials before starting it.
 
 Restore validates the source, copies through SQLite backup, migrates a private
 staging copy, checks integrity, and publishes the new path without overwriting
