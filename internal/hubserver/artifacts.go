@@ -247,7 +247,17 @@ func (s *Service) hostedArtifactReader(c echo.Context, principal, sessionHash st
 		err := s.config.TenantRepository.ReadTenant(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			stored, err = r.AccessCredential(readCtx, principal)
-			return err
+			if err != nil {
+				return err
+			}
+			member, err := r.AccessCredentialHasMember(readCtx, principal)
+			if err != nil {
+				return err
+			}
+			if member {
+				return auth.ErrHostedIdentity
+			}
+			return nil
 		})
 		if err != nil {
 			return apiCredential{}, err

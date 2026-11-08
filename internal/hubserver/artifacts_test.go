@@ -10,6 +10,11 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func seedHostedArtifact(t *testing.T, f hostedSecurityFixture, deadlines ...time.Time) (artifact.Reference, string, string) {
@@ -101,7 +106,9 @@ func TestHostedArtifactGrantRevocation(t *testing.T) {
 		name        string
 		change      func(*testing.T, postgresArtifactFixture, hostedSecurityUser)
 		rejectGrant bool
+		valid       bool
 	}{
+		{name: "sessionless keys retain authority", valid: true, change: func(*testing.T, postgresArtifactFixture, hostedSecurityUser) {}},
 		{name: "provider session revoked", change: func(t *testing.T, f postgresArtifactFixture, user hostedSecurityUser) {
 			if err := f.provider.RevokeSession(t.Context(), user.identity.Hosted.SessionID); err != nil {
 				t.Fatal(err)
@@ -172,8 +179,47 @@ func TestHostedArtifactGrantRevocation(t *testing.T) {
 			decodeHubResponse(t, response, &grant)
 			request := artifact.ReadAuthorization{Token: grant.Token, ArtifactID: ref.ArtifactID, Revision: 1}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, servicePath+"/authorize", publisher, request), http.StatusNoContent)
+			if test.valid {
+				for _, kind := range []string{"personal", "service"} {
+					token, err := apikey.GenerateToken()
+					if err != nil {
+						t.Fatal(err)
+					}
+					grantToken, err := apikey.GenerateToken()
+					if err != nil {
+						t.Fatal(err)
+					}
+					organization := tracker.OrganizationID(f.service.config.Hosted.OrganizationID)
+					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+						now := time.Now().UTC()
+						credential := accessstore.Credential{OrganizationID: organization, ID: "artifact_reader_" + kind, Name: "Artifact reader " + kind, Hash: apikey.HashToken(token), Fingerprint: tokenFingerprint(apikey.HashToken(token)), Scope: "operator", NativeOnly: true, Kind: kind, KeyScope: "read", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: new(now.Add(time.Hour))}
+						if kind == "personal" {
+							member, err := w.AccessMember(t.Context(), user.identity.Subject)
+							if err != nil {
+								return err
+							}
+							credential.UserID, credential.MembershipID = member.UserID, member.MembershipID
+						}
+						if err := w.CreateAccessCredential(t.Context(), credential); err != nil {
+							return err
+						}
+						if err := w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: credential.ID, ProjectID: f.project}); err != nil {
+							return err
+						}
+						return w.CreateArtifactReadGrant(t.Context(), artifactstore.ReadGrant{ProjectID: f.project, TokenHash: apikey.HashToken(grantToken), PrincipalID: credential.ID, ServiceID: ref.ServiceID, ArtifactID: ref.ArtifactID, Revision: ref.Revision, ExpiresAt: now.Add(time.Minute)}, now)
+					}); err != nil {
+						t.Fatal(err)
+					}
+					servicePath := f.base + "/artifact-services/" + ref.ServiceID + "/authorize"
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, servicePath, publisher, artifact.ReadAuthorization{Token: grantToken, ArtifactID: ref.ArtifactID, Revision: 1}), http.StatusNoContent)
+				}
+			}
 			test.change(t, f, user)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, servicePath+"/authorize", publisher, request), http.StatusNotFound)
+			want := http.StatusNotFound
+			if test.valid {
+				want = http.StatusNoContent
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, servicePath+"/authorize", publisher, request), want)
 			if test.rejectGrant {
 				requireNativeStatus(t, f.request(t, user, http.MethodPost, path, map[string]int64{"revision": 1}), http.StatusForbidden)
 			}
