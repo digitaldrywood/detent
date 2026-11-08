@@ -175,6 +175,9 @@ func (s *session) CreateLandingReceipt(ctx context.Context, record eventstore.La
 		return eventstore.LandingReceipt{}, mapError(ctx, err)
 	}
 	landing, err := s.Attempt(ctx, record.AttemptID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return eventstore.LandingReceipt{}, eventstore.ErrInvalidRecord
+	}
 	if err != nil {
 		return eventstore.LandingReceipt{}, err
 	}

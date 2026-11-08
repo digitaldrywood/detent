@@ -579,13 +579,20 @@ func TestLandingReceiptIsImmutableAndTenantScoped(t *testing.T) {
 	}); !errors.Is(err, corestore.ErrRevisionConflict) {
 		t.Fatalf("changed receipt error = %v, want revision conflict", err)
 	}
-	wrongAttempt := record
-	wrongAttempt.AttemptID = "attempt_unrelated"
-	if err := r.WriteRecords(t.Context(), "org_first", corestore.Serving, func(w eventstore.Writer) error {
-		_, err := w.CreateLandingReceipt(t.Context(), wrongAttempt)
-		return err
-	}); !errors.Is(err, eventstore.ErrInvalidRecord) {
-		t.Fatalf("unrelated attempt receipt error = %v, want invalid record", err)
+	for _, test := range []struct{ name, attempt string }{
+		{name: "unknown attempt", attempt: "attempt_unrelated"},
+		{name: "missing attempt"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			wrongAttempt := record
+			wrongAttempt.AttemptID = test.attempt
+			if err := r.WriteRecords(t.Context(), "org_first", corestore.Serving, func(w eventstore.Writer) error {
+				_, err := w.CreateLandingReceipt(t.Context(), wrongAttempt)
+				return err
+			}); !errors.Is(err, eventstore.ErrInvalidRecord) {
+				t.Fatalf("unrelated attempt receipt error = %v, want invalid record", err)
+			}
+		})
 	}
 	if err := r.ReadRecords(t.Context(), "org_second", corestore.Serving, func(reader eventstore.Reader) error {
 		_, err := reader.LandingReceipt(t.Context(), storedAttempt.ID)
