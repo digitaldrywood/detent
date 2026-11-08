@@ -1333,7 +1333,7 @@ func (r *Runner) runAgentTurn(
 		previousIdentity := result.RuntimeIdentity
 		applyAgentUpdate(&result, update)
 		if update.Type == AgentUpdateTokenUsage {
-			if err := usageReport.report(updateCtx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, r.logger); err != nil {
+			if err := usageReport.report(updateCtx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, false); err != nil {
 				return err
 			}
 		}
@@ -1427,7 +1427,7 @@ func (r *Runner) runAgentTurn(
 	result.TurnStartRefused = !turnStarted && turnResult.TurnID == "" && failure != nil && failure.Provider == "codex" && failure.Operation == "turn/start" && failure.RPCCode != nil
 	result.ReportedCostMicros, result.CostSource = turnResult.ReportedCostMicros, turnResult.CostSource
 	usageCtx, usageCancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
-	turnErr = errors.Join(turnErr, usageReport.report(usageCtx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, r.logger))
+	turnErr = errors.Join(turnErr, usageReport.report(usageCtx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, true))
 	usageCancel()
 	return agentTurnExecution{
 		turnResult:  turnResult,
@@ -4075,8 +4075,11 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		}
 		previousIdentity := runResult.RuntimeIdentity
 		applyAgentUpdate(&runResult, update)
+		if !update.AuxiliaryTurn && (update.Type == AgentUpdateTurnStarted || strings.TrimSpace(update.TurnID) != "") {
+			runResult.TurnStarted = true
+		}
 		if update.Type == AgentUpdateTokenUsage {
-			if err := usageReport.report(updateCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, r.logger); err != nil {
+			if err := usageReport.report(updateCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, false); err != nil {
 				return err
 			}
 		}
@@ -4103,7 +4106,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	runResult.Compute = stopCompute()
 	runResult.ReportedCostMicros, runResult.CostSource = turnResult.ReportedCostMicros, turnResult.CostSource
 	usageCtx, usageCancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
-	turnErr = errors.Join(turnErr, usageReport.report(usageCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, r.logger))
+	turnErr = errors.Join(turnErr, usageReport.report(usageCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, true))
 	usageCancel()
 	workerReapErr := r.reapSessionWorkerProcessWithWorkspace(
 		sessionCtx,

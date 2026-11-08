@@ -353,9 +353,13 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	}
 	plan := gate.PlanConfig{Enabled: failure == "" || planningRecovery, Review: gate.PlanReviewAutomated}
 	provider := &nativePlanningAgent{failure: failure}
+	workflowConfig := config.Config{Policy: h.descriptor, Plan: plan, Gate: gate.Config{Run: "true"}, Tracker: config.Tracker{Kind: config.TrackerHubNative}}
+	if failure == "provider" || failure == "refused" {
+		workflowConfig.Agents.Routes = []config.AgentRoute{{Name: "default", Backend: config.DefaultAgentBackendID, Model: "example-model", Default: true}}
+	}
 	agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource,
 		ProjectID: "local", Store: api.NewRunnerSessions(h.native),
-		Workflow:  config.Workflow{Config: config.Config{Policy: h.descriptor, Plan: plan, Gate: gate.Config{Run: "true"}, Tracker: config.Tracker{Kind: config.TrackerHubNative}}, Prompt: "Complete the issue"},
+		Workflow:  config.Workflow{Config: workflowConfig, Prompt: "Complete the issue"},
 		Workspace: backend, AgentBackend: provider,
 		ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) {
 			if failure == "cleanup" {
