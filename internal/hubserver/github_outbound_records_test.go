@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -143,4 +144,32 @@ func TestGitHubOutboundCallBoundedByLease(t *testing.T) {
 	if !backend.bounded || backend.deadline.After(now.Add(time.Minute)) {
 		t.Fatalf("external context bounded=%t deadline=%v lease=%v", backend.bounded, backend.deadline, now.Add(time.Minute))
 	}
+}
+
+func TestGitHubOutboundPollJitter(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		wake := make(chan time.Time)
+		var waits []time.Duration
+		jitter := []float64{0, 0.5, 1}
+		service := &Service{config: (Config{OutboxPollInterval: 10 * time.Second}).normalized()}
+		service.config.jitter = func() float64 { value := jitter[0]; jitter = jitter[1:]; return value }
+		service.config.newOutboxTimer = func(delay time.Duration) outboxTimer {
+			waits = append(waits, delay)
+			return outboxTimer{ticks: wake, stop: func() {}, reset: func(next time.Duration) { waits = append(waits, next) }}
+		}
+		worker := newOutboxWorker(service)
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan struct{})
+		defer func() { cancel(); <-done }()
+		go func() { defer close(done); worker.run(ctx) }()
+		for index, want := range []time.Duration{5 * time.Second, 7500 * time.Millisecond, 10 * time.Second} {
+			synctest.Wait()
+			if len(waits) != index+1 || waits[index] != want {
+				t.Fatalf("poll waits=%v want next=%v", waits, want)
+			}
+			if index < 2 {
+				wake <- time.Now()
+			}
+		}
+	})
 }

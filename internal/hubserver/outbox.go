@@ -434,9 +434,18 @@ func (w *outboxWorker) start(parent context.Context) {
 }
 
 func (w *outboxWorker) run(ctx context.Context) {
-	ticker := time.NewTicker(w.service.config.OutboxPollInterval)
-	defer ticker.Stop()
+	wait := func() time.Duration {
+		return gitHubRetryDelay(1, w.service.config.OutboxPollInterval, w.service.config.OutboxPollInterval, w.service.config.jitter())
+	}
+	timer := w.service.config.newOutboxTimer(wait())
+	defer timer.stop()
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-w.wake:
+		case <-timer.ticks:
+		}
 		for range 64 {
 			var github func(context.Context) (bool, error)
 			if w.service.config.OutboxBackend != nil {
@@ -450,12 +459,7 @@ func (w *outboxWorker) run(ctx context.Context) {
 				break
 			}
 		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.wake:
-		case <-ticker.C:
-		}
+		timer.reset(wait())
 	}
 }
 
