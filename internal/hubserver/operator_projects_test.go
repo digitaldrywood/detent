@@ -627,7 +627,7 @@ func TestProjectImportToolReceipts(t *testing.T) {
 	if replay := projectAction(t, e, connect("create-native-reconnect"), create); replay.Result != created.Result {
 		t.Fatalf("native create replay=%+v", replay)
 	}
-	approveHubTestPolicy(t, f.service, "/api/v1/repositories/digitaldrywood/detent/policy", hubTestPolicy())
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	legacy, err := e.Execute(ctx, operatortool.Call{Name: "get_project_policy", Arguments: json.RawMessage(`{"project_id":"` + string(f.project.ID) + `","repository_policy":true}`)})
 	if err != nil || !strings.Contains(string(legacy.Content), hubTestPolicy().ID) {
 		t.Fatalf("repository policy=%s %v", legacy.Content, err)

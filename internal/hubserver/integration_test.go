@@ -6,11 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -38,7 +39,7 @@ func (b *importFixtureBackend) FetchImportPage(_ context.Context, request GitHub
 		if b.incompleteBody && request.IssueNumber == 2 {
 			body = "## Roadmap Summary\nRepair the failed build."
 		}
-		return GitHubImportPage{Issue: &IssueSource{NodeID: id, Number: request.IssueNumber, Title: "Imported issue", Body: body, URL: fmt.Sprintf("https://github.com/digitaldrywood/detent/issues/%d", request.IssueNumber), State: "open", AuthorID: "author", Labels: []string{"Todo"}, Assignees: []string{}, CreatedAt: now.Add(-time.Hour), UpdatedAt: now}, Records: []GitHubImportRecord{{SourceKey: "issue:" + id, Kind: "issue", Data: json.RawMessage(`{"id":"` + id + `"}`)}}, Gaps: []string{"Deleted comments and edit revisions are unavailable"}}, nil
+		return GitHubImportPage{Issue: &IssueSource{NodeID: id, Number: request.IssueNumber, Title: "Imported issue", Body: body, URL: fmt.Sprintf("https://github.com/%s/issues/%d", request.Repository, request.IssueNumber), State: "open", AuthorID: "author", Labels: []string{"Todo"}, Assignees: []string{}, CreatedAt: now.Add(-time.Hour), UpdatedAt: now}, Records: []GitHubImportRecord{{SourceKey: "issue:" + id, Kind: "issue", Data: json.RawMessage(`{"id":"` + id + `"}`)}}, Gaps: []string{"Deleted comments and edit revisions are unavailable"}}, nil
 	case "comments":
 		if request.Cursor == "" {
 			return GitHubImportPage{Records: []GitHubImportRecord{comment}, NextCursor: "page2"}, nil
@@ -67,19 +68,22 @@ func (b *importFixtureBackend) FetchImportPage(_ context.Context, request GitHub
 
 func newIntegrationFixture(t *testing.T, backend ImportBackend) nativeFixture {
 	t.Helper()
-	s := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), ImportBackend: backend})
-	repository, _ := seedProjection(t, s.database.db)
-	var project tracker.NativeProject
-	if err := s.database.db.QueryRowContext(t.Context(), "SELECT id, organization_id FROM projects WHERE repository_id = ?", repository).Scan(&project.ID, &project.OrganizationID); err != nil {
+	s := newPostgresNativeService(t, Config{ImportBackend: backend})
+	f := newNativeFixture(t, s, "", "import")
+	f.token = testHubAdminToken
+	if err := s.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		project.Settings.Repository, project.Settings.CheckoutRepository = "example-org/example-project", "example-org/example-project"
+		project.Settings.Intake, project.Settings.DuplicateChallenge = "manual", false
+		project.States = nativeTriageStates(project.States)
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
-	f := nativeFixture{service: s, project: project, base: "/api/v2/organizations/" + string(project.OrganizationID) + "/projects/" + string(project.ID), token: testHubAdminToken}
-	seedNativeFixturePolicy(t, s, string(project.OrganizationID)+"/"+string(project.ID))
-	if _, err := s.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=0 WHERE id=?", project.ID); err != nil {
-		t.Fatal(err)
-	}
-	r := performHubAPIRequest(t, s, http.MethodPut, f.base+"/integration", f.token, map[string]any{"idempotency_key": "enable-import", "expected_revision": "1", "intake": "manual", "projection": "disabled", "repository_enabled": false})
-	requireNativeStatus(t, r, http.StatusOK)
 	return f
 }
 
