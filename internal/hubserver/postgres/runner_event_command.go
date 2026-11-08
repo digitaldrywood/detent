@@ -53,6 +53,7 @@ func (r *Repository) runnerEventCommand(ctx context.Context, org tracker.Organiz
 	}
 	var identity runnerstore.Identity
 	b.Queue(runnerIdentitySelect+`token_id=$2`+lock, org, credentialID).QueryRow(func(row pgx.Row) error { var err error; identity, err = scanRunnerIdentity(ctx, row); return err })
+	lock = s.accessLock()
 	var credential accessstore.Credential
 	b.Queue(`SELECT organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at,rotated_at,revoked_at,expires_at,last_used_at,hosted_user_id,hosted_membership_id,operator_key_scope,operator_project_access,key_kind FROM api_tokens WHERE organization_id=$1 AND id=$2`+lock, org, credentialID).QueryRow(func(row pgx.Row) error {
 		err := row.Scan(&credential.OrganizationID, &credential.ID, &credential.Name, &credential.Hash, &credential.Fingerprint, &credential.Scope, &credential.NativeOnly, &credential.CreatedAt, &credential.UpdatedAt, &credential.RotatedAt, &credential.RevokedAt, &credential.ExpiresAt, &credential.LastUsedAt, &credential.UserID, &credential.MembershipID, &credential.KeyScope, &credential.ProjectAccess, &credential.Kind)

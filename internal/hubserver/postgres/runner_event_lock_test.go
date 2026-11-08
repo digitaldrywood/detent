@@ -126,6 +126,15 @@ func TestRunnerCompletionAcquiresProjectLockBeforePublication(t *testing.T) {
 		seedLeaseFamily(t, repository, org)
 		seedRunnerIdentity(t, repository, org, "runner_shared", "machine_1", historyAt(), true)
 		lease := claimLease(t, repository, org, leaseClaim(1))
+		if err := repository.WriteRunnerEventCommand(t.Context(), org, "runner_shared", "runner_shared", eventstore.RunCommand{Project: "prj_1", WorkItem: "wi_1", LeaseID: lease.LeaseID}, func(ctx context.Context, w tenantstore.Writer) error {
+			var id string
+			if err := admin.QueryRowContext(ctx, `SELECT id FROM api_tokens WHERE organization_id=$1 AND id='runner_shared' FOR SHARE NOWAIT`, org).Scan(&id); err != nil {
+				return fmt.Errorf("runner command blocks concurrent credential authorization: %w", err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
 		for _, completion := range []bool{false, true} {
 			err := repository.WriteRunnerCommand(t.Context(), org, "runner_shared", "runner_shared", func(ctx context.Context, w tenantstore.Writer) error {
 				facts, ok := w.(interface {
