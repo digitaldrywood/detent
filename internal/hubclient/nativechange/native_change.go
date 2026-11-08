@@ -331,6 +331,15 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 	if err := api.MutationEffectError(ctx); err != nil {
 		return "", false, err
 	}
+	if err := e.flushObservations(ctx); err != nil {
+		return "", false, err
+	}
+	if e.storedSeq != e.data.Sequence+1 {
+		if err := e.postDiff(ctx, e.data.Sequence+1); err != nil {
+			return "", false, err
+		}
+	}
+	e.publication = nil
 	request := tracker.PublishChangeVersion{
 		Mutation:          tracker.Mutation{LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
 		ExpectedVersionID: detail.Change.CurrentVersion,
