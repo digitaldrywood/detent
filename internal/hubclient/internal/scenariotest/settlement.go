@@ -119,6 +119,9 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 	for _, test := range scenarios {
 		t.Run(test.Name, func(t *testing.T) {
 			t.Parallel()
+			if test.Land {
+				test.RetainSource = true
+			}
 			var h *nativeChangeHub
 			if test.ReleasedBlocked {
 				h = newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
@@ -572,7 +575,8 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 				t.Fatal(err)
 			}
 			if test.IntegrateAudit {
-				if err := execution.(runner.RuntimeExecution).ObserveRuntime(guarded, tracker.NativeRuntimeObservation{Phase: "implementation", Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 41}}); err != nil {
+				sessionID := h.completedSession(t, guarded, execution, "code")
+				if err := execution.(runner.RuntimeExecution).ObserveRuntime(guarded, tracker.NativeRuntimeObservation{Phase: "implementation", Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: sessionID}}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1133,7 +1137,9 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 				owner := execution.(*ownedExecution)
 				change := owner.NativeChange()
 				now := time.Now().UTC()
-				audit := tracker.SecurityAuditReview{VersionID: change.VersionID, SessionID: 42, DiffDigest: policy.Digest([]byte("diff")), Verdict: "pass", Run: securityaudit.Run{ID: 42, InvocationID: "integration-audit", ProjectID: string(h.project), IssueID: string(item), Repository: nativeChangeRepository, BaseSHA: change.BaseSHA, HeadSHA: change.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now, CompletedAt: now, ExitStatus: securityaudit.ExitStatusSuccess, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings"}}
+				sessionID := h.completedSession(t, guarded, execution, "security_audit")
+				audit := tracker.SecurityAuditReview{VersionID: change.VersionID, SessionID: sessionID, DiffDigest: policy.Digest([]byte("diff")), Verdict: "pass", Run: securityaudit.Run{ID: sessionID, InvocationID: "integration-audit", ProjectID: string(h.project), IssueID: string(item), Repository: nativeChangeRepository, BaseSHA: change.BaseSHA, HeadSHA: change.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now, CompletedAt: now, ExitStatus: securityaudit.ExitStatusSuccess, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings"}}
+				audit.DiffDigest = retainedCapture.Source.DiffSHA256
 				if err := owner.RecordSecurityAudit(guarded, audit); err != nil {
 					t.Fatal(err)
 				}
@@ -1201,6 +1207,11 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 					stop()
 					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
 						t.Fatal(err)
+					}
+					for _, state := range []string{"Todo", "In Progress"} {
+						if err := h.connector.UpdateIssueState(t.Context(), issue.ID, state); err != nil {
+							t.Fatal(err)
+						}
 					}
 					integrationCandidate := h.claim(t, issue.ID)
 					owner := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
@@ -1328,6 +1339,11 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 						}
 						if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
 							t.Fatal(err)
+						}
+						for _, state := range []string{"Todo", "In Progress"} {
+							if err := h.connector.UpdateIssueState(t.Context(), issue.ID, state); err != nil {
+								t.Fatal(err)
+							}
 						}
 						h.claim(t, issue.ID)
 						next := h.scheduler.RunExecution(issue.ID).(*ownedExecution)

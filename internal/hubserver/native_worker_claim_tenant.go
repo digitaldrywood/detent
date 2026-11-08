@@ -943,18 +943,21 @@ func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope nativeScope,
 		currentVersion := valueOrEmpty(plan.changeRecord.CurrentVersionID)
 		plan.changeReady = plan.changeRecord.OrganizationID == scope.organization && plan.changeRecord.ProjectID == scope.project && plan.changeRecord.WorkItemID == plan.candidate.WorkItemID && detail.Change.ID == plan.changeRecord.ID && int64(detail.Change.Revision) == plan.changeRecord.Revision && detail.Change.CurrentVersion == currentVersion && currentVersion == plan.changeVersion.ID && state.Current && !state.ChangesRequested && !state.RepairPending && nativeChangeLandingClaimable("Merging", &detail)
 	}
-	if stringsEqualFold(plan.candidate.State, "Merging") {
-		if plan.changePolicyRevision.GitHubPullRequest == nil {
-			return nativeClaimPlan{}, ErrNoClaimableWork
-		}
-		plan.landingRequired = *plan.changePolicyRevision.GitHubPullRequest
-	} else if plan.landingPending {
-		if plan.changePolicyRevision.GitHubPullRequest == nil || !*plan.changePolicyRevision.GitHubPullRequest {
-			return nativeClaimPlan{}, ErrNoClaimableWork
-		}
-		plan.landingRequired = true
+	plan.landingRequired, err = nativeClaimLandingCapacityRequired(plan)
+	if err != nil {
+		return nativeClaimPlan{}, err
 	}
 	return plan, nil
+}
+
+func nativeClaimLandingCapacityRequired(plan nativeClaimPlan) (bool, error) {
+	if stringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending {
+		if plan.changePolicyRevision.GitHubPullRequest == nil {
+			return false, ErrNoClaimableWork
+		}
+		return *plan.changePolicyRevision.GitHubPullRequest, nil
+	}
+	return false, nil
 }
 
 func nativeClaimPendingLanding(plan nativeClaimPlan) bool {

@@ -895,6 +895,34 @@ func TestNativeClaimPendingLandingRequiresLatestMatchingVersionReceipt(t *testin
 	}
 }
 
+func TestNativeClaimLandingCapacityRequired(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		state     string
+		pending   bool
+		github    *bool
+		want      bool
+		wantError bool
+	}{
+		{name: "coding"},
+		{name: "native merge", state: "Merging", github: new(false)},
+		{name: "GitHub merge", state: "Merging", github: new(true), want: true},
+		{name: "pending native merge", state: "In Progress", pending: true, github: new(false)},
+		{name: "pending GitHub merge", state: "In Progress", pending: true, github: new(true), want: true},
+		{name: "unknown merge policy", state: "Merging", wantError: true},
+		{name: "unknown pending policy", pending: true, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plan := nativeClaimPlan{candidate: claimstore.Candidate{State: test.state}, landingPending: test.pending}
+			plan.changePolicyRevision.GitHubPullRequest = test.github
+			got, err := nativeClaimLandingCapacityRequired(plan)
+			if got != test.want || (err != nil) != test.wantError {
+				t.Fatalf("landing capacity required=%t error=%v, want %t error=%t", got, err, test.want, test.wantError)
+			}
+		})
+	}
+}
+
 func TestTenantClaimUsesConcurrencyNotSubscriptionQuotaState(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	organization := tracker.OrganizationID("org_provider_claim")
