@@ -64,7 +64,7 @@ func (s *Service) receiveGitHubWebhookRecord(c echo.Context, verifiedByEntry boo
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	now := s.config.now().UTC()
+	now := s.config.now().UTC().Truncate(time.Microsecond)
 	row := projectstore.GitHubWebhook{DeliveryID: id, Repository: strings.ToLower(repository), EventType: event, Action: envelope.Action, Digest: hex.EncodeToString(digest[:]), Payload: ref, ReceivedAt: now, ExpiresAt: now.Add(s.config.WebhookPayloadRetention), NextAttemptAt: now, Status: "pending"}
 	created := false
 	err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -215,7 +215,7 @@ func (s *Service) applyGitHubWebhookRecord(ctx context.Context, scope nativeScop
 	if missing && (row.EventType != "issues" || row.Action != "opened") {
 		return nil
 	}
-	snapshot := linkedSnapshotFromSource(IssueSource{URL: canonical, NodeID: source.NodeID, Number: source.Number, Title: source.Title, Body: source.Body, AuthorID: source.AuthorID, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt}, s.config.now())
+	snapshot := linkedSnapshotFromSource(IssueSource{URL: canonical, NodeID: source.NodeID, Number: source.Number, Title: source.Title, Body: source.Body, AuthorID: source.AuthorID, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt}, row.ReceivedAt)
 	if row.EventType == "issue_comment" {
 		if row.Action != "created" || payload.Comment == nil || strings.Contains(payload.Comment.Body, "<!-- detent-summary:") {
 			return nil
@@ -229,9 +229,16 @@ func (s *Service) applyGitHubWebhookRecord(ctx context.Context, scope nativeScop
 		if updated.IsZero() {
 			updated = c.CreatedAt
 		}
-		snapshot.Comments = []tracker.GitHubIssueComment{{Body: c.Body, Provenance: tracker.Provenance{Provider: "github", ExternalID: c.NodeID, AuthorID: author, CreatedAt: c.CreatedAt, UpdatedAt: updated, ObservedAt: s.config.now()}}}
+		snapshot.Comments = []tracker.GitHubIssueComment{{Body: c.Body, Provenance: tracker.Provenance{Provider: "github", ExternalID: c.NodeID, AuthorID: author, CreatedAt: c.CreatedAt, UpdatedAt: updated, ObservedAt: row.ReceivedAt}}}
 	}
-	key := "webhook:" + row.DeliveryID
+	identity, err := nativeCommandHash(struct {
+		Project  tracker.ProjectID
+		Delivery string
+	}{scope.project, row.DeliveryID})
+	if err != nil {
+		return err
+	}
+	key := "webhook:" + identity
 	if missing {
 		_, err = s.importGitHubSnapshotRecord(ctx, scope, key, tracker.GitHubIssuePreview{Number: number, ID: source.NodeID, URL: canonical}, snapshot, "Triage", nil)
 		return err
