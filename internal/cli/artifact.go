@@ -21,7 +21,7 @@ func (a configuredArtifactAllowances) Limits(context.Context, string) (artifact.
 
 func newArtifactCommand(lookup func(string) string) *cobra.Command {
 	var configPath, projectID, address string
-	cmd := &cobra.Command{Use: "artifacts", Short: "Operate an independent artifact service", Example: "detent artifacts --artifact-config service.json serve", Args: NoArgs}
+	cmd := &cobra.Command{Use: "artifacts", Short: "Operate a Hub-backed artifact service", Example: "detent artifacts --artifact-config service.json serve", Args: NoArgs}
 	cmd.PersistentFlags().StringVar(&configPath, "artifact-config", "", "private artifact service JSON configuration")
 	load := func() (cfg artifact.Config, resultErr error) {
 		file, err := os.Open(configPath)
@@ -54,6 +54,11 @@ func newArtifactCommand(lookup func(string) string) *cobra.Command {
 			return err
 		}
 		hub := &artifact.RemoteHub{Origin: cfg.HubOrigin, ServiceID: cfg.ServiceID, OrganizationID: cfg.OrganizationID, ProjectID: projectID, PublisherToken: func() string { return strings.TrimSpace(lookup(cfg.PublishTokenEnv)) }}
+		if projectID != "" {
+			cfg.ProjectID = projectID
+		}
+		hub.ProjectID = cfg.ProjectID
+		cfg.Catalog = &artifact.RemoteCatalog{Hub: hub}
 		var allowances artifact.Allowances = configuredArtifactAllowances{cfg.Policy.Limits}
 		if cfg.Mode == "hosted" {
 			allowances = hub
@@ -88,32 +93,30 @@ func newArtifactCommand(lookup func(string) string) *cobra.Command {
 		return artifact.VerifyStorage(cmd.Context(), storage)
 	}}
 	var destination string
-	operate := func(cmd *cobra.Command, backup bool) (resultErr error) {
+	operate := func(cmd *cobra.Command, backup bool) error {
 		cfg, err := load()
 		if err != nil {
 			return err
 		}
-		storage, err := artifact.NewStorage(cmd.Context(), cfg.Storage)
-		if err != nil {
-			return err
+		if !artifact.ValidOrigin(cfg.HubOrigin) || cfg.PublishTokenEnv == "" || strings.TrimSpace(lookup(cfg.PublishTokenEnv)) == "" {
+			return artifact.ErrInvalid
 		}
-		service, err := artifact.NewService(cmd.Context(), cfg, storage, configuredArtifactAllowances{cfg.Policy.Limits})
-		if err != nil {
-			return err
-		}
-		defer func() { resultErr = errors.Join(resultErr, service.Close()) }()
+		hub := &artifact.RemoteHub{Origin: cfg.HubOrigin, OrganizationID: cfg.OrganizationID, ServiceID: cfg.ServiceID, ProjectID: cfg.ProjectID, PublisherToken: func() string { return strings.TrimSpace(lookup(cfg.PublishTokenEnv)) }}
+		catalog := &artifact.RemoteCatalog{Hub: hub}
+		scope := artifact.CatalogScope{OrganizationID: cfg.OrganizationID, ProjectID: cfg.ProjectID, ServiceID: cfg.ServiceID}
 		if backup {
-			return service.Backup(cmd.Context(), destination)
+			return artifact.ExportCatalog(cmd.Context(), catalog, scope, destination)
 		}
-		usage, err := service.Usage(cmd.Context())
+		result, err := catalog.Execute(cmd.Context(), artifact.CatalogCommand{CatalogScope: scope, Operation: "usage"})
 		if err != nil {
 			return err
 		}
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(usage)
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(result.Usage)
 	}
-	backup := &cobra.Command{Use: "backup", Short: "Back up the catalog while its service is stopped", Example: "detent artifacts --artifact-config service.json backup --output backup.db", Args: NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return operate(cmd, true) }}
-	backup.Flags().StringVar(&destination, "output", "", "new private backup file")
-	usage := &cobra.Command{Use: "usage", Short: "Read retained and reserved bytes while the service is stopped", Example: "detent artifacts --artifact-config service.json usage", Args: NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return operate(cmd, false) }}
+
+	backup := &cobra.Command{Use: "backup", Short: "Export artifact catalog records from the Hub", Example: "detent artifacts --artifact-config service.json backup --output catalog.jsonl", Args: NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return operate(cmd, true) }}
+	backup.Flags().StringVar(&destination, "output", "", "new private catalog export file")
+	usage := &cobra.Command{Use: "usage", Short: "Read retained and reserved bytes from the Hub", Example: "detent artifacts --artifact-config service.json usage", Args: NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return operate(cmd, false) }}
 	cmd.AddCommand(serve, verify, backup, usage)
 	return cmd
 }
