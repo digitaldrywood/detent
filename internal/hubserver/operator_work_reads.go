@@ -350,6 +350,8 @@ func (s *Service) readOperatorExplanation(ctx context.Context, scope nativeScope
 			return evidence, nil, false, err
 		}
 		evidence.Selection = "latest"
+	} else {
+		evidence.Unavailable = append(evidence.Unavailable, "native_attempt")
 	}
 	failures := make([]nativeFailure, 0, len(snapshots))
 	for _, snapshot := range snapshots {

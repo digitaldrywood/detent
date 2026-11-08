@@ -289,8 +289,7 @@ func RunNativeAttemptTerminalActivityReceipts(t *testing.T, factories Constructo
 			clock = at.Add(tt.duration)
 			SetSchedulerNow(h.scheduler, clock)
 			if tt.olderHub {
-				client := execution.claim.source.NativeClient().Transport()
-				fixtureWithoutFeature(t, client, tracker.NativePreProviderFailureCapability)
+				fixtureWithoutFeature(t, execution.claim.source.NativeClient(), tracker.NativePreProviderFailureCapability)
 			}
 			if err := execution.Finish(t.Context(), tt.outcome); err != nil {
 				t.Fatal(err)
@@ -337,8 +336,9 @@ func RunNativeAttemptTerminalActivityReceipts(t *testing.T, factories Constructo
 	}
 }
 
-func fixtureWithoutFeature(t testing.TB, client *Client, feature string) {
+func fixtureWithoutFeature(t testing.TB, native *NativeClient, feature string) {
 	t.Helper()
+	client := native.Transport()
 	fixture := fixtureClient(client)
 	next := fixture.requests.Load()
 	fixture.requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
@@ -364,5 +364,6 @@ func fixtureWithoutFeature(t testing.TB, client *Client, feature string) {
 		response.ContentLength = int64(len(encoded))
 		return response, nil
 	}))
+	native.ApplyHeartbeatChanges(nil)
 	fixture.offset.Add(int64(2 * time.Hour))
 }
