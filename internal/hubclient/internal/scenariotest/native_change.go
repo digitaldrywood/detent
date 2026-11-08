@@ -2707,7 +2707,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &nativeChangeHub{config: config, clock: config.Clock, review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), project: "prj_example", descriptor: clientTestPolicy()}
+	h := &nativeChangeHub{config: config, clock: config.Clock, review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), project: hubclientPostgresProject(config), descriptor: clientTestPolicy()}
 	h.restart = func() {
 		t.Helper()
 		requests.Lock()

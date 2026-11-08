@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,6 +106,7 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 		t.Fatal(err)
 	}
 	organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
+	project := hubclientPostgresProject(cfg)
 	now := cfg.Clock().UTC()
 	err = repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example", Slug: "example", CreatedAt: now}); err != nil {
@@ -123,7 +125,7 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 		if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: now}); err != nil {
 			return err
 		}
-		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "prj_example", Name: "Example project", Profile: "native", RequireDependencies: requireDependencies}, States: states}); err != nil {
+		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: "Example project", Profile: "native", RequireDependencies: requireDependencies}, States: states}); err != nil {
 			return err
 		}
 		for _, credential := range []struct{ id, token, scope string }{{"example_admin", string(cfg.InitialAdminToken), "admin"}, {"example_ci", "example-ci", "operator"}} {
@@ -134,19 +136,23 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 			if err := w.CreateAccessCredential(t.Context(), row); err != nil {
 				return err
 			}
-			if err := w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: credential.id, ProjectID: "prj_example"}); err != nil {
+			if err := w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: credential.id, ProjectID: project}); err != nil {
 				return err
 			}
 		}
 		if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: "user_example", MembershipID: "membership_example", Email: "owner@example.test", Role: "owner", Active: true, PrincipalID: "example_admin", CreatedAt: now, UpdatedAt: now}); err != nil {
 			return err
 		}
-		return w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization, UserID: "user_example", ProjectID: "prj_example", CanWrite: true, ManageRunner: true})
+		return w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization, UserID: "user_example", ProjectID: project, CanWrite: true, ManageRunner: true})
 	})
 	if err := errors.Join(err, repository.Close()); err != nil {
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+func hubclientPostgresProject(cfg hubserver.Config) tracker.ProjectID {
+	return tracker.ProjectID("prj_" + strings.TrimPrefix(cfg.Hosted.OrganizationID, "org_"))
 }
 
 func hubclientSeedPostgres(t *testing.T, cfg hubserver.Config, organization tracker.OrganizationID, seed func(tenantstore.Writer) error) {
