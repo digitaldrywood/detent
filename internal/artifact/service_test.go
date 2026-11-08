@@ -424,6 +424,12 @@ func TestAbandonedUploadsAndDeletionRecovery(t *testing.T) {
 			if _, err := s.Upload(t.Context(), u.ArtifactID); !errors.Is(err, ErrMissing) {
 				t.Fatal(err)
 			}
+			m.mu.Lock()
+			remaining := len(m.data)
+			m.mu.Unlock()
+			if remaining != 0 {
+				t.Fatal("pruned upload left external receipt objects", remaining)
+			}
 		})
 	}
 }
@@ -664,4 +670,36 @@ func newTestService(ctx context.Context, cfg Config, storage Storage, allowances
 		}
 	}
 	return NewService(ctx, cfg, storage, allowances)
+}
+
+type rejectedManifestCatalog struct {
+	Catalog
+	rejected bool
+}
+
+func (c *rejectedManifestCatalog) Execute(ctx context.Context, command CatalogCommand) (CatalogResult, error) {
+	if command.Operation == "commit" && command.Manifest.State == "complete" && !c.rejected {
+		c.rejected = true
+		return CatalogResult{}, ErrConflict
+	}
+	return c.Catalog.Execute(ctx, command)
+}
+
+func TestRejectedManifestCandidateDoesNotBlockInterruption(t *testing.T) {
+	service, _ := testService(t)
+	upload, err := service.Reserve(t.Context(), testReservation(service))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Append(t.Context(), upload.ArtifactID, testPart(0, "example")); err != nil {
+		t.Fatal(err)
+	}
+	service.catalog = &rejectedManifestCatalog{Catalog: service.catalog}
+	if _, err := service.Finalize(t.Context(), upload.ArtifactID, "complete", nil); !errors.Is(err, ErrConflict) {
+		t.Fatal("expected definite commit rejection", err)
+	}
+	ref, err := service.Finalize(t.Context(), upload.ArtifactID, "interrupted", nil)
+	if err != nil || ref.State != "interrupted" {
+		t.Fatalf("rejected complete body permanently blocks interruption: state=%q error=%v", ref.State, err)
+	}
 }

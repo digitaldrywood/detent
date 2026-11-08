@@ -47,6 +47,19 @@ func (s *session) CommitCatalogManifest(ctx context.Context, row CatalogManifest
 	if totals.VerifiedCount != int64(row.Objects) || totals.VerifiedBytes != row.TotalBytes || row.State != "partial" && totals.PendingCount != 0 {
 		return CatalogManifest{}, corestore.ErrRevisionConflict
 	}
+	intent, err := s.queries.CatalogManifestIntentByKey(ctx, pgquery.CatalogManifestIntentByKeyParams{OrganizationID: s.organization, ProjectID: row.ProjectID, ServiceID: row.ServiceID, UploadID: row.UploadID, BodyObjectKey: row.BodyObjectKey})
+	if err != nil {
+		return CatalogManifest{}, mapError(ctx, err)
+	}
+	if intent.ManifestState != row.State || intent.State != "pending" || intent.StorageVersion == "" || intent.Revision != row.Revision || intent.Sha256 != row.Sha256 || intent.BodyBytes != row.BodyBytes || row.State != "partial" && upload.ManifestReservedBytes != intent.BodyBytes {
+		return CatalogManifest{}, corestore.ErrRevisionConflict
+	}
+	if _, err := s.queries.AccountCatalogManifestIntent(ctx, pgquery.AccountCatalogManifestIntentParams{OrganizationID: s.organization, ProjectID: row.ProjectID, ServiceID: row.ServiceID, ID: row.UploadID, ManifestReservedBytes: -intent.BodyBytes}); err != nil {
+		return CatalogManifest{}, updated(ctx, err)
+	}
+	if _, err := s.queries.CommitCatalogManifestIntent(ctx, pgquery.CommitCatalogManifestIntentParams{OrganizationID: s.organization, ProjectID: row.ProjectID, ServiceID: row.ServiceID, UploadID: row.UploadID, ID: intent.ID}); err != nil {
+		return CatalogManifest{}, updated(ctx, err)
+	}
 	result, err := s.queries.CreateCatalogManifest(ctx, pgquery.CreateCatalogManifestParams{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ServiceID: row.ServiceID, UploadID: row.UploadID, Revision: row.Revision, ID: row.ID, State: row.State, Sha256: row.Sha256, BodyObjectKey: row.BodyObjectKey, BodyBytes: row.BodyBytes, TotalBytes: row.TotalBytes, Objects: row.Objects, RetentionPolicyID: row.RetentionPolicyID, CaptureBase: row.CaptureBase, CaptureHead: row.CaptureHead, CaptureMergeBase: row.CaptureMergeBase, CaptureContextLines: row.CaptureContextLines, CaptureFileContext: row.CaptureFileContext, CaptureWorkingTree: row.CaptureWorkingTree, CreatedAt: row.CreatedAt, ExpiresAt: row.ExpiresAt, ObservedAt: row.ObservedAt})
 	if err != nil {
 		return CatalogManifest{}, mapError(ctx, err)
@@ -55,7 +68,7 @@ func (s *session) CommitCatalogManifest(ctx context.Context, row CatalogManifest
 	if err != nil {
 		return CatalogManifest{}, updated(ctx, err)
 	}
-	if err := s.adjustCatalogUsage(ctx, sealed.ReservedBytes-upload.ReservedBytes, row.BodyBytes); err != nil {
+	if err := s.adjustCatalogUsage(ctx, upload.ServiceID, upload.BindingMode, sealed.ReservedBytes-upload.ReservedBytes, row.BodyBytes); err != nil {
 		return CatalogManifest{}, err
 	}
 	if err := s.queries.EnqueueCatalogPublication(ctx, pgquery.EnqueueCatalogPublicationParams{OrganizationID: s.organization, ProjectID: row.ProjectID, ServiceID: row.ServiceID, ManifestID: row.ID, UpdatedAt: row.ObservedAt}); err != nil {
@@ -114,7 +127,7 @@ func (s *session) FinishCatalogDeletion(ctx context.Context, arg CatalogDeletion
 	if err != nil {
 		return CatalogUpload{}, updated(ctx, err)
 	}
-	if err := s.adjustCatalogUsage(ctx, -row.ReservedBytes, -row.RetainedBytes); err != nil {
+	if err := s.adjustCatalogUsage(ctx, row.ServiceID, row.BindingMode, -row.ReservedBytes, -row.RetainedBytes); err != nil {
 		return CatalogUpload{}, err
 	}
 	return result, nil
@@ -127,5 +140,8 @@ func (s *session) PruneCatalogUpload(ctx context.Context, scope CatalogScope, be
 		return err
 	}
 	count, err := s.queries.PruneCatalogUpload(ctx, pgquery.PruneCatalogUploadParams{OrganizationID: s.organization, ProjectID: scope.ProjectID, ServiceID: scope.ServiceID, ID: scope.UploadID, DeletedAt: new(before)})
-	return affected(ctx, count, err)
+	if err := affected(ctx, count, err); err != nil {
+		return err
+	}
+	return mapError(ctx, s.queries.PruneEmptyCatalogServiceUsage(ctx, pgquery.PruneEmptyCatalogServiceUsageParams{OrganizationID: s.organization, ServiceID: scope.ServiceID}))
 }

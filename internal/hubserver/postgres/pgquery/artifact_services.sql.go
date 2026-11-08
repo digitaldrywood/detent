@@ -46,7 +46,7 @@ func (q *Queries) ArtifactServiceBind(ctx context.Context, arg ArtifactServiceBi
 }
 
 const artifactServiceGet = `-- name: ArtifactServiceGet :one
-SELECT organization_id, project_id, id, origin, binding_mode, hosted_opt_in, publisher_token_id FROM artifact_services WHERE organization_id=$1 AND project_id=$2 AND id=$3
+SELECT organization_id, project_id, id, origin, binding_mode, hosted_opt_in, publisher_token_id, catalog_policy_id, catalog_retained_limit, catalog_reserved_limit, catalog_artifact_limit, catalog_upload_limit, catalog_retention_seconds, catalog_abandoned_seconds, catalog_deletion_seconds, catalog_backup_seconds FROM artifact_services WHERE organization_id=$1 AND project_id=$2 AND id=$3
 `
 
 type ArtifactServiceGetParams struct {
@@ -66,12 +66,21 @@ func (q *Queries) ArtifactServiceGet(ctx context.Context, arg ArtifactServiceGet
 		&i.BindingMode,
 		&i.HostedOptIn,
 		&i.PublisherTokenID,
+		&i.CatalogPolicyID,
+		&i.CatalogRetainedLimit,
+		&i.CatalogReservedLimit,
+		&i.CatalogArtifactLimit,
+		&i.CatalogUploadLimit,
+		&i.CatalogRetentionSeconds,
+		&i.CatalogAbandonedSeconds,
+		&i.CatalogDeletionSeconds,
+		&i.CatalogBackupSeconds,
 	)
 	return i, err
 }
 
 const artifactServiceList = `-- name: ArtifactServiceList :many
-SELECT organization_id, project_id, id, origin, binding_mode, hosted_opt_in, publisher_token_id FROM artifact_services WHERE organization_id=$1 AND project_id=$2 ORDER BY id LIMIT 16
+SELECT organization_id, project_id, id, origin, binding_mode, hosted_opt_in, publisher_token_id, catalog_policy_id, catalog_retained_limit, catalog_reserved_limit, catalog_artifact_limit, catalog_upload_limit, catalog_retention_seconds, catalog_abandoned_seconds, catalog_deletion_seconds, catalog_backup_seconds FROM artifact_services WHERE organization_id=$1 AND project_id=$2 ORDER BY id LIMIT 16
 `
 
 type ArtifactServiceListParams struct {
@@ -96,6 +105,15 @@ func (q *Queries) ArtifactServiceList(ctx context.Context, arg ArtifactServiceLi
 			&i.BindingMode,
 			&i.HostedOptIn,
 			&i.PublisherTokenID,
+			&i.CatalogPolicyID,
+			&i.CatalogRetainedLimit,
+			&i.CatalogReservedLimit,
+			&i.CatalogArtifactLimit,
+			&i.CatalogUploadLimit,
+			&i.CatalogRetentionSeconds,
+			&i.CatalogAbandonedSeconds,
+			&i.CatalogDeletionSeconds,
+			&i.CatalogBackupSeconds,
 		); err != nil {
 			return nil, err
 		}

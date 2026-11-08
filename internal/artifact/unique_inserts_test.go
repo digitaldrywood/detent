@@ -18,11 +18,12 @@ type memoryCatalog struct {
 	manifests map[string][]CatalogManifest
 	outcomes  map[string]string
 	traffic   map[int64]CatalogTraffic
+	intents   map[string]map[string]CatalogIntent
 	settings  CatalogTraffic
 }
 
 func newMemoryCatalog(cfg Config) *memoryCatalog {
-	return &memoryCatalog{config: cfg, limits: func() Limits { return cfg.Policy.Limits }, uploads: map[string]Upload{}, objects: map[string][]CatalogObject{}, manifests: map[string][]CatalogManifest{}, outcomes: map[string]string{}, traffic: map[int64]CatalogTraffic{}, settings: CatalogTraffic{WindowSeconds: 3600, RetentionSeconds: 86400}}
+	return &memoryCatalog{intents: map[string]map[string]CatalogIntent{}, config: cfg, limits: func() Limits { return cfg.Policy.Limits }, uploads: map[string]Upload{}, objects: map[string][]CatalogObject{}, manifests: map[string][]CatalogManifest{}, outcomes: map[string]string{}, traffic: map[int64]CatalogTraffic{}, settings: CatalogTraffic{WindowSeconds: 3600, RetentionSeconds: 86400}}
 }
 
 func (m *memoryCatalog) Execute(_ context.Context, c CatalogCommand) (CatalogResult, error) {
@@ -39,6 +40,69 @@ func (m *memoryCatalog) Execute(_ context.Context, c CatalogCommand) (CatalogRes
 		usage.RetainedBytes += u.RetainedBytes
 	}
 	switch c.Operation {
+	case "manifest_intents":
+		ids := []string{}
+		for id, v := range m.intents[c.UploadID] {
+			if id > c.After && (c.Outcome != "pending" || v.State == "pending" || v.State == "discarding") {
+				ids = append(ids, id)
+			}
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			result.Intents = append(result.Intents, m.intents[c.UploadID][id])
+			if len(result.Intents) == c.Limit {
+				result.Next = id
+				break
+			}
+		}
+	case "prepare_manifest":
+		if !exists {
+			return result, ErrMissing
+		}
+		if m.intents[c.UploadID] == nil {
+			m.intents[c.UploadID] = map[string]CatalogIntent{}
+		}
+		pending := int64(0)
+		for _, v := range m.intents[c.UploadID] {
+			if v.State == "pending" || v.State == "discarding" {
+				if v.Revision == c.Intent.Revision && v.SHA256 == c.Intent.SHA256 {
+					result.Intent = v
+					return result, nil
+				}
+				pending += v.Bytes
+			}
+		}
+		if c.Intent.Bytes > u.ReservedBytes-pending {
+			return result, ErrQuota
+		}
+		v := c.Intent
+		v.State = "pending"
+		v.BodyKey = c.OrganizationID + "/" + c.ProjectID + "/" + c.ServiceID + "/" + c.UploadID + "/manifests/" + fmt.Sprint(v.Revision) + "/" + v.SHA256 + "/" + v.ID
+		m.intents[c.UploadID][v.ID] = v
+		result.Intent = v
+	case "verify_manifest", "begin_manifest_discard", "finish_manifest_discard":
+		v, ok := m.intents[c.UploadID][c.Intent.ID]
+		if !ok {
+			return result, ErrMissing
+		}
+		switch c.Operation {
+		case "verify_manifest":
+			if v.State != "pending" {
+				return result, ErrConflict
+			}
+			v.StorageVersion = c.Intent.StorageVersion
+		case "begin_manifest_discard":
+			if v.State == "committed" {
+				return result, ErrConflict
+			}
+			v.State = "discarding"
+		case "finish_manifest_discard":
+			v.State = "discarded"
+			v.Receipt = c.Intent.Receipt
+		}
+		m.intents[c.UploadID][v.ID] = v
+		result.Intent = v
+
 	case "traffic_settings":
 		result.Traffic = m.settings
 	case "set_traffic_settings":
@@ -129,6 +193,7 @@ func (m *memoryCatalog) Execute(_ context.Context, c CatalogCommand) (CatalogRes
 			result.Uploads = result.Uploads[:c.Limit]
 		}
 	case "export":
+		result.Complete = true
 		for _, upload := range m.uploads {
 			result.Uploads = append(result.Uploads, upload)
 			result.Objects = append(result.Objects, m.objects[upload.ArtifactID]...)
@@ -214,6 +279,17 @@ func (m *memoryCatalog) Execute(_ context.Context, c CatalogCommand) (CatalogRes
 				if !o.Verified && !o.Discarded && c.Manifest.State != "partial" {
 					return result, ErrConflict
 				}
+			}
+			found := false
+			for id, v := range m.intents[c.UploadID] {
+				if v.BodyKey == c.Manifest.BodyKey && v.State == "pending" && v.StorageVersion != "" {
+					v.State = "committed"
+					m.intents[c.UploadID][id] = v
+					found = true
+				}
+			}
+			if !found {
+				return result, ErrConflict
 			}
 			u.ManifestRevision = c.Manifest.Revision
 			u.RetainedBytes += c.Manifest.BodyBytes

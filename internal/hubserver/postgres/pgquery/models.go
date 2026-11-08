@@ -173,6 +173,23 @@ type ArtifactCatalogManifest struct {
 	ObservedAt          time.Time
 }
 
+type ArtifactCatalogManifestIntent struct {
+	OrganizationID   tracker.OrganizationID
+	ProjectID        tracker.ProjectID
+	ServiceID        string
+	UploadID         string
+	ID               string
+	Revision         int64
+	BodyObjectKey    string
+	Sha256           string
+	BodyBytes        int64
+	ManifestState    string
+	State            string
+	StorageVersion   string
+	ReceiptObjectKey string
+	CreatedAt        time.Time
+}
+
 type ArtifactCatalogObject struct {
 	OrganizationID          tracker.OrganizationID
 	ProjectID               tracker.ProjectID
@@ -200,6 +217,22 @@ type ArtifactCatalogPublication struct {
 	Outcome         string
 	ExternalReceipt string
 	UpdatedAt       time.Time
+}
+
+type ArtifactCatalogServiceTraffic struct {
+	OrganizationID tracker.OrganizationID
+	ServiceID      string
+	Minute         time.Time
+	UploadBytes    int64
+	DownloadBytes  int64
+	Requests       int64
+}
+
+type ArtifactCatalogServiceUsage struct {
+	OrganizationID tracker.OrganizationID
+	ServiceID      string
+	ReservedBytes  int64
+	RetainedBytes  int64
 }
 
 type ArtifactCatalogTraffic struct {
@@ -256,6 +289,9 @@ type ArtifactCatalogUpload struct {
 	ExpiresAt                time.Time
 	DeletedAt                *time.Time
 	DeletionReceiptObjectKey *string
+	ManifestReservedBytes    int64
+	BindingMode              string
+	HostedOptIn              bool
 }
 
 type ArtifactCatalogUsage struct {
@@ -299,13 +335,22 @@ type ArtifactReference struct {
 }
 
 type ArtifactService struct {
-	OrganizationID   tracker.OrganizationID
-	ProjectID        tracker.ProjectID
-	ID               string
-	Origin           string
-	BindingMode      string
-	HostedOptIn      bool
-	PublisherTokenID string
+	OrganizationID          tracker.OrganizationID
+	ProjectID               tracker.ProjectID
+	ID                      string
+	Origin                  string
+	BindingMode             string
+	HostedOptIn             bool
+	PublisherTokenID        string
+	CatalogPolicyID         string
+	CatalogRetainedLimit    int64
+	CatalogReservedLimit    int64
+	CatalogArtifactLimit    int64
+	CatalogUploadLimit      int64
+	CatalogRetentionSeconds int64
+	CatalogAbandonedSeconds int64
+	CatalogDeletionSeconds  int64
+	CatalogBackupSeconds    int64
 }
 
 type ArtifactUploadAuthorization struct {

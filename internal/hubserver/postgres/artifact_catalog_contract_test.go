@@ -60,7 +60,7 @@ func catalogReservation(org tracker.OrganizationID, project tracker.ProjectID, s
 	if project == "prj_second" {
 		item = "wi_second_1"
 	}
-	return postgres.CatalogReservation{Upload: postgres.CatalogUpload{OrganizationID: org, ProjectID: project, ServiceID: service, ID: "upload", IdempotencyKey: "request", RequestHash: artifact.Digest([]byte("request")), WorkItemID: item, Kind: "log", RequestedBytes: 1000, PartLimit: 1000, CreatedAt: now, UploadDeadline: now.Add(time.Hour), ExpiresAt: now.Add(24 * time.Hour)}, ReservedLimit: 100000, RetainedLimit: 100000}
+	return postgres.CatalogReservation{Upload: postgres.CatalogUpload{BindingMode: "customer", OrganizationID: org, ProjectID: project, ServiceID: service, ID: "upload", IdempotencyKey: "request", RequestHash: artifact.Digest([]byte("request")), WorkItemID: item, Kind: "log", RequestedBytes: 1000, PartLimit: 1000, CreatedAt: now, UploadDeadline: now.Add(time.Hour), ExpiresAt: now.Add(24 * time.Hour)}, ReservedLimit: 100000, RetainedLimit: 100000}
 }
 func TestArtifactCatalogContractAccountsReceiptsOnceAcrossReopen(t *testing.T) {
 	admin, repository, pool, now := artifactCatalogFixture(t)
@@ -102,6 +102,9 @@ func TestArtifactCatalogContractAccountsReceiptsOnceAcrossReopen(t *testing.T) {
 						}
 					}
 					manifest := postgres.CatalogManifest{OrganizationID: org, ProjectID: project, ServiceID: service, UploadID: "upload", Revision: 1, ID: "manifest", State: "complete", Sha256: artifact.Digest([]byte("manifest")), BodyObjectKey: "objects/manifest/" + string(org) + "/" + suffix + "/" + service, BodyBytes: 100, TotalBytes: 50, Objects: 2, RetentionPolicyID: "example", CreatedAt: now, ExpiresAt: now.Add(24 * time.Hour), ObservedAt: now}
+					if err := prepareCatalogManifest(t, w, manifest); err != nil {
+						return err
+					}
 					for range 2 {
 						if _, err := w.CommitCatalogManifest(t.Context(), manifest); err != nil {
 							return err
@@ -124,8 +127,8 @@ func TestArtifactCatalogContractAccountsReceiptsOnceAcrossReopen(t *testing.T) {
 						return err
 					}
 					traffic := postgres.CatalogTrafficReport{OrganizationID: org, ProjectID: project, ServiceID: service, ID: "traffic", Minute: now.UTC().Truncate(time.Minute), UploadBytes: 10, DownloadBytes: 20, Requests: 2}
-					for range 2 {
-						if err := w.RecordCatalogTraffic(t.Context(), traffic); err != nil {
+					for replay := range 2 {
+						if err := w.RecordCatalogTrafficNow(t.Context(), traffic, now.Add(time.Duration(replay)*time.Minute)); err != nil {
 							return err
 						}
 					}
@@ -336,6 +339,9 @@ func TestArtifactCatalogContractSerializesQuotaAndRequiresDiscardReceipt(t *test
 			t.Fatal(err)
 		}
 		if err := repository.WriteArtifactCatalog(t.Context(), org, corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
+			if err := prepareCatalogManifest(t, w, manifest); err != nil {
+				return err
+			}
 			_, err := w.CommitCatalogManifest(t.Context(), manifest)
 			return err
 		}); !errors.Is(err, corestore.ErrRevisionConflict) {
@@ -343,6 +349,9 @@ func TestArtifactCatalogContractSerializesQuotaAndRequiresDiscardReceipt(t *test
 		}
 		if err := repository.WriteArtifactCatalog(t.Context(), org, corestore.Background, func(w postgres.ArtifactCatalogWriter) error {
 			if _, err := w.DiscardCatalogObject(t.Context(), object, now.Add(time.Hour), "objects/definite-rejection"); err != nil {
+				return err
+			}
+			if err := prepareCatalogManifest(t, w, manifest); err != nil {
 				return err
 			}
 			if _, err := w.CommitCatalogManifest(t.Context(), manifest); err != nil {
@@ -596,4 +605,14 @@ func TestArtifactCatalogTrafficPruneSeeksBoundedHistoryPages(t *testing.T) {
 			}
 		}
 	}
+}
+
+func prepareCatalogManifest(t *testing.T, w postgres.ArtifactCatalogWriter, m postgres.CatalogManifest) error {
+	t.Helper()
+	row, err := w.PrepareCatalogManifestIntent(t.Context(), postgres.CatalogManifestIntent{OrganizationID: m.OrganizationID, ProjectID: m.ProjectID, ServiceID: m.ServiceID, UploadID: m.UploadID, ID: m.ID + "_body", Revision: m.Revision, BodyObjectKey: m.BodyObjectKey, Sha256: m.Sha256, BodyBytes: m.BodyBytes, ManifestState: m.State}, m.ObservedAt)
+	if err != nil {
+		return err
+	}
+	_, err = w.TransitionCatalogManifestIntent(t.Context(), postgres.CatalogIntentTransition{CatalogScope: postgres.CatalogScope{OrganizationID: m.OrganizationID, ProjectID: m.ProjectID, ServiceID: m.ServiceID, UploadID: m.UploadID}, ID: row.ID, State: "verified", StorageVersion: "version"})
+	return err
 }

@@ -13,7 +13,7 @@ import (
 )
 
 const accountCatalogObject = `-- name: AccountCatalogObject :one
-UPDATE artifact_catalog_uploads SET reserved_bytes=reserved_bytes-$5,retained_bytes=retained_bytes+$5 WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND id=$4 AND state='uploading' AND reserved_bytes>=$5 RETURNING organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key
+UPDATE artifact_catalog_uploads SET reserved_bytes=reserved_bytes-$5,retained_bytes=retained_bytes+$5 WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND id=$4 AND state='uploading' AND reserved_bytes>=$5 RETURNING organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key, manifest_reserved_bytes, binding_mode, hosted_opt_in
 `
 
 type AccountCatalogObjectParams struct {
@@ -58,6 +58,9 @@ func (q *Queries) AccountCatalogObject(ctx context.Context, arg AccountCatalogOb
 		&i.ExpiresAt,
 		&i.DeletedAt,
 		&i.DeletionReceiptObjectKey,
+		&i.ManifestReservedBytes,
+		&i.BindingMode,
+		&i.HostedOptIn,
 	)
 	return i, err
 }
@@ -105,7 +108,7 @@ func (q *Queries) AdjustCatalogUsage(ctx context.Context, arg AdjustCatalogUsage
 }
 
 const beginCatalogDeletion = `-- name: BeginCatalogDeletion :one
-UPDATE artifact_catalog_uploads SET state='deletion_pending' WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND id=$4 AND state<>'deleted' RETURNING organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key
+UPDATE artifact_catalog_uploads SET state='deletion_pending' WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND id=$4 AND state<>'deleted' RETURNING organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key, manifest_reserved_bytes, binding_mode, hosted_opt_in
 `
 
 type BeginCatalogDeletionParams struct {
@@ -148,6 +151,9 @@ func (q *Queries) BeginCatalogDeletion(ctx context.Context, arg BeginCatalogDele
 		&i.ExpiresAt,
 		&i.DeletedAt,
 		&i.DeletionReceiptObjectKey,
+		&i.ManifestReservedBytes,
+		&i.BindingMode,
+		&i.HostedOptIn,
 	)
 	return i, err
 }
@@ -367,13 +373,13 @@ func (q *Queries) CatalogPublication(ctx context.Context, arg CatalogPublication
 
 const catalogRetentionCandidates = `-- name: CatalogRetentionCandidates :many
 WITH due AS (
- (SELECT u.organization_id, u.project_id, u.service_id, u.id, u.idempotency_key, u.request_hash, u.work_item_id, u.run_id, u.attempt_id, u.version_id, u.kind, u.lease_id, u.fencing_token, u.requested_bytes, u.part_limit, u.state, u.reserved_bytes, u.retained_bytes, u.manifest_revision, u.created_at, u.upload_deadline, u.expires_at, u.deleted_at, u.deletion_receipt_object_key FROM artifact_catalog_uploads u WHERE u.organization_id=$2 AND state<>'deleted' AND expires_at<=$3::timestamptz ORDER BY expires_at,project_id,service_id,id LIMIT $1)
+ (SELECT u.organization_id, u.project_id, u.service_id, u.id, u.idempotency_key, u.request_hash, u.work_item_id, u.run_id, u.attempt_id, u.version_id, u.kind, u.lease_id, u.fencing_token, u.requested_bytes, u.part_limit, u.state, u.reserved_bytes, u.retained_bytes, u.manifest_revision, u.created_at, u.upload_deadline, u.expires_at, u.deleted_at, u.deletion_receipt_object_key, u.manifest_reserved_bytes, u.binding_mode, u.hosted_opt_in FROM artifact_catalog_uploads u WHERE u.organization_id=$2 AND state<>'deleted' AND expires_at<=$3::timestamptz ORDER BY expires_at,project_id,service_id,id LIMIT $1)
  UNION
- (SELECT u.organization_id, u.project_id, u.service_id, u.id, u.idempotency_key, u.request_hash, u.work_item_id, u.run_id, u.attempt_id, u.version_id, u.kind, u.lease_id, u.fencing_token, u.requested_bytes, u.part_limit, u.state, u.reserved_bytes, u.retained_bytes, u.manifest_revision, u.created_at, u.upload_deadline, u.expires_at, u.deleted_at, u.deletion_receipt_object_key FROM artifact_catalog_uploads u WHERE u.organization_id=$2 AND state='uploading' AND upload_deadline<=$3::timestamptz ORDER BY upload_deadline,project_id,service_id,id LIMIT $1)
+ (SELECT u.organization_id, u.project_id, u.service_id, u.id, u.idempotency_key, u.request_hash, u.work_item_id, u.run_id, u.attempt_id, u.version_id, u.kind, u.lease_id, u.fencing_token, u.requested_bytes, u.part_limit, u.state, u.reserved_bytes, u.retained_bytes, u.manifest_revision, u.created_at, u.upload_deadline, u.expires_at, u.deleted_at, u.deletion_receipt_object_key, u.manifest_reserved_bytes, u.binding_mode, u.hosted_opt_in FROM artifact_catalog_uploads u WHERE u.organization_id=$2 AND state='uploading' AND upload_deadline<=$3::timestamptz ORDER BY upload_deadline,project_id,service_id,id LIMIT $1)
  UNION
- (SELECT u.organization_id, u.project_id, u.service_id, u.id, u.idempotency_key, u.request_hash, u.work_item_id, u.run_id, u.attempt_id, u.version_id, u.kind, u.lease_id, u.fencing_token, u.requested_bytes, u.part_limit, u.state, u.reserved_bytes, u.retained_bytes, u.manifest_revision, u.created_at, u.upload_deadline, u.expires_at, u.deleted_at, u.deletion_receipt_object_key FROM artifact_catalog_uploads u WHERE u.organization_id=$2 AND state='deletion_pending' ORDER BY expires_at,project_id,service_id,id LIMIT $1)
+ (SELECT u.organization_id, u.project_id, u.service_id, u.id, u.idempotency_key, u.request_hash, u.work_item_id, u.run_id, u.attempt_id, u.version_id, u.kind, u.lease_id, u.fencing_token, u.requested_bytes, u.part_limit, u.state, u.reserved_bytes, u.retained_bytes, u.manifest_revision, u.created_at, u.upload_deadline, u.expires_at, u.deleted_at, u.deletion_receipt_object_key, u.manifest_reserved_bytes, u.binding_mode, u.hosted_opt_in FROM artifact_catalog_uploads u WHERE u.organization_id=$2 AND state='deletion_pending' ORDER BY expires_at,project_id,service_id,id LIMIT $1)
 )
-SELECT organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key FROM due ORDER BY expires_at,project_id,service_id,id LIMIT $1
+SELECT organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key, manifest_reserved_bytes, binding_mode, hosted_opt_in FROM due ORDER BY expires_at,project_id,service_id,id LIMIT $1
 `
 
 type CatalogRetentionCandidatesParams struct {
@@ -407,6 +413,9 @@ type CatalogRetentionCandidatesRow struct {
 	ExpiresAt                time.Time
 	DeletedAt                *time.Time
 	DeletionReceiptObjectKey *string
+	ManifestReservedBytes    int64
+	BindingMode              string
+	HostedOptIn              bool
 }
 
 func (q *Queries) CatalogRetentionCandidates(ctx context.Context, arg CatalogRetentionCandidatesParams) ([]CatalogRetentionCandidatesRow, error) {
@@ -443,6 +452,9 @@ func (q *Queries) CatalogRetentionCandidates(ctx context.Context, arg CatalogRet
 			&i.ExpiresAt,
 			&i.DeletedAt,
 			&i.DeletionReceiptObjectKey,
+			&i.ManifestReservedBytes,
+			&i.BindingMode,
+			&i.HostedOptIn,
 		); err != nil {
 			return nil, err
 		}
@@ -558,7 +570,7 @@ func (q *Queries) CatalogTrafficSettings(ctx context.Context, arg CatalogTraffic
 }
 
 const catalogUpload = `-- name: CatalogUpload :one
-SELECT organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key FROM artifact_catalog_uploads WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND id=$4
+SELECT organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key, manifest_reserved_bytes, binding_mode, hosted_opt_in FROM artifact_catalog_uploads WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND id=$4
 `
 
 type CatalogUploadParams struct {
@@ -601,12 +613,15 @@ func (q *Queries) CatalogUpload(ctx context.Context, arg CatalogUploadParams) (A
 		&i.ExpiresAt,
 		&i.DeletedAt,
 		&i.DeletionReceiptObjectKey,
+		&i.ManifestReservedBytes,
+		&i.BindingMode,
+		&i.HostedOptIn,
 	)
 	return i, err
 }
 
 const catalogUploadByKey = `-- name: CatalogUploadByKey :one
-SELECT organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key FROM artifact_catalog_uploads WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND idempotency_key=$4
+SELECT organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key, manifest_reserved_bytes, binding_mode, hosted_opt_in FROM artifact_catalog_uploads WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND idempotency_key=$4
 `
 
 type CatalogUploadByKeyParams struct {
@@ -649,6 +664,9 @@ func (q *Queries) CatalogUploadByKey(ctx context.Context, arg CatalogUploadByKey
 		&i.ExpiresAt,
 		&i.DeletedAt,
 		&i.DeletionReceiptObjectKey,
+		&i.ManifestReservedBytes,
+		&i.BindingMode,
+		&i.HostedOptIn,
 	)
 	return i, err
 }
@@ -833,8 +851,8 @@ func (q *Queries) CreateCatalogTrafficReceipt(ctx context.Context, arg CreateCat
 }
 
 const createCatalogUpload = `-- name: CreateCatalogUpload :one
-INSERT INTO artifact_catalog_uploads(organization_id,project_id,service_id,id,idempotency_key,request_hash,work_item_id,run_id,attempt_id,version_id,kind,lease_id,fencing_token,requested_bytes,part_limit,reserved_bytes,created_at,upload_deadline,expires_at)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$14,$16,$17,$18) RETURNING organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key
+INSERT INTO artifact_catalog_uploads(organization_id,project_id,service_id,id,idempotency_key,request_hash,work_item_id,run_id,attempt_id,version_id,kind,lease_id,fencing_token,requested_bytes,part_limit,reserved_bytes,created_at,upload_deadline,expires_at,binding_mode,hosted_opt_in)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$14,$16,$17,$18,$19,$20) RETURNING organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key, manifest_reserved_bytes, binding_mode, hosted_opt_in
 `
 
 type CreateCatalogUploadParams struct {
@@ -856,6 +874,8 @@ type CreateCatalogUploadParams struct {
 	CreatedAt      time.Time
 	UploadDeadline time.Time
 	ExpiresAt      time.Time
+	BindingMode    string
+	HostedOptIn    bool
 }
 
 func (q *Queries) CreateCatalogUpload(ctx context.Context, arg CreateCatalogUploadParams) (ArtifactCatalogUpload, error) {
@@ -878,6 +898,8 @@ func (q *Queries) CreateCatalogUpload(ctx context.Context, arg CreateCatalogUplo
 		arg.CreatedAt,
 		arg.UploadDeadline,
 		arg.ExpiresAt,
+		arg.BindingMode,
+		arg.HostedOptIn,
 	)
 	var i ArtifactCatalogUpload
 	err := row.Scan(
@@ -905,6 +927,9 @@ func (q *Queries) CreateCatalogUpload(ctx context.Context, arg CreateCatalogUplo
 		&i.ExpiresAt,
 		&i.DeletedAt,
 		&i.DeletionReceiptObjectKey,
+		&i.ManifestReservedBytes,
+		&i.BindingMode,
+		&i.HostedOptIn,
 	)
 	return i, err
 }
@@ -988,7 +1013,7 @@ func (q *Queries) EnsureCatalogUsage(ctx context.Context, organizationID tracker
 }
 
 const finishCatalogDeletion = `-- name: FinishCatalogDeletion :one
-UPDATE artifact_catalog_uploads SET state='deleted',reserved_bytes=0,retained_bytes=0,deleted_at=$5,deletion_receipt_object_key=$6 WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND id=$4 AND state='deletion_pending' RETURNING organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key
+UPDATE artifact_catalog_uploads SET state='deleted',reserved_bytes=0,retained_bytes=0,manifest_reserved_bytes=0,deleted_at=$5,deletion_receipt_object_key=$6 WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND id=$4 AND state='deletion_pending' RETURNING organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key, manifest_reserved_bytes, binding_mode, hosted_opt_in
 `
 
 type FinishCatalogDeletionParams struct {
@@ -1035,12 +1060,15 @@ func (q *Queries) FinishCatalogDeletion(ctx context.Context, arg FinishCatalogDe
 		&i.ExpiresAt,
 		&i.DeletedAt,
 		&i.DeletionReceiptObjectKey,
+		&i.ManifestReservedBytes,
+		&i.BindingMode,
+		&i.HostedOptIn,
 	)
 	return i, err
 }
 
 const lockCatalogUpload = `-- name: LockCatalogUpload :one
-SELECT organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key FROM artifact_catalog_uploads WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND id=$4 FOR UPDATE
+SELECT organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key, manifest_reserved_bytes, binding_mode, hosted_opt_in FROM artifact_catalog_uploads WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND id=$4 FOR UPDATE
 `
 
 type LockCatalogUploadParams struct {
@@ -1083,6 +1111,9 @@ func (q *Queries) LockCatalogUpload(ctx context.Context, arg LockCatalogUploadPa
 		&i.ExpiresAt,
 		&i.DeletedAt,
 		&i.DeletionReceiptObjectKey,
+		&i.ManifestReservedBytes,
+		&i.BindingMode,
+		&i.HostedOptIn,
 	)
 	return i, err
 }
@@ -1269,7 +1300,7 @@ func (q *Queries) RecordCatalogPublication(ctx context.Context, arg RecordCatalo
 
 const sealCatalogUpload = `-- name: SealCatalogUpload :one
 UPDATE artifact_catalog_uploads SET manifest_revision=$1,state=CASE WHEN $2::text='partial' THEN 'uploading' ELSE $2 END,retained_bytes=retained_bytes+$3,reserved_bytes=CASE WHEN $2::text='partial' THEN reserved_bytes-$3 ELSE 0 END
-WHERE organization_id=$4 AND project_id=$5 AND service_id=$6 AND id=$7 AND state='uploading' AND manifest_revision=$1-1 AND reserved_bytes>=$3 RETURNING organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key
+WHERE organization_id=$4 AND project_id=$5 AND service_id=$6 AND id=$7 AND state='uploading' AND manifest_revision=$1-1 AND reserved_bytes>=$3 RETURNING organization_id, project_id, service_id, id, idempotency_key, request_hash, work_item_id, run_id, attempt_id, version_id, kind, lease_id, fencing_token, requested_bytes, part_limit, state, reserved_bytes, retained_bytes, manifest_revision, created_at, upload_deadline, expires_at, deleted_at, deletion_receipt_object_key, manifest_reserved_bytes, binding_mode, hosted_opt_in
 `
 
 type SealCatalogUploadParams struct {
@@ -1318,6 +1349,9 @@ func (q *Queries) SealCatalogUpload(ctx context.Context, arg SealCatalogUploadPa
 		&i.ExpiresAt,
 		&i.DeletedAt,
 		&i.DeletionReceiptObjectKey,
+		&i.ManifestReservedBytes,
+		&i.BindingMode,
+		&i.HostedOptIn,
 	)
 	return i, err
 }

@@ -20,8 +20,8 @@ SELECT * FROM artifact_catalog_uploads WHERE organization_id=$1 AND project_id=$
 SELECT * FROM artifact_catalog_uploads WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND idempotency_key=$4;
 
 -- name: CreateCatalogUpload :one
-INSERT INTO artifact_catalog_uploads(organization_id,project_id,service_id,id,idempotency_key,request_hash,work_item_id,run_id,attempt_id,version_id,kind,lease_id,fencing_token,requested_bytes,part_limit,reserved_bytes,created_at,upload_deadline,expires_at)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$14,$16,$17,$18) RETURNING *;
+INSERT INTO artifact_catalog_uploads(organization_id,project_id,service_id,id,idempotency_key,request_hash,work_item_id,run_id,attempt_id,version_id,kind,lease_id,fencing_token,requested_bytes,part_limit,reserved_bytes,created_at,upload_deadline,expires_at,binding_mode,hosted_opt_in)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$14,$16,$17,$18,$19,$20) RETURNING *;
 
 -- name: CatalogObjects :many
 SELECT * FROM artifact_catalog_objects WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND upload_id=$4 AND sequence>=$5 ORDER BY sequence LIMIT $6;
@@ -80,7 +80,7 @@ SELECT * FROM due ORDER BY expires_at,project_id,service_id,id LIMIT sqlc.arg(pa
 UPDATE artifact_catalog_uploads SET state='deletion_pending' WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND id=$4 AND state<>'deleted' RETURNING *;
 
 -- name: FinishCatalogDeletion :one
-UPDATE artifact_catalog_uploads SET state='deleted',reserved_bytes=0,retained_bytes=0,deleted_at=$5,deletion_receipt_object_key=$6 WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND id=$4 AND state='deletion_pending' RETURNING *;
+UPDATE artifact_catalog_uploads SET state='deleted',reserved_bytes=0,retained_bytes=0,manifest_reserved_bytes=0,deleted_at=$5,deletion_receipt_object_key=$6 WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND id=$4 AND state='deletion_pending' RETURNING *;
 
 -- name: PruneCatalogUpload :execrows
 DELETE FROM artifact_catalog_uploads WHERE organization_id=$1 AND project_id=$2 AND service_id=$3 AND id=$4 AND state='deleted' AND deleted_at<=$5;

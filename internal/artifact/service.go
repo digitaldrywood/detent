@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,18 +35,21 @@ type Policy struct {
 }
 
 type Config struct {
-	ServiceID       string        `json:"service_id"`
-	Mode            string        `json:"mode"`
-	HostedOptIn     bool          `json:"hosted_opt_in"`
-	OrganizationID  string        `json:"organization_id"`
-	ProjectID       string        `json:"project_id"`
-	Catalog         Catalog       `json:"-"`
-	DatabasePath    string        `json:"database_path"`
-	Policy          Policy        `json:"policy"`
-	Storage         StorageConfig `json:"storage"`
-	HubOrigin       string        `json:"hub_origin"`
-	PublishTokenEnv string        `json:"publish_token_env"`
-	AllowedOrigins  []string      `json:"allowed_origins"`
+	ServiceID                 string        `json:"service_id"`
+	Mode                      string        `json:"mode"`
+	HostedOptIn               bool          `json:"hosted_opt_in"`
+	OrganizationID            string        `json:"organization_id"`
+	ProjectID                 string        `json:"project_id,omitempty"`
+	PublisherID               string        `json:"-"`
+	OrganizationRetainedLimit int64         `json:"-"`
+	OrganizationReservedLimit int64         `json:"-"`
+	Catalog                   Catalog       `json:"-"`
+	DatabasePath              string        `json:"database_path"`
+	Policy                    Policy        `json:"policy"`
+	Storage                   StorageConfig `json:"storage"`
+	HubOrigin                 string        `json:"hub_origin"`
+	PublishTokenEnv           string        `json:"publish_token_env"`
+	AllowedOrigins            []string      `json:"allowed_origins"`
 }
 
 type Reservation struct {
@@ -102,13 +104,20 @@ type Service struct {
 	catalog          Catalog
 	allowances       Allowances
 	now              func() time.Time
+	maintainAfter    string
 	publishAfter     publishCursor
 	publishMu        sync.Mutex
 }
 
 func (cfg Config) Validate() error {
-	p := cfg.Policy
-	if !ValidID(cfg.ProjectID, "prj") || !ValidID(cfg.ServiceID, "service") || !ValidID(cfg.OrganizationID, "org") || !slices.Contains([]string{"customer", "hosted"}, cfg.Mode) || cfg.Mode == "hosted" && !cfg.HostedOptIn || p.ID == "" || len(p.ID) > 128 || !validLimits(p.Limits) || p.AbandonedUploadSeconds <= 0 || p.AbandonedUploadSeconds > 365*86400 || p.BackupSeconds <= 0 || p.BackupSeconds > 365*86400 || p.DeletionRecordSeconds <= p.BackupSeconds+p.AbandonedUploadSeconds || p.DeletionRecordSeconds > 10*365*86400 {
+	if cfg.ProjectID != "" && !ValidID(cfg.ProjectID, "prj") || !ValidID(cfg.ServiceID, "service") || !ValidID(cfg.OrganizationID, "org") || !slices.Contains([]string{"customer", "hosted"}, cfg.Mode) || cfg.Mode == "hosted" && !cfg.HostedOptIn {
+		return ErrInvalid
+	}
+	return cfg.Policy.Validate()
+}
+
+func (p Policy) Validate() error {
+	if p.ID == "" || len(p.ID) > 128 || !validLimits(p.Limits) || p.AbandonedUploadSeconds <= 0 || p.AbandonedUploadSeconds > 365*86400 || p.BackupSeconds <= 0 || p.BackupSeconds > 365*86400 || p.DeletionRecordSeconds <= p.BackupSeconds+p.AbandonedUploadSeconds || p.DeletionRecordSeconds > 10*365*86400 {
 		return ErrInvalid
 	}
 	return nil
@@ -188,13 +197,13 @@ func (s *Service) Usage(ctx context.Context) (Usage, error) {
 }
 
 func (s *Service) Reserve(ctx context.Context, r Reservation) (Upload, error) {
-	if r.ServiceID != s.config.ServiceID || r.Mode != s.config.Mode || r.HostedOptIn != s.config.HostedOptIn || r.OrganizationID != s.config.OrganizationID || r.ProjectID != s.config.ProjectID {
+	if r.ServiceID != s.config.ServiceID || r.Mode != s.config.Mode || r.HostedOptIn != s.config.HostedOptIn || r.OrganizationID != s.config.OrganizationID || s.config.ProjectID != "" && r.ProjectID != s.config.ProjectID {
 		return Upload{}, ErrDenied
 	}
 	if r.Validate() != nil || r.Key == "" || len(r.Key) > 128 || !slices.Contains([]string{"log", "diff", "screenshot", "video"}, r.Kind) || r.Bytes <= 0 || r.Bytes > MaxArtifactBytes {
 		return Upload{}, ErrInvalid
 	}
-	existing, err := s.command(ctx, CatalogCommand{Operation: "upload_by_key", Key: r.Key})
+	existing, err := s.command(ctx, CatalogCommand{CatalogScope: CatalogScope{ProjectID: r.ProjectID}, Operation: "upload_by_key", Key: r.Key})
 	if err == nil {
 		if existing.Upload.Reservation != r {
 			return Upload{}, ErrConflict
@@ -230,7 +239,7 @@ func (s *Service) Upload(ctx context.Context, id string) (Upload, error) {
 		return Upload{}, err
 	}
 	u := result.Upload
-	if u.ServiceID != s.config.ServiceID || u.OrganizationID != s.config.OrganizationID || u.ProjectID != s.config.ProjectID || u.Mode != s.config.Mode || u.HostedOptIn != s.config.HostedOptIn {
+	if u.ServiceID != s.config.ServiceID || u.OrganizationID != s.config.OrganizationID || s.config.ProjectID != "" && u.ProjectID != s.config.ProjectID || u.Mode != s.config.Mode || u.HostedOptIn != s.config.HostedOptIn {
 		return Upload{}, ErrDenied
 	}
 	return u, nil
@@ -338,7 +347,7 @@ func (s *Service) Append(ctx context.Context, id string, p Part) (Object, error)
 		}
 		obj = stored.Object.Object
 	}
-	key := s.objectKey(id, obj.ID)
+	key := s.scopedObjectKey(u.ProjectID, id, obj.ID)
 	version, err := s.storage.Put(ctx, key, p.Data)
 	if err != nil && !errors.Is(err, ErrConflict) {
 		return Object{}, err
@@ -429,17 +438,26 @@ func (s *Service) seal(ctx context.Context, id, state string, capture *Capture) 
 			return Reference{}, ErrConflict
 		}
 		if state == "interrupted" {
-			if err := s.discardPending(ctx, id); err != nil {
+			if err := s.discardPending(ctx, u); err != nil {
 				return Reference{}, err
 			}
 			break
 		}
 	}
 	revision := u.ManifestRevision + 1
-	m := Manifest{SchemaVersion: 1, Scope: u.Scope, ArtifactID: id, ManifestID: "manifest_" + Digest([]byte(id + "/" + strconv.FormatInt(revision, 10)))[:32], Revision: revision, Kind: u.Kind, State: state, CreatedAt: u.CreatedAt, ExpiresAt: u.ExpiresAt, RetentionPolicyID: s.config.Policy.ID, Objects: objects, Capture: capture}
+	m := Manifest{SchemaVersion: 1, Scope: u.Scope, ArtifactID: id, ManifestID: "", Revision: revision, Kind: u.Kind, State: state, CreatedAt: u.CreatedAt, ExpiresAt: u.ExpiresAt, RetentionPolicyID: s.config.Policy.ID, Objects: objects, Capture: capture}
 	for _, obj := range objects {
 		m.TotalBytes += obj.Size
 	}
+	identity, err := json.Marshal(struct {
+		ServiceID string
+		Manifest
+	}{s.config.ServiceID, m})
+	if err != nil {
+		return Reference{}, err
+	}
+	m.ManifestID = "manifest_" + Digest(identity)[:32]
+
 	if err := m.Validate(); err != nil {
 		return Reference{}, err
 	}
@@ -451,7 +469,18 @@ func (s *Service) seal(ctx context.Context, id, state string, capture *Capture) 
 		return Reference{}, ErrQuota
 	}
 	ref := Reference{SchemaVersion: 1, Scope: m.Scope, ServiceID: s.config.ServiceID, ArtifactID: id, ManifestID: m.ManifestID, Revision: revision, SHA256: Digest(raw), Kind: m.Kind, State: state, Availability: "available", Bytes: m.TotalBytes, Objects: len(objects), ExpiresAt: m.ExpiresAt, ObservedAt: s.now().UTC()}
-	key := s.objectKey(id, "manifests/"+strconv.FormatInt(revision, 10))
+	if err := s.cleanManifestIntents(ctx, u, revision, ref.SHA256); err != nil {
+		return Reference{}, err
+	}
+	prepared, err := s.command(ctx, CatalogCommand{Operation: "prepare_manifest", UploadID: id, Intent: CatalogIntent{ManifestState: state, ID: NewID("intent"), Revision: revision, SHA256: ref.SHA256, Bytes: int64(len(raw))}})
+	if err != nil {
+		return Reference{}, err
+	}
+	intent := prepared.Intent
+	if intent.State != "pending" {
+		return Reference{}, ErrConflict
+	}
+	key := intent.BodyKey
 	version, err := s.storage.Put(ctx, key, raw)
 	if err != nil && !errors.Is(err, ErrConflict) {
 		return Reference{}, err
@@ -462,6 +491,13 @@ func (s *Service) seal(ctx context.Context, id, state string, capture *Capture) 
 	}
 	if Digest(read) != ref.SHA256 {
 		return Reference{}, ErrConflict
+	}
+	if version == "" {
+		version = "null"
+	}
+	intent.StorageVersion = version
+	if _, err := s.command(ctx, CatalogCommand{Operation: "verify_manifest", UploadID: id, Intent: intent}); err != nil {
+		return Reference{}, err
 	}
 	committed, err := s.command(ctx, CatalogCommand{Operation: "commit", UploadID: id, Manifest: CatalogManifest{Reference: ref, BodyKey: key, BodyBytes: int64(len(raw)), CreatedAt: u.CreatedAt, RetentionPolicyID: m.RetentionPolicyID, Capture: capture}, At: s.now().UTC()})
 	return committed.Manifest.Reference, err
@@ -497,7 +533,7 @@ func (s *Service) Manifest(ctx context.Context, id string, revision int64) ([]by
 }
 
 func (s *Service) ReadObject(ctx context.Context, id string, revision int64, objectID string) (Object, []byte, error) {
-	body, _, err := s.Manifest(ctx, id, revision)
+	body, reference, err := s.Manifest(ctx, id, revision)
 	if err != nil {
 		return Object{}, nil, err
 	}
@@ -523,7 +559,7 @@ func (s *Service) ReadObject(ctx context.Context, id string, revision int64, obj
 		if version == "" {
 			return obj, nil, ErrMissing
 		}
-		data, err := s.storage.Get(ctx, s.objectKey(id, objectID), version, obj.Size)
+		data, err := s.storage.Get(ctx, s.scopedObjectKey(reference.ProjectID, id, objectID), version, obj.Size)
 		if err != nil {
 			return obj, nil, err
 		}
@@ -537,4 +573,8 @@ func (s *Service) ReadObject(ctx context.Context, id string, revision int64, obj
 
 func (s *Service) objectKey(id, suffix string) string {
 	return s.config.OrganizationID + "/" + s.config.ProjectID + "/" + s.config.ServiceID + "/" + id + "/" + suffix
+}
+
+func (s *Service) scopedObjectKey(project, id, suffix string) string {
+	return s.config.OrganizationID + "/" + project + "/" + s.config.ServiceID + "/" + id + "/" + suffix
 }

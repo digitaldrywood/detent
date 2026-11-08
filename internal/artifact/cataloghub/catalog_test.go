@@ -203,7 +203,7 @@ func TestAuthenticatedCatalogSurvivesHubRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	policy := func(ctx context.Context, scope artifact.CatalogScope) (artifact.Config, error) {
+	policy := func(ctx context.Context, _ postgres.ArtifactCatalogReader, scope artifact.CatalogScope) (artifact.Config, error) {
 		for _, fixture := range fixtures {
 			cfg := fixture.config
 			if cfg.OrganizationID == scope.OrganizationID && cfg.ProjectID == scope.ProjectID && cfg.ServiceID == scope.ServiceID {
@@ -212,10 +212,7 @@ func TestAuthenticatedCatalogSurvivesHubRestart(t *testing.T) {
 		}
 		return artifact.Config{}, artifact.ErrDenied
 	}
-	backend, err := New(repo, policy, func(context.Context, artifact.CatalogCommand) (artifact.CatalogResult, error) {
-		t.Error("unexpected catalog page")
-		return artifact.CatalogResult{}, artifact.ErrInvalid
-	})
+	backend, err := New(repo, policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,9 +232,13 @@ func TestAuthenticatedCatalogSurvivesHubRestart(t *testing.T) {
 			return nil
 		})
 	}
+	var rejectComplete atomic.Bool
 	var lostOperation atomic.Value
 	lostOperation.Store("")
 	handler, err := artifact.NewCatalogHandler(catalogFunction(func(ctx context.Context, c artifact.CatalogCommand) (artifact.CatalogResult, error) {
+		if c.Operation == "commit" && c.Manifest.State == "complete" && rejectComplete.Swap(false) {
+			return artifact.CatalogResult{}, artifact.ErrConflict
+		}
 		result, err := backend.Execute(ctx, c)
 		if err == nil && c.Operation == lostOperation.Load().(string) {
 			lostOperation.Store("")
@@ -356,6 +357,25 @@ func TestAuthenticatedCatalogSurvivesHubRestart(t *testing.T) {
 			t.Fatal("manifest storage scope collision", err)
 		}
 		sharedRows = append(sharedRows, persisted{fixture: fixture, upload: sharedResult.Upload, reference: sharedRef, object: sharedObject, part: sharedPart})
+		rejectedRequest := request
+		rejectedRequest.Key = "rejected-manifest"
+		rejectedUpload, err := service.Reserve(t.Context(), rejectedRequest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rejectedObject, err := service.Append(t.Context(), rejectedUpload.ArtifactID, part)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rejectComplete.Store(true)
+		if _, err := service.Finalize(t.Context(), rejectedUpload.ArtifactID, "complete", nil); !errors.Is(err, artifact.ErrConflict) {
+			t.Fatal("expected rejected commit", err)
+		}
+		interrupted, err := service.Finalize(t.Context(), rejectedUpload.ArtifactID, "interrupted", nil)
+		if err != nil || interrupted.State != "interrupted" {
+			t.Fatal("rejected body blocks interrupted finalization", err)
+		}
+		sharedRows = append(sharedRows, persisted{fixture: fixture, upload: rejectedUpload, reference: interrupted, object: rejectedObject, part: part})
 		pendingRequest := request
 		pendingRequest.Key = "pending-admission"
 		pendingRequest.Kind = "diff"
@@ -425,11 +445,11 @@ func TestAuthenticatedCatalogSurvivesHubRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, data, err := service.ReadObject(t.Context(), sharedID, row.reference.Revision, row.object.ID)
+		_, data, err := service.ReadObject(t.Context(), row.upload.ArtifactID, row.reference.Revision, row.object.ID)
 		if err != nil || !bytes.Equal(data, row.part.Data) {
 			t.Fatal("same artifact ID crossed storage scope", err)
 		}
-		if err := service.Delete(t.Context(), sharedID); err != nil {
+		if err := service.Delete(t.Context(), row.upload.ArtifactID); err != nil {
 			t.Fatal(err)
 		}
 	}

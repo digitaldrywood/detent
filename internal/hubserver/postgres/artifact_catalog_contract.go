@@ -7,15 +7,21 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type CatalogManifestIntent = pgquery.ArtifactCatalogManifestIntent
+type CatalogManifestIntentInput = pgquery.CatalogManifestIntentParams
+type CatalogManifestIntentsInput = pgquery.CatalogManifestIntentsParams
+
 type CatalogUpload = pgquery.ArtifactCatalogUpload
 type CatalogObject = pgquery.ArtifactCatalogObject
 type CatalogManifest = pgquery.ArtifactCatalogManifest
 type CatalogPublication = pgquery.ArtifactCatalogPublication
+type CatalogTrafficReceipt = pgquery.ArtifactCatalogTrafficReceipt
 type CatalogTrafficBucket = pgquery.ArtifactCatalogTraffic
 type CatalogTrafficSettings = pgquery.ArtifactCatalogTrafficSetting
 type CatalogUsage = pgquery.ArtifactCatalogUsage
@@ -30,6 +36,26 @@ type CatalogRetentionCandidatesInput = pgquery.CatalogRetentionCandidatesParams
 type CatalogTrafficSettingsInput = pgquery.CatalogTrafficSettingsParams
 type CatalogTrafficInput = pgquery.CatalogTrafficParams
 type ArtifactCatalogReader interface {
+	ScopedCatalogPolicies(context.Context, ScopedCatalogPoliciesInput) ([]CatalogBinding, error)
+	CatalogServiceUsage(context.Context, CatalogServiceUsageInput) (CatalogUsage, error)
+	CatalogPolicy(context.Context, CatalogPolicyInput) (CatalogBinding, error)
+	ScopedCatalogPublications(context.Context, ScopedCatalogPublicationsInput) ([]CatalogPublication, error)
+	ScopedCatalogTrafficBuckets(context.Context, ScopedCatalogTrafficBucketsInput) ([]CatalogTrafficBucket, error)
+	ScopedCatalogTrafficReceipts(context.Context, ScopedCatalogTrafficReceiptsInput) ([]CatalogTrafficReceipt, error)
+	ScopedCatalogSettings(context.Context, ScopedCatalogSettingsInput) ([]CatalogTrafficSettings, error)
+
+	CatalogServiceUploads(context.Context, CatalogServiceUploadsInput) ([]CatalogUpload, error)
+	CatalogServiceBinding(context.Context, CatalogServiceBindingInput) (CatalogBinding, error)
+	CatalogServiceTraffic(context.Context, CatalogServiceTrafficInput) (CatalogTrafficUsage, error)
+	ScopedCatalogUploads(context.Context, ScopedCatalogUploadsInput) ([]CatalogUpload, error)
+	ScopedPendingCatalogManifests(context.Context, ScopedPendingCatalogManifestsInput) ([]CatalogManifest, error)
+	ScopedCatalogRetention(context.Context, ScopedCatalogRetentionInput) ([]CatalogUpload, error)
+	ScopedCatalogObjects(context.Context, ScopedCatalogObjectsInput) ([]CatalogObject, error)
+	ScopedCatalogManifests(context.Context, ScopedCatalogManifestsInput) ([]CatalogManifest, error)
+	ScopedCatalogIntents(context.Context, ScopedCatalogIntentsInput) ([]CatalogManifestIntent, error)
+
+	CatalogManifestIntent(context.Context, CatalogManifestIntentInput) (CatalogManifestIntent, error)
+	CatalogManifestIntents(context.Context, CatalogManifestIntentsInput) ([]CatalogManifestIntent, error)
 	CatalogUsage(context.Context) (CatalogUsage, error)
 	CatalogUpload(context.Context, CatalogUploadInput) (CatalogUpload, error)
 	CatalogUploadByKey(context.Context, CatalogUploadByKeyInput) (CatalogUpload, error)
@@ -44,10 +70,16 @@ type ArtifactCatalogReader interface {
 }
 type ArtifactCatalogWriter interface {
 	ArtifactCatalogReader
+	SetCatalogPolicy(context.Context, tracker.ProjectID, string, artifact.Policy) (CatalogBinding, error)
+	CatalogExecutionAuthority(context.Context, CatalogExecutionAuthorityInput) error
+	PruneScopedCatalogTraffic(context.Context, ScopedCatalogTrafficPrune) error
+	RecordCatalogTrafficNow(context.Context, CatalogTrafficReport, time.Time) error
+	PrepareCatalogManifestIntent(context.Context, CatalogManifestIntent, time.Time) (CatalogManifestIntent, error)
+	TransitionCatalogManifestIntent(context.Context, CatalogIntentTransition) (CatalogManifestIntent, error)
 	ReserveCatalogUpload(context.Context, CatalogReservation) (CatalogUpload, error)
 	PutCatalogObject(context.Context, CatalogObject, time.Time) (CatalogObject, error)
 	VerifyCatalogObject(context.Context, CatalogObject, time.Time) (CatalogObject, error)
- DiscardCatalogObject(context.Context, CatalogObject, time.Time, string) (CatalogObject, error)
+	DiscardCatalogObject(context.Context, CatalogObject, time.Time, string) (CatalogObject, error)
 	CommitCatalogManifest(context.Context, CatalogManifest) (CatalogManifest, error)
 	RecordCatalogPublication(context.Context, CatalogPublicationResult) (CatalogPublication, error)
 	BeginCatalogDeletion(context.Context, CatalogScope) (CatalogUpload, error)
@@ -179,9 +211,15 @@ type CatalogScope struct {
 	UploadID       string
 }
 type CatalogReservation struct {
-	Upload        CatalogUpload
-	RetainedLimit int64
-	ReservedLimit int64
+	Upload               CatalogUpload
+	RetainedLimit        int64
+	ReservedLimit        int64
+	ServiceRetainedLimit int64
+	ServiceReservedLimit int64
+	EnforceRelay         bool
+	RelayLimit           int64
+	RelayWindowStart     time.Time
+	At                   time.Time
 }
 type CatalogDeletion struct {
 	CatalogScope
@@ -195,11 +233,21 @@ type CatalogTrafficPolicy = pgquery.PutCatalogTrafficSettingsParams
 func (s *session) CatalogUsage(ctx context.Context) (CatalogUsage, error) {
 	row, err := s.queries.CatalogUsage(ctx, s.organization)
 	if errors.Is(err, pgx.ErrNoRows) {
+		active, err := s.queries.CatalogOrganizationUsageActive(ctx, s.organization)
+		if err != nil {
+			return CatalogUsage{}, mapError(ctx, err)
+		}
+		if active {
+			return CatalogUsage{}, artifact.ErrIntegrity
+		}
 		return CatalogUsage{OrganizationID: s.organization}, nil
 	}
 	return row, mapError(ctx, err)
 }
 func (s *session) lockCatalogUsage(ctx context.Context) (CatalogUsage, error) {
+	if _, err := s.CatalogUsage(ctx); err != nil {
+		return CatalogUsage{}, err
+	}
 	if err := s.queries.EnsureCatalogUsage(ctx, s.organization); err != nil {
 		return CatalogUsage{}, mapError(ctx, err)
 	}
@@ -216,6 +264,19 @@ func (s *session) lockCatalogUpload(ctx context.Context, scope CatalogScope) (Ca
 	row, err := s.queries.LockCatalogUpload(ctx, pgquery.LockCatalogUploadParams{OrganizationID: s.organization, ProjectID: scope.ProjectID, ServiceID: scope.ServiceID, ID: scope.UploadID})
 	return row, mapError(ctx, err)
 }
-func (s *session) adjustCatalogUsage(ctx context.Context, reserved, retained int64) error {
-	return mapError(ctx, s.queries.AdjustCatalogUsage(ctx, pgquery.AdjustCatalogUsageParams{OrganizationID: s.organization, ReservedBytes: reserved, RetainedBytes: retained}))
+func (s *session) adjustCatalogUsage(ctx context.Context, service, mode string, reserved, retained int64) error {
+	if err := s.queries.AdjustCatalogUsage(ctx, pgquery.AdjustCatalogUsageParams{OrganizationID: s.organization, ReservedBytes: reserved, RetainedBytes: retained}); err != nil {
+		return mapError(ctx, err)
+	}
+	services := []string{service}
+	if mode == "hosted" {
+		services = append(services, "")
+	}
+	for _, id := range services {
+		count, err := s.queries.AdjustCatalogServiceUsage(ctx, pgquery.AdjustCatalogServiceUsageParams{OrganizationID: s.organization, ServiceID: id, ReservedBytes: reserved, RetainedBytes: retained})
+		if err := affected(ctx, count, err); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -17,7 +18,7 @@ func (s *session) ReserveCatalogUpload(ctx context.Context, arg CatalogReservati
 	if err := s.checkOrganization(row.OrganizationID); err != nil {
 		return CatalogUpload{}, err
 	}
-	if row.ID == "" || row.IdempotencyKey == "" || len(row.IdempotencyKey) > 128 || !artifact.ValidHash(row.RequestHash, 64) || row.RequestedBytes < 1 || row.RequestedBytes > artifact.MaxArtifactBytes || row.PartLimit < 1 || row.CreatedAt.IsZero() || !row.UploadDeadline.After(row.CreatedAt) || !row.ExpiresAt.After(row.CreatedAt) || arg.RetainedLimit < 0 || arg.ReservedLimit < 0 {
+	if !slices.Contains([]string{"customer", "hosted"}, row.BindingMode) || row.BindingMode == "hosted" && !row.HostedOptIn || row.ID == "" || row.IdempotencyKey == "" || len(row.IdempotencyKey) > 128 || !artifact.ValidHash(row.RequestHash, 64) || row.RequestedBytes < 1 || row.RequestedBytes > artifact.MaxArtifactBytes || row.PartLimit < 1 || row.CreatedAt.IsZero() || !row.UploadDeadline.After(row.CreatedAt) || !row.ExpiresAt.After(row.CreatedAt) || arg.RetainedLimit < 0 || arg.ReservedLimit < 0 {
 		return CatalogUpload{}, artifact.ErrInvalid
 	}
 	if _, err := s.queries.ShareActiveProject(ctx, pgquery.ShareActiveProjectParams{OrganizationID: s.organization, ID: row.ProjectID}); err != nil {
@@ -29,7 +30,7 @@ func (s *session) ReserveCatalogUpload(ctx context.Context, arg CatalogReservati
 	}
 	existing, err := s.queries.CatalogUploadByKey(ctx, pgquery.CatalogUploadByKeyParams{OrganizationID: s.organization, ProjectID: row.ProjectID, ServiceID: row.ServiceID, IdempotencyKey: row.IdempotencyKey})
 	if err == nil {
-		if existing.RequestHash != row.RequestHash || existing.WorkItemID != row.WorkItemID || existing.RunID != row.RunID || existing.AttemptID != row.AttemptID || existing.VersionID != row.VersionID || existing.LeaseID != row.LeaseID || existing.FencingToken != row.FencingToken || existing.RequestedBytes != row.RequestedBytes || existing.Kind != row.Kind {
+		if existing.RequestHash != row.RequestHash || existing.WorkItemID != row.WorkItemID || existing.RunID != row.RunID || existing.AttemptID != row.AttemptID || existing.VersionID != row.VersionID || existing.LeaseID != row.LeaseID || existing.FencingToken != row.FencingToken || existing.RequestedBytes != row.RequestedBytes || existing.Kind != row.Kind || existing.BindingMode != row.BindingMode || existing.HostedOptIn != row.HostedOptIn {
 			return CatalogUpload{}, corestore.ErrRevisionConflict
 		}
 		return existing, nil
@@ -37,14 +38,47 @@ func (s *session) ReserveCatalogUpload(ctx context.Context, arg CatalogReservati
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return CatalogUpload{}, mapError(ctx, err)
 	}
-	if row.RequestedBytes > arg.ReservedLimit || row.RequestedBytes > arg.RetainedLimit || usage.ReservedBytes > arg.ReservedLimit-row.RequestedBytes || usage.RetainedBytes > arg.RetainedLimit-row.RequestedBytes || usage.ReservedBytes > arg.RetainedLimit-row.RequestedBytes-usage.RetainedBytes {
+	serviceUsage, err := s.ensureCatalogServiceUsage(ctx, row.ServiceID)
+	if err != nil {
+		return CatalogUpload{}, err
+	}
+	quotaUsage := usage
+	if row.BindingMode == "hosted" {
+		quotaUsage, err = s.ensureCatalogServiceUsage(ctx, "")
+		if err != nil {
+			return CatalogUpload{}, err
+		}
+	}
+	serviceRetained, serviceReserved := arg.ServiceRetainedLimit, arg.ServiceReservedLimit
+	if serviceRetained == 0 {
+		serviceRetained = arg.RetainedLimit
+	}
+	if serviceReserved == 0 {
+		serviceReserved = arg.ReservedLimit
+	}
+	if row.RequestedBytes > serviceReserved-serviceUsage.ReservedBytes || row.RequestedBytes > serviceRetained-serviceUsage.ReservedBytes-serviceUsage.RetainedBytes {
 		return CatalogUpload{}, artifact.ErrQuota
 	}
-	result, err := s.queries.CreateCatalogUpload(ctx, pgquery.CreateCatalogUploadParams{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ServiceID: row.ServiceID, ID: row.ID, IdempotencyKey: row.IdempotencyKey, RequestHash: row.RequestHash, WorkItemID: row.WorkItemID, RunID: row.RunID, AttemptID: row.AttemptID, VersionID: row.VersionID, Kind: row.Kind, LeaseID: row.LeaseID, FencingToken: row.FencingToken, RequestedBytes: row.RequestedBytes, PartLimit: row.PartLimit, CreatedAt: row.CreatedAt, UploadDeadline: row.UploadDeadline, ExpiresAt: row.ExpiresAt})
+	if row.RequestedBytes > arg.ReservedLimit || row.RequestedBytes > arg.RetainedLimit || quotaUsage.ReservedBytes > arg.ReservedLimit-row.RequestedBytes || quotaUsage.RetainedBytes > arg.RetainedLimit-row.RequestedBytes || quotaUsage.ReservedBytes > arg.RetainedLimit-row.RequestedBytes-quotaUsage.RetainedBytes {
+		return CatalogUpload{}, artifact.ErrQuota
+	}
+	if arg.EnforceRelay {
+		if arg.RelayLimit < 0 || arg.RelayWindowStart.IsZero() || arg.At.IsZero() {
+			return CatalogUpload{}, artifact.ErrInvalid
+		}
+		traffic, err := s.CatalogServiceTraffic(ctx, CatalogServiceTrafficInput{OrganizationID: s.organization, ServiceID: "", Minute: arg.RelayWindowStart, Minute_2: arg.At.Add(time.Minute)})
+		if err != nil {
+			return CatalogUpload{}, err
+		}
+		if row.RequestedBytes > (arg.RelayLimit-traffic.RelayBytes)/2-quotaUsage.ReservedBytes {
+			return CatalogUpload{}, artifact.ErrQuota
+		}
+	}
+	result, err := s.queries.CreateCatalogUpload(ctx, pgquery.CreateCatalogUploadParams{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ServiceID: row.ServiceID, ID: row.ID, IdempotencyKey: row.IdempotencyKey, RequestHash: row.RequestHash, WorkItemID: row.WorkItemID, RunID: row.RunID, AttemptID: row.AttemptID, VersionID: row.VersionID, Kind: row.Kind, LeaseID: row.LeaseID, FencingToken: row.FencingToken, RequestedBytes: row.RequestedBytes, PartLimit: row.PartLimit, CreatedAt: row.CreatedAt, UploadDeadline: row.UploadDeadline, ExpiresAt: row.ExpiresAt, BindingMode: row.BindingMode, HostedOptIn: row.HostedOptIn})
 	if err != nil {
 		return CatalogUpload{}, mapError(ctx, err)
 	}
-	if err := s.adjustCatalogUsage(ctx, row.RequestedBytes, 0); err != nil {
+	if err := s.adjustCatalogUsage(ctx, row.ServiceID, row.BindingMode, row.RequestedBytes, 0); err != nil {
 		return CatalogUpload{}, err
 	}
 	return result, nil
@@ -126,7 +160,7 @@ func (s *session) VerifyCatalogObject(ctx context.Context, row CatalogObject, at
 	if err != nil {
 		return CatalogObject{}, updated(ctx, err)
 	}
-	if err := s.adjustCatalogUsage(ctx, -current.Size, current.Size); err != nil {
+	if err := s.adjustCatalogUsage(ctx, upload.ServiceID, upload.BindingMode, -current.Size, current.Size); err != nil {
 		return CatalogObject{}, err
 	}
 	return result, nil
@@ -165,7 +199,7 @@ func (s *session) checkCatalogObjectAdmission(ctx context.Context, row CatalogOb
 	if err != nil {
 		return mapError(ctx, err)
 	}
-	if totals.PendingBytes > upload.ReservedBytes || additional > upload.ReservedBytes-totals.PendingBytes {
+	if totals.PendingBytes > upload.ReservedBytes-upload.ManifestReservedBytes || additional > upload.ReservedBytes-upload.ManifestReservedBytes-totals.PendingBytes {
 		return artifact.ErrQuota
 	}
 	return nil
