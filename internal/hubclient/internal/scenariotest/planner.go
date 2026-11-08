@@ -576,7 +576,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 			t.Fatalf("setup failure lost receipt or started provider: attempts=%+v changes=%v calls=%d err=%v", current.Attempts, changes, provider.calls.Load(), err)
 		}
 		a := current.Attempts[0]
-		if a.Identity != nil || a.Status != "failed" || a.TerminalFailure == nil || a.TerminalFailure.Error != "workspace hook after_create failed (exit status 127)" || a.TerminalFailure.Stage != "pre_provider" || a.TerminalFailure.Attribution != "instance" || a.TerminalFailure.ObservedAt.IsZero() || a.Runtime == nil || a.Runtime.LocalAttemptID == 0 || a.Runtime.Generation == 0 || a.Runtime.Activity != nil {
+		if a.Identity != nil || a.Status != "failed" || a.TerminalFailure == nil || a.TerminalFailure.Error != "workspace hook after_create failed (exit status 127)" || a.TerminalFailure.Stage != "pre_provider" || a.TerminalFailure.Attribution != "instance" || a.TerminalFailure.ObservedAt.IsZero() || a.Runtime == nil || a.Runtime.LocalAttemptID != 0 || a.Runtime.Generation == 0 || a.Runtime.Activity != nil {
 			t.Fatalf("setup failure diagnostic or identity incorrect: %+v", a)
 		}
 		state, err := orch.State(t.Context())
