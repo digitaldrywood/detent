@@ -146,9 +146,6 @@
       "backend_sqlite": 1,
       "sqlite_open": 1
     },
-    "internal/cli/global_reload_test.go": {
-      "sqlite_open": 1
-    },
     "internal/cli/hub.go": {
       "database_path": 1
     },
@@ -169,32 +166,15 @@
     "internal/cli/local_configuration_test.go": {
       "sqlite_open": 1
     },
-    "internal/cli/runner_project_configuration_test.go": {
-      "backend_sqlite": 1,
-      "sqlite_open": 1
-    },
-    "internal/cli/runner_projects_test.go": {
-      "sqlite_open": 1
-    },
-    "internal/cli/runner_test.go": {
-      "backend_sqlite": 2,
-      "sqlite_open": 2
-    },
     "internal/cli/ssh_runner_test.go": {
       "backend_sqlite": 1,
-      "sqlite_open": 1
-    },
-    "internal/cli/state_test.go": {
       "sqlite_open": 1
     },
     "internal/cli/stop_recorded_run_test.go": {
       "sqlite_open": 1
     },
-    "internal/cli/telemetry_liveness_test.go": {
-      "sqlite_open": 1
-    },
     "internal/cli/update_runtime_test.go": {
-      "sqlite_open": 2
+      "sqlite_open": 1
     },
     "internal/cli/worker_generation_test.go": {
       "sqlite_open": 1
@@ -1869,7 +1849,7 @@
       "sqlite_open": 2
     },
     "internal/orchestrator/staleness_test.go": {
-      "sqlite_open": 2
+      "sqlite_open": 1
     },
     "internal/orchestrator/stop_run_integration_test.go": {
       "backend_sqlite": 5,
@@ -2290,7 +2270,7 @@
       "sqlite_open": 2
     },
     "internal/web/server_test.go": {
-      "backend_sqlite": 3,
+      "backend_sqlite": 2,
       "sqlite_open": 2
     },
     "internal/web/staleness_warning_test.go": {
