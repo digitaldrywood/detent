@@ -18,7 +18,6 @@ type preparedChangeVersionRun struct {
 	authority NativeRunEventAuthority
 	attempt   leasestore.Attempt
 	event     eventstore.Event
-	diff      *leasestore.AttemptDiff
 	lease     leasestore.Lease
 	workItem  corestore.WorkItem
 	diff      *leasestore.AttemptDiff
