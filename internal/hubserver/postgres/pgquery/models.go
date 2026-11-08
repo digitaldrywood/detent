@@ -4522,6 +4522,40 @@ type RunnerProblemReport struct {
 	FirstSeen      time.Time
 }
 
+type RunnerProcessReceipt struct {
+	OrganizationID           tracker.OrganizationID
+	ProjectID                tracker.ProjectID
+	SessionID                int64
+	Role                     string
+	RunnerID                 string
+	EnrollmentID             string
+	MachineID                string
+	LeaseID                  string
+	FencingToken             int64
+	OwnerGeneration          int64
+	AuthorityHash            string
+	Pid                      int32
+	GroupID                  int32
+	StartedAt                time.Time
+	StartedAtNs              int64
+	CleanupRoot              string
+	CleanupPath              string
+	HistoryRevision          int64
+	RegistrationObjectKey    string
+	RegistrationSha256       string
+	RegistrationBytes        int64
+	RegistrationContentBytes int64
+	ReapClass                string
+	ReapedAt                 *time.Time
+	ReapOutcome              string
+	ReapReason               string
+	ReapObjectKey            *string
+	ReapSha256               string
+	ReapBytes                int64
+	ReapContentBytes         int64
+	UpdatedAt                time.Time
+}
+
 type RunnerProjectCapacityLimit struct {
 	OrganizationID tracker.OrganizationID
 	RunnerID       string
