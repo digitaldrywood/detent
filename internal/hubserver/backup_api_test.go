@@ -32,7 +32,7 @@ func TestAdminBackupBoundary(t *testing.T) {
 			f.service.database.hostedOrganization = organization
 			owner := f.user(t, "owner", "owner", "owner@example.test", "", "")
 			output := filepath.Join(t.TempDir(), "snapshot.db")
-			requireNativeCode(t, f.request(t, owner, http.MethodPost, "/api/v2/admin/backup", map[string]string{"output": output}), http.StatusServiceUnavailable, "storage_owner_unavailable")
+			requireNativeCode(t, f.request(t, owner, http.MethodPost, "/api/v2/admin/backup", map[string]string{"output": output}), http.StatusNotFound, "not_found")
 			if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("hosted backup created output: %v", err)
 			}
