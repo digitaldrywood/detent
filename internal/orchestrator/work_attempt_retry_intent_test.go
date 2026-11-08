@@ -266,28 +266,23 @@ func TestDurableRecoveryPreservesDispatchFailureBackoff(t *testing.T) {
 }
 
 type failingRecoveryJournal struct {
-	store.Store
+	*autoPromoteWorkflowMetricsRecorder
 }
 
 func (s failingRecoveryJournal) RecordWorkflowPhaseEvent(ctx context.Context, event store.WorkflowPhaseEvent) (int64, error) {
 	if event.PhaseName == workAttemptRetryIntentPhase {
 		return 0, errors.New("recovery journal unavailable")
 	}
-	return s.Store.RecordWorkflowPhaseEvent(ctx, event)
+	return s.autoPromoteWorkflowMetricsRecorder.RecordWorkflowPhaseEvent(ctx, event)
 }
 
 func TestRecoveryJournalFailureLeavesHoldsIntact(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
-	db := openWorkAttemptRecoveryStore(t, t.Context())
-	host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
-	host.workflowMetrics = failingRecoveryJournal{Store: db}
 	issue := recoveryTestIssue()
 	now := time.Now().UTC()
-	attemptID := startRecoveryWorkAttempt(t, t.Context(), db, issue, store.WorkAttemptStatusTerminal, store.WorkAttemptTerminalFailure, now.Add(-time.Hour))
+	started := now.Add(-time.Hour)
+	host, attemptID := newWorkAttemptRecoveryLogicOrchestrator(t, issue, started.Add(time.Minute))
+	host.workflowMetrics = failingRecoveryJournal{autoPromoteWorkflowMetricsRecorder: &autoPromoteWorkflowMetricsRecorder{}}
 	state := newState(host.cfg)
 	state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceProjectStatus, Reason: "existing hold"}
 	_, err := host.handleWorkAttemptRecovery(t.Context(), &state, WorkAttemptRecoveryRequest{AttemptID: attemptID, Action: WorkAttemptRecoveryRetryFresh}, now)
@@ -455,18 +450,17 @@ func TestRecoveryRevalidatesConfigurationBeforeRecordingIntent(t *testing.T) {
 }
 
 func TestConfigurationCompletionDoesNotRetryOrPoisonProject(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	for _, form := range []string{"typed", "wrapped", "restored", "observed lane"} {
 		t.Run(form, func(t *testing.T) {
-			db := openWorkAttemptRecoveryStore(t, t.Context())
-			host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
 			issue := recoveryTestIssue()
 			now := time.Now().UTC()
-			attemptID := startRecoveryWorkAttempt(t, t.Context(), db, issue, store.WorkAttemptStatusActive, "", now.Add(-time.Minute))
+			host, attemptID := newWorkAttemptRecoveryLogicOrchestrator(t, issue, now)
+			attempts := host.workAttempts.(*recordingWorkAttemptStore)
+			attempts.workAttempt.Status = store.WorkAttemptStatusActive
+			attempts.workAttempt.TerminalState = ""
+			attempts.workAttempt.CompletedAt = time.Time{}
+			attempts.history = nil
 			state := newState(host.cfg)
 			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: attemptID, Attempt: 1, StartedAt: now.Add(-time.Minute)}
 			if form == "observed lane" {
@@ -482,13 +476,12 @@ func TestConfigurationCompletionDoesNotRetryOrPoisonProject(t *testing.T) {
 				failure = errors.New(failure.Error())
 			}
 			host.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Err: failure, CompletedAt: now})
-			attempt, err := db.WorkAttempt(t.Context(), attemptID)
 			wantClass := "issue_configuration"
 			if form == "restored" {
 				wantClass = workAttemptErrorRunner
 			}
-			if err != nil || attempt.ErrorClass != wantClass {
-				t.Fatalf("completion class=%s retry=%v err=%v", attempt.ErrorClass, state.Retry, err)
+			if len(attempts.completions) != 1 || attempts.completions[0].ErrorClass != wantClass {
+				t.Fatalf("completion=%+v retry=%v, want class %s", attempts.completions, state.Retry, wantClass)
 			}
 			if len(state.Blocked) != 0 {
 				t.Fatal("configuration failure created a human hold")
@@ -503,21 +496,17 @@ func TestConfigurationCompletionDoesNotRetryOrPoisonProject(t *testing.T) {
 }
 
 func TestInvalidConfigurationPreflightDoesNotSpendLaunchAttempts(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	db := openWorkAttemptRecoveryStore(t, ctx)
+	attempts := &recordingWorkAttemptStore{}
 	issue := recoveryTestIssue()
 	issue.Title = "Fix invalid override"
 	issue.AssignedToWorker = true
 	issue.Description = "```detent-agent\nschema: 2\n```"
 	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	runner := newClaimBlockingRunner()
-	host, err := New(Config{MaxConcurrentAgents: 1, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo", "In Progress"}}, Dependencies{Connector: tracker, Runner: runner, WorkAttempts: db, WorkflowMetrics: db})
+	host, err := New(Config{MaxConcurrentAgents: 1, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo", "In Progress"}}, Dependencies{Connector: tracker, Runner: runner, WorkAttempts: attempts, WorkflowMetrics: &autoPromoteWorkflowMetricsRecorder{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -526,7 +515,7 @@ func TestInvalidConfigurationPreflightDoesNotSpendLaunchAttempts(t *testing.T) {
 	for range 6 {
 		host.dispatchReadyIssues(ctx, &state, []connector.Issue{issue}, now)
 	}
-	if len(state.Running) != 0 || len(state.WorkAttempts) != 0 || len(state.Blocked) != 0 || len(state.Retry) != 1 {
+	if len(state.Running) != 0 || len(state.WorkAttempts) != 0 || len(state.Blocked) != 0 || len(state.Retry) != 1 || len(attempts.starts) != 0 {
 		t.Fatalf("invalid override consumed attempts: running=%v attempts=%v blocked=%v", state.Running, state.WorkAttempts, state.Blocked)
 	}
 	issue.Description = "```detent-agent\nschema: 1\neffort: low\n```"
