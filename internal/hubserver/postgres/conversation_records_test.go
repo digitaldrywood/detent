@@ -239,6 +239,66 @@ func TestConversationRecordsAreTenantScopedAndTransactional(t *testing.T) {
 		}
 	}
 
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		for index, suppliedSequence := range []int64{0, 1000} {
+			if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+				conversationID := "conv_0123456789abcdef0123456789abcdef"
+				snapshot, err := w.LockConversation(ctx, "prj_shared", conversationID)
+				if err != nil {
+					return err
+				}
+				first, err := w.AppendConversationEvent(ctx, conversationstore.Event{OrganizationID: organization, ConversationID: conversationID, Event: conversation.Event{Type: conversation.EventExecutionUpdated, Data: json.RawMessage(`{}`), CreatedAt: now}})
+				if err != nil {
+					return err
+				}
+				wantSequence := int64(2 + index*2)
+				if first.Seq != wantSequence {
+					t.Fatalf("first event sequence = %d, want %d", first.Seq, wantSequence)
+				}
+				snapshot.EventSequence = suppliedSequence
+				snapshot.Title = string(organization) + " updated"
+				updated, err := w.UpdateConversation(ctx, snapshot, snapshot.Revision)
+				if err != nil {
+					return err
+				}
+				if updated.EventSequence != wantSequence || updated.Title != snapshot.Title || updated.Revision != snapshot.Revision+1 {
+					t.Fatalf("conversation update changed event ownership: %+v, want event sequence %d", updated, wantSequence)
+				}
+				second, err := w.AppendConversationEvent(ctx, conversationstore.Event{OrganizationID: organization, ConversationID: conversationID, Event: conversation.Event{Type: conversation.EventCommandReceipt, Data: json.RawMessage(`{}`), CreatedAt: now}})
+				if err != nil {
+					return err
+				}
+				stored, err := w.Conversation(ctx, "prj_shared", conversationID)
+				if err != nil {
+					return err
+				}
+				if second.Seq != wantSequence+1 || stored.EventSequence != wantSequence+1 || stored.Title != snapshot.Title {
+					t.Fatalf("subsequent event lost sequence: event=%+v conversation=%+v", second, stored)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+			events, err := r.ConversationEvents(ctx, "conv_0123456789abcdef0123456789abcdef", 0, 20)
+			if err != nil {
+				return err
+			}
+			if len(events.Items) != 5 {
+				t.Fatalf("conversation history = %+v, want five events", events.Items)
+			}
+			for index, event := range events.Items {
+				if event.OrganizationID != organization || event.Seq != int64(index+1) {
+					t.Fatalf("conversation history escaped its tenant or order: %+v", event)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	rollback := errors.New("reject after message write")
 	rollbackRef, _, err := attachment.PrepareArchive("org_first", 1, bytes.NewReader([]byte(`{"rollback":true}`)))
 	if err != nil {
