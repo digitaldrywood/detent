@@ -1837,14 +1837,6 @@
       "backend_sqlite": 4,
       "sqlite_open": 4
     },
-    "internal/orchestrator/blocker_evidence_test.go": {
-      "backend_sqlite": 1,
-      "sqlite_open": 1
-    },
-    "internal/orchestrator/checkpoint_test.go": {
-      "backend_sqlite": 1,
-      "sqlite_open": 1
-    },
     "internal/orchestrator/completion_classification_test.go": {
       "backend_sqlite": 1,
       "sqlite_open": 2
@@ -1897,10 +1889,6 @@
       "backend_sqlite": 2,
       "sqlite_open": 2
     },
-    "internal/orchestrator/session_brake_test.go": {
-      "backend_sqlite": 1,
-      "sqlite_open": 1
-    },
     "internal/orchestrator/staleness_test.go": {
       "sqlite_open": 2
     },
@@ -1909,8 +1897,8 @@
       "sqlite_open": 5
     },
     "internal/orchestrator/terminal_attempt_retry_test.go": {
-      "backend_sqlite": 2,
-      "sqlite_open": 3
+      "backend_sqlite": 1,
+      "sqlite_open": 2
     },
     "internal/orchestrator/work_attempt_recovery_test.go": {
       "backend_sqlite": 1,
@@ -2299,8 +2287,7 @@
       "sql_schema": 1
     },
     "internal/testenv/unique_inserts_test.go": {
-      "driver_import": 1,
-      "sqlite_open": 1
+      "driver_import": 1
     },
     "internal/web/api_benchmark_test.go": {
       "backend_sqlite": 1,
@@ -2318,14 +2305,6 @@
     "internal/web/completions_test.go": {
       "backend_sqlite": 1,
       "sqlite_open": 2
-    },
-    "internal/web/library.go": {
-      "driver_import": 1,
-      "sql_pragma": 1,
-      "sqlite_open": 1
-    },
-    "internal/web/library_internal_test.go": {
-      "sqlite_open": 1
     },
     "internal/web/native_work_integration_test.go": {
       "database_path": 1
