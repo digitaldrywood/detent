@@ -568,32 +568,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 			t.Fatal("owner could not cancel backlog item")
 		}
 	})
-	for _, user := range []string{"owner", "admin", "member", "reporter", "reader"} {
-		t.Run("catalog_"+user, func(t *testing.T) {
-			response := request(user, "/internal/v1/keys/catalog", map[string]any{})
-			requireNativeStatus(t, response, http.StatusOK)
-			var definitions []operatortool.Definition
-			decodeHubResponse(t, response, &definitions)
-			found := false
-			for _, definition := range definitions {
-				if definition.Name == operatortool.MoveItem {
-					found = true
-					if definition.Annotations.ReadOnly {
-						t.Error("MoveItem is a mutation")
-					}
-				}
-				if definition.Name == operatortool.StopRun {
-					t.Error("StopRun must remain unavailable")
-				}
-				if user == "reader" && !definition.Annotations.ReadOnly {
-					t.Errorf("reader gained mutation %s", definition.Name)
-				}
-			}
-			if found != (user != "reader") {
-				t.Errorf("MoveItem availability=%v", found)
-			}
-		})
-	}
+
 	if t.Failed() {
 		return
 	}
@@ -1983,6 +1958,77 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPostgresEntryKeyWorkCommandCatalog(t *testing.T) {
+	permissions := map[string]apikey.Scope{"owner": apikey.ScopeAdmin, "admin": apikey.ScopeAdmin, "member": apikey.ScopeWrite, "reporter": apikey.ScopeWrite, "reader": apikey.ScopeRead}
+	roles := map[string]string{"owner": "owner", "admin": "admin", "member": "member", "reporter": "reporter", "reader": "owner"}
+	authority := func(user, id, binding string) *apikey.KeyAuthority {
+		return &apikey.KeyAuthority{ID: id, CredentialBinding: binding, Kind: "personal", Permission: permissions[user], ProjectContext: apikey.ProjectContext{Access: "selected", Projects: []string{"project"}}}
+	}
+	f := newSharedRouteFixture(t, func(cfg *Config) {
+		plans := pilotHostedPlans()
+		cfg.Hosted.Plans = &plans
+		org := cfg.Hosted.OrganizationID
+		cfg.Hosted.SharedEntry.ResolveKey = func(_ context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
+			user := strings.TrimPrefix(origin.Subject, org+"_")
+			return cloudassert.Claims{Issuer: origin.Issuer, Generation: origin.Generation, Audience: org, ProviderOrganization: "provider_" + org, Subject: origin.Subject, Role: roles[user], Kind: cloudassert.KindKey, ExpiresAt: time.Now().Add(time.Minute), Key: authority(user, origin.KeyID, origin.CredentialBinding)}, nil
+		}
+	})
+	for _, org := range []string{"org_startup", "org_other"} {
+		service := f.services[org]
+		organization := tracker.OrganizationID(org)
+		pgmcpcatSeed(t, service, organization)
+		if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			now := service.config.now()
+			for _, user := range []string{"admin", "member", "reporter", "reader"} {
+				id := org + "_" + user
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: id, Name: id, Hash: apikey.HashToken(id), Scope: "operator", Kind: "personal", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: id, Email: id + "@example.test", MembershipID: id, PrincipalID: id, Role: roles[user], Active: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+					return err
+				}
+				if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization, ProjectID: "project", UserID: id, CanWrite: user != "reader"}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for _, user := range []string{"owner", "admin", "member", "reporter", "reader"} {
+			t.Run(org+"/"+user, func(t *testing.T) {
+				claims := func(c *cloudassert.Claims) {
+					c.Kind, c.Subject, c.Role, c.ProviderOrganization = cloudassert.KindKey, org+"_"+user, roles[user], "provider_"+org
+					c.Key = authority(user, "key_"+c.Subject, strings.Repeat("a", 64))
+				}
+				response := f.request(t, org, "/internal/v1/keys/catalog", `{}`, claims)
+				requireNativeStatus(t, response, http.StatusOK)
+				var definitions []operatortool.Definition
+				decodeHubResponse(t, response, &definitions)
+				for _, test := range []struct {
+					name      string
+					available bool
+				}{{operatortool.MoveItem, user != "reader"}, {operatortool.StopRun, user == "owner" || user == "admin" || user == "member"}} {
+					definition, found := entryKeyDefinition(definitions, test.name)
+					if found != test.available {
+						t.Errorf("%s availability=%v want=%v", test.name, found, test.available)
+					}
+					if found && definition.Annotations.ReadOnly {
+						t.Errorf("%s is a mutation", test.name)
+					}
+				}
+				for _, definition := range definitions {
+					if user == "reader" && !definition.Annotations.ReadOnly {
+						t.Errorf("reader gained mutation %s", definition.Name)
+					}
+				}
+				denied := f.request(t, org, "/internal/v1/keys/call", `{"name":"stop_run","connection_id":"catalog","arguments":{"project_id":"compat","identifier":"wi_compat_item","expected_revision":"1","lease_id":"lease_example","fencing_token":1,"destination":"Cancelled","request_id":"catalog"}}`, claims)
+				requireNativeStatus(t, denied, http.StatusForbidden)
+			})
+		}
 	}
 }
 
