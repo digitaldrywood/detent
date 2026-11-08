@@ -2075,7 +2075,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					return d.VersionID != "" && d.VersionID != expected.Change.CurrentVersion
 				})
 				if len(currentFeedback.Reviews) == 0 {
-					currentFeedback.Reviews = nil
+					currentFeedback.Reviews = []tracker.ChangeReview{}
 				}
 				if len(currentFeedback.Checks) == 0 {
 					currentFeedback.Checks = nil
