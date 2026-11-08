@@ -20,6 +20,16 @@ Call `template.Database(t)` to get an isolated `*sql.DB`. Fixture cleanup is
 registered with `t.Cleanup`; close application connections before fixture cleanup
 runs. Run with a nonzero `go test -timeout` so setup and cleanup have a deadline.
 
+For a service that opens its own pool, call `template.DatabaseConnection(t)` to
+create an isolated database and obtain explicit `pgtransport.Connection` settings.
+The helper closes its setup pool before returning. Use those settings in the
+service's PostgreSQL configuration, limit its pool to the fixture's two client
+connections, and register service cleanup after obtaining the connection. Reopen
+the service with the same settings to check persisted state; calling the helper
+again creates a different empty fixture. This avoids reconstructing credentials
+or socket paths from server settings and never returns a local database file.
+Call `template.Database(t)` directly for repository tests using `database/sql`.
+
 The migration function receives an empty database and must finish all migration
 work before returning. It runs once, then its connection pool is closed and the
 template disables connections. Each fixture clones that database with

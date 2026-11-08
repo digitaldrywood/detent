@@ -15,8 +15,9 @@ import (
 	"strings"
 )
 
-var insertStatement = regexp.MustCompile(`(?is)\bINSERT\s+(?:OR\s+\w+\s+)?INTO\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*VALUES\s*\(`)
+var insertStatement = regexp.MustCompile(`(?is)\bINSERT\s+(?:OR\s+\w+\s+)?INTO\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\s*\(([^)]*)\)\s*VALUES\s*\(`)
 var conflictTarget = regexp.MustCompile(`(?is)\bON\s+CONFLICT\s*\(([^)]*)\)`)
+var numberedPlaceholder = regexp.MustCompile(`^\$([1-9][0-9]*)(?:::[A-Za-z_][A-Za-z0-9_.]*(?:\[\])?)*$`)
 
 // ConstantUniqueInserts reports INSERT statements in the non-test Go files of
 // dir that write a constant into every column of a UNIQUE or PRIMARY KEY index
@@ -29,6 +30,58 @@ func ConstantUniqueInserts(ctx context.Context, db *sql.DB, dir string) ([]strin
 	if err != nil {
 		return nil, err
 	}
+	return constantUniqueInserts(dir, indexes)
+}
+
+func ConstantUniquePostgresInserts(ctx context.Context, db *sql.DB, dir string) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT n.nspname, c.relname, i.indexrelid::text, a.attname, pg_table_is_visible(c.oid)
+FROM pg_index i
+JOIN pg_class c ON c.oid = i.indrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, position)
+JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+WHERE i.indisunique AND i.indisvalid AND i.indisready AND i.indislive
+  AND i.indpred IS NULL AND i.indexprs IS NULL
+  AND k.position <= i.indnkeyatts
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+  AND n.nspname NOT LIKE 'pg_toast%'
+ORDER BY n.nspname, c.relname, i.indexrelid, k.position`)
+	if err != nil {
+		return nil, fmt.Errorf("list PostgreSQL unique indexes: %w", err)
+	}
+	defer rows.Close()
+	indexes := map[string][][]string{}
+	var previous string
+	for rows.Next() {
+		var schema, table, index, column string
+		var visible bool
+		if err := rows.Scan(&schema, &table, &index, &column, &visible); err != nil {
+			return nil, fmt.Errorf("read PostgreSQL unique index: %w", err)
+		}
+		keys := []string{strings.ToLower(schema + "." + table)}
+		if visible {
+			keys = append(keys, strings.ToLower(table))
+		}
+		for _, key := range keys {
+			if index != previous {
+				indexes[key] = append(indexes[key], nil)
+			}
+			last := len(indexes[key]) - 1
+			indexes[key][last] = append(indexes[key][last], strings.ToLower(column))
+		}
+		previous = index
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate PostgreSQL unique indexes: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close PostgreSQL unique indexes: %w", err)
+	}
+	return constantUniqueInserts(dir, indexes)
+}
+
+func constantUniqueInserts(dir string, indexes map[string][][]string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("read source directory: %w", err)
@@ -125,18 +178,23 @@ func constantInsertViolations(query string, args []ast.Expr, spread bool, consta
 		for i, value := range values {
 			value = strings.TrimSpace(value)
 			column := strings.ToLower(strings.TrimSpace(columns[i]))
+			argument := -1
 			switch {
 			case value == "?":
-				if !spread || placeholder < len(args)-1 {
-					if placeholder < len(args) {
-						if _, ok := constantValue(args[placeholder], constants); ok {
-							constant[column] = true
-						}
-					}
+				argument = placeholder
+			case numberedPlaceholder.MatchString(value):
+				position, err := strconv.Atoi(numberedPlaceholder.FindStringSubmatch(value)[1])
+				if err == nil {
+					argument = position - 1
 				}
 			case strings.EqualFold(value, "NULL"):
 			case constantSQL(value):
 				constant[column] = true
+			}
+			if argument >= 0 && argument < len(args) && (!spread || argument < len(args)-1) {
+				if _, ok := constantValue(args[argument], constants); ok {
+					constant[column] = true
+				}
 			}
 			placeholder += strings.Count(value, "?")
 		}

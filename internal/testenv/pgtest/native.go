@@ -10,6 +10,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 )
 
+func (p *Template) DatabaseConnection(t *testing.T) pgtransport.Connection {
+	t.Helper()
+	fixture := p.Database(t)
+	connection := p.Connection(t, fixture, "", "")
+	if err := fixture.Close(); err != nil {
+		t.Fatal("close PostgreSQL fixture setup connection")
+	}
+	return connection
+}
+
 func (p *Template) NativeConfig(t *testing.T, fixture *sql.DB, role, password string) *pgxpool.Config {
 	t.Helper()
 	var name string
