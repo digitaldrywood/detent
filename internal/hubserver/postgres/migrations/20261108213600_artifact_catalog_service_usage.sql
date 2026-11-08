@@ -4,8 +4,10 @@ CREATE TABLE artifact_catalog_service_usage (
  reserved_bytes bigint NOT NULL DEFAULT 0 CHECK(reserved_bytes>=0),retained_bytes bigint NOT NULL DEFAULT 0 CHECK(retained_bytes>=0),
  PRIMARY KEY(organization_id,service_id)
 );
+ALTER TABLE artifact_catalog_uploads NO FORCE ROW LEVEL SECURITY;
 INSERT INTO artifact_catalog_service_usage SELECT organization_id,service_id,sum(reserved_bytes),sum(retained_bytes) FROM artifact_catalog_uploads GROUP BY organization_id,service_id;
 INSERT INTO artifact_catalog_service_usage SELECT organization_id,'',sum(reserved_bytes),sum(retained_bytes) FROM artifact_catalog_uploads WHERE binding_mode='hosted' GROUP BY organization_id;
+ALTER TABLE artifact_catalog_uploads FORCE ROW LEVEL SECURITY;
 CREATE INDEX artifact_catalog_active_service_usage ON artifact_catalog_uploads(organization_id,service_id) WHERE reserved_bytes>0 OR retained_bytes>0;
 CREATE INDEX artifact_catalog_active_hosted_usage ON artifact_catalog_uploads(organization_id,binding_mode) WHERE reserved_bytes>0 OR retained_bytes>0;
 ALTER TABLE artifact_catalog_service_usage ENABLE ROW LEVEL SECURITY;

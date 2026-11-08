@@ -15,8 +15,12 @@ CREATE TABLE artifact_catalog_service_traffic (
  upload_bytes bigint NOT NULL CHECK(upload_bytes>=0),download_bytes bigint NOT NULL CHECK(download_bytes>=0),requests bigint NOT NULL CHECK(requests>=0),
  PRIMARY KEY(organization_id,service_id,minute)
 );
+ALTER TABLE artifact_catalog_traffic NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE artifact_services NO FORCE ROW LEVEL SECURITY;
 INSERT INTO artifact_catalog_service_traffic SELECT organization_id,service_id,minute,sum(upload_bytes),sum(download_bytes),sum(requests) FROM artifact_catalog_traffic GROUP BY organization_id,service_id,minute;
-INSERT INTO artifact_catalog_service_traffic SELECT organization_id,'',minute,sum(upload_bytes),sum(download_bytes),sum(requests) FROM artifact_catalog_traffic GROUP BY organization_id,minute;
+INSERT INTO artifact_catalog_service_traffic SELECT t.organization_id,'',t.minute,sum(t.upload_bytes),sum(t.download_bytes),sum(t.requests) FROM artifact_catalog_traffic t JOIN artifact_services b ON (b.organization_id,b.project_id,b.id)=(t.organization_id,t.project_id,t.service_id) WHERE b.binding_mode='hosted' AND b.hosted_opt_in GROUP BY t.organization_id,t.minute;
+ALTER TABLE artifact_catalog_traffic FORCE ROW LEVEL SECURITY;
+ALTER TABLE artifact_services FORCE ROW LEVEL SECURITY;
 ALTER TABLE artifact_catalog_service_traffic ENABLE ROW LEVEL SECURITY;
 ALTER TABLE artifact_catalog_service_traffic FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON artifact_catalog_service_traffic FROM PUBLIC,detent_platform;
